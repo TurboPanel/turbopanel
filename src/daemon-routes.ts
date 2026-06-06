@@ -8,9 +8,11 @@ import {
   parseDaemonMessage,
   recordDaemonBroadcast,
   recordDaemonMessage,
+  requestDaemonAddresses,
   sendToDaemon,
   type DaemonMessage,
 } from './daemon-hub.ts'
+import { collectServerAddresses } from './server-addresses.ts'
 
 export function registerDaemonRoutes(app: Hono) {
   app.get('/api/daemon/connections', (c) =>
@@ -79,6 +81,41 @@ export function registerDaemonRoutes(app: Hono) {
     const commandId = dispatchCommand(id, command)
     if (!commandId) return c.json({ error: 'daemon not connected' }, 404)
     return c.json({ ok: true, commandId })
+  })
+
+  app.get('/api/instance/addresses', (c) => {
+    const addresses = collectServerAddresses()
+    return c.json({ ok: true, source: 'instance', addresses })
+  })
+
+  app.get('/api/daemon/addresses', async (c) => {
+    const connections = listDaemonConnections()
+    const servers = await Promise.all(
+      connections.map(async (conn) => {
+        try {
+          const addresses = await requestDaemonAddresses(conn.id)
+          return { daemonId: conn.id, addresses }
+        } catch (err) {
+          return {
+            daemonId: conn.id,
+            error: err instanceof Error ? err.message : String(err),
+          }
+        }
+      }),
+    )
+    return c.json({ servers })
+  })
+
+  app.get('/api/daemon/:id/addresses', async (c) => {
+    const id = c.req.param('id')
+    try {
+      const addresses = await requestDaemonAddresses(id)
+      return c.json({ ok: true, daemonId: id, addresses })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      const status = message === 'daemon not connected' ? 404 : 500
+      return c.json({ error: message }, status)
+    }
   })
 
   return app

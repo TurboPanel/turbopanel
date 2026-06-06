@@ -1,3 +1,5 @@
+import type { ServerAddresses } from './server-addresses.ts'
+
 /** JSON messages exchanged between the instance and daemon over /ws. */
 export type DaemonMessage =
   | { type: 'hello'; from: 'instance' | 'daemon'; at: string }
@@ -12,6 +14,13 @@ export type DaemonMessage =
     exitCode: number
     stdout: string
     stderr: string
+    at: string
+  }
+  | { type: 'addresses-request'; id: string; at: string }
+  | {
+    type: 'addresses-result'
+    id: string
+    addresses: ServerAddresses
     at: string
   }
 
@@ -57,6 +66,15 @@ const MAX_EVENTS = 100
 const commands = new Map<string, CommandResult>()
 const commandOrder: string[] = []
 const MAX_COMMANDS = 100
+
+const pendingAddresses = new Map<string, {
+  daemonId: string
+  resolve: (addresses: ServerAddresses) => void
+  reject: (err: Error) => void
+  timer: ReturnType<typeof setTimeout>
+}>()
+
+const ADDRESSES_TIMEOUT_MS = 10_000
 
 let nextId = 1
 
@@ -177,6 +195,45 @@ export function listCommandResults(limit = 50): CommandResult[] {
     .slice(-limit)
     .map((id) => commands.get(id))
     .filter((entry): entry is CommandResult => entry !== undefined)
+}
+
+/** Ask a connected daemon for its network addresses and wait for the reply. */
+export function requestDaemonAddresses(
+  daemonId: string,
+  timeoutMs = ADDRESSES_TIMEOUT_MS,
+): Promise<ServerAddresses> {
+  const conn = connections.get(daemonId)
+  if (!conn) {
+    return Promise.reject(new Error('daemon not connected'))
+  }
+
+  return new Promise((resolve, reject) => {
+    const id = crypto.randomUUID()
+    const timer = setTimeout(() => {
+      pendingAddresses.delete(id)
+      reject(new Error('timeout waiting for addresses'))
+    }, timeoutMs)
+
+    pendingAddresses.set(id, { daemonId, resolve, reject, timer })
+
+    const message: DaemonMessage = {
+      type: 'addresses-request',
+      id,
+      at: new Date().toISOString(),
+    }
+    recordDaemonMessage(daemonId, 'out', message)
+    conn.send(JSON.stringify(message))
+  })
+}
+
+export function recordAddressesResult(
+  message: Extract<DaemonMessage, { type: 'addresses-result' }>,
+): void {
+  const pending = pendingAddresses.get(message.id)
+  if (!pending) return
+  clearTimeout(pending.timer)
+  pendingAddresses.delete(message.id)
+  pending.resolve(message.addresses)
 }
 
 export function broadcastToDaemons(message: DaemonMessage): number {

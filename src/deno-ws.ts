@@ -3,6 +3,7 @@ import { upgradeWebSocket } from 'hono/deno'
 import {
   type DaemonMessage,
   parseDaemonMessage,
+  recordAddressesResult,
   recordCommandResult,
   recordDaemonMessage,
   registerDaemon,
@@ -85,6 +86,10 @@ export function registerDaemonWebSocket(app: Hono) {
 
           if (message.type === 'command-result') {
             recordCommandResult(message)
+          }
+
+          if (message.type === 'addresses-result') {
+            recordAddressesResult(message)
           }
         },
 

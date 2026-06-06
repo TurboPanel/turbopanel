@@ -37,11 +37,11 @@ def run_deno_mode():
     local_resource(
         name = "turbopanel (deno)",
         labels = ["Runtime"],
-        serve_cmd = deno_bin() + " run --allow-env --allow-read=" + SOCKET_DIR + ",../daemon --allow-write=" + SOCKET_DIR + " --allow-run=git --watch src/deno.ts",
+        serve_cmd = deno_bin() + " run --allow-env --allow-sys=networkInterfaces --allow-read=" + SOCKET_DIR + ",../daemon --allow-write=" + SOCKET_DIR + " --allow-run=git --watch src/deno.ts",
         serve_env = deno_env,
         resource_deps = ["socket-setup"],
         trigger_mode = TRIGGER_MODE_AUTO,
-        deps = ["src/deno.ts", "src/app.ts", "src/deno-ws.ts", "src/daemon-hub.ts", "src/daemon-routes.ts", "src/daemon-version.ts", "src/server-paths.ts", "deno.json"],
+        deps = ["src/deno.ts", "src/app.ts", "src/deno-ws.ts", "src/daemon-hub.ts", "src/daemon-routes.ts", "src/daemon-version.ts", "src/server-addresses.ts", "src/server-paths.ts", "deno.json"],
     )
 
     # Ensure Caddy is downloaded and the self-signed cert exists before Caddy serves.
