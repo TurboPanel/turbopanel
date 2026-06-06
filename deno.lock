@@ -11,6 +11,12 @@
   "workspace": {
     "dependencies": [
       "jsr:@hono/hono@^4.12.23"
-    ]
+    ],
+    "packageJson": {
+      "dependencies": [
+        "npm:hono@4.12.23",
+        "npm:wrangler@^4.98.0"
+      ]
+    }
   }
 }

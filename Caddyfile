@@ -1,0 +1,27 @@
+# Local dev reverse proxy mirroring the Cloudflare (wrangler) routing.
+#
+#   /api/*  and  /ws   -> Deno turbopanel control plane
+#   everything else     -> Expo web dev server (SPA)
+#
+# Ports are injected by Tilt via env placeholders (defaults match tilt/common.tiltfile PORTS).
+# No ACME / Let's Encrypt: auto_https is disabled and a local self-signed cert is used.
+{
+	auto_https off
+	admin off
+}
+
+# Bind all interfaces so the dev proxy is reachable via LAN IP, not just localhost.
+:{$CADDY_PORT:8443} {
+	tls ./certs/dev.crt ./certs/dev.key
+
+	@api path /api/*
+	reverse_proxy @api 127.0.0.1:{$TURBOPANEL_PORT:8787}
+
+	@ws path /ws
+	reverse_proxy @ws 127.0.0.1:{$TURBOPANEL_PORT:8787}
+
+	# Expo's dev server expects a localhost Host; clients may connect via the machine's LAN IP.
+	reverse_proxy 127.0.0.1:{$EXPO_PORT:8081} {
+		header_up Host 127.0.0.1:{$EXPO_PORT:8081}
+	}
+}

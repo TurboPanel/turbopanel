@@ -2,8 +2,59 @@
 #
 # Shared constants and utilities for TurboPanel Tiltfiles.
 
+def deno_bin():
+    override = os.environ.get("TURBOPANEL_DENO", "")
+    if override != "":
+        return override
+
+    home = os.environ.get("HOME", "")
+    if home == "":
+        fail("HOME is not set; cannot resolve Deno binary path")
+
+    candidate = home + "/runtimes/deno/current/deno"
+    path = str(local("readlink -f '" + candidate + "'", quiet = True)).strip()
+    if path == "":
+        fail("Could not resolve Deno binary at " + candidate)
+    return path
+
+def deno_bin_dir():
+    return str(local("dirname '" + deno_bin() + "'", quiet = True)).strip()
+
+def deno_serve_env():
+    return {
+        "PATH": deno_bin_dir() + ":" + os.environ.get("PATH", ""),
+    }
+
+def caddy_bin():
+    override = os.environ.get("TURBOPANEL_CADDY", "")
+    if override != "":
+        return override
+
+    home = os.environ.get("HOME", "")
+    if home == "":
+        fail("HOME is not set; cannot resolve Caddy binary path")
+
+    # Return the managed-runtime path without requiring the binary to exist yet.
+    # caddy-setup / the caddy serve_cmd bootstrap scripts install it on demand.
+    return home + "/runtimes/caddy/current/caddy"
+
+def node_bin_dir():
+    home = os.environ.get("HOME", "")
+    if home == "":
+        fail("HOME is not set; cannot resolve Node binary path")
+    return home + "/runtimes/node/current/bin"
+
+def node_serve_env():
+    return {
+        "PATH": node_bin_dir() + ":" + os.environ.get("PATH", ""),
+    }
+
 PORTS = {
-    "turbopanel": 18787,
+    "deno": 8787,
+    "workers": 18787,
+    "expo": 8081,
+    "caddy": 8443,
+    # "daemon": <port>,  # add when the daemon exposes a port
 }
 
 COLORS = {

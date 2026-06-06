@@ -1,19 +1,9 @@
 {
   "name": "turbopanel",
   "version": "0.1.0",
+  "exports": "./src/app.ts",
   "imports": {
     "hono": "jsr:@hono/hono@^4.12.23"
-  },
-  "tasks": {
-    "deps": "pnpm install",
-    "start": "deno run --allow-net src/deno.ts",
-    "dev": "deno run --allow-net --watch src/deno.ts",
-    "tilt": "node scripts/tilt-wrapper.mjs",
-    "tilt:deno": "node scripts/tilt-wrapper.mjs deno",
-    "tilt:workers": "node scripts/tilt-wrapper.mjs workers",
-    "workers:dev": "pnpm exec wrangler dev",
-    "workers:deploy": "pnpm exec wrangler deploy --minify",
-    "workers:typegen": "pnpm exec wrangler types --env-interface CloudflareBindings"
   },
   "compilerOptions": {
     "jsx": "precompile",

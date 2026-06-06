@@ -6,7 +6,8 @@ def run_workers_mode():
         print("")
         print("-----------------------------------------")
         print("Services:")
-        print("  TurboPanel (Workers)  @ http://localhost:" + str(PORTS["turbopanel"]))
+        print("  TurboPanel (Workers)  @ http://localhost:" + str(PORTS["workers"]))
+        print("  Daemon               @ (no port)")
         print("")
         print("Custom Buttons: Switch to Deno")
         print("Press Ctrl+C to stop all services")
@@ -15,7 +16,7 @@ def run_workers_mode():
     local_resource(
         name = "turbopanel (workers)",
         labels = ["Runtime"],
-        serve_cmd = "deno task workers:dev",
+        serve_cmd = "pnpm exec wrangler dev",
         trigger_mode = TRIGGER_MODE_AUTO,
         deps = ["src/workers.ts", "src/app.ts", "wrangler.jsonc"],
     )

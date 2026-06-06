@@ -1,12 +1,21 @@
-load("./common.tiltfile", "COLORS", "PORTS")
+load("./common.tiltfile", "COLORS", "PORTS", "deno_bin", "deno_serve_env", "caddy_bin", "node_bin_dir", "node_serve_env")
 load("ext://uibutton", "cmd_button", "location")
 
 def run_deno_mode():
     if config.tilt_subcommand != "down":
+        lan_ips = str(local("hostname -I 2>/dev/null | tr ' ' '\\n' | grep -v '^$' | head -3", quiet = True)).strip().split("\n")
+        lan_ips = [ip for ip in lan_ips if ip != ""]
+
         print("")
         print("-----------------------------------------")
         print("Services:")
-        print("  TurboPanel (Deno)  @ http://localhost:" + str(PORTS["turbopanel"]))
+        print("  TurboPanel  @ https://localhost:" + str(PORTS["caddy"]) + "  (Caddy)")
+        for ip in lan_ips:
+            host = "[" + ip + "]" if ":" in ip else ip
+            print("              @ https://" + host + ":" + str(PORTS["caddy"]) + "  (LAN)")
+        print("    /api/*, /ws  -> Deno    @ http://localhost:" + str(PORTS["deno"]))
+        print("    everything else -> Expo @ http://localhost:" + str(PORTS["expo"]))
+        print("  Daemon      @ (no port)")
         print("")
         print("Custom Buttons: Switch to Workers")
         print("Press Ctrl+C to stop all services")
@@ -15,9 +24,51 @@ def run_deno_mode():
     local_resource(
         name = "turbopanel (deno)",
         labels = ["Runtime"],
-        serve_cmd = "deno task dev",
+        serve_cmd = deno_bin() + " run --allow-net --watch src/deno.ts",
+        serve_env = deno_serve_env(),
         trigger_mode = TRIGGER_MODE_AUTO,
         deps = ["src/deno.ts", "src/app.ts", "deno.json"],
+    )
+
+    # Ensure Caddy is downloaded and a dev cert exists before Caddy serves.
+    node = node_bin_dir() + "/node"
+    local_resource(
+        name = "caddy-setup",
+        labels = ["Proxy"],
+        cmd = node + " scripts/download-caddy.mjs && " + node + " scripts/generate-dev-cert.mjs",
+        env = node_serve_env(),
+        deps = ["scripts/download-caddy.mjs", "scripts/generate-dev-cert.mjs"],
+    )
+
+    # Expo web dev server (UI). Caddy proxies all non-API/WS traffic here.
+    # EXPO_UNSTABLE_HEADLESS=1 makes Expo treat this as a headless environment, so it
+    # skips preparing/launching the React Native DevTools (fusebox) Electron shell --
+    # that GUI app can't run on this headless server and only errors out otherwise.
+    expo_env = dict(node_serve_env())
+    expo_env["EXPO_UNSTABLE_HEADLESS"] = "1"
+    local_resource(
+        name = "expo (web)",
+        labels = ["Runtime"],
+        serve_cmd = "pnpm exec expo start --web --port " + str(PORTS["expo"]),
+        serve_dir = "../ui",
+        serve_env = expo_env,
+        trigger_mode = TRIGGER_MODE_AUTO,
+    )
+
+    # Caddy HTTPS reverse proxy mirroring the wrangler routing locally.
+    # Bootstrap scripts run before every caddy start so a deleted runtimes/caddy tree is recreated.
+    local_resource(
+        name = "caddy",
+        labels = ["Proxy"],
+        serve_cmd = node + " scripts/download-caddy.mjs && " + node + " scripts/generate-dev-cert.mjs && " + caddy_bin() + " run --config Caddyfile --adapter caddyfile",
+        serve_env = {
+            "CADDY_PORT": str(PORTS["caddy"]),
+            "TURBOPANEL_PORT": str(PORTS["deno"]),
+            "EXPO_PORT": str(PORTS["expo"]),
+        },
+        resource_deps = ["caddy-setup"],
+        trigger_mode = TRIGGER_MODE_AUTO,
+        deps = ["Caddyfile"],
     )
 
     wrapper_active = os.environ.get("TILT_WRAPPER_ACTIVE", "") == "1"

@@ -6,6 +6,8 @@
     "dev": "node scripts/tilt-wrapper.mjs",
     "dev:deno": "node scripts/tilt-wrapper.mjs deno",
     "dev:workers": "node scripts/tilt-wrapper.mjs workers",
+    "dev:cert": "node scripts/generate-dev-cert.mjs",
+    "caddy:install": "node scripts/download-caddy.mjs",
     "deploy:workers": "wrangler deploy --minify",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings"
   },
