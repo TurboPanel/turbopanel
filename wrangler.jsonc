@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json.schemastore.org/wrangler.json",
+  "$schema": "node_modules/wrangler/config-schema.json",
   "send_metrics": false,
   "account_id": "a574c2793baa3e2276ac16e96097bc8c",
   "name": "turbopanel",
@@ -17,7 +17,6 @@
   },
   "env": {
     "testing": {
-      "name": "turbopanel-testing",
       "route": {
         "pattern": "testing.turbopanel.dev/api/*",
         "zone_name": "turbopanel.dev"
