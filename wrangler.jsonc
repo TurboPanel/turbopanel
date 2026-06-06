@@ -17,10 +17,16 @@
   },
   "env": {
     "testing": {
-      "route": {
-        "pattern": "testing.turbopanel.dev/api/*",
-        "zone_name": "turbopanel.dev"
-      }
+      "routes": [
+        {
+          "pattern": "testing.turbopanel.dev/api/*",
+          "zone_name": "turbopanel.dev"
+        },
+        {
+          "pattern": "testing.turbopanel.dev/ws",
+          "zone_name": "turbopanel.dev"
+        }
+      ]
     }
   }
 }
