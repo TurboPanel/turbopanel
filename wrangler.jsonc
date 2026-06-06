@@ -1,5 +1,5 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
+  "$schema": "https://json.schemastore.org/wrangler.json",
   "send_metrics": false,
   "account_id": "a574c2793baa3e2276ac16e96097bc8c",
   "name": "turbopanel",

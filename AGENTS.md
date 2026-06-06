@@ -4,15 +4,18 @@ Minimal Hono app with dual runtimes: **Cloudflare Workers** (Wrangler) and **Den
 
 ## Setup
 
+- **Deno** — <https://docs.deno.com/runtime/getting_started/installation/>
+- **Wrangler** — <https://developers.cloudflare.com/workers/wrangler/install-and-update/>
 - **Tilt** — <https://docs.tilt.dev/install.html>
-- `pnpm install` — installs Wrangler and Hono; `pnpm-workspace.yaml` pre-approves `esbuild`, `sharp`, and `workerd` build scripts
+- **Node.js** — only for the Tilt wrapper scripts (`scripts/*.mjs`) and one-time Hono install for Wrangler (`deno task deps`)
 - Copy or create `.dev.vars` at the repo root for local Wrangler secrets (see the commented stub; file is gitignored)
-- `pnpm dev` — launches Tilt; defaults to Deno mode; use the "Switch to Workers" button in Tilt UI to swap runtimes
-- `pnpm dev:deno` — Tilt in Deno mode directly
-- `pnpm dev:workers` — Tilt in Workers (Wrangler) mode directly
+- `deno task deps` — installs Hono into `node_modules/` for Wrangler bundling (uses npm once; no `package.json` or pnpm)
+- `deno task tilt` — launches Tilt; defaults to Deno mode; use the "Switch to Workers" button in Tilt UI to swap runtimes
+- `deno task tilt:deno` — Tilt in Deno mode directly
+- `deno task tilt:workers` — Tilt in Workers (Wrangler) mode directly
 - `DEV_MODE=deno` or `DEV_MODE=workers` in a root `.env` file is read by the wrapper on startup and watched for live mode-switching
-- `pnpm deploy:workers` — deploy to Cloudflare
-- `pnpm cf-typegen` — regenerate `worker-configuration.d.ts`
+- `deno task workers:deploy` — deploy to Cloudflare
+- `deno task workers:typegen` — regenerate `worker-configuration.d.ts`
 
 ## Layout
 

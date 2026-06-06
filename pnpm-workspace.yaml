@@ -1,5 +1,0 @@
-allowBuilds:
-  deno: true
-  esbuild: true
-  sharp: true
-  workerd: true
