@@ -1,0 +1,15 @@
+# tilt/common.tiltfile
+#
+# Shared constants and utilities for TurboPanel Tiltfiles.
+
+PORTS = {
+    "turbopanel": 18787,
+}
+
+COLORS = {
+    "deno": "greenBright",
+    "workers": "yellow",
+}
+
+def tilt_serve(prefix, color, cmd):
+    return cmd

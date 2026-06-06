@@ -1,0 +1,32 @@
+load("./common.tiltfile", "COLORS", "PORTS")
+load("ext://uibutton", "cmd_button", "location")
+
+def run_deno_mode():
+    if config.tilt_subcommand != "down":
+        print("")
+        print("-----------------------------------------")
+        print("Services:")
+        print("  TurboPanel (Deno)  @ http://localhost:" + str(PORTS["turbopanel"]))
+        print("")
+        print("Custom Buttons: Switch to Workers")
+        print("Press Ctrl+C to stop all services")
+        print("=========================================")
+
+    local_resource(
+        name = "turbopanel (deno)",
+        labels = ["Runtime"],
+        serve_cmd = "deno task dev",
+        trigger_mode = TRIGGER_MODE_AUTO,
+        deps = ["src/deno.ts", "src/app.ts", "deno.json"],
+    )
+
+    wrapper_active = os.environ.get("TILT_WRAPPER_ACTIVE", "") == "1"
+    switch_cmd = ["node", "scripts/set-dev-mode.mjs", "workers"] if wrapper_active else ["sh", "-c", "tilt down -- deno && tilt up workers"]
+
+    cmd_button(
+        "switch-to-workers",
+        argv = switch_cmd,
+        location = location.NAV,
+        icon_name = "bolt",
+        text = "Switch to Workers",
+    )
