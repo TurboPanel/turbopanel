@@ -22,12 +22,16 @@
 
 	@api path /api/*
 	handle @api {
-		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/turbopanel.sock}
+		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/turbopanel.sock} {
+			header_up X-Real-IP {remote_host}
+		}
 	}
 
 	@ws path /ws
 	handle @ws {
-		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/turbopanel.sock}
+		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/turbopanel.sock} {
+			header_up X-Real-IP {remote_host}
+		}
 	}
 
 	# Dev: proxy to Expo's web dev server (Tilt sets TURBOPANEL_UI_MODE=dev).

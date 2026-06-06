@@ -75,18 +75,20 @@ def run_deno_mode():
 
     # Caddy HTTPS reverse proxy mirroring the wrangler routing locally.
     # Bootstrap scripts run before every caddy start so a deleted runtimes/caddy tree is recreated.
+    caddy_env = {
+        "CADDY_PORT": str(PORTS["caddy"]),
+        "TURBOPANEL_SOCKET_DIAL": SOCKET_DIAL,
+        "TURBOPANEL_UI_MODE": "dev",
+        "EXPO_PORT": str(PORTS["expo"]),
+    }
+    if extra_tls_sans != "":
+        caddy_env["TURBOPANEL_TLS_EXTRA_SANS"] = extra_tls_sans
+
     local_resource(
         name = "caddy",
         labels = ["Proxy"],
         serve_cmd = node + " scripts/download-caddy.mjs && " + node + " scripts/generate-self-signed-cert.mjs && " + caddy_bin() + " run --config Caddyfile --adapter caddyfile",
-        serve_env = {
-            "CADDY_PORT": str(PORTS["caddy"]),
-            "TURBOPANEL_SOCKET_DIAL": SOCKET_DIAL,
-            "TURBOPANEL_UI_MODE": "dev",
-            "EXPO_PORT": str(PORTS["expo"]),
-        }
-        if extra_tls_sans != "":
-            serve_env["TURBOPANEL_TLS_EXTRA_SANS"] = extra_tls_sans
+        serve_env = caddy_env,
         resource_deps = ["caddy-setup", "socket-setup"],
         trigger_mode = TRIGGER_MODE_AUTO,
         deps = ["Caddyfile", ".env", "certs/ca.crt", "certs/self-signed.crt", "certs/self-signed.key"],

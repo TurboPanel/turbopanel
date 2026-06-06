@@ -105,10 +105,15 @@ export function registerDaemonRoutes(app: Hono) {
       connections.map(async (conn) => {
         try {
           const addresses = await requestDaemonAddresses(conn.id)
-          return { daemonId: conn.id, addresses }
+          return {
+            daemonId: conn.id,
+            hostname: conn.hostname ?? null,
+            addresses,
+          }
         } catch (err) {
           return {
             daemonId: conn.id,
+            hostname: conn.hostname ?? null,
             error: err instanceof Error ? err.message : String(err),
           }
         }
@@ -121,7 +126,13 @@ export function registerDaemonRoutes(app: Hono) {
     const id = c.req.param('id')
     try {
       const addresses = await requestDaemonAddresses(id)
-      return c.json({ ok: true, daemonId: id, addresses })
+      const conn = listDaemonConnections().find((entry) => entry.id === id)
+      return c.json({
+        ok: true,
+        daemonId: id,
+        hostname: conn?.hostname ?? null,
+        addresses,
+      })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       const status = message === 'daemon not connected' ? 404 : 500

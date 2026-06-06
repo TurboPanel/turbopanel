@@ -2,27 +2,72 @@ import type { Hono } from 'hono'
 import { upgradeWebSocket } from 'hono/deno'
 import {
   type DaemonMessage,
+  evictDuplicateDaemons,
   parseDaemonMessage,
+  pruneStaleDaemons,
   recordAddressesResult,
   recordCommandResult,
   recordDaemonMessage,
   registerDaemon,
+  setDaemonHostname,
+  setDaemonNodeId,
+  probeDaemonHostname,
+  probeMissingHostnames,
+  setDaemonRemoteAddress,
+  touchDaemonInbound,
   unregisterDaemon,
 } from './daemon-hub.ts'
+
+let pruneTimer: ReturnType<typeof setInterval> | undefined
+
+function ensurePruneTimer(): void {
+  const run = () => {
+    probeMissingHostnames()
+    const pruned = pruneStaleDaemons()
+    if (pruned.length > 0) {
+      console.log(`[ws] pruned ${pruned.length} stale daemon connection(s)`)
+    }
+  }
+  run()
+  if (pruneTimer) return
+  pruneTimer = setInterval(run, 15_000)
+}
 import { getDaemonCommit } from './daemon-version.ts'
 
 export function registerDaemonWebSocket(app: Hono) {
   app.get(
     '/ws',
-    upgradeWebSocket(() => {
+    upgradeWebSocket((c) => {
+      const remoteAddress = c.req.header('x-real-ip')?.trim() ||
+        c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
       let connId: string | undefined
       let pingTimer: ReturnType<typeof setInterval> | undefined
 
       return {
         onOpen(_event, ws) {
-          const conn = registerDaemon((data) => ws.send(data))
+          ensurePruneTimer()
+          const conn = registerDaemon(
+            (data) => ws.send(data),
+            () => ws.close(),
+          )
           connId = conn.id
-          console.log(`[ws] daemon connected: ${conn.id}`)
+          // Caddy sets X-Real-IP for remote agents; co-located unix-socket daemons
+          // have no proxy hop — collapse those under a single local slot.
+          const identityAddress = remoteAddress ?? '__direct__'
+          setDaemonRemoteAddress(conn.id, identityAddress)
+          const evicted = evictDuplicateDaemons(conn.id, {
+            remoteAddress: identityAddress,
+          })
+          if (evicted.length > 0) {
+            console.log(
+              `[ws] evicted ${evicted.length} duplicate connection(s) for ${identityAddress}`,
+            )
+          }
+          console.log(
+            `[ws] daemon connected: ${conn.id}${
+              remoteAddress ? ` from ${remoteAddress}` : ''
+            }`,
+          )
 
           const hello: DaemonMessage = {
             type: 'hello',
@@ -72,7 +117,32 @@ export function registerDaemonWebSocket(app: Hono) {
           }
 
           console.log(`[ws] from ${connId ?? 'unknown'}:`, message.type)
-          if (connId) recordDaemonMessage(connId, 'in', message)
+          if (connId) {
+            touchDaemonInbound(connId)
+            recordDaemonMessage(connId, 'in', message)
+          }
+
+          if (message.type === 'hello' && message.from === 'daemon' && connId) {
+            if (message.hostname) setDaemonHostname(connId, message.hostname)
+            if (message.nodeId) setDaemonNodeId(connId, message.nodeId)
+            const evicted = evictDuplicateDaemons(connId, {
+              hostname: message.hostname,
+              nodeId: message.nodeId,
+              remoteAddress,
+            })
+            if (evicted.length > 0) {
+              console.log(
+                `[ws] evicted ${evicted.length} duplicate connection(s) for ${
+                  message.hostname ?? message.nodeId ?? connId
+                }`,
+              )
+            }
+            if (message.hostname) {
+              console.log(`[ws] daemon hostname: ${message.hostname} (${connId})`)
+            } else {
+              probeDaemonHostname(connId)
+            }
+          }
 
           if (message.type === 'ping') {
             const pong: DaemonMessage = {

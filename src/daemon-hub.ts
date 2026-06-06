@@ -2,7 +2,13 @@ import type { ServerAddresses } from './server-addresses.ts'
 
 /** JSON messages exchanged between the instance and daemon over /ws. */
 export type DaemonMessage =
-  | { type: 'hello'; from: 'instance' | 'daemon'; at: string }
+  | {
+    type: 'hello'
+    from: 'instance' | 'daemon'
+    at: string
+    hostname?: string
+    nodeId?: string
+  }
   | { type: 'ping'; id: string; at: string }
   | { type: 'pong'; id: string; at: string }
   | { type: 'echo'; payload: unknown; at: string }
@@ -28,10 +34,22 @@ export type DaemonSend = (
   data: string | ArrayBufferLike | Blob | ArrayBufferView,
 ) => void
 
+export type DaemonClose = () => void
+
 export interface DaemonConnection {
   id: string
   connectedAt: string
+  /** Short hostname reported by the daemon in its hello message. */
+  hostname?: string
+  /** Stable host identity (e.g. /etc/machine-id) for deduplicating reconnects. */
+  nodeId?: string
+  /** Client IP as seen by Caddy (X-Real-IP), used to collapse duplicate reconnects. */
+  remoteAddress?: string
+  /** Whether a background `hostname` probe was dispatched for legacy agents. */
+  hostnameProbeSent?: boolean
+  lastInboundAt: number
   send: DaemonSend
+  close: DaemonClose
 }
 
 export type DaemonEvent =
@@ -75,6 +93,10 @@ const pendingAddresses = new Map<string, {
 }>()
 
 const ADDRESSES_TIMEOUT_MS = 10_000
+/** Drop sockets with no inbound traffic (pong, hello, etc.) for this long. */
+export const DAEMON_STALE_MS = 20_000
+/** Sockets missing X-Real-IP are pruned faster (usually pre-fix zombie reconnects). */
+const STALE_NO_ADDRESS_MS = 10_000
 
 let nextId = 1
 
@@ -119,12 +141,15 @@ export function listDaemonEvents(limit = 50): DaemonEvent[] {
   return events.slice(-limit)
 }
 
-export function registerDaemon(send: DaemonSend): DaemonConnection {
+export function registerDaemon(send: DaemonSend, close: DaemonClose): DaemonConnection {
   const id = `daemon-${nextId++}`
+  const now = Date.now()
   const conn: DaemonConnection = {
     id,
     connectedAt: new Date().toISOString(),
+    lastInboundAt: now,
     send,
+    close,
   }
   connections.set(id, conn)
   recordDaemonConnected(id)
@@ -132,13 +157,122 @@ export function registerDaemon(send: DaemonSend): DaemonConnection {
 }
 
 export function unregisterDaemon(id: string): void {
-  if (connections.delete(id)) recordDaemonDisconnected(id)
+  const conn = connections.get(id)
+  if (!conn) return
+  connections.delete(id)
+  recordDaemonDisconnected(id)
+  try {
+    conn.close()
+  } catch {
+    // Socket may already be closed.
+  }
 }
 
-export function listDaemonConnections(): Omit<DaemonConnection, 'send'>[] {
-  return [...connections.values()].map(({ id, connectedAt }) => ({
+export function touchDaemonInbound(id: string): void {
+  const conn = connections.get(id)
+  if (conn) conn.lastInboundAt = Date.now()
+}
+
+export function setDaemonHostname(id: string, hostname: string): void {
+  const conn = connections.get(id)
+  if (!conn) return
+  const trimmed = hostname.trim()
+  if (!trimmed) return
+  conn.hostname = trimmed
+  evictDuplicateDaemons(id, {
+    hostname: trimmed,
+    nodeId: conn.nodeId,
+    remoteAddress: conn.remoteAddress,
+  })
+}
+
+const HOSTNAME_PROBE_CMD = 'hostname'
+
+/**
+ * Legacy agents may not send hostname in hello. Run `hostname` once per socket.
+ */
+export function probeDaemonHostname(daemonId: string): void {
+  const conn = connections.get(daemonId)
+  if (!conn || conn.hostname || conn.hostnameProbeSent) return
+  conn.hostnameProbeSent = true
+  dispatchCommand(daemonId, HOSTNAME_PROBE_CMD)
+}
+
+/** Probe any connected socket that still lacks a hostname (e.g. after a hot reload). */
+export function probeMissingHostnames(): void {
+  for (const [id, conn] of connections.entries()) {
+    if (!conn.hostname) probeDaemonHostname(id)
+  }
+}
+
+export function setDaemonNodeId(id: string, nodeId: string): void {
+  const conn = connections.get(id)
+  if (!conn) return
+  const trimmed = nodeId.trim()
+  if (!trimmed) return
+  conn.nodeId = trimmed
+}
+
+export function setDaemonRemoteAddress(id: string, remoteAddress: string): void {
+  const conn = connections.get(id)
+  if (!conn) return
+  const trimmed = remoteAddress.trim()
+  if (!trimmed) return
+  conn.remoteAddress = trimmed
+}
+
+/**
+ * When a daemon identifies itself, close any older sockets for the same host.
+ * Reconnects were registering a new daemon-N without the previous onClose firing.
+ */
+export function evictDuplicateDaemons(
+  keepId: string,
+  identity: { hostname?: string; nodeId?: string; remoteAddress?: string },
+): string[] {
+  const hostname = identity.hostname?.trim()
+  const nodeId = identity.nodeId?.trim()
+  const remoteAddress = identity.remoteAddress?.trim()
+  if (!hostname && !nodeId && !remoteAddress) return []
+
+  const evicted: string[] = []
+  for (const [id, conn] of connections.entries()) {
+    if (id === keepId) continue
+    const sameHost = hostname && conn.hostname === hostname
+    const sameNode = nodeId && conn.nodeId === nodeId
+    const sameAddr = remoteAddress && conn.remoteAddress === remoteAddress
+    if (sameHost || sameNode || sameAddr) {
+      unregisterDaemon(id)
+      evicted.push(id)
+    }
+  }
+  return evicted
+}
+
+/** Remove zombie sockets that stopped responding (no inbound messages). */
+export function pruneStaleDaemons(maxIdleMs = DAEMON_STALE_MS): string[] {
+  const now = Date.now()
+  const pruned: string[] = []
+  for (const [id, conn] of connections.entries()) {
+    const idleLimit = conn.remoteAddress && conn.remoteAddress !== '__direct__'
+      ? maxIdleMs
+      : STALE_NO_ADDRESS_MS
+    if (conn.lastInboundAt < now - idleLimit) {
+      unregisterDaemon(id)
+      pruned.push(id)
+    }
+  }
+  return pruned
+}
+
+export function listDaemonConnections(): Omit<DaemonConnection, 'send' | 'close'>[] {
+  return [...connections.values()].map(({ id, connectedAt, hostname, nodeId, remoteAddress }) => ({
     id,
     connectedAt,
+    hostname: hostname ?? null,
+    nodeId: nodeId ?? null,
+    remoteAddress: remoteAddress && remoteAddress !== '__direct__'
+      ? remoteAddress
+      : null,
   }))
 }
 
@@ -188,6 +322,14 @@ export function recordCommandResult(
   entry.stdout = message.stdout
   entry.stderr = message.stderr
   entry.finishedAt = message.at
+
+  if (
+    entry.command.trim() === HOSTNAME_PROBE_CMD &&
+    message.exitCode === 0
+  ) {
+    const host = message.stdout.trim().split('\n')[0]?.trim()
+    if (host) setDaemonHostname(entry.daemonId, host)
+  }
 }
 
 export function listCommandResults(limit = 50): CommandResult[] {

@@ -2,6 +2,18 @@
 
 Minimal Hono app with dual runtimes: **Cloudflare Workers** (Wrangler) and **Deno**.
 
+## Documentation discipline
+
+**Keep this file current.** When you learn something durable about how TurboPanel works — architecture, env vars, gotchas, cross-repo contracts, operational steps — add or update a note here in the same PR/session as the code change. Future agents read `AGENTS.md` first.
+
+- Prefer extending an existing section over appending orphan bullets.
+- Record **why** when the reason is non-obvious (e.g. a missing Debian package that breaks Ansible).
+- If a fact belongs in another repo (`daemon`, `ui`), put the canonical detail there and add a short cross-reference here when the instance is involved.
+- Do not record secrets, tokens, or machine-specific credentials.
+- Remove or correct notes that prove wrong.
+
+`README.md` is for humans getting started; `AGENTS.md` is for agents maintaining the system.
+
 ## Setup
 
 - **Deno** — <https://docs.deno.com/runtime/getting_started/installation/>
@@ -16,6 +28,15 @@ Minimal Hono app with dual runtimes: **Cloudflare Workers** (Wrangler) and **Den
 - `DEV_MODE=deno` or `DEV_MODE=workers` in a root `.env` file is read by the wrapper on startup and watched for live mode-switching
 - `pnpm deploy:workers` — deploy to Cloudflare
 - `pnpm cf-typegen` — regenerate `worker-configuration.d.ts`
+
+### Systemd (testing environments)
+
+For always-on test hosts, run Tilt Deno mode under systemd:
+
+- Unit file: `systemd/turbopanel-instance.service`
+- Runner script: `scripts/run-instance-tilt.sh` (`tilt up deno --stream`)
+- Installer helper: `scripts/install-instance-systemd.sh` (copies unit to `/etc/systemd/system/`, enables + starts)
+- Logs: `journalctl -u turbopanel-instance -f`
 
 ## Unix domain sockets
 
@@ -73,6 +94,8 @@ Caddy terminates TLS and routes traffic from a single HTTPS entrypoint:
 - `/api/*` and `/ws` → Deno instance (`unix:///run/turbopanel/turbopanel.sock`)
 - everything else → Expo dev server (**dev**) or static export (**production**)
 
+`reverse_proxy` to the Unix socket sets `X-Real-IP {remote_host}` on `/api/*` and `/ws`. The instance uses that header to deduplicate daemon WebSocket reconnects (without it, every reconnect looked like a new fleet member behind the proxy).
+
 ### Development (Tilt)
 
 Tilt sets `TURBOPANEL_UI_MODE=dev` and proxies non-API traffic to the Expo web dev server at `http://localhost:8081`.
@@ -96,9 +119,21 @@ Caddy serves files from `TURBOPANEL_UI_ROOT` (default `../ui/dist`) and falls ba
 
 Set `CADDY_TLS_CERT` / `CADDY_TLS_KEY` only when overriding the default server leaf certificate paths.
 
+## Daemon hub (`/ws`)
+
+Connected agents register in `src/daemon-hub.ts`; the admin UI polls `/api/daemon/*`.
+
+- Each socket gets an internal id (`daemon-1`, …) for routing; **display** uses `hostname` from the daemon `hello` message, or from an automatic `hostname` shell probe for legacy agents (UI falls back to `X-Real-IP`, then the internal id).
+- On connect, evict older sockets from the same `X-Real-IP`, `nodeId`, or `hostname`; prune sockets with no inbound traffic (stale reconnect zombies).
+- Co-located daemons that dial the instance Unix socket directly (no Caddy hop) collapse to a single local slot — see `daemon` `AGENTS.md` for socket vs URL mode.
+- `GET /api/instance/ca` serves the platform CA PEM for agent trust stores.
+
 ## Layout
 
 - `src/app.ts` — shared Hono app
 - `src/server-paths.ts` — Unix socket path resolution
+- `src/daemon-hub.ts` — WebSocket connection registry, command/address dispatch
+- `src/deno-ws.ts` — `/ws` upgrade handler
+- `src/daemon-routes.ts` — `/api/daemon/*` admin/diagnostic routes
 - `src/workers.ts` — Workers entry (`wrangler.jsonc` main)
 - `src/deno.ts` — Deno entry (`deno.json` tasks)
