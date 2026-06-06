@@ -55,7 +55,7 @@ def run_deno_mode():
         labels = ["Proxy"],
         cmd = node + " scripts/download-caddy.mjs && " + node + " scripts/generate-self-signed-cert.mjs",
         env = cert_env,
-        deps = ["scripts/download-caddy.mjs", "scripts/generate-self-signed-cert.mjs"],
+        deps = ["scripts/download-caddy.mjs", "scripts/generate-self-signed-cert.mjs", ".env"],
     )
 
     # Expo web dev server (UI). Caddy proxies all non-API/WS traffic here.
@@ -84,11 +84,12 @@ def run_deno_mode():
             "TURBOPANEL_SOCKET_DIAL": SOCKET_DIAL,
             "TURBOPANEL_UI_MODE": "dev",
             "EXPO_PORT": str(PORTS["expo"]),
-            "TURBOPANEL_TLS_EXTRA_SANS": extra_tls_sans,
-        },
+        }
+        if extra_tls_sans != "":
+            serve_env["TURBOPANEL_TLS_EXTRA_SANS"] = extra_tls_sans
         resource_deps = ["caddy-setup", "socket-setup"],
         trigger_mode = TRIGGER_MODE_AUTO,
-        deps = ["Caddyfile", "certs/ca.crt", "certs/self-signed.crt", "certs/self-signed.key"],
+        deps = ["Caddyfile", ".env", "certs/ca.crt", "certs/self-signed.crt", "certs/self-signed.key"],
     )
 
     wrapper_active = os.environ.get("TILT_WRAPPER_ACTIVE", "") == "1"

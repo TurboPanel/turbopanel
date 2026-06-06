@@ -10,13 +10,39 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { networkInterfaces } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, '..')
+
+function loadEnvFile() {
+  const envPath = path.join(repoRoot, '.env')
+  if (!existsSync(envPath)) return
+
+  for (const line of readFileSync(envPath, 'utf-8').split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const eq = trimmed.indexOf('=')
+    if (eq === -1) continue
+    const key = trimmed.slice(0, eq).trim()
+    let value = trimmed.slice(eq + 1).trim()
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1)
+    }
+    const existing = process.env[key]
+    if (existing === undefined || existing.trim() === '') {
+      process.env[key] = value
+    }
+  }
+}
+
+loadEnvFile()
 const certsDir = path.join(repoRoot, 'certs')
 const caCrtPath = path.join(certsDir, 'ca.crt')
 const caKeyPath = path.join(certsDir, 'ca.key')
