@@ -49,8 +49,12 @@ def node_serve_env():
         "PATH": node_bin_dir() + ":" + os.environ.get("PATH", ""),
     }
 
+SOCKET_DIR = "/run/turbopanel"
+SOCKET_NAME = "turbopanel.sock"
+SOCKET_PATH = SOCKET_DIR + "/" + SOCKET_NAME
+SOCKET_DIAL = "run/turbopanel/turbopanel.sock"
+
 PORTS = {
-    "deno": 8787,
     "workers": 18787,
     "expo": 8081,
     "caddy": 8443,

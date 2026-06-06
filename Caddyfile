@@ -1,27 +1,47 @@
-# Local dev reverse proxy mirroring the Cloudflare (wrangler) routing.
+# TurboPanel reverse proxy (dev + production).
 #
-#   /api/*  and  /ws   -> Deno turbopanel control plane
-#   everything else     -> Expo web dev server (SPA)
+#   /api/*  and  /ws  -> Deno instance (Unix socket)
+#   everything else    -> Expo dev server (dev) or static export (production)
 #
-# Ports are injected by Tilt via env placeholders (defaults match tilt/common.tiltfile PORTS).
-# No ACME / Let's Encrypt: auto_https is disabled and a local self-signed cert is used.
+# Env:
+#   TURBOPANEL_UI_MODE       "dev" | "static" (default: static)
+#   EXPO_PORT                Expo dev server port when UI_MODE=dev (default: 8081)
+#   TURBOPANEL_UI_ROOT       Static export directory when UI_MODE=static
+#   TURBOPANEL_SOCKET_DIAL   Unix socket dial path for instance
+#   CADDY_PORT               Listen port (default: 8443)
+#   CADDY_TLS_CERT           TLS certificate path (default: ./certs/self-signed.crt)
+#   CADDY_TLS_KEY            TLS private key path (default: ./certs/self-signed.key)
 {
 	auto_https off
 	admin off
 }
 
-# Bind all interfaces so the dev proxy is reachable via LAN IP, not just localhost.
+# Bind all interfaces so the proxy is reachable via LAN IP, not just localhost.
 :{$CADDY_PORT:8443} {
-	tls ./certs/dev.crt ./certs/dev.key
+	tls {$CADDY_TLS_CERT:./certs/self-signed.crt} {$CADDY_TLS_KEY:./certs/self-signed.key}
 
 	@api path /api/*
-	reverse_proxy @api 127.0.0.1:{$TURBOPANEL_PORT:8787}
+	handle @api {
+		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/turbopanel.sock}
+	}
 
 	@ws path /ws
-	reverse_proxy @ws 127.0.0.1:{$TURBOPANEL_PORT:8787}
+	handle @ws {
+		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/turbopanel.sock}
+	}
 
-	# Expo's dev server expects a localhost Host; clients may connect via the machine's LAN IP.
-	reverse_proxy 127.0.0.1:{$EXPO_PORT:8081} {
-		header_up Host 127.0.0.1:{$EXPO_PORT:8081}
+	# Dev: proxy to Expo's web dev server (Tilt sets TURBOPANEL_UI_MODE=dev).
+	@ui_dev expression `"{$TURBOPANEL_UI_MODE:static}" == "dev"`
+	handle @ui_dev {
+		reverse_proxy 127.0.0.1:{$EXPO_PORT:8081} {
+			header_up Host 127.0.0.1:{$EXPO_PORT:8081}
+		}
+	}
+
+	# Production: serve the exported Expo web app (pnpm export --platform web -> ui/dist).
+	handle {
+		root * {$TURBOPANEL_UI_ROOT:../ui/dist}
+		try_files {path} /index.html
+		file_server
 	}
 }

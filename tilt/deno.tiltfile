@@ -1,4 +1,4 @@
-load("./common.tiltfile", "COLORS", "PORTS", "deno_bin", "deno_serve_env", "caddy_bin", "node_bin_dir", "node_serve_env")
+load("./common.tiltfile", "COLORS", "PORTS", "SOCKET_DIR", "SOCKET_PATH", "SOCKET_DIAL", "deno_bin", "deno_serve_env", "caddy_bin", "node_bin_dir", "node_serve_env")
 load("ext://uibutton", "cmd_button", "location")
 
 def run_deno_mode():
@@ -13,31 +13,44 @@ def run_deno_mode():
         for ip in lan_ips:
             host = "[" + ip + "]" if ":" in ip else ip
             print("              @ https://" + host + ":" + str(PORTS["caddy"]) + "  (LAN)")
-        print("    /api/*, /ws  -> Deno    @ http://localhost:" + str(PORTS["deno"]))
-        print("    everything else -> Expo @ http://localhost:" + str(PORTS["expo"]))
+        print("    /api/*, /ws  -> Deno     @ unix://" + SOCKET_PATH)
+        print("    everything else -> Expo  @ http://localhost:" + str(PORTS["expo"]))
         print("  Daemon      @ (no port)")
         print("")
         print("Custom Buttons: Switch to Workers")
         print("Press Ctrl+C to stop all services")
         print("=========================================")
 
+    node = node_bin_dir() + "/node"
+
+    local_resource(
+        name = "socket-setup",
+        labels = ["Proxy"],
+        cmd = node + " scripts/ensure-socket-dir.mjs",
+        env = node_serve_env(),
+        deps = ["scripts/ensure-socket-dir.mjs"],
+    )
+
+    deno_env = dict(deno_serve_env())
+    deno_env["TURBOPANEL_SOCKET"] = SOCKET_PATH
+
     local_resource(
         name = "turbopanel (deno)",
         labels = ["Runtime"],
-        serve_cmd = deno_bin() + " run --allow-net --watch src/deno.ts",
-        serve_env = deno_serve_env(),
+        serve_cmd = deno_bin() + " run --allow-env --allow-read=" + SOCKET_DIR + ",../daemon --allow-write=" + SOCKET_DIR + " --allow-run=git --watch src/deno.ts",
+        serve_env = deno_env,
+        resource_deps = ["socket-setup"],
         trigger_mode = TRIGGER_MODE_AUTO,
-        deps = ["src/deno.ts", "src/app.ts", "deno.json"],
+        deps = ["src/deno.ts", "src/app.ts", "src/deno-ws.ts", "src/daemon-hub.ts", "src/daemon-routes.ts", "src/daemon-version.ts", "src/server-paths.ts", "deno.json"],
     )
 
-    # Ensure Caddy is downloaded and a dev cert exists before Caddy serves.
-    node = node_bin_dir() + "/node"
+    # Ensure Caddy is downloaded and the self-signed cert exists before Caddy serves.
     local_resource(
         name = "caddy-setup",
         labels = ["Proxy"],
-        cmd = node + " scripts/download-caddy.mjs && " + node + " scripts/generate-dev-cert.mjs",
+        cmd = node + " scripts/download-caddy.mjs && " + node + " scripts/generate-self-signed-cert.mjs",
         env = node_serve_env(),
-        deps = ["scripts/download-caddy.mjs", "scripts/generate-dev-cert.mjs"],
+        deps = ["scripts/download-caddy.mjs", "scripts/generate-self-signed-cert.mjs"],
     )
 
     # Expo web dev server (UI). Caddy proxies all non-API/WS traffic here.
@@ -60,13 +73,14 @@ def run_deno_mode():
     local_resource(
         name = "caddy",
         labels = ["Proxy"],
-        serve_cmd = node + " scripts/download-caddy.mjs && " + node + " scripts/generate-dev-cert.mjs && " + caddy_bin() + " run --config Caddyfile --adapter caddyfile",
+        serve_cmd = node + " scripts/download-caddy.mjs && " + node + " scripts/generate-self-signed-cert.mjs && " + caddy_bin() + " run --config Caddyfile --adapter caddyfile",
         serve_env = {
             "CADDY_PORT": str(PORTS["caddy"]),
-            "TURBOPANEL_PORT": str(PORTS["deno"]),
+            "TURBOPANEL_SOCKET_DIAL": SOCKET_DIAL,
+            "TURBOPANEL_UI_MODE": "dev",
             "EXPO_PORT": str(PORTS["expo"]),
         },
-        resource_deps = ["caddy-setup"],
+        resource_deps = ["caddy-setup", "socket-setup"],
         trigger_mode = TRIGGER_MODE_AUTO,
         deps = ["Caddyfile"],
     )

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * Generate a self-signed TLS certificate for local development.
+ * Generate the TurboPanel self-signed TLS certificate.
  *
- * Produces certs/dev.crt and certs/dev.key (gitignored) for use by Caddy with
- * `auto_https off` -- no ACME / Let's Encrypt involved. The cert covers
- * localhost, loopback, and all non-loopback interface addresses so HTTPS works
- * when visiting the machine by LAN IP (e.g. https://10.0.0.5:8443).
+ * Produces certs/self-signed.crt and certs/self-signed.key (gitignored) for use
+ * by Caddy with `auto_https off` — no ACME / Let's Encrypt involved. The cert
+ * covers localhost, loopback, and all non-loopback interface addresses so HTTPS
+ * works when visiting the machine by LAN IP (e.g. https://10.0.0.5:8443).
  *
  * Regenerates automatically when interface addresses change.
  */
@@ -19,11 +19,12 @@ import { fileURLToPath } from 'node:url'
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, '..')
 const certsDir = path.join(repoRoot, 'certs')
-const crtPath = path.join(certsDir, 'dev.crt')
-const keyPath = path.join(certsDir, 'dev.key')
+const crtPath = path.join(certsDir, 'self-signed.crt')
+const keyPath = path.join(certsDir, 'self-signed.key')
+const certCommonName = 'TURBOPANEL SELF-SIGNED CERTIFICATE'
 
 function fail(msg) {
-  console.error(`generate-dev-cert: ${msg}`)
+  console.error(`generate-self-signed-cert: ${msg}`)
   process.exit(1)
 }
 
@@ -38,7 +39,7 @@ function normalizeSan(entry) {
   return `IP:${normalizeIp(entry.slice(3))}`
 }
 
-function devSubjectAltNames() {
+function subjectAltNames() {
   const sans = new Set(['DNS:localhost', 'IP:127.0.0.1', 'IP:0:0:0:0:0:0:0:1'])
 
   for (const entries of Object.values(networkInterfaces())) {
@@ -85,7 +86,7 @@ function removeCertFiles() {
   }
 }
 
-const expectedSans = devSubjectAltNames()
+const expectedSans = subjectAltNames()
 const existingSans = readCertSubjectAltNames()
 
 if (
@@ -93,23 +94,25 @@ if (
   existsSync(keyPath) &&
   expectedSans.join(',') === existingSans.join(',')
 ) {
-  console.log(`generate-dev-cert: certs already up to date at ${certsDir}`)
+  console.log(`generate-self-signed-cert: certificate already up to date at ${certsDir}`)
   process.exit(0)
 }
 
 if (existsSync(crtPath) || existsSync(keyPath)) {
-  console.log('generate-dev-cert: interface addresses changed; regenerating certificate')
+  console.log('generate-self-signed-cert: interface addresses changed; regenerating certificate')
   removeCertFiles()
 }
 
 mkdirSync(certsDir, { recursive: true })
 
-const subject = '/CN=turbopanel-dev'
+const subject = `/O=TurboPanel/CN=${certCommonName}`
 const sans = `subjectAltName=${expectedSans.join(',')}`
 const days = '3650'
 
 try {
-  console.log(`generate-dev-cert: generating self-signed certificate (10y, ${expectedSans.join(', ')})`)
+  console.log(
+    `generate-self-signed-cert: generating "${certCommonName}" (10y, ${expectedSans.join(', ')})`,
+  )
   execFileSync(
     'openssl',
     [
@@ -125,9 +128,9 @@ try {
     ],
     { stdio: ['ignore', 'inherit', 'inherit'] }
   )
-  console.log(`generate-dev-cert: wrote ${crtPath} and ${keyPath}`)
+  console.log(`generate-self-signed-cert: wrote ${crtPath} and ${keyPath}`)
 } catch (err) {
-  console.error(`generate-dev-cert: failed to generate certificate: ${err.message}`)
-  console.error('generate-dev-cert: ensure openssl is installed and on PATH')
+  console.error(`generate-self-signed-cert: failed to generate certificate: ${err.message}`)
+  console.error('generate-self-signed-cert: ensure openssl is installed and on PATH')
   process.exit(1)
 }
