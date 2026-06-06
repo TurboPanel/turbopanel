@@ -37,19 +37,24 @@ def run_deno_mode():
     local_resource(
         name = "turbopanel (deno)",
         labels = ["Runtime"],
-        serve_cmd = deno_bin() + " run --allow-env --allow-sys=networkInterfaces --allow-read=" + SOCKET_DIR + ",../daemon --allow-write=" + SOCKET_DIR + " --allow-run=git --watch src/deno.ts",
+        serve_cmd = deno_bin() + " run --allow-env --allow-sys=networkInterfaces --allow-read=" + SOCKET_DIR + ",../daemon,./certs --allow-write=" + SOCKET_DIR + " --allow-run=git --watch src/deno.ts",
         serve_env = deno_env,
         resource_deps = ["socket-setup"],
         trigger_mode = TRIGGER_MODE_AUTO,
-        deps = ["src/deno.ts", "src/app.ts", "src/deno-ws.ts", "src/daemon-hub.ts", "src/daemon-routes.ts", "src/daemon-version.ts", "src/server-addresses.ts", "src/server-paths.ts", "deno.json"],
+        deps = ["src/deno.ts", "src/app.ts", "src/deno-ws.ts", "src/daemon-hub.ts", "src/daemon-routes.ts", "src/daemon-version.ts", "src/server-addresses.ts", "src/server-paths.ts", "certs", "deno.json"],
     )
+
+    cert_env = dict(node_serve_env())
+    extra_tls_sans = os.environ.get("TURBOPANEL_TLS_EXTRA_SANS", "")
+    if extra_tls_sans != "":
+        cert_env["TURBOPANEL_TLS_EXTRA_SANS"] = extra_tls_sans
 
     # Ensure Caddy is downloaded and the self-signed cert exists before Caddy serves.
     local_resource(
         name = "caddy-setup",
         labels = ["Proxy"],
         cmd = node + " scripts/download-caddy.mjs && " + node + " scripts/generate-self-signed-cert.mjs",
-        env = node_serve_env(),
+        env = cert_env,
         deps = ["scripts/download-caddy.mjs", "scripts/generate-self-signed-cert.mjs"],
     )
 
@@ -79,10 +84,11 @@ def run_deno_mode():
             "TURBOPANEL_SOCKET_DIAL": SOCKET_DIAL,
             "TURBOPANEL_UI_MODE": "dev",
             "EXPO_PORT": str(PORTS["expo"]),
+            "TURBOPANEL_TLS_EXTRA_SANS": extra_tls_sans,
         },
         resource_deps = ["caddy-setup", "socket-setup"],
         trigger_mode = TRIGGER_MODE_AUTO,
-        deps = ["Caddyfile"],
+        deps = ["Caddyfile", "certs/ca.crt", "certs/self-signed.crt", "certs/self-signed.key"],
     )
 
     wrapper_active = os.environ.get("TILT_WRAPPER_ACTIVE", "") == "1"

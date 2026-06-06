@@ -13,6 +13,7 @@ import {
   type DaemonMessage,
 } from './daemon-hub.ts'
 import { collectServerAddresses } from './server-addresses.ts'
+import { resolveInstanceTlsCaPath } from './server-paths.ts'
 
 export function registerDaemonRoutes(app: Hono) {
   app.get('/api/daemon/connections', (c) =>
@@ -86,6 +87,16 @@ export function registerDaemonRoutes(app: Hono) {
   app.get('/api/instance/addresses', (c) => {
     const addresses = collectServerAddresses()
     return c.json({ ok: true, source: 'instance', addresses })
+  })
+
+  app.get('/api/instance/ca', async (c) => {
+    try {
+      const cert = await Deno.readTextFile(resolveInstanceTlsCaPath())
+      return c.body(cert, 200, { 'content-type': 'application/x-pem-file' })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return c.json({ error: message }, 500)
+    }
   })
 
   app.get('/api/daemon/addresses', async (c) => {

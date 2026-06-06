@@ -40,8 +40,9 @@ All TurboPanel runtime sockets live under **`/run/turbopanel/`** (on Linux, `/va
 | `TURBOPANEL_UI_MODE` | `static` | `dev` proxies to Expo; `static` serves exported UI |
 | `TURBOPANEL_UI_ROOT` | `../ui/dist` | Directory of `expo export --platform web` output |
 | `CADDY_PORT` | `8443` | HTTPS listen port |
-| `CADDY_TLS_CERT` | `./certs/self-signed.crt` | TLS certificate path |
-| `CADDY_TLS_KEY` | `./certs/self-signed.key` | TLS private key path |
+| `CADDY_TLS_CERT` | `./certs/self-signed.crt` | Server leaf certificate (signed by platform CA) |
+| `CADDY_TLS_KEY` | `./certs/self-signed.key` | Server leaf private key |
+| `TURBOPANEL_TLS_EXTRA_SANS` | — | Comma-separated DNS names for the server cert (e.g. `turbopanel.lan`) |
 
 Path resolution lives in `src/server-paths.ts`.
 
@@ -76,9 +77,9 @@ Caddy terminates TLS and routes traffic from a single HTTPS entrypoint:
 
 Tilt sets `TURBOPANEL_UI_MODE=dev` and proxies non-API traffic to the Expo web dev server at `http://localhost:8081`.
 
-- Entrypoint: `https://<host>:8443` (Caddy, defined in `Caddyfile`) — binds all interfaces; use `localhost` or the machine's LAN IP. The self-signed cert includes detected LAN addresses.
-- Caddy uses a self-signed cert (`auto_https off`, no Let's Encrypt). The certificate is issued as **TURBOPANEL SELF-SIGNED CERTIFICATE** (similar to Traefik's default cert). Trust `certs/self-signed.crt` in your browser/OS trust store to avoid warnings.
-- `pnpm caddy:install` — download the pinned Caddy into `~/runtimes/caddy/` (symlinked like node/deno); `pnpm cert:generate` — generate `certs/self-signed.crt` + `certs/self-signed.key`. Tilt's `caddy-setup` resource runs both automatically.
+- Entrypoint: `https://<host>:8443` (Caddy, defined in `Caddyfile`) — binds all interfaces; use `localhost` or the machine's LAN IP.
+- Self-hosted TLS uses a **platform CA** (`certs/ca.crt` + `certs/ca.key`) that signs a **server leaf cert** (`certs/self-signed.crt` + `.key`) presented by Caddy (`auto_https off`, no Let's Encrypt). The CA is long-lived and can issue additional certificates later; agents fetch it from `GET /api/instance/ca`. Trust `certs/ca.crt` in browsers/OS to avoid warnings.
+- `pnpm caddy:install` — download the pinned Caddy into `~/runtimes/caddy/` (symlinked like node/deno); `pnpm cert:generate` — (re)generate the platform CA and server cert. Tilt's `caddy-setup` resource runs both automatically.
 - Override the resolved binary with `TURBOPANEL_CADDY` (and `TURBOPANEL_DENO` for Deno).
 
 ### Production (static UI)
@@ -93,7 +94,7 @@ TURBOPANEL_UI_ROOT=../ui/dist caddy run --config Caddyfile --adapter caddyfile
 
 Caddy serves files from `TURBOPANEL_UI_ROOT` (default `../ui/dist`) and falls back to `/index.html` for client-side routes (SPA), matching the Cloudflare Workers asset routing in `ui/wrangler.jsonc`.
 
-Set `CADDY_TLS_CERT` / `CADDY_TLS_KEY` only when overriding the default self-signed certificate paths.
+Set `CADDY_TLS_CERT` / `CADDY_TLS_KEY` only when overriding the default server leaf certificate paths.
 
 ## Layout
 

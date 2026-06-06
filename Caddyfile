@@ -9,8 +9,8 @@
 #   TURBOPANEL_UI_ROOT       Static export directory when UI_MODE=static
 #   TURBOPANEL_SOCKET_DIAL   Unix socket dial path for instance
 #   CADDY_PORT               Listen port (default: 8443)
-#   CADDY_TLS_CERT           TLS certificate path (default: ./certs/self-signed.crt)
-#   CADDY_TLS_KEY            TLS private key path (default: ./certs/self-signed.key)
+#   CADDY_TLS_CERT           Server leaf cert (default: ./certs/self-signed.crt, signed by certs/ca.crt)
+#   CADDY_TLS_KEY            Server leaf key (default: ./certs/self-signed.key)
 {
 	auto_https off
 	admin off

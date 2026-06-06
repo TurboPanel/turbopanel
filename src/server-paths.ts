@@ -4,6 +4,33 @@ export const DEFAULT_SOCKET_DIR = '/run/turbopanel'
 /** Unix socket filename for the TurboPanel instance. */
 export const INSTANCE_SOCKET = 'turbopanel.sock'
 
+/**
+ * Default server leaf cert path (Caddy TLS).
+ * Signed by the platform CA in `certs/ca.crt`; filename kept for compatibility.
+ */
+export const DEFAULT_TLS_CERT = './certs/self-signed.crt'
+
+/** Platform CA PEM — trust anchor for agent nodes, browsers, and future issued certs. */
+export const DEFAULT_TLS_CA = './certs/ca.crt'
+
+/**
+ * Resolve the instance TLS certificate PEM path.
+ *
+ * Matches Caddy's `CADDY_TLS_CERT` default in the Caddyfile.
+ */
+export function resolveInstanceTlsCertPath(
+  env: Record<string, string | undefined> = Deno.env.toObject(),
+): string {
+  return env.CADDY_TLS_CERT?.trim() || DEFAULT_TLS_CERT
+}
+
+/** PEM path of the local CA to distribute to agent nodes. */
+export function resolveInstanceTlsCaPath(
+  env: Record<string, string | undefined> = Deno.env.toObject(),
+): string {
+  return env.TURBOPANEL_TLS_CA?.trim() || DEFAULT_TLS_CA
+}
+
 /** Instance socket file mode: owner+group read/write only (no world access). */
 export const INSTANCE_SOCKET_MODE = 0o660
 
