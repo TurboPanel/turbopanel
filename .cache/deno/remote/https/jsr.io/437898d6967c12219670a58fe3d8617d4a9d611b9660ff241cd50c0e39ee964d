@@ -1,0 +1,30 @@
+import type { Result, Router } from '../../router.ts'
+import { checkOptionalParameter } from '../../utils/url.ts'
+import { Node } from './node.ts'
+
+export class TrieRouter<T> implements Router<T> {
+  name: string = 'TrieRouter'
+  #node: Node<T>
+
+  constructor() {
+    this.#node = new Node()
+  }
+
+  add(method: string, path: string, handler: T) {
+    const results = checkOptionalParameter(path)
+    if (results) {
+      for (let i = 0, len = results.length; i < len; i++) {
+        this.#node.insert(method, results[i], handler)
+      }
+      return
+    }
+
+    this.#node.insert(method, path, handler)
+  }
+
+  match(method: string, path: string): Result<T> {
+    return this.#node.search(method, path)
+  }
+}
+
+// denoCacheMetadata={"headers":{"nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","content-length":"708","cf-ray":"a0809bd5a8d2301b-MCI","alt-svc":"h3=\":443\"; ma=86400","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","x-jsr-backend":"modules","cross-origin-resource-policy":"cross-origin","vary":"Origin","x-content-type-options":"nosniff","cache-control":"public, max-age=31536000, immutable","access-control-allow-origin":"*","content-encoding":"identity","server":"cloudflare","x-robots-tag":"noindex","access-control-expose-headers":"*","etag":"\"2b2d98c3cc0aa61c8b428bb76cc811ee\"","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=OTA28BaCZneyMi6jbLJqzhXoEWfPIE7LkKI7V5RsVPoxS%2FGHZcEshEjD%2BZBRq%2FJUwFwK1hZTHH7xJ2hJ%2FaeMDjdX6%2B06zc7JkNQ3XpeK%2BezoOiz%2B4SxbCI0%3D\"}]}","content-type":"text/typescript","date":"Sun, 07 Jun 2026 15:14:50 GMT"},"url":"https://jsr.io/@hono/hono/4.12.23/src/router/trie-router/router.ts","time":1780845290}

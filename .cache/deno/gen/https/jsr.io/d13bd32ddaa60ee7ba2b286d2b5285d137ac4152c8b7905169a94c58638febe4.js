@@ -1,0 +1,70 @@
+/**
+ * @description This file is a modified version of `fetch-result-please` (`ofetch`), minimalized and adapted to Hono's custom needs.
+ *
+ * @link https://www.npmjs.com/package/fetch-result-please
+ */ const nullBodyResponses = new Set([
+  101,
+  204,
+  205,
+  304
+]);
+/**
+ * Smartly parses and return the consumable result from a fetch `Response`.
+ *
+ * Throwing a structured error if the response is not `ok`. ({@link DetailedError})
+ */ export async function fetchRP(fetchRes) {
+  const _fetchRes = await fetchRes;
+  const hasBody = (_fetchRes.body || _fetchRes._bodyInit) && !nullBodyResponses.has(_fetchRes.status);
+  if (hasBody) {
+    const responseType = detectResponseType(_fetchRes);
+    _fetchRes._data = await _fetchRes[responseType]();
+  }
+  if (!_fetchRes.ok) {
+    throw new DetailedError(`${_fetchRes.status} ${_fetchRes.statusText}`, {
+      statusCode: _fetchRes?.status,
+      detail: {
+        data: _fetchRes?._data,
+        statusText: _fetchRes?.statusText
+      }
+    });
+  }
+  return _fetchRes._data;
+}
+export class DetailedError extends Error {
+  /**
+   * Additional `message` that will be logged AND returned to client
+   */ detail;
+  /**
+   * Additional `code` that will be logged AND returned to client
+   */ code;
+  /**
+   * Additional value that will be logged AND NOT returned to client
+   */ log;
+  /**
+   * Optionally set the status code to return, in a web server context
+   */ statusCode;
+  constructor(message, options = {}){
+    super(message);
+    this.name = 'DetailedError';
+    this.log = options.log;
+    this.detail = options.detail;
+    this.code = options.code;
+    this.statusCode = options.statusCode;
+  }
+}
+// This is used to match the content-type header for 'json'
+const jsonRegex = /^application\/(?:[\w!#$%&*.^`~-]*\+)?json(?:;.+)?$/i;
+function detectResponseType(response) {
+  const _contentType = response.headers.get('content-type');
+  if (!_contentType) {
+    return 'text';
+  }
+  // `_contentType` might look like: `application/json; charset=utf-8`, `text/plain`, so we get the first part before `;`
+  const contentType = _contentType.split(';').shift();
+  if (jsonRegex.test(contentType)) {
+    return 'json';
+  }
+  return 'text';
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImh0dHBzOi8vanNyLmlvL0Bob25vL2hvbm8vNC4xMi4yMy9zcmMvY2xpZW50L2ZldGNoLXJlc3VsdC1wbGVhc2UudHMiXSwic291cmNlc0NvbnRlbnQiOlsiLyoqXG4gKiBAZGVzY3JpcHRpb24gVGhpcyBmaWxlIGlzIGEgbW9kaWZpZWQgdmVyc2lvbiBvZiBgZmV0Y2gtcmVzdWx0LXBsZWFzZWAgKGBvZmV0Y2hgKSwgbWluaW1hbGl6ZWQgYW5kIGFkYXB0ZWQgdG8gSG9ubydzIGN1c3RvbSBuZWVkcy5cbiAqXG4gKiBAbGluayBodHRwczovL3d3dy5ucG1qcy5jb20vcGFja2FnZS9mZXRjaC1yZXN1bHQtcGxlYXNlXG4gKi9cblxuY29uc3QgbnVsbEJvZHlSZXNwb25zZXMgPSBuZXcgU2V0KFsxMDEsIDIwNCwgMjA1LCAzMDRdKVxuXG4vKipcbiAqIFNtYXJ0bHkgcGFyc2VzIGFuZCByZXR1cm4gdGhlIGNvbnN1bWFibGUgcmVzdWx0IGZyb20gYSBmZXRjaCBgUmVzcG9uc2VgLlxuICpcbiAqIFRocm93aW5nIGEgc3RydWN0dXJlZCBlcnJvciBpZiB0aGUgcmVzcG9uc2UgaXMgbm90IGBva2AuICh7QGxpbmsgRGV0YWlsZWRFcnJvcn0pXG4gKi9cbmV4cG9ydCBhc3luYyBmdW5jdGlvbiBmZXRjaFJQKGZldGNoUmVzOiBSZXNwb25zZSB8IFByb21pc2U8UmVzcG9uc2U+KTogUHJvbWlzZTxhbnk+IHtcbiAgY29uc3QgX2ZldGNoUmVzID0gKGF3YWl0IGZldGNoUmVzKSBhcyB1bmtub3duIGFzIFJlc3BvbnNlICYge1xuICAgIF9kYXRhOiBhbnlcbiAgICAvKipcbiAgICAgKiBAZGVzY3JpcHRpb24gQm9keUluaXQgcHJvcGVydHkgZnJvbSB3aGF0d2ctZmV0Y2ggcG9seWZpbGxcbiAgICAgKlxuICAgICAqIEBsaW5rIGh0dHBzOi8vZ2l0aHViLmNvbS9KYWtlQ2hhbXBpb24vZmV0Y2gvYmxvYi9tYWluL2ZldGNoLmpzI0wyMzhcbiAgICAgKi9cbiAgICBfYm9keUluaXQ/OiBhbnlcbiAgfVxuXG4gIGNvbnN0IGhhc0JvZHkgPVxuICAgIChfZmV0Y2hSZXMuYm9keSB8fCBfZmV0Y2hSZXMuX2JvZHlJbml0KSAmJiAhbnVsbEJvZHlSZXNwb25zZXMuaGFzKF9mZXRjaFJlcy5zdGF0dXMpXG5cbiAgaWYgKGhhc0JvZHkpIHtcbiAgICBjb25zdCByZXNwb25zZVR5cGUgPSBkZXRlY3RSZXNwb25zZVR5cGUoX2ZldGNoUmVzKVxuICAgIF9mZXRjaFJlcy5fZGF0YSA9IGF3YWl0IF9mZXRjaFJlc1tyZXNwb25zZVR5cGVdKClcbiAgfVxuXG4gIGlmICghX2ZldGNoUmVzLm9rKSB7XG4gICAgdGhyb3cgbmV3IERldGFpbGVkRXJyb3IoYCR7X2ZldGNoUmVzLnN0YXR1c30gJHtfZmV0Y2hSZXMuc3RhdHVzVGV4dH1gLCB7XG4gICAgICBzdGF0dXNDb2RlOiBfZmV0Y2hSZXM/LnN0YXR1cyxcbiAgICAgIGRldGFpbDoge1xuICAgICAgICBkYXRhOiBfZmV0Y2hSZXM/Ll9kYXRhLFxuICAgICAgICBzdGF0dXNUZXh0OiBfZmV0Y2hSZXM/LnN0YXR1c1RleHQsXG4gICAgICB9LFxuICAgIH0pXG4gIH1cblxuICByZXR1cm4gX2ZldGNoUmVzLl9kYXRhXG59XG5cbmV4cG9ydCBjbGFzcyBEZXRhaWxlZEVycm9yIGV4dGVuZHMgRXJyb3Ige1xuICAvKipcbiAgICogQWRkaXRpb25hbCBgbWVzc2FnZWAgdGhhdCB3aWxsIGJlIGxvZ2dlZCBBTkQgcmV0dXJuZWQgdG8gY2xpZW50XG4gICAqL1xuICBwdWJsaWMgZGV0YWlsPzogYW55XG4gIC8qKlxuICAgKiBBZGRpdGlvbmFsIGBjb2RlYCB0aGF0IHdpbGwgYmUgbG9nZ2VkIEFORCByZXR1cm5lZCB0byBjbGllbnRcbiAgICovXG4gIHB1YmxpYyBjb2RlPzogYW55XG4gIC8qKlxuICAgKiBBZGRpdGlvbmFsIHZhbHVlIHRoYXQgd2lsbCBiZSBsb2dnZWQgQU5EIE5PVCByZXR1cm5lZCB0byBjbGllbnRcbiAgICovXG4gIHB1YmxpYyBsb2c/OiBhbnlcbiAgLyoqXG4gICAqIE9wdGlvbmFsbHkgc2V0IHRoZSBzdGF0dXMgY29kZSB0byByZXR1cm4sIGluIGEgd2ViIHNlcnZlciBjb250ZXh0XG4gICAqL1xuICBwdWJsaWMgc3RhdHVzQ29kZT86IGFueVxuXG4gIGNvbnN0cnVjdG9yKFxuICAgIG1lc3NhZ2U6IHN0cmluZyxcbiAgICBvcHRpb25zOiB7IGRldGFpbD86IGFueTsgY29kZT86IGFueTsgc3RhdHVzQ29kZT86IG51bWJlcjsgbG9nPzogYW55IH0gPSB7fVxuICApIHtcbiAgICBzdXBlcihtZXNzYWdlKVxuICAgIHRoaXMubmFtZSA9ICdEZXRhaWxlZEVycm9yJ1xuICAgIHRoaXMubG9nID0gb3B0aW9ucy5sb2dcbiAgICB0aGlzLmRldGFpbCA9IG9wdGlvbnMuZGV0YWlsXG4gICAgdGhpcy5jb2RlID0gb3B0aW9ucy5jb2RlXG4gICAgdGhpcy5zdGF0dXNDb2RlID0gb3B0aW9ucy5zdGF0dXNDb2RlXG4gIH1cbn1cblxuLy8gVGhpcyBpcyB1c2VkIHRvIG1hdGNoIHRoZSBjb250ZW50LXR5cGUgaGVhZGVyIGZvciAnanNvbidcbmNvbnN0IGpzb25SZWdleCA9IC9eYXBwbGljYXRpb25cXC8oPzpbXFx3ISMkJSYqLl5gfi1dKlxcKyk/anNvbig/OjsuKyk/JC9pXG5cbmZ1bmN0aW9uIGRldGVjdFJlc3BvbnNlVHlwZShyZXNwb25zZTogUmVzcG9uc2UpOiAnanNvbicgfCAndGV4dCcge1xuICBjb25zdCBfY29udGVudFR5cGUgPSByZXNwb25zZS5oZWFkZXJzLmdldCgnY29udGVudC10eXBlJylcblxuICBpZiAoIV9jb250ZW50VHlwZSkge1xuICAgIHJldHVybiAndGV4dCdcbiAgfVxuXG4gIC8vIGBfY29udGVudFR5cGVgIG1pZ2h0IGxvb2sgbGlrZTogYGFwcGxpY2F0aW9uL2pzb247IGNoYXJzZXQ9dXRmLThgLCBgdGV4dC9wbGFpbmAsIHNvIHdlIGdldCB0aGUgZmlyc3QgcGFydCBiZWZvcmUgYDtgXG4gIGNvbnN0IGNvbnRlbnRUeXBlID0gX2NvbnRlbnRUeXBlLnNwbGl0KCc7Jykuc2hpZnQoKSFcblxuICBpZiAoanNvblJlZ2V4LnRlc3QoY29udGVudFR5cGUpKSB7XG4gICAgcmV0dXJuICdqc29uJ1xuICB9XG5cbiAgcmV0dXJuICd0ZXh0J1xufVxuIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUFBOzs7O0NBSUMsR0FFRCxNQUFNLG9CQUFvQixJQUFJLElBQUk7RUFBQztFQUFLO0VBQUs7RUFBSztDQUFJO0FBRXREOzs7O0NBSUMsR0FDRCxPQUFPLGVBQWUsUUFBUSxRQUFzQztFQUNsRSxNQUFNLFlBQWEsTUFBTTtFQVV6QixNQUFNLFVBQ0osQ0FBQyxVQUFVLElBQUksSUFBSSxVQUFVLFNBQVMsS0FBSyxDQUFDLGtCQUFrQixHQUFHLENBQUMsVUFBVSxNQUFNO0VBRXBGLElBQUksU0FBUztJQUNYLE1BQU0sZUFBZSxtQkFBbUI7SUFDeEMsVUFBVSxLQUFLLEdBQUcsTUFBTSxTQUFTLENBQUMsYUFBYTtFQUNqRDtFQUVBLElBQUksQ0FBQyxVQUFVLEVBQUUsRUFBRTtJQUNqQixNQUFNLElBQUksY0FBYyxHQUFHLFVBQVUsTUFBTSxDQUFDLENBQUMsRUFBRSxVQUFVLFVBQVUsRUFBRSxFQUFFO01BQ3JFLFlBQVksV0FBVztNQUN2QixRQUFRO1FBQ04sTUFBTSxXQUFXO1FBQ2pCLFlBQVksV0FBVztNQUN6QjtJQUNGO0VBQ0Y7RUFFQSxPQUFPLFVBQVUsS0FBSztBQUN4QjtBQUVBLE9BQU8sTUFBTSxzQkFBc0I7RUFDakM7O0dBRUMsR0FDRCxBQUFPLE9BQVk7RUFDbkI7O0dBRUMsR0FDRCxBQUFPLEtBQVU7RUFDakI7O0dBRUMsR0FDRCxBQUFPLElBQVM7RUFDaEI7O0dBRUMsR0FDRCxBQUFPLFdBQWdCO0VBRXZCLFlBQ0UsT0FBZSxFQUNmLFVBQXdFLENBQUMsQ0FBQyxDQUMxRTtJQUNBLEtBQUssQ0FBQztJQUNOLElBQUksQ0FBQyxJQUFJLEdBQUc7SUFDWixJQUFJLENBQUMsR0FBRyxHQUFHLFFBQVEsR0FBRztJQUN0QixJQUFJLENBQUMsTUFBTSxHQUFHLFFBQVEsTUFBTTtJQUM1QixJQUFJLENBQUMsSUFBSSxHQUFHLFFBQVEsSUFBSTtJQUN4QixJQUFJLENBQUMsVUFBVSxHQUFHLFFBQVEsVUFBVTtFQUN0QztBQUNGO0FBRUEsMkRBQTJEO0FBQzNELE1BQU0sWUFBWTtBQUVsQixTQUFTLG1CQUFtQixRQUFrQjtFQUM1QyxNQUFNLGVBQWUsU0FBUyxPQUFPLENBQUMsR0FBRyxDQUFDO0VBRTFDLElBQUksQ0FBQyxjQUFjO0lBQ2pCLE9BQU87RUFDVDtFQUVBLHVIQUF1SDtFQUN2SCxNQUFNLGNBQWMsYUFBYSxLQUFLLENBQUMsS0FBSyxLQUFLO0VBRWpELElBQUksVUFBVSxJQUFJLENBQUMsY0FBYztJQUMvQixPQUFPO0VBQ1Q7RUFFQSxPQUFPO0FBQ1QifQ==
+// denoCacheMetadata=12923115623830884249,3981672887749015140

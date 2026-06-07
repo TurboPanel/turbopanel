@@ -1,0 +1,62 @@
+// Copyright 2018-2026 the Deno authors. MIT license.
+// This module is browser compatible.
+
+import {
+  CHAR_BACKWARD_SLASH,
+  CHAR_COLON,
+  CHAR_DOT,
+  CHAR_QUESTION_MARK,
+} from "../_common/constants.ts";
+import { isWindowsDeviceRoot } from "./_util.ts";
+import { resolve } from "./resolve.ts";
+
+/**
+ * Resolves path to a namespace path
+ *
+ * @example Usage
+ * ```ts
+ * import { toNamespacedPath } from "@std/path/windows/to-namespaced-path";
+ * import { assertEquals } from "@std/assert";
+ *
+ * const namespaced = toNamespacedPath("C:\\foo\\bar");
+ * assertEquals(namespaced, "\\\\?\\C:\\foo\\bar");
+ * ```
+ *
+ * @param path The path to resolve to namespaced path
+ * @returns The resolved namespaced path
+ */
+export function toNamespacedPath(path: string): string {
+  // Note: this will *probably* throw somewhere.
+  if (typeof path !== "string") return path;
+  if (path.length === 0) return "";
+
+  const resolvedPath = resolve(path);
+
+  if (resolvedPath.length >= 3) {
+    if (resolvedPath.charCodeAt(0) === CHAR_BACKWARD_SLASH) {
+      // Possible UNC root
+
+      if (resolvedPath.charCodeAt(1) === CHAR_BACKWARD_SLASH) {
+        const code = resolvedPath.charCodeAt(2);
+        if (code !== CHAR_QUESTION_MARK && code !== CHAR_DOT) {
+          // Matched non-long UNC root, convert the path to a long UNC path
+          return `\\\\?\\UNC\\${resolvedPath.slice(2)}`;
+        }
+      }
+    } else if (isWindowsDeviceRoot(resolvedPath.charCodeAt(0))) {
+      // Possible device root
+
+      if (
+        resolvedPath.charCodeAt(1) === CHAR_COLON &&
+        resolvedPath.charCodeAt(2) === CHAR_BACKWARD_SLASH
+      ) {
+        // Matched device root, convert the path to a long UNC path
+        return `\\\\?\\${resolvedPath}`;
+      }
+    }
+  }
+
+  return path;
+}
+
+// denoCacheMetadata={"headers":{"content-type":"text/typescript","x-robots-tag":"noindex","etag":"\"37d50332f2461d63f8fd06b571e0b1e1\"","access-control-allow-origin":"*","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","content-length":"1766","access-control-expose-headers":"*","x-content-type-options":"nosniff","x-jsr-backend":"modules","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=9j6Ijr1B1aTNZGWfGw9gjX7pxmPgaEbovvNI31SWNed3GBTooQYa0G3nxzBy6mRsAtL9LRX94XvmbwEt3JyIskrixPRDU7gZBIGaw%2Fdl0dbTc%2FWAjAkjb5I%3D\"}]}","date":"Sun, 07 Jun 2026 15:14:50 GMT","cross-origin-resource-policy":"cross-origin","server":"cloudflare","cf-ray":"a0809bd5a8b5301b-MCI","vary":"Origin","alt-svc":"h3=\":443\"; ma=86400","cache-control":"public, max-age=31536000, immutable","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","content-encoding":"identity"},"url":"https://jsr.io/@std/path/1.1.5/windows/to_namespaced_path.ts","time":1780845290}

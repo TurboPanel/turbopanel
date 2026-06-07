@@ -1,0 +1,35 @@
+import { WSContext, defineWebSocketHelper } from '../../helper/websocket/index.ts';
+export const upgradeWebSocket = defineWebSocketHelper(async (c, events, options)=>{
+  if (c.req.header('upgrade') !== 'websocket') {
+    return;
+  }
+  // Echo the negotiated subprotocol back to the client. Browsers (e.g. Chrome)
+  // reject the connection when a subprotocol was requested but the response is
+  // missing the `Sec-WebSocket-Protocol` header.
+  const subprotocol = c.req.header('sec-websocket-protocol')?.split(',')[0]?.trim();
+  const { response, socket } = Deno.upgradeWebSocket(c.req.raw, {
+    ...subprotocol ? {
+      protocol: subprotocol
+    } : {},
+    ...options
+  });
+  const wsContext = new WSContext({
+    close: (code, reason)=>socket.close(code, reason),
+    get protocol () {
+      return socket.protocol;
+    },
+    raw: socket,
+    get readyState () {
+      return socket.readyState;
+    },
+    url: socket.url ? new URL(socket.url) : null,
+    send: (source)=>socket.send(source)
+  });
+  socket.onopen = (evt)=>events.onOpen?.(evt, wsContext);
+  socket.onmessage = (evt)=>events.onMessage?.(evt, wsContext);
+  socket.onclose = (evt)=>events.onClose?.(evt, wsContext);
+  socket.onerror = (evt)=>events.onError?.(evt, wsContext);
+  return response;
+});
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImh0dHBzOi8vanNyLmlvL0Bob25vL2hvbm8vNC4xMi4yMy9zcmMvYWRhcHRlci9kZW5vL3dlYnNvY2tldC50cyJdLCJzb3VyY2VzQ29udGVudCI6WyJpbXBvcnQgdHlwZSB7IFVwZ3JhZGVXZWJTb2NrZXQsIFdTUmVhZHlTdGF0ZSB9IGZyb20gJy4uLy4uL2hlbHBlci93ZWJzb2NrZXQvaW5kZXgudHMnXG5pbXBvcnQgeyBXU0NvbnRleHQsIGRlZmluZVdlYlNvY2tldEhlbHBlciB9IGZyb20gJy4uLy4uL2hlbHBlci93ZWJzb2NrZXQvaW5kZXgudHMnXG5cbmV4cG9ydCBjb25zdCB1cGdyYWRlV2ViU29ja2V0OiBVcGdyYWRlV2ViU29ja2V0PFdlYlNvY2tldCwgRGVuby5VcGdyYWRlV2ViU29ja2V0T3B0aW9ucz4gPVxuICBkZWZpbmVXZWJTb2NrZXRIZWxwZXIoYXN5bmMgKGMsIGV2ZW50cywgb3B0aW9ucykgPT4ge1xuICAgIGlmIChjLnJlcS5oZWFkZXIoJ3VwZ3JhZGUnKSAhPT0gJ3dlYnNvY2tldCcpIHtcbiAgICAgIHJldHVyblxuICAgIH1cblxuICAgIC8vIEVjaG8gdGhlIG5lZ290aWF0ZWQgc3VicHJvdG9jb2wgYmFjayB0byB0aGUgY2xpZW50LiBCcm93c2VycyAoZS5nLiBDaHJvbWUpXG4gICAgLy8gcmVqZWN0IHRoZSBjb25uZWN0aW9uIHdoZW4gYSBzdWJwcm90b2NvbCB3YXMgcmVxdWVzdGVkIGJ1dCB0aGUgcmVzcG9uc2UgaXNcbiAgICAvLyBtaXNzaW5nIHRoZSBgU2VjLVdlYlNvY2tldC1Qcm90b2NvbGAgaGVhZGVyLlxuICAgIGNvbnN0IHN1YnByb3RvY29sID0gYy5yZXEuaGVhZGVyKCdzZWMtd2Vic29ja2V0LXByb3RvY29sJyk/LnNwbGl0KCcsJylbMF0/LnRyaW0oKVxuXG4gICAgY29uc3QgeyByZXNwb25zZSwgc29ja2V0IH0gPSBEZW5vLnVwZ3JhZGVXZWJTb2NrZXQoYy5yZXEucmF3LCB7XG4gICAgICAuLi4oc3VicHJvdG9jb2wgPyB7IHByb3RvY29sOiBzdWJwcm90b2NvbCB9IDoge30pLFxuICAgICAgLi4ub3B0aW9ucyxcbiAgICB9KVxuXG4gICAgY29uc3Qgd3NDb250ZXh0OiBXU0NvbnRleHQ8V2ViU29ja2V0PiA9IG5ldyBXU0NvbnRleHQoe1xuICAgICAgY2xvc2U6IChjb2RlLCByZWFzb24pID0+IHNvY2tldC5jbG9zZShjb2RlLCByZWFzb24pLFxuICAgICAgZ2V0IHByb3RvY29sKCkge1xuICAgICAgICByZXR1cm4gc29ja2V0LnByb3RvY29sXG4gICAgICB9LFxuICAgICAgcmF3OiBzb2NrZXQsXG4gICAgICBnZXQgcmVhZHlTdGF0ZSgpIHtcbiAgICAgICAgcmV0dXJuIHNvY2tldC5yZWFkeVN0YXRlIGFzIFdTUmVhZHlTdGF0ZVxuICAgICAgfSxcbiAgICAgIHVybDogc29ja2V0LnVybCA/IG5ldyBVUkwoc29ja2V0LnVybCkgOiBudWxsLFxuICAgICAgc2VuZDogKHNvdXJjZSkgPT4gc29ja2V0LnNlbmQoc291cmNlKSxcbiAgICB9KVxuICAgIHNvY2tldC5vbm9wZW4gPSAoZXZ0KSA9PiBldmVudHMub25PcGVuPy4oZXZ0LCB3c0NvbnRleHQpXG4gICAgc29ja2V0Lm9ubWVzc2FnZSA9IChldnQpID0+IGV2ZW50cy5vbk1lc3NhZ2U/LihldnQsIHdzQ29udGV4dClcbiAgICBzb2NrZXQub25jbG9zZSA9IChldnQpID0+IGV2ZW50cy5vbkNsb3NlPy4oZXZ0LCB3c0NvbnRleHQpXG4gICAgc29ja2V0Lm9uZXJyb3IgPSAoZXZ0KSA9PiBldmVudHMub25FcnJvcj8uKGV2dCwgd3NDb250ZXh0KVxuXG4gICAgcmV0dXJuIHJlc3BvbnNlXG4gIH0pXG4iXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQ0EsU0FBUyxTQUFTLEVBQUUscUJBQXFCLFFBQVEsa0NBQWlDO0FBRWxGLE9BQU8sTUFBTSxtQkFDWCxzQkFBc0IsT0FBTyxHQUFHLFFBQVE7RUFDdEMsSUFBSSxFQUFFLEdBQUcsQ0FBQyxNQUFNLENBQUMsZUFBZSxhQUFhO0lBQzNDO0VBQ0Y7RUFFQSw2RUFBNkU7RUFDN0UsNkVBQTZFO0VBQzdFLCtDQUErQztFQUMvQyxNQUFNLGNBQWMsRUFBRSxHQUFHLENBQUMsTUFBTSxDQUFDLDJCQUEyQixNQUFNLElBQUksQ0FBQyxFQUFFLEVBQUU7RUFFM0UsTUFBTSxFQUFFLFFBQVEsRUFBRSxNQUFNLEVBQUUsR0FBRyxLQUFLLGdCQUFnQixDQUFDLEVBQUUsR0FBRyxDQUFDLEdBQUcsRUFBRTtJQUM1RCxHQUFJLGNBQWM7TUFBRSxVQUFVO0lBQVksSUFBSSxDQUFDLENBQUM7SUFDaEQsR0FBRyxPQUFPO0VBQ1o7RUFFQSxNQUFNLFlBQWtDLElBQUksVUFBVTtJQUNwRCxPQUFPLENBQUMsTUFBTSxTQUFXLE9BQU8sS0FBSyxDQUFDLE1BQU07SUFDNUMsSUFBSSxZQUFXO01BQ2IsT0FBTyxPQUFPLFFBQVE7SUFDeEI7SUFDQSxLQUFLO0lBQ0wsSUFBSSxjQUFhO01BQ2YsT0FBTyxPQUFPLFVBQVU7SUFDMUI7SUFDQSxLQUFLLE9BQU8sR0FBRyxHQUFHLElBQUksSUFBSSxPQUFPLEdBQUcsSUFBSTtJQUN4QyxNQUFNLENBQUMsU0FBVyxPQUFPLElBQUksQ0FBQztFQUNoQztFQUNBLE9BQU8sTUFBTSxHQUFHLENBQUMsTUFBUSxPQUFPLE1BQU0sR0FBRyxLQUFLO0VBQzlDLE9BQU8sU0FBUyxHQUFHLENBQUMsTUFBUSxPQUFPLFNBQVMsR0FBRyxLQUFLO0VBQ3BELE9BQU8sT0FBTyxHQUFHLENBQUMsTUFBUSxPQUFPLE9BQU8sR0FBRyxLQUFLO0VBQ2hELE9BQU8sT0FBTyxHQUFHLENBQUMsTUFBUSxPQUFPLE9BQU8sR0FBRyxLQUFLO0VBRWhELE9BQU87QUFDVCxHQUFFIn0=
+// denoCacheMetadata=6680003584364094470,15791423060834384524

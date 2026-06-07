@@ -1,0 +1,16 @@
+/**
+ * @module
+ * SSG Helper for Hono.
+ */
+
+export * from './ssg.ts'
+export {
+  X_HONO_DISABLE_SSG_HEADER_KEY,
+  ssgParams,
+  isSSGContext,
+  disableSSG,
+  onlySSG,
+} from './middleware.ts'
+export { defaultPlugin, redirectPlugin } from './plugins.ts'
+
+// denoCacheMetadata={"headers":{"alt-svc":"h3=\":443\"; ma=86400","content-encoding":"identity","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","x-jsr-backend":"modules","content-length":"251","content-type":"text/typescript","x-robots-tag":"noindex","cf-ray":"a0809bd5a880301b-MCI","date":"Sun, 07 Jun 2026 15:14:50 GMT","x-content-type-options":"nosniff","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=y2Fg41G70o1dDYPxzXMQL1HHnBZPLLT75FBOccSsuOvk%2FUdpzBn9PVV%2F17jqG8g2uw3vDSRjofL7QGmKjqN3CxHZlcshh5XSTUa%2FX%2FyzXWjOtSOxQiGB8yE%3D\"}]}","cross-origin-resource-policy":"cross-origin","access-control-allow-origin":"*","cache-control":"public, max-age=31536000, immutable","server":"cloudflare","vary":"Origin","etag":"\"0d03057c911dbbfc68d8ba1511a6ba49\"","access-control-expose-headers":"*","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';"},"url":"https://jsr.io/@hono/hono/4.12.23/src/helper/ssg/index.ts","time":1780845290}

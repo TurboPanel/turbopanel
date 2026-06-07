@@ -1,0 +1,6 @@
+/**
+ * @module
+ * TrieRouter for Hono.
+ */ export { TrieRouter } from './router.ts';
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImh0dHBzOi8vanNyLmlvL0Bob25vL2hvbm8vNC4xMi4yMy9zcmMvcm91dGVyL3RyaWUtcm91dGVyL2luZGV4LnRzIl0sInNvdXJjZXNDb250ZW50IjpbIi8qKlxuICogQG1vZHVsZVxuICogVHJpZVJvdXRlciBmb3IgSG9uby5cbiAqL1xuXG5leHBvcnQgeyBUcmllUm91dGVyIH0gZnJvbSAnLi9yb3V0ZXIudHMnXG4iXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUE7OztDQUdDLEdBRUQsU0FBUyxVQUFVLFFBQVEsY0FBYSJ9
+// denoCacheMetadata=4440603718956727871,8472968550653746604

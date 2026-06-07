@@ -1,0 +1,32 @@
+// Copyright 2018-2026 the Deno authors. MIT license.
+// This module is browser compatible.
+
+import { isWindows } from "jsr:@std/internal@^1.0.14/os";
+import { toFileUrl as posixToFileUrl } from "./posix/to_file_url.ts";
+import { toFileUrl as windowsToFileUrl } from "./windows/to_file_url.ts";
+
+/**
+ * Converts a path string to a file URL.
+ *
+ * @example Usage
+ * ```ts
+ * import { toFileUrl } from "@std/path/to-file-url";
+ * import { assertEquals } from "@std/assert";
+ *
+ * if (Deno.build.os === "windows") {
+ *   assertEquals(toFileUrl("\\home\\foo"), new URL("file:///home/foo"));
+ *   assertEquals(toFileUrl("C:\\Users\\foo"), new URL("file:///C:/Users/foo"));
+ *   assertEquals(toFileUrl("\\\\127.0.0.1\\home\\foo"), new URL("file://127.0.0.1/home/foo"));
+ * } else {
+ *   assertEquals(toFileUrl("/home/foo"), new URL("file:///home/foo"));
+ * }
+ * ```
+ *
+ * @param path Path to convert to file URL.
+ * @returns The file URL equivalent to the path.
+ */
+export function toFileUrl(path: string): URL {
+  return isWindows ? windowsToFileUrl(path) : posixToFileUrl(path);
+}
+
+// denoCacheMetadata={"headers":{"date":"Sun, 07 Jun 2026 15:14:50 GMT","cf-ray":"a0809bd5a864301b-MCI","cache-control":"public, max-age=31536000, immutable","x-jsr-backend":"modules","access-control-allow-origin":"*","x-robots-tag":"noindex","etag":"\"0be658e13961fdef14fe00cef5c53d15\"","server":"cloudflare","vary":"Origin","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=mrqWp%2BAh7%2F%2FnQ0RFcRKZfWwt5hodNQ%2F6UwSLEpWMbcFsmk8XNZdgIbtEHU9N2t39LzegKeI1foa1%2BPsZlV3PYsGTMuZwe3JZns5YbYN8Vn1ZXmnLCooZ3q0%3D\"}]}","content-length":"1077","content-encoding":"identity","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","content-type":"text/typescript","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","access-control-expose-headers":"*","x-content-type-options":"nosniff","alt-svc":"h3=\":443\"; ma=86400","cross-origin-resource-policy":"cross-origin"},"url":"https://jsr.io/@std/path/1.1.5/to_file_url.ts","time":1780845290}

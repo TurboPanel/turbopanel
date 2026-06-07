@@ -1,0 +1,116 @@
+import type {
+  ClientErrorStatusCode,
+  ContentfulStatusCode,
+  ServerErrorStatusCode,
+} from '../utils/http-status.ts'
+import { fetchRP, DetailedError } from './fetch-result-please.ts'
+import type { ClientResponse, FilterClientResponseByStatusCode, ObjectType } from './types.ts'
+
+export { DetailedError }
+
+export const mergePath = (base: string, path: string) => {
+  base = base.replace(/\/+$/, '')
+  base = base + '/'
+  path = path.replace(/^\/+/, '')
+  return base + path
+}
+
+export const replaceUrlParam = (urlString: string, params: Record<string, string | undefined>) => {
+  for (const [k, v] of Object.entries(params)) {
+    const reg = new RegExp('/:' + k + '(?:{[^/]+})?\\??')
+    urlString = urlString.replace(reg, v ? `/${v}` : '')
+  }
+  return urlString
+}
+
+export const buildSearchParams = (query: Record<string, string | string[]>) => {
+  const searchParams = new URLSearchParams()
+
+  for (const [k, v] of Object.entries(query)) {
+    if (v === undefined) {
+      continue
+    }
+
+    if (Array.isArray(v)) {
+      for (const v2 of v) {
+        searchParams.append(k, v2)
+      }
+    } else {
+      searchParams.set(k, v)
+    }
+  }
+
+  return searchParams
+}
+
+export const replaceUrlProtocol = (urlString: string, protocol: 'ws' | 'http') => {
+  switch (protocol) {
+    case 'ws':
+      return urlString.replace(/^http/, 'ws')
+    case 'http':
+      return urlString.replace(/^ws/, 'http')
+  }
+}
+
+export const removeIndexString = (urlString: string) => {
+  if (/^https?:\/\/[^\/]+?\/index(?=\?|$)/.test(urlString)) {
+    return urlString.replace(/\/index(?=\?|$)/, '/')
+  }
+  return urlString.replace(/\/index(?=\?|$)/, '')
+}
+
+function isObject(item: unknown): item is ObjectType {
+  return typeof item === 'object' && item !== null && !Array.isArray(item)
+}
+
+export function deepMerge<T>(target: T, source: Record<string, unknown>): T {
+  if (!isObject(target) && !isObject(source)) {
+    return source as T
+  }
+  const merged = { ...target } as ObjectType<T>
+
+  for (const key in source) {
+    const value = source[key]
+    if (isObject(merged[key]) && isObject(value)) {
+      merged[key] = deepMerge(merged[key], value)
+    } else {
+      merged[key] = value as T[keyof T] & T
+    }
+  }
+
+  return merged as T
+}
+
+/**
+ * Shortcut to get a consumable response from `hc`'s fetch calls (Response), with types inference.
+ *
+ * Smartly parse the response data, throwing a structured error if the response is not `ok`. ({@link DetailedError})
+ *
+ * @example const result = await parseResponse(client.posts.$get())
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function parseResponse<T extends ClientResponse<any>>(
+  fetchRes: T | Promise<T>
+): Promise<
+  FilterClientResponseByStatusCode<
+    T,
+    Exclude<ContentfulStatusCode, ClientErrorStatusCode | ServerErrorStatusCode> // Filter out the error responses
+  > extends never
+    ? // Filtered responses does not include any contentful responses, exit with undefined
+      undefined
+    : // Filtered responses includes contentful responses, proceed to infer the type
+      FilterClientResponseByStatusCode<
+          T,
+          Exclude<ContentfulStatusCode, ClientErrorStatusCode | ServerErrorStatusCode>
+        > extends ClientResponse<infer RT, infer _, infer RF>
+      ? RF extends 'json'
+        ? RT
+        : RT extends string
+          ? RT
+          : string
+      : undefined
+> {
+  return fetchRP(fetchRes)
+}
+
+// denoCacheMetadata={"headers":{"date":"Sun, 07 Jun 2026 15:14:50 GMT","vary":"Origin","content-type":"text/typescript","cross-origin-resource-policy":"cross-origin","etag":"\"9c133eed072e592134fc307ad5183ddf\"","x-robots-tag":"noindex","x-content-type-options":"nosniff","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","server":"cloudflare","x-jsr-backend":"modules","alt-svc":"h3=\":443\"; ma=86400","access-control-expose-headers":"*","access-control-allow-origin":"*","content-encoding":"identity","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=kVo%2B%2Fd0pHz7et0cNMiSuw5fyJ%2BNHUtofl3j%2FYLSQtJK%2BQkE6pVV6fLPCGlRy6bUD7aM7h%2B6lUQNV26d4UFqGCqXgb4v4syytKBrQdJkkf%2FF%2B5ve%2Bin2sugo%3D\"}]}","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","content-length":"3417","cache-control":"public, max-age=31536000, immutable","cf-ray":"a0809bd6bad0301b-MCI"},"url":"https://jsr.io/@hono/hono/4.12.23/src/client/utils.ts","time":1780845290}

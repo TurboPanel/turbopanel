@@ -5,7 +5,7 @@ import {
   getColocatedDaemonId,
   sendToDaemon,
 } from './daemon-hub.ts'
-import { ADMIN_API_PREFIX } from './surfaces.ts'
+import { DEVELOPER_API_PREFIX } from './surfaces.ts'
 
 const TUNNEL_TOKEN_TIMEOUT_MS = 30_000
 
@@ -15,7 +15,7 @@ const TUNNEL_TOKEN_TIMEOUT_MS = 30_000
  * external agent nodes can connect in. An empty token tears the tunnel down.
  */
 export function registerTunnelRoutes(app: Hono): Hono {
-  app.post(`${ADMIN_API_PREFIX}/instance/tunnel-token`, async (c) => {
+  app.post(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, async (c) => {
     const body = await c.req.json().catch(() => null)
     if (!body || typeof body !== 'object' || typeof body.token !== 'string') {
       return c.json({ ok: false, error: 'expected { token: string }' }, 400)

@@ -1,0 +1,9 @@
+/**
+ * @module
+ * Deno Adapter for Hono.
+ */ export { serveStatic } from './serve-static.ts';
+export { toSSG, denoFileSystemModule } from './ssg.ts';
+export { upgradeWebSocket } from './websocket.ts';
+export { getConnInfo } from './conninfo.ts';
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImh0dHBzOi8vanNyLmlvL0Bob25vL2hvbm8vNC4xMi4yMy9zcmMvYWRhcHRlci9kZW5vL2luZGV4LnRzIl0sInNvdXJjZXNDb250ZW50IjpbIi8qKlxuICogQG1vZHVsZVxuICogRGVubyBBZGFwdGVyIGZvciBIb25vLlxuICovXG5cbmV4cG9ydCB7IHNlcnZlU3RhdGljIH0gZnJvbSAnLi9zZXJ2ZS1zdGF0aWMudHMnXG5leHBvcnQgeyB0b1NTRywgZGVub0ZpbGVTeXN0ZW1Nb2R1bGUgfSBmcm9tICcuL3NzZy50cydcbmV4cG9ydCB7IHVwZ3JhZGVXZWJTb2NrZXQgfSBmcm9tICcuL3dlYnNvY2tldC50cydcbmV4cG9ydCB7IGdldENvbm5JbmZvIH0gZnJvbSAnLi9jb25uaW5mby50cydcbiJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiQUFBQTs7O0NBR0MsR0FFRCxTQUFTLFdBQVcsUUFBUSxvQkFBbUI7QUFDL0MsU0FBUyxLQUFLLEVBQUUsb0JBQW9CLFFBQVEsV0FBVTtBQUN0RCxTQUFTLGdCQUFnQixRQUFRLGlCQUFnQjtBQUNqRCxTQUFTLFdBQVcsUUFBUSxnQkFBZSJ9
+// denoCacheMetadata=5007176968439133239,14322534713698152581

@@ -1,0 +1,19 @@
+import type { GetConnInfo } from '../../helper/conninfo/index.ts'
+
+/**
+ * Get conninfo with Deno
+ * @param c Context
+ * @returns ConnInfo
+ */
+export const getConnInfo: GetConnInfo = (c) => {
+  const { remoteAddr } = c.env
+  return {
+    remote: {
+      address: remoteAddr.hostname,
+      port: remoteAddr.port,
+      transport: remoteAddr.transport,
+    },
+  }
+}
+
+// denoCacheMetadata={"headers":{"x-jsr-backend":"modules","access-control-expose-headers":"*","cache-control":"public, max-age=31536000, immutable","cross-origin-resource-policy":"cross-origin","server":"cloudflare","date":"Sun, 07 Jun 2026 15:14:50 GMT","x-robots-tag":"noindex","content-encoding":"identity","content-length":"364","vary":"Origin","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=S8suXTf8s0uN1AqdODSMiZi9C4xLSZqXwmrFJPFWGGxCS%2FVAS1FQm9b%2FFN7e2us9d7zaDXF545bVy3IS6tINd4MG1Zd55iuFGlgxFTnMPq%2FLGpB%2BRyz5hu4%3D\"}]}","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","alt-svc":"h3=\":443\"; ma=86400","access-control-allow-origin":"*","cf-ray":"a0809bd5a84f301b-MCI","x-content-type-options":"nosniff","etag":"\"c5708a6261e2799240ef2a6d1b52a279\"","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","content-type":"text/typescript"},"url":"https://jsr.io/@hono/hono/4.12.23/src/adapter/deno/conninfo.ts","time":1780845290}

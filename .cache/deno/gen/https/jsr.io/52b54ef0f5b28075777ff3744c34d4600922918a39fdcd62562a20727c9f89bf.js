@@ -1,0 +1,6 @@
+/**
+ * @module
+ * SmartRouter for Hono.
+ */ export { SmartRouter } from './router.ts';
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImh0dHBzOi8vanNyLmlvL0Bob25vL2hvbm8vNC4xMi4yMy9zcmMvcm91dGVyL3NtYXJ0LXJvdXRlci9pbmRleC50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIEBtb2R1bGVcbiAqIFNtYXJ0Um91dGVyIGZvciBIb25vLlxuICovXG5cbmV4cG9ydCB7IFNtYXJ0Um91dGVyIH0gZnJvbSAnLi9yb3V0ZXIudHMnXG4iXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUE7OztDQUdDLEdBRUQsU0FBUyxXQUFXLFFBQVEsY0FBYSJ9
+// denoCacheMetadata=16584142608548298825,9134669645924737086

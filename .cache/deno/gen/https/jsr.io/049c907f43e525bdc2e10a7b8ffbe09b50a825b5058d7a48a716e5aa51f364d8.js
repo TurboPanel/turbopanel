@@ -1,0 +1,20 @@
+// Copyright 2018-2026 the Deno authors. MIT license.
+// Copyright the Browserify authors. MIT License.
+// Ported from https://github.com/browserify/path-browserify/
+// This module is browser compatible.
+export function stripTrailingSeparators(segment, isSep) {
+  if (segment.length <= 1) {
+    return segment;
+  }
+  let end = segment.length;
+  for(let i = segment.length - 1; i > 0; i--){
+    if (isSep(segment.charCodeAt(i))) {
+      end = i;
+    } else {
+      break;
+    }
+  }
+  return segment.slice(0, end);
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImh0dHBzOi8vanNyLmlvL0BzdGQvcGF0aC8xLjEuNS9fY29tbW9uL3N0cmlwX3RyYWlsaW5nX3NlcGFyYXRvcnMudHMiXSwic291cmNlc0NvbnRlbnQiOlsiLy8gQ29weXJpZ2h0IDIwMTgtMjAyNiB0aGUgRGVubyBhdXRob3JzLiBNSVQgbGljZW5zZS5cbi8vIENvcHlyaWdodCB0aGUgQnJvd3NlcmlmeSBhdXRob3JzLiBNSVQgTGljZW5zZS5cbi8vIFBvcnRlZCBmcm9tIGh0dHBzOi8vZ2l0aHViLmNvbS9icm93c2VyaWZ5L3BhdGgtYnJvd3NlcmlmeS9cbi8vIFRoaXMgbW9kdWxlIGlzIGJyb3dzZXIgY29tcGF0aWJsZS5cblxuZXhwb3J0IGZ1bmN0aW9uIHN0cmlwVHJhaWxpbmdTZXBhcmF0b3JzKFxuICBzZWdtZW50OiBzdHJpbmcsXG4gIGlzU2VwOiAoY2hhcjogbnVtYmVyKSA9PiBib29sZWFuLFxuKTogc3RyaW5nIHtcbiAgaWYgKHNlZ21lbnQubGVuZ3RoIDw9IDEpIHtcbiAgICByZXR1cm4gc2VnbWVudDtcbiAgfVxuXG4gIGxldCBlbmQgPSBzZWdtZW50Lmxlbmd0aDtcblxuICBmb3IgKGxldCBpID0gc2VnbWVudC5sZW5ndGggLSAxOyBpID4gMDsgaS0tKSB7XG4gICAgaWYgKGlzU2VwKHNlZ21lbnQuY2hhckNvZGVBdChpKSkpIHtcbiAgICAgIGVuZCA9IGk7XG4gICAgfSBlbHNlIHtcbiAgICAgIGJyZWFrO1xuICAgIH1cbiAgfVxuXG4gIHJldHVybiBzZWdtZW50LnNsaWNlKDAsIGVuZCk7XG59XG4iXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUEscURBQXFEO0FBQ3JELGlEQUFpRDtBQUNqRCw2REFBNkQ7QUFDN0QscUNBQXFDO0FBRXJDLE9BQU8sU0FBUyx3QkFDZCxPQUFlLEVBQ2YsS0FBZ0M7RUFFaEMsSUFBSSxRQUFRLE1BQU0sSUFBSSxHQUFHO0lBQ3ZCLE9BQU87RUFDVDtFQUVBLElBQUksTUFBTSxRQUFRLE1BQU07RUFFeEIsSUFBSyxJQUFJLElBQUksUUFBUSxNQUFNLEdBQUcsR0FBRyxJQUFJLEdBQUcsSUFBSztJQUMzQyxJQUFJLE1BQU0sUUFBUSxVQUFVLENBQUMsS0FBSztNQUNoQyxNQUFNO0lBQ1IsT0FBTztNQUNMO0lBQ0Y7RUFDRjtFQUVBLE9BQU8sUUFBUSxLQUFLLENBQUMsR0FBRztBQUMxQiJ9
+// denoCacheMetadata=15599419560963433841,10500044507054052474

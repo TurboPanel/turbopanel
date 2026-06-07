@@ -1,0 +1,76 @@
+import type { Context, ParamAssocArray } from './node.ts'
+import { Node } from './node.ts'
+
+export type ReplacementMap = number[]
+
+export class Trie {
+  #context: Context = { varIndex: 0 }
+  #root: Node = new Node()
+
+  insert(path: string, index: number, pathErrorCheckOnly: boolean): ParamAssocArray {
+    const paramAssoc: ParamAssocArray = []
+
+    const groups: [string, string][] = [] // [mark, original string]
+    for (let i = 0; ; ) {
+      let replaced = false
+      path = path.replace(/\{[^}]+\}/g, (m) => {
+        const mark = `@\\${i}`
+        groups[i] = [mark, m]
+        i++
+        replaced = true
+        return mark
+      })
+      if (!replaced) {
+        break
+      }
+    }
+
+    /**
+     *  - pattern (:label, :label{0-9]+}, ...)
+     *  - /* wildcard
+     *  - character
+     */
+    const tokens = path.match(/(?::[^\/]+)|(?:\/\*$)|./g) || []
+    for (let i = groups.length - 1; i >= 0; i--) {
+      const [mark] = groups[i]
+      for (let j = tokens.length - 1; j >= 0; j--) {
+        if (tokens[j].indexOf(mark) !== -1) {
+          tokens[j] = tokens[j].replace(mark, groups[i][1])
+          break
+        }
+      }
+    }
+
+    this.#root.insert(tokens, index, paramAssoc, this.#context, pathErrorCheckOnly)
+
+    return paramAssoc
+  }
+
+  buildRegExp(): [RegExp, ReplacementMap, ReplacementMap] {
+    let regexp = this.#root.buildRegExpStr()
+    if (regexp === '') {
+      return [/^$/, [], []] // never match
+    }
+
+    let captureIndex = 0
+    const indexReplacementMap: ReplacementMap = []
+    const paramReplacementMap: ReplacementMap = []
+
+    regexp = regexp.replace(/#(\d+)|@(\d+)|\.\*\$/g, (_, handlerIndex, paramIndex) => {
+      if (handlerIndex !== undefined) {
+        indexReplacementMap[++captureIndex] = Number(handlerIndex)
+        return '$()'
+      }
+      if (paramIndex !== undefined) {
+        paramReplacementMap[Number(paramIndex)] = ++captureIndex
+        return ''
+      }
+
+      return ''
+    })
+
+    return [new RegExp(`^${regexp}`), indexReplacementMap, paramReplacementMap]
+  }
+}
+
+// denoCacheMetadata={"headers":{"access-control-expose-headers":"*","content-type":"text/typescript","date":"Sun, 07 Jun 2026 15:14:50 GMT","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","cache-control":"public, max-age=31536000, immutable","x-content-type-options":"nosniff","alt-svc":"h3=\":443\"; ma=86400","server":"cloudflare","content-encoding":"identity","cf-ray":"a0809bd6bacd301b-MCI","etag":"\"ff2b15f0e8a3bedc8b53b30cadf1c066\"","content-length":"2031","vary":"Origin","x-jsr-backend":"modules","access-control-allow-origin":"*","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=lgeTlM0vuQQuhBW8sCGLlyRQvusIOTBU8GMHU%2B1c2QSeU8yJuGRZKEUvRIAt4vLr7eupeyUlNptTkWgHvwN21WTp64aelQLVNcd%2BAbaXjwmSWqXrewlq170%3D\"}]}","cross-origin-resource-policy":"cross-origin","x-robots-tag":"noindex","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}"},"url":"https://jsr.io/@hono/hono/4.12.23/src/router/reg-exp-router/trie.ts","time":1780845290}

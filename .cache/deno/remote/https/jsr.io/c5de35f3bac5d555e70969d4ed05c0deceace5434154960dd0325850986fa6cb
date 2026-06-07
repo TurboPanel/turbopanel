@@ -1,0 +1,35 @@
+// Copyright 2018-2026 the Deno authors. MIT license.
+// This module is browser compatible.
+
+import { isWindows } from "jsr:@std/internal@^1.0.14/os";
+import { normalize as posixNormalize } from "./posix/normalize.ts";
+import { normalize as windowsNormalize } from "./windows/normalize.ts";
+/**
+ * Normalize the path, resolving `'..'` and `'.'` segments.
+ *
+ * Note: Resolving these segments does not necessarily mean that all will be
+ * eliminated. A `'..'` at the top-level will be preserved, and an empty path is
+ * canonically `'.'`.
+ *
+ * @example Usage
+ * ```ts
+ * import { normalize } from "@std/path/normalize";
+ * import { assertEquals } from "@std/assert";
+ *
+ * if (Deno.build.os === "windows") {
+ *   assertEquals(normalize("C:\\foo\\bar\\..\\baz\\quux"), "C:\\foo\\baz\\quux");
+ *   assertEquals(normalize(new URL("file:///C:/foo/bar/../baz/quux")), "C:\\foo\\baz\\quux");
+ * } else {
+ *   assertEquals(normalize("/foo/bar/../baz/quux"), "/foo/baz/quux");
+ *   assertEquals(normalize(new URL("file:///foo/bar/../baz/quux")), "/foo/baz/quux");
+ * }
+ * ```
+ *
+ * @param path Path to be normalized
+ * @returns The normalized path.
+ */
+export function normalize(path: string | URL): string {
+  return isWindows ? windowsNormalize(path) : posixNormalize(path);
+}
+
+// denoCacheMetadata={"headers":{"cache-control":"public, max-age=31536000, immutable","cross-origin-resource-policy":"cross-origin","x-robots-tag":"noindex","date":"Sun, 07 Jun 2026 15:14:50 GMT","server":"cloudflare","content-type":"text/typescript","content-length":"1271","vary":"Origin","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=hSU4W9no5qX63tcHr6GfjMCd20HxX8yCmhBp3gkS%2FnblDBV4aZwbnaD5aCvhc%2BAUgPN1Ak2elfsrOajveyqub0trErbqQILgis8K%2BtHTfULPWFFeSt2mhu0%3D\"}]}","access-control-allow-origin":"*","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","x-jsr-backend":"modules","x-content-type-options":"nosniff","etag":"\"84ec2d5aaaa08a5c1f1c0a9413d75331\"","cf-ray":"a0809bd5a85a301b-MCI","alt-svc":"h3=\":443\"; ma=86400","content-encoding":"identity","access-control-expose-headers":"*"},"url":"https://jsr.io/@std/path/1.1.5/normalize.ts","time":1780845290}

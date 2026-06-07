@@ -1,0 +1,55 @@
+/**
+ * @module
+ *
+ * Hono - Web Framework built on Web Standards
+ *
+ * @example
+ * ```ts
+ * import { Hono } from 'hono'
+ * const app = new Hono()
+ *
+ * app.get('/', (c) => c.text('Hono!'))
+ *
+ * export default app
+ * ```
+ */
+
+import { Hono } from './hono.ts'
+
+/**
+ * Types for environment variables, error handlers, handlers, middleware handlers, and more.
+ */
+export type {
+  Env,
+  ErrorHandler,
+  Handler,
+  MiddlewareHandler,
+  Next,
+  NotFoundResponse,
+  NotFoundHandler,
+  ValidationTargets,
+  Input,
+  Schema,
+  ToSchema,
+  TypedResponse,
+} from './types.ts'
+/**
+ * Types for context, context variable map, context renderer, and execution context.
+ */
+export { Context } from './context.ts'
+export type { ContextVariableMap, ContextRenderer, ExecutionContext } from './context.ts'
+/**
+ * Type for HonoRequest.
+ */
+export type { HonoRequest } from './request.ts'
+/**
+ * Types for inferring request and response types and client request options.
+ */
+export type { InferRequestType, InferResponseType, ClientRequestOptions } from './client/index.ts'
+
+/**
+ * Hono framework for building web applications.
+ */
+export { Hono }
+
+// denoCacheMetadata={"headers":{"content-length":"1128","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","x-jsr-backend":"modules","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","alt-svc":"h3=\":443\"; ma=86400","access-control-expose-headers":"*","date":"Sun, 07 Jun 2026 15:14:49 GMT","content-type":"text/typescript","x-robots-tag":"noindex","cache-control":"public, max-age=31536000, immutable","content-encoding":"identity","cross-origin-resource-policy":"cross-origin","server":"cloudflare","etag":"\"533d93134c9de419ca8e4340f8c3481c\"","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=vF8j%2F958aq%2FN1Du2q8YEInKTlWsLkjxV11GCn69EmfB7RCcc8ICqa7ttlNpMZW%2BjiLw4qtfr3FaHk6IaYZb%2Bmpy9rtciYq0DmFGCwS2ALOKNswkifJwT1Bg%3D\"}]}","cf-ray":"a0809bd5a83f301b-MCI","x-content-type-options":"nosniff","vary":"Origin","access-control-allow-origin":"*"},"url":"https://jsr.io/@hono/hono/4.12.23/src/index.ts","time":1780845289}

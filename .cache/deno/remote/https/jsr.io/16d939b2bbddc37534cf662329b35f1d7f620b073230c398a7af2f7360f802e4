@@ -1,0 +1,167 @@
+import type { ParamIndexMap, Result, Router } from '../../router.ts'
+import { METHOD_NAME_ALL } from '../../router.ts'
+import type { HandlerData, Matcher, MatcherMap, StaticMap } from './matcher.ts'
+import { match, emptyParam } from './matcher.ts'
+import { RegExpRouter } from './router.ts'
+
+type RelocateMap = Record<string, ([(number | string)[], ParamIndexMap] | [(number | string)[]])[]>
+
+export class PreparedRegExpRouter<T> implements Router<T> {
+  name: string = 'PreparedRegExpRouter'
+  #matchers: MatcherMap<T>
+  #relocateMap: RelocateMap
+
+  constructor(matchers: MatcherMap<T>, relocateMap: RelocateMap) {
+    this.#matchers = matchers
+    this.#relocateMap = relocateMap
+  }
+
+  #addWildcard(method: string, handlerData: [T, ParamIndexMap]) {
+    const matcher = this.#matchers[method] as Matcher<T>
+    matcher[1].forEach((list) => list && list.push(handlerData))
+    Object.values(matcher[2]).forEach((list) => (list[0] as [T, ParamIndexMap][]).push(handlerData))
+  }
+
+  #addPath(
+    method: string,
+    path: string,
+    handler: T,
+    indexes: (number | string)[],
+    map: ParamIndexMap | undefined
+  ) {
+    const matcher = this.#matchers[method] as Matcher<T>
+    if (!map) {
+      // assumed to be a static route
+      matcher[2][path][0].push([handler, {}])
+    } else {
+      indexes.forEach((index) => {
+        if (typeof index === 'number') {
+          matcher[1][index].push([handler, map])
+        } else {
+          ;(matcher[2][index || path][0] as [T, ParamIndexMap][]).push([handler, map])
+        }
+      })
+    }
+  }
+
+  add(method: string, path: string, handler: T) {
+    if (!this.#matchers[method]) {
+      const all = this.#matchers[METHOD_NAME_ALL] as Matcher<T>
+      const staticMap = {} as StaticMap<T>
+      for (const key in all[2]) {
+        staticMap[key] = [all[2][key][0].slice(), emptyParam] as Result<T>
+      }
+      this.#matchers[method] = [
+        all[0],
+        all[1].map((list) => (Array.isArray(list) ? list.slice() : 0)) as HandlerData<T>[],
+        staticMap,
+      ]
+    }
+
+    if (path === '/*' || path === '*') {
+      const handlerData: [T, ParamIndexMap] = [handler, {}]
+      if (method === METHOD_NAME_ALL) {
+        for (const m in this.#matchers) {
+          this.#addWildcard(m, handlerData)
+        }
+      } else {
+        this.#addWildcard(method, handlerData)
+      }
+      return
+    }
+
+    const data = this.#relocateMap[path]
+    if (!data) {
+      throw new Error(`Path ${path} is not registered`)
+    }
+    for (const [indexes, map] of data) {
+      if (method === METHOD_NAME_ALL) {
+        for (const m in this.#matchers) {
+          this.#addPath(m, path, handler, indexes, map)
+        }
+      } else {
+        this.#addPath(method, path, handler, indexes, map)
+      }
+    }
+  }
+
+  protected buildAllMatchers(): MatcherMap<T> {
+    return this.#matchers
+  }
+
+  match: typeof match<Router<T>, T> = match
+}
+
+export const buildInitParams: (params: {
+  paths: string[]
+}) => ConstructorParameters<typeof PreparedRegExpRouter> = ({ paths }) => {
+  const RegExpRouterWithMatcherExport = class<T> extends RegExpRouter<T> {
+    buildAndExportAllMatchers() {
+      return this.buildAllMatchers()
+    }
+  }
+  const router = new RegExpRouterWithMatcherExport<string>()
+  for (const path of paths) {
+    router.add(METHOD_NAME_ALL, path, path)
+  }
+
+  const matchers = router.buildAndExportAllMatchers()
+  const all = matchers[METHOD_NAME_ALL] as Matcher<string>
+
+  const relocateMap: RelocateMap = {}
+  for (const path of paths) {
+    if (path === '/*' || path === '*') {
+      continue
+    }
+    all[1].forEach((list, i) => {
+      list.forEach(([p, map]) => {
+        if (p === path) {
+          if (relocateMap[path]) {
+            relocateMap[path][0][1] = {
+              ...relocateMap[path][0][1],
+              ...map,
+            }
+          } else {
+            relocateMap[path] = [[[], map]]
+          }
+          if (relocateMap[path][0][0].findIndex((j) => j === i) === -1) {
+            relocateMap[path][0][0].push(i)
+          }
+        }
+      })
+    })
+    for (const path2 in all[2]) {
+      all[2][path2][0].forEach(([p]) => {
+        if (p === path) {
+          relocateMap[path] ||= [[[]]]
+          const value = path2 === path ? '' : path2
+          if (relocateMap[path][0][0].findIndex((v) => v === value) === -1) {
+            relocateMap[path][0][0].push(value)
+          }
+        }
+      })
+    }
+  }
+
+  for (let i = 0, len = all[1].length; i < len; i++) {
+    all[1][i] = all[1][i] ? [] : (0 as unknown as HandlerData<string>)
+  }
+  for (const path in all[2]) {
+    all[2][path][0] = []
+  }
+
+  return [matchers, relocateMap]
+}
+
+export const serializeInitParams: (
+  params: ConstructorParameters<typeof PreparedRegExpRouter>
+) => string = ([matchers, relocateMap]) => {
+  // Embed the regular expression as a result of `toString()` so that it can be evaluated as JavaScript.
+  const matchersStr = JSON.stringify(matchers, (_, value) =>
+    value instanceof RegExp ? `##${value.toString()}##` : value
+  ).replace(/"##(.+?)##"/g, (_, str) => str.replace(/\\\\/g, '\\'))
+  const relocateMapStr = JSON.stringify(relocateMap)
+  return `[${matchersStr},${relocateMapStr}]`
+}
+
+// denoCacheMetadata={"headers":{"content-length":"5173","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","x-robots-tag":"noindex","server":"cloudflare","content-encoding":"identity","access-control-expose-headers":"*","access-control-allow-origin":"*","date":"Sun, 07 Jun 2026 15:14:50 GMT","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=NeXz4LFxg4XBgGoq8wDdbFTJPrQT5sR7mx1tJPWCoa5LWcH6SOwgn50Ia42wBkeIT2dQ%2FUEny2foJyUYgRFP7pZxmrdPELniPm96qAr8gjdXaFtSItBVdjA%3D\"}]}","x-jsr-backend":"modules","cf-ray":"a0809bd5a8ce301b-MCI","etag":"\"6c6b9caf43016be343c92f09629bbd69\"","content-type":"text/typescript","x-content-type-options":"nosniff","vary":"Origin","cache-control":"public, max-age=31536000, immutable","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","alt-svc":"h3=\":443\"; ma=86400","cross-origin-resource-policy":"cross-origin"},"url":"https://jsr.io/@hono/hono/4.12.23/src/router/reg-exp-router/prepared-router.ts","time":1780845290}

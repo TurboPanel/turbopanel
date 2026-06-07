@@ -1,0 +1,11 @@
+// Copyright 2018-2026 the Deno authors. MIT license.
+// This module is browser compatible.
+export function assertArg(url) {
+  url = url instanceof URL ? url : new URL(url);
+  if (url.protocol !== "file:") {
+    throw new TypeError(`URL must be a file URL: received "${url.protocol}"`);
+  }
+  return url;
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImh0dHBzOi8vanNyLmlvL0BzdGQvcGF0aC8xLjEuNS9fY29tbW9uL2Zyb21fZmlsZV91cmwudHMiXSwic291cmNlc0NvbnRlbnQiOlsiLy8gQ29weXJpZ2h0IDIwMTgtMjAyNiB0aGUgRGVubyBhdXRob3JzLiBNSVQgbGljZW5zZS5cbi8vIFRoaXMgbW9kdWxlIGlzIGJyb3dzZXIgY29tcGF0aWJsZS5cblxuZXhwb3J0IGZ1bmN0aW9uIGFzc2VydEFyZyh1cmw6IFVSTCB8IHN0cmluZykge1xuICB1cmwgPSB1cmwgaW5zdGFuY2VvZiBVUkwgPyB1cmwgOiBuZXcgVVJMKHVybCk7XG4gIGlmICh1cmwucHJvdG9jb2wgIT09IFwiZmlsZTpcIikge1xuICAgIHRocm93IG5ldyBUeXBlRXJyb3IoXG4gICAgICBgVVJMIG11c3QgYmUgYSBmaWxlIFVSTDogcmVjZWl2ZWQgXCIke3VybC5wcm90b2NvbH1cImAsXG4gICAgKTtcbiAgfVxuICByZXR1cm4gdXJsO1xufVxuIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUFBLHFEQUFxRDtBQUNyRCxxQ0FBcUM7QUFFckMsT0FBTyxTQUFTLFVBQVUsR0FBaUI7RUFDekMsTUFBTSxlQUFlLE1BQU0sTUFBTSxJQUFJLElBQUk7RUFDekMsSUFBSSxJQUFJLFFBQVEsS0FBSyxTQUFTO0lBQzVCLE1BQU0sSUFBSSxVQUNSLENBQUMsa0NBQWtDLEVBQUUsSUFBSSxRQUFRLENBQUMsQ0FBQyxDQUFDO0VBRXhEO0VBQ0EsT0FBTztBQUNUIn0=
+// denoCacheMetadata=7949477243111811047,6594624049278792820

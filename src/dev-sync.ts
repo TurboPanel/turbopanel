@@ -7,7 +7,7 @@ import {
   sendToDaemon,
 } from './daemon-hub.ts'
 import { getDaemonRepoPath } from './daemon-version.ts'
-import { ADMIN_API_PREFIX } from './surfaces.ts'
+import { DEVELOPER_API_PREFIX } from './surfaces.ts'
 
 /** Base64 characters per chunk (~256 KiB of payload before encoding). */
 const CHUNK_CHARS = 256 * 1024
@@ -91,7 +91,7 @@ export async function syncDevToDaemon(daemonId: string): Promise<void> {
  * filesystem access are not available in the Workers build.
  */
 export function registerDevSyncRoutes(app: Hono): Hono {
-  app.post(`${ADMIN_API_PREFIX}/daemon/:id/sync-dev`, async (c) => {
+  app.post(`${DEVELOPER_API_PREFIX}/daemon/:id/sync-dev`, async (c) => {
     const id = c.req.param('id')
     try {
       await syncDevToDaemon(id)
@@ -103,7 +103,7 @@ export function registerDevSyncRoutes(app: Hono): Hono {
     }
   })
 
-  app.post(`${ADMIN_API_PREFIX}/daemon/sync-dev`, async (c) => {
+  app.post(`${DEVELOPER_API_PREFIX}/daemon/sync-dev`, async (c) => {
     const results = await Promise.all(
       listDaemonConnections().map(async (conn) => {
         try {

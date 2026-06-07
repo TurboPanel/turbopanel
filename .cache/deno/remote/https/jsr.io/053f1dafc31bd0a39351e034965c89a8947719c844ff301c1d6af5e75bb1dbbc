@@ -1,0 +1,12 @@
+/**
+ * @module
+ * Constants for compression.
+ */
+
+/**
+ * Match for compressible content type.
+ */
+export const COMPRESSIBLE_CONTENT_TYPE_REGEX =
+  /^\s*(?:text\/(?!event-stream(?:[;\s]|$))[^;\s]+|application\/(?:javascript|json|xml|xml-dtd|ecmascript|dart|msgpack|postscript|rtf|tar|toml|vnd\.dart|vnd\.ms-fontobject|vnd\.ms-opentype|vnd\.msgpack|wasm|x-httpd-php|x-javascript|x-msgpack|x-ns-proxy-autoconfig|x-sh|x-tar|x-virtualbox-hdd|x-virtualbox-ova|x-virtualbox-ovf|x-virtualbox-vbox|x-virtualbox-vdi|x-virtualbox-vhd|x-virtualbox-vmdk|x-www-form-urlencoded)|font\/(?:otf|ttf)|image\/(?:bmp|vnd\.adobe\.photoshop|vnd\.microsoft\.icon|vnd\.ms-dds|x-icon|x-ms-bmp)|message\/rfc822|model\/gltf-binary|x-shader\/x-fragment|x-shader\/x-vertex|[^;\s]+?\+(?:json|text|xml|yaml|msgpack))(?:[;\s]|$)/i
+
+// denoCacheMetadata={"headers":{"access-control-allow-origin":"*","vary":"Origin","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=Dz0Smn8BVLWhZZa2SRQtsIR0gRgCxOemJ6xsHQ5affFPI5rFXtmLhQbOCz0NuHjJudATJ%2BvQ9QARkB6Rs2NmUxbjnxv%2BXiTRamVDblCy3NqXKl8HPdixano%3D\"}]}","content-type":"text/typescript","content-encoding":"identity","cross-origin-resource-policy":"cross-origin","alt-svc":"h3=\":443\"; ma=86400","cache-control":"public, max-age=31536000, immutable","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","etag":"\"1cc7d3e6a8f772e504c4587d7c121a94\"","access-control-expose-headers":"*","x-content-type-options":"nosniff","x-jsr-backend":"modules","server":"cloudflare","date":"Sun, 07 Jun 2026 15:14:50 GMT","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","content-length":"798","x-robots-tag":"noindex","cf-ray":"a0809bd5a8db301b-MCI"},"url":"https://jsr.io/@hono/hono/4.12.23/src/utils/compress.ts","time":1780845290}

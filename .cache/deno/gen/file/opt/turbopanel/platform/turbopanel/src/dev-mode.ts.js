@@ -1,0 +1,22 @@
+/**
+ * Dev-mode detection for the Deno instance.
+ *
+ * The developer surface (fleet/diagnostics/shell/dev-sync/tunnel under
+ * `/api/developer/v1` + `/ws/developer/v1`) exists only to help a developer
+ * babysit a development instance and its development nodes. It must never be
+ * exposed by a production deployment.
+ *
+ * We key off `TURBOPANEL_UI_MODE`, the existing dev/prod toggle plumbed through
+ * the `instance-launch` Ansible role and Caddy: `dev` proxies to the Expo dev
+ * server, `static` serves the exported production UI. Anything other than the
+ * explicit `static` value is treated as dev (so a bare `deno task` run, with the
+ * var unset, still gets the developer surface).
+ *
+ * Production prebuilt instance hosting is out of scope today (seams only); when
+ * it lands it must launch with `TURBOPANEL_UI_MODE=static` so this returns false.
+ */ export function isDeveloperSurfaceEnabled() {
+  const mode = Deno.env.get('TURBOPANEL_UI_MODE')?.trim().toLowerCase();
+  return mode !== 'static';
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vb3B0L3R1cmJvcGFuZWwvcGxhdGZvcm0vdHVyYm9wYW5lbC9zcmMvZGV2LW1vZGUudHMiXSwic291cmNlc0NvbnRlbnQiOlsiLyoqXG4gKiBEZXYtbW9kZSBkZXRlY3Rpb24gZm9yIHRoZSBEZW5vIGluc3RhbmNlLlxuICpcbiAqIFRoZSBkZXZlbG9wZXIgc3VyZmFjZSAoZmxlZXQvZGlhZ25vc3RpY3Mvc2hlbGwvZGV2LXN5bmMvdHVubmVsIHVuZGVyXG4gKiBgL2FwaS9kZXZlbG9wZXIvdjFgICsgYC93cy9kZXZlbG9wZXIvdjFgKSBleGlzdHMgb25seSB0byBoZWxwIGEgZGV2ZWxvcGVyXG4gKiBiYWJ5c2l0IGEgZGV2ZWxvcG1lbnQgaW5zdGFuY2UgYW5kIGl0cyBkZXZlbG9wbWVudCBub2Rlcy4gSXQgbXVzdCBuZXZlciBiZVxuICogZXhwb3NlZCBieSBhIHByb2R1Y3Rpb24gZGVwbG95bWVudC5cbiAqXG4gKiBXZSBrZXkgb2ZmIGBUVVJCT1BBTkVMX1VJX01PREVgLCB0aGUgZXhpc3RpbmcgZGV2L3Byb2QgdG9nZ2xlIHBsdW1iZWQgdGhyb3VnaFxuICogdGhlIGBpbnN0YW5jZS1sYXVuY2hgIEFuc2libGUgcm9sZSBhbmQgQ2FkZHk6IGBkZXZgIHByb3hpZXMgdG8gdGhlIEV4cG8gZGV2XG4gKiBzZXJ2ZXIsIGBzdGF0aWNgIHNlcnZlcyB0aGUgZXhwb3J0ZWQgcHJvZHVjdGlvbiBVSS4gQW55dGhpbmcgb3RoZXIgdGhhbiB0aGVcbiAqIGV4cGxpY2l0IGBzdGF0aWNgIHZhbHVlIGlzIHRyZWF0ZWQgYXMgZGV2IChzbyBhIGJhcmUgYGRlbm8gdGFza2AgcnVuLCB3aXRoIHRoZVxuICogdmFyIHVuc2V0LCBzdGlsbCBnZXRzIHRoZSBkZXZlbG9wZXIgc3VyZmFjZSkuXG4gKlxuICogUHJvZHVjdGlvbiBwcmVidWlsdCBpbnN0YW5jZSBob3N0aW5nIGlzIG91dCBvZiBzY29wZSB0b2RheSAoc2VhbXMgb25seSk7IHdoZW5cbiAqIGl0IGxhbmRzIGl0IG11c3QgbGF1bmNoIHdpdGggYFRVUkJPUEFORUxfVUlfTU9ERT1zdGF0aWNgIHNvIHRoaXMgcmV0dXJucyBmYWxzZS5cbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGlzRGV2ZWxvcGVyU3VyZmFjZUVuYWJsZWQoKTogYm9vbGVhbiB7XG4gIGNvbnN0IG1vZGUgPSBEZW5vLmVudi5nZXQoJ1RVUkJPUEFORUxfVUlfTU9ERScpPy50cmltKCkudG9Mb3dlckNhc2UoKVxuICByZXR1cm4gbW9kZSAhPT0gJ3N0YXRpYydcbn1cbiJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiQUFBQTs7Ozs7Ozs7Ozs7Ozs7OztDQWdCQyxHQUNELE9BQU8sU0FBUztFQUNkLE1BQU0sT0FBTyxLQUFLLEdBQUcsQ0FBQyxHQUFHLENBQUMsdUJBQXVCLE9BQU87RUFDeEQsT0FBTyxTQUFTO0FBQ2xCIn0=
+// denoCacheMetadata=15556290955077312460,10502771607182434918

@@ -19,7 +19,7 @@ import {
   unregisterDaemon,
 } from './daemon-hub.ts'
 
-import { ADMIN_WS_PATH, CLIENT_WS_PATH, DAEMON_WS_PATH } from './surfaces.ts'
+import { DEVELOPER_WS_PATH, CLIENT_WS_PATH, DAEMON_WS_PATH } from './surfaces.ts'
 
 let pruneTimer: ReturnType<typeof setInterval> | undefined
 
@@ -36,7 +36,7 @@ function ensurePruneTimer(): void {
   pruneTimer = setInterval(runPruneCycle, 15_000)
 }
 
-export function registerDaemonWebSocket(app: Hono) {
+export function registerDaemonWebSocket(app: Hono, { developerSurface = false }: { developerSurface?: boolean } = {},) {
   app.get(
     DAEMON_WS_PATH,
     upgradeWebSocket((c) => {
@@ -167,7 +167,7 @@ export function registerDaemonWebSocket(app: Hono) {
     }),
   )
 
-  registerStubWebSocket(app, ADMIN_WS_PATH, 'admin')
+  if (developerSurface) registerStubWebSocket(app, DEVELOPER_WS_PATH, 'developer')
   registerStubWebSocket(app, CLIENT_WS_PATH, 'client')
 }
 

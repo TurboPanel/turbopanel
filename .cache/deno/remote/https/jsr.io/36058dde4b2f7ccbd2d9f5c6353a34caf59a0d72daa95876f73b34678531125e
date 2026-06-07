@@ -1,0 +1,32 @@
+// Copyright 2018-2026 the Deno authors. MIT license.
+// This module is browser compatible.
+
+import { isWindows } from "jsr:@std/internal@^1.0.14/os";
+import { isAbsolute as posixIsAbsolute } from "./posix/is_absolute.ts";
+import { isAbsolute as windowsIsAbsolute } from "./windows/is_absolute.ts";
+
+/**
+ * Verifies whether provided path is absolute.
+ *
+ * @example Usage
+ * ```ts
+ * import { isAbsolute } from "@std/path/is-absolute";
+ * import { assert, assertFalse } from "@std/assert";
+ *
+ * if (Deno.build.os === "windows") {
+ *   assert(isAbsolute("C:\\home\\foo"));
+ *   assertFalse(isAbsolute("home\\foo"));
+ * } else {
+ *   assert(isAbsolute("/home/foo"));
+ *   assertFalse(isAbsolute("home/foo"));
+ * }
+ * ```
+ *
+ * @param path Path to be verified as absolute.
+ * @returns `true` if path is absolute, `false` otherwise
+ */
+export function isAbsolute(path: string): boolean {
+  return isWindows ? windowsIsAbsolute(path) : posixIsAbsolute(path);
+}
+
+// denoCacheMetadata={"headers":{"content-length":"957","x-jsr-backend":"modules","cf-ray":"a0809bd5a858301b-MCI","etag":"\"de2cf152e4eb8cbf095c024fc5c2e61c\"","access-control-allow-origin":"*","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","content-encoding":"identity","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","alt-svc":"h3=\":443\"; ma=86400","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=lc0ht9vUgJtB5M%2F0vaYWYivst1%2FwTQPMPKyIjRb51%2FemUUFcv7pfzy8YShKrj3zL9wTP9XmGBuR0B7meWPLoMFBXKaYyOMB%2Fsw2Cwwq2n3h%2B00jXA%2Fkh9Ag%3D\"}]}","cross-origin-resource-policy":"cross-origin","cache-control":"public, max-age=31536000, immutable","x-robots-tag":"noindex","server":"cloudflare","date":"Sun, 07 Jun 2026 15:14:50 GMT","vary":"Origin","content-type":"text/typescript","access-control-expose-headers":"*","x-content-type-options":"nosniff"},"url":"https://jsr.io/@std/path/1.1.5/is_absolute.ts","time":1780845290}

@@ -1,0 +1,14 @@
+// Copyright 2018-2026 the Deno authors. MIT license.
+// This module is browser compatible.
+/**
+ * The character used to separate entries in the PATH environment variable.
+ */ export const DELIMITER = ":";
+/**
+ * The character used to separate components of a file path.
+ */ export const SEPARATOR = "/";
+/**
+ * A regular expression that matches one or more path separators.
+ */ // deno-lint-ignore deno-style-guide/naming-convention
+export const SEPARATOR_PATTERN = /\/+/;
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImh0dHBzOi8vanNyLmlvL0BzdGQvcGF0aC8xLjEuNS9wb3NpeC9jb25zdGFudHMudHMiXSwic291cmNlc0NvbnRlbnQiOlsiLy8gQ29weXJpZ2h0IDIwMTgtMjAyNiB0aGUgRGVubyBhdXRob3JzLiBNSVQgbGljZW5zZS5cbi8vIFRoaXMgbW9kdWxlIGlzIGJyb3dzZXIgY29tcGF0aWJsZS5cblxuLyoqXG4gKiBUaGUgY2hhcmFjdGVyIHVzZWQgdG8gc2VwYXJhdGUgZW50cmllcyBpbiB0aGUgUEFUSCBlbnZpcm9ubWVudCB2YXJpYWJsZS5cbiAqL1xuZXhwb3J0IGNvbnN0IERFTElNSVRFUiA9IFwiOlwiIGFzIGNvbnN0O1xuLyoqXG4gKiBUaGUgY2hhcmFjdGVyIHVzZWQgdG8gc2VwYXJhdGUgY29tcG9uZW50cyBvZiBhIGZpbGUgcGF0aC5cbiAqL1xuZXhwb3J0IGNvbnN0IFNFUEFSQVRPUiA9IFwiL1wiIGFzIGNvbnN0O1xuLyoqXG4gKiBBIHJlZ3VsYXIgZXhwcmVzc2lvbiB0aGF0IG1hdGNoZXMgb25lIG9yIG1vcmUgcGF0aCBzZXBhcmF0b3JzLlxuICovXG4vLyBkZW5vLWxpbnQtaWdub3JlIGRlbm8tc3R5bGUtZ3VpZGUvbmFtaW5nLWNvbnZlbnRpb25cbmV4cG9ydCBjb25zdCBTRVBBUkFUT1JfUEFUVEVSTiA9IC9cXC8rLztcbiJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiQUFBQSxxREFBcUQ7QUFDckQscUNBQXFDO0FBRXJDOztDQUVDLEdBQ0QsT0FBTyxNQUFNLFlBQVksSUFBYTtBQUN0Qzs7Q0FFQyxHQUNELE9BQU8sTUFBTSxZQUFZLElBQWE7QUFDdEM7O0NBRUMsR0FDRCxzREFBc0Q7QUFDdEQsT0FBTyxNQUFNLG9CQUFvQixNQUFNIn0=
+// denoCacheMetadata=2800150678095902467,13038008239038071034

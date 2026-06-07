@@ -1,0 +1,18 @@
+import { Hono } from 'hono';
+import { registerClientRoutes } from './client-routes.ts';
+import { registerDaemonApiRoutes } from './daemon-api-routes.ts';
+import { registerDeveloperRoutes } from './developer-routes.ts';
+import { HEALTH_PATH } from './surfaces.ts';
+export function createApp({ developerSurface = false } = {}) {
+  const app = new Hono();
+  app.get('/', (c)=>c.text('TurboPanel'));
+  app.get(HEALTH_PATH, (c)=>c.json({
+      ok: true
+    }));
+  registerClientRoutes(app);
+  registerDaemonApiRoutes(app);
+  if (developerSurface) registerDeveloperRoutes(app);
+  return app;
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vb3B0L3R1cmJvcGFuZWwvcGxhdGZvcm0vdHVyYm9wYW5lbC9zcmMvYXBwLnRzIl0sInNvdXJjZXNDb250ZW50IjpbImltcG9ydCB7IEhvbm8gfSBmcm9tICdob25vJ1xuaW1wb3J0IHsgcmVnaXN0ZXJDbGllbnRSb3V0ZXMgfSBmcm9tICcuL2NsaWVudC1yb3V0ZXMudHMnXG5pbXBvcnQgeyByZWdpc3RlckRhZW1vbkFwaVJvdXRlcyB9IGZyb20gJy4vZGFlbW9uLWFwaS1yb3V0ZXMudHMnXG5pbXBvcnQgeyByZWdpc3RlckRldmVsb3BlclJvdXRlcyB9IGZyb20gJy4vZGV2ZWxvcGVyLXJvdXRlcy50cydcbmltcG9ydCB7IEhFQUxUSF9QQVRIIH0gZnJvbSAnLi9zdXJmYWNlcy50cydcblxuZXhwb3J0IGZ1bmN0aW9uIGNyZWF0ZUFwcChcbiAgeyBkZXZlbG9wZXJTdXJmYWNlID0gZmFsc2UgfTogeyBkZXZlbG9wZXJTdXJmYWNlPzogYm9vbGVhbiB9ID0ge30sXG4pIHtcbiAgY29uc3QgYXBwID0gbmV3IEhvbm8oKVxuICBhcHAuZ2V0KCcvJywgKGMpID0+IGMudGV4dCgnVHVyYm9QYW5lbCcpKVxuICBhcHAuZ2V0KEhFQUxUSF9QQVRILCAoYykgPT4gYy5qc29uKHsgb2s6IHRydWUgfSkpXG4gIHJlZ2lzdGVyQ2xpZW50Um91dGVzKGFwcClcbiAgcmVnaXN0ZXJEYWVtb25BcGlSb3V0ZXMoYXBwKVxuICBpZiAoZGV2ZWxvcGVyU3VyZmFjZSkgcmVnaXN0ZXJEZXZlbG9wZXJSb3V0ZXMoYXBwKVxuICByZXR1cm4gYXBwXG59XG4iXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUEsU0FBUyxJQUFJLFFBQVEsT0FBTTtBQUMzQixTQUFTLG9CQUFvQixRQUFRLHFCQUFvQjtBQUN6RCxTQUFTLHVCQUF1QixRQUFRLHlCQUF3QjtBQUNoRSxTQUFTLHVCQUF1QixRQUFRLHdCQUF1QjtBQUMvRCxTQUFTLFdBQVcsUUFBUSxnQkFBZTtBQUUzQyxPQUFPLFNBQVMsVUFDZCxFQUFFLG1CQUFtQixLQUFLLEVBQWtDLEdBQUcsQ0FBQyxDQUFDO0VBRWpFLE1BQU0sTUFBTSxJQUFJO0VBQ2hCLElBQUksR0FBRyxDQUFDLEtBQUssQ0FBQyxJQUFNLEVBQUUsSUFBSSxDQUFDO0VBQzNCLElBQUksR0FBRyxDQUFDLGFBQWEsQ0FBQyxJQUFNLEVBQUUsSUFBSSxDQUFDO01BQUUsSUFBSTtJQUFLO0VBQzlDLHFCQUFxQjtFQUNyQix3QkFBd0I7RUFDeEIsSUFBSSxrQkFBa0Isd0JBQXdCO0VBQzlDLE9BQU87QUFDVCJ9
+// denoCacheMetadata=4687670291237560578,2848789695208965077

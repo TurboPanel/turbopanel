@@ -1,0 +1,33 @@
+// Copyright 2018-2026 the Deno authors. MIT license.
+// This module is browser compatible.
+
+import { isWindows } from "jsr:@std/internal@^1.0.14/os";
+import { toNamespacedPath as posixToNamespacedPath } from "./posix/to_namespaced_path.ts";
+import { toNamespacedPath as windowsToNamespacedPath } from "./windows/to_namespaced_path.ts";
+
+/**
+ * Resolves path to a namespace path.  This is a no-op on
+ * non-windows systems.
+ *
+ * @example Usage
+ * ```ts
+ * import { toNamespacedPath } from "@std/path/to-namespaced-path";
+ * import { assertEquals } from "@std/assert";
+ *
+ * if (Deno.build.os === "windows") {
+ *   assertEquals(toNamespacedPath("C:\\foo\\bar"), "\\\\?\\C:\\foo\\bar");
+ * } else {
+ *   assertEquals(toNamespacedPath("/foo/bar"), "/foo/bar");
+ * }
+ * ```
+ *
+ * @param path Path to resolve to namespace.
+ * @returns The resolved namespace path.
+ */
+export function toNamespacedPath(path: string): string {
+  return isWindows
+    ? windowsToNamespacedPath(path)
+    : posixToNamespacedPath(path);
+}
+
+// denoCacheMetadata={"headers":{"nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","cf-ray":"a0809bd5a866301b-MCI","alt-svc":"h3=\":443\"; ma=86400","access-control-allow-origin":"*","cache-control":"public, max-age=31536000, immutable","access-control-expose-headers":"*","cross-origin-resource-policy":"cross-origin","x-content-type-options":"nosniff","content-type":"text/typescript","x-robots-tag":"noindex","server":"cloudflare","vary":"Origin","x-jsr-backend":"modules","etag":"\"8e3d6c6db2791cae3160326157498c04\"","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=6GhAmLDbn9Fiyknnc3aBEB1yN9IPqcMfSwxlnFq0GCwRVI8pvgPucaX8hLeTEYFw6PrZ9Ea1WUSMrTxi1jYyXX8tjyFhpVI6nERXJ2hz%2FcWmbZO5x8GzPaQ%3D\"}]}","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","content-length":"1013","content-encoding":"identity","date":"Sun, 07 Jun 2026 15:14:50 GMT"},"url":"https://jsr.io/@std/path/1.1.5/to_namespaced_path.ts","time":1780845290}

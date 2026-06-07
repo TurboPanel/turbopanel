@@ -1,0 +1,6 @@
+[safe]
+	directory = /opt/turbopanel/platform/turbopanel
+	directory = /opt/turbopanel/platform/daemon
+	directory = /opt/turbopanel/platform/ui
+	directory = /opt/turbopanel/platform/turbopanel
+	directory = /opt/turbopanel/platform/daemon

@@ -1,0 +1,36 @@
+// Copyright 2018-2026 the Deno authors. MIT license.
+// This module is browser compatible.
+
+import { assertArg } from "../_common/from_file_url.ts";
+
+/**
+ * Converts a file URL to a path string.
+ *
+ * @example Usage
+ * ```ts
+ * import { fromFileUrl } from "@std/path/windows/from-file-url";
+ * import { assertEquals } from "@std/assert";
+ *
+ * assertEquals(fromFileUrl("file:///home/foo"), "\\home\\foo");
+ * assertEquals(fromFileUrl("file:///C:/Users/foo"), "C:\\Users\\foo");
+ * assertEquals(fromFileUrl("file://localhost/home/foo"), "\\home\\foo");
+ * ```
+ *
+ * @param url The file URL to convert.
+ * @returns The path string.
+ */
+export function fromFileUrl(url: URL | string): string {
+  url = assertArg(url);
+  let path = decodeURIComponent(
+    url.pathname.replace(/\//g, "\\").replace(/%(?![0-9A-Fa-f]{2})/g, "%25"),
+  ).replace(/^\\*([A-Za-z]:)(\\|$)/, "$1\\");
+  if (url.hostname !== "") {
+    // Note: The `URL` implementation guarantees that the drive letter and
+    // hostname are mutually exclusive. Otherwise it would not have been valid
+    // to append the hostname and path like this.
+    path = `\\\\${url.hostname}${path}`;
+  }
+  return path;
+}
+
+// denoCacheMetadata={"headers":{"etag":"\"36eb0e4e7e976b1d121055e485732f2e\"","x-robots-tag":"noindex","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=Df39G4Yy%2ByU1O6B6UnQJw77kO3duWuqxKQq75LdqFiT5kq4zcDsOEo0FcLANXe4EEOEimtTP4jSJNFAgAZnoVvdnbtbLO8QvbN25OnL7NqiaaYE44nEHxDk%3D\"}]}","cache-control":"public, max-age=31536000, immutable","date":"Sun, 07 Jun 2026 15:14:50 GMT","cf-ray":"a0809bd5a894301b-MCI","access-control-expose-headers":"*","content-length":"1168","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","vary":"Origin","cross-origin-resource-policy":"cross-origin","content-type":"text/typescript","server":"cloudflare","access-control-allow-origin":"*","x-jsr-backend":"modules","alt-svc":"h3=\":443\"; ma=86400","x-content-type-options":"nosniff","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","content-encoding":"identity"},"url":"https://jsr.io/@std/path/1.1.5/windows/from_file_url.ts","time":1780845290}

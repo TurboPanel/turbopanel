@@ -1,0 +1,121 @@
+// Copyright 2018-2026 the Deno authors. MIT license.
+// This module is browser compatible.
+
+import { assertArg } from "../_common/dirname.ts";
+import { CHAR_COLON } from "../_common/constants.ts";
+import { stripTrailingSeparators } from "../_common/strip_trailing_separators.ts";
+import {
+  isPathSeparator,
+  isPosixPathSeparator,
+  isWindowsDeviceRoot,
+} from "./_util.ts";
+import { fromFileUrl } from "./from_file_url.ts";
+
+/**
+ * Return the directory path of a `path`.
+ *
+ * @example Usage
+ * ```ts
+ * import { dirname } from "@std/path/windows/dirname";
+ * import { assertEquals } from "@std/assert";
+ *
+ * assertEquals(dirname("C:\\foo\\bar\\baz.ext"), "C:\\foo\\bar");
+ * assertEquals(dirname(new URL("file:///C:/foo/bar/baz.ext")), "C:\\foo\\bar");
+ * ```
+ *
+ * @param path The path to get the directory from.
+ * @returns The directory path.
+ * @throws {TypeError} If `path` is a `URL` instance whose protocol is not `file:`.
+ */
+export function dirname(path: string | URL): string {
+  if (path instanceof URL) {
+    path = fromFileUrl(path);
+  }
+  assertArg(path);
+
+  const len = path.length;
+  let rootEnd = -1;
+  let end = -1;
+  let matchedSlash = true;
+  let offset = 0;
+  const code = path.charCodeAt(0);
+
+  // Try to match a root
+  if (len > 1) {
+    if (isPathSeparator(code)) {
+      // Possible UNC root
+
+      rootEnd = offset = 1;
+
+      if (isPathSeparator(path.charCodeAt(1))) {
+        // Matched double path separator at beginning
+        let j = 2;
+        let last = j;
+        // Match 1 or more non-path separators
+        for (; j < len; ++j) {
+          if (isPathSeparator(path.charCodeAt(j))) break;
+        }
+        if (j < len && j !== last) {
+          // Matched!
+          last = j;
+          // Match 1 or more path separators
+          for (; j < len; ++j) {
+            if (!isPathSeparator(path.charCodeAt(j))) break;
+          }
+          if (j < len && j !== last) {
+            // Matched!
+            last = j;
+            // Match 1 or more non-path separators
+            for (; j < len; ++j) {
+              if (isPathSeparator(path.charCodeAt(j))) break;
+            }
+            if (j === len) {
+              // We matched a UNC root only
+              return path;
+            }
+            if (j !== last) {
+              // We matched a UNC root with leftovers
+
+              // Offset by 1 to include the separator after the UNC root to
+              // treat it as a "normal root" on top of a (UNC) root
+              rootEnd = offset = j + 1;
+            }
+          }
+        }
+      }
+    } else if (isWindowsDeviceRoot(code)) {
+      // Possible device root
+
+      if (path.charCodeAt(1) === CHAR_COLON) {
+        rootEnd = offset = 2;
+        if (len > 2) {
+          if (isPathSeparator(path.charCodeAt(2))) rootEnd = offset = 3;
+        }
+      }
+    }
+  } else if (isPathSeparator(code)) {
+    // `path` contains just a path separator, exit early to avoid
+    // unnecessary work
+    return path;
+  }
+
+  for (let i = len - 1; i >= offset; --i) {
+    if (isPathSeparator(path.charCodeAt(i))) {
+      if (!matchedSlash) {
+        end = i;
+        break;
+      }
+    } else {
+      // We saw the first non-path separator
+      matchedSlash = false;
+    }
+  }
+
+  if (end === -1) {
+    if (rootEnd === -1) return ".";
+    else end = rootEnd;
+  }
+  return stripTrailingSeparators(path.slice(0, end), isPosixPathSeparator);
+}
+
+// denoCacheMetadata={"headers":{"access-control-allow-origin":"*","x-jsr-backend":"modules","x-robots-tag":"noindex","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=9%2BBmQD5fxKll9Kxy9V3nMTB0lGRfqrUycMsrCnhfiVUdrVWqLyNN%2FUKIOENG5w7jV8VVeWa%2FANGrE3LkHxxDjVxjf7Sl3HrrUwrFJGg39IU11ATT%2BJ6jYPw%3D\"}]}","alt-svc":"h3=\":443\"; ma=86400","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","date":"Sun, 07 Jun 2026 15:14:50 GMT","etag":"\"3c7b3699075d6f95361fd0870aa3eb22\"","x-content-type-options":"nosniff","access-control-expose-headers":"*","cache-control":"public, max-age=31536000, immutable","content-encoding":"identity","vary":"Origin","cross-origin-resource-policy":"cross-origin","server":"cloudflare","cf-ray":"a0809bd5a889301b-MCI","content-length":"3385","content-type":"text/typescript","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';"},"url":"https://jsr.io/@std/path/1.1.5/windows/dirname.ts","time":1780845290}

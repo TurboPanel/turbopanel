@@ -1,0 +1,11 @@
+/**
+ * @module
+ * Deno Adapter for Hono.
+ */
+
+export { serveStatic } from './serve-static.ts'
+export { toSSG, denoFileSystemModule } from './ssg.ts'
+export { upgradeWebSocket } from './websocket.ts'
+export { getConnInfo } from './conninfo.ts'
+
+// denoCacheMetadata={"headers":{"date":"Sun, 07 Jun 2026 15:14:50 GMT","x-jsr-backend":"modules","vary":"Origin","content-type":"text/typescript","access-control-allow-origin":"*","content-encoding":"identity","cache-control":"public, max-age=31536000, immutable","access-control-expose-headers":"*","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=r2jn24A5fLVrsiiAfhi0DdBvGDsh06E3HXpxq6y34i%2FtX8wAZr5wuhPeAilF2b2zXNFJ244iszcoJQjE77wkFADiI2ZAA6ovMOhb%2F0R1k%2BRYXqfy8OYFgvU%3D\"}]}","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","etag":"\"906e5d1df660a8960da948fab5ff2112\"","cross-origin-resource-policy":"cross-origin","alt-svc":"h3=\":443\"; ma=86400","content-length":"243","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","server":"cloudflare","x-content-type-options":"nosniff","cf-ray":"a0809bd5a843301b-MCI","x-robots-tag":"noindex"},"url":"https://jsr.io/@hono/hono/4.12.23/src/adapter/deno/index.ts","time":1780845290}
