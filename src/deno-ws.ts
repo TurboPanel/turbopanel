@@ -58,21 +58,6 @@ export function registerDaemonWebSocket(app: Hono) {
           // have no proxy hop — collapse those under a single local slot.
           identityAddress = remoteAddress ?? '__direct__'
           setDaemonRemoteAddress(conn.id, identityAddress)
-          const evicted = evictDuplicateDaemons(conn.id, {
-            remoteAddress: identityAddress,
-          })
-          if (evicted.length > 0) {
-            // #region agent log
-            agentDebugLog('deno-ws.ts:onOpen', 'evicted duplicate on open', {
-              connId: conn.id,
-              identityAddress,
-              evicted,
-            }, 'H2')
-            // #endregion
-            console.log(
-              `[ws] evicted ${evicted.length} duplicate connection(s) for ${identityAddress}`,
-            )
-          }
           console.log(
             `[ws] daemon connected: ${conn.id}${
               remoteAddress ? ` from ${remoteAddress}` : ''
