@@ -12,6 +12,7 @@
 #   TURBOPANEL_UI_ROOT       Static export directory when UI_MODE=static
 #   TURBOPANEL_SOCKET_DIAL   Unix socket dial path for instance
 #   CADDY_PORT               Listen port (default: 8443)
+#   DRIZZLE_STUDIO_PROXY_PORT  HTTPS proxy to drizzle-kit studio API (default: 8444)
 #   CADDY_TLS_CERT           Server leaf cert (default: ./certs/self-signed.crt, signed by certs/ca.crt)
 #   CADDY_TLS_KEY            Server leaf key (default: ./certs/self-signed.key)
 {
@@ -37,17 +38,6 @@
 		}
 	}
 
-	# Dev: Drizzle Studio (spawned on demand by the instance developer API).
-	# Matcher must include the path — a dev-only expression alone would swallow all UI traffic.
-	@drizzle_studio {
-		expression `"{$TURBOPANEL_UI_MODE:static}" == "dev"`
-		path /drizzle-studio*
-	}
-	handle @drizzle_studio {
-		uri strip_prefix /drizzle-studio
-		reverse_proxy 127.0.0.1:{$DRIZZLE_STUDIO_PORT:4983}
-	}
-
 	# Dev: proxy to Expo's web dev server (TURBOPANEL_UI_MODE=dev).
 	@ui_dev expression `"{$TURBOPANEL_UI_MODE:static}" == "dev"`
 	handle @ui_dev {
@@ -62,4 +52,11 @@
 		try_files {path} /index.html
 		file_server
 	}
+}
+
+# Drizzle Studio API — proxied so local.drizzle.studio can use ?host=<this-host>&port=8444
+# without SSH/Cursor port forwarding (studio itself still listens on 127.0.0.1:4983).
+:{$DRIZZLE_STUDIO_PROXY_PORT:8444} {
+	tls {$CADDY_TLS_CERT:./certs/self-signed.crt} {$CADDY_TLS_KEY:./certs/self-signed.key}
+	reverse_proxy 127.0.0.1:{$DRIZZLE_STUDIO_PORT:4983}
 }

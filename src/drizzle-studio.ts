@@ -3,8 +3,12 @@ import { buildPostgresUrlFromEnv } from './db-url.ts'
 
 const STUDIO_PORT = Number(Deno.env.get('TURBOPANEL_DRIZZLE_STUDIO_PORT') ?? '4983')
 const STUDIO_HOST = Deno.env.get('TURBOPANEL_DRIZZLE_STUDIO_HOST')?.trim() || '127.0.0.1'
-/** Hosted Drizzle Studio UI (talks to the local server on STUDIO_PORT). */
+/** Hosted Drizzle Studio UI — connects to the API server on STUDIO_PORT (localhost when forwarded). */
 export const DRIZZLE_STUDIO_BROWSER_URL = 'https://local.drizzle.studio'
+
+export function drizzleStudioBrowserUrl(port = STUDIO_PORT): string {
+  return port === 4983 ? DRIZZLE_STUDIO_BROWSER_URL : `${DRIZZLE_STUDIO_BROWSER_URL}?port=${port}`
+}
 
 const INSTANCE_REPO_ROOT = (() => {
   const here = dirname(fromFileUrl(import.meta.url))
@@ -38,16 +42,16 @@ export function drizzleStudioStatus(): {
   return {
     running: studioRunning,
     port: STUDIO_PORT,
-    browserUrl: DRIZZLE_STUDIO_BROWSER_URL,
+    browserUrl: drizzleStudioBrowserUrl(),
   }
 }
 
 export async function startDrizzleStudio(): Promise<
-  { ok: true; browserUrl: string } | { ok: false; error: string }
+  { ok: true; browserUrl: string; port: number } | { ok: false; error: string }
 > {
   const status = drizzleStudioStatus()
   if (status.running) {
-    return { ok: true, browserUrl: status.browserUrl }
+    return { ok: true, browserUrl: status.browserUrl, port: status.port }
   }
 
   const databaseUrl = buildPostgresUrlFromEnv()
@@ -81,7 +85,6 @@ export async function startDrizzleStudio(): Promise<
     studioChild = command.spawn()
     studioRunning = true
 
-    // Reap the child when it exits so status stays accurate.
     studioChild.status.then(() => {
       studioRunning = false
       studioChild = null
@@ -100,7 +103,7 @@ export async function startDrizzleStudio(): Promise<
       }
     }
 
-    return { ok: true, browserUrl: DRIZZLE_STUDIO_BROWSER_URL }
+    return { ok: true, browserUrl: drizzleStudioBrowserUrl(), port: STUDIO_PORT }
   } catch (err) {
     studioRunning = false
     studioChild = null

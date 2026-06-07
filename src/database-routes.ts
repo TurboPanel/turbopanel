@@ -1,11 +1,7 @@
 import { sql } from 'drizzle-orm'
 import type { Hono } from 'hono'
 import { getDb } from './db.ts'
-import {
-  drizzleStudioStatus,
-  DRIZZLE_STUDIO_BROWSER_URL,
-  startDrizzleStudio,
-} from './drizzle-studio.ts'
+import { drizzleStudioStatus, startDrizzleStudio } from './drizzle-studio.ts'
 
 export type DatabaseStatus = {
   configured: boolean
@@ -81,7 +77,7 @@ export function registerDatabaseRoutes(developer: Hono): void {
     const status = drizzleStudioStatus()
     return c.json({
       running: status.running,
-      browserUrl: DRIZZLE_STUDIO_BROWSER_URL,
+      browserUrl: status.browserUrl,
       port: status.port,
     })
   })
@@ -96,6 +92,6 @@ export function registerDatabaseRoutes(developer: Hono): void {
     if (!started.ok) {
       return c.json({ ok: false, error: started.error }, 500)
     }
-    return c.json({ ok: true, browserUrl: started.browserUrl })
+    return c.json({ ok: true, browserUrl: started.browserUrl, port: started.port })
   })
 }

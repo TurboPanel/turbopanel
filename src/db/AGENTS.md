@@ -35,4 +35,4 @@ Postgres runs in Docker on the instance host; the instance connects via Unix soc
 ## Developer console tooling
 
 - **Test connection** — `GET /api/developer/v1/database/status` runs `SELECT version()` via the same client as the app.
-- **Drizzle Studio** — `POST /api/developer/v1/database/studio` spawns `drizzle-kit studio` on `127.0.0.1:4983`; open `https://local.drizzle.studio` in the browser (remote dev may need `ssh -L 4983:127.0.0.1:4983 <host>`). Read-only browsing only — still no `push` / `migrate` unless explicitly approved.
+- **Drizzle Studio** — `POST /api/developer/v1/database/studio` spawns `drizzle-kit studio` on `127.0.0.1:4983`. Caddy proxies that API on **`:8444`** (`?host=<browser-host>&port=8444`). Dev co-located installs use **TCP** Postgres (`postgres_expose_port=true`, `TURBOPANEL_PG_HOST=127.0.0.1`) so drizzle-kit gets a normal `DATABASE_URL`. Production uses Unix socket only. Read-only browsing only — still no `push` / `migrate` unless explicitly approved.
