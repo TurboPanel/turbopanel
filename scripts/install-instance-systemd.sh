@@ -18,3 +18,6 @@ systemctl enable --now turbopanel-instance
 echo "turbopanel-instance service installed and started"
 echo "status: sudo systemctl status turbopanel-instance"
 echo "logs:   sudo journalctl -u turbopanel-instance -f"
+echo ""
+echo "Co-located dev also runs the daemon under systemd (not Tilt):"
+echo "  sudo /opt/turbopanel/platform/daemon/scripts/install-daemon-systemd.sh"
