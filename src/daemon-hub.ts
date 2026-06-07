@@ -8,7 +8,9 @@ export type DaemonMessage =
     from: 'instance' | 'daemon'
     at: string
     hostname?: string
-    nodeId?: string
+    serverId?: string
+    /** Daemon-only: stable host fingerprint for first-time server row lookup. */
+    machineId?: string
   }
   | { type: 'ping'; id: string; at: string }
   | { type: 'pong'; id: string; at: string }
@@ -59,8 +61,8 @@ export interface DaemonConnection {
   connectedAt: string
   /** Short hostname reported by the daemon in its hello message. */
   hostname?: string
-  /** Stable host identity (e.g. /etc/machine-id) for deduplicating reconnects. */
-  nodeId?: string
+  /** Canonical servers.id (uuidv7) for this physical server node. */
+  serverId?: string
   /** Client IP as seen by Caddy (X-Real-IP), used to collapse duplicate reconnects. */
   remoteAddress?: string
   /** Whether a background `hostname` probe was dispatched for legacy agents. */
@@ -96,7 +98,7 @@ export interface CommandResult {
 }
 
 const connections = new Map<string, DaemonConnection>()
-const nodeIdIndex = new Map<string, string>()
+const serverIdIndex = new Map<string, string>()
 const events: DaemonEvent[] = []
 const MAX_EVENTS = 100
 
@@ -187,9 +189,9 @@ export function registerDaemon(send: DaemonSend, close: DaemonClose): DaemonConn
 export function unregisterDaemon(id: string): void {
   const conn = connections.get(id)
   if (!conn) return
-  if (conn.nodeId) {
-    const indexed = nodeIdIndex.get(conn.nodeId)
-    if (indexed === id) nodeIdIndex.delete(conn.nodeId)
+  if (conn.serverId) {
+    const indexed = serverIdIndex.get(conn.serverId)
+    if (indexed === id) serverIdIndex.delete(conn.serverId)
   }
   connections.delete(id)
   recordDaemonDisconnected(id)
@@ -213,7 +215,7 @@ export function setDaemonHostname(id: string, hostname: string): void {
   conn.hostname = trimmed
   evictDuplicateDaemons(id, {
     hostname: trimmed,
-    nodeId: conn.nodeId,
+    serverId: conn.serverId,
     remoteAddress: conn.remoteAddress,
   })
 }
@@ -237,13 +239,13 @@ export function probeMissingHostnames(): void {
   }
 }
 
-export function setDaemonNodeId(id: string, nodeId: string): string {
+export function setDaemonServerId(id: string, serverId: string): string {
   const conn = connections.get(id)
   if (!conn) return id
-  const trimmed = nodeId.trim()
+  const trimmed = serverId.trim()
   if (!trimmed) return id
 
-  const existingId = nodeIdIndex.get(trimmed)
+  const existingId = serverIdIndex.get(trimmed)
   if (existingId && existingId !== id) {
     const existing = connections.get(existingId)
     const incoming = conn
@@ -260,12 +262,12 @@ export function setDaemonNodeId(id: string, nodeId: string): string {
     }
   }
 
-  if (conn.nodeId && conn.nodeId !== trimmed) {
-    const indexed = nodeIdIndex.get(conn.nodeId)
-    if (indexed === id) nodeIdIndex.delete(conn.nodeId)
+  if (conn.serverId && conn.serverId !== trimmed) {
+    const indexed = serverIdIndex.get(conn.serverId)
+    if (indexed === id) serverIdIndex.delete(conn.serverId)
   }
-  conn.nodeId = trimmed
-  nodeIdIndex.set(trimmed, id)
+  conn.serverId = trimmed
+  serverIdIndex.set(trimmed, id)
   return id
 }
 
@@ -283,20 +285,20 @@ export function setDaemonRemoteAddress(id: string, remoteAddress: string): void 
  */
 export function evictDuplicateDaemons(
   keepId: string,
-  identity: { hostname?: string; nodeId?: string; remoteAddress?: string },
+  identity: { hostname?: string; serverId?: string; remoteAddress?: string },
 ): string[] {
   const hostname = identity.hostname?.trim()
-  const nodeId = identity.nodeId?.trim()
+  const serverId = identity.serverId?.trim()
   const remoteAddress = identity.remoteAddress?.trim()
-  if (!hostname && !nodeId && !remoteAddress) return []
+  if (!hostname && !serverId && !remoteAddress) return []
 
   const evicted: string[] = []
   for (const [id, conn] of connections.entries()) {
     if (id === keepId) continue
     const sameHost = hostname && conn.hostname === hostname
-    const sameNode = nodeId && conn.nodeId === nodeId
+    const sameServer = serverId && conn.serverId === serverId
     const sameAddr = remoteAddress && conn.remoteAddress === remoteAddress
-    if (sameHost || sameNode || sameAddr) {
+    if (sameHost || sameServer || sameAddr) {
       unregisterDaemon(id)
       evicted.push(id)
     }
@@ -320,14 +322,22 @@ export function pruneStaleDaemons(maxIdleMs = DAEMON_STALE_MS): string[] {
 }
 
 export function listDaemonConnections(): Omit<DaemonConnection, 'send' | 'close'>[] {
-  return [...connections.values()].map(({ id, connectedAt, hostname, nodeId, remoteAddress }) => ({
+  return [...connections.values()].map(({
+    id,
+    connectedAt,
+    hostname,
+    serverId,
+    remoteAddress,
+    lastInboundAt,
+  }) => ({
     id,
     connectedAt,
     hostname: hostname ?? null,
-    nodeId: nodeId ?? null,
+    serverId: serverId ?? null,
     remoteAddress: remoteAddress && remoteAddress !== '__direct__'
       ? remoteAddress
       : null,
+    lastInboundAt,
   }))
 }
 

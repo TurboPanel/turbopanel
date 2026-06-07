@@ -25,7 +25,7 @@ if (developerSurface) {
   registerDevSyncRoutes(routes)
   registerTunnelRoutes(routes)
 }
-registerDaemonWebSocket(routes, { developerSurface })
+registerDaemonWebSocket(routes, { developerSurface, db })
 const socketPath = resolveInstanceSocket()
 
 const abort = new AbortController()

@@ -11,13 +11,15 @@ import {
   recordDaemonMessage,
   registerDaemon,
   setDaemonHostname,
-  setDaemonNodeId,
+  setDaemonServerId,
   probeDaemonHostname,
   probeMissingHostnames,
   setDaemonRemoteAddress,
   touchDaemonInbound,
   unregisterDaemon,
 } from './daemon-hub.ts'
+import type { Db } from './db.ts'
+import { resolveServerId } from './server-registry.ts'
 
 import { DEVELOPER_WS_PATH, CLIENT_WS_PATH, DAEMON_WS_PATH } from './surfaces.ts'
 
@@ -36,7 +38,10 @@ function ensurePruneTimer(): void {
   pruneTimer = setInterval(runPruneCycle, 15_000)
 }
 
-export function registerDaemonWebSocket(app: Hono, { developerSurface = false }: { developerSurface?: boolean } = {},) {
+export function registerDaemonWebSocket(
+  app: Hono,
+  { developerSurface = false, db }: { developerSurface?: boolean; db?: Db } = {},
+) {
   app.get(
     DAEMON_WS_PATH,
     upgradeWebSocket((c) => {
@@ -102,27 +107,58 @@ export function registerDaemonWebSocket(app: Hono, { developerSurface = false }:
           }
 
           if (message.type === 'hello' && message.from === 'daemon' && connId) {
-            if (message.hostname) setDaemonHostname(connId, message.hostname)
-            if (message.nodeId) {
-              connId = setDaemonNodeId(connId, message.nodeId)
-            }
-            const evicted = evictDuplicateDaemons(connId, {
-              hostname: message.hostname,
-              nodeId: message.nodeId,
-              remoteAddress: identityAddress,
-            })
-            if (evicted.length > 0) {
-              console.log(
-                `[ws] evicted ${evicted.length} duplicate connection(s) for ${
-                  message.hostname ?? message.nodeId ?? connId
-                }`,
-              )
-            }
-            if (message.hostname) {
-              console.log(`[ws] daemon hostname: ${message.hostname} (${connId})`)
-            } else {
-              probeDaemonHostname(connId)
-            }
+            const socketId = connId
+            void (async () => {
+              if (message.hostname) setDaemonHostname(socketId, message.hostname)
+
+              let serverId: string | undefined
+              if (db) {
+                try {
+                  serverId = await resolveServerId(db, {
+                    serverId: message.serverId,
+                    machineId: message.machineId,
+                    hostname: message.hostname,
+                  })
+                  connId = setDaemonServerId(socketId, serverId)
+                } catch (err) {
+                  console.error('[ws] failed to resolve server id:', err)
+                }
+              } else {
+                console.warn('[ws] no database configured — server id not assigned')
+              }
+
+              const activeId = connId ?? socketId
+              const evicted = evictDuplicateDaemons(activeId, {
+                hostname: message.hostname,
+                serverId,
+                remoteAddress: identityAddress,
+              })
+              if (evicted.length > 0) {
+                console.log(
+                  `[ws] evicted ${evicted.length} duplicate connection(s) for ${
+                    serverId ?? message.hostname ?? activeId
+                  }`,
+                )
+              }
+
+              if (serverId) {
+                const ack: DaemonMessage = {
+                  type: 'hello',
+                  from: 'instance',
+                  serverId,
+                  at: new Date().toISOString(),
+                }
+                recordDaemonMessage(activeId, 'out', ack)
+                ws.send(JSON.stringify(ack))
+                console.log(`[ws] daemon server id: ${serverId} (${activeId})`)
+              }
+
+              if (message.hostname) {
+                console.log(`[ws] daemon hostname: ${message.hostname} (${activeId})`)
+              } else {
+                probeDaemonHostname(activeId)
+              }
+            })()
           }
 
           if (message.type === 'ping') {

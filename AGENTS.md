@@ -110,16 +110,15 @@ Route handlers read the per-request client via `getDb(c)` (set by `createApp({ d
 
 Injected by `../daemon` `instance-launch` from the same defaults as the `postgres` role (`/etc/turbopanel/postgres/config.json` metadata). Password is read from `/etc/turbopanel/postgres/.pgpass` at unit install time.
 
-| Variable | Socket mode (production) | TCP mode (dev, `postgres_expose_port=true`) |
-|---|---|---|
-| `TURBOPANEL_PG_USER` | `turbopanel` | same |
-| `TURBOPANEL_PG_DB` | `turbopanel` | same |
-| `TURBOPANEL_PG_PORT` | `5432` | same |
-| `TURBOPANEL_PG_PASSWORD` | from `.pgpass` | same |
-| `TURBOPANEL_PG_SOCKET` | `/var/run/turbopanel/postgres/.s.PGSQL.5432` | — |
-| `TURBOPANEL_PG_HOST` | — | `127.0.0.1` |
+| Variable | Value |
+|---|---|
+| `TURBOPANEL_PG_USER` | `turbopanel` |
+| `TURBOPANEL_PG_DB` | `turbopanel` |
+| `TURBOPANEL_PG_PORT` | `5432` |
+| `TURBOPANEL_PG_PASSWORD` | from `/etc/turbopanel/postgres/.pgpass` |
+| `TURBOPANEL_PG_SOCKET` | `/var/run/turbopanel/postgres/.s.PGSQL.5432` |
 
-The Deno unit adds `--allow-read` and `--allow-write` for `postgres_socket_dir` (Deno requires write on the socket directory for Unix connects) and `--allow-net=127.0.0.1:5432` only when `postgres_expose_port=true`.
+The instance always connects via Unix socket (`createDenoDb()` prefers `TURBOPANEL_PG_SOCKET` over `TURBOPANEL_PG_HOST`). Postgres in Docker always binds the socket volume; `postgres_expose_port` only adds optional TCP `127.0.0.1:5432` and is off in co-located dev. The Deno unit adds `--allow-read` and `--allow-write` for `postgres_socket_dir` (Deno requires write on the socket directory for Unix connects).
 
 ### Workers Hyperdrive
 
@@ -197,10 +196,10 @@ Three audiences, each with its own REST + WS namespace. Prefixes live in `src/su
 
 ## Daemon hub (`/ws/daemon/v1`)
 
-Connected agents register in `src/daemon-hub.ts`; the admin UI polls `/api/admin/v1/daemon/*`.
+Server nodes register in `src/daemon-hub.ts` (keyed by `serverId` from the `servers` table); the developer UI polls `/api/developer/v1/daemon/*`.
 
 - Each socket gets an internal id (`daemon-1`, …) for routing; **display** uses `hostname` from the daemon `hello` message, or from an automatic `hostname` shell probe for legacy agents (UI falls back to `X-Real-IP`, then the internal id).
-- On connect, evict older sockets from the same `X-Real-IP`, `nodeId`, or `hostname`; prune sockets with no inbound traffic (stale reconnect zombies).
+- On connect, resolve or create a `servers` row (uuidv7 `serverId`), evict older sockets from the same `serverId`, `X-Real-IP`, or `hostname`; prune sockets with no inbound traffic (stale reconnect zombies).
 - Co-located daemons that dial the instance Unix socket directly (no Caddy hop) collapse to a single local slot and are tagged `__direct__` (`getColocatedDaemonId`) — see `daemon` `AGENTS.md` for socket vs URL mode.
 - No `version` push / auto-update: the daemon never self-updates.
 

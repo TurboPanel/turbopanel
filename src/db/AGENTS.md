@@ -2,87 +2,77 @@
 
 **Do not run migrations.** TurboPanel is in very early development and the co-located dev server already has live data. Treat every database change as production-adjacent until we say otherwise.
 
-## Workflow: database first → introspect → `schema.ts`
+## Two sync directions (no migration files)
 
-During early dev we **design in the database**, then pull the model back into code. Do **not** use `drizzle-kit push` or `migrate` for this loop.
+We keep `schema.ts` and the dev database aligned using **drizzle-kit introspect** and **drizzle-kit push** only. Neither writes versioned migrations under `drizzle/`.
 
-| Step | Where | What |
-|---|---|---|
-| 1. Change schema | Live dev Postgres (Drizzle Studio) | Add/alter tables, columns, indexes |
-| 2. Introspect | Host shell (`drizzle-kit introspect`) | Read DB → generated TS |
-| 3. Adopt | `schema.ts` | Replace contents with introspected model (clean up style) |
-| 4. Discard | `drizzle/` output | Delete generated SQL/snapshots — we are not keeping migrations yet |
+| Direction | You changed | Command | drizzle-kit |
+|---|---|---|---|
+| **Pull** (DB → code) | Live Postgres (Studio / SQL) | `./introspect.sh` | `introspect` |
+| **Push** (code → DB) | `schema.ts` | `./sync.sh` | `push` |
 
-**Source of truth in code:** `schema.ts` — kept in sync with the dev database via introspect, not hand-written ahead of the DB.
+Pick one source of truth per change — do not edit both sides and blindly run both scripts.
 
-### 1. Edit the database (Drizzle Studio)
+### Pull: database → `schema.ts` (`./introspect.sh`)
 
-Use the developer console **Database** section (`/developer/database`):
+Use when you designed in **Drizzle Studio** or applied DDL directly.
 
-1. **Test Postgres connection** — should show connected (`tcp` on co-located dev).
-2. **Start API & open studio** — opens `https://local.drizzle.studio?host=<browser-host>&port=8444` (Caddy proxies the studio API on `:8444`).
-3. In Studio, create or change tables/columns. Changes apply **directly** to the dev database.
+1. Change tables in Studio (`/developer/database` → **Start API & open studio**).
+2. Run `./introspect.sh` from the `turbopanel` repo root.
+3. Review `schema.ts` (style, dropped tables).
 
-Studio is for **schema exploration and DDL in dev only**. Do not use it on production.
+`introspect.sh`: builds `DATABASE_URL` from `turbopanel-instance` env → introspect → copy to `schema.ts` → delete ephemeral `drizzle/` output → `deno check`.
 
-### 2. Introspect (pull DB → `schema.ts`)
+### Push: `schema.ts` → database (`./sync.sh`)
 
-Run on the **instance host** from the `turbopanel` repo root:
+Use when you edited **`schema.ts` first** and need the live dev DB to catch up.
 
-```bash
-cd /opt/turbopanel/platform/turbopanel
-./introspect.sh
-```
+1. Edit `src/db/schema.ts`.
+2. Run `./sync.sh` from the `turbopanel` repo root.
+3. Confirm drizzle-kit prompts (`--strict` by default). Use `./sync.sh --force` only when you accept possible **data loss** on dev.
 
-`introspect.sh` (repo root):
+`sync.sh`: `deno check` → `drizzle-kit push` (no SQL files committed). Flags: `--verbose`, `--force`.
 
-1. Builds `DATABASE_URL` from `turbopanel-instance` systemd env (dev TCP `127.0.0.1:5432`), or uses `DATABASE_URL` if already set
-2. Runs `drizzle-kit introspect`
-3. Copies `drizzle/schema.ts` → **`schema.ts`** (this file)
-4. Deletes ephemeral `drizzle/` SQL/snapshots
-5. Runs `deno check src/db/schema.ts`
+Override connection for either script: `DATABASE_URL=postgresql://… ./introspect.sh` or `./sync.sh`.
 
-Override connection: `DATABASE_URL=postgresql://… ./introspect.sh`
+### Drizzle Studio (dev UI)
 
-### 3. Review `schema.ts`
-
-The script copies drizzle-kit output verbatim (minus unused `sql` import). Before commit:
-
-1. Normalize style if needed: single quotes, explicit column names, trim verbose `generatedAlwaysAsIdentity` options when defaults suffice.
-2. Remove exports for tables you intentionally dropped in Studio.
-3. If relations matter later, inspect what drizzle-kit generated in `drizzle/relations.ts` during the run (the script deletes it after adopt) and add a `relations.ts` sibling when app code needs it.
-
-Optional sanity check:
-
-```bash
-docker exec turbopanel-postgres psql -U turbopanel -d turbopanel -c '\dt'
-```
-
-Restart the instance only if application code changed — introspect alone does not require a restart.
+- **Test connection** — `GET /api/developer/v1/database/status`
+- **Studio** — `POST /api/developer/v1/database/studio`; Caddy proxies **HTTPS-only** on **`:8444`**. `local.drizzle.studio` (HTTPS) blocks mixed-content HTTP to private hosts, then retries HTTPS — trust the platform CA (same as `:8443`). Open `https://local.drizzle.studio?host=<browser-host>&port=8444`.
+- Studio applies DDL **directly** to the DB — follow with `./introspect.sh` to pull into code.
 
 ## Current policy (what not to run)
 
-- **No migration workflow** — do not run `drizzle-kit migrate`, do not curate SQL under `drizzle/`, do not commit `drizzle/meta/`.
-- **No `drizzle-kit push`** — schema changes go through Studio (or explicit approved DDL), then introspect back; push bypasses that loop and can fight live data.
+- **No migration workflow** — do not run `drizzle-kit migrate`, do not commit `drizzle/*.sql` or `drizzle/meta/`.
+- **No ad-hoc push** — use `./sync.sh` only (after editing `schema.ts`), not raw `drizzle-kit push` in one-off commands.
 - **No production DDL** from agents without explicit approval.
 
-Destructive Studio changes (drop column/table, type narrowing) can lose dev rows. Before introspecting after a destructive change, confirm the operator intended it.
+Destructive changes (drop column/table, type narrowing) can lose dev rows. `sync.sh` prompts via `--strict`; `--force` skips those guardrails.
+
+## `servers` table
+
+Each physical server node gets a row in `servers` (`id` uuidv7). On daemon connect the instance resolves `serverId` (reuse by persisted id, `metadata.machineId`, or `metadata.hostname`; unique indexes prevent duplicates), tracks the websocket in `daemon-hub`, and returns `serverId` in `hello`. The daemon persists it at `/etc/turbopanel/daemon/server.id` (writable by the `turbopanel` user).
 
 ## Layout
 
 | File | Purpose |
 |---|---|
-| `schema.ts` | Drizzle table definitions — **synced from dev DB via introspect** |
+| `schema.ts` | Drizzle table definitions — sync with dev DB via `./introspect.sh` or `./sync.sh` |
 | `../db.ts` | Connection factories (`createDenoDb`, `createWorkersDb`) |
-| `../../drizzle.config.ts` | drizzle-kit config (introspect + studio only) |
-| `../../introspect.sh` | Standard pull script (introspect → adopt → cleanup → check) |
-| `../../drizzle/` | Ephemeral introspect output — **not** source of truth; `introspect.sh` deletes after adopt |
+| `../../drizzle.config.ts` | drizzle-kit config (introspect, push, studio) |
+| `../../introspect.sh` | Pull DB → `schema.ts` |
+| `../../sync.sh` | Push `schema.ts` → DB (no migration files) |
+| `../../scripts/db-connect.sh` | Shared `DATABASE_URL` + toolchain paths for both scripts |
+| `../../drizzle/` | Ephemeral introspect output only — `introspect.sh` deletes after adopt |
 
 ## Connection (self-hosted dev)
 
-Co-located **dev** uses **TCP** `127.0.0.1:5432` (`postgres_expose_port=true`, `TURBOPANEL_PG_HOST=127.0.0.1`) so `drizzle-kit` and `node-postgres` work with a normal URL. **Production** uses Unix socket only (`TURBOPANEL_PG_SOCKET`). See repo root `AGENTS.md` for `TURBOPANEL_PG_*` env vars. Do not embed credentials or host-specific URLs here.
+Self-hosted instance, drizzle-kit (`drizzle.config.ts`), and `./sync.sh` / `./introspect.sh` all connect via **Unix socket** (`TURBOPANEL_PG_SOCKET`). Postgres in Docker always publishes the socket under `/var/run/turbopanel/postgres`; TCP port exposure (`postgres_expose_port`) is optional and unused by the instance. See repo root `AGENTS.md` for `TURBOPANEL_PG_*` env vars. Do not embed credentials here.
 
-## Developer console tooling
+## Sanity check
 
-- **Test connection** — `GET /api/developer/v1/database/status` runs `SELECT version()` via the same client as the app.
-- **Drizzle Studio** — `POST /api/developer/v1/database/studio` spawns `drizzle-kit studio` on `127.0.0.1:4983`; Caddy proxies on **`:8444`**. Open `https://local.drizzle.studio?host=<browser-host>&port=8444`.
+```bash
+docker exec turbopanel-postgres psql -U turbopanel -d turbopanel -c '\dt'
+```
+
+Restart the instance only when **application code** changed — schema sync alone does not require a restart.

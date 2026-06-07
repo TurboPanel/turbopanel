@@ -56,7 +56,9 @@
 
 # Drizzle Studio API — proxied so local.drizzle.studio can use ?host=<this-host>&port=8444
 # without SSH/Cursor port forwarding (studio itself still listens on 127.0.0.1:4983).
-:{$DRIZZLE_STUDIO_PROXY_PORT:8444} {
+# HTTPS-only: local.drizzle.studio (HTTPS) blocks mixed-content HTTP to private hosts;
+# the failed HTTP attempt becomes ERR_NETWORK and the client retries HTTPS here.
+https://:{$DRIZZLE_STUDIO_PROXY_PORT:8444} {
 	tls {$CADDY_TLS_CERT:./certs/self-signed.crt} {$CADDY_TLS_KEY:./certs/self-signed.key}
 	reverse_proxy 127.0.0.1:{$DRIZZLE_STUDIO_PORT:4983}
 }

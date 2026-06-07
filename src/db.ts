@@ -24,8 +24,8 @@ export function createDenoDb(): Db | undefined {
   if (!user || !password || !database) return undefined
 
   const port = Number(Deno.env.get('TURBOPANEL_PG_PORT') ?? '5432')
-  const socket = Deno.env.get('TURBOPANEL_PG_SOCKET')
-  const host = Deno.env.get('TURBOPANEL_PG_HOST')
+  const socket = Deno.env.get('TURBOPANEL_PG_SOCKET')?.trim()
+  const host = Deno.env.get('TURBOPANEL_PG_HOST')?.trim()
 
   let client: ReturnType<typeof postgres>
   if (socket) {
@@ -35,6 +35,7 @@ export function createDenoDb(): Db | undefined {
       : socket
     client = postgres({ ...PG_OPTS, user, password, database, host: socketDir, port })
   } else if (host) {
+    // TCP fallback only when no socket path is configured.
     client = postgres({ ...PG_OPTS, user, password, database, host, port })
   } else {
     return undefined

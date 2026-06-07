@@ -92,6 +92,10 @@ export function registerDatabaseRoutes(developer: Hono): void {
     if (!started.ok) {
       return c.json({ ok: false, error: started.error }, 500)
     }
-    return c.json({ ok: true, browserUrl: started.browserUrl, port: started.port })
+    return c.json({
+      ok: true,
+      browserUrl: started.browserUrl,
+      port: started.port,
+    })
   })
 }
