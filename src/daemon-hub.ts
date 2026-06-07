@@ -80,6 +80,7 @@ export interface CommandResult {
 }
 
 const connections = new Map<string, DaemonConnection>()
+const nodeIdIndex = new Map<string, string>()
 const events: DaemonEvent[] = []
 const MAX_EVENTS = 100
 
@@ -163,6 +164,10 @@ export function registerDaemon(send: DaemonSend, close: DaemonClose): DaemonConn
 export function unregisterDaemon(id: string): void {
   const conn = connections.get(id)
   if (!conn) return
+  if (conn.nodeId) {
+    const indexed = nodeIdIndex.get(conn.nodeId)
+    if (indexed === id) nodeIdIndex.delete(conn.nodeId)
+  }
   connections.delete(id)
   recordDaemonDisconnected(id)
   try {
@@ -209,12 +214,43 @@ export function probeMissingHostnames(): void {
   }
 }
 
-export function setDaemonNodeId(id: string, nodeId: string): void {
+export function setDaemonNodeId(id: string, nodeId: string): string {
   const conn = connections.get(id)
-  if (!conn) return
+  if (!conn) return id
   const trimmed = nodeId.trim()
-  if (!trimmed) return
+  if (!trimmed) return id
+
+  const existingId = nodeIdIndex.get(trimmed)
+  if (existingId && existingId !== id) {
+    const existing = connections.get(existingId)
+    const incoming = conn
+    if (existing) {
+      existing.send = incoming.send
+      existing.close = incoming.close
+      existing.lastInboundAt = Date.now()
+      existing.hostname = incoming.hostname ?? existing.hostname
+      existing.remoteAddress = incoming.remoteAddress ?? existing.remoteAddress
+      existing.hostnameProbeSent = incoming.hostnameProbeSent ??
+        existing.hostnameProbeSent
+      connections.delete(id)
+      // #region agent log
+      agentDebugLog('daemon-hub.ts:setDaemonNodeId', 'superseded duplicate node socket', {
+        nodeId: trimmed,
+        keepId: existingId,
+        dropId: id,
+      }, 'H2')
+      // #endregion
+      return existingId
+    }
+  }
+
+  if (conn.nodeId && conn.nodeId !== trimmed) {
+    const indexed = nodeIdIndex.get(conn.nodeId)
+    if (indexed === id) nodeIdIndex.delete(conn.nodeId)
+  }
   conn.nodeId = trimmed
+  nodeIdIndex.set(trimmed, id)
+  return id
 }
 
 export function setDaemonRemoteAddress(id: string, remoteAddress: string): void {

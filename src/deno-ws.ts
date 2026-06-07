@@ -134,7 +134,9 @@ export function registerDaemonWebSocket(app: Hono) {
 
           if (message.type === 'hello' && message.from === 'daemon' && connId) {
             if (message.hostname) setDaemonHostname(connId, message.hostname)
-            if (message.nodeId) setDaemonNodeId(connId, message.nodeId)
+            if (message.nodeId) {
+              connId = setDaemonNodeId(connId, message.nodeId)
+            }
             const evicted = evictDuplicateDaemons(connId, {
               hostname: message.hostname,
               nodeId: message.nodeId,
