@@ -33,6 +33,7 @@ function ensurePruneTimer(): void {
   pruneTimer = setInterval(run, 15_000)
 }
 import { getDaemonCommit } from './daemon-version.ts'
+import { debugSessionLog } from './debug-session-log.ts'
 
 export function registerDaemonWebSocket(app: Hono) {
   app.get(
@@ -63,6 +64,14 @@ export function registerDaemonWebSocket(app: Hono) {
               `[ws] evicted ${evicted.length} duplicate connection(s) for ${identityAddress}`,
             )
           }
+          // #region agent log
+          debugSessionLog('deno-ws.ts:onOpen', 'socket opened', {
+            connId: conn.id,
+            identityAddress,
+            headerRemoteAddress: remoteAddress ?? null,
+            evictedOnOpen: evicted.length,
+          }, 'H1')
+          // #endregion
           console.log(
             `[ws] daemon connected: ${conn.id}${
               remoteAddress ? ` from ${remoteAddress}` : ''
@@ -142,6 +151,15 @@ export function registerDaemonWebSocket(app: Hono) {
             } else {
               probeDaemonHostname(connId)
             }
+            // #region agent log
+            debugSessionLog('deno-ws.ts:onMessage:hello', 'daemon hello received', {
+              connId,
+              hostname: message.hostname ?? null,
+              nodeId: message.nodeId ?? null,
+              headerRemoteAddress: remoteAddress ?? null,
+              evictedOnHello: evicted.length,
+            }, message.hostname ? 'H2' : 'H1')
+            // #endregion
           }
 
           if (message.type === 'ping') {

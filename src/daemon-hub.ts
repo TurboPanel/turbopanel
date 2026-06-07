@@ -1,4 +1,5 @@
 import type { ServerAddresses } from './server-addresses.ts'
+import { debugSessionLog } from './debug-session-log.ts'
 
 /** JSON messages exchanged between the instance and daemon over /ws. */
 export type DaemonMessage =
@@ -153,6 +154,13 @@ export function registerDaemon(send: DaemonSend, close: DaemonClose): DaemonConn
   }
   connections.set(id, conn)
   recordDaemonConnected(id)
+  // #region agent log
+  debugSessionLog('daemon-hub.ts:registerDaemon', 'daemon registered', {
+    id,
+    totalConnections: connections.size,
+    nextId,
+  }, 'H1')
+  // #endregion
   return conn
 }
 
@@ -232,7 +240,15 @@ export function evictDuplicateDaemons(
   const hostname = identity.hostname?.trim()
   const nodeId = identity.nodeId?.trim()
   const remoteAddress = identity.remoteAddress?.trim()
-  if (!hostname && !nodeId && !remoteAddress) return []
+  if (!hostname && !nodeId && !remoteAddress) {
+    // #region agent log
+    debugSessionLog('daemon-hub.ts:evictDuplicateDaemons', 'eviction skipped — empty identity', {
+      keepId,
+      totalConnections: connections.size,
+    }, 'H2')
+    // #endregion
+    return []
+  }
 
   const evicted: string[] = []
   for (const [id, conn] of connections.entries()) {
@@ -245,6 +261,15 @@ export function evictDuplicateDaemons(
       evicted.push(id)
     }
   }
+  // #region agent log
+  debugSessionLog('daemon-hub.ts:evictDuplicateDaemons', 'eviction pass complete', {
+    keepId,
+    identity: { hostname: hostname ?? null, nodeId: nodeId ?? null, remoteAddress: remoteAddress ?? null },
+    evictedCount: evicted.length,
+    evictedIds: evicted.slice(0, 10),
+    totalConnections: connections.size,
+  }, evicted.length > 0 ? 'H2' : 'H1')
+  // #endregion
   return evicted
 }
 
@@ -261,6 +286,15 @@ export function pruneStaleDaemons(maxIdleMs = DAEMON_STALE_MS): string[] {
       pruned.push(id)
     }
   }
+  // #region agent log
+  if (pruned.length > 0 || connections.size > 20) {
+    debugSessionLog('daemon-hub.ts:pruneStaleDaemons', 'prune pass complete', {
+      prunedCount: pruned.length,
+      totalConnections: connections.size,
+      prunedIds: pruned.slice(0, 10),
+    }, 'H3')
+  }
+  // #endregion
   return pruned
 }
 
