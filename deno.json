@@ -3,7 +3,11 @@
   "version": "0.1.0",
   "exports": "./src/app.ts",
   "imports": {
-    "hono": "jsr:@hono/hono@^4.12.23"
+    "drizzle-orm": "npm:drizzle-orm@^0.43.1",
+    "drizzle-orm/postgres-js": "npm:drizzle-orm@^0.43.1/postgres-js",
+    "drizzle-orm/pg-core": "npm:drizzle-orm@^0.43.1/pg-core",
+    "hono": "jsr:@hono/hono@^4.12.23",
+    "postgres": "npm:postgres@^3.4.7"
   },
   "compilerOptions": {
     "jsx": "precompile",

@@ -1,0 +1,3 @@
+interface CloudflareBindings {
+  HYPERDRIVE?: Hyperdrive
+}

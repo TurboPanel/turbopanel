@@ -25,11 +25,16 @@
   },
   "workspace": {
     "dependencies": [
-      "jsr:@hono/hono@^4.12.23"
+      "jsr:@hono/hono@^4.12.23",
+      "npm:drizzle-orm@~0.43.1",
+      "npm:postgres@^3.4.7"
     ],
     "packageJson": {
       "dependencies": [
+        "npm:drizzle-kit@~0.31.1",
+        "npm:drizzle-orm@~0.43.1",
         "npm:hono@4.12.23",
+        "npm:postgres@^3.4.7",
         "npm:wrangler@^4.98.0"
       ]
     }

@@ -94,6 +94,41 @@ All TurboPanel runtime sockets live under **`/run/turbopanel/`** (on Linux, `/va
 
 Path resolution lives in `src/server-paths.ts`.
 
+## Database (Drizzle + Postgres.js)
+
+The instance uses **Drizzle ORM** over **postgres.js** with `prepare: false` (required for Hyperdrive and transaction-pooling). Connection factories live in `src/db.ts`; schema in `src/db/schema.ts`; migrations config in `drizzle.config.ts`.
+
+| Runtime | Factory | When connected |
+|---|---|---|
+| Cloudflare Workers | `createWorkersDb(env.HYPERDRIVE)` | `HYPERDRIVE` binding present in `wrangler.jsonc` |
+| Deno (self-hosted) | `createDenoDb()` | `TURBOPANEL_PG_*` env vars set by `instance-launch` |
+
+Route handlers read the per-request client via `getDb(c)` (set by `createApp({ db })`). When no database is configured the app still starts; `getDb()` returns `undefined`.
+
+### Self-hosted Postgres env (`TURBOPANEL_PG_*`)
+
+Injected by `../daemon` `instance-launch` from the same defaults as the `postgres` role (`/etc/turbopanel/postgres/config.json` metadata). Password is read from `/etc/turbopanel/postgres/.pgpass` at unit install time.
+
+| Variable | Socket mode (production) | TCP mode (dev, `postgres_expose_port=true`) |
+|---|---|---|
+| `TURBOPANEL_PG_USER` | `turbopanel` | same |
+| `TURBOPANEL_PG_DB` | `turbopanel` | same |
+| `TURBOPANEL_PG_PORT` | `5432` | same |
+| `TURBOPANEL_PG_PASSWORD` | from `.pgpass` | same |
+| `TURBOPANEL_PG_SOCKET` | `/var/run/turbopanel/postgres/.s.PGSQL.5432` | — |
+| `TURBOPANEL_PG_HOST` | — | `127.0.0.1` |
+
+The Deno unit adds `--allow-read` for `postgres_socket_dir` and `--allow-net=127.0.0.1:5432` only in TCP dev mode.
+
+### Workers Hyperdrive
+
+`wrangler.jsonc` declares a `HYPERDRIVE` binding stub (replace the placeholder id before deploy). Types: `worker-configuration.d.ts` (`HYPERDRIVE?: Hyperdrive`). Regenerate with `pnpm cf-typegen` after changing bindings.
+
+### Tooling
+
+- `pnpm install` — pulls `drizzle-orm`, `postgres`, `drizzle-kit`
+- `DATABASE_URL=… pnpm exec drizzle-kit push` — apply schema (dev/CI)
+
 ### Caddy dial format
 
 Caddy uses `unix//<path>` where `<path>` has **no leading slash**:
@@ -108,7 +143,7 @@ reverse_proxy unix//run/turbopanel/turbopanel.sock
 
 The daemon's `runtime-sockets` role (and `scripts/ensure-socket-dir.mjs` for manual runs) ensures `/run/turbopanel` exists as `2770 turbopanel:turbopanel`, using passwordless `sudo` when needed. After bind, the instance hardens the socket file to `0660` (owner+group only) so the daemon can connect.
 
-The instance Deno process runs with scoped permissions (see the `instance-launch` unit template): `--allow-env --allow-sys=networkInterfaces --allow-read=/run/turbopanel,<daemon dir>,<instance dir> --allow-write=/run/turbopanel --allow-run=git,systemctl,tar` (`tar` is needed for the dev-sync tarball).
+The instance Deno process runs with scoped permissions (see the `instance-launch` unit template): `--allow-env --allow-sys=networkInterfaces --allow-read=/run/turbopanel,<postgres socket dir>,<daemon dir>,<instance dir> --allow-write=/run/turbopanel --allow-run=git,systemctl,tar` (`tar` is needed for the dev-sync tarball). TCP dev Postgres adds `--allow-net=127.0.0.1:5432`.
 
 ### Production
 
@@ -189,5 +224,6 @@ Correlated request/ack helpers (`awaitDaemonAck` / `recordDaemonAck`) back both 
 - `src/server-paths.ts` — Unix socket path resolution
 - `src/daemon-hub.ts` — WebSocket connection registry, command/address/ack dispatch
 - `src/deno-ws.ts` — `/ws/daemon/v1` handler + `/ws/{admin,client}/v1` stubs
+- `src/db.ts` / `src/db/schema.ts` — Drizzle client factories + schema
 - `src/workers.ts` — Workers entry (`wrangler.jsonc` main)
 - `src/deno.ts` — Deno entry (`deno.json` tasks)

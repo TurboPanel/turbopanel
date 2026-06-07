@@ -1,4 +1,6 @@
+import { Hono } from 'hono'
 import { createApp } from './app.ts'
+import { createDenoDb } from './db.ts'
 import { registerDaemonWebSocket } from './deno-ws.ts'
 import { registerVersionRoute } from './daemon-version.ts'
 import { registerSystemRoutes } from './system-routes.ts'
@@ -13,14 +15,16 @@ import {
 } from './server-paths.ts'
 
 const developerSurface = isDeveloperSurfaceEnabled()
-const app = createApp({ developerSurface })
-registerVersionRoute(app)
+const db = createDenoDb()
+const app = createApp({ developerSurface, db })
+const routes = app as unknown as Hono
+registerVersionRoute(routes)
 if (developerSurface) {
-  registerSystemRoutes(app)
-  registerDevSyncRoutes(app)
-  registerTunnelRoutes(app)
+  registerSystemRoutes(routes)
+  registerDevSyncRoutes(routes)
+  registerTunnelRoutes(routes)
 }
-registerDaemonWebSocket(app, { developerSurface })
+registerDaemonWebSocket(routes, { developerSurface })
 const socketPath = resolveInstanceSocket()
 
 const abort = new AbortController()
