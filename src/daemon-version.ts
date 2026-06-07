@@ -1,5 +1,6 @@
 import type { Hono } from 'hono'
 import { dirname, fromFileUrl, join } from 'jsr:@std/path@1'
+import { DAEMON_API_PREFIX } from './surfaces.ts'
 
 /**
  * Canonical commit the connected daemons (agent nodes) should be running.
@@ -78,6 +79,6 @@ export async function getInstanceCommit(): Promise<DaemonVersion> {
 }
 
 export function registerVersionRoute(app: Hono): Hono {
-  app.get('/api/daemon/version', async (c) => c.json(await getDaemonCommit()))
+  app.get(`${DAEMON_API_PREFIX}/version`, async (c) => c.json(await getDaemonCommit()))
   return app
 }

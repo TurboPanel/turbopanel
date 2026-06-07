@@ -1,8 +1,9 @@
 import { createApp } from './app.ts'
 import { registerDaemonWebSocket } from './deno-ws.ts'
-import { broadcastToDaemons, type DaemonMessage } from './daemon-hub.ts'
-import { getDaemonCommit, registerVersionRoute } from './daemon-version.ts'
+import { registerVersionRoute } from './daemon-version.ts'
 import { registerSystemRoutes } from './system-routes.ts'
+import { registerDevSyncRoutes } from './dev-sync.ts'
+import { registerTunnelRoutes } from './tunnel-routes.ts'
 import {
   hardenInstanceSocket,
   INSTANCE_SOCKET_MODE,
@@ -13,6 +14,8 @@ import {
 const app = createApp()
 registerVersionRoute(app)
 registerSystemRoutes(app)
+registerDevSyncRoutes(app)
+registerTunnelRoutes(app)
 registerDaemonWebSocket(app)
 const socketPath = resolveInstanceSocket()
 
@@ -21,32 +24,9 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   Deno.addSignalListener(signal, () => abort.abort())
 }
 
-// Watch the daemon checkout's commit and push it to all connected agents when it
-// changes, so a `git pull` on this host rolls out to the fleet without waiting
-// for each agent's fallback poll.
-let lastBroadcastCommit: string | undefined
-const versionWatch = setInterval(async () => {
-  try {
-    const version = await getDaemonCommit(true)
-    if (
-      version.commit === 'unknown' || version.commit === lastBroadcastCommit
-    ) return
-    lastBroadcastCommit = version.commit
-    const message: DaemonMessage = {
-      type: 'version',
-      commit: version.commit,
-      branch: version.branch,
-      at: new Date().toISOString(),
-    }
-    broadcastToDaemons(message)
-  } catch (err) {
-    console.warn(
-      '[version] watch failed:',
-      err instanceof Error ? err.message : err,
-    )
-  }
-}, 30_000)
-abort.signal.addEventListener('abort', () => clearInterval(versionWatch))
+// Note: the daemon never self-updates. There is no version watcher/broadcast.
+// Updates are operator-driven (admin "Upgrade System" button / dev-sync) and
+// the daemon owns all installs/updates via Ansible.
 
 await prepareInstanceSocket(socketPath)
 

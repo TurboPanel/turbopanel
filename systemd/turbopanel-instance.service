@@ -5,10 +5,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=turbopanel
+# The instance runs as the low-privilege `instance` user (UID 9998), a member
+# of the turbopanel group with no group of its own. The daemon installs and
+# manages this unit via the instance-launch Ansible role; this file is a
+# reference/manual-install fallback only.
+User=instance
 Group=turbopanel
 WorkingDirectory=/opt/turbopanel/platform/turbopanel
-Environment=HOME=/opt/turbopanel
+Environment=HOME=/opt/turbopanel/platform/turbopanel
 Environment=PATH=/opt/turbopanel/runtimes/deno/current:/opt/turbopanel/runtimes/caddy/current:/usr/local/bin:/usr/bin:/bin
 Environment=TURBOPANEL_INSTANCE_SERVICE=turbopanel-instance
 ExecStart=/opt/turbopanel/runtimes/deno/current/deno run --allow-env --allow-sys=networkInterfaces --allow-read=/run/turbopanel,../daemon,./certs --allow-write=/run/turbopanel --allow-run=git,systemctl src/deno.ts

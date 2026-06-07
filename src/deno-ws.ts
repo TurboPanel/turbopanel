@@ -7,6 +7,7 @@ import {
   pruneStaleDaemons,
   recordAddressesResult,
   recordCommandResult,
+  recordDaemonAck,
   recordDaemonMessage,
   registerDaemon,
   setDaemonHostname,
@@ -18,8 +19,7 @@ import {
   unregisterDaemon,
 } from './daemon-hub.ts'
 
-import { getDaemonCommit } from './daemon-version.ts'
-import { agentDebugLog } from './debug-agent-log.ts'
+import { ADMIN_WS_PATH, CLIENT_WS_PATH, DAEMON_WS_PATH } from './surfaces.ts'
 
 let pruneTimer: ReturnType<typeof setInterval> | undefined
 
@@ -38,7 +38,7 @@ function ensurePruneTimer(): void {
 
 export function registerDaemonWebSocket(app: Hono) {
   app.get(
-    '/ws',
+    DAEMON_WS_PATH,
     upgradeWebSocket((c) => {
       const remoteAddress = c.req.header('x-real-ip')?.trim() ||
         c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
@@ -72,24 +72,8 @@ export function registerDaemonWebSocket(app: Hono) {
           recordDaemonMessage(conn.id, 'out', hello)
           ws.send(JSON.stringify(hello))
 
-          // Tell the daemon which commit it should be running, so it can
-          // self-update if its checkout has drifted from this host's.
-          void getDaemonCommit().then((version) => {
-            if (ws.readyState !== WebSocket.OPEN) return
-            const message: DaemonMessage = {
-              type: 'version',
-              commit: version.commit,
-              branch: version.branch,
-              at: new Date().toISOString(),
-            }
-            if (connId) recordDaemonMessage(connId, 'out', message)
-            ws.send(JSON.stringify(message))
-          }).catch((err) => {
-            console.warn(
-              '[ws] failed to send version:',
-              err instanceof Error ? err.message : err,
-            )
-          })
+          // No version push: the daemon never self-updates. Updates are
+          // operator-driven (admin upgrade button / dev-sync).
 
           pingTimer = setInterval(() => {
             const ping: DaemonMessage = {
@@ -158,6 +142,13 @@ export function registerDaemonWebSocket(app: Hono) {
           if (message.type === 'addresses-result') {
             recordAddressesResult(message)
           }
+
+          if (
+            message.type === 'dev-sync-result' ||
+            message.type === 'tunnel-token-result'
+          ) {
+            recordDaemonAck(message.id, message.ok, message.error)
+          }
         },
 
         onClose() {
@@ -174,5 +165,28 @@ export function registerDaemonWebSocket(app: Hono) {
         },
       }
     }),
+  )
+
+  registerStubWebSocket(app, ADMIN_WS_PATH, 'admin')
+  registerStubWebSocket(app, CLIENT_WS_PATH, 'client')
+}
+
+/**
+ * Placeholder WebSocket surface for the admin/client UIs. Today the UIs poll
+ * REST; these endpoints reserve the namespace for future live streaming. They
+ * accept the upgrade, greet the peer, and otherwise idle.
+ */
+function registerStubWebSocket(app: Hono, path: string, surface: string): void {
+  app.get(
+    path,
+    upgradeWebSocket(() => ({
+      onOpen(_event, ws) {
+        ws.send(JSON.stringify({
+          type: 'hello',
+          surface,
+          at: new Date().toISOString(),
+        }))
+      },
+    })),
   )
 }

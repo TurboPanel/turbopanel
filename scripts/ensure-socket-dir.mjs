@@ -3,7 +3,11 @@
  * Ensure /run/turbopanel exists with turbopanel ownership for Unix socket backends.
  *
  * Uses passwordless sudo when the directory is missing or has wrong owner/mode.
- * Prints TURBOPANEL_SOCKET and TURBOPANEL_SOCKET_DIAL for Tilt env wiring.
+ * Prints TURBOPANEL_SOCKET and TURBOPANEL_SOCKET_DIAL for dev env wiring.
+ *
+ * Mode is 2770 (group-writable + setgid): both the daemon (turbopanel) and the
+ * in-group `instance` user bind sockets here, and setgid keeps new socket files
+ * in the turbopanel group so the other party can connect.
  */
 
 import { execSync } from 'node:child_process'
@@ -15,7 +19,7 @@ const SOCKET_NAME = 'turbopanel.sock'
 const SOCKET_PATH = `${SOCKET_DIR}/${SOCKET_NAME}`
 const SOCKET_DIAL = SOCKET_PATH.replace(/^\/+/, '')
 const OWNER = 'turbopanel'
-const MODE = 0o750
+const MODE = 0o2770
 
 function run(cmd) {
   execSync(cmd, { stdio: 'inherit' })
@@ -29,7 +33,7 @@ async function dirLooksCorrect() {
   try {
     const info = await stat(SOCKET_DIR)
     if (!info.isDirectory()) return false
-    if ((info.mode & 0o777) !== MODE) return false
+    if ((info.mode & 0o7777) !== MODE) return false
 
     const owner = execSync(`stat -c '%U:%G' '${SOCKET_DIR}'`, { encoding: 'utf8' }).trim()
     return owner === `${OWNER}:${OWNER}`

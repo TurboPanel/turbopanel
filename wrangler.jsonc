@@ -23,7 +23,7 @@
           "zone_name": "turbopanel.dev"
         },
         {
-          "pattern": "testing.turbopanel.dev/ws",
+          "pattern": "testing.turbopanel.dev/ws/*",
           "zone_name": "turbopanel.dev"
         }
       ]

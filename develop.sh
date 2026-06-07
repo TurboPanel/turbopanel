@@ -1,88 +1,70 @@
 #!/usr/bin/env bash
+# TurboPanel development launcher.
+#
+# Ansible — run by the always-installed daemon — owns ALL installs and updates.
+# This script only bootstraps the daemon enough to take over, switches it into
+# co-located dev-instance mode, and then tails the journals.
+#
+# Everything runs under systemd, each service as its dedicated user:
+#
+#   turbopanel-daemon     turbopanel:turbopanel  (UID 9999, has sudo; runs ansible)
+#   turbopanel-instance   instance:turbopanel    (UID 9998, no sudo)
+#   turbopanel-caddy      instance:turbopanel    https://<host>:8443
+#   turbopanel-ui         instance:turbopanel    Expo web dev server :8081
+#
+# On startup the daemon runs the instance-dev-install playbook, which installs
+# the instance, Caddy, and UI services. To test the Cloudflare Workers path
+# instead, run `pnpm dev` (wrangler) in this repo separately.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+DAEMON_DIR="$(cd "$SCRIPT_DIR/../daemon" && pwd)"
+DAEMON_ENV="$DAEMON_DIR/.env"
 
-export HOME="${HOME:-/opt/turbopanel}"
-export PATH="${HOME}/runtimes/deno/current:${HOME}/runtimes/caddy/current:${HOME}/runtimes/node/current/bin:/usr/local/bin:${PATH}"
-
-PIDS=()
-
-cleanup() {
-  for pid in "${PIDS[@]}"; do
-    kill "$pid" 2>/dev/null || true
-  done
-}
-
-trap cleanup SIGINT SIGTERM EXIT
-
-# Step 1 — Install Deno
-if [[ ! -x "${HOME}/runtimes/deno/current/deno" ]]; then
-  DENO_TMP="${HOME}/runtimes/deno/.install"
-  rm -rf "$DENO_TMP"
-  mkdir -p "$DENO_TMP"
-  curl -fsSL https://deno.land/install.sh | DENO_INSTALL="$DENO_TMP" sh
-  VERSION="$("$DENO_TMP/bin/deno" --version | head -n1 | awk '{print $2}')"
-  install -d -m 0755 "${HOME}/runtimes/deno/${VERSION}"
-  mv "$DENO_TMP/bin/deno" "${HOME}/runtimes/deno/${VERSION}/deno"
-  rm -rf "$DENO_TMP"
-  ln -sfn "${HOME}/runtimes/deno/${VERSION}" "${HOME}/runtimes/deno/current"
-  ln -sfn "${HOME}/runtimes/deno/current/deno" /usr/local/bin/deno
+if [[ ! -d "$DAEMON_DIR" ]]; then
+  echo "develop.sh: expected the daemon checkout at $DAEMON_DIR" >&2
+  exit 1
 fi
 
-# Step 2 — Install Caddy
-echo "Note: Node.js is required for Caddy download (scripts/download-caddy.mjs)"
-node scripts/download-caddy.mjs
+# Step 1 — Bootstrap the daemon orchestration runtime (uv -> Python -> ansible).
+# This is what lets the daemon run every other install via Ansible.
+"$DAEMON_DIR/scripts/bootstrap-orchestration.sh"
 
-# Step 3 — Clone or update the daemon repo
-if [[ -d ../daemon/.git ]]; then
-  git -C ../daemon fetch origin trunk
-  git -C ../daemon reset --hard origin/trunk
-else
-  git clone --branch trunk https://github.com/turbopanel/turbopanel-daemon ../daemon
+# Step 2 — Put the daemon into co-located dev-instance mode. The flag persists
+# in the daemon .env so systemd picks it up on every (re)start.
+touch "$DAEMON_ENV"
+if ! grep -q '^TURBOPANEL_DEV_INSTANCE=' "$DAEMON_ENV"; then
+  echo 'TURBOPANEL_DEV_INSTANCE=1' >> "$DAEMON_ENV"
+fi
+if ! grep -q '^TURBOPANEL_TRUNK_BRANCH=' "$DAEMON_ENV"; then
+  echo 'TURBOPANEL_TRUNK_BRANCH=trunk' >> "$DAEMON_ENV"
 fi
 
-# Step 4 — Socket directory setup
-node scripts/ensure-socket-dir.mjs
+# Step 3 — Install + start the daemon systemd unit (creates the turbopanel
+# user, installs Deno, and reconciles the unit). The daemon then installs the
+# instance/Caddy/UI stack via Ansible on startup.
+sudo "$DAEMON_DIR/scripts/install-daemon-systemd.sh"
 
-# Step 5 — Generate TLS certificates
-node scripts/generate-self-signed-cert.mjs
-
-# Step 6 — Startup banner
+# Step 4 — Startup banner.
 CADDY_PORT=8443
-SOCKET_PATH="/run/turbopanel/turbopanel.sock"
+cat <<BANNER
 
-echo ""
-echo "-----------------------------------------"
-echo "Services:"
-echo "  TurboPanel  @ https://localhost:${CADDY_PORT}  (Caddy)"
-while IFS= read -r ip; do
-  [[ -z "$ip" ]] && continue
-  if [[ "$ip" == *:* ]]; then
-    host="[$ip]"
-  else
-    host="$ip"
-  fi
-  echo "              @ https://${host}:${CADDY_PORT}  (LAN)"
-done < <(hostname -I 2>/dev/null | tr ' ' '\n' | grep -v '^$' | head -3)
-echo "    /api/*, /ws  -> Deno     @ unix://${SOCKET_PATH}"
-echo "    everything else -> static UI  @ ../ui/dist"
-echo "  Daemon      @ (no port)"
-echo ""
-echo "Press Ctrl+C to stop all services"
-echo "========================================="
+-----------------------------------------
+TurboPanel dev stack (systemd-managed):
+  TurboPanel   @ https://localhost:${CADDY_PORT}  (Caddy, user: instance)
+  Instance     @ unix:///run/turbopanel/turbopanel.sock  (user: instance)
+  UI (Expo)    @ http://127.0.0.1:8081  (user: instance)
+  Daemon       @ (no port, user: turbopanel)
 
-# Step 7 — Start background processes and trap cleanup
-CADDY_PORT=8443 TURBOPANEL_SOCKET_DIAL=run/turbopanel/turbopanel.sock TURBOPANEL_UI_MODE=static \
-  caddy run --config Caddyfile --adapter caddyfile &
-PIDS+=($!)
+The daemon installs/updates everything via Ansible. Use the admin "Upgrade
+System" button (or sync-dev) to update; nothing auto-updates.
+=========================================
 
-(cd ../daemon && deno run --allow-net --allow-sys=networkInterfaces,hostname --allow-read --allow-write --allow-run --allow-env --env-file=.env main.ts) &
-PIDS+=($!)
+BANNER
 
-# Instance omits TURBOPANEL_INSTANCE_SERVICE so POST /api/system/upgrade returns
-# 503 (no managed restart under develop.sh; use git pull + Ctrl+C/restart instead).
-deno run --allow-env --allow-sys=networkInterfaces --allow-read=/run/turbopanel,../daemon,./certs --allow-write=/run/turbopanel --allow-run=git src/deno.ts &
-PIDS+=($!)
-wait "${PIDS[-1]}"
+# Step 5 — Follow the journals for all dev services.
+exec journalctl -f \
+  -u turbopanel-daemon \
+  -u turbopanel-instance \
+  -u turbopanel-caddy \
+  -u turbopanel-ui

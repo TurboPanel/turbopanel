@@ -1,30 +1,34 @@
 import { Hono } from 'hono'
 import {
   broadcastToDaemons,
+  type DaemonMessage,
   dispatchCommand,
   listCommandResults,
   listDaemonConnections,
   listDaemonEvents,
-  parseDaemonMessage,
   recordDaemonBroadcast,
-  recordDaemonMessage,
   requestDaemonAddresses,
   sendToDaemon,
-  type DaemonMessage,
 } from './daemon-hub.ts'
 import { collectServerAddresses } from './server-addresses.ts'
-import { resolveInstanceTlsCaPath } from './server-paths.ts'
+import { ADMIN_API_PREFIX } from './surfaces.ts'
 
-export function registerDaemonRoutes(app: Hono) {
-  app.get('/api/daemon/connections', (c) =>
+/**
+ * Admin UI surface: fleet management, diagnostics, shell, addresses.
+ * Mounted under {@link ADMIN_API_PREFIX} (`/api/admin/v1`).
+ */
+export function registerAdminRoutes(app: Hono) {
+  const admin = new Hono()
+
+  admin.get('/daemon/connections', (c) =>
     c.json({ connections: listDaemonConnections() }))
 
-  app.get('/api/daemon/events', (c) => {
+  admin.get('/daemon/events', (c) => {
     const limit = Number(c.req.query('limit') ?? 50)
     return c.json({ events: listDaemonEvents(Number.isFinite(limit) ? limit : 50) })
   })
 
-  app.post('/api/daemon/broadcast', async (c) => {
+  admin.post('/daemon/broadcast', async (c) => {
     const body = await c.req.json().catch(() => null)
     if (!body || typeof body !== 'object' || !('payload' in body)) {
       return c.json({ error: 'expected { payload: unknown }' }, 400)
@@ -40,7 +44,7 @@ export function registerDaemonRoutes(app: Hono) {
     return c.json({ ok: true, sent })
   })
 
-  app.post('/api/daemon/:id/send', async (c) => {
+  admin.post('/daemon/:id/send', async (c) => {
     const id = c.req.param('id')
     const body = await c.req.json().catch(() => null)
     if (!body || typeof body !== 'object' || !('payload' in body)) {
@@ -57,12 +61,12 @@ export function registerDaemonRoutes(app: Hono) {
     return c.json({ ok: true, id })
   })
 
-  app.get('/api/daemon/commands', (c) => {
+  admin.get('/daemon/commands', (c) => {
     const limit = Number(c.req.query('limit') ?? 50)
     return c.json({ commands: listCommandResults(Number.isFinite(limit) ? limit : 50) })
   })
 
-  app.post('/api/daemon/command', async (c) => {
+  admin.post('/daemon/command', async (c) => {
     const body = await c.req.json().catch(() => null)
     const command = typeof body?.command === 'string' ? body.command.trim() : ''
     if (!command) return c.json({ error: 'expected { command: string }' }, 400)
@@ -73,7 +77,7 @@ export function registerDaemonRoutes(app: Hono) {
     return c.json({ ok: true, sent: commandIds.length, commandIds })
   })
 
-  app.post('/api/daemon/:id/command', async (c) => {
+  admin.post('/daemon/:id/command', async (c) => {
     const id = c.req.param('id')
     const body = await c.req.json().catch(() => null)
     const command = typeof body?.command === 'string' ? body.command.trim() : ''
@@ -84,22 +88,12 @@ export function registerDaemonRoutes(app: Hono) {
     return c.json({ ok: true, commandId })
   })
 
-  app.get('/api/instance/addresses', (c) => {
+  admin.get('/instance/addresses', (c) => {
     const addresses = collectServerAddresses()
     return c.json({ ok: true, source: 'instance', addresses })
   })
 
-  app.get('/api/instance/ca', async (c) => {
-    try {
-      const cert = await Deno.readTextFile(resolveInstanceTlsCaPath())
-      return c.body(cert, 200, { 'content-type': 'application/x-pem-file' })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      return c.json({ error: message }, 500)
-    }
-  })
-
-  app.get('/api/daemon/addresses', async (c) => {
+  admin.get('/daemon/addresses', async (c) => {
     const connections = listDaemonConnections()
     const servers = await Promise.all(
       connections.map(async (conn) => {
@@ -122,7 +116,7 @@ export function registerDaemonRoutes(app: Hono) {
     return c.json({ servers })
   })
 
-  app.get('/api/daemon/:id/addresses', async (c) => {
+  admin.get('/daemon/:id/addresses', async (c) => {
     const id = c.req.param('id')
     try {
       const addresses = await requestDaemonAddresses(id)
@@ -140,7 +134,6 @@ export function registerDaemonRoutes(app: Hono) {
     }
   })
 
+  app.route(ADMIN_API_PREFIX, admin)
   return app
 }
-
-export { parseDaemonMessage }

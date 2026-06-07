@@ -31,6 +31,23 @@ export type DaemonMessage =
     addresses: ServerAddresses
     at: string
   }
+  // Dev-only: push the instance host's current daemon build to an agent without
+  // git. The tarball is streamed as base64 chunks (begin -> chunk* -> end), then
+  // the daemon unpacks, caches, restarts, and replies with dev-sync-result.
+  | {
+    type: 'dev-sync-begin'
+    id: string
+    totalChunks: number
+    totalBytes: number
+    at: string
+  }
+  | { type: 'dev-sync-chunk'; id: string; index: number; data: string; at: string }
+  | { type: 'dev-sync-end'; id: string; at: string }
+  | { type: 'dev-sync-result'; id: string; ok: boolean; error?: string; at: string }
+  // Dev/self-hosted: set the instance's Cloudflare tunnel token on the
+  // co-located daemon, which (re)starts cloudflared to expose this instance.
+  | { type: 'tunnel-token'; id: string; token: string; at: string }
+  | { type: 'tunnel-token-result'; id: string; ok: boolean; error?: string; at: string }
 
 export type DaemonSend = (
   data: string | ArrayBufferLike | Blob | ArrayBufferView,
@@ -91,6 +108,13 @@ const MAX_COMMANDS = 100
 const pendingAddresses = new Map<string, {
   daemonId: string
   resolve: (addresses: ServerAddresses) => void
+  reject: (err: Error) => void
+  timer: ReturnType<typeof setTimeout>
+}>()
+
+/** Correlated request/ack waiters (dev-sync, tunnel-token) keyed by request id. */
+const pendingAcks = new Map<string, {
+  resolve: () => void
   reject: (err: Error) => void
   timer: ReturnType<typeof setTimeout>
 }>()
@@ -324,6 +348,18 @@ export function listDaemonConnections(): Omit<DaemonConnection, 'send' | 'close'
   }))
 }
 
+/**
+ * The connection id of the co-located daemon (one that dialed the Unix socket
+ * directly, with no Caddy/X-Real-IP hop), or null if none is connected. Used to
+ * target the instance's own Cloudflare tunnel token.
+ */
+export function getColocatedDaemonId(): string | null {
+  for (const conn of connections.values()) {
+    if (conn.remoteAddress === '__direct__') return conn.id
+  }
+  return null
+}
+
 export function sendToDaemon(id: string, message: DaemonMessage): boolean {
   const conn = connections.get(id)
   if (!conn) return false
@@ -424,6 +460,33 @@ export function recordAddressesResult(
   clearTimeout(pending.timer)
   pendingAddresses.delete(message.id)
   pending.resolve(message.addresses)
+}
+
+/**
+ * Wait for a daemon to acknowledge a correlated request (dev-sync / tunnel-token).
+ * Resolves on `{ ok: true }`, rejects on `{ ok: false }` or timeout.
+ */
+export function awaitDaemonAck(
+  id: string,
+  timeoutMs: number,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingAcks.delete(id)
+      reject(new Error('timeout waiting for daemon acknowledgement'))
+    }, timeoutMs)
+    pendingAcks.set(id, { resolve, reject, timer })
+  })
+}
+
+/** Resolve/reject a pending ack from a daemon result message. */
+export function recordDaemonAck(id: string, ok: boolean, error?: string): void {
+  const pending = pendingAcks.get(id)
+  if (!pending) return
+  clearTimeout(pending.timer)
+  pendingAcks.delete(id)
+  if (ok) pending.resolve()
+  else pending.reject(new Error(error || 'daemon reported failure'))
 }
 
 export function broadcastToDaemons(message: DaemonMessage): number {

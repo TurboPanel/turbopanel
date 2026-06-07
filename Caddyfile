@@ -1,7 +1,10 @@
 # TurboPanel reverse proxy (dev + production).
 #
-#   /api/*  and  /ws  -> Deno instance (Unix socket)
-#   everything else    -> Expo dev server (dev) or static export (production)
+#   /api/*  and  /ws/*  -> Deno instance (Unix socket)
+#   everything else      -> Expo dev server (dev) or static export (production)
+#
+# API/WS surfaces are versioned: /api/{client,admin,daemon}/v1 and
+# /ws/{client,admin,daemon}/v1 (plus the unversioned /api/health probe).
 #
 # Env:
 #   TURBOPANEL_UI_MODE       "dev" | "static" (default: static)
@@ -27,14 +30,14 @@
 		}
 	}
 
-	@ws path /ws
+	@ws path /ws/*
 	handle @ws {
 		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/turbopanel.sock} {
 			header_up X-Real-IP {remote_host}
 		}
 	}
 
-	# Dev: proxy to Expo's web dev server (Tilt sets TURBOPANEL_UI_MODE=dev).
+	# Dev: proxy to Expo's web dev server (TURBOPANEL_UI_MODE=dev).
 	@ui_dev expression `"{$TURBOPANEL_UI_MODE:static}" == "dev"`
 	handle @ui_dev {
 		reverse_proxy 127.0.0.1:{$EXPO_PORT:8081} {

@@ -1,11 +1,7 @@
 import { Hono } from 'hono'
-import { broadcastToDaemons, type DaemonMessage } from './daemon-hub.ts'
-import {
-  getDaemonCommit,
-  getDaemonRepoPath,
-  getInstanceCommit,
-} from './daemon-version.ts'
+import { getDaemonRepoPath, getInstanceCommit } from './daemon-version.ts'
 import { dirname, fromFileUrl, join } from 'jsr:@std/path@1'
+import { ADMIN_API_PREFIX } from './surfaces.ts'
 
 const INSTANCE_REPO_ROOT = (() => {
   const here = dirname(fromFileUrl(import.meta.url))
@@ -64,7 +60,7 @@ async function syncRepoToTrunk(
 }
 
 export function registerSystemRoutes(app: Hono): Hono {
-  app.post('/api/system/upgrade', async (c) => {
+  app.post(`${ADMIN_API_PREFIX}/system/upgrade`, async (c) => {
     if (upgrading) {
       return c.json({ ok: false, error: 'upgrade already in progress' }, 409)
     }
@@ -92,14 +88,6 @@ export function registerSystemRoutes(app: Hono): Hono {
       }
 
       const instanceVersion = await getInstanceCommit()
-      const daemonVersion = await getDaemonCommit(true)
-      const message: DaemonMessage = {
-        type: 'version',
-        commit: daemonVersion.commit,
-        branch: daemonVersion.branch,
-        at: new Date().toISOString(),
-      }
-      broadcastToDaemons(message)
 
       const restart = await new Deno.Command('systemctl', {
         args: ['restart', INSTANCE_SERVICE],

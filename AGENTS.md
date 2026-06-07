@@ -2,6 +2,26 @@
 
 Minimal Hono app with dual runtimes: **Cloudflare Workers** (Wrangler) and **Deno**.
 
+## Speed doctrine (turbo)
+
+TurboPanel is named for speed; keep it fast on every path.
+
+- **Cache runtimes & deps.** Deno/Node/Caddy live under `/opt/turbopanel/runtimes/<tool>/current`; install only when the pinned version is missing. Don't re-download or re-`pnpm install` when nothing changed.
+- **Idempotent fast-paths.** Bootstrap/install steps must short-circuit when already satisfied (the Ansible roles do; mirror that in scripts).
+- **Avoid redundant work.** No polling loops or periodic git/`systemctl` forks unless essential (the version watcher and auto-update poll were removed for this reason).
+- **Parallelize** independent I/O (e.g. `Promise.all` for per-daemon fan-out, as in the admin routes).
+- **Push, don't poll** for cross-process signals where practical (WS messages over fallback timers).
+
+## Platform model: Ansible owns installs
+
+The **daemon is the constant** installed on every TurboPanel-managed host and is the only party that runs Ansible to install/update everything else (runtimes, users, the instance, UI, Caddy). The instance does not install itself. In co-located dev the daemon runs the `instance-dev-install` playbook (see `../daemon/AGENTS.md`) when `TURBOPANEL_DEV_INSTANCE=1`. Nothing auto-updates — updates are operator-driven (admin **Upgrade System** button or **Sync Dev Build**).
+
+## Users, group & socket permissions
+
+- **`turbopanel`** (UID/GID **9999**): the daemon user; has sudo; owns the install tree.
+- **`instance`** (UID **9998**): runs the instance, Caddy, and the dev UI. Primary group is **`turbopanel`** — it has **no group of its own** and **no sudo**.
+- `/run/turbopanel` is **`2770 turbopanel:turbopanel`** (group-writable + setgid) so the in-group `instance` user can bind the socket; new sockets stay in the `turbopanel` group. The instance hardens its socket to **`0660`** so the daemon (also group `turbopanel`) can connect.
+
 ## Documentation discipline
 
 **Keep this file current.** When you learn something durable about how TurboPanel works — architecture, env vars, gotchas, cross-repo contracts, operational steps — add or update a note here in the same PR/session as the code change. Future agents read `AGENTS.md` first.
@@ -19,32 +39,40 @@ Minimal Hono app with dual runtimes: **Cloudflare Workers** (Wrangler) and **Den
 - **Deno** — <https://docs.deno.com/runtime/getting_started/installation/>
 - **pnpm** — <https://pnpm.io/installation>
 - **Node.js** — required for cert generation and Caddy download (`scripts/*.mjs`)
-- Run `./develop.sh` on a fresh VM (Debian/Ubuntu) to install the dev stack and start all services
+- Run `./develop.sh` on a fresh VM (Debian/Ubuntu). It is a **thin wrapper**: it bootstraps the daemon orchestration runtime, flips the daemon into co-located dev mode (`TURBOPANEL_DEV_INSTANCE=1` in `../daemon/.env`), installs the daemon systemd unit, and tails the journals. The **daemon** then installs the instance/Caddy/UI via Ansible — `develop.sh` no longer launches `deno`/`caddy`/daemon processes itself.
 - `pnpm install` — installs Hono and Wrangler into `node_modules/` for Workers bundling
 - Copy or create `.dev.vars` at the repo root for local Wrangler secrets (see the commented stub; file is gitignored)
+- `pnpm dev` (wrangler) still runs the **Cloudflare Workers** path for full-stack testing — unchanged.
 - `pnpm deploy:workers` — deploy to Cloudflare
 - `pnpm cf-typegen` — regenerate `worker-configuration.d.ts`
-- `pnpm cert:generate` — (re)generate the platform CA and server cert
-- `pnpm caddy:install` — download the pinned Caddy into `~/runtimes/caddy/`
+- The Ansible `instance-certs` / `caddy` / `node-runtime` roles supersede the standalone `pnpm cert:generate` / `pnpm caddy:install` scripts for managed hosts (the scripts remain for manual use).
 
-### Systemd
+### Systemd (all dev services run as their users)
 
-- Unit file: `systemd/turbopanel-instance.service`
-- Install: copy unit to `/etc/systemd/system/`, run `systemctl daemon-reload && systemctl enable --now turbopanel-instance`
-- Logs: `journalctl -u turbopanel-instance -f`
+Installed and managed by the daemon via the `instance-launch` Ansible role:
+
+| Unit | User | Notes |
+|---|---|---|
+| `turbopanel-instance.service` | `instance:turbopanel` | Deno instance on the Unix socket |
+| `turbopanel-caddy.service` | `instance:turbopanel` | TLS + reverse proxy on `:8443` |
+| `turbopanel-ui.service` | `instance:turbopanel` | Expo web dev server (`:8081`, dev only) |
+| `turbopanel-daemon.service` | `turbopanel:turbopanel` | runs Ansible; has sudo |
+
+- `systemd/turbopanel-instance.service` in this repo is a **reference/manual-install fallback**; the canonical unit is templated by the `instance-launch` role in `../daemon`.
+- Logs: `journalctl -u turbopanel-instance -u turbopanel-caddy -u turbopanel-ui -f`
 - Co-located daemon: `../daemon/scripts/install-daemon-systemd.sh`
 
 ## Unix domain sockets
 
-In Deno mode (development and production), the Hono instance listens on a **Unix domain socket** instead of a TCP port. Caddy terminates TLS and proxies `/api/*` and `/ws` to that socket.
+In Deno mode (development and production), the Hono instance listens on a **Unix domain socket** instead of a TCP port. Caddy terminates TLS and proxies `/api/*` and `/ws/*` to that socket.
 
 ### Directory layout
 
-All TurboPanel runtime sockets live under **`/run/turbopanel/`** (on Linux, `/var/run` symlinks to `/run`):
+All TurboPanel runtime sockets live under **`/run/turbopanel/`** (on Linux, `/var/run` symlinks to `/run`). The directory is **`2770 turbopanel:turbopanel`** (setgid) so the `instance` user (in group `turbopanel`) can bind:
 
 | Socket file | Service |
 |---|---|
-| `/run/turbopanel/turbopanel.sock` | Hono instance (mode `0660`, owner `turbopanel:turbopanel`) |
+| `/run/turbopanel/turbopanel.sock` | Hono instance (bound by `instance`, mode `0660`, group `turbopanel`) |
 | `/run/turbopanel/<name>.sock` | Reserved for future services |
 
 ### Environment variables
@@ -75,9 +103,9 @@ reverse_proxy unix//run/turbopanel/turbopanel.sock
 
 ### Development
 
-`develop.sh` runs `scripts/ensure-socket-dir.mjs` before starting services. The script ensures `/run/turbopanel` exists with owner `turbopanel:turbopanel` and mode `0750`, using passwordless `sudo` when needed. After bind, the instance sets the socket file itself to mode `0660` (owner+group only).
+The daemon's `runtime-sockets` role (and `scripts/ensure-socket-dir.mjs` for manual runs) ensures `/run/turbopanel` exists as `2770 turbopanel:turbopanel`, using passwordless `sudo` when needed. After bind, the instance hardens the socket file to `0660` (owner+group only) so the daemon can connect.
 
-Deno is started with scoped permissions: `--allow-env --allow-read=/run/turbopanel --allow-write=/run/turbopanel`.
+The instance Deno process runs with scoped permissions (see the `instance-launch` unit template): `--allow-env --allow-sys=networkInterfaces --allow-read=/run/turbopanel,<daemon dir>,<instance dir> --allow-write=/run/turbopanel --allow-run=git,systemctl,tar` (`tar` is needed for the dev-sync tarball).
 
 ### Production
 
@@ -87,17 +115,17 @@ The daemon's orchestration bootstrap runs the `socket-dirs-setup` Ansible playbo
 
 Caddy terminates TLS and routes traffic from a single HTTPS entrypoint:
 
-- `/api/*` and `/ws` → Deno instance (`unix:///run/turbopanel/turbopanel.sock`)
+- `/api/*` and `/ws/*` → Deno instance (`unix:///run/turbopanel/turbopanel.sock`)
 - everything else → Expo dev server (**dev**) or static export (**production**)
 
-`reverse_proxy` to the Unix socket sets `X-Real-IP {remote_host}` on `/api/*` and `/ws`. The instance uses that header to deduplicate daemon WebSocket reconnects (without it, every reconnect looked like a new fleet member behind the proxy).
+`reverse_proxy` to the Unix socket sets `X-Real-IP {remote_host}` on `/api/*` and `/ws/*`. The instance uses that header to deduplicate daemon WebSocket reconnects (without it, every reconnect looked like a new fleet member behind the proxy).
 
 ### Development
 
-`develop.sh` runs `download-caddy.mjs` and `generate-self-signed-cert.mjs` automatically.
+Caddy/cert installs are handled by the daemon's `caddy` and `instance-certs` Ansible roles; `turbopanel-caddy.service` runs Caddy as `instance`.
 
 - Entrypoint: `https://<host>:8443` (Caddy, defined in `Caddyfile`) — binds all interfaces; use `localhost` or the machine's LAN IP.
-- Self-hosted TLS uses a **platform CA** (`certs/ca.crt` + `certs/ca.key`) that signs a **server leaf cert** (`certs/self-signed.crt` + `.key`) presented by Caddy (`auto_https off`, no Let's Encrypt). The CA is long-lived and can issue additional certificates later; agents fetch it from `GET /api/instance/ca`. Trust `certs/ca.crt` in browsers/OS to avoid warnings.
+- Self-hosted TLS uses a **platform CA** (`certs/ca.crt` + `certs/ca.key`) that signs a **server leaf cert** (`certs/self-signed.crt` + `.key`) presented by Caddy (`auto_https off`, no Let's Encrypt). The CA is long-lived and can issue additional certificates later; agents fetch it from `GET /api/daemon/v1/instance/ca`. Trust `certs/ca.crt` in browsers/OS to avoid warnings.
 - Override the resolved binary with `TURBOPANEL_CADDY` (and `TURBOPANEL_DENO` for Deno).
 
 ### Production (static UI)
@@ -114,22 +142,49 @@ Caddy serves files from `TURBOPANEL_UI_ROOT` (default `../ui/dist`) and falls ba
 
 Set `CADDY_TLS_CERT` / `CADDY_TLS_KEY` only when overriding the default server leaf certificate paths.
 
-## Daemon hub (`/ws`)
+## API / WS surfaces (versioned)
 
-Connected agents register in `src/daemon-hub.ts`; the admin UI polls `/api/daemon/*`.
+Three audiences, each with its own REST + WS namespace. Prefixes live in `src/surfaces.ts`; `GET /api/health` is the single deliberately-unversioned probe.
+
+| Surface | REST | WS | Notes |
+|---|---|---|---|
+| Client (end-user UI) | `/api/client/v1/*` | `/ws/client/v1` | greenfield stubs |
+| Admin (admin UI) | `/api/admin/v1/*` | `/ws/admin/v1` | fleet, diagnostics, shell, addresses, `system/upgrade`, `instance/tunnel-token`, `daemon/(:id/)sync-dev`. WS is a stub. |
+| Daemon (agents) | `/api/daemon/v1/*` | `/ws/daemon/v1` | `version`, `instance/ca`; agents connect on the WS path |
+
+- Route modules: `src/admin-routes.ts`, `src/daemon-api-routes.ts`, `src/client-routes.ts` (mounted in `createApp`); Deno-only routes `src/system-routes.ts`, `src/dev-sync.ts`, `src/tunnel-routes.ts`, and the version route are registered in `src/deno.ts`.
+- The UI calls everything through `../ui/src/lib/instance-api.ts` (single choke point, prefixed `/api/admin/v1`).
+- Hard cutover: daemon, UI, Caddy (`/ws/*`), and Workers routes (`wrangler.jsonc`) moved together. The external CDN node installer must fetch the CA from the new `/api/daemon/v1/instance/ca` path.
+
+## Daemon hub (`/ws/daemon/v1`)
+
+Connected agents register in `src/daemon-hub.ts`; the admin UI polls `/api/admin/v1/daemon/*`.
 
 - Each socket gets an internal id (`daemon-1`, …) for routing; **display** uses `hostname` from the daemon `hello` message, or from an automatic `hostname` shell probe for legacy agents (UI falls back to `X-Real-IP`, then the internal id).
 - On connect, evict older sockets from the same `X-Real-IP`, `nodeId`, or `hostname`; prune sockets with no inbound traffic (stale reconnect zombies).
-- Co-located daemons that dial the instance Unix socket directly (no Caddy hop) collapse to a single local slot — see `daemon` `AGENTS.md` for socket vs URL mode.
-- `GET /api/instance/ca` serves the platform CA PEM for agent trust stores.
+- Co-located daemons that dial the instance Unix socket directly (no Caddy hop) collapse to a single local slot and are tagged `__direct__` (`getColocatedDaemonId`) — see `daemon` `AGENTS.md` for socket vs URL mode.
+- No `version` push / auto-update: the daemon never self-updates.
+
+### Dev sync (push a daemon build without git)
+
+`src/dev-sync.ts` tars the local `../daemon` checkout, base64-encodes it, and streams `dev-sync-begin` → `dev-sync-chunk*` → `dev-sync-end` over the daemon WS; the daemon unpacks, `deno cache`s, replies `dev-sync-result`, and restarts. Admin routes: `POST /api/admin/v1/daemon/:id/sync-dev` and `…/daemon/sync-dev` (all). UI: **Sync Dev Build** in the fleet section.
+
+### Instance Cloudflare tunnel
+
+`POST /api/admin/v1/instance/tunnel-token` (`src/tunnel-routes.ts`) sends a `tunnel-token` WS message to the co-located daemon, which writes `cloudflared/tunnels/instance.token` and (re)starts cloudflared. External agents then reach this instance via the tunnel → Caddy → socket. UI: **Save Tunnel Token** in the fleet section (empty token tears it down).
+
+Correlated request/ack helpers (`awaitDaemonAck` / `recordDaemonAck`) back both dev-sync and tunnel-token.
 
 ## Layout
 
-- `develop.sh` — dev entrypoint: installs stack from GitHub and starts all services
-- `src/app.ts` — shared Hono app
+- `develop.sh` — thin dev wrapper: bootstraps the daemon, enables dev-instance mode, tails journals
+- `src/app.ts` — shared Hono app (`/api/health` + client/admin/daemon routers)
+- `src/surfaces.ts` — versioned API/WS prefix constants
+- `src/admin-routes.ts` / `src/daemon-api-routes.ts` / `src/client-routes.ts` — per-surface REST routers
+- `src/system-routes.ts` — admin `system/upgrade` (Deno-only)
+- `src/dev-sync.ts` / `src/tunnel-routes.ts` — dev-sync + tunnel admin routes (Deno-only)
 - `src/server-paths.ts` — Unix socket path resolution
-- `src/daemon-hub.ts` — WebSocket connection registry, command/address dispatch
-- `src/deno-ws.ts` — `/ws` upgrade handler
-- `src/daemon-routes.ts` — `/api/daemon/*` admin/diagnostic routes
+- `src/daemon-hub.ts` — WebSocket connection registry, command/address/ack dispatch
+- `src/deno-ws.ts` — `/ws/daemon/v1` handler + `/ws/{admin,client}/v1` stubs
 - `src/workers.ts` — Workers entry (`wrangler.jsonc` main)
 - `src/deno.ts` — Deno entry (`deno.json` tasks)
