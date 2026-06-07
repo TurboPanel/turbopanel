@@ -1,5 +1,7 @@
 import type { ServerAddresses } from './server-addresses.ts'
 
+import { agentDebugLog } from './debug-agent-log.ts'
+
 /** JSON messages exchanged between the instance and daemon over /ws. */
 export type DaemonMessage =
   | {
@@ -94,9 +96,11 @@ const pendingAddresses = new Map<string, {
 
 const ADDRESSES_TIMEOUT_MS = 10_000
 /** Drop sockets with no inbound traffic (pong, hello, etc.) for this long. */
-export const DAEMON_STALE_MS = 20_000
-/** Sockets missing X-Real-IP are pruned faster (usually pre-fix zombie reconnects). */
-const STALE_NO_ADDRESS_MS = 10_000
+export const DAEMON_STALE_MS = 45_000
+/** Sockets that never got an identity address (legacy zombie reconnects). */
+const STALE_NO_ADDRESS_MS = 15_000
+/** Instance ping interval in deno-ws.ts — stale timeout must stay above this. */
+export const DAEMON_PING_MS = 15_000
 
 let nextId = 1
 
@@ -253,10 +257,18 @@ export function pruneStaleDaemons(maxIdleMs = DAEMON_STALE_MS): string[] {
   const now = Date.now()
   const pruned: string[] = []
   for (const [id, conn] of connections.entries()) {
-    const idleLimit = conn.remoteAddress && conn.remoteAddress !== '__direct__'
-      ? maxIdleMs
-      : STALE_NO_ADDRESS_MS
-    if (conn.lastInboundAt < now - idleLimit) {
+    const idleMs = now - conn.lastInboundAt
+    const idleLimit = conn.remoteAddress ? maxIdleMs : STALE_NO_ADDRESS_MS
+    if (idleMs >= idleLimit) {
+      // #region agent log
+      agentDebugLog('daemon-hub.ts:pruneStaleDaemons', 'pruning stale daemon', {
+        id,
+        hostname: conn.hostname ?? null,
+        remoteAddress: conn.remoteAddress ?? null,
+        idleMs,
+        idleLimit,
+      }, 'H1')
+      // #endregion
       unregisterDaemon(id)
       pruned.push(id)
     }

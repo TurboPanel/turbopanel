@@ -18,21 +18,23 @@ import {
   unregisterDaemon,
 } from './daemon-hub.ts'
 
+import { getDaemonCommit } from './daemon-version.ts'
+import { agentDebugLog } from './debug-agent-log.ts'
+
 let pruneTimer: ReturnType<typeof setInterval> | undefined
 
-function ensurePruneTimer(): void {
-  const run = () => {
-    probeMissingHostnames()
-    const pruned = pruneStaleDaemons()
-    if (pruned.length > 0) {
-      console.log(`[ws] pruned ${pruned.length} stale daemon connection(s)`)
-    }
+function runPruneCycle(): void {
+  probeMissingHostnames()
+  const pruned = pruneStaleDaemons()
+  if (pruned.length > 0) {
+    console.log(`[ws] pruned ${pruned.length} stale daemon connection(s): ${pruned.join(', ')}`)
   }
-  run()
-  if (pruneTimer) return
-  pruneTimer = setInterval(run, 15_000)
 }
-import { getDaemonCommit } from './daemon-version.ts'
+
+function ensurePruneTimer(): void {
+  if (pruneTimer) return
+  pruneTimer = setInterval(runPruneCycle, 15_000)
+}
 
 export function registerDaemonWebSocket(app: Hono) {
   app.get(
@@ -41,6 +43,7 @@ export function registerDaemonWebSocket(app: Hono) {
       const remoteAddress = c.req.header('x-real-ip')?.trim() ||
         c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
       let connId: string | undefined
+      let identityAddress = remoteAddress ?? '__direct__'
       let pingTimer: ReturnType<typeof setInterval> | undefined
 
       return {
@@ -53,12 +56,19 @@ export function registerDaemonWebSocket(app: Hono) {
           connId = conn.id
           // Caddy sets X-Real-IP for remote agents; co-located unix-socket daemons
           // have no proxy hop — collapse those under a single local slot.
-          const identityAddress = remoteAddress ?? '__direct__'
+          identityAddress = remoteAddress ?? '__direct__'
           setDaemonRemoteAddress(conn.id, identityAddress)
           const evicted = evictDuplicateDaemons(conn.id, {
             remoteAddress: identityAddress,
           })
           if (evicted.length > 0) {
+            // #region agent log
+            agentDebugLog('deno-ws.ts:onOpen', 'evicted duplicate on open', {
+              connId: conn.id,
+              identityAddress,
+              evicted,
+            }, 'H2')
+            // #endregion
             console.log(
               `[ws] evicted ${evicted.length} duplicate connection(s) for ${identityAddress}`,
             )
@@ -128,7 +138,7 @@ export function registerDaemonWebSocket(app: Hono) {
             const evicted = evictDuplicateDaemons(connId, {
               hostname: message.hostname,
               nodeId: message.nodeId,
-              remoteAddress,
+              remoteAddress: identityAddress,
             })
             if (evicted.length > 0) {
               console.log(
