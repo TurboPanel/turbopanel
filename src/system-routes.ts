@@ -10,17 +10,19 @@ const INSTANCE_REPO_ROOT = (() => {
 
 const TRUNK_BRANCH = Deno.env.get('TURBOPANEL_TRUNK_BRANCH')?.trim() || 'trunk'
 const INSTANCE_SERVICE = Deno.env.get('TURBOPANEL_INSTANCE_SERVICE')?.trim()
+const TURBOPANEL_USER = Deno.env.get('TURBOPANEL_USER')?.trim() || 'turbopanel'
+const NORMALIZE_CHECKOUT = '/usr/local/bin/turbopanel-normalize-dev-checkout'
 
 let upgrading = false
 
-/** Run git as turbopanel so the deploy key stays mode 0600 (SSH rejects group-readable keys). */
+/** Run git as turbopanel (9999) so the deploy key stays mode 0600 and checkouts stay editable. */
 async function git(
   repoRoot: string,
   args: string[],
 ): Promise<{ success: boolean; stdout: string; stderr: string }> {
   try {
     const command = new Deno.Command('sudo', {
-      args: ['-u', 'turbopanel', 'git', '-C', repoRoot, ...args],
+      args: ['-u', TURBOPANEL_USER, 'git', '-C', repoRoot, ...args],
       stdout: 'piped',
       stderr: 'piped',
     })
@@ -34,6 +36,27 @@ async function git(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     return { success: false, stdout: '', stderr: message }
+  }
+}
+
+/** After git reset, re-home any instance-owned source files back to turbopanel (9999). */
+async function normalizeCheckout(
+  repoRoot: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const out = await new Deno.Command('sudo', {
+      args: [NORMALIZE_CHECKOUT, repoRoot],
+      stdout: 'piped',
+      stderr: 'piped',
+    }).output()
+    if (out.success) return { ok: true }
+    return {
+      ok: false,
+      error: new TextDecoder().decode(out.stderr).trim() || 'normalize checkout failed',
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    return { ok: false, error: message }
   }
 }
 
@@ -54,6 +77,14 @@ async function syncRepoToTrunk(
     return {
       ok: false,
       error: `${label} git reset failed: ${reset.stderr}`,
+    }
+  }
+
+  const normalized = await normalizeCheckout(repoRoot)
+  if (!normalized.ok) {
+    return {
+      ok: false,
+      error: `${label} checkout permission fix failed: ${normalized.error}`,
     }
   }
 

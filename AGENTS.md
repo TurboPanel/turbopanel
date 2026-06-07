@@ -18,8 +18,11 @@ The **daemon is the constant** installed on every TurboPanel-managed host and is
 
 ## Users, group & socket permissions
 
-- **`turbopanel`** (UID/GID **9999**): the daemon user; has sudo; owns the install tree.
-- **`instance`** (UID **9998**): runs the instance, Caddy, and the dev UI. Primary group is **`turbopanel`** — it has **no group of its own** and **no sudo**.
+- **`turbopanel`** (UID/GID **9999**): the developer and daemon user; has passwordless sudo; owns the install tree and **all git operations** (`git pull`, Upgrade System fetch/reset).
+- **`instance`** (UID **9998**): runs the instance, Caddy, and the dev UI. Primary group is **`turbopanel`** — it has **no group of its own** and **no sudo**. It **reads** platform checkouts via group membership; it must not own source files (that blocks 9999 from saving in the editor).
+- Co-located dev checkouts (`platform/turbopanel`, `platform/ui`) are **`2770 turbopanel:turbopanel`**. Instance runtime dirs (`.cache`, `.config`, `.local` under the instance checkout) stay **`instance:turbopanel`** — the normalizer skips them.
+- Git SSH uses `/opt/turbopanel/.ssh/github_ed25519` at mode **`0600`** only (SSH rejects `0640`). Upgrade runs `sudo -u turbopanel git`; never run git as `instance`.
+- Manual pulls: `sudo -u turbopanel git -C … pull` (or pull as the `turbopanel` login user directly). After any mistaken `instance`-user git, run `/usr/local/bin/turbopanel-normalize-dev-checkout <path>`.
 - `/run/turbopanel` is **`2770 turbopanel:turbopanel`** (group-writable + setgid) so the in-group `instance` user can bind the socket; new sockets stay in the `turbopanel` group. The instance hardens its socket to **`0660`** so the daemon (also group `turbopanel`) can connect.
 
 ## Documentation discipline
