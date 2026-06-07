@@ -37,7 +37,7 @@ For always-on test hosts, run Tilt Deno mode under systemd:
 - Runner script: `scripts/run-instance-tilt.sh` (`tilt up deno --stream`)
 - Installer helper: `scripts/install-instance-systemd.sh` (copies unit to `/etc/systemd/system/`, enables + starts)
 - Logs: `journalctl -u turbopanel-instance -f`
-- Co-located dev runs the **daemon** under `turbopanel-daemon.service` (not Tilt). Install with `../daemon/scripts/install-daemon-systemd.sh`; logs at `/var/log/turbopanel/daemon/`. Do not run `tilt up` in the daemon repo on the same host — two daemon processes will fight over `/ws` and inflate connection ids.
+- Co-located dev runs the **daemon** under `turbopanel-daemon.service` (systemd only — no Tilt in the daemon repo). Install with `../daemon/scripts/install-daemon-systemd.sh`; logs at `/var/log/turbopanel/daemon/`.
 
 ## Unix domain sockets
 
