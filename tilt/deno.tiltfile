@@ -37,11 +37,11 @@ def run_deno_mode():
     local_resource(
         name = "turbopanel (deno)",
         labels = ["Runtime"],
-        serve_cmd = deno_bin() + " run --allow-env --allow-net=127.0.0.1:7686 --allow-sys=networkInterfaces --allow-read=" + SOCKET_DIR + ",../daemon,./certs --allow-write=" + SOCKET_DIR + " --allow-run=git --watch src/deno.ts",
+        serve_cmd = deno_bin() + " run --allow-env --allow-sys=networkInterfaces --allow-read=" + SOCKET_DIR + ",../daemon,./certs --allow-write=" + SOCKET_DIR + " --allow-run=git --watch src/deno.ts",
         serve_env = deno_env,
         resource_deps = ["socket-setup"],
         trigger_mode = TRIGGER_MODE_AUTO,
-        deps = ["src/deno.ts", "src/app.ts", "src/deno-ws.ts", "src/daemon-hub.ts", "src/daemon-routes.ts", "src/daemon-version.ts", "src/server-addresses.ts", "src/server-paths.ts", "src/debug-session-log.ts", "certs", "deno.json"],
+        deps = ["src/deno.ts", "src/app.ts", "src/deno-ws.ts", "src/daemon-hub.ts", "src/daemon-routes.ts", "src/daemon-version.ts", "src/server-addresses.ts", "src/server-paths.ts", "certs", "deno.json"],
     )
 
     cert_env = dict(node_serve_env())
