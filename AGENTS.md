@@ -97,7 +97,7 @@ Path resolution lives in `src/server-paths.ts`.
 
 ## Database (Drizzle + Postgres.js)
 
-The instance uses **Drizzle ORM** over **postgres.js** with `prepare: false` (required for Hyperdrive and transaction-pooling). Connection factories live in `src/db.ts`; schema in `src/db/schema.ts`; migrations config in `drizzle.config.ts`.
+The instance uses **Drizzle ORM** over **postgres.js** with `prepare: false` (required for Hyperdrive and transaction-pooling). Connection factories live in `src/db.ts`; schema in `src/db/schema.ts`; drizzle-kit config in `drizzle.config.ts`. **Read `src/db/AGENTS.md` before touching schema or the database** — no migrations yet; the dev server has live data.
 
 | Runtime | Factory | When connected |
 |---|---|---|
@@ -128,7 +128,7 @@ The Deno unit adds `--allow-read` and `--allow-write` for `postgres_socket_dir` 
 ### Tooling
 
 - `pnpm install` — pulls `drizzle-orm`, `postgres`, `drizzle-kit`
-- `DATABASE_URL=… pnpm exec drizzle-kit push` — apply schema (dev/CI)
+- Do **not** run `drizzle-kit push`, `generate`, or `migrate` without explicit approval — see `src/db/AGENTS.md`
 
 ### Caddy dial format
 
@@ -221,6 +221,7 @@ Correlated request/ack helpers (`awaitDaemonAck` / `recordDaemonAck`) back both 
 - `src/surfaces.ts` — versioned API/WS prefix constants
 - `src/admin-routes.ts` / `src/daemon-api-routes.ts` / `src/client-routes.ts` — per-surface REST routers
 - `src/system-routes.ts` — developer `system/upgrade` + `system/upgrade-status` (Deno-only). Upgrade hard-resets instance + daemon to `origin/trunk`; blocked when instance, daemon, or UI checkouts have uncommitted changes (`git status --porcelain`).
+- `src/database-routes.ts` — developer `database/status` + `database/studio` (Deno-only). Connection test and on-demand Drizzle Studio at `/drizzle-studio/` via Caddy in dev mode.
 - `src/dev-sync.ts` / `src/tunnel-routes.ts` — dev-sync + tunnel admin routes (Deno-only)
 - `src/server-paths.ts` — Unix socket path resolution
 - `src/daemon-hub.ts` — WebSocket connection registry, command/address/ack dispatch

@@ -11,6 +11,7 @@ import {
   sendToDaemon,
 } from './daemon-hub.ts'
 import { collectServerAddresses } from './server-addresses.ts'
+import { registerDatabaseRoutes } from './database-routes.ts'
 import { DEVELOPER_API_PREFIX } from './surfaces.ts'
 
 /**
@@ -134,6 +135,8 @@ export function registerDeveloperRoutes(app: Hono) {
       return c.json({ error: message }, status)
     }
   })
+
+  registerDatabaseRoutes(developer)
 
   app.route(DEVELOPER_API_PREFIX, developer)
   return app

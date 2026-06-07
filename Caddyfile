@@ -37,6 +37,14 @@
 		}
 	}
 
+	# Dev: Drizzle Studio (spawned on demand by the instance developer API).
+	@drizzle_studio expression `"{$TURBOPANEL_UI_MODE:static}" == "dev"`
+	handle @drizzle_studio {
+		handle_path /drizzle-studio* {
+			reverse_proxy 127.0.0.1:{$DRIZZLE_STUDIO_PORT:4983}
+		}
+	}
+
 	# Dev: proxy to Expo's web dev server (TURBOPANEL_UI_MODE=dev).
 	@ui_dev expression `"{$TURBOPANEL_UI_MODE:static}" == "dev"`
 	handle @ui_dev {

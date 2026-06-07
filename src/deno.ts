@@ -7,6 +7,7 @@ import { registerSystemRoutes } from './system-routes.ts'
 import { registerDevSyncRoutes } from './dev-sync.ts'
 import { registerTunnelRoutes } from './tunnel-routes.ts'
 import { isDeveloperSurfaceEnabled } from './dev-mode.ts'
+import { stopDrizzleStudio } from './drizzle-studio.ts'
 import {
   hardenInstanceSocket,
   INSTANCE_SOCKET_MODE,
@@ -29,7 +30,10 @@ const socketPath = resolveInstanceSocket()
 
 const abort = new AbortController()
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-  Deno.addSignalListener(signal, () => abort.abort())
+  Deno.addSignalListener(signal, () => {
+    stopDrizzleStudio()
+    abort.abort()
+  })
 }
 
 await prepareInstanceSocket(socketPath)
