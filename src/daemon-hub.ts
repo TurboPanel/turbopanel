@@ -1,6 +1,5 @@
 import type { ServerAddresses } from './server-addresses.ts'
 
-import { agentDebugLog } from './debug-agent-log.ts'
 
 /** JSON messages exchanged between the instance and daemon over /ws. */
 export type DaemonMessage =
@@ -257,13 +256,6 @@ export function setDaemonNodeId(id: string, nodeId: string): string {
       existing.hostnameProbeSent = incoming.hostnameProbeSent ??
         existing.hostnameProbeSent
       connections.delete(id)
-      // #region agent log
-      agentDebugLog('daemon-hub.ts:setDaemonNodeId', 'superseded duplicate node socket', {
-        nodeId: trimmed,
-        keepId: existingId,
-        dropId: id,
-      }, 'H2')
-      // #endregion
       return existingId
     }
   }
@@ -320,15 +312,6 @@ export function pruneStaleDaemons(maxIdleMs = DAEMON_STALE_MS): string[] {
     const idleMs = now - conn.lastInboundAt
     const idleLimit = conn.remoteAddress ? maxIdleMs : STALE_NO_ADDRESS_MS
     if (idleMs >= idleLimit) {
-      // #region agent log
-      agentDebugLog('daemon-hub.ts:pruneStaleDaemons', 'pruning stale daemon', {
-        id,
-        hostname: conn.hostname ?? null,
-        remoteAddress: conn.remoteAddress ?? null,
-        idleMs,
-        idleLimit,
-      }, 'H1')
-      // #endregion
       unregisterDaemon(id)
       pruned.push(id)
     }

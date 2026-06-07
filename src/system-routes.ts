@@ -78,23 +78,7 @@ export function registerSystemRoutes(app: Hono): Hono {
 
     upgrading = true
     try {
-      // #region agent log
-      Deno.writeTextFile('/run/turbopanel/debug-e3dc28.log', `${JSON.stringify({
-        sessionId: 'e3dc28', runId: 'upgrade-fix-v2', hypothesisId: 'H4',
-        location: 'system-routes.ts:upgrade', message: 'starting upgrade via sudo -u turbopanel git',
-        data: { instanceService: INSTANCE_SERVICE ?? null },
-        timestamp: Date.now(),
-      })}\n`, { append: true }).catch(() => {})
-      // #endregion
       const instanceSync = await syncRepoToTrunk(INSTANCE_REPO_ROOT, 'instance')
-      // #region agent log
-      Deno.writeTextFile('/run/turbopanel/debug-e3dc28.log', `${JSON.stringify({
-        sessionId: 'e3dc28', runId: 'upgrade-fix-v2', hypothesisId: 'H4',
-        location: 'system-routes.ts:upgrade', message: 'instance sync result',
-        data: { ok: instanceSync.ok, error: instanceSync.ok ? null : instanceSync.error },
-        timestamp: Date.now(),
-      })}\n`, { append: true }).catch(() => {})
-      // #endregion
       if (!instanceSync.ok) {
         return c.json({ ok: false, error: instanceSync.error }, 500)
       }
@@ -112,17 +96,6 @@ export function registerSystemRoutes(app: Hono): Hono {
         stdout: 'piped',
         stderr: 'piped',
       }).output()
-      // #region agent log
-      Deno.writeTextFile('/run/turbopanel/debug-e3dc28.log', `${JSON.stringify({
-        sessionId: 'e3dc28', runId: 'upgrade-fix-v2', hypothesisId: 'H2',
-        location: 'system-routes.ts:upgrade', message: 'systemctl restart result',
-        data: {
-          success: restart.success,
-          stderr: new TextDecoder().decode(restart.stderr).trim().slice(0, 300),
-        },
-        timestamp: Date.now(),
-      })}\n`, { append: true }).catch(() => {})
-      // #endregion
       if (!restart.success) {
         const err = new TextDecoder().decode(restart.stderr).trim()
         return c.json(
