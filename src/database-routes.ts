@@ -3,7 +3,7 @@ import type { Hono } from 'hono'
 import { getDb } from './db.ts'
 import {
   drizzleStudioStatus,
-  DRIZZLE_STUDIO_PUBLIC_PATH,
+  DRIZZLE_STUDIO_BROWSER_URL,
   startDrizzleStudio,
 } from './drizzle-studio.ts'
 
@@ -81,7 +81,7 @@ export function registerDatabaseRoutes(developer: Hono): void {
     const status = drizzleStudioStatus()
     return c.json({
       running: status.running,
-      publicPath: DRIZZLE_STUDIO_PUBLIC_PATH,
+      browserUrl: DRIZZLE_STUDIO_BROWSER_URL,
       port: status.port,
     })
   })
@@ -96,6 +96,6 @@ export function registerDatabaseRoutes(developer: Hono): void {
     if (!started.ok) {
       return c.json({ ok: false, error: started.error }, 500)
     }
-    return c.json({ ok: true, publicPath: started.publicPath })
+    return c.json({ ok: true, browserUrl: started.browserUrl })
   })
 }

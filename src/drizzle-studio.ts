@@ -3,8 +3,8 @@ import { buildPostgresUrlFromEnv } from './db-url.ts'
 
 const STUDIO_PORT = Number(Deno.env.get('TURBOPANEL_DRIZZLE_STUDIO_PORT') ?? '4983')
 const STUDIO_HOST = Deno.env.get('TURBOPANEL_DRIZZLE_STUDIO_HOST')?.trim() || '127.0.0.1'
-/** Browser path on the Caddy HTTPS entrypoint (dev only). */
-export const DRIZZLE_STUDIO_PUBLIC_PATH = '/drizzle-studio/'
+/** Hosted Drizzle Studio UI (talks to the local server on STUDIO_PORT). */
+export const DRIZZLE_STUDIO_BROWSER_URL = 'https://local.drizzle.studio'
 
 const INSTANCE_REPO_ROOT = (() => {
   const here = dirname(fromFileUrl(import.meta.url))
@@ -22,28 +22,32 @@ function nodeBinDir(): string {
   return '/opt/turbopanel/runtimes/node/current/bin'
 }
 
-function pnpmPath(): string {
-  return join(nodeBinDir(), 'pnpm')
+function nodePath(): string {
+  return join(nodeBinDir(), 'node')
+}
+
+function drizzleKitPath(): string {
+  return join(INSTANCE_REPO_ROOT, 'node_modules', 'drizzle-kit', 'bin.cjs')
 }
 
 export function drizzleStudioStatus(): {
   running: boolean
   port: number
-  publicPath: string
+  browserUrl: string
 } {
   return {
     running: studioRunning,
     port: STUDIO_PORT,
-    publicPath: DRIZZLE_STUDIO_PUBLIC_PATH,
+    browserUrl: DRIZZLE_STUDIO_BROWSER_URL,
   }
 }
 
 export async function startDrizzleStudio(): Promise<
-  { ok: true; publicPath: string } | { ok: false; error: string }
+  { ok: true; browserUrl: string } | { ok: false; error: string }
 > {
   const status = drizzleStudioStatus()
   if (status.running) {
-    return { ok: true, publicPath: status.publicPath }
+    return { ok: true, browserUrl: status.browserUrl }
   }
 
   const databaseUrl = buildPostgresUrlFromEnv()
@@ -55,10 +59,9 @@ export async function startDrizzleStudio(): Promise<
   const path = [nodeBin, Deno.env.get('PATH') ?? ''].filter(Boolean).join(':')
 
   try {
-    const command = new Deno.Command(pnpmPath(), {
+    const command = new Deno.Command(nodePath(), {
       args: [
-        'exec',
-        'drizzle-kit',
+        drizzleKitPath(),
         'studio',
         '--host',
         STUDIO_HOST,
@@ -87,13 +90,17 @@ export async function startDrizzleStudio(): Promise<
       studioChild = null
     })
 
-    const ready = await waitForStudioPort(10_000)
+    const ready = await waitForStudioPort(30_000)
     if (!ready) {
+      const detail = await childErrorDetail(studioChild)
       stopDrizzleStudio()
-      return { ok: false, error: 'drizzle studio did not become ready in time' }
+      return {
+        ok: false,
+        error: detail ?? 'drizzle studio did not become ready in time',
+      }
     }
 
-    return { ok: true, publicPath: DRIZZLE_STUDIO_PUBLIC_PATH }
+    return { ok: true, browserUrl: DRIZZLE_STUDIO_BROWSER_URL }
   } catch (err) {
     studioRunning = false
     studioChild = null
@@ -114,6 +121,22 @@ export function stopDrizzleStudio(): void {
   }
   studioRunning = false
   studioChild = null
+}
+
+async function childErrorDetail(
+  child: Deno.ChildProcess | null,
+): Promise<string | undefined> {
+  if (!child) return undefined
+  const status = await Promise.race([
+    child.status,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 500)),
+  ])
+  if (!status || status.success) return undefined
+  const stderr = child.stderr
+  if (!stderr) return `drizzle studio exited (code ${status.code})`
+  const text = new TextDecoder().decode(await stderr.getReader().read().then((r) => r.value ?? new Uint8Array()))
+  const line = text.split('\n').map((s) => s.trim()).find(Boolean)
+  return line ?? `drizzle studio exited (code ${status.code})`
 }
 
 async function waitForStudioPort(timeoutMs: number): Promise<boolean> {

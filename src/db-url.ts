@@ -1,7 +1,7 @@
 /** Build a postgres connection URL from self-hosted `TURBOPANEL_PG_*` env vars. */
 export function buildPostgresUrlFromEnv(): string | undefined {
   const user = Deno.env.get('TURBOPANEL_PG_USER')?.trim()
-  const password = Deno.env.get('TURBOPANEL_PG_PASSWORD')
+  const password = Deno.env.get('TURBOPANEL_PG_PASSWORD')?.trim()
   const database = Deno.env.get('TURBOPANEL_PG_DB')?.trim()
   if (!user || !password || !database) return undefined
 
@@ -15,7 +15,8 @@ export function buildPostgresUrlFromEnv(): string | undefined {
     const socketDir = socket.includes('.s.PGSQL.')
       ? socket.slice(0, socket.lastIndexOf('/'))
       : socket
-    return `postgresql://${encUser}:${encPass}@/${database}?host=${
+    // libpq socket URLs need a host placeholder; `@/db` breaks Node's URL parser.
+    return `postgresql://${encUser}:${encPass}@127.0.0.1:${port}/${database}?host=${
       encodeURIComponent(socketDir)
     }`
   }
