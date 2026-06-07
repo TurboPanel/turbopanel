@@ -29,10 +29,11 @@ export function createDenoDb(): Db | undefined {
 
   let client: ReturnType<typeof postgres>
   if (socket) {
-    const path = socket.includes('.s.PGSQL.')
+    // postgres.js builds `host/.s.PGSQL.<port>` when host contains a slash.
+    const socketDir = socket.includes('.s.PGSQL.')
       ? socket.slice(0, socket.lastIndexOf('/'))
       : socket
-    client = postgres({ ...PG_OPTS, user, password, database, path, port })
+    client = postgres({ ...PG_OPTS, user, password, database, host: socketDir, port })
   } else if (host) {
     client = postgres({ ...PG_OPTS, user, password, database, host, port })
   } else {

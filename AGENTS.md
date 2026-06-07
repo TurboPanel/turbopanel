@@ -76,6 +76,7 @@ All TurboPanel runtime sockets live under **`/run/turbopanel/`** (on Linux, `/va
 | Socket file | Service |
 |---|---|
 | `/run/turbopanel/turbopanel.sock` | Hono instance (bound by `instance`, mode `0660`, group `turbopanel`) |
+| `/run/turbopanel/postgres/.s.PGSQL.5432` | PostgreSQL 18 (Docker bind-mount) |
 | `/run/turbopanel/<name>.sock` | Reserved for future services |
 
 ### Environment variables
@@ -118,7 +119,7 @@ Injected by `../daemon` `instance-launch` from the same defaults as the `postgre
 | `TURBOPANEL_PG_SOCKET` | `/var/run/turbopanel/postgres/.s.PGSQL.5432` | — |
 | `TURBOPANEL_PG_HOST` | — | `127.0.0.1` |
 
-The Deno unit adds `--allow-read` for `postgres_socket_dir` and `--allow-net=127.0.0.1:5432` only in TCP dev mode.
+The Deno unit adds `--allow-read` and `--allow-write` for `postgres_socket_dir` (Deno requires write on the socket directory for Unix connects) and `--allow-net=127.0.0.1:5432` only when `postgres_expose_port=true`.
 
 ### Workers Hyperdrive
 
@@ -219,7 +220,7 @@ Correlated request/ack helpers (`awaitDaemonAck` / `recordDaemonAck`) back both 
 - `src/app.ts` — shared Hono app (`/api/health` + client/admin/daemon routers)
 - `src/surfaces.ts` — versioned API/WS prefix constants
 - `src/admin-routes.ts` / `src/daemon-api-routes.ts` / `src/client-routes.ts` — per-surface REST routers
-- `src/system-routes.ts` — admin `system/upgrade` (Deno-only)
+- `src/system-routes.ts` — developer `system/upgrade` + `system/upgrade-status` (Deno-only). Upgrade hard-resets instance + daemon to `origin/trunk`; blocked when instance, daemon, or UI checkouts have uncommitted changes (`git status --porcelain`).
 - `src/dev-sync.ts` / `src/tunnel-routes.ts` — dev-sync + tunnel admin routes (Deno-only)
 - `src/server-paths.ts` — Unix socket path resolution
 - `src/daemon-hub.ts` — WebSocket connection registry, command/address/ack dispatch

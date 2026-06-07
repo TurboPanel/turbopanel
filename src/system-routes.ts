@@ -8,6 +8,31 @@ const INSTANCE_REPO_ROOT = (() => {
   return join(here, '..')
 })()
 
+function getUiRepoPath(): string {
+  const override = Deno.env.get('TURBOPANEL_UI_REPO')?.trim()
+  if (override) return override
+  return join(INSTANCE_REPO_ROOT, '..', 'ui')
+}
+
+/** Platform checkouts Upgrade System may reset — all must be clean first. */
+const PLATFORM_REPOS = [
+  { name: 'instance', path: INSTANCE_REPO_ROOT },
+  { name: 'daemon', path: getDaemonRepoPath },
+  { name: 'ui', path: getUiRepoPath },
+] as const
+
+export type DirtyRepo = {
+  repo: string
+  path: string
+  changes: number
+}
+
+export type UpgradeStatus = {
+  ok: true
+  canUpgrade: boolean
+  dirty: DirtyRepo[]
+}
+
 const TRUNK_BRANCH = Deno.env.get('TURBOPANEL_TRUNK_BRANCH')?.trim() || 'trunk'
 const INSTANCE_SERVICE = Deno.env.get('TURBOPANEL_INSTANCE_SERVICE')?.trim()
 const TURBOPANEL_USER = Deno.env.get('TURBOPANEL_USER')?.trim() || 'turbopanel'
@@ -60,6 +85,42 @@ async function normalizeCheckout(
   }
 }
 
+async function repoDirty(
+  repoRoot: string,
+): Promise<{ ok: true; dirty: boolean; changes: number } | { ok: false; error: string }> {
+  const status = await git(repoRoot, ['status', '--porcelain'])
+  if (!status.success) {
+    return {
+      ok: false,
+      error: status.stderr || 'git status failed',
+    }
+  }
+  const lines = status.stdout ? status.stdout.split('\n').filter(Boolean) : []
+  return { ok: true, dirty: lines.length > 0, changes: lines.length }
+}
+
+async function collectDirtyRepos(): Promise<
+  { ok: true; dirty: DirtyRepo[] } | { ok: false; error: string }
+> {
+  const dirty: DirtyRepo[] = []
+  for (const repo of PLATFORM_REPOS) {
+    const path = typeof repo.path === 'function' ? repo.path() : repo.path
+    const result = await repoDirty(path)
+    if (!result.ok) {
+      return { ok: false, error: `${repo.name}: ${result.error}` }
+    }
+    if (result.dirty) {
+      dirty.push({ repo: repo.name, path, changes: result.changes })
+    }
+  }
+  return { ok: true, dirty }
+}
+
+function dirtyUpgradeError(dirty: DirtyRepo[]): string {
+  const names = dirty.map((entry) => entry.repo).join(', ')
+  return `cannot upgrade: uncommitted changes in ${names} (commit or stash first)`
+}
+
 async function syncRepoToTrunk(
   repoRoot: string,
   label: string,
@@ -92,10 +153,39 @@ async function syncRepoToTrunk(
 }
 
 export function registerSystemRoutes(app: Hono): Hono {
+  app.get(`${DEVELOPER_API_PREFIX}/system/upgrade-status`, async (c) => {
+    const result = await collectDirtyRepos()
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error }, 500)
+    }
+    const body: UpgradeStatus = {
+      ok: true,
+      canUpgrade: result.dirty.length === 0,
+      dirty: result.dirty,
+    }
+    return c.json(body)
+  })
+
   app.post(`${DEVELOPER_API_PREFIX}/system/upgrade`, async (c) => {
     if (upgrading) {
       return c.json({ ok: false, error: 'upgrade already in progress' }, 409)
     }
+
+    const dirtyCheck = await collectDirtyRepos()
+    if (!dirtyCheck.ok) {
+      return c.json({ ok: false, error: dirtyCheck.error }, 500)
+    }
+    if (dirtyCheck.dirty.length > 0) {
+      return c.json(
+        {
+          ok: false,
+          error: dirtyUpgradeError(dirtyCheck.dirty),
+          dirty: dirtyCheck.dirty,
+        },
+        409,
+      )
+    }
+
     if (!INSTANCE_SERVICE) {
       return c.json(
         {
