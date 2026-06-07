@@ -1,5 +1,5 @@
 [Unit]
-Description=TurboPanel instance dev stack (Tilt Deno mode)
+Description=TurboPanel instance
 After=network-online.target
 Wants=network-online.target
 
@@ -9,8 +9,9 @@ User=turbopanel
 Group=turbopanel
 WorkingDirectory=/opt/turbopanel/platform/turbopanel
 Environment=HOME=/opt/turbopanel
-ExecStart=/opt/turbopanel/platform/turbopanel/scripts/run-instance-tilt.sh
-ExecStop=/bin/bash -lc 'cd /opt/turbopanel/platform/turbopanel && tilt down -- deno'
+Environment=PATH=/opt/turbopanel/runtimes/deno/current:/opt/turbopanel/runtimes/caddy/current:/usr/local/bin:/usr/bin:/bin
+Environment=TURBOPANEL_INSTANCE_SERVICE=turbopanel-instance
+ExecStart=/opt/turbopanel/runtimes/deno/current/deno run --allow-env --allow-sys=networkInterfaces --allow-read=/run/turbopanel,../daemon,./certs --allow-write=/run/turbopanel --allow-run=git,systemctl src/deno.ts
 Restart=always
 RestartSec=2
 

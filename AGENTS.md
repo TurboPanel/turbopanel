@@ -18,26 +18,21 @@ Minimal Hono app with dual runtimes: **Cloudflare Workers** (Wrangler) and **Den
 
 - **Deno** — <https://docs.deno.com/runtime/getting_started/installation/>
 - **pnpm** — <https://pnpm.io/installation>
-- **Tilt** — <https://docs.tilt.dev/install.html>
-- **Node.js** — for the Tilt wrapper scripts (`scripts/*.mjs`)
+- **Node.js** — required for cert generation and Caddy download (`scripts/*.mjs`)
+- Run `./develop.sh` on a fresh VM (Debian/Ubuntu) to install the dev stack and start all services
 - `pnpm install` — installs Hono and Wrangler into `node_modules/` for Workers bundling
 - Copy or create `.dev.vars` at the repo root for local Wrangler secrets (see the commented stub; file is gitignored)
-- `pnpm dev` — launches Tilt; defaults to Deno mode; use the "Switch to Workers" button in Tilt UI to swap runtimes
-- `pnpm dev:deno` — Tilt in Deno mode directly
-- `pnpm dev:workers` — Tilt in Workers (Wrangler) mode directly
-- `DEV_MODE=deno` or `DEV_MODE=workers` in a root `.env` file is read by the wrapper on startup and watched for live mode-switching
 - `pnpm deploy:workers` — deploy to Cloudflare
 - `pnpm cf-typegen` — regenerate `worker-configuration.d.ts`
+- `pnpm cert:generate` — (re)generate the platform CA and server cert
+- `pnpm caddy:install` — download the pinned Caddy into `~/runtimes/caddy/`
 
-### Systemd (testing environments)
-
-For always-on test hosts, run Tilt Deno mode under systemd:
+### Systemd
 
 - Unit file: `systemd/turbopanel-instance.service`
-- Runner script: `scripts/run-instance-tilt.sh` (`tilt up deno --stream`)
-- Installer helper: `scripts/install-instance-systemd.sh` (copies unit to `/etc/systemd/system/`, enables + starts)
+- Install: copy unit to `/etc/systemd/system/`, run `systemctl daemon-reload && systemctl enable --now turbopanel-instance`
 - Logs: `journalctl -u turbopanel-instance -f`
-- Co-located dev runs the **daemon** under `turbopanel-daemon.service` (systemd only — no Tilt in the daemon repo). Install with `../daemon/scripts/install-daemon-systemd.sh`; logs at `/var/log/turbopanel/daemon/`.
+- Co-located daemon: `../daemon/scripts/install-daemon-systemd.sh`
 
 ## Unix domain sockets
 
@@ -76,11 +71,11 @@ Caddy uses `unix//<path>` where `<path>` has **no leading slash**:
 reverse_proxy unix//run/turbopanel/turbopanel.sock
 ```
 
-Tilt passes `TURBOPANEL_SOCKET_DIAL` into the `Caddyfile` placeholders.
+`TURBOPANEL_SOCKET_DIAL` is passed into the `Caddyfile` placeholders.
 
-### Development (Tilt)
+### Development
 
-Tilt runs a `socket-setup` resource (`scripts/ensure-socket-dir.mjs`) before Deno and Caddy start. The script ensures `/run/turbopanel` exists with owner `turbopanel:turbopanel` and mode `0750`, using passwordless `sudo` when needed. After bind, the instance sets the socket file itself to mode `0660` (owner+group only).
+`develop.sh` runs `scripts/ensure-socket-dir.mjs` before starting services. The script ensures `/run/turbopanel` exists with owner `turbopanel:turbopanel` and mode `0750`, using passwordless `sudo` when needed. After bind, the instance sets the socket file itself to mode `0660` (owner+group only).
 
 Deno is started with scoped permissions: `--allow-env --allow-read=/run/turbopanel --allow-write=/run/turbopanel`.
 
@@ -97,13 +92,12 @@ Caddy terminates TLS and routes traffic from a single HTTPS entrypoint:
 
 `reverse_proxy` to the Unix socket sets `X-Real-IP {remote_host}` on `/api/*` and `/ws`. The instance uses that header to deduplicate daemon WebSocket reconnects (without it, every reconnect looked like a new fleet member behind the proxy).
 
-### Development (Tilt)
+### Development
 
-Tilt sets `TURBOPANEL_UI_MODE=dev` and proxies non-API traffic to the Expo web dev server at `http://localhost:8081`.
+`develop.sh` runs `download-caddy.mjs` and `generate-self-signed-cert.mjs` automatically.
 
 - Entrypoint: `https://<host>:8443` (Caddy, defined in `Caddyfile`) — binds all interfaces; use `localhost` or the machine's LAN IP.
 - Self-hosted TLS uses a **platform CA** (`certs/ca.crt` + `certs/ca.key`) that signs a **server leaf cert** (`certs/self-signed.crt` + `.key`) presented by Caddy (`auto_https off`, no Let's Encrypt). The CA is long-lived and can issue additional certificates later; agents fetch it from `GET /api/instance/ca`. Trust `certs/ca.crt` in browsers/OS to avoid warnings.
-- `pnpm caddy:install` — download the pinned Caddy into `~/runtimes/caddy/` (symlinked like node/deno); `pnpm cert:generate` — (re)generate the platform CA and server cert. Tilt's `caddy-setup` resource runs both automatically.
 - Override the resolved binary with `TURBOPANEL_CADDY` (and `TURBOPANEL_DENO` for Deno).
 
 ### Production (static UI)
@@ -131,6 +125,7 @@ Connected agents register in `src/daemon-hub.ts`; the admin UI polls `/api/daemo
 
 ## Layout
 
+- `develop.sh` — dev entrypoint: installs stack from GitHub and starts all services
 - `src/app.ts` — shared Hono app
 - `src/server-paths.ts` — Unix socket path resolution
 - `src/daemon-hub.ts` — WebSocket connection registry, command/address dispatch

@@ -2,6 +2,7 @@ import { createApp } from './app.ts'
 import { registerDaemonWebSocket } from './deno-ws.ts'
 import { broadcastToDaemons, type DaemonMessage } from './daemon-hub.ts'
 import { getDaemonCommit, registerVersionRoute } from './daemon-version.ts'
+import { registerSystemRoutes } from './system-routes.ts'
 import {
   hardenInstanceSocket,
   INSTANCE_SOCKET_MODE,
@@ -11,6 +12,7 @@ import {
 
 const app = createApp()
 registerVersionRoute(app)
+registerSystemRoutes(app)
 registerDaemonWebSocket(app)
 const socketPath = resolveInstanceSocket()
 

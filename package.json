@@ -3,9 +3,6 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "node scripts/tilt-wrapper.mjs",
-    "dev:deno": "node scripts/tilt-wrapper.mjs deno",
-    "dev:workers": "node scripts/tilt-wrapper.mjs workers",
     "cert:generate": "node scripts/generate-self-signed-cert.mjs",
     "caddy:install": "node scripts/download-caddy.mjs",
     "deploy:workers": "wrangler deploy --minify",

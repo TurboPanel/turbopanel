@@ -18,7 +18,7 @@ const TURBOPANEL_ROOT = (() => {
   return join(here, '..')
 })()
 
-function daemonRepoPath(): string {
+export function getDaemonRepoPath(): string {
   const override = Deno.env.get('TURBOPANEL_DAEMON_REPO')?.trim()
   if (override) return override
   return join(TURBOPANEL_ROOT, '..', 'daemon')
@@ -57,7 +57,7 @@ export async function getDaemonCommit(force = false): Promise<DaemonVersion> {
   const now = Date.now()
   if (!force && cache && now - cache.at < TTL_MS) return cache.value
 
-  const repo = daemonRepoPath()
+  const repo = getDaemonRepoPath()
   const commit = (await gitOutput(repo, ['rev-parse', 'HEAD'])) ?? 'unknown'
   const branch =
     (await gitOutput(repo, ['rev-parse', '--abbrev-ref', 'HEAD'])) ?? 'unknown'
@@ -65,6 +65,16 @@ export async function getDaemonCommit(force = false): Promise<DaemonVersion> {
   const value: DaemonVersion = { commit, branch }
   cache = { value, at: now }
   return value
+}
+
+/** Read the instance repo's own HEAD (not cached). */
+export async function getInstanceCommit(): Promise<DaemonVersion> {
+  const commit =
+    (await gitOutput(TURBOPANEL_ROOT, ['rev-parse', 'HEAD'])) ?? 'unknown'
+  const branch =
+    (await gitOutput(TURBOPANEL_ROOT, ['rev-parse', '--abbrev-ref', 'HEAD'])) ??
+      'unknown'
+  return { commit, branch }
 }
 
 export function registerVersionRoute(app: Hono): Hono {
