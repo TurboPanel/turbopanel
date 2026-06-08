@@ -59,7 +59,6 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `sync
 | **Organizations** | `organization`, `member`, `team`, `mate`, `invitation` |
 | **Config** | `setting` |
 | **Runtime** | `server` |
-| **Throttle** | `rate_limit` |
 
 Drizzle relations are defined for future Better Auth adapter use. `IS_SIGNUP_ENABLED_CONFIG_KEY` is the `setting.key` for self-service signup.
 

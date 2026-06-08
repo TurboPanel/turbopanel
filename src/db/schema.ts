@@ -1,7 +1,7 @@
 /** Introspected from live dev DB (`./introspect.sh`). Review style before commit. */
 
 import { sql } from 'drizzle-orm'
-import { pgTable, index, foreignKey, uuid, timestamp, varchar, text, unique, check, jsonb, integer, boolean, bigint } from "drizzle-orm/pg-core"
+import { pgTable, index, foreignKey, uuid, timestamp, varchar, text, unique, check, jsonb, integer, boolean } from "drizzle-orm/pg-core"
 export const invitation = pgTable("invitation", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
@@ -99,15 +99,6 @@ export const server = pgTable("server", {
 			name: "server_organization_id_organization_id_fk"
 		}),
 	check("server_display_name_format_check", sql`(char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)`),
-]);
-export const rateLimit = pgTable("rate_limit", {
-	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
-	key: text().notNull(),
-	count: integer().notNull(),
-	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
-	lastRequest: bigint("last_request", { mode: "number" }).notNull(),
-}, (table) => [
-	unique("rate_limit_key_unique").on(table.key),
 ]);
 export const session = pgTable("session", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
