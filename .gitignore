@@ -33,8 +33,10 @@ lerna-debug.log*
 # misc
 .DS_Store
 
-# deno
+# instance runtime (Caddy XDG data, Deno cache, etc.)
+.local/
 .cache/
+.config/
 
 # browser singleton locks (created when Chromium/Firefox uses this dir as a profile)
 SingletonCookie
