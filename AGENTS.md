@@ -196,10 +196,10 @@ Three audiences, each with its own REST + WS namespace. Prefixes live in `src/su
 
 ## Daemon hub (`/ws/daemon/v1`)
 
-Server nodes register in `src/daemon-hub.ts` (keyed by `serverId` from the `servers` table); the developer UI polls `/api/developer/v1/daemon/*`.
+Server nodes register in `src/daemon-hub.ts` (keyed by `serverId` from the `server` table); the developer UI polls `/api/developer/v1/daemon/*`.
 
 - Each socket gets an internal id (`daemon-1`, …) for routing; **display** uses `hostname` from the daemon `hello` message, or from an automatic `hostname` shell probe for legacy agents (UI falls back to `X-Real-IP`, then the internal id).
-- On connect, resolve or create a `servers` row (uuidv7 `serverId`), evict older sockets from the same `serverId`, `X-Real-IP`, or `hostname`; prune sockets with no inbound traffic (stale reconnect zombies).
+- On connect, resolve or create a `server` row (uuidv7 `serverId`), evict older sockets from the same `serverId`, `X-Real-IP`, or `hostname`; prune sockets with no inbound traffic (stale reconnect zombies).
 - Co-located daemons that dial the instance Unix socket directly (no Caddy hop) collapse to a single local slot and are tagged `__direct__` (`getColocatedDaemonId`) — see `daemon` `AGENTS.md` for socket vs URL mode.
 - No `version` push / auto-update: the daemon never self-updates.
 

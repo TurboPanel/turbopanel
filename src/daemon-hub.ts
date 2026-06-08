@@ -61,7 +61,7 @@ export interface DaemonConnection {
   connectedAt: string
   /** Short hostname reported by the daemon in its hello message. */
   hostname?: string
-  /** Canonical servers.id (uuidv7) for this physical server node. */
+  /** Canonical server.id (uuidv7) for this physical server node. */
   serverId?: string
   /** Client IP as seen by Caddy (X-Real-IP), used to collapse duplicate reconnects. */
   remoteAddress?: string

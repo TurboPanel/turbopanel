@@ -1,6 +1,7 @@
 import { eq, sql } from 'drizzle-orm'
 import type { Db } from './db.ts'
-import { servers } from './db/schema.ts'
+import type { ServerMetadata } from './db/server-metadata.ts'
+import { server } from './db/schema.ts'
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -11,13 +12,21 @@ export type ServerHelloIdentity = {
   hostname?: string
 }
 
-function metadataPatch(identity: ServerHelloIdentity): Record<string, string> {
-  const patch: Record<string, string> = {}
+function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
+  const patch: Partial<ServerMetadata> = {}
   const machineId = identity.machineId?.trim()
   const hostname = identity.hostname?.trim()
   if (machineId) patch.machineId = machineId
   if (hostname) patch.hostname = hostname
   return patch
+}
+
+function defaultDisplayName(identity: ServerHelloIdentity): string {
+  const hostname = identity.hostname?.trim()
+  if (hostname) return hostname.slice(0, 255)
+  const machineId = identity.machineId?.trim()
+  if (machineId) return machineId.slice(0, 255)
+  return 'server'
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -33,14 +42,15 @@ async function touchServerMetadata(
   const patch = metadataPatch(identity)
   if (Object.keys(patch).length === 0) return
   const rows = await db
-    .select({ metadata: servers.metadata })
-    .from(servers)
-    .where(eq(servers.id, serverId))
+    .select({ metadata: server.metadata })
+    .from(server)
+    .where(eq(server.id, serverId))
     .limit(1)
-  const current = (rows[0]?.metadata ?? {}) as Record<string, string>
-  await db.update(servers).set({
+  const current = (rows[0]?.metadata ?? {}) as ServerMetadata
+  await db.update(server).set({
     metadata: { ...current, ...patch },
-  }).where(eq(servers.id, serverId))
+    updatedAt: new Date(),
+  }).where(eq(server.id, serverId))
 }
 
 async function findExistingServerId(
@@ -50,9 +60,9 @@ async function findExistingServerId(
   const hinted = identity.serverId?.trim()
   if (hinted && UUID_RE.test(hinted)) {
     const existing = await db
-      .select({ id: servers.id })
-      .from(servers)
-      .where(eq(servers.id, hinted))
+      .select({ id: server.id })
+      .from(server)
+      .where(eq(server.id, hinted))
       .limit(1)
     if (existing.length > 0) return existing[0].id
   }
@@ -60,9 +70,9 @@ async function findExistingServerId(
   const machineId = identity.machineId?.trim()
   if (machineId) {
     const byMachine = await db
-      .select({ id: servers.id })
-      .from(servers)
-      .where(sql`${servers.metadata}->>'machineId' = ${machineId}`)
+      .select({ id: server.id })
+      .from(server)
+      .where(sql`${server.metadata}->>'machineId' = ${machineId}`)
       .limit(1)
     if (byMachine.length > 0) return byMachine[0].id
   }
@@ -70,10 +80,10 @@ async function findExistingServerId(
   const hostname = identity.hostname?.trim()
   if (hostname) {
     const byHostname = await db
-      .select({ id: servers.id })
-      .from(servers)
-      .where(sql`${servers.metadata}->>'hostname' = ${hostname}`)
-      .orderBy(servers.createdAt)
+      .select({ id: server.id })
+      .from(server)
+      .where(sql`${server.metadata}->>'hostname' = ${hostname}`)
+      .orderBy(server.createdAt)
       .limit(1)
     if (byHostname.length > 0) return byHostname[0].id
   }
@@ -82,7 +92,7 @@ async function findExistingServerId(
 }
 
 /**
- * Resolve the canonical servers.id (uuidv7) for a connecting daemon.
+ * Resolve the canonical server.id (uuidv7) for a connecting daemon.
  * Creates a row on first sight; reuses by serverId, metadata.machineId, or hostname.
  */
 export async function resolveServerId(
@@ -96,13 +106,17 @@ export async function resolveServerId(
   }
 
   const patch = metadataPatch(identity)
+  const now = new Date()
   try {
     const inserted = await db
-      .insert(servers)
+      .insert(server)
       .values({
+        displayName: defaultDisplayName(identity),
+        createdAt: now,
+        updatedAt: now,
         metadata: Object.keys(patch).length > 0 ? patch : null,
       })
-      .returning({ id: servers.id })
+      .returning({ id: server.id })
 
     const id = inserted[0]?.id
     if (!id) throw new Error('failed to insert server row')

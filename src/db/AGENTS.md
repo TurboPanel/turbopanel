@@ -49,9 +49,23 @@ Override connection for either script: `DATABASE_URL=postgresql://… ./introspe
 
 Destructive changes (drop column/table, type narrowing) can lose dev rows. `sync.sh` prompts via `--strict`; `--force` skips those guardrails.
 
-## `servers` table
+## Schema (ported from old trunk `apps/api`)
 
-Each physical server node gets a row in `servers` (`id` uuidv7). On daemon connect the instance resolves `serverId` (reuse by persisted id, `metadata.machineId`, or `metadata.hostname`; unique indexes prevent duplicates), tracks the websocket in `daemon-hub`, and returns `serverId` in `hello`. The daemon persists it at `/etc/turbopanel/daemon/server.id` (writable by the `turbopanel` user).
+`schema.ts` mirrors the old monorepo database layout (Better Auth–compatible tables, no auth runtime yet). Grouped by concern:
+
+| Group | Tables |
+|---|---|
+| **Identity** | `user`, `account`, `session`, `verification`, `passkey`, `2fa` |
+| **Organizations** | `organization`, `member`, `team`, `team_member`, `invitation` |
+| **Config** | `setting` |
+| **Runtime** | `server` |
+| **Throttle** | `rate_limit` |
+
+Drizzle relations are defined for future Better Auth adapter use. `IS_SIGNUP_ENABLED_CONFIG_KEY` is the `setting.key` for self-service signup.
+
+### `server` table
+
+Each physical server node gets a row in `server` (`id` uuidv7). On daemon connect the instance resolves `serverId` (reuse by persisted id, `metadata.machineId`, or `metadata.hostname`), tracks the websocket in `daemon-hub`, and returns `serverId` in `hello`. The daemon persists it at `/etc/turbopanel/daemon/server.id` (writable by the `turbopanel` user). `display_name`, `organization_id`, and soft-delete via `deleted_at` match the old trunk shape; daemon registration stores `machineId` / `hostname` in `metadata` (see `server-metadata.ts`).
 
 ## Layout
 
