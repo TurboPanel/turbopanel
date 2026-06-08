@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { createRootOnlyMiddleware } from './auth/middleware.ts'
 import {
   broadcastToDaemons,
   type DaemonMessage,
@@ -12,6 +13,7 @@ import {
 } from './daemon-hub.ts'
 import { collectServerAddresses } from './server-addresses.ts'
 import { registerDatabaseRoutes } from './database-routes.ts'
+import { EXPO_UI_SERVICE, expoTmuxStatus } from './expo-pty.ts'
 import { DEVELOPER_API_PREFIX } from './surfaces.ts'
 
 /**
@@ -19,8 +21,9 @@ import { DEVELOPER_API_PREFIX } from './surfaces.ts'
  * Mounted under {@link DEVELOPER_API_PREFIX} (`/api/developer/v1`). Dev-only —
  * the caller (`deno.ts`) registers this surface only when dev mode is enabled.
  */
-export function registerDeveloperRoutes(app: Hono) {
+export function registerDeveloperRoutes(app: Hono, opts: { sessionSecret: string }) {
   const developer = new Hono()
+  developer.use('*', createRootOnlyMiddleware(opts.sessionSecret))
 
   developer.get('/daemon/connections', (c) =>
     c.json({ connections: listDaemonConnections() }))
@@ -137,6 +140,33 @@ export function registerDeveloperRoutes(app: Hono) {
   })
 
   registerDatabaseRoutes(developer)
+
+  developer.get('/expo/status', async (c) => {
+    const { running } = await expoTmuxStatus()
+    return c.json({ running })
+  })
+
+  developer.post('/expo/restart', (c) => {
+    if (!EXPO_UI_SERVICE) {
+      return c.json(
+        {
+          ok: false,
+          error:
+            'expo restart unavailable: TURBOPANEL_UI_SERVICE is not set (run under systemd or configure a managed service)',
+        },
+        503,
+      )
+    }
+
+    new Deno.Command('sudo', {
+      args: ['systemctl', 'restart', EXPO_UI_SERVICE],
+      stdin: 'null',
+      stdout: 'null',
+      stderr: 'null',
+    }).spawn()
+
+    return c.json({ ok: true })
+  })
 
   app.route(DEVELOPER_API_PREFIX, developer)
   return app

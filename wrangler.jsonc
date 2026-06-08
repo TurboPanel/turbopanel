@@ -15,6 +15,7 @@
       "enabled": true
     }
   },
+  // Set SESSION_SECRET in .dev.vars for local `pnpm dev`; use `wrangler secret put SESSION_SECRET` in production.
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",

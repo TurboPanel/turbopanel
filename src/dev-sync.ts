@@ -1,4 +1,5 @@
 import type { Hono } from 'hono'
+import { createRootOnlyMiddleware } from './auth/middleware.ts'
 import { encodeBase64 } from 'jsr:@std/encoding@1/base64'
 import {
   awaitDaemonAck,
@@ -90,7 +91,13 @@ export async function syncDevToDaemon(daemonId: string): Promise<void> {
  * Admin routes to push the current dev daemon build to agents. Deno-only: tar +
  * filesystem access are not available in the Workers build.
  */
-export function registerDevSyncRoutes(app: Hono): Hono {
+export function registerDevSyncRoutes(
+  app: Hono,
+  opts: { sessionSecret: string },
+): Hono {
+  app.use(`${DEVELOPER_API_PREFIX}/daemon/sync-dev`, createRootOnlyMiddleware(opts.sessionSecret))
+  app.use(`${DEVELOPER_API_PREFIX}/daemon/:id/sync-dev`, createRootOnlyMiddleware(opts.sessionSecret))
+
   app.post(`${DEVELOPER_API_PREFIX}/daemon/:id/sync-dev`, async (c) => {
     const id = c.req.param('id')
     try {

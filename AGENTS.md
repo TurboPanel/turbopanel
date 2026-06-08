@@ -42,7 +42,7 @@ The **daemon is the constant** installed on every TurboPanel-managed host and is
 - **Deno** — <https://docs.deno.com/runtime/getting_started/installation/>
 - **pnpm** — <https://pnpm.io/installation>
 - **Node.js** — required for cert generation and Caddy download (`scripts/*.mjs`)
-- Run `./develop.sh` on a fresh VM (Debian/Ubuntu). It is a **thin wrapper**: it bootstraps the daemon orchestration runtime, flips the daemon into co-located dev mode (`TURBOPANEL_DEV_INSTANCE=1` in `../daemon/.env`), installs the daemon systemd unit, and tails the journals. The **daemon** then installs the instance/Caddy/UI via Ansible — `develop.sh` no longer launches `deno`/`caddy`/daemon processes itself.
+- Run `./develop.sh` on a fresh VM (Debian/Ubuntu). It is a **thin wrapper**: it bootstraps the daemon orchestration runtime, flips the daemon into co-located dev mode (`TURBOPANEL_DEV_INSTANCE=1` in `../daemon/.env`), installs the daemon systemd unit, and tails the journals. The **daemon** then installs the instance/Caddy/UI via Ansible — `develop.sh` no longer launches `deno`/`caddy`/daemon processes itself. The dev playbook installs the React Native devtools shared-library stack via `instance-dev-prereqs` (see `../daemon/AGENTS.md`).
 - `pnpm install` — installs Hono and Wrangler into `node_modules/` for Workers bundling
 - Copy or create `.dev.vars` at the repo root for local Wrangler secrets (see the commented stub; file is gitignored)
 - `pnpm dev` (wrangler) still runs the **Cloudflare Workers** path for full-stack testing — unchanged.
@@ -60,6 +60,8 @@ Installed and managed by the daemon via the `instance-launch` Ansible role:
 | `turbopanel-caddy.service` | `instance:turbopanel` | TLS + reverse proxy on `:8443` |
 | `turbopanel-ui.service` | `instance:turbopanel` | Expo web dev server (`:8081`, dev only) |
 | `turbopanel-daemon.service` | `turbopanel:turbopanel` | runs Ansible; has sudo |
+
+The `turbopanel-ui.service` unit runs Expo inside a tmux session named `expo-ui` (session name is the `EXPO_TMUX_SESSION` constant in `src/expo-pty.ts`). The instance Deno process requires **`--allow-run=tmux`** for the developer Expo terminal WebSocket (polls `tmux capture-pane -e` snapshots; resizes the tmux window to match xterm cols/rows).
 
 - `systemd/turbopanel-instance.service` in this repo is a **reference/manual-install fallback**; the canonical unit is templated by the `instance-launch` role in `../daemon`.
 - Logs: `journalctl -u turbopanel-instance -u turbopanel-caddy -u turbopanel-ui -f`
@@ -88,10 +90,13 @@ All TurboPanel runtime sockets live under **`/run/turbopanel/`** (on Linux, `/va
 | `TURBOPANEL_SOCKET_DIAL` | `run/turbopanel/turbopanel.sock` | Caddy `unix//` dial path (no leading slash) |
 | `TURBOPANEL_UI_MODE` | `static` | `dev` proxies to Expo; `static` serves exported UI |
 | `TURBOPANEL_UI_ROOT` | `../ui/dist` | Directory of `expo export --platform web` output |
+| `TURBOPANEL_UI_SERVICE` | `turbopanel-ui` | Name of the Expo systemd unit; default `turbopanel-ui`. Used by `POST /api/developer/v1/expo/restart`. |
 | `CADDY_PORT` | `8443` | HTTPS listen port |
 | `CADDY_TLS_CERT` | `./certs/self-signed.crt` | Server leaf certificate (signed by platform CA) |
 | `CADDY_TLS_KEY` | `./certs/self-signed.key` | Server leaf private key |
 | `TURBOPANEL_TLS_EXTRA_SANS` | — | Comma-separated DNS names for the server cert (e.g. `turbopanel.lan`) |
+| `TURBOPANEL_SESSION_SECRET` | *(required in production)* | HMAC-SHA256 signing key for session cookies (Deno runtime); ephemeral random fallback only when `TURBOPANEL_UI_MODE` is not `static` |
+| `SESSION_SECRET` | *(required)* | Same purpose on Cloudflare Workers — set in `.dev.vars` (local) or `wrangler secret put` (deployed) |
 
 Path resolution lives in `src/server-paths.ts`.
 
@@ -187,7 +192,8 @@ Three audiences, each with its own REST + WS namespace. Prefixes live in `src/su
 | Surface | REST | WS | Notes |
 |---|---|---|---|
 | Client (end-user UI) | `/api/client/v1/*` | `/ws/client/v1` | greenfield stubs |
-| Admin (admin UI) | `/api/admin/v1/*` | `/ws/admin/v1` | fleet, diagnostics, shell, addresses, `system/upgrade`, `instance/tunnel-token`, `daemon/(:id/)sync-dev`. WS is a stub. |
+| Developer (dev console) | `/api/developer/v1/*` | `/ws/developer/v1` (stub), `/ws/developer/v1/expo-pty` | fleet, diagnostics, shell, addresses, `expo/status`, `expo/restart`, `system/upgrade`, `instance/tunnel-token`, `daemon/(:id/)sync-dev` |
+| Admin (admin UI) | `/api/admin/v1/*` | `/ws/admin/v1` | reserved for a future instance-admin surface |
 | Daemon (agents) | `/api/daemon/v1/*` | `/ws/daemon/v1` | `version`, `instance/ca`; agents connect on the WS path |
 
 - Route modules: `src/admin-routes.ts`, `src/daemon-api-routes.ts`, `src/client-routes.ts` (mounted in `createApp`); Deno-only routes `src/system-routes.ts`, `src/dev-sync.ts`, `src/tunnel-routes.ts`, and the version route are registered in `src/deno.ts`.
@@ -213,6 +219,56 @@ Server nodes register in `src/daemon-hub.ts` (keyed by `serverId` from the `serv
 
 Correlated request/ack helpers (`awaitDaemonAck` / `recordDaemonAck`) back both dev-sync and tunnel-token.
 
+## Authentication
+
+The instance uses a **custom PAM-style auth model** built entirely on the **Web Crypto API** (`crypto.subtle`, `crypto.getRandomValues`). There is no dependency on Node.js crypto or `nodejs_compat` mode — the same primitives run on both Deno and Cloudflare Workers.
+
+**No `nodejs_compat` mode.** Do not enable `nodejs_compat` in `wrangler.jsonc` for any auth-related reason. All cryptographic operations use the standard Web Crypto API only.
+
+#### Session model
+
+Sessions are **opaque DB-backed tokens** with a signed cookie:
+
+- A 32-byte random token is generated and stored in the `session` table (`token`, `userId`, `expiresAt`, `ipAddress`, `userAgent`).
+- The cookie value sent to the browser is `<token>.<HMAC-SHA256-signature>`, where the signature is computed over the raw token using the session secret.
+- On every request the signature is verified first (constant-time); only then is the DB queried for the session row.
+- Cookie attributes: `HttpOnly; SameSite=Lax; Path=/; Max-Age=604800` (7 days). `Secure` is added automatically when the request URL is HTTPS.
+
+#### Root bypass (Deno only)
+
+On the **Deno runtime**, sign-in as `root` is verified via **`pamtester`** against the Linux PAM `login` service (the host's real Unix password) before any DB lookup — not a hardcoded password. The instance process runs as **`instance`** (no broad sudo); it runs **`printf '%s\n' "$TP_PAM_PASSWORD" | sudo -n /usr/bin/pamtester login root authenticate`** via `/bin/sh` so stdin reaches pamtester (Deno's direct `sudo` stdin does not). Password is passed in env `TP_PAM_PASSWORD` only for the subprocess lifetime. **`pamtester`** must be installed on managed hosts (the daemon `agent-prereqs` role). Sudoers: **`turbopanel`** has passwordless sudo for all commands (`turbopanel-user` role); **`instance`** gets a scoped rule in `instance-launch` `upgrade-sudoers.yml`: `NOPASSWD: /usr/bin/pamtester login root authenticate`. The instance systemd unit must grant **`--allow-run=/bin/sh,sudo,/usr/bin/sudo,pamtester,/usr/bin/pamtester`**. Root sessions are held in a **module-scope in-memory `Map`** (never written to the `session` table) and expire after 7 days. This bypass is **never active on Workers** — `verifyCredentials` returns `{ ok: false }` for all credentials on the Workers runtime until real DB users are wired.
+
+The sentinel `ROOT_USER_ID = '00000000-0000-0000-0000-000000000001'` identifies root sessions throughout the codebase.
+
+#### Session secret configuration
+
+| Runtime | Variable | Behaviour when missing |
+|---|---|---|
+| Deno | `TURBOPANEL_SESSION_SECRET` | Dev (`TURBOPANEL_UI_MODE` not `static`): warning logged; ephemeral random secret generated (sessions reset on restart). Production (`static`): process exits with error. |
+| Workers | `SESSION_SECRET` binding | Required — first request throws if unset; add to `.dev.vars` for local Wrangler dev or `wrangler secret put` in production |
+
+Add `SESSION_SECRET = "your-secret-here"` to `.dev.vars` before running `pnpm dev`.
+
+#### Auth routes
+
+All routes live under `CLIENT_API_PREFIX` (`/api/client/v1/auth/*`):
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/client/v1/auth/sign-in` | Verify credentials, create session, set signed cookie |
+| `POST` | `/api/client/v1/auth/sign-out` | Delete session, clear cookie |
+| `GET` | `/api/client/v1/auth/session` | Return current session data or 401 |
+
+#### New files
+
+| File | Purpose |
+|---|---|
+| `src/auth/crypto.ts` | Web Crypto primitives: `generateSessionToken`, `signToken`, `buildSignedCookie`, `verifySignedCookie`, constants |
+| `src/auth/session-store.ts` | `createSession`, `getSession`, `deleteSession`; in-memory root session map; `SessionData` type |
+| `src/auth/credentials.ts` | `verifyCredentials`; PAM root bypass (Deno only); `VerifyResult` type |
+| `src/auth/http.ts` | `registerAuthRoutes` — sign-in / sign-out / session HTTP handlers |
+| `src/auth/middleware.ts` | `createSessionMiddleware` — reads + verifies cookie, populates `c.var.session` |
+
 ## Layout
 
 - `develop.sh` — thin dev wrapper: bootstraps the daemon, enables dev-instance mode, tails journals
@@ -221,10 +277,12 @@ Correlated request/ack helpers (`awaitDaemonAck` / `recordDaemonAck`) back both 
 - `src/admin-routes.ts` / `src/daemon-api-routes.ts` / `src/client-routes.ts` — per-surface REST routers
 - `src/system-routes.ts` — developer `system/upgrade` + `system/upgrade-status` (Deno-only). Upgrade hard-resets instance + daemon to `origin/trunk`; blocked when instance, daemon, or UI checkouts have uncommitted changes (`git status --porcelain`).
 - `src/database-routes.ts` — developer `database/status` + `database/studio` (Deno-only). Connection test and on-demand Drizzle Studio at `/drizzle-studio/` via Caddy in dev mode.
+- `src/expo-pty.ts` — Expo PTY: tmux session status check, output streaming, and key forwarding for the developer console.
 - `src/dev-sync.ts` / `src/tunnel-routes.ts` — dev-sync + tunnel admin routes (Deno-only)
 - `src/server-paths.ts` — Unix socket path resolution
 - `src/daemon-hub.ts` — WebSocket connection registry, command/address/ack dispatch
-- `src/deno-ws.ts` — `/ws/daemon/v1` handler + `/ws/{admin,client}/v1` stubs
+- `src/deno-ws.ts` — `/ws/daemon/v1` handler, `/ws/developer/v1/expo-pty` PTY stream, and `/ws/{developer,client}/v1` stubs
 - `src/db.ts` / `src/db/schema.ts` — Drizzle client factories + schema
 - `src/workers.ts` — Workers entry (`wrangler.jsonc` main)
 - `src/deno.ts` — Deno entry (`deno.json` tasks)
+- `src/auth/` — authentication module: Web Crypto primitives, session store, PAM credentials, HTTP handlers, and session middleware (see **Authentication** section above)

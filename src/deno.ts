@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { generateSessionToken } from './auth/crypto.ts'
 import { createApp } from './app.ts'
 import { createDenoDb } from './db.ts'
 import { registerDaemonWebSocket } from './deno-ws.ts'
@@ -14,18 +15,28 @@ import {
   prepareInstanceSocket,
   resolveInstanceSocket,
 } from './server-paths.ts'
-
 const developerSurface = isDeveloperSurfaceEnabled()
 const db = createDenoDb()
-const app = createApp({ developerSurface, db })
+const sessionSecret = (() => {
+  const configured = Deno.env.get('TURBOPANEL_SESSION_SECRET')
+  if (configured) return configured
+  if (developerSurface) {
+    console.warn('[auth] TURBOPANEL_SESSION_SECRET not set — using ephemeral secret (dev only)')
+    return generateSessionToken()
+  }
+  throw new Error(
+    'TURBOPANEL_SESSION_SECRET is required when TURBOPANEL_UI_MODE=static (production)',
+  )
+})()
+const app = createApp({ developerSurface, db, sessionSecret, runtime: 'deno' })
 const routes = app as unknown as Hono
 registerVersionRoute(routes)
 if (developerSurface) {
-  registerSystemRoutes(routes)
-  registerDevSyncRoutes(routes)
-  registerTunnelRoutes(routes)
+  registerSystemRoutes(routes, { sessionSecret })
+  registerDevSyncRoutes(routes, { sessionSecret })
+  registerTunnelRoutes(routes, { sessionSecret })
 }
-registerDaemonWebSocket(routes, { developerSurface, db })
+registerDaemonWebSocket(routes, { developerSurface, db, sessionSecret })
 const socketPath = resolveInstanceSocket()
 
 const abort = new AbortController()

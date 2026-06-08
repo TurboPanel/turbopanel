@@ -1,5 +1,6 @@
 import type { Hono } from 'hono'
 import { upgradeWebSocket } from 'hono/deno'
+import { resolveRootSession } from './auth/middleware.ts'
 import {
   type DaemonMessage,
   evictDuplicateDaemons,
@@ -21,7 +22,13 @@ import {
 import type { Db } from './db.ts'
 import { resolveServerId } from './server-registry.ts'
 
-import { DEVELOPER_WS_PATH, CLIENT_WS_PATH, DAEMON_WS_PATH } from './surfaces.ts'
+import { resizeExpoTmuxPane, sendExpoKeys, streamExpoTmuxPty } from './expo-pty.ts'
+import {
+  CLIENT_WS_PATH,
+  DAEMON_WS_PATH,
+  DEVELOPER_EXPO_PTY_WS_PATH,
+  DEVELOPER_WS_PATH,
+} from './surfaces.ts'
 
 let pruneTimer: ReturnType<typeof setInterval> | undefined
 
@@ -40,7 +47,11 @@ function ensurePruneTimer(): void {
 
 export function registerDaemonWebSocket(
   app: Hono,
-  { developerSurface = false, db }: { developerSurface?: boolean; db?: Db } = {},
+  {
+    developerSurface = false,
+    db,
+    sessionSecret,
+  }: { developerSurface?: boolean; db?: Db; sessionSecret?: string } = {},
 ) {
   app.get(
     DAEMON_WS_PATH,
@@ -203,7 +214,80 @@ export function registerDaemonWebSocket(
     }),
   )
 
-  if (developerSurface) registerStubWebSocket(app, DEVELOPER_WS_PATH, 'developer')
+  if (developerSurface) {
+    registerStubWebSocket(app, DEVELOPER_WS_PATH, 'developer')
+
+    app.get(
+      DEVELOPER_EXPO_PTY_WS_PATH,
+      async (c, next) => {
+        if (!sessionSecret) {
+          return c.json({ ok: false, error: 'Unauthorized' }, 401)
+        }
+        const session = await resolveRootSession(c, sessionSecret, db)
+        if (!session) {
+          return c.json({ ok: false, error: 'Unauthorized' }, 401)
+        }
+        await next()
+      },
+      upgradeWebSocket(() => {
+        let cleanup: (() => void) | undefined
+        let streamStarted = false
+
+        const clampSize = (cols: unknown, rows: unknown) => ({
+          cols: Math.max(2, Math.min(500, Math.floor(Number(cols)))),
+          rows: Math.max(1, Math.min(200, Math.floor(Number(rows)))),
+        })
+
+        return {
+          onOpen(_event, _ws) {
+            // Wait for client log-panel dimensions before streaming.
+          },
+
+          onMessage(event, ws) {
+            const raw = typeof event.data === 'string' ? event.data : String(event.data)
+            try {
+              const parsed = JSON.parse(raw) as {
+                type?: string
+                data?: string
+                cols?: number
+                rows?: number
+              }
+              if (parsed.type === 'resize') {
+                const size = clampSize(parsed.cols, parsed.rows)
+                if (!Number.isFinite(size.cols) || !Number.isFinite(size.rows)) return
+                void (async () => {
+                  await resizeExpoTmuxPane(size.cols, size.rows)
+                  if (!streamStarted) {
+                    streamStarted = true
+                    cleanup = streamExpoTmuxPty(
+                      {
+                        send: (data) => ws.send(data),
+                        close: () => ws.close(),
+                      },
+                      size,
+                    )
+                  }
+                })()
+              }
+              if (parsed.type === 'input' && typeof parsed.data === 'string') {
+                void sendExpoKeys(parsed.data)
+              }
+            } catch {
+              // ignore malformed frames
+            }
+          },
+
+          onClose() {
+            cleanup?.()
+          },
+
+          onError() {
+            cleanup?.()
+          },
+        }
+      }),
+    )
+  }
   registerStubWebSocket(app, CLIENT_WS_PATH, 'client')
 }
 

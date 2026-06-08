@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { createRootOnlyMiddleware } from './auth/middleware.ts'
 import { getDaemonRepoPath, getInstanceCommit } from './daemon-version.ts'
 import { dirname, fromFileUrl, join } from 'jsr:@std/path@1'
 import { DEVELOPER_API_PREFIX } from './surfaces.ts'
@@ -152,7 +153,12 @@ async function syncRepoToTrunk(
   return { ok: true }
 }
 
-export function registerSystemRoutes(app: Hono): Hono {
+export function registerSystemRoutes(
+  app: Hono,
+  opts: { sessionSecret: string },
+): Hono {
+  app.use(`${DEVELOPER_API_PREFIX}/system/*`, createRootOnlyMiddleware(opts.sessionSecret))
+
   app.get(`${DEVELOPER_API_PREFIX}/system/upgrade-status`, async (c) => {
     const result = await collectDirtyRepos()
     if (!result.ok) {

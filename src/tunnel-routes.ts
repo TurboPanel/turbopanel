@@ -1,4 +1,5 @@
 import type { Hono } from 'hono'
+import { createRootOnlyMiddleware } from './auth/middleware.ts'
 import {
   awaitDaemonAck,
   type DaemonMessage,
@@ -14,7 +15,12 @@ const TUNNEL_TOKEN_TIMEOUT_MS = 30_000
  * to the co-located daemon (which runs cloudflared), exposing this instance so
  * external agent nodes can connect in. An empty token tears the tunnel down.
  */
-export function registerTunnelRoutes(app: Hono): Hono {
+export function registerTunnelRoutes(
+  app: Hono,
+  opts: { sessionSecret: string },
+): Hono {
+  app.use(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, createRootOnlyMiddleware(opts.sessionSecret))
+
   app.post(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, async (c) => {
     const body = await c.req.json().catch(() => null)
     if (!body || typeof body !== 'object' || typeof body.token !== 'string') {
