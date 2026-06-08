@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import type { Hono } from 'hono'
 import { generateSessionToken } from './auth/crypto.ts'
 import { createApp } from './app.ts'
 import { createDenoDb } from './db.ts'
@@ -11,7 +11,6 @@ import { isDeveloperSurfaceEnabled } from './dev-mode.ts'
 import { stopDrizzleStudio } from './drizzle-studio.ts'
 import {
   hardenInstanceSocket,
-  INSTANCE_SOCKET_MODE,
   prepareInstanceSocket,
   resolveInstanceSocket,
 } from './server-paths.ts'

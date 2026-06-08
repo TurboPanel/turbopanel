@@ -5,10 +5,12 @@
     "moduleResolution": "Bundler",
     "strict": true,
     "skipLibCheck": true,
-    "lib": [
-      "ESNext"
-    ],
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
-    "jsxImportSource": "hono/jsx"
+    "jsxImportSource": "hono/jsx",
+    "types": []
   },
+  "include": ["src/**/*.ts", "worker-configuration.d.ts", "ts-deno-globals.d.ts"]
 }

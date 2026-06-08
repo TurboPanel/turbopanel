@@ -57,7 +57,7 @@ export async function verifySignedCookie(
   const expectedBytes = new TextEncoder().encode(expectedSig);
   if (providedBytes.length !== expectedBytes.length) return null;
 
-  const timingSafeEqual = (crypto.subtle as CryptoSubtle & {
+  const timingSafeEqual = (crypto.subtle as SubtleCrypto & {
     timingSafeEqual?: (a: ArrayBufferView, b: ArrayBufferView) => boolean;
   }).timingSafeEqual;
 

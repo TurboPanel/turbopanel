@@ -1,4 +1,4 @@
-import { dirname, fromFileUrl, join } from 'jsr:@std/path@1'
+import { dirname, fromFileUrl, join } from '@std/path'
 import { buildPostgresUrlFromEnv, postgresEnvFromEnv } from './db-url.ts'
 
 const STUDIO_PORT = Number(Deno.env.get('TURBOPANEL_DRIZZLE_STUDIO_PORT') ?? '4983')

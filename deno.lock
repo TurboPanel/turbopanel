@@ -26,6 +26,8 @@
   "workspace": {
     "dependencies": [
       "jsr:@hono/hono@^4.12.23",
+      "jsr:@std/encoding@1",
+      "jsr:@std/path@1",
       "npm:drizzle-orm@~0.43.1",
       "npm:postgres@^3.4.7"
     ],

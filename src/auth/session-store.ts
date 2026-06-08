@@ -26,7 +26,7 @@ export function pruneExpiredRootSessions(): void {
 export async function createSession(
   db: Db | undefined,
   userId: string,
-  username: string,
+  _username: string,
   meta: { ipAddress?: string | null; userAgent?: string | null },
 ): Promise<{ token: string; expiresAt: Date }> {
   const token = generateSessionToken()

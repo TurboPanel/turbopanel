@@ -1,5 +1,5 @@
 import type { Hono } from 'hono'
-import { dirname, fromFileUrl, join } from 'jsr:@std/path@1'
+import { dirname, fromFileUrl, join } from '@std/path'
 import { DAEMON_API_PREFIX } from './surfaces.ts'
 
 /**

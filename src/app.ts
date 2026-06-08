@@ -26,7 +26,7 @@ export function createApp(
     sessionSecret?: string
     runtime?: 'deno' | 'workers'
   } = {},
-) {
+): Hono<AppEnv> {
   const app = new Hono<AppEnv>()
   if (db) {
     app.use('*', async (c, next) => {

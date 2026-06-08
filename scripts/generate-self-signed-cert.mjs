@@ -55,11 +55,6 @@ const certCommonName = 'TurboPanel Instance'
 const caCommonName = 'TurboPanel Platform CA'
 const days = '3650'
 
-function fail(msg) {
-  console.error(`generate-self-signed-cert: ${msg}`)
-  process.exit(1)
-}
-
 function normalizeIp(ip) {
   const lower = ip.toLowerCase()
   if (lower === '::1' || lower === '0:0:0:0:0:0:0:1') return '0:0:0:0:0:0:0:1'

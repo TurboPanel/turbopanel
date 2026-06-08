@@ -1,7 +1,7 @@
-import { Hono } from 'hono'
+import type { Hono } from 'hono'
 import { createRootOnlyMiddleware } from './auth/middleware.ts'
 import { getDaemonRepoPath, getInstanceCommit } from './daemon-version.ts'
-import { dirname, fromFileUrl, join } from 'jsr:@std/path@1'
+import { dirname, fromFileUrl, join } from '@std/path'
 import { DEVELOPER_API_PREFIX } from './surfaces.ts'
 
 const INSTANCE_REPO_ROOT = (() => {
