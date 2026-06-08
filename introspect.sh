@@ -33,8 +33,12 @@ adopt_schema() {
   {
     printf '%s\n' "/** Introspected from live dev DB (\`./introspect.sh\`). Review style before commit. */"
     printf '\n'
-    grep -v '^import { sql }' "$DRIZZLE_SCHEMA" | grep -v '^$' || true
+    cat "$DRIZZLE_SCHEMA" | grep -v '^$' || true
   } > "$SCHEMA_SRC"
+
+  # drizzle-kit emits invalid JS for the `2fa` table name.
+  sed -i 's/export const "2Fa"/export const twoFactor/' "$SCHEMA_SRC" 2>/dev/null || \
+    sed -i '' 's/export const "2Fa"/export const twoFactor/' "$SCHEMA_SRC"
 
   sed -i -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$SCHEMA_SRC" 2>/dev/null || \
     sed -i '' -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$SCHEMA_SRC"

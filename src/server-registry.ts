@@ -34,6 +34,10 @@ function isUniqueViolation(err: unknown): boolean {
     'code' in err && (err as { code: string }).code === '23505'
 }
 
+function nowTs(): string {
+  return new Date().toISOString()
+}
+
 async function touchServerMetadata(
   db: Db,
   serverId: string,
@@ -49,7 +53,7 @@ async function touchServerMetadata(
   const current = (rows[0]?.metadata ?? {}) as ServerMetadata
   await db.update(server).set({
     metadata: { ...current, ...patch },
-    updatedAt: new Date(),
+    updatedAt: nowTs(),
   }).where(eq(server.id, serverId))
 }
 
@@ -106,7 +110,7 @@ export async function resolveServerId(
   }
 
   const patch = metadataPatch(identity)
-  const now = new Date()
+  const now = nowTs()
   try {
     const inserted = await db
       .insert(server)
