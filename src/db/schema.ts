@@ -110,8 +110,8 @@ export const team = pgTable(
   ],
 )
 
-export const teamMember = pgTable(
-  'team_member',
+export const mate = pgTable(
+  'mate',
   {
     id: uuid('id').primaryKey().default(sql`uuidv7()`),
     createdAt: timestamp('created_at', ts).notNull().defaultNow(),
@@ -119,8 +119,8 @@ export const teamMember = pgTable(
     userId: uuid('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
   },
   (table) => [
-    index('idx_team_member_team_id').on(table.teamId),
-    index('idx_team_member_user_id').on(table.userId),
+    index('idx_mate_team_id').on(table.teamId),
+    index('idx_mate_user_id').on(table.userId),
   ],
 )
 
@@ -288,9 +288,9 @@ export const sessionRelations = relations(session, ({ one }) => ({
   team: one(team, { fields: [session.activeOrganizationTeamId], references: [team.id] }),
 }))
 
-export const teamMemberRelations = relations(teamMember, ({ one }) => ({
-  team: one(team, { fields: [teamMember.teamId], references: [team.id] }),
-  user: one(user, { fields: [teamMember.userId], references: [user.id] }),
+export const mateRelations = relations(mate, ({ one }) => ({
+  team: one(team, { fields: [mate.teamId], references: [team.id] }),
+  user: one(user, { fields: [mate.userId], references: [user.id] }),
 }))
 
 export const teamRelations = relations(team, ({ one, many }) => ({
@@ -300,7 +300,7 @@ export const teamRelations = relations(team, ({ one, many }) => ({
   }),
   invitations: many(invitation),
   sessions: many(session),
-  teamMembers: many(teamMember),
+  mates: many(mate),
 }))
 
 export const twoFactorRelations = relations(twoFactor, ({ one }) => ({
@@ -317,6 +317,6 @@ export const userRelations = relations(user, ({ many }) => ({
   members: many(member),
   passkeys: many(passkey),
   sessions: many(session),
-  teamMembers: many(teamMember),
+  mates: many(mate),
   twoFactors: many(twoFactor),
 }))

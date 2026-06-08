@@ -56,7 +56,7 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `sync
 | Group | Tables |
 |---|---|
 | **Identity** | `user`, `account`, `session`, `verification`, `passkey`, `2fa` |
-| **Organizations** | `organization`, `member`, `team`, `team_member`, `invitation` |
+| **Organizations** | `organization`, `member`, `team`, `mate`, `invitation` |
 | **Config** | `setting` |
 | **Runtime** | `server` |
 | **Throttle** | `rate_limit` |
