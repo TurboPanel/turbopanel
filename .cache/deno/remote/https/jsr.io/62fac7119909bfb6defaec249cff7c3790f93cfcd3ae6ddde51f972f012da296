@@ -1,8 +1,0 @@
-/**
- * @module
- * TrieRouter for Hono.
- */
-
-export { TrieRouter } from './router.ts'
-
-// denoCacheMetadata={"headers":{"content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","server":"cloudflare","x-content-type-options":"nosniff","cache-control":"public, max-age=31536000, immutable","content-length":"85","cross-origin-resource-policy":"cross-origin","etag":"\"deeedad988f4c677cb21b79f429d1164\"","access-control-allow-origin":"*","content-type":"text/typescript","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=jimN6bfUSXN6p%2BFW05V%2BVPKpJ5gsJHpKWx0v5qaBsclXrDFAtv7tnuwwbJHYTiyM43usSoPb88RCFE8YpbJUzV3lA8qNmHtQZj5%2FixMeSyvQwOoQlCZBYvo%3D\"}]}","date":"Sun, 07 Jun 2026 15:14:50 GMT","alt-svc":"h3=\":443\"; ma=86400","content-encoding":"identity","x-jsr-backend":"modules","x-robots-tag":"noindex","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","access-control-expose-headers":"*","cf-ray":"a0809bd5a87b301b-MCI","vary":"Origin"},"url":"https://jsr.io/@hono/hono/4.12.23/src/router/trie-router/index.ts","time":1780845290}

@@ -35,3 +35,8 @@ lerna-debug.log*
 
 # deno
 .cache/
+
+# browser singleton locks (created when Chromium/Firefox uses this dir as a profile)
+SingletonCookie
+SingletonLock
+SingletonSocket

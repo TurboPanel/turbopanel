@@ -1,9 +1,0 @@
-/**
- * @module
- * RegExpRouter for Hono.
- */
-
-export { RegExpRouter } from './router.ts'
-export { PreparedRegExpRouter, buildInitParams, serializeInitParams } from './prepared-router.ts'
-
-// denoCacheMetadata={"headers":{"content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","server":"cloudflare","content-encoding":"identity","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","access-control-allow-origin":"*","date":"Sun, 07 Jun 2026 15:14:50 GMT","cf-ray":"a0809bd5a877301b-MCI","content-length":"187","x-jsr-backend":"modules","x-robots-tag":"noindex","cross-origin-resource-policy":"cross-origin","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=ePsX4CXfLvjP2KLBQQShNMuzT9l%2FWKZjx0mim6YiZMEj83h9EcZdt9K5qTloFuuLG9%2F4oYJDV6R9VH8sEWcuFirlWD9hVGXoyX2HcQF8ltKAUJkTsgTliQQ%3D\"}]}","x-content-type-options":"nosniff","etag":"\"f3bd934e30beb141c10c58501cc60381\"","alt-svc":"h3=\":443\"; ma=86400","cache-control":"public, max-age=31536000, immutable","access-control-expose-headers":"*","vary":"Origin","content-type":"text/typescript"},"url":"https://jsr.io/@hono/hono/4.12.23/src/router/reg-exp-router/index.ts","time":1780845290}
