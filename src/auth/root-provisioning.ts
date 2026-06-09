@@ -3,32 +3,43 @@
 import { eq, and } from 'drizzle-orm'
 import type { Db } from '../db.ts'
 import { user, account, organization, team } from '../db/schema.ts'
-import { ROOT_USER_ID } from './session-store.ts'
+import { ROOT_USERNAME, SUPERUSER_ROLE } from './session-store.ts'
 
-export async function ensureRootProvisioned(db: Db): Promise<void> {
-  await db.transaction(async (tx) => {
-    await tx
-      .insert(user)
-      .values({
-        id: ROOT_USER_ID,
-        displayName: 'root',
-        username: 'root',
-        displayUsername: 'root',
-        email: 'root@localhost',
-        isEmailVerified: true,
-        role: 'system',
-      })
-      .onConflictDoNothing({ target: user.id })
-
-    const [rootUser] = await tx
+export async function ensureRootProvisioned(db: Db): Promise<string> {
+  return await db.transaction(async (tx) => {
+    let [rootUser] = await tx
       .select({ id: user.id })
       .from(user)
-      .where(eq(user.id, ROOT_USER_ID))
+      .where(eq(user.username, ROOT_USERNAME))
       .limit(1)
+
+    if (!rootUser) {
+      const inserted = await tx
+        .insert(user)
+        .values({
+          displayName: ROOT_USERNAME,
+          username: ROOT_USERNAME,
+          displayUsername: ROOT_USERNAME,
+          email: 'root@localhost',
+          isEmailVerified: true,
+          role: SUPERUSER_ROLE,
+        })
+        .returning({ id: user.id })
+      rootUser = inserted[0]
+    } else {
+      await tx
+        .update(user)
+        .set({ role: SUPERUSER_ROLE })
+        .where(
+          and(eq(user.id, rootUser.id), eq(user.role, 'system')),
+        )
+    }
 
     if (!rootUser) {
       throw new Error('root user provisioning failed')
     }
+
+    const userId = rootUser.id
 
     await tx
       .insert(organization)
@@ -52,13 +63,13 @@ export async function ensureRootProvisioned(db: Db): Promise<void> {
       .select({ id: account.id })
       .from(account)
       .where(
-        and(eq(account.userId, ROOT_USER_ID), eq(account.providerId, 'pam')),
+        and(eq(account.userId, userId), eq(account.providerId, 'pam')),
       )
       .limit(1)
 
     if (!existingAccount) {
       await tx.insert(account).values({
-        userId: ROOT_USER_ID,
+        userId,
         providerId: 'pam',
         providerUserId: '0',
       })
@@ -81,5 +92,7 @@ export async function ensureRootProvisioned(db: Db): Promise<void> {
         displayName: 'System Administrators',
       })
     }
+
+    return userId
   })
 }

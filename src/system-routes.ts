@@ -1,6 +1,8 @@
 import type { Hono } from 'hono'
 import { createRootOnlyMiddleware } from './auth/middleware.ts'
+import { resetDevInstance } from './dev-reset.ts'
 import { getDaemonRepoPath, getInstanceCommit } from './daemon-version.ts'
+import type { Db } from './db.ts'
 import { dirname, fromFileUrl, join } from '@std/path'
 import { DEVELOPER_API_PREFIX } from './surfaces.ts'
 
@@ -40,6 +42,7 @@ const TURBOPANEL_USER = Deno.env.get('TURBOPANEL_USER')?.trim() || 'turbopanel'
 const NORMALIZE_CHECKOUT = '/usr/local/bin/turbopanel-normalize-dev-checkout'
 
 let upgrading = false
+let resettingDev = false
 
 /** Run git as turbopanel (9999) so the deploy key stays mode 0600 and checkouts stay editable. */
 async function git(
@@ -197,7 +200,7 @@ async function syncRepoToTrunk(
 
 export function registerSystemRoutes(
   app: Hono,
-  opts: { sessionSecret: string },
+  opts: { sessionSecret: string; db?: Db },
 ): Hono {
   app.use(`${DEVELOPER_API_PREFIX}/system/*`, createRootOnlyMiddleware(opts.sessionSecret))
 
@@ -275,6 +278,29 @@ export function registerSystemRoutes(
       return c.json({ ok: false, error: message }, 500)
     } finally {
       upgrading = false
+    }
+  })
+
+  app.post(`${DEVELOPER_API_PREFIX}/system/reset-dev`, async (c) => {
+    if (resettingDev) {
+      return c.json({ ok: false, error: 'dev reset already in progress' }, 409)
+    }
+    if (!opts.db) {
+      return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    }
+
+    resettingDev = true
+    try {
+      const result = await resetDevInstance(opts.db)
+      if (!result.ok) {
+        return c.json({ ok: false, error: result.error }, 500)
+      }
+      return c.json({ ok: true, restarted: result.restarted })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return c.json({ ok: false, error: message }, 500)
+    } finally {
+      resettingDev = false
     }
   })
 

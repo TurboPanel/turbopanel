@@ -38,6 +38,7 @@ Override connection for either script: `DATABASE_URL=postgresql://… ./introspe
 ### Drizzle Studio (dev UI)
 
 - **Test connection** — `GET /api/developer/v1/database/status`
+- **Reset dev instance** — `POST /api/developer/v1/system/reset-dev` (root session only): `DROP SCHEMA public CASCADE`, `drizzle-kit push --force`, `ensureRootProvisioned`, restart instance. UI: Database section → **Reset Dev Instance**.
 - **Studio** — `POST /api/developer/v1/database/studio`; Caddy proxies **HTTPS-only** on **`:8444`**. `local.drizzle.studio` (HTTPS) blocks mixed-content HTTP to private hosts, then retries HTTPS — trust the platform CA (same as `:8443`). Open `https://local.drizzle.studio?host=<browser-host>&port=8444`.
 - Studio applies DDL **directly** to the DB — follow with `./introspect.sh` to pull into code.
 

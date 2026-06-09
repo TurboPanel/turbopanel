@@ -1,11 +1,10 @@
-import { ROOT_USER_ID } from './session-store.ts'
-
 export const PAM_ROOT_USERNAME = 'root'
 
 export type AuthRuntime = 'deno' | 'workers'
 
 export type VerifyResult =
-  | { ok: true; userId: string; username: string; isRoot: boolean }
+  | { ok: true; username: string; isRoot: true }
+  | { ok: true; userId: string; username: string; isRoot: false }
   | { ok: false }
 
 async function verifyRootViaPam(password: string): Promise<boolean> {
@@ -38,8 +37,7 @@ export async function verifyCredentials(
     if (ok) {
       return {
         ok: true,
-        userId: ROOT_USER_ID,
-        username: 'root',
+        username: PAM_ROOT_USERNAME,
         isRoot: true,
       }
     }

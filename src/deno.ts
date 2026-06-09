@@ -31,7 +31,7 @@ const app = createApp({ developerSurface, db, sessionSecret, runtime: 'deno' })
 const routes = app as unknown as Hono
 registerVersionRoute(routes)
 if (developerSurface) {
-  registerSystemRoutes(routes, { sessionSecret })
+  registerSystemRoutes(routes, { sessionSecret, db })
   registerDevSyncRoutes(routes, { sessionSecret })
   registerTunnelRoutes(routes, { sessionSecret })
 }

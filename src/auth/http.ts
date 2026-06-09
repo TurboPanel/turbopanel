@@ -72,11 +72,17 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Invalid credentials' }, 401)
     }
 
-    if (result.isRoot && db !== undefined) {
-      await ensureRootProvisioned(db)
+    let userId: string
+    if (result.isRoot) {
+      if (db === undefined) {
+        throw new Error('Database unavailable')
+      }
+      userId = await ensureRootProvisioned(db)
+    } else {
+      userId = result.userId
     }
 
-    const { token } = await createSession(db, result.userId, result.username, {
+    const { token } = await createSession(db, userId, result.username, {
       ipAddress: c.req.header('X-Real-IP') ?? undefined,
       userAgent: c.req.header('User-Agent') ?? undefined,
     })

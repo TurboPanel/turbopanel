@@ -3,13 +3,14 @@ import type { Db } from '../db.ts'
 import { session, user } from '../db/schema.ts'
 import { eq, and, gt } from 'drizzle-orm'
 
-export const ROOT_USER_ID = '00000000-0000-0000-0000-000000000001'
 export const ROOT_USERNAME = 'root'
+export const SUPERUSER_ROLE = 'superuser'
 
 export type SessionData = {
   sessionId: string
   userId: string
   username: string
+  role: string
 }
 
 export async function createSession(
@@ -51,6 +52,7 @@ export async function getSession(
       sessionId: session.id,
       userId: session.userId,
       username: user.username,
+      role: user.role,
     })
     .from(session)
     .innerJoin(user, eq(session.userId, user.id))
@@ -71,6 +73,7 @@ export async function getSession(
     sessionId: row.sessionId,
     userId: row.userId,
     username: row.username,
+    role: row.role,
   }
 }
 

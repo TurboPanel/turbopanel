@@ -5,7 +5,15 @@ import type { AppEnv } from '../app.ts'
 import type { Db } from '../db.ts'
 import { getDb } from '../db.ts'
 import { SESSION_COOKIE_NAME, verifySignedCookie } from './crypto.ts'
-import { getSession, ROOT_USER_ID, type SessionData } from './session-store.ts'
+import {
+  getSession,
+  SUPERUSER_ROLE,
+  type SessionData,
+} from './session-store.ts'
+
+function isSuperuser(sessionData: SessionData): boolean {
+  return sessionData.role === SUPERUSER_ROLE
+}
 
 export type { SessionData }
 
@@ -30,7 +38,7 @@ export async function resolveRootSession(
   db?: Db,
 ): Promise<SessionData | null> {
   const sessionData = await resolveSession(c, sessionSecret, db)
-  if (!sessionData || sessionData.userId !== ROOT_USER_ID) return null
+  if (!sessionData || !isSuperuser(sessionData)) return null
   return sessionData
 }
 
@@ -57,7 +65,7 @@ export function createRootOnlyMiddleware(
       return c.json({ ok: false, error: 'Unauthorized' }, 401)
     }
 
-    if (sessionData.userId !== ROOT_USER_ID) {
+    if (!isSuperuser(sessionData)) {
       return c.json({ ok: false, error: 'Forbidden' }, 403)
     }
 

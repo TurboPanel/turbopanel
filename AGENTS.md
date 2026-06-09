@@ -236,9 +236,9 @@ Sessions are **opaque DB-backed tokens** with a signed cookie:
 
 #### Root bypass (Deno only)
 
-On the **Deno runtime**, sign-in as `root` is verified via **`pamtester`** against the Linux PAM `login` service (the host's real Unix password) before any DB lookup — not a hardcoded password. The instance process runs as **`instance`** (no broad sudo); it runs **`printf '%s\n' "$TP_PAM_PASSWORD" | sudo -n /usr/bin/pamtester login root authenticate`** via `/bin/sh` so stdin reaches pamtester (Deno's direct `sudo` stdin does not). Password is passed in env `TP_PAM_PASSWORD` only for the subprocess lifetime. **`pamtester`** must be installed on managed hosts (the daemon `agent-prereqs` role). Sudoers: **`turbopanel`** has passwordless sudo for all commands (`turbopanel-user` role); **`instance`** gets a scoped rule in `instance-launch` `upgrade-sudoers.yml`: `NOPASSWD: /usr/bin/pamtester login root authenticate`. The instance systemd unit must grant **`--allow-run=/bin/sh,sudo,/usr/bin/sudo,pamtester,/usr/bin/pamtester`**. Root sessions are held in a **module-scope in-memory `Map`** (never written to the `session` table) and expire after 7 days. This bypass is **never active on Workers** — `verifyCredentials` returns `{ ok: false }` for all credentials on the Workers runtime until real DB users are wired.
+On the **Deno runtime**, sign-in as `root` is verified via **`pamtester`** against the Linux PAM `login` service (the host's real Unix password) before any DB lookup — not a hardcoded password. The instance process runs as **`instance`** (no broad sudo); it runs **`printf '%s\n' "$TP_PAM_PASSWORD" | sudo -n /usr/bin/pamtester login root authenticate`** via `/bin/sh` so stdin reaches pamtester (Deno's direct `sudo` stdin does not). Password is passed in env `TP_PAM_PASSWORD` only for the subprocess lifetime. **`pamtester`** must be installed on managed hosts (the daemon `agent-prereqs` role). Sudoers: **`turbopanel`** has passwordless sudo for all commands (`turbopanel-user` role); **`instance`** gets a scoped rule in `instance-launch` `upgrade-sudoers.yml`: `NOPASSWD: /usr/bin/pamtester login root authenticate`. The instance systemd unit must grant **`--allow-run=/bin/sh,sudo,/usr/bin/sudo,pamtester,/usr/bin/pamtester`**. On first sign-in, `ensureRootProvisioned` creates a DB `user` row (uuidv7 id, username `root`, role **`superuser`**) plus root org/account/team; sessions are DB-backed like any other user. This bypass is **never active on Workers** — `verifyCredentials` returns `{ ok: false }` for all credentials on the Workers runtime until real DB users are wired.
 
-The sentinel `ROOT_USER_ID = '00000000-0000-0000-0000-000000000001'` identifies root sessions throughout the codebase.
+Root-only routes (`createRootOnlyMiddleware`, `resolveRootSession`) authorize by **`user.role === 'superuser'`** (loaded with the session join), not a fixed user id.
 
 #### Session secret configuration
 
@@ -264,7 +264,7 @@ All routes live under `CLIENT_API_PREFIX` (`/api/client/v1/auth/*`):
 | File | Purpose |
 |---|---|
 | `src/auth/crypto.ts` | Web Crypto primitives: `generateSessionToken`, `signToken`, `buildSignedCookie`, `verifySignedCookie`, constants |
-| `src/auth/session-store.ts` | `createSession`, `getSession`, `deleteSession`; in-memory root session map; `SessionData` type |
+| `src/auth/session-store.ts` | `createSession`, `getSession`, `deleteSession`; `SessionData` type (`role` included) |
 | `src/auth/credentials.ts` | `verifyCredentials`; PAM root bypass (Deno only); `VerifyResult` type |
 | `src/auth/http.ts` | `registerAuthRoutes` — sign-in / sign-out / session HTTP handlers |
 | `src/auth/middleware.ts` | `createSessionMiddleware` — reads + verifies cookie, populates `c.var.session` |
@@ -275,7 +275,7 @@ All routes live under `CLIENT_API_PREFIX` (`/api/client/v1/auth/*`):
 - `src/app.ts` — shared Hono app (`/api/health` + client/admin/daemon routers)
 - `src/surfaces.ts` — versioned API/WS prefix constants
 - `src/admin-routes.ts` / `src/daemon-api-routes.ts` / `src/client-routes.ts` — per-surface REST routers
-- `src/system-routes.ts` — developer `system/upgrade` + `system/upgrade-status` (Deno-only). Upgrade hard-resets instance + daemon to `origin/trunk`; blocked when instance, daemon, or UI checkouts have uncommitted changes (`git status --porcelain`).
+- `src/system-routes.ts` — developer `system/upgrade` + `system/upgrade-status` + `system/reset-dev` (Deno-only). Upgrade hard-resets instance + daemon to `origin/trunk` (blocked when platform checkouts are dirty). Reset-dev wipes Postgres, repushes `schema.ts`, reprovisions root, and restarts the instance.
 - `src/database-routes.ts` — developer `database/status` + `database/studio` (Deno-only). Connection test and on-demand Drizzle Studio at `/drizzle-studio/` via Caddy in dev mode.
 - `src/expo-pty.ts` — Expo PTY: tmux session status check, output streaming, and key forwarding for the developer console.
 - `src/dev-sync.ts` / `src/tunnel-routes.ts` — dev-sync + tunnel admin routes (Deno-only)
