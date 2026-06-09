@@ -38,7 +38,7 @@ Override connection for either script: `DATABASE_URL=postgresql://… ./introspe
 ### Drizzle Studio (dev UI)
 
 - **Test connection** — `GET /api/developer/v1/database/status`
-- **Reset dev instance** — `POST /api/developer/v1/system/reset-dev` (root session only): `DROP SCHEMA public CASCADE`, `drizzle-kit push --force`, `ensureRootProvisioned`, restart instance. UI: Database section → **Reset Dev Instance**.
+- **Reset dev instance** — `POST /api/developer/v1/system/reset-dev` (superadmin session only): `DROP SCHEMA public CASCADE`, `drizzle-kit push --force`, restart instance. UI: Database section → **Reset Dev Instance**.
 - **Studio** — `POST /api/developer/v1/database/studio`; Caddy proxies **HTTPS-only** on **`:8444`**. `local.drizzle.studio` (HTTPS) blocks mixed-content HTTP to private hosts, then retries HTTPS — trust the platform CA (same as `:8443`). Open `https://local.drizzle.studio?host=<browser-host>&port=8444`.
 - Studio applies DDL **directly** to the DB — follow with `./introspect.sh` to pull into code.
 
@@ -56,12 +56,14 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `sync
 
 | Group | Tables |
 |---|---|
-| **Identity** | `user`, `account`, `session`, `verification`, `passkey`, `2fa` |
+| **Identity** | `user`, `account`, `apikey`, `session`, `verification`, `passkey`, `2fa` |
 | **Organizations** | `organization`, `member`, `team`, `mate`, `invitation` |
 | **Config** | `setting` |
 | **Runtime** | `server` |
 
 Drizzle relations are defined for future Better Auth adapter use. `IS_SIGNUP_ENABLED_CONFIG_KEY` is the `setting.key` for self-service signup.
+
+**Install (Deno):** A fresh DB has no org or superadmin. `src/auth/install-state.ts` `isInstanceInstalled()` is false until `completeInstanceInstall` creates org + team + superadmin user with a named org. **`organization.slug`** stays **NULL** (reserved for a future feature). Org extras (e.g. logo URL) belong in **`organization.metadata`** — there is no `logo` column. Install sets **`email`** and **`role`** only — `display_name`, `username`, and `display_username` stay **NULL** until the user chooses them.
 
 ### `server` table
 

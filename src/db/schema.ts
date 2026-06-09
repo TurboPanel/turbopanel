@@ -35,13 +35,12 @@ export const organization = pgTable("organization", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	displayName: varchar("display_name", { length: 255 }).notNull(),
-	slug: varchar({ length: 255 }).notNull(),
-	logo: text(),
+	displayName: varchar("display_name", { length: 255 }),
+	slug: varchar({ length: 255 }),
 	metadata: jsonb(),
 }, (table) => [
 	unique("organization_slug_unique").on(table.slug),
-	check("organization_display_name_format_check", sql`((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)`),
+	check("organization_display_name_format_check", sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`),
 ]);
 export const passkey = pgTable("passkey", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
@@ -149,6 +148,34 @@ export const account = pgTable("account", {
 			name: "account_user_id_user_id_fk"
 		}).onDelete("cascade"),
 ]);
+export const apikey = pgTable("apikey", {
+	id: text().primaryKey().notNull(),
+	configId: text("config_id").notNull(),
+	name: text(),
+	start: text(),
+	prefix: text(),
+	key: text().notNull(),
+	referenceId: text("reference_id").notNull(),
+	refillInterval: integer("refill_interval"),
+	refillAmount: integer("refill_amount"),
+	lastRefillAt: timestamp("last_refill_at", { precision: 6, withTimezone: true, mode: 'string' }),
+	enabled: boolean(),
+	rateLimitEnabled: boolean("rate_limit_enabled"),
+	rateLimitTimeWindow: integer("rate_limit_time_window"),
+	rateLimitMax: integer("rate_limit_max"),
+	requestCount: integer("request_count"),
+	remaining: integer(),
+	lastRequest: timestamp("last_request", { precision: 6, withTimezone: true, mode: 'string' }),
+	expiresAt: timestamp("expires_at", { precision: 6, withTimezone: true, mode: 'string' }),
+	createdAt: timestamp("created_at", { precision: 6, withTimezone: true, mode: 'string' }).notNull(),
+	updatedAt: timestamp("updated_at", { precision: 6, withTimezone: true, mode: 'string' }).notNull(),
+	permissions: text(),
+	metadata: text(),
+}, (table) => [
+	index("idx_apikey_config_id").using("btree", table.configId.asc().nullsLast().op("text_ops")),
+	index("idx_apikey_reference_id").using("btree", table.referenceId.asc().nullsLast().op("text_ops")),
+	index("idx_apikey_key").using("btree", table.key.asc().nullsLast().op("text_ops")),
+]);
 export const mate = pgTable("mate", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
@@ -173,7 +200,7 @@ export const team = pgTable("team", {
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	organizationId: uuid("organization_id").notNull(),
-	displayName: varchar("display_name", { length: 255 }).notNull(),
+	displayName: varchar("display_name", { length: 255 }),
 	metadata: jsonb(),
 }, (table) => [
 	index("idx_team_organization_id").using("btree", table.organizationId.asc().nullsLast().op("uuid_ops")),
@@ -182,15 +209,15 @@ export const team = pgTable("team", {
 			foreignColumns: [organization.id],
 			name: "team_organization_id_organization_id_fk"
 		}).onDelete("cascade"),
-	check("team_display_name_format_check", sql`(char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)`),
+	check("team_display_name_format_check", sql`(display_name IS NULL) OR ((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255))`),
 ]);
 export const user = pgTable("user", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	displayName: varchar("display_name", { length: 255 }).notNull(),
-	username: varchar({ length: 255 }).notNull(),
-	displayUsername: varchar("display_username", { length: 255 }).notNull(),
+	displayName: varchar("display_name", { length: 255 }),
+	username: varchar({ length: 255 }),
+	displayUsername: varchar("display_username", { length: 255 }),
 	email: varchar({ length: 255 }).notNull(),
 	isEmailVerified: boolean("is_email_verified").default(false).notNull(),
 	is2FaEnabled: boolean("is_2fa_enabled").default(false).notNull(),
@@ -201,6 +228,9 @@ export const user = pgTable("user", {
 }, (table) => [
 	unique("user_email_unique").on(table.email),
 	unique("user_username_unique").on(table.username),
+	check("user_display_name_format_check", sql`(display_name IS NULL) OR ((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255))`),
+	check("user_username_format_check", sql`(username IS NULL) OR ((char_length((username)::text) >= 1) AND (char_length((username)::text) <= 255))`),
+	check("user_display_username_format_check", sql`(display_username IS NULL) OR ((char_length((display_username)::text) >= 1) AND (char_length((display_username)::text) <= 255))`),
 ]);
 export const twoFactor = pgTable("2fa", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),

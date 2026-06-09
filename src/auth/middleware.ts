@@ -4,15 +4,18 @@ import type { MiddlewareHandler } from 'hono'
 import type { AppEnv } from '../app.ts'
 import type { Db } from '../db.ts'
 import { getDb } from '../db.ts'
-import { SESSION_COOKIE_NAME, verifySignedCookie } from './crypto.ts'
+import {
+  SESSION_COOKIE_NAME,
+  verifySignedCookie,
+} from './crypto.ts'
 import {
   getSession,
-  SUPERUSER_ROLE,
+  isSuperadminRole,
   type SessionData,
 } from './session-store.ts'
 
-function isSuperuser(sessionData: SessionData): boolean {
-  return sessionData.role === SUPERUSER_ROLE
+function isSuperadmin(sessionData: SessionData): boolean {
+  return isSuperadminRole(sessionData.role)
 }
 
 export type { SessionData }
@@ -38,7 +41,7 @@ export async function resolveRootSession(
   db?: Db,
 ): Promise<SessionData | null> {
   const sessionData = await resolveSession(c, sessionSecret, db)
-  if (!sessionData || !isSuperuser(sessionData)) return null
+  if (!sessionData || !isSuperadmin(sessionData)) return null
   return sessionData
 }
 
@@ -65,7 +68,7 @@ export function createRootOnlyMiddleware(
       return c.json({ ok: false, error: 'Unauthorized' }, 401)
     }
 
-    if (!isSuperuser(sessionData)) {
+    if (!isSuperadmin(sessionData)) {
       return c.json({ ok: false, error: 'Forbidden' }, 403)
     }
 

@@ -13,13 +13,12 @@ import {
   registerDaemon,
   setDaemonHostname,
   setDaemonServerId,
-  probeDaemonHostname,
-  probeMissingHostnames,
   setDaemonRemoteAddress,
   touchDaemonInbound,
   unregisterDaemon,
 } from './daemon-hub.ts'
 import type { Db } from './db.ts'
+import { tryAssignColocatedDaemonToInstalledOrganization } from './auth/install-state.ts'
 import { resolveServerId } from './server-registry.ts'
 
 import { resizeExpoTmuxPane, sendExpoKeys, streamExpoTmuxPty } from './expo-pty.ts'
@@ -33,7 +32,6 @@ import {
 let pruneTimer: ReturnType<typeof setInterval> | undefined
 
 function runPruneCycle(): void {
-  probeMissingHostnames()
   const pruned = pruneStaleDaemons()
   if (pruned.length > 0) {
     console.log(`[ws] pruned ${pruned.length} stale daemon connection(s): ${pruned.join(', ')}`)
@@ -164,12 +162,18 @@ export function registerDaemonWebSocket(
                 recordDaemonMessage(activeId, 'out', ack)
                 ws.send(JSON.stringify(ack))
                 console.log(`[ws] daemon server id: ${serverId} (${activeId})`)
+
+                if (db && identityAddress === '__direct__') {
+                  try {
+                    await tryAssignColocatedDaemonToInstalledOrganization(db)
+                  } catch (err) {
+                    console.error('[ws] failed to assign colocated server:', err)
+                  }
+                }
               }
 
               if (message.hostname) {
                 console.log(`[ws] daemon hostname: ${message.hostname} (${activeId})`)
-              } else {
-                probeDaemonHostname(activeId)
               }
             })()
           }

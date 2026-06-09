@@ -204,7 +204,7 @@ Three audiences, each with its own REST + WS namespace. Prefixes live in `src/su
 
 Server nodes register in `src/daemon-hub.ts` (keyed by `serverId` from the `server` table); the developer UI polls `/api/developer/v1/daemon/*`.
 
-- Each socket gets an internal id (`daemon-1`, …) for routing; **display** uses `hostname` from the daemon `hello` message, or from an automatic `hostname` shell probe for legacy agents (UI falls back to `X-Real-IP`, then the internal id).
+- Each socket gets an internal id (`daemon-1`, …) for routing; **display** uses `hostname` from the daemon `hello` message (UI falls back to `X-Real-IP`, then the internal id).
 - On connect, resolve or create a `server` row (uuidv7 `serverId`), evict older sockets from the same `serverId`, `X-Real-IP`, or `hostname`; prune sockets with no inbound traffic (stale reconnect zombies). All connecting daemons auto-register; `organization_id` stays null until assigned in the developer **Servers** section (`PATCH /api/developer/v1/servers/:id`).
 - Co-located daemons that dial the instance Unix socket directly (no Caddy hop) collapse to a single local slot and are tagged `__direct__` (`getColocatedDaemonId`) — see `daemon` `AGENTS.md` for socket vs URL mode.
 - No `version` push / auto-update: the daemon never self-updates.
@@ -225,6 +225,10 @@ The instance uses a **custom PAM-style auth model** built entirely on the **Web 
 
 **No `nodejs_compat` mode.** Do not enable `nodejs_compat` in `wrangler.jsonc` for any auth-related reason. All cryptographic operations use the standard Web Crypto API only.
 
+#### Password hashing
+
+Credential-account passwords use **PBKDF2-HMAC-SHA256** via `crypto.subtle` (`src/auth/password.ts`). This is the strongest password-hashing primitive available in native Workers/Deno Web Crypto — Argon2 and scrypt are not exposed, and WASM Argon2 is heavier and awkward in Workers. Stored format: `$pbkdf2-sha256$<iterations>$<base64url-salt>$<base64url-hash>` (100k iterations for new hashes — Workers PBKDF2 cap; iteration count is embedded so older hashes still verify). Verification uses constant-time byte comparison. Do not use plain SHA-256 for passwords.
+
 #### Session model
 
 Sessions are **opaque DB-backed tokens** with a signed cookie:
@@ -234,11 +238,13 @@ Sessions are **opaque DB-backed tokens** with a signed cookie:
 - On every request the signature is verified first (constant-time); only then is the DB queried for the session row.
 - Cookie attributes: `HttpOnly; SameSite=Lax; Path=/; Max-Age=604800` (7 days). `Secure` is added automatically when the request URL is HTTPS.
 
-#### Root bypass (Deno only)
+#### Host PAM install gate (Deno only, install wizard)
 
-On the **Deno runtime**, sign-in as `root` is verified via **`pamtester`** against the Linux PAM `login` service (the host's real Unix password) before any DB lookup — not a hardcoded password. The instance process runs as **`instance`** (no broad sudo); it runs **`printf '%s\n' "$TP_PAM_PASSWORD" | sudo -n /usr/bin/pamtester login root authenticate`** via `/bin/sh` so stdin reaches pamtester (Deno's direct `sudo` stdin does not). Password is passed in env `TP_PAM_PASSWORD` only for the subprocess lifetime. **`pamtester`** must be installed on managed hosts (the daemon `agent-prereqs` role). Sudoers: **`turbopanel`** has passwordless sudo for all commands (`turbopanel-user` role); **`instance`** gets a scoped rule in `instance-launch` `upgrade-sudoers.yml`: `NOPASSWD: /usr/bin/pamtester login root authenticate`. The instance systemd unit must grant **`--allow-run=/bin/sh,sudo,/usr/bin/sudo,pamtester,/usr/bin/pamtester`**. On first sign-in, `ensureRootProvisioned` creates a DB `user` row (uuidv7 id, username `root`, role **`superuser`**) plus root org/account/team; sessions are DB-backed like any other user. This bypass is **never active on Workers** — `verifyCredentials` returns `{ ok: false }` for all credentials on the Workers runtime until real DB users are wired.
+On the **Deno runtime**, initial setup is gated by host PAM — **`root`** or any user in the **`sudo` / `wheel` / `admin`** groups. Host auth **never** receives a session or cookie. The instance process runs as **`instance`**; it runs **`pamtester login "$username" authenticate`** via **`sudo -n`** and a shell pipe (see `src/auth/credentials.ts`). **`pamtester`** must be installed on managed hosts (the daemon `agent-prereqs` role). Sudoers: **`instance`** gets `NOPASSWD: /usr/bin/pamtester login * authenticate` in `instance-launch` `upgrade-sudoers.yml`. The instance systemd unit must grant **`--allow-run=/bin/sh,sudo,/usr/bin/sudo,pamtester,/usr/bin/pamtester`**.
 
-Root-only routes (`createRootOnlyMiddleware`, `resolveRootSession`) authorize by **`user.role === 'superuser'`** (loaded with the session join), not a fixed user id.
+**Install flow:** `POST /api/client/v1/install/bootstrap` verifies host PAM and returns `{ ok: true }` only (no cookies). The UI keeps host username/password in the form and reveals superadmin fields client-side. `POST /api/client/v1/install` re-verifies host PAM, creates org (**Default Organization**) + team (**Default Team**) + **superadmin** user (`role: superadmin`, email + credential `account`), assigns the co-located daemon, and returns a **`tp_session`** cookie for the superadmin only. Host accounts cannot sign in via `/auth/sign-in`. This path is **never active on Workers**.
+
+Superadmin-only routes (`createRootOnlyMiddleware`, `resolveRootSession`) authorize by **`user.role === 'superadmin'`**, not PAM root.
 
 #### Session secret configuration
 
@@ -251,23 +257,30 @@ Add `SESSION_SECRET = "your-secret-here"` to `.dev.vars` before running `pnpm de
 
 #### Auth routes
 
-All routes live under `CLIENT_API_PREFIX` (`/api/client/v1/auth/*`):
+Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/client/v1/auth/sign-in` | Verify credentials, create session, set signed cookie |
+| `POST` | `/api/client/v1/auth/sign-in` | Verify DB user credentials, create session (rejects root; use install wizard) |
 | `POST` | `/api/client/v1/auth/sign-out` | Delete session, clear cookie |
-| `GET` | `/api/client/v1/auth/session` | Return current session data or 401 |
+| `GET` | `/api/client/v1/auth/session` | Return current user session or 401 |
+| `GET` | `/api/client/v1/install/status` | Public (Deno): `{ needsInstall }` — true until org + superadmin exist |
+| `POST` | `/api/client/v1/install/bootstrap` | Deno: verify host PAM (root or sudo user), no cookies |
+| `POST` | `/api/client/v1/install` | Deno: host PAM + superadmin setup → superadmin session only |
+
+**Install mode (Deno self-hosted):** `isInstanceInstalled()` is false on a fresh DB. The UI `/install` page first verifies host PAM (`POST /install/bootstrap`, client-side gate only), then collects superadmin email/password. Org/team names are fixed defaults. After install, sign-in uses superadmin email/password only. The co-located daemon's `server.organization_id` is assigned on install (and again when the unix-socket daemon connects, if still unset).
 
 #### New files
 
 | File | Purpose |
 |---|---|
-| `src/auth/crypto.ts` | Web Crypto primitives: `generateSessionToken`, `signToken`, `buildSignedCookie`, `verifySignedCookie`, constants |
+| `src/auth/crypto.ts` | Web Crypto primitives: session cookie signing |
 | `src/auth/session-store.ts` | `createSession`, `getSession`, `deleteSession`; `SessionData` type (`role` included) |
-| `src/auth/credentials.ts` | `verifyCredentials`; PAM root bypass (Deno only); `VerifyResult` type |
-| `src/auth/http.ts` | `registerAuthRoutes` — sign-in / sign-out / session HTTP handlers |
-| `src/auth/middleware.ts` | `createSessionMiddleware` — reads + verifies cookie, populates `c.var.session` |
+| `src/auth/credentials.ts` | `verifyCredentials`, `verifyInstallHostCredentials`; PAM host install gate + DB credential users |
+| `src/auth/password.ts` | PBKDF2-SHA256 hash/verify for credential accounts |
+| `src/auth/http.ts` | `registerAuthRoutes` — sign-in / sign-out / session + install HTTP handlers |
+| `src/auth/install-state.ts` | Install detection, validation, `completeInstanceInstall`, colocated server assignment |
+| `src/auth/middleware.ts` | Session + superadmin middleware helpers |
 
 ## Layout
 
@@ -275,7 +288,7 @@ All routes live under `CLIENT_API_PREFIX` (`/api/client/v1/auth/*`):
 - `src/app.ts` — shared Hono app (`/api/health` + client/admin/daemon routers)
 - `src/surfaces.ts` — versioned API/WS prefix constants
 - `src/admin-routes.ts` / `src/daemon-api-routes.ts` / `src/client-routes.ts` — per-surface REST routers
-- `src/system-routes.ts` — developer `system/upgrade` + `system/upgrade-status` + `system/reset-dev` (Deno-only). Upgrade hard-resets instance + daemon to `origin/trunk` (blocked when platform checkouts are dirty). Reset-dev wipes Postgres, repushes `schema.ts`, reprovisions root, and restarts the instance.
+- `src/system-routes.ts` — developer `system/upgrade` + `system/upgrade-status` + `system/reset-dev` (Deno-only). Upgrade hard-resets instance + daemon to `origin/trunk` (blocked when platform checkouts are dirty). Reset-dev wipes Postgres, repushes `schema.ts`, and restarts the instance (fresh install wizard).
 - `src/database-routes.ts` — developer `database/status` + `database/studio` (Deno-only). Connection test and on-demand Drizzle Studio at `/drizzle-studio/` via Caddy in dev mode.
 - `src/expo-pty.ts` — Expo PTY: tmux session status check, output streaming, and key forwarding for the developer console.
 - `src/dev-sync.ts` / `src/tunnel-routes.ts` — dev-sync + tunnel admin routes (Deno-only)

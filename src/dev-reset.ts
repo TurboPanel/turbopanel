@@ -1,5 +1,4 @@
 import { sql } from 'drizzle-orm'
-import { ensureRootProvisioned } from './auth/root-provisioning.ts'
 import type { Db } from './db.ts'
 import { pushSchemaFromCode } from './db/schema-push.ts'
 import { stopDrizzleStudio } from './drizzle-studio.ts'
@@ -33,7 +32,7 @@ function queueInstanceRestart(): boolean {
   return true
 }
 
-/** Wipe dev Postgres, repush schema.ts, reprovision root org, restart the instance. */
+/** Wipe dev Postgres, repush schema.ts, and restart the instance for a fresh install wizard. */
 export async function resetDevInstance(db: Db): Promise<DevResetResult> {
   stopDrizzleStudio()
 
@@ -45,13 +44,6 @@ export async function resetDevInstance(db: Db): Promise<DevResetResult> {
   const pushed = await pushSchemaFromCode()
   if (!pushed.ok) {
     return { ok: false, error: `schema push failed: ${pushed.error}` }
-  }
-
-  try {
-    await ensureRootProvisioned(db)
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    return { ok: false, error: `root provisioning failed: ${message}` }
   }
 
   const restarted = queueInstanceRestart()

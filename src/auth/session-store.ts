@@ -3,20 +3,23 @@ import type { Db } from '../db.ts'
 import { session, user } from '../db/schema.ts'
 import { eq, and, gt } from 'drizzle-orm'
 
-export const ROOT_USERNAME = 'root'
-export const SUPERUSER_ROLE = 'superuser'
+export const SUPERADMIN_ROLE = 'superadmin'
+
+export function isSuperadminRole(role: string | null | undefined): boolean {
+  return role === SUPERADMIN_ROLE
+}
 
 export type SessionData = {
   sessionId: string
   userId: string
-  username: string
+  username: string | null
+  email: string
   role: string
 }
 
 export async function createSession(
   db: Db | undefined,
   userId: string,
-  _username: string,
   meta: { ipAddress?: string | null; userAgent?: string | null },
 ): Promise<{ token: string; expiresAt: Date }> {
   const token = generateSessionToken()
@@ -52,6 +55,7 @@ export async function getSession(
       sessionId: session.id,
       userId: session.userId,
       username: user.username,
+      email: user.email,
       role: user.role,
     })
     .from(session)
@@ -73,6 +77,7 @@ export async function getSession(
     sessionId: row.sessionId,
     userId: row.userId,
     username: row.username,
+    email: row.email,
     role: row.role,
   }
 }

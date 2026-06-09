@@ -1,22 +1,35 @@
+import { and, eq } from 'drizzle-orm'
+import type { Db } from '../db.ts'
+import { account, user } from '../db/schema.ts'
+import { isInstanceInstalled } from './install-state.ts'
+import { verifyPassword } from './password.ts'
+
 export const PAM_ROOT_USERNAME = 'root'
+
+const HOST_USERNAME_RE = /^[a-zA-Z0-9._-]+$/
+const INSTALL_SUDO_GROUPS = ['sudo', 'wheel', 'admin']
 
 export type AuthRuntime = 'deno' | 'workers'
 
 export type VerifyResult =
   | { ok: true; username: string; isRoot: true }
-  | { ok: true; userId: string; username: string; isRoot: false }
+  | { ok: true; userId: string; username: string | null; email: string; isRoot: false }
   | { ok: false }
 
-async function verifyRootViaPam(password: string): Promise<boolean> {
+async function verifyPamLogin(username: string, password: string): Promise<boolean> {
+  if (!HOST_USERNAME_RE.test(username)) return false
+
   try {
-    // sudo does not reliably forward Deno Command stdin to pamtester; shell pipe matches
-    // `printf '%s\n' "$PW" | sudo -n pamtester login root authenticate`.
     const result = await new Deno.Command('/bin/sh', {
       args: [
         '-c',
-        "printf '%s\\n' \"$TP_PAM_PASSWORD\" | sudo -n /usr/bin/pamtester login root authenticate",
+        'printf \'%s\\n\' "$TP_PAM_PASSWORD" | sudo -n /usr/bin/pamtester login "$TP_PAM_USERNAME" authenticate',
       ],
-      env: { ...Deno.env.toObject(), TP_PAM_PASSWORD: password },
+      env: {
+        ...Deno.env.toObject(),
+        TP_PAM_USERNAME: username,
+        TP_PAM_PASSWORD: password,
+      },
       stdout: 'null',
       stderr: 'null',
     }).output()
@@ -27,13 +40,110 @@ async function verifyRootViaPam(password: string): Promise<boolean> {
   }
 }
 
+async function userHasInstallSudo(username: string): Promise<boolean> {
+  if (!HOST_USERNAME_RE.test(username)) return false
+
+  try {
+    const result = await new Deno.Command('/bin/sh', {
+      args: [
+        '-c',
+        'groups=$(id -nG "$TP_PAM_USERNAME" 2>/dev/null) || exit 1; for g in sudo wheel admin; do echo "$groups" | tr " " "\\n" | grep -qx "$g" && exit 0; done; exit 1',
+      ],
+      env: { ...Deno.env.toObject(), TP_PAM_USERNAME: username },
+      stdout: 'null',
+      stderr: 'null',
+    }).output()
+
+    return result.success
+  } catch {
+    return false
+  }
+}
+
+/** PAM root or a sudo-capable host user — install wizard only, never issues a session. */
+export async function verifyInstallHostCredentials(
+  username: string,
+  password: string,
+  runtime: AuthRuntime,
+  db?: Db,
+): Promise<boolean> {
+  if (runtime !== 'deno') return false
+  if (db && await isInstanceInstalled(db)) return false
+
+  const trimmed = username.trim()
+  if (!HOST_USERNAME_RE.test(trimmed) || !password) return false
+
+  const pamOk = await verifyPamLogin(trimmed, password)
+  if (!pamOk) return false
+
+  if (trimmed === PAM_ROOT_USERNAME) return true
+
+  return await userHasInstallSudo(trimmed)
+}
+
+async function verifyDbUserCredentials(
+  db: Db,
+  login: string,
+  password: string,
+): Promise<VerifyResult> {
+  const trimmed = login.trim()
+  const byEmail = trimmed.includes('@')
+
+  const rows = await db
+    .select({
+      userId: user.id,
+      username: user.username,
+      email: user.email,
+      password: account.password,
+      isDisabled: user.isDisabled,
+    })
+    .from(user)
+    .innerJoin(
+      account,
+      and(eq(account.userId, user.id), eq(account.providerId, 'credential')),
+    )
+    .where(
+      byEmail
+        ? eq(user.email, trimmed.toLowerCase())
+        : eq(user.username, trimmed),
+    )
+    .limit(1)
+
+  const row = rows[0]
+  if (!row?.password || row.isDisabled) {
+    return { ok: false }
+  }
+
+  const valid = await verifyPassword(password, row.password)
+  if (!valid) {
+    return { ok: false }
+  }
+
+  return {
+    ok: true,
+    userId: row.userId,
+    username: row.username,
+    email: row.email,
+    isRoot: false,
+  }
+}
+
 export async function verifyCredentials(
   username: string,
   password: string,
   runtime: AuthRuntime,
+  db?: Db,
 ): Promise<VerifyResult> {
   if (runtime === 'deno' && username === PAM_ROOT_USERNAME) {
-    const ok = await verifyRootViaPam(password)
+    if (db && await isInstanceInstalled(db)) {
+      return { ok: false }
+    }
+    const ok = await verifyInstallHostCredentials(
+      PAM_ROOT_USERNAME,
+      password,
+      runtime,
+      db,
+    )
     if (ok) {
       return {
         ok: true,
@@ -44,6 +154,9 @@ export async function verifyCredentials(
     return { ok: false }
   }
 
-  // TODO: DB user lookup — query user table, verify hashed password
-  return { ok: false }
+  if (db === undefined) {
+    return { ok: false }
+  }
+
+  return await verifyDbUserCredentials(db, username, password)
 }

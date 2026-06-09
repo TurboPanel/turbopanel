@@ -65,8 +65,6 @@ export interface DaemonConnection {
   serverId?: string
   /** Client IP as seen by Caddy (X-Real-IP), used to collapse duplicate reconnects. */
   remoteAddress?: string
-  /** Whether a background `hostname` probe was dispatched for legacy agents. */
-  hostnameProbeSent?: boolean
   lastInboundAt: number
   send: DaemonSend
   close: DaemonClose
@@ -123,8 +121,6 @@ const pendingAcks = new Map<string, {
 const ADDRESSES_TIMEOUT_MS = 10_000
 /** Drop sockets with no inbound traffic (pong, hello, etc.) for this long. */
 export const DAEMON_STALE_MS = 45_000
-/** Sockets that never got an identity address (legacy zombie reconnects). */
-const STALE_NO_ADDRESS_MS = 15_000
 /** Instance ping interval in deno-ws.ts — stale timeout must stay above this. */
 export const DAEMON_PING_MS = 15_000
 
@@ -220,25 +216,6 @@ export function setDaemonHostname(id: string, hostname: string): void {
   })
 }
 
-const HOSTNAME_PROBE_CMD = 'hostname'
-
-/**
- * Legacy agents may not send hostname in hello. Run `hostname` once per socket.
- */
-export function probeDaemonHostname(daemonId: string): void {
-  const conn = connections.get(daemonId)
-  if (!conn || conn.hostname || conn.hostnameProbeSent) return
-  conn.hostnameProbeSent = true
-  dispatchCommand(daemonId, HOSTNAME_PROBE_CMD)
-}
-
-/** Probe any connected socket that still lacks a hostname (e.g. after a hot reload). */
-export function probeMissingHostnames(): void {
-  for (const [id, conn] of connections.entries()) {
-    if (!conn.hostname) probeDaemonHostname(id)
-  }
-}
-
 export function setDaemonServerId(id: string, serverId: string): string {
   const conn = connections.get(id)
   if (!conn) return id
@@ -255,8 +232,6 @@ export function setDaemonServerId(id: string, serverId: string): string {
       existing.lastInboundAt = Date.now()
       existing.hostname = incoming.hostname ?? existing.hostname
       existing.remoteAddress = incoming.remoteAddress ?? existing.remoteAddress
-      existing.hostnameProbeSent = incoming.hostnameProbeSent ??
-        existing.hostnameProbeSent
       connections.delete(id)
       return existingId
     }
@@ -312,8 +287,7 @@ export function pruneStaleDaemons(maxIdleMs = DAEMON_STALE_MS): string[] {
   const pruned: string[] = []
   for (const [id, conn] of connections.entries()) {
     const idleMs = now - conn.lastInboundAt
-    const idleLimit = conn.remoteAddress ? maxIdleMs : STALE_NO_ADDRESS_MS
-    if (idleMs >= idleLimit) {
+    if (idleMs >= maxIdleMs) {
       unregisterDaemon(id)
       pruned.push(id)
     }
@@ -349,6 +323,16 @@ export function listDaemonConnections(): Omit<DaemonConnection, 'send' | 'close'
 export function getColocatedDaemonId(): string | null {
   for (const conn of connections.values()) {
     if (conn.remoteAddress === '__direct__') return conn.id
+  }
+  return null
+}
+
+/** Canonical server.id for the co-located daemon, when connected. */
+export function getColocatedDaemonServerId(): string | null {
+  for (const conn of connections.values()) {
+    if (conn.remoteAddress === '__direct__' && conn.serverId) {
+      return conn.serverId
+    }
   }
   return null
 }
@@ -399,14 +383,6 @@ export function recordCommandResult(
   entry.stdout = message.stdout
   entry.stderr = message.stderr
   entry.finishedAt = message.at
-
-  if (
-    entry.command.trim() === HOSTNAME_PROBE_CMD &&
-    message.exitCode === 0
-  ) {
-    const host = message.stdout.trim().split('\n')[0]?.trim()
-    if (host) setDaemonHostname(entry.daemonId, host)
-  }
 }
 
 export function listCommandResults(limit = 50): CommandResult[] {
