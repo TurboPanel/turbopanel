@@ -66,24 +66,48 @@ async function git(
 }
 
 /** After git reset, re-home any instance-owned source files back to turbopanel (9999). */
-async function normalizeCheckout(
+async function runCheckoutHelper(
   repoRoot: string,
+  mode?: '--prepare-reset' | '--ensure-runtime-dirs',
 ): Promise<{ ok: true } | { ok: false; error: string }> {
+  const args = mode
+    ? [NORMALIZE_CHECKOUT, repoRoot, mode]
+    : [NORMALIZE_CHECKOUT, repoRoot]
   try {
     const out = await new Deno.Command('sudo', {
-      args: [NORMALIZE_CHECKOUT, repoRoot],
+      args,
       stdout: 'piped',
       stderr: 'piped',
     }).output()
     if (out.success) return { ok: true }
     return {
       ok: false,
-      error: new TextDecoder().decode(out.stderr).trim() || 'normalize checkout failed',
+      error: new TextDecoder().decode(out.stderr).trim() ||
+        (mode ? `${mode} failed` : 'normalize checkout failed'),
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     return { ok: false, error: message }
   }
+}
+
+async function normalizeCheckout(
+  repoRoot: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  return await runCheckoutHelper(repoRoot)
+}
+
+const RUNTIME_DIR_PREFIXES = ['.config/', '.local/', '.cache/'] as const
+
+function porcelainPath(line: string): string {
+  const raw = line.slice(3).trim()
+  const arrow = raw.indexOf(' -> ')
+  return (arrow >= 0 ? raw.slice(arrow + 4) : raw).trim()
+}
+
+function isRuntimePorcelainLine(line: string): boolean {
+  const path = porcelainPath(line)
+  return RUNTIME_DIR_PREFIXES.some((prefix) => path.startsWith(prefix))
 }
 
 async function repoDirty(
@@ -96,7 +120,9 @@ async function repoDirty(
       error: status.stderr || 'git status failed',
     }
   }
-  const lines = status.stdout ? status.stdout.split('\n').filter(Boolean) : []
+  const lines = status.stdout
+    ? status.stdout.split('\n').filter(Boolean).filter((line) => !isRuntimePorcelainLine(line))
+    : []
   return { ok: true, dirty: lines.length > 0, changes: lines.length }
 }
 
@@ -126,6 +152,14 @@ async function syncRepoToTrunk(
   repoRoot: string,
   label: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
+  const prepared = await runCheckoutHelper(repoRoot, '--prepare-reset')
+  if (!prepared.ok) {
+    return {
+      ok: false,
+      error: `${label} checkout prepare failed: ${prepared.error}`,
+    }
+  }
+
   const fetched = await git(repoRoot, ['fetch', 'origin', TRUNK_BRANCH])
   if (!fetched.success) {
     return {
@@ -147,6 +181,14 @@ async function syncRepoToTrunk(
     return {
       ok: false,
       error: `${label} checkout permission fix failed: ${normalized.error}`,
+    }
+  }
+
+  const runtime = await runCheckoutHelper(repoRoot, '--ensure-runtime-dirs')
+  if (!runtime.ok) {
+    return {
+      ok: false,
+      error: `${label} runtime dir setup failed: ${runtime.error}`,
     }
   }
 
