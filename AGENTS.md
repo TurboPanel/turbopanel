@@ -267,6 +267,7 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `GET` | `/api/client/v1/install/status` | Public (Deno): `{ needsInstall }` — true until org + superadmin exist |
 | `POST` | `/api/client/v1/install/bootstrap` | Deno: verify host PAM (root or sudo user), no cookies |
 | `POST` | `/api/client/v1/install` | Deno: host PAM + superadmin setup → superadmin session only |
+| `GET` | `/api/client/v1/servers` | Session required: servers assigned to the user's organization, with live `connected` / `hostname` from the daemon hub |
 
 **Install mode (Deno self-hosted):** `isInstanceInstalled()` is false on a fresh DB. The UI `/install` page first verifies host PAM (`POST /install/bootstrap`, client-side gate only), then collects superadmin email/password. Org/team names are fixed defaults. After install, sign-in uses superadmin email/password only. The co-located daemon's `server.organization_id` is assigned on install (and again when the unix-socket daemon connects, if still unset).
 
