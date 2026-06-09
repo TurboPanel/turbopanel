@@ -1,5 +1,8 @@
 import { Hono } from 'hono'
+import { eq, isNull } from 'drizzle-orm'
 import { createRootOnlyMiddleware } from './auth/middleware.ts'
+import type { Db } from './db.ts'
+import { organization, server } from './db/schema.ts'
 import {
   broadcastToDaemons,
   type DaemonMessage,
@@ -21,7 +24,17 @@ import { DEVELOPER_API_PREFIX } from './surfaces.ts'
  * Mounted under {@link DEVELOPER_API_PREFIX} (`/api/developer/v1`). Dev-only —
  * the caller (`deno.ts`) registers this surface only when dev mode is enabled.
  */
-export function registerDeveloperRoutes(app: Hono, opts: { sessionSecret: string }) {
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function nowTs(): string {
+  return new Date().toISOString()
+}
+
+export function registerDeveloperRoutes(
+  app: Hono,
+  opts: { sessionSecret: string; db?: Db },
+) {
   const developer = new Hono()
   developer.use('*', createRootOnlyMiddleware(opts.sessionSecret))
 
@@ -165,6 +178,128 @@ export function registerDeveloperRoutes(app: Hono, opts: { sessionSecret: string
       stderr: 'null',
     }).spawn()
 
+    return c.json({ ok: true })
+  })
+
+  developer.get('/organizations', async (c) => {
+    if (!opts.db) return c.json({ error: 'Database unavailable' }, 503)
+    const rows = await opts.db
+      .select({
+        id: organization.id,
+        displayName: organization.displayName,
+        slug: organization.slug,
+      })
+      .from(organization)
+      .orderBy(organization.displayName)
+    return c.json({ organizations: rows })
+  })
+
+  developer.get('/servers', async (c) => {
+    if (!opts.db) return c.json({ error: 'Database unavailable' }, 503)
+    const rows = await opts.db
+      .select({
+        id: server.id,
+        displayName: server.displayName,
+        organizationId: server.organizationId,
+        options: server.options,
+        createdAt: server.createdAt,
+      })
+      .from(server)
+      .where(isNull(server.deletedAt))
+      .orderBy(server.createdAt)
+    return c.json({ servers: rows })
+  })
+
+  developer.post('/servers', async (c) => {
+    if (!opts.db) return c.json({ error: 'Database unavailable' }, 503)
+    const body = await c.req.json().catch(() => null) as {
+      displayName?: string | null
+      options?: Record<string, unknown> | null
+    } | null
+
+    let displayName: string | null = null
+    if (body && body.displayName != null) {
+      if (typeof body.displayName !== 'string') {
+        return c.json({ error: 'displayName must be a string or null' }, 400)
+      }
+      const trimmed = body.displayName.trim()
+      if (trimmed.length > 255) {
+        return c.json({ error: 'displayName must be at most 255 characters' }, 400)
+      }
+      displayName = trimmed
+    }
+
+    const options = body?.options ?? null
+    const now = nowTs()
+    const inserted = await opts.db
+      .insert(server)
+      .values({ displayName, options, createdAt: now, updatedAt: now })
+      .returning({ id: server.id })
+
+    return c.json({ ok: true, id: inserted[0].id }, 201)
+  })
+
+  developer.patch('/servers/:id', async (c) => {
+    if (!opts.db) return c.json({ error: 'Database unavailable' }, 503)
+    const id = c.req.param('id')
+    const body = await c.req.json().catch(() => null) as {
+      displayName?: string | null
+      organizationId?: string | null
+      options?: Record<string, unknown> | null
+    } | null
+
+    const patch: {
+      displayName?: string | null
+      organizationId?: string | null
+      options?: Record<string, unknown> | null
+    } = {}
+    if (body && 'displayName' in body) {
+      if (body.displayName != null) {
+        if (typeof body.displayName !== 'string') {
+          return c.json({ error: 'displayName must be a string or null' }, 400)
+        }
+        const trimmed = body.displayName.trim()
+        if (trimmed.length > 255) {
+          return c.json({ error: 'displayName must be at most 255 characters' }, 400)
+        }
+        patch.displayName = trimmed
+      } else {
+        patch.displayName = null
+      }
+    }
+    if (body && 'options' in body) {
+      patch.options = body.options ?? null
+    }
+    if (body && 'organizationId' in body) {
+      const organizationId = body.organizationId
+      if (organizationId == null) {
+        patch.organizationId = null
+      } else if (typeof organizationId !== 'string') {
+        return c.json({ error: 'organizationId must be a string or null' }, 400)
+      } else {
+        const trimmed = organizationId.trim()
+        if (!UUID_RE.test(trimmed)) {
+          return c.json({ error: 'organizationId must be a valid UUID' }, 400)
+        }
+        const org = await opts.db
+          .select({ id: organization.id })
+          .from(organization)
+          .where(eq(organization.id, trimmed))
+          .limit(1)
+        if (org.length === 0) {
+          return c.json({ error: 'Organization not found' }, 404)
+        }
+        patch.organizationId = trimmed
+      }
+    }
+
+    const updated = await opts.db
+      .update(server)
+      .set({ ...patch, updatedAt: nowTs() })
+      .where(eq(server.id, id))
+      .returning({ id: server.id })
+
+    if (updated.length === 0) return c.json({ error: 'Server not found' }, 404)
     return c.json({ ok: true })
   })
 

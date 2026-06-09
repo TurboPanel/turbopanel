@@ -12,17 +12,6 @@ export type SessionData = {
   username: string
 }
 
-export const rootSessionStore = new Map<string, { expiresAt: Date }>()
-
-export function pruneExpiredRootSessions(): void {
-  const now = new Date()
-  for (const [token, entry] of rootSessionStore) {
-    if (entry.expiresAt <= now) {
-      rootSessionStore.delete(token)
-    }
-  }
-}
-
 export async function createSession(
   db: Db | undefined,
   userId: string,
@@ -32,16 +21,12 @@ export async function createSession(
   const token = generateSessionToken()
   const expiresAt = new Date(Date.now() + SESSION_EXPIRES_IN_MS)
 
-  if (userId === ROOT_USER_ID) {
-    pruneExpiredRootSessions()
-    rootSessionStore.set(token, { expiresAt })
-    return { token, expiresAt }
-  }
-
   if (db === undefined) {
     throw new Error('Database unavailable')
   }
 
+  // Root sessions are DB-backed on Deno (createDenoDb() in deno.ts always provides db).
+  // This guard cannot trigger in practice on Deno; Workers has no DB and never reaches here.
   await db.insert(session).values({
     token,
     userId,
@@ -57,19 +42,6 @@ export async function getSession(
   db: Db | undefined,
   token: string,
 ): Promise<SessionData | null> {
-  const rootEntry = rootSessionStore.get(token)
-  if (rootEntry) {
-    if (rootEntry.expiresAt > new Date()) {
-      return {
-        sessionId: 'root',
-        userId: ROOT_USER_ID,
-        username: ROOT_USERNAME,
-      }
-    }
-    rootSessionStore.delete(token)
-    return null
-  }
-
   if (db === undefined) {
     return null
   }
@@ -78,7 +50,7 @@ export async function getSession(
     .select({
       sessionId: session.id,
       userId: session.userId,
-      username: user.email,
+      username: user.username,
     })
     .from(session)
     .innerJoin(user, eq(session.userId, user.id))
@@ -106,8 +78,6 @@ export async function deleteSession(
   db: Db | undefined,
   token: string,
 ): Promise<void> {
-  rootSessionStore.delete(token)
-
   if (db !== undefined) {
     await db.delete(session).where(eq(session.token, token))
   }

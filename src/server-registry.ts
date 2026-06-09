@@ -21,12 +21,8 @@ function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
   return patch
 }
 
-function defaultDisplayName(identity: ServerHelloIdentity): string {
-  const hostname = identity.hostname?.trim()
-  if (hostname) return hostname.slice(0, 255)
-  const machineId = identity.machineId?.trim()
-  if (machineId) return machineId.slice(0, 255)
-  return 'server'
+function defaultDisplayName(_identity: ServerHelloIdentity): string | null {
+  return null
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -97,12 +93,14 @@ async function findExistingServerId(
 
 /**
  * Resolve the canonical server.id (uuidv7) for a connecting daemon.
- * Creates a row on first sight; reuses by serverId, metadata.machineId, or hostname.
+ * Reuses by serverId, metadata.machineId, or hostname. Creates a row on first
+ * sight when no match exists; organization assignment is operator-driven via
+ * the developer console.
  */
 export async function resolveServerId(
   db: Db,
   identity: ServerHelloIdentity,
-): Promise<string> {
+): Promise<string | null> {
   const existing = await findExistingServerId(db, identity)
   if (existing) {
     await touchServerMetadata(db, existing, identity)

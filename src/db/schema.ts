@@ -90,15 +90,15 @@ export const server = pgTable("server", {
 	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).notNull(),
 	deletedAt: timestamp("deleted_at", { precision: 3, withTimezone: true, mode: 'string' }),
 	organizationId: uuid("organization_id"),
-	displayName: varchar("display_name", { length: 255 }).notNull(),
+	displayName: varchar("display_name", { length: 255 }),
 	metadata: jsonb(),
+	options: jsonb(),
 }, (table) => [
 	foreignKey({
 			columns: [table.organizationId],
 			foreignColumns: [organization.id],
 			name: "server_organization_id_organization_id_fk"
 		}),
-	check("server_display_name_format_check", sql`(char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)`),
 ]);
 export const session = pgTable("session", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
@@ -189,14 +189,18 @@ export const user = pgTable("user", {
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	displayName: varchar("display_name", { length: 255 }).notNull(),
+	username: varchar({ length: 255 }).notNull(),
+	displayUsername: varchar("display_username", { length: 255 }).notNull(),
 	email: varchar({ length: 255 }).notNull(),
-	image: text(),
 	isEmailVerified: boolean("is_email_verified").default(false).notNull(),
 	is2FaEnabled: boolean("is_2fa_enabled").default(false).notNull(),
 	isDisabled: boolean("is_disabled").default(false).notNull(),
+	role: text().default('user').notNull(),
 	metadata: jsonb(),
+	options: jsonb(),
 }, (table) => [
 	unique("user_email_unique").on(table.email),
+	unique("user_username_unique").on(table.username),
 ]);
 export const twoFactor = pgTable("2fa", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),

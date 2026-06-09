@@ -122,7 +122,7 @@ export function registerDaemonWebSocket(
             void (async () => {
               if (message.hostname) setDaemonHostname(socketId, message.hostname)
 
-              let serverId: string | undefined
+              let serverId: string | null = null
               if (db) {
                 try {
                   serverId = await resolveServerId(db, {
@@ -130,7 +130,9 @@ export function registerDaemonWebSocket(
                     machineId: message.machineId,
                     hostname: message.hostname,
                   })
-                  connId = setDaemonServerId(socketId, serverId)
+                  if (serverId) {
+                    connId = setDaemonServerId(socketId, serverId)
+                  }
                 } catch (err) {
                   console.error('[ws] failed to resolve server id:', err)
                 }
@@ -141,7 +143,7 @@ export function registerDaemonWebSocket(
               const activeId = connId ?? socketId
               const evicted = evictDuplicateDaemons(activeId, {
                 hostname: message.hostname,
-                serverId,
+                serverId: serverId ?? undefined,
                 remoteAddress: identityAddress,
               })
               if (evicted.length > 0) {

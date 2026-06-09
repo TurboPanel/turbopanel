@@ -7,6 +7,7 @@ import {
   verifySignedCookie,
 } from './crypto.ts'
 import { verifyCredentials } from './credentials.ts'
+import { ensureRootProvisioned } from './root-provisioning.ts'
 import { createSession, deleteSession, getSession } from './session-store.ts'
 import { getDb } from '../db.ts'
 
@@ -69,6 +70,10 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
     const result = await verifyCredentials(username, password, opts.runtime)
     if (!result.ok) {
       return c.json({ ok: false, error: 'Invalid credentials' }, 401)
+    }
+
+    if (result.isRoot && db !== undefined) {
+      await ensureRootProvisioned(db)
     }
 
     const { token } = await createSession(db, result.userId, result.username, {

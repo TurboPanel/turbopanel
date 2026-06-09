@@ -44,7 +44,7 @@ export function createApp(
   registerAdminRoutes(routes, { sessionSecret: sessionSecret ?? '' })
   registerDaemonApiRoutes(routes)
   if (developerSurface) {
-    registerDeveloperRoutes(routes, { sessionSecret: sessionSecret ?? '' })
+    registerDeveloperRoutes(routes, { sessionSecret: sessionSecret ?? '', db })
   }
   return app
 }
