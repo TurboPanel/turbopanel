@@ -55,7 +55,12 @@ main() {
   db_connect_verify_schema sync.sh "$SCHEMA_SRC"
 
   echo "sync.sh: pushing schema to live database (no migration files)…"
-  DATABASE_URL="$DATABASE_URL" "$NODE" "$DRIZZLE_KIT" push "${PUSH_ARGS[@]}"
+  if [[ -n "${DATABASE_URL:-}" ]]; then
+    DATABASE_URL="$DATABASE_URL" "$NODE" "$DRIZZLE_KIT" push "${PUSH_ARGS[@]}"
+  else
+    # drizzle.config.ts reads TURBOPANEL_PG_* (socket mode).
+    "$NODE" "$DRIZZLE_KIT" push "${PUSH_ARGS[@]}"
+  fi
 
   echo "sync.sh: done — database should match src/db/schema.ts"
 }

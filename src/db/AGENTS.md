@@ -90,3 +90,7 @@ docker exec turbopanel-postgres psql -U turbopanel -d turbopanel -c '\dt'
 ```
 
 Restart the instance only when **application code** changed — schema sync alone does not require a restart.
+
+### Empty database bootstrap (Deno dev)
+
+On startup, `src/deno.ts` calls `ensureDbSchemaReady()` when Postgres is configured. If the `user` table is missing (fresh Postgres volume, failed reset, etc.), the instance runs `drizzle-kit push --force` from `schema.ts` before accepting traffic. `./sync.sh` also works in socket mode (`TURBOPANEL_PG_*` from the instance unit — no `DATABASE_URL` required).

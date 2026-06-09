@@ -1,17 +1,9 @@
 import { sql } from 'drizzle-orm'
-import { dirname, fromFileUrl, join } from '@std/path'
 import { ensureRootProvisioned } from './auth/root-provisioning.ts'
 import type { Db } from './db.ts'
+import { pushSchemaFromCode } from './db/schema-push.ts'
 import { stopDrizzleStudio } from './drizzle-studio.ts'
 
-const INSTANCE_REPO_ROOT = (() => {
-  const here = dirname(fromFileUrl(import.meta.url))
-  return join(here, '..')
-})()
-
-const TURBOPANEL_USER = Deno.env.get('TURBOPANEL_USER')?.trim() || 'turbopanel'
-const NODE_BIN = Deno.env.get('TURBOPANEL_NODE')?.trim() ||
-  '/opt/turbopanel/runtimes/node/current/bin/node'
 const INSTANCE_SERVICE = Deno.env.get('TURBOPANEL_INSTANCE_SERVICE')?.trim()
 
 export type DevResetResult =
@@ -24,29 +16,6 @@ async function wipePublicSchema(db: Db): Promise<{ ok: true } | { ok: false; err
     await db.execute(sql`CREATE SCHEMA public`)
     await db.execute(sql`GRANT ALL ON SCHEMA public TO PUBLIC`)
     return { ok: true }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    return { ok: false, error: message }
-  }
-}
-
-async function pushSchemaFromCode(): Promise<{ ok: true } | { ok: false; error: string }> {
-  const drizzleKit = join(INSTANCE_REPO_ROOT, 'node_modules/drizzle-kit/bin.cjs')
-  try {
-    const out = await new Deno.Command('sudo', {
-      args: ['-u', TURBOPANEL_USER, NODE_BIN, drizzleKit, 'push', '--force'],
-      cwd: INSTANCE_REPO_ROOT,
-      env: Deno.env.toObject(),
-      stdout: 'piped',
-      stderr: 'piped',
-    }).output()
-    if (out.success) return { ok: true }
-    const stderr = new TextDecoder().decode(out.stderr).trim()
-    const stdout = new TextDecoder().decode(out.stdout).trim()
-    return {
-      ok: false,
-      error: stderr || stdout || 'drizzle-kit push failed',
-    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     return { ok: false, error: message }

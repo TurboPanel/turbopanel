@@ -2,6 +2,7 @@ import type { Hono } from 'hono'
 import { generateSessionToken } from './auth/crypto.ts'
 import { createApp } from './app.ts'
 import { createDenoDb } from './db.ts'
+import { ensureDbSchemaReady } from './db/schema-push.ts'
 import { registerDaemonWebSocket } from './deno-ws.ts'
 import { registerVersionRoute } from './daemon-version.ts'
 import { registerSystemRoutes } from './system-routes.ts'
@@ -16,6 +17,9 @@ import {
 } from './server-paths.ts'
 const developerSurface = isDeveloperSurfaceEnabled()
 const db = createDenoDb()
+if (db) {
+  await ensureDbSchemaReady(db)
+}
 const sessionSecret = (() => {
   const configured = Deno.env.get('TURBOPANEL_SESSION_SECRET')
   if (configured) return configured
