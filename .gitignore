@@ -33,7 +33,7 @@ lerna-debug.log*
 # misc
 .DS_Store
 
-# instance runtime (Caddy XDG data, Deno cache, etc.)
+# instance/caddy runtime (systemd HOME/XDG_* for the instance user)
 .local/
 .cache/
 .config/

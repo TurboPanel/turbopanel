@@ -12,7 +12,10 @@ Type=simple
 User=instance
 Group=turbopanel
 WorkingDirectory=/opt/turbopanel/platform/turbopanel
-Environment=HOME=/opt/turbopanel/platform/turbopanel
+Environment=HOME=/opt/turbopanel/platform/turbopanel/.local
+Environment=XDG_DATA_HOME=/opt/turbopanel/platform/turbopanel/.local/share
+Environment=XDG_STATE_HOME=/opt/turbopanel/platform/turbopanel/.local/state
+Environment=XDG_CONFIG_HOME=/opt/turbopanel/platform/turbopanel/.config
 Environment=PATH=/opt/turbopanel/runtimes/deno/current:/opt/turbopanel/runtimes/caddy/current:/usr/local/bin:/usr/bin:/bin
 Environment=TURBOPANEL_INSTANCE_SERVICE=turbopanel-instance
 ExecStart=/opt/turbopanel/runtimes/deno/current/deno run --allow-env --allow-sys=networkInterfaces --allow-read=/run/turbopanel,../daemon,./certs --allow-write=/run/turbopanel --allow-run=git,systemctl src/deno.ts
