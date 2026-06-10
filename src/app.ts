@@ -3,7 +3,6 @@ import type { SessionData } from './auth/session-store.ts'
 import { registerAdminRoutes } from './admin-routes.ts'
 import { registerClientRoutes } from './client-routes.ts'
 import { registerDaemonApiRoutes } from './daemon-api-routes.ts'
-import { registerDeveloperRoutes } from './developer-routes.ts'
 import type { Db } from './db.ts'
 import { HEALTH_PATH } from './surfaces.ts'
 
@@ -16,12 +15,10 @@ export type AppEnv = {
 
 export function createApp(
   {
-    developerSurface = false,
     db,
     sessionSecret,
     runtime,
   }: {
-    developerSurface?: boolean
     db?: Db
     sessionSecret?: string
     runtime?: 'deno' | 'workers'
@@ -43,8 +40,5 @@ export function createApp(
   })
   registerAdminRoutes(routes, { sessionSecret: sessionSecret ?? '' })
   registerDaemonApiRoutes(routes)
-  if (developerSurface) {
-    registerDeveloperRoutes(routes, { sessionSecret: sessionSecret ?? '', db })
-  }
   return app
 }

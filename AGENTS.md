@@ -297,6 +297,7 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 - `src/daemon-hub.ts` — WebSocket connection registry, command/address/ack dispatch
 - `src/deno-ws.ts` — `/ws/daemon/v1` handler, `/ws/developer/v1/expo-pty` PTY stream, and `/ws/{developer,client}/v1` stubs
 - `src/db.ts` / `src/db/schema.ts` — Drizzle client factories + schema
-- `src/workers.ts` — Workers entry (`wrangler.jsonc` main)
+- `src/developer-routes-core.ts` — developer REST routes safe for Workers (`workers.ts` registers this). Deno-only routes (Drizzle Studio, tmux Expo) stay in `src/developer-routes.ts`, registered from `deno.ts` only — never import Deno-only modules from `src/app.ts` or the Workers bundle will fail.
+- `src/workers.ts` — Workers entry (`wrangler.jsonc` main); registers `developer-routes-core` once per isolate
 - `src/deno.ts` — Deno entry (`deno.json` tasks)
 - `src/auth/` — authentication module: Web Crypto primitives, session store, PAM credentials, HTTP handlers, and session middleware (see **Authentication** section above)

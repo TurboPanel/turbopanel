@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "dev": "wrangler dev",
     "cert:generate": "node scripts/generate-self-signed-cert.mjs",
     "caddy:install": "node scripts/download-caddy.mjs",
     "deploy:workers": "wrangler deploy --minify",

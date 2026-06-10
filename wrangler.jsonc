@@ -5,6 +5,7 @@
   "name": "turbopanel",
   "main": "src/workers.ts",
   "compatibility_date": "2026-06-01",
+  "compatibility_flags": ["nodejs_compat"],
   "dev": {
     "port": 18787
   },
@@ -19,7 +20,8 @@
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",
-      "id": "00000000-0000-0000-0000-000000000000"
+      "id": "00000000-0000-0000-0000-000000000000",
+      "localConnectionString": "postgres://turbopanel:turbopanel-dev@127.0.0.1:5432/turbopanel"
     }
   ],
   "env": {

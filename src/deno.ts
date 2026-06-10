@@ -8,6 +8,7 @@ import { registerVersionRoute } from './daemon-version.ts'
 import { registerSystemRoutes } from './system-routes.ts'
 import { registerDevSyncRoutes } from './dev-sync.ts'
 import { registerTunnelRoutes } from './tunnel-routes.ts'
+import { registerDeveloperRoutes } from './developer-routes.ts'
 import { isDeveloperSurfaceEnabled } from './dev-mode.ts'
 import { stopDrizzleStudio } from './drizzle-studio.ts'
 import {
@@ -31,8 +32,11 @@ const sessionSecret = (() => {
     'TURBOPANEL_SESSION_SECRET is required when TURBOPANEL_UI_MODE=static (production)',
   )
 })()
-const app = createApp({ developerSurface, db, sessionSecret, runtime: 'deno' })
+const app = createApp({ db, sessionSecret, runtime: 'deno' })
 const routes = app as unknown as Hono
+if (developerSurface) {
+  registerDeveloperRoutes(routes, { sessionSecret, db })
+}
 registerVersionRoute(routes)
 if (developerSurface) {
   registerSystemRoutes(routes, { sessionSecret, db })
