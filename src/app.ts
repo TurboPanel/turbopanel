@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import type { SessionData } from './auth/session-store.ts'
+import type { DerivedSecretsConfig } from './auth/secrets.ts'
 import { registerAdminRoutes } from './admin-routes.ts'
 import { registerClientRoutes } from './client-routes.ts'
 import { registerDaemonApiRoutes } from './daemon-api-routes.ts'
@@ -16,11 +17,11 @@ export type AppEnv = {
 export function createApp(
   {
     db,
-    sessionSecret,
+    secrets,
     runtime,
   }: {
     db?: Db
-    sessionSecret?: string
+    secrets?: DerivedSecretsConfig
     runtime?: 'deno' | 'workers'
   } = {},
 ): Hono<AppEnv> {
@@ -34,11 +35,13 @@ export function createApp(
   app.get('/', (c) => c.text('TurboPanel'))
   app.get(HEALTH_PATH, (c) => c.json({ ok: true }))
   const routes = app as unknown as Hono
-  registerClientRoutes(routes, {
-    sessionSecret: sessionSecret ?? '',
-    runtime: runtime ?? 'workers',
-  })
-  registerAdminRoutes(routes, { sessionSecret: sessionSecret ?? '' })
+  if (secrets) {
+    registerClientRoutes(routes, {
+      secrets,
+      runtime: runtime ?? 'workers',
+    })
+    registerAdminRoutes(routes, { secrets })
+  }
   registerDaemonApiRoutes(routes)
   return app
 }

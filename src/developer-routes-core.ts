@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { eq, isNull } from 'drizzle-orm'
 import { createRootOnlyMiddleware } from './auth/middleware.ts'
+import type { DerivedSecretsConfig } from './auth/secrets.ts'
 import type { Db } from './db.ts'
 import { organization, server } from './db/schema.ts'
 import {
@@ -30,10 +31,10 @@ function nowTs(): string {
 
 export function registerDeveloperRoutesCore(
   app: Hono,
-  opts: { sessionSecret: string; db?: Db },
+  opts: { secrets: DerivedSecretsConfig; db?: Db },
 ) {
   const developer = new Hono()
-  developer.use('*', createRootOnlyMiddleware(opts.sessionSecret))
+  developer.use('*', createRootOnlyMiddleware(opts.secrets))
 
   developer.get('/daemon/connections', (c) =>
     c.json({ connections: listDaemonConnections() }))

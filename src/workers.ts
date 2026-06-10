@@ -1,33 +1,29 @@
 import type { Hono } from 'hono'
+import type { DerivedSecretsConfig } from './auth/secrets.ts'
+import { deriveSecretsConfig, parseSecretsEnv } from './auth/secrets.ts'
 import { createApp } from './app'
 import { createWorkersDb } from './db'
 import { registerDeveloperRoutesCore } from './developer-routes-core.ts'
 
+let initPromise: Promise<void> | null = null
 let cachedApp: ReturnType<typeof createApp> | null = null
+let cachedSecrets: DerivedSecretsConfig | null = null
 
-function workerApp(env: CloudflareBindings) {
-  if (!cachedApp) {
-    const db = env.HYPERDRIVE ? createWorkersDb(env.HYPERDRIVE) : undefined
-    cachedApp = createApp({
-      db,
-      sessionSecret: env.SESSION_SECRET,
-      runtime: 'workers',
-    })
-    registerDeveloperRoutesCore(cachedApp as unknown as Hono, {
-      sessionSecret: env.SESSION_SECRET,
-      db,
-    })
-  }
-  return cachedApp
+async function initWorkerApp(env: CloudflareBindings) {
+  const secretsConfig = parseSecretsEnv(env.SESSION_SECRET, env.SESSION_SECRETS, 'workers')
+  cachedSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+  const db = env.HYPERDRIVE ? createWorkersDb(env.HYPERDRIVE) : undefined
+  cachedApp = createApp({ db, secrets: cachedSecrets, runtime: 'workers' })
+  registerDeveloperRoutesCore(cachedApp as unknown as Hono, {
+    secrets: cachedSecrets,
+    db,
+  })
 }
 
 export default {
-  fetch(request: Request, env: CloudflareBindings, ctx: ExecutionContext) {
-    if (!env.SESSION_SECRET) {
-      throw new Error(
-        'SESSION_SECRET binding is required — add to .dev.vars for local Wrangler dev or wrangler secret put for production',
-      )
-    }
-    return workerApp(env).fetch(request, env, ctx)
+  async fetch(request: Request, env: CloudflareBindings, ctx: ExecutionContext) {
+    if (!initPromise) initPromise = initWorkerApp(env)
+    await initPromise
+    return cachedApp!.fetch(request, env, ctx)
   },
 } satisfies ExportedHandler<CloudflareBindings>

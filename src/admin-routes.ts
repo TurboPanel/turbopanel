@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { createSessionMiddleware } from './auth/middleware.ts'
+import type { DerivedSecretsConfig } from './auth/secrets.ts'
 import {
   broadcastToDaemons,
   type DaemonMessage,
@@ -18,9 +19,9 @@ import { ADMIN_API_PREFIX } from './surfaces.ts'
  * Admin UI surface: fleet management, diagnostics, shell, addresses.
  * Mounted under {@link ADMIN_API_PREFIX} (`/api/admin/v1`).
  */
-export function registerAdminRoutes(app: Hono, opts: { sessionSecret: string }) {
+export function registerAdminRoutes(app: Hono, opts: { secrets: DerivedSecretsConfig }) {
   const admin = new Hono()
-  admin.use('*', createSessionMiddleware(opts.sessionSecret))
+  admin.use('*', createSessionMiddleware(opts.secrets))
 
   admin.get('/daemon/connections', (c) =>
     c.json({ connections: listDaemonConnections() }))

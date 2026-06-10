@@ -1,4 +1,5 @@
 import type { Hono } from 'hono'
+import type { DerivedSecretsConfig } from './auth/secrets.ts'
 import type { Db } from './db.ts'
 import { registerDeveloperRoutesCore } from './developer-routes-core.ts'
 import { registerDatabaseRoutes } from './database-routes.ts'
@@ -10,7 +11,7 @@ import { EXPO_UI_SERVICE, expoTmuxStatus } from './expo-pty.ts'
  */
 export function registerDeveloperRoutes(
   app: Hono,
-  opts: { sessionSecret: string; db?: Db },
+  opts: { secrets: DerivedSecretsConfig; db?: Db },
 ) {
   const developer = registerDeveloperRoutesCore(app, opts)
 

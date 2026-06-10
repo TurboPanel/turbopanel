@@ -95,8 +95,6 @@ All TurboPanel runtime sockets live under **`/run/turbopanel/`** (on Linux, `/va
 | `CADDY_TLS_CERT` | `./certs/self-signed.crt` | Server leaf certificate (signed by platform CA) |
 | `CADDY_TLS_KEY` | `./certs/self-signed.key` | Server leaf private key |
 | `TURBOPANEL_TLS_EXTRA_SANS` | — | Comma-separated DNS names for the server cert (e.g. `turbopanel.lan`) |
-| `TURBOPANEL_SESSION_SECRET` | *(required in production)* | HMAC-SHA256 signing key for session cookies (Deno runtime); ephemeral random fallback only when `TURBOPANEL_UI_MODE` is not `static` |
-| `SESSION_SECRET` | *(required)* | Same purpose on Cloudflare Workers — set in `.dev.vars` (local) or `wrangler secret put` (deployed) |
 
 Path resolution lives in `src/server-paths.ts`.
 
@@ -250,10 +248,16 @@ Superadmin-only routes (`createRootOnlyMiddleware`, `resolveRootSession`) author
 
 | Runtime | Variable | Behaviour when missing |
 |---|---|---|
-| Deno | `TURBOPANEL_SESSION_SECRET` | Dev (`TURBOPANEL_UI_MODE` not `static`): warning logged; ephemeral random secret generated (sessions reset on restart). Production (`static`): process exits with error. |
-| Workers | `SESSION_SECRET` binding | Required — first request throws if unset; add to `.dev.vars` for local Wrangler dev or `wrangler secret put` in production |
+| Deno | `TURBOPANEL_SECRET` | Single **base64-encoded** key; used as legacy fallback when `TURBOPANEL_SECRETS` is also set |
+| Deno | `TURBOPANEL_SECRETS` | Versioned list `2:b64,1:b64` (each value base64); highest version is current signing key |
+| Workers | `SESSION_SECRET` | Single **base64-encoded** key (binding); legacy fallback when `SESSION_SECRETS` is also set |
+| Workers | `SESSION_SECRETS` | Versioned list (binding), same `version:base64` format; highest version is current signing key |
 
-Add `SESSION_SECRET = "your-secret-here"` to `.dev.vars` before running `pnpm dev`.
+**Single-secret form must be base64.** Values are decoded with `atob()` before HKDF derivation — plain text like `dev-local-change-me` will crash startup. Generate with `openssl rand -base64 32` (or any base64 encoder over ≥16 random bytes).
+
+At least one of `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` (Deno) or `SESSION_SECRET` / `SESSION_SECRETS` (Workers) must be set in production. Workers always fail fast when both are missing. Deno co-located dev (`TURBOPANEL_UI_MODE` ≠ `static`) may use an ephemeral random key as a warning-only fallback.
+
+Add a base64 `SESSION_SECRET` to `.dev.vars` before running `pnpm dev` (Tilt syncs this from `dev/.env` — see `dev/.env.example`).
 
 #### Auth routes
 

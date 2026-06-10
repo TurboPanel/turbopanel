@@ -14,11 +14,12 @@ import {
   isInstanceInstalled,
 } from './install-state.ts'
 import { createSession, deleteSession, getSession } from './session-store.ts'
+import type { DerivedSecretsConfig } from './secrets.ts'
 import { getDb } from '../db.ts'
 import type { Db } from '../db.ts'
 
 export type AuthRouteOpts = {
-  sessionSecret: string
+  secrets: DerivedSecretsConfig
   runtime: 'deno' | 'workers'
 }
 
@@ -148,7 +149,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       ipAddress: c.req.header('X-Real-IP') ?? undefined,
       userAgent: c.req.header('User-Agent') ?? undefined,
     })
-    const cookieValue = await buildSignedCookie(token, opts.sessionSecret)
+    const cookieValue = await buildSignedCookie(token, opts.secrets)
     const isHttps = isHttpsRequest(c)
 
     const sessionData = await getSession(db, token)
@@ -176,9 +177,9 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
     const cookieValue = readSessionCookie(c)
 
     if (cookieValue) {
-      const token = await verifySignedCookie(cookieValue, opts.sessionSecret)
-      if (token) {
-        await deleteSession(db, token)
+      const result = await verifySignedCookie(cookieValue, opts.secrets)
+      if (result) {
+        await deleteSession(db, result.token)
       }
     }
 
@@ -199,12 +200,12 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false }, 401)
     }
 
-    const token = await verifySignedCookie(cookieValue, opts.sessionSecret)
-    if (!token) {
+    const result = await verifySignedCookie(cookieValue, opts.secrets)
+    if (!result) {
       return c.json({ ok: false }, 401)
     }
 
-    const sessionData = await getSession(db, token)
+    const sessionData = await getSession(db, result.token)
     if (!sessionData) {
       return c.json({ ok: false }, 401)
     }
@@ -349,7 +350,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
           ipAddress: c.req.header('X-Real-IP') ?? undefined,
           userAgent: c.req.header('User-Agent') ?? undefined,
         })
-      const sessionCookie = await buildSignedCookie(token, opts.sessionSecret)
+      const sessionCookie = await buildSignedCookie(token, opts.secrets)
       const isHttps = isHttpsRequest(c)
 
       const sessionData = await getSession(db, token)

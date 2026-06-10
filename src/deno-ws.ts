@@ -1,6 +1,7 @@
 import type { Hono } from 'hono'
 import { upgradeWebSocket } from 'hono/deno'
 import { resolveRootSession } from './auth/middleware.ts'
+import type { DerivedSecretsConfig } from './auth/secrets.ts'
 import {
   type DaemonMessage,
   evictDuplicateDaemons,
@@ -48,8 +49,8 @@ export function registerDaemonWebSocket(
   {
     developerSurface = false,
     db,
-    sessionSecret,
-  }: { developerSurface?: boolean; db?: Db; sessionSecret?: string } = {},
+    secrets,
+  }: { developerSurface?: boolean; db?: Db; secrets?: DerivedSecretsConfig } = {},
 ) {
   app.get(
     DAEMON_WS_PATH,
@@ -226,10 +227,10 @@ export function registerDaemonWebSocket(
     app.get(
       DEVELOPER_EXPO_PTY_WS_PATH,
       async (c, next) => {
-        if (!sessionSecret) {
+        if (!secrets) {
           return c.json({ ok: false, error: 'Unauthorized' }, 401)
         }
-        const session = await resolveRootSession(c, sessionSecret, db)
+        const session = await resolveRootSession(c, secrets, db)
         if (!session) {
           return c.json({ ok: false, error: 'Unauthorized' }, 401)
         }

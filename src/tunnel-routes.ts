@@ -1,5 +1,6 @@
 import type { Hono } from 'hono'
 import { createRootOnlyMiddleware } from './auth/middleware.ts'
+import type { DerivedSecretsConfig } from './auth/secrets.ts'
 import {
   awaitDaemonAck,
   type DaemonMessage,
@@ -17,9 +18,9 @@ const TUNNEL_TOKEN_TIMEOUT_MS = 30_000
  */
 export function registerTunnelRoutes(
   app: Hono,
-  opts: { sessionSecret: string },
+  opts: { secrets: DerivedSecretsConfig },
 ): Hono {
-  app.use(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, createRootOnlyMiddleware(opts.sessionSecret))
+  app.use(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, createRootOnlyMiddleware(opts.secrets))
 
   app.post(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, async (c) => {
     const body = await c.req.json().catch(() => null)

@@ -17,7 +17,7 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
   const client = new Hono()
 
   registerAuthRoutes(client, opts)
-  client.use('/*', createSessionMiddleware(opts.sessionSecret))
+  client.use('/*', createSessionMiddleware(opts.secrets))
 
   client.get('/status', (c) => c.json({ ok: true, surface: 'client' }))
 

@@ -5,9 +5,12 @@ import type { AppEnv } from '../app.ts'
 import type { Db } from '../db.ts'
 import { getDb } from '../db.ts'
 import {
+  buildSignedCookie,
   SESSION_COOKIE_NAME,
+  SESSION_EXPIRES_IN_MS,
   verifySignedCookie,
 } from './crypto.ts'
+import type { DerivedSecretsConfig } from './secrets.ts'
 import {
   getSession,
   isSuperadminRole,
@@ -20,59 +23,90 @@ function isSuperadmin(sessionData: SessionData): boolean {
 
 export type { SessionData }
 
+export type ResolvedSession = {
+  data: SessionData
+  rotated: boolean
+  token: string
+}
+
+function buildCookieHeader(cookieValue: string, c: Context): string {
+  let header =
+    `${SESSION_COOKIE_NAME}=${cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_EXPIRES_IN_MS / 1000}`
+  if (c.req.url.startsWith('https://')) {
+    header += '; Secure'
+  }
+  return header
+}
+
+async function applyRotatedCookie(
+  c: Context,
+  token: string,
+  secrets: DerivedSecretsConfig,
+): Promise<void> {
+  const cookieValue = await buildSignedCookie(token, secrets)
+  c.header('Set-Cookie', buildCookieHeader(cookieValue, c))
+}
+
 export async function resolveSession(
   c: Context,
-  sessionSecret: string,
+  secrets: DerivedSecretsConfig,
   db?: Db,
-): Promise<SessionData | null> {
+): Promise<ResolvedSession | null> {
   const cookieValue = getCookie(c, SESSION_COOKIE_NAME)
-  const token = cookieValue
-    ? await verifySignedCookie(cookieValue, sessionSecret)
+  const result = cookieValue
+    ? await verifySignedCookie(cookieValue, secrets)
     : null
 
-  if (!token) return null
+  if (!result) return null
 
-  return (await getSession(db, token)) ?? null
+  const data = await getSession(db, result.token)
+  if (!data) return null
+
+  if (result.rotated) {
+    await applyRotatedCookie(c, result.token, secrets)
+  }
+
+  return { data, rotated: result.rotated, token: result.token }
 }
 
 export async function resolveRootSession(
   c: Context,
-  sessionSecret: string,
+  secrets: DerivedSecretsConfig,
   db?: Db,
 ): Promise<SessionData | null> {
-  const sessionData = await resolveSession(c, sessionSecret, db)
-  if (!sessionData || !isSuperadmin(sessionData)) return null
-  return sessionData
+  const resolved = await resolveSession(c, secrets, db)
+  if (!resolved || !isSuperadmin(resolved.data)) return null
+  return resolved.data
 }
 
 export function createSessionMiddleware(
-  sessionSecret: string,
+  secrets: DerivedSecretsConfig,
 ): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
-    const sessionData = await resolveSession(c, sessionSecret, getDb(c))
-    if (!sessionData) {
+    const resolved = await resolveSession(c, secrets, getDb(c))
+    if (!resolved) {
       return c.json({ ok: false, error: 'Unauthorized' }, 401)
     }
 
-    c.set('session', sessionData)
+    c.set('session', resolved.data)
     await next()
   }
 }
 
 export function createRootOnlyMiddleware(
-  sessionSecret: string,
+  secrets: DerivedSecretsConfig,
 ): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
-    const sessionData = await resolveSession(c, sessionSecret, getDb(c))
-    if (!sessionData) {
+    const resolved = await resolveSession(c, secrets, getDb(c))
+    if (!resolved) {
       return c.json({ ok: false, error: 'Unauthorized' }, 401)
     }
 
-    if (!isSuperadmin(sessionData)) {
+    if (!isSuperadmin(resolved.data)) {
       return c.json({ ok: false, error: 'Forbidden' }, 403)
     }
 
-    c.set('session', sessionData)
+    c.set('session', resolved.data)
     await next()
   }
 }

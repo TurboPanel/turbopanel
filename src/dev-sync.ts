@@ -1,5 +1,6 @@
 import type { Hono } from 'hono'
 import { createRootOnlyMiddleware } from './auth/middleware.ts'
+import type { DerivedSecretsConfig } from './auth/secrets.ts'
 import { encodeBase64 } from '@std/encoding/base64'
 import {
   awaitDaemonAck,
@@ -93,10 +94,10 @@ export async function syncDevToDaemon(daemonId: string): Promise<void> {
  */
 export function registerDevSyncRoutes(
   app: Hono,
-  opts: { sessionSecret: string },
+  opts: { secrets: DerivedSecretsConfig },
 ): Hono {
-  app.use(`${DEVELOPER_API_PREFIX}/daemon/sync-dev`, createRootOnlyMiddleware(opts.sessionSecret))
-  app.use(`${DEVELOPER_API_PREFIX}/daemon/:id/sync-dev`, createRootOnlyMiddleware(opts.sessionSecret))
+  app.use(`${DEVELOPER_API_PREFIX}/daemon/sync-dev`, createRootOnlyMiddleware(opts.secrets))
+  app.use(`${DEVELOPER_API_PREFIX}/daemon/:id/sync-dev`, createRootOnlyMiddleware(opts.secrets))
 
   app.post(`${DEVELOPER_API_PREFIX}/daemon/:id/sync-dev`, async (c) => {
     const id = c.req.param('id')
