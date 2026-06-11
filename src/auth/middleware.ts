@@ -1,12 +1,11 @@
 import { getCookie } from 'hono/cookie'
-import type { Context } from 'hono'
-import type { MiddlewareHandler } from 'hono'
+import type { Context, MiddlewareHandler } from 'hono'
 import type { AppEnv } from '../app.ts'
 import type { Db } from '../db.ts'
 import { getDb } from '../db.ts'
 import {
   buildSignedCookie,
-  SESSION_COOKIE_NAME,
+  resolveSessionCookieName,
   SESSION_EXPIRES_IN_MS,
   verifySignedCookie,
 } from './crypto.ts'
@@ -30,8 +29,9 @@ export type ResolvedSession = {
 }
 
 function buildCookieHeader(cookieValue: string, c: Context): string {
+  const cookieName = resolveSessionCookieName(c.req.url)
   let header =
-    `${SESSION_COOKIE_NAME}=${cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_EXPIRES_IN_MS / 1000}`
+    `${cookieName}=${cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_EXPIRES_IN_MS / 1000}`
   if (c.req.url.startsWith('https://')) {
     header += '; Secure'
   }
@@ -52,7 +52,8 @@ export async function resolveSession(
   secrets: DerivedSecretsConfig,
   db?: Db,
 ): Promise<ResolvedSession | null> {
-  const cookieValue = getCookie(c, SESSION_COOKIE_NAME)
+  const cookieName = resolveSessionCookieName(c.req.url)
+  const cookieValue = getCookie(c, cookieName)
   const result = cookieValue
     ? await verifySignedCookie(cookieValue, secrets)
     : null

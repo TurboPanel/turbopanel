@@ -2,7 +2,7 @@ import { getCookie } from 'hono/cookie'
 import { Hono, type Context } from 'hono'
 import {
   buildSignedCookie,
-  SESSION_COOKIE_NAME,
+  resolveSessionCookieName,
   SESSION_EXPIRES_IN_MS,
   verifySignedCookie,
 } from './crypto.ts'
@@ -34,16 +34,18 @@ export type SessionResponse = {
 }
 
 function readSessionCookie(c: Context): string | null {
-  return getCookie(c, SESSION_COOKIE_NAME) ?? null
+  const cookieName = resolveSessionCookieName(c.req.url)
+  return getCookie(c, cookieName) ?? null
 }
 
 function buildCookieHeader(
   cookieValue: string,
   maxAge: number,
+  cookieName: string,
   isHttps: boolean,
 ): string {
   let header =
-    `${SESSION_COOKIE_NAME}=${cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}`
+    `${cookieName}=${cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}`
   if (isHttps) {
     header += '; Secure'
   }
@@ -151,6 +153,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
     })
     const cookieValue = await buildSignedCookie(token, opts.secrets)
     const isHttps = isHttpsRequest(c)
+    const cookieName = resolveSessionCookieName(c.req.url)
 
     const sessionData = await getSession(db, token)
     if (!sessionData) {
@@ -166,6 +169,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
         'Set-Cookie': buildCookieHeader(
           cookieValue,
           SESSION_EXPIRES_IN_MS / 1000,
+          cookieName,
           isHttps,
         ),
       },
@@ -183,11 +187,17 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       }
     }
 
+    const cookieName = resolveSessionCookieName(c.req.url)
+    let clearCookie = `${cookieName}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`
+    if (isHttpsRequest(c)) {
+      clearCookie += '; Secure'
+    }
+
     return c.json(
       { ok: true },
       200,
       {
-        'Set-Cookie': `${SESSION_COOKIE_NAME}=; HttpOnly; Path=/; Max-Age=0`,
+        'Set-Cookie': clearCookie,
       },
     )
   })
@@ -352,6 +362,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
         })
       const sessionCookie = await buildSignedCookie(token, opts.secrets)
       const isHttps = isHttpsRequest(c)
+      const cookieName = resolveSessionCookieName(c.req.url)
 
       const sessionData = await getSession(db, token)
       if (!sessionData) {
@@ -371,6 +382,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
           'Set-Cookie': buildCookieHeader(
             sessionCookie,
             SESSION_EXPIRES_IN_MS / 1000,
+            cookieName,
             isHttps,
           ),
         },

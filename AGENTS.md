@@ -127,6 +127,17 @@ The instance always connects via Unix socket (`createDenoDb()` prefers `TURBOPAN
 
 `wrangler.jsonc` declares a `HYPERDRIVE` binding stub (replace the placeholder id before deploy). Types: `worker-configuration.d.ts` (`HYPERDRIVE?: Hyperdrive`). Regenerate with `pnpm cf-typegen` after changing bindings.
 
+**Local dev (`wrangler dev`):** do not commit `localConnectionString` in `wrangler.jsonc`. Tilt `sync-env.sh` writes `CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE` to `instance/.env` (derived from `dev/.env` `POSTGRES_*`, or override in `dev/.env`). Wrangler loads `.env` into `process.env` before applying Hyperdrive bindings — the Worker connects directly to local Postgres (no Hyperdrive pooling/caching in this mode). **`TURBOPANEL_DATABASE_URL`** in the same file is for migrations/Drizzle/sync tooling and may use different credentials than the Hyperdrive runtime user in production.
+
+The Workers DB client uses `prepare: false` on postgres.js (see **Database** above) because Hyperdrive sits in front of a connection pool and does not preserve per-session prepared-statement state.
+
+**Unsupported PostgreSQL features** (do not rely on these on the Workers/Hyperdrive path):
+
+- SQL-level prepared statements: `PREPARE`, `DISCARD`, `DEALLOCATE`, `EXECUTE`
+- [Advisory locks](https://www.postgresql.org/docs/current/explicit-locking.html#ADVISORY-LOCKS)
+- `LISTEN` / `NOTIFY`
+- Any other modification to per-session state unless Cloudflare documents it as supported
+
 ### Tooling
 
 - `pnpm install` — pulls `drizzle-orm`, `postgres`, `drizzle-kit`
@@ -234,13 +245,14 @@ Sessions are **opaque DB-backed tokens** with a signed cookie:
 - A 32-byte random token is generated and stored in the `session` table (`token`, `userId`, `expiresAt`, `ipAddress`, `userAgent`).
 - The cookie value sent to the browser is `<token>.<HMAC-SHA256-signature>`, where the signature is computed over the raw token using the session secret.
 - On every request the signature is verified first (constant-time); only then is the DB queried for the session row.
+- Cookie name: `turbopanel.session_token` on HTTP, `__Secure-turbopanel.session_token` on HTTPS (resolved from the request URL in `src/auth/crypto.ts`).
 - Cookie attributes: `HttpOnly; SameSite=Lax; Path=/; Max-Age=604800` (7 days). `Secure` is added automatically when the request URL is HTTPS.
 
 #### Host PAM install gate (Deno only, install wizard)
 
 On the **Deno runtime**, initial setup is gated by host PAM — **`root`** or any user in the **`sudo` / `wheel` / `admin`** groups. Host auth **never** receives a session or cookie. The instance process runs as **`instance`**; it runs **`pamtester login "$username" authenticate`** via **`sudo -n`** and a shell pipe (see `src/auth/credentials.ts`). **`pamtester`** must be installed on managed hosts (the daemon `agent-prereqs` role). Sudoers: **`instance`** gets `NOPASSWD: /usr/bin/pamtester login * authenticate` in `instance-launch` `upgrade-sudoers.yml`. The instance systemd unit must grant **`--allow-run=/bin/sh,sudo,/usr/bin/sudo,pamtester,/usr/bin/pamtester`**.
 
-**Install flow:** `POST /api/client/v1/install/bootstrap` verifies host PAM and returns `{ ok: true }` only (no cookies). The UI keeps host username/password in the form and reveals superadmin fields client-side. `POST /api/client/v1/install` re-verifies host PAM, creates org (**Default Organization**) + team (**Default Team**) + **superadmin** user (`role: superadmin`, email + credential `account`), assigns the co-located daemon, and returns a **`tp_session`** cookie for the superadmin only. Host accounts cannot sign in via `/auth/sign-in`. This path is **never active on Workers**.
+**Install flow:** `POST /api/client/v1/install/bootstrap` verifies host PAM and returns `{ ok: true }` only (no cookies). The UI keeps host username/password in the form and reveals superadmin fields client-side. `POST /api/client/v1/install` re-verifies host PAM, creates org (**Default Organization**) + team (**Default Team**) + **superadmin** user (`role: superadmin`, email + credential `account`), assigns the co-located daemon, and returns a signed session cookie for the superadmin only. Host accounts cannot sign in via `/auth/sign-in`. This path is **never active on Workers**.
 
 Superadmin-only routes (`createRootOnlyMiddleware`, `resolveRootSession`) authorize by **`user.role === 'superadmin'`**, not PAM root.
 
@@ -287,10 +299,37 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `src/auth/install-state.ts` | Install detection, validation, `completeInstanceInstall`, colocated server assignment |
 | `src/auth/middleware.ts` | Session + superadmin middleware helpers |
 
+## OpenAPI & Scalar
+
+Hand-authored API docs served from the shared Hono app (Workers and Deno):
+
+- **`GET /api/openapi.json`** — OpenAPI 3.1 JSON spec from `src/openapi.ts`; `servers[0].url` is the request origin (`new URL(c.req.url).origin`). Documents health, client/auth/install, and daemon CA routes. No auth required.
+- **`GET /api/reference`** — CDN-based [Scalar](https://github.com/scalar/scalar) embed from `src/scalar-html.ts`, pointing at `/api/openapi.json`. No auth required.
+
+The marketing site (`../website`) loads the same spec via its `/api/config` proxy for `/docs/api`; the instance also exposes Scalar directly for local/dev use.
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant Instance as instance (Workers/Deno)
+    participant Website as website (Next.js)
+
+    Browser->>Website: GET /docs/api
+    Website-->>Browser: ApiReferenceReact page
+    Browser->>Website: GET /api/config
+    Website-->>Browser: { openApiUrl: "https://api.host/api/openapi.json", servers }
+    Browser->>Instance: GET /api/openapi.json
+    Instance-->>Browser: OpenAPI 3.1 JSON spec
+    Browser->>Instance: GET /api/reference (direct Scalar UI)
+    Instance-->>Browser: Scalar CDN HTML embed
+```
+
 ## Layout
 
 - `develop.sh` — thin dev wrapper: bootstraps the daemon, enables dev-instance mode, tails journals
-- `src/app.ts` — shared Hono app (`/api/health` + client/admin/daemon routers)
+- `src/app.ts` — shared Hono app (`/api/health`, `/api/openapi.json`, `/api/reference` + client/admin/daemon routers)
+- `src/openapi.ts` — hand-authored OpenAPI 3.1 spec (`getOpenApiSpec`)
+- `src/scalar-html.ts` — Scalar CDN embed HTML (`buildScalarHtml`)
 - `src/surfaces.ts` — versioned API/WS prefix constants
 - `src/admin-routes.ts` / `src/daemon-api-routes.ts` / `src/client-routes.ts` — per-surface REST routers
 - `src/system-routes.ts` — developer `system/upgrade` + `system/upgrade-status` + `system/reset-dev` (Deno-only). Upgrade hard-resets instance + daemon to `origin/trunk` (blocked when platform checkouts are dirty). Reset-dev wipes Postgres, repushes `schema.ts`, and restarts the instance (fresh install wizard).

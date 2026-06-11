@@ -5,6 +5,8 @@ import { registerAdminRoutes } from './admin-routes.ts'
 import { registerClientRoutes } from './client-routes.ts'
 import { registerDaemonApiRoutes } from './daemon-api-routes.ts'
 import type { Db } from './db.ts'
+import { getOpenApiSpec } from './openapi.ts'
+import { buildScalarHtml } from './scalar-html.ts'
 import { HEALTH_PATH } from './surfaces.ts'
 
 export type AppEnv = {
@@ -34,6 +36,14 @@ export function createApp(
   }
   app.get('/', (c) => c.text('TurboPanel'))
   app.get(HEALTH_PATH, (c) => c.json({ ok: true }))
+  app.get('/api/openapi.json', (c) => {
+    const origin = new URL(c.req.url).origin
+    return c.json(getOpenApiSpec(origin))
+  })
+  app.get('/api/reference', (c) => {
+    const origin = new URL(c.req.url).origin
+    return c.html(buildScalarHtml('/api/openapi.json', origin))
+  })
   const routes = app as unknown as Hono
   if (secrets) {
     registerClientRoutes(routes, {

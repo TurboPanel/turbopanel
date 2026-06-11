@@ -16,12 +16,10 @@
       "enabled": true
     }
   },
-  // Set SESSION_SECRET in .dev.vars for local `pnpm dev`; use `wrangler secret put SESSION_SECRET` in production.
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",
-      "id": "00000000-0000-0000-0000-000000000000",
-      "localConnectionString": "postgres://turbopanel:turbopanel-dev@127.0.0.1:5432/turbopanel"
+      "id": "83edd62a2d7e4e6ba8b5d77b01ca3729"
     }
   ],
   "env": {

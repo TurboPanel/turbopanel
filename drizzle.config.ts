@@ -35,12 +35,13 @@ function postgresCredentials(): PgCredentials {
     }
   }
 
-  const url = process.env.DATABASE_URL?.trim()
+  const url =
+    process.env.TURBOPANEL_DATABASE_URL?.trim() || process.env.DATABASE_URL?.trim()
   if (url) return { url }
 
   if (!user || !password || !database) {
     throw new Error(
-      'Postgres not configured for drizzle-kit (set DATABASE_URL or TURBOPANEL_PG_* env)',
+      'Postgres not configured for drizzle-kit (set TURBOPANEL_DATABASE_URL, DATABASE_URL, or TURBOPANEL_PG_* env)',
     )
   }
 
@@ -49,7 +50,7 @@ function postgresCredentials(): PgCredentials {
   }
 
   throw new Error(
-    'Postgres not configured for drizzle-kit (set DATABASE_URL, TURBOPANEL_PG_SOCKET, or TURBOPANEL_PG_HOST)',
+    'Postgres not configured for drizzle-kit (set TURBOPANEL_DATABASE_URL, DATABASE_URL, TURBOPANEL_PG_SOCKET, or TURBOPANEL_PG_HOST)',
   )
 }
 

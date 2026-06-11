@@ -45,6 +45,11 @@ db_connect_build_database_url() {
   if [[ -n "${DATABASE_URL:-}" ]]; then
     return 0
   fi
+  if [[ -n "${TURBOPANEL_DATABASE_URL:-}" ]]; then
+    DATABASE_URL="$TURBOPANEL_DATABASE_URL"
+    export DATABASE_URL
+    return 0
+  fi
   db_connect_load_pg_env_from_unit "$caller"
 
   if [[ -z "${TURBOPANEL_PG_USER:-}" || -z "${TURBOPANEL_PG_PASSWORD:-}" || -z "${TURBOPANEL_PG_DB:-}" ]]; then
