@@ -68,10 +68,7 @@ export function parseSecretsEnv(
 
   if (secretEnv === undefined && secretsEnv === undefined) {
     if (!allowEphemeralSecrets(runtime)) {
-      const vars = runtime === "workers"
-        ? "SESSION_SECRET or SESSION_SECRETS"
-        : "TURBOPANEL_SECRET or TURBOPANEL_SECRETS";
-      throw new Error(`${vars} is required`);
+      throw new Error("TURBOPANEL_SECRET or TURBOPANEL_SECRETS is required");
     }
     console.warn("[auth] No secret configured — using ephemeral random secret (dev only)");
     const bytes = crypto.getRandomValues(new Uint8Array(32));

@@ -4,6 +4,7 @@ import type { DerivedSecretsConfig } from './auth/secrets.ts'
 import { registerAdminRoutes } from './admin-routes.ts'
 import { registerClientRoutes } from './client-routes.ts'
 import { registerDaemonApiRoutes } from './daemon-api-routes.ts'
+import { registerCorsMiddleware } from './cors.ts'
 import type { Db } from './db.ts'
 import { getOpenApiSpec } from './openapi.ts'
 import { buildScalarHtml } from './scalar-html.ts'
@@ -21,13 +22,16 @@ export function createApp(
     db,
     secrets,
     runtime,
+    corsOrigins,
   }: {
     db?: Db
     secrets?: DerivedSecretsConfig
     runtime?: 'deno' | 'workers'
+    corsOrigins?: string
   } = {},
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>()
+  registerCorsMiddleware(app, corsOrigins)
   if (db) {
     app.use('*', async (c, next) => {
       c.set('db', db)

@@ -10,10 +10,19 @@ let cachedApp: ReturnType<typeof createApp> | null = null
 let cachedSecrets: DerivedSecretsConfig | null = null
 
 async function initWorkerApp(env: CloudflareBindings) {
-  const secretsConfig = parseSecretsEnv(env.SESSION_SECRET, env.SESSION_SECRETS, 'workers')
+  const secretsConfig = parseSecretsEnv(
+    env.TURBOPANEL_SECRET,
+    env.TURBOPANEL_SECRETS,
+    'workers',
+  )
   cachedSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const db = env.HYPERDRIVE ? createWorkersDb(env.HYPERDRIVE) : undefined
-  cachedApp = createApp({ db, secrets: cachedSecrets, runtime: 'workers' })
+  cachedApp = createApp({
+    db,
+    secrets: cachedSecrets,
+    runtime: 'workers',
+    corsOrigins: env.TURBOPANEL_CORS_ORIGINS,
+  })
   registerDeveloperRoutesCore(cachedApp as unknown as Hono, {
     secrets: cachedSecrets,
     db,

@@ -1,5 +1,6 @@
 interface CloudflareBindings {
   HYPERDRIVE?: Hyperdrive
-  SESSION_SECRET?: string
-  SESSION_SECRETS?: string
+  TURBOPANEL_SECRET?: string
+  TURBOPANEL_SECRETS?: string
+  TURBOPANEL_CORS_ORIGINS?: string
 }

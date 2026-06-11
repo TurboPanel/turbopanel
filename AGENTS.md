@@ -44,8 +44,8 @@ The **daemon is the constant** installed on every TurboPanel-managed host and is
 - **Node.js** — required for cert generation and Caddy download (`scripts/*.mjs`)
 - Run `./develop.sh` on a fresh VM (Debian/Ubuntu). It is a **thin wrapper**: it bootstraps the daemon orchestration runtime, flips the daemon into co-located dev mode (`TURBOPANEL_DEV_INSTANCE=1` in `../daemon/.env`), installs the daemon systemd unit, and tails the journals. The **daemon** then installs the instance/Caddy/UI via Ansible — `develop.sh` no longer launches `deno`/`caddy`/daemon processes itself. The dev playbook installs the React Native devtools shared-library stack via `instance-dev-prereqs` (see `../daemon/AGENTS.md`).
 - `pnpm install` — installs Hono and Wrangler into `node_modules/` for Workers bundling
-- Copy or create `.dev.vars` at the repo root for local Wrangler secrets (see the commented stub; file is gitignored)
-- `pnpm dev` (wrangler) still runs the **Cloudflare Workers** path for full-stack testing — unchanged.
+- Local Wrangler secrets live in `.dev.vars` (`TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS`; gitignored — Tilt `sync-env.sh` writes from `dev/.env`)
+- `pnpm dev` (wrangler) still runs the **Cloudflare Workers** path for full-stack testing — unchanged. **`wrangler.jsonc` `dev.ip` is `0.0.0.0`** so Docker Caddy (`host.docker.internal`) can reach the dev server; default localhost-only bind causes Caddy **502**s.
 - `pnpm deploy:workers` — deploy to Cloudflare
 - `pnpm cf-typegen` — regenerate `worker-configuration.d.ts`
 - The Ansible `instance-certs` / `caddy` / `node-runtime` roles supersede the standalone `pnpm cert:generate` / `pnpm caddy:install` scripts for managed hosts (the scripts remain for manual use).
@@ -258,18 +258,25 @@ Superadmin-only routes (`createRootOnlyMiddleware`, `resolveRootSession`) author
 
 #### Session secret configuration
 
-| Runtime | Variable | Behaviour when missing |
-|---|---|---|
-| Deno | `TURBOPANEL_SECRET` | Single **base64-encoded** key; used as legacy fallback when `TURBOPANEL_SECRETS` is also set |
-| Deno | `TURBOPANEL_SECRETS` | Versioned list `2:b64,1:b64` (each value base64); highest version is current signing key |
-| Workers | `SESSION_SECRET` | Single **base64-encoded** key (binding); legacy fallback when `SESSION_SECRETS` is also set |
-| Workers | `SESSION_SECRETS` | Versioned list (binding), same `version:base64` format; highest version is current signing key |
+Both runtimes read the same root secret env vars; `deriveSecretsConfig()` HKDF-derives purpose-specific keys (e.g. `session-signing`) from the root material.
 
-**Single-secret form must be base64.** Values are decoded with `atob()` before HKDF derivation — plain text like `dev-local-change-me` will crash startup. Generate with `openssl rand -base64 32` (or any base64 encoder over ≥16 random bytes).
+| Variable | Behaviour when missing |
+|---|---|
+| `TURBOPANEL_SECRET` | Single **base64-encoded** root key; legacy fallback when `TURBOPANEL_SECRETS` is also set |
+| `TURBOPANEL_SECRETS` | Versioned list `2:b64,1:b64` (each value base64); highest version is current signing key |
 
-At least one of `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` (Deno) or `SESSION_SECRET` / `SESSION_SECRETS` (Workers) must be set in production. Workers always fail fast when both are missing. Deno co-located dev (`TURBOPANEL_UI_MODE` ≠ `static`) may use an ephemeral random key as a warning-only fallback.
+| Runtime | Source |
+|---|---|
+| Deno | `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` env vars (`instance-launch` injects them on managed hosts) |
+| Workers | Same names as Wrangler bindings / `.dev.vars` (Tilt `sync-env.sh` writes them from `dev/.env`) |
 
-Add a base64 `SESSION_SECRET` to `.dev.vars` before running `pnpm dev` (Tilt syncs this from `dev/.env` — see `dev/.env.example`).
+**Root secret must be base64.** Values are decoded with `atob()` before HKDF derivation — plain text will crash startup. Generate with `openssl rand -base64 32` (or any base64 encoder over ≥16 random bytes).
+
+At least one of `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` must be set in production. Workers always fail fast when both are missing. Deno co-located dev (`TURBOPANEL_UI_MODE` ≠ `static`) may use an ephemeral random key as a warning-only fallback.
+
+Add a base64 `TURBOPANEL_SECRET` to `dev/.env` before running `pnpm dev` (Tilt syncs it to `instance/.dev.vars` — see `dev/.env.example`).
+
+**CORS (Scalar / docs site):** when `TURBOPANEL_CORS_ORIGINS` is set (comma-separated browser origins), `src/cors.ts` reflects matching `Origin` headers on API responses. Tilt `sync-env.sh` defaults this to `http://localhost:{WEBSITE_PORT}` and `http://127.0.0.1:{WEBSITE_PORT}` so the marketing docs site can call the API through Caddy cross-origin.
 
 #### Auth routes
 

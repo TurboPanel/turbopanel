@@ -27,7 +27,12 @@ const secretsConfig = parseSecretsEnv(
   'deno',
 )
 const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
-const app = createApp({ db, secrets, runtime: 'deno' })
+const app = createApp({
+  db,
+  secrets,
+  runtime: 'deno',
+  corsOrigins: Deno.env.get('TURBOPANEL_CORS_ORIGINS'),
+})
 const routes = app as unknown as Hono
 if (developerSurface) {
   registerDeveloperRoutes(routes, { secrets, db })
