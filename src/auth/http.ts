@@ -1,3 +1,4 @@
+import { eq } from 'drizzle-orm'
 import { getCookie } from 'hono/cookie'
 import { Hono, type Context } from 'hono'
 import {
@@ -12,11 +13,16 @@ import {
   getInstallStatus,
   getUserOrganizationId,
   isInstanceInstalled,
+  isSignupEnabled,
+  validateSuperadminEmail,
+  validateSuperadminPassword,
 } from './install-state.ts'
+import { hashPassword } from './password.ts'
 import { createSession, deleteSession, getSession } from './session-store.ts'
 import type { DerivedSecretsConfig } from './secrets.ts'
 import { getDb } from '../db.ts'
 import type { Db } from '../db.ts'
+import { account, user } from '../db/schema.ts'
 
 export type AuthRouteOpts = {
   secrets: DerivedSecretsConfig
@@ -54,6 +60,31 @@ function buildCookieHeader(
 
 function isHttpsRequest(c: Context): boolean {
   return c.req.url.startsWith('https://')
+}
+
+function isPostgresUniqueViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null &&
+    'code' in err && (err as { code: string }).code === '23505'
+}
+
+function isUserEmailUniqueViolation(err: unknown): boolean {
+  if (!isPostgresUniqueViolation(err)) return false
+
+  const candidates: unknown[] = [err]
+  if (typeof err === 'object' && err !== null && 'cause' in err) {
+    candidates.push((err as { cause: unknown }).cause)
+  }
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'object' || candidate === null) continue
+    const constraint = 'constraint_name' in candidate
+      ? (candidate as { constraint_name?: unknown }).constraint_name
+      : undefined
+    if (constraint === 'user_email_unique') return true
+  }
+
+  const message = err instanceof Error ? err.message : String(err)
+  return message.includes('user_email_unique')
 }
 
 async function buildSessionResponse(
@@ -202,6 +233,107 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
     )
   })
 
+  auth.post('/sign-up', async (c) => {
+    if (opts.runtime !== 'deno') {
+      return c.json({ ok: false, error: 'Not available' }, 404)
+    }
+
+    const db = getDb(c)
+    if (db === undefined) {
+      return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    }
+
+    if (!(await isInstanceInstalled(db))) {
+      return c.json({ ok: false, error: 'Complete initial setup first' }, 403)
+    }
+
+    if (!(await isSignupEnabled(db))) {
+      return c.json({ ok: false, error: 'Sign-up is not enabled' }, 403)
+    }
+
+    let body: unknown
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ ok: false, error: 'Invalid request' }, 400)
+    }
+
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+      return c.json({ ok: false, error: 'Invalid request' }, 400)
+    }
+
+    const { email, password } = body as {
+      email?: unknown
+      password?: unknown
+    }
+
+    if (
+      typeof email !== 'string' ||
+      !email ||
+      typeof password !== 'string' ||
+      !password
+    ) {
+      return c.json({ ok: false, error: 'Invalid request' }, 400)
+    }
+
+    const emailError = validateSuperadminEmail(email)
+    if (emailError) {
+      return c.json({ ok: false, error: emailError }, 400)
+    }
+
+    const passwordError = validateSuperadminPassword(password)
+    if (passwordError) {
+      return c.json({ ok: false, error: passwordError }, 400)
+    }
+
+    const trimmedEmail = email.trim().toLowerCase()
+
+    const existingUser = await db
+      .select({ id: user.id })
+      .from(user)
+      .where(eq(user.email, trimmedEmail))
+      .limit(1)
+
+    if (existingUser.length > 0) {
+      return c.json({ ok: false, error: 'Email is already registered' }, 409)
+    }
+
+    const hashedPassword = await hashPassword(password)
+
+    try {
+      await db.transaction(async (tx) => {
+        const insertedUser = await tx
+          .insert(user)
+          .values({
+            email: trimmedEmail,
+            isEmailVerified: false,
+            role: 'user',
+          })
+          .returning({ id: user.id })
+
+        const userId = insertedUser[0]?.id
+        if (!userId) {
+          throw new Error('User creation failed')
+        }
+
+        await tx.insert(account).values({
+          userId,
+          providerId: 'credential',
+          providerUserId: userId,
+          password: hashedPassword,
+        })
+      })
+    } catch (err) {
+      if (isUserEmailUniqueViolation(err)) {
+        return c.json({ ok: false, error: 'Email is already registered' }, 409)
+      }
+      console.error('Sign-up failed:', err)
+      return c.json({ ok: false, error: 'Sign-up failed' }, 500)
+    }
+
+    return c.json({ ok: true }, 201)
+  })
+
   auth.get('/session', async (c) => {
     const db = getDb(c)
 
@@ -228,7 +360,12 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
 
   install.get('/status', async (c) => {
     if (opts.runtime !== 'deno') {
-      return c.json({ ok: true, needsInstall: false })
+      return c.json({
+        ok: true,
+        needsInstall: false,
+        isInstallMode: false,
+        isSignupEnabled: false,
+      })
     }
 
     const db = getDb(c)

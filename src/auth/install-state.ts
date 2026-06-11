@@ -7,6 +7,7 @@ import {
   mate,
   organization,
   server,
+  setting,
   team,
   user,
 } from '../db/schema.ts'
@@ -19,8 +20,12 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 export const DEFAULT_ORGANIZATION_NAME = 'Default Organization'
 export const DEFAULT_TEAM_NAME = 'Default Team'
 
+export const IS_SIGNUP_ENABLED_CONFIG_KEY = 'IS_SIGNUP_ENABLED'
+
 export type InstallStatus = {
   needsInstall: boolean
+  isInstallMode: boolean
+  isSignupEnabled: boolean
 }
 
 function nowTs(): string {
@@ -48,9 +53,26 @@ export async function isInstanceInstalled(db: Db): Promise<boolean> {
   return true
 }
 
+export async function isSignupEnabled(db: Db): Promise<boolean> {
+  const rows = await db
+    .select({ value: setting.value })
+    .from(setting)
+    .where(eq(setting.key, IS_SIGNUP_ENABLED_CONFIG_KEY))
+    .limit(1)
+
+  return rows[0]?.value === '1'
+}
+
 export async function getInstallStatus(db: Db): Promise<InstallStatus> {
+  const [installed, signupEnabled] = await Promise.all([
+    isInstanceInstalled(db),
+    isSignupEnabled(db),
+  ])
+  const needsInstall = !installed
   return {
-    needsInstall: !(await isInstanceInstalled(db)),
+    needsInstall,
+    isInstallMode: needsInstall,
+    isSignupEnabled: signupEnabled,
   }
 }
 

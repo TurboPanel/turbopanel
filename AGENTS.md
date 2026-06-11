@@ -286,8 +286,9 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 |---|---|---|
 | `POST` | `/api/client/v1/auth/sign-in` | Verify DB user credentials, create session (rejects root; use install wizard) |
 | `POST` | `/api/client/v1/auth/sign-out` | Delete session, clear cookie |
+| `POST` | `/api/client/v1/auth/sign-up` | Deno only: create a regular user account when `IS_SIGNUP_ENABLED = '1'` in the `setting` table; no session returned — user must sign in |
 | `GET` | `/api/client/v1/auth/session` | Return current user session or 401 |
-| `GET` | `/api/client/v1/install/status` | Public (Deno): `{ needsInstall }` — true until org + superadmin exist |
+| `GET` | `/api/client/v1/install/status` | Public (Deno): `{ needsInstall, isInstallMode, isSignupEnabled }` — `needsInstall` / `isInstallMode` true until org + superadmin exist; `isSignupEnabled` reflects the `IS_SIGNUP_ENABLED` setting |
 | `POST` | `/api/client/v1/install/bootstrap` | Deno: verify host PAM (root or sudo user), no cookies |
 | `POST` | `/api/client/v1/install` | Deno: host PAM + superadmin setup → superadmin session only |
 | `GET` | `/api/client/v1/servers` | Session required: servers assigned to the user's organization, with live `connected` / `hostname` from the daemon hub |

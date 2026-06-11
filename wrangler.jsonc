@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "send_metrics": false,
   "account_id": "a574c2793baa3e2276ac16e96097bc8c",
-  "name": "turbopanel",
+  "name": "dev-instance",
   "main": "src/workers.ts",
   "compatibility_date": "2026-06-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -33,6 +33,19 @@
         {
           "pattern": "testing.turbopanel.dev/ws/*",
           "zone_name": "turbopanel.dev"
+        }
+      ]
+    },
+    "live": {
+      "name": "instance",
+      "routes": [
+        {
+          "pattern": "turbopanel.app/api/*",
+          "zone_name": "turbopanel.app"
+        },
+        {
+          "pattern": "turbopanel.app/ws/*",
+          "zone_name": "turbopanel.app"
         }
       ]
     }
