@@ -20,7 +20,7 @@ import { DEVELOPER_API_PREFIX } from './surfaces.ts'
 
 /**
  * Developer console routes safe for the Workers bundle (no Deno-only imports).
- * Deno-only routes (Drizzle Studio, tmux/systemd Expo) live in developer-routes.ts.
+ * Deno-only routes (Drizzle Studio) live in developer-routes.ts.
  */
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -29,12 +29,14 @@ function nowTs(): string {
   return new Date().toISOString()
 }
 
-export function registerDeveloperRoutesCore(
-  app: Hono,
-  opts: { secrets: DerivedSecretsConfig; db?: Db },
-) {
+/** Build the developer router without mounting — extend before {@link mountDeveloperRouter}. */
+export function buildDeveloperRouter(
+  opts: { secrets: DerivedSecretsConfig; db?: Db; authRequired?: boolean },
+): Hono {
   const developer = new Hono()
-  developer.use('*', createRootOnlyMiddleware(opts.secrets))
+  if (opts.authRequired !== false) {
+    developer.use('*', createRootOnlyMiddleware(opts.secrets))
+  }
 
   developer.get('/daemon/connections', (c) =>
     c.json({ connections: listDaemonConnections() }))
@@ -272,6 +274,17 @@ export function registerDeveloperRoutesCore(
     return c.json({ ok: true })
   })
 
+  return developer
+}
+
+export function mountDeveloperRouter(app: Hono, developer: Hono): Hono {
   app.route(DEVELOPER_API_PREFIX, developer)
   return developer
+}
+
+export function registerDeveloperRoutesCore(
+  app: Hono,
+  opts: { secrets: DerivedSecretsConfig; db?: Db; authRequired?: boolean },
+) {
+  return mountDeveloperRouter(app, buildDeveloperRouter(opts))
 }

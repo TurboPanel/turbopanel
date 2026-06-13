@@ -201,9 +201,11 @@ async function syncRepoToTrunk(
 
 export function registerSystemRoutes(
   app: Hono,
-  opts: { secrets: DerivedSecretsConfig; db?: Db },
+  opts: { secrets: DerivedSecretsConfig; db?: Db; authRequired?: boolean },
 ): Hono {
-  app.use(`${DEVELOPER_API_PREFIX}/system/*`, createRootOnlyMiddleware(opts.secrets))
+  if (opts.authRequired !== false) {
+    app.use(`${DEVELOPER_API_PREFIX}/system/*`, createRootOnlyMiddleware(opts.secrets))
+  }
 
   app.get(`${DEVELOPER_API_PREFIX}/system/upgrade-status`, async (c) => {
     const result = await collectDirtyRepos()

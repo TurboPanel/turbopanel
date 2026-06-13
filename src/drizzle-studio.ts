@@ -1,5 +1,6 @@
 import { dirname, fromFileUrl, join } from '@std/path'
 import { buildPostgresUrlFromEnv, postgresEnvFromEnv } from './db-url.ts'
+import { resolveNodePath } from './node-path.ts'
 
 const STUDIO_PORT = Number(Deno.env.get('TURBOPANEL_DRIZZLE_STUDIO_PORT') ?? '4983')
 const STUDIO_HOST = Deno.env.get('TURBOPANEL_DRIZZLE_STUDIO_HOST')?.trim() || '127.0.0.1'
@@ -17,18 +18,6 @@ const INSTANCE_REPO_ROOT = (() => {
 
 let studioChild: Deno.ChildProcess | null = null
 let studioRunning = false
-
-function nodeBinDir(): string {
-  const fromPath = Deno.env.get('PATH')?.split(':').find((entry) =>
-    entry.endsWith('/node/current/bin') || entry.endsWith('/node/current')
-  )
-  if (fromPath) return fromPath.endsWith('/bin') ? fromPath : join(fromPath, 'bin')
-  return '/opt/turbopanel/runtimes/node/current/bin'
-}
-
-function nodePath(): string {
-  return join(nodeBinDir(), 'node')
-}
 
 function drizzleKitPath(): string {
   return join(INSTANCE_REPO_ROOT, 'node_modules', 'drizzle-kit', 'bin.cjs')
@@ -60,15 +49,14 @@ export async function startDrizzleStudio(): Promise<
   }
 
   const databaseUrl = buildPostgresUrlFromEnv()
-  const nodeBin = nodeBinDir()
-  const path = [nodeBin, Deno.env.get('PATH') ?? ''].filter(Boolean).join(':')
-  const studioEnv: Record<string, string> = { ...Deno.env.toObject(), PATH: path }
+  const nodeBin = await resolveNodePath()
+  const studioEnv: Record<string, string> = { ...Deno.env.toObject() }
   // Socket mode: drizzle.config.ts reads TURBOPANEL_PG_* object credentials.
   if (databaseUrl) studioEnv.DATABASE_URL = databaseUrl
   else delete studioEnv.DATABASE_URL
 
   try {
-    const command = new Deno.Command(nodePath(), {
+    const command = new Deno.Command(nodeBin, {
       args: [
         drizzleKitPath(),
         'studio',

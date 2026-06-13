@@ -7,9 +7,11 @@
     "cert:generate": "node scripts/generate-self-signed-cert.mjs",
     "caddy:install": "node scripts/download-caddy.mjs",
     "deploy:workers": "wrangler deploy --minify",
-    "cf-typegen": "wrangler types --env-interface CloudflareBindings"
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "generate:secret": "node scripts/generate-secret.mjs"
   },
   "dependencies": {
+    "amqplib": "^2.0.1",
     "drizzle-orm": "^0.43.1",
     "hono": "4.12.23",
     "postgres": "^3.4.7"

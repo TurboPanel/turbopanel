@@ -26,14 +26,14 @@
 
 	@api path /api/*
 	handle @api {
-		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/turbopanel.sock} {
+		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/instance.sock} {
 			header_up X-Real-IP {remote_host}
 		}
 	}
 
 	@ws path /ws/*
 	handle @ws {
-		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/turbopanel.sock} {
+		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/instance.sock} {
 			header_up X-Real-IP {remote_host}
 		}
 	}
@@ -41,8 +41,23 @@
 	# Dev: proxy to Expo's web dev server (TURBOPANEL_UI_MODE=dev).
 	@ui_dev expression `"{$TURBOPANEL_UI_MODE:static}" == "dev"`
 	handle @ui_dev {
-		reverse_proxy 127.0.0.1:{$EXPO_PORT:8081} {
-			header_up Host 127.0.0.1:{$EXPO_PORT:8081}
+		route {
+			vars expoUpstream true
+			reverse_proxy 127.0.0.1:{$EXPO_PORT:8081} {
+				header_up Host 127.0.0.1:{$EXPO_PORT:8081}
+			}
+		}
+	}
+
+	# Expo is often still binding when Caddy starts — show a spinner instead of a bare 502.
+	handle_errors 502 503 {
+		@expoUpstream vars expoUpstream true
+		handle @expoUpstream {
+			root * .
+			rewrite * /expo-loading.html
+			file_server {
+				status 200
+			}
 		}
 	}
 

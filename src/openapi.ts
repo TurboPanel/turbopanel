@@ -88,10 +88,24 @@ export function getOpenApiSpec(serverUrl: string): object {
         },
         InstallStatusResponse: {
           type: 'object',
-          required: ['ok', 'needsInstall'],
+          required: ['ok', 'needsInstall', 'isInstallMode', 'isSignupEnabled'],
+          description:
+            'Dedicated install surface (`/api/install/v1`). On Workers, needsInstall and isInstallMode are always false; isSignupEnabled reflects DB + env. On Deno, all fields reflect self-hosted install wizard state.',
           properties: {
             ok: { type: 'boolean', const: true },
-            needsInstall: { type: 'boolean' },
+            needsInstall: {
+              type: 'boolean',
+              description: 'True when org + superadmin do not exist yet (Deno only).',
+            },
+            isInstallMode: {
+              type: 'boolean',
+              description: 'True while the install wizard is active (Deno only).',
+            },
+            isSignupEnabled: {
+              type: 'boolean',
+              description:
+                'Whether public sign-up is enabled (DB setting or TURBOPANEL_IS_SIGNUP_ENABLED env override).',
+            },
           },
         },
         InstallBootstrapRequest: {
@@ -111,15 +125,24 @@ export function getOpenApiSpec(serverUrl: string): object {
         },
         InstallRequest: {
           type: 'object',
-          required: [
-            'hostUsername',
-            'hostPassword',
-            'superadminEmail',
-            'superadminPassword',
-          ],
+          required: ['superadminEmail', 'superadminPassword'],
+          description:
+            'Host credentials are required as either `username` + `password` (preferred) or legacy `hostUsername` + `hostPassword` during the client transition.',
           properties: {
-            hostUsername: { type: 'string', description: 'Host root or sudo user' },
-            hostPassword: { type: 'string', format: 'password' },
+            username: {
+              type: 'string',
+              description: 'Host root or sudo user (preferred).',
+            },
+            password: { type: 'string', format: 'password' },
+            hostUsername: {
+              type: 'string',
+              description: 'Legacy alias for `username`; accepted during transition.',
+            },
+            hostPassword: {
+              type: 'string',
+              format: 'password',
+              description: 'Legacy alias for `password`; accepted during transition.',
+            },
             superadminEmail: { type: 'string', format: 'email' },
             superadminPassword: { type: 'string', format: 'password' },
           },
@@ -290,11 +313,12 @@ export function getOpenApiSpec(serverUrl: string): object {
           },
         },
       },
-      '/api/client/v1/install/status': {
+      '/api/install/v1/status': {
         get: {
           tags: ['install'],
           summary: 'Install wizard status',
-          description: 'Deno self-hosted only; Workers always returns needsInstall false.',
+          description:
+            'Dedicated install surface (`/api/install/v1`). Workers: needsInstall/isInstallMode always false; isSignupEnabled from DB + TURBOPANEL_IS_SIGNUP_ENABLED env. Deno: full install wizard status.',
           responses: {
             '200': {
               description: 'Install status',
@@ -315,7 +339,7 @@ export function getOpenApiSpec(serverUrl: string): object {
           },
         },
       },
-      '/api/client/v1/install/bootstrap': {
+      '/api/install/v1/bootstrap': {
         post: {
           tags: ['install'],
           summary: 'Verify host PAM credentials (install step 1)',
@@ -380,11 +404,12 @@ export function getOpenApiSpec(serverUrl: string): object {
           },
         },
       },
-      '/api/client/v1/install': {
+      '/api/install/v1/': {
         post: {
           tags: ['install'],
           summary: 'Complete initial install (install step 2)',
-          description: 'Deno self-hosted only. Creates org, team, superadmin, and session.',
+          description:
+            'Deno self-hosted only. Creates org, team, superadmin, and session. Accepts host credentials as `username`/`password` or legacy `hostUsername`/`hostPassword`.',
           requestBody: {
             required: true,
             content: {

@@ -10,10 +10,26 @@ export type HyperdriveBinding = {
   connectionString: string
 }
 
-const PG_OPTS = { prepare: false as const, max: 1 }
+/** Hyperdrive transaction pooling — one connection per isolate. */
+const PG_OPTS_WORKERS = { prepare: false as const, max: 1 }
+
+/**
+ * Self-hosted Deno: up to 10 concurrent connections.
+ * No idle_timeout — let connections live for the process lifetime so postgres.js
+ * never has to recreate them mid-request. Tilt restarts the process anyway.
+ * backoff: 0 — disable exponential reconnect delay; options.shared.retries can
+ * accumulate to 6+ on any connection error and backoff(6)*1000 ≈ 7300ms, causing
+ * the entire pool to pause for ~7s waiting to reconnect. With 0, reconnect is
+ * immediate after any close event regardless of retry count.
+ */
+const PG_OPTS_DENO = {
+  prepare: false as const,
+  max: 10,
+  backoff: 0,
+}
 
 export function createWorkersDb(hyperdrive: HyperdriveBinding): Db {
-  const client = postgres(hyperdrive.connectionString, PG_OPTS)
+  const client = postgres(hyperdrive.connectionString, PG_OPTS_WORKERS)
   return drizzle(client, { schema })
 }
 
@@ -33,10 +49,10 @@ export function createDenoDb(): Db | undefined {
     const socketDir = socket.includes('.s.PGSQL.')
       ? socket.slice(0, socket.lastIndexOf('/'))
       : socket
-    client = postgres({ ...PG_OPTS, user, password, database, host: socketDir, port })
+    client = postgres({ ...PG_OPTS_DENO, user, password, database, host: socketDir, port })
   } else if (host) {
     // TCP fallback only when no socket path is configured.
-    client = postgres({ ...PG_OPTS, user, password, database, host, port })
+    client = postgres({ ...PG_OPTS_DENO, user, password, database, host, port })
   } else {
     return undefined
   }

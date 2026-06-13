@@ -6,7 +6,7 @@ export const invitation = pgTable("invitation", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	expiresAt: timestamp("expires_at", { precision: 3, withTimezone: true, mode: 'string' }).notNull(),
-	inviterUserId: uuid("inviter_user_id").notNull(),
+	userId: uuid("user_id").notNull(),
 	organizationId: uuid("organization_id").notNull(),
 	teamId: uuid("team_id"),
 	email: varchar({ length: 255 }).notNull(),
@@ -16,9 +16,9 @@ export const invitation = pgTable("invitation", {
 	index("idx_invitation_email").using("btree", table.email.asc().nullsLast().op("text_ops")),
 	index("idx_invitation_organization_id").using("btree", table.organizationId.asc().nullsLast().op("uuid_ops")),
 	foreignKey({
-			columns: [table.inviterUserId],
+			columns: [table.userId],
 			foreignColumns: [user.id],
-			name: "invitation_inviter_user_id_user_id_fk"
+			name: "invitation_user_id_user_id_fk"
 		}).onDelete("cascade"),
 	foreignKey({
 			columns: [table.organizationId],
@@ -176,23 +176,23 @@ export const apikey = pgTable("apikey", {
 	index("idx_apikey_reference_id").using("btree", table.referenceId.asc().nullsLast().op("text_ops")),
 	index("idx_apikey_key").using("btree", table.key.asc().nullsLast().op("text_ops")),
 ]);
-export const mate = pgTable("mate", {
+export const teammate = pgTable("teammate", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	teamId: uuid("team_id").notNull(),
 	userId: uuid("user_id").notNull(),
 }, (table) => [
-	index("idx_mate_team_id").using("btree", table.teamId.asc().nullsLast().op("uuid_ops")),
-	index("idx_mate_user_id").using("btree", table.userId.asc().nullsLast().op("uuid_ops")),
+	index("idx_teammate_team_id").using("btree", table.teamId.asc().nullsLast().op("uuid_ops")),
+	index("idx_teammate_user_id").using("btree", table.userId.asc().nullsLast().op("uuid_ops")),
 	foreignKey({
 			columns: [table.teamId],
 			foreignColumns: [team.id],
-			name: "team_member_team_id_team_id_fk"
+			name: "teammate_team_id_team_id_fk"
 		}).onDelete("cascade"),
 	foreignKey({
 			columns: [table.userId],
 			foreignColumns: [user.id],
-			name: "team_member_user_id_user_id_fk"
+			name: "teammate_user_id_user_id_fk"
 		}).onDelete("cascade"),
 ]);
 export const team = pgTable("team", {
@@ -202,6 +202,7 @@ export const team = pgTable("team", {
 	organizationId: uuid("organization_id").notNull(),
 	displayName: varchar("display_name", { length: 255 }),
 	metadata: jsonb(),
+	options: jsonb(),
 }, (table) => [
 	index("idx_team_organization_id").using("btree", table.organizationId.asc().nullsLast().op("uuid_ops")),
 	foreignKey({

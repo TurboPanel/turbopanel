@@ -15,7 +15,7 @@ import { constants as fsConstants } from 'node:fs'
 import { access, stat } from 'node:fs/promises'
 
 const SOCKET_DIR = (process.env.TURBOPANEL_SOCKET_DIR ?? '/run/turbopanel').replace(/\/$/, '')
-const SOCKET_NAME = 'turbopanel.sock'
+const SOCKET_NAME = 'instance.sock'
 const SOCKET_PATH = `${SOCKET_DIR}/${SOCKET_NAME}`
 const SOCKET_DIAL = SOCKET_PATH.replace(/^\/+/, '')
 const OWNER = 'turbopanel'

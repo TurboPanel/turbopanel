@@ -1,14 +1,12 @@
 import { sql } from 'drizzle-orm'
 import { dirname, fromFileUrl, join } from '@std/path'
 import type { Db } from '../db.ts'
+import { resolveNodePath } from '../node-path.ts'
 
 const INSTANCE_REPO_ROOT = (() => {
   const here = dirname(fromFileUrl(import.meta.url))
   return join(here, '../..')
 })()
-
-const NODE_BIN = Deno.env.get('TURBOPANEL_NODE')?.trim() ||
-  '/opt/turbopanel/runtimes/node/current/bin/node'
 
 export async function isDbSchemaReady(db: Db): Promise<boolean> {
   const rows = await db.execute<{ exists: boolean }>(sql`
@@ -25,8 +23,12 @@ export async function pushSchemaFromCode(): Promise<
   { ok: true } | { ok: false; error: string }
 > {
   const drizzleKit = join(INSTANCE_REPO_ROOT, 'node_modules/drizzle-kit/bin.cjs')
+  const nodeBin = await resolveNodePath()
+  // #region agent log
+  fetch('http://127.0.0.1:7807/ingest/0b79b1a0-6087-4e49-bbd8-5d9dad0c0825',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'5855b0'},body:JSON.stringify({sessionId:'5855b0',location:'schema-push.ts:push',message:'resolved node for drizzle-kit',data:{nodeBin,drizzleKit},timestamp:Date.now(),hypothesisId:'B',runId:'post-fix'})}).catch(()=>{});
+  // #endregion
   try {
-    const out = await new Deno.Command(NODE_BIN, {
+    const out = await new Deno.Command(nodeBin, {
       args: [drizzleKit, 'push', '--force'],
       cwd: INSTANCE_REPO_ROOT,
       env: Deno.env.toObject(),

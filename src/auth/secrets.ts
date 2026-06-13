@@ -1,3 +1,5 @@
+import { generateSecret } from "../generate-secret.ts";
+
 export type VersionedSecret = {
   version: number;
   value: string;
@@ -48,7 +50,7 @@ export function parseSecretsEnv(
       const colonIndex = entry.indexOf(":");
       if (colonIndex === -1) {
         throw new Error(
-          `Invalid secrets entry at index ${index}: expected "version:base64value", got "${entry}"`,
+          `Invalid secrets entry at index ${index}: expected "version:secret", got "${entry}"`,
         );
       }
       const versionStr = entry.slice(0, colonIndex);
@@ -71,8 +73,7 @@ export function parseSecretsEnv(
       throw new Error("TURBOPANEL_SECRET or TURBOPANEL_SECRETS is required");
     }
     console.warn("[auth] No secret configured — using ephemeral random secret (dev only)");
-    const bytes = crypto.getRandomValues(new Uint8Array(32));
-    legacy = btoa(String.fromCharCode(...bytes));
+    legacy = generateSecret();
   }
 
   return { versioned, legacy };
@@ -82,7 +83,7 @@ export async function deriveKey(
   rootSecret: string,
   purpose: string,
 ): Promise<CryptoKey> {
-  const keyMaterial = Uint8Array.from(atob(rootSecret), (c) => c.charCodeAt(0));
+  const keyMaterial = new TextEncoder().encode(rootSecret);
   const hkdfKey = await crypto.subtle.importKey(
     "raw",
     keyMaterial,

@@ -5,7 +5,7 @@ import type { Db } from '../db.ts'
 import { getDb } from '../db.ts'
 import {
   buildSignedCookie,
-  resolveSessionCookieName,
+  resolveRequestTls,
   SESSION_EXPIRES_IN_MS,
   verifySignedCookie,
 } from './crypto.ts'
@@ -29,10 +29,10 @@ export type ResolvedSession = {
 }
 
 function buildCookieHeader(cookieValue: string, c: Context): string {
-  const cookieName = resolveSessionCookieName(c.req.url)
+  const tls = resolveRequestTls(c.req.url, c.req.header('x-forwarded-proto'))
   let header =
-    `${cookieName}=${cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_EXPIRES_IN_MS / 1000}`
-  if (c.req.url.startsWith('https://')) {
+    `${tls.cookieName}=${cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_EXPIRES_IN_MS / 1000}`
+  if (tls.isHttps) {
     header += '; Secure'
   }
   return header
@@ -52,8 +52,8 @@ export async function resolveSession(
   secrets: DerivedSecretsConfig,
   db?: Db,
 ): Promise<ResolvedSession | null> {
-  const cookieName = resolveSessionCookieName(c.req.url)
-  const cookieValue = getCookie(c, cookieName)
+  const tls = resolveRequestTls(c.req.url, c.req.header('x-forwarded-proto'))
+  const cookieValue = getCookie(c, tls.cookieName)
   const result = cookieValue
     ? await verifySignedCookie(cookieValue, secrets)
     : null

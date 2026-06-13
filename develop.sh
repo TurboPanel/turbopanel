@@ -52,7 +52,7 @@ cat <<BANNER
 -----------------------------------------
 TurboPanel dev stack (systemd-managed):
   TurboPanel   @ https://localhost:${CADDY_PORT}  (Caddy, user: instance)
-  Instance     @ unix:///run/turbopanel/turbopanel.sock  (user: instance)
+  Instance     @ unix:///run/turbopanel/instance.sock  (user: instance)
   UI (Expo)    @ http://127.0.0.1:8081  (user: instance)
   Daemon       @ (no port, user: turbopanel)
 

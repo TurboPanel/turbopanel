@@ -20,16 +20,50 @@ export const HTTP_SESSION_COOKIE_NAME = "turbopanel.session_token";
 
 export const HTTPS_SESSION_COOKIE_NAME = "__Secure-turbopanel.session_token";
 
-/** `http:` → {@link HTTP_SESSION_COOKIE_NAME}; `https:` → {@link HTTPS_SESSION_COOKIE_NAME}. */
-export function resolveSessionCookieName(requestUrl: string): string {
+export type RequestTls = {
+  isHttps: boolean;
+  cookieName: string;
+};
+
+function tlsFromProtocol(protocol: string): RequestTls | null {
+  if (protocol === "http:") {
+    return { isHttps: false, cookieName: HTTP_SESSION_COOKIE_NAME };
+  }
+  if (protocol === "https:") {
+    return { isHttps: true, cookieName: HTTPS_SESSION_COOKIE_NAME };
+  }
+  return null;
+}
+
+/**
+ * Resolve cookie name + Secure flag from proxy headers first, then the request URL.
+ * Deno unix sockets behind Caddy use `http+unix://` URLs while `X-Forwarded-Proto` is `https`.
+ */
+export function resolveRequestTls(
+  requestUrl: string,
+  forwardedProto?: string | null,
+): RequestTls {
+  const normalized = forwardedProto?.trim().toLowerCase();
+  if (normalized === "https" || normalized === "http") {
+    return tlsFromProtocol(`${normalized}:`)!;
+  }
+
   try {
-    const { protocol } = new URL(requestUrl);
-    if (protocol === "http:") return HTTP_SESSION_COOKIE_NAME;
-    if (protocol === "https:") return HTTPS_SESSION_COOKIE_NAME;
+    const resolved = tlsFromProtocol(new URL(requestUrl).protocol);
+    if (resolved) return resolved;
   } catch {
     // fall through
   }
-  return HTTPS_SESSION_COOKIE_NAME;
+
+  return { isHttps: false, cookieName: HTTP_SESSION_COOKIE_NAME };
+}
+
+/** `http:` → {@link HTTP_SESSION_COOKIE_NAME}; `https:` → {@link HTTPS_SESSION_COOKIE_NAME}. */
+export function resolveSessionCookieName(
+  requestUrl: string,
+  forwardedProto?: string | null,
+): string {
+  return resolveRequestTls(requestUrl, forwardedProto).cookieName;
 }
 
 export const SESSION_EXPIRES_IN_MS = 7 * 24 * 60 * 60 * 1000;

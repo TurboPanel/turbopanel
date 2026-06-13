@@ -17,9 +17,15 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
   const client = new Hono()
 
   registerAuthRoutes(client, opts)
-  client.use('/*', createSessionMiddleware(opts.secrets))
 
   client.get('/status', (c) => c.json({ ok: true, surface: 'client' }))
+
+  client.all('/install', (c) =>
+    c.json({ ok: false, error: 'Gone; use /api/install/v1' }, 410))
+  client.all('/install/*', (c) =>
+    c.json({ ok: false, error: 'Gone; use /api/install/v1' }, 410))
+
+  client.use('/servers', createSessionMiddleware(opts.secrets))
 
   client.get('/servers', async (c) => {
     const db = getDb(c)

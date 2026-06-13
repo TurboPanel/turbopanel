@@ -2,6 +2,7 @@ import { and, eq } from 'drizzle-orm'
 import type { Db } from '../db.ts'
 import { account, user } from '../db/schema.ts'
 import { isInstanceInstalled } from './install-state.ts'
+import { debugLog } from '../debug-log.ts'
 import { verifyPassword } from './password.ts'
 
 export const PAM_ROOT_USERNAME = 'root'
@@ -60,6 +61,11 @@ async function userHasInstallSudo(username: string): Promise<boolean> {
   }
 }
 
+/** Dev-only: bypass PAM password verification, keep group-membership check. */
+function isDevHostAuthMode(): boolean {
+  return Deno.env.get('TURBOPANEL_DEV_HOST_AUTH') === 'group-only'
+}
+
 /** PAM root or a sudo-capable host user — install wizard only, never issues a session. */
 export async function verifyInstallHostCredentials(
   username: string,
@@ -72,6 +78,14 @@ export async function verifyInstallHostCredentials(
 
   const trimmed = username.trim()
   if (!HOST_USERNAME_RE.test(trimmed) || !password) return false
+
+  if (isDevHostAuthMode()) {
+    console.warn(
+      '[dev] TURBOPANEL_DEV_HOST_AUTH=group-only — PAM password verification is disabled; verifying group membership only',
+    )
+    if (trimmed === PAM_ROOT_USERNAME) return true
+    return await userHasInstallSudo(trimmed)
+  }
 
   const pamOk = await verifyPamLogin(trimmed, password)
   if (!pamOk) return false
@@ -110,11 +124,25 @@ async function verifyDbUserCredentials(
     .limit(1)
 
   const row = rows[0]
+  // #region agent log
+  await debugLog('credentials.ts:verifyDbUserCredentials', 'db credential lookup', {
+    byEmail,
+    loginLength: trimmed.length,
+    rowFound: Boolean(row),
+    hasPassword: Boolean(row?.password),
+    isDisabled: row?.isDisabled ?? null,
+  }, 'B')
+  // #endregion
   if (!row?.password || row.isDisabled) {
     return { ok: false }
   }
 
   const valid = await verifyPassword(password, row.password)
+  // #region agent log
+  await debugLog('credentials.ts:verifyDbUserCredentials', 'password verify result', {
+    valid,
+  }, 'C')
+  // #endregion
   if (!valid) {
     return { ok: false }
   }

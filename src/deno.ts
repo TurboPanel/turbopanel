@@ -12,12 +12,36 @@ import { registerDeveloperRoutes } from './developer-routes.ts'
 import { isDeveloperSurfaceEnabled } from './dev-mode.ts'
 import { stopDrizzleStudio } from './drizzle-studio.ts'
 import {
+  createDenoAmqpQueue,
+  DEFAULT_AMQP_URL,
+  probeAmqpBrokerReachable,
+} from './email/deno-amqp-queue.ts'
+import { createNoopQueue } from './email/noop-queue.ts'
+import type { EmailQueue } from './email/types.ts'
+import {
   hardenInstanceSocket,
   prepareInstanceSocket,
   resolveInstanceSocket,
 } from './server-paths.ts'
 const developerSurface = isDeveloperSurfaceEnabled()
 const db = createDenoDb()
+
+async function resolveEmailQueue(): Promise<EmailQueue> {
+  const envUrl = Deno.env.get('TURBOPANEL_AMQP_URL')
+  if (envUrl !== undefined && envUrl.trim() === '') {
+    return createNoopQueue()
+  }
+  if (envUrl !== undefined) {
+    return createDenoAmqpQueue({ amqpUrl: envUrl.trim() })
+  }
+  if (await probeAmqpBrokerReachable(DEFAULT_AMQP_URL)) {
+    return createDenoAmqpQueue({ amqpUrl: DEFAULT_AMQP_URL })
+  }
+  console.log('[TurboPanel email] AMQP broker unavailable; using noop queue')
+  return createNoopQueue()
+}
+
+const emailQueue = await resolveEmailQueue()
 if (db) {
   await ensureDbSchemaReady(db)
 }
@@ -29,27 +53,32 @@ const secretsConfig = parseSecretsEnv(
 const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
 const app = createApp({
   db,
+  emailQueue,
   secrets,
   runtime: 'deno',
   corsOrigins: Deno.env.get('TURBOPANEL_CORS_ORIGINS'),
+  signupEnvOverride: Deno.env.get('TURBOPANEL_IS_SIGNUP_ENABLED'),
+  emailFrom: Deno.env.get('TURBOPANEL_SYSTEM_EMAIL_FROM') ?? 'noreply@turbopanel.local',
+  baseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? undefined,
 })
 const routes = app as unknown as Hono
 if (developerSurface) {
-  registerDeveloperRoutes(routes, { secrets, db })
+  registerDeveloperRoutes(routes, { secrets, db, authRequired: false })
 }
 registerVersionRoute(routes)
 if (developerSurface) {
-  registerSystemRoutes(routes, { secrets, db })
-  registerDevSyncRoutes(routes, { secrets })
-  registerTunnelRoutes(routes, { secrets })
+  registerSystemRoutes(routes, { secrets, db, authRequired: false })
+  registerDevSyncRoutes(routes, { secrets, authRequired: false })
+  registerTunnelRoutes(routes, { secrets, authRequired: false })
 }
 registerDaemonWebSocket(routes, { developerSurface, db, secrets })
 const socketPath = resolveInstanceSocket()
 
 const abort = new AbortController()
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-  Deno.addSignalListener(signal, () => {
+  Deno.addSignalListener(signal, async () => {
     stopDrizzleStudio()
+    await emailQueue.close?.()
     abort.abort()
   })
 }

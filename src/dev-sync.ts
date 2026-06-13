@@ -94,10 +94,12 @@ export async function syncDevToDaemon(daemonId: string): Promise<void> {
  */
 export function registerDevSyncRoutes(
   app: Hono,
-  opts: { secrets: DerivedSecretsConfig },
+  opts: { secrets: DerivedSecretsConfig; authRequired?: boolean },
 ): Hono {
-  app.use(`${DEVELOPER_API_PREFIX}/daemon/sync-dev`, createRootOnlyMiddleware(opts.secrets))
-  app.use(`${DEVELOPER_API_PREFIX}/daemon/:id/sync-dev`, createRootOnlyMiddleware(opts.secrets))
+  if (opts.authRequired !== false) {
+    app.use(`${DEVELOPER_API_PREFIX}/daemon/sync-dev`, createRootOnlyMiddleware(opts.secrets))
+    app.use(`${DEVELOPER_API_PREFIX}/daemon/:id/sync-dev`, createRootOnlyMiddleware(opts.secrets))
+  }
 
   app.post(`${DEVELOPER_API_PREFIX}/daemon/:id/sync-dev`, async (c) => {
     const id = c.req.param('id')

@@ -18,9 +18,11 @@ const TUNNEL_TOKEN_TIMEOUT_MS = 30_000
  */
 export function registerTunnelRoutes(
   app: Hono,
-  opts: { secrets: DerivedSecretsConfig },
+  opts: { secrets: DerivedSecretsConfig; authRequired?: boolean },
 ): Hono {
-  app.use(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, createRootOnlyMiddleware(opts.secrets))
+  if (opts.authRequired !== false) {
+    app.use(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, createRootOnlyMiddleware(opts.secrets))
+  }
 
   app.post(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, async (c) => {
     const body = await c.req.json().catch(() => null)

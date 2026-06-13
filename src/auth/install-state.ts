@@ -4,7 +4,7 @@ import { getColocatedDaemonServerId } from '../daemon-hub.ts'
 import {
   account,
   member,
-  mate,
+  teammate,
   organization,
   server,
   setting,
@@ -21,6 +21,18 @@ export const DEFAULT_ORGANIZATION_NAME = 'Default Organization'
 export const DEFAULT_TEAM_NAME = 'Default Team'
 
 export const IS_SIGNUP_ENABLED_CONFIG_KEY = 'IS_SIGNUP_ENABLED'
+
+/** Env override wins; otherwise true only when the DB setting is `'1'`. */
+export function resolveIsSignupEnabled(
+  dbValue: string | null | undefined,
+  envOverride: string | undefined,
+): boolean {
+  if (envOverride !== undefined) {
+    const normalized = envOverride.trim().toLowerCase()
+    if (normalized === '1' || normalized === 'true') return true
+  }
+  return dbValue === '1'
+}
 
 export type InstallStatus = {
   needsInstall: boolean
@@ -53,21 +65,26 @@ export async function isInstanceInstalled(db: Db): Promise<boolean> {
   return true
 }
 
-export async function isSignupEnabled(db: Db): Promise<boolean> {
+export async function isSignupEnabled(
+  db: Db,
+  envOverride?: string,
+): Promise<boolean> {
   const rows = await db
     .select({ value: setting.value })
     .from(setting)
     .where(eq(setting.key, IS_SIGNUP_ENABLED_CONFIG_KEY))
     .limit(1)
 
-  return rows[0]?.value === '1'
+  return resolveIsSignupEnabled(rows[0]?.value, envOverride)
 }
 
-export async function getInstallStatus(db: Db): Promise<InstallStatus> {
-  const [installed, signupEnabled] = await Promise.all([
-    isInstanceInstalled(db),
-    isSignupEnabled(db),
-  ])
+export async function getInstallStatus(
+  db: Db,
+  envOverride?: string,
+): Promise<InstallStatus> {
+  // Sequential: parallel drizzle queries on postgres.js can wedge the pool (Deno dev).
+  const installed = await isInstanceInstalled(db)
+  const signupEnabled = await isSignupEnabled(db, envOverride)
   const needsInstall = !installed
   return {
     needsInstall,
@@ -243,7 +260,7 @@ export async function completeInstanceInstall(
       role: 'owner',
     })
 
-    await tx.insert(mate).values({
+    await tx.insert(teammate).values({
       teamId,
       userId,
     })

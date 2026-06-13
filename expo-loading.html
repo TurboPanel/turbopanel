@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TurboPanel — starting…</title>
+  <meta http-equiv="refresh" content="2">
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #0f1117;
+      color: #e8eaed;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, sans-serif;
+    }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1.25rem;
+      padding: 2rem;
+      text-align: center;
+    }
+    .spinner {
+      width: 2.5rem;
+      height: 2.5rem;
+      border: 3px solid #2a2f3a;
+      border-top-color: #6ee7b7;
+      border-radius: 50%;
+      animation: spin 0.75s linear infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    p {
+      margin: 0;
+      font-size: 0.9375rem;
+      color: #9aa0a6;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="spinner" aria-hidden="true"></div>
+    <p>Starting Expo dev server…</p>
+  </div>
+</body>
+</html>

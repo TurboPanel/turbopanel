@@ -9,7 +9,9 @@
     "drizzle-orm/postgres-js": "npm:drizzle-orm@^0.43.1/postgres-js",
     "drizzle-orm/pg-core": "npm:drizzle-orm@^0.43.1/pg-core",
     "hono": "jsr:@hono/hono@^4.12.23",
-    "postgres": "npm:postgres@^3.4.7"
+    "postgres": "npm:postgres@^3.4.7",
+    "amqplib": "npm:amqplib@^0.10.4",
+    "nodemailer": "npm:nodemailer@^6.10.1"
   },
   "lint": {
     "rules": {

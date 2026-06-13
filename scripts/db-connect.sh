@@ -68,15 +68,14 @@ db_connect_build_database_url() {
   fi
 
   DATABASE_URL="$(
-    python3 - <<'PY'
-import os, urllib.parse
-u = os.environ["TURBOPANEL_PG_USER"]
-p = os.environ["TURBOPANEL_PG_PASSWORD"]
-port = os.environ.get("TURBOPANEL_PG_PORT", "5432")
-d = os.environ["TURBOPANEL_PG_DB"]
-host = os.environ["TURBOPANEL_PG_HOST"].strip()
-print(f"postgresql://{urllib.parse.quote(u)}:{urllib.parse.quote(p)}@{host}:{port}/{d}")
-PY
+    "$NODE" -e '
+const u = process.env.TURBOPANEL_PG_USER;
+const p = process.env.TURBOPANEL_PG_PASSWORD;
+const port = process.env.TURBOPANEL_PG_PORT || "5432";
+const d = process.env.TURBOPANEL_PG_DB;
+const host = process.env.TURBOPANEL_PG_HOST.trim();
+console.log(`postgresql://${encodeURIComponent(u)}:${encodeURIComponent(p)}@${host}:${port}/${d}`);
+'
   )"
   export DATABASE_URL
   return 0

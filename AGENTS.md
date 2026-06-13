@@ -41,7 +41,7 @@ The **daemon is the constant** installed on every TurboPanel-managed host and is
 
 - **Deno** — <https://docs.deno.com/runtime/getting_started/installation/>
 - **pnpm** — <https://pnpm.io/installation>
-- **Node.js** — required for cert generation and Caddy download (`scripts/*.mjs`)
+- **Node.js** and **openssl** — required for cert generation (`scripts/*.mjs`); Node.js also used for Caddy download
 - Run `./develop.sh` on a fresh VM (Debian/Ubuntu). It is a **thin wrapper**: it bootstraps the daemon orchestration runtime, flips the daemon into co-located dev mode (`TURBOPANEL_DEV_INSTANCE=1` in `../daemon/.env`), installs the daemon systemd unit, and tails the journals. The **daemon** then installs the instance/Caddy/UI via Ansible — `develop.sh` no longer launches `deno`/`caddy`/daemon processes itself. The dev playbook installs the React Native devtools shared-library stack via `instance-dev-prereqs` (see `../daemon/AGENTS.md`).
 - `pnpm install` — installs Hono and Wrangler into `node_modules/` for Workers bundling
 - Local Wrangler secrets live in `.dev.vars` (`TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS`; gitignored — Tilt `sync-env.sh` writes from `dev/.env`)
@@ -61,8 +61,6 @@ Installed and managed by the daemon via the `instance-launch` Ansible role:
 | `turbopanel-ui.service` | `instance:turbopanel` | Expo web dev server (`:8081`, dev only) |
 | `turbopanel-daemon.service` | `turbopanel:turbopanel` | runs Ansible; has sudo |
 
-The `turbopanel-ui.service` unit runs Expo inside a tmux session named `expo-ui` (session name is the `EXPO_TMUX_SESSION` constant in `src/expo-pty.ts`). The instance Deno process requires **`--allow-run=tmux`** for the developer Expo terminal WebSocket (polls `tmux capture-pane -e` snapshots; resizes the tmux window to match xterm cols/rows).
-
 - `systemd/turbopanel-instance.service` in this repo is a **reference/manual-install fallback**; the canonical unit is templated by the `instance-launch` role in `../daemon`.
 - Logs: `journalctl -u turbopanel-instance -u turbopanel-caddy -u turbopanel-ui -f`
 - Co-located daemon: `../daemon/scripts/install-daemon-systemd.sh`
@@ -77,7 +75,7 @@ All TurboPanel runtime sockets live under **`/run/turbopanel/`** (on Linux, `/va
 
 | Socket file | Service |
 |---|---|
-| `/run/turbopanel/turbopanel.sock` | Hono instance (bound by `instance`, mode `0660`, group `turbopanel`) |
+| `/run/turbopanel/instance.sock` | Hono instance (bound by `instance`, mode `0660`, group `turbopanel`) |
 | `/run/turbopanel/postgres/.s.PGSQL.5432` | PostgreSQL 18 (Docker bind-mount) |
 | `/run/turbopanel/<name>.sock` | Reserved for future services |
 
@@ -87,10 +85,10 @@ All TurboPanel runtime sockets live under **`/run/turbopanel/`** (on Linux, `/va
 |---|---|---|
 | `TURBOPANEL_SOCKET` | — | Full socket path override |
 | `TURBOPANEL_SOCKET_DIR` | `/run/turbopanel` | Directory when using the default filename |
-| `TURBOPANEL_SOCKET_DIAL` | `run/turbopanel/turbopanel.sock` | Caddy `unix//` dial path (no leading slash) |
+| `TURBOPANEL_SOCKET_DIAL` | `run/turbopanel/instance.sock` | Caddy `unix//` dial path (no leading slash) |
 | `TURBOPANEL_UI_MODE` | `static` | `dev` proxies to Expo; `static` serves exported UI |
 | `TURBOPANEL_UI_ROOT` | `../ui/dist` | Directory of `expo export --platform web` output |
-| `TURBOPANEL_UI_SERVICE` | `turbopanel-ui` | Name of the Expo systemd unit; default `turbopanel-ui`. Used by `POST /api/developer/v1/expo/restart`. |
+| `TURBOPANEL_UI_SERVICE` | `turbopanel-ui` | Name of the Expo systemd unit on managed hosts (injected for orchestration; no instance API surface today) |
 | `CADDY_PORT` | `8443` | HTTPS listen port |
 | `CADDY_TLS_CERT` | `./certs/self-signed.crt` | Server leaf certificate (signed by platform CA) |
 | `CADDY_TLS_KEY` | `./certs/self-signed.key` | Server leaf private key |
@@ -148,7 +146,7 @@ The Workers DB client uses `prepare: false` on postgres.js (see **Database** abo
 Caddy uses `unix//<path>` where `<path>` has **no leading slash**:
 
 ```caddyfile
-reverse_proxy unix//run/turbopanel/turbopanel.sock
+reverse_proxy unix//run/turbopanel/instance.sock
 ```
 
 `TURBOPANEL_SOCKET_DIAL` is passed into the `Caddyfile` placeholders.
@@ -167,7 +165,7 @@ The daemon's orchestration bootstrap runs the `socket-dirs-setup` Ansible playbo
 
 Caddy terminates TLS and routes traffic from a single HTTPS entrypoint:
 
-- `/api/*` and `/ws/*` → Deno instance (`unix:///run/turbopanel/turbopanel.sock`)
+- `/api/*` and `/ws/*` → Deno instance (`unix:///run/turbopanel/instance.sock`)
 - everything else → Expo dev server (**dev**) or static export (**production**)
 
 `reverse_proxy` to the Unix socket sets `X-Real-IP {remote_host}` on `/api/*` and `/ws/*`. The instance uses that header to deduplicate daemon WebSocket reconnects (without it, every reconnect looked like a new fleet member behind the proxy).
@@ -201,11 +199,12 @@ Three audiences, each with its own REST + WS namespace. Prefixes live in `src/su
 | Surface | REST | WS | Notes |
 |---|---|---|---|
 | Client (end-user UI) | `/api/client/v1/*` | `/ws/client/v1` | greenfield stubs |
-| Developer (dev console) | `/api/developer/v1/*` | `/ws/developer/v1` (stub), `/ws/developer/v1/expo-pty` | fleet, diagnostics, shell, addresses, `expo/status`, `expo/restart`, `system/upgrade`, `instance/tunnel-token`, `daemon/(:id/)sync-dev` |
+| Install (self-hosted wizard) | `/api/install/v1/*` | — | Deno only for POST endpoints; PAM-gated; no session/cookie on bootstrap |
+| Developer (dev console) | `/api/developer/v1/*` | `/ws/developer/v1` (stub) | fleet, diagnostics, shell, addresses, `system/upgrade`, `instance/tunnel-token`, `daemon/(:id/)sync-dev` |
 | Admin (admin UI) | `/api/admin/v1/*` | `/ws/admin/v1` | reserved for a future instance-admin surface |
 | Daemon (agents) | `/api/daemon/v1/*` | `/ws/daemon/v1` | `version`, `instance/ca`; agents connect on the WS path |
 
-- Route modules: `src/admin-routes.ts`, `src/daemon-api-routes.ts`, `src/client-routes.ts` (mounted in `createApp`); Deno-only routes `src/system-routes.ts`, `src/dev-sync.ts`, `src/tunnel-routes.ts`, and the version route are registered in `src/deno.ts`.
+- Route modules: `src/admin-routes.ts`, `src/daemon-api-routes.ts`, `src/client-routes.ts`, `src/install-routes.ts` (mounted in `createApp`); Deno-only routes `src/system-routes.ts`, `src/dev-sync.ts`, `src/tunnel-routes.ts`, and the version route are registered in `src/deno.ts`.
 - The UI calls everything through `../ui/src/lib/instance-api.ts` (single choke point, prefixed `/api/admin/v1`).
 - Hard cutover: daemon, UI, Caddy (`/ws/*`), and Workers routes (`wrangler.jsonc`) moved together. The external CDN node installer must fetch the CA from the new `/api/daemon/v1/instance/ca` path.
 
@@ -250,9 +249,11 @@ Sessions are **opaque DB-backed tokens** with a signed cookie:
 
 #### Host PAM install gate (Deno only, install wizard)
 
-On the **Deno runtime**, initial setup is gated by host PAM — **`root`** or any user in the **`sudo` / `wheel` / `admin`** groups. Host auth **never** receives a session or cookie. The instance process runs as **`instance`**; it runs **`pamtester login "$username" authenticate`** via **`sudo -n`** and a shell pipe (see `src/auth/credentials.ts`). **`pamtester`** must be installed on managed hosts (the daemon `agent-prereqs` role). Sudoers: **`instance`** gets `NOPASSWD: /usr/bin/pamtester login * authenticate` in `instance-launch` `upgrade-sudoers.yml`. The instance systemd unit must grant **`--allow-run=/bin/sh,sudo,/usr/bin/sudo,pamtester,/usr/bin/pamtester`**.
+On the **Deno runtime**, initial setup is gated by host PAM — **`root`** or any user in the **`sudo` / `wheel` / `admin`** groups. Host auth **never** receives a session or cookie. The instance process runs as **`instance`**; it runs **`pamtester login "$username" authenticate`** via **`sudo -n`** and a shell pipe (see `src/auth/credentials.ts`). **`pamtester`** must be installed on managed hosts (the daemon `agent-prereqs` role). Sudoers: **`instance`** gets `NOPASSWD: /usr/bin/pamtester login * authenticate` in `instance-launch` `upgrade-sudoers.yml`. The instance systemd unit must grant **`--allow-run=/bin/sh,sudo,/usr/bin/sudo`**.
 
-**Install flow:** `POST /api/client/v1/install/bootstrap` verifies host PAM and returns `{ ok: true }` only (no cookies). The UI keeps host username/password in the form and reveals superadmin fields client-side. `POST /api/client/v1/install` re-verifies host PAM, creates org (**Default Organization**) + team (**Default Team**) + **superadmin** user (`role: superadmin`, email + credential `account`), assigns the co-located daemon, and returns a signed session cookie for the superadmin only. Host accounts cannot sign in via `/auth/sign-in`. This path is **never active on Workers**.
+**Dev mode bypass (`TURBOPANEL_DEV_HOST_AUTH=group-only`):** When this env var is set, `verifyInstallHostCredentials` skips `verifyPamLogin` entirely. The password field must still be non-empty (the UI requires it), but it is not verified against PAM. Group membership (`sudo`/`wheel`/`admin`) is still checked via `id -nG`. This var is injected automatically by `dev/scripts/instance-serve.sh` in Tilt dev — it is never set on managed production hosts. `pamtester` is only required on managed hosts (installed by the daemon `agent-prereqs` role).
+
+**Install flow:** `POST /api/install/v1/bootstrap` verifies host PAM and returns `{ ok: true }` only (no cookies). The UI keeps host username/password in the form and reveals superadmin fields client-side. `POST /api/install/v1/` re-verifies host PAM, creates org (**Default Organization**) + team (**Default Team**) + **superadmin** user (`role: superadmin`, email + credential `account`), assigns the co-located daemon, and returns a signed session cookie for the superadmin only. Host accounts cannot sign in via `/auth/sign-in`. This path is **never active on Workers**.
 
 Superadmin-only routes (`createRootOnlyMiddleware`, `resolveRootSession`) authorize by **`user.role === 'superadmin'`**, not PAM root.
 
@@ -262,21 +263,23 @@ Both runtimes read the same root secret env vars; `deriveSecretsConfig()` HKDF-d
 
 | Variable | Behaviour when missing |
 |---|---|
-| `TURBOPANEL_SECRET` | Single **base64-encoded** root key; legacy fallback when `TURBOPANEL_SECRETS` is also set |
-| `TURBOPANEL_SECRETS` | Versioned list `2:b64,1:b64` (each value base64); highest version is current signing key |
+| `TURBOPANEL_SECRET` | Single 48-char root key (`src/generate-secret.ts`); legacy fallback when `TURBOPANEL_SECRETS` is also set |
+| `TURBOPANEL_SECRETS` | Versioned list `2:secret,1:secret`; highest version is current signing key |
 
 | Runtime | Source |
 |---|---|
 | Deno | `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` env vars (`instance-launch` injects them on managed hosts) |
 | Workers | Same names as Wrangler bindings / `.dev.vars` (Tilt `sync-env.sh` writes them from `dev/.env`) |
 
-**Root secret must be base64.** Values are decoded with `atob()` before HKDF derivation — plain text will crash startup. Generate with `openssl rand -base64 32` (or any base64 encoder over ≥16 random bytes).
+**Root secret format:** 48 characters from `[A-Za-z0-9_]`, always at least one `_` between positions 2–47 (never in position 1 or 48). Implementation: `scripts/generate-secret.mjs` (re-exported from `src/generate-secret.ts`). Generate with `pnpm generate:secret` in `instance/`. HKDF uses the UTF-8 bytes of the string as key material (`deriveKey` in `src/auth/secrets.ts`). Same helper (`generatePassword`) is the canonical generator for random passwords.
 
 At least one of `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` must be set in production. Workers always fail fast when both are missing. Deno co-located dev (`TURBOPANEL_UI_MODE` ≠ `static`) may use an ephemeral random key as a warning-only fallback.
 
-Add a base64 `TURBOPANEL_SECRET` to `dev/.env` before running `pnpm dev` (Tilt syncs it to `instance/.dev.vars` — see `dev/.env.example`).
+Add a `TURBOPANEL_SECRET` to `dev/.env` before running `pnpm dev` (Tilt syncs it to `instance/.dev.vars` — see `dev/.env.example`).
 
 **CORS (Scalar / docs site):** when `TURBOPANEL_CORS_ORIGINS` is set (comma-separated browser origins), `src/cors.ts` reflects matching `Origin` headers on API responses. Tilt `sync-env.sh` defaults this to `http://localhost:{WEBSITE_PORT}` and `http://127.0.0.1:{WEBSITE_PORT}` so the marketing docs site can call the API through Caddy cross-origin.
+
+**Public sign-up (Workers dev):** `TURBOPANEL_IS_SIGNUP_ENABLED=1` (or `true`) in `dev/.env` → `sync-env.sh` writes it to `instance/.dev.vars`. Env override wins over the `IS_SIGNUP_ENABLED` DB setting. Local Tilt defaults it to `1` in `.env.example`.
 
 #### Auth routes
 
@@ -286,14 +289,15 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 |---|---|---|
 | `POST` | `/api/client/v1/auth/sign-in` | Verify DB user credentials, create session (rejects root; use install wizard) |
 | `POST` | `/api/client/v1/auth/sign-out` | Delete session, clear cookie |
-| `POST` | `/api/client/v1/auth/sign-up` | Deno only: create a regular user account when `IS_SIGNUP_ENABLED = '1'` in the `setting` table; no session returned — user must sign in |
+| `POST` | `/api/client/v1/auth/sign-up` | Create a regular user account when signup is enabled (`IS_SIGNUP_ENABLED = '1'` in DB, or `TURBOPANEL_IS_SIGNUP_ENABLED=1`/`true` env override); no session returned — user must sign in. Generates a 24h email verification token and enqueues a `signup-verification` email job (Deno → RabbitMQ → mailer → SMTP/Mailpit; Workers → Mailgun directly). Also logs the token and verify URL to console in dev |
+| `GET` | `/api/client/v1/auth/verify-email?token=<token>` | Consume a 24-hour email verification token; sets `user.isEmailVerified = true` |
 | `GET` | `/api/client/v1/auth/session` | Return current user session or 401 |
-| `GET` | `/api/client/v1/install/status` | Public (Deno): `{ needsInstall, isInstallMode, isSignupEnabled }` — `needsInstall` / `isInstallMode` true until org + superadmin exist; `isSignupEnabled` reflects the `IS_SIGNUP_ENABLED` setting |
-| `POST` | `/api/client/v1/install/bootstrap` | Deno: verify host PAM (root or sudo user), no cookies |
-| `POST` | `/api/client/v1/install` | Deno: host PAM + superadmin setup → superadmin session only |
+| `GET` | `/api/install/v1/status` | Public: `{ needsInstall, isInstallMode, isSignupEnabled }` — Deno: install mode until org + superadmin exist; Workers: always `needsInstall: false`, `isSignupEnabled` from DB + env override |
+| `POST` | `/api/install/v1/bootstrap` | Deno: verify host PAM (root or sudo user), no cookies |
+| `POST` | `/api/install/v1/` | Deno: host PAM + superadmin setup → superadmin session only |
 | `GET` | `/api/client/v1/servers` | Session required: servers assigned to the user's organization, with live `connected` / `hostname` from the daemon hub |
 
-**Install mode (Deno self-hosted):** `isInstanceInstalled()` is false on a fresh DB. The UI `/install` page first verifies host PAM (`POST /install/bootstrap`, client-side gate only), then collects superadmin email/password. Org/team names are fixed defaults. After install, sign-in uses superadmin email/password only. The co-located daemon's `server.organization_id` is assigned on install (and again when the unix-socket daemon connects, if still unset).
+**Install mode (Deno self-hosted):** `isInstanceInstalled()` is false on a fresh DB. The UI `/install` page first verifies host PAM (`POST /api/install/v1/bootstrap`, client-side gate only), then collects superadmin email/password. Org/team names are fixed defaults. After install, sign-in uses superadmin email/password only. The co-located daemon's `server.organization_id` is assigned on install (and again when the unix-socket daemon connects, if still unset).
 
 #### New files
 
@@ -303,9 +307,32 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `src/auth/session-store.ts` | `createSession`, `getSession`, `deleteSession`; `SessionData` type (`role` included) |
 | `src/auth/credentials.ts` | `verifyCredentials`, `verifyInstallHostCredentials`; PAM host install gate + DB credential users |
 | `src/auth/password.ts` | PBKDF2-SHA256 hash/verify for credential accounts |
-| `src/auth/http.ts` | `registerAuthRoutes` — sign-in / sign-out / session + install HTTP handlers |
+| `src/auth/email-verification.ts` | `createEmailVerificationToken` / `consumeEmailVerificationToken` — token lifecycle against the `verification` table (`identifier` = email, `value` = 64-char hex, `expiresAt` = 24h) |
+| `src/auth/http.ts` | `registerAuthRoutes` — sign-in / sign-out / session / verify-email HTTP handlers |
+| `src/install-routes.ts` | `registerInstallRoutes` — self-hosted install wizard (`/api/install/v1/*`) |
 | `src/auth/install-state.ts` | Install detection, validation, `completeInstanceInstall`, colocated server assignment |
 | `src/auth/middleware.ts` | Session + superadmin middleware helpers |
+
+## Email
+
+The `src/email/` module defines a queue abstraction (`EmailQueue`, `EmailJob`, `getEmailQueue`) shared by both runtimes:
+
+- **Deno** — `createDenoAmqpQueue` publishes jobs to RabbitMQ (`TURBOPANEL_AMQP_URL`); falls back to `createNoopQueue` when the broker is unreachable.
+- **Workers** — `createWorkersMailgunQueue` sends directly via Mailgun when `TURBOPANEL_MAILGUN_API_KEY` and `TURBOPANEL_MAILGUN_DOMAIN` are set; otherwise noop.
+
+The **`mailer/`** consumer is a standalone Deno process (Tilt `mailer` resource, Deno mode only): RabbitMQ consumer → SMTP sender with a token-bucket rate limiter (`TURBOPANEL_MAILER_RATE_LIMIT_PER_MINUTE`, default 60). SMTP config comes from env (`SMTP_*`) with DB `setting` table fallback; Mailpit is the default SMTP target in dev (`MAILPIT_SMTP_PORT`).
+
+| Variable | Runtime | Purpose |
+|---|---|---|
+| `TURBOPANEL_AMQP_URL` | Deno | RabbitMQ connection URL (default `amqp://guest:guest@localhost:19828`) |
+| `TURBOPANEL_SYSTEM_EMAIL_FROM` | Both | Sender address (default `noreply@turbopanel.local`) |
+| `TURBOPANEL_BASE_URL` | Deno | Public base URL for verification links (falls back to request origin) |
+| `TURBOPANEL_MAILGUN_API_KEY` | Workers | Mailgun API key |
+| `TURBOPANEL_MAILGUN_DOMAIN` | Workers | Mailgun sending domain |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | Deno mailer | SMTP config (env override; DB fallback via `setting` table) |
+| `SMTP_FROM` | Deno mailer | Sender address override (env; DB fallback) |
+| `TURBOPANEL_MAILER_RATE_LIMIT_PER_MINUTE` | Deno mailer | Token-bucket rate limit (default 60) |
+| `MAILPIT_SMTP_PORT` | Deno mailer | Mailpit SMTP port used as fallback when no SMTP config (default 19825) |
 
 ## OpenAPI & Scalar
 
@@ -342,13 +369,12 @@ sequenceDiagram
 - `src/admin-routes.ts` / `src/daemon-api-routes.ts` / `src/client-routes.ts` — per-surface REST routers
 - `src/system-routes.ts` — developer `system/upgrade` + `system/upgrade-status` + `system/reset-dev` (Deno-only). Upgrade hard-resets instance + daemon to `origin/trunk` (blocked when platform checkouts are dirty). Reset-dev wipes Postgres, repushes `schema.ts`, and restarts the instance (fresh install wizard).
 - `src/database-routes.ts` — developer `database/status` + `database/studio` (Deno-only). Connection test and on-demand Drizzle Studio at `/drizzle-studio/` via Caddy in dev mode.
-- `src/expo-pty.ts` — Expo PTY: tmux session status check, output streaming, and key forwarding for the developer console.
 - `src/dev-sync.ts` / `src/tunnel-routes.ts` — dev-sync + tunnel admin routes (Deno-only)
 - `src/server-paths.ts` — Unix socket path resolution
 - `src/daemon-hub.ts` — WebSocket connection registry, command/address/ack dispatch
-- `src/deno-ws.ts` — `/ws/daemon/v1` handler, `/ws/developer/v1/expo-pty` PTY stream, and `/ws/{developer,client}/v1` stubs
+- `src/deno-ws.ts` — `/ws/daemon/v1` handler and `/ws/{developer,client}/v1` stubs
 - `src/db.ts` / `src/db/schema.ts` — Drizzle client factories + schema
-- `src/developer-routes-core.ts` — developer REST routes safe for Workers (`workers.ts` registers this). Deno-only routes (Drizzle Studio, tmux Expo) stay in `src/developer-routes.ts`, registered from `deno.ts` only — never import Deno-only modules from `src/app.ts` or the Workers bundle will fail.
+- `src/developer-routes-core.ts` — developer REST routes safe for Workers (`workers.ts` registers this). Deno-only routes (Drizzle Studio) stay in `src/developer-routes.ts`, registered from `deno.ts` only — never import Deno-only modules from `src/app.ts` or the Workers bundle will fail.
 - `src/workers.ts` — Workers entry (`wrangler.jsonc` main); registers `developer-routes-core` once per isolate
 - `src/deno.ts` — Deno entry (`deno.json` tasks)
 - `src/auth/` — authentication module: Web Crypto primitives, session store, PAM credentials, HTTP handlers, and session middleware (see **Authentication** section above)

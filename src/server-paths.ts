@@ -2,7 +2,7 @@
 export const DEFAULT_SOCKET_DIR = '/run/turbopanel'
 
 /** Unix socket filename for the TurboPanel instance. */
-export const INSTANCE_SOCKET = 'turbopanel.sock'
+export const INSTANCE_SOCKET = 'instance.sock'
 
 /**
  * Default server leaf cert path (Caddy TLS).
@@ -53,7 +53,7 @@ export function resolveInstanceSocket(
 /**
  * Path segment for Caddy's `unix//` dial syntax (no leading slash).
  *
- * Example: `/run/turbopanel/turbopanel.sock` -> `run/turbopanel/turbopanel.sock`
+ * Example: `/run/turbopanel/instance.sock` -> `run/turbopanel/instance.sock`
  */
 export function caddyUnixDialPath(absolutePath: string): string {
   return absolutePath.replace(/^\/+/, '')

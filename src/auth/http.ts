@@ -3,14 +3,13 @@ import { getCookie } from 'hono/cookie'
 import { Hono, type Context } from 'hono'
 import {
   buildSignedCookie,
+  resolveRequestTls,
   resolveSessionCookieName,
   SESSION_EXPIRES_IN_MS,
   verifySignedCookie,
 } from './crypto.ts'
-import { PAM_ROOT_USERNAME, verifyCredentials, verifyInstallHostCredentials } from './credentials.ts'
+import { PAM_ROOT_USERNAME, verifyCredentials } from './credentials.ts'
 import {
-  completeInstanceInstall,
-  getInstallStatus,
   getUserOrganizationId,
   isInstanceInstalled,
   isSignupEnabled,
@@ -18,15 +17,25 @@ import {
   validateSuperadminPassword,
 } from './install-state.ts'
 import { hashPassword } from './password.ts'
+import {
+  consumeEmailVerificationToken,
+  createEmailVerificationToken,
+} from './email-verification.ts'
 import { createSession, deleteSession, getSession } from './session-store.ts'
 import type { DerivedSecretsConfig } from './secrets.ts'
+import { debugLog } from '../debug-log.ts'
 import { getDb } from '../db.ts'
 import type { Db } from '../db.ts'
 import { account, user } from '../db/schema.ts'
+import { getEmailQueue } from '../email/types.ts'
 
 export type AuthRouteOpts = {
-  secrets: DerivedSecretsConfig
+  secrets?: DerivedSecretsConfig
   runtime: 'deno' | 'workers'
+  /** `TURBOPANEL_IS_SIGNUP_ENABLED` — env override for Workers dev and self-hosted. */
+  signupEnvOverride?: string
+  emailFrom?: string
+  baseUrl?: string
 }
 
 export type SessionResponse = {
@@ -40,7 +49,8 @@ export type SessionResponse = {
 }
 
 function readSessionCookie(c: Context): string | null {
-  const cookieName = resolveSessionCookieName(c.req.url)
+  const forwardedProto = c.req.header('x-forwarded-proto')
+  const cookieName = resolveSessionCookieName(c.req.url, forwardedProto)
   return getCookie(c, cookieName) ?? null
 }
 
@@ -58,8 +68,12 @@ function buildCookieHeader(
   return header
 }
 
-function isHttpsRequest(c: Context): boolean {
-  return c.req.url.startsWith('https://')
+function requestTls(c: Context) {
+  return resolveRequestTls(c.req.url, c.req.header('x-forwarded-proto'))
+}
+
+function nowTs(): string {
+  return new Date().toISOString()
 }
 
 function isPostgresUniqueViolation(err: unknown): boolean {
@@ -87,7 +101,27 @@ function isUserEmailUniqueViolation(err: unknown): boolean {
   return message.includes('user_email_unique')
 }
 
-async function buildSessionResponse(
+function isVerificationDevLoggingEnabled(opts: AuthRouteOpts): boolean {
+  if (opts.runtime !== 'deno' || typeof Deno === 'undefined') return false
+  const mode = Deno.env.get('TURBOPANEL_UI_MODE')?.trim().toLowerCase()
+  return mode !== 'static'
+}
+
+function resolveVerificationBaseUrl(
+  c: Context,
+  opts: AuthRouteOpts,
+): string {
+  if (opts.runtime === 'deno') {
+    return opts.baseUrl?.trim() ||
+      (typeof Deno !== 'undefined'
+        ? Deno.env.get('TURBOPANEL_BASE_URL')?.trim()
+        : undefined) ||
+      new URL(c.req.url).origin
+  }
+  return new URL(c.req.url).origin
+}
+
+export async function buildSessionResponse(
   db: Db | undefined,
   runtime: AuthRouteOpts['runtime'],
   sessionData: {
@@ -169,7 +203,24 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       )
     }
 
+    // #region agent log
+    await debugLog('http.ts:sign-in', 'sign-in request context', {
+      runtime: opts.runtime,
+      dbPresent: db !== undefined,
+      loginHasAt: username.includes('@'),
+      reqUrl: c.req.url,
+      forwardedProto: c.req.header('x-forwarded-proto') ?? null,
+      forwardedHost: c.req.header('x-forwarded-host') ?? null,
+    }, 'A')
+    // #endregion
+
     const result = await verifyCredentials(username, password, opts.runtime, db)
+    // #region agent log
+    await debugLog('http.ts:sign-in', 'verifyCredentials result', {
+      ok: result.ok,
+      isRoot: result.ok ? result.isRoot : null,
+    }, 'A')
+    // #endregion
     if (!result.ok) {
       return c.json({ ok: false, error: 'Invalid credentials' }, 401)
     }
@@ -183,8 +234,21 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       userAgent: c.req.header('User-Agent') ?? undefined,
     })
     const cookieValue = await buildSignedCookie(token, opts.secrets)
-    const isHttps = isHttpsRequest(c)
-    const cookieName = resolveSessionCookieName(c.req.url)
+    const tls = requestTls(c)
+    const setCookieHeader = buildCookieHeader(
+      cookieValue,
+      SESSION_EXPIRES_IN_MS / 1000,
+      tls.cookieName,
+      tls.isHttps,
+    )
+    // #region agent log
+    await debugLog('http.ts:sign-in', 'session cookie built', {
+      cookieName: tls.cookieName,
+      isHttps: tls.isHttps,
+      setCookieHasSecure: setCookieHeader.includes('; Secure'),
+      setCookiePrefix: tls.cookieName,
+    }, 'D')
+    // #endregion
 
     const sessionData = await getSession(db, token)
     if (!sessionData) {
@@ -197,12 +261,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       payload,
       200,
       {
-        'Set-Cookie': buildCookieHeader(
-          cookieValue,
-          SESSION_EXPIRES_IN_MS / 1000,
-          cookieName,
-          isHttps,
-        ),
+        'Set-Cookie': setCookieHeader,
       },
     )
   })
@@ -218,9 +277,10 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       }
     }
 
-    const cookieName = resolveSessionCookieName(c.req.url)
-    let clearCookie = `${cookieName}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`
-    if (isHttpsRequest(c)) {
+    const tls = requestTls(c)
+    let clearCookie =
+      `${tls.cookieName}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`
+    if (tls.isHttps) {
       clearCookie += '; Secure'
     }
 
@@ -234,10 +294,6 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
   })
 
   auth.post('/sign-up', async (c) => {
-    if (opts.runtime !== 'deno') {
-      return c.json({ ok: false, error: 'Not available' }, 404)
-    }
-
     const db = getDb(c)
     if (db === undefined) {
       return c.json({ ok: false, error: 'Database unavailable' }, 503)
@@ -247,7 +303,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Complete initial setup first' }, 403)
     }
 
-    if (!(await isSignupEnabled(db))) {
+    if (!(await isSignupEnabled(db, opts.signupEnvOverride))) {
       return c.json({ ok: false, error: 'Sign-up is not enabled' }, 403)
     }
 
@@ -331,6 +387,42 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Sign-up failed' }, 500)
     }
 
+    // Token generation must not roll back the already-committed user creation.
+    try {
+      const verificationToken = await createEmailVerificationToken(db, trimmedEmail)
+      const baseOrigin = resolveVerificationBaseUrl(c, opts)
+      const verificationUrl =
+        `${baseOrigin}/verify-email?token=${encodeURIComponent(verificationToken)}`
+
+      const queue = getEmailQueue(c)
+      const emailFrom =
+        c.get('emailFrom') ?? opts.emailFrom ?? 'noreply@turbopanel.local'
+      if (queue) {
+        try {
+          await queue.enqueue({
+            type: 'signup-verification',
+            to: trimmedEmail,
+            from: emailFrom,
+            verificationUrl,
+          })
+          if (isVerificationDevLoggingEnabled(opts)) {
+            console.log(
+              `[TurboPanel dev] Verification email queued for ${trimmedEmail}`,
+            )
+            console.log(`[TurboPanel dev] Verify URL: ${verificationUrl}`)
+          }
+        } catch (err) {
+          console.warn('Email verification enqueue failed:', err)
+        }
+      } else {
+        console.warn(
+          `[TurboPanel email] Verification email not sent for ${trimmedEmail}: email queue unavailable`,
+        )
+      }
+    } catch (err) {
+      console.error('Email verification token generation failed:', err)
+    }
+
     return c.json({ ok: true }, 201)
   })
 
@@ -338,6 +430,15 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
     const db = getDb(c)
 
     const cookieValue = readSessionCookie(c)
+    // #region agent log
+    const tls = requestTls(c)
+    await debugLog('http.ts:session', 'session cookie read', {
+      reqUrl: c.req.url,
+      forwardedProto: c.req.header('x-forwarded-proto') ?? null,
+      cookieName: tls.cookieName,
+      cookiePresent: Boolean(cookieValue),
+    }, 'D')
+    // #endregion
     if (!cookieValue) {
       return c.json({ ok: false }, 401)
     }
@@ -356,16 +457,10 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
     return c.json(payload)
   })
 
-  const install = new Hono()
-
-  install.get('/status', async (c) => {
-    if (opts.runtime !== 'deno') {
-      return c.json({
-        ok: true,
-        needsInstall: false,
-        isInstallMode: false,
-        isSignupEnabled: false,
-      })
+  auth.get('/verify-email', async (c) => {
+    const token = c.req.query('token')
+    if (!token) {
+      return c.json({ ok: false, error: 'Missing token' }, 400)
     }
 
     const db = getDb(c)
@@ -373,167 +468,19 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Database unavailable' }, 503)
     }
 
-    const status = await getInstallStatus(db)
-    return c.json({ ok: true, ...status })
-  })
-
-  install.post('/bootstrap', async (c) => {
-    if (opts.runtime !== 'deno') {
-      return c.json({ ok: false, error: 'Not available' }, 404)
+    const identifier = await consumeEmailVerificationToken(db, token)
+    if (identifier === null) {
+      return c.json({ ok: false, error: 'Invalid or expired token' }, 400)
     }
 
-    const db = getDb(c)
-    if (db === undefined) {
-      return c.json({ ok: false, error: 'Database unavailable' }, 503)
-    }
+    await db
+      .update(user)
+      .set({ isEmailVerified: true, updatedAt: nowTs() })
+      .where(eq(user.email, identifier))
 
-    if (await isInstanceInstalled(db)) {
-      return c.json({ ok: false, error: 'Instance is already configured' }, 409)
-    }
-
-    let body: unknown
-    try {
-      body = await c.req.json()
-    } catch {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    const { username, password } = body as {
-      username?: unknown
-      password?: unknown
-    }
-
-    if (
-      typeof username !== 'string' ||
-      !username.trim() ||
-      typeof password !== 'string' ||
-      !password
-    ) {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    const ok = await verifyInstallHostCredentials(
-      username.trim(),
-      password,
-      opts.runtime,
-      db,
-    )
-    if (!ok) {
-      return c.json({ ok: false, error: 'Invalid credentials' }, 401)
-    }
-
-    return c.json({ ok: true })
-  })
-
-  install.post('/', async (c) => {
-    if (opts.runtime !== 'deno') {
-      return c.json({ ok: false, error: 'Not available' }, 404)
-    }
-
-    const db = getDb(c)
-    if (db === undefined) {
-      return c.json({ ok: false, error: 'Database unavailable' }, 503)
-    }
-
-    if (await isInstanceInstalled(db)) {
-      return c.json({ ok: false, error: 'Instance is already configured' }, 409)
-    }
-
-    let body: unknown
-    try {
-      body = await c.req.json()
-    } catch {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    const {
-      hostUsername,
-      hostPassword,
-      superadminEmail,
-      superadminPassword,
-    } = body as {
-      hostUsername?: unknown
-      hostPassword?: unknown
-      superadminEmail?: unknown
-      superadminPassword?: unknown
-    }
-
-    if (
-      typeof hostUsername !== 'string' ||
-      !hostUsername.trim() ||
-      typeof hostPassword !== 'string' ||
-      !hostPassword ||
-      typeof superadminEmail !== 'string' ||
-      typeof superadminPassword !== 'string'
-    ) {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    const hostOk = await verifyInstallHostCredentials(
-      hostUsername.trim(),
-      hostPassword,
-      opts.runtime,
-      db,
-    )
-    if (!hostOk) {
-      return c.json({ ok: false, error: 'Invalid host credentials' }, 401)
-    }
-
-    try {
-      const result = await completeInstanceInstall(db, {
-        superadminEmail,
-        superadminPassword,
-      })
-
-      const { token } = await createSession(db, result.userId, {
-          ipAddress: c.req.header('X-Real-IP') ?? undefined,
-          userAgent: c.req.header('User-Agent') ?? undefined,
-        })
-      const sessionCookie = await buildSignedCookie(token, opts.secrets)
-      const isHttps = isHttpsRequest(c)
-      const cookieName = resolveSessionCookieName(c.req.url)
-
-      const sessionData = await getSession(db, token)
-      if (!sessionData) {
-        throw new Error('Session creation failed')
-      }
-
-      const payload = await buildSessionResponse(db, opts.runtime, sessionData)
-
-      return c.json(
-        {
-          ...payload,
-          organizationId: result.organizationId,
-          needsInstall: false,
-        },
-        200,
-        {
-          'Set-Cookie': buildCookieHeader(
-            sessionCookie,
-            SESSION_EXPIRES_IN_MS / 1000,
-            cookieName,
-            isHttps,
-          ),
-        },
-      )
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Install failed'
-      if (message === 'Instance is already configured') {
-        return c.json({ ok: false, error: message }, 409)
-      }
-      return c.json({ ok: false, error: message }, 400)
-    }
+    return c.json({ ok: true }, 200)
   })
 
   app.route('/auth', auth)
-  app.route('/install', install)
   return app
 }
