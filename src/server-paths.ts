@@ -94,4 +94,18 @@ export async function hardenInstanceSocket(
   mode: number = INSTANCE_SOCKET_MODE,
 ): Promise<void> {
   await Deno.chmod(socketPath, mode)
+
+  const devUser = Deno.env.get('TURBOPANEL_DEV_USER')?.trim()
+  if (!devUser) return
+
+  const setfacl = await new Deno.Command('setfacl', {
+    args: ['-m', `u:${devUser}:rw`, socketPath],
+    stdout: 'null',
+    stderr: 'null',
+  }).output()
+  if (!setfacl.success) {
+    console.warn(
+      `[TurboPanel] Could not grant ${devUser} access to ${socketPath} via setfacl`,
+    )
+  }
 }

@@ -18,10 +18,11 @@ The **daemon is the constant** installed on every TurboPanel-managed host and is
 
 ## Users, group & socket permissions
 
-- **`turbopanel`** (UID/GID **9999**): the developer and daemon user; has passwordless sudo; owns the install tree and **all git operations** (`git pull`, Upgrade System fetch/reset).
-- **`instance`** (UID **9998**): runs the instance, Caddy, and the dev UI. Primary group is **`turbopanel`** — it has **no group of its own** and **no sudo**. It **reads** platform checkouts via group membership; it must not own source files (that blocks 9999 from saving in the editor).
-- Co-located dev checkouts (`platform/turbopanel`, `platform/ui`) are **`2770 turbopanel:turbopanel`**. Per-service instance-user runtime state lives in **gitignored** checkout dirs: **`turbopanel/.local`** (instance + Caddy), **`ui/.local`** (Expo), plus matching **`.config`** trees. The **daemon** (`turbopanel`, UID 9999) uses **`/opt/turbopanel`** as `HOME`. The ownership normalizer skips checkout `.cache`/`.config`/`.local` so instance-owned runtime files are not reclaimed to `turbopanel`.
-- Git SSH uses `/opt/turbopanel/.ssh/github_ed25519` at mode **`0600`** only (SSH rejects `0640`). Upgrade runs `sudo -u turbopanel git`; never run git as `instance`.
+- **`turbopanel`** (UID/GID **9999**): the **daemon user and git identity**; has passwordless sudo; owns the install tree and **all git operations** (`git pull`, Upgrade System fetch/reset). Not necessarily the human developer.
+- **Human developer** (whoever runs `./console`): added to the `turbopanel` group by the `dev-permissions` role and can edit source files via group ACL write. After any `git pull` or `pnpm install` (which run as `turbopanel`), the dev user can immediately edit the resulting files because the default ACL propagates `g:turbopanel:rwx` to new files.
+- **`instance`** (UID **9998**): runs the instance, Caddy, and the dev UI. Primary group is **`turbopanel`** — it has **no group of its own** and **no sudo**. It **reads** platform checkouts via group membership; it must not own source files (that blocks reclaiming ownership to `turbopanel`).
+- Co-located dev checkouts (`platform/daemon`, `platform/turbopanel`, `platform/ui`) are **`2770 turbopanel:turbopanel`** with default ACL **`g:turbopanel:rwx`**. Per-service instance-user runtime state lives in **gitignored** checkout dirs: **`turbopanel/.local`** (instance + Caddy), **`ui/.local`** (Expo), plus matching **`.config`** trees. The **daemon** (`turbopanel`, UID 9999) uses **`/opt/turbopanel`** as `HOME`. The ownership normalizer skips checkout `.cache`/`.config`/`.local` so instance-owned runtime files are not reclaimed to `turbopanel`, and re-applies default ACLs on the source tree.
+- Git SSH uses `/opt/turbopanel/.ssh/github_ed25519` at mode **`0600`** only (SSH rejects `0640`); the ACL must not be applied to `.ssh/`. Upgrade runs `sudo -u turbopanel git`; never run git as `instance`.
 - Manual pulls: `sudo -u turbopanel git -C … pull` (or pull as the `turbopanel` login user directly). After any mistaken `instance`-user git, run `/usr/local/bin/turbopanel-normalize-dev-checkout <path>`. **Upgrade System** runs `turbopanel-normalize-dev-checkout <path> --prepare-reset` before `git reset` (clears instance-owned `.config`/`.local`/`.cache` that block reset), then normalizes source ownership and `--ensure-runtime-dirs` after reset.
 - `/run/turbopanel` is **`2770 turbopanel:turbopanel`** (group-writable + setgid) so the in-group `instance` user can bind the socket; new sockets stay in the `turbopanel` group. The instance hardens its socket to **`0660`** so the daemon (also group `turbopanel`) can connect.
 
@@ -42,7 +43,7 @@ The **daemon is the constant** installed on every TurboPanel-managed host and is
 - **Deno** — <https://docs.deno.com/runtime/getting_started/installation/>
 - **pnpm** — <https://pnpm.io/installation>
 - **Node.js** and **openssl** — required for cert generation (`scripts/*.mjs`); Node.js also used for Caddy download
-- Run `./develop.sh` on a fresh VM (Debian/Ubuntu). It is a **thin wrapper**: it bootstraps the daemon orchestration runtime, flips the daemon into co-located dev mode (`TURBOPANEL_DEV_INSTANCE=1` in `../daemon/.env`), installs the daemon systemd unit, and tails the journals. The **daemon** then installs the instance/Caddy/UI via Ansible — `develop.sh` no longer launches `deno`/`caddy`/daemon processes itself. The dev playbook installs the React Native devtools shared-library stack via `instance-dev-prereqs` (see `../daemon/AGENTS.md`).
+- Run `./console` from the `turbopanel-dev` checkout (see `../dev/AGENTS.md`). The console installs Deno, clones the daemon, and drives the full dev stack via `scripts/bootstrap-orchestration.sh` + `scripts/install-daemon-systemd.sh`.
 - `pnpm install` — installs Hono and Wrangler into `node_modules/` for Workers bundling
 - Local Wrangler secrets live in `.dev.vars` (`TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS`; gitignored — Tilt `sync-env.sh` writes from `dev/.env`)
 - `pnpm dev` (wrangler) still runs the **Cloudflare Workers** path for full-stack testing — unchanged. **`wrangler.jsonc` `dev.ip` is `0.0.0.0`** so Docker Caddy (`host.docker.internal`) can reach the dev server; default localhost-only bind causes Caddy **502**s.
@@ -180,7 +181,11 @@ Caddy/cert installs are handled by the daemon's `caddy` and `instance-certs` Ans
 
 ### Production (static UI)
 
-Export the Expo web app, then run Caddy with the default `TURBOPANEL_UI_MODE=static`:
+When `TURBOPANEL_UI_MODE=static`, Caddy serves the exported web build from `ui/dist`, `isDeveloperSurfaceEnabled()` is disabled (see `src/dev-mode.ts`), and `turbopanel-ui.service` is stopped/disabled by the `instance-launch` role.
+
+Build the static export locally or switch via the dev console **Switch to production build** (runs `ui-build` → `instance-build` → `instance-launch`). For a compiled instance binary, `deno task compile` in this repo produces `dist/turbopanel-instance` with all `--allow-*` flags baked in at compile time (mirrors the `turbopanel-instance.service` `ExecStart` permissions).
+
+Manual export + Caddy:
 
 ```bash
 cd ../ui && pnpm export
@@ -317,14 +322,15 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 
 The `src/email/` module defines a queue abstraction (`EmailQueue`, `EmailJob`, `getEmailQueue`) shared by both runtimes:
 
-- **Deno** — `createDenoAmqpQueue` publishes jobs to RabbitMQ (`TURBOPANEL_AMQP_URL`); falls back to `createNoopQueue` when the broker is unreachable.
+- **Deno** — `createDenoAmqpQueue` publishes jobs to RabbitMQ (`TURBOPANEL_AMQP_URL`); falls back to `createNoopQueue` when the broker is unreachable. On managed hosts, `TURBOPANEL_AMQP_URL` is injected by the `instance-launch` role from `/etc/turbopanel/rabbitmq/.rabbitmq_pass` (no `guest:guest` default).
 - **Workers** — `createWorkersMailgunQueue` sends directly via Mailgun when `TURBOPANEL_MAILGUN_API_KEY` and `TURBOPANEL_MAILGUN_DOMAIN` are set; otherwise noop.
 
-The **`mailer/`** consumer is a standalone Deno process (Tilt `mailer` resource, Deno mode only): RabbitMQ consumer → SMTP sender with a token-bucket rate limiter (`TURBOPANEL_MAILER_RATE_LIMIT_PER_MINUTE`, default 60). SMTP config comes from env (`SMTP_*`) with DB `setting` table fallback; Mailpit is the default SMTP target in dev (`MAILPIT_SMTP_PORT`).
+The **`mailer/`** consumer runs as **`turbopanel-mailer.service`** on managed hosts (installed by the `instance-launch` role). In Tilt dev it is the standalone `mailer` resource (Deno mode only): RabbitMQ consumer → SMTP sender with a token-bucket rate limiter (`TURBOPANEL_MAILER_RATE_LIMIT_PER_MINUTE`, default 60). SMTP config comes from env (`SMTP_*`) with DB `setting` table fallback; Mailpit is the default SMTP target in dev (`MAILPIT_SMTP_PORT`).
 
 | Variable | Runtime | Purpose |
 |---|---|---|
-| `TURBOPANEL_AMQP_URL` | Deno | RabbitMQ connection URL (default `amqp://guest:guest@localhost:19828`) |
+| `TURBOPANEL_AMQP_URL` | Deno | RabbitMQ connection URL (managed installs: from `/etc/turbopanel/rabbitmq/.rabbitmq_pass`; Tilt dev default `amqp://guest:guest@localhost:19828`) |
+| `TURBOPANEL_REDIS_SOCKET` | Deno | Unix socket path for future session/cache use (managed installs: `/run/turbopanel/redis.sock`; no consumer yet) |
 | `TURBOPANEL_SYSTEM_EMAIL_FROM` | Both | Sender address (default `noreply@turbopanel.local`) |
 | `TURBOPANEL_BASE_URL` | Deno | Public base URL for verification links (falls back to request origin) |
 | `TURBOPANEL_MAILGUN_API_KEY` | Workers | Mailgun API key |
@@ -361,7 +367,7 @@ sequenceDiagram
 
 ## Layout
 
-- `develop.sh` — thin dev wrapper: bootstraps the daemon, enables dev-instance mode, tails journals
+- `develop.sh` — deprecated shim; redirects to the dev console
 - `src/app.ts` — shared Hono app (`/api/health`, `/api/openapi.json`, `/api/reference` + client/admin/daemon routers)
 - `src/openapi.ts` — hand-authored OpenAPI 3.1 spec (`getOpenApiSpec`)
 - `src/scalar-html.ts` — Scalar CDN embed HTML (`buildScalarHtml`)

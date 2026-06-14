@@ -23,5 +23,8 @@
     "lib": ["deno.window", "dom", "dom.iterable"],
     "jsx": "precompile",
     "jsxImportSource": "hono/jsx"
+  },
+  "tasks": {
+    "compile": "deno compile --allow-env --allow-sys=networkInterfaces --allow-read=/run/turbopanel,/var/run/turbopanel/postgres,/opt/turbopanel/platform/daemon,/opt/turbopanel/platform/turbopanel,/opt/turbopanel/platform/turbopanel/.local --allow-write=/run/turbopanel,/var/run/turbopanel/postgres,/opt/turbopanel/platform/turbopanel/.local --allow-net=127.0.0.1:4983,127.0.0.1:5672 --allow-run=git,systemctl,tar,sudo,/usr/bin/sudo,/bin/sh,mkfifo,/usr/bin/mkfifo,pamtester,/usr/bin/pamtester,/opt/turbopanel/runtimes/node/current/bin/node -o dist/turbopanel-instance src/deno.ts"
   }
 }
