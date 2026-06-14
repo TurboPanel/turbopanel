@@ -82,7 +82,8 @@ export function generateSecret() {
 
 export const generatePassword = generateSecret
 
-const isMain = process.argv[1] === fileURLToPath(import.meta.url)
+const isMain = typeof import.meta.url === 'string' &&
+  process.argv[1] === fileURLToPath(import.meta.url)
 if (isMain) {
   const count = Math.max(1, Number.parseInt(process.argv[2] ?? '1', 10) || 1)
   for (let i = 0; i < count; i++) {

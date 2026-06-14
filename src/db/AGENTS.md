@@ -88,7 +88,7 @@ Self-hosted instance, drizzle-kit (`drizzle.config.ts`), and `./sync.sh` / `./in
 ## Sanity check
 
 ```bash
-docker exec turbopanel-postgres psql -U turbopanel -d turbopanel -c '\dt'
+docker exec turbopanel-db psql -U turbopanel -d turbopanel -c '\dt'
 ```
 
 Restart the instance only when **application code** changed — schema sync alone does not require a restart.

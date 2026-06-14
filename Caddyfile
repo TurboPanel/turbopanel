@@ -10,7 +10,9 @@
 #   TURBOPANEL_UI_MODE       "dev" | "static" (default: static)
 #   EXPO_PORT                Expo dev server port when UI_MODE=dev (default: 8081)
 #   TURBOPANEL_UI_ROOT       Static export directory when UI_MODE=static
-#   TURBOPANEL_SOCKET_DIAL   Unix socket dial path for instance
+#   TURBOPANEL_SOCKET_DIAL   Unix socket dial path for instance (Deno runtime)
+#   TURBOPANEL_INSTANCE_RUNTIME  "deno" | "workers" (default: deno)
+#   WRANGLER_DEV_PORT        wrangler dev port when runtime is workers (default: 18787)
 #   CADDY_PORT               Listen port (default: 8443)
 #   CADDY_TLS_CERT           Server leaf cert (default: ./certs/self-signed.crt, signed by certs/ca.crt)
 #   CADDY_TLS_KEY            Server leaf key (default: ./certs/self-signed.key)
@@ -25,15 +27,31 @@
 
 	@api path /api/*
 	handle @api {
-		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/instance.sock} {
-			header_up X-Real-IP {remote_host}
+		@workers_runtime expression `"{$TURBOPANEL_INSTANCE_RUNTIME:deno}" == "workers"`
+		handle @workers_runtime {
+			reverse_proxy 127.0.0.1:{$WRANGLER_DEV_PORT:18787} {
+				header_up X-Real-IP {remote_host}
+			}
+		}
+		handle {
+			reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/instance.sock} {
+				header_up X-Real-IP {remote_host}
+			}
 		}
 	}
 
 	@ws path /ws/*
 	handle @ws {
-		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/instance.sock} {
-			header_up X-Real-IP {remote_host}
+		@workers_runtime expression `"{$TURBOPANEL_INSTANCE_RUNTIME:deno}" == "workers"`
+		handle @workers_runtime {
+			reverse_proxy 127.0.0.1:{$WRANGLER_DEV_PORT:18787} {
+				header_up X-Real-IP {remote_host}
+			}
+		}
+		handle {
+			reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/instance.sock} {
+				header_up X-Real-IP {remote_host}
+			}
 		}
 	}
 
