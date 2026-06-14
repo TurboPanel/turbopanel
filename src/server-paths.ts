@@ -6,7 +6,7 @@ export const INSTANCE_SOCKET = 'instance.sock'
 
 /**
  * Default server leaf cert path (Caddy TLS).
- * Signed by the platform CA in `certs/ca.crt`; filename kept for compatibility.
+ * Signed by the platform CA in `certs/ca.crt`.
  */
 export const DEFAULT_TLS_CERT = './certs/self-signed.crt'
 

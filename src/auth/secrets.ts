@@ -7,13 +7,11 @@ export type VersionedSecret = {
 
 export type SecretsConfig = {
   versioned: VersionedSecret[];
-  legacy: string | null;
 };
 
 export type DerivedSecretsConfig = {
-  current: { version: number | null; key: CryptoKey };
-  fallbacks: Array<{ version: number | null; key: CryptoKey }>;
-  legacyKey: CryptoKey | null;
+  current: { version: number; key: CryptoKey };
+  fallbacks: Array<{ version: number; key: CryptoKey }>;
 };
 
 function normalizeEnvValue(value: string | undefined): string | undefined {
@@ -64,19 +62,19 @@ export function parseSecretsEnv(
       return { version, value };
     });
     versioned.sort((a, b) => b.version - a.version);
+  } else if (secretEnv !== undefined) {
+    versioned = [{ version: 1, value: secretEnv }];
   }
-
-  let legacy: string | null = secretEnv ?? null;
 
   if (secretEnv === undefined && secretsEnv === undefined) {
     if (!allowEphemeralSecrets(runtime)) {
       throw new Error("TURBOPANEL_SECRET or TURBOPANEL_SECRETS is required");
     }
     console.warn("[auth] No secret configured — using ephemeral random secret (dev only)");
-    legacy = generateSecret();
+    versioned = [{ version: 1, value: generateSecret() }];
   }
 
-  return { versioned, legacy };
+  return { versioned };
 }
 
 export async function deriveKey(
@@ -109,33 +107,21 @@ export async function deriveSecretsConfig(
   config: SecretsConfig,
   purpose: string,
 ): Promise<DerivedSecretsConfig> {
-  const versionedKeys = await Promise.all(
-    config.versioned.map((entry) => deriveKey(entry.value, purpose)),
-  );
-  const legacyKey = config.legacy !== null
-    ? await deriveKey(config.legacy, purpose)
-    : null;
-
-  if (config.versioned.length > 0) {
-    return {
-      current: { version: config.versioned[0].version, key: versionedKeys[0] },
-      fallbacks: config.versioned.slice(1).map((entry, i) => ({
-        version: entry.version,
-        key: versionedKeys[i + 1],
-      })),
-      legacyKey,
-    };
-  }
-
-  if (legacyKey === null) {
+  if (config.versioned.length === 0) {
     throw new Error(
       "No signing secret available — configure TURBOPANEL_SECRET or TURBOPANEL_SECRETS",
     );
   }
 
+  const versionedKeys = await Promise.all(
+    config.versioned.map((entry) => deriveKey(entry.value, purpose)),
+  );
+
   return {
-    current: { version: null, key: legacyKey },
-    fallbacks: [],
-    legacyKey,
-  };
+    current: { version: config.versioned[0].version, key: versionedKeys[0] },
+    fallbacks: config.versioned.slice(1).map((entry, i) => ({
+      version: entry.version,
+      key: versionedKeys[i + 1],
+    })),
+  }
 }

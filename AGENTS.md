@@ -247,7 +247,7 @@ Credential-account passwords use **PBKDF2-HMAC-SHA256** via `crypto.subtle` (`sr
 Sessions are **opaque DB-backed tokens** with a signed cookie:
 
 - A 32-byte random token is generated and stored in the `session` table (`token`, `userId`, `expiresAt`, `ipAddress`, `userAgent`).
-- The cookie value sent to the browser is `<token>.<HMAC-SHA256-signature>`, where the signature is computed over the raw token using the session secret.
+- The cookie value sent to the browser is `<token>.v<version>.<HMAC-SHA256-signature>`, where the signature is computed over the raw token using the session secret for that version.
 - On every request the signature is verified first (constant-time); only then is the DB queried for the session row.
 - Cookie name: `turbopanel.session_token` on HTTP, `__Secure-turbopanel.session_token` on HTTPS (resolved from the request URL in `src/auth/crypto.ts`).
 - Cookie attributes: `HttpOnly; SameSite=Lax; Path=/; Max-Age=604800` (7 days). `Secure` is added automatically when the request URL is HTTPS.
@@ -268,7 +268,7 @@ Both runtimes read the same root secret env vars; `deriveSecretsConfig()` HKDF-d
 
 | Variable | Behaviour when missing |
 |---|---|
-| `TURBOPANEL_SECRET` | Single 48-char root key (`src/generate-secret.ts`); legacy fallback when `TURBOPANEL_SECRETS` is also set |
+| `TURBOPANEL_SECRET` | Single 48-char root key (`src/generate-secret.ts`); normalized to `v1` when `TURBOPANEL_SECRETS` is unset |
 | `TURBOPANEL_SECRETS` | Versioned list `2:secret,1:secret`; highest version is current signing key |
 
 | Runtime | Source |
@@ -374,7 +374,7 @@ sequenceDiagram
 - `src/surfaces.ts` — versioned API/WS prefix constants
 - `src/admin-routes.ts` / `src/daemon-api-routes.ts` / `src/client-routes.ts` — per-surface REST routers
 - `src/system-routes.ts` — developer `system/upgrade` + `system/upgrade-status` + `system/reset-dev` (Deno-only). Upgrade hard-resets instance + daemon to `origin/trunk` (blocked when platform checkouts are dirty). Reset-dev wipes Postgres, repushes `schema.ts`, and restarts the instance (fresh install wizard).
-- `src/database-routes.ts` — developer `database/status` + `database/studio` (Deno-only). Connection test and on-demand Drizzle Studio at `/drizzle-studio/` via Caddy in dev mode.
+- `src/database-routes.ts` — developer `database/status` + `database/studio` (Deno-only). Connection test and on-demand Drizzle Studio via `drizzle-kit studio` on port 4983.
 - `src/dev-sync.ts` / `src/tunnel-routes.ts` — dev-sync + tunnel admin routes (Deno-only)
 - `src/server-paths.ts` — Unix socket path resolution
 - `src/daemon-hub.ts` — WebSocket connection registry, command/address/ack dispatch

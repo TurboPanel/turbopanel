@@ -2,7 +2,6 @@ import { and, eq } from 'drizzle-orm'
 import type { Db } from '../db.ts'
 import { account, user } from '../db/schema.ts'
 import { isInstanceInstalled } from './install-state.ts'
-import { debugLog } from '../debug-log.ts'
 import { verifyPassword } from './password.ts'
 
 export const PAM_ROOT_USERNAME = 'root'
@@ -124,25 +123,11 @@ async function verifyDbUserCredentials(
     .limit(1)
 
   const row = rows[0]
-  // #region agent log
-  await debugLog('credentials.ts:verifyDbUserCredentials', 'db credential lookup', {
-    byEmail,
-    loginLength: trimmed.length,
-    rowFound: Boolean(row),
-    hasPassword: Boolean(row?.password),
-    isDisabled: row?.isDisabled ?? null,
-  }, 'B')
-  // #endregion
   if (!row?.password || row.isDisabled) {
     return { ok: false }
   }
 
   const valid = await verifyPassword(password, row.password)
-  // #region agent log
-  await debugLog('credentials.ts:verifyDbUserCredentials', 'password verify result', {
-    valid,
-  }, 'C')
-  // #endregion
   if (!valid) {
     return { ok: false }
   }

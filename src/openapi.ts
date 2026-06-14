@@ -125,24 +125,15 @@ export function getOpenApiSpec(serverUrl: string): object {
         },
         InstallRequest: {
           type: 'object',
-          required: ['superadminEmail', 'superadminPassword'],
+          required: ['username', 'password', 'superadminEmail', 'superadminPassword'],
           description:
-            'Host credentials are required as either `username` + `password` (preferred) or legacy `hostUsername` + `hostPassword` during the client transition.',
+            'Host credentials are required as `username` + `password`.',
           properties: {
             username: {
               type: 'string',
-              description: 'Host root or sudo user (preferred).',
+              description: 'Host root or sudo user.',
             },
             password: { type: 'string', format: 'password' },
-            hostUsername: {
-              type: 'string',
-              description: 'Legacy alias for `username`; accepted during transition.',
-            },
-            hostPassword: {
-              type: 'string',
-              format: 'password',
-              description: 'Legacy alias for `password`; accepted during transition.',
-            },
             superadminEmail: { type: 'string', format: 'email' },
             superadminPassword: { type: 'string', format: 'password' },
           },
@@ -409,7 +400,7 @@ export function getOpenApiSpec(serverUrl: string): object {
           tags: ['install'],
           summary: 'Complete initial install (install step 2)',
           description:
-            'Deno self-hosted only. Creates org, team, superadmin, and session. Accepts host credentials as `username`/`password` or legacy `hostUsername`/`hostPassword`.',
+            'Deno self-hosted only. Creates org, team, superadmin, and session. Requires host credentials as `username`/`password`.',
           requestBody: {
             required: true,
             content: {

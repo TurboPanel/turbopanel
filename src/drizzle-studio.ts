@@ -2,13 +2,17 @@ import { dirname, fromFileUrl, join } from '@std/path'
 import { buildPostgresUrlFromEnv, postgresEnvFromEnv } from './db-url.ts'
 import { resolveNodePath } from './node-path.ts'
 
-const STUDIO_PORT = Number(Deno.env.get('TURBOPANEL_DRIZZLE_STUDIO_PORT') ?? '4983')
-const STUDIO_HOST = Deno.env.get('TURBOPANEL_DRIZZLE_STUDIO_HOST')?.trim() || '127.0.0.1'
-/** Hosted Drizzle Studio UI — connects to the API server on STUDIO_PORT (localhost when forwarded). */
+const STUDIO_API_PORT = Number(Deno.env.get('TURBOPANEL_DRIZZLE_STUDIO_PORT') ?? '4983')
+const STUDIO_HOST = Deno.env.get('TURBOPANEL_DRIZZLE_STUDIO_HOST')?.trim() || 'localhost'
+/** Hosted Drizzle Studio UI — connects to the local drizzle-kit API (HTTP on STUDIO_API_PORT). */
 export const DRIZZLE_STUDIO_BROWSER_URL = 'https://local.drizzle.studio'
 
-export function drizzleStudioBrowserUrl(port = STUDIO_PORT): string {
-  return port === 4983 ? DRIZZLE_STUDIO_BROWSER_URL : `${DRIZZLE_STUDIO_BROWSER_URL}?port=${port}`
+export function drizzleStudioBrowserUrl(): string {
+  const params = new URLSearchParams({
+    host: STUDIO_HOST,
+    port: String(STUDIO_API_PORT),
+  })
+  return `${DRIZZLE_STUDIO_BROWSER_URL}?${params.toString()}`
 }
 
 const INSTANCE_REPO_ROOT = (() => {
@@ -30,7 +34,7 @@ export function drizzleStudioStatus(): {
 } {
   return {
     running: studioRunning,
-    port: STUDIO_PORT,
+    port: STUDIO_API_PORT,
     browserUrl: drizzleStudioBrowserUrl(),
   }
 }
@@ -55,15 +59,17 @@ export async function startDrizzleStudio(): Promise<
   if (databaseUrl) studioEnv.DATABASE_URL = databaseUrl
   else delete studioEnv.DATABASE_URL
 
+  const bindHost = STUDIO_HOST === 'localhost' ? '127.0.0.1' : STUDIO_HOST
+
   try {
     const command = new Deno.Command(nodeBin, {
       args: [
         drizzleKitPath(),
         'studio',
         '--host',
-        STUDIO_HOST,
+        bindHost,
         '--port',
-        String(STUDIO_PORT),
+        String(STUDIO_API_PORT),
       ],
       cwd: INSTANCE_REPO_ROOT,
       env: studioEnv,
@@ -82,7 +88,7 @@ export async function startDrizzleStudio(): Promise<
       studioChild = null
     })
 
-    const ready = await waitForStudioPort(30_000)
+    const ready = await waitForStudioPort(bindHost, 30_000)
     if (!ready) {
       const detail = await childErrorDetail(studioChild)
       stopDrizzleStudio()
@@ -92,7 +98,7 @@ export async function startDrizzleStudio(): Promise<
       }
     }
 
-    return { ok: true, browserUrl: drizzleStudioBrowserUrl(), port: STUDIO_PORT }
+    return { ok: true, browserUrl: drizzleStudioBrowserUrl(), port: STUDIO_API_PORT }
   } catch (err) {
     studioRunning = false
     studioChild = null
@@ -131,11 +137,11 @@ async function childErrorDetail(
   return line ?? `drizzle studio exited (code ${status.code})`
 }
 
-async function waitForStudioPort(timeoutMs: number): Promise<boolean> {
+async function waitForStudioPort(host: string, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     try {
-      const conn = await Deno.connect({ hostname: STUDIO_HOST, port: STUDIO_PORT })
+      const conn = await Deno.connect({ hostname: host, port: STUDIO_API_PORT })
       conn.close()
       return true
     } catch {

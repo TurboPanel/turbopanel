@@ -85,10 +85,7 @@ export async function buildSignedCookie(
   secrets: DerivedSecretsConfig,
 ): Promise<string> {
   const sig = await signToken(token, secrets.current.key);
-  if (secrets.current.version !== null) {
-    return `${token}.v${secrets.current.version}.${sig}`;
-  }
-  return `${token}.${sig}`;
+  return `${token}.v${secrets.current.version}.${sig}`;
 }
 
 function signaturesEqual(providedSig: string, expectedSig: string): boolean {
@@ -152,29 +149,9 @@ async function verifyVersionedCookie(
   const matchedKey = findKeyForVersion(secrets, version);
   if (matchedKey === null) return null;
 
-  const expectedSig = await signToken(token, matchedKey);
-  if (!signaturesEqual(providedSig, expectedSig)) return null;
+  if (!await signatureMatches(token, providedSig, matchedKey)) return null;
 
   return { token, rotated: matchedKey !== secrets.current.key };
-}
-
-async function verifyLegacyFormatCookie(
-  token: string,
-  providedSig: string,
-  secrets: DerivedSecretsConfig,
-): Promise<VerifyResult | null> {
-  if (
-    secrets.legacyKey !== null &&
-    await signatureMatches(token, providedSig, secrets.legacyKey)
-  ) {
-    return { token, rotated: secrets.legacyKey !== secrets.current.key };
-  }
-
-  if (await signatureMatches(token, providedSig, secrets.current.key)) {
-    return { token, rotated: secrets.current.version !== null };
-  }
-
-  return null;
 }
 
 export async function verifySignedCookie(
@@ -187,12 +164,6 @@ export async function verifySignedCookie(
     const [token, versionSegment, providedSig] = segments;
     if (!token || !versionSegment || !providedSig) return null;
     return verifyVersionedCookie(token, versionSegment, providedSig, secrets);
-  }
-
-  if (segments.length === 2) {
-    const [token, providedSig] = segments;
-    if (!token || !providedSig) return null;
-    return verifyLegacyFormatCookie(token, providedSig, secrets);
   }
 
   return null;

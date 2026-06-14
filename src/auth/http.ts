@@ -23,7 +23,6 @@ import {
 } from './email-verification.ts'
 import { createSession, deleteSession, getSession } from './session-store.ts'
 import type { DerivedSecretsConfig } from './secrets.ts'
-import { debugLog } from '../debug-log.ts'
 import { getDb } from '../db.ts'
 import type { Db } from '../db.ts'
 import { account, user } from '../db/schema.ts'
@@ -203,24 +202,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       )
     }
 
-    // #region agent log
-    await debugLog('http.ts:sign-in', 'sign-in request context', {
-      runtime: opts.runtime,
-      dbPresent: db !== undefined,
-      loginHasAt: username.includes('@'),
-      reqUrl: c.req.url,
-      forwardedProto: c.req.header('x-forwarded-proto') ?? null,
-      forwardedHost: c.req.header('x-forwarded-host') ?? null,
-    }, 'A')
-    // #endregion
-
     const result = await verifyCredentials(username, password, opts.runtime, db)
-    // #region agent log
-    await debugLog('http.ts:sign-in', 'verifyCredentials result', {
-      ok: result.ok,
-      isRoot: result.ok ? result.isRoot : null,
-    }, 'A')
-    // #endregion
     if (!result.ok) {
       return c.json({ ok: false, error: 'Invalid credentials' }, 401)
     }
@@ -241,15 +223,6 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       tls.cookieName,
       tls.isHttps,
     )
-    // #region agent log
-    await debugLog('http.ts:sign-in', 'session cookie built', {
-      cookieName: tls.cookieName,
-      isHttps: tls.isHttps,
-      setCookieHasSecure: setCookieHeader.includes('; Secure'),
-      setCookiePrefix: tls.cookieName,
-    }, 'D')
-    // #endregion
-
     const sessionData = await getSession(db, token)
     if (!sessionData) {
       throw new Error('Session creation failed')
@@ -430,15 +403,6 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
     const db = getDb(c)
 
     const cookieValue = readSessionCookie(c)
-    // #region agent log
-    const tls = requestTls(c)
-    await debugLog('http.ts:session', 'session cookie read', {
-      reqUrl: c.req.url,
-      forwardedProto: c.req.header('x-forwarded-proto') ?? null,
-      cookieName: tls.cookieName,
-      cookiePresent: Boolean(cookieValue),
-    }, 'D')
-    // #endregion
     if (!cookieValue) {
       return c.json({ ok: false }, 401)
     }

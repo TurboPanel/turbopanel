@@ -24,9 +24,6 @@ export async function pushSchemaFromCode(): Promise<
 > {
   const drizzleKit = join(INSTANCE_REPO_ROOT, 'node_modules/drizzle-kit/bin.cjs')
   const nodeBin = await resolveNodePath()
-  // #region agent log
-  fetch('http://127.0.0.1:7807/ingest/0b79b1a0-6087-4e49-bbd8-5d9dad0c0825',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'5855b0'},body:JSON.stringify({sessionId:'5855b0',location:'schema-push.ts:push',message:'resolved node for drizzle-kit',data:{nodeBin,drizzleKit},timestamp:Date.now(),hypothesisId:'B',runId:'post-fix'})}).catch(()=>{});
-  // #endregion
   try {
     const out = await new Deno.Command(nodeBin, {
       args: [drizzleKit, 'push', '--force'],

@@ -13,29 +13,8 @@ import {
   isSignupEnabled,
 } from './auth/install-state.ts'
 import { createSession, getSession } from './auth/session-store.ts'
-import { debugLog } from './debug-log.ts'
 import { getDb } from './db.ts'
 import { INSTALL_API_PREFIX } from './surfaces.ts'
-
-/** Accept `username`/`password` or legacy `hostUsername`/`hostPassword`. */
-function normalizeHostCredentials(body: Record<string, unknown>): {
-  username: string
-  password: string
-} | null {
-  const username = body.username ?? body.hostUsername
-  const password = body.password ?? body.hostPassword
-
-  if (
-    typeof username !== 'string' ||
-    !username.trim() ||
-    typeof password !== 'string' ||
-    !password
-  ) {
-    return null
-  }
-
-  return { username: username.trim(), password }
-}
 
 async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
   if (opts.runtime !== 'deno') {
@@ -67,11 +46,13 @@ async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
   }
 
   const record = body as Record<string, unknown>
-  const hostCredentials = normalizeHostCredentials(record)
-  const { superadminEmail, superadminPassword } = record
+  const { username, password, superadminEmail, superadminPassword } = record
 
   if (
-    hostCredentials === null ||
+    typeof username !== 'string' ||
+    !username.trim() ||
+    typeof password !== 'string' ||
+    !password ||
     typeof superadminEmail !== 'string' ||
     typeof superadminPassword !== 'string'
   ) {
@@ -79,8 +60,8 @@ async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
   }
 
   const hostOk = await verifyInstallHostCredentials(
-    hostCredentials.username,
-    hostCredentials.password,
+    username.trim(),
+    password,
     opts.runtime,
     db,
   )
@@ -105,16 +86,6 @@ async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
     if (tls.isHttps) {
       setCookie += '; Secure'
     }
-    // #region agent log
-    await debugLog('install-routes.ts:install', 'install session cookie built', {
-      userId: result.userId,
-      reqUrl: c.req.url,
-      forwardedProto: c.req.header('x-forwarded-proto') ?? null,
-      cookieName: tls.cookieName,
-      isHttps: tls.isHttps,
-      setCookieHasSecure: setCookie.includes('; Secure'),
-    }, 'E')
-    // #endregion
 
     const sessionData = await getSession(db, token)
     if (!sessionData) {
