@@ -43,9 +43,6 @@ async function resolveEmailQueue(): Promise<EmailQueue> {
 
 const emailQueue = await resolveEmailQueue()
 await ensureDbSchemaReady(db)
-if (developerSurface) {
-  await ensureDrizzleStudioInDev()
-}
 const secretsConfig = parseSecretsEnv(
   Deno.env.get('TURBOPANEL_SECRET'),
   Deno.env.get('TURBOPANEL_SECRETS'),
@@ -96,5 +93,8 @@ Deno.serve({
         developerSurface ? 'enabled' : 'disabled'
       }`,
     )
+    if (developerSurface) {
+      void ensureDrizzleStudioInDev()
+    }
   },
 }, app.fetch)
