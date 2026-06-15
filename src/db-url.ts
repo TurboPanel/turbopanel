@@ -29,7 +29,7 @@ export function parsePostgresDatabaseUrl(url: string): {
   }
 }
 
-function resolvePostgresConnectionParts(url: string): {
+export function resolvePostgresConnectionParts(url: string): {
   user: string
   pass: string
   database: string
