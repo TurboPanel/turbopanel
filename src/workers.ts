@@ -4,6 +4,7 @@ import { deriveSecretsConfig, parseSecretsEnv } from './auth/secrets.ts'
 import { createApp } from './app'
 import { createWorkersDb } from './db'
 import { registerDeveloperRoutesCore } from './developer-routes-core.ts'
+import { registerWorkersDaemonWebSocket } from './workers-ws.ts'
 import { createNoopQueue } from './email/noop-queue.ts'
 import { createWorkersMailgunQueue } from './email/workers-queue.ts'
 
@@ -41,6 +42,7 @@ async function initWorkerApp(env: CloudflareBindings) {
     db,
     authRequired: false,
   })
+  registerWorkersDaemonWebSocket(cachedApp as unknown as Hono, { db })
 }
 
 export default {
