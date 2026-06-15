@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm'
 import { dirname, fromFileUrl, join } from '@std/path'
 import type { Db } from '../db.ts'
 import { resolveNodePath } from '../node-path.ts'
-import { resolvePostgresConnectionParts } from './db-url.ts'
+import { resolvePostgresConnectionParts } from '../db-url.ts'
 
 const INSTANCE_REPO_ROOT = (() => {
   const here = dirname(fromFileUrl(import.meta.url))
