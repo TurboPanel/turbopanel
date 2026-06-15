@@ -35,7 +35,7 @@ db_connect_load_pg_env_from_unit() {
   eval "$(
     systemctl show "$INSTANCE_UNIT" -p Environment --value \
       | tr ' ' '\n' \
-      | grep -E '^(TURBOPANEL_DATABASE_URL|TURBOPANEL_PG_(USER|PASSWORD|DB|HOST|PORT|SOCKET))=' \
+      | grep -E '^TURBOPANEL_DATABASE_URL=' \
       | sed 's/^/export /'
   )"
 }
@@ -58,33 +58,8 @@ db_connect_build_database_url() {
     return 0
   fi
 
-  if [[ -z "${TURBOPANEL_PG_USER:-}" || -z "${TURBOPANEL_PG_PASSWORD:-}" || -z "${TURBOPANEL_PG_DB:-}" ]]; then
-    echo "$caller: missing TURBOPANEL_DATABASE_URL or TURBOPANEL_PG_USER/PASSWORD/DB on $INSTANCE_UNIT" >&2
-    return 1
-  fi
-
-  if [[ -n "${TURBOPANEL_PG_SOCKET:-}" ]]; then
-    # Legacy socket mode: drizzle.config.ts uses object credentials from TURBOPANEL_PG_*.
-    return 0
-  fi
-
-  if [[ -z "${TURBOPANEL_PG_HOST:-}" ]]; then
-    echo "$caller: set DATABASE_URL or configure TURBOPANEL_DATABASE_URL / TURBOPANEL_PG_SOCKET/HOST on $INSTANCE_UNIT" >&2
-    return 1
-  fi
-
-  DATABASE_URL="$(
-    "$NODE" -e '
-const u = process.env.TURBOPANEL_PG_USER;
-const p = process.env.TURBOPANEL_PG_PASSWORD;
-const port = process.env.TURBOPANEL_PG_PORT || "5432";
-const d = process.env.TURBOPANEL_PG_DB;
-const host = process.env.TURBOPANEL_PG_HOST.trim();
-console.log(`postgresql://${encodeURIComponent(u)}:${encodeURIComponent(p)}@${host}:${port}/${d}`);
-'
-  )"
-  export DATABASE_URL
-  return 0
+  echo "$caller: missing DATABASE_URL or TURBOPANEL_DATABASE_URL (set env or configure on $INSTANCE_UNIT)" >&2
+  return 1
 }
 
 db_connect_verify_schema() {

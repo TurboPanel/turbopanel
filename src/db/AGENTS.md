@@ -23,7 +23,7 @@ Use when you designed in **Drizzle Studio** or applied DDL directly.
 2. Run `./introspect.sh` from the `turbopanel` repo root.
 3. Review `schema.ts` (style, dropped tables).
 
-`introspect.sh`: builds `DATABASE_URL` from `turbopanel-instance` env → introspect → copy to `schema.ts` → delete ephemeral `drizzle/` output → `deno check`.
+`introspect.sh`: loads `TURBOPANEL_DATABASE_URL` from `turbopanel-instance` (or `DATABASE_URL` override) → introspect → copy to `schema.ts` → delete ephemeral `drizzle/` output → `deno check`.
 
 ### Push: `schema.ts` → database (`./sync.sh`)
 

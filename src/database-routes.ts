@@ -22,7 +22,7 @@ export function registerDatabaseRoutes(developer: Hono): void {
         ...meta,
         connected: false,
         version: null,
-        error: 'postgres env is not configured',
+        error: 'postgres is not configured (missing TURBOPANEL_DATABASE_URL)',
       }
       return c.json(body)
     }
@@ -75,7 +75,7 @@ export function registerDatabaseRoutes(developer: Hono): void {
   developer.post('/database/studio', async (c) => {
     const meta = postgresConfigFromEnv()
     if (!meta.configured) {
-      return c.json({ ok: false, error: 'postgres is not configured' }, 503)
+      return c.json({ ok: false, error: 'postgres is not configured (missing TURBOPANEL_DATABASE_URL)' }, 503)
     }
 
     const started = await startDrizzleStudio()

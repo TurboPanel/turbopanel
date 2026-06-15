@@ -189,18 +189,17 @@ Set `CADDY_TLS_CERT` / `CADDY_TLS_KEY` only when overriding the default server l
 
 ## API / WS surfaces (versioned)
 
-Three audiences, each with its own REST + WS namespace. Prefixes live in `src/surfaces.ts`; `GET /api/health` is the single deliberately-unversioned probe.
+Four versioned surfaces each have REST + WS namespaces (where applicable). Prefixes live in `src/surfaces.ts`; `GET /api/health` is the single deliberately-unversioned probe.
 
 | Surface | REST | WS | Notes |
 |---|---|---|---|
 | Client (end-user UI) | `/api/client/v1/*` | `/ws/client/v1` | greenfield stubs |
 | Install (self-hosted wizard) | `/api/install/v1/*` | — | Deno only for POST endpoints; PAM-gated; no session/cookie on bootstrap |
 | Developer (dev console) | `/api/developer/v1/*` | `/ws/developer/v1` (stub) | fleet, diagnostics, shell, addresses, `system/upgrade`, `instance/tunnel-token`, `daemon/(:id/)sync-dev` |
-| Admin (admin UI) | `/api/admin/v1/*` | `/ws/admin/v1` | reserved for a future instance-admin surface |
 | Daemon | `/api/daemon/v1/*` | `/ws/daemon/v1` | `version`, `instance/ca`; daemons connect on the WS path |
 
-- Route modules: `src/admin-routes.ts`, `src/daemon-api-routes.ts`, `src/client-routes.ts`, `src/install-routes.ts` (mounted in `createApp`); Deno-only routes `src/system-routes.ts`, `src/dev-sync.ts`, `src/tunnel-routes.ts`, and the version route are registered in `src/deno.ts`.
-- The UI calls everything through `../ui/src/lib/instance-api.ts` (single choke point, prefixed `/api/admin/v1`).
+- Route modules: `src/daemon-api-routes.ts`, `src/client-routes.ts`, `src/install-routes.ts` (mounted in `createApp`); Deno-only routes `src/system-routes.ts`, `src/dev-sync.ts`, `src/tunnel-routes.ts`, and the version route are registered in `src/deno.ts`. `src/admin-routes.ts` exists but is **not mounted** until a real admin surface ships.
+- The turbopanel-dev console calls developer routes via `src/instance-client.ts` (Unix socket + HTTPS fallback).
 - Hard cutover: daemon, UI, Caddy (`/ws/*`), and Workers routes (`wrangler.jsonc`) moved together. The external CDN node installer must fetch the CA from the new `/api/daemon/v1/instance/ca` path.
 
 ## Daemon hub (`/ws/daemon/v1`)
@@ -214,11 +213,11 @@ Server nodes register in `src/daemon-hub.ts` (keyed by `serverId` from the `serv
 
 ### Dev sync (push a daemon build without git)
 
-`src/dev-sync.ts` tars the local `../daemon` checkout, base64-encodes it, and streams `dev-sync-begin` → `dev-sync-chunk*` → `dev-sync-end` over the daemon WS; the daemon unpacks, `deno cache`s, replies `dev-sync-result`, and restarts. Admin routes: `POST /api/admin/v1/daemon/:id/sync-dev` and `…/daemon/sync-dev` (all). UI: **Sync Dev Build** in the fleet section.
+`src/dev-sync.ts` tars the local `../daemon` checkout, base64-encodes it, and streams `dev-sync-begin` → `dev-sync-chunk*` → `dev-sync-end` over the daemon WS; the daemon unpacks, `deno cache`s, replies `dev-sync-result`, and restarts. Developer routes: `POST /api/developer/v1/daemon/:id/sync-dev` and `…/daemon/sync-dev` (all). Dev console: **Sync Dev Build** in the fleet section.
 
 ### Instance Cloudflare tunnel
 
-`POST /api/admin/v1/instance/tunnel-token` (`src/tunnel-routes.ts`) sends a `tunnel-token` WS message to the co-located daemon, which writes `cloudflared/tunnels/instance.token` and (re)starts cloudflared. External remote daemons then reach this instance via the tunnel → Caddy → socket. UI: **Save Tunnel Token** in the fleet section (empty token tears it down).
+`POST /api/developer/v1/instance/tunnel-token` (`src/tunnel-routes.ts`) sends a `tunnel-token` WS message to the co-located daemon, which writes `cloudflared/tunnels/instance.token` and (re)starts cloudflared. External remote daemons then reach this instance via the tunnel → Caddy → socket. Dev console: **Save Tunnel Token** in the fleet section (empty token tears it down).
 
 Correlated request/ack helpers (`awaitDaemonAck` / `recordDaemonAck`) back both dev-sync and tunnel-token.
 
@@ -315,11 +314,12 @@ The `src/email/` module defines a queue abstraction (`EmailQueue`, `EmailJob`, `
 - **Deno** — `createDenoAmqpQueue` publishes jobs to RabbitMQ (`TURBOPANEL_AMQP_URL`); falls back to `createNoopQueue` when the broker is unreachable. On managed hosts, `TURBOPANEL_AMQP_URL` is injected by the `instance-launch` role from `/etc/turbopanel/rabbitmq/.rabbitmq_pass` (no `guest:guest` default).
 - **Workers** — `createWorkersMailgunQueue` sends directly via Mailgun when `TURBOPANEL_MAILGUN_API_KEY` and `TURBOPANEL_MAILGUN_DOMAIN` are set; otherwise noop.
 
-The **`mailer/`** consumer runs as **`turbopanel-mailer.service`** on managed hosts (installed by the `instance-launch` role). In Tilt dev it is the standalone `mailer` resource (Deno mode only): RabbitMQ consumer → SMTP sender with a token-bucket rate limiter (`TURBOPANEL_MAILER_RATE_LIMIT_PER_MINUTE`, default 60). SMTP config comes from env (`SMTP_*`) with DB `setting` table fallback; Mailpit is the default SMTP target in dev (`MAILPIT_SMTP_PORT`).
+The **`mailer/`** consumer runs as **`turbopanel-mailer.service`** on managed hosts (installed by the `instance-launch` role). In Tilt dev it is the standalone `mailer` resource (Deno mode only): RabbitMQ consumer → SMTP sender with a token-bucket rate limiter (`TURBOPANEL_MAILER_RATE_LIMIT_PER_MINUTE`, default 60). SMTP config comes from env (`SMTP_*`) with DB `setting` table fallback when **`TURBOPANEL_DATABASE_URL`** is set; Mailpit is the default SMTP target in dev (`MAILPIT_SMTP_PORT`).
 
 | Variable | Runtime | Purpose |
 |---|---|---|
 | `TURBOPANEL_AMQP_URL` | Deno | RabbitMQ connection URL (managed installs: from `/etc/turbopanel/rabbitmq/.rabbitmq_pass`; Tilt dev default `amqp://guest:guest@localhost:19828`) |
+| `TURBOPANEL_DATABASE_URL` | Deno mailer | Postgres for DB-backed SMTP settings (`setting` table); same URL as the instance |
 | `TURBOPANEL_REDIS_SOCKET` | Deno | Unix socket path for future session/cache use (managed installs: `/run/turbopanel/redis.sock`; no consumer yet) |
 | `TURBOPANEL_SYSTEM_EMAIL_FROM` | Both | Sender address (default `noreply@turbopanel.local`) |
 | `TURBOPANEL_BASE_URL` | Deno | Public base URL for verification links (falls back to request origin) |
@@ -357,14 +357,14 @@ sequenceDiagram
 
 ## Layout
 
-- `src/app.ts` — shared Hono app (`/api/health`, `/api/openapi.json`, `/api/reference` + client/admin/daemon routers)
+- `src/app.ts` — shared Hono app (`/api/health`, `/api/openapi.json`, `/api/reference` + client/daemon routers)
 - `src/openapi.ts` — hand-authored OpenAPI 3.1 spec (`getOpenApiSpec`)
 - `src/scalar-html.ts` — Scalar CDN embed HTML (`buildScalarHtml`)
 - `src/surfaces.ts` — versioned API/WS prefix constants
-- `src/admin-routes.ts` / `src/daemon-api-routes.ts` / `src/client-routes.ts` — per-surface REST routers
+- `src/daemon-api-routes.ts` / `src/client-routes.ts` — per-surface REST routers (`src/admin-routes.ts` reserved, unmounted)
 - `src/system-routes.ts` — developer `system/upgrade` + `system/upgrade-status` + `system/reset-dev` (Deno-only). Upgrade hard-resets instance + daemon to `origin/trunk` (blocked when platform checkouts are dirty). Reset-dev wipes Postgres, repushes `schema.ts`, and restarts the instance (fresh install wizard).
 - `src/database-routes.ts` — developer `database/status` + `database/studio` (Deno-only). Connection test and on-demand Drizzle Studio via `drizzle-kit studio` on port 4983.
-- `src/dev-sync.ts` / `src/tunnel-routes.ts` — dev-sync + tunnel admin routes (Deno-only)
+- `src/dev-sync.ts` / `src/tunnel-routes.ts` — dev-sync + tunnel developer routes (Deno-only)
 - `src/server-paths.ts` — Unix socket path resolution
 - `src/daemon-hub.ts` — WebSocket connection registry, command/address/ack dispatch
 - `src/deno-ws.ts` — `/ws/daemon/v1` handler and `/ws/{developer,client}/v1` stubs

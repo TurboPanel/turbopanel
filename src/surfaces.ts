@@ -2,7 +2,6 @@
 export const HEALTH_PATH = '/api/health'
 export const CLIENT_API_PREFIX = '/api/client/v1'
 export const DEVELOPER_API_PREFIX = '/api/developer/v1'
-export const ADMIN_API_PREFIX = '/api/admin/v1'
 export const DAEMON_API_PREFIX = '/api/daemon/v1'
 export const INSTALL_API_PREFIX = '/api/install/v1'
 export const CLIENT_WS_PATH = '/ws/client/v1'

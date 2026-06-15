@@ -1,7 +1,6 @@
 import { Hono } from 'hono'
 import type { SessionData } from './auth/session-store.ts'
 import type { DerivedSecretsConfig } from './auth/secrets.ts'
-import { registerAdminRoutes } from './admin-routes.ts'
 import { registerClientRoutes } from './client-routes.ts'
 import { registerInstallRoutes } from './install-routes.ts'
 import { registerDaemonApiRoutes } from './daemon-api-routes.ts'
@@ -88,7 +87,6 @@ export function createApp(
       emailFrom,
       baseUrl,
     })
-    registerAdminRoutes(routes, { secrets })
   }
   registerDaemonApiRoutes(routes)
   return app

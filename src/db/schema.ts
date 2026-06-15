@@ -38,6 +38,7 @@ export const organization = pgTable("organization", {
 	displayName: varchar("display_name", { length: 255 }),
 	slug: varchar({ length: 255 }),
 	metadata: jsonb(),
+	options: jsonb(),
 }, (table) => [
 	unique("organization_slug_unique").on(table.slug),
 	check("organization_display_name_format_check", sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`),

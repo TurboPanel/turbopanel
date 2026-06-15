@@ -34,35 +34,12 @@ export function createWorkersDb(hyperdrive: HyperdriveBinding): Db {
   return drizzle(client, { schema })
 }
 
-export function createDenoDb(): Db | undefined {
+export function createDenoDb(): Db {
   const url = getDatabaseUrl()
-  if (url) {
-    const client = postgres(url, PG_OPTS_DENO)
-    return drizzle(client, { schema })
+  if (!url) {
+    throw new Error('TURBOPANEL_DATABASE_URL is required')
   }
-
-  const user = Deno.env.get('TURBOPANEL_PG_USER')
-  const password = Deno.env.get('TURBOPANEL_PG_PASSWORD')
-  const database = Deno.env.get('TURBOPANEL_PG_DB')
-  if (!user || !password || !database) return undefined
-
-  const port = Number(Deno.env.get('TURBOPANEL_PG_PORT') ?? '5432')
-  const socket = Deno.env.get('TURBOPANEL_PG_SOCKET')?.trim()
-  const host = Deno.env.get('TURBOPANEL_PG_HOST')?.trim()
-
-  let client: ReturnType<typeof postgres>
-  if (socket) {
-    // postgres.js builds `host/.s.PGSQL.<port>` when host contains a slash.
-    const socketDir = socket.includes('.s.PGSQL.')
-      ? socket.slice(0, socket.lastIndexOf('/'))
-      : socket
-    client = postgres({ ...PG_OPTS_DENO, user, password, database, host: socketDir, port })
-  } else if (host) {
-    client = postgres({ ...PG_OPTS_DENO, user, password, database, host, port })
-  } else {
-    return undefined
-  }
-
+  const client = postgres(url, PG_OPTS_DENO)
   return drizzle(client, { schema })
 }
 

@@ -51,7 +51,7 @@ export async function startDrizzleStudio(): Promise<
   if (!databaseUrl) {
     return {
       ok: false,
-      error: 'postgres is not configured (missing TURBOPANEL_DATABASE_URL or TURBOPANEL_PG_* env)',
+      error: 'postgres is not configured (missing TURBOPANEL_DATABASE_URL)',
     }
   }
 

@@ -13,11 +13,12 @@ import {
   sendToDaemon,
 } from './daemon-hub.ts'
 import { collectServerAddresses } from './server-addresses.ts'
-import { ADMIN_API_PREFIX } from './surfaces.ts'
+/** Reserved for a future admin UI surface — not mounted from `createApp()` yet. */
+const ADMIN_API_PREFIX = '/api/admin/v1'
 
 /**
  * Admin UI surface: fleet management, diagnostics, shell, addresses.
- * Mounted under {@link ADMIN_API_PREFIX} (`/api/admin/v1`).
+ * Unmounted until a real, documented admin surface ships.
  */
 export function registerAdminRoutes(app: Hono, opts: { secrets: DerivedSecretsConfig }) {
   const admin = new Hono()

@@ -16,7 +16,7 @@ deno run --allow-net --allow-env --allow-read mailer/main.ts
 | --- | --- |
 | `--allow-net` | AMQP broker + SMTP |
 | `--allow-env` | Configuration env vars |
-| `--allow-read` | Deno.env, Postgres Unix socket path |
+| `--allow-read` | Deno.env, Postgres Unix socket directory (`TURBOPANEL_DATABASE_URL`) |
 
 ## Environment variables
 
@@ -30,7 +30,7 @@ deno run --allow-net --allow-env --allow-read mailer/main.ts
 | `SMTP_PASS` | SMTP auth password |
 | `SMTP_FROM` | Default From address (env) |
 | `TURBOPANEL_SYSTEM_EMAIL_FROM` | System From address (env) |
-| `TURBOPANEL_PG_*` | Postgres for `setting` table SMTP fallback |
+| `TURBOPANEL_DATABASE_URL` | Postgres for DB-backed SMTP settings (`setting` table) |
 | `MAILPIT_SMTP_PORT` | Mailpit SMTP port when no SMTP config |
 
 ## Dev defaults
