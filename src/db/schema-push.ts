@@ -1,19 +1,17 @@
 import { sql } from 'drizzle-orm'
 import { dirname, fromFileUrl, join } from '@std/path'
 import type { Db } from '../db.ts'
+import { DRIZZLE_PUSH_CONFIG, writeDrizzleKitConfig } from '../drizzle-kit-config.ts'
 import { resolveNodePath } from '../node-path.ts'
-import { resolvePostgresConnectionParts } from '../db-url.ts'
 
 const INSTANCE_REPO_ROOT = (() => {
   const here = dirname(fromFileUrl(import.meta.url))
   return join(here, '../..')
 })()
 
-const DRIZZLE_PUSH_CONFIG = join(
-  INSTANCE_REPO_ROOT,
-  '.local',
-  'drizzle-push.config.mjs',
-)
+async function writeDrizzlePushConfig(url: string): Promise<void> {
+  await writeDrizzleKitConfig(url, DRIZZLE_PUSH_CONFIG)
+}
 
 export async function isDbSchemaReady(db: Db): Promise<boolean> {
   const rows = await db.execute<{ exists: boolean }>(sql`
@@ -24,34 +22,6 @@ export async function isDbSchemaReady(db: Db): Promise<boolean> {
   `)
   const row = rows[0]
   return row?.exists === true
-}
-
-async function writeDrizzlePushConfig(url: string): Promise<void> {
-  const parts = resolvePostgresConnectionParts(url)
-  if (!parts) {
-    throw new Error('invalid TURBOPANEL_DATABASE_URL')
-  }
-
-  const dbCredentials = parts.socketDir
-    ? `{
-    host: ${JSON.stringify(parts.socketDir)},
-    user: ${JSON.stringify(parts.user)},
-    password: ${JSON.stringify(parts.pass)},
-    database: ${JSON.stringify(parts.database)},
-  }`
-    : `{ url: ${JSON.stringify(parts.tcpUrl ?? url)} }`
-
-  const configContent = `import { defineConfig } from 'drizzle-kit'
-export default defineConfig({
-  schema: './src/db/schema.ts',
-  out: './migrations',
-  dialect: 'postgresql',
-  dbCredentials: ${dbCredentials},
-})
-`
-
-  await Deno.mkdir(dirname(DRIZZLE_PUSH_CONFIG), { recursive: true })
-  await Deno.writeTextFile(DRIZZLE_PUSH_CONFIG, configContent)
 }
 
 export async function pushSchemaFromCode(): Promise<

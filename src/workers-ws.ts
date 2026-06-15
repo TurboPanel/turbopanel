@@ -38,7 +38,9 @@ export function registerWorkersDaemonWebSocket(
       send: (source) => server.send(source),
     })
 
-    const session = createDaemonWebSocketSession(c, ws, options)
+    const remoteAddress = c.req.header('x-real-ip')?.trim() ||
+      c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
+    const session = createDaemonWebSocketSession(ws, options, { remoteAddress })
     server.addEventListener('message', (evt) => session.onMessage(evt, ws))
     server.addEventListener('close', () => session.onClose())
     server.addEventListener('error', () => session.onError())

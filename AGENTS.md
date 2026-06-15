@@ -291,7 +291,7 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `POST` | `/api/install/v1/` | Deno: host PAM + superadmin setup → superadmin session only |
 | `GET` | `/api/client/v1/servers` | Session required: servers assigned to the user's organization, with live `connected` / `hostname` from the daemon hub |
 
-**Install mode (Deno self-hosted):** `isInstanceInstalled()` is false on a fresh DB. The UI `/install` page first verifies host PAM (`POST /api/install/v1/bootstrap`, client-side gate only), then collects superadmin email/password. Org/team names are fixed defaults. After install, sign-in uses superadmin email/password only. The co-located daemon's `server.organization_id` is assigned on install (and again when the unix-socket daemon connects, if still unset).
+**Install mode (Deno self-hosted):** `isInstanceInstalled()` is false on a fresh DB. The UI `/install` page first verifies host PAM (`POST /api/install/v1/bootstrap`, client-side gate only), then collects superadmin email/password. Org/team names are fixed defaults. After install, sign-in uses superadmin email/password only. The co-located daemon's `server.organization_id` is assigned to **Default Organization** on install (`assignColocatedDaemonToOrganization` in `install-state.ts`, resolving the server row from the live hub or by `metadata.machineId` / hostname) and again when the Unix-socket daemon sends `hello` if still unassigned.
 
 #### New files
 
@@ -367,6 +367,7 @@ sequenceDiagram
 - `src/dev-sync.ts` / `src/tunnel-routes.ts` — dev-sync + tunnel developer routes (Deno-only)
 - `src/server-paths.ts` — Unix socket path resolution
 - `src/daemon-hub.ts` — WebSocket connection registry, command/address/ack dispatch
+- `src/daemon-ws-handlers.ts` / `src/deno-ws.ts` — shared daemon WS session. **Deno:** capture `X-Real-IP` / `X-Forwarded-For` in the `upgradeWebSocket` callback before returning `onOpen`; reading `c.req.header()` inside `onOpen` throws `Request closed` and crashes the instance on every Unix-socket daemon connect.
 - `src/deno-ws.ts` — `/ws/daemon/v1` handler and `/ws/{developer,client}/v1` stubs
 - `src/db.ts` / `src/db/schema.ts` — Drizzle client factories + schema
 - `src/developer-routes-core.ts` — developer REST routes safe for Workers (`workers.ts` registers this). Deno-only routes (Drizzle Studio) stay in `src/developer-routes.ts`, registered from `deno.ts` only — never import Deno-only modules from `src/app.ts` or the Workers bundle will fail.

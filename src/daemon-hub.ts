@@ -337,6 +337,16 @@ export function getColocatedDaemonServerId(): string | null {
   return null
 }
 
+/** Hostname reported by the co-located daemon in its hello message, when connected. */
+export function getColocatedDaemonHostname(): string | null {
+  for (const conn of connections.values()) {
+    if (conn.remoteAddress === '__direct__' && conn.hostname) {
+      return conn.hostname
+    }
+  }
+  return null
+}
+
 export function sendToDaemon(id: string, message: DaemonMessage): boolean {
   const conn = connections.get(id)
   if (!conn) return false

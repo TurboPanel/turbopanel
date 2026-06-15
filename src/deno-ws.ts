@@ -18,10 +18,15 @@ export function registerDaemonWebSocket(
   app.get(
     DAEMON_WS_PATH,
     upgradeWebSocket((c) => {
+      // Capture proxy headers while the upgrade request is still open. Deno's
+      // onOpen callback runs after the HTTP request closes — reading c.req there
+      // throws "Request closed" and crashes the instance on every daemon connect.
+      const remoteAddress = c.req.header('x-real-ip')?.trim() ||
+        c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
       let session: ReturnType<typeof createDaemonWebSocketSession> | undefined
       return {
         onOpen(_event, ws) {
-          session = createDaemonWebSocketSession(c, ws, options)
+          session = createDaemonWebSocketSession(ws, options, { remoteAddress })
         },
         onMessage(event, ws) {
           session?.onMessage(event, ws)

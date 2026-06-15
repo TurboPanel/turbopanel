@@ -63,8 +63,8 @@ export function registerDatabaseRoutes(developer: Hono): void {
     }
   })
 
-  developer.get('/database/studio', (c) => {
-    const status = drizzleStudioStatus()
+  developer.get('/database/studio', async (c) => {
+    const status = await drizzleStudioStatus()
     return c.json({
       running: status.running,
       browserUrl: status.browserUrl,

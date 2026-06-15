@@ -1,6 +1,9 @@
-import { and, eq, isNotNull, isNull } from 'drizzle-orm'
+import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm'
 import type { Db } from '../db.ts'
-import { getColocatedDaemonServerId } from '../daemon-hub.ts'
+import {
+  getColocatedDaemonHostname,
+  getColocatedDaemonServerId,
+} from '../daemon-hub.ts'
 import {
   account,
   member,
@@ -143,17 +146,101 @@ export function validateSuperadminPassword(password: string): string | null {
   return null
 }
 
-/** Assign the co-located daemon to the first installed organization when possible. */
-export async function tryAssignColocatedDaemonToInstalledOrganization(
+async function readLocalMachineId(): Promise<string | undefined> {
+  if (typeof Deno === 'undefined') return undefined
+  try {
+    const id = await Deno.readTextFile('/etc/machine-id')
+    const trimmed = id.trim()
+    return trimmed.length > 0 ? trimmed : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Default org created by the self-hosted install wizard (superadmin's org). */
+async function findDefaultInstalledOrganizationId(
   db: Db,
-): Promise<void> {
+): Promise<string | null> {
+  const byName = await db
+    .select({ id: organization.id })
+    .from(organization)
+    .where(eq(organization.displayName, DEFAULT_ORGANIZATION_NAME))
+    .limit(1)
+  if (byName[0]?.id) return byName[0].id
+
+  const withSuperadmin = await db
+    .select({ organizationId: member.organizationId })
+    .from(member)
+    .innerJoin(user, eq(member.userId, user.id))
+    .where(eq(user.role, SUPERADMIN_ROLE))
+    .limit(1)
+  if (withSuperadmin[0]?.organizationId) return withSuperadmin[0].organizationId
+
   const rows = await db
     .select({ id: organization.id })
     .from(organization)
     .where(isNotNull(organization.displayName))
     .limit(1)
 
-  const organizationId = rows[0]?.id
+  return rows[0]?.id ?? null
+}
+
+/**
+ * Resolve the co-located server row id from the live hub or persisted daemon
+ * metadata (machineId / hostname). Used when the hub is empty during install
+ * or right after an instance restart.
+ */
+export async function resolveColocatedServerId(db: Db): Promise<string | null> {
+  const fromHub = getColocatedDaemonServerId()
+  if (fromHub) return fromHub
+
+  const machineId = await readLocalMachineId()
+  if (machineId) {
+    const byMachine = await db
+      .select({ id: server.id })
+      .from(server)
+      .where(and(
+        isNull(server.organizationId),
+        isNull(server.deletedAt),
+        sql`${server.metadata}->>'machineId' = ${machineId}`,
+      ))
+      .limit(1)
+    if (byMachine[0]?.id) return byMachine[0].id
+  }
+
+  const hostname = getColocatedDaemonHostname()
+  if (hostname) {
+    const byHostname = await db
+      .select({ id: server.id })
+      .from(server)
+      .where(and(
+        isNull(server.organizationId),
+        isNull(server.deletedAt),
+        sql`${server.metadata}->>'hostname' = ${hostname}`,
+      ))
+      .limit(1)
+    if (byHostname[0]?.id) return byHostname[0].id
+  }
+
+  // Self-hosted Deno co-located dev: a single unassigned row is this host.
+  if (typeof Deno !== 'undefined') {
+    const unassigned = await db
+      .select({ id: server.id })
+      .from(server)
+      .where(and(isNull(server.organizationId), isNull(server.deletedAt)))
+    if (unassigned.length === 1 && unassigned[0]?.id) {
+      return unassigned[0].id
+    }
+  }
+
+  return null
+}
+
+/** Assign the co-located daemon to the default installed organization when possible. */
+export async function tryAssignColocatedDaemonToInstalledOrganization(
+  db: Db,
+): Promise<void> {
+  const organizationId = await findDefaultInstalledOrganizationId(db)
   if (!organizationId) return
 
   await assignColocatedDaemonToOrganization(db, organizationId)
@@ -162,14 +249,29 @@ export async function tryAssignColocatedDaemonToInstalledOrganization(
 export async function assignColocatedDaemonToOrganization(
   db: Db,
   organizationId: string,
-): Promise<void> {
-  const serverId = getColocatedDaemonServerId()
-  if (!serverId) return
+): Promise<boolean> {
+  const serverId = await resolveColocatedServerId(db)
+  if (!serverId) {
+    console.log(
+      '[install] colocated server not found yet — will assign on daemon connect',
+    )
+    return false
+  }
 
-  await db
+  const updated = await db
     .update(server)
     .set({ organizationId, updatedAt: nowTs() })
     .where(and(eq(server.id, serverId), isNull(server.organizationId)))
+    .returning({ id: server.id })
+
+  if (updated.length > 0) {
+    console.log(
+      `[install] assigned colocated server ${serverId} to organization ${organizationId}`,
+    )
+    return true
+  }
+
+  return false
 }
 
 export type CompleteInstallInput = {

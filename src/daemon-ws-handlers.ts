@@ -1,4 +1,3 @@
-import type { Context } from 'hono'
 import type { WSContext } from 'hono/ws'
 import type { DerivedSecretsConfig } from './auth/secrets.ts'
 import {
@@ -47,14 +46,17 @@ export type DaemonWebSocketSession = {
   onError: () => void
 }
 
+export type DaemonWebSocketConnectMeta = {
+  /** From X-Real-IP / X-Forwarded-For; omit for direct Unix-socket dials. */
+  remoteAddress?: string
+}
+
 /** Shared daemon hub logic for Deno and Workers WebSocket upgrades. */
 export function createDaemonWebSocketSession(
-  c: Context,
   ws: WSContext,
   { db }: DaemonWebSocketOptions = {},
+  { remoteAddress }: DaemonWebSocketConnectMeta = {},
 ): DaemonWebSocketSession {
-  const remoteAddress = c.req.header('x-real-ip')?.trim() ||
-    c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
   let connId: string | undefined
   let identityAddress = remoteAddress ?? '__direct__'
   let pingTimer: ReturnType<typeof setInterval> | undefined
