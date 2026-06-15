@@ -3,7 +3,7 @@
 #
 # Uses drizzle-kit push — applies DDL directly. Does not write drizzle/*.sql.
 #
-# Credentials default from turbopanel-instance systemd env (dev TCP).
+# Credentials from TURBOPANEL_DATABASE_URL (or DATABASE_URL override).
 # Override: DATABASE_URL=postgresql://… ./sync.sh
 #
 # Flags (passed to drizzle-kit push):
@@ -55,12 +55,7 @@ main() {
   db_connect_verify_schema sync.sh "$SCHEMA_SRC"
 
   echo "sync.sh: pushing schema to live database (no migration files)…"
-  if [[ -n "${DATABASE_URL:-}" ]]; then
-    DATABASE_URL="$DATABASE_URL" "$NODE" "$DRIZZLE_KIT" push "${PUSH_ARGS[@]}"
-  else
-    # drizzle.config.ts reads TURBOPANEL_PG_* (socket mode).
-    "$NODE" "$DRIZZLE_KIT" push "${PUSH_ARGS[@]}"
-  fi
+  DATABASE_URL="$DATABASE_URL" "$NODE" "$DRIZZLE_KIT" push "${PUSH_ARGS[@]}"
 
   echo "sync.sh: done — database should match src/db/schema.ts"
 }

@@ -59,6 +59,7 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
           ...row,
           connected: conn != null,
           hostname: conn?.hostname ?? null,
+          remoteAddress: conn?.remoteAddress ?? null,
         }
       }),
     })

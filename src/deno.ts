@@ -42,9 +42,7 @@ async function resolveEmailQueue(): Promise<EmailQueue> {
 }
 
 const emailQueue = await resolveEmailQueue()
-if (db) {
-  await ensureDbSchemaReady(db)
-}
+await ensureDbSchemaReady(db)
 const secretsConfig = parseSecretsEnv(
   Deno.env.get('TURBOPANEL_SECRET'),
   Deno.env.get('TURBOPANEL_SECRETS'),

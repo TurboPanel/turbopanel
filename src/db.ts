@@ -1,6 +1,7 @@
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import type { Context } from 'hono'
 import postgres from 'postgres'
+import { getDatabaseUrl } from './db-url.ts'
 import * as schema from './db/schema.ts'
 
 export type Db = PostgresJsDatabase<typeof schema>
@@ -34,6 +35,12 @@ export function createWorkersDb(hyperdrive: HyperdriveBinding): Db {
 }
 
 export function createDenoDb(): Db | undefined {
+  const url = getDatabaseUrl()
+  if (url) {
+    const client = postgres(url, PG_OPTS_DENO)
+    return drizzle(client, { schema })
+  }
+
   const user = Deno.env.get('TURBOPANEL_PG_USER')
   const password = Deno.env.get('TURBOPANEL_PG_PASSWORD')
   const database = Deno.env.get('TURBOPANEL_PG_DB')
@@ -51,7 +58,6 @@ export function createDenoDb(): Db | undefined {
       : socket
     client = postgres({ ...PG_OPTS_DENO, user, password, database, host: socketDir, port })
   } else if (host) {
-    // TCP fallback only when no socket path is configured.
     client = postgres({ ...PG_OPTS_DENO, user, password, database, host, port })
   } else {
     return undefined

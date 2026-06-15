@@ -1,15 +1,17 @@
-# Database (early development)
+# Database
 
-**Do not run migrations.** TurboPanel is in very early development and the co-located dev server already has live data. Treat every database change as production-adjacent until we say otherwise.
+Schema changes are versioned in **`migrations/`**. After editing `schema.ts`, run `pnpm drizzle-kit generate` to create SQL files. Apply pending migrations with `TURBOPANEL_DATABASE_URL=… pnpm migrate`; Workers deploy runs the same command. **`drizzle-kit migrate` records applied versions in `public.migration`** (configured in `drizzle.config.ts`).
 
-## Two sync directions (no migration files)
+The co-located dev server has live data — treat every database change as production-adjacent.
 
-We keep `schema.ts` and the dev database aligned using **drizzle-kit introspect** and **drizzle-kit push** only. Neither writes versioned migrations under `drizzle/`.
+## Schema sync directions
 
 | Direction | You changed | Command | drizzle-kit |
 |---|---|---|---|
 | **Pull** (DB → code) | Live Postgres (Studio / SQL) | `./introspect.sh` | `introspect` |
-| **Push** (code → DB) | `schema.ts` | `./sync.sh` | `push` |
+| **Push** (code → DB, Deno dev only) | `schema.ts` | `./sync.sh` | `push` |
+| **Generate migration** | `schema.ts` | `pnpm drizzle-kit generate` | `generate` |
+| **Apply migration** (Workers deploy + manual) | pending SQL in `migrations/` | `TURBOPANEL_DATABASE_URL=… pnpm migrate` | `migrate` |
 
 Pick one source of truth per change — do not edit both sides and blindly run both scripts.
 
@@ -25,7 +27,7 @@ Use when you designed in **Drizzle Studio** or applied DDL directly.
 
 ### Push: `schema.ts` → database (`./sync.sh`)
 
-Use when you edited **`schema.ts` first** and need the live dev DB to catch up.
+Use when you edited **`schema.ts` first** and need the live dev DB to catch up without committing migration files (Deno dev convenience only).
 
 1. Edit `src/db/schema.ts`.
 2. Run `./sync.sh` from the `turbopanel` repo root.
@@ -34,6 +36,17 @@ Use when you edited **`schema.ts` first** and need the live dev DB to catch up.
 `sync.sh`: `deno check` → `drizzle-kit push` (no SQL files committed). Flags: `--verbose`, `--force`.
 
 Override connection for either script: `DATABASE_URL=postgresql://… ./introspect.sh` or `./sync.sh`.
+
+### Generate + apply migrations (Workers path)
+
+Use when schema changes should ship as versioned SQL (required for Workers deploy).
+
+1. Edit `src/db/schema.ts`.
+2. Run `pnpm drizzle-kit generate` — writes SQL under `migrations/`.
+3. Commit the new migration files.
+4. Apply: `TURBOPANEL_DATABASE_URL=… pnpm migrate` (local or CI). Workers deploy runs `pnpm migrate` automatically.
+
+Applied versions are tracked in **`public.migration`** (`drizzle.config.ts` sets `migrations: { table: 'migration', schema: 'public' }`).
 
 ### Drizzle Studio (dev UI)
 
@@ -44,7 +57,7 @@ Override connection for either script: `DATABASE_URL=postgresql://… ./introspe
 
 ## Current policy (what not to run)
 
-- **No migration workflow** — do not run `drizzle-kit migrate`, do not commit `drizzle/*.sql` or `drizzle/meta/`.
+- Use `pnpm drizzle-kit generate` + `pnpm migrate` for Workers-bound schema changes; `./sync.sh` (`push`) remains for Deno dev convenience only.
 - **No ad-hoc push** — use `./sync.sh` only (after editing `schema.ts`), not raw `drizzle-kit push` in one-off commands.
 - **No production DDL** from agents without explicit approval.
 
@@ -75,15 +88,16 @@ Each physical server node gets a row in `server` (`id` uuidv7). On daemon connec
 |---|---|
 | `schema.ts` | Drizzle table definitions — sync with dev DB via `./introspect.sh` or `./sync.sh` |
 | `../db.ts` | Connection factories (`createDenoDb`, `createWorkersDb`) |
-| `../../drizzle.config.ts` | drizzle-kit config (introspect, push, studio) |
+| `../../drizzle.config.ts` | drizzle-kit config (`TURBOPANEL_DATABASE_URL` / `DATABASE_URL`; introspect, push, generate, migrate, studio) |
 | `../../introspect.sh` | Pull DB → `schema.ts` |
-| `../../sync.sh` | Push `schema.ts` → DB (no migration files) |
-| `../../scripts/db-connect.sh` | Shared `DATABASE_URL` + toolchain paths for both scripts |
-| `../../drizzle/` | Ephemeral introspect output only — `introspect.sh` deletes after adopt |
+| `../../sync.sh` | Push `schema.ts` → DB (Deno dev only; no migration files) |
+| `../../scripts/db-connect.sh` | Resolves `TURBOPANEL_DATABASE_URL` → `DATABASE_URL` for drizzle-kit scripts |
+| `../../migrations/` | Versioned SQL migration files (committed); applied by `pnpm migrate`; tracked in `public.migration` |
+| `../../drizzle/` | Ephemeral introspect scratch dir — `introspect.sh` deletes after adopt; never committed |
 
 ## Connection (self-hosted dev)
 
-Self-hosted instance, drizzle-kit (`drizzle.config.ts`), and `./sync.sh` / `./introspect.sh` all connect via **Unix socket** (`TURBOPANEL_PG_SOCKET`). Postgres in Docker always publishes the socket under `/var/run/turbopanel/postgres`; TCP port exposure (`postgres_expose_port`) is optional and unused by the instance. See repo root `AGENTS.md` for `TURBOPANEL_PG_*` env vars. Do not embed credentials here.
+Self-hosted instance, drizzle-kit (`drizzle.config.ts`), and `./sync.sh` / `./introspect.sh` all connect via **`TURBOPANEL_DATABASE_URL`** (falls back to `DATABASE_URL` for tooling). Unix socket connections use the libpq-style `?host=` query param (e.g. `postgresql://user:pass@/turbopanel?host=/var/run/turbopanel/postgres`). Postgres in Docker always publishes the socket under `/var/run/turbopanel/postgres`; TCP port exposure (`postgres_expose_port`) is optional and unused by the instance. See repo root `AGENTS.md` for env var details. Do not embed credentials here.
 
 ## Sanity check
 
@@ -95,4 +109,4 @@ Restart the instance only when **application code** changed — schema sync alon
 
 ### Empty database bootstrap (Deno dev)
 
-On startup, `src/deno.ts` calls `ensureDbSchemaReady()` when Postgres is configured. If the `user` table is missing (fresh Postgres volume, failed reset, etc.), the instance runs `drizzle-kit push --force` from `schema.ts` before accepting traffic. `./sync.sh` also works in socket mode (`TURBOPANEL_PG_*` from the instance unit — no `DATABASE_URL` required).
+On startup, `src/deno.ts` calls `ensureDbSchemaReady()` when Postgres is configured. If the `user` table is missing (fresh Postgres volume, failed reset, etc.), the instance runs `drizzle-kit push --force` from `schema.ts` before accepting traffic. `./sync.sh` reads `TURBOPANEL_DATABASE_URL` (or `DATABASE_URL` override).

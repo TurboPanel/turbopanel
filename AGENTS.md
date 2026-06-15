@@ -21,7 +21,7 @@ The **daemon is the constant** installed on every TurboPanel-managed host and is
 - **`turbopanel`** (UID/GID **9999**): the **daemon user and git identity**; has passwordless sudo; owns the install tree and **all git operations** (`git pull`, Upgrade System fetch/reset). Not necessarily the human developer.
 - **Human developer** (whoever runs `./console`): added to the `turbopanel` group by the `dev-permissions` role and can edit source files via group ACL write. After any `git pull` or `pnpm install` (which run as `turbopanel`), the dev user can immediately edit the resulting files because the default ACL propagates `g:turbopanel:rwx` to new files.
 - **`instance`** (UID **9998**): runs the instance, Caddy, and the dev UI. Primary group is **`turbopanel`** — it has **no group of its own** and **no sudo**. It **reads** platform checkouts via group membership; it must not own source files (that blocks reclaiming ownership to `turbopanel`).
-- Co-located dev checkouts (`platform/daemon`, `platform/turbopanel`, `platform/ui`) are **`2770 turbopanel:turbopanel`** with default ACL **`g:turbopanel:rwx`**. Per-service instance-user runtime state lives in **gitignored** checkout dirs: **`turbopanel/.local`** (instance + Caddy), **`ui/.local`** (Expo), plus matching **`.config`** trees. The **daemon** (`turbopanel`, UID 9999) uses **`/opt/turbopanel`** as `HOME`. The ownership normalizer skips checkout `.cache`/`.config`/`.local` so instance-owned runtime files are not reclaimed to `turbopanel`, and re-applies default ACLs on the source tree.
+- Co-located dev checkouts (`platform/daemon`, `platform/instance`, `platform/ui`) are **`2770 turbopanel:turbopanel`** with default ACL **`g:turbopanel:rwx`**. Per-service instance-user runtime state lives in **gitignored** checkout dirs: **`instance/.local`** (instance + Caddy), **`ui/.local`** (Expo), plus matching **`.config`** trees. The **daemon** (`turbopanel`, UID 9999) uses **`/opt/turbopanel`** as `HOME`. The ownership normalizer skips checkout `.cache`/`.config`/`.local` so instance-owned runtime files are not reclaimed to `turbopanel`, and re-applies default ACLs on the source tree.
 - Git SSH uses `/opt/turbopanel/.ssh/github_ed25519` at mode **`0600`** only (SSH rejects `0640`); the ACL must not be applied to `.ssh/`. Upgrade runs `sudo -u turbopanel git`; never run git as `instance`.
 - Manual pulls: `sudo -u turbopanel git -C … pull` (or pull as the `turbopanel` login user directly). After any mistaken `instance`-user git, run `/usr/local/bin/turbopanel-normalize-dev-checkout <path>`. **Upgrade System** runs `turbopanel-normalize-dev-checkout <path> --prepare-reset` before `git reset` (clears instance-owned `.config`/`.local`/`.cache` that block reset), then normalizes source ownership and `--ensure-runtime-dirs` after reset.
 - `/run/turbopanel` is **`2770 turbopanel:turbopanel`** (group-writable + setgid) so the in-group `instance` user can bind the socket; new sockets stay in the `turbopanel` group. The instance hardens its socket to **`0660`** so the daemon (also group `turbopanel`) can connect.
@@ -62,7 +62,7 @@ Installed and managed by the daemon via the `instance-launch` Ansible role:
 | `turbopanel-ui.service` | `instance:turbopanel` | Expo web dev server (`:8081`, dev only) |
 | `turbopanel-daemon.service` | `turbopanel:turbopanel` | runs Ansible; has sudo |
 
-- `systemd/turbopanel-instance.service` in this repo is a **reference/manual-install fallback**; the canonical unit is templated by the `instance-launch` role in `../daemon`.
+- `systemd/turbopanel-instance.service` was removed — the canonical unit is templated by the `instance-launch` role in `../daemon`.
 - Logs: `journalctl -u turbopanel-instance -u turbopanel-caddy -u turbopanel-ui -f`
 - Co-located daemon: `../daemon/scripts/install-daemon-systemd.sh`
 
@@ -99,28 +99,18 @@ Path resolution lives in `src/server-paths.ts`.
 
 ## Database (Drizzle + Postgres.js)
 
-The instance uses **Drizzle ORM** over **postgres.js** with `prepare: false` (required for Hyperdrive and transaction-pooling). Connection factories live in `src/db.ts`; schema in `src/db/schema.ts`; drizzle-kit config in `drizzle.config.ts`. **Read `src/db/AGENTS.md` before touching schema or the database** — no migrations yet; the dev server has live data.
+The instance uses **Drizzle ORM** over **postgres.js** with `prepare: false` (required for Hyperdrive and transaction-pooling). Connection factories live in `src/db.ts`; schema in `src/db/schema.ts`; drizzle-kit config in `drizzle.config.ts`. **Read `src/db/AGENTS.md` before touching schema or the database.** Schema changes are versioned in `migrations/`; `pnpm migrate` applies pending SQL during Workers deploy and records applied versions in `public.migration`.
 
 | Runtime | Factory | When connected |
 |---|---|---|
 | Cloudflare Workers | `createWorkersDb(env.HYPERDRIVE)` | `HYPERDRIVE` binding present in `wrangler.jsonc` |
-| Deno (self-hosted) | `createDenoDb()` | `TURBOPANEL_PG_*` env vars set by `instance-launch` |
+| Deno (self-hosted) | `createDenoDb()` | `TURBOPANEL_DATABASE_URL` set by `instance-launch` |
 
-Route handlers read the per-request client via `getDb(c)` (set by `createApp({ db })`). When no database is configured the app still starts; `getDb()` returns `undefined`.
+Route handlers read the per-request client via `getDb(c)` (set by `createApp({ db })`). **Deno boot requires `TURBOPANEL_DATABASE_URL`:** `createDenoDb()` throws before `createApp()` when the variable is missing or blank, so the process exits instead of serving without a database.
 
-### Self-hosted Postgres env (`TURBOPANEL_PG_*`)
-
-Injected by `../daemon` `instance-launch` from the same defaults as the `postgres` role (`/etc/turbopanel/postgres/config.json` metadata). Password is read from `/etc/turbopanel/postgres/.pgpass` at unit install time.
-
-| Variable | Value |
+| Variable | Purpose |
 |---|---|
-| `TURBOPANEL_PG_USER` | `turbopanel` |
-| `TURBOPANEL_PG_DB` | `turbopanel` |
-| `TURBOPANEL_PG_PORT` | `5432` |
-| `TURBOPANEL_PG_PASSWORD` | from `/etc/turbopanel/postgres/.pgpass` |
-| `TURBOPANEL_PG_SOCKET` | `/var/run/turbopanel/postgres/.s.PGSQL.5432` |
-
-The instance always connects via Unix socket (`createDenoDb()` prefers `TURBOPANEL_PG_SOCKET` over `TURBOPANEL_PG_HOST`). Postgres in Docker always binds the socket volume; `postgres_expose_port` only adds optional TCP `127.0.0.1:5432` and is off in co-located dev. The Deno unit adds `--allow-read` and `--allow-write` for `postgres_socket_dir` (Deno requires write on the socket directory for Unix connects).
+| `TURBOPANEL_DATABASE_URL` | Full postgres connection URL. **Deno mode:** required at boot — `createDenoDb()` throws immediately when missing or blank (self-hosted instance will not start). Passed directly to postgres.js (supports Unix socket URLs: `postgresql://user:pass@/db?host=/var/run/turbopanel/postgres`). **Workers mode:** used only by drizzle-kit tooling; the runtime uses the `HYPERDRIVE` binding. When the URL uses `?host=` for a Unix socket, ensure Deno has read access to that directory (`/run/turbopanel` covers the default Docker bind-mount path). |
 
 ### Workers Hyperdrive
 
@@ -140,7 +130,7 @@ The Workers DB client uses `prepare: false` on postgres.js (see **Database** abo
 ### Tooling
 
 - `pnpm install` — pulls `drizzle-orm`, `postgres`, `drizzle-kit`
-- Do **not** run `drizzle-kit push`, `generate`, or `migrate` without explicit approval — see `src/db/AGENTS.md`
+- After editing `schema.ts`, run `pnpm drizzle-kit generate` to create SQL in `migrations/`; apply locally with `TURBOPANEL_DATABASE_URL=… pnpm migrate`. Workers deploy runs `pnpm migrate` (with `TURBOPANEL_DATABASE_URL` set); `drizzle-kit migrate` tracks applied versions in `public.migration`. Deno dev can still use `./sync.sh` (`push`) — see `src/db/AGENTS.md`.
 
 ### Caddy dial format
 
@@ -156,7 +146,7 @@ reverse_proxy unix//run/turbopanel/instance.sock
 
 The daemon's `runtime-sockets` role (and `scripts/ensure-socket-dir.mjs` for manual runs) ensures `/run/turbopanel` exists as `2770 turbopanel:turbopanel`, using passwordless `sudo` when needed. After bind, the instance hardens the socket file to `0660` (owner+group only) so the daemon can connect.
 
-The instance Deno process runs with scoped permissions (see the `instance-launch` unit template): `--allow-env --allow-sys=networkInterfaces --allow-read=/run/turbopanel,<postgres socket dir>,<daemon dir>,<instance dir> --allow-write=/run/turbopanel --allow-run=git,systemctl,tar` (`tar` is needed for the dev-sync tarball). TCP dev Postgres adds `--allow-net=127.0.0.1:5432`.
+The instance Deno process runs with scoped permissions (see the `instance-launch` unit template): `--allow-env --allow-sys=networkInterfaces --allow-read=/run/turbopanel,<daemon dir>,<instance dir> --allow-write=/run/turbopanel --allow-run=git,systemctl,tar` (`tar` is needed for the dev-sync tarball). TCP dev Postgres adds `--allow-net=127.0.0.1:5432`.
 
 ### Production
 
@@ -236,7 +226,7 @@ Correlated request/ack helpers (`awaitDaemonAck` / `recordDaemonAck`) back both 
 
 The instance uses a **custom PAM-style auth model** built entirely on the **Web Crypto API** (`crypto.subtle`, `crypto.getRandomValues`). There is no dependency on Node.js crypto or `nodejs_compat` mode — the same primitives run on both Deno and Cloudflare Workers.
 
-**No `nodejs_compat` mode.** Do not enable `nodejs_compat` in `wrangler.jsonc` for any auth-related reason. All cryptographic operations use the standard Web Crypto API only.
+**`nodejs_compat` is enabled** in `wrangler.jsonc` as a toolchain compatibility shim (required for drizzle-kit and postgres.js during the migration step). **Rarely use Node.js APIs in application code** — always prefer Cloudflare-native APIs: Web Crypto API (`crypto.subtle`, `crypto.getRandomValues`), Cloudflare Cache API, etc. Do not use `nodejs_compat` as justification for pulling in Node.js-specific libraries in application routes.
 
 #### Password hashing
 

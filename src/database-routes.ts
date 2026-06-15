@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import type { Hono } from 'hono'
+import { postgresConfigFromEnv } from './db-url.ts'
 import { getDb } from './db.ts'
 import { drizzleStudioStatus, startDrizzleStudio } from './drizzle-studio.ts'
 
@@ -13,20 +14,9 @@ export type DatabaseStatus = {
   error: string | null
 }
 
-function postgresConfig(): Pick<DatabaseStatus, 'configured' | 'transport' | 'user' | 'database'> {
-  const user = Deno.env.get('TURBOPANEL_PG_USER')?.trim() ?? null
-  const database = Deno.env.get('TURBOPANEL_PG_DB')?.trim() ?? null
-  const password = Deno.env.get('TURBOPANEL_PG_PASSWORD')
-  const socket = Deno.env.get('TURBOPANEL_PG_SOCKET')?.trim()
-  const host = Deno.env.get('TURBOPANEL_PG_HOST')?.trim()
-  const configured = Boolean(user && password && database && (socket || host))
-  const transport = socket ? 'socket' as const : host ? 'tcp' as const : null
-  return { configured, transport, user, database }
-}
-
 export function registerDatabaseRoutes(developer: Hono): void {
   developer.get('/database/status', async (c) => {
-    const meta = postgresConfig()
+    const meta = postgresConfigFromEnv()
     if (!meta.configured) {
       const body: DatabaseStatus = {
         ...meta,
@@ -83,7 +73,7 @@ export function registerDatabaseRoutes(developer: Hono): void {
   })
 
   developer.post('/database/studio', async (c) => {
-    const meta = postgresConfig()
+    const meta = postgresConfigFromEnv()
     if (!meta.configured) {
       return c.json({ ok: false, error: 'postgres is not configured' }, 503)
     }

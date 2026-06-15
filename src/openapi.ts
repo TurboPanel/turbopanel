@@ -148,6 +148,11 @@ export function getOpenApiSpec(serverUrl: string): object {
             createdAt: { type: 'string', format: 'date-time' },
             connected: { type: 'boolean' },
             hostname: { type: ['string', 'null'] },
+            remoteAddress: {
+              type: ['string', 'null'],
+              description:
+                'Client IP as seen by the instance (X-Real-IP from Caddy). Null when offline or co-located on a Unix socket.',
+            },
           },
         },
         ServersResponse: {

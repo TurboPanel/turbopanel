@@ -35,7 +35,7 @@ db_connect_load_pg_env_from_unit() {
   eval "$(
     systemctl show "$INSTANCE_UNIT" -p Environment --value \
       | tr ' ' '\n' \
-      | grep -E '^TURBOPANEL_PG_(USER|PASSWORD|DB|HOST|PORT|SOCKET)=' \
+      | grep -E '^(TURBOPANEL_DATABASE_URL|TURBOPANEL_PG_(USER|PASSWORD|DB|HOST|PORT|SOCKET))=' \
       | sed 's/^/export /'
   )"
 }
@@ -52,18 +52,24 @@ db_connect_build_database_url() {
   fi
   db_connect_load_pg_env_from_unit "$caller"
 
+  if [[ -n "${TURBOPANEL_DATABASE_URL:-}" ]]; then
+    DATABASE_URL="$TURBOPANEL_DATABASE_URL"
+    export DATABASE_URL
+    return 0
+  fi
+
   if [[ -z "${TURBOPANEL_PG_USER:-}" || -z "${TURBOPANEL_PG_PASSWORD:-}" || -z "${TURBOPANEL_PG_DB:-}" ]]; then
-    echo "$caller: missing TURBOPANEL_PG_USER/PASSWORD/DB on $INSTANCE_UNIT" >&2
+    echo "$caller: missing TURBOPANEL_DATABASE_URL or TURBOPANEL_PG_USER/PASSWORD/DB on $INSTANCE_UNIT" >&2
     return 1
   fi
 
   if [[ -n "${TURBOPANEL_PG_SOCKET:-}" ]]; then
-    # drizzle.config.ts uses object credentials for socket mode.
+    # Legacy socket mode: drizzle.config.ts uses object credentials from TURBOPANEL_PG_*.
     return 0
   fi
 
   if [[ -z "${TURBOPANEL_PG_HOST:-}" ]]; then
-    echo "$caller: set DATABASE_URL or configure TURBOPANEL_PG_SOCKET/HOST on $INSTANCE_UNIT" >&2
+    echo "$caller: set DATABASE_URL or configure TURBOPANEL_DATABASE_URL / TURBOPANEL_PG_SOCKET/HOST on $INSTANCE_UNIT" >&2
     return 1
   fi
 

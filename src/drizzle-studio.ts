@@ -1,5 +1,5 @@
 import { dirname, fromFileUrl, join } from '@std/path'
-import { buildPostgresUrlFromEnv, postgresEnvFromEnv } from './db-url.ts'
+import { getDatabaseUrl } from './db-url.ts'
 import { resolveNodePath } from './node-path.ts'
 
 const STUDIO_API_PORT = Number(Deno.env.get('TURBOPANEL_DRIZZLE_STUDIO_PORT') ?? '4983')
@@ -47,17 +47,20 @@ export async function startDrizzleStudio(): Promise<
     return { ok: true, browserUrl: status.browserUrl, port: status.port }
   }
 
-  const pg = postgresEnvFromEnv()
-  if (!pg) {
-    return { ok: false, error: 'postgres is not configured (missing TURBOPANEL_PG_* env)' }
+  const databaseUrl = getDatabaseUrl()
+  if (!databaseUrl) {
+    return {
+      ok: false,
+      error: 'postgres is not configured (missing TURBOPANEL_DATABASE_URL or TURBOPANEL_PG_* env)',
+    }
   }
 
-  const databaseUrl = buildPostgresUrlFromEnv()
   const nodeBin = await resolveNodePath()
-  const studioEnv: Record<string, string> = { ...Deno.env.toObject() }
-  // Socket mode: drizzle.config.ts reads TURBOPANEL_PG_* object credentials.
-  if (databaseUrl) studioEnv.DATABASE_URL = databaseUrl
-  else delete studioEnv.DATABASE_URL
+  const studioEnv: Record<string, string> = {
+    ...Deno.env.toObject(),
+    DATABASE_URL: databaseUrl,
+    TURBOPANEL_DATABASE_URL: databaseUrl,
+  }
 
   const bindHost = STUDIO_HOST === 'localhost' ? '127.0.0.1' : STUDIO_HOST
 
