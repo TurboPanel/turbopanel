@@ -5,11 +5,36 @@ export type PostgresConfigMeta = {
   database: string | null
 }
 
+export type PostgresConnectionConfig =
+  | string
+  | {
+      host: string
+      database: string
+      user: string
+      pass: string
+    }
+
 /** Parse self-hosted postgres URLs, including Unix-socket `?host=` form. */
 export function parsePostgresDatabaseUrl(url: string): {
   user: string
   database: string
   transport: 'socket' | 'tcp'
+} | undefined {
+  const resolved = resolvePostgresConnectionParts(url)
+  if (!resolved) return undefined
+  return {
+    user: resolved.user,
+    database: resolved.database,
+    transport: resolved.socketDir ? 'socket' : 'tcp',
+  }
+}
+
+function resolvePostgresConnectionParts(url: string): {
+  user: string
+  pass: string
+  database: string
+  socketDir: string | null
+  tcpUrl: string | null
 } | undefined {
   try {
     const parsed = new URL(url)
@@ -21,13 +46,25 @@ export function parsePostgresDatabaseUrl(url: string): {
     const database = parsed.pathname.replace(/^\//, '')
     if (!user || !database) return undefined
 
-    const hostParam = parsed.searchParams.get('host')?.trim()
-    if (hostParam) {
-      return { user, database, transport: 'socket' }
+    const socketDir = parsed.searchParams.get('host')?.trim() || null
+    if (socketDir) {
+      return {
+        user,
+        pass: decodeURIComponent(parsed.password),
+        database,
+        socketDir,
+        tcpUrl: null,
+      }
     }
 
     if (parsed.hostname) {
-      return { user, database, transport: 'tcp' }
+      return {
+        user,
+        pass: decodeURIComponent(parsed.password),
+        database,
+        socketDir: null,
+        tcpUrl: url,
+      }
     }
 
     return undefined
@@ -36,15 +73,42 @@ export function parsePostgresDatabaseUrl(url: string): {
     const match = url.match(/^postgres(?:ql)?:\/\/([^:@]+)(?::([^@]*))?@\/([^?]+)(?:\?(.*))?$/)
     if (!match) return undefined
 
-    const [, userEnc, , dbEnc, query = ''] = match
-    const hostParam = new URLSearchParams(query).get('host')?.trim()
-    if (!hostParam) return undefined
+    const [, userEnc, passwordEnc = '', dbEnc, query = ''] = match
+    const socketDir = new URLSearchParams(query).get('host')?.trim() || null
+    if (!socketDir) return undefined
 
     const user = decodeURIComponent(userEnc)
     const database = decodeURIComponent(dbEnc)
     if (!user || !database) return undefined
 
-    return { user, database, transport: 'socket' }
+    return {
+      user,
+      pass: decodeURIComponent(passwordEnc),
+      database,
+      socketDir,
+      tcpUrl: null,
+    }
+  }
+}
+
+/**
+ * Resolve `TURBOPANEL_DATABASE_URL` for postgres.js.
+ * Unix-socket libpq URLs (`?host=`) become a connection object — Deno's URL
+ * parser and postgres.js string parsing both reject the `@/db` form.
+ */
+export function resolvePostgresConnection(url: string): PostgresConnectionConfig {
+  const parts = resolvePostgresConnectionParts(url)
+  if (!parts) {
+    throw new Error('invalid TURBOPANEL_DATABASE_URL')
+  }
+  if (parts.tcpUrl) {
+    return parts.tcpUrl
+  }
+  return {
+    host: parts.socketDir!,
+    database: parts.database,
+    user: parts.user,
+    pass: parts.pass,
   }
 }
 

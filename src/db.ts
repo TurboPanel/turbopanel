@@ -1,7 +1,7 @@
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import type { Context } from 'hono'
 import postgres from 'postgres'
-import { getDatabaseUrl } from './db-url.ts'
+import { getDatabaseUrl, resolvePostgresConnection } from './db-url.ts'
 import * as schema from './db/schema.ts'
 
 export type Db = PostgresJsDatabase<typeof schema>
@@ -39,7 +39,7 @@ export function createDenoDb(): Db {
   if (!url) {
     throw new Error('TURBOPANEL_DATABASE_URL is required')
   }
-  const client = postgres(url, PG_OPTS_DENO)
+  const client = postgres(resolvePostgresConnection(url), PG_OPTS_DENO)
   return drizzle(client, { schema })
 }
 

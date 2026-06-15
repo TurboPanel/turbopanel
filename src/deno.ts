@@ -10,7 +10,7 @@ import { registerDevSyncRoutes } from './dev-sync.ts'
 import { registerTunnelRoutes } from './tunnel-routes.ts'
 import { registerDeveloperRoutes } from './developer-routes.ts'
 import { isDeveloperSurfaceEnabled } from './dev-mode.ts'
-import { stopDrizzleStudio } from './drizzle-studio.ts'
+import { ensureDrizzleStudioInDev, stopDrizzleStudio } from './drizzle-studio.ts'
 import {
   createDenoAmqpQueue,
   DEFAULT_AMQP_URL,
@@ -43,6 +43,9 @@ async function resolveEmailQueue(): Promise<EmailQueue> {
 
 const emailQueue = await resolveEmailQueue()
 await ensureDbSchemaReady(db)
+if (developerSurface) {
+  await ensureDrizzleStudioInDev()
+}
 const secretsConfig = parseSecretsEnv(
   Deno.env.get('TURBOPANEL_SECRET'),
   Deno.env.get('TURBOPANEL_SECRETS'),

@@ -39,6 +39,16 @@ export function drizzleStudioStatus(): {
   }
 }
 
+/** Start Drizzle Studio when the developer surface is enabled (dev UI mode). */
+export async function ensureDrizzleStudioInDev(): Promise<void> {
+  const started = await startDrizzleStudio()
+  if (started.ok) {
+    console.log(`[TurboPanel] Drizzle Studio ready at ${started.browserUrl}`)
+  } else {
+    console.warn(`[TurboPanel] Drizzle Studio failed to start: ${started.error}`)
+  }
+}
+
 export async function startDrizzleStudio(): Promise<
   { ok: true; browserUrl: string; port: number } | { ok: false; error: string }
 > {
