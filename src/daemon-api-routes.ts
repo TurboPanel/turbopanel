@@ -3,13 +3,13 @@ import { resolveInstanceTlsCaPath } from './server-paths.ts'
 import { DAEMON_API_PREFIX } from './surfaces.ts'
 
 /**
- * Daemon-facing surface: endpoints agent nodes and the node installer call.
+ * Daemon-facing surface: endpoints remote daemons and the node installer call.
  * Mounted under {@link DAEMON_API_PREFIX} (`/api/daemon/v1`).
  */
 export function registerDaemonApiRoutes(app: Hono) {
   const daemon = new Hono()
 
-  // Platform CA PEM — agents add this to their trust store before dialing in.
+  // Platform CA PEM — daemons add this to their trust store before dialing in.
   daemon.get('/instance/ca', async (c) => {
     try {
       const cert = await Deno.readTextFile(resolveInstanceTlsCaPath())

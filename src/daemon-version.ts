@@ -3,11 +3,12 @@ import { dirname, fromFileUrl, join } from '@std/path'
 import { DAEMON_API_PREFIX } from './surfaces.ts'
 
 /**
- * Canonical commit the connected daemons (agent nodes) should be running.
+ * Informational daemon checkout commit for the co-located daemon repo on this host.
  *
  * This is the HEAD of the daemon repository checkout that lives alongside the
- * instance on this host (`../daemon`, override with `TURBOPANEL_DAEMON_REPO`).
- * Agents compare their own checkout against this and self-update on mismatch.
+ * instance (`../daemon`, override with `TURBOPANEL_DAEMON_REPO`). The REST
+ * endpoint and brief cache support operator upgrades and dev-sync — connected
+ * daemons do not auto-sync or self-update from this value.
  *
  * Deno-only: it shells out to `git` and reads the daemon working tree, so it is
  * registered from `deno.ts` rather than the shared `createApp()` used by Workers.

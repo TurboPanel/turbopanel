@@ -10,7 +10,7 @@ export const INSTANCE_SOCKET = 'instance.sock'
  */
 export const DEFAULT_TLS_CERT = './certs/self-signed.crt'
 
-/** Platform CA PEM — trust anchor for agent nodes, browsers, and future issued certs. */
+/** Platform CA PEM — trust anchor for daemons, browsers, and future issued certs. */
 export const DEFAULT_TLS_CA = './certs/ca.crt'
 
 /**
@@ -24,7 +24,7 @@ export function resolveInstanceTlsCertPath(
   return env.CADDY_TLS_CERT?.trim() || DEFAULT_TLS_CERT
 }
 
-/** PEM path of the local CA to distribute to agent nodes. */
+/** PEM path of the local CA to distribute to remote daemons. */
 export function resolveInstanceTlsCaPath(
   env: Record<string, string | undefined> = Deno.env.toObject(),
 ): string {

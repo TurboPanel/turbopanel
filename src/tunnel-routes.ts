@@ -14,7 +14,7 @@ const TUNNEL_TOKEN_TIMEOUT_MS = 30_000
 /**
  * Set the self-hosted instance's Cloudflare tunnel token. The token is pushed
  * to the co-located daemon (which runs cloudflared), exposing this instance so
- * external agent nodes can connect in. An empty token tears the tunnel down.
+ * external remote daemons can connect in. An empty token tears the tunnel down.
  */
 export function registerTunnelRoutes(
   app: Hono,

@@ -43,7 +43,7 @@ The **daemon is the constant** installed on every TurboPanel-managed host and is
 - **Deno** — <https://docs.deno.com/runtime/getting_started/installation/>
 - **pnpm** — <https://pnpm.io/installation>
 - **Node.js** and **openssl** — required for cert generation (`scripts/*.mjs`); Node.js also used for Caddy download
-- Run `./console` from the `turbopanel-dev` checkout (see `../dev/AGENTS.md`). The console installs Deno, clones the daemon, and drives the full dev stack via `scripts/bootstrap-orchestration.sh` + `scripts/install-daemon-systemd.sh`.
+- Run `./console` from the `turbopanel-dev` checkout. The console installs Deno, clones the daemon, and drives the full dev stack via `scripts/bootstrap-orchestration.sh` + `scripts/install-daemon-systemd.sh`.
 - `pnpm install` — installs Hono and Wrangler into `node_modules/` for Workers bundling
 - Local Wrangler secrets live in `.dev.vars` (`TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS`; gitignored — Tilt `sync-env.sh` writes from `dev/.env`)
 - `pnpm dev` (wrangler) still runs the **Cloudflare Workers** path for full-stack testing — unchanged. **`wrangler.jsonc` `dev.ip` is `0.0.0.0`** so Docker Caddy (`host.docker.internal`) can reach the dev server; default localhost-only bind causes Caddy **502**s.
@@ -176,7 +176,7 @@ Caddy terminates TLS and routes traffic from a single HTTPS entrypoint:
 Caddy/cert installs are handled by the daemon's `caddy` and `instance-certs` Ansible roles; `turbopanel-caddy.service` runs Caddy as `instance`.
 
 - Entrypoint: `https://<host>:8443` (Caddy, defined in `Caddyfile`) — binds all interfaces; use `localhost` or the machine's LAN IP.
-- Self-hosted TLS uses a **platform CA** (`certs/ca.crt` + `certs/ca.key`) that signs a **server leaf cert** (`certs/self-signed.crt` + `.key`) presented by Caddy (`auto_https off`, no Let's Encrypt). The CA is long-lived and can issue additional certificates later; agents fetch it from `GET /api/daemon/v1/instance/ca`. Trust `certs/ca.crt` in browsers/OS to avoid warnings.
+- Self-hosted TLS uses a **platform CA** (`certs/ca.crt` + `certs/ca.key`) that signs a **server leaf cert** (`certs/self-signed.crt` + `.key`) presented by Caddy (`auto_https off`, no Let's Encrypt). The CA is long-lived and can issue additional certificates later; daemons fetch it from `GET /api/daemon/v1/instance/ca`. Trust `certs/ca.crt` in browsers/OS to avoid warnings.
 - Override the resolved binary with `TURBOPANEL_CADDY` (and `TURBOPANEL_DENO` for Deno).
 
 ### Production (static UI)
@@ -207,7 +207,7 @@ Three audiences, each with its own REST + WS namespace. Prefixes live in `src/su
 | Install (self-hosted wizard) | `/api/install/v1/*` | — | Deno only for POST endpoints; PAM-gated; no session/cookie on bootstrap |
 | Developer (dev console) | `/api/developer/v1/*` | `/ws/developer/v1` (stub) | fleet, diagnostics, shell, addresses, `system/upgrade`, `instance/tunnel-token`, `daemon/(:id/)sync-dev` |
 | Admin (admin UI) | `/api/admin/v1/*` | `/ws/admin/v1` | reserved for a future instance-admin surface |
-| Daemon (agents) | `/api/daemon/v1/*` | `/ws/daemon/v1` | `version`, `instance/ca`; agents connect on the WS path |
+| Daemon | `/api/daemon/v1/*` | `/ws/daemon/v1` | `version`, `instance/ca`; daemons connect on the WS path |
 
 - Route modules: `src/admin-routes.ts`, `src/daemon-api-routes.ts`, `src/client-routes.ts`, `src/install-routes.ts` (mounted in `createApp`); Deno-only routes `src/system-routes.ts`, `src/dev-sync.ts`, `src/tunnel-routes.ts`, and the version route are registered in `src/deno.ts`.
 - The UI calls everything through `../ui/src/lib/instance-api.ts` (single choke point, prefixed `/api/admin/v1`).
@@ -228,7 +228,7 @@ Server nodes register in `src/daemon-hub.ts` (keyed by `serverId` from the `serv
 
 ### Instance Cloudflare tunnel
 
-`POST /api/admin/v1/instance/tunnel-token` (`src/tunnel-routes.ts`) sends a `tunnel-token` WS message to the co-located daemon, which writes `cloudflared/tunnels/instance.token` and (re)starts cloudflared. External agents then reach this instance via the tunnel → Caddy → socket. UI: **Save Tunnel Token** in the fleet section (empty token tears it down).
+`POST /api/admin/v1/instance/tunnel-token` (`src/tunnel-routes.ts`) sends a `tunnel-token` WS message to the co-located daemon, which writes `cloudflared/tunnels/instance.token` and (re)starts cloudflared. External remote daemons then reach this instance via the tunnel → Caddy → socket. UI: **Save Tunnel Token** in the fleet section (empty token tears it down).
 
 Correlated request/ack helpers (`awaitDaemonAck` / `recordDaemonAck`) back both dev-sync and tunnel-token.
 
@@ -254,9 +254,9 @@ Sessions are **opaque DB-backed tokens** with a signed cookie:
 
 #### Host PAM install gate (Deno only, install wizard)
 
-On the **Deno runtime**, initial setup is gated by host PAM — **`root`** or any user in the **`sudo` / `wheel` / `admin`** groups. Host auth **never** receives a session or cookie. The instance process runs as **`instance`**; it runs **`pamtester login "$username" authenticate`** via **`sudo -n`** and a shell pipe (see `src/auth/credentials.ts`). **`pamtester`** must be installed on managed hosts (the daemon `agent-prereqs` role). Sudoers: **`instance`** gets `NOPASSWD: /usr/bin/pamtester login * authenticate` in `instance-launch` `upgrade-sudoers.yml`. The instance systemd unit must grant **`--allow-run=/bin/sh,sudo,/usr/bin/sudo`**.
+On the **Deno runtime**, initial setup is gated by host PAM — **`root`** or any user in the **`sudo` / `wheel` / `admin`** groups. Host auth **never** receives a session or cookie. The instance process runs as **`instance`**; it runs **`pamtester login "$username" authenticate`** via **`sudo -n`** and a shell pipe (see `src/auth/credentials.ts`). **`pamtester`** must be installed on managed hosts (the daemon `daemon-prereqs` role). Sudoers: **`instance`** gets `NOPASSWD: /usr/bin/pamtester login * authenticate` in `instance-launch` `upgrade-sudoers.yml`. The instance systemd unit must grant **`--allow-run=/bin/sh,sudo,/usr/bin/sudo`**.
 
-**Dev mode bypass (`TURBOPANEL_DEV_HOST_AUTH=group-only`):** When this env var is set, `verifyInstallHostCredentials` skips `verifyPamLogin` entirely. The password field must still be non-empty (the UI requires it), but it is not verified against PAM. Group membership (`sudo`/`wheel`/`admin`) is still checked via `id -nG`. This var is injected automatically by `dev/scripts/instance-serve.sh` in Tilt dev — it is never set on managed production hosts. `pamtester` is only required on managed hosts (installed by the daemon `agent-prereqs` role).
+**Dev mode bypass (`TURBOPANEL_DEV_HOST_AUTH=group-only`):** When this env var is set, `verifyInstallHostCredentials` skips `verifyPamLogin` entirely. The password field must still be non-empty (the UI requires it), but it is not verified against PAM. Group membership (`sudo`/`wheel`/`admin`) is still checked via `id -nG`. This var is injected automatically by `dev/scripts/instance-serve.sh` in Tilt dev — it is never set on managed production hosts. `pamtester` is only required on managed hosts (installed by the daemon `daemon-prereqs` role).
 
 **Install flow:** `POST /api/install/v1/bootstrap` verifies host PAM and returns `{ ok: true }` only (no cookies). The UI keeps host username/password in the form and reveals superadmin fields client-side. `POST /api/install/v1/` re-verifies host PAM, creates org (**Default Organization**) + team (**Default Team**) + **superadmin** user (`role: superadmin`, email + credential `account`), assigns the co-located daemon, and returns a signed session cookie for the superadmin only. Host accounts cannot sign in via `/auth/sign-in`. This path is **never active on Workers**.
 
@@ -367,7 +367,6 @@ sequenceDiagram
 
 ## Layout
 
-- `develop.sh` — deprecated shim; redirects to the dev console
 - `src/app.ts` — shared Hono app (`/api/health`, `/api/openapi.json`, `/api/reference` + client/admin/daemon routers)
 - `src/openapi.ts` — hand-authored OpenAPI 3.1 spec (`getOpenApiSpec`)
 - `src/scalar-html.ts` — Scalar CDN embed HTML (`buildScalarHtml`)

@@ -512,7 +512,7 @@ export function getOpenApiSpec(serverUrl: string): object {
         get: {
           tags: ['daemon'],
           summary: 'Platform TLS CA certificate',
-          description: 'Returns the PEM-encoded platform CA for agent trust stores.',
+          description: 'Returns the PEM-encoded platform CA for daemon trust stores.',
           responses: {
             '200': {
               description: 'PEM certificate',
