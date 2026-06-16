@@ -16,6 +16,65 @@ import { createSession, getSession } from './auth/session-store.ts'
 import { getDb } from './db.ts'
 import { INSTALL_API_PREFIX } from './surfaces.ts'
 
+const DAEMON_INSTALL_SCRIPT = `#!/bin/sh
+set -eu
+
+LICENSE=""
+HOST_URL=""
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--license)
+			if [ $# -lt 2 ]; then
+				echo "daemon-install.sh: --license requires an argument" >&2
+				exit 1
+			fi
+			LICENSE="$2"
+			shift 2
+			;;
+		--host)
+			if [ $# -lt 2 ]; then
+				echo "daemon-install.sh: --host requires an argument" >&2
+				exit 1
+			fi
+			HOST_URL="$2"
+			shift 2
+			;;
+		*)
+			echo "daemon-install.sh: unknown option: $1" >&2
+			exit 1
+			;;
+	esac
+done
+
+if [ -z "$LICENSE" ]; then
+	echo "daemon-install.sh: --license is required (id:token)" >&2
+	exit 1
+fi
+
+LICENSE_ID="$(echo "$LICENSE" | cut -d: -f1)"
+LICENSE_TOKEN="$(echo "$LICENSE" | cut -d: -f2-)"
+
+if [ -z "$LICENSE_ID" ] || [ -z "$LICENSE_TOKEN" ]; then
+	echo "daemon-install.sh: invalid --license format; expected id:token" >&2
+	exit 1
+fi
+
+STATE_DIR="\${TURBOPANEL_DAEMON_STATE_DIR:-/etc/turbopanel/platform/daemon}"
+mkdir -p "$STATE_DIR"
+
+printf '%s' "$LICENSE_ID" > "$STATE_DIR/license.id"
+printf '%s' "$LICENSE_TOKEN" > "$STATE_DIR/license.token"
+
+INSTALLER_URL="\${TURBOPANEL_CDN_URL:-https://cdn.turbopanel.app/daemon/install.sh}"
+
+if [ -n "$HOST_URL" ]; then
+	curl -fsSL "$INSTALLER_URL" | sh -s -- --instance-url "$HOST_URL"
+else
+	curl -fsSL "$INSTALLER_URL" | sh
+fi
+`
+
 async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
   if (opts.runtime !== 'deno') {
     return c.json({ ok: false, error: 'Not available' }, 404)
@@ -78,6 +137,7 @@ async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
     const { token } = await createSession(db, result.userId, {
       ipAddress: c.req.header('X-Real-IP') ?? undefined,
       userAgent: c.req.header('User-Agent') ?? undefined,
+      organizationId: result.organizationId,
     })
     const sessionCookie = await buildSignedCookie(token, opts.secrets)
     const tls = resolveRequestTls(c.req.url, c.req.header('x-forwarded-proto'))
@@ -208,6 +268,11 @@ export function registerInstallRoutes(app: Hono, opts: AuthRouteOpts) {
 
   install.post('/', (c) => completeInstallHandler(c, opts))
   app.post(`${INSTALL_API_PREFIX}/`, (c) => completeInstallHandler(c, opts))
+
+  install.get('/daemon-install.sh', (c) => {
+    c.header('Content-Type', 'text/plain; charset=utf-8')
+    return c.text(DAEMON_INSTALL_SCRIPT)
+  })
 
   app.route(INSTALL_API_PREFIX, install)
   return app

@@ -231,6 +231,8 @@ The instance uses a **custom PAM-style auth model** built entirely on the **Web 
 
 Credential-account passwords use **PBKDF2-HMAC-SHA256** via `crypto.subtle` (`src/auth/password.ts`). This is the strongest password-hashing primitive available in native Workers/Deno Web Crypto — Argon2 and scrypt are not exposed, and WASM Argon2 is heavier and awkward in Workers. Stored format: `$pbkdf2-sha256$<iterations>$<base64url-salt>$<base64url-hash>` (100k iterations for new hashes — Workers PBKDF2 cap; iteration count is embedded so older hashes still verify). Verification uses constant-time byte comparison. Do not use plain SHA-256 for passwords.
 
+**License-based daemon auth:** Daemons connecting with a `licenseId` + `licenseToken` in their `hello` message are authenticated against the `license` table (PBKDF2-SHA256 token verification, same as account passwords). Invalid or revoked licenses cause the WS to be closed with code `4401`. Authenticated daemons have their `server.organizationId` set automatically from the license's org. The colocated daemon's license is auto-provisioned during install and written to `TURBOPANEL_DAEMON_STATE_DIR` (`license.id` / `license.token`).
+
 #### Session model
 
 Sessions are **opaque DB-backed tokens** with a signed cookie:

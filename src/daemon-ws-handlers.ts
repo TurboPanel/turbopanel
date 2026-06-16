@@ -120,7 +120,18 @@ export function createDaemonWebSocketSession(
               serverId: message.serverId,
               machineId: message.machineId,
               hostname: message.hostname,
+              licenseId: message.licenseId,
+              licenseToken: message.licenseToken,
             })
+
+            if (!serverId && message.licenseId) {
+              console.warn(
+                `[ws] rejected daemon ${socketId}: invalid or revoked license ${message.licenseId}`,
+              )
+              ws.close(4401, 'invalid license')
+              return
+            }
+
             if (serverId) {
               connId = setDaemonServerId(socketId, serverId)
             }
@@ -191,7 +202,8 @@ export function createDaemonWebSocketSession(
 
     if (
       message.type === 'dev-sync-result' ||
-      message.type === 'tunnel-token-result'
+      message.type === 'tunnel-token-result' ||
+      message.type === 'update-result'
     ) {
       recordDaemonAck(message.id, message.ok, message.error)
     }

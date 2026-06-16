@@ -14,6 +14,7 @@ import {
   team,
   user,
 } from '../db/schema.ts'
+import { createLicense } from './license.ts'
 import { hashPassword } from './password.ts'
 import { SUPERADMIN_ROLE } from './session-store.ts'
 
@@ -45,6 +46,14 @@ export type InstallStatus = {
 
 function nowTs(): string {
   return new Date().toISOString()
+}
+
+function resolveColocatedDaemonStateDir(): string {
+  if (typeof Deno === 'undefined') return '/etc/turbopanel/platform/daemon'
+  const fromEnv = Deno.env.get('TURBOPANEL_DAEMON_STATE_DIR')?.trim()
+  return fromEnv && fromEnv.length > 0
+    ? fromEnv
+    : '/etc/turbopanel/platform/daemon'
 }
 
 /** True once an org has a name and at least one superadmin account exists. */
@@ -282,7 +291,7 @@ export type CompleteInstallInput = {
 export async function completeInstanceInstall(
   db: Db,
   input: CompleteInstallInput,
-): Promise<{ organizationId: string; userId: string }> {
+): Promise<{ organizationId: string; userId: string; licenseId: string }> {
   if (await isInstanceInstalled(db)) {
     throw new Error('Instance is already configured')
   }
@@ -367,10 +376,38 @@ export async function completeInstanceInstall(
       userId,
     })
 
-    return { organizationId, userId }
+    const { licenseId, licenseToken } = await createLicense(tx, {
+      organizationId,
+      displayName: 'Colocated server',
+    })
+
+    return { organizationId, userId, licenseId, licenseToken }
   })
 
   await assignColocatedDaemonToOrganization(db, result.organizationId)
 
-  return result
+  if (typeof Deno !== 'undefined') {
+    try {
+      const stateDir = resolveColocatedDaemonStateDir()
+      await Deno.writeTextFile(`${stateDir}/license.id`, result.licenseId, {
+        create: true,
+      })
+      await Deno.writeTextFile(
+        `${stateDir}/license.token`,
+        result.licenseToken,
+        { create: true },
+      )
+    } catch (err) {
+      console.warn(
+        '[install] failed to write license credentials to disk:',
+        err,
+      )
+    }
+  }
+
+  return {
+    organizationId: result.organizationId,
+    userId: result.userId,
+    licenseId: result.licenseId,
+  }
 }

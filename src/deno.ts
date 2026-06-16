@@ -8,6 +8,7 @@ import { registerVersionRoute } from './daemon-version.ts'
 import { registerSystemRoutes } from './system-routes.ts'
 import { registerDevSyncRoutes } from './dev-sync.ts'
 import { registerTunnelRoutes } from './tunnel-routes.ts'
+import { registerUpdateRoutes } from './update-routes.ts'
 import { registerDeveloperRoutes } from './developer-routes.ts'
 import { isDeveloperSurfaceEnabled } from './dev-mode.ts'
 import { ensureDrizzleStudioInDev, stopDrizzleStudio } from './drizzle-studio.ts'
@@ -68,6 +69,7 @@ if (developerSurface) {
   registerSystemRoutes(routes, { secrets, db, authRequired: false })
   registerDevSyncRoutes(routes, { secrets, authRequired: false })
   registerTunnelRoutes(routes, { secrets, authRequired: false })
+  registerUpdateRoutes(routes, { secrets, authRequired: false })
 }
 registerDaemonWebSocket(routes, { developerSurface, db, secrets })
 const socketPath = resolveInstanceSocket()

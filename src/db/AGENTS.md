@@ -70,7 +70,7 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `sync
 | Group | Tables |
 |---|---|
 | **Identity** | `user`, `account`, `apikey`, `session`, `verification`, `passkey`, `2fa` |
-| **Organizations** | `organization`, `member`, `team`, `teammate`, `invitation` |
+| **Organizations** | `organization`, `member`, `team`, `teammate`, `invitation`, `license` |
 | **Config** | `setting` |
 | **Runtime** | `server` |
 
@@ -78,9 +78,13 @@ Drizzle relations are defined for future Better Auth adapter use. `IS_SIGNUP_ENA
 
 **Install (Deno):** A fresh DB has no org or superadmin. `src/auth/install-state.ts` `isInstanceInstalled()` is false until `completeInstanceInstall` creates org + team + superadmin user with a named org. **`organization.slug`** stays **NULL** (reserved for a future feature). Org extras (e.g. logo URL) belong in **`organization.metadata`** — there is no `logo` column. Install sets **`email`** and **`role`** only — `display_name`, `username`, and `display_username` stay **NULL** until the user chooses them.
 
+### `license` table
+
+Organization-scoped API tokens for server registration. Each row belongs to an `organization` (`organization_id`, cascade delete). `display_name` is optional. `hashed_token` stores a PBKDF2-SHA256 hash in the same `$pbkdf2-sha256$…` format as `account.password`. Soft-delete via `revoked_at` — revoked licenses remain in the table for audit; application code should treat non-null `revoked_at` as inactive.
+
 ### `server` table
 
-Each physical server node gets a row in `server` (`id` uuidv7). On daemon connect the instance resolves `serverId` (reuse by persisted id, `metadata.machineId`, or `metadata.hostname`), tracks the websocket in `daemon-hub`, and returns `serverId` in `hello`. The daemon persists it at `/etc/turbopanel/daemon/server.id` (writable by the `turbopanel` user). `display_name`, `organization_id`, and soft-delete via `deleted_at` match the old trunk shape; daemon registration stores `machineId` / `hostname` in `metadata` (see `server-metadata.ts`).
+Each physical server node gets a row in `server` (`id` uuidv7). On daemon connect the instance resolves `serverId` (reuse by persisted id, `metadata.machineId`, or `metadata.hostname`), tracks the websocket in `daemon-hub`, and returns `serverId` in `hello`. The daemon persists it at `/etc/turbopanel/daemon/server.id` (writable by the `turbopanel` user). `display_name`, `organization_id`, and soft-delete via `deleted_at` match the old trunk shape; daemon registration stores `machineId` / `hostname` in `metadata` (see `server-metadata.ts`). `license_id` (nullable FK → `license.id`) records which license token the server registered with.
 
 ## Layout
 

@@ -43,6 +43,24 @@ export const organization = pgTable("organization", {
 	unique("organization_slug_unique").on(table.slug),
 	check("organization_display_name_format_check", sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`),
 ]);
+export const license = pgTable("license", {
+	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
+	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	organizationId: uuid("organization_id").notNull(),
+	displayName: varchar("display_name", { length: 255 }),
+	/** PBKDF2-SHA256 hashed token — same format as account.password */
+	hashedToken: text("hashed_token").notNull(),
+	/** Soft-delete */
+	revokedAt: timestamp("revoked_at", { precision: 3, withTimezone: true, mode: 'string' }),
+}, (table) => [
+	index("idx_license_organization_id").using("btree", table.organizationId.asc().nullsLast().op("uuid_ops")),
+	foreignKey({
+			columns: [table.organizationId],
+			foreignColumns: [organization.id],
+			name: "license_organization_id_organization_id_fk"
+		}).onDelete("cascade"),
+]);
 export const passkey = pgTable("passkey", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow(),
@@ -90,6 +108,7 @@ export const server = pgTable("server", {
 	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).notNull(),
 	deletedAt: timestamp("deleted_at", { precision: 3, withTimezone: true, mode: 'string' }),
 	organizationId: uuid("organization_id"),
+	licenseId: uuid("license_id"),
 	displayName: varchar("display_name", { length: 255 }),
 	metadata: jsonb(),
 	options: jsonb(),
@@ -99,6 +118,11 @@ export const server = pgTable("server", {
 			foreignColumns: [organization.id],
 			name: "server_organization_id_organization_id_fk"
 		}),
+	foreignKey({
+			columns: [table.licenseId],
+			foreignColumns: [license.id],
+			name: "server_license_id_license_id_fk"
+		}),
 ]);
 export const session = pgTable("session", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
@@ -106,16 +130,23 @@ export const session = pgTable("session", {
 	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	expiresAt: timestamp("expires_at", { precision: 3, withTimezone: true, mode: 'string' }).notNull(),
 	userId: uuid("user_id").notNull(),
+	organizationId: uuid("organization_id"),
 	token: varchar({ length: 255 }).notNull(),
 	ipAddress: varchar("ip_address", { length: 45 }),
 	userAgent: text("user_agent"),
 }, (table) => [
 	index("idx_session_user_id").using("btree", table.userId.asc().nullsLast().op("uuid_ops")),
+	index("idx_session_organization_id").using("btree", table.organizationId.asc().nullsLast().op("uuid_ops")),
 	foreignKey({
 			columns: [table.userId],
 			foreignColumns: [user.id],
 			name: "session_user_id_user_id_fk"
 		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.organizationId],
+			foreignColumns: [organization.id],
+			name: "session_organization_id_organization_id_fk"
+		}).onDelete("set null"),
 	unique("session_token_unique").on(table.token),
 ]);
 export const setting = pgTable("setting", {

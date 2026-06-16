@@ -11,6 +11,8 @@ export type DaemonMessage =
     serverId?: string
     /** Daemon-only: stable host fingerprint for first-time server row lookup. */
     machineId?: string
+    licenseId?: string
+    licenseToken?: string
   }
   | { type: 'ping'; id: string; at: string }
   | { type: 'pong'; id: string; at: string }
@@ -49,6 +51,8 @@ export type DaemonMessage =
   // co-located daemon, which (re)starts cloudflared to expose this instance.
   | { type: 'tunnel-token'; id: string; token: string; at: string }
   | { type: 'tunnel-token-result'; id: string; ok: boolean; error?: string; at: string }
+  | { type: 'update'; id: string; updateUrl: string; at: string }
+  | { type: 'update-result'; id: string; ok: boolean; error?: string; at: string }
 
 export type DaemonSend = (
   data: string | ArrayBufferLike | Blob | ArrayBufferView,
@@ -139,6 +143,17 @@ export function recordDaemonDisconnected(daemonId: string): void {
   recordEvent({ at: new Date().toISOString(), kind: 'disconnected', daemonId })
 }
 
+/** Strip one-time secrets before persisting daemon traffic to the event buffer. */
+export function sanitizeDaemonMessageForEvents(
+  message: DaemonMessage,
+): DaemonMessage {
+  if (message.type === 'hello' && 'licenseToken' in message) {
+    const { licenseToken: _token, ...rest } = message
+    return rest
+  }
+  return message
+}
+
 export function recordDaemonMessage(
   daemonId: string,
   direction: 'in' | 'out',
@@ -150,7 +165,7 @@ export function recordDaemonMessage(
     kind: 'message',
     daemonId,
     direction,
-    message,
+    message: sanitizeDaemonMessageForEvents(message),
   })
 }
 

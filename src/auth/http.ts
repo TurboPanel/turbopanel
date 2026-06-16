@@ -128,6 +128,7 @@ export async function buildSessionResponse(
     username: string | null
     email: string
     role: string
+    organizationId: string | null
   },
 ): Promise<SessionResponse> {
   const base: SessionResponse = {
@@ -137,7 +138,7 @@ export async function buildSessionResponse(
     email: sessionData.email,
     role: sessionData.role,
     needsInstall: false,
-    organizationId: null,
+    organizationId: sessionData.organizationId,
   }
 
   if (db === undefined) {
@@ -147,15 +148,14 @@ export async function buildSessionResponse(
   if (runtime === 'deno') {
     const needsInstall = !(await isInstanceInstalled(db))
     if (needsInstall) {
-      return { ...base, needsInstall: true }
+      return { ...base, needsInstall: true, organizationId: null }
     }
   }
 
-  const organizationId = await getUserOrganizationId(db, sessionData.userId)
   return {
     ...base,
     needsInstall: false,
-    organizationId,
+    organizationId: sessionData.organizationId,
   }
 }
 
@@ -216,6 +216,9 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
     const { token } = await createSession(db, result.userId, {
       ipAddress: c.req.header('X-Real-IP') ?? undefined,
       userAgent: c.req.header('User-Agent') ?? undefined,
+      organizationId: db
+        ? await getUserOrganizationId(db, result.userId)
+        : null,
     })
     const cookieValue = await buildSignedCookie(token, opts.secrets)
     const tls = requestTls(c)

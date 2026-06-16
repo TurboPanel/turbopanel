@@ -1,6 +1,7 @@
 import { eq, sql } from 'drizzle-orm'
 import type { Db } from './db.ts'
 import type { ServerMetadata } from './db/server-metadata.ts'
+import { lookupActiveLicense, verifyLicenseToken } from './auth/license.ts'
 import { server } from './db/schema.ts'
 
 const UUID_RE =
@@ -10,6 +11,8 @@ export type ServerHelloIdentity = {
   serverId?: string
   machineId?: string
   hostname?: string
+  licenseId?: string
+  licenseToken?: string
 }
 
 function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
@@ -91,6 +94,84 @@ async function findExistingServerId(
   return undefined
 }
 
+async function applyLicensedServerBinding(
+  db: Db,
+  serverId: string,
+  identity: ServerHelloIdentity,
+  organizationId: string,
+): Promise<void> {
+  const licenseId = identity.licenseId!.trim()
+  const now = nowTs()
+
+  await db.update(server).set({
+    licenseId,
+    organizationId,
+    updatedAt: now,
+  }).where(eq(server.id, serverId))
+}
+
+async function resolveLicensedServerId(
+  db: Db,
+  identity: ServerHelloIdentity,
+): Promise<string | null> {
+  const licenseId = identity.licenseId?.trim()
+  const licenseToken = identity.licenseToken?.trim()
+  if (!licenseId || !licenseToken) return null
+
+  const activeLicense = await lookupActiveLicense(db, licenseId)
+  if (!activeLicense) return null
+
+  const tokenValid = await verifyLicenseToken(
+    licenseToken,
+    activeLicense.hashedToken,
+  )
+  if (!tokenValid) return null
+
+  const existing = await findExistingServerId(db, identity)
+  if (existing) {
+    await touchServerMetadata(db, existing, identity)
+    await applyLicensedServerBinding(
+      db,
+      existing,
+      identity,
+      activeLicense.organizationId,
+    )
+    return existing
+  }
+
+  const patch = metadataPatch(identity)
+  const now = nowTs()
+  try {
+    const inserted = await db
+      .insert(server)
+      .values({
+        licenseId,
+        organizationId: activeLicense.organizationId,
+        displayName: defaultDisplayName(identity),
+        createdAt: now,
+        updatedAt: now,
+        metadata: Object.keys(patch).length > 0 ? patch : null,
+      })
+      .returning({ id: server.id })
+
+    const id = inserted[0]?.id
+    if (!id) throw new Error('failed to insert server row')
+    return id
+  } catch (err) {
+    if (!isUniqueViolation(err)) throw err
+    const raced = await findExistingServerId(db, identity)
+    if (!raced) throw err
+    await touchServerMetadata(db, raced, identity)
+    await applyLicensedServerBinding(
+      db,
+      raced,
+      identity,
+      activeLicense.organizationId,
+    )
+    return raced
+  }
+}
+
 /**
  * Resolve the canonical server.id (uuidv7) for a connecting daemon.
  * Reuses by serverId, metadata.machineId, or hostname. Creates a row on first
@@ -101,6 +182,10 @@ export async function resolveServerId(
   db: Db,
   identity: ServerHelloIdentity,
 ): Promise<string | null> {
+  if (identity.licenseId?.trim()) {
+    return resolveLicensedServerId(db, identity)
+  }
+
   const existing = await findExistingServerId(db, identity)
   if (existing) {
     await touchServerMetadata(db, existing, identity)

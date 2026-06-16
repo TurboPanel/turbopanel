@@ -15,12 +15,17 @@ export type SessionData = {
   username: string | null
   email: string
   role: string
+  organizationId: string | null
 }
 
 export async function createSession(
   db: Db | undefined,
   userId: string,
-  meta: { ipAddress?: string | null; userAgent?: string | null },
+  meta: {
+    ipAddress?: string | null
+    userAgent?: string | null
+    organizationId?: string | null
+  },
 ): Promise<{ token: string; expiresAt: Date }> {
   const token = generateSessionToken()
   const expiresAt = new Date(Date.now() + SESSION_EXPIRES_IN_MS)
@@ -37,6 +42,7 @@ export async function createSession(
     expiresAt: expiresAt.toISOString(),
     ipAddress: meta.ipAddress ?? null,
     userAgent: meta.userAgent ?? null,
+    organizationId: meta.organizationId ?? null,
   })
 
   return { token, expiresAt }
@@ -57,6 +63,7 @@ export async function getSession(
       username: user.username,
       email: user.email,
       role: user.role,
+      organizationId: session.organizationId,
     })
     .from(session)
     .innerJoin(user, eq(session.userId, user.id))
@@ -79,6 +86,7 @@ export async function getSession(
     username: row.username,
     email: row.email,
     role: row.role,
+    organizationId: row.organizationId,
   }
 }
 
