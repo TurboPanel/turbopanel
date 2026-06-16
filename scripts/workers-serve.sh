@@ -5,14 +5,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-# #region agent log
-_agent_log() {
-  local msg="$1"
-  local data="$2"
-  printf '%s\n' "{\"sessionId\":\"e1d639\",\"location\":\"workers-serve.sh\",\"message\":\"${msg}\",\"data\":${data},\"timestamp\":$(($(date +%s)*1000)),\"hypothesisId\":\"G\"}" >> /home/dev/turbopanel-dev/.cursor/debug-e1d639.log 2>/dev/null || true
-}
-# #endregion
-
 # shellcheck source=scripts/db-connect.sh
 source "$ROOT/scripts/db-connect.sh"
 db_connect_init workers-serve
@@ -67,17 +59,11 @@ wait_for_studio() {
 
 start_studio_if_dev() {
   if [[ "$UI_MODE" == static ]]; then
-    # #region agent log
-    _agent_log "studio skipped static ui mode" "{\"uiMode\":\"${UI_MODE}\"}"
-    # #endregion
     return 0
   fi
 
   if studio_listening; then
     echo "[TurboPanel] Drizzle Studio already listening on ${STUDIO_PORT}"
-    # #region agent log
-    _agent_log "studio already running" "{\"port\":${STUDIO_PORT}}"
-    # #endregion
     return 0
   fi
 
@@ -94,22 +80,12 @@ start_studio_if_dev() {
 
   if ! wait_for_studio; then
     echo "[TurboPanel] Drizzle Studio failed to start on port ${STUDIO_PORT}" >&2
-    # #region agent log
-    _agent_log "studio failed to become ready" "{\"port\":${STUDIO_PORT},\"pid\":${STUDIO_PID}}"
-    # #endregion
     exit 1
   fi
 
   echo "[TurboPanel] Drizzle Studio ready at https://local.drizzle.studio?host=localhost&port=${STUDIO_PORT}"
-  # #region agent log
-  _agent_log "studio started" "{\"port\":${STUDIO_PORT},\"pid\":${STUDIO_PID}}"
-  # #endregion
 }
 
 start_studio_if_dev
-
-# #region agent log
-_agent_log "starting wrangler" "{\"port\":${WRANGLER_PORT}}"
-# #endregion
 
 exec "$ROOT/node_modules/.bin/wrangler" dev --port "$WRANGLER_PORT" --ip 127.0.0.1
