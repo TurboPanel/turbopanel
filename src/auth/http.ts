@@ -140,13 +140,15 @@ export async function buildSessionResponse(
     organizationId: null,
   }
 
-  if (runtime !== 'deno' || db === undefined) {
+  if (db === undefined) {
     return base
   }
 
-  const needsInstall = !(await isInstanceInstalled(db))
-  if (needsInstall) {
-    return { ...base, needsInstall: true }
+  if (runtime === 'deno') {
+    const needsInstall = !(await isInstanceInstalled(db))
+    if (needsInstall) {
+      return { ...base, needsInstall: true }
+    }
   }
 
   const organizationId = await getUserOrganizationId(db, sessionData.userId)

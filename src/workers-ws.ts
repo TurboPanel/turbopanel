@@ -4,6 +4,7 @@ import {
   createDaemonWebSocketSession,
   type DaemonWebSocketOptions,
 } from './daemon-ws-handlers.ts'
+import { getDb } from './db.ts'
 import { DAEMON_WS_PATH } from './surfaces.ts'
 
 /**
@@ -14,7 +15,7 @@ import { DAEMON_WS_PATH } from './surfaces.ts'
  */
 export function registerWorkersDaemonWebSocket(
   app: Hono,
-  options: DaemonWebSocketOptions = {},
+  _options: DaemonWebSocketOptions = {},
 ): void {
   app.get(DAEMON_WS_PATH, async (c) => {
     if (c.req.header('Upgrade')?.toLowerCase() !== 'websocket') {
@@ -40,7 +41,7 @@ export function registerWorkersDaemonWebSocket(
 
     const remoteAddress = c.req.header('x-real-ip')?.trim() ||
       c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
-    const session = createDaemonWebSocketSession(ws, options, { remoteAddress })
+    const session = createDaemonWebSocketSession(ws, { db: getDb(c) }, { remoteAddress })
     server.addEventListener('message', (evt) => session.onMessage(evt, ws))
     server.addEventListener('close', () => session.onClose())
     server.addEventListener('error', () => session.onError())

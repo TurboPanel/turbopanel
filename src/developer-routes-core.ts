@@ -3,6 +3,7 @@ import { eq, isNull } from 'drizzle-orm'
 import { createRootOnlyMiddleware } from './auth/middleware.ts'
 import type { DerivedSecretsConfig } from './auth/secrets.ts'
 import type { Db } from './db.ts'
+import { getDb } from './db.ts'
 import { organization, server } from './db/schema.ts'
 import {
   broadcastToDaemons,
@@ -17,6 +18,7 @@ import {
 } from './daemon-hub.ts'
 import { collectServerAddresses } from './server-addresses.ts'
 import { DEVELOPER_API_PREFIX } from './surfaces.ts'
+import { registerDatabaseRoutes } from './database-routes.ts'
 
 /**
  * Developer console routes safe for the Workers bundle (no Deno-only imports).
@@ -153,8 +155,9 @@ export function buildDeveloperRouter(
   })
 
   developer.get('/organizations', async (c) => {
-    if (!opts.db) return c.json({ error: 'Database unavailable' }, 503)
-    const rows = await opts.db
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+    const rows = await db
       .select({
         id: organization.id,
         displayName: organization.displayName,
@@ -166,8 +169,9 @@ export function buildDeveloperRouter(
   })
 
   developer.get('/servers', async (c) => {
-    if (!opts.db) return c.json({ error: 'Database unavailable' }, 503)
-    const rows = await opts.db
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+    const rows = await db
       .select({
         id: server.id,
         displayName: server.displayName,
@@ -182,7 +186,8 @@ export function buildDeveloperRouter(
   })
 
   developer.post('/servers', async (c) => {
-    if (!opts.db) return c.json({ error: 'Database unavailable' }, 503)
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
     const body = await c.req.json().catch(() => null) as {
       displayName?: string | null
       options?: Record<string, unknown> | null
@@ -202,7 +207,7 @@ export function buildDeveloperRouter(
 
     const options = body?.options ?? null
     const now = nowTs()
-    const inserted = await opts.db
+    const inserted = await db
       .insert(server)
       .values({ displayName, options, createdAt: now, updatedAt: now })
       .returning({ id: server.id })
@@ -211,7 +216,8 @@ export function buildDeveloperRouter(
   })
 
   developer.patch('/servers/:id', async (c) => {
-    if (!opts.db) return c.json({ error: 'Database unavailable' }, 503)
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
     const id = c.req.param('id')
     const body = await c.req.json().catch(() => null) as {
       displayName?: string | null
@@ -252,7 +258,7 @@ export function buildDeveloperRouter(
         if (!UUID_RE.test(trimmed)) {
           return c.json({ error: 'organizationId must be a valid UUID' }, 400)
         }
-        const org = await opts.db
+        const org = await db
           .select({ id: organization.id })
           .from(organization)
           .where(eq(organization.id, trimmed))
@@ -264,7 +270,7 @@ export function buildDeveloperRouter(
       }
     }
 
-    const updated = await opts.db
+    const updated = await db
       .update(server)
       .set({ ...patch, updatedAt: nowTs() })
       .where(eq(server.id, id))
@@ -273,6 +279,8 @@ export function buildDeveloperRouter(
     if (updated.length === 0) return c.json({ error: 'Server not found' }, 404)
     return c.json({ ok: true })
   })
+
+  registerDatabaseRoutes(developer)
 
   return developer
 }

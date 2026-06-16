@@ -97,8 +97,9 @@ function signaturesEqual(providedSig: string, expectedSig: string): boolean {
     timingSafeEqual?: (a: ArrayBufferView, b: ArrayBufferView) => boolean;
   }).timingSafeEqual;
 
+  // Must be invoked on crypto.subtle — unbound calls throw in Workers (nodejs_compat).
   if (typeof timingSafeEqual === "function") {
-    return timingSafeEqual(providedBytes, expectedBytes);
+    return timingSafeEqual.call(crypto.subtle, providedBytes, expectedBytes);
   }
 
   let diff = 0;

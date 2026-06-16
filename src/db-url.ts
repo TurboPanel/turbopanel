@@ -112,9 +112,11 @@ export function resolvePostgresConnection(url: string): PostgresConnectionConfig
   }
 }
 
-/** Derive status metadata from `TURBOPANEL_DATABASE_URL`. */
-export function postgresConfigFromEnv(): PostgresConfigMeta {
-  const explicit = Deno.env.get('TURBOPANEL_DATABASE_URL')?.trim()
+/** Derive status metadata from a postgres connection URL. */
+export function postgresConfigFromUrl(
+  url: string | undefined,
+): PostgresConfigMeta {
+  const explicit = url?.trim()
   if (!explicit) {
     return { configured: false, transport: null, user: null, database: null }
   }
@@ -130,6 +132,14 @@ export function postgresConfigFromEnv(): PostgresConfigMeta {
     user: parsed.user,
     database: parsed.database,
   }
+}
+
+/** Derive status metadata from `TURBOPANEL_DATABASE_URL`. */
+export function postgresConfigFromEnv(): PostgresConfigMeta {
+  if (typeof Deno === 'undefined') {
+    return { configured: false, transport: null, user: null, database: null }
+  }
+  return postgresConfigFromUrl(Deno.env.get('TURBOPANEL_DATABASE_URL'))
 }
 
 /** Self-hosted Postgres connection URL (`TURBOPANEL_DATABASE_URL` only). */

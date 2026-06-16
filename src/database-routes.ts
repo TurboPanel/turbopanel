@@ -1,8 +1,10 @@
 import { sql } from 'drizzle-orm'
 import type { Hono } from 'hono'
-import { postgresConfigFromEnv } from './db-url.ts'
+import {
+  drizzleStudioProbeStatus,
+  postgresConfigFromContext,
+} from './database-routes-shared.ts'
 import { getDb } from './db.ts'
-import { drizzleStudioStatus, startDrizzleStudio } from './drizzle-studio.ts'
 
 export type DatabaseStatus = {
   configured: boolean
@@ -14,15 +16,16 @@ export type DatabaseStatus = {
   error: string | null
 }
 
+/** Workers-safe database diagnostics (status + studio probe). */
 export function registerDatabaseRoutes(developer: Hono): void {
   developer.get('/database/status', async (c) => {
-    const meta = postgresConfigFromEnv()
+    const meta = postgresConfigFromContext(c)
     if (!meta.configured) {
       const body: DatabaseStatus = {
         ...meta,
         connected: false,
         version: null,
-        error: 'postgres is not configured (missing TURBOPANEL_DATABASE_URL)',
+        error: 'postgres is not configured (missing database URL)',
       }
       return c.json(body)
     }
@@ -63,29 +66,12 @@ export function registerDatabaseRoutes(developer: Hono): void {
     }
   })
 
-  developer.get('/database/studio', async (c) => {
-    const status = await drizzleStudioStatus()
-    return c.json({
+  developer.get('/database/studio', async () => {
+    const status = await drizzleStudioProbeStatus()
+    return Response.json({
       running: status.running,
       browserUrl: status.browserUrl,
       port: status.port,
-    })
-  })
-
-  developer.post('/database/studio', async (c) => {
-    const meta = postgresConfigFromEnv()
-    if (!meta.configured) {
-      return c.json({ ok: false, error: 'postgres is not configured (missing TURBOPANEL_DATABASE_URL)' }, 503)
-    }
-
-    const started = await startDrizzleStudio()
-    if (!started.ok) {
-      return c.json({ ok: false, error: started.error }, 500)
-    }
-    return c.json({
-      ok: true,
-      browserUrl: started.browserUrl,
-      port: started.port,
     })
   })
 }

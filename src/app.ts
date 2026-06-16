@@ -18,6 +18,8 @@ export type AppEnv = {
     emailFrom?: string
     baseUrl?: string
     session?: SessionData
+    /** Hyperdrive or TURBOPANEL_DATABASE_URL for database status routes (Workers). */
+    postgresConnectionString?: string
   }
 }
 

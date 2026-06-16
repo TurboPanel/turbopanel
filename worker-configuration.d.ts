@@ -2,6 +2,7 @@ interface CloudflareBindings {
   HYPERDRIVE?: Hyperdrive
   TURBOPANEL_SECRET?: string
   TURBOPANEL_SECRETS?: string
+  TURBOPANEL_DATABASE_URL?: string
   TURBOPANEL_CORS_ORIGINS?: string
   TURBOPANEL_IS_SIGNUP_ENABLED?: string
   TURBOPANEL_MAILGUN_API_KEY?: string

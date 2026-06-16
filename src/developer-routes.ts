@@ -5,10 +5,10 @@ import {
   buildDeveloperRouter,
   mountDeveloperRouter,
 } from './developer-routes-core.ts'
-import { registerDatabaseRoutes } from './database-routes.ts'
+import { registerDatabaseStudioRoutes } from './database-studio-routes.ts'
 
 /**
- * Full developer console for Deno (includes Drizzle Studio routes).
+ * Full developer console for Deno (includes Drizzle Studio spawn routes).
  * Workers use {@link registerDeveloperRoutesCore} directly — see workers.ts.
  */
 export function registerDeveloperRoutes(
@@ -16,9 +16,7 @@ export function registerDeveloperRoutes(
   opts: { secrets: DerivedSecretsConfig; db?: Db; authRequired?: boolean },
 ) {
   const developer = buildDeveloperRouter(opts)
-
-  registerDatabaseRoutes(developer)
-
+  registerDatabaseStudioRoutes(developer)
   mountDeveloperRouter(app, developer)
   return app
 }

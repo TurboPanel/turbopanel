@@ -4,8 +4,10 @@
 # Sets: DATABASE_URL (unless already set), NODE, DRIZZLE_KIT, DENO, ROOT
 db_connect_init() {
   local caller="${1:-db-connect}"
-  # Caller (introspect.sh / sync.sh) lives at repo root; this file is scripts/db-connect.sh.
-  ROOT="$(cd "$(dirname "${BASH_SOURCE[1]}")" && pwd)"
+  # Caller (introspect.sh / sync.sh) lives at repo root; workers-serve.sh sets ROOT first.
+  if [[ -z "${ROOT:-}" ]]; then
+    ROOT="$(cd "$(dirname "${BASH_SOURCE[1]}")" && pwd)"
+  fi
   DRIZZLE_KIT="$ROOT/node_modules/drizzle-kit/bin.cjs"
   INSTANCE_UNIT="${TURBOPANEL_INSTANCE_SERVICE:-turbopanel-instance}"
   NODE="${TURBOPANEL_NODE:-/opt/turbopanel/runtimes/node/current/bin/node}"

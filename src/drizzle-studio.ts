@@ -4,20 +4,12 @@ import {
   DRIZZLE_STUDIO_CONFIG,
   writeDrizzleKitConfig,
 } from './drizzle-kit-config.ts'
+import {
+  drizzleStudioBrowserUrl,
+  DRIZZLE_STUDIO_PORT,
+  probeDrizzleStudioPort,
+} from './drizzle-studio-probe.ts'
 import { resolveNodePath } from './node-path.ts'
-
-const STUDIO_API_PORT = Number(Deno.env.get('TURBOPANEL_DRIZZLE_STUDIO_PORT') ?? '4983')
-const STUDIO_HOST = Deno.env.get('TURBOPANEL_DRIZZLE_STUDIO_HOST')?.trim() || 'localhost'
-/** Hosted Drizzle Studio UI — connects to the local drizzle-kit API (HTTP on STUDIO_API_PORT). */
-export const DRIZZLE_STUDIO_BROWSER_URL = 'https://local.drizzle.studio'
-
-export function drizzleStudioBrowserUrl(): string {
-  const params = new URLSearchParams({
-    host: STUDIO_HOST,
-    port: String(STUDIO_API_PORT),
-  })
-  return `${DRIZZLE_STUDIO_BROWSER_URL}?${params.toString()}`
-}
 
 const INSTANCE_REPO_ROOT = (() => {
   const here = dirname(fromFileUrl(import.meta.url))
@@ -32,17 +24,12 @@ function drizzleKitPath(): string {
 }
 
 function studioBindHost(): string {
-  return STUDIO_HOST === 'localhost' ? '127.0.0.1' : STUDIO_HOST
+  const host = Deno.env.get('TURBOPANEL_DRIZZLE_STUDIO_HOST')?.trim() || 'localhost'
+  return host === 'localhost' ? '127.0.0.1' : host
 }
 
 async function isStudioPortListening(host = studioBindHost()): Promise<boolean> {
-  try {
-    const conn = await Deno.connect({ hostname: host, port: STUDIO_API_PORT })
-    conn.close()
-    return true
-  } catch {
-    return false
-  }
+  return probeDrizzleStudioPort(host, DRIZZLE_STUDIO_PORT)
 }
 
 async function isStudioChildAlive(): Promise<boolean> {
@@ -67,7 +54,7 @@ export async function drizzleStudioStatus(): Promise<{
   }
   return {
     running: portOpen || studioRunning,
-    port: STUDIO_API_PORT,
+    port: DRIZZLE_STUDIO_PORT,
     browserUrl: drizzleStudioBrowserUrl(),
   }
 }
@@ -89,14 +76,14 @@ export async function startDrizzleStudio(): Promise<
 
   if (await isStudioPortListening(bindHost)) {
     studioRunning = true
-    return { ok: true, browserUrl: drizzleStudioBrowserUrl(), port: STUDIO_API_PORT }
+    return { ok: true, browserUrl: drizzleStudioBrowserUrl(), port: DRIZZLE_STUDIO_PORT }
   }
 
   if (studioRunning && await isStudioChildAlive()) {
     return {
       ok: true,
       browserUrl: drizzleStudioBrowserUrl(),
-      port: STUDIO_API_PORT,
+      port: DRIZZLE_STUDIO_PORT,
     }
   }
 
@@ -122,7 +109,7 @@ export async function startDrizzleStudio(): Promise<
         '--host',
         bindHost,
         '--port',
-        String(STUDIO_API_PORT),
+        String(DRIZZLE_STUDIO_PORT),
       ],
       cwd: INSTANCE_REPO_ROOT,
       env: Deno.env.toObject(),
@@ -153,7 +140,7 @@ export async function startDrizzleStudio(): Promise<
       }
     }
 
-    return { ok: true, browserUrl: drizzleStudioBrowserUrl(), port: STUDIO_API_PORT }
+    return { ok: true, browserUrl: drizzleStudioBrowserUrl(), port: DRIZZLE_STUDIO_PORT }
   } catch (err) {
     studioRunning = false
     studioChild = null
