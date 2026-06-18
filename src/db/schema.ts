@@ -1,7 +1,11 @@
 /** Introspected from live dev DB (`./introspect.sh`). Review style before commit. */
 
 import { sql } from 'drizzle-orm'
-import { pgTable, index, foreignKey, uuid, timestamp, varchar, text, unique, check, jsonb, integer, boolean } from "drizzle-orm/pg-core"
+import { pgTable, index, foreignKey, uuid, timestamp, varchar, text, unique, uniqueIndex, check, jsonb, integer, boolean, pgEnum } from "drizzle-orm/pg-core"
+
+export const subjectKind = pgEnum("subjectkind", ["user", "team", "organization"])
+export const effect = pgEnum("effect", ["allow", "deny"])
+
 export const invitation = pgTable("invitation", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
@@ -10,8 +14,9 @@ export const invitation = pgTable("invitation", {
 	organizationId: uuid("organization_id").notNull(),
 	teamId: uuid("team_id"),
 	email: varchar({ length: 255 }).notNull(),
-	role: text(),
 	status: varchar({ length: 255 }).notNull(),
+	/** Intended access grants materialized on accept — see `InvitationGrantSpec`. */
+	grants: jsonb(),
 }, (table) => [
 	index("idx_invitation_email").using("btree", table.email.asc().nullsLast().op("text_ops")),
 	index("idx_invitation_organization_id").using("btree", table.organizationId.asc().nullsLast().op("uuid_ops")),
@@ -87,7 +92,6 @@ export const member = pgTable("member", {
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	organizationId: uuid("organization_id").notNull(),
 	userId: uuid("user_id").notNull(),
-	role: text().notNull(),
 }, (table) => [
 	index("idx_member_organization_id").using("btree", table.organizationId.asc().nullsLast().op("uuid_ops")),
 	index("idx_member_user_id").using("btree", table.userId.asc().nullsLast().op("uuid_ops")),
@@ -101,6 +105,7 @@ export const member = pgTable("member", {
 			foreignColumns: [user.id],
 			name: "member_user_id_user_id_fk"
 		}).onDelete("cascade"),
+	unique("member_org_user_unique").on(table.organizationId, table.userId),
 ]);
 export const server = pgTable("server", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
@@ -123,6 +128,215 @@ export const server = pgTable("server", {
 			foreignColumns: [license.id],
 			name: "server_license_id_license_id_fk"
 		}),
+]);
+export const realm = pgTable("realm", {
+	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
+	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	displayName: varchar("display_name", { length: 255 }),
+	organizationId: uuid("organization_id").notNull(),
+}, (table) => [
+	unique("realm_id_org_unique").on(table.id, table.organizationId),
+	index("idx_realm_organization_id").using("btree", table.organizationId.asc().nullsLast().op("uuid_ops")),
+	foreignKey({
+			columns: [table.organizationId],
+			foreignColumns: [organization.id],
+			name: "realm_organization_id_organization_id_fk"
+		}).onDelete("cascade"),
+	check("realm_display_name_format_check", sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`),
+]);
+export const environment = pgTable("environment", {
+	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
+	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	displayName: varchar("display_name", { length: 255 }),
+	organizationId: uuid("organization_id").notNull(),
+	realmId: uuid("realm_id").notNull(),
+}, (table) => [
+	unique("environment_id_org_unique").on(table.id, table.organizationId),
+	index("idx_environment_realm_id").using("btree", table.realmId.asc().nullsLast().op("uuid_ops")),
+	index("idx_environment_organization_id").using("btree", table.organizationId.asc().nullsLast().op("uuid_ops")),
+	foreignKey({
+			columns: [table.organizationId],
+			foreignColumns: [organization.id],
+			name: "environment_organization_id_organization_id_fk"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.realmId, table.organizationId],
+			foreignColumns: [realm.id, realm.organizationId],
+			name: "environment_realm_org_fk"
+		}).onDelete("cascade"),
+	check("environment_display_name_format_check", sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`),
+]);
+export const project = pgTable("project", {
+	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
+	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	displayName: varchar("display_name", { length: 255 }),
+	organizationId: uuid("organization_id").notNull(),
+	environmentId: uuid("environment_id").notNull(),
+}, (table) => [
+	unique("project_id_org_unique").on(table.id, table.organizationId),
+	index("idx_project_environment_id").using("btree", table.environmentId.asc().nullsLast().op("uuid_ops")),
+	index("idx_project_organization_id").using("btree", table.organizationId.asc().nullsLast().op("uuid_ops")),
+	foreignKey({
+			columns: [table.organizationId],
+			foreignColumns: [organization.id],
+			name: "project_organization_id_organization_id_fk"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.environmentId, table.organizationId],
+			foreignColumns: [environment.id, environment.organizationId],
+			name: "project_environment_org_fk"
+		}).onDelete("cascade"),
+	check("project_display_name_format_check", sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`),
+]);
+export const service = pgTable("service", {
+	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
+	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	displayName: varchar("display_name", { length: 255 }),
+	organizationId: uuid("organization_id").notNull(),
+	projectId: uuid("project_id").notNull(),
+}, (table) => [
+	unique("service_id_org_unique").on(table.id, table.organizationId),
+	index("idx_service_project_id").using("btree", table.projectId.asc().nullsLast().op("uuid_ops")),
+	index("idx_service_organization_id").using("btree", table.organizationId.asc().nullsLast().op("uuid_ops")),
+	foreignKey({
+			columns: [table.organizationId],
+			foreignColumns: [organization.id],
+			name: "service_organization_id_organization_id_fk"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.projectId, table.organizationId],
+			foreignColumns: [project.id, project.organizationId],
+			name: "service_project_org_fk"
+		}).onDelete("cascade"),
+	check("service_display_name_format_check", sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`),
+]);
+export const hosting = pgTable("hosting", {
+	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
+	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	displayName: varchar("display_name", { length: 255 }),
+	organizationId: uuid("organization_id").notNull(),
+	projectId: uuid("project_id").notNull(),
+}, (table) => [
+	unique("hosting_id_org_unique").on(table.id, table.organizationId),
+	index("idx_hosting_project_id").using("btree", table.projectId.asc().nullsLast().op("uuid_ops")),
+	index("idx_hosting_organization_id").using("btree", table.organizationId.asc().nullsLast().op("uuid_ops")),
+	foreignKey({
+			columns: [table.organizationId],
+			foreignColumns: [organization.id],
+			name: "hosting_organization_id_organization_id_fk"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.projectId, table.organizationId],
+			foreignColumns: [project.id, project.organizationId],
+			name: "hosting_project_org_fk"
+		}).onDelete("cascade"),
+	check("hosting_display_name_format_check", sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`),
+]);
+export const role = pgTable("role", {
+	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
+	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	key: text().notNull(),
+	displayName: text("display_name").notNull(),
+	description: text(),
+}, (table) => [
+	unique("role_key_unique").on(table.key),
+]);
+export const permission = pgTable("permission", {
+	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
+	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	key: text().notNull(),
+	displayName: text("display_name").notNull(),
+	description: text(),
+}, (table) => [
+	unique("permission_key_unique").on(table.key),
+]);
+export const permit = pgTable("permit", {
+	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
+	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	roleId: uuid("role_id").notNull(),
+	permissionId: uuid("permission_id").notNull(),
+}, (table) => [
+	unique("permit_role_permission_unique").on(table.roleId, table.permissionId),
+	index("idx_permit_role_id").on(table.roleId),
+	index("idx_permit_permission_id").on(table.permissionId),
+	foreignKey({
+			columns: [table.roleId],
+			foreignColumns: [role.id],
+			name: "permit_role_id_role_id_fk"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.permissionId],
+			foreignColumns: [permission.id],
+			name: "permit_permission_id_permission_id_fk"
+		}).onDelete("cascade"),
+]);
+export const resource = pgTable("resource", {
+	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
+	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	kind: text().notNull(),
+	itemId: uuid("item_id").notNull(),
+	organizationId: uuid("organization_id").notNull(),
+	parentId: uuid("parent_id"),
+}, (table) => [
+	unique("resource_kind_item_unique").on(table.kind, table.itemId),
+	unique("resource_id_org_unique").on(table.id, table.organizationId),
+	index("idx_resource_parent_id").on(table.parentId),
+	index("idx_resource_organization_kind").on(table.organizationId, table.kind),
+	foreignKey({
+			columns: [table.organizationId],
+			foreignColumns: [organization.id],
+			name: "resource_organization_id_organization_id_fk"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.parentId, table.organizationId],
+			foreignColumns: [table.id, table.organizationId],
+			name: "resource_parent_org_fk"
+		}).onDelete("cascade"),
+]);
+export const access = pgTable("access", {
+	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
+	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	subjectKind: subjectKind("subject_kind").notNull(),
+	subjectId: uuid("subject_id").notNull(),
+	resourceId: uuid("resource_id").notNull(),
+	effect: effect().default("allow").notNull(),
+	roleId: uuid("role_id"),
+	permissionId: uuid("permission_id"),
+}, (table) => [
+	index("idx_access_subject").on(table.subjectKind, table.subjectId),
+	index("idx_access_resource_id").on(table.resourceId),
+	index("idx_access_subject_resource").on(table.subjectKind, table.subjectId, table.resourceId),
+	index("idx_access_role_id").on(table.roleId),
+	index("idx_access_permission_id").on(table.permissionId),
+	check("access_one_target_check", sql`num_nonnulls(${table.roleId}, ${table.permissionId}) = 1`),
+	foreignKey({
+			columns: [table.resourceId],
+			foreignColumns: [resource.id],
+			name: "access_resource_id_resource_id_fk"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.roleId],
+			foreignColumns: [role.id],
+			name: "access_role_id_role_id_fk"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.permissionId],
+			foreignColumns: [permission.id],
+			name: "access_permission_id_permission_id_fk"
+		}).onDelete("cascade"),
+	uniqueIndex("access_subject_resource_role_unique")
+		.on(table.subjectKind, table.subjectId, table.resourceId, table.roleId)
+		.where(sql`role_id IS NOT NULL`),
+	uniqueIndex("access_subject_resource_permission_unique")
+		.on(table.subjectKind, table.subjectId, table.resourceId, table.permissionId)
+		.where(sql`permission_id IS NOT NULL`),
 ]);
 export const session = pgTable("session", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
@@ -226,6 +440,7 @@ export const teammate = pgTable("teammate", {
 			foreignColumns: [user.id],
 			name: "teammate_user_id_user_id_fk"
 		}).onDelete("cascade"),
+	unique("teammate_team_user_unique").on(table.teamId, table.userId),
 ]);
 export const team = pgTable("team", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),

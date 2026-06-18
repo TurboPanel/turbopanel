@@ -2,3 +2,4 @@
 	directory = /opt/turbopanel/platform/instance
 	directory = /opt/turbopanel/platform/daemon
 	directory = /opt/turbopanel/platform/ui
+	directory = /opt/turbopanel/platform/website

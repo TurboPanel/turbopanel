@@ -17,6 +17,7 @@ import {
   sendToDaemon,
 } from './daemon-hub.ts'
 import { collectServerAddresses } from './server-addresses.ts'
+import { ensureServerResource } from './server-registry.ts'
 import { DEVELOPER_API_PREFIX } from './surfaces.ts'
 import { registerDatabaseRoutes } from './database-routes.ts'
 
@@ -274,9 +275,15 @@ export function buildDeveloperRouter(
       .update(server)
       .set({ ...patch, updatedAt: nowTs() })
       .where(eq(server.id, id))
-      .returning({ id: server.id })
+      .returning({ id: server.id, organizationId: server.organizationId })
 
     if (updated.length === 0) return c.json({ error: 'Server not found' }, 404)
+
+    const organizationId = updated[0]?.organizationId
+    if (organizationId) {
+      await ensureServerResource(db, id, organizationId)
+    }
+
     return c.json({ ok: true })
   })
 

@@ -5,15 +5,19 @@ import {
   getColocatedDaemonServerId,
 } from '../daemon-hub.ts'
 import {
+  access,
   account,
   member,
   teammate,
   organization,
+  role,
   server,
   setting,
   team,
   user,
 } from '../db/schema.ts'
+import { registerResource } from '../authz/resource-registry.ts'
+import { ensureServerResource } from '../server-registry.ts'
 import { createLicense } from './license.ts'
 import { hashPassword } from './password.ts'
 import { SUPERADMIN_ROLE } from './session-store.ts'
@@ -273,6 +277,17 @@ export async function assignColocatedDaemonToOrganization(
     .where(and(eq(server.id, serverId), isNull(server.organizationId)))
     .returning({ id: server.id })
 
+  const assignedRows = await db
+    .select({ organizationId: server.organizationId })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+
+  const assignedOrgId = assignedRows[0]?.organizationId
+  if (assignedOrgId) {
+    await ensureServerResource(db, serverId, assignedOrgId)
+  }
+
   if (updated.length > 0) {
     console.log(
       `[install] assigned colocated server ${serverId} to organization ${organizationId}`,
@@ -280,7 +295,7 @@ export async function assignColocatedDaemonToOrganization(
     return true
   }
 
-  return false
+  return assignedOrgId != null
 }
 
 export type CompleteInstallInput = {
@@ -368,12 +383,37 @@ export async function completeInstanceInstall(
     await tx.insert(member).values({
       organizationId,
       userId,
-      role: 'owner',
     })
 
     await tx.insert(teammate).values({
       teamId,
       userId,
+    })
+
+    const resourceId = await registerResource(tx, {
+      kind: 'organization',
+      itemId: organizationId,
+      organizationId,
+    })
+
+    const ownerRoleRows = await tx
+      .select({ id: role.id })
+      .from(role)
+      .where(eq(role.key, 'owner'))
+      .limit(1)
+
+    const ownerRoleId = ownerRoleRows[0]?.id
+    if (!ownerRoleId) {
+      throw new Error('Owner role not found in catalog')
+    }
+
+    await tx.insert(access).values({
+      subjectKind: 'user',
+      subjectId: userId,
+      resourceId,
+      effect: 'allow',
+      roleId: ownerRoleId,
+      permissionId: null,
     })
 
     const { licenseId, licenseToken } = await createLicense(tx, {

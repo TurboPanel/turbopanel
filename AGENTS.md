@@ -99,7 +99,7 @@ Path resolution lives in `src/server-paths.ts`.
 
 ## Database (Drizzle + Postgres.js)
 
-The instance uses **Drizzle ORM** over **postgres.js** with `prepare: false` (required for Hyperdrive and transaction-pooling). Connection factories live in `src/db.ts`; schema in `src/db/schema.ts`; drizzle-kit config in `drizzle.config.ts`. **Read `src/db/AGENTS.md` before touching schema or the database.** Schema changes are versioned in `migrations/`; `pnpm migrate` applies pending SQL during Workers deploy and records applied versions in `public.migration`.
+The instance uses **Drizzle ORM** over **postgres.js** with `prepare: false` (required for Hyperdrive and transaction-pooling). Connection factories live in `src/db.ts`; schema in `src/db/schema.ts`; drizzle-kit config in `drizzle.config.ts`. **Read `src/db/AGENTS.md` before touching schema or the database.** Schema changes are versioned in `migrations/`; `pnpm migrate` applies pending SQL and syncs the authz catalog during Workers deploy. Applied versions are recorded in `public.migration`.
 
 | Runtime | Factory | When connected |
 |---|---|---|
@@ -130,7 +130,7 @@ The Workers DB client uses `prepare: false` on postgres.js (see **Database** abo
 ### Tooling
 
 - `pnpm install` — pulls `drizzle-orm`, `postgres`, `drizzle-kit`
-- After editing `schema.ts`, run `pnpm drizzle-kit generate` to create SQL in `migrations/`; apply locally with `TURBOPANEL_DATABASE_URL=… pnpm migrate`. Workers deploy runs `pnpm migrate` (with `TURBOPANEL_DATABASE_URL` set); `drizzle-kit migrate` tracks applied versions in `public.migration`. Deno dev can still use `./sync.sh` (`push`) — see `src/db/AGENTS.md`.
+- After editing `schema.ts`, run `pnpm drizzle-kit generate` to create SQL in `migrations/`; apply locally with `TURBOPANEL_DATABASE_URL=… pnpm migrate` (schema + authz catalog). Workers deploy runs `pnpm migrate` (with `TURBOPANEL_DATABASE_URL` set). Deno dev can still use `./sync.sh` (`push`) — see `src/db/AGENTS.md`.
 
 ### Caddy dial format
 
@@ -291,9 +291,18 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `GET` | `/api/install/v1/status` | Public: `{ needsInstall, isInstallMode, isSignupEnabled }` — Deno: install mode until org + superadmin exist; Workers: always `needsInstall: false`, `isSignupEnabled` from DB + env override |
 | `POST` | `/api/install/v1/bootstrap` | Deno: verify host PAM (root or sudo user), no cookies |
 | `POST` | `/api/install/v1/` | Deno: host PAM + superadmin setup → superadmin session only |
-| `GET` | `/api/client/v1/servers` | Session required: servers assigned to the user's organization, with live `connected` / `hostname` from the daemon hub |
+| `GET` | `/api/client/v1/servers` | Session required: servers visible to the user via `listVisible` (`server:ro`/`server:rw`), with live `connected` / `hostname` from the daemon hub |
+| `POST` | `/api/client/v1/invitations/{id}/accept` | Accept a pending invitation; atomically claims the row, materializes `invitation.grants` into `access` rows (default: org `member` role), updates session `organizationId` |
+| `GET` | `/api/client/v1/roles` | Role catalog (any authenticated user) |
+| `GET` | `/api/client/v1/permissions` | Permission catalog (any authenticated user) |
+| `GET` | `/api/client/v1/access?resourceId=<uuid>` | List access grants (requires `organization:members`, `team:members`, or `{kind}:rw` on the target resource) |
+| `POST` | `/api/client/v1/access` | Create an access grant (same resource-kind management permission as list) |
+| `DELETE` | `/api/client/v1/access/{id}` | Revoke an access grant (same resource-kind management permission as list) |
+| `GET` | `/api/client/v1/licenses` | List licenses (`organization:billing`; legacy fallback when org resource missing) |
+| `POST` | `/api/client/v1/licenses` | Create a license (`organization:billing`) |
+| `DELETE` | `/api/client/v1/licenses/{id}` | Revoke a license (`organization:billing`) |
 
-**Install mode (Deno self-hosted):** `isInstanceInstalled()` is false on a fresh DB. The UI `/install` page first verifies host PAM (`POST /api/install/v1/bootstrap`, client-side gate only), then collects superadmin email/password. Org/team names are fixed defaults. After install, sign-in uses superadmin email/password only. The co-located daemon's `server.organization_id` is assigned to **Default Organization** on install (`assignColocatedDaemonToOrganization` in `install-state.ts`, resolving the server row from the live hub or by `metadata.machineId` / hostname) and again when the Unix-socket daemon sends `hello` if still unassigned.
+**Install mode (Deno self-hosted):** `isInstanceInstalled()` is false on a fresh DB. The UI `/install` page first verifies host PAM (`POST /api/install/v1/bootstrap`, client-side gate only), then collects superadmin email/password. Org/team names are fixed defaults. `completeInstanceInstall` registers the org `resource` and inserts an owner `access` row for the superadmin. After install, sign-in uses superadmin email/password only. The co-located daemon's `server.organization_id` is assigned to **Default Organization** on install (`assignColocatedDaemonToOrganization` in `install-state.ts`, resolving the server row from the live hub or by `metadata.machineId` / hostname) and again when the Unix-socket daemon sends `hello` if still unassigned.
 
 #### New files
 

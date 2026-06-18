@@ -13,15 +13,24 @@ async function writeDrizzlePushConfig(url: string): Promise<void> {
   await writeDrizzleKitConfig(url, DRIZZLE_PUSH_CONFIG)
 }
 
+const BOOTSTRAP_TABLES = [
+  'user',
+  'role',
+  'permission',
+  'permit',
+  'resource',
+  'access',
+] as const
+
 export async function isDbSchemaReady(db: Db): Promise<boolean> {
-  const rows = await db.execute<{ exists: boolean }>(sql`
-    SELECT EXISTS (
-      SELECT FROM information_schema.tables
-      WHERE table_schema = 'public' AND table_name = 'user'
-    ) AS "exists"
+  const rows = await db.execute<{ count: string }>(sql`
+    SELECT COUNT(*)::text AS count
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+      AND table_name IN ('user', 'role', 'permission', 'permit', 'resource', 'access')
   `)
-  const row = rows[0]
-  return row?.exists === true
+  const count = Number(rows[0]?.count ?? 0)
+  return count === BOOTSTRAP_TABLES.length
 }
 
 export async function pushSchemaFromCode(): Promise<
@@ -71,7 +80,7 @@ export async function pushSchemaFromCode(): Promise<
   }
 }
 
-/** Push schema.ts when the live database has no auth tables yet. */
+/** Push schema.ts when required bootstrap tables (incl. authz) are missing. */
 export async function ensureDbSchemaReady(db: Db): Promise<void> {
   if (await isDbSchemaReady(db)) return
 
@@ -81,6 +90,8 @@ export async function ensureDbSchemaReady(db: Db): Promise<void> {
     throw new Error(`schema push failed: ${pushed.error}`)
   }
   if (!(await isDbSchemaReady(db))) {
-    throw new Error('schema push completed but user table still missing')
+    throw new Error(
+      `schema push completed but required tables still missing (${BOOTSTRAP_TABLES.join(', ')})`,
+    )
   }
 }

@@ -10,7 +10,10 @@
     "deploy:workers": "wrangler deploy --minify",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
     "generate:secret": "node scripts/generate-secret.mjs",
-    "migrate": "drizzle-kit migrate"
+    "seed-catalog": "deno run --allow-env --allow-net --allow-read=/run/turbopanel,/var/run/turbopanel scripts/seed-catalog.ts",
+    "migrate": "drizzle-kit migrate && pnpm run seed-catalog",
+    "seed": "pnpm run seed-catalog",
+    "deploy-db": "pnpm migrate"
   },
   "dependencies": {
     "amqplib": "^2.0.1",

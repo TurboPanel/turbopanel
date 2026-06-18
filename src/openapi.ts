@@ -1,8 +1,256 @@
 import { resolveSessionCookieName } from './auth/crypto.ts'
 
+const clientErrorJson = {
+  type: 'object',
+  required: ['error'],
+  properties: { error: { type: 'string' } },
+}
+
+function resourceErrorResponses(options?: {
+  badRequest?: boolean
+  forbidden?: boolean
+  notFound?: boolean
+}) {
+  const responses: Record<string, unknown> = {
+    '401': {
+      description: 'Unauthorized',
+      content: { 'application/json': { schema: clientErrorJson } },
+    },
+    '503': {
+      description: 'Database unavailable',
+      content: { 'application/json': { schema: clientErrorJson } },
+    },
+  }
+  if (options?.badRequest) {
+    responses['400'] = {
+      description: 'Invalid request',
+      content: { 'application/json': { schema: clientErrorJson } },
+    }
+  }
+  if (options?.forbidden !== false) {
+    responses['403'] = {
+      description: 'Forbidden',
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/ErrorResponse' },
+        },
+      },
+    }
+  }
+  if (options?.notFound) {
+    responses['404'] = {
+      description: 'Not found',
+      content: { 'application/json': { schema: clientErrorJson } },
+    }
+  }
+  return responses
+}
+
+type ResourceCrudConfig = {
+  plural: string
+  singular: string
+  listSchema: string
+  rowSchema: string
+  createSchema: string
+  createBodyRequired?: boolean
+  parentQuery?: { name: string; description: string }
+}
+
+function buildResourceCrudPaths(config: ResourceCrudConfig): Record<string, unknown> {
+  const base = `/api/client/v1/${config.plural}`
+  const idPath = `${base}/{id}`
+  const security = [{ cookieAuth: [] }]
+  const singleEntitySchema = {
+    type: 'object',
+    required: [config.singular],
+    properties: {
+      [config.singular]: { $ref: `#/components/schemas/${config.rowSchema}` },
+    },
+  }
+
+  const listGet: Record<string, unknown> = {
+    tags: ['resources'],
+    summary: `List ${config.plural}`,
+    security,
+    responses: {
+      '200': {
+        description: `Visible ${config.plural} for the signed-in organization`,
+        content: {
+          'application/json': {
+            schema: { $ref: `#/components/schemas/${config.listSchema}` },
+          },
+        },
+      },
+      ...resourceErrorResponses({ forbidden: false }),
+    },
+  }
+
+  if (config.parentQuery) {
+    listGet.parameters = [
+      {
+        name: config.parentQuery.name,
+        in: 'query',
+        required: false,
+        schema: { type: 'string' },
+        description: config.parentQuery.description,
+      },
+    ]
+  }
+
+  return {
+    [base]: {
+      get: listGet,
+      post: {
+        tags: ['resources'],
+        summary: `Create ${config.singular}`,
+        security,
+        requestBody: {
+          required: config.createBodyRequired ?? true,
+          content: {
+            'application/json': {
+              schema: { $ref: `#/components/schemas/${config.createSchema}` },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: `${config.singular} created`,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/EntityOkResponse' },
+              },
+            },
+          },
+          ...resourceErrorResponses({ badRequest: true, notFound: true }),
+        },
+      },
+    },
+    [idPath]: {
+      get: {
+        tags: ['resources'],
+        summary: `Get ${config.singular}`,
+        security,
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        responses: {
+          '200': {
+            description: `${config.singular} details`,
+            content: {
+              'application/json': { schema: singleEntitySchema },
+            },
+          },
+          ...resourceErrorResponses({ notFound: true }),
+        },
+      },
+      patch: {
+        tags: ['resources'],
+        summary: `Update ${config.singular}`,
+        security,
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/UpdateEntityRequest' },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: `${config.singular} updated`,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/UpdateEntityOkResponse' },
+              },
+            },
+          },
+          ...resourceErrorResponses({ badRequest: true, notFound: true }),
+        },
+      },
+      delete: {
+        tags: ['resources'],
+        summary: `Delete ${config.singular}`,
+        security,
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        responses: {
+          '200': {
+            description: `${config.singular} deleted`,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/UpdateEntityOkResponse' },
+              },
+            },
+          },
+          ...resourceErrorResponses({ notFound: true }),
+        },
+      },
+    },
+  }
+}
+
 /** Hand-authored OpenAPI 3.1 spec for documented client/daemon/health routes. */
 export function getOpenApiSpec(serverUrl: string): object {
   const sessionCookieName = resolveSessionCookieName(serverUrl)
+
+  const resourceTreePaths = {
+    ...buildResourceCrudPaths({
+      plural: 'realms',
+      singular: 'realm',
+      listSchema: 'RealmsResponse',
+      rowSchema: 'RealmRow',
+      createSchema: 'CreateRealmRequest',
+      createBodyRequired: false,
+    }),
+    ...buildResourceCrudPaths({
+      plural: 'environments',
+      singular: 'environment',
+      listSchema: 'EnvironmentsResponse',
+      rowSchema: 'EnvironmentRow',
+      createSchema: 'CreateEnvironmentRequest',
+      parentQuery: {
+        name: 'realmId',
+        description: 'Filter environments under a realm',
+      },
+    }),
+    ...buildResourceCrudPaths({
+      plural: 'projects',
+      singular: 'project',
+      listSchema: 'ProjectsResponse',
+      rowSchema: 'ProjectRow',
+      createSchema: 'CreateProjectRequest',
+      parentQuery: {
+        name: 'environmentId',
+        description: 'Filter projects under an environment',
+      },
+    }),
+    ...buildResourceCrudPaths({
+      plural: 'services',
+      singular: 'service',
+      listSchema: 'ServicesResponse',
+      rowSchema: 'ServiceRow',
+      createSchema: 'CreateServiceRequest',
+      parentQuery: {
+        name: 'projectId',
+        description: 'Filter services under a project',
+      },
+    }),
+    ...buildResourceCrudPaths({
+      plural: 'hostings',
+      singular: 'hosting',
+      listSchema: 'HostingsResponse',
+      rowSchema: 'HostingRow',
+      createSchema: 'CreateHostingRequest',
+      parentQuery: {
+        name: 'projectId',
+        description: 'Filter hostings under a project',
+      },
+    }),
+  }
 
   return {
     openapi: '3.1.0',
@@ -214,6 +462,312 @@ export function getOpenApiSpec(serverUrl: string): object {
           },
         },
         RevokeOkResponse: {
+          type: 'object',
+          required: ['ok'],
+          properties: {
+            ok: { type: 'boolean', const: true },
+          },
+        },
+        InvitationAcceptResponse: {
+          type: 'object',
+          required: ['ok', 'organizationId'],
+          properties: {
+            ok: { type: 'boolean', const: true },
+            organizationId: {
+              type: 'string',
+              description:
+                'Organization joined by the invitation. The active session organizationId is updated to this value.',
+            },
+          },
+        },
+        InvitationGrantSpec: {
+          type: 'object',
+          required: ['resourceKind', 'itemId'],
+          properties: {
+            resourceKind: {
+              type: 'string',
+              description: 'Entity kind registered in `resource` (e.g. organization, team, server).',
+            },
+            itemId: {
+              type: 'string',
+              description: 'Primary key of the entity (`resource.item_id`).',
+            },
+            effect: { type: 'string', enum: ['allow', 'deny'], default: 'allow' },
+            roleId: { type: 'string' },
+            roleKey: {
+              type: 'string',
+              description: 'Catalog role key (e.g. member, billing, readonly).',
+            },
+            permissionId: { type: 'string' },
+            permissionKey: {
+              type: 'string',
+              description: 'Direct permission key from the catalog (e.g. organization:billing).',
+            },
+          },
+          description:
+            'One intended access grant stored on `invitation.grants`. Exactly one of roleId/roleKey or permissionId/permissionKey should be set.',
+        },
+        RoleRecord: {
+          type: 'object',
+          required: ['id', 'key', 'displayName'],
+          properties: {
+            id: { type: 'string' },
+            key: { type: 'string' },
+            displayName: { type: 'string' },
+            description: { type: ['string', 'null'] },
+          },
+        },
+        RolesResponse: {
+          type: 'object',
+          required: ['roles'],
+          properties: {
+            roles: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/RoleRecord' },
+            },
+          },
+        },
+        PermissionRecord: {
+          type: 'object',
+          required: ['id', 'key', 'displayName'],
+          properties: {
+            id: { type: 'string' },
+            key: { type: 'string' },
+            displayName: { type: 'string' },
+            description: { type: ['string', 'null'] },
+          },
+        },
+        PermissionsResponse: {
+          type: 'object',
+          required: ['permissions'],
+          properties: {
+            permissions: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/PermissionRecord' },
+            },
+          },
+        },
+        AccessRecord: {
+          type: 'object',
+          required: [
+            'id',
+            'subjectKind',
+            'subjectId',
+            'resourceId',
+            'effect',
+          ],
+          properties: {
+            id: { type: 'string' },
+            subjectKind: {
+              type: 'string',
+              enum: ['user', 'team', 'organization'],
+            },
+            subjectId: { type: 'string' },
+            resourceId: { type: 'string' },
+            effect: { type: 'string', enum: ['allow', 'deny'] },
+            roleId: { type: ['string', 'null'] },
+            roleKey: { type: ['string', 'null'] },
+            permissionId: { type: ['string', 'null'] },
+            permissionKey: { type: ['string', 'null'] },
+          },
+        },
+        AccessListResponse: {
+          type: 'object',
+          required: ['access'],
+          properties: {
+            access: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/AccessRecord' },
+            },
+          },
+        },
+        CreateAccessRequest: {
+          type: 'object',
+          required: ['subjectKind', 'subjectId', 'resourceId', 'effect'],
+          properties: {
+            subjectKind: {
+              type: 'string',
+              enum: ['user', 'team', 'organization'],
+            },
+            subjectId: { type: 'string' },
+            resourceId: { type: 'string' },
+            effect: { type: 'string', enum: ['allow', 'deny'] },
+            roleId: { type: 'string' },
+            permissionId: { type: 'string' },
+          },
+        },
+        CreateAccessResponse: {
+          type: 'object',
+          required: ['ok', 'id'],
+          properties: {
+            ok: { type: 'boolean', const: true },
+            id: { type: 'string' },
+          },
+        },
+        RevokeAccessResponse: {
+          type: 'object',
+          required: ['ok'],
+          properties: {
+            ok: { type: 'boolean', const: true },
+          },
+        },
+        RealmRow: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            displayName: { type: ['string', 'null'] },
+            organizationId: { type: 'string' },
+            createdAt: { type: 'string', format: 'date-time' },
+            updatedAt: { type: 'string', format: 'date-time' },
+          },
+        },
+        RealmsResponse: {
+          type: 'object',
+          required: ['realms'],
+          properties: {
+            realms: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/RealmRow' },
+            },
+          },
+        },
+        CreateRealmRequest: {
+          type: 'object',
+          properties: {
+            displayName: { type: 'string' },
+          },
+        },
+        EnvironmentRow: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            displayName: { type: ['string', 'null'] },
+            organizationId: { type: 'string' },
+            realmId: { type: 'string' },
+            createdAt: { type: 'string', format: 'date-time' },
+            updatedAt: { type: 'string', format: 'date-time' },
+          },
+        },
+        EnvironmentsResponse: {
+          type: 'object',
+          required: ['environments'],
+          properties: {
+            environments: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/EnvironmentRow' },
+            },
+          },
+        },
+        CreateEnvironmentRequest: {
+          type: 'object',
+          required: ['realmId'],
+          properties: {
+            displayName: { type: 'string' },
+            realmId: { type: 'string' },
+          },
+        },
+        ProjectRow: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            displayName: { type: ['string', 'null'] },
+            organizationId: { type: 'string' },
+            environmentId: { type: 'string' },
+            createdAt: { type: 'string', format: 'date-time' },
+            updatedAt: { type: 'string', format: 'date-time' },
+          },
+        },
+        ProjectsResponse: {
+          type: 'object',
+          required: ['projects'],
+          properties: {
+            projects: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/ProjectRow' },
+            },
+          },
+        },
+        CreateProjectRequest: {
+          type: 'object',
+          required: ['environmentId'],
+          properties: {
+            displayName: { type: 'string' },
+            environmentId: { type: 'string' },
+          },
+        },
+        ServiceRow: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            displayName: { type: ['string', 'null'] },
+            organizationId: { type: 'string' },
+            projectId: { type: 'string' },
+            createdAt: { type: 'string', format: 'date-time' },
+            updatedAt: { type: 'string', format: 'date-time' },
+          },
+        },
+        ServicesResponse: {
+          type: 'object',
+          required: ['services'],
+          properties: {
+            services: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/ServiceRow' },
+            },
+          },
+        },
+        CreateServiceRequest: {
+          type: 'object',
+          required: ['projectId'],
+          properties: {
+            displayName: { type: 'string' },
+            projectId: { type: 'string' },
+          },
+        },
+        HostingRow: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            displayName: { type: ['string', 'null'] },
+            organizationId: { type: 'string' },
+            projectId: { type: 'string' },
+            createdAt: { type: 'string', format: 'date-time' },
+            updatedAt: { type: 'string', format: 'date-time' },
+          },
+        },
+        HostingsResponse: {
+          type: 'object',
+          required: ['hostings'],
+          properties: {
+            hostings: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/HostingRow' },
+            },
+          },
+        },
+        CreateHostingRequest: {
+          type: 'object',
+          required: ['projectId'],
+          properties: {
+            displayName: { type: 'string' },
+            projectId: { type: 'string' },
+          },
+        },
+        EntityOkResponse: {
+          type: 'object',
+          required: ['ok', 'id'],
+          properties: {
+            ok: { type: 'boolean', const: true },
+            id: { type: 'string' },
+          },
+        },
+        UpdateEntityRequest: {
+          type: 'object',
+          properties: {
+            displayName: { type: 'string' },
+          },
+        },
+        UpdateEntityOkResponse: {
           type: 'object',
           required: ['ok'],
           properties: {
@@ -722,6 +1276,399 @@ export function getOpenApiSpec(serverUrl: string): object {
           },
         },
       },
+      '/api/client/v1/invitations/{id}/accept': {
+        post: {
+          tags: ['client'],
+          summary: 'Accept an organization invitation',
+          description:
+            'Atomically claims a pending invitation, creates org membership (and optional team membership), materializes the invitation\'s `grants` JSON into `access` rows, and updates the active session `organizationId`. When `grants` is null, a default org-scoped `member` role grant is applied.',
+          security: [{ cookieAuth: [] }],
+          parameters: [
+            {
+              name: 'id',
+              in: 'path',
+              required: true,
+              schema: { type: 'string' },
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'Invitation accepted',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/InvitationAcceptResponse' },
+                },
+              },
+            },
+            '401': {
+              description: 'Unauthorized',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+            '403': {
+              description: 'Invitation email does not match session user',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+            '404': {
+              description: 'Invitation not found',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+            '410': {
+              description: 'Invitation expired or already used',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+            '500': {
+              description: 'Organization resource not registered',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+            '503': {
+              description: 'Database unavailable',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/client/v1/roles': {
+        get: {
+          tags: ['client'],
+          summary: 'List authorization roles',
+          security: [{ cookieAuth: [] }],
+          responses: {
+            '200': {
+              description: 'Role catalog',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/RolesResponse' },
+                },
+              },
+            },
+            '401': {
+              description: 'Unauthorized',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+            '503': {
+              description: 'Database unavailable',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/client/v1/permissions': {
+        get: {
+          tags: ['client'],
+          summary: 'List authorization permissions',
+          security: [{ cookieAuth: [] }],
+          responses: {
+            '200': {
+              description: 'Permission catalog',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/PermissionsResponse' },
+                },
+              },
+            },
+            '401': {
+              description: 'Unauthorized',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+            '503': {
+              description: 'Database unavailable',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/client/v1/access': {
+        get: {
+          tags: ['client'],
+          summary: 'List access grants for a resource',
+          description:
+            'Requires the resource-kind management permission: `organization:members`, `team:members`, or `{kind}:rw` for other kinds.',
+          security: [{ cookieAuth: [] }],
+          parameters: [
+            {
+              name: 'resourceId',
+              in: 'query',
+              required: true,
+              schema: { type: 'string' },
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'Access grants for the resource',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/AccessListResponse' },
+                },
+              },
+            },
+            '400': {
+              description: 'Missing resourceId query parameter',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+            '401': {
+              description: 'Unauthorized',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+            '403': {
+              description: 'Forbidden',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ErrorResponse' },
+                },
+              },
+            },
+            '503': {
+              description: 'Database unavailable',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+          },
+        },
+        post: {
+          tags: ['client'],
+          summary: 'Create an access grant',
+          description:
+            'Requires the resource-kind management permission on the target `resourceId`.',
+          security: [{ cookieAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/CreateAccessRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Access grant created',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/CreateAccessResponse' },
+                },
+              },
+            },
+            '400': {
+              description: 'Invalid request',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+            '401': {
+              description: 'Unauthorized',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+            '403': {
+              description: 'Forbidden',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ErrorResponse' },
+                },
+              },
+            },
+            '503': {
+              description: 'Database unavailable',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/client/v1/access/{id}': {
+        delete: {
+          tags: ['client'],
+          summary: 'Revoke an access grant',
+          description:
+            'Requires the resource-kind management permission on the grant\'s target resource.',
+          security: [{ cookieAuth: [] }],
+          parameters: [
+            {
+              name: 'id',
+              in: 'path',
+              required: true,
+              schema: { type: 'string' },
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'Access grant revoked',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/RevokeAccessResponse' },
+                },
+              },
+            },
+            '401': {
+              description: 'Unauthorized',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+            '403': {
+              description: 'Forbidden',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ErrorResponse' },
+                },
+              },
+            },
+            '404': {
+              description: 'Access grant not found',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+            '503': {
+              description: 'Database unavailable',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      ...resourceTreePaths,
       '/api/install/v1/daemon-install.sh': {
         get: {
           tags: ['install'],

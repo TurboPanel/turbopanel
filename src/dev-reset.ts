@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import type { Db } from './db.ts'
+import { syncAuthzCatalog } from './authz/sync.ts'
 import { pushSchemaFromCode } from './db/schema-push.ts'
 import { stopDrizzleStudio } from './drizzle-studio.ts'
 
@@ -44,6 +45,13 @@ export async function resetDevInstance(db: Db): Promise<DevResetResult> {
   const pushed = await pushSchemaFromCode()
   if (!pushed.ok) {
     return { ok: false, error: `schema push failed: ${pushed.error}` }
+  }
+
+  try {
+    await syncAuthzCatalog(db)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    return { ok: false, error: `catalog sync failed: ${message}` }
   }
 
   const restarted = queueInstanceRestart()

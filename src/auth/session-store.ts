@@ -98,3 +98,18 @@ export async function deleteSession(
     await db.delete(session).where(eq(session.token, token))
   }
 }
+
+/** Point the active session at an organization (e.g. after accepting an invite). */
+export async function updateSessionOrganization(
+  db: Db,
+  sessionId: string,
+  organizationId: string,
+): Promise<void> {
+  await db
+    .update(session)
+    .set({
+      organizationId,
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(session.id, sessionId))
+}
