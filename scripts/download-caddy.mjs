@@ -2,9 +2,9 @@
 /**
  * Download Caddy into the shared runtimes directory and symlink "current".
  *
- * Mirrors the node/deno layout:
- *   $HOME/runtimes/caddy/versions/<version>/caddy
- *   $HOME/runtimes/caddy/current -> versions/<version>
+ * Mirrors the daemon caddy role layout:
+ *   /opt/turbopanel/runtimes/caddy/<version>/caddy
+ *   /opt/turbopanel/runtimes/caddy/current -> <version>
  *
  * Idempotent: skips the download if the pinned binary already exists, and
  * always refreshes the "current" symlink to point at the pinned version.
@@ -12,10 +12,12 @@
 
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, mkdirSync, existsSync, symlinkSync, unlinkSync, copyFileSync, chmodSync, lstatSync } from 'node:fs'
-import { tmpdir, homedir } from 'node:os'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-const CADDY_VERSION = 'v2.10.2'
+const TURBOPANEL_RUNTIMES_DIR = '/opt/turbopanel/runtimes'
+const CADDY_VERSION = '2.10.2'
+const CADDY_RELEASE_TAG = 'v2.10.2'
 
 const ARCH_MAP = {
   arm64: 'arm64',
@@ -35,22 +37,18 @@ if (process.platform !== 'linux') {
   fail(`unsupported platform: ${process.platform} (only linux is supported)`)
 }
 
-const home = process.env.HOME || homedir()
-if (!home) {
-  fail('HOME is not set; cannot resolve runtimes directory')
-}
-
-const versionDir = path.join(home, 'runtimes', 'caddy', 'versions', CADDY_VERSION)
+const caddyRoot = path.join(TURBOPANEL_RUNTIMES_DIR, 'caddy')
+const versionDir = path.join(caddyRoot, CADDY_VERSION)
 const binPath = path.join(versionDir, 'caddy')
-const currentLink = path.join(home, 'runtimes', 'caddy', 'current')
+const currentLink = path.join(caddyRoot, 'current')
 
 function refreshCurrentSymlink() {
-  const target = path.join('versions', CADDY_VERSION)
+  const target = path.join(caddyRoot, CADDY_VERSION)
   if (existsSync(currentLink) || isSymlink(currentLink)) {
     unlinkSync(currentLink)
   }
   symlinkSync(target, currentLink)
-  console.log(`download-caddy: current -> ${target}`)
+  console.log(`download-caddy: current -> ${CADDY_VERSION}`)
 }
 
 function isSymlink(p) {
@@ -67,9 +65,8 @@ if (existsSync(binPath)) {
   process.exit(0)
 }
 
-const versionNumber = CADDY_VERSION.replace(/^v/, '')
-const assetName = `caddy_${versionNumber}_linux_${arch}.tar.gz`
-const url = `https://github.com/caddyserver/caddy/releases/download/${CADDY_VERSION}/${assetName}`
+const assetName = `caddy_${CADDY_VERSION}_linux_${arch}.tar.gz`
+const url = `https://github.com/caddyserver/caddy/releases/download/${CADDY_RELEASE_TAG}/${assetName}`
 
 const tmp = mkdtempSync(path.join(tmpdir(), 'caddy-dl-'))
 const tarball = path.join(tmp, assetName)

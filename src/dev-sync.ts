@@ -30,7 +30,6 @@ async function buildDaemonTarball(repo: string): Promise<Uint8Array> {
         '-C',
         repo,
         '--exclude=./.git',
-        '--exclude=./orchestration/runtime',
         '--exclude=./orchestration/roles',
         '--exclude=./cloudflared/tunnels',
         '--exclude=./node_modules',
