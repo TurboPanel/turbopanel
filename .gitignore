@@ -42,3 +42,6 @@ lerna-debug.log*
 SingletonCookie
 SingletonLock
 SingletonSocket
+
+# co-located dev host stamp (normalize-dev-checkout.sh)
+.turbopanel-checkout-stamp
