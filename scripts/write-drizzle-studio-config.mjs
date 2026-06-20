@@ -47,7 +47,25 @@ function resolvePostgresParts(url) {
     }
     return undefined
   } catch {
-    return undefined
+    // `postgresql://user:pass@/db?host=/path` has no hostname — URL rejects it.
+    const match = url.match(/^postgres(?:ql)?:\/\/([^:@]+)(?::([^@]*))?@\/([^?]+)(?:\?(.*))?$/)
+    if (!match) return undefined
+
+    const [, userEnc, passwordEnc = '', dbEnc, query = ''] = match
+    const socketDir = new URLSearchParams(query).get('host')?.trim() || null
+    if (!socketDir) return undefined
+
+    const user = decodeURIComponent(userEnc)
+    const database = decodeURIComponent(dbEnc)
+    if (!user || !database) return undefined
+
+    return {
+      user,
+      pass: decodeURIComponent(passwordEnc),
+      database,
+      socketDir,
+      tcpUrl: null,
+    }
   }
 }
 
