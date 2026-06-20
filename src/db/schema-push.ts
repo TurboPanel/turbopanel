@@ -3,6 +3,7 @@ import { dirname, fromFileUrl, join } from '@std/path'
 import type { Db } from '../db.ts'
 import { DRIZZLE_PUSH_CONFIG, writeDrizzleKitConfig } from '../drizzle-kit-config.ts'
 import { resolveNodePath } from '../node-path.ts'
+import { logWarn } from '../logger.ts'
 
 const INSTANCE_REPO_ROOT = (() => {
   const here = dirname(fromFileUrl(import.meta.url))
@@ -84,7 +85,7 @@ export async function pushSchemaFromCode(): Promise<
 export async function ensureDbSchemaReady(db: Db): Promise<void> {
   if (await isDbSchemaReady(db)) return
 
-  console.warn('[db] schema missing — pushing from schema.ts')
+  logWarn('db', 'schema missing — pushing from schema.ts')
   const pushed = await pushSchemaFromCode()
   if (!pushed.ok) {
     throw new Error(`schema push failed: ${pushed.error}`)

@@ -2,6 +2,7 @@ import { and, eq, isNull, sql } from 'drizzle-orm'
 import type { Db } from '../db.ts'
 import { organization, resource, server } from '../db/schema.ts'
 import { registerResource } from './resource-registry.ts'
+import { logInfo } from '../logger.ts'
 
 /**
  * Ensure every organization has a corresponding `resource` row. Idempotent —
@@ -96,8 +97,9 @@ export async function repairResourceRegistry(db: Db): Promise<void> {
   const serverRepaired = await repairServerResourceParents(db)
 
   if (orgRepaired > 0 || serverRepaired > 0) {
-    console.log(
-      `[authz] resource registry repaired: ${orgRepaired} org resource(s), ${serverRepaired} server parent link(s)`,
+    logInfo(
+      'authz',
+      `resource registry repaired: ${orgRepaired} org resource(s), ${serverRepaired} server parent link(s)`,
     )
   }
 }

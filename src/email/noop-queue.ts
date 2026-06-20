@@ -1,10 +1,9 @@
 import type { EmailJob, EmailQueue } from './types.ts'
+import { compatLogWarn } from '../log-compat.ts'
 
 class NoopQueue implements EmailQueue {
   async enqueue(job: EmailJob): Promise<void> {
-    console.warn(
-      `[TurboPanel email] email queue unavailable — ${job.type} not sent to ${job.to}`,
-    )
+    compatLogWarn('email', `email queue unavailable — ${job.type} not sent to ${job.to}`)
   }
 }
 

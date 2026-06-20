@@ -19,13 +19,14 @@ import {
 import type { Db } from './db.ts'
 import { tryAssignColocatedDaemonToInstalledOrganization } from './auth/install-state.ts'
 import { resolveServerId } from './server-registry.ts'
+import { compatLogError, compatLogInfo, compatLogWarn } from './log-compat.ts'
 
 let pruneTimer: ReturnType<typeof setInterval> | undefined
 
 function runPruneCycle(): void {
   const pruned = pruneStaleDaemons()
   if (pruned.length > 0) {
-    console.log(`[ws] pruned ${pruned.length} stale daemon connection(s): ${pruned.join(', ')}`)
+    compatLogInfo('ws', `pruned ${pruned.length} stale daemon connection(s): ${pruned.join(', ')}`)
   }
 }
 
@@ -69,8 +70,9 @@ export function createDaemonWebSocketSession(
   connId = conn.id
   identityAddress = remoteAddress ?? '__direct__'
   setDaemonRemoteAddress(conn.id, identityAddress)
-  console.log(
-    `[ws] daemon connected: ${conn.id}${
+  compatLogInfo(
+    'ws',
+    `daemon connected: ${conn.id}${
       remoteAddress ? ` from ${remoteAddress}` : ''
     }`,
   )
@@ -98,11 +100,11 @@ export function createDaemonWebSocketSession(
       : String(event.data)
     const message = parseDaemonMessage(raw)
     if (!message) {
-      console.warn('[ws] ignored non-JSON message from daemon')
+      compatLogWarn('ws', 'ignored non-JSON message from daemon')
       return
     }
 
-    console.log(`[ws] from ${connId ?? 'unknown'}:`, message.type)
+    compatLogInfo('ws', `from ${connId ?? 'unknown'}: ${message.type}`)
     if (connId) {
       touchDaemonInbound(connId)
       recordDaemonMessage(connId, 'in', message)
@@ -125,8 +127,9 @@ export function createDaemonWebSocketSession(
             })
 
             if (!serverId && message.licenseId) {
-              console.warn(
-                `[ws] rejected daemon ${socketId}: invalid or revoked license ${message.licenseId}`,
+              compatLogWarn(
+                'ws',
+                `rejected daemon ${socketId}: invalid or revoked license ${message.licenseId}`,
               )
               ws.close(4401, 'invalid license')
               return
@@ -136,10 +139,10 @@ export function createDaemonWebSocketSession(
               connId = setDaemonServerId(socketId, serverId)
             }
           } catch (err) {
-            console.error('[ws] failed to resolve server id:', err)
+            compatLogError('ws', `failed to resolve server id: ${err}`)
           }
         } else {
-          console.warn('[ws] no database configured — server id not assigned')
+          compatLogWarn('ws', 'no database configured — server id not assigned')
         }
 
         const activeId = connId ?? socketId
@@ -149,8 +152,9 @@ export function createDaemonWebSocketSession(
           remoteAddress: identityAddress,
         })
         if (evicted.length > 0) {
-          console.log(
-            `[ws] evicted ${evicted.length} duplicate connection(s) for ${
+          compatLogInfo(
+            'ws',
+            `evicted ${evicted.length} duplicate connection(s) for ${
               serverId ?? message.hostname ?? activeId
             }`,
           )
@@ -165,19 +169,19 @@ export function createDaemonWebSocketSession(
           }
           recordDaemonMessage(activeId, 'out', ack)
           ws.send(JSON.stringify(ack))
-          console.log(`[ws] daemon server id: ${serverId} (${activeId})`)
+          compatLogInfo('ws', `daemon server id: ${serverId} (${activeId})`)
 
           if (db && identityAddress === '__direct__') {
             try {
               await tryAssignColocatedDaemonToInstalledOrganization(db)
             } catch (err) {
-              console.error('[ws] failed to assign colocated server:', err)
+              compatLogError('ws', `failed to assign colocated server: ${err}`)
             }
           }
         }
 
         if (message.hostname) {
-          console.log(`[ws] daemon hostname: ${message.hostname} (${activeId})`)
+          compatLogInfo('ws', `daemon hostname: ${message.hostname} (${activeId})`)
         }
       })()
     }
@@ -213,7 +217,7 @@ export function createDaemonWebSocketSession(
     if (pingTimer) clearInterval(pingTimer)
     if (connId) {
       unregisterDaemon(connId)
-      console.log(`[ws] daemon disconnected: ${connId}`)
+      compatLogInfo('ws', `daemon disconnected: ${connId}`)
     }
   }
 

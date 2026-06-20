@@ -21,6 +21,7 @@ import { ensureServerResource } from '../server-registry.ts'
 import { createLicense } from './license.ts'
 import { hashPassword } from './password.ts'
 import { SUPERADMIN_ROLE } from './session-store.ts'
+import { compatLogInfo, compatLogWarn } from '../log-compat.ts'
 
 const ORG_NAME_RE = /^[A-Za-z0-9 ._-]+$/
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -282,8 +283,9 @@ export async function assignColocatedDaemonToOrganization(
 ): Promise<boolean> {
   const serverId = await resolveColocatedServerId(db)
   if (!serverId) {
-    console.log(
-      '[install] colocated server not found yet — will assign on daemon connect',
+    compatLogInfo(
+      'install',
+      'colocated server not found yet — will assign on daemon connect',
     )
     return false
   }
@@ -306,8 +308,9 @@ export async function assignColocatedDaemonToOrganization(
   }
 
   if (updated.length > 0) {
-    console.log(
-      `[install] assigned colocated server ${serverId} to organization ${organizationId}`,
+    compatLogInfo(
+      'install',
+      `assigned colocated server ${serverId} to organization ${organizationId}`,
     )
     return true
   }
@@ -456,9 +459,9 @@ export async function completeInstanceInstall(
         { create: true },
       )
     } catch (err) {
-      console.warn(
-        '[install] failed to write license credentials to disk:',
-        err,
+      compatLogWarn(
+        'install',
+        `failed to write license credentials to disk: ${err}`,
       )
     }
   }

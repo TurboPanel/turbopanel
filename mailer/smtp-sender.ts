@@ -11,6 +11,7 @@ import {
 } from '../src/email/smtp-resolve.ts'
 import type { EmailJob } from '../src/email/types.ts'
 import type { Db } from './db.ts'
+import { logError } from '../src/logger.ts'
 
 const POOL_OPTS = { pool: true, maxConnections: 5, maxMessages: 100 }
 const DEFAULT_FROM = 'noreply@turbopanel.local'
@@ -231,7 +232,7 @@ export class MailerSmtpSender {
       }
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e)
-      console.error('[TurboPanel mailer] send failed:', errMsg)
+      logError('mailer', `send failed: ${errMsg}`)
       return { success: false, error: errMsg, permanent: isPermanentSmtpError(e) }
     }
   }

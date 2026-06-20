@@ -3,6 +3,7 @@ import type { Db } from '../db.ts'
 import { account, user } from '../db/schema.ts'
 import { isInstanceInstalled } from './install-state.ts'
 import { verifyPassword } from './password.ts'
+import { compatLogWarn } from '../log-compat.ts'
 
 export const PAM_ROOT_USERNAME = 'root'
 
@@ -79,8 +80,9 @@ export async function verifyInstallHostCredentials(
   if (!HOST_USERNAME_RE.test(trimmed) || !password) return false
 
   if (isDevHostAuthMode()) {
-    console.warn(
-      '[dev] TURBOPANEL_DEV_HOST_AUTH=group-only — PAM password verification is disabled; verifying group membership only',
+    compatLogWarn(
+      'dev',
+      'TURBOPANEL_DEV_HOST_AUTH=group-only — PAM password verification is disabled; verifying group membership only',
     )
     if (trimmed === PAM_ROOT_USERNAME) return true
     return await userHasInstallSudo(trimmed)

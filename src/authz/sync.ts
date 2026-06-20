@@ -9,6 +9,7 @@ import {
   type PermissionKey,
   type RoleKey,
 } from './catalog.ts'
+import { logInfo } from '../logger.ts'
 
 export async function syncAuthzCatalog(db: Db): Promise<void> {
   await db.transaction(async (tx) => {
@@ -103,7 +104,8 @@ export async function syncAuthzCatalog(db: Db): Promise<void> {
     }
   })
 
-  console.log(
-    `[authz] catalog synced: ${PERMISSIONS.length} permissions, ${Object.keys(ROLES).length} roles`,
+  logInfo(
+    'authz',
+    `catalog synced: ${PERMISSIONS.length} permissions, ${Object.keys(ROLES).length} roles`,
   )
 }

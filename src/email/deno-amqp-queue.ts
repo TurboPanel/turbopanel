@@ -5,6 +5,7 @@ import {
   EMAIL_AMQP_ROUTING_KEY,
 } from './amqp-topology.ts'
 import type { EmailJob, EmailQueue } from './types.ts'
+import { compatLogWarn } from '../log-compat.ts'
 
 export const DEFAULT_AMQP_URL = 'amqp://guest:guest@localhost:19828'
 
@@ -31,7 +32,7 @@ class DenoAmqpQueue implements EmailQueue {
         this.channel = await this.connection.createConfirmChannel()
         await assertEmailAmqpTopology(this.channel)
       })().catch((error) => {
-        console.warn('[TurboPanel email] AMQP connection failed', error)
+        compatLogWarn('email', `AMQP connection failed: ${error}`)
         this.connection = null
         this.channel = null
       }).finally(() => {
@@ -59,7 +60,7 @@ class DenoAmqpQueue implements EmailQueue {
         )
       })
     } catch (error) {
-      console.warn('[TurboPanel email] AMQP publish failed', error)
+      compatLogWarn('email', `AMQP publish failed: ${error}`)
     }
   }
 

@@ -1,3 +1,5 @@
+import { compatLogWarn } from './log-compat.ts'
+
 /** Canonical runtime socket directory ( /var/run symlinks to /run on Linux ). */
 export const DEFAULT_SOCKET_DIR = '/run/turbopanel'
 
@@ -104,8 +106,9 @@ export async function hardenInstanceSocket(
     stderr: 'null',
   }).output()
   if (!setfacl.success) {
-    console.warn(
-      `[TurboPanel] Could not grant ${devUser} access to ${socketPath} via setfacl`,
+    compatLogWarn(
+      'instance',
+      `Could not grant ${devUser} access to ${socketPath} via setfacl`,
     )
   }
 }

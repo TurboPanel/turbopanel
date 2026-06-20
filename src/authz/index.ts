@@ -23,4 +23,3 @@ export type {
 } from './evaluator.ts'
 export { assertCanOr403 } from './http.ts'
 export { getAccessManagementPermission } from './access-management.ts'
-export { repairResourceRegistry } from './repair.ts'

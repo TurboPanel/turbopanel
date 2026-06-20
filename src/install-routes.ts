@@ -15,6 +15,7 @@ import {
 import { createSession, getSession } from './auth/session-store.ts'
 import { getDb } from './db.ts'
 import { INSTALL_API_PREFIX } from './surfaces.ts'
+import { compatLogInfo } from './log-compat.ts'
 
 const DAEMON_INSTALL_SCRIPT = `#!/bin/sh
 set -eu
@@ -210,9 +211,7 @@ export function registerInstallRoutes(app: Hono, opts: AuthRouteOpts) {
 
     const status = await getInstallStatus(db, opts.signupEnvOverride)
     const elapsed = (performance.now() - startedAt).toFixed(1)
-    console.log(
-      `[auth] install/status ${elapsed}ms`,
-    )
+    compatLogInfo('auth', `install/status ${elapsed}ms`)
     return c.json({ ok: true, ...status })
   })
 

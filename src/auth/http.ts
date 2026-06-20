@@ -23,6 +23,7 @@ import {
 } from './email-verification.ts'
 import { createSession, deleteSession, getSession } from './session-store.ts'
 import type { DerivedSecretsConfig } from './secrets.ts'
+import { compatLogError, compatLogInfo, compatLogWarn } from '../log-compat.ts'
 import { getDb } from '../db.ts'
 import type { Db } from '../db.ts'
 import { account, user } from '../db/schema.ts'
@@ -361,7 +362,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       if (isUserEmailUniqueViolation(err)) {
         return c.json({ ok: false, error: 'Email is already registered' }, 409)
       }
-      console.error('Sign-up failed:', err)
+      compatLogError('auth', `sign-up failed: ${err}`)
       return c.json({ ok: false, error: 'Sign-up failed' }, 500)
     }
 
@@ -384,21 +385,20 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
             verificationUrl,
           })
           if (isVerificationDevLoggingEnabled(opts)) {
-            console.log(
-              `[TurboPanel dev] Verification email queued for ${trimmedEmail}`,
-            )
-            console.log(`[TurboPanel dev] Verify URL: ${verificationUrl}`)
+            compatLogInfo('dev', `verification email queued for ${trimmedEmail}`)
+            compatLogInfo('dev', `verify URL: ${verificationUrl}`)
           }
         } catch (err) {
-          console.warn('Email verification enqueue failed:', err)
+          compatLogWarn('email', `verification email enqueue failed: ${err}`)
         }
       } else {
-        console.warn(
-          `[TurboPanel email] Verification email not sent for ${trimmedEmail}: email queue unavailable`,
+        compatLogWarn(
+          'email',
+          `verification email not sent for ${trimmedEmail}: email queue unavailable`,
         )
       }
     } catch (err) {
-      console.error('Email verification token generation failed:', err)
+      compatLogError('auth', `verification token generation failed: ${err}`)
     }
 
     return c.json({ ok: true }, 201)

@@ -8,6 +8,7 @@ import {
 } from './auth/invitation-grants.ts'
 import { createLicense, listLicenses, revokeLicense } from './auth/license.ts'
 import { createSessionMiddleware } from './auth/middleware.ts'
+import { compatLogError, compatLogInfo } from './log-compat.ts'
 import { updateSessionOrganization } from './auth/session-store.ts'
 import { getAccessManagementPermission } from './authz/access-management.ts'
 import { createAccessGrant } from './authz/create-access-grant.ts'
@@ -42,9 +43,7 @@ async function assertBillingOrOrgMember(
 ): Promise<Response | null> {
   const orgResourceId = await getResourceId(db, 'organization', organizationId)
   if (!orgResourceId) {
-    console.error(
-      `[authz] org resource not registered for ${organizationId} — run catalog sync to repair`,
-    )
+    compatLogError('authz', `org resource not registered for ${organizationId} — run catalog sync to repair`)
     return c.json({ error: 'Organization authorization not configured' }, 500)
   }
   return assertCanOr403(c, 'organization:billing', orgResourceId)
@@ -600,7 +599,7 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
     const installCommand =
       `curl -fsSL ${origin}/api/install/v1/daemon-install.sh | sh -s -- --license ${licenseId}:${licenseToken}${hostFlag}`
 
-    console.log('[auth] license created; licenseToken is shown once and not stored in plaintext')
+    compatLogInfo('auth', 'license created; licenseToken is shown once and not stored in plaintext')
 
     return c.json({ licenseId, licenseToken, installCommand })
   })

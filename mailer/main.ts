@@ -7,6 +7,7 @@ import { createMailerDb } from './db.ts'
 import { RateLimiter } from './rate-limiter.ts'
 import { createMailerSmtpSender } from './smtp-sender.ts'
 import type { EmailJob } from '../src/email/types.ts'
+import { logError, logInfo, logWarn } from '../src/logger.ts'
 
 const DEFAULT_AMQP_URL = 'amqp://guest:guest@localhost:19828'
 const QUEUE = EMAIL_AMQP_QUEUE
@@ -51,9 +52,7 @@ async function connectAmqp(url: string): Promise<AmqpConnection> {
     } catch (error) {
       if (attempt === maxAttempts) throw error
       const errMsg = error instanceof Error ? error.message : String(error)
-      console.warn(
-        `[TurboPanel mailer] AMQP connect failed (attempt ${attempt}/${maxAttempts}): ${errMsg}`,
-      )
+      logWarn('mailer', `AMQP connect failed (attempt ${attempt}/${maxAttempts}): ${errMsg}`)
       await sleep(1000)
     }
   }
@@ -75,22 +74,22 @@ async function pauseConsumptionForRateLimit(msg: NonNullable<AmqpMessage>, waitM
     consumerTag = null
     await activeChannel.cancel(activeConsumerTag).catch((error: unknown) => {
       const errMsg = error instanceof Error ? error.message : String(error)
-      console.warn('[TurboPanel mailer] failed to pause consumer:', errMsg)
+      logWarn('mailer', `failed to pause consumer: ${errMsg}`)
     })
   }
 
   activeChannel.nack(msg, false, true)
-  console.warn(`[TurboPanel mailer] rate limit exhausted, requeueing and pausing for ${waitMs}ms`)
+  logWarn('mailer', `rate limit exhausted, requeueing and pausing for ${waitMs}ms`)
   await sleep(waitMs)
   await startConsumer().catch((error: unknown) => {
     const errMsg = error instanceof Error ? error.message : String(error)
-    console.error('[TurboPanel mailer] failed to resume consumer:', errMsg)
+    logError('mailer', `failed to resume consumer: ${errMsg}`)
   })
 }
 
 async function handleMessage(msg: AmqpMessage): Promise<void> {
   if (!msg) {
-    console.log('[TurboPanel mailer] consumer cancelled')
+    logInfo('mailer', 'consumer cancelled')
     consumerTag = null
     return
   }
@@ -100,13 +99,13 @@ async function handleMessage(msg: AmqpMessage): Promise<void> {
     try {
       job = parseEmailJob(JSON.parse(msg.content.toString()))
     } catch {
-      console.error('[TurboPanel mailer] invalid JSON payload')
+      logError('mailer', 'invalid JSON payload')
       channel!.nack(msg, false, false)
       return
     }
 
     if (!job) {
-      console.error('[TurboPanel mailer] unknown or invalid job type')
+      logError('mailer', 'unknown or invalid job type')
       channel!.nack(msg, false, false)
       return
     }
@@ -124,16 +123,16 @@ async function handleMessage(msg: AmqpMessage): Promise<void> {
     }
 
     if (result.permanent) {
-      console.error('[TurboPanel mailer] permanent error:', result.error)
+      logError('mailer', `permanent error: ${result.error}`)
       channel!.nack(msg, false, false)
       return
     }
 
-    console.warn('[TurboPanel mailer] transient SMTP error, requeueing:', result.error)
+    logWarn('mailer', `transient SMTP error, requeueing: ${result.error}`)
     channel!.nack(msg, false, true)
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error)
-    console.error('[TurboPanel mailer] handler error:', errMsg)
+    logError('mailer', `handler error: ${errMsg}`)
     channel!.nack(msg, false, true)
   }
 }
@@ -150,7 +149,7 @@ channel = await connection.createChannel()
 await assertEmailAmqpTopology(channel)
 await channel.prefetch(1)
 
-console.log(`[TurboPanel mailer] consuming from ${QUEUE} at ${amqpUrl}`)
+logInfo('mailer', `consuming from ${QUEUE} at ${amqpUrl}`)
 
 await startConsumer()
 

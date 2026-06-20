@@ -1,4 +1,5 @@
 import { generateSecret } from "../generate-secret.ts";
+import { compatLogWarn } from "../log-compat.ts";
 
 export type VersionedSecret = {
   version: number;
@@ -70,7 +71,7 @@ export function parseSecretsEnv(
     if (!allowEphemeralSecrets(runtime)) {
       throw new Error("TURBOPANEL_SECRET or TURBOPANEL_SECRETS is required");
     }
-    console.warn("[auth] No secret configured — using ephemeral random secret (dev only)");
+    compatLogWarn('auth', 'No secret configured — using ephemeral random secret (dev only)');
     versioned = [{ version: 1, value: generateSecret() }];
   }
 

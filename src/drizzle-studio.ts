@@ -10,6 +10,7 @@ import {
   probeDrizzleStudioPort,
 } from './drizzle-studio-probe.ts'
 import { resolveNodePath } from './node-path.ts'
+import { logInfo, logWarn } from './logger.ts'
 
 const INSTANCE_REPO_ROOT = (() => {
   const here = dirname(fromFileUrl(import.meta.url))
@@ -63,9 +64,9 @@ export async function drizzleStudioStatus(): Promise<{
 export async function ensureDrizzleStudioInDev(): Promise<void> {
   const started = await startDrizzleStudio()
   if (started.ok) {
-    console.log(`[TurboPanel] Drizzle Studio ready at ${started.browserUrl}`)
+    logInfo('instance', `Drizzle Studio ready at ${started.browserUrl}`)
   } else {
-    console.warn(`[TurboPanel] Drizzle Studio failed to start: ${started.error}`)
+    logWarn('instance', `Drizzle Studio failed to start: ${started.error}`)
   }
 }
 

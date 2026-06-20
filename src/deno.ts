@@ -4,6 +4,7 @@ import { createApp } from './app.ts'
 import { createDenoDb } from './db.ts'
 import { syncAuthzCatalog } from './authz/sync.ts'
 import { ensureDbSchemaReady } from './db/schema-push.ts'
+import { logInfo } from './logger.ts'
 import { registerDaemonWebSocket } from './deno-ws.ts'
 import { registerVersionRoute } from './daemon-version.ts'
 import { registerSystemRoutes } from './system-routes.ts'
@@ -39,7 +40,7 @@ async function resolveEmailQueue(): Promise<EmailQueue> {
   if (await probeAmqpBrokerReachable(DEFAULT_AMQP_URL)) {
     return createDenoAmqpQueue({ amqpUrl: DEFAULT_AMQP_URL })
   }
-  console.log('[TurboPanel email] AMQP broker unavailable; using noop queue')
+  logInfo('email', 'AMQP broker unavailable; using noop queue')
   return createNoopQueue()
 }
 
@@ -92,7 +93,8 @@ Deno.serve({
   signal: abort.signal,
   async onListen({ path }) {
     await hardenInstanceSocket(path)
-    console.log(
+    logInfo(
+      'instance',
       `TurboPanel listening on ${path}; developer surface ${
         developerSurface ? 'enabled' : 'disabled'
       }`,
