@@ -6,13 +6,11 @@ import {
   organization,
   realm,
   resource,
-  role,
   user,
 } from '../db/schema.ts'
 import { defaultInvitationGrants, materializeInvitationGrants } from '../auth/invitation-grants.ts'
 import { registerResource } from './resource-registry.ts'
 import { can } from './evaluator.ts'
-import { syncAuthzCatalog } from './sync.ts'
 import type { PermissionKey } from './catalog.ts'
 
 const dbUrl = Deno.env.get('TURBOPANEL_DATABASE_URL')?.trim() ??
@@ -41,7 +39,6 @@ async function withTestFixtures(
   }
 
   const db = createDenoDb()
-  await syncAuthzCatalog(db)
 
   const email = `member-test-${crypto.randomUUID()}@example.com`
   const now = new Date().toISOString()
@@ -141,24 +138,15 @@ Deno.test('default invited member cannot mutate realm-tree resources', async () 
   })
 })
 
-Deno.test('elevated manager role grants realm write after explicit grant', async () => {
+Deno.test('elevated manager access profile grants realm write after explicit grant', async () => {
   await withTestFixtures(async ({ db, userId, realmResourceId }) => {
-    const managerRole = await db
-      .select({ id: role.id })
-      .from(role)
-      .where(eq(role.key, 'manager'))
-      .limit(1)
-
-    const managerRoleId = managerRole[0]?.id
-    if (!managerRoleId) throw new Error('manager role missing from catalog')
-
     await db.insert(access).values({
       subjectKind: 'user',
       subjectId: userId,
       resourceId: realmResourceId,
       effect: 'allow',
-      roleId: managerRoleId,
-      permissionId: null,
+      accessProfileKey: 'manager',
+      permissionKey: null,
     })
 
     const allowed = await can(db, userId, 'realm:rw', realmResourceId)

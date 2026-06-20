@@ -1,3 +1,10 @@
+/**
+ * Static authorization catalog: access profiles and permissions are compile-time
+ * constants defined in code (not runtime-editable, not DB rows).
+ *
+ * Distinct from `user.role` (instance authority, e.g. superadmin).
+ */
+
 export const PERMISSIONS = [
   'organization:ro',
   'organization:rw',
@@ -29,7 +36,7 @@ export const PERMISSIONS = [
 
 export type PermissionKey = (typeof PERMISSIONS)[number]
 
-export const ROLES = {
+export const ACCESS_PROFILES = {
   owner: [...PERMISSIONS],
   manager: [
     'organization:ro',
@@ -119,7 +126,7 @@ export const ROLES = {
   ],
 } as const satisfies Record<string, readonly PermissionKey[]>
 
-export type RoleKey = keyof typeof ROLES
+export type AccessProfileKey = keyof typeof ACCESS_PROFILES
 
 export const RESOURCE_KINDS = [
   'organization',
@@ -131,7 +138,7 @@ export const RESOURCE_KINDS = [
   'hosting',
 ] as const
 
-export const ROLE_DISPLAY_NAMES: Record<RoleKey, string> = {
+export const ACCESS_PROFILE_DISPLAY_NAMES: Record<AccessProfileKey, string> = {
   owner: 'Owner',
   manager: 'Manager',
   member: 'Member',
@@ -168,4 +175,46 @@ export const PERMISSION_DISPLAY_NAMES: Record<PermissionKey, string> = {
   'hosting:ro': 'View hosting',
   'hosting:rw': 'Manage hosting',
   'hosting:reload': 'Reload hosting',
+}
+
+const PERMISSION_KEY_SET = new Set<string>(PERMISSIONS)
+
+export function isPermissionKey(value: string): value is PermissionKey {
+  return PERMISSION_KEY_SET.has(value)
+}
+
+export function isAccessProfileKey(value: string): value is AccessProfileKey {
+  return Object.hasOwn(ACCESS_PROFILES, value)
+}
+
+export function accessProfilesGrantingPermission(
+  permissionKey: PermissionKey,
+): AccessProfileKey[] {
+  return (Object.keys(ACCESS_PROFILES) as AccessProfileKey[]).filter((key) =>
+    (ACCESS_PROFILES[key] as readonly PermissionKey[]).includes(permissionKey),
+  )
+}
+
+export function getAccessProfileCatalog(): Array<{
+  key: AccessProfileKey
+  displayName: string
+  permissions: readonly PermissionKey[]
+}> {
+  return (Object.keys(ACCESS_PROFILES) as AccessProfileKey[])
+    .toSorted()
+    .map((key) => ({
+      key,
+      displayName: ACCESS_PROFILE_DISPLAY_NAMES[key],
+      permissions: [...ACCESS_PROFILES[key]],
+    }))
+}
+
+export function getPermissionCatalog(): Array<{
+  key: PermissionKey
+  displayName: string
+}> {
+  return [...PERMISSIONS].toSorted().map((key) => ({
+    key,
+    displayName: PERMISSION_DISPLAY_NAMES[key],
+  }))
 }

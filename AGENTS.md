@@ -253,7 +253,7 @@ On the **Deno runtime**, initial setup is gated by host PAM — **`root`** or an
 
 **Install flow:** `POST /api/install/v1/bootstrap` verifies host PAM and returns `{ ok: true }` only (no cookies). The UI keeps host username/password in the form and reveals superadmin fields client-side. `POST /api/install/v1/` re-verifies host PAM, creates org (**Default Organization**) + team (**Default Team**) + **superadmin** user (`role: superadmin`, email + credential `account`), assigns the co-located daemon, and returns a signed session cookie for the superadmin only. Host accounts cannot sign in via `/auth/sign-in`. This path is **never active on Workers**.
 
-Superadmin-only routes (`createRootOnlyMiddleware`, `resolveRootSession`) authorize by **`user.role === 'superadmin'`**, not PAM root.
+Superadmin-only routes (`createRootOnlyMiddleware`, `resolveRootSession`) authorize by **`user.role === 'superadmin'`**, not PAM root. `user.role` ∈ `superadmin | admin | user` is **instance authority only** and is distinct from resource access profiles. A superadmin always bypasses resource authorization checks — `can()` short-circuits in SQL without requiring any `access` rows.
 
 #### Session secret configuration
 
@@ -294,9 +294,9 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `POST` | `/api/install/v1/bootstrap` | Deno: verify host PAM (root or sudo user), no cookies |
 | `POST` | `/api/install/v1/` | Deno: host PAM + superadmin setup → superadmin session only |
 | `GET` | `/api/client/v1/servers` | Session required: servers visible to the user via `listVisible` (`server:ro`/`server:rw`), with live `connected` / `hostname` from the daemon hub |
-| `POST` | `/api/client/v1/invitations/{id}/accept` | Accept a pending invitation; atomically claims the row, materializes `invitation.grants` into `access` rows (default: org `member` role), updates session `organizationId` |
-| `GET` | `/api/client/v1/roles` | Role catalog (any authenticated user) |
-| `GET` | `/api/client/v1/permissions` | Permission catalog (any authenticated user) |
+| `POST` | `/api/client/v1/invitations/{id}/accept` | Accept a pending invitation; atomically claims the row, materializes `invitation.grants` into `access` rows (default: org member access-profile grant), updates session `organizationId` |
+| `GET` | `/api/client/v1/access-profiles` | Access profile catalog — static, served from code constants (any authenticated user) |
+| `GET` | `/api/client/v1/permissions` | Permission catalog — static, served from code constants (any authenticated user) |
 | `GET` | `/api/client/v1/access?resourceId=<uuid>` | List access grants (requires `organization:members`, `team:members`, or `{kind}:rw` on the target resource) |
 | `POST` | `/api/client/v1/access` | Create an access grant (same resource-kind management permission as list) |
 | `DELETE` | `/api/client/v1/access/{id}` | Revoke an access grant (same resource-kind management permission as list) |
@@ -304,7 +304,7 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `POST` | `/api/client/v1/licenses` | Create a license (`organization:billing`) |
 | `DELETE` | `/api/client/v1/licenses/{id}` | Revoke a license (`organization:billing`) |
 
-**Install mode (Deno self-hosted):** `isInstanceInstalled()` is false on a fresh DB. The UI `/install` page first verifies host PAM (`POST /api/install/v1/bootstrap`, client-side gate only), then collects superadmin email/password. Org/team names are fixed defaults. `completeInstanceInstall` registers the org `resource` and inserts an owner `access` row for the superadmin. After install, sign-in uses superadmin email/password only. The co-located daemon's `server.organization_id` is assigned to **Default Organization** on install (`assignColocatedDaemonToOrganization` in `install-state.ts`, resolving the server row from the live hub or by `metadata.machineId` / hostname) and again when the Unix-socket daemon sends `hello` if still unassigned.
+**Install mode (Deno self-hosted):** `isInstanceInstalled()` is false on a fresh DB. The UI `/install` page first verifies host PAM (`POST /api/install/v1/bootstrap`, client-side gate only), then collects superadmin email/password. Org/team names are fixed defaults. `completeInstanceInstall` registers the org `resource` and inserts an owner `access` row for the superadmin (direct insert with `accessProfileKey: 'owner'`, no `role` table lookup). After install, sign-in uses superadmin email/password only. The co-located daemon's `server.organization_id` is assigned to **Default Organization** on install (`assignColocatedDaemonToOrganization` in `install-state.ts`, resolving the server row from the live hub or by `metadata.machineId` / hostname) and again when the Unix-socket daemon sends `hello` if still unassigned.
 
 #### New files
 

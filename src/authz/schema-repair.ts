@@ -29,15 +29,18 @@ export async function repairSchemaFromMigrations(db: Db): Promise<void> {
     END $$
   `)
 
+  await db.execute(sql`DROP INDEX IF EXISTS "access_subject_resource_role_unique"`)
+  await db.execute(sql`DROP INDEX IF EXISTS "access_subject_resource_permission_unique"`)
+
   await db.execute(sql`
-    CREATE UNIQUE INDEX IF NOT EXISTS "access_subject_resource_role_unique"
-      ON "access" ("subject_kind","subject_id","resource_id","role_id")
-      WHERE role_id IS NOT NULL
+    CREATE UNIQUE INDEX IF NOT EXISTS "access_subject_resource_profile_unique"
+      ON "access" ("subject_kind","subject_id","resource_id","access_profile_key")
+      WHERE access_profile_key IS NOT NULL
   `)
 
   await db.execute(sql`
     CREATE UNIQUE INDEX IF NOT EXISTS "access_subject_resource_permission_unique"
-      ON "access" ("subject_kind","subject_id","resource_id","permission_id")
-      WHERE permission_id IS NOT NULL
+      ON "access" ("subject_kind","subject_id","resource_id","permission_key")
+      WHERE permission_key IS NOT NULL
   `)
 }

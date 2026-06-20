@@ -1,6 +1,6 @@
 # Database
 
-Schema changes are versioned in **`migrations/`**. After editing `schema.ts`, run `pnpm drizzle-kit generate` to create SQL files. Apply pending migrations with `TURBOPANEL_DATABASE_URL=… pnpm migrate`; Workers deploy runs the same command. **`pnpm migrate` applies versioned SQL via `drizzle-kit migrate` and then syncs the authz catalog** (`role`, `permission`, `permit` from `src/authz/catalog.ts`). Applied migration versions are recorded in **`public.migration`** (configured in `drizzle.config.ts`).
+Schema changes are versioned in **`migrations/`**. After editing `schema.ts`, run `pnpm drizzle-kit generate` to create SQL files. Apply pending migrations with `TURBOPANEL_DATABASE_URL=… pnpm migrate`; Workers deploy runs the same command. **`pnpm migrate` applies versioned SQL via `drizzle-kit migrate` and then runs resource-registry repair** (`repairSchemaFromMigrations` + `repairResourceRegistry` in `scripts/seed-catalog.ts`). Applied migration versions are recorded in **`public.migration`** (configured in `drizzle.config.ts`).
 
 The co-located dev server has live data — treat every database change as production-adjacent.
 
@@ -11,7 +11,7 @@ The co-located dev server has live data — treat every database change as produ
 | **Pull** (DB → code) | Live Postgres (Studio / SQL) | `./introspect.sh` | `introspect` |
 | **Push** (code → DB, Deno dev only) | `schema.ts` | `./sync.sh` | `push` |
 | **Generate migration** | `schema.ts` | `pnpm drizzle-kit generate` | `generate` |
-| **Apply migration** (Workers deploy + manual) | pending SQL in `migrations/` | `TURBOPANEL_DATABASE_URL=… pnpm migrate` | `migrate` + catalog seed |
+| **Apply migration** (Workers deploy + manual) | pending SQL in `migrations/` | `TURBOPANEL_DATABASE_URL=… pnpm migrate` | `migrate` + resource registry repair |
 
 Pick one source of truth per change — do not edit both sides and blindly run both scripts.
 
@@ -44,7 +44,7 @@ Use when schema changes should ship as versioned SQL (required for Workers deplo
 1. Edit `src/db/schema.ts`.
 2. Run `pnpm drizzle-kit generate` — writes SQL under `migrations/`.
 3. Commit the new migration files.
-4. Apply: `TURBOPANEL_DATABASE_URL=… pnpm migrate` (local or CI). Workers deploy runs `pnpm migrate` automatically — schema migrations and authz catalog sync run in one step.
+4. Apply: `TURBOPANEL_DATABASE_URL=… pnpm migrate` (local or CI). Workers deploy runs `pnpm migrate` automatically — schema migrations and resource-registry repair run in one step.
 
 Applied versions are tracked in **`public.migration`** (`drizzle.config.ts` sets `migrations: { table: 'migration', schema: 'public' }`).
 
@@ -72,30 +72,32 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `sync
 | **Identity** | `user`, `account`, `apikey`, `session`, `verification`, `passkey`, `2fa` |
 | **Organizations** | `organization`, `member`, `team`, `teammate`, `invitation`, `license` |
 | **Resource tree** | `realm`, `environment`, `project`, `service`, `hosting` |
-| **Authorization** | `role`, `permission`, `permit`, `resource`, `access` |
+| **Authorization** | `resource`, `access` |
 | **Config** | `setting` |
 | **Runtime** | `server` |
 
+> Access profiles and permissions are **static code constants** defined in `../authz/catalog.ts` (`ACCESS_PROFILES`, `PERMISSIONS`) — not DB rows. There are no `role`, `permission`, or `permit` tables.
+
 Drizzle relations are defined for future Better Auth adapter use. `IS_SIGNUP_ENABLED_CONFIG_KEY` is the `setting.key` for self-service signup.
 
-**Organizations:** `member` and `invitation` are **pure relationship tables** — `member.role` and `invitation.role` were removed because authorization is now derived exclusively from `access` rows, not membership columns. **`invitation.grants`** (JSONB) stores the intended access grants (`InvitationGrantSpec[]` in `src/auth/invitation-grants.ts`); they are materialized into `access` rows on accept. When `grants` is null, accept applies a default org-scoped `member` role grant.
+**Organizations:** `member` and `invitation` are **pure relationship tables** — `member.role` and `invitation.role` were removed because authorization is now derived exclusively from `access` rows, not membership columns. **`invitation.grants`** (JSONB) stores the intended access grants (`InvitationGrantSpec[]` in `src/auth/invitation-grants.ts`); they are materialized into `access` rows on accept. When `grants` is null, accept applies a default org-scoped member access-profile grant.
 
-**Uniqueness:** `member(organization_id, user_id)`, `teammate(team_id, user_id)`, and partial unique indexes on `access` for role- and permission-targeted grants prevent duplicate membership or grant rows on concurrent invite acceptance/retries.
+**Uniqueness:** `member(organization_id, user_id)`, `teammate(team_id, user_id)`, and partial unique indexes on `access` for access-profile-key and permission-key targeted grants prevent duplicate membership or grant rows on concurrent invite acceptance/retries.
 
 **Server resources:** `server` rows with an `organization_id` must have a matching `resource` row (`kind = 'server'`) for `listVisible()` to include them. Registration happens in `server-registry.ts` (create/bind), `assignColocatedDaemonToOrganization()` (install), and developer `PATCH /servers/:id` org assignment.
 
-**Install (Deno):** A fresh DB has no org or superadmin. `src/auth/install-state.ts` `isInstanceInstalled()` is false until `completeInstanceInstall` creates org + team + superadmin user with a named org. **`organization.slug`** stays **NULL** (reserved for a future feature). Org extras (e.g. logo URL) belong in **`organization.metadata`** — there is no `logo` column. Install sets **`email`** and **`role`** (on `user`) only — `display_name`, `username`, and `display_username` stay **NULL** until the user chooses them. `completeInstanceInstall` registers the org `resource` row and inserts an owner `access` grant for the superadmin user (via `registerResource` + `role.key = 'owner'`).
+**Install (Deno):** A fresh DB has no org or superadmin. `src/auth/install-state.ts` `isInstanceInstalled()` is false until `completeInstanceInstall` creates org + team + superadmin user with a named org. **`organization.slug`** stays **NULL** (reserved for a future feature). Org extras (e.g. logo URL) belong in **`organization.metadata`** — there is no `logo` column. Install sets **`email`** and **`role`** (on `user`) only — `display_name`, `username`, and `display_username` stay **NULL** until the user chooses them. `completeInstanceInstall` registers the org `resource` row and inserts an owner `access` grant for the superadmin user (via `registerResource` + direct `access` insert with `accessProfileKey: 'owner'`).
 
 ### Client API (authz integration)
 
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/api/client/v1/invitations/{id}/accept` | Accept a pending invitation; creates `member`/`teammate` rows, materializes `invitation.grants` into `access` rows, updates session `organizationId` |
-| `GET` | `/api/client/v1/roles` | Role catalog (any authenticated user) |
-| `GET` | `/api/client/v1/permissions` | Permission catalog (any authenticated user) |
-| `GET` | `/api/client/v1/access?resourceId=<uuid>` | List access grants (resource-kind management permission required) |
-| `POST` | `/api/client/v1/access` | Create an access grant (resource-kind management permission required) |
-| `DELETE` | `/api/client/v1/access/{id}` | Revoke an access grant (resource-kind management permission required) |
+| `GET` | `/api/client/v1/access-profiles` | Access profile catalog — static, no DB query (any authenticated user) |
+| `GET` | `/api/client/v1/permissions` | Permission catalog — static, no DB query (any authenticated user) |
+| `GET` | `/api/client/v1/access?resourceId=<uuid>` | List access grants; rows carry `accessProfileKey` or `permissionKey` string fields |
+| `POST` | `/api/client/v1/access` | Create an access grant; body: `{ subjectKind, subjectId, resourceId, effect, accessProfileKey?, permissionKey? }` — exactly one key required |
+| `DELETE` | `/api/client/v1/access/{id}` | Revoke an access grant |
 
 #### Resource tree CRUD
 
@@ -135,7 +137,7 @@ Implemented in `src/resource-routes.ts`, registered from `registerClientRoutes`.
 
 ### Catalog seeding
 
-`role`, `permission`, and `permit` rows are the materialized copy of the hardcoded catalog in `src/authz/catalog.ts`. `syncAuthzCatalog(db)` runs automatically on Deno boot (after `ensureDbSchemaReady` in `src/deno.ts`), after dev-reset (`src/dev-reset.ts`), and at the end of `pnpm migrate` (via `scripts/seed-catalog.ts`, which calls the same `syncAuthzCatalog` implementation). Use `pnpm seed` to re-sync the catalog without applying migrations. The catalog is the source of truth — never edit `role`/`permission`/`permit` rows directly in Studio; edit `catalog.ts` and let the sync reconcile.
+Access profiles and permissions are **static code constants** in `src/authz/catalog.ts` — there is nothing to seed. `syncAuthzCatalog` has been removed. `pnpm migrate` applies versioned SQL migrations and repairs the `resource` registry (`repairSchemaFromMigrations` + `repairResourceRegistry` in `scripts/seed-catalog.ts`). `pnpm seed` re-runs the same repair without applying migrations. Never edit access profiles or permissions in Studio — they do not exist as DB rows.
 
 ### `license` table
 
@@ -156,20 +158,23 @@ Each physical server node gets a row in `server` (`id` uuidv7). On daemon connec
 | `../../sync.sh` | Push `schema.ts` → DB (Deno dev only; no migration files) |
 | `../../scripts/db-connect.sh` | Resolves `TURBOPANEL_DATABASE_URL` → `DATABASE_URL` for drizzle-kit scripts |
 | `../../migrations/` | Versioned SQL migration files (committed); applied by `pnpm migrate`; tracked in `public.migration` |
-| `../../scripts/seed-catalog.ts` | Deno entrypoint for `syncAuthzCatalog` — run by `pnpm migrate` and `pnpm seed` |
+| `../../scripts/seed-catalog.ts` | Deno entrypoint for `repairSchemaFromMigrations` + `repairResourceRegistry` — run by `pnpm migrate` and `pnpm seed`; no longer calls `syncAuthzCatalog` |
 | `../../drizzle/` | Ephemeral introspect scratch dir — `introspect.sh` deletes after adopt; never committed |
 
 ### Authz engine
 
-Runtime authorization lives in `../authz/` (pure TypeScript, safe for both Deno and Workers — no Deno-only imports). The catalog (`catalog.ts`) + sync (`sync.ts`) seed the `permission` / `role` / `permit` tables; the modules below evaluate access at request time against `resource` / `access`.
+Runtime authorization lives in `../authz/` (pure TypeScript, safe for both Deno and Workers — no Deno-only imports). Access profiles and permissions are static code constants in `catalog.ts`; `sync.ts` has been removed. The modules below evaluate access at request time against `resource` / `access`.
 
 | File | Purpose |
 |---|---|
+| `../authz/catalog.ts` | Static `ACCESS_PROFILES`, `PERMISSIONS`, `isAccessProfileKey`, `isPermissionKey`, `accessProfilesGrantingPermission`, `getAccessProfileCatalog`, `getPermissionCatalog` — no DB access |
 | `../authz/resource-registry.ts` | `registerResource` / `unregisterResource` / `getResourceByItem` / `getResourceId` — lifecycle of `resource` rows keyed by (`kind`, `item_id`) |
-| `../authz/evaluator.ts` | `getSubjects`, `getResourceAncestry`, `can`, `assertCan`, `listVisible`, `ForbiddenError` |
+| `../authz/evaluator.ts` | `getSubjects`, `getResourceAncestry`, `can`, `assertCan`, `listVisible`, `ForbiddenError` — expands access profiles from code constants; superadmin bypass in SQL |
 | `../authz/http.ts` | `assertCanOr403` Hono helper (503 / 401 / 403 short-circuit, `null` to continue) |
 
-`can()` resolves a permission in a **single recursive-CTE query** (`subjectset` → `ancestry` → `hits`, ordered closest-first with deny winning ties) — one round-trip, no per-ancestor queries. `listVisible()` applies the same leaf-first, deny-beats-allow resolution for `<kind>:ro` and `<kind>:rw` in SQL — **never rely on client-side filtering** for visibility.
+`can()` resolves a permission in a **single recursive-CTE query** (`subjectset` → `ancestry` → `hits`, ordered closest-first with deny winning ties) — one round-trip, no per-ancestor queries. Access profile expansion (`accessProfilesGrantingPermission`) happens in code before the query. A superadmin bypass (`EXISTS … WHERE role = 'superadmin'`) is OR'd into the final result so no explicit grants are needed for superadmins. `listVisible()` applies the same leaf-first, deny-beats-allow resolution for `<kind>:ro` and `<kind>:rw` in SQL — **never rely on client-side filtering** for visibility.
+
+**Follow-up (deferred):** Resource ancestry is currently computed from the generic `resource` shadow table. A future pass should compute it directly from real domain tables (`organization → realm → environment → project → service/hosting`, `organization → server`) and drop the `resource` table entirely.
 
 ## Connection (self-hosted dev)
 
@@ -185,4 +190,4 @@ Restart the instance only when **application code** changed — schema sync alon
 
 ### Empty database bootstrap (Deno dev)
 
-On startup, `src/deno.ts` calls `ensureDbSchemaReady()` when Postgres is configured. If required bootstrap tables are missing (`user`, `role`, `permission`, `permit`, `resource`, `access` — e.g. fresh Postgres volume, legacy DB before authz tables, partial migration, failed reset), the instance runs `drizzle-kit push --force` from `schema.ts` before syncing the catalog and accepting traffic. `./sync.sh` reads `TURBOPANEL_DATABASE_URL` (or `DATABASE_URL` override).
+On startup, `src/deno.ts` calls `ensureDbSchemaReady()` when Postgres is configured. If required bootstrap tables are missing (`user`, `resource`, `access` — e.g. fresh Postgres volume, legacy DB before authz tables, partial migration, failed reset), the instance runs `drizzle-kit push --force` from `schema.ts` before accepting traffic. `./sync.sh` reads `TURBOPANEL_DATABASE_URL` (or `DATABASE_URL` override).

@@ -1,7 +1,7 @@
 import { eq, sql, type SQL } from 'drizzle-orm'
 import type { Db } from '../db.ts'
 import { member, teammate } from '../db/schema.ts'
-import type { PermissionKey } from './catalog.ts'
+import { accessProfilesGrantingPermission, type PermissionKey } from './catalog.ts'
 
 export type { PermissionKey }
 
@@ -113,8 +113,8 @@ function buildSubjectsetBody(userId: string, subjects?: Subject[]): SQL {
  *
  * 1. `subjectset` — the user plus their teams and organizations.
  * 2. `ancestry` — the leaf resource walked up via `parent_id`.
- * 3. `hits` — access grants matching subject + permission (direct or via role
- *    permit), ordered closest-first with deny winning ties.
+ * 3. `hits` — access grants matching subject + permission (direct or via access
+ *    profile), ordered closest-first with deny winning ties.
  */
 export async function can(
   db: Db,
@@ -124,6 +124,14 @@ export async function can(
   opts?: CanOptions,
 ): Promise<boolean> {
   const subjectsetBody = buildSubjectsetBody(userId, opts?.subjects)
+  const profiles = accessProfilesGrantingPermission(permissionKey)
+  const accessPredicate =
+    profiles.length > 0
+      ? sql`acc.permission_key = ${permissionKey} OR acc.access_profile_key IN (${sql.join(
+          profiles.map((p) => sql`${p}`),
+          sql`, `,
+        )})`
+      : sql`acc.permission_key = ${permissionKey}`
 
   const rows = (await db.execute(sql`
     WITH RECURSIVE
@@ -143,19 +151,14 @@ export async function can(
       JOIN access acc ON acc.resource_id = a.id
       JOIN subjectset ss
         ON ss.subject_kind = acc.subject_kind AND ss.subject_id = acc.subject_id
-      WHERE (
-        acc.permission_id = (SELECT id FROM permission WHERE key = ${permissionKey})
-        OR acc.role_id IN (
-          SELECT pm.role_id
-          FROM permit pm
-          JOIN permission p ON p.id = pm.permission_id
-          WHERE p.key = ${permissionKey}
-        )
-      )
+      WHERE ${accessPredicate}
       ORDER BY a.depth ASC, (acc.effect = 'deny') DESC
       LIMIT 1
     )
-    SELECT coalesce((SELECT effect = 'allow' FROM hits), false) AS allowed
+    SELECT (
+      EXISTS(SELECT 1 FROM "user" WHERE id = ${userId}::uuid AND role = 'superadmin')
+      OR coalesce((SELECT effect = 'allow' FROM hits), false)
+    ) AS allowed
   `)) as unknown as Array<{ allowed: boolean | null }>
 
   return rows[0]?.allowed === true
@@ -194,8 +197,24 @@ export async function listVisible(
   { kind, userId, organizationId, filters }: ListVisibleInput,
 ): Promise<string[]> {
   const subjectsetBody = buildSubjectsetBody(userId)
-  const roKey = `${kind}:ro`
-  const rwKey = `${kind}:rw`
+  const roKey = `${kind}:ro` as PermissionKey
+  const rwKey = `${kind}:rw` as PermissionKey
+  const roProfiles = accessProfilesGrantingPermission(roKey)
+  const rwProfiles = accessProfilesGrantingPermission(rwKey)
+  const roAccessPredicate =
+    roProfiles.length > 0
+      ? sql`acc.permission_key = ${roKey} OR acc.access_profile_key IN (${sql.join(
+          roProfiles.map((p) => sql`${p}`),
+          sql`, `,
+        )})`
+      : sql`acc.permission_key = ${roKey}`
+  const rwAccessPredicate =
+    rwProfiles.length > 0
+      ? sql`acc.permission_key = ${rwKey} OR acc.access_profile_key IN (${sql.join(
+          rwProfiles.map((p) => sql`${p}`),
+          sql`, `,
+        )})`
+      : sql`acc.permission_key = ${rwKey}`
   const parentFilter = filters?.parentId
     ? sql`AND parent_id = ${filters.parentId}::uuid`
     : sql``
@@ -204,6 +223,11 @@ export async function listVisible(
     WITH RECURSIVE
     subjectset(subject_kind, subject_id) AS (
       ${subjectsetBody}
+    ),
+    is_superadmin AS (
+      SELECT EXISTS(
+        SELECT 1 FROM "user" WHERE id = ${userId}::uuid AND role = 'superadmin'
+      ) AS val
     ),
     leaves AS (
       SELECT id, item_id, parent_id
@@ -221,25 +245,25 @@ export async function listVisible(
     hits AS (
       SELECT
         w.leaf_item_id,
-        p.key AS permission_key,
         acc.effect AS effect,
-        w.depth AS depth
+        w.depth AS depth,
+        ${roKey} AS permission_key
       FROM walk w
       JOIN access acc ON acc.resource_id = w.node_id
       JOIN subjectset ss
         ON ss.subject_kind = acc.subject_kind AND ss.subject_id = acc.subject_id
-      JOIN LATERAL (
-        SELECT perm.key
-        FROM permission perm
-        WHERE acc.permission_id = perm.id
-          AND perm.key IN (${roKey}, ${rwKey})
-        UNION
-        SELECT perm.key
-        FROM permit pm
-        JOIN permission perm ON perm.id = pm.permission_id
-        WHERE pm.role_id = acc.role_id
-          AND perm.key IN (${roKey}, ${rwKey})
-      ) p ON true
+      WHERE ${roAccessPredicate}
+      UNION ALL
+      SELECT
+        w.leaf_item_id,
+        acc.effect AS effect,
+        w.depth AS depth,
+        ${rwKey} AS permission_key
+      FROM walk w
+      JOIN access acc ON acc.resource_id = w.node_id
+      JOIN subjectset ss
+        ON ss.subject_kind = acc.subject_kind AND ss.subject_id = acc.subject_id
+      WHERE ${rwAccessPredicate}
     ),
     resolved AS (
       SELECT DISTINCT ON (leaf_item_id, permission_key)
@@ -251,12 +275,13 @@ export async function listVisible(
     )
     SELECT DISTINCT l.item_id AS item_id
     FROM leaves l
-    WHERE EXISTS (
-      SELECT 1
-      FROM resolved r
-      WHERE r.leaf_item_id = l.item_id
-        AND r.effect = 'allow'
-    )
+    WHERE (SELECT val FROM is_superadmin)
+       OR EXISTS (
+         SELECT 1
+         FROM resolved r
+         WHERE r.leaf_item_id = l.item_id
+           AND r.effect = 'allow'
+       )
   `)) as unknown as Array<{ item_id: string }>
 
   return rows.map((row) => row.item_id)

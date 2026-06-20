@@ -1,6 +1,7 @@
-import { eq } from 'drizzle-orm'
+import { sql } from 'drizzle-orm'
 import type { Db } from '../db.ts'
-import { access, permission, role } from '../db/schema.ts'
+import { access } from '../db/schema.ts'
+import { isAccessProfileKey, isPermissionKey } from '../authz/catalog.ts'
 import { getResourceId } from '../authz/resource-registry.ts'
 
 /** Intended access grant stored on an invitation row (`invitation.grants` JSONB). */
@@ -8,9 +9,7 @@ export type InvitationGrantSpec = {
   resourceKind: string
   itemId: string
   effect?: 'allow' | 'deny'
-  roleId?: string
-  roleKey?: string
-  permissionId?: string
+  accessProfileKey?: string
   permissionKey?: string
 }
 
@@ -21,10 +20,47 @@ export function defaultInvitationGrants(
     {
       resourceKind: 'organization',
       itemId: organizationId,
-      roleKey: 'member',
+      accessProfileKey: 'member',
       effect: 'allow',
     },
   ]
+}
+
+function parseGrantTarget(
+  record: Record<string, unknown>,
+): Pick<InvitationGrantSpec, 'accessProfileKey' | 'permissionKey'> | null {
+  const accessProfileKeyFromRecord =
+    typeof record.accessProfileKey === 'string' ? record.accessProfileKey : undefined
+  const roleKeyFromRecord =
+    typeof record.roleKey === 'string' ? record.roleKey : undefined
+  if (
+    accessProfileKeyFromRecord &&
+    roleKeyFromRecord &&
+    accessProfileKeyFromRecord !== roleKeyFromRecord
+  ) {
+    return null
+  }
+
+  const accessProfileKey = accessProfileKeyFromRecord ?? roleKeyFromRecord
+  const permissionKey =
+    typeof record.permissionKey === 'string' ? record.permissionKey : undefined
+
+  const hasRoleId = typeof record.roleId === 'string' && record.roleId.length > 0
+  const hasPermissionId =
+    typeof record.permissionId === 'string' && record.permissionId.length > 0
+
+  if (hasRoleId && !accessProfileKey) return null
+  if (hasPermissionId && !permissionKey) return null
+  if (accessProfileKey && permissionKey) return null
+  if (!accessProfileKey && !permissionKey) return null
+
+  if (accessProfileKey && !isAccessProfileKey(accessProfileKey)) return null
+  if (permissionKey && !isPermissionKey(permissionKey)) return null
+
+  return {
+    ...(accessProfileKey ? { accessProfileKey } : {}),
+    ...(permissionKey ? { permissionKey } : {}),
+  }
 }
 
 export function parseInvitationGrants(
@@ -45,20 +81,17 @@ export function parseInvitationGrants(
     ) {
       return null
     }
+
+    const target = parseGrantTarget(record)
+    if (!target) return null
+
     const grant: InvitationGrantSpec = {
       resourceKind: record.resourceKind,
       itemId: record.itemId,
+      ...target,
     }
     if (record.effect === 'allow' || record.effect === 'deny') {
       grant.effect = record.effect
-    }
-    if (typeof record.roleId === 'string') grant.roleId = record.roleId
-    if (typeof record.roleKey === 'string') grant.roleKey = record.roleKey
-    if (typeof record.permissionId === 'string') {
-      grant.permissionId = record.permissionId
-    }
-    if (typeof record.permissionKey === 'string') {
-      grant.permissionKey = record.permissionKey
     }
     grants.push(grant)
   }
@@ -71,34 +104,6 @@ export function resolveInvitationGrants(
   organizationId: string,
 ): InvitationGrantSpec[] {
   return parseInvitationGrants(raw) ?? defaultInvitationGrants(organizationId)
-}
-
-async function resolveRoleId(
-  db: Db,
-  grant: InvitationGrantSpec,
-): Promise<string | null> {
-  if (grant.roleId) return grant.roleId
-  if (!grant.roleKey) return null
-  const rows = await db
-    .select({ id: role.id })
-    .from(role)
-    .where(eq(role.key, grant.roleKey))
-    .limit(1)
-  return rows[0]?.id ?? null
-}
-
-async function resolvePermissionId(
-  db: Db,
-  grant: InvitationGrantSpec,
-): Promise<string | null> {
-  if (grant.permissionId) return grant.permissionId
-  if (!grant.permissionKey) return null
-  const rows = await db
-    .select({ id: permission.id })
-    .from(permission)
-    .where(eq(permission.key, grant.permissionKey))
-    .limit(1)
-  return rows[0]?.id ?? null
 }
 
 /** Materialize invitation grant specs into user-scoped `access` rows (idempotent). */
@@ -115,12 +120,12 @@ export async function materializeInvitationGrants(
       )
     }
 
-    const roleId = await resolveRoleId(db, grant)
-    const permissionId = await resolvePermissionId(db, grant)
-    if (roleId && permissionId) {
+    const accessProfileKey = grant.accessProfileKey ?? null
+    const permissionKey = grant.permissionKey ?? null
+    if (accessProfileKey && permissionKey) {
       throw new Error('GRANT_AMBIGUOUS_TARGET')
     }
-    if (!roleId && !permissionId) {
+    if (!accessProfileKey && !permissionKey) {
       throw new Error('GRANT_MISSING_TARGET')
     }
 
@@ -129,33 +134,35 @@ export async function materializeInvitationGrants(
       subjectId: userId,
       resourceId,
       effect: grant.effect ?? ('allow' as const),
-      roleId,
-      permissionId,
+      accessProfileKey,
+      permissionKey,
     }
 
-    if (roleId) {
+    if (accessProfileKey) {
       await db
         .insert(access)
-        .values({ ...values, permissionId: null })
+        .values({ ...values, permissionKey: null })
         .onConflictDoNothing({
           target: [
             access.subjectKind,
             access.subjectId,
             access.resourceId,
-            access.roleId,
+            access.accessProfileKey,
           ],
+          where: sql`${access.accessProfileKey} IS NOT NULL`,
         })
     } else {
       await db
         .insert(access)
-        .values({ ...values, roleId: null })
+        .values({ ...values, accessProfileKey: null })
         .onConflictDoNothing({
           target: [
             access.subjectKind,
             access.subjectId,
             access.resourceId,
-            access.permissionId,
+            access.permissionKey,
           ],
+          where: sql`${access.permissionKey} IS NOT NULL`,
         })
     }
   }

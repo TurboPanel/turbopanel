@@ -493,48 +493,46 @@ export function getOpenApiSpec(serverUrl: string): object {
               description: 'Primary key of the entity (`resource.item_id`).',
             },
             effect: { type: 'string', enum: ['allow', 'deny'], default: 'allow' },
-            roleId: { type: 'string' },
-            roleKey: {
+            accessProfileKey: {
               type: 'string',
-              description: 'Catalog role key (e.g. member, billing, readonly).',
+              description: 'Access profile key (e.g. member, owner, readonly).',
             },
-            permissionId: { type: 'string' },
             permissionKey: {
               type: 'string',
               description: 'Direct permission key from the catalog (e.g. organization:billing).',
             },
           },
           description:
-            'One intended access grant stored on `invitation.grants`. Exactly one of roleId/roleKey or permissionId/permissionKey should be set.',
+            'One intended access grant stored on `invitation.grants`. Exactly one of `accessProfileKey` or `permissionKey` should be set.',
         },
-        RoleRecord: {
+        AccessProfileRecord: {
           type: 'object',
-          required: ['id', 'key', 'displayName'],
+          required: ['key', 'displayName', 'permissions'],
           properties: {
-            id: { type: 'string' },
             key: { type: 'string' },
             displayName: { type: 'string' },
-            description: { type: ['string', 'null'] },
+            permissions: {
+              type: 'array',
+              items: { type: 'string' },
+            },
           },
         },
-        RolesResponse: {
+        AccessProfilesResponse: {
           type: 'object',
-          required: ['roles'],
+          required: ['accessProfiles'],
           properties: {
-            roles: {
+            accessProfiles: {
               type: 'array',
-              items: { $ref: '#/components/schemas/RoleRecord' },
+              items: { $ref: '#/components/schemas/AccessProfileRecord' },
             },
           },
         },
         PermissionRecord: {
           type: 'object',
-          required: ['id', 'key', 'displayName'],
+          required: ['key', 'displayName'],
           properties: {
-            id: { type: 'string' },
             key: { type: 'string' },
             displayName: { type: 'string' },
-            description: { type: ['string', 'null'] },
           },
         },
         PermissionsResponse: {
@@ -565,9 +563,7 @@ export function getOpenApiSpec(serverUrl: string): object {
             subjectId: { type: 'string' },
             resourceId: { type: 'string' },
             effect: { type: 'string', enum: ['allow', 'deny'] },
-            roleId: { type: ['string', 'null'] },
-            roleKey: { type: ['string', 'null'] },
-            permissionId: { type: ['string', 'null'] },
+            accessProfileKey: { type: ['string', 'null'] },
             permissionKey: { type: ['string', 'null'] },
           },
         },
@@ -584,6 +580,8 @@ export function getOpenApiSpec(serverUrl: string): object {
         CreateAccessRequest: {
           type: 'object',
           required: ['subjectKind', 'subjectId', 'resourceId', 'effect'],
+          description:
+            'Exactly one of `accessProfileKey` or `permissionKey` must be provided.',
           properties: {
             subjectKind: {
               type: 'string',
@@ -592,8 +590,8 @@ export function getOpenApiSpec(serverUrl: string): object {
             subjectId: { type: 'string' },
             resourceId: { type: 'string' },
             effect: { type: 'string', enum: ['allow', 'deny'] },
-            roleId: { type: 'string' },
-            permissionId: { type: 'string' },
+            accessProfileKey: { type: 'string' },
+            permissionKey: { type: 'string' },
           },
         },
         CreateAccessResponse: {
@@ -1375,34 +1373,22 @@ export function getOpenApiSpec(serverUrl: string): object {
           },
         },
       },
-      '/api/client/v1/roles': {
+      '/api/client/v1/access-profiles': {
         get: {
           tags: ['client'],
-          summary: 'List authorization roles',
+          summary: 'List access profiles',
           security: [{ cookieAuth: [] }],
           responses: {
             '200': {
-              description: 'Role catalog',
+              description: 'Access profile catalog',
               content: {
                 'application/json': {
-                  schema: { $ref: '#/components/schemas/RolesResponse' },
+                  schema: { $ref: '#/components/schemas/AccessProfilesResponse' },
                 },
               },
             },
             '401': {
               description: 'Unauthorized',
-              content: {
-                'application/json': {
-                  schema: {
-                    type: 'object',
-                    required: ['error'],
-                    properties: { error: { type: 'string' } },
-                  },
-                },
-              },
-            },
-            '503': {
-              description: 'Database unavailable',
               content: {
                 'application/json': {
                   schema: {
@@ -1432,18 +1418,6 @@ export function getOpenApiSpec(serverUrl: string): object {
             },
             '401': {
               description: 'Unauthorized',
-              content: {
-                'application/json': {
-                  schema: {
-                    type: 'object',
-                    required: ['error'],
-                    properties: { error: { type: 'string' } },
-                  },
-                },
-              },
-            },
-            '503': {
-              description: 'Database unavailable',
               content: {
                 'application/json': {
                   schema: {
@@ -1531,7 +1505,7 @@ export function getOpenApiSpec(serverUrl: string): object {
           tags: ['client'],
           summary: 'Create an access grant',
           description:
-            'Requires the resource-kind management permission on the target `resourceId`.',
+            'Requires the resource-kind management permission on the target `resourceId`. Grant an access profile or permission to a subject.',
           security: [{ cookieAuth: [] }],
           requestBody: {
             required: true,

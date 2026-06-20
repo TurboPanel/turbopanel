@@ -16,9 +16,6 @@ async function writeDrizzlePushConfig(url: string): Promise<void> {
 
 const BOOTSTRAP_TABLES = [
   'user',
-  'role',
-  'permission',
-  'permit',
   'resource',
   'access',
 ] as const
@@ -28,7 +25,7 @@ export async function isDbSchemaReady(db: Db): Promise<boolean> {
     SELECT COUNT(*)::text AS count
     FROM information_schema.tables
     WHERE table_schema = 'public'
-      AND table_name IN ('user', 'role', 'permission', 'permit', 'resource', 'access')
+      AND table_name IN ('user', 'resource', 'access')
   `)
   const count = Number(rows[0]?.count ?? 0)
   return count === BOOTSTRAP_TABLES.length

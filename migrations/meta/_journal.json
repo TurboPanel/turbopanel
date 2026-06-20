@@ -43,6 +43,13 @@
       "when": 1781860000000,
       "tag": "0005_backfill_resource_parents",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1781993000000,
+      "tag": "0006_access_string_keys",
+      "breakpoints": true
     }
   ]
 }

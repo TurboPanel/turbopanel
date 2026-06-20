@@ -21,10 +21,12 @@ export async function assertCanOr403(
     return c.json({ ok: false, error: 'Database unavailable' }, 503)
   }
 
-  const session = c.get('session') as { userId: string } | undefined
+  const session = c.get('session') as { userId: string; role?: string } | undefined
   if (!session) {
     return c.json({ ok: false, error: 'Unauthorized' }, 401)
   }
+
+  if (session.role === 'superadmin') return null
 
   const allowed = await can(db, session.userId, permissionKey, resourceId)
   if (!allowed) {

@@ -19,7 +19,12 @@ import {
   getResourceId,
   listVisible,
 } from './authz/index.ts'
-import { PERMISSIONS, type PermissionKey } from './authz/catalog.ts'
+import {
+  getAccessProfileCatalog,
+  getPermissionCatalog,
+  PERMISSIONS,
+  type PermissionKey,
+} from './authz/catalog.ts'
 import { listDaemonConnections } from './daemon-hub.ts'
 import type { Db } from './db.ts'
 import { getDb } from './db.ts'
@@ -27,9 +32,7 @@ import {
   access,
   invitation,
   member,
-  permission,
   resource,
-  role,
   server,
   teammate,
 } from './db/schema.ts'
@@ -247,50 +250,26 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
     return c.json({ ok: true as const, organizationId: result.organizationId })
   })
 
-  client.use('/roles', createSessionMiddleware(opts.secrets))
+  client.use('/access-profiles', createSessionMiddleware(opts.secrets))
   client.use('/permissions', createSessionMiddleware(opts.secrets))
   client.use('/access/check', createSessionMiddleware(opts.secrets))
   client.use('/access/resource-id', createSessionMiddleware(opts.secrets))
   client.use('/access', createSessionMiddleware(opts.secrets))
   client.use('/access/:id', createSessionMiddleware(opts.secrets))
 
-  client.get('/roles', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
+  client.get('/access-profiles', async (c) => {
     const session = c.get('session')
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const roles = await db
-      .select({
-        id: role.id,
-        key: role.key,
-        displayName: role.displayName,
-        description: role.description,
-      })
-      .from(role)
-      .orderBy(role.key)
-
-    return c.json({ roles })
+    const accessProfiles = getAccessProfileCatalog()
+    return c.json({ accessProfiles })
   })
 
   client.get('/permissions', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
     const session = c.get('session')
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const permissions = await db
-      .select({
-        id: permission.id,
-        key: permission.key,
-        displayName: permission.displayName,
-        description: permission.description,
-      })
-      .from(permission)
-      .orderBy(permission.key)
-
+    const permissions = getPermissionCatalog()
     return c.json({ permissions })
   })
 
@@ -412,14 +391,10 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
         subjectId: access.subjectId,
         resourceId: access.resourceId,
         effect: access.effect,
-        roleId: access.roleId,
-        roleKey: role.key,
-        permissionId: access.permissionId,
-        permissionKey: permission.key,
+        accessProfileKey: access.accessProfileKey,
+        permissionKey: access.permissionKey,
       })
       .from(access)
-      .leftJoin(role, eq(access.roleId, role.id))
-      .leftJoin(permission, eq(access.permissionId, permission.id))
       .where(eq(access.resourceId, resourceId))
       .orderBy(access.createdAt)
 
@@ -449,8 +424,8 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
     const subjectId = record.subjectId
     const resourceId = record.resourceId
     const effect = record.effect
-    const roleId = record.roleId
-    const permissionId = record.permissionId
+    const accessProfileKey = record.accessProfileKey
+    const permissionKey = record.permissionKey
 
     if (
       subjectKind !== 'user' &&
@@ -466,11 +441,15 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Invalid request' }, 400)
     }
 
-    const hasRoleId = typeof roleId === 'string' && roleId.length > 0
-    const hasPermissionId =
-      typeof permissionId === 'string' && permissionId.length > 0
-    if (hasRoleId === hasPermissionId) {
-      return c.json({ error: 'Exactly one of roleId or permissionId is required' }, 400)
+    const providedAccessProfileKey =
+      typeof accessProfileKey === 'string' && accessProfileKey.length > 0
+    const providedPermissionKey =
+      typeof permissionKey === 'string' && permissionKey.length > 0
+    if (providedAccessProfileKey === providedPermissionKey) {
+      return c.json(
+        { error: 'Exactly one of accessProfileKey or permissionKey is required' },
+        400,
+      )
     }
 
     const denied = await assertCanManageAccessOr403(c, db, resourceId)
@@ -481,8 +460,8 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
       subjectId,
       resourceId,
       effect,
-      roleId: hasRoleId ? roleId : undefined,
-      permissionId: hasPermissionId ? permissionId : undefined,
+      accessProfileKey: providedAccessProfileKey ? accessProfileKey : undefined,
+      permissionKey: providedPermissionKey ? permissionKey : undefined,
     })
 
     if (!result.ok) {

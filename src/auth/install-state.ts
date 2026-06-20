@@ -10,7 +10,6 @@ import {
   member,
   teammate,
   organization,
-  role,
   server,
   setting,
   team,
@@ -416,24 +415,13 @@ export async function completeInstanceInstall(
       organizationId,
     })
 
-    const ownerRoleRows = await tx
-      .select({ id: role.id })
-      .from(role)
-      .where(eq(role.key, 'owner'))
-      .limit(1)
-
-    const ownerRoleId = ownerRoleRows[0]?.id
-    if (!ownerRoleId) {
-      throw new Error('Owner role not found in catalog')
-    }
-
     await tx.insert(access).values({
       subjectKind: 'user',
       subjectId: userId,
       resourceId,
       effect: 'allow',
-      roleId: ownerRoleId,
-      permissionId: null,
+      accessProfileKey: 'owner',
+      permissionKey: null,
     })
 
     const { licenseId, licenseToken } = await createLicense(tx, {

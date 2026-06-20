@@ -2,7 +2,6 @@ import type { Hono } from 'hono'
 import { deriveSecretsConfig, parseSecretsEnv } from './auth/secrets.ts'
 import { createApp } from './app.ts'
 import { createDenoDb } from './db.ts'
-import { syncAuthzCatalog } from './authz/sync.ts'
 import { ensureDbSchemaReady } from './db/schema-push.ts'
 import { logInfo } from './logger.ts'
 import { registerDaemonWebSocket } from './deno-ws.ts'
@@ -45,7 +44,6 @@ async function resolveEmailQueue(): Promise<EmailQueue> {
 
 const emailQueue = await resolveEmailQueue()
 await ensureDbSchemaReady(db)
-await syncAuthzCatalog(db)
 const secretsConfig = parseSecretsEnv(
   Deno.env.get('TURBOPANEL_SECRET'),
   Deno.env.get('TURBOPANEL_SECRETS'),

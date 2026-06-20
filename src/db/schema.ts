@@ -237,44 +237,6 @@ export const hosting = pgTable("hosting", {
 		}).onDelete("cascade"),
 	check("hosting_display_name_format_check", sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`),
 ]);
-export const role = pgTable("role", {
-	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
-	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	key: text().notNull(),
-	displayName: text("display_name").notNull(),
-	description: text(),
-}, (table) => [
-	unique("role_key_unique").on(table.key),
-]);
-export const permission = pgTable("permission", {
-	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
-	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	key: text().notNull(),
-	displayName: text("display_name").notNull(),
-	description: text(),
-}, (table) => [
-	unique("permission_key_unique").on(table.key),
-]);
-export const permit = pgTable("permit", {
-	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
-	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	roleId: uuid("role_id").notNull(),
-	permissionId: uuid("permission_id").notNull(),
-}, (table) => [
-	unique("permit_role_permission_unique").on(table.roleId, table.permissionId),
-	index("idx_permit_role_id").on(table.roleId),
-	index("idx_permit_permission_id").on(table.permissionId),
-	foreignKey({
-			columns: [table.roleId],
-			foreignColumns: [role.id],
-			name: "permit_role_id_role_id_fk"
-		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.permissionId],
-			foreignColumns: [permission.id],
-			name: "permit_permission_id_permission_id_fk"
-		}).onDelete("cascade"),
-]);
 export const resource = pgTable("resource", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
@@ -307,36 +269,26 @@ export const access = pgTable("access", {
 	subjectId: uuid("subject_id").notNull(),
 	resourceId: uuid("resource_id").notNull(),
 	effect: effect().default("allow").notNull(),
-	roleId: uuid("role_id"),
-	permissionId: uuid("permission_id"),
+	accessProfileKey: text("access_profile_key"),
+	permissionKey: text("permission_key"),
 }, (table) => [
 	index("idx_access_subject").on(table.subjectKind, table.subjectId),
 	index("idx_access_resource_id").on(table.resourceId),
 	index("idx_access_subject_resource").on(table.subjectKind, table.subjectId, table.resourceId),
-	index("idx_access_role_id").on(table.roleId),
-	index("idx_access_permission_id").on(table.permissionId),
-	check("access_one_target_check", sql`num_nonnulls(${table.roleId}, ${table.permissionId}) = 1`),
+	index("idx_access_access_profile_key").on(table.accessProfileKey),
+	index("idx_access_permission_key").on(table.permissionKey),
+	check("access_one_target_check", sql`num_nonnulls(${table.accessProfileKey}, ${table.permissionKey}) = 1`),
 	foreignKey({
 			columns: [table.resourceId],
 			foreignColumns: [resource.id],
 			name: "access_resource_id_resource_id_fk"
 		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.roleId],
-			foreignColumns: [role.id],
-			name: "access_role_id_role_id_fk"
-		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.permissionId],
-			foreignColumns: [permission.id],
-			name: "access_permission_id_permission_id_fk"
-		}).onDelete("cascade"),
-	uniqueIndex("access_subject_resource_role_unique")
-		.on(table.subjectKind, table.subjectId, table.resourceId, table.roleId)
-		.where(sql`role_id IS NOT NULL`),
+	uniqueIndex("access_subject_resource_profile_unique")
+		.on(table.subjectKind, table.subjectId, table.resourceId, table.accessProfileKey)
+		.where(sql`access_profile_key IS NOT NULL`),
 	uniqueIndex("access_subject_resource_permission_unique")
-		.on(table.subjectKind, table.subjectId, table.resourceId, table.permissionId)
-		.where(sql`permission_id IS NOT NULL`),
+		.on(table.subjectKind, table.subjectId, table.resourceId, table.permissionKey)
+		.where(sql`permission_key IS NOT NULL`),
 ]);
 export const session = pgTable("session", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),

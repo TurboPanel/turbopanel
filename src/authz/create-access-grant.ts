@@ -1,14 +1,13 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import type { Db } from '../db.ts'
 import {
   access,
   organization,
-  permission,
   resource,
-  role,
   team,
   user,
 } from '../db/schema.ts'
+import { isAccessProfileKey, isPermissionKey } from './catalog.ts'
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -18,8 +17,8 @@ export type CreateAccessGrantInput = {
   subjectId: string
   resourceId: string
   effect: 'allow' | 'deny'
-  roleId?: string
-  permissionId?: string
+  accessProfileKey?: string
+  permissionKey?: string
 }
 
 export type CreateAccessGrantResult =
@@ -94,22 +93,23 @@ export async function createAccessGrant(
     return { ok: false, status: 400, error: 'Invalid request' }
   }
 
-  const hasRoleId = typeof input.roleId === 'string' && input.roleId.length > 0
-  const hasPermissionId =
-    typeof input.permissionId === 'string' && input.permissionId.length > 0
-  if (hasRoleId === hasPermissionId) {
+  const hasAccessProfileKey =
+    typeof input.accessProfileKey === 'string' && input.accessProfileKey.length > 0
+  const hasPermissionKey =
+    typeof input.permissionKey === 'string' && input.permissionKey.length > 0
+  if (hasAccessProfileKey === hasPermissionKey) {
     return {
       ok: false,
       status: 400,
-      error: 'Exactly one of roleId or permissionId is required',
+      error: 'Exactly one of accessProfileKey or permissionKey is required',
     }
   }
 
-  if (hasRoleId && !isUuid(input.roleId!)) {
-    return { ok: false, status: 400, error: 'Invalid roleId' }
+  if (hasAccessProfileKey && !isAccessProfileKey(input.accessProfileKey!)) {
+    return { ok: false, status: 400, error: 'Invalid access profile key' }
   }
-  if (hasPermissionId && !isUuid(input.permissionId!)) {
-    return { ok: false, status: 400, error: 'Invalid permissionId' }
+  if (hasPermissionKey && !isPermissionKey(input.permissionKey!)) {
+    return { ok: false, status: 400, error: 'Invalid permission key' }
   }
 
   const resourceRows = await db
@@ -136,46 +136,27 @@ export async function createAccessGrant(
     return subjectResult
   }
 
-  if (hasRoleId) {
-    const roleRows = await db
-      .select({ id: role.id })
-      .from(role)
-      .where(eq(role.id, input.roleId!))
-      .limit(1)
-    if (roleRows.length === 0) {
-      return { ok: false, status: 404, error: 'Role not found' }
-    }
-  } else {
-    const permissionRows = await db
-      .select({ id: permission.id })
-      .from(permission)
-      .where(eq(permission.id, input.permissionId!))
-      .limit(1)
-    if (permissionRows.length === 0) {
-      return { ok: false, status: 404, error: 'Permission not found' }
-    }
-  }
-
   const values = {
     subjectKind: input.subjectKind,
     subjectId: input.subjectId,
     resourceId: input.resourceId,
     effect: input.effect,
-    roleId: hasRoleId ? input.roleId! : null,
-    permissionId: hasPermissionId ? input.permissionId! : null,
+    accessProfileKey: hasAccessProfileKey ? input.accessProfileKey! : null,
+    permissionKey: hasPermissionKey ? input.permissionKey! : null,
   }
 
-  if (hasRoleId) {
+  if (hasAccessProfileKey) {
     const inserted = await db
       .insert(access)
-      .values({ ...values, permissionId: null })
+      .values({ ...values, permissionKey: null })
       .onConflictDoNothing({
         target: [
           access.subjectKind,
           access.subjectId,
           access.resourceId,
-          access.roleId,
+          access.accessProfileKey,
         ],
+        where: sql`${access.accessProfileKey} IS NOT NULL`,
       })
       .returning({ id: access.id })
 
@@ -191,7 +172,7 @@ export async function createAccessGrant(
         eq(access.subjectKind, input.subjectKind),
         eq(access.subjectId, input.subjectId),
         eq(access.resourceId, input.resourceId),
-        eq(access.roleId, input.roleId!),
+        eq(access.accessProfileKey, input.accessProfileKey!),
       ))
       .limit(1)
 
@@ -205,14 +186,15 @@ export async function createAccessGrant(
 
   const inserted = await db
     .insert(access)
-    .values({ ...values, roleId: null })
+    .values({ ...values, accessProfileKey: null })
     .onConflictDoNothing({
       target: [
         access.subjectKind,
         access.subjectId,
         access.resourceId,
-        access.permissionId,
+        access.permissionKey,
       ],
+      where: sql`${access.permissionKey} IS NOT NULL`,
     })
     .returning({ id: access.id })
 
@@ -228,7 +210,7 @@ export async function createAccessGrant(
       eq(access.subjectKind, input.subjectKind),
       eq(access.subjectId, input.subjectId),
       eq(access.resourceId, input.resourceId),
-      eq(access.permissionId, input.permissionId!),
+      eq(access.permissionKey, input.permissionKey!),
     ))
     .limit(1)
 
