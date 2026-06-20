@@ -36,7 +36,7 @@ deno run --allow-net --allow-env --allow-read mailer/main.ts
 ## Dev defaults
 
 - **AMQP:** `amqp://guest:guest@localhost:19828`
-- **SMTP:** Mailpit at `localhost:19825` (when no SMTP host/port is configured)
+- **SMTP:** Mailpit at `localhost:1025` (when no SMTP host/port is configured)
 
 ## Rate limiting
 

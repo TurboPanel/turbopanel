@@ -34,7 +34,7 @@ function mailpitPort(): number {
     const parsed = Number.parseInt(smtp, 10)
     if (!Number.isNaN(parsed)) return parsed
   }
-  return 19_825
+  return 1025
 }
 
 function buildTransport(cfg: SmtpConfig | undefined): Transporter {
