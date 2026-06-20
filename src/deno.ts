@@ -13,7 +13,6 @@ import { registerTunnelRoutes } from './tunnel-routes.ts'
 import { registerUpdateRoutes } from './update-routes.ts'
 import { registerDeveloperRoutes } from './developer-routes.ts'
 import { isDeveloperSurfaceEnabled } from './dev-mode.ts'
-import { ensureDrizzleStudioInDev, stopDrizzleStudio } from './drizzle-studio.ts'
 import {
   createDenoAmqpQueue,
   DEFAULT_AMQP_URL,
@@ -80,7 +79,6 @@ const socketPath = resolveInstanceSocket()
 const abort = new AbortController()
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   Deno.addSignalListener(signal, async () => {
-    stopDrizzleStudio()
     await emailQueue.close?.()
     abort.abort()
   })
@@ -99,8 +97,5 @@ Deno.serve({
         developerSurface ? 'enabled' : 'disabled'
       }`,
     )
-    if (developerSurface) {
-      void ensureDrizzleStudioInDev()
-    }
   },
 }, app.fetch)
