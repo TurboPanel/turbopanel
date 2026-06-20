@@ -60,11 +60,13 @@ if [ -z "$LICENSE_ID" ] || [ -z "$LICENSE_TOKEN" ]; then
 	exit 1
 fi
 
-STATE_DIR="\${TURBOPANEL_DAEMON_STATE_DIR:-/etc/turbopanel/platform/daemon}"
-mkdir -p "$STATE_DIR"
+# Stage outside the daemon checkout — git clone into turbopanel_daemon_dir fails
+# when that path already contains files (see daemon-repo role).
+STAGING_DIR="/opt/turbopanel/platform/config/daemon-license-staging"
+mkdir -p "$STAGING_DIR"
 
-printf '%s' "$LICENSE_ID" > "$STATE_DIR/license.id"
-printf '%s' "$LICENSE_TOKEN" > "$STATE_DIR/license.token"
+printf '%s' "$LICENSE_ID" > "$STAGING_DIR/license.id"
+printf '%s' "$LICENSE_TOKEN" > "$STAGING_DIR/license.token"
 
 INSTALLER_URL="\${TURBOPANEL_CDN_URL:-https://cdn.turbopanel.app/daemon/install.sh}"
 

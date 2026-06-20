@@ -52,12 +52,29 @@ function nowTs(): string {
   return new Date().toISOString()
 }
 
+const DEFAULT_DAEMON_STATE_DIR = '/opt/turbopanel/platform/daemon/state'
+
+function stripTrailingSlash(path: string): string {
+  return path.replace(/\/+$/, '')
+}
+
+function isTruthyEnvFlag(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase()
+  return normalized === '1' || normalized === 'true' || normalized === 'yes'
+}
+
+/** Mirrors daemon `resolveServerIdDir` in src/instance/client.ts. */
 function resolveColocatedDaemonStateDir(): string {
-  if (typeof Deno === 'undefined') return '/etc/turbopanel/platform/daemon'
-  const fromEnv = Deno.env.get('TURBOPANEL_DAEMON_STATE_DIR')?.trim()
-  return fromEnv && fromEnv.length > 0
-    ? fromEnv
-    : '/etc/turbopanel/platform/daemon'
+  if (typeof Deno === 'undefined') return DEFAULT_DAEMON_STATE_DIR
+
+  const override = Deno.env.get('TURBOPANEL_DAEMON_STATE_DIR')?.trim()
+  if (override) return stripTrailingSlash(override)
+
+  if (isTruthyEnvFlag(Deno.env.get('TURBOPANEL_SKIP_ORCHESTRATION'))) {
+    return stripTrailingSlash(Deno.cwd())
+  }
+
+  return DEFAULT_DAEMON_STATE_DIR
 }
 
 /** True once an org has a name and at least one superadmin account exists. */
@@ -429,6 +446,7 @@ export async function completeInstanceInstall(
   if (typeof Deno !== 'undefined') {
     try {
       const stateDir = resolveColocatedDaemonStateDir()
+      await Deno.mkdir(stateDir, { recursive: true })
       await Deno.writeTextFile(`${stateDir}/license.id`, result.licenseId, {
         create: true,
       })

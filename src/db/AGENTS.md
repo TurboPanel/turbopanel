@@ -143,7 +143,7 @@ Organization-scoped API tokens for server registration. Each row belongs to an `
 
 ### `server` table
 
-Each physical server node gets a row in `server` (`id` uuidv7). On daemon connect the instance resolves `serverId` (reuse by persisted id, `metadata.machineId`, or `metadata.hostname`), tracks the websocket in `daemon-hub`, and returns `serverId` in `hello`. The daemon persists it at `/etc/turbopanel/daemon/server.id` (writable by the `turbopanel` user). `display_name`, `organization_id`, and soft-delete via `deleted_at` match the old trunk shape; daemon registration stores `machineId` / `hostname` in `metadata` (see `server-metadata.ts`). `license_id` (nullable FK → `license.id`) records which license token the server registered with.
+Each physical server node gets a row in `server` (`id` uuidv7). On daemon connect the instance resolves `serverId` (reuse by persisted id, `metadata.machineId`, or `metadata.hostname`), tracks the websocket in `daemon-hub`, and returns `serverId` in `hello`. The daemon persists it at `/opt/turbopanel/platform/daemon/state/server.id` (writable by the `turbopanel` user). `display_name`, `organization_id`, and soft-delete via `deleted_at` match the old trunk shape; daemon registration stores `machineId` / `hostname` in `metadata` (see `server-metadata.ts`). `license_id` (nullable FK → `license.id`) records which license token the server registered with.
 
 ## Layout
 
@@ -178,7 +178,7 @@ Self-hosted instance, drizzle-kit (`drizzle.config.ts`), and `./sync.sh` / `./in
 ## Sanity check
 
 ```bash
-docker exec turbopanel-db psql -U turbopanel -d turbopanel -c '\dt'
+docker exec turbopaneldb psql -U turbopanel -d turbopanel -c '\dt'
 ```
 
 Restart the instance only when **application code** changed — schema sync alone does not require a restart.

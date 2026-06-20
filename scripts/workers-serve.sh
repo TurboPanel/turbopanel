@@ -75,7 +75,7 @@ start_studio_if_dev() {
     --config "$CONFIG" \
     --host "$STUDIO_HOST" \
     --port "$STUDIO_PORT" \
-    >>"${TURBOPANEL_INSTANCE_LOG:-/var/log/turbopanel/instance/instance.log}" 2>&1 &
+    >>"${TURBOPANEL_INSTANCE_LOG:-/opt/turbopanel/platform/instance/logs/instance.log}" 2>&1 &
   STUDIO_PID=$!
 
   if ! wait_for_studio; then

@@ -322,14 +322,14 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 
 The `src/email/` module defines a queue abstraction (`EmailQueue`, `EmailJob`, `getEmailQueue`) shared by both runtimes:
 
-- **Deno** — `createDenoAmqpQueue` publishes jobs to RabbitMQ (`TURBOPANEL_AMQP_URL`); falls back to `createNoopQueue` when the broker is unreachable. On managed hosts, `TURBOPANEL_AMQP_URL` is injected by the `instance-launch` role from `/etc/turbopanel/rabbitmq/.rabbitmq_pass` (no `guest:guest` default).
+- **Deno** — `createDenoAmqpQueue` publishes jobs to RabbitMQ (`TURBOPANEL_AMQP_URL`); falls back to `createNoopQueue` when the broker is unreachable. On managed hosts, `TURBOPANEL_AMQP_URL` is injected by the `instance-launch` role from `/opt/turbopanel/platform/config/rabbitmq/.rabbitmq_pass` (no `guest:guest` default).
 - **Workers** — `createWorkersMailgunQueue` sends directly via Mailgun when `TURBOPANEL_MAILGUN_API_KEY` and `TURBOPANEL_MAILGUN_DOMAIN` are set; otherwise noop.
 
 The **`mailer/`** consumer runs as **`turbopanel-mailer.service`** on managed hosts (installed by the `instance-launch` role). In Tilt dev it is the standalone `mailer` resource (Deno mode only): RabbitMQ consumer → SMTP sender with a token-bucket rate limiter (`TURBOPANEL_MAILER_RATE_LIMIT_PER_MINUTE`, default 60). SMTP config comes from env (`SMTP_*`) with DB `setting` table fallback when **`TURBOPANEL_DATABASE_URL`** is set; Mailpit is the default SMTP target in dev (`MAILPIT_SMTP_PORT`).
 
 | Variable | Runtime | Purpose |
 |---|---|---|
-| `TURBOPANEL_AMQP_URL` | Deno | RabbitMQ connection URL (managed installs: from `/etc/turbopanel/rabbitmq/.rabbitmq_pass`; Tilt dev default `amqp://guest:guest@localhost:19828`) |
+| `TURBOPANEL_AMQP_URL` | Deno | RabbitMQ connection URL (managed installs: from `/opt/turbopanel/platform/config/rabbitmq/.rabbitmq_pass`; Tilt dev default `amqp://guest:guest@localhost:19828`) |
 | `TURBOPANEL_DATABASE_URL` | Deno mailer | Postgres for DB-backed SMTP settings (`setting` table); same URL as the instance |
 | `TURBOPANEL_REDIS_SOCKET` | Deno | Unix socket path for future session/cache use (managed installs: `/run/turbopanel/redis.sock`; no consumer yet) |
 | `TURBOPANEL_SYSTEM_EMAIL_FROM` | Both | Sender address (default `noreply@turbopanel.local`) |
