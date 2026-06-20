@@ -161,6 +161,8 @@ Caddy terminates TLS and routes traffic from a single HTTPS entrypoint:
 
 `reverse_proxy` to the Unix socket sets `X-Real-IP {remote_host}` on `/api/*` and `/ws/*`. The instance uses that header to deduplicate daemon WebSocket reconnects (without it, every reconnect looked like a new fleet member behind the proxy).
 
+In **dev** mode, the Expo upstream proxy must forward `Host {http.request.host}` (not `127.0.0.1:8081`). Expo's CORS middleware compares `Origin` to `Host`; LAN hostnames like `huey.lan:8443` are rejected when `Host` is overwritten to the loopback upstream.
+
 ### Development
 
 Caddy/cert installs are handled by the daemon's `caddy` and `instance-certs` Ansible roles; `turbopanel-caddy.service` runs Caddy as `instance`.
