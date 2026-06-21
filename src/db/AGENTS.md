@@ -1,6 +1,6 @@
 # Database
 
-Schema changes are versioned in **`migrations/`**. After editing `schema.ts`, run `pnpm drizzle-kit generate` to create SQL files. Apply pending migrations with `TURBOPANEL_DATABASE_URL=… pnpm migrate` or `DATABASE_URL=… pnpm migrate`; Workers deploy runs the same command. **`pnpm migrate` applies versioned SQL via `drizzle-kit migrate` and then runs resource-registry repair** (`repairSchemaFromMigrations` + `repairResourceRegistry` in `scripts/seed-catalog.ts` via Node — no Deno prerequisite). Applied migration versions are recorded in **`public.migration`** (configured in `drizzle.config.ts`).
+Schema changes are versioned in **`migrations/`**. After editing `schema.ts`, run `pnpm drizzle-kit generate` to create SQL files. Apply pending migrations with `TURBOPANEL_DATABASE_URL=… pnpm migrate`; Workers deploy runs the same command. **`pnpm migrate` applies versioned SQL via `drizzle-kit migrate` and then runs resource-registry repair** (`repairSchemaFromMigrations` + `repairResourceRegistry` in `scripts/seed-catalog.ts` via Node — no Deno prerequisite). Applied migration versions are recorded in **`public.migration`** (configured in `drizzle.config.ts`).
 
 The co-located dev server has live data — treat every database change as production-adjacent.
 
@@ -13,7 +13,7 @@ The co-located dev server has live data — treat every database change as produ
 | **Pull** (DB → code) | Live Postgres (Studio / SQL) | `./introspect.sh` | `introspect` |
 | **Push** (code → DB, Deno dev only) | `schema.ts` | `./sync.sh` | `push` |
 | **Generate migration** | `schema.ts` | `pnpm drizzle-kit generate` | `generate` |
-| **Apply migration** (Workers deploy + manual) | pending SQL in `migrations/` | `TURBOPANEL_DATABASE_URL=…` or `DATABASE_URL=…` `pnpm migrate` | `migrate` + resource registry repair |
+| **Apply migration** (Workers deploy + manual) | pending SQL in `migrations/` | `TURBOPANEL_DATABASE_URL=… pnpm migrate` | `migrate` + resource registry repair |
 
 Pick one source of truth per change — do not edit both sides and blindly run both scripts.
 
@@ -25,7 +25,7 @@ Use when you designed in **Drizzle Studio** or applied DDL directly.
 2. Run `./introspect.sh` from the `turbopanel` repo root.
 3. Review `schema.ts` (style, dropped tables).
 
-`introspect.sh`: loads `TURBOPANEL_DATABASE_URL` from `turbopanel-instance` (or `DATABASE_URL` override) → introspect → copy to `schema.ts` → delete ephemeral `drizzle/` output → `deno check`.
+`introspect.sh`: loads `TURBOPANEL_DATABASE_URL` from env or `turbopanel-instance` → introspect → copy to `schema.ts` → delete ephemeral `drizzle/` output → `deno check`.
 
 ### Push: `schema.ts` → database (`./sync.sh`)
 
@@ -37,7 +37,7 @@ Use when you edited **`schema.ts` first** and need the live dev DB to catch up w
 
 `sync.sh`: `deno check` → `drizzle-kit push` (no SQL files committed). Flags: `--verbose`, `--force`.
 
-Override connection for either script: `DATABASE_URL=postgresql://… ./introspect.sh` or `./sync.sh`.
+Override connection for either script: `TURBOPANEL_DATABASE_URL=postgresql://… ./introspect.sh` or `./sync.sh`.
 
 ### Generate + apply migrations (Workers path)
 
@@ -46,7 +46,7 @@ Use when schema changes should ship as versioned SQL (required for Workers deplo
 1. Edit `src/db/schema.ts`.
 2. Run `pnpm drizzle-kit generate` — writes SQL under `migrations/`.
 3. Commit the new migration files.
-4. Apply: `TURBOPANEL_DATABASE_URL=… pnpm migrate` or `DATABASE_URL=… pnpm migrate` (local or CI). Workers deploy runs `pnpm migrate` automatically — schema migrations and resource-registry repair run in one step (Node only).
+4. Apply: `TURBOPANEL_DATABASE_URL=… pnpm migrate` (local or CI). Workers deploy runs `pnpm migrate` automatically — schema migrations and resource-registry repair run in one step (Node only).
 
 Applied versions are tracked in **`public.migration`** (`drizzle.config.ts` sets `migrations: { table: 'migration', schema: 'public' }`).
 
@@ -155,10 +155,10 @@ Each physical server node gets a row in `server` (`id` uuidv7). On daemon connec
 |---|---|
 | `schema.ts` | Drizzle table definitions — sync with dev DB via `./introspect.sh` or `./sync.sh` |
 | `../db.ts` | Connection factories (`createDenoDb`, `createToolingDb`, `createWorkersDb`) |
-| `../../drizzle.config.ts` | drizzle-kit config (`TURBOPANEL_DATABASE_URL` / `DATABASE_URL`; introspect, push, generate, migrate, studio) |
+| `../../drizzle.config.ts` | drizzle-kit config (`TURBOPANEL_DATABASE_URL`; introspect, push, generate, migrate, studio) |
 | `../../introspect.sh` | Pull DB → `schema.ts` |
 | `../../sync.sh` | Push `schema.ts` → DB (Deno dev only; no migration files) |
-| `../../scripts/db-connect.sh` | Resolves `TURBOPANEL_DATABASE_URL` → `DATABASE_URL` for drizzle-kit scripts |
+| `../../scripts/db-connect.sh` | Resolves `TURBOPANEL_DATABASE_URL` from env or `turbopanel-instance` for drizzle-kit scripts |
 | `../../migrations/` | Versioned SQL migration files (committed); applied by `pnpm migrate`; tracked in `public.migration` |
 | `../../scripts/seed-catalog.ts` | Node entrypoint (`node --experimental-strip-types`) for `repairSchemaFromMigrations` + `repairResourceRegistry` — run by `pnpm migrate` and `pnpm seed`; no longer calls `syncAuthzCatalog` |
 | `../../drizzle/` | Ephemeral introspect scratch dir — `introspect.sh` deletes after adopt; never committed |
@@ -180,7 +180,7 @@ Runtime authorization lives in `../authz/` (pure TypeScript, safe for both Deno 
 
 ## Connection (self-hosted dev)
 
-Self-hosted instance boot uses **`TURBOPANEL_DATABASE_URL`** only. drizzle-kit (`drizzle.config.ts`), `pnpm migrate` repair, and `./sync.sh` / `./introspect.sh` accept **`TURBOPANEL_DATABASE_URL`** or **`DATABASE_URL`** (tooling fallback). Unix socket connections use the libpq-style `?host=` query param (e.g. `postgresql://user:pass@/turbopanel?host=/var/run/turbopanel/postgres`). Postgres in Docker always publishes the socket under `/var/run/turbopanel/postgres`; TCP port exposure (`postgres_expose_port`) is optional and unused by the instance. See repo root `AGENTS.md` for env var details. Do not embed credentials here.
+Self-hosted instance boot and all database tooling require **`TURBOPANEL_DATABASE_URL`**. Unix socket connections use the libpq-style `?host=` query param (e.g. `postgresql://user:pass@/turbopanel?host=/var/run/turbopanel/postgres`). Postgres in Docker always publishes the socket under `/var/run/turbopanel/postgres`; TCP port exposure (`postgres_expose_port`) is optional and unused by the instance. See repo root `AGENTS.md` for env var details. Do not embed credentials here.
 
 ## Sanity check
 

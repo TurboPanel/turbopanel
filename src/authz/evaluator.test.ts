@@ -1,4 +1,5 @@
 import { and, eq } from 'drizzle-orm'
+import { getDatabaseUrl } from '../db-url.ts'
 import { createDenoDb } from '../db.ts'
 import {
   access,
@@ -12,8 +13,7 @@ import {
 import { registerResource } from './resource-registry.ts'
 import { can, listVisible } from './evaluator.ts'
 
-const dbUrl = Deno.env.get('TURBOPANEL_DATABASE_URL')?.trim() ??
-  Deno.env.get('DATABASE_URL')?.trim()
+const dbUrl = getDatabaseUrl()
 
 async function withTestFixtures(
   fn: (ctx: {

@@ -38,7 +38,7 @@ load_database_url() {
 load_database_url
 db_connect_build_database_url drizzle-studio-serve
 
-"$NODE" "$ROOT/scripts/write-drizzle-studio-config.mjs" "$DATABASE_URL" "$CONFIG"
+"$NODE" "$ROOT/scripts/write-drizzle-studio-config.mjs" "$TURBOPANEL_DATABASE_URL" "$CONFIG"
 echo "[TurboPanel] Drizzle Studio listening on http://${STUDIO_HOST}:${STUDIO_PORT}"
 echo "[TurboPanel] Open https://local.drizzle.studio?host=localhost&port=${STUDIO_PORT}"
 

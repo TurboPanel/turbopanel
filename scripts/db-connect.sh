@@ -1,7 +1,7 @@
 # Shared Postgres connection helpers for drizzle-kit scripts.
 # Source from repo root: source "$(dirname …)/scripts/db-connect.sh"
 #
-# Sets: DATABASE_URL (unless already set), NODE, DRIZZLE_KIT, DENO, ROOT
+# Sets: TURBOPANEL_DATABASE_URL (from env or turbopanel-instance unit), NODE, DRIZZLE_KIT, DENO, ROOT
 db_connect_init() {
   local caller="${1:-db-connect}"
   # Caller (introspect.sh / sync.sh) lives at repo root; workers-serve.sh sets ROOT first.
@@ -44,23 +44,18 @@ db_connect_load_pg_env_from_unit() {
 
 db_connect_build_database_url() {
   local caller="${1:-db-connect}"
-  if [[ -n "${DATABASE_URL:-}" ]]; then
-    return 0
-  fi
   if [[ -n "${TURBOPANEL_DATABASE_URL:-}" ]]; then
-    DATABASE_URL="$TURBOPANEL_DATABASE_URL"
-    export DATABASE_URL
+    export TURBOPANEL_DATABASE_URL
     return 0
   fi
   db_connect_load_pg_env_from_unit "$caller"
 
   if [[ -n "${TURBOPANEL_DATABASE_URL:-}" ]]; then
-    DATABASE_URL="$TURBOPANEL_DATABASE_URL"
-    export DATABASE_URL
+    export TURBOPANEL_DATABASE_URL
     return 0
   fi
 
-  echo "$caller: missing DATABASE_URL or TURBOPANEL_DATABASE_URL (set env or configure on $INSTANCE_UNIT)" >&2
+  echo "$caller: missing TURBOPANEL_DATABASE_URL (set env or configure on $INSTANCE_UNIT)" >&2
   return 1
 }
 

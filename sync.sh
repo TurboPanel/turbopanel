@@ -3,8 +3,8 @@
 #
 # Uses drizzle-kit push — applies DDL directly. Does not write drizzle/*.sql.
 #
-# Credentials from TURBOPANEL_DATABASE_URL (or DATABASE_URL override).
-# Override: DATABASE_URL=postgresql://… ./sync.sh
+# Credentials from TURBOPANEL_DATABASE_URL (env or turbopanel-instance unit).
+# Override: TURBOPANEL_DATABASE_URL=postgresql://… ./sync.sh
 #
 # Flags (passed to drizzle-kit push):
 #   --force    auto-approve data-loss statements (destructive — dev only)
@@ -55,7 +55,7 @@ main() {
   db_connect_verify_schema sync.sh "$SCHEMA_SRC"
 
   echo "sync.sh: pushing schema to live database (no migration files)…"
-  DATABASE_URL="$DATABASE_URL" "$NODE" "$DRIZZLE_KIT" push "${PUSH_ARGS[@]}"
+  TURBOPANEL_DATABASE_URL="$TURBOPANEL_DATABASE_URL" "$NODE" "$DRIZZLE_KIT" push "${PUSH_ARGS[@]}"
 
   echo "sync.sh: done — database should match src/db/schema.ts"
 }

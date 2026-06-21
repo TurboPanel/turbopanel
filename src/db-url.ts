@@ -151,9 +151,3 @@ export function getDatabaseUrl(): string | undefined {
   const url = readEnv('TURBOPANEL_DATABASE_URL')?.trim()
   return url || undefined
 }
-
-/** Postgres URL for drizzle-kit and post-migration repair (`TURBOPANEL_DATABASE_URL` or `DATABASE_URL`). */
-export function getToolingDatabaseUrl(): string | undefined {
-  const url = getDatabaseUrl() ?? readEnv('DATABASE_URL')?.trim()
-  return url || undefined
-}

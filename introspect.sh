@@ -6,8 +6,8 @@
 # 3. remove ephemeral drizzle/ artifacts
 # 4. deno check src/db/schema.ts
 #
-# Credentials from TURBOPANEL_DATABASE_URL (or DATABASE_URL override).
-# Override: DATABASE_URL=postgresql://… ./introspect.sh
+# Credentials from TURBOPANEL_DATABASE_URL (env or turbopanel-instance unit).
+# Override: TURBOPANEL_DATABASE_URL=postgresql://… ./introspect.sh
 #
 # See src/db/AGENTS.md for the full workflow (Drizzle Studio → introspect).
 set -euo pipefail
@@ -50,7 +50,7 @@ main() {
 
   echo "introspect.sh: pulling schema from live database…"
   cleanup_drizzle_out
-  DATABASE_URL="$DATABASE_URL" "$NODE" "$DRIZZLE_KIT" introspect --out drizzle
+  TURBOPANEL_DATABASE_URL="$TURBOPANEL_DATABASE_URL" "$NODE" "$DRIZZLE_KIT" introspect --out drizzle
 
   echo "introspect.sh: adopting drizzle/schema.ts → src/db/schema.ts"
   adopt_schema
