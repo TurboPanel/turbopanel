@@ -6,10 +6,7 @@ import { createSessionMiddleware, type SessionData } from './authn/middleware.ts
 import {
   assertCanOr403,
   can,
-  getResourceId,
   listVisible,
-  registerResource,
-  unregisterResource,
 } from './authz/index.ts'
 import type { PermissionKey } from './authz/index.ts'
 import { getDb } from './db.ts'
@@ -70,7 +67,7 @@ function buildPatchUpdateFields(
 async function assertCanReadOr403(
   c: Context,
   kind: string,
-  resourceId: string,
+  entityId: string,
 ): Promise<Response | null> {
   const db = getDb(c)
   if (!db) return c.json({ error: 'Database unavailable' }, 503)
@@ -81,8 +78,8 @@ async function assertCanReadOr403(
   const roKey = `${kind}:ro` as PermissionKey
   const rwKey = `${kind}:rw` as PermissionKey
   const allowed =
-    (await can(db, session.userId, roKey, resourceId)) ||
-    (await can(db, session.userId, rwKey, resourceId))
+    (await can(db, session.userId, roKey, kind, entityId)) ||
+    (await can(db, session.userId, rwKey, kind, entityId))
 
   if (!allowed) {
     return c.json({ error: 'Forbidden' }, 403)
@@ -93,7 +90,8 @@ async function assertCanReadOr403(
 /** Create access: allow when any listed permission is granted on the parent scope. */
 async function assertCanCreateOr403(
   c: Context,
-  parentResourceId: string,
+  parentKind: string,
+  parentId: string,
   permissionKeys: PermissionKey[],
 ): Promise<Response | null> {
   const db = getDb(c)
@@ -103,7 +101,7 @@ async function assertCanCreateOr403(
   if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
   for (const key of permissionKeys) {
-    if (await can(db, session.userId, key, parentResourceId)) {
+    if (await can(db, session.userId, key, parentKind, parentId)) {
       return null
     }
   }
@@ -216,12 +214,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const resourceId = await getResourceId(db, 'realm', id)
-    if (!resourceId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanReadOr403(c, 'realm', resourceId)
+    const denied = await assertCanReadOr403(c, 'realm', id)
     if (denied) return denied
 
     return c.json({ realm: row })
@@ -248,12 +241,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Invalid request' }, 400)
     }
 
-    const orgResourceId = await getResourceId(db, 'organization', organizationId)
-    if (!orgResourceId) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-
-    const denied = await assertCanCreateOr403(c, orgResourceId, [
+    const denied = await assertCanCreateOr403(c, 'organization', organizationId, [
       'organization:rw',
       'realm:rw',
     ])
@@ -264,12 +252,6 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
         .insert(realm)
         .values({ displayName, organizationId })
         .returning({ id: realm.id })
-      await registerResource(tx, {
-        kind: 'realm',
-        itemId: inserted.id,
-        organizationId,
-        parentId: orgResourceId,
-      })
       return inserted.id
     })
 
@@ -299,12 +281,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const resourceId = await getResourceId(db, 'realm', id)
-    if (!resourceId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'realm:rw', resourceId)
+    const denied = await assertCanOr403(c, 'realm:rw', 'realm', id)
     if (denied) return denied
 
     const body = await parseJsonBody(c)
@@ -348,17 +325,11 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const resourceId = await getResourceId(db, 'realm', id)
-    if (!resourceId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'realm:rw', resourceId)
+    const denied = await assertCanOr403(c, 'realm:rw', 'realm', id)
     if (denied) return denied
 
     await db.transaction(async (tx) => {
       await tx.delete(realm).where(eq(realm.id, id))
-      await unregisterResource(tx, 'realm', id)
     })
 
     return c.json({ ok: true as const })
@@ -379,19 +350,11 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
     const organizationId = orgResult
 
     const realmId = c.req.query('realmId')
-    let filters: { parentId: string } | undefined
-    if (realmId) {
-      const realmResourceId = await getResourceId(db, 'realm', realmId)
-      if (realmResourceId) {
-        filters = { parentId: realmResourceId }
-      }
-    }
 
     const visibleIds = await listVisible(db, {
       kind: 'environment',
       userId: session.userId,
       organizationId,
-      filters,
     })
 
     if (visibleIds.length === 0) {
@@ -449,12 +412,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const resourceId = await getResourceId(db, 'environment', id)
-    if (!resourceId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanReadOr403(c, 'environment', resourceId)
+    const denied = await assertCanReadOr403(c, 'environment', id)
     if (denied) return denied
 
     return c.json({ environment: row })
@@ -487,12 +445,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const realmResourceId = await getResourceId(db, 'realm', realmId)
-    if (!realmResourceId) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-
-    const denied = await assertCanCreateOr403(c, realmResourceId, [
+    const denied = await assertCanCreateOr403(c, 'realm', realmId, [
       'realm:rw',
       'environment:rw',
     ])
@@ -510,12 +463,6 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
         .insert(environment)
         .values({ displayName, organizationId, realmId })
         .returning({ id: environment.id })
-      await registerResource(tx, {
-        kind: 'environment',
-        itemId: inserted.id,
-        organizationId,
-        parentId: realmResourceId,
-      })
       return inserted.id
     })
 
@@ -545,12 +492,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const resourceId = await getResourceId(db, 'environment', id)
-    if (!resourceId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'environment:rw', resourceId)
+    const denied = await assertCanOr403(c, 'environment:rw', 'environment', id)
     if (denied) return denied
 
     const body = await parseJsonBody(c)
@@ -594,17 +536,11 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const resourceId = await getResourceId(db, 'environment', id)
-    if (!resourceId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'environment:rw', resourceId)
+    const denied = await assertCanOr403(c, 'environment:rw', 'environment', id)
     if (denied) return denied
 
     await db.transaction(async (tx) => {
       await tx.delete(environment).where(eq(environment.id, id))
-      await unregisterResource(tx, 'environment', id)
     })
 
     return c.json({ ok: true as const })
@@ -625,19 +561,11 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
     const organizationId = orgResult
 
     const environmentId = c.req.query('environmentId')
-    let filters: { parentId: string } | undefined
-    if (environmentId) {
-      const envResourceId = await getResourceId(db, 'environment', environmentId)
-      if (envResourceId) {
-        filters = { parentId: envResourceId }
-      }
-    }
 
     const visibleIds = await listVisible(db, {
       kind: 'project',
       userId: session.userId,
       organizationId,
-      filters,
     })
 
     if (visibleIds.length === 0) {
@@ -695,12 +623,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const resourceId = await getResourceId(db, 'project', id)
-    if (!resourceId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanReadOr403(c, 'project', resourceId)
+    const denied = await assertCanReadOr403(c, 'project', id)
     if (denied) return denied
 
     return c.json({ project: row })
@@ -738,12 +661,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const envResourceId = await getResourceId(db, 'environment', environmentId)
-    if (!envResourceId) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-
-    const denied = await assertCanCreateOr403(c, envResourceId, [
+    const denied = await assertCanCreateOr403(c, 'environment', environmentId, [
       'environment:rw',
       'project:rw',
     ])
@@ -761,12 +679,6 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
         .insert(project)
         .values({ displayName, organizationId, environmentId })
         .returning({ id: project.id })
-      await registerResource(tx, {
-        kind: 'project',
-        itemId: inserted.id,
-        organizationId,
-        parentId: envResourceId,
-      })
       return inserted.id
     })
 
@@ -796,12 +708,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const resourceId = await getResourceId(db, 'project', id)
-    if (!resourceId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'project:rw', resourceId)
+    const denied = await assertCanOr403(c, 'project:rw', 'project', id)
     if (denied) return denied
 
     const body = await parseJsonBody(c)
@@ -845,17 +752,11 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const resourceId = await getResourceId(db, 'project', id)
-    if (!resourceId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'project:rw', resourceId)
+    const denied = await assertCanOr403(c, 'project:rw', 'project', id)
     if (denied) return denied
 
     await db.transaction(async (tx) => {
       await tx.delete(project).where(eq(project.id, id))
-      await unregisterResource(tx, 'project', id)
     })
 
     return c.json({ ok: true as const })
@@ -876,19 +777,11 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
     const organizationId = orgResult
 
     const projectId = c.req.query('projectId')
-    let filters: { parentId: string } | undefined
-    if (projectId) {
-      const projectResourceId = await getResourceId(db, 'project', projectId)
-      if (projectResourceId) {
-        filters = { parentId: projectResourceId }
-      }
-    }
 
     const visibleIds = await listVisible(db, {
       kind: 'service',
       userId: session.userId,
       organizationId,
-      filters,
     })
 
     if (visibleIds.length === 0) {
@@ -946,12 +839,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const resourceId = await getResourceId(db, 'service', id)
-    if (!resourceId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanReadOr403(c, 'service', resourceId)
+    const denied = await assertCanReadOr403(c, 'service', id)
     if (denied) return denied
 
     return c.json({ service: row })
@@ -986,12 +874,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const projectResourceId = await getResourceId(db, 'project', projectId)
-    if (!projectResourceId) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-
-    const denied = await assertCanCreateOr403(c, projectResourceId, [
+    const denied = await assertCanCreateOr403(c, 'project', projectId, [
       'project:rw',
       'service:rw',
     ])
@@ -1009,12 +892,6 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
         .insert(service)
         .values({ displayName, organizationId, projectId })
         .returning({ id: service.id })
-      await registerResource(tx, {
-        kind: 'service',
-        itemId: inserted.id,
-        organizationId,
-        parentId: projectResourceId,
-      })
       return inserted.id
     })
 
@@ -1044,12 +921,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const resourceId = await getResourceId(db, 'service', id)
-    if (!resourceId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'service:rw', resourceId)
+    const denied = await assertCanOr403(c, 'service:rw', 'service', id)
     if (denied) return denied
 
     const body = await parseJsonBody(c)
@@ -1093,17 +965,11 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const resourceId = await getResourceId(db, 'service', id)
-    if (!resourceId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'service:rw', resourceId)
+    const denied = await assertCanOr403(c, 'service:rw', 'service', id)
     if (denied) return denied
 
     await db.transaction(async (tx) => {
       await tx.delete(service).where(eq(service.id, id))
-      await unregisterResource(tx, 'service', id)
     })
 
     return c.json({ ok: true as const })
@@ -1124,19 +990,11 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
     const organizationId = orgResult
 
     const projectId = c.req.query('projectId')
-    let filters: { parentId: string } | undefined
-    if (projectId) {
-      const projectResourceId = await getResourceId(db, 'project', projectId)
-      if (projectResourceId) {
-        filters = { parentId: projectResourceId }
-      }
-    }
 
     const visibleIds = await listVisible(db, {
       kind: 'hosting',
       userId: session.userId,
       organizationId,
-      filters,
     })
 
     if (visibleIds.length === 0) {
@@ -1194,12 +1052,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const resourceId = await getResourceId(db, 'hosting', id)
-    if (!resourceId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanReadOr403(c, 'hosting', resourceId)
+    const denied = await assertCanReadOr403(c, 'hosting', id)
     if (denied) return denied
 
     return c.json({ hosting: row })
@@ -1234,12 +1087,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const projectResourceId = await getResourceId(db, 'project', projectId)
-    if (!projectResourceId) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-
-    const denied = await assertCanCreateOr403(c, projectResourceId, [
+    const denied = await assertCanCreateOr403(c, 'project', projectId, [
       'project:rw',
       'hosting:rw',
     ])
@@ -1257,12 +1105,6 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
         .insert(hosting)
         .values({ displayName, organizationId, projectId })
         .returning({ id: hosting.id })
-      await registerResource(tx, {
-        kind: 'hosting',
-        itemId: inserted.id,
-        organizationId,
-        parentId: projectResourceId,
-      })
       return inserted.id
     })
 
@@ -1292,12 +1134,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const resourceId = await getResourceId(db, 'hosting', id)
-    if (!resourceId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'hosting:rw', resourceId)
+    const denied = await assertCanOr403(c, 'hosting:rw', 'hosting', id)
     if (denied) return denied
 
     const body = await parseJsonBody(c)
@@ -1341,17 +1178,11 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const resourceId = await getResourceId(db, 'hosting', id)
-    if (!resourceId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'hosting:rw', resourceId)
+    const denied = await assertCanOr403(c, 'hosting:rw', 'hosting', id)
     if (denied) return denied
 
     await db.transaction(async (tx) => {
       await tx.delete(hosting).where(eq(hosting.id, id))
-      await unregisterResource(tx, 'hosting', id)
     })
 
     return c.json({ ok: true as const })

@@ -1,11 +1,7 @@
 import { eq, sql, type SQL } from 'drizzle-orm'
 import type { Db } from '../db.ts'
-import { member, teammate } from '../db/schema.ts'
-import {
-  ACCESS_PROFILES,
-  accessProfilesGrantingPermission,
-  type PermissionKey,
-} from './catalog.ts'
+import { accessGrant, member, teammate } from '../db/schema.ts'
+import { type PermissionKey } from './catalog.ts'
 
 export type { PermissionKey }
 
@@ -59,17 +55,6 @@ export async function getSubjects(db: Db, userId: string): Promise<Subject[]> {
   }
 
   return subjects
-}
-
-/** Atomic permission keys stored in `access_grant` that imply `permissionKey`. */
-function permissionsImplying(permissionKey: PermissionKey): PermissionKey[] {
-  const implied = new Set<PermissionKey>([permissionKey])
-  for (const profileKey of accessProfilesGrantingPermission(permissionKey)) {
-    for (const perm of ACCESS_PROFILES[profileKey]) {
-      implied.add(perm)
-    }
-  }
-  return [...implied]
 }
 
 /** Build the `subjectset` CTE body, either from a pre-fetched set or inline. */
@@ -314,7 +299,7 @@ function buildLeavesBody(kind: string, organizationId: string): SQL {
 
 /**
  * Resolve whether `userId` holds `permissionKey` on the entity (or any of its
- * ancestors) using domain FK joins and `access_grant` rows.
+ * ancestors) using domain FK joins and `grant` rows.
  */
 export async function can(
   db: Db,
@@ -326,11 +311,6 @@ export async function can(
 ): Promise<boolean> {
   const subjectsetBody = buildSubjectsetBody(userId, opts?.subjects)
   const ancestryBody = buildAncestryBody(entityType, entityId)
-  const impliedPermissions = permissionsImplying(permissionKey)
-  const permissionPredicate = sql`ag.permission IN (${sql.join(
-    impliedPermissions.map((p) => sql`${p}`),
-    sql`, `,
-  )})`
 
   const rows = (await db.execute(sql`
     WITH
@@ -343,11 +323,11 @@ export async function can(
     hits AS (
       SELECT ag.allowed, a.depth
       FROM ancestry a
-      JOIN access_grant ag
+      JOIN ${accessGrant} ag
         ON ag.entity_type = a.entity_type AND ag.entity_id = a.entity_id
       JOIN subjectset ss
         ON ss.subject_type = ag.subject_type AND ss.subject_id = ag.subject_id
-      WHERE ${permissionPredicate}
+      WHERE ag.permission = ${permissionKey}
       ORDER BY a.depth ASC, (ag.allowed = false) DESC
       LIMIT 1
     )
@@ -395,13 +375,6 @@ export async function listVisible(
   const walkBody = buildWalkBody(kind, organizationId)
   const roKey = `${kind}:ro` as PermissionKey
   const rwKey = `${kind}:rw` as PermissionKey
-  const visibilityPermissions = [
-    ...new Set([...permissionsImplying(roKey), ...permissionsImplying(rwKey)]),
-  ]
-  const visibilityPredicate = sql`ag.permission IN (${sql.join(
-    visibilityPermissions.map((p) => sql`${p}`),
-    sql`, `,
-  )})`
 
   const rows = (await db.execute(sql`
     WITH
@@ -426,11 +399,11 @@ export async function listVisible(
         w.depth,
         ag.permission
       FROM walk w
-      JOIN access_grant ag
+      JOIN ${accessGrant} ag
         ON ag.entity_type = w.entity_type AND ag.entity_id = w.entity_id
       JOIN subjectset ss
         ON ss.subject_type = ag.subject_type AND ss.subject_id = ag.subject_id
-      WHERE ${visibilityPredicate}
+      WHERE ag.permission IN (${roKey}, ${rwKey})
     ),
     resolved AS (
       SELECT DISTINCT ON (leaf_id, permission)

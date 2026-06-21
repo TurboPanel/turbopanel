@@ -3,20 +3,28 @@ import type { Context } from 'hono'
 import { Hono } from 'hono'
 import { registerAuthRoutes, type AuthRouteOpts } from '../authn/http.ts'
 import {
+  InvitationGrantValidationError,
   materializeInvitationGrants,
   resolveInvitationGrants,
 } from '../authn/invitation-grants.ts'
 import { createLicense, listLicenses, revokeLicense } from '../authn/license.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { compatLogError, compatLogInfo } from '../log-compat.ts'
+import { compatLogInfo } from '../log-compat.ts'
 import { updateSessionOrganization } from '../authn/session-store.ts'
 import { getAccessManagementPermission } from '../authz/access-management.ts'
+import {
+  collapseAtomicGrants,
+  mapEffectToAllowed,
+  revokeLegacyAccessGrant,
+} from '../authz/access-api-compat.ts'
 import { createAccessGrant } from '../authz/create-access-grant.ts'
+import {
+  resolveEntityById,
+  resolveEntityByKindAndItemId,
+} from '../authz/entity-resolver.ts'
 import {
   assertCanOr403,
   can,
-  getResourceByItem,
-  getResourceId,
   listVisible,
 } from '../authz/index.ts'
 import {
@@ -29,10 +37,9 @@ import { listDaemonConnections } from '../daemon/hub.ts'
 import type { Db } from '../db.ts'
 import { getDb } from '../db.ts'
 import {
-  access,
+  accessGrant,
   invitation,
   member,
-  resource,
   server,
   teammate,
 } from '../db/schema.ts'
@@ -41,17 +48,11 @@ import { buildClientScalarHtml } from '../scalar-html.ts'
 import { CLIENT_API_PREFIX } from '../surfaces.ts'
 import { registerResourceRoutes } from '../resource-routes.ts'
 
-async function assertBillingOrOrgMember(
-  c: Context,
-  db: Db,
-  organizationId: string,
-): Promise<Response | null> {
-  const orgResourceId = await getResourceId(db, 'organization', organizationId)
-  if (!orgResourceId) {
-    compatLogError('authz', `org resource not registered for ${organizationId} — run catalog sync to repair`)
-    return c.json({ error: 'Organization authorization not configured' }, 500)
-  }
-  return assertCanOr403(c, 'organization:billing', orgResourceId)
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function isUuid(value: string): boolean {
+  return UUID_RE.test(value)
 }
 
 async function assertCanManageAccessOr403(
@@ -59,22 +60,24 @@ async function assertCanManageAccessOr403(
   db: Db,
   resourceId: string,
 ): Promise<Response | null> {
-  const resourceRows = await db
-    .select({ kind: resource.kind })
-    .from(resource)
-    .where(eq(resource.id, resourceId))
-    .limit(1)
-
-  const resourceRow = resourceRows[0]
-  if (!resourceRow) {
+  const entity = await resolveEntityById(db, resourceId)
+  if (!entity) {
     return c.json({ error: 'Not found' }, 404)
   }
 
   return assertCanOr403(
     c,
-    getAccessManagementPermission(resourceRow.kind),
-    resourceId,
+    getAccessManagementPermission(entity.entityType),
+    entity.entityType,
+    entity.entityId,
   )
+}
+
+async function assertBillingOrOrgMember(
+  c: Context,
+  organizationId: string,
+): Promise<Response | null> {
+  return assertCanOr403(c, 'organization:billing', 'organization', organizationId)
 }
 
 /**
@@ -176,8 +179,7 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
 
     type AcceptResult =
       | { ok: true; organizationId: string }
-      | { error: 'gone' }
-      | { error: 'resource' }
+      | { error: 'gone' | 'invalid_grant' }
 
     const result: AcceptResult = await db.transaction(async (tx) => {
       const claimed = await tx
@@ -225,10 +227,15 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
       )
 
       try {
-        await materializeInvitationGrants(tx, session.userId, grants)
+        await materializeInvitationGrants(
+          tx,
+          session.userId,
+          grants,
+          invite.organizationId,
+        )
       } catch (err) {
-        if (err instanceof Error && err.message.startsWith('RESOURCE_NOT_REGISTERED')) {
-          return { error: 'resource' as const }
+        if (err instanceof InvitationGrantValidationError) {
+          return { error: 'invalid_grant' as const }
         }
         throw err
       }
@@ -237,10 +244,10 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
     })
 
     if ('error' in result) {
-      if (result.error === 'gone') {
-        return c.json({ error: 'Invitation expired or already used' }, 410)
+      if (result.error === 'invalid_grant') {
+        return c.json({ error: 'Invalid invitation grants' }, 400)
       }
-      return c.json({ error: 'Organization resource not registered' }, 500)
+      return c.json({ error: 'Invitation expired or already used' }, 410)
     }
 
     await updateSessionOrganization(
@@ -286,22 +293,24 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
     const permissionKey = c.req.query('permissionKey')?.trim()
     if (!resourceId || !permissionKey) {
       return c.json(
-        { error: 'resourceId and permissionKey query parameters are required' },
+        {
+          error:
+            'resourceId and permissionKey query parameters are required',
+        },
         400,
       )
+    }
+
+    if (!isUuid(resourceId)) {
+      return c.json({ error: 'Invalid resourceId' }, 400)
     }
 
     if (!PERMISSIONS.includes(permissionKey as PermissionKey)) {
       return c.json({ error: 'Invalid permissionKey' }, 400)
     }
 
-    const resourceRows = await db
-      .select({ id: resource.id })
-      .from(resource)
-      .where(eq(resource.id, resourceId))
-      .limit(1)
-
-    if (!resourceRows[0]) {
+    const entity = await resolveEntityById(db, resourceId)
+    if (!entity) {
       return c.json({ error: 'Not found' }, 404)
     }
 
@@ -309,7 +318,8 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
       db,
       session.userId,
       permissionKey as PermissionKey,
-      resourceId,
+      entity.entityType,
+      entity.entityId,
     )
 
     return c.json({ allowed })
@@ -336,8 +346,8 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const resourceRow = await getResourceByItem(db, kind, itemId)
-    if (!resourceRow || resourceRow.organizationId !== organizationId) {
+    const entity = await resolveEntityByKindAndItemId(db, kind, itemId)
+    if (!entity || entity.organizationId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 
@@ -346,7 +356,7 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
         return c.json({ error: 'Not found' }, 404)
       }
       return c.json({
-        resourceId: resourceRow.id,
+        resourceId: entity.entityId,
         kind,
         itemId,
       })
@@ -357,15 +367,15 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
     const visible =
       PERMISSIONS.includes(roKey) &&
       PERMISSIONS.includes(rwKey) &&
-      ((await can(db, session.userId, roKey, resourceRow.id)) ||
-        (await can(db, session.userId, rwKey, resourceRow.id)))
+      ((await can(db, session.userId, roKey, entity.entityType, entity.entityId)) ||
+        (await can(db, session.userId, rwKey, entity.entityType, entity.entityId)))
 
     if (!visible) {
       return c.json({ error: 'Forbidden' }, 403)
     }
 
     return c.json({
-      resourceId: resourceRow.id,
+      resourceId: entity.entityId,
       kind,
       itemId,
     })
@@ -383,24 +393,38 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'resourceId query parameter is required' }, 400)
     }
 
+    if (!isUuid(resourceId)) {
+      return c.json({ error: 'Invalid resourceId' }, 400)
+    }
+
+    const entity = await resolveEntityById(db, resourceId)
+    if (!entity) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
     const denied = await assertCanManageAccessOr403(c, db, resourceId)
     if (denied) return denied
 
     const rows = await db
       .select({
-        id: access.id,
-        subjectKind: access.subjectKind,
-        subjectId: access.subjectId,
-        resourceId: access.resourceId,
-        effect: access.effect,
-        accessProfileKey: access.accessProfileKey,
-        permissionKey: access.permissionKey,
+        id: accessGrant.id,
+        entityType: accessGrant.entityType,
+        entityId: accessGrant.entityId,
+        subjectType: accessGrant.subjectType,
+        subjectId: accessGrant.subjectId,
+        permission: accessGrant.permission,
+        allowed: accessGrant.allowed,
       })
-      .from(access)
-      .where(eq(access.resourceId, resourceId))
-      .orderBy(access.createdAt)
+      .from(accessGrant)
+      .where(
+        and(
+          eq(accessGrant.entityType, entity.entityType),
+          eq(accessGrant.entityId, entity.entityId),
+        ),
+      )
+      .orderBy(accessGrant.createdAt)
 
-    return c.json({ access: rows })
+    return c.json({ access: collapseAtomicGrants(rows) })
   })
 
   client.post('/access', async (c) => {
@@ -454,14 +478,24 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
       )
     }
 
+    if (!isUuid(resourceId) || !isUuid(subjectId)) {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+
+    const entity = await resolveEntityById(db, resourceId)
+    if (!entity) {
+      return c.json({ error: 'Entity not found' }, 404)
+    }
+
     const denied = await assertCanManageAccessOr403(c, db, resourceId)
     if (denied) return denied
 
     const result = await createAccessGrant(db, {
-      subjectKind,
+      entityType: entity.entityType,
+      entityId: entity.entityId,
+      subjectType: subjectKind,
       subjectId,
-      resourceId,
-      effect,
+      allowed: mapEffectToAllowed(effect),
       accessProfileKey: providedAccessProfileKey ? accessProfileKey : undefined,
       permissionKey: providedPermissionKey ? permissionKey : undefined,
     })
@@ -472,7 +506,7 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
 
     return c.json({
       ok: true as const,
-      id: result.id,
+      id: result.ids[0]!,
       created: result.created,
     })
   })
@@ -486,9 +520,12 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
 
     const accessId = c.req.param('id')
     const accessRows = await db
-      .select({ resourceId: access.resourceId })
-      .from(access)
-      .where(eq(access.id, accessId))
+      .select({
+        entityType: accessGrant.entityType,
+        entityId: accessGrant.entityId,
+      })
+      .from(accessGrant)
+      .where(eq(accessGrant.id, accessId))
       .limit(1)
 
     const accessRow = accessRows[0]
@@ -496,10 +533,13 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanManageAccessOr403(c, db, accessRow.resourceId)
+    const denied = await assertCanManageAccessOr403(c, db, accessRow.entityId)
     if (denied) return denied
 
-    await db.delete(access).where(eq(access.id, accessId))
+    const revoked = await revokeLegacyAccessGrant(db, accessId)
+    if (!revoked) {
+      return c.json({ error: 'Not found' }, 404)
+    }
 
     return c.json({ ok: true as const })
   })
@@ -519,7 +559,7 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ licenses: [] })
     }
 
-    const denied = await assertBillingOrOrgMember(c, db, organizationId)
+    const denied = await assertBillingOrOrgMember(c, organizationId)
     if (denied) return denied
 
     const licenses = await listLicenses(db, organizationId)
@@ -567,7 +607,7 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'No organization' }, 400)
     }
 
-    const denied = await assertBillingOrOrgMember(c, db, organizationId)
+    const denied = await assertBillingOrOrgMember(c, organizationId)
     if (denied) return denied
 
     const { licenseId, licenseToken } = await createLicense(db, {
@@ -597,7 +637,7 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertBillingOrOrgMember(c, db, organizationId)
+    const denied = await assertBillingOrOrgMember(c, organizationId)
     if (denied) return denied
 
     const id = c.req.param('id')

@@ -2,15 +2,14 @@ import { and, eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../db-url.ts'
 import { createDenoDb } from '../db.ts'
 import {
-  access,
+  accessGrant,
   environment,
   member,
   organization,
   realm,
-  resource,
   user,
 } from '../db/schema.ts'
-import { registerResource } from './resource-registry.ts'
+import { ACCESS_PROFILES } from './catalog.ts'
 import { can, listVisible } from './evaluator.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -20,8 +19,6 @@ async function withTestFixtures(
     db: ReturnType<typeof createDenoDb>
     userId: string
     organizationId: string
-    orgResourceId: string
-    realmResourceId: string
     realmId: string
   }) => Promise<void>,
 ): Promise<void> {
@@ -50,12 +47,6 @@ async function withTestFixtures(
 
   await db.insert(member).values({ organizationId, userId })
 
-  const orgResourceId = await registerResource(db, {
-    kind: 'organization',
-    itemId: organizationId,
-    organizationId,
-  })
-
   const [insertedRealm] = await db
     .insert(realm)
     .values({ displayName: 'Test Realm', organizationId })
@@ -63,29 +54,19 @@ async function withTestFixtures(
 
   const realmId = insertedRealm!.id
 
-  const realmResourceId = await registerResource(db, {
-    kind: 'realm',
-    itemId: realmId,
-    organizationId,
-    parentId: orgResourceId,
-  })
-
   try {
     await fn({
       db,
       userId,
       organizationId,
-      orgResourceId,
-      realmResourceId,
       realmId,
     })
   } finally {
-    await db.delete(access).where(eq(access.subjectId, userId))
+    await db.delete(accessGrant).where(eq(accessGrant.subjectId, userId))
     await db.delete(member).where(and(
       eq(member.userId, userId),
       eq(member.organizationId, organizationId),
     ))
-    await db.delete(resource).where(eq(resource.organizationId, organizationId))
     await db.delete(environment).where(eq(environment.organizationId, organizationId))
     await db.delete(realm).where(eq(realm.organizationId, organizationId))
     await db.delete(user).where(eq(user.id, userId))
@@ -94,18 +75,31 @@ async function withTestFixtures(
 }
 
 Deno.test('access profile grant allows inherited access', async () => {
-  await withTestFixtures(async ({ db, userId, orgResourceId, realmResourceId }) => {
-    await db.insert(access).values({
-      subjectKind: 'user',
-      subjectId: userId,
-      resourceId: orgResourceId,
-      effect: 'allow',
-      accessProfileKey: 'member',
-      permissionKey: null,
-    })
+  await withTestFixtures(async ({ db, userId, organizationId, realmId }) => {
+    for (const permission of ACCESS_PROFILES['member']) {
+      await db
+        .insert(accessGrant)
+        .values({
+          entityType: 'organization',
+          entityId: organizationId,
+          subjectType: 'user',
+          subjectId: userId,
+          permission,
+          allowed: true,
+        })
+        .onConflictDoNothing({
+          target: [
+            accessGrant.entityType,
+            accessGrant.entityId,
+            accessGrant.subjectType,
+            accessGrant.subjectId,
+            accessGrant.permission,
+          ],
+        })
+    }
 
-    const canRead = await can(db, userId, 'realm:ro', realmResourceId)
-    const canWrite = await can(db, userId, 'realm:rw', realmResourceId)
+    const canRead = await can(db, userId, 'realm:ro', 'realm', realmId)
+    const canWrite = await can(db, userId, 'realm:rw', 'realm', realmId)
 
     if (!canRead) throw new Error('member profile on org should inherit realm:ro')
     if (canWrite) throw new Error('member profile must not grant realm:rw')
@@ -113,18 +107,18 @@ Deno.test('access profile grant allows inherited access', async () => {
 })
 
 Deno.test('direct permission grant allows access', async () => {
-  await withTestFixtures(async ({ db, userId, realmResourceId }) => {
-    await db.insert(access).values({
-      subjectKind: 'user',
+  await withTestFixtures(async ({ db, userId, realmId }) => {
+    await db.insert(accessGrant).values({
+      entityType: 'realm',
+      entityId: realmId,
+      subjectType: 'user',
       subjectId: userId,
-      resourceId: realmResourceId,
-      effect: 'allow',
-      accessProfileKey: null,
-      permissionKey: 'realm:rw',
+      permission: 'realm:rw',
+      allowed: true,
     })
 
-    const canWrite = await can(db, userId, 'realm:rw', realmResourceId)
-    const canRead = await can(db, userId, 'realm:ro', realmResourceId)
+    const canWrite = await can(db, userId, 'realm:rw', 'realm', realmId)
+    const canRead = await can(db, userId, 'realm:ro', 'realm', realmId)
 
     if (!canWrite) throw new Error('direct realm:rw grant should allow realm:rw')
     if (canRead) throw new Error('direct realm:rw grant must not imply realm:ro')
@@ -136,8 +130,6 @@ Deno.test('lower nearer deny revokes inherited parent allow', async () => {
     db,
     userId,
     organizationId,
-    orgResourceId,
-    realmResourceId,
     realmId,
   }) => {
     const [insertedEnvironment] = await db
@@ -145,49 +137,86 @@ Deno.test('lower nearer deny revokes inherited parent allow', async () => {
       .values({ displayName: 'Test Environment', organizationId, realmId })
       .returning({ id: environment.id })
 
-    const environmentResourceId = await registerResource(db, {
-      kind: 'environment',
-      itemId: insertedEnvironment!.id,
-      organizationId,
-      parentId: realmResourceId,
-    })
+    const environmentId = insertedEnvironment!.id
 
-    await db.insert(access).values({
-      subjectKind: 'user',
-      subjectId: userId,
-      resourceId: orgResourceId,
-      effect: 'allow',
-      accessProfileKey: 'owner',
-      permissionKey: null,
-    })
+    try {
+      for (const permission of ACCESS_PROFILES['owner']) {
+        await db
+          .insert(accessGrant)
+          .values({
+            entityType: 'organization',
+            entityId: organizationId,
+            subjectType: 'user',
+            subjectId: userId,
+            permission,
+            allowed: true,
+          })
+          .onConflictDoNothing({
+            target: [
+              accessGrant.entityType,
+              accessGrant.entityId,
+              accessGrant.subjectType,
+              accessGrant.subjectId,
+              accessGrant.permission,
+            ],
+          })
+      }
 
-    await db.insert(access).values({
-      subjectKind: 'user',
-      subjectId: userId,
-      resourceId: realmResourceId,
-      effect: 'deny',
-      accessProfileKey: 'owner',
-      permissionKey: null,
-    })
+      for (const permission of ACCESS_PROFILES['owner']) {
+        await db
+          .insert(accessGrant)
+          .values({
+            entityType: 'realm',
+            entityId: realmId,
+            subjectType: 'user',
+            subjectId: userId,
+            permission,
+            allowed: false,
+          })
+          .onConflictDoNothing({
+            target: [
+              accessGrant.entityType,
+              accessGrant.entityId,
+              accessGrant.subjectType,
+              accessGrant.subjectId,
+              accessGrant.permission,
+            ],
+          })
+      }
 
-    const canRealmWrite = await can(db, userId, 'realm:rw', realmResourceId)
-    const canEnvironmentWrite = await can(db, userId, 'environment:rw', environmentResourceId)
-    const canOrgWrite = await can(db, userId, 'organization:rw', orgResourceId)
+      const canRealmWrite = await can(db, userId, 'realm:rw', 'realm', realmId)
+      const canEnvironmentWrite = await can(
+        db,
+        userId,
+        'environment:rw',
+        'environment',
+        environmentId,
+      )
+      const canOrgWrite = await can(
+        db,
+        userId,
+        'organization:rw',
+        'organization',
+        organizationId,
+      )
 
-    if (canRealmWrite) {
-      throw new Error('nearer deny on realm should revoke inherited realm:rw')
-    }
-    if (canEnvironmentWrite) {
-      throw new Error('nearer deny on realm should revoke inherited environment:rw on descendant')
-    }
-    if (!canOrgWrite) {
-      throw new Error('deny on realm should not affect organization:rw on org')
+      if (canRealmWrite) {
+        throw new Error('nearer deny on realm should revoke inherited realm:rw')
+      }
+      if (canEnvironmentWrite) {
+        throw new Error('nearer deny on realm should revoke inherited environment:rw on descendant')
+      }
+      if (!canOrgWrite) {
+        throw new Error('deny on realm should not affect organization:rw on org')
+      }
+    } finally {
+      await db.delete(environment).where(eq(environment.id, environmentId))
     }
   })
 })
 
 Deno.test('cross-org subject grant works', async () => {
-  await withTestFixtures(async ({ db, orgResourceId, realmResourceId }) => {
+  await withTestFixtures(async ({ db, organizationId, realmId }) => {
     const emailB = `evaluator-cross-org-${crypto.randomUUID()}@example.com`
 
     const insertedOrgB = await db
@@ -207,17 +236,36 @@ Deno.test('cross-org subject grant works', async () => {
     try {
       await db.insert(member).values({ organizationId: organizationIdB, userId: userBId })
 
-      await db.insert(access).values({
-        subjectKind: 'user',
-        subjectId: userBId,
-        resourceId: orgResourceId,
-        effect: 'allow',
-        accessProfileKey: 'member',
-        permissionKey: null,
-      })
+      for (const permission of ACCESS_PROFILES['member']) {
+        await db
+          .insert(accessGrant)
+          .values({
+            entityType: 'organization',
+            entityId: organizationId,
+            subjectType: 'user',
+            subjectId: userBId,
+            permission,
+            allowed: true,
+          })
+          .onConflictDoNothing({
+            target: [
+              accessGrant.entityType,
+              accessGrant.entityId,
+              accessGrant.subjectType,
+              accessGrant.subjectId,
+              accessGrant.permission,
+            ],
+          })
+      }
 
-      const canOrgRead = await can(db, userBId, 'organization:ro', orgResourceId)
-      const canRealmRead = await can(db, userBId, 'realm:ro', realmResourceId)
+      const canOrgRead = await can(
+        db,
+        userBId,
+        'organization:ro',
+        'organization',
+        organizationId,
+      )
+      const canRealmRead = await can(db, userBId, 'realm:ro', 'realm', realmId)
 
       if (!canOrgRead) {
         throw new Error('cross-org user grant should allow organization:ro on org A')
@@ -226,12 +274,11 @@ Deno.test('cross-org subject grant works', async () => {
         throw new Error('cross-org user grant should inherit realm:ro from org A')
       }
     } finally {
-      await db.delete(access).where(eq(access.subjectId, userBId))
+      await db.delete(accessGrant).where(eq(accessGrant.subjectId, userBId))
       await db.delete(member).where(and(
         eq(member.userId, userBId),
         eq(member.organizationId, organizationIdB),
       ))
-      await db.delete(resource).where(eq(resource.organizationId, organizationIdB))
       await db.delete(realm).where(eq(realm.organizationId, organizationIdB))
       await db.delete(user).where(eq(user.id, userBId))
       await db.delete(organization).where(eq(organization.id, organizationIdB))
@@ -240,7 +287,7 @@ Deno.test('cross-org subject grant works', async () => {
 })
 
 Deno.test('superadmin bypass', async () => {
-  await withTestFixtures(async ({ db, organizationId, orgResourceId, realmResourceId, realmId }) => {
+  await withTestFixtures(async ({ db, organizationId, realmId }) => {
     const superadminEmail = `evaluator-superadmin-${crypto.randomUUID()}@example.com`
 
     const insertedSuperadmin = await db
@@ -251,8 +298,14 @@ Deno.test('superadmin bypass', async () => {
     const superadminId = insertedSuperadmin[0]!.id
 
     try {
-      const canRealmWrite = await can(db, superadminId, 'realm:rw', realmResourceId)
-      const canBilling = await can(db, superadminId, 'organization:billing', orgResourceId)
+      const canRealmWrite = await can(db, superadminId, 'realm:rw', 'realm', realmId)
+      const canBilling = await can(
+        db,
+        superadminId,
+        'organization:billing',
+        'organization',
+        organizationId,
+      )
 
       if (!canRealmWrite) throw new Error('superadmin should bypass realm:rw check')
       if (!canBilling) throw new Error('superadmin should bypass organization:billing check')

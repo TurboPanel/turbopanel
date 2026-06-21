@@ -6,7 +6,7 @@ import {
   getColocatedDaemonServerId,
 } from '../daemon/hub.ts'
 import {
-  access,
+  accessGrant,
   account,
   member,
   teammate,
@@ -16,8 +16,7 @@ import {
   team,
   user,
 } from '../db/schema.ts'
-import { registerResource } from '../authz/resource-registry.ts'
-import { ensureServerResource } from '../server-registry.ts'
+import { ACCESS_PROFILES } from '../authz/catalog.ts'
 import { createLicense } from './license.ts'
 import { hashPassword } from './password.ts'
 import { SUPERADMIN_ROLE } from './session-store.ts'
@@ -51,6 +50,35 @@ export type InstallStatus = {
 
 function nowTs(): string {
   return new Date().toISOString()
+}
+
+async function insertOwnerGrants(
+  db: Db,
+  userId: string,
+  organizationId: string,
+): Promise<void> {
+  const permissions = ACCESS_PROFILES.owner
+  for (const permission of permissions) {
+    await db
+      .insert(accessGrant)
+      .values({
+        entityType: 'organization',
+        entityId: organizationId,
+        subjectType: 'user',
+        subjectId: userId,
+        permission,
+        allowed: true,
+      })
+      .onConflictDoNothing({
+        target: [
+          accessGrant.entityType,
+          accessGrant.entityId,
+          accessGrant.subjectType,
+          accessGrant.subjectId,
+          accessGrant.permission,
+        ],
+      })
+  }
 }
 
 const DEFAULT_DAEMON_STATE_DIR = '/opt/turbopanel/platform/daemon/state'
@@ -315,9 +343,6 @@ export async function assignColocatedDaemonToOrganization(
     .limit(1)
 
   const assignedOrgId = assignedRows[0]?.organizationId
-  if (assignedOrgId) {
-    await ensureServerResource(db, serverId, assignedOrgId)
-  }
 
   if (updated.length > 0) {
     compatLogInfo(
@@ -422,20 +447,7 @@ export async function completeInstanceInstall(
       userId,
     })
 
-    const resourceId = await registerResource(tx, {
-      kind: 'organization',
-      itemId: organizationId,
-      organizationId,
-    })
-
-    await tx.insert(access).values({
-      subjectKind: 'user',
-      subjectId: userId,
-      resourceId,
-      effect: 'allow',
-      accessProfileKey: 'owner',
-      permissionKey: null,
-    })
+    await insertOwnerGrants(tx, userId, organizationId)
 
     const { licenseId, licenseToken } = await createLicense(tx, {
       organizationId,

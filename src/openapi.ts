@@ -479,24 +479,25 @@ export function getClientOpenApiSpec(serverUrl: string): object {
           properties: {
             resourceKind: {
               type: 'string',
-              description: 'Entity kind registered in `resource` (e.g. organization, team, server).',
+              description: 'Entity kind (e.g. organization, realm, project).',
             },
             itemId: {
               type: 'string',
-              description: 'Primary key of the entity (`resource.item_id`).',
+              format: 'uuid',
+              description: 'Primary key of the entity.',
             },
             effect: { type: 'string', enum: ['allow', 'deny'], default: 'allow' },
             accessProfileKey: {
               type: 'string',
-              description: 'Access profile key (e.g. member, owner, readonly).',
+              description: 'Access profile key expanded to atomic permissions on accept.',
             },
             permissionKey: {
               type: 'string',
-              description: 'Direct permission key from the catalog (e.g. organization:billing).',
+              description: 'Single atomic permission key.',
             },
           },
           description:
-            'One intended access grant stored on `invitation.grants`. Exactly one of `accessProfileKey` or `permissionKey` should be set.',
+            'One intended access grant stored on invitation.grants. Exactly one of accessProfileKey or permissionKey should be set. Materialized into grant rows on invitation accept.',
         },
         AccessProfileRecord: {
           type: 'object',
@@ -548,13 +549,13 @@ export function getClientOpenApiSpec(serverUrl: string): object {
             'effect',
           ],
           properties: {
-            id: { type: 'string' },
+            id: { type: 'string', format: 'uuid' },
             subjectKind: {
               type: 'string',
               enum: ['user', 'team', 'organization'],
             },
-            subjectId: { type: 'string' },
-            resourceId: { type: 'string' },
+            subjectId: { type: 'string', format: 'uuid' },
+            resourceId: { type: 'string', format: 'uuid' },
             effect: { type: 'string', enum: ['allow', 'deny'] },
             accessProfileKey: { type: ['string', 'null'] },
             permissionKey: { type: ['string', 'null'] },
@@ -574,17 +575,24 @@ export function getClientOpenApiSpec(serverUrl: string): object {
           type: 'object',
           required: ['subjectKind', 'subjectId', 'resourceId', 'effect'],
           description:
-            'Exactly one of `accessProfileKey` or `permissionKey` must be provided.',
+            'Exactly one of accessProfileKey or permissionKey must be provided. accessProfileKey is expanded server-side into multiple atomic grant rows in a single transaction.',
           properties: {
             subjectKind: {
               type: 'string',
               enum: ['user', 'team', 'organization'],
             },
-            subjectId: { type: 'string' },
-            resourceId: { type: 'string' },
+            subjectId: { type: 'string', format: 'uuid' },
+            resourceId: { type: 'string', format: 'uuid' },
             effect: { type: 'string', enum: ['allow', 'deny'] },
-            accessProfileKey: { type: 'string' },
-            permissionKey: { type: 'string' },
+            accessProfileKey: {
+              type: 'string',
+              description:
+                'Sugar: expanded to atomic permission rows server-side. Exactly one of `accessProfileKey` or `permissionKey` required.',
+            },
+            permissionKey: {
+              type: 'string',
+              description: 'Single atomic permission key from the catalog.',
+            },
           },
         },
         CreateAccessResponse: {
@@ -592,7 +600,11 @@ export function getClientOpenApiSpec(serverUrl: string): object {
           required: ['ok', 'id'],
           properties: {
             ok: { type: 'boolean', const: true },
-            id: { type: 'string' },
+            id: { type: 'string', format: 'uuid' },
+            created: {
+              type: 'boolean',
+              description: 'True if at least one new row was inserted.',
+            },
           },
         },
         RevokeAccessResponse: {
@@ -1339,18 +1351,6 @@ export function getClientOpenApiSpec(serverUrl: string): object {
                 },
               },
             },
-            '500': {
-              description: 'Organization resource not registered',
-              content: {
-                'application/json': {
-                  schema: {
-                    type: 'object',
-                    required: ['error'],
-                    properties: { error: { type: 'string' } },
-                  },
-                },
-              },
-            },
             '503': {
               description: 'Database unavailable',
               content: {
@@ -1424,16 +1424,20 @@ export function getClientOpenApiSpec(serverUrl: string): object {
           },
         },
       },
-      '/api/client/v1/access': {
+      '/api/client/v1/access/check': {
         get: {
           tags: ['client'],
-          summary: 'List access grants for a resource',
-          description:
-            'Requires the resource-kind management permission: `organization:members`, `team:members`, or `{kind}:rw` for other kinds.',
+          summary: 'Check a permission for the signed-in user',
           security: [{ cookieAuth: [] }],
           parameters: [
             {
               name: 'resourceId',
+              in: 'query',
+              required: true,
+              schema: { type: 'string', format: 'uuid' },
+            },
+            {
+              name: 'permissionKey',
               in: 'query',
               required: true,
               schema: { type: 'string' },
@@ -1441,15 +1445,106 @@ export function getClientOpenApiSpec(serverUrl: string): object {
           ],
           responses: {
             '200': {
-              description: 'Access grants for the resource',
+              description: 'Permission check result',
               content: {
                 'application/json': {
-                  schema: { $ref: '#/components/schemas/AccessListResponse' },
+                  schema: {
+                    type: 'object',
+                    required: ['allowed'],
+                    properties: { allowed: { type: 'boolean' } },
+                  },
                 },
               },
             },
             '400': {
-              description: 'Missing resourceId query parameter',
+              description: 'Missing or invalid query parameters',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+            '401': {
+              description: 'Unauthorized',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+            '404': {
+              description: 'Resource not found',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+            '503': {
+              description: 'Database unavailable',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/client/v1/access/resource-id': {
+        get: {
+          tags: ['client'],
+          summary: 'Resolve a resource id for an entity',
+          security: [{ cookieAuth: [] }],
+          parameters: [
+            {
+              name: 'kind',
+              in: 'query',
+              required: true,
+              schema: { type: 'string' },
+            },
+            {
+              name: 'itemId',
+              in: 'query',
+              required: true,
+              schema: { type: 'string', format: 'uuid' },
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'Resolved resource id',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['resourceId', 'kind', 'itemId'],
+                    properties: {
+                      resourceId: { type: 'string', format: 'uuid' },
+                      kind: { type: 'string' },
+                      itemId: { type: 'string', format: 'uuid' },
+                    },
+                  },
+                },
+              },
+            },
+            '400': {
+              description: 'Missing or invalid query parameters',
               content: {
                 'application/json': {
                   schema: {
@@ -1480,6 +1575,101 @@ export function getClientOpenApiSpec(serverUrl: string): object {
                 },
               },
             },
+            '404': {
+              description: 'Resource not found',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+            '503': {
+              description: 'Database unavailable',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/client/v1/access': {
+        get: {
+          tags: ['client'],
+          summary: 'List access grants for a resource',
+          description:
+            'Requires the resource-kind management permission: organization:members, team:members, or {kind}:rw for other kinds.',
+          security: [{ cookieAuth: [] }],
+          parameters: [
+            {
+              name: 'resourceId',
+              in: 'query',
+              required: true,
+              schema: { type: 'string', format: 'uuid' },
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'Access grants for the resource',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/AccessListResponse' },
+                },
+              },
+            },
+            '400': {
+              description: 'Missing or invalid query parameters',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+            '401': {
+              description: 'Unauthorized',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string' } },
+                  },
+                },
+              },
+            },
+            '403': {
+              description: 'Forbidden',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ErrorResponse' },
+                },
+              },
+            },
+            '404': {
+              description: 'Resource not found',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: { error: { type: 'string', example: 'Not found' } },
+                  },
+                },
+              },
+            },
             '503': {
               description: 'Database unavailable',
               content: {
@@ -1498,7 +1688,7 @@ export function getClientOpenApiSpec(serverUrl: string): object {
           tags: ['client'],
           summary: 'Create an access grant',
           description:
-            'Requires the resource-kind management permission on the target `resourceId`. Grant an access profile or permission to a subject.',
+            'Requires the resource-kind management permission on the target resourceId. Accepts accessProfileKey as sugar — expanded server-side to multiple atomic grant rows in one transaction.',
           security: [{ cookieAuth: [] }],
           requestBody: {
             required: true,
@@ -1546,6 +1736,29 @@ export function getClientOpenApiSpec(serverUrl: string): object {
               content: {
                 'application/json': {
                   schema: { $ref: '#/components/schemas/ErrorResponse' },
+                },
+              },
+            },
+            '404': {
+              description:
+                'Target entity or subject not found (`Entity not found`, `User not found`, `Team not found`, or `Organization not found`)',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['error'],
+                    properties: {
+                      error: {
+                        type: 'string',
+                        enum: [
+                          'Entity not found',
+                          'User not found',
+                          'Team not found',
+                          'Organization not found',
+                        ],
+                      },
+                    },
+                  },
                 },
               },
             },

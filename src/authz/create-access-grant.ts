@@ -1,41 +1,229 @@
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../db.ts'
 import {
-  access,
+  accessGrant,
+  environment,
+  hosting,
   organization,
-  resource,
+  project,
+  realm,
+  server,
+  service,
   team,
   user,
 } from '../db/schema.ts'
-import { isAccessProfileKey, isPermissionKey } from './catalog.ts'
+import {
+  ACCESS_PROFILES,
+  isAccessProfileKey,
+  isPermissionKey,
+  RESOURCE_KINDS,
+  type AccessProfileKey,
+  type PermissionKey,
+} from './catalog.ts'
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export type CreateAccessGrantInput = {
-  subjectKind: 'user' | 'team' | 'organization'
+  subjectType: 'user' | 'team' | 'organization'
   subjectId: string
-  resourceId: string
-  effect: 'allow' | 'deny'
+  entityType: string
+  entityId: string
+  allowed?: boolean
   accessProfileKey?: string
   permissionKey?: string
 }
 
 export type CreateAccessGrantResult =
-  | { ok: true; id: string; created: boolean }
+  | { ok: true; ids: string[]; created: boolean }
   | { ok: false; status: 400 | 404 | 409; error: string }
 
 function isUuid(value: string): boolean {
   return UUID_RE.test(value)
 }
 
+function isResourceKind(value: string): value is (typeof RESOURCE_KINDS)[number] {
+  return (RESOURCE_KINDS as readonly string[]).includes(value)
+}
+
+export async function verifyEntityExists(
+  db: Db,
+  entityType: string,
+  entityId: string,
+): Promise<boolean> {
+  switch (entityType) {
+    case 'organization': {
+      const rows = await db
+        .select({ id: organization.id })
+        .from(organization)
+        .where(eq(organization.id, entityId))
+        .limit(1)
+      return rows.length > 0
+    }
+    case 'realm': {
+      const rows = await db
+        .select({ id: realm.id })
+        .from(realm)
+        .where(eq(realm.id, entityId))
+        .limit(1)
+      return rows.length > 0
+    }
+    case 'environment': {
+      const rows = await db
+        .select({ id: environment.id })
+        .from(environment)
+        .where(eq(environment.id, entityId))
+        .limit(1)
+      return rows.length > 0
+    }
+    case 'project': {
+      const rows = await db
+        .select({ id: project.id })
+        .from(project)
+        .where(eq(project.id, entityId))
+        .limit(1)
+      return rows.length > 0
+    }
+    case 'service': {
+      const rows = await db
+        .select({ id: service.id })
+        .from(service)
+        .where(eq(service.id, entityId))
+        .limit(1)
+      return rows.length > 0
+    }
+    case 'hosting': {
+      const rows = await db
+        .select({ id: hosting.id })
+        .from(hosting)
+        .where(eq(hosting.id, entityId))
+        .limit(1)
+      return rows.length > 0
+    }
+    case 'server': {
+      const rows = await db
+        .select({ id: server.id })
+        .from(server)
+        .where(eq(server.id, entityId))
+        .limit(1)
+      return rows.length > 0
+    }
+    default:
+      return false
+  }
+}
+
+export type ValidateGrantEntityTargetResult =
+  | { ok: true; organizationId: string }
+  | { ok: false; status: 400 | 404; error: string }
+
+/** Confirm the entity exists and optionally belongs to the expected organization. */
+export async function validateGrantEntityTarget(
+  db: Db,
+  entityType: string,
+  entityId: string,
+  expectedOrganizationId?: string,
+): Promise<ValidateGrantEntityTargetResult> {
+  if (!isResourceKind(entityType)) {
+    return { ok: false, status: 404, error: 'Entity not found' }
+  }
+
+  if (!isUuid(entityId)) {
+    return { ok: false, status: 404, error: 'Entity not found' }
+  }
+
+  const entityExists = await verifyEntityExists(db, entityType, entityId)
+  if (!entityExists) {
+    return { ok: false, status: 404, error: 'Entity not found' }
+  }
+
+  const organizationId = await resolveEntityOrganizationId(db, entityType, entityId)
+  if (!organizationId) {
+    return { ok: false, status: 404, error: 'Entity not found' }
+  }
+
+  if (
+    expectedOrganizationId !== undefined &&
+    organizationId !== expectedOrganizationId
+  ) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Entity must belong to the invitation organization',
+    }
+  }
+
+  return { ok: true, organizationId }
+}
+
+export async function resolveEntityOrganizationId(
+  db: Db,
+  entityType: string,
+  entityId: string,
+): Promise<string | null> {
+  switch (entityType) {
+    case 'organization':
+      return entityId
+    case 'realm': {
+      const rows = await db
+        .select({ organizationId: realm.organizationId })
+        .from(realm)
+        .where(eq(realm.id, entityId))
+        .limit(1)
+      return rows[0]?.organizationId ?? null
+    }
+    case 'environment': {
+      const rows = await db
+        .select({ organizationId: environment.organizationId })
+        .from(environment)
+        .where(eq(environment.id, entityId))
+        .limit(1)
+      return rows[0]?.organizationId ?? null
+    }
+    case 'project': {
+      const rows = await db
+        .select({ organizationId: project.organizationId })
+        .from(project)
+        .where(eq(project.id, entityId))
+        .limit(1)
+      return rows[0]?.organizationId ?? null
+    }
+    case 'service': {
+      const rows = await db
+        .select({ organizationId: service.organizationId })
+        .from(service)
+        .where(eq(service.id, entityId))
+        .limit(1)
+      return rows[0]?.organizationId ?? null
+    }
+    case 'hosting': {
+      const rows = await db
+        .select({ organizationId: hosting.organizationId })
+        .from(hosting)
+        .where(eq(hosting.id, entityId))
+        .limit(1)
+      return rows[0]?.organizationId ?? null
+    }
+    case 'server': {
+      const rows = await db
+        .select({ organizationId: server.organizationId })
+        .from(server)
+        .where(eq(server.id, entityId))
+        .limit(1)
+      return rows[0]?.organizationId ?? null
+    }
+    default:
+      return null
+  }
+}
+
 async function resolveSubject(
   db: Db,
-  subjectKind: CreateAccessGrantInput['subjectKind'],
+  subjectType: CreateAccessGrantInput['subjectType'],
   subjectId: string,
-  resourceOrganizationId: string,
+  entityOrganizationId: string,
 ): Promise<{ ok: true } | { ok: false; status: 400 | 404; error: string }> {
-  if (subjectKind === 'user') {
+  if (subjectType === 'user') {
     const rows = await db
       .select({ id: user.id })
       .from(user)
@@ -47,7 +235,7 @@ async function resolveSubject(
     return { ok: true }
   }
 
-  if (subjectKind === 'team') {
+  if (subjectType === 'team') {
     const rows = await db
       .select({ id: team.id, organizationId: team.organizationId })
       .from(team)
@@ -57,11 +245,11 @@ async function resolveSubject(
     if (!row) {
       return { ok: false, status: 404, error: 'Team not found' }
     }
-    if (row.organizationId !== resourceOrganizationId) {
+    if (row.organizationId !== entityOrganizationId) {
       return {
         ok: false,
         status: 400,
-        error: 'Team must belong to the same organization as the resource',
+        error: 'Team must belong to the same organization as the entity',
       }
     }
     return { ok: true }
@@ -75,11 +263,11 @@ async function resolveSubject(
   if (rows.length === 0) {
     return { ok: false, status: 404, error: 'Organization not found' }
   }
-  if (subjectId !== resourceOrganizationId) {
+  if (subjectId !== entityOrganizationId) {
     return {
       ok: false,
       status: 400,
-      error: 'Organization subject must match the resource organization',
+      error: 'Organization subject must match the entity organization',
     }
   }
   return { ok: true }
@@ -89,7 +277,19 @@ export async function createAccessGrant(
   db: Db,
   input: CreateAccessGrantInput,
 ): Promise<CreateAccessGrantResult> {
-  if (!isUuid(input.subjectId) || !isUuid(input.resourceId)) {
+  if (!isResourceKind(input.entityType)) {
+    return { ok: false, status: 400, error: 'Invalid entity type' }
+  }
+
+  if (
+    input.subjectType !== 'user' &&
+    input.subjectType !== 'team' &&
+    input.subjectType !== 'organization'
+  ) {
+    return { ok: false, status: 400, error: 'Invalid request' }
+  }
+
+  if (!isUuid(input.entityId) || !isUuid(input.subjectId)) {
     return { ok: false, status: 400, error: 'Invalid request' }
   }
 
@@ -112,106 +312,124 @@ export async function createAccessGrant(
     return { ok: false, status: 400, error: 'Invalid permission key' }
   }
 
-  const resourceRows = await db
-    .select({
-      id: resource.id,
-      organizationId: resource.organizationId,
-    })
-    .from(resource)
-    .where(eq(resource.id, input.resourceId))
-    .limit(1)
-
-  const resourceRow = resourceRows[0]
-  if (!resourceRow) {
-    return { ok: false, status: 404, error: 'Resource not found' }
+  const entityResult = await validateGrantEntityTarget(
+    db,
+    input.entityType,
+    input.entityId,
+  )
+  if (!entityResult.ok) {
+    return entityResult
   }
+
+  const entityOrganizationId = entityResult.organizationId
 
   const subjectResult = await resolveSubject(
     db,
-    input.subjectKind,
+    input.subjectType,
     input.subjectId,
-    resourceRow.organizationId,
+    entityOrganizationId,
   )
   if (!subjectResult.ok) {
     return subjectResult
   }
 
-  const values = {
-    subjectKind: input.subjectKind,
-    subjectId: input.subjectId,
-    resourceId: input.resourceId,
-    effect: input.effect,
-    accessProfileKey: hasAccessProfileKey ? input.accessProfileKey! : null,
-    permissionKey: hasPermissionKey ? input.permissionKey! : null,
-  }
+  const allowed = input.allowed ?? true
 
   if (hasAccessProfileKey) {
-    const inserted = await db
-      .insert(access)
-      .values({ ...values, permissionKey: null })
-      .onConflictDoNothing({
-        target: [
-          access.subjectKind,
-          access.subjectId,
-          access.resourceId,
-          access.accessProfileKey,
-        ],
-        where: sql`${access.accessProfileKey} IS NOT NULL`,
-      })
-      .returning({ id: access.id })
+    const profileKey = input.accessProfileKey! as AccessProfileKey
+    const permissions = ACCESS_PROFILES[profileKey] as readonly PermissionKey[]
 
-    const id = inserted[0]?.id
-    if (id) {
-      return { ok: true, id, created: true }
-    }
+    return db.transaction(async (tx) => {
+      let insertedCount = 0
 
-    const existing = await db
-      .select({ id: access.id })
-      .from(access)
-      .where(and(
-        eq(access.subjectKind, input.subjectKind),
-        eq(access.subjectId, input.subjectId),
-        eq(access.resourceId, input.resourceId),
-        eq(access.accessProfileKey, input.accessProfileKey!),
-      ))
-      .limit(1)
+      for (const permission of permissions) {
+        const inserted = await tx
+          .insert(accessGrant)
+          .values({
+            entityType: input.entityType,
+            entityId: input.entityId,
+            subjectType: input.subjectType,
+            subjectId: input.subjectId,
+            permission,
+            allowed,
+          })
+          .onConflictDoNothing({
+            target: [
+              accessGrant.entityType,
+              accessGrant.entityId,
+              accessGrant.subjectType,
+              accessGrant.subjectId,
+              accessGrant.permission,
+            ],
+          })
+          .returning({ id: accessGrant.id })
 
-    const existingId = existing[0]?.id
-    if (!existingId) {
-      return { ok: false, status: 409, error: 'Access grant conflict' }
-    }
+        if (inserted.length > 0) {
+          insertedCount += inserted.length
+        }
+      }
 
-    return { ok: true, id: existingId, created: false }
+      const rows = await tx
+        .select({ id: accessGrant.id })
+        .from(accessGrant)
+        .where(
+          and(
+            eq(accessGrant.entityType, input.entityType),
+            eq(accessGrant.entityId, input.entityId),
+            eq(accessGrant.subjectType, input.subjectType),
+            eq(accessGrant.subjectId, input.subjectId),
+            inArray(accessGrant.permission, [...permissions]),
+          ),
+        )
+
+      const ids = rows.map((row) => row.id)
+      if (ids.length === 0) {
+        return { ok: false, status: 409, error: 'Access grant conflict' } as const
+      }
+
+      return { ok: true, ids, created: insertedCount > 0 } as const
+    })
   }
 
+  const permission = input.permissionKey! as PermissionKey
   const inserted = await db
-    .insert(access)
-    .values({ ...values, accessProfileKey: null })
+    .insert(accessGrant)
+    .values({
+      entityType: input.entityType,
+      entityId: input.entityId,
+      subjectType: input.subjectType,
+      subjectId: input.subjectId,
+      permission,
+      allowed,
+    })
     .onConflictDoNothing({
       target: [
-        access.subjectKind,
-        access.subjectId,
-        access.resourceId,
-        access.permissionKey,
+        accessGrant.entityType,
+        accessGrant.entityId,
+        accessGrant.subjectType,
+        accessGrant.subjectId,
+        accessGrant.permission,
       ],
-      where: sql`${access.permissionKey} IS NOT NULL`,
     })
-    .returning({ id: access.id })
+    .returning({ id: accessGrant.id })
 
   const id = inserted[0]?.id
   if (id) {
-    return { ok: true, id, created: true }
+    return { ok: true, ids: [id], created: true }
   }
 
   const existing = await db
-    .select({ id: access.id })
-    .from(access)
-    .where(and(
-      eq(access.subjectKind, input.subjectKind),
-      eq(access.subjectId, input.subjectId),
-      eq(access.resourceId, input.resourceId),
-      eq(access.permissionKey, input.permissionKey!),
-    ))
+    .select({ id: accessGrant.id })
+    .from(accessGrant)
+    .where(
+      and(
+        eq(accessGrant.entityType, input.entityType),
+        eq(accessGrant.entityId, input.entityId),
+        eq(accessGrant.subjectType, input.subjectType),
+        eq(accessGrant.subjectId, input.subjectId),
+        eq(accessGrant.permission, permission),
+      ),
+    )
     .limit(1)
 
   const existingId = existing[0]?.id
@@ -219,5 +437,5 @@ export async function createAccessGrant(
     return { ok: false, status: 409, error: 'Access grant conflict' }
   }
 
-  return { ok: true, id: existingId, created: false }
+  return { ok: true, ids: [existingId], created: false }
 }

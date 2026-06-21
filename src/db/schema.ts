@@ -234,7 +234,7 @@ export const hosting = pgTable("hosting", {
 		}).onDelete("cascade"),
 	check("hosting_display_name_format_check", sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`),
 ]);
-export const accessGrant = pgTable("access_grant", {
+export const accessGrant = pgTable("grant", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
 	entityType: text("entity_type").notNull(),
 	entityId: uuid("entity_id").notNull(),
@@ -245,9 +245,9 @@ export const accessGrant = pgTable("access_grant", {
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 }, (table) => [
-	unique("access_grant_unique").on(table.entityType, table.entityId, table.subjectType, table.subjectId, table.permission),
-	index("idx_access_grant_entity").on(table.entityType, table.entityId),
-	index("idx_access_grant_subject").on(table.subjectType, table.subjectId),
+	unique("grant_unique").on(table.entityType, table.entityId, table.subjectType, table.subjectId, table.permission),
+	index("idx_grant_entity").on(table.entityType, table.entityId),
+	index("idx_grant_subject").on(table.subjectType, table.subjectId),
 ]);
 export const session = pgTable("session", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),

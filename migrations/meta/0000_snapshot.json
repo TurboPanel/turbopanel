@@ -1,11 +1,11 @@
 {
-  "id": "4af5ddf8-2a9c-4090-a6dc-52479805cc43",
+  "id": "633dfd7c-de3b-439e-abdc-2f5c4babb350",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
-    "public.access_grant": {
-      "name": "access_grant",
+    "public.grant": {
+      "name": "grant",
       "schema": "",
       "columns": {
         "id": {
@@ -68,8 +68,8 @@
         }
       },
       "indexes": {
-        "idx_access_grant_entity": {
-          "name": "idx_access_grant_entity",
+        "idx_grant_entity": {
+          "name": "idx_grant_entity",
           "columns": [
             {
               "expression": "entity_type",
@@ -89,8 +89,8 @@
           "method": "btree",
           "with": {}
         },
-        "idx_access_grant_subject": {
-          "name": "idx_access_grant_subject",
+        "idx_grant_subject": {
+          "name": "idx_grant_subject",
           "columns": [
             {
               "expression": "subject_type",
@@ -114,8 +114,8 @@
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "access_grant_unique": {
-          "name": "access_grant_unique",
+        "grant_unique": {
+          "name": "grant_unique",
           "nullsNotDistinct": false,
           "columns": [
             "entity_type",

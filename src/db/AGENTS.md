@@ -74,7 +74,7 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `sync
 | **Identity** | `user`, `account`, `apikey`, `session`, `verification`, `passkey`, `2fa` |
 | **Organizations** | `organization`, `member`, `team`, `teammate`, `invitation`, `license` |
 | **Resource tree** | `realm`, `environment`, `project`, `service`, `hosting` |
-| **Authorization** | `access_grant` |
+| **Authorization** | `grant` |
 | **Config** | `setting` |
 | **Runtime** | `server` |
 
@@ -82,7 +82,7 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `sync
 
 Drizzle relations are defined for future Better Auth adapter use. `IS_SIGNUP_ENABLED_CONFIG_KEY` is the `setting.key` for self-service signup.
 
-**Organizations:** `member` and `invitation` are **pure relationship tables** — `member.role` and `invitation.role` were removed because authorization is now derived exclusively from `access` rows, not membership columns. **`invitation.grants`** (JSONB) stores the intended access grants (`InvitationGrantSpec[]` in `src/authn/invitation-grants.ts`); they are materialized into `access` rows on accept. When `grants` is null, accept applies a default org-scoped member access-profile grant.
+**Organizations:** `member` and `invitation` are **pure relationship tables** — `member.role` and `invitation.role` were removed because authorization is now derived exclusively from `grant` rows, not membership columns. **`invitation.grants`** (JSONB) stores the intended access grants (`InvitationGrantSpec[]` in `src/authn/invitation-grants.ts`); they are materialized into `grant` rows on accept. When `grants` is null, accept applies a default org-scoped member access-profile grant.
 
 **Uniqueness:** `member(organization_id, user_id)` and `teammate(team_id, user_id)` prevent duplicate membership rows on concurrent invite acceptance/retries.
 
@@ -92,16 +92,17 @@ Drizzle relations are defined for future Better Auth adapter use. `IS_SIGNUP_ENA
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/client/v1/invitations/{id}/accept` | Accept a pending invitation; creates `member`/`teammate` rows, materializes `invitation.grants` into `access` rows, updates session `organizationId` |
+| `POST` | `/api/client/v1/invitations/{id}/accept` | Accept a pending invitation; creates `member`/`teammate` rows, materializes `invitation.grants` into `grant` rows, updates session `organizationId` |
 | `GET` | `/api/client/v1/access-profiles` | Access profile catalog — static, no DB query (any authenticated user) |
 | `GET` | `/api/client/v1/permissions` | Permission catalog — static, no DB query (any authenticated user) |
-| `GET` | `/api/client/v1/access?resourceId=<uuid>` | List access grants; rows carry `accessProfileKey` or `permissionKey` string fields |
-| `POST` | `/api/client/v1/access` | Create an access grant; body: `{ subjectKind, subjectId, resourceId, effect, accessProfileKey?, permissionKey? }` — exactly one key required |
+| `GET` | `/api/client/v1/access?entityType=<kind>&entityId=<uuid>` | List access grants; rows carry `entityType`, `entityId`, `subjectType`, `subjectId`, `permission`, `allowed`, `createdAt`, `updatedAt` |
+| `GET` | `/api/client/v1/access/check?entityType=…&entityId=…&permissionKey=…` | Check a single permission for the signed-in user; returns `{ allowed: boolean }` |
+| `POST` | `/api/client/v1/access` | Create an access grant; body: `{ entityType, entityId, subjectType, subjectId, allowed?, accessProfileKey?, permissionKey? }` — exactly one key required |
 | `DELETE` | `/api/client/v1/access/{id}` | Revoke an access grant |
 
 #### Resource tree CRUD
 
-List and get enforce visibility via `listVisible` / `assertCanOr403` in SQL — never client-side. Create requires `<parent-kind>:rw` on the parent resource scope. Update and delete require `<kind>:rw` on the entity's own resource scope. All create/delete operations run entity insert/delete + `registerResource` / `unregisterResource` in a single transaction.
+List and get enforce visibility via `listVisible` / `assertCanOr403` in SQL — never client-side. Create requires `<parent-kind>:rw` on the parent resource scope. Update and delete require `<kind>:rw` on the entity's own resource scope. All create/delete operations run entity insert/delete in a single transaction.
 
 | Method | Path | Permission |
 |---|---|---|
@@ -133,7 +134,7 @@ List and get enforce visibility via `listVisible` / `assertCanOr403` in SQL — 
 
 Implemented in `src/resource-routes.ts`, registered from `registerClientRoutes`.
 
-`GET /api/client/v1/servers` uses `listVisible()` for server visibility (not raw org membership). License endpoints (`GET`/`POST` `/licenses`, `DELETE` `/licenses/{id}`) require `organization:billing` when the org `resource` row exists; legacy installs without a registered org resource fall back to session org membership with a warning log.
+`GET /api/client/v1/servers` uses `listVisible()` for server visibility (not raw org membership). License endpoints (`GET`/`POST` `/licenses`, `DELETE` `/licenses/{id}`) require `organization:billing`.
 
 ### Catalog
 
@@ -163,15 +164,15 @@ Each physical server node gets a row in `server` (`id` uuidv7). On daemon connec
 
 ### Authz engine
 
-Runtime authorization lives in `../authz/` (pure TypeScript, safe for both Deno and Workers — no Deno-only imports). Access profiles and permissions are static code constants in `catalog.ts`; `sync.ts` has been removed. The modules below evaluate access at request time against `access_grant`.
+Runtime authorization lives in `../authz/` (pure TypeScript, safe for both Deno and Workers — no Deno-only imports). Access profiles and permissions are static code constants in `catalog.ts`; `sync.ts` has been removed. The modules below evaluate access at request time against `grant`.
 
 | File | Purpose |
 |---|---|
-| `../authz/catalog.ts` | Static `ACCESS_PROFILES`, `PERMISSIONS`, `isAccessProfileKey`, `isPermissionKey`, `accessProfilesGrantingPermission`, `getAccessProfileCatalog`, `getPermissionCatalog` — no DB access |
-| `../authz/evaluator.ts` | `getSubjects`, `getResourceAncestry`, `can`, `assertCan`, `listVisible`, `ForbiddenError` — expands access profiles from code constants; superadmin bypass in SQL |
+| `../authz/catalog.ts` | Static `ACCESS_PROFILES`, `PERMISSIONS`, `isAccessProfileKey`, `isPermissionKey`, `getAccessProfileCatalog`, `getPermissionCatalog` — no DB access |
+| `../authz/evaluator.ts` | `getSubjects`, `can`, `assertCan`, `listVisible`, `ForbiddenError` — domain-FK ancestry CTE; exact atomic permission checks against `grant`; superadmin bypass in SQL |
 | `../authz/http.ts` | `assertCanOr403` Hono helper (503 / 401 / 403 short-circuit, `null` to continue) |
 
-`can()` resolves a permission in a **single recursive-CTE query** (`subjectset` → `ancestry` → `hits`, ordered closest-first with deny winning ties) — one round-trip, no per-ancestor queries. Access profile expansion (`accessProfilesGrantingPermission`) happens in code before the query. A superadmin bypass (`EXISTS … WHERE role = 'superadmin'`) is OR'd into the final result so no explicit grants are needed for superadmins. `listVisible()` applies the same leaf-first, deny-beats-allow resolution for `<kind>:ro` and `<kind>:rw` in SQL — **never rely on client-side filtering** for visibility.
+`can()` resolves a permission in a **single CTE query** (`subjectset` → `ancestry` → `hits`) that matches the exact `permissionKey` against `grant` rows on the entity and its ancestors — one round-trip, no per-ancestor queries, no profile expansion at evaluation time. Grants are stored atomically (one row per permission); profile keys are expanded to multiple `grant` rows only at grant creation (`createAccessGrant`, invitation accept). A superadmin bypass (`EXISTS … WHERE role = 'superadmin'`) is OR'd into the final result so no explicit grants are needed for superadmins. `listVisible()` applies the same leaf-first, deny-beats-allow resolution for `<kind>:ro` and `<kind>:rw` in SQL — **never rely on client-side filtering** for visibility.
 
 **Completed:** Resource ancestry is computed directly from real domain tables (`organization → realm → environment → project → service/hosting`, `organization → server`); the generic `resource` shadow table has been dropped.
 

@@ -1,14 +1,24 @@
-import { sql } from 'drizzle-orm'
 import type { Db } from '../db.ts'
-import { access } from '../db/schema.ts'
-import { isAccessProfileKey, isPermissionKey } from '../authz/catalog.ts'
-import { getResourceId } from '../authz/resource-registry.ts'
+import { accessGrant } from '../db/schema.ts'
+import { ACCESS_PROFILES, isAccessProfileKey, isPermissionKey, type AccessProfileKey } from '../authz/catalog.ts'
+import { validateGrantEntityTarget } from '../authz/create-access-grant.ts'
+
+/** Thrown when an invitation grant target fails validation before insert. */
+export class InvitationGrantValidationError extends Error {
+  readonly status: 400 | 404
+
+  constructor(message: string, status: 400 | 404 = 404) {
+    super(message)
+    this.name = 'InvitationGrantValidationError'
+    this.status = status
+  }
+}
 
 /** Intended access grant stored on an invitation row (`invitation.grants` JSONB). */
 export type InvitationGrantSpec = {
-  resourceKind: string
-  itemId: string
-  effect?: 'allow' | 'deny'
+  entityType: string
+  entityId: string
+  allowed?: boolean
   accessProfileKey?: string
   permissionKey?: string
 }
@@ -18,10 +28,10 @@ export function defaultInvitationGrants(
 ): InvitationGrantSpec[] {
   return [
     {
-      resourceKind: 'organization',
-      itemId: organizationId,
+      entityType: 'organization',
+      entityId: organizationId,
       accessProfileKey: 'member',
-      effect: 'allow',
+      allowed: true,
     },
   ]
 }
@@ -75,23 +85,51 @@ export function parseInvitationGrants(
       return null
     }
     const record = entry as Record<string, unknown>
-    if (
-      typeof record.resourceKind !== 'string' ||
-      typeof record.itemId !== 'string'
-    ) {
+    const entityType =
+      typeof record.entityType === 'string'
+        ? record.entityType
+        : typeof record.resourceKind === 'string'
+          ? record.resourceKind
+          : null
+    const entityId =
+      typeof record.entityId === 'string'
+        ? record.entityId
+        : typeof record.itemId === 'string'
+          ? record.itemId
+          : null
+
+    if (!entityType || !entityId) {
       return null
     }
 
     const target = parseGrantTarget(record)
     if (!target) return null
 
-    const grant: InvitationGrantSpec = {
-      resourceKind: record.resourceKind,
-      itemId: record.itemId,
-      ...target,
+    const allowed = record.allowed
+    const effect = record.effect
+    if (allowed !== undefined && typeof allowed !== 'boolean') {
+      return null
     }
-    if (record.effect === 'allow' || record.effect === 'deny') {
-      grant.effect = record.effect
+    if (
+      effect !== undefined &&
+      effect !== 'allow' &&
+      effect !== 'deny'
+    ) {
+      return null
+    }
+
+    const resolvedAllowed =
+      typeof allowed === 'boolean'
+        ? allowed
+        : effect === 'deny'
+          ? false
+          : undefined
+
+    const grant: InvitationGrantSpec = {
+      entityType,
+      entityId,
+      ...target,
+      ...(resolvedAllowed !== undefined ? { allowed: resolvedAllowed } : {}),
     }
     grants.push(grant)
   }
@@ -106,18 +144,22 @@ export function resolveInvitationGrants(
   return parseInvitationGrants(raw) ?? defaultInvitationGrants(organizationId)
 }
 
-/** Materialize invitation grant specs into user-scoped `access` rows (idempotent). */
+/** Materialize invitation grant specs into user-scoped `grant` rows (idempotent). */
 export async function materializeInvitationGrants(
   db: Db,
   userId: string,
   grants: InvitationGrantSpec[],
+  organizationId: string,
 ): Promise<void> {
   for (const grant of grants) {
-    const resourceId = await getResourceId(db, grant.resourceKind, grant.itemId)
-    if (!resourceId) {
-      throw new Error(
-        `RESOURCE_NOT_REGISTERED:${grant.resourceKind}:${grant.itemId}`,
-      )
+    const targetResult = await validateGrantEntityTarget(
+      db,
+      grant.entityType,
+      grant.entityId,
+      organizationId,
+    )
+    if (!targetResult.ok) {
+      throw new InvitationGrantValidationError(targetResult.error, targetResult.status)
     }
 
     const accessProfileKey = grant.accessProfileKey ?? null
@@ -129,40 +171,51 @@ export async function materializeInvitationGrants(
       throw new Error('GRANT_MISSING_TARGET')
     }
 
-    const values = {
-      subjectKind: 'user' as const,
-      subjectId: userId,
-      resourceId,
-      effect: grant.effect ?? ('allow' as const),
-      accessProfileKey,
-      permissionKey,
-    }
+    const allowed = grant.allowed ?? true
 
     if (accessProfileKey) {
-      await db
-        .insert(access)
-        .values({ ...values, permissionKey: null })
-        .onConflictDoNothing({
-          target: [
-            access.subjectKind,
-            access.subjectId,
-            access.resourceId,
-            access.accessProfileKey,
-          ],
-          where: sql`${access.accessProfileKey} IS NOT NULL`,
-        })
+      const profileKey = accessProfileKey as AccessProfileKey
+      const permissions = ACCESS_PROFILES[profileKey]
+      for (const permission of permissions) {
+        await db
+          .insert(accessGrant)
+          .values({
+            entityType: grant.entityType,
+            entityId: grant.entityId,
+            subjectType: 'user',
+            subjectId: userId,
+            permission,
+            allowed,
+          })
+          .onConflictDoNothing({
+            target: [
+              accessGrant.entityType,
+              accessGrant.entityId,
+              accessGrant.subjectType,
+              accessGrant.subjectId,
+              accessGrant.permission,
+            ],
+          })
+      }
     } else {
       await db
-        .insert(access)
-        .values({ ...values, accessProfileKey: null })
+        .insert(accessGrant)
+        .values({
+          entityType: grant.entityType,
+          entityId: grant.entityId,
+          subjectType: 'user',
+          subjectId: userId,
+          permission: permissionKey!,
+          allowed,
+        })
         .onConflictDoNothing({
           target: [
-            access.subjectKind,
-            access.subjectId,
-            access.resourceId,
-            access.permissionKey,
+            accessGrant.entityType,
+            accessGrant.entityId,
+            accessGrant.subjectType,
+            accessGrant.subjectId,
+            accessGrant.permission,
           ],
-          where: sql`${access.permissionKey} IS NOT NULL`,
         })
     }
   }

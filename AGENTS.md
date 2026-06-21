@@ -295,17 +295,17 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `POST` | `/api/install/v1/bootstrap` | Deno: verify host PAM (root or sudo user), no cookies |
 | `POST` | `/api/install/v1/` | Deno: host PAM + superadmin setup → superadmin session only |
 | `GET` | `/api/client/v1/servers` | Session required: servers visible to the user via `listVisible` (`server:ro`/`server:rw`), with live `connected` / `hostname` from the daemon hub |
-| `POST` | `/api/client/v1/invitations/{id}/accept` | Accept a pending invitation; atomically claims the row, materializes `invitation.grants` into `access` rows (default: org member access-profile grant), updates session `organizationId` |
+| `POST` | `/api/client/v1/invitations/{id}/accept` | Accept a pending invitation; atomically claims the row, materializes `invitation.grants` into `access_grant` rows (default: org member access-profile grant), updates session `organizationId` |
 | `GET` | `/api/client/v1/access-profiles` | Access profile catalog — static, served from code constants (any authenticated user) |
 | `GET` | `/api/client/v1/permissions` | Permission catalog — static, served from code constants (any authenticated user) |
-| `GET` | `/api/client/v1/access?resourceId=<uuid>` | List access grants (requires `organization:members`, `team:members`, or `{kind}:rw` on the target resource) |
-| `POST` | `/api/client/v1/access` | Create an access grant (same resource-kind management permission as list) |
-| `DELETE` | `/api/client/v1/access/{id}` | Revoke an access grant (same resource-kind management permission as list) |
-| `GET` | `/api/client/v1/licenses` | List licenses (`organization:billing`; legacy fallback when org resource missing) |
+| `GET` | `/api/client/v1/access?entityType=<kind>&entityId=<uuid>` | List `access_grant` rows for the entity; requires the entity-kind management permission (`{kind}:rw` or `organization:members`) |
+| `POST` | `/api/client/v1/access` | Create an access grant; body accepts `entityType`, `entityId`, `subjectType`, `subjectId`, `allowed?`, and exactly one of `accessProfileKey` (expanded server-side to atomic rows) or `permissionKey` |
+| `DELETE` | `/api/client/v1/access/{id}` | Revoke an `access_grant` row; management permission derived from the grant's `entityType` |
+| `GET` | `/api/client/v1/licenses` | List licenses (`organization:billing`) |
 | `POST` | `/api/client/v1/licenses` | Create a license (`organization:billing`) |
 | `DELETE` | `/api/client/v1/licenses/{id}` | Revoke a license (`organization:billing`) |
 
-**Install mode (Deno self-hosted):** `isInstanceInstalled()` is false on a fresh DB. The UI `/install` page first verifies host PAM (`POST /api/install/v1/bootstrap`, client-side gate only), then collects superadmin email/password. Org/team names are fixed defaults. `completeInstanceInstall` registers the org `resource` and inserts an owner `access` row for the superadmin (direct insert with `accessProfileKey: 'owner'`, no `role` table lookup). After install, sign-in uses superadmin email/password only. The co-located daemon's `server.organization_id` is assigned to **Default Organization** on install (`assignColocatedDaemonToOrganization` in `install-state.ts`, resolving the server row from the live hub or by `metadata.machineId` / hostname) and again when the Unix-socket daemon sends `hello` if still unassigned.
+**Install mode (Deno self-hosted):** `isInstanceInstalled()` is false on a fresh DB. The UI `/install` page first verifies host PAM (`POST /api/install/v1/bootstrap`, client-side gate only), then collects superadmin email/password. Org/team names are fixed defaults. `completeInstanceInstall` inserts one `access_grant` row per permission in `ACCESS_PROFILES['owner']` for the superadmin on the org entity (`entity_type='organization'`, `entity_id=<orgId>`, `subject_type='user'`, `subject_id=<userId>`, `allowed=true`) — no `resource` registration, no `accessProfileKey` stored on rows. After install, sign-in uses superadmin email/password only. The co-located daemon's `server.organization_id` is assigned to **Default Organization** on install (`assignColocatedDaemonToOrganization` in `install-state.ts`, resolving the server row from the live hub or by `metadata.machineId` / hostname) and again when the Unix-socket daemon sends `hello` if still unassigned.
 
 #### New files
 

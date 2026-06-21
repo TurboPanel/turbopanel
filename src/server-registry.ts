@@ -2,7 +2,6 @@ import { eq, sql } from 'drizzle-orm'
 import type { Db } from './db.ts'
 import type { ServerMetadata } from './db/server-metadata.ts'
 import { lookupActiveLicense, verifyLicenseToken } from './authn/license.ts'
-import { getResourceId, registerResource } from './authz/resource-registry.ts'
 import { server } from './db/schema.ts'
 
 const UUID_RE =
@@ -36,25 +35,6 @@ function isUniqueViolation(err: unknown): boolean {
 
 function nowTs(): string {
   return new Date().toISOString()
-}
-
-/** Register (or refresh) the authz `resource` row for an org-assigned server. */
-export async function ensureServerResource(
-  db: Db,
-  serverId: string,
-  organizationId: string,
-): Promise<string> {
-  const orgResourceId = await getResourceId(db, 'organization', organizationId)
-  if (!orgResourceId) {
-    throw new Error(`ORG_RESOURCE_NOT_REGISTERED:${organizationId}`)
-  }
-
-  return registerResource(db, {
-    kind: 'server',
-    itemId: serverId,
-    organizationId,
-    parentId: orgResourceId,
-  })
 }
 
 async function touchServerMetadata(
@@ -128,7 +108,6 @@ async function applyLicensedServerBinding(
     organizationId,
     updatedAt: now,
   }).where(eq(server.id, serverId))
-  await ensureServerResource(db, serverId, organizationId)
 }
 
 async function resolveLicensedServerId(
@@ -177,7 +156,6 @@ async function resolveLicensedServerId(
 
     const id = inserted[0]?.id
     if (!id) throw new Error('failed to insert server row')
-    await ensureServerResource(db, id, activeLicense.organizationId)
     return id
   } catch (err) {
     if (!isUniqueViolation(err)) throw err

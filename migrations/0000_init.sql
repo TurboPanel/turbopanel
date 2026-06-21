@@ -1,4 +1,4 @@
-CREATE TABLE "access_grant" (
+CREATE TABLE "grant" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"entity_type" text NOT NULL,
 	"entity_id" uuid NOT NULL,
@@ -8,7 +8,7 @@ CREATE TABLE "access_grant" (
 	"allowed" boolean DEFAULT true NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "access_grant_unique" UNIQUE("entity_type","entity_id","subject_type","subject_id","permission")
+	CONSTRAINT "grant_unique" UNIQUE("entity_type","entity_id","subject_type","subject_id","permission")
 );
 --> statement-breakpoint
 CREATE TABLE "account" (
@@ -279,8 +279,8 @@ ALTER TABLE "team" ADD CONSTRAINT "team_organization_id_organization_id_fk" FORE
 ALTER TABLE "teammate" ADD CONSTRAINT "teammate_team_id_team_id_fk" FOREIGN KEY ("team_id") REFERENCES "public"."team"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "teammate" ADD CONSTRAINT "teammate_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "2fa" ADD CONSTRAINT "2fa_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "idx_access_grant_entity" ON "access_grant" USING btree ("entity_type","entity_id");--> statement-breakpoint
-CREATE INDEX "idx_access_grant_subject" ON "access_grant" USING btree ("subject_type","subject_id");--> statement-breakpoint
+CREATE INDEX "idx_grant_entity" ON "grant" USING btree ("entity_type","entity_id");--> statement-breakpoint
+CREATE INDEX "idx_grant_subject" ON "grant" USING btree ("subject_type","subject_id");--> statement-breakpoint
 CREATE INDEX "idx_account_user_id" ON "account" USING btree ("user_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_apikey_config_id" ON "apikey" USING btree ("config_id" text_ops);--> statement-breakpoint
 CREATE INDEX "idx_apikey_reference_id" ON "apikey" USING btree ("reference_id" text_ops);--> statement-breakpoint
