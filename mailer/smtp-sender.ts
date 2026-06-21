@@ -1,6 +1,6 @@
 import nodemailer from 'nodemailer'
 import type { Transporter } from 'nodemailer'
-import { createEmailVerificationLinkEmail } from '../src/email/templates.ts'
+import { createEmailVerificationLinkEmail } from '../src/lib/email/templates.ts'
 import {
   resolveSelfHostedMailFromAddress,
   resolveSelfHostedSmtpConfig,
@@ -8,8 +8,8 @@ import {
   smtpEnvOverrideActive,
   type SmtpConfig,
   type SmtpRuntimeEnv,
-} from '../src/email/smtp-resolve.ts'
-import type { EmailJob } from '../src/email/types.ts'
+} from '../src/lib/email/smtp/smtp-resolve.ts'
+import type { EmailJob } from '../src/lib/email/types.ts'
 import type { Db } from './db.ts'
 import { logError } from '../src/logger.ts'
 

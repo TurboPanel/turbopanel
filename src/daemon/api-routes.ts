@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { isInstanceInstalled } from '../authn/install-state.ts'
+import { isInstanceInstalled } from '../client/authn/install-state.ts'
 import { getDb } from '../db.ts'
 import { getDaemonOpenApiSpec } from '../openapi.ts'
 import { buildDaemonScalarHtml } from '../scalar-html.ts'

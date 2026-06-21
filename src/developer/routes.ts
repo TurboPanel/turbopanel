@@ -1,5 +1,5 @@
 import type { Hono } from 'hono'
-import type { DerivedSecretsConfig } from '../authn/secrets.ts'
+import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import type { Db } from '../db.ts'
 import {
   buildDeveloperRouter,

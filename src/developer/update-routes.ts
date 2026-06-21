@@ -1,6 +1,6 @@
 import type { Hono } from 'hono'
-import { createRootOnlyMiddleware } from '../authn/middleware.ts'
-import type { DerivedSecretsConfig } from '../authn/secrets.ts'
+import { createRootOnlyMiddleware } from '../client/authn/middleware.ts'
+import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import {
   awaitDaemonAck,
   type DaemonMessage,

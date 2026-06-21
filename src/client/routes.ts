@@ -1,48 +1,49 @@
 import { and, eq, gt, inArray, isNull } from 'drizzle-orm'
 import type { Context } from 'hono'
 import { Hono } from 'hono'
-import { registerAuthRoutes, type AuthRouteOpts } from '../authn/http.ts'
+import { registerAuthRoutes, type AuthRouteOpts } from './authn/http.ts'
 import {
   InvitationGrantValidationError,
   materializeInvitationGrants,
   resolveInvitationGrants,
-} from '../authn/invitation-grants.ts'
-import { createLicense, listLicenses, revokeLicense } from '../authn/license.ts'
-import { createSessionMiddleware } from '../authn/middleware.ts'
+} from './authn/invitation-grants.ts'
+import { createLicense, listLicenses, revokeLicense } from './authn/license.ts'
+import { createSessionMiddleware } from './authn/middleware.ts'
 import { compatLogInfo } from '../log-compat.ts'
-import { updateSessionOrganization } from '../authn/session-store.ts'
-import { getAccessManagementPermission } from '../authz/access-management.ts'
+import { updateSessionOrganization } from './authn/session-store.ts'
+import { getAccessManagementPermission } from './authz/access-management.ts'
 import {
   collapseAtomicGrants,
   mapEffectToAllowed,
   revokeLegacyAccessGrant,
-} from '../authz/access-api-compat.ts'
-import { createAccessGrant } from '../authz/create-access-grant.ts'
+} from './authz/access-api-compat.ts'
+import { createAccessGrant } from './authz/create-access-grant.ts'
 import {
   resolveEntityById,
   resolveEntityByKindAndItemId,
-} from '../authz/entity-resolver.ts'
+} from './authz/entity-resolver.ts'
 import {
   assertCanOr403,
   can,
   listVisible,
-} from '../authz/index.ts'
+} from './authz/index.ts'
 import {
   getAccessProfileCatalog,
   getPermissionCatalog,
   PERMISSIONS,
   type PermissionKey,
-} from '../authz/catalog.ts'
+} from './authz/catalog.ts'
 import { listDaemonConnections } from '../daemon/hub.ts'
 import type { Db } from '../db.ts'
 import { getDb } from '../db.ts'
 import {
-  accessGrant,
+  grant,
   invitation,
   member,
   server,
   teammate,
-} from '../db/schema.ts'
+} from '../lib/db/schema.ts'
+import { buildLicenseInstallCommand } from '../lib/daemon-install-command.ts'
 import { getClientOpenApiSpec } from '../openapi.ts'
 import { buildClientScalarHtml } from '../scalar-html.ts'
 import { CLIENT_API_PREFIX } from '../surfaces.ts'
@@ -407,22 +408,22 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
 
     const rows = await db
       .select({
-        id: accessGrant.id,
-        entityType: accessGrant.entityType,
-        entityId: accessGrant.entityId,
-        subjectType: accessGrant.subjectType,
-        subjectId: accessGrant.subjectId,
-        permission: accessGrant.permission,
-        allowed: accessGrant.allowed,
+        id: grant.id,
+        entityType: grant.entityType,
+        entityId: grant.entityId,
+        subjectType: grant.subjectType,
+        subjectId: grant.subjectId,
+        permission: grant.permission,
+        allowed: grant.allowed,
       })
-      .from(accessGrant)
+      .from(grant)
       .where(
         and(
-          eq(accessGrant.entityType, entity.entityType),
-          eq(accessGrant.entityId, entity.entityId),
+          eq(grant.entityType, entity.entityType),
+          eq(grant.entityId, entity.entityId),
         ),
       )
-      .orderBy(accessGrant.createdAt)
+      .orderBy(grant.createdAt)
 
     return c.json({ access: collapseAtomicGrants(rows) })
   })
@@ -521,11 +522,11 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
     const accessId = c.req.param('id')
     const accessRows = await db
       .select({
-        entityType: accessGrant.entityType,
-        entityId: accessGrant.entityId,
+        entityType: grant.entityType,
+        entityId: grant.entityId,
       })
-      .from(accessGrant)
-      .where(eq(accessGrant.id, accessId))
+      .from(grant)
+      .where(eq(grant.id, accessId))
       .limit(1)
 
     const accessRow = accessRows[0]
@@ -616,9 +617,12 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
     })
 
     const origin = new URL(c.req.url).origin
-    const hostFlag = origin !== 'https://turbopanel.app' ? ` --host ${origin}` : ''
-    const installCommand =
-      `curl -fsSL ${origin}/api/install/v1/daemon-install.sh | sh -s -- --license ${licenseId}:${licenseToken}${hostFlag}`
+    const installCommand = buildLicenseInstallCommand({
+      runtime: opts.runtime,
+      origin,
+      licenseId,
+      licenseToken,
+    })
 
     compatLogInfo('auth', 'license created; licenseToken is shown once and not stored in plaintext')
 
@@ -651,7 +655,7 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
 
   client.get('/openapi.json', (c) => {
     const origin = new URL(c.req.url).origin
-    return c.json(getClientOpenApiSpec(origin))
+    return c.json(getClientOpenApiSpec(origin, { runtime: opts.runtime }))
   })
 
   client.get('/reference', (c) => {

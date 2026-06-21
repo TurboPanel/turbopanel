@@ -21,7 +21,7 @@ export async function writeDrizzleKitConfig(url: string, configPath: string): Pr
 
   const configContent = `import { defineConfig } from 'drizzle-kit'
 export default defineConfig({
-  schema: './src/db/schema.ts',
+  schema: './src/lib/db/schema.ts',
   out: './migrations',
   migrations: { table: 'migration', schema: 'public' },
   dialect: 'postgresql',

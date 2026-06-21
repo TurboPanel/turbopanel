@@ -1,8 +1,9 @@
 import type { Hono } from 'hono'
-import { deriveSecretsConfig, parseSecretsEnv } from './authn/secrets.ts'
+import { deriveSecretsConfig, parseSecretsEnv } from './client/authn/secrets.ts'
 import { createApp } from './app.ts'
 import { createDenoDb } from './db.ts'
 import { logInfo } from './logger.ts'
+import { registerInstallRoutes } from './lib/install/routes.ts'
 import { registerDaemonWebSocket } from './daemon/deno-ws.ts'
 import { registerVersionRoute } from './daemon/version.ts'
 import { registerSystemRoutes } from './developer/system-routes.ts'
@@ -15,9 +16,9 @@ import {
   createDenoAmqpQueue,
   DEFAULT_AMQP_URL,
   probeAmqpBrokerReachable,
-} from './email/deno-amqp-queue.ts'
-import { createNoopQueue } from './email/noop-queue.ts'
-import type { EmailQueue } from './email/types.ts'
+} from './lib/email/smtp/deno-amqp-queue.ts'
+import { createNoopQueue } from './lib/email/noop-queue.ts'
+import type { EmailQueue } from './lib/email/types.ts'
 import {
   hardenInstanceSocket,
   prepareInstanceSocket,
@@ -59,6 +60,11 @@ const app = createApp({
   baseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? undefined,
 })
 const routes = app as unknown as Hono
+registerInstallRoutes(routes, {
+  secrets,
+  runtime: 'deno',
+  signupEnvOverride: Deno.env.get('TURBOPANEL_IS_SIGNUP_ENABLED'),
+})
 if (developerSurface) {
   registerDeveloperRoutes(routes, { secrets, db, authRequired: false })
 }

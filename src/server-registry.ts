@@ -1,8 +1,8 @@
 import { eq, sql } from 'drizzle-orm'
 import type { Db } from './db.ts'
-import type { ServerMetadata } from './db/server-metadata.ts'
-import { lookupActiveLicense, verifyLicenseToken } from './authn/license.ts'
-import { server } from './db/schema.ts'
+import { verifyDaemonLicense } from './daemon/authn/license.ts'
+import type { ServerMetadata } from './lib/db/server-metadata.ts'
+import { server } from './lib/db/schema.ts'
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -118,14 +118,8 @@ async function resolveLicensedServerId(
   const licenseToken = identity.licenseToken?.trim()
   if (!licenseId || !licenseToken) return null
 
-  const activeLicense = await lookupActiveLicense(db, licenseId)
-  if (!activeLicense) return null
-
-  const tokenValid = await verifyLicenseToken(
-    licenseToken,
-    activeLicense.hashedToken,
-  )
-  if (!tokenValid) return null
+  const verified = await verifyDaemonLicense(db, licenseId, licenseToken)
+  if (!verified) return null
 
   const existing = await findExistingServerId(db, identity)
   if (existing) {
@@ -134,7 +128,7 @@ async function resolveLicensedServerId(
       db,
       existing,
       identity,
-      activeLicense.organizationId,
+      verified.organizationId,
     )
     return existing
   }
@@ -146,7 +140,7 @@ async function resolveLicensedServerId(
       .insert(server)
       .values({
         licenseId,
-        organizationId: activeLicense.organizationId,
+        organizationId: verified.organizationId,
         displayName: defaultDisplayName(identity),
         createdAt: now,
         updatedAt: now,
@@ -166,7 +160,7 @@ async function resolveLicensedServerId(
       db,
       raced,
       identity,
-      activeLicense.organizationId,
+      verified.organizationId,
     )
     return raced
   }

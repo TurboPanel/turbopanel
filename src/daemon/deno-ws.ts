@@ -1,6 +1,6 @@
 import type { Hono } from 'hono'
 import { upgradeWebSocket } from 'hono/deno'
-import type { DerivedSecretsConfig } from '../authn/secrets.ts'
+import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import {
   createDaemonWebSocketSession,
   type DaemonWebSocketOptions,

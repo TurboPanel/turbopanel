@@ -1,10 +1,10 @@
 import { Hono } from 'hono'
 import { eq, isNull } from 'drizzle-orm'
-import { createRootOnlyMiddleware } from '../authn/middleware.ts'
-import type { DerivedSecretsConfig } from '../authn/secrets.ts'
+import { createRootOnlyMiddleware } from '../client/authn/middleware.ts'
+import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import type { Db } from '../db.ts'
 import { getDb } from '../db.ts'
-import { organization, server } from '../db/schema.ts'
+import { organization, server } from '../lib/db/schema.ts'
 import {
   broadcastToDaemons,
   type DaemonMessage,

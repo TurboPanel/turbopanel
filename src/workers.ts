@@ -1,14 +1,12 @@
 import { Hono } from 'hono'
-import type { Hono as HonoType } from 'hono'
-import type { DerivedSecretsConfig } from './authn/secrets.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from './authn/secrets.ts'
+import type { DerivedSecretsConfig } from './client/authn/secrets.ts'
+import { deriveSecretsConfig, parseSecretsEnv } from './client/authn/secrets.ts'
 import { createApp, type AppEnv } from './app'
 import { createWorkersDb } from './db'
-import { registerDeveloperRoutesCore } from './developer/routes-core.ts'
 import { registerWorkersDaemonWebSocket } from './daemon/workers-ws.ts'
-import { createNoopQueue } from './email/noop-queue.ts'
-import { createWorkersMailgunQueue } from './email/workers-queue.ts'
-import type { EmailQueue } from './email/types.ts'
+import { createNoopQueue } from './lib/email/noop-queue.ts'
+import { createWorkersMailgunQueue } from './lib/email/mailgun/workers-queue.ts'
+import type { EmailQueue } from './lib/email/types.ts'
 
 let initPromise: Promise<void> | null = null
 let cachedApp: ReturnType<typeof createApp> | null = null
@@ -39,11 +37,7 @@ async function initWorkerApp(env: CloudflareBindings) {
     signupEnvOverride: env.TURBOPANEL_IS_SIGNUP_ENABLED,
     emailFrom: env.TURBOPANEL_SYSTEM_EMAIL_FROM ?? 'noreply@turbopanel.local',
   })
-  registerDeveloperRoutesCore(cachedApp as unknown as HonoType, {
-    secrets: cachedSecrets,
-    authRequired: false,
-  })
-  registerWorkersDaemonWebSocket(cachedApp as unknown as HonoType)
+  registerWorkersDaemonWebSocket(cachedApp)
 }
 
 export default {

@@ -1,22 +1,22 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Context } from 'hono'
 import { Hono } from 'hono'
-import type { AuthRouteOpts } from './authn/http.ts'
-import { createSessionMiddleware, type SessionData } from './authn/middleware.ts'
+import type { AuthRouteOpts } from './client/authn/http.ts'
+import { createSessionMiddleware, type SessionData } from './client/authn/middleware.ts'
 import {
   assertCanOr403,
   can,
   listVisible,
-} from './authz/index.ts'
-import type { PermissionKey } from './authz/index.ts'
+} from './client/authz/index.ts'
+import type { PermissionKey } from './client/authz/index.ts'
 import { getDb } from './db.ts'
 import {
   environment,
   hosting,
   project,
-  realm,
+  workspace,
   service,
-} from './db/schema.ts'
+} from './lib/db/schema.ts'
 import { CLIENT_API_PREFIX } from './surfaces.ts'
 
 const DISPLAY_NAME_RE = /^[A-Za-z0-9 ._-]+$/
@@ -140,16 +140,16 @@ function requireStringField(
 }
 
 /**
- * Resource tree CRUD for realms, environments, projects, services, and hostings.
+ * Resource tree CRUD for workspaces, environments, projects, services, and hostings.
  * Mounted under {@link CLIENT_API_PREFIX} (`/api/client/v1`).
  */
 export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
   const resourceRouter = new Hono()
 
-  resourceRouter.use('/realms', createSessionMiddleware(opts.secrets))
-  resourceRouter.use('/realms/:id', createSessionMiddleware(opts.secrets))
+  resourceRouter.use('/workspaces', createSessionMiddleware(opts.secrets))
+  resourceRouter.use('/workspaces/:id', createSessionMiddleware(opts.secrets))
 
-  resourceRouter.get('/realms', async (c) => {
+  resourceRouter.get('/workspaces', async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
@@ -161,31 +161,31 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
     const organizationId = orgResult
 
     const visibleIds = await listVisible(db, {
-      kind: 'realm',
+      kind: 'workspace',
       userId: session.userId,
       organizationId,
     })
 
     if (visibleIds.length === 0) {
-      return c.json({ realms: [] })
+      return c.json({ workspaces: [] })
     }
 
     const rows = await db
       .select({
-        id: realm.id,
-        displayName: realm.displayName,
-        organizationId: realm.organizationId,
-        createdAt: realm.createdAt,
-        updatedAt: realm.updatedAt,
+        id: workspace.id,
+        displayName: workspace.displayName,
+        organizationId: workspace.organizationId,
+        createdAt: workspace.createdAt,
+        updatedAt: workspace.updatedAt,
       })
-      .from(realm)
-      .where(inArray(realm.id, visibleIds))
-      .orderBy(realm.createdAt)
+      .from(workspace)
+      .where(inArray(workspace.id, visibleIds))
+      .orderBy(workspace.createdAt)
 
-    return c.json({ realms: rows })
+    return c.json({ workspaces: rows })
   })
 
-  resourceRouter.get('/realms/:id', async (c) => {
+  resourceRouter.get('/workspaces/:id', async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
@@ -199,14 +199,14 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
     const id = c.req.param('id')
     const rows = await db
       .select({
-        id: realm.id,
-        displayName: realm.displayName,
-        organizationId: realm.organizationId,
-        createdAt: realm.createdAt,
-        updatedAt: realm.updatedAt,
+        id: workspace.id,
+        displayName: workspace.displayName,
+        organizationId: workspace.organizationId,
+        createdAt: workspace.createdAt,
+        updatedAt: workspace.updatedAt,
       })
-      .from(realm)
-      .where(eq(realm.id, id))
+      .from(workspace)
+      .where(eq(workspace.id, id))
       .limit(1)
 
     const row = rows[0]
@@ -214,13 +214,13 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanReadOr403(c, 'realm', id)
+    const denied = await assertCanReadOr403(c, 'workspace', id)
     if (denied) return denied
 
-    return c.json({ realm: row })
+    return c.json({ workspace: row })
   })
 
-  resourceRouter.post('/realms', async (c) => {
+  resourceRouter.post('/workspaces', async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
@@ -243,22 +243,22 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
 
     const denied = await assertCanCreateOr403(c, 'organization', organizationId, [
       'organization:rw',
-      'realm:rw',
+      'workspace:rw',
     ])
     if (denied) return denied
 
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
-        .insert(realm)
+        .insert(workspace)
         .values({ displayName, organizationId })
-        .returning({ id: realm.id })
+        .returning({ id: workspace.id })
       return inserted.id
     })
 
     return c.json({ ok: true as const, id })
   })
 
-  resourceRouter.patch('/realms/:id', async (c) => {
+  resourceRouter.patch('/workspaces/:id', async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
@@ -271,9 +271,9 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
 
     const id = c.req.param('id')
     const rows = await db
-      .select({ organizationId: realm.organizationId })
-      .from(realm)
-      .where(eq(realm.id, id))
+      .select({ organizationId: workspace.organizationId })
+      .from(workspace)
+      .where(eq(workspace.id, id))
       .limit(1)
 
     const row = rows[0]
@@ -281,7 +281,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanOr403(c, 'realm:rw', 'realm', id)
+    const denied = await assertCanOr403(c, 'workspace:rw', 'workspace', id)
     if (denied) return denied
 
     const body = await parseJsonBody(c)
@@ -295,14 +295,14 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
     }
 
     await db
-      .update(realm)
+      .update(workspace)
       .set(patchFields)
-      .where(eq(realm.id, id))
+      .where(eq(workspace.id, id))
 
     return c.json({ ok: true as const })
   })
 
-  resourceRouter.delete('/realms/:id', async (c) => {
+  resourceRouter.delete('/workspaces/:id', async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
@@ -315,9 +315,9 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
 
     const id = c.req.param('id')
     const rows = await db
-      .select({ organizationId: realm.organizationId })
-      .from(realm)
-      .where(eq(realm.id, id))
+      .select({ organizationId: workspace.organizationId })
+      .from(workspace)
+      .where(eq(workspace.id, id))
       .limit(1)
 
     const row = rows[0]
@@ -325,11 +325,11 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanOr403(c, 'realm:rw', 'realm', id)
+    const denied = await assertCanOr403(c, 'workspace:rw', 'workspace', id)
     if (denied) return denied
 
     await db.transaction(async (tx) => {
-      await tx.delete(realm).where(eq(realm.id, id))
+      await tx.delete(workspace).where(eq(workspace.id, id))
     })
 
     return c.json({ ok: true as const })
@@ -349,7 +349,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
     if (orgResult instanceof Response) return orgResult
     const organizationId = orgResult
 
-    const realmId = c.req.query('realmId')
+    const workspaceId = c.req.query('workspaceId')
 
     const visibleIds = await listVisible(db, {
       kind: 'environment',
@@ -362,8 +362,8 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
     }
 
     const conditions = [inArray(environment.id, visibleIds)]
-    if (realmId) {
-      conditions.push(eq(environment.realmId, realmId))
+    if (workspaceId) {
+      conditions.push(eq(environment.workspaceId, workspaceId))
     }
 
     const rows = await db
@@ -371,7 +371,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
         id: environment.id,
         displayName: environment.displayName,
         organizationId: environment.organizationId,
-        realmId: environment.realmId,
+        workspaceId: environment.workspaceId,
         createdAt: environment.createdAt,
         updatedAt: environment.updatedAt,
       })
@@ -399,7 +399,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
         id: environment.id,
         displayName: environment.displayName,
         organizationId: environment.organizationId,
-        realmId: environment.realmId,
+        workspaceId: environment.workspaceId,
         createdAt: environment.createdAt,
         updatedAt: environment.updatedAt,
       })
@@ -432,21 +432,21 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const realmId = requireStringField(c, body, 'realmId')
-    if (realmId instanceof Response) return realmId
+    const workspaceId = requireStringField(c, body, 'workspaceId')
+    if (workspaceId instanceof Response) return workspaceId
 
-    const realmRows = await db
-      .select({ id: realm.id })
-      .from(realm)
-      .where(and(eq(realm.id, realmId), eq(realm.organizationId, organizationId)))
+    const workspaceRows = await db
+      .select({ id: workspace.id })
+      .from(workspace)
+      .where(and(eq(workspace.id, workspaceId), eq(workspace.organizationId, organizationId)))
       .limit(1)
 
-    if (!realmRows[0]) {
+    if (!workspaceRows[0]) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanCreateOr403(c, 'realm', realmId, [
-      'realm:rw',
+    const denied = await assertCanCreateOr403(c, 'workspace', workspaceId, [
+      'workspace:rw',
       'environment:rw',
     ])
     if (denied) return denied
@@ -461,7 +461,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(environment)
-        .values({ displayName, organizationId, realmId })
+        .values({ displayName, organizationId, workspaceId })
         .returning({ id: environment.id })
       return inserted.id
     })

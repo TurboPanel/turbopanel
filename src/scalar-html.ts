@@ -1,4 +1,4 @@
-import { resolveSessionCookieName } from './authn/crypto.ts'
+import { resolveSessionCookieName } from './client/authn/crypto.ts'
 
 /** Self-contained Scalar CDN embed HTML for GET /api/client/v1/reference. */
 export function buildClientScalarHtml(specUrl: string, requestOrigin: string): string {

@@ -2,11 +2,11 @@ import amqplib from 'amqplib'
 import {
   assertEmailAmqpTopology,
   EMAIL_AMQP_QUEUE,
-} from '../src/email/amqp-topology.ts'
+} from '../src/lib/email/smtp/amqp-topology.ts'
 import { createMailerDb } from './db.ts'
 import { RateLimiter } from './rate-limiter.ts'
 import { createMailerSmtpSender } from './smtp-sender.ts'
-import type { EmailJob } from '../src/email/types.ts'
+import type { EmailJob } from '../src/lib/email/types.ts'
 import { logError, logInfo, logWarn } from '../src/logger.ts'
 
 const DEFAULT_AMQP_URL = 'amqp://guest:guest@localhost:19828'

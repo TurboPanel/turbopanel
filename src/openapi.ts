@@ -1,4 +1,4 @@
-import { resolveSessionCookieName } from './authn/crypto.ts'
+import { resolveSessionCookieName } from './client/authn/crypto.ts'
 
 const clientErrorJson = {
   type: 'object',
@@ -194,16 +194,253 @@ function buildResourceCrudPaths(config: ResourceCrudConfig): Record<string, unkn
 }
 
 /** Hand-authored OpenAPI 3.1 spec for documented client/install/health routes. */
-export function getClientOpenApiSpec(serverUrl: string): object {
+export type ClientOpenApiOptions = {
+  runtime?: 'deno' | 'workers'
+}
+
+const installOpenApiSchemas = {
+  InstallStatusResponse: {
+    type: 'object',
+    required: ['ok', 'needsInstall', 'isInstallMode', 'isSignupEnabled'],
+    description:
+      'Dedicated install surface (`/api/install/v1`). On Workers, needsInstall and isInstallMode are always false; isSignupEnabled reflects DB + env. On Deno, all fields reflect self-hosted install wizard state.',
+    properties: {
+      ok: { type: 'boolean', const: true },
+      needsInstall: {
+        type: 'boolean',
+        description: 'True when org + superadmin do not exist yet (Deno only).',
+      },
+      isInstallMode: {
+        type: 'boolean',
+        description: 'True while the install wizard is active (Deno only).',
+      },
+      isSignupEnabled: {
+        type: 'boolean',
+        description:
+          'Whether public sign-up is enabled (DB setting or TURBOPANEL_IS_SIGNUP_ENABLED env override).',
+      },
+    },
+  },
+  InstallBootstrapRequest: {
+    type: 'object',
+    required: ['username', 'password'],
+    properties: {
+      username: { type: 'string', description: 'Host root or sudo user' },
+      password: { type: 'string', format: 'password' },
+    },
+  },
+  InstallBootstrapResponse: {
+    type: 'object',
+    required: ['ok'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+    },
+  },
+  InstallRequest: {
+    type: 'object',
+    required: ['username', 'password', 'superadminEmail', 'superadminPassword'],
+    description:
+      'Host credentials are required as `username` + `password`.',
+    properties: {
+      username: {
+        type: 'string',
+        description: 'Host root or sudo user.',
+      },
+      password: { type: 'string', format: 'password' },
+      superadminEmail: { type: 'string', format: 'email' },
+      superadminPassword: { type: 'string', format: 'password' },
+    },
+  },
+}
+
+const installOpenApiPaths: Record<string, unknown> = {
+  '/api/install/v1/status': {
+    get: {
+      tags: ['install'],
+      summary: 'Install wizard status',
+      description:
+        'Dedicated install surface (`/api/install/v1`). Deno self-hosted only.',
+      responses: {
+        '200': {
+          description: 'Install status',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/InstallStatusResponse' },
+            },
+          },
+        },
+        '503': {
+          description: 'Database unavailable',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/install/v1/bootstrap': {
+    post: {
+      tags: ['install'],
+      summary: 'Verify host PAM credentials (install step 1)',
+      description: 'Deno self-hosted only.',
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/InstallBootstrapRequest' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Host credentials verified',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/InstallBootstrapResponse' },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid request',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '401': {
+          description: 'Invalid credentials',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '409': {
+          description: 'Instance already configured',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '503': {
+          description: 'Database unavailable',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/install/v1/': {
+    post: {
+      tags: ['install'],
+      summary: 'Complete initial install (install step 2)',
+      description:
+        'Deno self-hosted only. Creates org, team, superadmin, and session. Requires host credentials as `username`/`password`.',
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/InstallRequest' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Install complete; superadmin session cookie set',
+          headers: {
+            'Set-Cookie': {
+              schema: { type: 'string' },
+              description: 'Signed session cookie',
+            },
+          },
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/SessionResponse' },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid request or install failed',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '401': {
+          description: 'Invalid host credentials',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '409': {
+          description: 'Instance already configured',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '503': {
+          description: 'Database unavailable',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/install/v1/daemon-install.sh': {
+    get: {
+      tags: ['install'],
+      summary: 'Daemon install script',
+      description:
+        'Returns a POSIX sh script for installing a managed daemon. ' +
+        'Shell arguments (not HTTP query params): `--license <id:token>` (required) ' +
+        'and optional `--host <instance-url>` to set TURBOPANEL_INSTANCE_URL before ' +
+        'delegating to the CDN installer. Deno self-hosted only.',
+      responses: {
+        '200': {
+          description: 'Install script',
+          content: {
+            'text/plain': {
+              schema: { type: 'string' },
+            },
+          },
+        },
+      },
+    },
+  },
+}
+
+export function getClientOpenApiSpec(
+  serverUrl: string,
+  options?: ClientOpenApiOptions,
+): object {
+  const includeInstall = options?.runtime === 'deno'
+  const installCommandDescription = includeInstall
+    ? 'Shell command to install a daemon with this license via the instance install wrapper.'
+    : 'Shell command to install a daemon with this license via the CDN installer (Workers does not expose /api/install/v1).'
   const sessionCookieName = resolveSessionCookieName(serverUrl)
 
   const resourceTreePaths = {
     ...buildResourceCrudPaths({
-      plural: 'realms',
-      singular: 'realm',
-      listSchema: 'RealmsResponse',
-      rowSchema: 'RealmRow',
-      createSchema: 'CreateRealmRequest',
+      plural: 'workspaces',
+      singular: 'workspace',
+      listSchema: 'WorkspacesResponse',
+      rowSchema: 'WorkspaceRow',
+      createSchema: 'CreateWorkspaceRequest',
       createBodyRequired: false,
     }),
     ...buildResourceCrudPaths({
@@ -213,8 +450,8 @@ export function getClientOpenApiSpec(serverUrl: string): object {
       rowSchema: 'EnvironmentRow',
       createSchema: 'CreateEnvironmentRequest',
       parentQuery: {
-        name: 'realmId',
-        description: 'Filter environments under a realm',
+        name: 'workspaceId',
+        description: 'Filter environments under a workspace',
       },
     }),
     ...buildResourceCrudPaths({
@@ -334,58 +571,6 @@ export function getClientOpenApiSpec(serverUrl: string): object {
             ok: { type: 'boolean', const: true },
           },
         },
-        InstallStatusResponse: {
-          type: 'object',
-          required: ['ok', 'needsInstall', 'isInstallMode', 'isSignupEnabled'],
-          description:
-            'Dedicated install surface (`/api/install/v1`). On Workers, needsInstall and isInstallMode are always false; isSignupEnabled reflects DB + env. On Deno, all fields reflect self-hosted install wizard state.',
-          properties: {
-            ok: { type: 'boolean', const: true },
-            needsInstall: {
-              type: 'boolean',
-              description: 'True when org + superadmin do not exist yet (Deno only).',
-            },
-            isInstallMode: {
-              type: 'boolean',
-              description: 'True while the install wizard is active (Deno only).',
-            },
-            isSignupEnabled: {
-              type: 'boolean',
-              description:
-                'Whether public sign-up is enabled (DB setting or TURBOPANEL_IS_SIGNUP_ENABLED env override).',
-            },
-          },
-        },
-        InstallBootstrapRequest: {
-          type: 'object',
-          required: ['username', 'password'],
-          properties: {
-            username: { type: 'string', description: 'Host root or sudo user' },
-            password: { type: 'string', format: 'password' },
-          },
-        },
-        InstallBootstrapResponse: {
-          type: 'object',
-          required: ['ok'],
-          properties: {
-            ok: { type: 'boolean', const: true },
-          },
-        },
-        InstallRequest: {
-          type: 'object',
-          required: ['username', 'password', 'superadminEmail', 'superadminPassword'],
-          description:
-            'Host credentials are required as `username` + `password`.',
-          properties: {
-            username: {
-              type: 'string',
-              description: 'Host root or sudo user.',
-            },
-            password: { type: 'string', format: 'password' },
-            superadminEmail: { type: 'string', format: 'email' },
-            superadminPassword: { type: 'string', format: 'password' },
-          },
-        },
         ServerRow: {
           type: 'object',
           properties: {
@@ -449,8 +634,7 @@ export function getClientOpenApiSpec(serverUrl: string): object {
             },
             installCommand: {
               type: 'string',
-              description:
-                'Shell command to install a daemon with this license on a target host.',
+              description: installCommandDescription,
             },
           },
         },
@@ -479,7 +663,7 @@ export function getClientOpenApiSpec(serverUrl: string): object {
           properties: {
             resourceKind: {
               type: 'string',
-              description: 'Entity kind (e.g. organization, realm, project).',
+              description: 'Entity kind (e.g. organization, workspace, project).',
             },
             itemId: {
               type: 'string',
@@ -614,7 +798,7 @@ export function getClientOpenApiSpec(serverUrl: string): object {
             ok: { type: 'boolean', const: true },
           },
         },
-        RealmRow: {
+        WorkspaceRow: {
           type: 'object',
           properties: {
             id: { type: 'string' },
@@ -624,17 +808,17 @@ export function getClientOpenApiSpec(serverUrl: string): object {
             updatedAt: { type: 'string', format: 'date-time' },
           },
         },
-        RealmsResponse: {
+        WorkspacesResponse: {
           type: 'object',
-          required: ['realms'],
+          required: ['workspaces'],
           properties: {
-            realms: {
+            workspaces: {
               type: 'array',
-              items: { $ref: '#/components/schemas/RealmRow' },
+              items: { $ref: '#/components/schemas/WorkspaceRow' },
             },
           },
         },
-        CreateRealmRequest: {
+        CreateWorkspaceRequest: {
           type: 'object',
           properties: {
             displayName: { type: 'string' },
@@ -646,7 +830,7 @@ export function getClientOpenApiSpec(serverUrl: string): object {
             id: { type: 'string' },
             displayName: { type: ['string', 'null'] },
             organizationId: { type: 'string' },
-            realmId: { type: 'string' },
+            workspaceId: { type: 'string' },
             createdAt: { type: 'string', format: 'date-time' },
             updatedAt: { type: 'string', format: 'date-time' },
           },
@@ -663,10 +847,10 @@ export function getClientOpenApiSpec(serverUrl: string): object {
         },
         CreateEnvironmentRequest: {
           type: 'object',
-          required: ['realmId'],
+          required: ['workspaceId'],
           properties: {
             displayName: { type: 'string' },
-            realmId: { type: 'string' },
+            workspaceId: { type: 'string' },
           },
         },
         ProjectRow: {
@@ -777,6 +961,7 @@ export function getClientOpenApiSpec(serverUrl: string): object {
             ok: { type: 'boolean', const: true },
           },
         },
+        ...(includeInstall ? installOpenApiSchemas : {}),
       },
     },
     paths: {
@@ -908,169 +1093,6 @@ export function getClientOpenApiSpec(serverUrl: string): object {
               content: {
                 'application/json': {
                   schema: { $ref: '#/components/schemas/UnauthorizedResponse' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/install/v1/status': {
-        get: {
-          tags: ['install'],
-          summary: 'Install wizard status',
-          description:
-            'Dedicated install surface (`/api/install/v1`). Workers: needsInstall/isInstallMode always false; isSignupEnabled from DB + TURBOPANEL_IS_SIGNUP_ENABLED env. Deno: full install wizard status.',
-          responses: {
-            '200': {
-              description: 'Install status',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/InstallStatusResponse' },
-                },
-              },
-            },
-            '503': {
-              description: 'Database unavailable',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/install/v1/bootstrap': {
-        post: {
-          tags: ['install'],
-          summary: 'Verify host PAM credentials (install step 1)',
-          description: 'Deno self-hosted only.',
-          requestBody: {
-            required: true,
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/InstallBootstrapRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Host credentials verified',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/InstallBootstrapResponse' },
-                },
-              },
-            },
-            '400': {
-              description: 'Invalid request',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
-            },
-            '401': {
-              description: 'Invalid credentials',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
-            },
-            '404': {
-              description: 'Not available on Workers',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
-            },
-            '409': {
-              description: 'Instance already configured',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
-            },
-            '503': {
-              description: 'Database unavailable',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/install/v1/': {
-        post: {
-          tags: ['install'],
-          summary: 'Complete initial install (install step 2)',
-          description:
-            'Deno self-hosted only. Creates org, team, superadmin, and session. Requires host credentials as `username`/`password`.',
-          requestBody: {
-            required: true,
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/InstallRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Install complete; superadmin session cookie set',
-              headers: {
-                'Set-Cookie': {
-                  schema: { type: 'string' },
-                  description: 'Signed session cookie',
-                },
-              },
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/SessionResponse' },
-                },
-              },
-            },
-            '400': {
-              description: 'Invalid request or install failed',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
-            },
-            '401': {
-              description: 'Invalid host credentials',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
-            },
-            '404': {
-              description: 'Not available on Workers',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
-            },
-            '409': {
-              description: 'Instance already configured',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
-            },
-            '503': {
-              description: 'Database unavailable',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
                 },
               },
             },
@@ -1849,27 +1871,7 @@ export function getClientOpenApiSpec(serverUrl: string): object {
         },
       },
       ...resourceTreePaths,
-      '/api/install/v1/daemon-install.sh': {
-        get: {
-          tags: ['install'],
-          summary: 'Daemon install script',
-          description:
-            'Returns a POSIX sh script for installing a managed daemon. ' +
-            'Shell arguments (not HTTP query params): `--license <id:token>` (required) ' +
-            'and optional `--host <instance-url>` to set TURBOPANEL_INSTANCE_URL before ' +
-            'delegating to the CDN installer.',
-          responses: {
-            '200': {
-              description: 'Install script',
-              content: {
-                'text/plain': {
-                  schema: { type: 'string' },
-                },
-              },
-            },
-          },
-        },
-      },
+      ...(includeInstall ? installOpenApiPaths : {}),
     },
   }
 }

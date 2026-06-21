@@ -1,5 +1,5 @@
 import type { WSContext } from 'hono/ws'
-import type { DerivedSecretsConfig } from '../authn/secrets.ts'
+import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import {
   type DaemonMessage,
   evictDuplicateDaemons,
@@ -17,7 +17,7 @@ import {
   unregisterDaemon,
 } from './hub.ts'
 import type { Db } from '../db.ts'
-import { tryAssignColocatedDaemonToInstalledOrganization } from '../authn/install-state.ts'
+import { tryAssignColocatedDaemonToInstalledOrganization } from '../client/authn/install-state.ts'
 import { resolveServerId } from '../server-registry.ts'
 import { compatLogError, compatLogInfo, compatLogWarn } from '../log-compat.ts'
 

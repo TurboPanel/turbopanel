@@ -1,12 +1,11 @@
 import { Hono } from 'hono'
-import type { SessionData } from './authn/session-store.ts'
-import type { DerivedSecretsConfig } from './authn/secrets.ts'
+import type { SessionData } from './client/authn/session-store.ts'
+import type { DerivedSecretsConfig } from './client/authn/secrets.ts'
 import { registerClientRoutes } from './client/routes.ts'
-import { registerInstallRoutes } from './install/routes.ts'
 import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
 import { registerCorsMiddleware } from './cors.ts'
 import type { Db } from './db.ts'
-import type { EmailQueue } from './email/types.ts'
+import type { EmailQueue } from './lib/email/types.ts'
 import { HEALTH_PATH } from './surfaces.ts'
 
 export type AppEnv = {
@@ -66,11 +65,6 @@ export function createApp(
   app.get('/', (c) => c.text('TurboPanel'))
   app.get(HEALTH_PATH, (c) => c.json({ ok: true }))
   const routes = app as unknown as Hono
-  registerInstallRoutes(routes, {
-    secrets: secrets ?? undefined,
-    runtime: runtime ?? 'workers',
-    signupEnvOverride,
-  })
   if (secrets) {
     registerClientRoutes(routes, {
       secrets,

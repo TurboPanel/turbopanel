@@ -2,7 +2,7 @@ import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import type { Context } from 'hono'
 import postgres from 'postgres'
 import { getDatabaseUrl, resolvePostgresConnection } from './db-url.ts'
-import * as schema from './db/schema.ts'
+import * as schema from './lib/db/schema.ts'
 
 export type Db = PostgresJsDatabase<typeof schema>
 
