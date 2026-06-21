@@ -47,6 +47,12 @@
           "pattern": "turbopanel.app/ws/*",
           "zone_name": "turbopanel.app"
         }
+      ],
+      "hyperdrive": [
+        {
+          "binding": "HYPERDRIVE",
+          "id": "91114c98e51f4f77967f0ee3e7f510e4"
+        }
       ]
     }
   }
