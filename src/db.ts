@@ -55,6 +55,21 @@ export function createToolingDb(): Db {
   return drizzle(client, { schema })
 }
 
+/** Run tooling DB work and close the postgres.js pool so short-lived scripts can exit. */
+export async function withToolingDb<T>(fn: (db: Db) => Promise<T>): Promise<T> {
+  const url = getDatabaseUrl()
+  if (!url) {
+    throw new Error(DATABASE_URL_REQUIRED)
+  }
+  const client = postgres(resolvePostgresConnection(url), PG_OPTS_DENO)
+  const db = drizzle(client, { schema })
+  try {
+    return await fn(db)
+  } finally {
+    await client.end({ timeout: 5 })
+  }
+}
+
 export function getDb(c: Context): Db | undefined {
   return c.get('db')
 }

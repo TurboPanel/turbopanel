@@ -5,50 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1781548019113,
-      "tag": "0000_organization_options",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1781741302746,
-      "tag": "0001_license",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1781712000000,
-      "tag": "0002_session_organization_id",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1781741302745,
-      "tag": "0003_authz_resource_tree",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1781800000000,
-      "tag": "0004_invitation_grants_and_uniques",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "7",
-      "when": 1781860000000,
-      "tag": "0005_backfill_resource_parents",
-      "breakpoints": true
-    },
-    {
-      "idx": 6,
-      "version": "7",
-      "when": 1781993000000,
-      "tag": "0006_access_string_keys",
+      "when": 1782007557673,
+      "tag": "0000_initial_schema",
       "breakpoints": true
     }
   ]

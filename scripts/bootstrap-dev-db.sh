@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Bootstrap a fresh co-located dev Postgres from src/db/schema.ts.
+# Bootstrap co-located dev Postgres from versioned migrations in migrations/.
 #
-# Migrations in migrations/ are incremental — they assume a base schema already
-# exists. On an empty database, push schema.ts first, then repair the registry.
+# Empty databases run pnpm migrate (0000_initial_schema.sql). Legacy dev DBs
+# created via sync.sh without migration history fall back to seed-catalog only.
 #
 # Usage (from instance repo root):
 #   ./scripts/bootstrap-dev-db.sh
@@ -26,16 +26,24 @@ organization_table_exists() {
     "SELECT to_regclass('public.organization') IS NOT NULL" 2>/dev/null | grep -qx t
 }
 
+migrations_recorded() {
+  docker exec "$POSTGRES_CONTAINER" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
+    "SELECT EXISTS (SELECT 1 FROM public.migration LIMIT 1)" 2>/dev/null | grep -qx t
+}
+
 cd "$ROOT"
 
 if organization_table_exists; then
-  echo "bootstrap-dev-db: organization table present — running migrate + seed-catalog"
-  pnpm migrate
+  if migrations_recorded; then
+    echo "bootstrap-dev-db: organization table present — running migrate + seed-catalog"
+    pnpm migrate
+  else
+    echo "bootstrap-dev-db: schema present without migration history — repairing resource registry"
+    pnpm run seed-catalog
+  fi
 else
-  echo "bootstrap-dev-db: empty database — pushing src/db/schema.ts"
-  "$ROOT/sync.sh" --force
-  echo "bootstrap-dev-db: repairing resource registry"
-  pnpm run seed-catalog
+  echo "bootstrap-dev-db: empty database — running migrate + seed-catalog"
+  pnpm migrate
 fi
 
 echo "bootstrap-dev-db: done"
