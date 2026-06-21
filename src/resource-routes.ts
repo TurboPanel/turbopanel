@@ -14,7 +14,7 @@ import {
   environment,
   hosting,
   project,
-  workspace,
+  realm,
   service,
 } from './lib/db/schema.ts'
 import { CLIENT_API_PREFIX } from './surfaces.ts'
@@ -172,15 +172,15 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
 
     const rows = await db
       .select({
-        id: workspace.id,
-        displayName: workspace.displayName,
-        organizationId: workspace.organizationId,
-        createdAt: workspace.createdAt,
-        updatedAt: workspace.updatedAt,
+        id: realm.id,
+        displayName: realm.displayName,
+        organizationId: realm.organizationId,
+        createdAt: realm.createdAt,
+        updatedAt: realm.updatedAt,
       })
-      .from(workspace)
-      .where(inArray(workspace.id, visibleIds))
-      .orderBy(workspace.createdAt)
+      .from(realm)
+      .where(inArray(realm.id, visibleIds))
+      .orderBy(realm.createdAt)
 
     return c.json({ workspaces: rows })
   })
@@ -199,14 +199,14 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
     const id = c.req.param('id')
     const rows = await db
       .select({
-        id: workspace.id,
-        displayName: workspace.displayName,
-        organizationId: workspace.organizationId,
-        createdAt: workspace.createdAt,
-        updatedAt: workspace.updatedAt,
+        id: realm.id,
+        displayName: realm.displayName,
+        organizationId: realm.organizationId,
+        createdAt: realm.createdAt,
+        updatedAt: realm.updatedAt,
       })
-      .from(workspace)
-      .where(eq(workspace.id, id))
+      .from(realm)
+      .where(eq(realm.id, id))
       .limit(1)
 
     const row = rows[0]
@@ -249,9 +249,9 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
 
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
-        .insert(workspace)
+        .insert(realm)
         .values({ displayName, organizationId })
-        .returning({ id: workspace.id })
+        .returning({ id: realm.id })
       return inserted.id
     })
 
@@ -271,9 +271,9 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
 
     const id = c.req.param('id')
     const rows = await db
-      .select({ organizationId: workspace.organizationId })
-      .from(workspace)
-      .where(eq(workspace.id, id))
+      .select({ organizationId: realm.organizationId })
+      .from(realm)
+      .where(eq(realm.id, id))
       .limit(1)
 
     const row = rows[0]
@@ -295,9 +295,9 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
     }
 
     await db
-      .update(workspace)
+      .update(realm)
       .set(patchFields)
-      .where(eq(workspace.id, id))
+      .where(eq(realm.id, id))
 
     return c.json({ ok: true as const })
   })
@@ -315,9 +315,9 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
 
     const id = c.req.param('id')
     const rows = await db
-      .select({ organizationId: workspace.organizationId })
-      .from(workspace)
-      .where(eq(workspace.id, id))
+      .select({ organizationId: realm.organizationId })
+      .from(realm)
+      .where(eq(realm.id, id))
       .limit(1)
 
     const row = rows[0]
@@ -329,7 +329,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
     if (denied) return denied
 
     await db.transaction(async (tx) => {
-      await tx.delete(workspace).where(eq(workspace.id, id))
+      await tx.delete(realm).where(eq(realm.id, id))
     })
 
     return c.json({ ok: true as const })
@@ -363,7 +363,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
 
     const conditions = [inArray(environment.id, visibleIds)]
     if (workspaceId) {
-      conditions.push(eq(environment.workspaceId, workspaceId))
+      conditions.push(eq(environment.realmId, workspaceId))
     }
 
     const rows = await db
@@ -371,7 +371,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
         id: environment.id,
         displayName: environment.displayName,
         organizationId: environment.organizationId,
-        workspaceId: environment.workspaceId,
+        workspaceId: environment.realmId,
         createdAt: environment.createdAt,
         updatedAt: environment.updatedAt,
       })
@@ -399,7 +399,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
         id: environment.id,
         displayName: environment.displayName,
         organizationId: environment.organizationId,
-        workspaceId: environment.workspaceId,
+        workspaceId: environment.realmId,
         createdAt: environment.createdAt,
         updatedAt: environment.updatedAt,
       })
@@ -435,13 +435,13 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
     const workspaceId = requireStringField(c, body, 'workspaceId')
     if (workspaceId instanceof Response) return workspaceId
 
-    const workspaceRows = await db
-      .select({ id: workspace.id })
-      .from(workspace)
-      .where(and(eq(workspace.id, workspaceId), eq(workspace.organizationId, organizationId)))
+    const realmRows = await db
+      .select({ id: realm.id })
+      .from(realm)
+      .where(and(eq(realm.id, workspaceId), eq(realm.organizationId, organizationId)))
       .limit(1)
 
-    if (!workspaceRows[0]) {
+    if (!realmRows[0]) {
       return c.json({ error: 'Not found' }, 404)
     }
 
@@ -461,7 +461,7 @@ export function registerResourceRoutes(app: Hono, opts: AuthRouteOpts) {
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(environment)
-        .values({ displayName, organizationId, workspaceId })
+        .values({ displayName, organizationId, realmId: workspaceId })
         .returning({ id: environment.id })
       return inserted.id
     })

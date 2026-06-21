@@ -93,19 +93,20 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         FROM team t WHERE t.id = ${entityId}::uuid
       `
     case 'workspace':
+    case 'realm':
       return sql`
-        SELECT 'workspace'::text AS entity_type, r.id AS entity_id, 0 AS depth
-        FROM workspace r WHERE r.id = ${entityId}::uuid
+        SELECT 'realm'::text AS entity_type, r.id AS entity_id, 0 AS depth
+        FROM realm r WHERE r.id = ${entityId}::uuid
         UNION ALL
         SELECT 'organization'::text, r.organization_id, 1
-        FROM workspace r WHERE r.id = ${entityId}::uuid
+        FROM realm r WHERE r.id = ${entityId}::uuid
       `
     case 'environment':
       return sql`
         SELECT 'environment'::text AS entity_type, e.id AS entity_id, 0 AS depth
         FROM environment e WHERE e.id = ${entityId}::uuid
         UNION ALL
-        SELECT 'workspace'::text, e.workspace_id, 1
+        SELECT 'realm'::text, e.realm_id, 1
         FROM environment e WHERE e.id = ${entityId}::uuid
         UNION ALL
         SELECT 'organization'::text, e.organization_id, 2
@@ -119,7 +120,7 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         SELECT 'environment'::text, p.environment_id, 1
         FROM project p WHERE p.id = ${entityId}::uuid
         UNION ALL
-        SELECT 'workspace'::text, e.workspace_id, 2
+        SELECT 'realm'::text, e.realm_id, 2
         FROM project p
         JOIN environment e ON e.id = p.environment_id
         WHERE p.id = ${entityId}::uuid
@@ -140,7 +141,7 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         JOIN project p ON p.id = s.project_id
         WHERE s.id = ${entityId}::uuid
         UNION ALL
-        SELECT 'workspace'::text, e.workspace_id, 3
+        SELECT 'realm'::text, e.realm_id, 3
         FROM service s
         JOIN project p ON p.id = s.project_id
         JOIN environment e ON e.id = p.environment_id
@@ -162,7 +163,7 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         JOIN project p ON p.id = h.project_id
         WHERE h.id = ${entityId}::uuid
         UNION ALL
-        SELECT 'workspace'::text, e.workspace_id, 3
+        SELECT 'realm'::text, e.realm_id, 3
         FROM hosting h
         JOIN project p ON p.id = h.project_id
         JOIN environment e ON e.id = p.environment_id
@@ -193,19 +194,20 @@ function buildWalkBody(kind: string, organizationId: string): SQL {
         FROM organization WHERE id = ${organizationId}::uuid
       `
     case 'workspace':
+    case 'realm':
       return sql`
-        SELECT r.id AS leaf_id, 'workspace'::text AS entity_type, r.id AS entity_id, 0 AS depth
-        FROM workspace r WHERE r.organization_id = ${organizationId}::uuid
+        SELECT r.id AS leaf_id, 'realm'::text AS entity_type, r.id AS entity_id, 0 AS depth
+        FROM realm r WHERE r.organization_id = ${organizationId}::uuid
         UNION ALL
         SELECT r.id, 'organization'::text, r.organization_id, 1
-        FROM workspace r WHERE r.organization_id = ${organizationId}::uuid
+        FROM realm r WHERE r.organization_id = ${organizationId}::uuid
       `
     case 'environment':
       return sql`
         SELECT e.id AS leaf_id, 'environment'::text AS entity_type, e.id AS entity_id, 0 AS depth
         FROM environment e WHERE e.organization_id = ${organizationId}::uuid
         UNION ALL
-        SELECT e.id, 'workspace'::text, e.workspace_id, 1
+        SELECT e.id, 'realm'::text, e.realm_id, 1
         FROM environment e WHERE e.organization_id = ${organizationId}::uuid
         UNION ALL
         SELECT e.id, 'organization'::text, e.organization_id, 2
@@ -219,7 +221,7 @@ function buildWalkBody(kind: string, organizationId: string): SQL {
         SELECT p.id, 'environment'::text, p.environment_id, 1
         FROM project p WHERE p.organization_id = ${organizationId}::uuid
         UNION ALL
-        SELECT p.id, 'workspace'::text, e.workspace_id, 2
+        SELECT p.id, 'realm'::text, e.realm_id, 2
         FROM project p
         JOIN environment e ON e.id = p.environment_id
         WHERE p.organization_id = ${organizationId}::uuid
@@ -240,7 +242,7 @@ function buildWalkBody(kind: string, organizationId: string): SQL {
         JOIN project p ON p.id = s.project_id
         WHERE s.organization_id = ${organizationId}::uuid
         UNION ALL
-        SELECT s.id, 'workspace'::text, e.workspace_id, 3
+        SELECT s.id, 'realm'::text, e.realm_id, 3
         FROM service s
         JOIN project p ON p.id = s.project_id
         JOIN environment e ON e.id = p.environment_id
@@ -262,7 +264,7 @@ function buildWalkBody(kind: string, organizationId: string): SQL {
         JOIN project p ON p.id = h.project_id
         WHERE h.organization_id = ${organizationId}::uuid
         UNION ALL
-        SELECT h.id, 'workspace'::text, e.workspace_id, 3
+        SELECT h.id, 'realm'::text, e.realm_id, 3
         FROM hosting h
         JOIN project p ON p.id = h.project_id
         JOIN environment e ON e.id = p.environment_id
@@ -289,7 +291,8 @@ function buildLeavesBody(kind: string, organizationId: string): SQL {
     case 'organization':
       return sql`SELECT id FROM organization WHERE id = ${organizationId}::uuid`
     case 'workspace':
-      return sql`SELECT id FROM workspace WHERE organization_id = ${organizationId}::uuid`
+    case 'realm':
+      return sql`SELECT id FROM realm WHERE organization_id = ${organizationId}::uuid`
     case 'environment':
       return sql`SELECT id FROM environment WHERE organization_id = ${organizationId}::uuid`
     case 'project':
@@ -332,7 +335,14 @@ export async function can(
       SELECT ag.allowed, a.depth
       FROM ancestry a
       JOIN ${grant} ag
-        ON ag.entity_type = a.entity_type AND ag.entity_id = a.entity_id
+        ON ag.entity_id = a.entity_id
+        AND (
+          ag.entity_type = a.entity_type
+          OR (
+            ag.entity_type IN ('realm', 'workspace')
+            AND a.entity_type IN ('realm', 'workspace')
+          )
+        )
       JOIN subjectset ss
         ON ss.subject_type = ag.subject_type AND ss.subject_id = ag.subject_id
       WHERE ag.permission = ${permissionKey}
@@ -408,7 +418,14 @@ export async function listVisible(
         ag.permission
       FROM walk w
       JOIN ${grant} ag
-        ON ag.entity_type = w.entity_type AND ag.entity_id = w.entity_id
+        ON ag.entity_id = w.entity_id
+        AND (
+          ag.entity_type = w.entity_type
+          OR (
+            ag.entity_type IN ('realm', 'workspace')
+            AND w.entity_type IN ('realm', 'workspace')
+          )
+        )
       JOIN subjectset ss
         ON ss.subject_type = ag.subject_type AND ss.subject_id = ag.subject_id
       WHERE ag.permission IN (${roKey}, ${rwKey})

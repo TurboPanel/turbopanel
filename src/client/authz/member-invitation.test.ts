@@ -5,7 +5,7 @@ import {
   grant,
   member,
   organization,
-  workspace,
+  realm,
   user,
 } from '../../lib/db/schema.ts'
 import {
@@ -89,9 +89,9 @@ async function withTestFixtures(
   await materializeInvitationGrants(db, userId, grants, organizationId)
 
   const [insertedWorkspace] = await db
-    .insert(workspace)
+    .insert(realm)
     .values({ displayName: 'Test Workspace', organizationId })
-    .returning({ id: workspace.id })
+    .returning({ id: realm.id })
 
   const workspaceId = insertedWorkspace!.id
 
@@ -108,7 +108,7 @@ async function withTestFixtures(
       eq(member.userId, userId),
       eq(member.organizationId, organizationId),
     ))
-    await db.delete(workspace).where(eq(workspace.organizationId, organizationId))
+    await db.delete(realm).where(eq(realm.organizationId, organizationId))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
