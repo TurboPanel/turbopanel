@@ -74,7 +74,7 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `sync
 | **Identity** | `user`, `account`, `apikey`, `session`, `verification`, `passkey`, `2fa` |
 | **Organizations** | `organization`, `member`, `team`, `teammate`, `invitation`, `license` |
 | **Resource tree** | `realm`, `environment`, `project`, `service`, `hosting` |
-| **Authorization** | `resource`, `access` |
+| **Authorization** | `access_grant` |
 | **Config** | `setting` |
 | **Runtime** | `server` |
 
@@ -84,11 +84,9 @@ Drizzle relations are defined for future Better Auth adapter use. `IS_SIGNUP_ENA
 
 **Organizations:** `member` and `invitation` are **pure relationship tables** — `member.role` and `invitation.role` were removed because authorization is now derived exclusively from `access` rows, not membership columns. **`invitation.grants`** (JSONB) stores the intended access grants (`InvitationGrantSpec[]` in `src/authn/invitation-grants.ts`); they are materialized into `access` rows on accept. When `grants` is null, accept applies a default org-scoped member access-profile grant.
 
-**Uniqueness:** `member(organization_id, user_id)`, `teammate(team_id, user_id)`, and partial unique indexes on `access` for access-profile-key and permission-key targeted grants prevent duplicate membership or grant rows on concurrent invite acceptance/retries.
+**Uniqueness:** `member(organization_id, user_id)` and `teammate(team_id, user_id)` prevent duplicate membership rows on concurrent invite acceptance/retries.
 
-**Server resources:** `server` rows with an `organization_id` must have a matching `resource` row (`kind = 'server'`) for `listVisible()` to include them. Registration happens in `server-registry.ts` (create/bind), `assignColocatedDaemonToOrganization()` (install), and developer `PATCH /servers/:id` org assignment.
-
-**Install (Deno):** A fresh DB has no org or superadmin. `src/authn/install-state.ts` `isInstanceInstalled()` is false until `completeInstanceInstall` creates org + team + superadmin user with a named org. **`organization.slug`** stays **NULL** (reserved for a future feature). Org extras (e.g. logo URL) belong in **`organization.metadata`** — there is no `logo` column. Install sets **`email`** and **`role`** (on `user`) only — `display_name`, `username`, and `display_username` stay **NULL** until the user chooses them. `completeInstanceInstall` registers the org `resource` row and inserts an owner `access` grant for the superadmin user (via `registerResource` + direct `access` insert with `accessProfileKey: 'owner'`).
+**Install (Deno):** A fresh DB has no org or superadmin. `src/authn/install-state.ts` `isInstanceInstalled()` is false until `completeInstanceInstall` creates org + team + superadmin user with a named org. **`organization.slug`** stays **NULL** (reserved for a future feature). Org extras (e.g. logo URL) belong in **`organization.metadata`** — there is no `logo` column. Install sets **`email`** and **`role`** (on `user`) only — `display_name`, `username`, and `display_username` stay **NULL** until the user chooses them.
 
 ### Client API (authz integration)
 
@@ -165,18 +163,17 @@ Each physical server node gets a row in `server` (`id` uuidv7). On daemon connec
 
 ### Authz engine
 
-Runtime authorization lives in `../authz/` (pure TypeScript, safe for both Deno and Workers — no Deno-only imports). Access profiles and permissions are static code constants in `catalog.ts`; `sync.ts` has been removed. The modules below evaluate access at request time against `resource` / `access`.
+Runtime authorization lives in `../authz/` (pure TypeScript, safe for both Deno and Workers — no Deno-only imports). Access profiles and permissions are static code constants in `catalog.ts`; `sync.ts` has been removed. The modules below evaluate access at request time against `access_grant`.
 
 | File | Purpose |
 |---|---|
 | `../authz/catalog.ts` | Static `ACCESS_PROFILES`, `PERMISSIONS`, `isAccessProfileKey`, `isPermissionKey`, `accessProfilesGrantingPermission`, `getAccessProfileCatalog`, `getPermissionCatalog` — no DB access |
-| `../authz/resource-registry.ts` | `registerResource` / `unregisterResource` / `getResourceByItem` / `getResourceId` — lifecycle of `resource` rows keyed by (`kind`, `item_id`) |
 | `../authz/evaluator.ts` | `getSubjects`, `getResourceAncestry`, `can`, `assertCan`, `listVisible`, `ForbiddenError` — expands access profiles from code constants; superadmin bypass in SQL |
 | `../authz/http.ts` | `assertCanOr403` Hono helper (503 / 401 / 403 short-circuit, `null` to continue) |
 
 `can()` resolves a permission in a **single recursive-CTE query** (`subjectset` → `ancestry` → `hits`, ordered closest-first with deny winning ties) — one round-trip, no per-ancestor queries. Access profile expansion (`accessProfilesGrantingPermission`) happens in code before the query. A superadmin bypass (`EXISTS … WHERE role = 'superadmin'`) is OR'd into the final result so no explicit grants are needed for superadmins. `listVisible()` applies the same leaf-first, deny-beats-allow resolution for `<kind>:ro` and `<kind>:rw` in SQL — **never rely on client-side filtering** for visibility.
 
-**Follow-up (deferred):** Resource ancestry is currently computed from the generic `resource` shadow table. A future pass should compute it directly from real domain tables (`organization → realm → environment → project → service/hosting`, `organization → server`) and drop the `resource` table entirely.
+**Completed:** Resource ancestry is computed directly from real domain tables (`organization → realm → environment → project → service/hosting`, `organization → server`); the generic `resource` shadow table has been dropped.
 
 ## Connection (self-hosted dev)
 

@@ -1,11 +1,11 @@
 {
-  "id": "6cab1db8-3a50-4b46-99eb-a5969aff026c",
+  "id": "4af5ddf8-2a9c-4090-a6dc-52479805cc43",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
-    "public.access": {
-      "name": "access",
+    "public.access_grant": {
+      "name": "access_grant",
       "schema": "",
       "columns": {
         "id": {
@@ -14,6 +14,43 @@
           "primaryKey": true,
           "notNull": true,
           "default": "uuidv7()"
+        },
+        "entity_type": {
+          "name": "entity_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "entity_id": {
+          "name": "entity_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subject_type": {
+          "name": "subject_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subject_id": {
+          "name": "subject_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "permission": {
+          "name": "permission",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "allowed": {
+          "name": "allowed",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
         },
         "created_at": {
           "name": "created_at",
@@ -28,53 +65,35 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "subject_kind": {
-          "name": "subject_kind",
-          "type": "subjectkind",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "subject_id": {
-          "name": "subject_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "resource_id": {
-          "name": "resource_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "effect": {
-          "name": "effect",
-          "type": "effect",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'allow'"
-        },
-        "access_profile_key": {
-          "name": "access_profile_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "permission_key": {
-          "name": "permission_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
-        "idx_access_subject": {
-          "name": "idx_access_subject",
+        "idx_access_grant_entity": {
+          "name": "idx_access_grant_entity",
           "columns": [
             {
-              "expression": "subject_kind",
+              "expression": "entity_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "entity_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_access_grant_subject": {
+          "name": "idx_access_grant_subject",
+          "columns": [
+            {
+              "expression": "subject_type",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -87,175 +106,28 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_access_resource_id": {
-          "name": "idx_access_resource_id",
-          "columns": [
-            {
-              "expression": "resource_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_access_subject_resource": {
-          "name": "idx_access_subject_resource",
-          "columns": [
-            {
-              "expression": "subject_kind",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "subject_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "resource_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_access_access_profile_key": {
-          "name": "idx_access_access_profile_key",
-          "columns": [
-            {
-              "expression": "access_profile_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_access_permission_key": {
-          "name": "idx_access_permission_key",
-          "columns": [
-            {
-              "expression": "permission_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "access_subject_resource_profile_unique": {
-          "name": "access_subject_resource_profile_unique",
-          "columns": [
-            {
-              "expression": "subject_kind",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "subject_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "resource_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "access_profile_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "access_profile_key IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "access_subject_resource_permission_unique": {
-          "name": "access_subject_resource_permission_unique",
-          "columns": [
-            {
-              "expression": "subject_kind",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "subject_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "resource_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "permission_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "permission_key IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
         }
       },
-      "foreignKeys": {
-        "access_resource_id_resource_id_fk": {
-          "name": "access_resource_id_resource_id_fk",
-          "tableFrom": "access",
-          "tableTo": "resource",
-          "columnsFrom": [
-            "resource_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "access_one_target_check": {
-          "name": "access_one_target_check",
-          "value": "num_nonnulls(\"access\".\"access_profile_key\", \"access\".\"permission_key\") = 1"
+      "uniqueConstraints": {
+        "access_grant_unique": {
+          "name": "access_grant_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "entity_type",
+            "entity_id",
+            "subject_type",
+            "subject_id",
+            "permission"
+          ]
         }
       },
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.account": {
@@ -1591,147 +1463,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.resource": {
-      "name": "resource",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "uuidv7()"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "item_id": {
-          "name": "item_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "organization_id": {
-          "name": "organization_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "parent_id": {
-          "name": "parent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "idx_resource_parent_id": {
-          "name": "idx_resource_parent_id",
-          "columns": [
-            {
-              "expression": "parent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_resource_organization_kind": {
-          "name": "idx_resource_organization_kind",
-          "columns": [
-            {
-              "expression": "organization_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "kind",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "resource_organization_id_organization_id_fk": {
-          "name": "resource_organization_id_organization_id_fk",
-          "tableFrom": "resource",
-          "tableTo": "organization",
-          "columnsFrom": [
-            "organization_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "resource_parent_org_fk": {
-          "name": "resource_parent_org_fk",
-          "tableFrom": "resource",
-          "tableTo": "resource",
-          "columnsFrom": [
-            "parent_id",
-            "organization_id"
-          ],
-          "columnsTo": [
-            "id",
-            "organization_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "resource_kind_item_unique": {
-          "name": "resource_kind_item_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "kind",
-            "item_id"
-          ]
-        },
-        "resource_id_org_unique": {
-          "name": "resource_id_org_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "id",
-            "organization_id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.server": {
       "name": "server",
       "schema": "",
@@ -2644,25 +2375,7 @@
       "isRLSEnabled": false
     }
   },
-  "enums": {
-    "public.effect": {
-      "name": "effect",
-      "schema": "public",
-      "values": [
-        "allow",
-        "deny"
-      ]
-    },
-    "public.subjectkind": {
-      "name": "subjectkind",
-      "schema": "public",
-      "values": [
-        "user",
-        "team",
-        "organization"
-      ]
-    }
-  },
+  "enums": {},
   "schemas": {},
   "sequences": {},
   "roles": {},

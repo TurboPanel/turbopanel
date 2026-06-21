@@ -7,14 +7,15 @@ import { can, type PermissionKey } from './evaluator.ts'
  * handler (503 / 401 / 403) or `null` to continue:
  *
  * ```ts
- * const denied = await assertCanOr403(c, 'server:ro', resourceId)
+ * const denied = await assertCanOr403(c, 'server:ro', 'server', serverId)
  * if (denied) return denied
  * ```
  */
 export async function assertCanOr403(
   c: Context,
   permissionKey: PermissionKey,
-  resourceId: string,
+  entityType: string,
+  entityId: string,
 ): Promise<Response | null> {
   const db = getDb(c)
   if (!db) {
@@ -26,9 +27,7 @@ export async function assertCanOr403(
     return c.json({ ok: false, error: 'Unauthorized' }, 401)
   }
 
-  if (session.role === 'superadmin') return null
-
-  const allowed = await can(db, session.userId, permissionKey, resourceId)
+  const allowed = await can(db, session.userId, permissionKey, entityType, entityId)
   if (!allowed) {
     return c.json({ ok: false, error: 'Forbidden' }, 403)
   }

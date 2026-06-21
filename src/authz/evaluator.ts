@@ -1,7 +1,11 @@
 import { eq, sql, type SQL } from 'drizzle-orm'
 import type { Db } from '../db.ts'
 import { member, teammate } from '../db/schema.ts'
-import { accessProfilesGrantingPermission, type PermissionKey } from './catalog.ts'
+import {
+  ACCESS_PROFILES,
+  accessProfilesGrantingPermission,
+  type PermissionKey,
+} from './catalog.ts'
 
 export type { PermissionKey }
 
@@ -57,107 +61,299 @@ export async function getSubjects(db: Db, userId: string): Promise<Subject[]> {
   return subjects
 }
 
-export type ResourceAncestryRow = {
-  id: string
-  parentId: string | null
-  depth: number
-}
-
-/**
- * Walk from `resourceId` up through `parent_id` to the root. Depth 0 is the
- * leaf; larger depths are farther ancestors.
- */
-export async function getResourceAncestry(
-  db: Db,
-  resourceId: string,
-): Promise<ResourceAncestryRow[]> {
-  const rows = (await db.execute(sql`
-    WITH RECURSIVE ancestry(id, parent_id, depth) AS (
-      SELECT id, parent_id, 0 FROM resource WHERE id = ${resourceId}::uuid
-      UNION ALL
-      SELECT r.id, r.parent_id, a.depth + 1
-      FROM resource r
-      JOIN ancestry a ON r.id = a.parent_id
-    )
-    SELECT id, parent_id AS "parentId", depth
-    FROM ancestry
-    ORDER BY depth ASC
-  `)) as unknown as ResourceAncestryRow[]
-
-  return rows
+/** Atomic permission keys stored in `access_grant` that imply `permissionKey`. */
+function permissionsImplying(permissionKey: PermissionKey): PermissionKey[] {
+  const implied = new Set<PermissionKey>([permissionKey])
+  for (const profileKey of accessProfilesGrantingPermission(permissionKey)) {
+    for (const perm of ACCESS_PROFILES[profileKey]) {
+      implied.add(perm)
+    }
+  }
+  return [...implied]
 }
 
 /** Build the `subjectset` CTE body, either from a pre-fetched set or inline. */
 function buildSubjectsetBody(userId: string, subjects?: Subject[]): SQL {
   if (subjects && subjects.length > 0) {
     const rows = subjects.map(
-      (s) => sql`(${s.subjectKind}::subjectkind, ${s.subjectId}::uuid)`,
+      (s) => sql`(${s.subjectKind}::text, ${s.subjectId}::uuid)`,
     )
     const separator = sql.raw(', ')
     const values = sql.join(rows, separator)
-    return sql`SELECT * FROM (VALUES ${values}) AS s(subject_kind, subject_id)`
+    return sql`SELECT * FROM (VALUES ${values}) AS s(subject_type, subject_id)`
   }
 
   return sql`
-    SELECT 'user'::subjectkind AS subject_kind, ${userId}::uuid AS subject_id
+    SELECT 'user'::text AS subject_type, ${userId}::uuid AS subject_id
     UNION
-    SELECT 'team'::subjectkind, team_id FROM teammate WHERE user_id = ${userId}::uuid
+    SELECT 'team'::text, team_id FROM teammate WHERE user_id = ${userId}::uuid
     UNION
-    SELECT 'organization'::subjectkind, organization_id FROM member WHERE user_id = ${userId}::uuid
+    SELECT 'organization'::text, organization_id FROM member WHERE user_id = ${userId}::uuid
   `
 }
 
+/** Non-recursive ancestry enumeration for a single entity leaf. */
+function buildAncestryBody(entityType: string, entityId: string): SQL {
+  switch (entityType) {
+    case 'organization':
+      return sql`
+        SELECT 'organization'::text AS entity_type, ${entityId}::uuid AS entity_id, 0 AS depth
+      `
+    case 'realm':
+      return sql`
+        SELECT 'realm'::text AS entity_type, r.id AS entity_id, 0 AS depth
+        FROM realm r WHERE r.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'organization'::text, r.organization_id, 1
+        FROM realm r WHERE r.id = ${entityId}::uuid
+      `
+    case 'environment':
+      return sql`
+        SELECT 'environment'::text AS entity_type, e.id AS entity_id, 0 AS depth
+        FROM environment e WHERE e.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'realm'::text, e.realm_id, 1
+        FROM environment e WHERE e.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'organization'::text, e.organization_id, 2
+        FROM environment e WHERE e.id = ${entityId}::uuid
+      `
+    case 'project':
+      return sql`
+        SELECT 'project'::text AS entity_type, p.id AS entity_id, 0 AS depth
+        FROM project p WHERE p.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'environment'::text, p.environment_id, 1
+        FROM project p WHERE p.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'realm'::text, e.realm_id, 2
+        FROM project p
+        JOIN environment e ON e.id = p.environment_id
+        WHERE p.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'organization'::text, p.organization_id, 3
+        FROM project p WHERE p.id = ${entityId}::uuid
+      `
+    case 'service':
+      return sql`
+        SELECT 'service'::text AS entity_type, s.id AS entity_id, 0 AS depth
+        FROM service s WHERE s.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'project'::text, s.project_id, 1
+        FROM service s WHERE s.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'environment'::text, p.environment_id, 2
+        FROM service s
+        JOIN project p ON p.id = s.project_id
+        WHERE s.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'realm'::text, e.realm_id, 3
+        FROM service s
+        JOIN project p ON p.id = s.project_id
+        JOIN environment e ON e.id = p.environment_id
+        WHERE s.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'organization'::text, s.organization_id, 4
+        FROM service s WHERE s.id = ${entityId}::uuid
+      `
+    case 'hosting':
+      return sql`
+        SELECT 'hosting'::text AS entity_type, h.id AS entity_id, 0 AS depth
+        FROM hosting h WHERE h.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'project'::text, h.project_id, 1
+        FROM hosting h WHERE h.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'environment'::text, p.environment_id, 2
+        FROM hosting h
+        JOIN project p ON p.id = h.project_id
+        WHERE h.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'realm'::text, e.realm_id, 3
+        FROM hosting h
+        JOIN project p ON p.id = h.project_id
+        JOIN environment e ON e.id = p.environment_id
+        WHERE h.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'organization'::text, h.organization_id, 4
+        FROM hosting h WHERE h.id = ${entityId}::uuid
+      `
+    case 'server':
+      return sql`
+        SELECT 'server'::text AS entity_type, s.id AS entity_id, 0 AS depth
+        FROM server s WHERE s.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'organization'::text, s.organization_id, 1
+        FROM server s WHERE s.id = ${entityId}::uuid
+      `
+    default:
+      throw new Error(`Unknown entity type for ancestry: ${entityType}`)
+  }
+}
+
+/** Non-recursive walk from all org-scoped leaves upward (bounded depth per kind). */
+function buildWalkBody(kind: string, organizationId: string): SQL {
+  switch (kind) {
+    case 'organization':
+      return sql`
+        SELECT id AS leaf_id, 'organization'::text AS entity_type, id AS entity_id, 0 AS depth
+        FROM organization WHERE id = ${organizationId}::uuid
+      `
+    case 'realm':
+      return sql`
+        SELECT r.id AS leaf_id, 'realm'::text AS entity_type, r.id AS entity_id, 0 AS depth
+        FROM realm r WHERE r.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT r.id, 'organization'::text, r.organization_id, 1
+        FROM realm r WHERE r.organization_id = ${organizationId}::uuid
+      `
+    case 'environment':
+      return sql`
+        SELECT e.id AS leaf_id, 'environment'::text AS entity_type, e.id AS entity_id, 0 AS depth
+        FROM environment e WHERE e.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT e.id, 'realm'::text, e.realm_id, 1
+        FROM environment e WHERE e.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT e.id, 'organization'::text, e.organization_id, 2
+        FROM environment e WHERE e.organization_id = ${organizationId}::uuid
+      `
+    case 'project':
+      return sql`
+        SELECT p.id AS leaf_id, 'project'::text AS entity_type, p.id AS entity_id, 0 AS depth
+        FROM project p WHERE p.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT p.id, 'environment'::text, p.environment_id, 1
+        FROM project p WHERE p.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT p.id, 'realm'::text, e.realm_id, 2
+        FROM project p
+        JOIN environment e ON e.id = p.environment_id
+        WHERE p.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT p.id, 'organization'::text, p.organization_id, 3
+        FROM project p WHERE p.organization_id = ${organizationId}::uuid
+      `
+    case 'service':
+      return sql`
+        SELECT s.id AS leaf_id, 'service'::text AS entity_type, s.id AS entity_id, 0 AS depth
+        FROM service s WHERE s.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT s.id, 'project'::text, s.project_id, 1
+        FROM service s WHERE s.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT s.id, 'environment'::text, p.environment_id, 2
+        FROM service s
+        JOIN project p ON p.id = s.project_id
+        WHERE s.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT s.id, 'realm'::text, e.realm_id, 3
+        FROM service s
+        JOIN project p ON p.id = s.project_id
+        JOIN environment e ON e.id = p.environment_id
+        WHERE s.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT s.id, 'organization'::text, s.organization_id, 4
+        FROM service s WHERE s.organization_id = ${organizationId}::uuid
+      `
+    case 'hosting':
+      return sql`
+        SELECT h.id AS leaf_id, 'hosting'::text AS entity_type, h.id AS entity_id, 0 AS depth
+        FROM hosting h WHERE h.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT h.id, 'project'::text, h.project_id, 1
+        FROM hosting h WHERE h.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT h.id, 'environment'::text, p.environment_id, 2
+        FROM hosting h
+        JOIN project p ON p.id = h.project_id
+        WHERE h.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT h.id, 'realm'::text, e.realm_id, 3
+        FROM hosting h
+        JOIN project p ON p.id = h.project_id
+        JOIN environment e ON e.id = p.environment_id
+        WHERE h.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT h.id, 'organization'::text, h.organization_id, 4
+        FROM hosting h WHERE h.organization_id = ${organizationId}::uuid
+      `
+    case 'server':
+      return sql`
+        SELECT s.id AS leaf_id, 'server'::text AS entity_type, s.id AS entity_id, 0 AS depth
+        FROM server s WHERE s.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT s.id, 'organization'::text, s.organization_id, 1
+        FROM server s WHERE s.organization_id = ${organizationId}::uuid
+      `
+    default:
+      throw new Error(`Unknown entity kind for visibility walk: ${kind}`)
+  }
+}
+
+function buildLeavesBody(kind: string, organizationId: string): SQL {
+  switch (kind) {
+    case 'organization':
+      return sql`SELECT id FROM organization WHERE id = ${organizationId}::uuid`
+    case 'realm':
+      return sql`SELECT id FROM realm WHERE organization_id = ${organizationId}::uuid`
+    case 'environment':
+      return sql`SELECT id FROM environment WHERE organization_id = ${organizationId}::uuid`
+    case 'project':
+      return sql`SELECT id FROM project WHERE organization_id = ${organizationId}::uuid`
+    case 'service':
+      return sql`SELECT id FROM service WHERE organization_id = ${organizationId}::uuid`
+    case 'hosting':
+      return sql`SELECT id FROM hosting WHERE organization_id = ${organizationId}::uuid`
+    case 'server':
+      return sql`SELECT id FROM server WHERE organization_id = ${organizationId}::uuid`
+    default:
+      throw new Error(`Unknown entity kind for visibility leaves: ${kind}`)
+  }
+}
+
 /**
- * Resolve whether `userId` holds `permissionKey` on `resourceId` (or any of its
- * ancestors) using a single recursive-CTE round-trip:
- *
- * 1. `subjectset` — the user plus their teams and organizations.
- * 2. `ancestry` — the leaf resource walked up via `parent_id`.
- * 3. `hits` — access grants matching subject + permission (direct or via access
- *    profile), ordered closest-first with deny winning ties.
+ * Resolve whether `userId` holds `permissionKey` on the entity (or any of its
+ * ancestors) using domain FK joins and `access_grant` rows.
  */
 export async function can(
   db: Db,
   userId: string,
   permissionKey: PermissionKey,
-  resourceId: string,
+  entityType: string,
+  entityId: string,
   opts?: CanOptions,
 ): Promise<boolean> {
   const subjectsetBody = buildSubjectsetBody(userId, opts?.subjects)
-  const profiles = accessProfilesGrantingPermission(permissionKey)
-  const accessPredicate =
-    profiles.length > 0
-      ? sql`acc.permission_key = ${permissionKey} OR acc.access_profile_key IN (${sql.join(
-          profiles.map((p) => sql`${p}`),
-          sql`, `,
-        )})`
-      : sql`acc.permission_key = ${permissionKey}`
+  const ancestryBody = buildAncestryBody(entityType, entityId)
+  const impliedPermissions = permissionsImplying(permissionKey)
+  const permissionPredicate = sql`ag.permission IN (${sql.join(
+    impliedPermissions.map((p) => sql`${p}`),
+    sql`, `,
+  )})`
 
   const rows = (await db.execute(sql`
-    WITH RECURSIVE
-    subjectset(subject_kind, subject_id) AS (
+    WITH
+    subjectset(subject_type, subject_id) AS (
       ${subjectsetBody}
     ),
-    ancestry(id, parent_id, depth) AS (
-      SELECT id, parent_id, 0 FROM resource WHERE id = ${resourceId}::uuid
-      UNION ALL
-      SELECT r.id, r.parent_id, a.depth + 1
-      FROM resource r
-      JOIN ancestry a ON r.id = a.parent_id
+    ancestry(entity_type, entity_id, depth) AS (
+      ${ancestryBody}
     ),
     hits AS (
-      SELECT acc.effect AS effect, a.depth AS depth
+      SELECT ag.allowed, a.depth
       FROM ancestry a
-      JOIN access acc ON acc.resource_id = a.id
+      JOIN access_grant ag
+        ON ag.entity_type = a.entity_type AND ag.entity_id = a.entity_id
       JOIN subjectset ss
-        ON ss.subject_kind = acc.subject_kind AND ss.subject_id = acc.subject_id
-      WHERE ${accessPredicate}
-      ORDER BY a.depth ASC, (acc.effect = 'deny') DESC
+        ON ss.subject_type = ag.subject_type AND ss.subject_id = ag.subject_id
+      WHERE ${permissionPredicate}
+      ORDER BY a.depth ASC, (ag.allowed = false) DESC
       LIMIT 1
     )
     SELECT (
       EXISTS(SELECT 1 FROM "user" WHERE id = ${userId}::uuid AND role = 'superadmin')
-      OR coalesce((SELECT effect = 'allow' FROM hits), false)
+      OR coalesce((SELECT allowed FROM hits), false)
     ) AS allowed
   `)) as unknown as Array<{ allowed: boolean | null }>
 
@@ -169,10 +365,11 @@ export async function assertCan(
   db: Db,
   userId: string,
   permissionKey: PermissionKey,
-  resourceId: string,
+  entityType: string,
+  entityId: string,
   opts?: CanOptions,
 ): Promise<void> {
-  const allowed = await can(db, userId, permissionKey, resourceId, opts)
+  const allowed = await can(db, userId, permissionKey, entityType, entityId, opts)
   if (!allowed) {
     throw new ForbiddenError(permissionKey)
   }
@@ -182,46 +379,33 @@ export type ListVisibleInput = {
   kind: string
   userId: string
   organizationId: string
-  /** Optional subtree scoping (e.g. projects within an environment). */
-  filters?: { parentId?: string }
 }
 
 /**
- * Return the `item_id` values of resources of `kind` within `organizationId`
- * that the user can at least read (`<kind>:ro` or `<kind>:rw`) after the same
- * leaf-first, deny-beats-allow resolution as {@link can}. The visibility
- * predicate stays in SQL — never filter client-side.
+ * Return entity ids of `kind` within `organizationId` that the user can at
+ * least read (`<kind>:ro` or `<kind>:rw`) after leaf-first, deny-beats-allow
+ * resolution matching {@link can}.
  */
 export async function listVisible(
   db: Db,
-  { kind, userId, organizationId, filters }: ListVisibleInput,
+  { kind, userId, organizationId }: ListVisibleInput,
 ): Promise<string[]> {
   const subjectsetBody = buildSubjectsetBody(userId)
+  const leavesBody = buildLeavesBody(kind, organizationId)
+  const walkBody = buildWalkBody(kind, organizationId)
   const roKey = `${kind}:ro` as PermissionKey
   const rwKey = `${kind}:rw` as PermissionKey
-  const roProfiles = accessProfilesGrantingPermission(roKey)
-  const rwProfiles = accessProfilesGrantingPermission(rwKey)
-  const roAccessPredicate =
-    roProfiles.length > 0
-      ? sql`acc.permission_key = ${roKey} OR acc.access_profile_key IN (${sql.join(
-          roProfiles.map((p) => sql`${p}`),
-          sql`, `,
-        )})`
-      : sql`acc.permission_key = ${roKey}`
-  const rwAccessPredicate =
-    rwProfiles.length > 0
-      ? sql`acc.permission_key = ${rwKey} OR acc.access_profile_key IN (${sql.join(
-          rwProfiles.map((p) => sql`${p}`),
-          sql`, `,
-        )})`
-      : sql`acc.permission_key = ${rwKey}`
-  const parentFilter = filters?.parentId
-    ? sql`AND parent_id = ${filters.parentId}::uuid`
-    : sql``
+  const visibilityPermissions = [
+    ...new Set([...permissionsImplying(roKey), ...permissionsImplying(rwKey)]),
+  ]
+  const visibilityPredicate = sql`ag.permission IN (${sql.join(
+    visibilityPermissions.map((p) => sql`${p}`),
+    sql`, `,
+  )})`
 
   const rows = (await db.execute(sql`
-    WITH RECURSIVE
-    subjectset(subject_kind, subject_id) AS (
+    WITH
+    subjectset(subject_type, subject_id) AS (
       ${subjectsetBody}
     ),
     is_superadmin AS (
@@ -230,58 +414,41 @@ export async function listVisible(
       ) AS val
     ),
     leaves AS (
-      SELECT id, item_id, parent_id
-      FROM resource
-      WHERE kind = ${kind} AND organization_id = ${organizationId}::uuid
-      ${parentFilter}
+      ${leavesBody}
     ),
-    walk(leaf_item_id, node_id, parent_id, depth) AS (
-      SELECT item_id, id, parent_id, 0 FROM leaves
-      UNION ALL
-      SELECT w.leaf_item_id, r.id, r.parent_id, w.depth + 1
-      FROM resource r
-      JOIN walk w ON r.id = w.parent_id
+    walk(leaf_id, entity_type, entity_id, depth) AS (
+      ${walkBody}
     ),
     hits AS (
       SELECT
-        w.leaf_item_id,
-        acc.effect AS effect,
-        w.depth AS depth,
-        ${roKey} AS permission_key
+        w.leaf_id,
+        ag.allowed,
+        w.depth,
+        ag.permission
       FROM walk w
-      JOIN access acc ON acc.resource_id = w.node_id
+      JOIN access_grant ag
+        ON ag.entity_type = w.entity_type AND ag.entity_id = w.entity_id
       JOIN subjectset ss
-        ON ss.subject_kind = acc.subject_kind AND ss.subject_id = acc.subject_id
-      WHERE ${roAccessPredicate}
-      UNION ALL
-      SELECT
-        w.leaf_item_id,
-        acc.effect AS effect,
-        w.depth AS depth,
-        ${rwKey} AS permission_key
-      FROM walk w
-      JOIN access acc ON acc.resource_id = w.node_id
-      JOIN subjectset ss
-        ON ss.subject_kind = acc.subject_kind AND ss.subject_id = acc.subject_id
-      WHERE ${rwAccessPredicate}
+        ON ss.subject_type = ag.subject_type AND ss.subject_id = ag.subject_id
+      WHERE ${visibilityPredicate}
     ),
     resolved AS (
-      SELECT DISTINCT ON (leaf_item_id, permission_key)
-        leaf_item_id,
-        permission_key,
-        effect
+      SELECT DISTINCT ON (leaf_id, permission)
+        leaf_id,
+        permission,
+        allowed
       FROM hits
-      ORDER BY leaf_item_id, permission_key, depth ASC, (effect = 'deny') DESC
+      ORDER BY leaf_id, permission, depth ASC, (allowed = false) DESC
+    ),
+    visible AS (
+      SELECT DISTINCT leaf_id
+      FROM resolved
+      WHERE allowed = true
     )
-    SELECT DISTINCT l.item_id AS item_id
+    SELECT l.id AS item_id
     FROM leaves l
     WHERE (SELECT val FROM is_superadmin)
-       OR EXISTS (
-         SELECT 1
-         FROM resolved r
-         WHERE r.leaf_item_id = l.item_id
-           AND r.effect = 'allow'
-       )
+       OR EXISTS (SELECT 1 FROM visible v WHERE v.leaf_id = l.id)
   `)) as unknown as Array<{ item_id: string }>
 
   return rows.map((row) => row.item_id)

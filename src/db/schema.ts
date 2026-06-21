@@ -1,10 +1,7 @@
 /** Introspected from live dev DB (`./introspect.sh`). Review style before commit. */
 
 import { sql } from 'drizzle-orm'
-import { pgTable, index, foreignKey, uuid, timestamp, varchar, text, unique, uniqueIndex, check, jsonb, integer, boolean, pgEnum } from "drizzle-orm/pg-core"
-
-export const subjectKind = pgEnum("subjectkind", ["user", "team", "organization"])
-export const effect = pgEnum("effect", ["allow", "deny"])
+import { pgTable, index, foreignKey, uuid, timestamp, varchar, text, unique, check, jsonb, integer, boolean } from "drizzle-orm/pg-core"
 
 export const invitation = pgTable("invitation", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
@@ -237,58 +234,20 @@ export const hosting = pgTable("hosting", {
 		}).onDelete("cascade"),
 	check("hosting_display_name_format_check", sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`),
 ]);
-export const resource = pgTable("resource", {
+export const accessGrant = pgTable("access_grant", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
-	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	kind: text().notNull(),
-	itemId: uuid("item_id").notNull(),
-	organizationId: uuid("organization_id").notNull(),
-	parentId: uuid("parent_id"),
-}, (table) => [
-	unique("resource_kind_item_unique").on(table.kind, table.itemId),
-	unique("resource_id_org_unique").on(table.id, table.organizationId),
-	index("idx_resource_parent_id").on(table.parentId),
-	index("idx_resource_organization_kind").on(table.organizationId, table.kind),
-	foreignKey({
-			columns: [table.organizationId],
-			foreignColumns: [organization.id],
-			name: "resource_organization_id_organization_id_fk"
-		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.parentId, table.organizationId],
-			foreignColumns: [table.id, table.organizationId],
-			name: "resource_parent_org_fk"
-		}).onDelete("cascade"),
-]);
-export const access = pgTable("access", {
-	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
-	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	subjectKind: subjectKind("subject_kind").notNull(),
+	entityType: text("entity_type").notNull(),
+	entityId: uuid("entity_id").notNull(),
+	subjectType: text("subject_type").notNull(),
 	subjectId: uuid("subject_id").notNull(),
-	resourceId: uuid("resource_id").notNull(),
-	effect: effect().default("allow").notNull(),
-	accessProfileKey: text("access_profile_key"),
-	permissionKey: text("permission_key"),
+	permission: text().notNull(),
+	allowed: boolean().notNull().default(true),
+	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 }, (table) => [
-	index("idx_access_subject").on(table.subjectKind, table.subjectId),
-	index("idx_access_resource_id").on(table.resourceId),
-	index("idx_access_subject_resource").on(table.subjectKind, table.subjectId, table.resourceId),
-	index("idx_access_access_profile_key").on(table.accessProfileKey),
-	index("idx_access_permission_key").on(table.permissionKey),
-	check("access_one_target_check", sql`num_nonnulls(${table.accessProfileKey}, ${table.permissionKey}) = 1`),
-	foreignKey({
-			columns: [table.resourceId],
-			foreignColumns: [resource.id],
-			name: "access_resource_id_resource_id_fk"
-		}).onDelete("cascade"),
-	uniqueIndex("access_subject_resource_profile_unique")
-		.on(table.subjectKind, table.subjectId, table.resourceId, table.accessProfileKey)
-		.where(sql`access_profile_key IS NOT NULL`),
-	uniqueIndex("access_subject_resource_permission_unique")
-		.on(table.subjectKind, table.subjectId, table.resourceId, table.permissionKey)
-		.where(sql`permission_key IS NOT NULL`),
+	unique("access_grant_unique").on(table.entityType, table.entityId, table.subjectType, table.subjectId, table.permission),
+	index("idx_access_grant_entity").on(table.entityType, table.entityId),
+	index("idx_access_grant_subject").on(table.subjectType, table.subjectId),
 ]);
 export const session = pgTable("session", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
