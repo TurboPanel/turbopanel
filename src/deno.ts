@@ -53,7 +53,7 @@ const app = createApp({
   emailQueue,
   secrets,
   runtime: 'deno',
-  corsOrigins: Deno.env.get('TURBOPANEL_CORS_ORIGINS'),
+  corsOrigins: Deno.env.get('TURBOPANEL_UI_CORS_ORIGINS'),
   signupEnvOverride: Deno.env.get('TURBOPANEL_IS_SIGNUP_ENABLED'),
   emailFrom: Deno.env.get('TURBOPANEL_SYSTEM_EMAIL_FROM') ?? 'noreply@turbopanel.local',
   baseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? undefined,

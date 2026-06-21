@@ -36,7 +36,7 @@
         }
       ],
       "vars": {
-        "TURBOPANEL_CORS_ORIGINS": "https://testing.turbopanel.io"
+        "TURBOPANEL_UI_CORS_ORIGINS": "https://testing.turbopanel.io"
       }
     },
     "live": {
@@ -58,7 +58,7 @@
         }
       ],
       "vars": {
-        "TURBOPANEL_CORS_ORIGINS": "https://turbopanel.io"
+        "TURBOPANEL_UI_CORS_ORIGINS": "https://turbopanel.io"
       }
     }
   }

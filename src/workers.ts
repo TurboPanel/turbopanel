@@ -35,7 +35,7 @@ async function initWorkerApp(env: CloudflareBindings) {
     emailQueue: cachedEmailQueue,
     secrets: cachedSecrets,
     runtime: 'workers',
-    corsOrigins: env.TURBOPANEL_CORS_ORIGINS,
+    corsOrigins: env.TURBOPANEL_UI_CORS_ORIGINS,
     signupEnvOverride: env.TURBOPANEL_IS_SIGNUP_ENABLED,
     emailFrom: env.TURBOPANEL_SYSTEM_EMAIL_FROM ?? 'noreply@turbopanel.local',
   })
