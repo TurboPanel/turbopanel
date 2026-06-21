@@ -34,7 +34,10 @@
           "pattern": "testing.turbopanel.dev/ws/*",
           "zone_name": "turbopanel.dev"
         }
-      ]
+      ],
+      "vars": {
+        "TURBOPANEL_CORS_ORIGINS": "https://testing.turbopanel.io"
+      }
     },
     "live": {
       "name": "instance",
@@ -53,7 +56,10 @@
           "binding": "HYPERDRIVE",
           "id": "91114c98e51f4f77967f0ee3e7f510e4"
         }
-      ]
+      ],
+      "vars": {
+        "TURBOPANEL_CORS_ORIGINS": "https://turbopanel.io"
+      }
     }
   }
 }
