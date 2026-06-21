@@ -1,10 +1,10 @@
 import type { Hono } from 'hono'
-import type { DerivedSecretsConfig } from './auth/secrets.ts'
-import type { Db } from './db.ts'
+import type { DerivedSecretsConfig } from '../authn/secrets.ts'
+import type { Db } from '../db.ts'
 import {
   buildDeveloperRouter,
   mountDeveloperRouter,
-} from './developer-routes-core.ts'
+} from './routes-core.ts'
 import { registerDatabaseStudioRoutes } from './database-studio-routes.ts'
 
 /**

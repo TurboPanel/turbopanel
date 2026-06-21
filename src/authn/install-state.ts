@@ -3,7 +3,7 @@ import type { Db } from '../db.ts'
 import {
   getColocatedDaemonHostname,
   getColocatedDaemonServerId,
-} from '../daemon-hub.ts'
+} from '../daemon/hub.ts'
 import {
   access,
   account,

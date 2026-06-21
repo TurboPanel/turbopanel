@@ -1,15 +1,15 @@
 import type { Hono } from 'hono'
-import { createRootOnlyMiddleware } from './auth/middleware.ts'
-import type { DerivedSecretsConfig } from './auth/secrets.ts'
-import { resetDevInstance } from './dev-reset.ts'
-import { getDaemonRepoPath, getInstanceCommit } from './daemon-version.ts'
-import type { Db } from './db.ts'
+import { createRootOnlyMiddleware } from '../authn/middleware.ts'
+import type { DerivedSecretsConfig } from '../authn/secrets.ts'
+import { resetDevInstance } from '../dev-reset.ts'
+import { getDaemonRepoPath, getInstanceCommit } from '../daemon/version.ts'
+import type { Db } from '../db.ts'
 import { dirname, fromFileUrl, join } from '@std/path'
-import { DEVELOPER_API_PREFIX } from './surfaces.ts'
+import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
 
 const INSTANCE_REPO_ROOT = (() => {
   const here = dirname(fromFileUrl(import.meta.url))
-  return join(here, '..')
+  return join(here, '..', '..')
 })()
 
 function getUiRepoPath(): string {

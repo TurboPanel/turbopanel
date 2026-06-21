@@ -8,7 +8,7 @@ import {
   resource,
   user,
 } from '../db/schema.ts'
-import { defaultInvitationGrants, materializeInvitationGrants } from '../auth/invitation-grants.ts'
+import { defaultInvitationGrants, materializeInvitationGrants } from '../authn/invitation-grants.ts'
 import { registerResource } from './resource-registry.ts'
 import { can } from './evaluator.ts'
 import type { PermissionKey } from './catalog.ts'

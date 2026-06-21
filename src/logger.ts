@@ -21,16 +21,29 @@ function formatStructuredLine(
   return `${new Date().toISOString()} ${level} ${component}  ${message}\n`
 }
 
+function writeLogLine(
+  stream: 'stdout' | 'stderr',
+  line: string,
+): void {
+  if (typeof Deno !== 'undefined') {
+    const out = stream === 'stdout' ? Deno.stdout : Deno.stderr
+    out.writeSync(encoder.encode(line))
+    return
+  }
+  const out = stream === 'stdout' ? process.stdout : process.stderr
+  out.write(line)
+}
+
 export function log(
   level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR',
   component: string,
   ...parts: unknown[]
 ): void {
   const message = formatParts(parts)
-  const out = level === 'INFO' || level === 'DEBUG' ? Deno.stdout : Deno.stderr
+  const stream = level === 'INFO' || level === 'DEBUG' ? 'stdout' : 'stderr'
 
   for (const line of splitMessageLines(message)) {
-    out.writeSync(encoder.encode(formatStructuredLine(level, component, line)))
+    writeLogLine(stream, formatStructuredLine(level, component, line))
   }
 }
 

@@ -1,7 +1,7 @@
 import { eq, sql } from 'drizzle-orm'
 import type { Db } from './db.ts'
 import type { ServerMetadata } from './db/server-metadata.ts'
-import { lookupActiveLicense, verifyLicenseToken } from './auth/license.ts'
+import { lookupActiveLicense, verifyLicenseToken } from './authn/license.ts'
 import { getResourceId, registerResource } from './authz/resource-registry.ts'
 import { server } from './db/schema.ts'
 

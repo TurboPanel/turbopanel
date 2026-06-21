@@ -1,17 +1,19 @@
 # Database
 
-Schema changes are versioned in **`migrations/`**. After editing `schema.ts`, run `pnpm drizzle-kit generate` to create SQL files. Apply pending migrations with `TURBOPANEL_DATABASE_URL=… pnpm migrate`; Workers deploy runs the same command. **`pnpm migrate` applies versioned SQL via `drizzle-kit migrate` and then runs resource-registry repair** (`repairSchemaFromMigrations` + `repairResourceRegistry` in `scripts/seed-catalog.ts`). Applied migration versions are recorded in **`public.migration`** (configured in `drizzle.config.ts`).
+Schema changes are versioned in **`migrations/`**. After editing `schema.ts`, run `pnpm drizzle-kit generate` to create SQL files. Apply pending migrations with `TURBOPANEL_DATABASE_URL=… pnpm migrate` or `DATABASE_URL=… pnpm migrate`; Workers deploy runs the same command. **`pnpm migrate` applies versioned SQL via `drizzle-kit migrate` and then runs resource-registry repair** (`repairSchemaFromMigrations` + `repairResourceRegistry` in `scripts/seed-catalog.ts` via Node — no Deno prerequisite). Applied migration versions are recorded in **`public.migration`** (configured in `drizzle.config.ts`).
 
 The co-located dev server has live data — treat every database change as production-adjacent.
 
 ## Schema sync directions
+
+> **Fresh database:** apply migrations with `pnpm migrate` before starting the instance. There is no automatic push fallback on boot.
 
 | Direction | You changed | Command | drizzle-kit |
 |---|---|---|---|
 | **Pull** (DB → code) | Live Postgres (Studio / SQL) | `./introspect.sh` | `introspect` |
 | **Push** (code → DB, Deno dev only) | `schema.ts` | `./sync.sh` | `push` |
 | **Generate migration** | `schema.ts` | `pnpm drizzle-kit generate` | `generate` |
-| **Apply migration** (Workers deploy + manual) | pending SQL in `migrations/` | `TURBOPANEL_DATABASE_URL=… pnpm migrate` | `migrate` + resource registry repair |
+| **Apply migration** (Workers deploy + manual) | pending SQL in `migrations/` | `TURBOPANEL_DATABASE_URL=…` or `DATABASE_URL=…` `pnpm migrate` | `migrate` + resource registry repair |
 
 Pick one source of truth per change — do not edit both sides and blindly run both scripts.
 
@@ -44,14 +46,14 @@ Use when schema changes should ship as versioned SQL (required for Workers deplo
 1. Edit `src/db/schema.ts`.
 2. Run `pnpm drizzle-kit generate` — writes SQL under `migrations/`.
 3. Commit the new migration files.
-4. Apply: `TURBOPANEL_DATABASE_URL=… pnpm migrate` (local or CI). Workers deploy runs `pnpm migrate` automatically — schema migrations and resource-registry repair run in one step.
+4. Apply: `TURBOPANEL_DATABASE_URL=… pnpm migrate` or `DATABASE_URL=… pnpm migrate` (local or CI). Workers deploy runs `pnpm migrate` automatically — schema migrations and resource-registry repair run in one step (Node only).
 
 Applied versions are tracked in **`public.migration`** (`drizzle.config.ts` sets `migrations: { table: 'migration', schema: 'public' }`).
 
 ### Drizzle Studio (dev UI)
 
 - **Test connection** — `GET /api/developer/v1/database/status`
-- **Reset dev instance** — `POST /api/developer/v1/system/reset-dev` (superadmin session only): `DROP SCHEMA public CASCADE`, `drizzle-kit push --force`, restart instance. UI: Database section → **Reset Dev Instance**.
+- **Reset dev instance** — `POST /api/developer/v1/system/reset-dev` (superadmin session only): `DROP SCHEMA public CASCADE`, `drizzle-kit migrate`, resource-registry repair, restart instance. UI: Database section → **Reset Dev Instance**.
 - **Studio** — `POST /api/developer/v1/database/studio` starts `drizzle-kit studio` on **127.0.0.1:4983** (HTTP API). Open **`https://local.drizzle.studio?host=localhost&port=4983`** (hosted UI). Safari/Brave may block localhost — see [Drizzle docs](https://orm.drizzle.team/docs/drizzle-kit-studio#safari-and-brave-support).
 - Studio applies DDL **directly** to the DB — follow with `./introspect.sh` to pull into code.
 
@@ -80,13 +82,13 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `sync
 
 Drizzle relations are defined for future Better Auth adapter use. `IS_SIGNUP_ENABLED_CONFIG_KEY` is the `setting.key` for self-service signup.
 
-**Organizations:** `member` and `invitation` are **pure relationship tables** — `member.role` and `invitation.role` were removed because authorization is now derived exclusively from `access` rows, not membership columns. **`invitation.grants`** (JSONB) stores the intended access grants (`InvitationGrantSpec[]` in `src/auth/invitation-grants.ts`); they are materialized into `access` rows on accept. When `grants` is null, accept applies a default org-scoped member access-profile grant.
+**Organizations:** `member` and `invitation` are **pure relationship tables** — `member.role` and `invitation.role` were removed because authorization is now derived exclusively from `access` rows, not membership columns. **`invitation.grants`** (JSONB) stores the intended access grants (`InvitationGrantSpec[]` in `src/authn/invitation-grants.ts`); they are materialized into `access` rows on accept. When `grants` is null, accept applies a default org-scoped member access-profile grant.
 
 **Uniqueness:** `member(organization_id, user_id)`, `teammate(team_id, user_id)`, and partial unique indexes on `access` for access-profile-key and permission-key targeted grants prevent duplicate membership or grant rows on concurrent invite acceptance/retries.
 
 **Server resources:** `server` rows with an `organization_id` must have a matching `resource` row (`kind = 'server'`) for `listVisible()` to include them. Registration happens in `server-registry.ts` (create/bind), `assignColocatedDaemonToOrganization()` (install), and developer `PATCH /servers/:id` org assignment.
 
-**Install (Deno):** A fresh DB has no org or superadmin. `src/auth/install-state.ts` `isInstanceInstalled()` is false until `completeInstanceInstall` creates org + team + superadmin user with a named org. **`organization.slug`** stays **NULL** (reserved for a future feature). Org extras (e.g. logo URL) belong in **`organization.metadata`** — there is no `logo` column. Install sets **`email`** and **`role`** (on `user`) only — `display_name`, `username`, and `display_username` stay **NULL** until the user chooses them. `completeInstanceInstall` registers the org `resource` row and inserts an owner `access` grant for the superadmin user (via `registerResource` + direct `access` insert with `accessProfileKey: 'owner'`).
+**Install (Deno):** A fresh DB has no org or superadmin. `src/authn/install-state.ts` `isInstanceInstalled()` is false until `completeInstanceInstall` creates org + team + superadmin user with a named org. **`organization.slug`** stays **NULL** (reserved for a future feature). Org extras (e.g. logo URL) belong in **`organization.metadata`** — there is no `logo` column. Install sets **`email`** and **`role`** (on `user`) only — `display_name`, `username`, and `display_username` stay **NULL** until the user chooses them. `completeInstanceInstall` registers the org `resource` row and inserts an owner `access` grant for the superadmin user (via `registerResource` + direct `access` insert with `accessProfileKey: 'owner'`).
 
 ### Client API (authz integration)
 
@@ -152,13 +154,13 @@ Each physical server node gets a row in `server` (`id` uuidv7). On daemon connec
 | File | Purpose |
 |---|---|
 | `schema.ts` | Drizzle table definitions — sync with dev DB via `./introspect.sh` or `./sync.sh` |
-| `../db.ts` | Connection factories (`createDenoDb`, `createWorkersDb`) |
+| `../db.ts` | Connection factories (`createDenoDb`, `createToolingDb`, `createWorkersDb`) |
 | `../../drizzle.config.ts` | drizzle-kit config (`TURBOPANEL_DATABASE_URL` / `DATABASE_URL`; introspect, push, generate, migrate, studio) |
 | `../../introspect.sh` | Pull DB → `schema.ts` |
 | `../../sync.sh` | Push `schema.ts` → DB (Deno dev only; no migration files) |
 | `../../scripts/db-connect.sh` | Resolves `TURBOPANEL_DATABASE_URL` → `DATABASE_URL` for drizzle-kit scripts |
 | `../../migrations/` | Versioned SQL migration files (committed); applied by `pnpm migrate`; tracked in `public.migration` |
-| `../../scripts/seed-catalog.ts` | Deno entrypoint for `repairSchemaFromMigrations` + `repairResourceRegistry` — run by `pnpm migrate` and `pnpm seed`; no longer calls `syncAuthzCatalog` |
+| `../../scripts/seed-catalog.ts` | Node entrypoint (`node --experimental-strip-types`) for `repairSchemaFromMigrations` + `repairResourceRegistry` — run by `pnpm migrate` and `pnpm seed`; no longer calls `syncAuthzCatalog` |
 | `../../drizzle/` | Ephemeral introspect scratch dir — `introspect.sh` deletes after adopt; never committed |
 
 ### Authz engine
@@ -178,7 +180,7 @@ Runtime authorization lives in `../authz/` (pure TypeScript, safe for both Deno 
 
 ## Connection (self-hosted dev)
 
-Self-hosted instance, drizzle-kit (`drizzle.config.ts`), and `./sync.sh` / `./introspect.sh` all connect via **`TURBOPANEL_DATABASE_URL`** (falls back to `DATABASE_URL` for tooling). Unix socket connections use the libpq-style `?host=` query param (e.g. `postgresql://user:pass@/turbopanel?host=/var/run/turbopanel/postgres`). Postgres in Docker always publishes the socket under `/var/run/turbopanel/postgres`; TCP port exposure (`postgres_expose_port`) is optional and unused by the instance. See repo root `AGENTS.md` for env var details. Do not embed credentials here.
+Self-hosted instance boot uses **`TURBOPANEL_DATABASE_URL`** only. drizzle-kit (`drizzle.config.ts`), `pnpm migrate` repair, and `./sync.sh` / `./introspect.sh` accept **`TURBOPANEL_DATABASE_URL`** or **`DATABASE_URL`** (tooling fallback). Unix socket connections use the libpq-style `?host=` query param (e.g. `postgresql://user:pass@/turbopanel?host=/var/run/turbopanel/postgres`). Postgres in Docker always publishes the socket under `/var/run/turbopanel/postgres`; TCP port exposure (`postgres_expose_port`) is optional and unused by the instance. See repo root `AGENTS.md` for env var details. Do not embed credentials here.
 
 ## Sanity check
 
@@ -187,7 +189,3 @@ docker exec turbopaneldb psql -U turbopanel -d turbopanel -c '\dt'
 ```
 
 Restart the instance only when **application code** changed — schema sync alone does not require a restart.
-
-### Empty database bootstrap (Deno dev)
-
-On startup, `src/deno.ts` calls `ensureDbSchemaReady()` when Postgres is configured. If required bootstrap tables are missing (`user`, `resource`, `access` — e.g. fresh Postgres volume, legacy DB before authz tables, partial migration, failed reset), the instance runs `drizzle-kit push --force` from `schema.ts` before accepting traffic. `./sync.sh` reads `TURBOPANEL_DATABASE_URL` (or `DATABASE_URL` override).

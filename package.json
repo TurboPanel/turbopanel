@@ -7,13 +7,13 @@
     "dev": "wrangler dev",
     "cert:generate": "node scripts/generate-self-signed-cert.mjs",
     "caddy:install": "node scripts/download-caddy.mjs",
-    "deploy:workers": "wrangler deploy --minify",
+    "deploy": "pnpm migrate && wrangler deploy --env $CLOUDFLARE_ENV --minify",
+    "deploy:workers": "pnpm run deploy",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
     "generate:secret": "node scripts/generate-secret.mjs",
-    "seed-catalog": "deno run --allow-env --allow-net --allow-read=/run/turbopanel,/var/run/turbopanel scripts/seed-catalog.ts",
+    "seed-catalog": "node --experimental-strip-types scripts/seed-catalog.ts",
     "migrate": "drizzle-kit migrate && pnpm run seed-catalog",
-    "seed": "pnpm run seed-catalog",
-    "deploy-db": "pnpm migrate"
+    "seed": "pnpm run seed-catalog"
   },
   "dependencies": {
     "amqplib": "^2.0.1",

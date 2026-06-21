@@ -1,33 +1,33 @@
 import { and, eq, gt, inArray, isNull } from 'drizzle-orm'
 import type { Context } from 'hono'
 import { Hono } from 'hono'
-import { registerAuthRoutes, type AuthRouteOpts } from './auth/http.ts'
+import { registerAuthRoutes, type AuthRouteOpts } from '../authn/http.ts'
 import {
   materializeInvitationGrants,
   resolveInvitationGrants,
-} from './auth/invitation-grants.ts'
-import { createLicense, listLicenses, revokeLicense } from './auth/license.ts'
-import { createSessionMiddleware } from './auth/middleware.ts'
-import { compatLogError, compatLogInfo } from './log-compat.ts'
-import { updateSessionOrganization } from './auth/session-store.ts'
-import { getAccessManagementPermission } from './authz/access-management.ts'
-import { createAccessGrant } from './authz/create-access-grant.ts'
+} from '../authn/invitation-grants.ts'
+import { createLicense, listLicenses, revokeLicense } from '../authn/license.ts'
+import { createSessionMiddleware } from '../authn/middleware.ts'
+import { compatLogError, compatLogInfo } from '../log-compat.ts'
+import { updateSessionOrganization } from '../authn/session-store.ts'
+import { getAccessManagementPermission } from '../authz/access-management.ts'
+import { createAccessGrant } from '../authz/create-access-grant.ts'
 import {
   assertCanOr403,
   can,
   getResourceByItem,
   getResourceId,
   listVisible,
-} from './authz/index.ts'
+} from '../authz/index.ts'
 import {
   getAccessProfileCatalog,
   getPermissionCatalog,
   PERMISSIONS,
   type PermissionKey,
-} from './authz/catalog.ts'
-import { listDaemonConnections } from './daemon-hub.ts'
-import type { Db } from './db.ts'
-import { getDb } from './db.ts'
+} from '../authz/catalog.ts'
+import { listDaemonConnections } from '../daemon/hub.ts'
+import type { Db } from '../db.ts'
+import { getDb } from '../db.ts'
 import {
   access,
   invitation,
@@ -35,9 +35,11 @@ import {
   resource,
   server,
   teammate,
-} from './db/schema.ts'
-import { CLIENT_API_PREFIX } from './surfaces.ts'
-import { registerResourceRoutes } from './resource-routes.ts'
+} from '../db/schema.ts'
+import { getClientOpenApiSpec } from '../openapi.ts'
+import { buildClientScalarHtml } from '../scalar-html.ts'
+import { CLIENT_API_PREFIX } from '../surfaces.ts'
+import { registerResourceRoutes } from '../resource-routes.ts'
 
 async function assertBillingOrOrgMember(
   c: Context,
@@ -605,6 +607,16 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
     }
 
     return c.json({ ok: true as const })
+  })
+
+  client.get('/openapi.json', (c) => {
+    const origin = new URL(c.req.url).origin
+    return c.json(getClientOpenApiSpec(origin))
+  })
+
+  client.get('/reference', (c) => {
+    const origin = new URL(c.req.url).origin
+    return c.html(buildClientScalarHtml('/api/client/v1/openapi.json', origin))
   })
 
   app.route(CLIENT_API_PREFIX, client)

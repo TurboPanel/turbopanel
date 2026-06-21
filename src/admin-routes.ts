@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
-import { createSessionMiddleware } from './auth/middleware.ts'
-import type { DerivedSecretsConfig } from './auth/secrets.ts'
+import { createSessionMiddleware } from './authn/middleware.ts'
+import type { DerivedSecretsConfig } from './authn/secrets.ts'
 import {
   broadcastToDaemons,
   type DaemonMessage,
@@ -11,7 +11,7 @@ import {
   recordDaemonBroadcast,
   requestDaemonAddresses,
   sendToDaemon,
-} from './daemon-hub.ts'
+} from './daemon/hub.ts'
 import { collectServerAddresses } from './server-addresses.ts'
 /** Reserved for a future admin UI surface — not mounted from `createApp()` yet. */
 const ADMIN_API_PREFIX = '/api/admin/v1'

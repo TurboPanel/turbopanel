@@ -1,16 +1,15 @@
 import type { Hono } from 'hono'
-import { deriveSecretsConfig, parseSecretsEnv } from './auth/secrets.ts'
+import { deriveSecretsConfig, parseSecretsEnv } from './authn/secrets.ts'
 import { createApp } from './app.ts'
 import { createDenoDb } from './db.ts'
-import { ensureDbSchemaReady } from './db/schema-push.ts'
 import { logInfo } from './logger.ts'
-import { registerDaemonWebSocket } from './deno-ws.ts'
-import { registerVersionRoute } from './daemon-version.ts'
-import { registerSystemRoutes } from './system-routes.ts'
-import { registerDevSyncRoutes } from './dev-sync.ts'
-import { registerTunnelRoutes } from './tunnel-routes.ts'
-import { registerUpdateRoutes } from './update-routes.ts'
-import { registerDeveloperRoutes } from './developer-routes.ts'
+import { registerDaemonWebSocket } from './daemon/deno-ws.ts'
+import { registerVersionRoute } from './daemon/version.ts'
+import { registerSystemRoutes } from './developer/system-routes.ts'
+import { registerDevSyncRoutes } from './developer/dev-sync.ts'
+import { registerTunnelRoutes } from './developer/tunnel-routes.ts'
+import { registerUpdateRoutes } from './developer/update-routes.ts'
+import { registerDeveloperRoutes } from './developer/routes.ts'
 import { isDeveloperSurfaceEnabled } from './dev-mode.ts'
 import {
   createDenoAmqpQueue,
@@ -43,7 +42,6 @@ async function resolveEmailQueue(): Promise<EmailQueue> {
 }
 
 const emailQueue = await resolveEmailQueue()
-await ensureDbSchemaReady(db)
 const secretsConfig = parseSecretsEnv(
   Deno.env.get('TURBOPANEL_SECRET'),
   Deno.env.get('TURBOPANEL_SECRETS'),

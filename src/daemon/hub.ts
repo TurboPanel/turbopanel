@@ -1,4 +1,4 @@
-import type { ServerAddresses } from './server-addresses.ts'
+import type { ServerAddresses } from '../server-addresses.ts'
 
 
 /** JSON messages exchanged between the instance and daemon over /ws. */

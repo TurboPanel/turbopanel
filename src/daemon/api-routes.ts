@@ -1,8 +1,10 @@
 import { Hono } from 'hono'
-import { isInstanceInstalled } from './auth/install-state.ts'
-import { getDb } from './db.ts'
-import { resolveInstanceTlsCaPath } from './server-paths.ts'
-import { DAEMON_API_PREFIX } from './surfaces.ts'
+import { isInstanceInstalled } from '../authn/install-state.ts'
+import { getDb } from '../db.ts'
+import { getDaemonOpenApiSpec } from '../openapi.ts'
+import { buildDaemonScalarHtml } from '../scalar-html.ts'
+import { resolveInstanceTlsCaPath } from '../server-paths.ts'
+import { DAEMON_API_PREFIX } from '../surfaces.ts'
 
 /**
  * Daemon-facing surface: endpoints remote daemons and the node installer call.
@@ -36,6 +38,15 @@ export function registerDaemonApiRoutes(app: Hono) {
       const message = err instanceof Error ? err.message : String(err)
       return c.json({ error: message }, 500)
     }
+  })
+
+  daemon.get('/openapi.json', (c) => {
+    const origin = new URL(c.req.url).origin
+    return c.json(getDaemonOpenApiSpec(origin))
+  })
+
+  daemon.get('/reference', (c) => {
+    return c.html(buildDaemonScalarHtml('/api/daemon/v1/openapi.json'))
   })
 
   app.route(DAEMON_API_PREFIX, daemon)

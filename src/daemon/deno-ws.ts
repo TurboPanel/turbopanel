@@ -1,15 +1,15 @@
 import type { Hono } from 'hono'
 import { upgradeWebSocket } from 'hono/deno'
-import type { DerivedSecretsConfig } from './auth/secrets.ts'
+import type { DerivedSecretsConfig } from '../authn/secrets.ts'
 import {
   createDaemonWebSocketSession,
   type DaemonWebSocketOptions,
-} from './daemon-ws-handlers.ts'
+} from './ws-handlers.ts'
 import {
   CLIENT_WS_PATH,
   DAEMON_WS_PATH,
   DEVELOPER_WS_PATH,
-} from './surfaces.ts'
+} from '../surfaces.ts'
 
 export function registerDaemonWebSocket(
   app: Hono,

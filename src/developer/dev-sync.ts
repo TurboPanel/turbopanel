@@ -1,15 +1,15 @@
 import type { Hono } from 'hono'
-import { createRootOnlyMiddleware } from './auth/middleware.ts'
-import type { DerivedSecretsConfig } from './auth/secrets.ts'
+import { createRootOnlyMiddleware } from '../authn/middleware.ts'
+import type { DerivedSecretsConfig } from '../authn/secrets.ts'
 import { encodeBase64 } from '@std/encoding/base64'
 import {
   awaitDaemonAck,
   type DaemonMessage,
   listDaemonConnections,
   sendToDaemon,
-} from './daemon-hub.ts'
-import { getDaemonRepoPath } from './daemon-version.ts'
-import { DEVELOPER_API_PREFIX } from './surfaces.ts'
+} from '../daemon/hub.ts'
+import { getDaemonRepoPath } from '../daemon/version.ts'
+import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
 
 /** Base64 characters per chunk (~256 KiB of payload before encoding). */
 const CHUNK_CHARS = 256 * 1024

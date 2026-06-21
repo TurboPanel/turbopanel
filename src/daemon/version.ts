@@ -1,6 +1,6 @@
 import type { Hono } from 'hono'
 import { dirname, fromFileUrl, join } from '@std/path'
-import { DAEMON_API_PREFIX } from './surfaces.ts'
+import { DAEMON_API_PREFIX } from '../surfaces.ts'
 
 /**
  * Informational daemon checkout commit for the co-located daemon repo on this host.
@@ -15,9 +15,9 @@ import { DAEMON_API_PREFIX } from './surfaces.ts'
  */
 
 const TURBOPANEL_ROOT = (() => {
-  // This module lives at <root>/src/daemon-version.ts.
+  // This module lives at <root>/src/daemon/version.ts.
   const here = dirname(fromFileUrl(import.meta.url))
-  return join(here, '..')
+  return join(here, '..', '..')
 })()
 
 export function getDaemonRepoPath(): string {

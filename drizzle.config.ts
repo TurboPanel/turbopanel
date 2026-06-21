@@ -10,7 +10,7 @@ export default defineConfig({
       process.env.TURBOPANEL_DATABASE_URL ??
       process.env.DATABASE_URL ??
       (() => {
-        throw new Error('TURBOPANEL_DATABASE_URL is required')
+        throw new Error('TURBOPANEL_DATABASE_URL or DATABASE_URL is required')
       })(),
   },
 })

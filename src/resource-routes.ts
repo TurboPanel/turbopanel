@@ -1,8 +1,8 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Context } from 'hono'
 import { Hono } from 'hono'
-import type { AuthRouteOpts } from './auth/http.ts'
-import { createSessionMiddleware, type SessionData } from './auth/middleware.ts'
+import type { AuthRouteOpts } from './authn/http.ts'
+import { createSessionMiddleware, type SessionData } from './authn/middleware.ts'
 import {
   assertCanOr403,
   can,

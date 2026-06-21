@@ -1,10 +1,10 @@
 import { Hono } from 'hono'
 import { eq, isNull } from 'drizzle-orm'
-import { createRootOnlyMiddleware } from './auth/middleware.ts'
-import type { DerivedSecretsConfig } from './auth/secrets.ts'
-import type { Db } from './db.ts'
-import { getDb } from './db.ts'
-import { organization, server } from './db/schema.ts'
+import { createRootOnlyMiddleware } from '../authn/middleware.ts'
+import type { DerivedSecretsConfig } from '../authn/secrets.ts'
+import type { Db } from '../db.ts'
+import { getDb } from '../db.ts'
+import { organization, server } from '../db/schema.ts'
 import {
   broadcastToDaemons,
   type DaemonMessage,
@@ -15,15 +15,15 @@ import {
   recordDaemonBroadcast,
   requestDaemonAddresses,
   sendToDaemon,
-} from './daemon-hub.ts'
-import { collectServerAddresses } from './server-addresses.ts'
-import { ensureServerResource } from './server-registry.ts'
-import { DEVELOPER_API_PREFIX } from './surfaces.ts'
+} from '../daemon/hub.ts'
+import { collectServerAddresses } from '../server-addresses.ts'
+import { ensureServerResource } from '../server-registry.ts'
+import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
 import { registerDatabaseRoutes } from './database-routes.ts'
 
 /**
  * Developer console routes safe for the Workers bundle (no Deno-only imports).
- * Deno-only routes (Drizzle Studio) live in developer-routes.ts.
+ * Deno-only routes (Drizzle Studio) live in developer/routes.ts.
  */
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i

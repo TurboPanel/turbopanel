@@ -1,7 +1,11 @@
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import type { Context } from 'hono'
 import postgres from 'postgres'
-import { getDatabaseUrl, resolvePostgresConnection } from './db-url.ts'
+import {
+  getDatabaseUrl,
+  getToolingDatabaseUrl,
+  resolvePostgresConnection,
+} from './db-url.ts'
 import * as schema from './db/schema.ts'
 
 export type Db = PostgresJsDatabase<typeof schema>
@@ -34,10 +38,23 @@ export function createWorkersDb(hyperdrive: HyperdriveBinding): Db {
   return drizzle(client, { schema })
 }
 
+const TOOLING_DATABASE_URL_ERROR =
+  'TURBOPANEL_DATABASE_URL or DATABASE_URL is required'
+
 export function createDenoDb(): Db {
   const url = getDatabaseUrl()
   if (!url) {
     throw new Error('TURBOPANEL_DATABASE_URL is required')
+  }
+  const client = postgres(resolvePostgresConnection(url), PG_OPTS_DENO)
+  return drizzle(client, { schema })
+}
+
+/** Node/drizzle-kit migration repair — accepts `DATABASE_URL` for Workers/CI. */
+export function createToolingDb(): Db {
+  const url = getToolingDatabaseUrl()
+  if (!url) {
+    throw new Error(TOOLING_DATABASE_URL_ERROR)
   }
   const client = postgres(resolvePostgresConnection(url), PG_OPTS_DENO)
   return drizzle(client, { schema })

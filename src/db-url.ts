@@ -134,16 +134,26 @@ export function postgresConfigFromUrl(
   }
 }
 
+function readEnv(name: string): string | undefined {
+  if (typeof Deno !== 'undefined') {
+    return Deno.env.get(name)
+  }
+  return process.env[name]
+}
+
 /** Derive status metadata from `TURBOPANEL_DATABASE_URL`. */
 export function postgresConfigFromEnv(): PostgresConfigMeta {
-  if (typeof Deno === 'undefined') {
-    return { configured: false, transport: null, user: null, database: null }
-  }
-  return postgresConfigFromUrl(Deno.env.get('TURBOPANEL_DATABASE_URL'))
+  return postgresConfigFromUrl(readEnv('TURBOPANEL_DATABASE_URL'))
 }
 
 /** Self-hosted Postgres connection URL (`TURBOPANEL_DATABASE_URL` only). */
 export function getDatabaseUrl(): string | undefined {
-  const url = Deno.env.get('TURBOPANEL_DATABASE_URL')?.trim()
+  const url = readEnv('TURBOPANEL_DATABASE_URL')?.trim()
+  return url || undefined
+}
+
+/** Postgres URL for drizzle-kit and post-migration repair (`TURBOPANEL_DATABASE_URL` or `DATABASE_URL`). */
+export function getToolingDatabaseUrl(): string | undefined {
+  const url = getDatabaseUrl() ?? readEnv('DATABASE_URL')?.trim()
   return url || undefined
 }

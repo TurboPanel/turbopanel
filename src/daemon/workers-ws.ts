@@ -3,9 +3,9 @@ import { WSContext } from 'hono/ws'
 import {
   createDaemonWebSocketSession,
   type DaemonWebSocketOptions,
-} from './daemon-ws-handlers.ts'
-import { getDb } from './db.ts'
-import { DAEMON_WS_PATH } from './surfaces.ts'
+} from './ws-handlers.ts'
+import { getDb } from '../db.ts'
+import { DAEMON_WS_PATH } from '../surfaces.ts'
 
 /**
  * Daemon WebSocket hub for Cloudflare Workers / wrangler dev.

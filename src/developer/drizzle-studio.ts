@@ -1,20 +1,20 @@
 import { dirname, fromFileUrl, join } from '@std/path'
-import { getDatabaseUrl } from './db-url.ts'
+import { getDatabaseUrl } from '../db-url.ts'
 import {
   DRIZZLE_STUDIO_CONFIG,
   writeDrizzleKitConfig,
-} from './drizzle-kit-config.ts'
+} from '../drizzle-kit-config.ts'
 import {
   drizzleStudioBrowserUrl,
   DRIZZLE_STUDIO_PORT,
   probeDrizzleStudioPort,
-} from './drizzle-studio-probe.ts'
-import { resolveNodePath } from './node-path.ts'
-import { logInfo, logWarn } from './logger.ts'
+} from '../drizzle-studio-probe.ts'
+import { resolveNodePath } from '../node-path.ts'
+import { logInfo, logWarn } from '../logger.ts'
 
 const INSTANCE_REPO_ROOT = (() => {
   const here = dirname(fromFileUrl(import.meta.url))
-  return join(here, '..')
+  return join(here, '..', '..')
 })()
 
 let studioChild: Deno.ChildProcess | null = null

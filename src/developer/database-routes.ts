@@ -4,7 +4,7 @@ import {
   drizzleStudioProbeStatus,
   postgresConfigFromContext,
 } from './database-routes-shared.ts'
-import { getDb } from './db.ts'
+import { getDb } from '../db.ts'
 
 export type DatabaseStatus = {
   configured: boolean

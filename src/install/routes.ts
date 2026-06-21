@@ -3,19 +3,19 @@ import {
   buildSignedCookie,
   resolveRequestTls,
   SESSION_EXPIRES_IN_MS,
-} from './auth/crypto.ts'
-import { verifyInstallHostCredentials } from './auth/credentials.ts'
-import { buildSessionResponse, type AuthRouteOpts } from './auth/http.ts'
+} from '../authn/crypto.ts'
+import { verifyInstallHostCredentials } from '../authn/credentials.ts'
+import { buildSessionResponse, type AuthRouteOpts } from '../authn/http.ts'
 import {
   completeInstanceInstall,
   getInstallStatus,
   isInstanceInstalled,
   isSignupEnabled,
-} from './auth/install-state.ts'
-import { createSession, getSession } from './auth/session-store.ts'
-import { getDb } from './db.ts'
-import { INSTALL_API_PREFIX } from './surfaces.ts'
-import { compatLogInfo } from './log-compat.ts'
+} from '../authn/install-state.ts'
+import { createSession, getSession } from '../authn/session-store.ts'
+import { getDb } from '../db.ts'
+import { INSTALL_API_PREFIX } from '../surfaces.ts'
+import { compatLogInfo } from '../log-compat.ts'
 
 const DAEMON_INSTALL_SCRIPT = `#!/bin/sh
 set -eu

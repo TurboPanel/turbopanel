@@ -1,5 +1,5 @@
 import type { WSContext } from 'hono/ws'
-import type { DerivedSecretsConfig } from './auth/secrets.ts'
+import type { DerivedSecretsConfig } from '../authn/secrets.ts'
 import {
   type DaemonMessage,
   evictDuplicateDaemons,
@@ -15,11 +15,11 @@ import {
   setDaemonRemoteAddress,
   touchDaemonInbound,
   unregisterDaemon,
-} from './daemon-hub.ts'
-import type { Db } from './db.ts'
-import { tryAssignColocatedDaemonToInstalledOrganization } from './auth/install-state.ts'
-import { resolveServerId } from './server-registry.ts'
-import { compatLogError, compatLogInfo, compatLogWarn } from './log-compat.ts'
+} from './hub.ts'
+import type { Db } from '../db.ts'
+import { tryAssignColocatedDaemonToInstalledOrganization } from '../authn/install-state.ts'
+import { resolveServerId } from '../server-registry.ts'
+import { compatLogError, compatLogInfo, compatLogWarn } from '../log-compat.ts'
 
 let pruneTimer: ReturnType<typeof setInterval> | undefined
 

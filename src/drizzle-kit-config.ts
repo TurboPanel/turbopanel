@@ -33,5 +33,4 @@ export default defineConfig({
   await Deno.writeTextFile(configPath, configContent)
 }
 
-export const DRIZZLE_PUSH_CONFIG = join(INSTANCE_REPO_ROOT, '.local', 'drizzle-push.config.mjs')
 export const DRIZZLE_STUDIO_CONFIG = join(INSTANCE_REPO_ROOT, '.local', 'drizzle-studio.config.mjs')

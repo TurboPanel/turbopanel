@@ -1,4 +1,4 @@
-import { resolveSessionCookieName } from './auth/crypto.ts'
+import { resolveSessionCookieName } from './authn/crypto.ts'
 
 const clientErrorJson = {
   type: 'object',
@@ -193,8 +193,8 @@ function buildResourceCrudPaths(config: ResourceCrudConfig): Record<string, unkn
   }
 }
 
-/** Hand-authored OpenAPI 3.1 spec for documented client/daemon/health routes. */
-export function getOpenApiSpec(serverUrl: string): object {
+/** Hand-authored OpenAPI 3.1 spec for documented client/install/health routes. */
+export function getClientOpenApiSpec(serverUrl: string): object {
   const sessionCookieName = resolveSessionCookieName(serverUrl)
 
   const resourceTreePaths = {
@@ -255,7 +255,7 @@ export function getOpenApiSpec(serverUrl: string): object {
   return {
     openapi: '3.1.0',
     info: {
-      title: 'TurboPanel API',
+      title: 'TurboPanel Client API',
       version: '0.1.0',
     },
     servers: [{ url: serverUrl }],
@@ -411,13 +411,6 @@ export function getOpenApiSpec(serverUrl: string): object {
               type: 'array',
               items: { $ref: '#/components/schemas/ServerRow' },
             },
-          },
-        },
-        DaemonErrorResponse: {
-          type: 'object',
-          required: ['error'],
-          properties: {
-            error: { type: 'string' },
           },
         },
         LicenseRecord: {
@@ -1664,6 +1657,109 @@ export function getOpenApiSpec(serverUrl: string): object {
           },
         },
       },
+    },
+  }
+}
+
+/** Hand-authored OpenAPI 3.1 spec for documented daemon REST/WS routes. */
+export function getDaemonOpenApiSpec(serverUrl: string): object {
+  return {
+    openapi: '3.1.0',
+    info: {
+      title: 'TurboPanel Daemon API',
+      version: '0.1.0',
+    },
+    servers: [{ url: serverUrl }],
+    components: {
+      securitySchemes: {
+        licenseAuth: {
+          type: 'http',
+          scheme: 'bearer',
+          description:
+            'License credentials as `licenseId:licenseToken`. On the WebSocket surface, ' +
+            'send `licenseId` and `licenseToken` in the first `hello` JSON message after ' +
+            'upgrade — not in HTTP Authorization headers.',
+        },
+      },
+      schemas: {
+        DaemonErrorResponse: {
+          type: 'object',
+          required: ['error'],
+          properties: {
+            error: { type: 'string' },
+          },
+        },
+        DaemonVersion: {
+          type: 'object',
+          required: ['commit', 'branch'],
+          properties: {
+            commit: {
+              type: 'string',
+              description: 'Daemon checkout HEAD commit (git rev-parse HEAD).',
+            },
+            branch: {
+              type: 'string',
+              description: 'Daemon checkout branch (git rev-parse --abbrev-ref HEAD).',
+            },
+          },
+        },
+      },
+    },
+    paths: {
+      '/api/daemon/v1/readiness': {
+        get: {
+          tags: ['daemon'],
+          summary: 'Install readiness probe',
+          description:
+            'Co-located self-hosted daemons poll this before opening the daemon WebSocket. ' +
+            'Returns 503 until the install wizard has created org + superadmin.',
+          responses: {
+            '200': {
+              description: 'Instance is ready for daemon connections',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['ok', 'ready'],
+                    properties: {
+                      ok: { type: 'boolean', const: true },
+                      ready: { type: 'boolean', const: true },
+                    },
+                  },
+                },
+              },
+            },
+            '503': {
+              description: 'Not ready or database unavailable',
+              content: {
+                'application/json': {
+                  schema: {
+                    oneOf: [
+                      {
+                        type: 'object',
+                        required: ['ok', 'ready', 'needsInstall'],
+                        properties: {
+                          ok: { type: 'boolean', const: true },
+                          ready: { type: 'boolean', const: false },
+                          needsInstall: { type: 'boolean', const: true },
+                        },
+                      },
+                      {
+                        type: 'object',
+                        required: ['ok', 'error'],
+                        properties: {
+                          ok: { type: 'boolean', const: false },
+                          error: { type: 'string' },
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
       '/api/daemon/v1/instance/ca': {
         get: {
           tags: ['daemon'],
@@ -1685,6 +1781,42 @@ export function getOpenApiSpec(serverUrl: string): object {
                   schema: { $ref: '#/components/schemas/DaemonErrorResponse' },
                 },
               },
+            },
+          },
+        },
+      },
+      '/api/daemon/v1/version': {
+        get: {
+          tags: ['daemon'],
+          summary: 'Co-located daemon checkout version',
+          description:
+            'Informational daemon repo commit and branch on this host (Deno self-hosted only). ' +
+            'Daemons may fetch this at connect time; connected daemons do not auto-sync from this value.',
+          responses: {
+            '200': {
+              description: 'Daemon checkout HEAD',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/DaemonVersion' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/ws/daemon/v1': {
+        get: {
+          tags: ['daemon'],
+          summary: 'Daemon WebSocket',
+          description:
+            'WebSocket upgrade endpoint for managed daemons. After the connection opens, ' +
+            'send a JSON `hello` message with `hostname`, optional `serverId`, `machineId`, ' +
+            'and license credentials (`licenseId`, `licenseToken`). Invalid or revoked licenses ' +
+            'close the socket with code 4401.',
+          security: [{ licenseAuth: [] }],
+          responses: {
+            '101': {
+              description: 'Switching Protocols — WebSocket upgrade',
             },
           },
         },

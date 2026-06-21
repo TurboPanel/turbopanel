@@ -1,13 +1,13 @@
 import type { Hono } from 'hono'
-import { createRootOnlyMiddleware } from './auth/middleware.ts'
-import type { DerivedSecretsConfig } from './auth/secrets.ts'
+import { createRootOnlyMiddleware } from '../authn/middleware.ts'
+import type { DerivedSecretsConfig } from '../authn/secrets.ts'
 import {
   awaitDaemonAck,
   type DaemonMessage,
   getColocatedDaemonId,
   sendToDaemon,
-} from './daemon-hub.ts'
-import { DEVELOPER_API_PREFIX } from './surfaces.ts'
+} from '../daemon/hub.ts'
+import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
 
 const TUNNEL_TOKEN_TIMEOUT_MS = 30_000
 

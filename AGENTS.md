@@ -47,7 +47,7 @@ The **daemon is the constant** installed on every TurboPanel-managed host and is
 - `pnpm install` — installs Hono and Wrangler into `node_modules/` for Workers bundling
 - Local Wrangler secrets live in `.dev.vars` (`TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS`; gitignored — Tilt `sync-env.sh` writes from `dev/.env`)
 - `pnpm dev` (wrangler) still runs the **Cloudflare Workers** path for full-stack testing — unchanged. **`wrangler.jsonc` `dev.ip` is `0.0.0.0`** so Docker Caddy (`host.docker.internal`) can reach the dev server; default localhost-only bind causes Caddy **502**s.
-- `pnpm deploy:workers` — deploy to Cloudflare
+- **`pnpm deploy`** — applies pending migrations (`TURBOPANEL_DATABASE_URL` or `DATABASE_URL` required for tooling) then deploys to Cloudflare Workers (`CLOUDFLARE_ENV` required, e.g. `live` or `testing`). Works from any environment with internet access to the database — self-hosted dev, CI, or production. Requires **Node** only (`pnpm migrate` runs `drizzle-kit migrate` + post-migration repair via `node --experimental-strip-types`; no Deno prerequisite). Equivalent to `pnpm migrate && wrangler deploy --env $CLOUDFLARE_ENV --minify`.
 - `pnpm cf-typegen` — regenerate `worker-configuration.d.ts`
 - The Ansible `instance-certs` / `caddy` / `node-runtime` roles supersede the standalone `pnpm cert:generate` / `pnpm caddy:install` scripts for managed hosts (the scripts remain for manual use).
 
@@ -110,13 +110,14 @@ Route handlers read the per-request client via `getDb(c)` (set by `createApp({ d
 
 | Variable | Purpose |
 |---|---|
-| `TURBOPANEL_DATABASE_URL` | Full postgres connection URL. **Deno mode:** required at boot — `createDenoDb()` throws immediately when missing or blank (self-hosted instance will not start). Passed directly to postgres.js (supports Unix socket URLs: `postgresql://user:pass@/db?host=/var/run/turbopanel/postgres`). **Workers mode:** used only by drizzle-kit tooling; the runtime uses the `HYPERDRIVE` binding. When the URL uses `?host=` for a Unix socket, ensure Deno has read access to that directory (`/run/turbopanel` covers the default Docker bind-mount path). |
+| `TURBOPANEL_DATABASE_URL` | Full postgres connection URL. **Deno mode:** required at boot — `createDenoDb()` throws immediately when missing or blank (self-hosted instance will not start). Passed directly to postgres.js (supports Unix socket URLs: `postgresql://user:pass@/db?host=/var/run/turbopanel/postgres`). **Workers runtime:** uses the `HYPERDRIVE` binding, not this env var. When the URL uses `?host=` for a Unix socket, ensure Deno has read access to that directory (`/run/turbopanel` covers the default Docker bind-mount path). |
+| `DATABASE_URL` | **Tooling only** (drizzle-kit, `pnpm migrate` repair step, `./introspect.sh` / `./sync.sh` overrides). Accepted as a fallback when `TURBOPANEL_DATABASE_URL` is unset — common in CI and Cloudflare dashboard deploy workflows. Not read by the Deno instance or Workers runtime at request time. |
 
 ### Workers Hyperdrive
 
 `wrangler.jsonc` declares a `HYPERDRIVE` binding stub (replace the placeholder id before deploy). Types: `worker-configuration.d.ts` (`HYPERDRIVE?: Hyperdrive`). Regenerate with `pnpm cf-typegen` after changing bindings.
 
-**Local dev (`wrangler dev`):** do not commit `localConnectionString` in `wrangler.jsonc`. Tilt `sync-env.sh` writes `CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE` to `instance/.env` (derived from `dev/.env` `POSTGRES_*`, or override in `dev/.env`). Wrangler loads `.env` into `process.env` before applying Hyperdrive bindings — the Worker connects directly to local Postgres (no Hyperdrive pooling/caching in this mode). **`TURBOPANEL_DATABASE_URL`** in the same file is for migrations/Drizzle/sync tooling and may use different credentials than the Hyperdrive runtime user in production.
+**Local dev (`wrangler dev`):** do not commit `localConnectionString` in `wrangler.jsonc`. Tilt `sync-env.sh` writes `CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE` to `instance/.env` (derived from `dev/.env` `POSTGRES_*`, or override in `dev/.env`). Wrangler loads `.env` into `process.env` before applying Hyperdrive bindings — the Worker connects directly to local Postgres (no Hyperdrive pooling/caching in this mode). **`TURBOPANEL_DATABASE_URL`** (or **`DATABASE_URL`** for tooling) in the same file is for migrations/Drizzle/sync and may use different credentials than the Hyperdrive runtime user in production.
 
 The Workers DB client uses `prepare: false` on postgres.js (see **Database** above) because Hyperdrive sits in front of a connection pool and does not preserve per-session prepared-statement state.
 
@@ -130,7 +131,7 @@ The Workers DB client uses `prepare: false` on postgres.js (see **Database** abo
 ### Tooling
 
 - `pnpm install` — pulls `drizzle-orm`, `postgres`, `drizzle-kit`
-- After editing `schema.ts`, run `pnpm drizzle-kit generate` to create SQL in `migrations/`; apply locally with `TURBOPANEL_DATABASE_URL=… pnpm migrate` (schema + authz catalog). Workers deploy runs `pnpm migrate` (with `TURBOPANEL_DATABASE_URL` set). Deno dev can still use `./sync.sh` (`push`) — see `src/db/AGENTS.md`.
+- After editing `schema.ts`, run `pnpm drizzle-kit generate` to create SQL in `migrations/`; apply locally with `TURBOPANEL_DATABASE_URL=… pnpm migrate` or `DATABASE_URL=… pnpm migrate` (schema + resource-registry repair). Workers deploy runs `pnpm migrate` automatically (Node only — no Deno). Deno dev can still use `./sync.sh` (`push`) — see `src/db/AGENTS.md`.
 
 ### Caddy dial format
 
@@ -200,13 +201,13 @@ Four versioned surfaces each have REST + WS namespaces (where applicable). Prefi
 | Developer (dev console) | `/api/developer/v1/*` | `/ws/developer/v1` (stub) | fleet, diagnostics, shell, addresses, `system/upgrade`, `instance/tunnel-token`, `daemon/(:id/)sync-dev` |
 | Daemon | `/api/daemon/v1/*` | `/ws/daemon/v1` | `version`, `instance/ca`; daemons connect on the WS path |
 
-- Route modules: `src/daemon-api-routes.ts`, `src/client-routes.ts`, `src/install-routes.ts` (mounted in `createApp`); Deno-only routes `src/system-routes.ts`, `src/dev-sync.ts`, `src/tunnel-routes.ts`, and the version route are registered in `src/deno.ts`. `src/admin-routes.ts` exists but is **not mounted** until a real admin surface ships.
+- Route modules: `src/daemon/api-routes.ts`, `src/client/routes.ts`, `src/install/routes.ts` (mounted in `createApp`); Deno-only routes `src/developer/system-routes.ts`, `src/developer/dev-sync.ts`, `src/developer/tunnel-routes.ts`, and the version route are registered in `src/deno.ts`. `src/admin-routes.ts` exists but is **not mounted** until a real admin surface ships. Workers-safe developer REST lives in `src/developer/routes-core.ts` (`workers.ts`); full Deno developer surface in `src/developer/routes.ts`.
 - The turbopanel-dev console calls developer routes via `src/instance-client.ts` (Unix socket + HTTPS fallback).
 - Hard cutover: daemon, UI, Caddy (`/ws/*`), and Workers routes (`wrangler.jsonc`) moved together. The external CDN node installer must fetch the CA from the new `/api/daemon/v1/instance/ca` path.
 
 ## Daemon hub (`/ws/daemon/v1`)
 
-Server nodes register in `src/daemon-hub.ts` (keyed by `serverId` from the `server` table); the developer UI polls `/api/developer/v1/daemon/*`.
+Server nodes register in `src/daemon/hub.ts` (keyed by `serverId` from the `server` table); the developer UI polls `/api/developer/v1/daemon/*`.
 
 - Each socket gets an internal id (`daemon-1`, …) for routing; **display** uses `hostname` from the daemon `hello` message (UI falls back to `X-Real-IP`, then the internal id).
 - On connect, resolve or create a `server` row (uuidv7 `serverId`), evict older sockets from the same `serverId`, `X-Real-IP`, or `hostname`; prune sockets with no inbound traffic (stale reconnect zombies). All connecting daemons auto-register; `organization_id` stays null until assigned in the developer **Servers** section (`PATCH /api/developer/v1/servers/:id`).
@@ -215,11 +216,11 @@ Server nodes register in `src/daemon-hub.ts` (keyed by `serverId` from the `serv
 
 ### Dev sync (push a daemon build without git)
 
-`src/dev-sync.ts` tars the local `../daemon` checkout, base64-encodes it, and streams `dev-sync-begin` → `dev-sync-chunk*` → `dev-sync-end` over the daemon WS; the daemon unpacks, `deno cache`s, replies `dev-sync-result`, and restarts. Developer routes: `POST /api/developer/v1/daemon/:id/sync-dev` and `…/daemon/sync-dev` (all). Dev console: **Sync Dev Build** in the fleet section.
+`src/developer/dev-sync.ts` tars the local `../daemon` checkout, base64-encodes it, and streams `dev-sync-begin` → `dev-sync-chunk*` → `dev-sync-end` over the daemon WS; the daemon unpacks, `deno cache`s, replies `dev-sync-result`, and restarts. Developer routes: `POST /api/developer/v1/daemon/:id/sync-dev` and `…/daemon/sync-dev` (all). Dev console: **Sync Dev Build** in the fleet section.
 
 ### Instance Cloudflare tunnel
 
-`POST /api/developer/v1/instance/tunnel-token` (`src/tunnel-routes.ts`) sends a `tunnel-token` WS message to the co-located daemon, which writes `cloudflared/tunnels/instance.token` and (re)starts cloudflared. External remote daemons then reach this instance via the tunnel → Caddy → socket. Dev console: **Save Tunnel Token** in the fleet section (empty token tears it down).
+`POST /api/developer/v1/instance/tunnel-token` (`src/developer/tunnel-routes.ts`) sends a `tunnel-token` WS message to the co-located daemon, which writes `cloudflared/tunnels/instance.token` and (re)starts cloudflared. External remote daemons then reach this instance via the tunnel → Caddy → socket. Dev console: **Save Tunnel Token** in the fleet section (empty token tears it down).
 
 Correlated request/ack helpers (`awaitDaemonAck` / `recordDaemonAck`) back both dev-sync and tunnel-token.
 
@@ -231,7 +232,7 @@ The instance uses a **custom PAM-style auth model** built entirely on the **Web 
 
 #### Password hashing
 
-Credential-account passwords use **PBKDF2-HMAC-SHA256** via `crypto.subtle` (`src/auth/password.ts`). This is the strongest password-hashing primitive available in native Workers/Deno Web Crypto — Argon2 and scrypt are not exposed, and WASM Argon2 is heavier and awkward in Workers. Stored format: `$pbkdf2-sha256$<iterations>$<base64url-salt>$<base64url-hash>` (100k iterations for new hashes — Workers PBKDF2 cap; iteration count is embedded so older hashes still verify). Verification uses constant-time byte comparison. Do not use plain SHA-256 for passwords.
+Credential-account passwords use **PBKDF2-HMAC-SHA256** via `crypto.subtle` (`src/authn/password.ts`). This is the strongest password-hashing primitive available in native Workers/Deno Web Crypto — Argon2 and scrypt are not exposed, and WASM Argon2 is heavier and awkward in Workers. Stored format: `$pbkdf2-sha256$<iterations>$<base64url-salt>$<base64url-hash>` (100k iterations for new hashes — Workers PBKDF2 cap; iteration count is embedded so older hashes still verify). Verification uses constant-time byte comparison. Do not use plain SHA-256 for passwords.
 
 **License-based daemon auth:** Daemons connecting with a `licenseId` + `licenseToken` in their `hello` message are authenticated against the `license` table (PBKDF2-SHA256 token verification, same as account passwords). Invalid or revoked licenses cause the WS to be closed with code `4401`. Authenticated daemons have their `server.organizationId` set automatically from the license's org. The colocated daemon's license is auto-provisioned during install and written to `TURBOPANEL_DAEMON_STATE_DIR` (`license.id` / `license.token`).
 
@@ -242,12 +243,12 @@ Sessions are **opaque DB-backed tokens** with a signed cookie:
 - A 32-byte random token is generated and stored in the `session` table (`token`, `userId`, `expiresAt`, `ipAddress`, `userAgent`).
 - The cookie value sent to the browser is `<token>.v<version>.<HMAC-SHA256-signature>`, where the signature is computed over the raw token using the session secret for that version.
 - On every request the signature is verified first (constant-time); only then is the DB queried for the session row.
-- Cookie name: `turbopanel.session_token` on HTTP, `__Secure-turbopanel.session_token` on HTTPS (resolved from the request URL in `src/auth/crypto.ts`).
+- Cookie name: `turbopanel.session_token` on HTTP, `__Secure-turbopanel.session_token` on HTTPS (resolved from the request URL in `src/authn/crypto.ts`).
 - Cookie attributes: `HttpOnly; SameSite=Lax; Path=/; Max-Age=604800` (7 days). `Secure` is added automatically when the request URL is HTTPS.
 
 #### Host PAM install gate (Deno only, install wizard)
 
-On the **Deno runtime**, initial setup is gated by host PAM — **`root`** or any user in the **`sudo` / `wheel` / `admin`** groups. Host auth **never** receives a session or cookie. The instance process runs as **`turbopaneli`**; it runs **`pamtester login "$username" authenticate`** via **`sudo -n`** and a shell pipe (see `src/auth/credentials.ts`). **`pamtester`** must be installed on managed hosts (the daemon `daemon-prereqs` role). Sudoers: **`turbopaneli`** gets `NOPASSWD: /usr/bin/pamtester login * authenticate` in `instance-launch` `upgrade-sudoers.yml`. The instance systemd unit must grant **`--allow-run=/bin/sh,sudo,/usr/bin/sudo`**.
+On the **Deno runtime**, initial setup is gated by host PAM — **`root`** or any user in the **`sudo` / `wheel` / `admin`** groups. Host auth **never** receives a session or cookie. The instance process runs as **`turbopaneli`**; it runs **`pamtester login "$username" authenticate`** via **`sudo -n`** and a shell pipe (see `src/authn/credentials.ts`). **`pamtester`** must be installed on managed hosts (the daemon `daemon-prereqs` role). Sudoers: **`turbopaneli`** gets `NOPASSWD: /usr/bin/pamtester login * authenticate` in `instance-launch` `upgrade-sudoers.yml`. The instance systemd unit must grant **`--allow-run=/bin/sh,sudo,/usr/bin/sudo`**.
 
 **Dev mode bypass (`TURBOPANEL_DEV_HOST_AUTH=group-only`):** When this env var is set, `verifyInstallHostCredentials` skips `verifyPamLogin` entirely. The password field must still be non-empty (the UI requires it), but it is not verified against PAM. Group membership (`sudo`/`wheel`/`admin`) is still checked via `id -nG`. This var is injected automatically by `dev/scripts/instance-serve.sh` in Tilt dev — it is never set on managed production hosts. `pamtester` is only required on managed hosts (installed by the daemon `daemon-prereqs` role).
 
@@ -269,7 +270,7 @@ Both runtimes read the same root secret env vars; `deriveSecretsConfig()` HKDF-d
 | Deno | `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` env vars (`instance-launch` injects them on managed hosts) |
 | Workers | Same names as Wrangler bindings / `.dev.vars` (Tilt `sync-env.sh` writes them from `dev/.env`) |
 
-**Root secret format:** 48 characters from `[A-Za-z0-9_]`, always at least one `_` between positions 2–47 (never in position 1 or 48). Implementation: `scripts/generate-secret.mjs` (re-exported from `src/generate-secret.ts`). Generate with `pnpm generate:secret` in `instance/`. HKDF uses the UTF-8 bytes of the string as key material (`deriveKey` in `src/auth/secrets.ts`). Same helper (`generatePassword`) is the canonical generator for random passwords.
+**Root secret format:** 48 characters from `[A-Za-z0-9_]`, always at least one `_` between positions 2–47 (never in position 1 or 48). Implementation: `scripts/generate-secret.mjs` (re-exported from `src/generate-secret.ts`). Generate with `pnpm generate:secret` in `instance/`. HKDF uses the UTF-8 bytes of the string as key material (`deriveKey` in `src/authn/secrets.ts`). Same helper (`generatePassword`) is the canonical generator for random passwords.
 
 At least one of `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` must be set in production. Workers always fail fast when both are missing. Deno co-located dev (`TURBOPANEL_UI_MODE` ≠ `static`) may use an ephemeral random key as a warning-only fallback.
 
@@ -310,15 +311,15 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 
 | File | Purpose |
 |---|---|
-| `src/auth/crypto.ts` | Web Crypto primitives: session cookie signing |
-| `src/auth/session-store.ts` | `createSession`, `getSession`, `deleteSession`; `SessionData` type (`role` included) |
-| `src/auth/credentials.ts` | `verifyCredentials`, `verifyInstallHostCredentials`; PAM host install gate + DB credential users |
-| `src/auth/password.ts` | PBKDF2-SHA256 hash/verify for credential accounts |
-| `src/auth/email-verification.ts` | `createEmailVerificationToken` / `consumeEmailVerificationToken` — token lifecycle against the `verification` table (`identifier` = email, `value` = 64-char hex, `expiresAt` = 24h) |
-| `src/auth/http.ts` | `registerAuthRoutes` — sign-in / sign-out / session / verify-email HTTP handlers |
-| `src/install-routes.ts` | `registerInstallRoutes` — self-hosted install wizard (`/api/install/v1/*`) |
-| `src/auth/install-state.ts` | Install detection, validation, `completeInstanceInstall`, colocated server assignment |
-| `src/auth/middleware.ts` | Session + superadmin middleware helpers |
+| `src/authn/crypto.ts` | Web Crypto primitives: session cookie signing |
+| `src/authn/session-store.ts` | `createSession`, `getSession`, `deleteSession`; `SessionData` type (`role` included) |
+| `src/authn/credentials.ts` | `verifyCredentials`, `verifyInstallHostCredentials`; PAM host install gate + DB credential users |
+| `src/authn/password.ts` | PBKDF2-SHA256 hash/verify for credential accounts |
+| `src/authn/email-verification.ts` | `createEmailVerificationToken` / `consumeEmailVerificationToken` — token lifecycle against the `verification` table (`identifier` = email, `value` = 64-char hex, `expiresAt` = 24h) |
+| `src/authn/http.ts` | `registerAuthRoutes` — sign-in / sign-out / session / verify-email HTTP handlers |
+| `src/install/routes.ts` | `registerInstallRoutes` — self-hosted install wizard (`/api/install/v1/*`) |
+| `src/authn/install-state.ts` | Install detection, validation, `completeInstanceInstall`, colocated server assignment |
+| `src/authn/middleware.ts` | Session + superadmin middleware helpers |
 
 ## Email
 
@@ -345,12 +346,18 @@ The **`mailer/`** consumer runs as **`turbopanel-mailer.service`** on managed ho
 
 ## OpenAPI & Scalar
 
-Hand-authored API docs served from the shared Hono app (Workers and Deno):
+Hand-authored API docs are split by surface and served from the client and daemon routers (Workers and Deno):
 
-- **`GET /api/openapi.json`** — OpenAPI 3.1 JSON spec from `src/openapi.ts`; `servers[0].url` is the request origin (`new URL(c.req.url).origin`). Documents health, client/auth/install, and daemon CA routes. No auth required.
-- **`GET /api/reference`** — CDN-based [Scalar](https://github.com/scalar/scalar) embed from `src/scalar-html.ts`, pointing at `/api/openapi.json`. No auth required.
+| Endpoint | Surface | Auth scheme |
+|---|---|---|
+| `GET /api/client/v1/openapi.json` | Client | `cookieAuth` (session cookie) |
+| `GET /api/client/v1/reference` | Client | Scalar embed with cookie auth |
+| `GET /api/daemon/v1/openapi.json` | Daemon | `licenseAuth` (Bearer) |
+| `GET /api/daemon/v1/reference` | Daemon | Scalar embed with Bearer auth |
 
-The marketing site (`../website`) loads the same spec via its `/api/config` proxy for `/docs/api`; the instance also exposes Scalar directly for local/dev use.
+`servers[0].url` in each spec is the request origin (`new URL(c.req.url).origin`). Client spec documents health, client/auth/install, and resource routes. Daemon spec documents readiness, platform CA, the co-located daemon checkout version endpoint (`GET /api/daemon/v1/version`), and the `/ws/daemon/v1` WebSocket upgrade — license credentials are sent in the first JSON `hello` message after upgrade, not in HTTP headers.
+
+The marketing site (`../website`) loads the client spec via its `/api/config` proxy for `/docs/api`; the instance also exposes Scalar directly for local/dev use.
 
 ```mermaid
 sequenceDiagram
@@ -361,29 +368,33 @@ sequenceDiagram
     Browser->>Website: GET /docs/api
     Website-->>Browser: ApiReferenceReact page
     Browser->>Website: GET /api/config
-    Website-->>Browser: { openApiUrl: "https://api.host/api/openapi.json", servers }
-    Browser->>Instance: GET /api/openapi.json
-    Instance-->>Browser: OpenAPI 3.1 JSON spec
-    Browser->>Instance: GET /api/reference (direct Scalar UI)
-    Instance-->>Browser: Scalar CDN HTML embed
+    Website-->>Browser: { openApiUrl: ".../api/client/v1/openapi.json" }
+    Browser->>Instance: GET /api/client/v1/openapi.json
+    Instance-->>Browser: OpenAPI 3.1 JSON (client surface)
+    Browser->>Instance: GET /api/client/v1/reference
+    Instance-->>Browser: Scalar embed (cookieAuth)
+    Browser->>Instance: GET /api/daemon/v1/openapi.json
+    Instance-->>Browser: OpenAPI 3.1 JSON (daemon surface)
+    Browser->>Instance: GET /api/daemon/v1/reference
+    Instance-->>Browser: Scalar embed (licenseAuth Bearer)
 ```
 
 ## Layout
 
-- `src/app.ts` — shared Hono app (`/api/health`, `/api/openapi.json`, `/api/reference` + client/daemon routers)
-- `src/openapi.ts` — hand-authored OpenAPI 3.1 spec (`getOpenApiSpec`)
-- `src/scalar-html.ts` — Scalar CDN embed HTML (`buildScalarHtml`)
+- `src/app.ts` — shared Hono app (`/api/health` + client/daemon routers)
+- `src/openapi.ts` — hand-authored OpenAPI 3.1 specs (`getClientOpenApiSpec`, `getDaemonOpenApiSpec`)
+- `src/scalar-html.ts` — Scalar CDN embed HTML (`buildClientScalarHtml`, `buildDaemonScalarHtml`)
 - `src/surfaces.ts` — versioned API/WS prefix constants
-- `src/daemon-api-routes.ts` / `src/client-routes.ts` — per-surface REST routers (`src/admin-routes.ts` reserved, unmounted)
-- `src/system-routes.ts` — developer `system/upgrade` + `system/upgrade-status` + `system/reset-dev` (Deno-only). Upgrade hard-resets instance + daemon to `origin/trunk` (blocked when platform checkouts are dirty). Reset-dev wipes Postgres, repushes `schema.ts`, and restarts the instance (fresh install wizard).
-- `src/database-routes.ts` — developer `database/status` + `database/studio` (Deno-only). Connection test and on-demand Drizzle Studio via `drizzle-kit studio` on port 4983.
-- `src/dev-sync.ts` / `src/tunnel-routes.ts` — dev-sync + tunnel developer routes (Deno-only)
+- `src/daemon/api-routes.ts` / `src/client/routes.ts` — per-surface REST routers (`src/admin-routes.ts` reserved, unmounted)
+- `src/developer/system-routes.ts` — developer `system/upgrade` + `system/upgrade-status` + `system/reset-dev` (Deno-only). Upgrade hard-resets instance + daemon to `origin/trunk` (blocked when platform checkouts are dirty). Reset-dev wipes Postgres, applies migrations via `drizzle-kit migrate`, repairs the resource registry, and restarts the instance (fresh install wizard).
+- `src/developer/database-routes.ts` — developer `database/status` + `database/studio` (Deno-only). Connection test and on-demand Drizzle Studio via `drizzle-kit studio` on port 4983.
+- `src/developer/dev-sync.ts` / `src/developer/tunnel-routes.ts` — dev-sync + tunnel developer routes (Deno-only)
 - `src/server-paths.ts` — Unix socket path resolution
-- `src/daemon-hub.ts` — WebSocket connection registry, command/address/ack dispatch
-- `src/daemon-ws-handlers.ts` / `src/deno-ws.ts` — shared daemon WS session. **Deno:** capture `X-Real-IP` / `X-Forwarded-For` in the `upgradeWebSocket` callback before returning `onOpen`; reading `c.req.header()` inside `onOpen` throws `Request closed` and crashes the instance on every Unix-socket daemon connect.
-- `src/deno-ws.ts` — `/ws/daemon/v1` handler and `/ws/{developer,client}/v1` stubs
+- `src/daemon/hub.ts` — WebSocket connection registry, command/address/ack dispatch
+- `src/daemon/ws-handlers.ts` / `src/daemon/deno-ws.ts` — shared daemon WS session. **Deno:** capture `X-Real-IP` / `X-Forwarded-For` in the `upgradeWebSocket` callback before returning `onOpen`; reading `c.req.header()` inside `onOpen` throws `Request closed` and crashes the instance on every Unix-socket daemon connect.
+- `src/daemon/deno-ws.ts` — `/ws/daemon/v1` handler and `/ws/{developer,client}/v1` stubs
 - `src/db.ts` / `src/db/schema.ts` — Drizzle client factories + schema
-- `src/developer-routes-core.ts` — developer REST routes safe for Workers (`workers.ts` registers this). Deno-only routes (Drizzle Studio) stay in `src/developer-routes.ts`, registered from `deno.ts` only — never import Deno-only modules from `src/app.ts` or the Workers bundle will fail.
-- `src/workers.ts` — Workers entry (`wrangler.jsonc` main); registers `developer-routes-core` once per isolate
+- `src/developer/routes-core.ts` — developer REST routes safe for Workers (`workers.ts` registers this). Deno-only routes (Drizzle Studio) stay in `src/developer/routes.ts`, registered from `deno.ts` only — never import Deno-only modules from `src/app.ts` or the Workers bundle will fail.
+- `src/workers.ts` — Workers entry (`wrangler.jsonc` main); registers `developer/routes-core` once per isolate
 - `src/deno.ts` — Deno entry (`deno.json` tasks)
-- `src/auth/` — authentication module: Web Crypto primitives, session store, PAM credentials, HTTP handlers, and session middleware (see **Authentication** section above)
+- `src/authn/` — authentication module: Web Crypto primitives, session store, PAM credentials, HTTP handlers, and session middleware (see **Authentication** section above)
