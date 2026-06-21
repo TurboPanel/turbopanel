@@ -50,7 +50,7 @@ main() {
 
   echo "introspect.sh: pulling schema from live database…"
   cleanup_drizzle_out
-  TURBOPANEL_DATABASE_URL="$TURBOPANEL_DATABASE_URL" "$NODE" "$DRIZZLE_KIT" introspect --out drizzle
+  TURBOPANEL_DATABASE_URL="$TURBOPANEL_DATABASE_URL" "$NODE" "$DRIZZLE_KIT" introspect --config "$ROOT/drizzle.config.mjs" --out drizzle
 
   echo "introspect.sh: adopting drizzle/schema.ts → src/db/schema.ts"
   adopt_schema

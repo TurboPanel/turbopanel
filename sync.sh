@@ -55,7 +55,7 @@ main() {
   db_connect_verify_schema sync.sh "$SCHEMA_SRC"
 
   echo "sync.sh: pushing schema to live database (no migration files)…"
-  TURBOPANEL_DATABASE_URL="$TURBOPANEL_DATABASE_URL" "$NODE" "$DRIZZLE_KIT" push "${PUSH_ARGS[@]}"
+  TURBOPANEL_DATABASE_URL="$TURBOPANEL_DATABASE_URL" "$NODE" "$DRIZZLE_KIT" push --config "$ROOT/drizzle.config.mjs" "${PUSH_ARGS[@]}"
 
   echo "sync.sh: done — database should match src/db/schema.ts"
 }

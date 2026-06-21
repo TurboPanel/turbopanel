@@ -6,6 +6,7 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { drizzleDbCredentials } from './resolve-postgres-url.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const databaseUrl = process.argv[2]
@@ -17,72 +18,21 @@ if (!databaseUrl) {
   process.exit(1)
 }
 
-function resolvePostgresParts(url) {
-  try {
-    const parsed = new URL(url)
-    if (parsed.protocol !== 'postgresql:' && parsed.protocol !== 'postgres:') {
-      return undefined
-    }
-    const user = decodeURIComponent(parsed.username)
-    const database = parsed.pathname.replace(/^\//, '')
-    if (!user || !database) return undefined
-    const socketDir = parsed.searchParams.get('host')?.trim() || null
-    if (socketDir) {
-      return {
-        user,
-        pass: decodeURIComponent(parsed.password),
-        database,
-        socketDir,
-        tcpUrl: null,
-      }
-    }
-    if (parsed.hostname) {
-      return {
-        user,
-        pass: decodeURIComponent(parsed.password),
-        database,
-        socketDir: null,
-        tcpUrl: url,
-      }
-    }
-    return undefined
-  } catch {
-    // `postgresql://user:pass@/db?host=/path` has no hostname — URL rejects it.
-    const match = url.match(/^postgres(?:ql)?:\/\/([^:@]+)(?::([^@]*))?@\/([^?]+)(?:\?(.*))?$/)
-    if (!match) return undefined
-
-    const [, userEnc, passwordEnc = '', dbEnc, query = ''] = match
-    const socketDir = new URLSearchParams(query).get('host')?.trim() || null
-    if (!socketDir) return undefined
-
-    const user = decodeURIComponent(userEnc)
-    const database = decodeURIComponent(dbEnc)
-    if (!user || !database) return undefined
-
-    return {
-      user,
-      pass: decodeURIComponent(passwordEnc),
-      database,
-      socketDir,
-      tcpUrl: null,
-    }
-  }
-}
-
-const parts = resolvePostgresParts(databaseUrl)
-if (!parts) {
+let parts
+try {
+  parts = drizzleDbCredentials(databaseUrl)
+} catch {
   console.error('invalid postgres URL')
   process.exit(1)
 }
-
-const dbCredentials = parts.socketDir
+const dbCredentials = parts.host
   ? `{
-    host: ${JSON.stringify(parts.socketDir)},
+    host: ${JSON.stringify(parts.host)},
     user: ${JSON.stringify(parts.user)},
-    password: ${JSON.stringify(parts.pass)},
+    password: ${JSON.stringify(parts.password)},
     database: ${JSON.stringify(parts.database)},
   }`
-  : `{ url: ${JSON.stringify(parts.tcpUrl ?? databaseUrl)} }`
+  : `{ url: ${JSON.stringify(parts.url)} }`
 
 const configContent = `import { defineConfig } from 'drizzle-kit'
 export default defineConfig({

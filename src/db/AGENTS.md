@@ -1,12 +1,12 @@
 # Database
 
-Schema changes are versioned in **`migrations/`**. After editing `schema.ts`, run `pnpm drizzle-kit generate` to create SQL files. Apply pending migrations with `TURBOPANEL_DATABASE_URL=… pnpm migrate`; Workers deploy runs the same command. **`pnpm migrate` applies versioned SQL via `drizzle-kit migrate` and then runs resource-registry repair** (`repairSchemaFromMigrations` + `repairResourceRegistry` in `scripts/seed-catalog.ts` via Node — no Deno prerequisite). Applied migration versions are recorded in **`public.migration`** (configured in `drizzle.config.ts`).
+Schema changes are versioned in **`migrations/`**. After editing `schema.ts`, run `pnpm drizzle-kit generate` to create SQL files. Apply pending migrations with `TURBOPANEL_DATABASE_URL=… pnpm migrate`; Workers deploy runs the same command. **`pnpm migrate` applies versioned SQL via `drizzle-kit migrate` and then runs resource-registry repair** (`repairSchemaFromMigrations` + `repairResourceRegistry` in `scripts/seed-catalog.ts` via Node — no Deno prerequisite). Applied migration versions are recorded in **`public.migration`** (configured in `drizzle.config.mjs`).
 
 The co-located dev server has live data — treat every database change as production-adjacent.
 
 ## Schema sync directions
 
-> **Fresh database:** apply migrations with `pnpm migrate` before starting the instance. There is no automatic push fallback on boot.
+> **Fresh database:** co-located dev converge runs `./scripts/bootstrap-dev-db.sh` via Ansible (push on empty DB, migrate on existing). Manual bootstrap: `./scripts/bootstrap-dev-db.sh` from the instance repo root. There is no automatic push fallback on boot.
 
 | Direction | You changed | Command | drizzle-kit |
 |---|---|---|---|
@@ -155,7 +155,8 @@ Each physical server node gets a row in `server` (`id` uuidv7). On daemon connec
 |---|---|
 | `schema.ts` | Drizzle table definitions — sync with dev DB via `./introspect.sh` or `./sync.sh` |
 | `../db.ts` | Connection factories (`createDenoDb`, `createToolingDb`, `createWorkersDb`) |
-| `../../drizzle.config.ts` | drizzle-kit config (`TURBOPANEL_DATABASE_URL`; introspect, push, generate, migrate, studio) |
+| `../../drizzle.config.mjs` | drizzle-kit config (`TURBOPANEL_DATABASE_URL`; introspect, push, generate, migrate, studio) |
+| `../../scripts/bootstrap-dev-db.sh` | Fresh dev DB: `./sync.sh --force` + `seed-catalog`; existing DB: `pnpm migrate` |
 | `../../introspect.sh` | Pull DB → `schema.ts` |
 | `../../sync.sh` | Push `schema.ts` → DB (Deno dev only; no migration files) |
 | `../../scripts/db-connect.sh` | Resolves `TURBOPANEL_DATABASE_URL` from env or `turbopanel-instance` for drizzle-kit scripts |

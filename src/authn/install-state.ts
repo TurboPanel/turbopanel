@@ -1,5 +1,6 @@
 import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm'
 import type { Db } from '../db.ts'
+import { isMissingRelationError } from '../db-errors.ts'
 import {
   getColocatedDaemonHostname,
   getColocatedDaemonServerId,
@@ -79,36 +80,48 @@ function resolveColocatedDaemonStateDir(): string {
 
 /** True once an org has a name and at least one superadmin account exists. */
 export async function isInstanceInstalled(db: Db): Promise<boolean> {
-  const orgRows = await db
-    .select({ id: organization.id })
-    .from(organization)
-    .where(isNotNull(organization.displayName))
-    .limit(1)
+  try {
+    const orgRows = await db
+      .select({ id: organization.id })
+      .from(organization)
+      .where(isNotNull(organization.displayName))
+      .limit(1)
 
-  if (orgRows.length === 0) return false
+    if (orgRows.length === 0) return false
 
-  const adminRows = await db
-    .select({ id: user.id, role: user.role })
-    .from(user)
-    .where(eq(user.role, SUPERADMIN_ROLE))
-    .limit(1)
+    const adminRows = await db
+      .select({ id: user.id, role: user.role })
+      .from(user)
+      .where(eq(user.role, SUPERADMIN_ROLE))
+      .limit(1)
 
-  if (adminRows.length === 0) return false
+    if (adminRows.length === 0) return false
 
-  return true
+    return true
+  } catch (err) {
+    if (isMissingRelationError(err)) return false
+    throw err
+  }
 }
 
 export async function isSignupEnabled(
   db: Db,
   envOverride?: string,
 ): Promise<boolean> {
-  const rows = await db
-    .select({ value: setting.value })
-    .from(setting)
-    .where(eq(setting.key, IS_SIGNUP_ENABLED_CONFIG_KEY))
-    .limit(1)
+  try {
+    const rows = await db
+      .select({ value: setting.value })
+      .from(setting)
+      .where(eq(setting.key, IS_SIGNUP_ENABLED_CONFIG_KEY))
+      .limit(1)
 
-  return resolveIsSignupEnabled(rows[0]?.value, envOverride)
+    return resolveIsSignupEnabled(rows[0]?.value, envOverride)
+  } catch (err) {
+    if (isMissingRelationError(err)) {
+      return resolveIsSignupEnabled(undefined, envOverride)
+    }
+    throw err
+  }
 }
 
 export async function getInstallStatus(

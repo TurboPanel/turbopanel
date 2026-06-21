@@ -33,13 +33,17 @@ db_connect_load_pg_env_from_unit() {
     echo "$caller: systemd unit $INSTANCE_UNIT not found" >&2
     return 1
   fi
-  # shellcheck disable=SC2046
-  eval "$(
+  local url
+  # systemd quotes Environment values that contain special characters (@, ?, etc.).
+  url="$(
     systemctl show "$INSTANCE_UNIT" -p Environment --value \
-      | tr ' ' '\n' \
-      | grep -E '^TURBOPANEL_DATABASE_URL=' \
-      | sed 's/^/export /'
+      | sed -n 's/.*TURBOPANEL_DATABASE_URL=\([^"]*\).*/\1/p'
   )"
+  if [[ -n "$url" ]]; then
+    export TURBOPANEL_DATABASE_URL="$url"
+    return 0
+  fi
+  return 1
 }
 
 db_connect_build_database_url() {
