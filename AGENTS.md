@@ -58,7 +58,7 @@ Installed and managed by the daemon via the `instance-launch` Ansible role:
 | Unit | User | Notes |
 |---|---|---|
 | `turbopanel-instance.service` | `instance:turbopanel` | Deno instance on the Unix socket |
-| `turbopanel-caddy.service` | `instance:turbopanel` | TLS + reverse proxy on `:8443` |
+| `turbopanel-caddy.service` | `instance:turbopanel` | TLS + reverse proxy on `:8443` (`GOMAXPROCS=1`, `CPUQuota=100%`) |
 | `turbopanel-ui.service` | `instance:turbopanel` | Expo web dev server (`:8081`, dev only) |
 | `turbopanel-daemon.service` | `turbopanel:turbopanel` | runs Ansible; has sudo |
 
