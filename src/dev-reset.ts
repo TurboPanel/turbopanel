@@ -62,27 +62,6 @@ async function runDrizzleMigrate(): Promise<{ ok: true } | { ok: false; error: s
   }
 }
 
-async function runSeedCatalog(): Promise<{ ok: true } | { ok: false; error: string }> {
-  const seedScript = join(INSTANCE_REPO_ROOT, 'scripts/seed-catalog.ts')
-  const nodeBin = await resolveNodePath()
-  try {
-    const out = await new Deno.Command(nodeBin, {
-      args: ['--experimental-strip-types', seedScript],
-      cwd: INSTANCE_REPO_ROOT,
-      env: Deno.env.toObject(),
-      stdout: 'piped',
-      stderr: 'piped',
-    }).output()
-    if (!out.success) {
-      return commandOutputError('seed-catalog failed', out)
-    }
-    return { ok: true }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    return { ok: false, error: message }
-  }
-}
-
 function queueInstanceRestart(): boolean {
   if (!INSTANCE_SERVICE) return false
   new Deno.Command('sudo', {
@@ -94,7 +73,7 @@ function queueInstanceRestart(): boolean {
   return true
 }
 
-/** Wipe dev Postgres, apply migrations, repair resource registry, and restart for a fresh install wizard. */
+/** Wipe dev Postgres, apply migrations, and restart for a fresh install wizard. */
 export async function resetDevInstance(db: Db): Promise<DevResetResult> {
   stopDrizzleStudio()
 
@@ -106,11 +85,6 @@ export async function resetDevInstance(db: Db): Promise<DevResetResult> {
   const migrated = await runDrizzleMigrate()
   if (!migrated.ok) {
     return { ok: false, error: `schema migrate failed: ${migrated.error}` }
-  }
-
-  const seeded = await runSeedCatalog()
-  if (!seeded.ok) {
-    return { ok: false, error: `resource registry repair failed: ${seeded.error}` }
   }
 
   const restarted = queueInstanceRestart()

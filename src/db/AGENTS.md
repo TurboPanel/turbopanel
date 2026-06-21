@@ -1,19 +1,19 @@
 # Database
 
-Schema changes are versioned in **`migrations/`**. After editing `schema.ts`, run `pnpm drizzle-kit generate` to create SQL files. Apply pending migrations with `TURBOPANEL_DATABASE_URL=… pnpm migrate`; Workers deploy runs the same command. **`pnpm migrate` applies versioned SQL via `drizzle-kit migrate` and then runs resource-registry repair** (`repairSchemaFromMigrations` + `repairResourceRegistry` in `scripts/seed-catalog.ts` via Node — no Deno prerequisite). Applied migration versions are recorded in **`public.migration`** (configured in `drizzle.config.mjs`).
+Schema changes are versioned in **`migrations/`**. After editing `schema.ts`, run `pnpm drizzle-kit generate` to create SQL files. Apply pending migrations with `TURBOPANEL_DATABASE_URL=… pnpm migrate`; Workers deploy runs the same command. Applied migration versions are recorded in **`public.migration`** (configured in `drizzle.config.mjs`).
 
 The co-located dev server has live data — treat every database change as production-adjacent.
 
 ## Schema sync directions
 
-> **Fresh database:** co-located dev converge runs `./scripts/bootstrap-dev-db.sh` via Ansible (push on empty DB, migrate on existing). Manual bootstrap: `./scripts/bootstrap-dev-db.sh` from the instance repo root. There is no automatic push fallback on boot.
+> **Fresh database:** co-located dev converge runs `./scripts/bootstrap-dev-db.sh` via Ansible (`pnpm migrate`). Manual bootstrap: `./scripts/bootstrap-dev-db.sh` from the instance repo root.
 
 | Direction | You changed | Command | drizzle-kit |
 |---|---|---|---|
 | **Pull** (DB → code) | Live Postgres (Studio / SQL) | `./introspect.sh` | `introspect` |
 | **Push** (code → DB, Deno dev only) | `schema.ts` | `./sync.sh` | `push` |
 | **Generate migration** | `schema.ts` | `pnpm drizzle-kit generate` | `generate` |
-| **Apply migration** (Workers deploy + manual) | pending SQL in `migrations/` | `TURBOPANEL_DATABASE_URL=… pnpm migrate` | `migrate` + resource registry repair |
+| **Apply migration** (Workers deploy + manual) | pending SQL in `migrations/` | `TURBOPANEL_DATABASE_URL=… pnpm migrate` | `migrate` |
 
 Pick one source of truth per change — do not edit both sides and blindly run both scripts.
 
@@ -46,14 +46,14 @@ Use when schema changes should ship as versioned SQL (required for Workers deplo
 1. Edit `src/db/schema.ts`.
 2. Run `pnpm drizzle-kit generate` — writes SQL under `migrations/`.
 3. Commit the new migration files.
-4. Apply: `TURBOPANEL_DATABASE_URL=… pnpm migrate` (local or CI). Workers deploy runs `pnpm migrate` automatically — schema migrations and resource-registry repair run in one step (Node only).
+4. Apply: `TURBOPANEL_DATABASE_URL=… pnpm migrate` (local or CI). Workers deploy runs `pnpm migrate` automatically.
 
 Applied versions are tracked in **`public.migration`** (`drizzle.config.ts` sets `migrations: { table: 'migration', schema: 'public' }`).
 
 ### Drizzle Studio (dev UI)
 
 - **Test connection** — `GET /api/developer/v1/database/status`
-- **Reset dev instance** — `POST /api/developer/v1/system/reset-dev` (superadmin session only): `DROP SCHEMA public CASCADE`, `drizzle-kit migrate`, resource-registry repair, restart instance. UI: Database section → **Reset Dev Instance**.
+- **Reset dev instance** — `POST /api/developer/v1/system/reset-dev` (superadmin session only): `DROP SCHEMA public CASCADE`, `drizzle-kit migrate`, restart instance. UI: Database section → **Reset Dev Instance**.
 - **Studio** — `POST /api/developer/v1/database/studio` starts `drizzle-kit studio` on **127.0.0.1:4983** (HTTP API). Open **`https://local.drizzle.studio?host=localhost&port=4983`** (hosted UI). Safari/Brave may block localhost — see [Drizzle docs](https://orm.drizzle.team/docs/drizzle-kit-studio#safari-and-brave-support).
 - Studio applies DDL **directly** to the DB — follow with `./introspect.sh` to pull into code.
 
@@ -137,9 +137,9 @@ Implemented in `src/resource-routes.ts`, registered from `registerClientRoutes`.
 
 `GET /api/client/v1/servers` uses `listVisible()` for server visibility (not raw org membership). License endpoints (`GET`/`POST` `/licenses`, `DELETE` `/licenses/{id}`) require `organization:billing` when the org `resource` row exists; legacy installs without a registered org resource fall back to session org membership with a warning log.
 
-### Catalog seeding
+### Catalog
 
-Access profiles and permissions are **static code constants** in `src/authz/catalog.ts` — there is nothing to seed. `syncAuthzCatalog` has been removed. `pnpm migrate` applies versioned SQL migrations and repairs the `resource` registry (`repairSchemaFromMigrations` + `repairResourceRegistry` in `scripts/seed-catalog.ts`). `pnpm seed` re-runs the same repair without applying migrations. Never edit access profiles or permissions in Studio — they do not exist as DB rows.
+Access profiles and permissions are **static code constants** in `src/authz/catalog.ts` — there is nothing to seed. Never edit access profiles or permissions in Studio — they do not exist as DB rows.
 
 ### `license` table
 
@@ -156,12 +156,11 @@ Each physical server node gets a row in `server` (`id` uuidv7). On daemon connec
 | `schema.ts` | Drizzle table definitions — sync with dev DB via `./introspect.sh` or `./sync.sh` |
 | `../db.ts` | Connection factories (`createDenoDb`, `createToolingDb`, `createWorkersDb`) |
 | `../../drizzle.config.mjs` | drizzle-kit config (`TURBOPANEL_DATABASE_URL`; introspect, push, generate, migrate, studio) |
-| `../../scripts/bootstrap-dev-db.sh` | Fresh dev DB: `./sync.sh --force` + `seed-catalog`; existing DB: `pnpm migrate` |
+| `../../scripts/bootstrap-dev-db.sh` | Dev DB bootstrap: `pnpm migrate` |
 | `../../introspect.sh` | Pull DB → `schema.ts` |
 | `../../sync.sh` | Push `schema.ts` → DB (Deno dev only; no migration files) |
 | `../../scripts/db-connect.sh` | Resolves `TURBOPANEL_DATABASE_URL` from env or `turbopanel-instance` for drizzle-kit scripts |
 | `../../migrations/` | Versioned SQL migration files (committed); applied by `pnpm migrate`; tracked in `public.migration` |
-| `../../scripts/seed-catalog.ts` | Node entrypoint (`node --experimental-strip-types`) for `repairSchemaFromMigrations` + `repairResourceRegistry` — run by `pnpm migrate` and `pnpm seed`; no longer calls `syncAuthzCatalog` |
 | `../../drizzle/` | Ephemeral introspect scratch dir — `introspect.sh` deletes after adopt; never committed |
 
 ### Authz engine

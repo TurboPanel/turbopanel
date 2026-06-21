@@ -47,7 +47,7 @@ The **daemon is the constant** installed on every TurboPanel-managed host and is
 - `pnpm install` — installs Hono and Wrangler into `node_modules/` for Workers bundling
 - Local Wrangler secrets live in `.dev.vars` (`TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS`; gitignored — Tilt `sync-env.sh` writes from `dev/.env`)
 - `pnpm dev` (wrangler) still runs the **Cloudflare Workers** path for full-stack testing — unchanged. **`wrangler.jsonc` `dev.ip` is `0.0.0.0`** so Docker Caddy (`host.docker.internal`) can reach the dev server; default localhost-only bind causes Caddy **502**s.
-- **`pnpm deploy`** — applies pending migrations (`TURBOPANEL_DATABASE_URL` or `DATABASE_URL` required for tooling) then deploys to Cloudflare Workers (`CLOUDFLARE_ENV` required, e.g. `live` or `testing`). Works from any environment with internet access to the database — self-hosted dev, CI, or production. Requires **Node** only (`pnpm migrate` runs `drizzle-kit migrate` + post-migration repair via `node --experimental-strip-types`; no Deno prerequisite). Equivalent to `pnpm migrate && wrangler deploy --env $CLOUDFLARE_ENV --minify`.
+- **`pnpm deploy`** — applies pending migrations (`TURBOPANEL_DATABASE_URL` or `DATABASE_URL` required for tooling) then deploys to Cloudflare Workers (`CLOUDFLARE_ENV` required, e.g. `live` or `testing`). Works from any environment with internet access to the database — self-hosted dev, CI, or production. Requires **Node** only (`pnpm migrate` runs `drizzle-kit migrate`; no Deno prerequisite). Equivalent to `pnpm migrate && wrangler deploy --env $CLOUDFLARE_ENV --minify`.
 - `pnpm cf-typegen` — regenerate `worker-configuration.d.ts`
 - The Ansible `instance-certs` / `caddy` / `node-runtime` roles supersede the standalone `pnpm cert:generate` / `pnpm caddy:install` scripts for managed hosts (the scripts remain for manual use).
 
@@ -99,7 +99,7 @@ Path resolution lives in `src/server-paths.ts`.
 
 ## Database (Drizzle + Postgres.js)
 
-The instance uses **Drizzle ORM** over **postgres.js** with `prepare: false` (required for Hyperdrive and transaction-pooling). Connection factories live in `src/db.ts`; schema in `src/db/schema.ts`; drizzle-kit config in `drizzle.config.ts`. **Read `src/db/AGENTS.md` before touching schema or the database.** Schema changes are versioned in `migrations/`; `pnpm migrate` applies pending SQL and syncs the authz catalog during Workers deploy. Applied versions are recorded in `public.migration`.
+The instance uses **Drizzle ORM** over **postgres.js** with `prepare: false` (required for Hyperdrive and transaction-pooling). Connection factories live in `src/db.ts`; schema in `src/db/schema.ts`; drizzle-kit config in `drizzle.config.ts`. **Read `src/db/AGENTS.md` before touching schema or the database.** Schema changes are versioned in `migrations/`; `pnpm migrate` applies pending SQL during Workers deploy. Applied versions are recorded in `public.migration`.
 
 | Runtime | Factory | When connected |
 |---|---|---|
@@ -111,7 +111,7 @@ Route handlers read the per-request client via `getDb(c)` (set by `createApp({ d
 | Variable | Purpose |
 |---|---|
 | `TURBOPANEL_DATABASE_URL` | Full postgres connection URL. **Deno mode:** required at boot — `createDenoDb()` throws immediately when missing or blank (self-hosted instance will not start). Passed directly to postgres.js (supports Unix socket URLs: `postgresql://user:pass@/db?host=/var/run/turbopanel/postgres`). **Workers runtime:** uses the `HYPERDRIVE` binding, not this env var. When the URL uses `?host=` for a Unix socket, ensure Deno has read access to that directory (`/run/turbopanel` covers the default Docker bind-mount path). |
-| `DATABASE_URL` | **Tooling only** (drizzle-kit, `pnpm migrate` repair step, `./introspect.sh` / `./sync.sh` overrides). Accepted as a fallback when `TURBOPANEL_DATABASE_URL` is unset — common in CI and Cloudflare dashboard deploy workflows. Not read by the Deno instance or Workers runtime at request time. |
+| `DATABASE_URL` | **Tooling only** (drizzle-kit, `pnpm migrate`, `./introspect.sh` / `./sync.sh` overrides). Accepted as a fallback when `TURBOPANEL_DATABASE_URL` is unset — common in CI and Cloudflare dashboard deploy workflows. Not read by the Deno instance or Workers runtime at request time. |
 
 ### Workers Hyperdrive
 
@@ -131,7 +131,7 @@ The Workers DB client uses `prepare: false` on postgres.js (see **Database** abo
 ### Tooling
 
 - `pnpm install` — pulls `drizzle-orm`, `postgres`, `drizzle-kit`
-- After editing `schema.ts`, run `pnpm drizzle-kit generate` to create SQL in `migrations/`; apply locally with `TURBOPANEL_DATABASE_URL=… pnpm migrate` or `DATABASE_URL=… pnpm migrate` (schema + resource-registry repair). Workers deploy runs `pnpm migrate` automatically (Node only — no Deno). Deno dev can still use `./sync.sh` (`push`) — see `src/db/AGENTS.md`.
+- After editing `schema.ts`, run `pnpm drizzle-kit generate` to create SQL in `migrations/`; apply locally with `TURBOPANEL_DATABASE_URL=… pnpm migrate` or `DATABASE_URL=… pnpm migrate`. Workers deploy runs `pnpm migrate` automatically (Node only — no Deno). Deno dev can still use `./sync.sh` (`push`) — see `src/db/AGENTS.md`.
 
 ### Caddy dial format
 
@@ -386,7 +386,7 @@ sequenceDiagram
 - `src/scalar-html.ts` — Scalar CDN embed HTML (`buildClientScalarHtml`, `buildDaemonScalarHtml`)
 - `src/surfaces.ts` — versioned API/WS prefix constants
 - `src/daemon/api-routes.ts` / `src/client/routes.ts` — per-surface REST routers (`src/admin-routes.ts` reserved, unmounted)
-- `src/developer/system-routes.ts` — developer `system/upgrade` + `system/upgrade-status` + `system/reset-dev` (Deno-only). Upgrade hard-resets instance + daemon to `origin/trunk` (blocked when platform checkouts are dirty). Reset-dev wipes Postgres, applies migrations via `drizzle-kit migrate`, repairs the resource registry, and restarts the instance (fresh install wizard).
+- `src/developer/system-routes.ts` — developer `system/upgrade` + `system/upgrade-status` + `system/reset-dev` (Deno-only). Upgrade hard-resets instance + daemon to `origin/trunk` (blocked when platform checkouts are dirty). Reset-dev wipes Postgres, applies migrations via `drizzle-kit migrate`, and restarts the instance (fresh install wizard).
 - `src/developer/database-routes.ts` — developer `database/status` + `database/studio` (Deno-only). Connection test and on-demand Drizzle Studio via `drizzle-kit studio` on port 4983.
 - `src/developer/dev-sync.ts` / `src/developer/tunnel-routes.ts` — dev-sync + tunnel developer routes (Deno-only)
 - `src/server-paths.ts` — Unix socket path resolution

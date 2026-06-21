@@ -11,9 +11,7 @@
     "deploy:workers": "pnpm run deploy",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
     "generate:secret": "node scripts/generate-secret.mjs",
-    "seed-catalog": "node --experimental-strip-types scripts/seed-catalog.ts",
-    "migrate": "drizzle-kit migrate --config drizzle.config.mjs && pnpm run seed-catalog",
-    "seed": "pnpm run seed-catalog"
+    "migrate": "drizzle-kit migrate --config drizzle.config.mjs"
   },
   "dependencies": {
     "amqplib": "^2.0.1",
