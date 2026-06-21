@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "send_metrics": false,
   "account_id": "a574c2793baa3e2276ac16e96097bc8c",
-  "name": "dev-instance",
+  "name": "instance",
   "main": "src/workers.ts",
   "compatibility_date": "2026-06-01",
   "compatibility_flags": ["nodejs_compat"],
