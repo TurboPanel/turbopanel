@@ -9,6 +9,11 @@ import { getDatabaseUrl } from "../db-url.ts";
 import { createDenoDb } from "../db.ts";
 import { license, organization, server, serverkey } from "../lib/db/schema.ts";
 import { registerDaemonApiRoutes } from "./api-routes.ts";
+import {
+  createRedisChallengeStore,
+  DAEMON_CHALLENGE_TTL_MS,
+} from "./cell/challenge-store.ts";
+import { createRedisCellClient } from "./cell/redis/client.ts";
 import { issueDaemonJwt } from "./authn/daemon-jwt.ts";
 import {
   buildAuthPayload,
@@ -19,6 +24,17 @@ import {
 
 const dbUrl = getDatabaseUrl();
 const encoder = new TextEncoder();
+const redisSocket =
+  Deno.env.get("TURBOPANEL_REDIS_SOCKET") ?? "/run/turbopanel/redis.sock";
+
+async function redisAvailable(): Promise<boolean> {
+  try {
+    const stat = await Deno.stat(redisSocket);
+    return stat.isSocket === true;
+  } catch {
+    return false;
+  }
+}
 
 type KeyMaterial = {
   privateKey: CryptoKey;
@@ -111,6 +127,28 @@ async function createTestApp(db: ReturnType<typeof createDenoDb>): Promise<Hono<
   });
   const secrets = await createTestSecrets();
   registerDaemonApiRoutes(app, { secrets });
+  return app;
+}
+
+async function createRedisBackedTestApp(
+  db: ReturnType<typeof createDenoDb>,
+  client: ReturnType<typeof createRedisCellClient>,
+): Promise<Hono<AppEnv>> {
+  const app = new Hono<AppEnv>();
+  app.use("*", (c, next) => {
+    c.set("db", db);
+    return next();
+  });
+  const secrets = await createTestSecrets();
+  const authStore = createRedisChallengeStore(client);
+  registerDaemonApiRoutes(app, {
+    secrets,
+    challengeStoreProvider: {
+      enroll: authStore,
+      auth: authStore,
+      rotation: createRedisChallengeStore(client, DAEMON_CHALLENGE_TTL_MS),
+    },
+  });
   return app;
 }
 
@@ -817,4 +855,123 @@ Deno.test("Protected route rejects expired JWT", async () => {
     });
     assertEquals(response.status, 401);
   });
+});
+
+Deno.test("POST /auth/session with Redis challenge store enforces single-use consume", async () => {
+  if (!(await redisAvailable())) {
+    console.warn(
+      `Skipping Redis-backed auth challenge test: socket not found at ${redisSocket}`,
+    );
+    return;
+  }
+  if (!dbUrl) {
+    console.warn(
+      "Skipping Redis-backed auth challenge test: TURBOPANEL_DATABASE_URL not set",
+    );
+    return;
+  }
+
+  const client = createRedisCellClient();
+  const db = createDenoDb();
+  const app = await createRedisBackedTestApp(db, client);
+  const machineId = `machine-${crypto.randomUUID()}`;
+  const hostname = `host-${crypto.randomUUID()}`;
+  const [orgRow] = await db
+    .insert(organization)
+    .values({ displayName: "Redis Challenge Store Test Org" })
+    .returning({ id: organization.id });
+  const organizationId = orgRow!.id;
+  const { licenseId, licenseToken } = await createLicense(db, {
+    organizationId,
+    displayName: "Redis Challenge Store Test License",
+  });
+
+  const challengeResponse = await app.request("/api/daemon/v1/auth/challenge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  assertEquals(challengeResponse.status, 200);
+  const challenge = await challengeResponse.json() as {
+    challengeId: string;
+    nonce: string;
+  };
+
+  const key = await generateKeyMaterial();
+  const payload = buildEnrollmentPayload({
+    challengeId: challenge.challengeId,
+    nonce: challenge.nonce,
+    licenseId,
+    machineId,
+    hostname,
+    publicKeyFingerprint: key.fingerprint,
+  });
+  const signature = await signPayload(key.privateKey, payload);
+
+  const enrollResponse = await app.request("/api/daemon/v1/enroll", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      licenseId,
+      licenseToken,
+      machineId,
+      hostname,
+      publicJwk: key.publicJwk,
+      challengeId: challenge.challengeId,
+      signature,
+    }),
+  });
+  assertEquals(enrollResponse.status, 200);
+  const enrollBody = await enrollResponse.json() as { serverId: string; keyId: string };
+
+  try {
+    const authChallenge = await issueAuthChallenge(
+      app,
+      enrollBody.serverId,
+      enrollBody.keyId,
+    );
+    const authPayload = buildAuthPayload({
+      challengeId: authChallenge.challengeId,
+      nonce: authChallenge.nonce,
+      serverId: enrollBody.serverId,
+      keyId: enrollBody.keyId,
+      machineId,
+      hostname,
+    });
+    const authSignature = await signPayload(key.privateKey, authPayload);
+
+    const first = await app.request("/api/daemon/v1/auth/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        serverId: enrollBody.serverId,
+        keyId: enrollBody.keyId,
+        challengeId: authChallenge.challengeId,
+        signature: authSignature,
+        machineId,
+        hostname,
+        at: new Date().toISOString(),
+      }),
+    });
+    assertEquals(first.status, 200);
+
+    const second = await app.request("/api/daemon/v1/auth/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        serverId: enrollBody.serverId,
+        keyId: enrollBody.keyId,
+        challengeId: authChallenge.challengeId,
+        signature: authSignature,
+        machineId,
+        hostname,
+        at: new Date().toISOString(),
+      }),
+    });
+    assertEquals(second.status, 400);
+  } finally {
+    await db.delete(server).where(eq(server.id, enrollBody.serverId));
+    await db.delete(organization).where(eq(organization.id, organizationId));
+    await client.close();
+  }
 });

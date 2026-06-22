@@ -205,19 +205,32 @@ Four versioned surfaces each have REST + WS namespaces (where applicable). Prefi
 - The turbopanel-dev console calls developer routes via `src/instance-client.ts` (Unix socket + HTTPS fallback).
 - Hard cutover: daemon, UI, Caddy (`/ws/*`), and Workers routes (`wrangler.jsonc`) moved together. The external CDN node installer must fetch the CA from the new `/api/daemon/v1/instance/ca` path.
 
-## Daemon hub (`/ws/daemon/v1`)
+## Daemon Cell (`/ws/daemon/v1`)
 
-Server nodes register in `src/daemon/hub.ts` (keyed by `serverId` from the `server` table); the developer UI polls `/api/developer/v1/daemon/*`.
+Server nodes are tracked by a **Daemon Cell** abstraction keyed by `serverId`. There is no in-process daemon state — all connection presence, snapshots, outbox, request records, challenges, and event buffers live in the cell backend.
+
+| Runtime | Backend | Storage |
+|---|---|---|
+| Deno (self-hosted) | `RedisDaemonCell` (`src/daemon/cell/redis/`) | Redis Streams + HASH + SET at `tp:cell:{serverId}:*`; Unix socket `/run/turbopanel/redis.sock` |
+| Cloudflare Workers | `DaemonCellObject` (`src/daemon/cell/do.ts`) | SQLite-backed Durable Object per server, named by `serverId` (or `serverId:g{n}` for relocated generations) |
+
+Postgres remains canonical for business data (`server`, `serverkey`, `daemonsession`). The cell is the low-latency hot projection and coordination layer.
+
+**WS upgrade flow:** JWT verified in the main isolate/process → `findActiveDaemonSession` validates the session is not revoked → cell `attachDaemonSocket` acquires the single-writer lease → outbox pump loop (`readOutboxBatch` → `ws.send` → `ackOutbox`) runs until close → `detachDaemonSocket` releases the lease.
+
+**Co-located daemon** (`__direct__`): stored in cell meta (`remoteAddress = '__direct__'`) so `tryAssignColocatedDaemonToInstalledOrganization` and tunnel routing still work.
+
+**Challenge stores:** enrollment, auth, and key-rotation challenges use `createRedisChallengeStore` (Deno) or `createDurableObjectChallengeStore` (Workers) — single-use, hard TTL, no in-process Maps.
+
+**Heartbeat:** `POST /api/daemon/v1/heartbeat` calls `cell.heartbeat()` (renews the Redis lease / updates DO meta) then `touchServerMetadataFromSnapshot` to write through to Postgres.
+
+**`DAEMON_INBOUND_ALLOWED`** is defined in `src/daemon/cell/protocol.ts` (not `hub.ts`).
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
 | `POST /api/daemon/v1/heartbeat` | daemon JWT | Daemon liveness signal; touches `server.metadata` and `daemonsession.lastUsedAt` |
 | `POST /api/daemon/v1/commands/lease` | daemon JWT | Poll for pending commands (stub — returns `{ commands: [] }`) |
 
-- Each socket gets an internal id (`daemon-1`, …) for routing; **display** uses tracked daemon hostname when available (UI falls back to `X-Real-IP`, then the internal id).
-- WS upgrade requires `Authorization: Bearer <daemon-jwt>`. The JWT is verified before upgrade completes; invalid or missing tokens return HTTP 401. The instance extracts `serverId`, `keyId`, and `sessionId` from the JWT and passes identity directly to `createDaemonWebSocketSession` (no post-upgrade handshake). Once connected, the hub marks the socket authenticated, evicts older sockets from the same `serverId`, `X-Real-IP`, or `hostname`, and prunes stale reconnect zombies. `organization_id` stays null until assigned in the developer **Servers** section (`PATCH /api/developer/v1/servers/:id`).
-- Co-located daemons that dial the instance Unix socket directly (no Caddy hop) collapse to a single local slot and are tagged `__direct__` (`getColocatedDaemonId`) — see `daemon` `AGENTS.md` for socket vs URL mode.
-- `DAEMON_INBOUND_ALLOWED` no longer includes `'hello'`, and the `challenge` / daemon-`hello` message variants were removed from `DaemonMessage`.
 - No `version` push / auto-update: the daemon never self-updates.
 
 ### Dev sync (push a daemon build without git)
@@ -247,7 +260,7 @@ Credential-account passwords use **PBKDF2-HMAC-SHA256** via `crypto.subtle` (`sr
 - **Canonical payload helper status**: `buildCanonicalPayload` is deprecated and aliases `buildAuthPayload` for compatibility (legacy `fingerprint` inputs are mapped to auth `keyId`).
 - Remote WSS connections require a valid daemon JWT at upgrade time; unauthenticated server row creation from `hostname`/`machineId` alone is disallowed.
 - Co-located socket daemons use the same auth model; there is no unauthenticated bypass.
-- `DAEMON_INBOUND_ALLOWED` in `hub.ts` is a static set of accepted post-auth message types — not an authz system.
+- `DAEMON_INBOUND_ALLOWED` in `src/daemon/cell/protocol.ts` is a static set of accepted post-auth message types — not an authz system.
 - Key rotation remains `POST /api/daemon/v1/server-key/rotate`; old keys remain revokable via `revokeServerKey`.
 
 ```mermaid
@@ -366,7 +379,7 @@ The **`mailer/`** consumer runs as **`turbopanel-mailer.service`** on managed ho
 |---|---|---|
 | `TURBOPANEL_AMQP_URL` | Deno | RabbitMQ connection URL (managed installs: from `/opt/turbopanel/platform/config/rabbitmq/.rabbitmq_pass`; Tilt dev default `amqp://guest:guest@localhost:19828`) |
 | `TURBOPANEL_DATABASE_URL` | Deno mailer | Postgres for DB-backed SMTP settings (`setting` table); same URL as the instance |
-| `TURBOPANEL_REDIS_SOCKET` | Deno | Unix socket path for future session/cache use (managed installs: `/run/turbopanel/redis.sock`; no consumer yet) |
+| `TURBOPANEL_REDIS_SOCKET` | Deno | Unix socket path used by the Daemon Cell Redis backend (`src/daemon/cell/redis/client.ts`); default `/run/turbopanel/redis.sock` |
 | `TURBOPANEL_SYSTEM_EMAIL_FROM` | Both | Sender address (default `noreply@turbopanel.local`) |
 | `TURBOPANEL_BASE_URL` | Deno | Public base URL for verification links (falls back to request origin) |
 | `TURBOPANEL_MAILGUN_API_KEY` | Workers | Mailgun API key |
@@ -421,7 +434,16 @@ sequenceDiagram
 - `src/client/routes.ts` — client REST router; imports `src/client/authn/*` and `src/client/authz/*`
 - `src/client/authn/` — session, credentials, PAM install gate, license CRUD, HTTP auth handlers
 - `src/client/authz/` — four-value permission catalog, `can`/`listVisible`, grant management
-- `src/daemon/api-routes.ts` / `src/daemon/hub.ts` / `src/daemon/ws-handlers.ts` / `src/daemon/deno-ws.ts` — daemon REST + WS hub
+- `src/daemon/api-routes.ts` / `src/daemon/deno-ws.ts` / `src/daemon/workers-ws.ts` — daemon REST + WS (cell-backed)
+- `src/daemon/cell/contracts.ts` — `DaemonCell` interface, `DaemonCellRegistry`, DTOs
+- `src/daemon/cell/protocol.ts` — `DaemonMessage`, envelope codecs, `DAEMON_INBOUND_ALLOWED`, `DAEMON_STALE_MS`, `DAEMON_PING_MS`
+- `src/daemon/cell/do.ts` — `DaemonCellObject` (SQLite-backed Durable Object, Workers)
+- `src/daemon/cell/do-registry.ts` — `createDurableObjectDaemonCellRegistry`
+- `src/daemon/cell/redis/` — `RedisDaemonCell`, `RedisCellClient`, `createRedisDaemonCellRegistry` (Deno only)
+- `src/daemon/cell/challenge-store.ts` — `DaemonChallengeStore` interface + Redis/DO/in-memory variants
+- `src/daemon/cell/location.ts` — `resolveCellLocationHint`, `resolveCellGeneration`
+- `src/daemon/cell/postgres-projection.ts` — write-through helpers for canonical Postgres fields
+- `src/daemon/cell/snapshot-merge.ts` — `mergeSnapshotPresence`
 - `src/daemon/authn/license.ts` — daemon hello license verification (`verifyDaemonLicense`)
 - `src/daemon/authn/daemon-jwt.ts` — daemon JWT issue/verify (HMAC-SHA256, 15-minute lifetime)
 - `src/daemon/authn/daemon-session-db.ts` — DB helpers for `daemonsession` rows (insert/touch/revoke/find-active)

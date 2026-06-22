@@ -3,8 +3,7 @@ import { Hono } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { listVisible } from '../authz/index.ts'
-import { listDaemonConnections } from '../../daemon/hub.ts'
-import { getDb } from '../../db.ts'
+import { getDb, getDaemonCellRegistry } from '../../db.ts'
 import { server } from '../../lib/db/schema.ts'
 
 export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
@@ -45,20 +44,23 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
       .where(and(inArray(server.id, visibleIds), isNull(server.deletedAt)))
       .orderBy(server.createdAt)
 
-    const connectionsByServerId = new Map(
-      listDaemonConnections()
-        .filter((conn) => conn.serverId)
-        .map((conn) => [conn.serverId!, conn]),
-    )
+    const registry = getDaemonCellRegistry(c)
+    const snapshots = registry
+      ? await registry.getSnapshots(rows.map((row) => row.id))
+      : new Map()
 
     return c.json({
       servers: rows.map((row) => {
-        const conn = connectionsByServerId.get(row.id)
+        const snapshot = snapshots.get(row.id)
+        const remoteAddress = snapshot?.remoteAddress &&
+            snapshot.remoteAddress !== '__direct__'
+          ? snapshot.remoteAddress
+          : null
         return {
           ...row,
-          connected: conn != null,
-          hostname: conn?.hostname ?? null,
-          remoteAddress: conn?.remoteAddress ?? null,
+          connected: snapshot?.connected ?? false,
+          hostname: snapshot?.hostname ?? null,
+          remoteAddress,
           licenseId: row.licenseId ?? null,
         }
       }),

@@ -2,12 +2,13 @@ import type { Hono } from 'hono'
 import { createRootOnlyMiddleware } from '../client/authn/middleware.ts'
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import { encodeBase64 } from '@std/encoding/base64'
+import type { DaemonCellRegistry } from '../daemon/cell/contracts.ts'
 import {
-  awaitDaemonAck,
-  type DaemonMessage,
-  listDaemonConnections,
-  sendToDaemon,
-} from '../daemon/hub.ts'
+  generateDeliveryId,
+  generateRequestId,
+  type DaemonOutboundEnvelope,
+} from '../daemon/cell/protocol.ts'
+import { getDaemonCellRegistry } from '../db.ts'
 import { getDaemonRepoPath } from '../daemon/version.ts'
 import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
 
@@ -48,43 +49,75 @@ async function buildDaemonTarball(repo: string): Promise<Uint8Array> {
   }
 }
 
+async function syncDevToDaemonWithRegistry(
+  registry: DaemonCellRegistry,
+  serverId: string,
+): Promise<void> {
+  const snapshots = await registry.getSnapshots([serverId])
+  if (!snapshots.get(serverId)?.connected) {
+    throw new Error('daemon not connected')
+  }
+
+  const cell = registry.getCell(serverId)
+  const tarball = await buildDaemonTarball(getDaemonRepoPath())
+  const base64 = encodeBase64(tarball)
+  const requestId = generateRequestId()
+  const totalChunks = Math.max(1, Math.ceil(base64.length / CHUNK_CHARS))
+
+  const begin: DaemonOutboundEnvelope = {
+    kind: 'dev-sync',
+    deliveryId: generateDeliveryId(),
+    requestId,
+    at: new Date().toISOString(),
+    phase: 'begin',
+    totalChunks,
+    totalBytes: tarball.byteLength,
+  }
+  await cell.enqueue(begin)
+
+  for (let i = 0; i < totalChunks; i++) {
+    const chunk: DaemonOutboundEnvelope = {
+      kind: 'dev-sync',
+      deliveryId: generateDeliveryId(),
+      requestId,
+      at: new Date().toISOString(),
+      phase: 'chunk',
+      index: i,
+      data: base64.slice(i * CHUNK_CHARS, (i + 1) * CHUNK_CHARS),
+    }
+    await cell.enqueue(chunk)
+  }
+
+  const end: DaemonOutboundEnvelope = {
+    kind: 'dev-sync',
+    deliveryId: generateDeliveryId(),
+    requestId,
+    at: new Date().toISOString(),
+    phase: 'end',
+  }
+  await cell.enqueue(end)
+
+  const record = await cell.waitForRequest(requestId, DEV_SYNC_TIMEOUT_MS)
+  if (!record || record.status === 'expired') {
+    throw new Error('timeout waiting for daemon acknowledgement')
+  }
+  if (record.status === 'failed') {
+    throw new Error(record.error ?? 'daemon reported failure')
+  }
+  if (record.status !== 'done') {
+    throw new Error(`unexpected dev-sync status: ${record.status}`)
+  }
+}
+
 /**
  * Package the instance host's current daemon build and stream it to one
  * connected daemon over the WebSocket, then wait for it to unpack + restart.
  */
-export async function syncDevToDaemon(daemonId: string): Promise<void> {
-  const tarball = await buildDaemonTarball(getDaemonRepoPath())
-  const base64 = encodeBase64(tarball)
-  const id = crypto.randomUUID()
-  const totalChunks = Math.max(1, Math.ceil(base64.length / CHUNK_CHARS))
-
-  const begin: DaemonMessage = {
-    type: 'dev-sync-begin',
-    id,
-    totalChunks,
-    totalBytes: tarball.byteLength,
-    at: new Date().toISOString(),
-  }
-  if (!sendToDaemon(daemonId, begin)) {
-    throw new Error('daemon not connected')
-  }
-
-  const ack = awaitDaemonAck(id, DEV_SYNC_TIMEOUT_MS)
-
-  for (let i = 0; i < totalChunks; i++) {
-    const data = base64.slice(i * CHUNK_CHARS, (i + 1) * CHUNK_CHARS)
-    sendToDaemon(daemonId, {
-      type: 'dev-sync-chunk',
-      id,
-      index: i,
-      data,
-      at: new Date().toISOString(),
-    })
-  }
-
-  sendToDaemon(daemonId, { type: 'dev-sync-end', id, at: new Date().toISOString() })
-
-  await ack
+export async function syncDevToDaemon(
+  daemonId: string,
+  registry: DaemonCellRegistry,
+): Promise<void> {
+  await syncDevToDaemonWithRegistry(registry, daemonId)
 }
 
 /**
@@ -101,9 +134,11 @@ export function registerDevSyncRoutes(
   }
 
   app.post(`${DEVELOPER_API_PREFIX}/daemon/:id/sync-dev`, async (c) => {
+    const registry = getDaemonCellRegistry(c)
+    if (!registry) return c.json({ ok: false, error: 'Daemon cell registry unavailable' }, 503)
     const id = c.req.param('id')
     try {
-      await syncDevToDaemon(id)
+      await syncDevToDaemon(id, registry)
       return c.json({ ok: true, daemonId: id })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -113,14 +148,17 @@ export function registerDevSyncRoutes(
   })
 
   app.post(`${DEVELOPER_API_PREFIX}/daemon/sync-dev`, async (c) => {
+    const registry = getDaemonCellRegistry(c)
+    if (!registry) return c.json({ ok: false, error: 'Daemon cell registry unavailable' }, 503)
+    const ids = await registry.listOnlineServerIds()
     const results = await Promise.all(
-      listDaemonConnections().map(async (conn) => {
+      ids.map(async (serverId) => {
         try {
-          await syncDevToDaemon(conn.id)
-          return { daemonId: conn.id, ok: true }
+          await syncDevToDaemon(serverId, registry)
+          return { daemonId: serverId, ok: true }
         } catch (err) {
           return {
-            daemonId: conn.id,
+            daemonId: serverId,
             ok: false,
             error: err instanceof Error ? err.message : String(err),
           }

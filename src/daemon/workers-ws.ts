@@ -1,23 +1,27 @@
 import type { Hono } from 'hono'
-import { WSContext } from 'hono/ws'
-import {
-  createDaemonWebSocketSession,
-  type DaemonWebSocketIdentity,
-  type DaemonWebSocketOptions,
-} from './ws-handlers.ts'
+import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import { getDb } from '../db.ts'
 import { DAEMON_WS_PATH } from '../surfaces.ts'
+import { findActiveDaemonSession } from './authn/daemon-session-db.ts'
 import { verifyDaemonJwt } from './authn/daemon-jwt.ts'
+import {
+  resolveCellGeneration,
+  resolveCellLocationHint,
+} from './cell/location.ts'
+
+export type WorkersDaemonWebSocketOptions = {
+  secrets?: DerivedSecretsConfig
+}
 
 /**
  * Daemon WebSocket hub for Cloudflare Workers / wrangler dev.
  *
- * The Hono Cloudflare adapter omits `onOpen`, so we wire the shared session
- * handler directly after `WebSocketPair` accept.
+ * Verifies the daemon JWT and session, then forwards the raw upgrade request
+ * to the per-server Durable Object cell.
  */
 export function registerWorkersDaemonWebSocket(
   app: Hono,
-  options: DaemonWebSocketOptions,
+  options: WorkersDaemonWebSocketOptions,
 ): void {
   app.get(DAEMON_WS_PATH, async (c) => {
     if (c.req.header('Upgrade')?.toLowerCase() !== 'websocket') {
@@ -35,44 +39,31 @@ export function registerWorkersDaemonWebSocket(
     if (!payload) {
       return new Response('Unauthorized', { status: 401 })
     }
-    const identity: DaemonWebSocketIdentity = {
-      serverId: payload.sub,
-      keyId: payload.kid,
-      sessionId: payload.sid,
+
+    const db = getDb(c)
+    if (db === undefined) {
+      return new Response('Database unavailable', { status: 503 })
     }
 
-    const pair = new WebSocketPair()
-    const [client, server] = Object.values(pair)
-    server.accept()
+    const session = await findActiveDaemonSession(db, payload.sid)
+    if (!session) {
+      return new Response('Unauthorized', { status: 401 })
+    }
 
-    const ws = new WSContext({
-      close: (code, reason) => server.close(code, reason),
-      get protocol() {
-        return server.protocol
-      },
-      raw: server,
-      get readyState() {
-        return server.readyState
-      },
-      url: server.url ? new URL(server.url) : null,
-      send: (source) => server.send(source),
-    })
+    const serverId = payload.sub
+    const [locationHint, generation] = await Promise.all([
+      resolveCellLocationHint(db, serverId),
+      resolveCellGeneration(db, serverId),
+    ])
+    const logicalName = generation > 1 ? `${serverId}:g${generation}` : serverId
 
-    const remoteAddress = c.req.header('x-real-ip')?.trim() ||
-      c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
-    const session = createDaemonWebSocketSession(
-      ws,
-      { db: getDb(c), secrets: options.secrets },
-      identity,
-      { remoteAddress },
-    )
-    server.addEventListener('message', (evt) => session.onMessage(evt, ws))
-    server.addEventListener('close', () => session.onClose())
-    server.addEventListener('error', () => session.onError())
+    const env = c.env as CloudflareBindings
+    const stub = locationHint
+      ? env.DAEMON_CELL.getByName(logicalName, {
+        locationHint: locationHint as DurableObjectLocationHint,
+      })
+      : env.DAEMON_CELL.getByName(logicalName)
 
-    return new Response(null, {
-      status: 101,
-      webSocket: client,
-    })
+    return stub.fetch(c.req.raw)
   })
 }

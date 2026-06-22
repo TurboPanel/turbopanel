@@ -3,6 +3,10 @@ import { deriveSecretsConfig, parseSecretsEnv } from './client/authn/secrets.ts'
 import { createApp } from './app.ts'
 import { createDenoDb } from './db.ts'
 import { logInfo } from './logger.ts'
+import { createRedisChallengeStore } from './daemon/cell/challenge-store.ts'
+import { createRedisDaemonCellRegistry } from './daemon/cell/redis/registry.ts'
+import { DAEMON_CHALLENGE_TTL_MS, DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS } from './daemon/authn/challenge.ts'
+import { DAEMON_PING_MS } from './daemon/cell/protocol.ts'
 import { registerInstallRoutes } from './lib/install/routes.ts'
 import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
 import { registerDaemonWebSocket } from './daemon/deno-ws.ts'
@@ -51,6 +55,21 @@ const secretsConfig = parseSecretsEnv(
 )
 const sessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
 const daemonJwtSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-jwt-signing')
+const daemonCellRegistry = createRedisDaemonCellRegistry()
+const challengeStoreProvider = {
+  enroll: createRedisChallengeStore(
+    daemonCellRegistry.client,
+    DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+  ),
+  auth: createRedisChallengeStore(
+    daemonCellRegistry.client,
+    DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+  ),
+  rotation: createRedisChallengeStore(
+    daemonCellRegistry.client,
+    DAEMON_CHALLENGE_TTL_MS,
+  ),
+}
 const app = createApp({
   db,
   emailQueue,
@@ -60,6 +79,7 @@ const app = createApp({
   signupEnvOverride: Deno.env.get('TURBOPANEL_IS_SIGNUP_ENABLED'),
   emailFrom: Deno.env.get('TURBOPANEL_SYSTEM_EMAIL_FROM') ?? 'noreply@turbopanel.local',
   baseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? undefined,
+  daemonCellRegistry,
 })
 const routes = app as unknown as Hono
 registerInstallRoutes(routes, {
@@ -70,7 +90,10 @@ registerInstallRoutes(routes, {
 if (developerSurface) {
   registerDeveloperRoutes(routes, { secrets: sessionSecrets, db, authRequired: false })
 }
-registerDaemonApiRoutes(routes, { secrets: daemonJwtSecrets })
+registerDaemonApiRoutes(routes, {
+  secrets: daemonJwtSecrets,
+  challengeStoreProvider,
+})
 registerVersionRoute(routes)
 if (developerSurface) {
   registerSystemRoutes(routes, { secrets: sessionSecrets, db, authRequired: false })
@@ -78,13 +101,26 @@ if (developerSurface) {
   registerTunnelRoutes(routes, { secrets: sessionSecrets, authRequired: false })
   registerUpdateRoutes(routes, { secrets: sessionSecrets, authRequired: false })
 }
-registerDaemonWebSocket(routes, { developerSurface, db, secrets: daemonJwtSecrets })
+registerDaemonWebSocket(routes, {
+  developerSurface,
+  db,
+  secrets: daemonJwtSecrets,
+  daemonCellRegistry,
+})
 const socketPath = resolveInstanceSocket()
 
 const abort = new AbortController()
+const maintenanceTimer = setInterval(() => {
+  void daemonCellRegistry.maintain().catch((err) => {
+    logInfo('daemon-cell', `maintenance error: ${String(err)}`)
+  })
+}, DAEMON_PING_MS)
+
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   Deno.addSignalListener(signal, async () => {
+    clearInterval(maintenanceTimer)
     await emailQueue.close?.()
+    await daemonCellRegistry.close()
     abort.abort()
   })
 }

@@ -1,19 +1,59 @@
 import { Hono } from 'hono'
 import { createSessionMiddleware } from '../client/authn/middleware.ts'
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
+import type { DaemonCellSnapshot } from '../daemon/cell/contracts.ts'
 import {
-  broadcastToDaemons,
-  type DaemonMessage,
-  dispatchCommand,
-  listCommandResults,
-  listDaemonConnections,
-  listDaemonEvents,
-  recordDaemonBroadcast,
-  requestDaemonAddresses,
-  sendToDaemon,
-} from '../daemon/hub.ts'
+  broadcastEchoToFleet,
+  collectFleetCommands,
+  collectFleetEvents,
+  enqueueEchoToServer,
+  listFleetServerIds,
+} from '../daemon/cell/fleet-diagnostics.ts'
+import {
+  generateDeliveryId,
+  generateRequestId,
+  type DaemonOutboundEnvelope,
+} from '../daemon/cell/protocol.ts'
+import { getDaemonCellRegistry, getDb } from '../db.ts'
+import type { ServerAddresses } from '../server-addresses.ts'
 import { collectServerAddresses } from '../server-addresses.ts'
 import { ADMIN_API_PREFIX } from '../surfaces.ts'
+
+const COMMAND_TIMEOUT_MS = 30_000
+const ADDRESSES_TIMEOUT_MS = 10_000
+
+function nowTs(): string {
+  return new Date().toISOString()
+}
+
+function snapshotToConnection(snapshot: DaemonCellSnapshot) {
+  return {
+    id: snapshot.serverId,
+    connectedAt: snapshot.connectedAt ?? snapshot.updatedAt,
+    hostname: snapshot.hostname ?? null,
+    serverId: snapshot.serverId,
+    keyId: snapshot.keyId ?? null,
+    authenticated: snapshot.connected,
+    remoteAddress: snapshot.remoteAddress && snapshot.remoteAddress !== '__direct__'
+      ? snapshot.remoteAddress
+      : null,
+    lastInboundAt: snapshot.lastInboundAt
+      ? new Date(snapshot.lastInboundAt).getTime()
+      : 0,
+    connected: snapshot.connected,
+  }
+}
+
+function extractAddresses(record: { status: string; result?: unknown }): ServerAddresses {
+  if (record.status !== 'done') {
+    throw new Error(record.status === 'expired'
+      ? 'timeout waiting for addresses'
+      : 'failed to fetch addresses')
+  }
+  const result = record.result as { addresses?: ServerAddresses } | undefined
+  if (!result?.addresses) throw new Error('missing addresses in daemon response')
+  return result.addresses
+}
 
 /**
  * Admin UI surface: fleet management, diagnostics, shell, addresses.
@@ -23,72 +63,126 @@ export function registerAdminRoutes(app: Hono, opts: { secrets: DerivedSecretsCo
   const admin = new Hono()
   admin.use('*', createSessionMiddleware(opts.secrets))
 
-  admin.get('/daemon/connections', (c) =>
-    c.json({ connections: listDaemonConnections() }))
+  admin.get('/daemon/connections', async (c) => {
+    const registry = getDaemonCellRegistry(c)
+    if (!registry) return c.json({ connections: [] })
+    const ids = await registry.listOnlineServerIds()
+    const snapshots = await registry.getSnapshots(ids)
+    const connections = ids
+      .map((id) => snapshots.get(id))
+      .filter((snap): snap is DaemonCellSnapshot => snap !== undefined)
+      .map(snapshotToConnection)
+    return c.json({ connections })
+  })
 
-  admin.get('/daemon/events', (c) => {
+  admin.get('/daemon/events', async (c) => {
+    const registry = getDaemonCellRegistry(c)
+    if (!registry) return c.json({ events: [] })
+    const db = getDb(c)
+    if (!db) return c.json({ events: [] })
     const limit = Number(c.req.query('limit') ?? 50)
-    return c.json({ events: listDaemonEvents(Number.isFinite(limit) ? limit : 50) })
+    const perServerLimit = Number.isFinite(limit) ? limit : 50
+    const serverIds = await listFleetServerIds(db)
+    const events = await collectFleetEvents(registry, serverIds, perServerLimit)
+    return c.json({ events })
   })
 
   admin.post('/daemon/broadcast', async (c) => {
+    const registry = getDaemonCellRegistry(c)
+    if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
     const body = await c.req.json().catch(() => null)
     if (!body || typeof body !== 'object' || !('payload' in body)) {
       return c.json({ error: 'expected { payload: unknown }' }, 400)
     }
-
-    const message: DaemonMessage = {
-      type: 'echo',
-      payload: body.payload,
-      at: new Date().toISOString(),
-    }
-    const sent = broadcastToDaemons(message)
-    recordDaemonBroadcast(sent, body.payload)
+    const ids = await registry.listOnlineServerIds()
+    const sent = await broadcastEchoToFleet(registry, ids, body.payload)
     return c.json({ ok: true, sent })
   })
 
   admin.post('/daemon/:id/send', async (c) => {
+    const registry = getDaemonCellRegistry(c)
+    if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
     const id = c.req.param('id')
     const body = await c.req.json().catch(() => null)
     if (!body || typeof body !== 'object' || !('payload' in body)) {
       return c.json({ error: 'expected { payload: unknown }' }, 400)
     }
-
-    const message: DaemonMessage = {
-      type: 'echo',
-      payload: body.payload,
-      at: new Date().toISOString(),
-    }
-    const sent = sendToDaemon(id, message)
-    if (!sent) return c.json({ error: 'daemon not connected' }, 404)
+    const snapshots = await registry.getSnapshots([id])
+    const snap = snapshots.get(id)
+    if (!snap?.connected) return c.json({ error: 'daemon not connected' }, 404)
+    await enqueueEchoToServer(registry, id, body.payload)
     return c.json({ ok: true, id })
   })
 
-  admin.get('/daemon/commands', (c) => {
+  admin.get('/daemon/commands', async (c) => {
+    const registry = getDaemonCellRegistry(c)
+    if (!registry) return c.json({ commands: [] })
+    const db = getDb(c)
+    if (!db) return c.json({ commands: [] })
     const limit = Number(c.req.query('limit') ?? 50)
-    return c.json({ commands: listCommandResults(Number.isFinite(limit) ? limit : 50) })
+    const perServerLimit = Number.isFinite(limit) ? limit : 50
+    const serverIds = await listFleetServerIds(db)
+    const commands = await collectFleetCommands(registry, serverIds, perServerLimit)
+    return c.json({ commands })
   })
 
   admin.post('/daemon/command', async (c) => {
+    const registry = getDaemonCellRegistry(c)
+    if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
     const body = await c.req.json().catch(() => null)
     const command = typeof body?.command === 'string' ? body.command.trim() : ''
     if (!command) return c.json({ error: 'expected { command: string }' }, 400)
 
-    const commandIds = listDaemonConnections()
-      .map((conn) => dispatchCommand(conn.id, command))
-      .filter((id): id is string => id !== null)
+    const ids = await registry.listOnlineServerIds()
+    const commandIds = (
+      await Promise.all(
+        ids.map(async (serverId) => {
+          const requestId = generateRequestId()
+          const envelope: DaemonOutboundEnvelope = {
+            kind: 'command',
+            deliveryId: generateDeliveryId(),
+            requestId,
+            at: nowTs(),
+            command,
+          }
+          try {
+            await registry.getCell(serverId).createRequestAndWait(
+              envelope,
+              COMMAND_TIMEOUT_MS,
+            )
+            return requestId
+          } catch {
+            return null
+          }
+        }),
+      )
+    ).filter((id): id is string => id !== null)
     return c.json({ ok: true, sent: commandIds.length, commandIds })
   })
 
   admin.post('/daemon/:id/command', async (c) => {
+    const registry = getDaemonCellRegistry(c)
+    if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
     const id = c.req.param('id')
     const body = await c.req.json().catch(() => null)
     const command = typeof body?.command === 'string' ? body.command.trim() : ''
     if (!command) return c.json({ error: 'expected { command: string }' }, 400)
 
-    const commandId = dispatchCommand(id, command)
-    if (!commandId) return c.json({ error: 'daemon not connected' }, 404)
-    return c.json({ ok: true, commandId })
+    const snapshots = await registry.getSnapshots([id])
+    if (!snapshots.get(id)?.connected) {
+      return c.json({ error: 'daemon not connected' }, 404)
+    }
+
+    const requestId = generateRequestId()
+    const envelope: DaemonOutboundEnvelope = {
+      kind: 'command',
+      deliveryId: generateDeliveryId(),
+      requestId,
+      at: nowTs(),
+      command,
+    }
+    await registry.getCell(id).createRequestAndWait(envelope, COMMAND_TIMEOUT_MS)
+    return c.json({ ok: true, commandId: requestId })
   })
 
   admin.get('/instance/addresses', (c) => {
@@ -97,20 +191,34 @@ export function registerAdminRoutes(app: Hono, opts: { secrets: DerivedSecretsCo
   })
 
   admin.get('/daemon/addresses', async (c) => {
-    const connections = listDaemonConnections()
+    const registry = getDaemonCellRegistry(c)
+    if (!registry) return c.json({ servers: [] })
+    const ids = await registry.listOnlineServerIds()
+    const snapshots = await registry.getSnapshots(ids)
     const servers = await Promise.all(
-      connections.map(async (conn) => {
+      ids.map(async (serverId) => {
+        const snapshot = snapshots.get(serverId)
+        const envelope: DaemonOutboundEnvelope = {
+          kind: 'addresses-request',
+          deliveryId: generateDeliveryId(),
+          requestId: generateRequestId(),
+          at: nowTs(),
+        }
         try {
-          const addresses = await requestDaemonAddresses(conn.id)
+          const record = await registry.getCell(serverId).createRequestAndWait(
+            envelope,
+            ADDRESSES_TIMEOUT_MS,
+          )
+          const addresses = extractAddresses(record)
           return {
-            daemonId: conn.id,
-            hostname: conn.hostname ?? null,
+            daemonId: serverId,
+            hostname: snapshot?.hostname ?? null,
             addresses,
           }
         } catch (err) {
           return {
-            daemonId: conn.id,
-            hostname: conn.hostname ?? null,
+            daemonId: serverId,
+            hostname: snapshot?.hostname ?? null,
             error: err instanceof Error ? err.message : String(err),
           }
         }
@@ -120,14 +228,30 @@ export function registerAdminRoutes(app: Hono, opts: { secrets: DerivedSecretsCo
   })
 
   admin.get('/daemon/:id/addresses', async (c) => {
+    const registry = getDaemonCellRegistry(c)
+    if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
     const id = c.req.param('id')
+    const snapshots = await registry.getSnapshots([id])
+    const snapshot = snapshots.get(id)
+    if (!snapshot?.connected) {
+      return c.json({ error: 'daemon not connected' }, 404)
+    }
     try {
-      const addresses = await requestDaemonAddresses(id)
-      const conn = listDaemonConnections().find((entry) => entry.id === id)
+      const envelope: DaemonOutboundEnvelope = {
+        kind: 'addresses-request',
+        deliveryId: generateDeliveryId(),
+        requestId: generateRequestId(),
+        at: nowTs(),
+      }
+      const record = await registry.getCell(id).createRequestAndWait(
+        envelope,
+        ADDRESSES_TIMEOUT_MS,
+      )
+      const addresses = extractAddresses(record)
       return c.json({
         ok: true,
         daemonId: id,
-        hostname: conn?.hostname ?? null,
+        hostname: snapshot.hostname ?? null,
         addresses,
       })
     } catch (err) {

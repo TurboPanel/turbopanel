@@ -148,7 +148,16 @@ Organization-scoped API tokens for server registration. Each row belongs to an `
 
 ### `server` table
 
-Each physical server node gets a row in `server` (`id` uuidv7). On daemon connect the instance resolves `serverId` (reuse by persisted id, `metadata.machineId`, or `metadata.hostname`), tracks the websocket in `daemon-hub`, and returns `serverId` in `hello`. The daemon persists it at `/opt/turbopanel/platform/daemon/state/server.id` (writable by the `turbopanel` user). `display_name`, `organization_id`, and soft-delete via `deleted_at` match the old trunk shape; daemon registration stores `machineId` / `hostname` in `metadata` (see `server-metadata.ts`). `license_id` (nullable FK → `license.id`) records which license token the server registered with.
+Each physical server node gets a row in `server` (`id` uuidv7). On daemon connect the instance resolves `serverId` (reuse by persisted id, `metadata.machineId`, or `metadata.hostname`), tracks presence in the **Daemon Cell**, and returns `serverId` in enrollment responses. The daemon persists it at `/opt/turbopanel/platform/daemon/state/server.id` (writable by the `turbopanel` user). `display_name`, `organization_id`, and soft-delete via `deleted_at` match the old trunk shape; daemon registration stores `machineId` / `hostname` in `metadata` (see `server-metadata.ts`). `license_id` (nullable FK → `license.id`) records which license token the server registered with.
+
+**Cell metadata fields** (stored in `server.metadata` and/or `server.options` JSONB — no migration required):
+
+| Field | Column | Purpose |
+|---|---|---|
+| `cellLocationHint` | `options` (preferred) or `metadata` | Cloudflare Durable Object `locationHint` chosen at enrollment time. Immutable after first `getByName` — region moves require a new `cellGeneration`. |
+| `cellGeneration` | `options` (preferred) or `metadata` | Integer (default 1). Increment to create a new DO logical name `${serverId}:g${n}` when the server's physical region changes materially. |
+
+`options` takes precedence over `metadata` when both define a value (see `src/daemon/cell/location.ts`).
 
 ### `serverkey` table
 

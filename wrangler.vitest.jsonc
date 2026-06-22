@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "dev-instance-test",
+  "main": "src/workers-vitest.ts",
+  "compatibility_date": "2026-06-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "DAEMON_CELL",
+        "class_name": "DaemonCellObject"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1-daemon-cell",
+      "new_sqlite_classes": ["DaemonCellObject"]
+    }
+  ],
+  "vars": {
+    "TURBOPANEL_SECRET": "aa_daemon_cell_vitest_secret_value_aaaa_b"
+  }
+}

@@ -1,10 +1,7 @@
 import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import { isMissingRelationError } from '../../db-errors.ts'
-import {
-  getColocatedDaemonHostname,
-  getColocatedDaemonServerId,
-} from '../../daemon/hub.ts'
+import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
 import {
   grant,
   account,
@@ -252,14 +249,45 @@ async function findDefaultInstalledOrganizationId(
   return rows[0]?.id ?? null
 }
 
+async function findColocatedServerIdFromRegistry(
+  registry: DaemonCellRegistry,
+): Promise<string | null> {
+  const onlineIds = await registry.listOnlineServerIds()
+  for (const id of onlineIds) {
+    const snapshot = await registry.getCell(id).getSnapshot()
+    if (snapshot.remoteAddress === '__direct__') {
+      return id
+    }
+  }
+  return null
+}
+
+async function findColocatedHostnameFromRegistry(
+  registry: DaemonCellRegistry,
+): Promise<string | null> {
+  const onlineIds = await registry.listOnlineServerIds()
+  for (const id of onlineIds) {
+    const snapshot = await registry.getCell(id).getSnapshot()
+    if (snapshot.remoteAddress === '__direct__' && snapshot.hostname) {
+      return snapshot.hostname
+    }
+  }
+  return null
+}
+
 /**
- * Resolve the co-located server row id from the live hub or persisted daemon
- * metadata (machineId / hostname). Used when the hub is empty during install
- * or right after an instance restart.
+ * Resolve the co-located server row id from the live cell registry or persisted
+ * daemon metadata (machineId / hostname). Used when no daemon is connected
+ * during install or right after an instance restart.
  */
-export async function resolveColocatedServerId(db: Db): Promise<string | null> {
-  const fromHub = getColocatedDaemonServerId()
-  if (fromHub) return fromHub
+export async function resolveColocatedServerId(
+  db: Db,
+  registry?: DaemonCellRegistry,
+): Promise<string | null> {
+  if (registry) {
+    const fromRegistry = await findColocatedServerIdFromRegistry(registry)
+    if (fromRegistry) return fromRegistry
+  }
 
   const machineId = await readLocalMachineId()
   if (machineId) {
@@ -275,7 +303,13 @@ export async function resolveColocatedServerId(db: Db): Promise<string | null> {
     if (byMachine[0]?.id) return byMachine[0].id
   }
 
-  const hostname = getColocatedDaemonHostname()
+  let hostname: string | null = null
+  if (registry) {
+    hostname = await findColocatedHostnameFromRegistry(registry)
+  }
+  if (!hostname && typeof Deno !== 'undefined') {
+    hostname = Deno.hostname()
+  }
   if (hostname) {
     const byHostname = await db
       .select({ id: server.id })
@@ -306,18 +340,20 @@ export async function resolveColocatedServerId(db: Db): Promise<string | null> {
 /** Assign the co-located daemon to the default installed organization when possible. */
 export async function tryAssignColocatedDaemonToInstalledOrganization(
   db: Db,
+  registry?: DaemonCellRegistry,
 ): Promise<void> {
   const organizationId = await findDefaultInstalledOrganizationId(db)
   if (!organizationId) return
 
-  await assignColocatedDaemonToOrganization(db, organizationId)
+  await assignColocatedDaemonToOrganization(db, organizationId, registry)
 }
 
 export async function assignColocatedDaemonToOrganization(
   db: Db,
   organizationId: string,
+  registry?: DaemonCellRegistry,
 ): Promise<boolean> {
-  const serverId = await resolveColocatedServerId(db)
+  const serverId = await resolveColocatedServerId(db, registry)
   if (!serverId) {
     compatLogInfo(
       'install',

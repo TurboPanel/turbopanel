@@ -1,0 +1,207 @@
+import { isNull } from 'drizzle-orm'
+import type { Db } from '../../db.ts'
+import { server } from '../../lib/db/schema.ts'
+import type {
+  DaemonCellRegistry,
+  PendingRequestRecord,
+} from './contracts.ts'
+import {
+  generateDeliveryId,
+  generateRequestId,
+  type DaemonOutboundEnvelope,
+} from './protocol.ts'
+
+export type DaemonEvent =
+  | { at: string; kind: 'connected'; daemonId: string }
+  | { at: string; kind: 'disconnected'; daemonId: string }
+  | {
+    at: string
+    kind: 'message'
+    daemonId: string
+    direction: 'in' | 'out'
+    message: { type: string; [key: string]: unknown }
+  }
+  | { at: string; kind: 'broadcast'; sent: number; payload: unknown }
+
+export type CommandResult = {
+  id: string
+  daemonId: string
+  command: string
+  status: 'pending' | 'done'
+  exitCode?: number
+  stdout?: string
+  stderr?: string
+  sentAt: string
+  finishedAt?: string
+}
+
+function nowTs(): string {
+  return new Date().toISOString()
+}
+
+export async function listFleetServerIds(db: Db): Promise<string[]> {
+  const rows = await db
+    .select({ id: server.id })
+    .from(server)
+    .where(isNull(server.deletedAt))
+  return rows.map((row) => row.id)
+}
+
+function cellEventToDaemonEvent(
+  serverId: string,
+  event: { kind: string; at: string; payload: Record<string, unknown> },
+): DaemonEvent | null {
+  switch (event.kind) {
+    case 'connected':
+      return { at: event.at, kind: 'connected', daemonId: serverId }
+    case 'disconnected':
+      return { at: event.at, kind: 'disconnected', daemonId: serverId }
+    case 'message':
+      if (
+        event.payload.direction !== 'in' &&
+        event.payload.direction !== 'out'
+      ) {
+        return null
+      }
+      if (
+        !event.payload.message ||
+        typeof event.payload.message !== 'object'
+      ) {
+        return null
+      }
+      return {
+        at: event.at,
+        kind: 'message',
+        daemonId: serverId,
+        direction: event.payload.direction,
+        message: event.payload.message as {
+          type: string
+          [key: string]: unknown
+        },
+      }
+    case 'broadcast':
+      return {
+        at: event.at,
+        kind: 'broadcast',
+        sent: Number(event.payload.sent ?? 0),
+        payload: event.payload.payload,
+      }
+    default:
+      return null
+  }
+}
+
+export async function collectFleetEvents(
+  registry: DaemonCellRegistry,
+  serverIds: string[],
+  limit: number,
+): Promise<DaemonEvent[]> {
+  const perServerLimit = Math.max(limit, 50)
+  const allEvents: DaemonEvent[] = []
+
+  await Promise.all(
+    serverIds.map(async (serverId) => {
+      const cellEvents = await registry.getCell(serverId).listEvents(perServerLimit)
+      for (const event of cellEvents) {
+        const mapped = cellEventToDaemonEvent(serverId, event)
+        if (mapped) allEvents.push(mapped)
+      }
+    }),
+  )
+
+  allEvents.sort((a, b) => a.at.localeCompare(b.at))
+  return allEvents.slice(-limit)
+}
+
+function requestToCommandResult(record: PendingRequestRecord): CommandResult {
+  const result = record.result as {
+    exitCode?: number
+    stdout?: string
+    stderr?: string
+  } | undefined
+
+  return {
+    id: record.requestId,
+    daemonId: record.serverId,
+    command: record.command ?? '',
+    status: record.status === 'done' ? 'done' : 'pending',
+    exitCode: result?.exitCode,
+    stdout: result?.stdout,
+    stderr: result?.stderr,
+    sentAt: record.createdAt,
+    finishedAt: record.finishedAt,
+  }
+}
+
+export async function collectFleetCommands(
+  registry: DaemonCellRegistry,
+  serverIds: string[],
+  limit: number,
+): Promise<CommandResult[]> {
+  const perServerLimit = Math.max(limit, 50)
+  const allCommands: CommandResult[] = []
+
+  await Promise.all(
+    serverIds.map(async (serverId) => {
+      const records = await registry.getCell(serverId).listRequests(
+        perServerLimit,
+        { requestKind: 'command' },
+      )
+      allCommands.push(...records.map(requestToCommandResult))
+    }),
+  )
+
+  allCommands.sort((a, b) => a.sentAt.localeCompare(b.sentAt))
+  return allCommands.slice(-limit)
+}
+
+function echoEnvelope(payload: unknown): DaemonOutboundEnvelope {
+  return {
+    kind: 'echo',
+    deliveryId: generateDeliveryId(),
+    requestId: generateRequestId(),
+    at: nowTs(),
+    payload,
+  }
+}
+
+export async function enqueueEchoToServer(
+  registry: DaemonCellRegistry,
+  serverId: string,
+  payload: unknown,
+): Promise<void> {
+  const envelope = echoEnvelope(payload)
+  const cell = registry.getCell(serverId)
+  await cell.enqueue(envelope)
+  await cell.appendEvent('message', {
+    direction: 'out',
+    message: { type: 'echo', payload, at: envelope.at },
+  })
+}
+
+export async function broadcastEchoToFleet(
+  registry: DaemonCellRegistry,
+  onlineServerIds: string[],
+  payload: unknown,
+): Promise<number> {
+  let sent = 0
+  await Promise.all(
+    onlineServerIds.map(async (serverId) => {
+      try {
+        await enqueueEchoToServer(registry, serverId, payload)
+        sent++
+      } catch {
+        // Skip servers that fail to enqueue.
+      }
+    }),
+  )
+
+  if (sent > 0 && onlineServerIds[0]) {
+    await registry.getCell(onlineServerIds[0]).appendEvent('broadcast', {
+      sent,
+      payload,
+    })
+  }
+
+  return sent
+}

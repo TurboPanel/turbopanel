@@ -11,16 +11,20 @@
     "deploy:workers": "pnpm run deploy",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
     "generate:secret": "node scripts/generate-secret.mjs",
-    "migrate": "drizzle-kit migrate --config drizzle.config.mjs"
+    "migrate": "drizzle-kit migrate --config drizzle.config.mjs",
+    "test:do": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
     "amqplib": "^2.0.1",
     "drizzle-orm": "^0.43.1",
     "hono": "4.12.23",
-    "postgres": "^3.4.7"
+    "postgres": "^3.4.7",
+    "ioredis": "^5.11.1"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.8.38",
     "drizzle-kit": "^0.31.1",
+    "vitest": "~3.0.5",
     "wrangler": "^4.98.0"
   },
   "packageManager": "pnpm@11.5.2+sha512.71c631e382066efc25625d5cf029075de07b61b37f6e27350fbd84b1bda5864c8c1967adc280776b45c30a715c0359a3be08fef42d5bb09e2b99029979692916"

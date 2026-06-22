@@ -2,7 +2,11 @@ import { Hono } from "hono";
 import type { Context, Next } from "hono";
 import { isInstanceInstalled } from "../client/authn/install-state.ts";
 import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
-import { getDb } from "../db.ts";
+import { getDb, getDaemonCellRegistry } from "../db.ts";
+import {
+  touchDaemonSessionFromHeartbeat,
+  touchServerMetadataFromSnapshot,
+} from "./cell/postgres-projection.ts";
 import { getDaemonOpenApiSpec } from "./openapi/index.ts";
 import { buildDaemonScalarHtml } from "../scalar-html.ts";
 import { resolveInstanceTlsCaPath } from "../server-paths.ts";
@@ -11,7 +15,6 @@ import { resolveServerId, touchServerMetadata } from "../server-registry.ts";
 import { verifyDaemonLicense } from "./authn/license.ts";
 import {
   insertDaemonSession,
-  touchDaemonSessionLastUsed,
 } from "./authn/daemon-session-db.ts";
 import {
   DAEMON_JWT_LIFETIME_MS,
@@ -31,11 +34,14 @@ import {
   computePublicKeyFingerprint,
   verifyDaemonSignature,
 } from "./authn/server-key.ts";
-import { createDaemonChallengeStore } from "./authn/challenge.ts";
-
-const enrollChallengeStore = createDaemonChallengeStore(60_000);
-const authChallengeStore = createDaemonChallengeStore(60_000);
-const rotationChallengeStore = createDaemonChallengeStore();
+import {
+  createInMemoryChallengeStore,
+  type DaemonChallengeStore,
+} from "./cell/challenge-store.ts";
+import {
+  DAEMON_CHALLENGE_TTL_MS,
+  DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+} from "./authn/challenge.ts";
 
 function normalizeRequiredString(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -47,12 +53,12 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function challengeExpiresAt(at: string): string {
+function challengeExpiresAt(at: string, ttlMs: number): string {
   const atMs = new Date(at).getTime();
   if (!Number.isFinite(atMs)) {
-    return new Date(Date.now() + 60_000).toISOString();
+    return new Date(Date.now() + ttlMs).toISOString();
   }
-  return new Date(atMs + 60_000).toISOString();
+  return new Date(atMs + ttlMs).toISOString();
 }
 
 /**
@@ -61,10 +67,23 @@ function challengeExpiresAt(at: string): string {
  */
 export function registerDaemonApiRoutes(
   app: Hono,
-  options: { secrets?: DerivedSecretsConfig } = {},
+  options: {
+    secrets?: DerivedSecretsConfig
+    challengeStoreProvider?: {
+      enroll: DaemonChallengeStore
+      auth: DaemonChallengeStore
+      rotation: DaemonChallengeStore
+    }
+  } = {},
 ) {
   const daemon = new Hono();
   const { secrets } = options;
+  const enrollChallengeStore = options.challengeStoreProvider?.enroll
+    ?? createInMemoryChallengeStore(DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS);
+  const authChallengeStore = options.challengeStoreProvider?.auth
+    ?? createInMemoryChallengeStore(DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS);
+  const rotationChallengeStore = options.challengeStoreProvider?.rotation
+    ?? createInMemoryChallengeStore(DAEMON_CHALLENGE_TTL_MS);
 
   const requireDaemonJwt = async (c: Context, next: Next) => {
     if (!secrets) {
@@ -156,21 +175,21 @@ export function registerDaemonApiRoutes(
         }
       }
 
-      const challenge = authChallengeStore.issue({ serverId, keyId });
+      const challenge = await authChallengeStore.issue({ serverId, keyId });
       return c.json({
         challengeId: challenge.id,
         nonce: challenge.nonce,
         at: challenge.at,
-        expiresAt: challengeExpiresAt(challenge.at),
+        expiresAt: challengeExpiresAt(challenge.at, authChallengeStore.ttlMs),
       }, 200);
     }
 
-    const challenge = enrollChallengeStore.issue();
+    const challenge = await enrollChallengeStore.issue();
     return c.json({
       challengeId: challenge.id,
       nonce: challenge.nonce,
       at: challenge.at,
-      expiresAt: challengeExpiresAt(challenge.at),
+      expiresAt: challengeExpiresAt(challenge.at, enrollChallengeStore.ttlMs),
     }, 200);
   });
 
@@ -201,7 +220,7 @@ export function registerDaemonApiRoutes(
       return c.json({ ok: false, error: "Missing required enroll fields" }, 400);
     }
 
-    const challenge = enrollChallengeStore.consume({ challengeId });
+    const challenge = await enrollChallengeStore.consume({ challengeId });
     if (!challenge) {
       return c.json({ ok: false, error: "Invalid or expired challenge" }, 400);
     }
@@ -304,7 +323,7 @@ export function registerDaemonApiRoutes(
       }
     }
 
-    const challenge = authChallengeStore.consume({ challengeId, serverId, keyId });
+    const challenge = await authChallengeStore.consume({ challengeId, serverId, keyId });
     if (!challenge) {
       return c.json({ ok: false, error: "Invalid or expired challenge" }, 400);
     }
@@ -378,7 +397,7 @@ export function registerDaemonApiRoutes(
       }
     }
 
-    const challenge = rotationChallengeStore.issue({ serverId, keyId });
+    const challenge = await rotationChallengeStore.issue({ serverId, keyId });
     return c.json({
       challengeId: challenge.id,
       nonce: challenge.nonce,
@@ -428,7 +447,7 @@ export function registerDaemonApiRoutes(
       }
     }
 
-    const issuedChallenge = rotationChallengeStore.consume({
+    const issuedChallenge = await rotationChallengeStore.consume({
       challengeId,
       serverId,
       keyId,
@@ -493,11 +512,19 @@ export function registerDaemonApiRoutes(
     const hostname = typeof body.hostname === "string"
       ? body.hostname.trim()
       : undefined;
+    const at = new Date().toISOString();
 
-    if (hostname) {
+    const registry = getDaemonCellRegistry(c);
+    if (registry) {
+      const cell = registry.getCell(serverId);
+      await cell.heartbeat({ hostname, at });
+      const snapshot = await cell.getSnapshot();
+      await touchServerMetadataFromSnapshot(db, serverId, snapshot);
+    } else if (hostname) {
       await touchServerMetadata(db, serverId, { hostname });
     }
-    void touchDaemonSessionLastUsed(db, sessionId).catch((err) => {
+
+    void touchDaemonSessionFromHeartbeat(db, sessionId).catch((err) => {
       console.warn("failed to touch daemon session", err);
     });
 

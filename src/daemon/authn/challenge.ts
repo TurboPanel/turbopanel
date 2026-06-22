@@ -1,4 +1,7 @@
+/** Short TTL for key-rotation challenges. */
 export const DAEMON_CHALLENGE_TTL_MS = 15_000;
+/** Enroll and auth challenges — matches `/auth/challenge` `expiresAt` contract. */
+export const DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS = 60_000;
 
 export type DaemonChallenge = {
   id: string;

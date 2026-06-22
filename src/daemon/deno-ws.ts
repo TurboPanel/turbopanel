@@ -1,16 +1,33 @@
 import type { Hono } from 'hono'
 import { upgradeWebSocket } from 'hono/deno'
+import type { DaemonCellRegistry } from './cell/contracts.ts'
 import {
-  createDaemonWebSocketSession,
-  type DaemonWebSocketIdentity,
-  type DaemonWebSocketOptions,
-} from './ws-handlers.ts'
+  DAEMON_INBOUND_ALLOWED,
+  generateDeliveryId,
+  generateRequestId,
+  outboundEnvelopeToWireMessage,
+  parseDaemonMessage,
+  wireMessageToInboundEnvelope,
+  type DaemonMessage,
+} from './cell/protocol.ts'
+import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
+import { tryAssignColocatedDaemonToInstalledOrganization } from '../client/authn/install-state.ts'
+import type { Db } from '../db.ts'
+import { compatLogError, compatLogInfo, compatLogWarn } from '../log-compat.ts'
 import {
   CLIENT_WS_PATH,
   DAEMON_WS_PATH,
   DEVELOPER_WS_PATH,
 } from '../surfaces.ts'
+import { findActiveDaemonSession, touchDaemonSessionLastUsed } from './authn/daemon-session-db.ts'
 import { verifyDaemonJwt } from './authn/daemon-jwt.ts'
+
+export type DaemonWebSocketOptions = {
+  developerSurface?: boolean
+  db?: Db
+  secrets?: DerivedSecretsConfig
+  daemonCellRegistry?: DaemonCellRegistry
+}
 
 export function registerDaemonWebSocket(
   app: Hono,
@@ -28,36 +45,189 @@ export function registerDaemonWebSocket(
     if (!payload) {
       return c.json({ ok: false, error: 'unauthorized' }, 401)
     }
-    const identity: DaemonWebSocketIdentity = {
-      serverId: payload.sub,
-      keyId: payload.kid,
-      sessionId: payload.sid,
+
+    const db = options.db
+    if (!db) {
+      return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    }
+
+    const session = await findActiveDaemonSession(db, payload.sid)
+    if (!session) {
+      return c.json({ ok: false, error: 'unauthorized' }, 401)
+    }
+
+    const registry = options.daemonCellRegistry
+    if (!registry) {
+      return c.json({ ok: false, error: 'Daemon cell registry unavailable' }, 503)
     }
 
     return upgradeWebSocket((c) => {
-      // Capture proxy headers while the upgrade request is still open. Deno's
-      // onOpen callback runs after the HTTP request closes — reading c.req there
-      // throws "Request closed" and crashes the instance on every daemon connect.
       const remoteAddress = c.req.header('x-real-ip')?.trim() ||
         c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
-      let session: ReturnType<typeof createDaemonWebSocketSession> | undefined
-      return {
-        onOpen(_event, ws) {
-          session = createDaemonWebSocketSession(
-            ws,
-            options,
-            identity,
-            { remoteAddress },
+      const identityAddress = remoteAddress ?? '__direct__'
+      const connectedAt = new Date().toISOString()
+
+      let connectionId: string | undefined
+      let leaseToken: string | undefined
+      let pumpAbort = false
+      let pingTimer: ReturnType<typeof setInterval> | undefined
+      let sessionTouched = false
+
+      const touchSession = () => {
+        if (sessionTouched) return
+        sessionTouched = true
+        touchDaemonSessionLastUsed(db, payload.sid).catch((err) => {
+          compatLogWarn(
+            'ws',
+            `failed to touch daemon session ${payload.sid}: ${String(err)}`,
           )
+        })
+      }
+
+      return {
+        async onOpen(_event, ws) {
+          const cell = registry.getCell(payload.sub)
+          const attached = await cell.attachDaemonSocket({
+            sessionId: payload.sid,
+            keyId: payload.kid,
+            hostname: undefined,
+            remoteAddress: identityAddress,
+            connectedAt,
+          })
+          connectionId = attached.connectionId
+          leaseToken = attached.lease.token
+
+          compatLogInfo(
+            'ws',
+            `daemon connected: ${connectionId}${
+              remoteAddress ? ` from ${remoteAddress}` : ''
+            }`,
+          )
+
+          touchSession()
+
+          if (identityAddress === '__direct__') {
+            void tryAssignColocatedDaemonToInstalledOrganization(db, registry)
+              .catch((err) => {
+                compatLogError('ws', `failed to assign colocated server: ${err}`)
+              })
+          }
+
+          const consumer = `ws:${connectionId}`
+
+          const outboxPump = async () => {
+            while (!pumpAbort) {
+              try {
+                const batch = await cell.readOutboxBatch({
+                  consumer,
+                  count: 50,
+                  blockMs: 15_000,
+                })
+                for (const envelope of batch) {
+                  const wireMsg = outboundEnvelopeToWireMessage(envelope)
+                  ws.send(JSON.stringify(wireMsg))
+                  await cell.ackOutbox([envelope.deliveryId], consumer)
+                  await cell.markSent(envelope.deliveryId, connectionId!)
+                }
+                if (batch.length > 0) {
+                  await cell.putSnapshot({
+                    lastOutboundAt: new Date().toISOString(),
+                  })
+                }
+              } catch (err) {
+                if (!pumpAbort) {
+                  compatLogWarn('ws', `outbox pump error: ${String(err)}`)
+                }
+              }
+            }
+          }
+          void outboxPump()
+
+          pingTimer = setInterval(() => {
+            void cell.enqueue({
+              kind: 'ping',
+              deliveryId: generateDeliveryId(),
+              requestId: generateRequestId(),
+              at: new Date().toISOString(),
+            })
+          }, 15_000)
         },
         onMessage(event, ws) {
-          session?.onMessage(event, ws)
+          const raw = typeof event.data === 'string'
+            ? event.data
+            : String(event.data)
+          const message = parseDaemonMessage(raw)
+          if (!message) {
+            compatLogWarn('ws', 'ignored non-JSON message from daemon')
+            return
+          }
+
+          compatLogInfo('ws', `from ${connectionId ?? 'unknown'}: ${message.type}`)
+
+          if (!DAEMON_INBOUND_ALLOWED.has(message.type)) {
+            compatLogWarn(
+              'ws',
+              `ignored disallowed message type ${message.type} from ${
+                connectionId ?? 'unknown'
+              }`,
+            )
+            return
+          }
+
+          const cell = registry.getCell(payload.sub)
+
+          if (message.type === 'ping') {
+            const pong: DaemonMessage = {
+              type: 'pong',
+              id: message.id,
+              at: new Date().toISOString(),
+            }
+            ws.send(JSON.stringify(pong))
+            if (connectionId) {
+              void cell.heartbeat({ connectionId })
+              void cell.putSnapshot({ lastInboundAt: message.at })
+            }
+            touchSession()
+            return
+          }
+
+          const envelope = wireMessageToInboundEnvelope(message)
+          if (envelope) {
+            void cell.handleInbound(envelope)
+            void cell.putSnapshot({ lastInboundAt: message.at })
+          }
+
+          if (message.type === 'pong' && connectionId) {
+            void cell.heartbeat({ connectionId })
+          }
+
+          touchSession()
         },
         onClose() {
-          session?.onClose()
+          pumpAbort = true
+          if (pingTimer) clearInterval(pingTimer)
+          if (connectionId && leaseToken) {
+            void registry.getCell(payload.sub).detachDaemonSocket({
+              connectionId,
+              leaseToken,
+              reason: 'closed',
+              closedAt: new Date().toISOString(),
+            })
+            compatLogInfo('ws', `daemon disconnected: ${connectionId}`)
+          }
         },
         onError() {
-          session?.onError()
+          pumpAbort = true
+          if (pingTimer) clearInterval(pingTimer)
+          if (connectionId && leaseToken) {
+            void registry.getCell(payload.sub).detachDaemonSocket({
+              connectionId,
+              leaseToken,
+              reason: 'closed',
+              closedAt: new Date().toISOString(),
+            })
+            compatLogInfo('ws', `daemon disconnected: ${connectionId}`)
+          }
         },
       }
     })(c, next)
@@ -88,5 +258,3 @@ function registerStubWebSocket(app: Hono, path: string, surface: string): void {
     })),
   )
 }
-
-export type { DaemonWebSocketOptions }

@@ -34,4 +34,31 @@ export type ServerMetadata = {
   cpu?: ServerCpuMetadata
   machineId?: string
   hostname?: string
+  /**
+   * Cloudflare `locationHint` chosen at enrollment time (e.g. `"wnam"`, `"eeur"`).
+   * Enrollment-time decision; region moves require a new generation.
+   */
+  cellLocationHint?: string
+  /** Monotonically increasing; increment when a new DO logical name is issued after a region move. */
+  cellGeneration?: number
+  /** Last snapshot version written by the cell, for optimistic concurrency checks. */
+  cellSnapshotVersion?: number
+}
+
+/**
+ * JSON stored in `server.options`. Operator-controlled server configuration;
+ * cell fields here override the enrollment copies in `server.metadata` when both
+ * are present.
+ */
+export type ServerOptions = {
+  /**
+   * Cloudflare `locationHint` for the daemon cell (e.g. `"wnam"`, `"eeur"`).
+   * Takes precedence over `server.metadata.cellLocationHint` when set.
+   */
+  cellLocationHint?: string
+  /**
+   * Monotonically increasing cell generation for logical DO naming.
+   * Takes precedence over `server.metadata.cellGeneration` when set.
+   */
+  cellGeneration?: number
 }

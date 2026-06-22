@@ -23,8 +23,30 @@
       "id": "83edd62a2d7e4e6ba8b5d77b01ca3729"
     }
   ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "DAEMON_CELL",
+        "class_name": "DaemonCellObject"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1-daemon-cell",
+      "new_sqlite_classes": ["DaemonCellObject"]
+    }
+  ],
   "env": {
     "testing": {
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "DAEMON_CELL",
+            "class_name": "DaemonCellObject"
+          }
+        ]
+      },
       "routes": [
         {
           "pattern": "testing.turbopanel.dev/api/*",
@@ -41,6 +63,14 @@
     },
     "live": {
       "name": "instance",
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "DAEMON_CELL",
+            "class_name": "DaemonCellObject"
+          }
+        ]
+      },
       "routes": [
         {
           "pattern": "turbopanel.app/api/*",

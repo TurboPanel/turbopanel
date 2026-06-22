@@ -1,6 +1,7 @@
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import type { Context } from 'hono'
 import postgres from 'postgres'
+import type { DaemonCellRegistry } from './daemon/cell/contracts.ts'
 import { getDatabaseUrl, resolvePostgresConnection } from './db-url.ts'
 import * as schema from './lib/db/schema.ts'
 
@@ -72,4 +73,8 @@ export async function withToolingDb<T>(fn: (db: Db) => Promise<T>): Promise<T> {
 
 export function getDb(c: Context): Db | undefined {
   return c.get('db')
+}
+
+export function getDaemonCellRegistry(c: Context): DaemonCellRegistry | undefined {
+  return c.get('daemonCellRegistry')
 }

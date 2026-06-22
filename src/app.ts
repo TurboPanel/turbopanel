@@ -3,6 +3,7 @@ import type { SessionData } from './client/authn/session-store.ts'
 import type { DerivedSecretsConfig } from './client/authn/secrets.ts'
 import { registerClientRoutes } from './client/routes.ts'
 import { registerCorsMiddleware } from './cors.ts'
+import type { DaemonCellRegistry } from './daemon/cell/contracts.ts'
 import type { Db } from './db.ts'
 import type { EmailQueue } from './lib/email/types.ts'
 import { HEALTH_PATH } from './surfaces.ts'
@@ -16,6 +17,7 @@ export type AppEnv = {
     session?: SessionData
     /** Hyperdrive or TURBOPANEL_DATABASE_URL for database status routes (Workers). */
     postgresConnectionString?: string
+    daemonCellRegistry?: DaemonCellRegistry
   }
 }
 
@@ -29,6 +31,7 @@ export function createApp(
     runtime,
     corsOrigins,
     signupEnvOverride,
+    daemonCellRegistry,
   }: {
     db?: Db
     emailQueue?: EmailQueue
@@ -38,6 +41,7 @@ export function createApp(
     runtime?: 'deno' | 'workers'
     corsOrigins?: string
     signupEnvOverride?: string
+    daemonCellRegistry?: DaemonCellRegistry
   } = {},
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>()
@@ -45,6 +49,12 @@ export function createApp(
   if (db) {
     app.use('*', (c, next) => {
       c.set('db', db)
+      return next()
+    })
+  }
+  if (daemonCellRegistry) {
+    app.use('*', (c, next) => {
+      c.set('daemonCellRegistry', daemonCellRegistry)
       return next()
     })
   }

@@ -2,18 +2,27 @@ import { Hono } from 'hono'
 import type { DerivedSecretsConfig } from './client/authn/secrets.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from './client/authn/secrets.ts'
 import { createApp, type AppEnv } from './app'
+import { createDurableObjectDaemonCellRegistry } from './daemon/cell/do-registry.ts'
+import { createDurableObjectChallengeStore } from './daemon/cell/challenge-store.ts'
 import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
 import { createWorkersDb } from './db'
 import { registerWorkersDaemonWebSocket } from './daemon/workers-ws.ts'
+import { DAEMON_CHALLENGE_TTL_MS, DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS } from './daemon/authn/challenge.ts'
 import { createNoopQueue } from './lib/email/noop-queue.ts'
 import { createWorkersMailgunQueue } from './lib/email/mailgun/workers-queue.ts'
 import type { EmailQueue } from './lib/email/types.ts'
+
+export { DaemonCellObject } from './daemon/cell/do.ts'
 
 let initPromise: Promise<void> | null = null
 let cachedApp: ReturnType<typeof createApp> | null = null
 let cachedSessionSecrets: DerivedSecretsConfig | null = null
 let cachedDaemonJwtSecrets: DerivedSecretsConfig | null = null
 let cachedEmailQueue: EmailQueue | null = null
+let cachedDaemonCellRegistryFactory:
+  | ((env: CloudflareBindings, db?: ReturnType<typeof createWorkersDb>) =>
+    ReturnType<typeof createDurableObjectDaemonCellRegistry>)
+  | null = null
 
 async function initWorkerApp(env: CloudflareBindings) {
   const secretsConfig = parseSecretsEnv(
@@ -40,10 +49,30 @@ async function initWorkerApp(env: CloudflareBindings) {
     signupEnvOverride: env.TURBOPANEL_IS_SIGNUP_ENABLED,
     emailFrom: env.TURBOPANEL_SYSTEM_EMAIL_FROM ?? 'noreply@turbopanel.local',
   })
-  registerDaemonApiRoutes(cachedApp, { secrets: cachedDaemonJwtSecrets ?? undefined })
+  const challengeStub = env.DAEMON_CELL.getByName('challenge-store')
+  const challengeStoreProvider = {
+    enroll: createDurableObjectChallengeStore(
+      challengeStub,
+      DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+    ),
+    auth: createDurableObjectChallengeStore(
+      challengeStub,
+      DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+    ),
+    rotation: createDurableObjectChallengeStore(
+      challengeStub,
+      DAEMON_CHALLENGE_TTL_MS,
+    ),
+  }
+  registerDaemonApiRoutes(cachedApp, {
+    secrets: cachedDaemonJwtSecrets ?? undefined,
+    challengeStoreProvider,
+  })
   registerWorkersDaemonWebSocket(cachedApp, {
     secrets: cachedDaemonJwtSecrets ?? undefined,
   })
+  cachedDaemonCellRegistryFactory = (env, db) =>
+    createDurableObjectDaemonCellRegistry(env, db)
 }
 
 export default {
@@ -61,6 +90,12 @@ export default {
       if (cachedEmailQueue) c.set('emailQueue', cachedEmailQueue)
       if (postgresConnectionString) {
         c.set('postgresConnectionString', postgresConnectionString)
+      }
+      if (cachedDaemonCellRegistryFactory) {
+        c.set(
+          'daemonCellRegistry',
+          cachedDaemonCellRegistryFactory(env, db),
+        )
       }
       await next()
     })
