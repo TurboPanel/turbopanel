@@ -10,7 +10,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { networkInterfaces } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -167,6 +167,13 @@ function removeTempServerFiles() {
   }
 }
 
+/** Caddy reads keys as turbopaneli:turbopanel — group must be able to read. */
+function normalizeTlsKeyPermissions() {
+  for (const file of [caKeyPath, keyPath]) {
+    if (existsSync(file)) chmodSync(file, 0o640)
+  }
+}
+
 function ensureCa() {
   if (existsSync(caCrtPath) && existsSync(caKeyPath)) return
 
@@ -187,6 +194,7 @@ function ensureCa() {
     ],
     { stdio: ['ignore', 'inherit', 'inherit'] },
   )
+  normalizeTlsKeyPermissions()
 }
 
 function generateServerCert(expectedSans) {
@@ -243,6 +251,7 @@ function generateServerCert(expectedSans) {
   execFileSync('openssl', signArgs, { stdio: ['ignore', 'inherit', 'inherit'] })
 
   removeTempServerFiles()
+  normalizeTlsKeyPermissions()
   console.log(`generate-self-signed-cert: wrote ${crtPath}, ${keyPath}, and ${caCrtPath}`)
 }
 
@@ -257,6 +266,7 @@ if (
   expectedSans.join(',') === existingSans.join(',') &&
   !serverCertMarkedAsCa()
 ) {
+  normalizeTlsKeyPermissions()
   console.log(`generate-self-signed-cert: certificate already up to date at ${certsDir}`)
   process.exit(0)
 }
