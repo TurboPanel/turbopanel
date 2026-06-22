@@ -7,17 +7,13 @@ import { deriveSecretsConfig } from "../client/authn/secrets.ts";
 import { createLicense } from "../client/authn/license.ts";
 import { getDatabaseUrl } from "../db-url.ts";
 import { createDenoDb } from "../db.ts";
-import { license, organization, server, serverkey } from "../lib/db/schema.ts";
+import { organization, server } from "../lib/db/schema.ts";
 import { registerDaemonApiRoutes } from "./api-routes.ts";
-import {
-  createRedisChallengeStore,
-  DAEMON_CHALLENGE_TTL_MS,
-} from "./cell/challenge-store.ts";
+import { createRedisChallengeStore, createInMemoryChallengeStore, DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS, DAEMON_CHALLENGE_TTL_MS } from "./cell/challenge-store.ts";
 import { createRedisCellClient } from "./cell/redis/client.ts";
 import { issueDaemonJwt } from "./authn/daemon-jwt.ts";
 import {
   buildAuthPayload,
-  buildCanonicalPayload,
   buildEnrollmentPayload,
   computePublicKeyFingerprint,
 } from "./authn/server-key.ts";
@@ -42,14 +38,6 @@ type KeyMaterial = {
   fingerprint: string;
 };
 
-type RotationFixture = {
-  db: ReturnType<typeof createDenoDb>;
-  app: Hono<AppEnv>;
-  serverId: string;
-  keyId: string;
-  currentKey: KeyMaterial;
-};
-
 type EnrollFixture = {
   db: ReturnType<typeof createDenoDb>;
   app: Hono<AppEnv>;
@@ -58,6 +46,7 @@ type EnrollFixture = {
   licenseToken: string;
   serverId: string;
   keyId: string;
+  enrollBody: { serverId: string; keyId: string };
   key: KeyMaterial;
   machineId: string;
   hostname: string;
@@ -86,7 +75,7 @@ async function generateKeyMaterial(): Promise<KeyMaterial> {
 
 function decodeJwtPayload(token: string): {
   sub: string;
-  sid: string;
+  jti: string;
   kid: string;
   iat: number;
   exp: number;
@@ -98,7 +87,7 @@ function decodeJwtPayload(token: string): {
   const base64 = padded.replaceAll("-", "+").replaceAll("_", "/");
   return JSON.parse(atob(base64)) as {
     sub: string;
-    sid: string;
+    jti: string;
     kid: string;
     iat: number;
     exp: number;
@@ -126,7 +115,12 @@ async function createTestApp(db: ReturnType<typeof createDenoDb>): Promise<Hono<
     return next();
   });
   const secrets = await createTestSecrets();
-  registerDaemonApiRoutes(app, { secrets });
+  const challengeStoreProvider = {
+    enroll: createInMemoryChallengeStore(DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS),
+    auth: createInMemoryChallengeStore(DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS),
+    rotation: createInMemoryChallengeStore(DAEMON_CHALLENGE_TTL_MS),
+  };
+  registerDaemonApiRoutes(app, { secrets, challengeStoreProvider });
   return app;
 }
 
@@ -146,35 +140,16 @@ async function createRedisBackedTestApp(
     challengeStoreProvider: {
       enroll: authStore,
       auth: authStore,
-      rotation: createRedisChallengeStore(client, DAEMON_CHALLENGE_TTL_MS),
+      rotation: createInMemoryChallengeStore(DAEMON_CHALLENGE_TTL_MS),
     },
   });
   return app;
 }
 
-async function issueRotationChallenge(
-  app: Hono<AppEnv>,
-  serverId: string,
-  keyId: string,
-  daemonToken: string,
-): Promise<{ challengeId: string; nonce: string }> {
-  const response = await app.request("/api/daemon/v1/server-key/challenge", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${daemonToken}`,
-    },
-    body: JSON.stringify({ serverId, keyId }),
-  });
-  assertEquals(response.status, 200);
-  const body = await response.json() as { challengeId: string; nonce: string };
-  return body;
-}
-
 async function issueDaemonToken(serverId: string, keyId: string): Promise<string> {
   const secrets = await createTestSecrets();
   const issued = await issueDaemonJwt(
-    { sub: serverId, sid: crypto.randomUUID(), kid: keyId },
+    { sub: serverId, kid: keyId },
     secrets,
   );
   return issued.token;
@@ -193,52 +168,6 @@ async function issueAuthChallenge(
   assertEquals(response.status, 200);
   const body = await response.json() as { challengeId: string; nonce: string };
   return body;
-}
-
-async function withRotationFixture(
-  fn: (fixture: RotationFixture) => Promise<void>,
-): Promise<void> {
-  if (!dbUrl) {
-    console.warn(
-      "Skipping daemon API route tests: TURBOPANEL_DATABASE_URL not set",
-    );
-    return;
-  }
-
-  const db = createDenoDb();
-  const app = await createTestApp(db);
-  const currentKey = await generateKeyMaterial();
-  const now = new Date().toISOString();
-
-  const [serverRow] = await db
-    .insert(server)
-    .values({
-      createdAt: now,
-      updatedAt: now,
-      metadata: {},
-      options: {},
-    })
-    .returning({ id: server.id });
-  const serverId = serverRow!.id;
-
-  const [keyRow] = await db
-    .insert(serverkey)
-    .values({
-      createdAt: now,
-      updatedAt: now,
-      serverId,
-      algorithm: "Ed25519",
-      publicKey: currentKey.publicJwk,
-      fingerprint: currentKey.fingerprint,
-    })
-    .returning({ id: serverkey.id });
-  const keyId = keyRow!.id;
-
-  try {
-    await fn({ db, app, serverId, keyId, currentKey });
-  } finally {
-    await db.delete(server).where(eq(server.id, serverId));
-  }
 }
 
 async function withEnrollFixture(
@@ -309,6 +238,7 @@ async function withEnrollFixture(
       licenseToken,
       serverId: enrollBody.serverId,
       keyId: enrollBody.keyId,
+      enrollBody,
       key,
       machineId,
       hostname,
@@ -318,77 +248,6 @@ async function withEnrollFixture(
     await db.delete(organization).where(eq(organization.id, organizationId));
   }
 }
-
-Deno.test("POST /server-key/rotate rejects mismatched newFingerprint claim", async () => {
-  await withRotationFixture(async ({ app, serverId, keyId }) => {
-    const daemonToken = await issueDaemonToken(serverId, keyId);
-    const nextKey = await generateKeyMaterial();
-    const { challengeId } = await issueRotationChallenge(
-      app,
-      serverId,
-      keyId,
-      daemonToken,
-    );
-
-    const response = await app.request("/api/daemon/v1/server-key/rotate", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${daemonToken}`,
-      },
-      body: JSON.stringify({
-        serverId,
-        keyId,
-        challengeId,
-        newPublicJwk: nextKey.publicJwk,
-        newFingerprint: "claimed-fingerprint-does-not-match",
-        signature: "invalid-signature",
-      }),
-    });
-
-    assertEquals(response.status, 400);
-    const body = await response.json() as { error?: string };
-    assertEquals(body.error, "Fingerprint mismatch");
-  });
-});
-
-Deno.test("POST /server-key/rotate rejects duplicate computed fingerprint", async () => {
-  await withRotationFixture(async ({ app, serverId, keyId, currentKey }) => {
-    const daemonToken = await issueDaemonToken(serverId, keyId);
-    const { challengeId, nonce } = await issueRotationChallenge(
-      app,
-      serverId,
-      keyId,
-      daemonToken,
-    );
-    const payload = buildCanonicalPayload({
-      challengeId,
-      nonce,
-      serverId,
-      fingerprint: currentKey.fingerprint,
-    });
-    const signature = await signPayload(currentKey.privateKey, payload);
-
-    const response = await app.request("/api/daemon/v1/server-key/rotate", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${daemonToken}`,
-      },
-      body: JSON.stringify({
-        serverId,
-        keyId,
-        challengeId,
-        newPublicJwk: currentKey.publicJwk,
-        signature,
-      }),
-    });
-
-    assertEquals(response.status, 409);
-    const body = await response.json() as { error?: string };
-    assertEquals(body.error, "Fingerprint already exists");
-  });
-});
 
 Deno.test("POST /enroll rejects invalid license", async () => {
   await withEnrollFixture(async ({ app, licenseId, machineId, hostname }) => {
@@ -494,27 +353,138 @@ Deno.test("POST /enroll rejects invalid signature", async () => {
 });
 
 Deno.test("POST /enroll stores public key only after proof-of-possession", async () => {
-  await withEnrollFixture(async ({ db, keyId, key }) => {
+  await withEnrollFixture(async ({ db, serverId, keyId, key }) => {
     const rows = await db
       .select({
-        id: serverkey.id,
-        fingerprint: serverkey.fingerprint,
+        daemonKeyId: server.daemonKeyId,
+        daemonPublicKey: server.daemonPublicKey,
+        daemonKeyFingerprint: server.daemonKeyFingerprint,
       })
-      .from(serverkey)
-      .where(eq(serverkey.id, keyId));
+      .from(server)
+      .where(eq(server.id, serverId));
     assertEquals(rows.length, 1);
-    assertEquals(rows[0]?.fingerprint, key.fingerprint);
+    assertEquals(rows[0]?.daemonKeyId, keyId);
+    assertEquals(rows[0]?.daemonKeyFingerprint, key.fingerprint);
+    assertExists(rows[0]?.daemonPublicKey);
+  });
+});
+
+Deno.test("POST /enroll returns serverId and daemonKeyId", async () => {
+  await withEnrollFixture(async ({ enrollBody, db }) => {
+    assertExists(enrollBody.serverId);
+    assertExists(enrollBody.keyId);
+    const rows = await db
+      .select({
+        daemonKeyId: server.daemonKeyId,
+      })
+      .from(server)
+      .where(eq(server.id, enrollBody.serverId));
+    assertEquals(rows.length, 1);
+    assertEquals(rows[0]?.daemonKeyId, enrollBody.keyId);
+  });
+});
+
+Deno.test("POST /enroll re-enrollment replaces daemon key on server row", async () => {
+  await withEnrollFixture(async ({
+    db,
+    app,
+    licenseId,
+    licenseToken,
+    serverId,
+    keyId,
+    key,
+    machineId,
+    hostname,
+  }) => {
+    const challengeResponse = await app.request("/api/daemon/v1/auth/challenge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assertEquals(challengeResponse.status, 200);
+    const challenge = await challengeResponse.json() as { challengeId: string; nonce: string };
+    const newKey = await generateKeyMaterial();
+    const payload = buildEnrollmentPayload({
+      challengeId: challenge.challengeId,
+      nonce: challenge.nonce,
+      licenseId,
+      machineId,
+      hostname,
+      publicKeyFingerprint: newKey.fingerprint,
+    });
+    const signature = await signPayload(newKey.privateKey, payload);
+
+    const enrollResponse = await app.request("/api/daemon/v1/enroll", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        licenseId,
+        licenseToken,
+        machineId,
+        hostname,
+        publicJwk: newKey.publicJwk,
+        challengeId: challenge.challengeId,
+        signature,
+      }),
+    });
+    assertEquals(enrollResponse.status, 200);
+    const body = await enrollResponse.json() as { serverId: string; keyId: string };
+    assertEquals(body.serverId, serverId);
+    assert(body.keyId !== keyId);
+
+    const rows = await db
+      .select({
+        daemonKeyId: server.daemonKeyId,
+        daemonKeyFingerprint: server.daemonKeyFingerprint,
+      })
+      .from(server)
+      .where(eq(server.id, serverId));
+    assertEquals(rows[0]?.daemonKeyId, body.keyId);
+    assertEquals(rows[0]?.daemonKeyFingerprint, newKey.fingerprint);
+    assertEquals(rows[0]?.daemonKeyFingerprint !== key.fingerprint, true);
   });
 });
 
 Deno.test("POST /auth/challenge rejects unknown keyId", async () => {
+  await withEnrollFixture(async ({ app, keyId }) => {
+    const response = await app.request("/api/daemon/v1/auth/challenge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ serverId: crypto.randomUUID(), keyId }),
+    });
+    assertEquals(response.status, 404);
+  });
+});
+
+Deno.test("POST /auth/challenge rejects mismatched daemonKeyId", async () => {
   await withEnrollFixture(async ({ app, serverId }) => {
     const response = await app.request("/api/daemon/v1/auth/challenge", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ serverId, keyId: crypto.randomUUID() }),
     });
-    assertEquals(response.status, 404);
+    assertEquals(response.status, 400);
+    const body = await response.json() as { error?: string };
+    assertEquals(body.error, "Server key mismatch");
+  });
+});
+
+Deno.test("POST /auth/challenge rejects revoked daemon key", async () => {
+  await withEnrollFixture(async ({ db, app, serverId, keyId }) => {
+    const now = new Date().toISOString();
+    await db
+      .update(server)
+      .set({ daemonKeyRevokedAt: now })
+      .where(eq(server.id, serverId));
+
+    const response = await app.request("/api/daemon/v1/auth/challenge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ serverId, keyId }),
+    });
+    assertEquals(response.status, 400);
+    const body = await response.json() as { error?: string };
+    assertEquals(body.error, "Server key is inactive");
   });
 });
 
@@ -613,6 +583,8 @@ Deno.test("POST /auth/session returns a 15-minute JWT", async () => {
     assertExists(body.token);
     const jwtPayload = decodeJwtPayload(body.token);
     assertEquals(jwtPayload.exp - jwtPayload.iat, 900);
+    assert(typeof jwtPayload.jti === "string" && jwtPayload.jti.length > 0);
+    assertEquals("sid" in jwtPayload, false);
   });
 });
 
@@ -639,6 +611,8 @@ Deno.test("POST /heartbeat returns 401 without JWT", async () => {
 Deno.test("POST /heartbeat returns 200 with valid JWT", async () => {
   await withEnrollFixture(async ({ app, serverId, keyId }) => {
     const daemonToken = await issueDaemonToken(serverId, keyId);
+    const jwtPayload = decodeJwtPayload(daemonToken);
+    assertEquals("sid" in jwtPayload, false);
     const response = await app.request("/api/daemon/v1/heartbeat", {
       method: "POST",
       headers: {
@@ -657,7 +631,7 @@ Deno.test("POST /heartbeat returns 401 with expired JWT", async () => {
   await withEnrollFixture(async ({ app, serverId, keyId }) => {
     const secrets = await createTestSecrets();
     const issued = await issueDaemonJwt(
-      { sub: serverId, sid: crypto.randomUUID(), kid: keyId },
+      { sub: serverId, kid: keyId },
       secrets,
       Date.now() - (16 * 60 * 1000),
     );
@@ -699,7 +673,7 @@ Deno.test("Enrolled daemon can auto-refresh JWT", async () => {
   await withEnrollFixture(async ({ app, serverId, keyId, key, machineId, hostname }) => {
     const secrets = await createTestSecrets();
     const nearExpiryIssued = await issueDaemonJwt(
-      { sub: serverId, sid: crypto.randomUUID(), kid: keyId },
+      { sub: serverId, kid: keyId },
       secrets,
       Date.now() - ((15 * 60 * 1000) - 30_000),
     );
@@ -754,74 +728,35 @@ Deno.test("Enrolled daemon can auto-refresh JWT", async () => {
   });
 });
 
-Deno.test("POST /server-key/challenge rejects missing JWT", async () => {
-  await withRotationFixture(async ({ app, serverId, keyId }) => {
-    const response = await app.request("/api/daemon/v1/server-key/challenge", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serverId, keyId }),
-    });
-    assertEquals(response.status, 401);
-  });
-});
+Deno.test("JWT verification uses stateless token without sid claim", async () => {
+  await withEnrollFixture(async ({ app, serverId, keyId }) => {
+    const secrets = await createTestSecrets();
+    const issued = await issueDaemonJwt({ sub: serverId, kid: keyId }, secrets);
+    const jwtPayload = decodeJwtPayload(issued.token);
+    assertEquals("sid" in jwtPayload, false);
+    assert(typeof jwtPayload.jti === "string" && jwtPayload.jti.length > 0);
 
-Deno.test("POST /server-key/challenge accepts valid JWT", async () => {
-  await withRotationFixture(async ({ app, serverId, keyId }) => {
-    const daemonToken = await issueDaemonToken(serverId, keyId);
-    const response = await app.request("/api/daemon/v1/server-key/challenge", {
+    const response = await app.request("/api/daemon/v1/heartbeat", {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${daemonToken}`,
+        Authorization: `Bearer ${issued.token}`,
       },
-      body: JSON.stringify({ serverId, keyId }),
     });
     assertEquals(response.status, 200);
   });
 });
 
-Deno.test("POST /server-key/rotate rejects missing JWT", async () => {
-  await withRotationFixture(async ({ app }) => {
-    const response = await app.request("/api/daemon/v1/server-key/rotate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
-    assertEquals(response.status, 401);
-  });
-});
-
-Deno.test("POST /server-key/rotate accepts valid JWT", async () => {
-  await withRotationFixture(async ({ app, serverId, keyId, currentKey }) => {
+Deno.test("POST /heartbeat accepts stateless JWT without sid claim", async () => {
+  await withEnrollFixture(async ({ app, serverId, keyId }) => {
     const daemonToken = await issueDaemonToken(serverId, keyId);
-    const nextKey = await generateKeyMaterial();
-    const { challengeId, nonce } = await issueRotationChallenge(
-      app,
-      serverId,
-      keyId,
-      daemonToken,
-    );
-    const payload = buildCanonicalPayload({
-      challengeId,
-      nonce,
-      serverId,
-      fingerprint: nextKey.fingerprint,
-    });
-    const signature = await signPayload(currentKey.privateKey, payload);
+    const jwtPayload = decodeJwtPayload(daemonToken);
+    assertEquals("sid" in jwtPayload, false);
 
-    const response = await app.request("/api/daemon/v1/server-key/rotate", {
+    const response = await app.request("/api/daemon/v1/heartbeat", {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
         Authorization: `Bearer ${daemonToken}`,
       },
-      body: JSON.stringify({
-        serverId,
-        keyId,
-        challengeId,
-        newPublicJwk: nextKey.publicJwk,
-        signature,
-      }),
     });
     assertEquals(response.status, 200);
   });
@@ -843,7 +778,7 @@ Deno.test("Protected route rejects expired JWT", async () => {
   await withEnrollFixture(async ({ app, serverId, keyId }) => {
     const secrets = await createTestSecrets();
     const issued = await issueDaemonJwt(
-      { sub: serverId, sid: crypto.randomUUID(), kid: keyId },
+      { sub: serverId, kid: keyId },
       secrets,
       Date.now() - (16 * 60 * 1000),
     );

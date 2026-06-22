@@ -10,8 +10,8 @@ export const DAEMON_JWT_TYP = "daemon"
 
 export type DaemonJwtPayload = {
   sub: string
-  sid: string
   kid: string
+  jti: string
   iss: string
   aud: string
   typ: string
@@ -62,7 +62,7 @@ function resolveKeyForVersion(
 }
 
 export async function issueDaemonJwt(
-  payload: Pick<DaemonJwtPayload, "sub" | "sid" | "kid">,
+  payload: Pick<DaemonJwtPayload, "sub" | "kid">,
   secrets: DerivedSecretsConfig,
   nowMs = Date.now(),
 ): Promise<{ token: string; expiresAt: string }> {
@@ -70,6 +70,7 @@ export async function issueDaemonJwt(
   const exp = Math.floor((nowMs + DAEMON_JWT_LIFETIME_MS) / 1000)
   const fullPayload: DaemonJwtPayload = {
     ...payload,
+    jti: crypto.randomUUID(),
     iss: DAEMON_JWT_ISS,
     aud: DAEMON_JWT_AUD,
     typ: DAEMON_JWT_TYP,

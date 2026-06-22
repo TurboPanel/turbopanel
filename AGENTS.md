@@ -214,13 +214,13 @@ Server nodes are tracked by a **Daemon Cell** abstraction keyed by `serverId`. T
 | Deno (self-hosted) | `RedisDaemonCell` (`src/daemon/cell/redis/`) | Redis Streams + HASH + SET at `tp:cell:{serverId}:*`; Unix socket `/run/turbopanel/redis.sock` |
 | Cloudflare Workers | `DaemonCellObject` (`src/daemon/cell/do.ts`) | SQLite-backed Durable Object per server, named by `serverId` (or `serverId:g{n}` for relocated generations) |
 
-Postgres remains canonical for business data (`server`, `serverkey`, `daemonsession`). The cell is the low-latency hot projection and coordination layer.
+Postgres remains canonical for business data (`server`). The cell is the low-latency hot projection and coordination layer.
 
-**WS upgrade flow:** JWT verified in the main isolate/process → `findActiveDaemonSession` validates the session is not revoked → cell `attachDaemonSocket` acquires the single-writer lease → outbox pump loop (`readOutboxBatch` → `ws.send` → `ackOutbox`) runs until close → `detachDaemonSocket` releases the lease.
+**WS upgrade flow:** JWT verified in the main isolate/process → cell `attachDaemonSocket` acquires the single-writer lease → outbox pump loop (`readOutboxBatch` → `ws.send` → `ackOutbox`) runs until close → `detachDaemonSocket` releases the lease.
 
 **Co-located daemon** (`__direct__`): stored in cell meta (`remoteAddress = '__direct__'`) so `tryAssignColocatedDaemonToInstalledOrganization` and tunnel routing still work.
 
-**Challenge stores:** enrollment, auth, and key-rotation challenges use `createRedisChallengeStore` (Deno) or `createDurableObjectChallengeStore` (Workers) — single-use, hard TTL, no in-process Maps.
+**Challenge stores:** enrollment and auth challenges use `createRedisChallengeStore` (Deno) or `createDurableObjectChallengeStore` (Workers) — single-use, hard TTL, no in-process Maps.
 
 **Heartbeat:** `POST /api/daemon/v1/heartbeat` calls `cell.heartbeat()` (renews the Redis lease / updates DO meta) then `touchServerMetadataFromSnapshot` to write through to Postgres.
 
@@ -228,7 +228,7 @@ Postgres remains canonical for business data (`server`, `serverkey`, `daemonsess
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `POST /api/daemon/v1/heartbeat` | daemon JWT | Daemon liveness signal; touches `server.metadata` and `daemonsession.lastUsedAt` |
+| `POST /api/daemon/v1/heartbeat` | daemon JWT | Daemon liveness signal; touches `server.metadata` |
 | `POST /api/daemon/v1/commands/lease` | daemon JWT | Poll for pending commands (stub — returns `{ commands: [] }`) |
 
 - No `version` push / auto-update: the daemon never self-updates.
@@ -253,15 +253,18 @@ The instance uses a **custom PAM-style auth model** built entirely on the **Web 
 
 Credential-account passwords use **PBKDF2-HMAC-SHA256** via `crypto.subtle` (`src/client/authn/password.ts`). This is the strongest password-hashing primitive available in native Workers/Deno Web Crypto — Argon2 and scrypt are not exposed, and WASM Argon2 is heavier and awkward in Workers. Stored format: `$pbkdf2-sha256$<iterations>$<base64url-salt>$<base64url-hash>` (100k iterations for new hashes — Workers PBKDF2 cap; iteration count is embedded so older hashes still verify). Verification uses constant-time byte comparison. Do not use plain SHA-256 for passwords.
 
-**Daemon key authentication:** daemon auth now starts with HTTP-first enrollment/session issuance, then uses a short-lived daemon JWT for protected daemon REST and daemon WebSocket upgrade authentication.
-- **Enrollment challenge + proof**: daemon requests `POST /api/daemon/v1/auth/challenge` (no credentials), signs `buildEnrollmentPayload()` (`turbopanel-daemon-enroll-v1` canonical format), then calls `POST /api/daemon/v1/enroll` with `{ licenseId, licenseToken, publicJwk, challengeId, signature, ... }`. The instance verifies license + proof-of-possession, resolves/creates `server`, and inserts/reuses `serverkey`.
-- **Auth challenge + session token**: enrolled daemon requests `POST /api/daemon/v1/auth/challenge` with `{ serverId, keyId }`, signs `buildAuthPayload()` (`turbopanel-daemon-auth-v1` canonical format), then calls `POST /api/daemon/v1/auth/session` to receive a **15-minute JWT**.
-- **JWT enforcement**: protected daemon REST routes use `requireDaemonJwt` middleware (`Authorization: Bearer <token>`), except `GET /readiness`, `GET /instance/ca`, `GET /openapi.json`, `GET /reference`, `POST /auth/challenge`, `POST /enroll`, and `POST /auth/session`.
+**Daemon key authentication:** daemon auth now starts with HTTP-first enrollment/session issuance, then uses a short-lived stateless daemon JWT for protected daemon REST and daemon WebSocket upgrade authentication.
+- **Enrollment challenge + proof**: daemon requests `POST /api/daemon/v1/auth/challenge` (no credentials), signs `buildEnrollmentPayload()` (`turbopanel-daemon-enroll-v1` canonical format), then calls `POST /api/daemon/v1/enroll` with `{ licenseId, licenseToken, publicJwk, challengeId, signature, ... }`. The instance verifies license + proof-of-possession, resolves/creates `server`, and stores the daemon public key on the server row.
+- **Auth challenge + session token**: enrolled daemon requests `POST /api/daemon/v1/auth/challenge` with `{ serverId, keyId }`, signs `buildAuthPayload()` (`turbopanel-daemon-auth-v1` canonical format), then calls `POST /api/daemon/v1/auth/session` to receive a **15-minute stateless JWT**.
+- **JWT enforcement**: protected daemon REST routes use `requireDaemonJwt` middleware (`Authorization: Bearer <token>`), except `GET /readiness`, `GET /instance/ca`, `GET /openapi.json`, `GET /reference`, `POST /auth/challenge`, `POST /enroll`, and `POST /auth/session`. JWT verification checks signature, expiry, and claims only — no session row lookup.
 - **Canonical payload helper status**: `buildCanonicalPayload` is deprecated and aliases `buildAuthPayload` for compatibility (legacy `fingerprint` inputs are mapped to auth `keyId`).
 - Remote WSS connections require a valid daemon JWT at upgrade time; unauthenticated server row creation from `hostname`/`machineId` alone is disallowed.
 - Co-located socket daemons use the same auth model; there is no unauthenticated bypass.
 - `DAEMON_INBOUND_ALLOWED` in `src/daemon/cell/protocol.ts` is a static set of accepted post-auth message types — not an authz system.
-- Key rotation remains `POST /api/daemon/v1/server-key/rotate`; old keys remain revokable via `revokeServerKey`.
+- Daemon public key is stored directly on the `server` row (`daemonPublicKey`, `daemonKeyId`, `daemonKeyFingerprint`, `daemonKeyRevokedAt`). No `serverkey` or `daemonsession` tables.
+- Re-enrollment with a valid license token replaces the daemon key on the server row. No historical key storage.
+- JWT payload: `sub` (serverId), `kid` (daemonKeyId), `jti` (random uuid, logging only), `iss`, `aud`, `typ`, `iat`, `exp`. No `sid`.
+- Revoking daemon auth: set `daemonKeyRevokedAt` on the server row. Existing JWTs remain valid until their 15-minute expiry. New JWT issuance fails.
 
 ```mermaid
 sequenceDiagram
@@ -446,11 +449,10 @@ sequenceDiagram
 - `src/daemon/cell/snapshot-merge.ts` — `mergeSnapshotPresence`
 - `src/daemon/authn/license.ts` — daemon hello license verification (`verifyDaemonLicense`)
 - `src/daemon/authn/daemon-jwt.ts` — daemon JWT issue/verify (HMAC-SHA256, 15-minute lifetime)
-- `src/daemon/authn/daemon-session-db.ts` — DB helpers for `daemonsession` rows (insert/touch/revoke/find-active)
+- `src/daemon/authn/server-identity-db.ts` — DB helpers for daemon key columns on the `server` row (`getServerDaemonKeyByServerId`, `attachDaemonKeyToServer`, `touchDaemonKeyLastUsed`, `revokeDaemonKey`)
 - `src/daemon/authn/server-key.ts` — `buildCanonicalPayload`, `computePublicKeyFingerprint`, `verifyDaemonSignature`
-- `src/daemon/authn/server-key-db.ts` — DB helpers: `findActiveServerKeys`, `findServerKeyById`, `findServerKeyByFingerprint`, `insertServerKey`, `touchServerKeyLastUsed`, `revokeServerKey`
 - `src/daemon/authz/` — daemon-side authorization placeholder
-- `src/lib/db/schema.ts` — Drizzle table definitions (`server`, `serverkey`, `daemonsession`, etc.; see `src/lib/db/AGENTS.md`); connection factories stay in `src/db.ts`
+- `src/lib/db/schema.ts` — Drizzle table definitions (`server`, etc.; see `src/lib/db/AGENTS.md`); connection factories stay in `src/db.ts`
 - `src/lib/install/routes.ts` — self-hosted install wizard (`/api/install/v1/*`; Deno-only registration)
 - `src/lib/email/` — shared queue types/templates; `smtp/` (Deno/AMQP) and `mailgun/` (Workers) backends
 - `src/developer/` — developer surface (Deno-only routes + Workers-safe `routes-core.ts`)

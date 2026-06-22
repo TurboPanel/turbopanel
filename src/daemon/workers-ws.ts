@@ -2,7 +2,7 @@ import type { Hono } from 'hono'
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import { getDb } from '../db.ts'
 import { DAEMON_WS_PATH } from '../surfaces.ts'
-import { findActiveDaemonSession } from './authn/daemon-session-db.ts'
+import { getServerDaemonKeyByServerId } from './authn/server-identity-db.ts'
 import { verifyDaemonJwt } from './authn/daemon-jwt.ts'
 import {
   resolveCellGeneration,
@@ -16,7 +16,7 @@ export type WorkersDaemonWebSocketOptions = {
 /**
  * Daemon WebSocket hub for Cloudflare Workers / wrangler dev.
  *
- * Verifies the daemon JWT and session, then forwards the raw upgrade request
+ * Verifies the daemon JWT, then forwards the raw upgrade request
  * to the per-server Durable Object cell.
  */
 export function registerWorkersDaemonWebSocket(
@@ -45,8 +45,12 @@ export function registerWorkersDaemonWebSocket(
       return new Response('Database unavailable', { status: 503 })
     }
 
-    const session = await findActiveDaemonSession(db, payload.sid)
-    if (!session) {
+    const keyRow = await getServerDaemonKeyByServerId(db, payload.sub)
+    if (
+      !keyRow ||
+      keyRow.daemonKeyId !== payload.kid ||
+      keyRow.daemonKeyRevokedAt !== null
+    ) {
       return new Response('Unauthorized', { status: 401 })
     }
 

@@ -13,9 +13,16 @@ import {
 
 const CELL_HEADER = 'X-Turbopanel-Cell-Server-Id'
 
+function decodeJwtJti(token: string): string {
+  const [, encodedPayload] = token.split('.')
+  const padded = encodedPayload + '='.repeat((4 - (encodedPayload.length % 4)) % 4)
+  const base64 = padded.replaceAll('-', '+').replaceAll('_', '/')
+  const payload = JSON.parse(atob(base64)) as { jti: string }
+  return payload.jti
+}
+
 async function issueTestDaemonJwt(
   serverId: string,
-  sessionId: string,
   keyId: string,
 ): Promise<string> {
   const secret = env.TURBOPANEL_SECRET ?? 'aa_daemon_cell_vitest_secret_value_aaaa_b'
@@ -24,7 +31,7 @@ async function issueTestDaemonJwt(
     'daemon-jwt-signing',
   )
   const issued = await issueDaemonJwt(
-    { sub: serverId, sid: sessionId, kid: keyId },
+    { sub: serverId, kid: keyId },
     secrets,
   )
   return issued.token
@@ -47,10 +54,9 @@ function cellRpc(
 async function openDaemonWebSocket(
   stub: DurableObjectStub,
   serverId: string,
-  sessionId = crypto.randomUUID(),
   keyId = crypto.randomUUID(),
-): Promise<{ ws: WebSocket; token: string; sessionId: string; keyId: string }> {
-  const token = await issueTestDaemonJwt(serverId, sessionId, keyId)
+): Promise<{ ws: WebSocket; token: string; tokenId: string; keyId: string }> {
+  const token = await issueTestDaemonJwt(serverId, keyId)
   const response = await stub.fetch('https://do.internal/ws/daemon/v1', {
     headers: {
       Authorization: `Bearer ${token}`,
@@ -61,7 +67,7 @@ async function openDaemonWebSocket(
   const ws = response.webSocket
   if (!ws) throw new Error('missing websocket')
   ws.accept()
-  return { ws, token, sessionId, keyId }
+  return { ws, token, tokenId: decodeJwtJti(token), keyId }
 }
 
 function waitForWebSocketMessage(ws: WebSocket, timeoutMs = 5000): Promise<string> {
@@ -99,11 +105,10 @@ async function waitFor(
 describe('DaemonCellObject', () => {
   it('accepts hibernation-safe WebSocket attach with valid JWT', async () => {
     const serverId = 'test-srv-1'
-    const sessionId = crypto.randomUUID()
     const keyId = crypto.randomUUID()
     const stub = env.DAEMON_CELL.getByName(serverId)
 
-    const { ws } = await openDaemonWebSocket(stub, serverId, sessionId, keyId)
+    const { ws, tokenId } = await openDaemonWebSocket(stub, serverId, keyId)
 
     const snapshotResponse = await cellRpc(stub, serverId, '/rpc/snapshot', {
       method: 'GET',
@@ -113,7 +118,7 @@ describe('DaemonCellObject', () => {
       sessionId?: string
     }
     expect(snapshot.connected).toBe(true)
-    expect(snapshot.sessionId).toBe(sessionId)
+    expect(snapshot.sessionId).toBe(tokenId)
 
     ws.close(1000, 'test done')
   })
@@ -195,7 +200,7 @@ describe('DaemonCellObject', () => {
       sessionId?: string
     }
     expect(snapshot.connected).toBe(true)
-    expect(snapshot.sessionId).toBe(second.sessionId)
+    expect(snapshot.sessionId).toBe(second.tokenId)
 
     const requestId = generateRequestId()
     const deliveryId = generateDeliveryId()

@@ -3,7 +3,6 @@ import { server } from '../../lib/db/schema.ts'
 import { eq } from 'drizzle-orm'
 import type { ServerMetadata } from '../../lib/db/server-metadata.ts'
 import { touchServerMetadata } from '../../server-registry.ts'
-import { touchDaemonSessionLastUsed } from '../authn/daemon-session-db.ts'
 import type { DaemonCellSnapshot } from './contracts.ts'
 
 function nowTs(): string {
@@ -43,12 +42,4 @@ export async function touchServerMetadataFromSnapshot(
     metadata: { ...current, ...operationalPatch },
     updatedAt: nowTs(),
   }).where(eq(server.id, serverId))
-}
-
-/** Thin wrapper around {@link touchDaemonSessionLastUsed} for heartbeat paths. */
-export async function touchDaemonSessionFromHeartbeat(
-  db: Db,
-  sessionId: string,
-): Promise<void> {
-  await touchDaemonSessionLastUsed(db, sessionId)
 }

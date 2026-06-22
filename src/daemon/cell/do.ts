@@ -354,7 +354,7 @@ export class DaemonCellObject {
     serverId: string,
     connectionId: string,
     meta: {
-      sessionId: string
+      sessionId?: string
       keyId: string
       hostname?: string
       machineId?: string
@@ -363,6 +363,7 @@ export class DaemonCellObject {
     },
   ): DaemonCellLease {
     const connectedAt = meta.connectedAt ?? nowIso()
+    const sessionId = meta.sessionId ?? ''
     const leaseExpiresAt = new Date(Date.now() + DAEMON_SOCKET_LEASE_MS).toISOString()
 
     this.#ctx.storage.transactionSync(() => {
@@ -385,7 +386,7 @@ export class DaemonCellObject {
           updated_at = excluded.updated_at`,
         serverId,
         connectionId,
-        meta.sessionId,
+        sessionId,
         meta.keyId,
         meta.hostname ?? '',
         meta.machineId ?? '',
@@ -398,7 +399,7 @@ export class DaemonCellObject {
           connection_id, session_id, key_id, connected_at, remote_address
         ) VALUES (?, ?, ?, ?, ?)`,
         connectionId,
-        meta.sessionId,
+        sessionId,
         meta.keyId,
         connectedAt,
         meta.remoteAddress ?? '',
@@ -497,7 +498,7 @@ export class DaemonCellObject {
     if (!payload) return new Response('Unauthorized', { status: 401 })
 
     const serverId = payload.sub
-    const sessionId = payload.sid
+    const sessionId = payload.jti
     const keyId = payload.kid
 
     const connectionId = crypto.randomUUID()
@@ -781,7 +782,6 @@ export class DaemonCellObject {
         return jsonResponse(await this.#attachDaemonSocket(
           this.#requireServerId(request, body),
           body?.meta as {
-            sessionId: string
             keyId: string
             hostname?: string
             machineId?: string
@@ -1349,7 +1349,6 @@ export class DaemonCellObject {
   async #attachDaemonSocket(
     serverId: string,
     meta: {
-      sessionId: string
       keyId: string
       hostname?: string
       machineId?: string

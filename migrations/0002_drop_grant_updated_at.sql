@@ -1,1 +1,0 @@
-ALTER TABLE "grant" DROP COLUMN "updated_at";

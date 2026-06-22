@@ -114,6 +114,13 @@ export const server = pgTable("server", {
 	displayName: varchar("display_name", { length: 255 }),
 	metadata: jsonb(),
 	options: jsonb(),
+	daemonKeyId: uuid("daemon_key_id"),
+	daemonKeyAlgorithm: text("daemon_key_algorithm"),
+	daemonPublicKey: jsonb("daemon_public_key"),
+	daemonKeyFingerprint: text("daemon_key_fingerprint"),
+	daemonKeyCreatedAt: timestamp("daemon_key_created_at", { precision: 3, withTimezone: true, mode: 'string' }),
+	daemonKeyLastUsedAt: timestamp("daemon_key_last_used_at", { precision: 3, withTimezone: true, mode: 'string' }),
+	daemonKeyRevokedAt: timestamp("daemon_key_revoked_at", { precision: 3, withTimezone: true, mode: 'string' }),
 }, (table) => [
 	foreignKey({
 			columns: [table.organizationId],
@@ -125,51 +132,7 @@ export const server = pgTable("server", {
 			foreignColumns: [license.id],
 			name: "server_license_id_license_id_fk"
 		}),
-]);
-export const serverkey = pgTable("serverkey", {
-	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
-	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	serverId: uuid("server_id").notNull(),
-	algorithm: text().notNull().default("Ed25519"),
-	publicKey: jsonb("public_key").notNull(),
-	fingerprint: text().notNull(),
-	lastUsedAt: timestamp("last_used_at", { precision: 3, withTimezone: true, mode: 'string' }),
-	expiresAt: timestamp("expires_at", { precision: 3, withTimezone: true, mode: 'string' }),
-	revokedAt: timestamp("revoked_at", { precision: 3, withTimezone: true, mode: 'string' }),
-}, (table) => [
-	index("idx_serverkey_server_id").using("btree", table.serverId.asc().nullsLast().op("uuid_ops")),
-	index("idx_serverkey_fingerprint").using("btree", table.fingerprint.asc().nullsLast().op("text_ops")),
-	index("idx_serverkey_active").using("btree", table.serverId.asc(), table.revokedAt.asc()).where(sql`revoked_at IS NULL`),
-	unique("serverkey_fingerprint_unique").on(table.fingerprint),
-	foreignKey({
-			columns: [table.serverId],
-			foreignColumns: [server.id],
-			name: "serverkey_server_id_server_id_fk"
-		}).onDelete("cascade"),
-]);
-export const daemonsession = pgTable("daemonsession", {
-	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
-	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	serverId: uuid("server_id").notNull(),
-	serverKeyId: uuid("server_key_id").notNull(),
-	lastUsedAt: timestamp("last_used_at", { precision: 3, withTimezone: true, mode: 'string' }),
-	expiresAt: timestamp("expires_at", { precision: 3, withTimezone: true, mode: 'string' }).notNull(),
-	revokedAt: timestamp("revoked_at", { precision: 3, withTimezone: true, mode: 'string' }),
-}, (table) => [
-	index("idx_daemonsession_server_id").using("btree", table.serverId.asc().nullsLast().op("uuid_ops")),
-	index("idx_daemonsession_server_key_id").using("btree", table.serverKeyId.asc().nullsLast().op("uuid_ops")),
-	foreignKey({
-			columns: [table.serverId],
-			foreignColumns: [server.id],
-			name: "daemonsession_server_id_server_id_fk"
-		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.serverKeyId],
-			foreignColumns: [serverkey.id],
-			name: "daemonsession_server_key_id_serverkey_id_fk"
-		}).onDelete("cascade"),
+	unique("server_daemon_key_fingerprint_unique").on(table.daemonKeyFingerprint),
 ]);
 export const workspace = pgTable("workspace", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),

@@ -62,32 +62,34 @@ async function buildTokenWithPayload(
 Deno.test("issueDaemonJwt produces a 15-minute JWT", async () => {
   const secrets = await createSecrets()
   const issued = await issueDaemonJwt(
-    { sub: "server-1", sid: "session-1", kid: "key-1" },
+    { sub: "server-1", kid: "key-1" },
     secrets,
   )
   const [, encodedPayload] = issued.token.split(".")
-  const payload = decodeJson<{ iat: number; exp: number }>(encodedPayload)
+  const payload = decodeJson<{ iat: number; exp: number; jti: string }>(encodedPayload)
   assertEquals(payload.exp - payload.iat, 900)
+  assertExists(payload.jti)
 })
 
 Deno.test("verifyDaemonJwt accepts a valid token", async () => {
   const secrets = await createSecrets()
   const issued = await issueDaemonJwt(
-    { sub: "server-1", sid: "session-1", kid: "key-1" },
+    { sub: "server-1", kid: "key-1" },
     secrets,
   )
   const payload = await verifyDaemonJwt(issued.token, secrets)
   assertExists(payload)
   assertEquals(payload.sub, "server-1")
-  assertEquals(payload.sid, "session-1")
   assertEquals(payload.kid, "key-1")
+  assertExists(payload.jti)
+  assertEquals(payload.jti.length > 0, true)
 })
 
 Deno.test("verifyDaemonJwt rejects an expired token", async () => {
   const secrets = await createSecrets()
   const nowMs = Date.now() - (16 * 60 * 1000)
   const issued = await issueDaemonJwt(
-    { sub: "server-1", sid: "session-1", kid: "key-1" },
+    { sub: "server-1", kid: "key-1" },
     secrets,
     nowMs,
   )
@@ -98,7 +100,7 @@ Deno.test("verifyDaemonJwt rejects an expired token", async () => {
 Deno.test("verifyDaemonJwt rejects a tampered payload", async () => {
   const secrets = await createSecrets()
   const issued = await issueDaemonJwt(
-    { sub: "server-1", sid: "session-1", kid: "key-1" },
+    { sub: "server-1", kid: "key-1" },
     secrets,
   )
   const [header, payload, signature] = issued.token.split(".")
@@ -112,7 +114,7 @@ Deno.test("verifyDaemonJwt rejects wrong aud", async () => {
   const nowSeconds = Math.floor(Date.now() / 1000)
   const token = await buildTokenWithPayload({
     sub: "server-1",
-    sid: "session-1",
+    jti: crypto.randomUUID(),
     kid: "key-1",
     iss: "turbopanel",
     aud: "other",
@@ -129,7 +131,7 @@ Deno.test("verifyDaemonJwt rejects wrong typ", async () => {
   const nowSeconds = Math.floor(Date.now() / 1000)
   const token = await buildTokenWithPayload({
     sub: "server-1",
-    sid: "session-1",
+    jti: crypto.randomUUID(),
     kid: "key-1",
     iss: "turbopanel",
     aud: DAEMON_JWT_AUD,

@@ -19,6 +19,8 @@ export const authSchemas = {
   },
   DaemonSessionResponse: {
     type: "object",
+    description:
+      "Token is a 15-minute stateless JWT. Payload contains sub (serverId), kid (daemonKeyId), jti (correlation id), iss, aud, typ, iat, exp. No sid claim.",
     required: ["token", "expiresAt"],
     properties: {
       token: { type: "string" },
@@ -49,6 +51,8 @@ export const authPaths: Record<string, unknown> = {
     post: {
       tags: ["daemon"],
       summary: "Request an enrollment or auth challenge",
+      description:
+        "Without body: issues enrollment challenge. With `{ serverId, keyId }`: issues auth challenge after verifying daemon key on server row.",
       responses: {
         "200": {
           description: "Challenge issued",
@@ -81,6 +85,8 @@ export const authPaths: Record<string, unknown> = {
     post: {
       tags: ["daemon"],
       summary: "Exchange a signed challenge for a 15-minute daemon JWT",
+      description:
+        "Exchange a signed challenge for a 15-minute stateless daemon JWT. Public key verified against server.daemonPublicKey. No session row stored.",
       responses: {
         "200": {
           description: "Session token issued",
@@ -97,6 +103,7 @@ export const authPaths: Record<string, unknown> = {
     post: {
       tags: ["daemon"],
       summary: "Daemon liveness signal",
+      description: "Daemon liveness signal. Validates stateless JWT only.",
       security: [{ bearerAuth: [] }],
       responses: {
         "200": {

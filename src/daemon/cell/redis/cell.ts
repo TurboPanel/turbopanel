@@ -221,7 +221,6 @@ export class RedisDaemonCell implements DaemonCell {
   }
 
   async attachDaemonSocket(meta: {
-    sessionId: string
     keyId: string
     hostname?: string
     machineId?: string
@@ -253,7 +252,6 @@ export class RedisDaemonCell implements DaemonCell {
     await this.#client.hset(metaKey(this.#serverId), {
       connected: '1',
       connectionId,
-      sessionId: meta.sessionId,
       keyId: meta.keyId,
       hostname: meta.hostname ?? '',
       machineId: meta.machineId ?? '',
@@ -262,7 +260,6 @@ export class RedisDaemonCell implements DaemonCell {
     })
     await this.#client.sadd(onlineSetKey(), this.#serverId)
     await this.#client.hset(connKey(this.#serverId, connectionId), {
-      sessionId: meta.sessionId,
       keyId: meta.keyId,
       connectedAt,
       remoteAddress: meta.remoteAddress ?? '',

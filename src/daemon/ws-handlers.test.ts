@@ -86,10 +86,8 @@ function withRedisCell(
 Deno.test(
   'cell-backed attach updates connected presence in snapshot',
   withRedisCell(async ({ cell, serverId }) => {
-    const sessionId = crypto.randomUUID()
     const keyId = crypto.randomUUID()
     const attached = await cell.attachDaemonSocket({
-      sessionId,
       keyId,
       remoteAddress: '__direct__',
     })
@@ -97,7 +95,6 @@ Deno.test(
     const snapshot = await cell.getSnapshot()
     assertEquals(snapshot.connected, true)
     assertEquals(snapshot.serverId, serverId)
-    assertEquals(snapshot.sessionId, sessionId)
     assertEquals(snapshot.remoteAddress, '__direct__')
     assertEquals(typeof attached.connectionId, 'string')
   }),
@@ -107,7 +104,6 @@ Deno.test(
   'cell-backed heartbeat renews lease and updates lastHeartbeatAt',
   withRedisCell(async ({ cell, client, serverId }) => {
     const attached = await cell.attachDaemonSocket({
-      sessionId: crypto.randomUUID(),
       keyId: crypto.randomUUID(),
     })
     const at = new Date().toISOString()
@@ -131,7 +127,6 @@ Deno.test(
   'cell-backed inbound ping updates lastInboundAt via putSnapshot path',
   withRedisCell(async ({ cell }) => {
     await cell.attachDaemonSocket({
-      sessionId: crypto.randomUUID(),
       keyId: crypto.randomUUID(),
     })
 
@@ -147,7 +142,6 @@ Deno.test(
   'cell-backed outbox pump delivers queued command envelopes',
   withRedisCell(async ({ cell }) => {
     const attached = await cell.attachDaemonSocket({
-      sessionId: crypto.randomUUID(),
       keyId: crypto.randomUUID(),
     })
     const consumer = `ws:${attached.connectionId}`
@@ -182,7 +176,6 @@ Deno.test(
   'cell-backed disconnect cleanup clears connected presence',
   withRedisCell(async ({ cell, registry, serverId }) => {
     const attached = await cell.attachDaemonSocket({
-      sessionId: crypto.randomUUID(),
       keyId: crypto.randomUUID(),
     })
 
@@ -207,14 +200,12 @@ Deno.test(
   'cell-backed second attach is rejected while lease is held',
   withRedisCell(async ({ cell }) => {
     await cell.attachDaemonSocket({
-      sessionId: crypto.randomUUID(),
       keyId: crypto.randomUUID(),
     })
 
     await assertRejects(
       () =>
         cell.attachDaemonSocket({
-          sessionId: crypto.randomUUID(),
           keyId: crypto.randomUUID(),
         }),
       Error,

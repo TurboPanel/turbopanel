@@ -21,22 +21,21 @@ async function createDaemonJwtSecrets() {
   return deriveSecretsConfig(parsed, 'daemon-jwt-signing')
 }
 
-function createMockDb(sessionId: string, serverId = 'srv-test'): Db {
-  const session = {
-    id: sessionId,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    serverId,
-    serverKeyId: 'key-test',
-    lastUsedAt: null,
-    expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-    revokedAt: null,
+function createMockDb(serverId = 'srv-test', keyId = 'key-test'): Db {
+  const keyRow = {
+    daemonKeyId: keyId,
+    daemonKeyAlgorithm: 'Ed25519',
+    daemonPublicKey: { kty: 'OKP', crv: 'Ed25519', x: 'test' },
+    daemonKeyFingerprint: 'abc123',
+    daemonKeyCreatedAt: new Date().toISOString(),
+    daemonKeyLastUsedAt: null,
+    daemonKeyRevokedAt: null,
   }
   return {
     select: () => ({
       from: () => ({
         where: () => ({
-          limit: () => Promise.resolve([session]),
+          limit: () => Promise.resolve([keyRow]),
         }),
       }),
     }),
@@ -70,7 +69,6 @@ function createTrackingDaemonCell(serverId: string) {
       snapshot = {
         ...snapshot,
         connected: true,
-        sessionId: meta.sessionId,
         remoteAddress: meta.remoteAddress,
         connectedAt: meta.connectedAt ?? new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -184,13 +182,12 @@ const WS_UPGRADE_HEADERS = {
 Deno.test('WS upgrade accepts HTTP 101 with valid JWT', async () => {
   const app = new Hono()
   const secrets = await createDaemonJwtSecrets()
-  const sessionId = crypto.randomUUID()
   registerTestDaemonWebSocket(app, secrets, {
-    db: createMockDb(sessionId),
+    db: createMockDb(),
   })
 
   const issued = await issueDaemonJwt(
-    { sub: 'srv-test', sid: sessionId, kid: 'key-test' },
+    { sub: 'srv-test', kid: 'key-test' },
     secrets,
   )
   const response = await app.request(DAEMON_WS_PATH, {
@@ -207,7 +204,7 @@ Deno.test('WS upgrade rejects HTTP 401 when no JWT is provided', async () => {
   const app = new Hono()
   const secrets = await createDaemonJwtSecrets()
   registerTestDaemonWebSocket(app, secrets, {
-    db: createMockDb(crypto.randomUUID()),
+    db: createMockDb(),
   })
 
   const response = await app.request(DAEMON_WS_PATH, { method: 'GET' })
@@ -218,7 +215,7 @@ Deno.test('WS upgrade rejects HTTP 401 when JWT is invalid', async () => {
   const app = new Hono()
   const secrets = await createDaemonJwtSecrets()
   registerTestDaemonWebSocket(app, secrets, {
-    db: createMockDb(crypto.randomUUID()),
+    db: createMockDb(),
   })
 
   const response = await app.request(DAEMON_WS_PATH, {
@@ -233,16 +230,15 @@ Deno.test('WS upgrade rejects HTTP 401 when JWT is invalid', async () => {
 Deno.test('WS lifecycle attaches, handles ping, and detaches through cell backend', async () => {
   const app = new Hono()
   const secrets = await createDaemonJwtSecrets()
-  const sessionId = crypto.randomUUID()
   const serverId = 'srv-lifecycle'
   const tracking = createTrackingDaemonCell(serverId)
   registerTestDaemonWebSocket(app, secrets, {
-    db: createMockDb(sessionId, serverId),
+    db: createMockDb(serverId),
     registry: createTrackingRegistry(tracking.cell),
   })
 
   const issued = await issueDaemonJwt(
-    { sub: serverId, sid: sessionId, kid: 'key-test' },
+    { sub: serverId, kid: 'key-test' },
     secrets,
   )
   const response = await app.request(DAEMON_WS_PATH, {

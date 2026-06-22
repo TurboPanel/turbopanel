@@ -19,7 +19,7 @@ import {
   DAEMON_WS_PATH,
   DEVELOPER_WS_PATH,
 } from '../surfaces.ts'
-import { findActiveDaemonSession, touchDaemonSessionLastUsed } from './authn/daemon-session-db.ts'
+import { getServerDaemonKeyByServerId, touchDaemonKeyLastUsed } from './authn/server-identity-db.ts'
 import { verifyDaemonJwt } from './authn/daemon-jwt.ts'
 
 export type DaemonWebSocketOptions = {
@@ -51,8 +51,12 @@ export function registerDaemonWebSocket(
       return c.json({ ok: false, error: 'Database unavailable' }, 503)
     }
 
-    const session = await findActiveDaemonSession(db, payload.sid)
-    if (!session) {
+    const keyRow = await getServerDaemonKeyByServerId(db, payload.sub)
+    if (
+      !keyRow ||
+      keyRow.daemonKeyId !== payload.kid ||
+      keyRow.daemonKeyRevokedAt !== null
+    ) {
       return c.json({ ok: false, error: 'unauthorized' }, 401)
     }
 
@@ -71,15 +75,15 @@ export function registerDaemonWebSocket(
       let leaseToken: string | undefined
       let pumpAbort = false
       let pingTimer: ReturnType<typeof setInterval> | undefined
-      let sessionTouched = false
+      let keyTouched = false
 
-      const touchSession = () => {
-        if (sessionTouched) return
-        sessionTouched = true
-        touchDaemonSessionLastUsed(db, payload.sid).catch((err) => {
+      const touchKey = () => {
+        if (keyTouched) return
+        keyTouched = true
+        touchDaemonKeyLastUsed(db, payload.sub).catch((err) => {
           compatLogWarn(
             'ws',
-            `failed to touch daemon session ${payload.sid}: ${String(err)}`,
+            `failed to touch daemon key for ${payload.sub}: ${String(err)}`,
           )
         })
       }
@@ -88,7 +92,6 @@ export function registerDaemonWebSocket(
         async onOpen(_event, ws) {
           const cell = registry.getCell(payload.sub)
           const attached = await cell.attachDaemonSocket({
-            sessionId: payload.sid,
             keyId: payload.kid,
             hostname: undefined,
             remoteAddress: identityAddress,
@@ -104,7 +107,7 @@ export function registerDaemonWebSocket(
             }`,
           )
 
-          touchSession()
+          touchKey()
 
           if (identityAddress === '__direct__') {
             void tryAssignColocatedDaemonToInstalledOrganization(db, registry)
@@ -187,7 +190,7 @@ export function registerDaemonWebSocket(
               void cell.heartbeat({ connectionId })
               void cell.putSnapshot({ lastInboundAt: message.at })
             }
-            touchSession()
+            touchKey()
             return
           }
 
@@ -201,7 +204,7 @@ export function registerDaemonWebSocket(
             void cell.heartbeat({ connectionId })
           }
 
-          touchSession()
+          touchKey()
         },
         onClose() {
           pumpAbort = true

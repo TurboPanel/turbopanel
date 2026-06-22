@@ -134,7 +134,6 @@ class DurableObjectStubDaemonCell implements DaemonCell {
   }
 
   attachDaemonSocket(meta: {
-    sessionId: string
     keyId: string
     hostname?: string
     machineId?: string

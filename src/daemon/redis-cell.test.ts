@@ -90,7 +90,6 @@ Deno.test(
   'attachDaemonSocket acquires lease and returns connectionId and leaseToken',
   withRedisCell(async ({ cell }) => {
     const attached = await cell.attachDaemonSocket({
-      sessionId: crypto.randomUUID(),
       keyId: crypto.randomUUID(),
     })
     assertEquals(typeof attached.connectionId, 'string')
@@ -103,13 +102,11 @@ Deno.test(
   'second attachDaemonSocket throws while lease is held',
   withRedisCell(async ({ cell }) => {
     await cell.attachDaemonSocket({
-      sessionId: crypto.randomUUID(),
       keyId: crypto.randomUUID(),
     })
     await assertRejects(
       () =>
         cell.attachDaemonSocket({
-          sessionId: crypto.randomUUID(),
           keyId: crypto.randomUUID(),
         }),
       Error,
@@ -122,7 +119,6 @@ Deno.test(
   'detachDaemonSocket with correct leaseToken releases lease',
   withRedisCell(async ({ cell }) => {
     const first = await cell.attachDaemonSocket({
-      sessionId: crypto.randomUUID(),
       keyId: crypto.randomUUID(),
     })
     await cell.detachDaemonSocket({
@@ -130,7 +126,6 @@ Deno.test(
       leaseToken: first.lease.token,
     })
     const second = await cell.attachDaemonSocket({
-      sessionId: crypto.randomUUID(),
       keyId: crypto.randomUUID(),
     })
     assertEquals(typeof second.connectionId, 'string')
@@ -141,7 +136,6 @@ Deno.test(
   'detachDaemonSocket with wrong leaseToken is a no-op',
   withRedisCell(async ({ cell, client, serverId }) => {
     const attached = await cell.attachDaemonSocket({
-      sessionId: crypto.randomUUID(),
       keyId: crypto.randomUUID(),
     })
     await cell.detachDaemonSocket({
@@ -157,7 +151,6 @@ Deno.test(
   'enqueue appends to outbox and readOutboxBatch reads in order',
   withRedisCell(async ({ cell }) => {
     const attached = await cell.attachDaemonSocket({
-      sessionId: crypto.randomUUID(),
       keyId: crypto.randomUUID(),
     })
     const consumer = `ws:${attached.connectionId}`
@@ -191,7 +184,6 @@ Deno.test(
   'ackOutbox clears pending entries for the consumer',
   withRedisCell(async ({ cell }) => {
     const attached = await cell.attachDaemonSocket({
-      sessionId: crypto.randomUUID(),
       keyId: crypto.randomUUID(),
     })
     const consumer = `ws:${attached.connectionId}`
@@ -245,7 +237,6 @@ Deno.test(
   'XAUTOCLAIM reclaims pending outbox entries after reconnect',
   withRedisCell(async ({ cell }) => {
     const firstAttach = await cell.attachDaemonSocket({
-      sessionId: crypto.randomUUID(),
       keyId: crypto.randomUUID(),
     })
     const consumer1 = `ws:${firstAttach.connectionId}`
@@ -277,7 +268,6 @@ Deno.test(
     await new Promise((resolve) => setTimeout(resolve, 61_000))
 
     const secondAttach = await cell.attachDaemonSocket({
-      sessionId: crypto.randomUUID(),
       keyId: crypto.randomUUID(),
     })
     const consumer2 = `ws:${secondAttach.connectionId}`
@@ -373,7 +363,6 @@ Deno.test(
   'listOnlineServerIds tracks attach and detach',
   withRedisCell(async ({ cell, registry, serverId }) => {
     const attached = await cell.attachDaemonSocket({
-      sessionId: crypto.randomUUID(),
       keyId: crypto.randomUUID(),
     })
     let online = await registry.listOnlineServerIds()
@@ -392,7 +381,6 @@ Deno.test(
   'reconcileStalePresence removes stale online entry when lease expired',
   withRedisCell(async ({ cell, client, registry, serverId }) => {
     const attached = await cell.attachDaemonSocket({
-      sessionId: crypto.randomUUID(),
       keyId: crypto.randomUUID(),
     })
 
