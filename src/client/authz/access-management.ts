@@ -1,11 +1,12 @@
 import type { PermissionKey } from './catalog.ts'
 
+/** Permission required to list, create, or revoke access grants on any resource. */
+export const ACCESS_MANAGEMENT_PERMISSION: PermissionKey = 'organization:own'
+
 /**
  * Permission required to list, create, or revoke access grants on a resource.
- * Organization and team scopes use `*:members`; all other kinds use `*:rw`.
+ * The evaluator resolves the entity's org and checks org-level ownership.
  */
-export function getAccessManagementPermission(kind: string): PermissionKey {
-  if (kind === 'organization') return 'organization:members'
-  if (kind === 'team') return 'team:members'
-  return `${kind}:rw` as PermissionKey
+export function getAccessManagementPermission(_kind: string): PermissionKey {
+  return ACCESS_MANAGEMENT_PERMISSION
 }

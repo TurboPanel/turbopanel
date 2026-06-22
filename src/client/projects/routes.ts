@@ -131,10 +131,7 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanCreateOr403(c, 'environment', environmentId, [
-      'environment:rw',
-      'project:rw',
-    ])
+    const denied = await assertCanCreateOr403(c, 'environment', environmentId)
     if (denied) return denied
 
     let displayName: string | null
@@ -178,7 +175,7 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanOr403(c, 'project:rw', 'project', id)
+    const denied = await assertCanOr403(c, 'organization:own', 'project', id)
     if (denied) return denied
 
     const body = await parseJsonBody(c)
@@ -222,7 +219,7 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanOr403(c, 'project:rw', 'project', id)
+    const denied = await assertCanOr403(c, 'organization:own', 'project', id)
     if (denied) return denied
 
     await db.transaction(async (tx) => {

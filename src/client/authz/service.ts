@@ -1,9 +1,7 @@
 import { and, eq } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
-import { grant, team, user } from '../../lib/db/schema.ts'
+import { grant, user } from '../../lib/db/schema.ts'
 import { can } from './evaluator.ts'
-import { type PermissionKey } from './catalog.ts'
-import { resolveEntityOrganizationId } from './create-access-grant.ts'
 
 export type PlatformUser = { id: string; role: string }
 
@@ -32,24 +30,11 @@ async function resolveUserRole(
   return userRole === undefined ? fetchUserRole(db, userId) : userRole
 }
 
-async function fetchTeamOrganizationId(
-  db: Db,
-  teamId: string,
-): Promise<string | null> {
-  const rows = await db
-    .select({ organizationId: team.organizationId })
-    .from(team)
-    .where(eq(team.id, teamId))
-    .limit(1)
-  return rows[0]?.organizationId ?? null
-}
-
-export async function hasGrant(
+async function hasOrganizationGrant(
   db: Db,
   userId: string,
-  permission: PermissionKey,
-  entityType: string,
-  entityId: string,
+  organizationId: string,
+  permission: 'organization:own' | 'organization:manage',
 ): Promise<boolean> {
   const rows = await db
     .select({ id: grant.id })
@@ -58,8 +43,31 @@ export async function hasGrant(
       and(
         eq(grant.subjectType, 'user'),
         eq(grant.subjectId, userId),
-        eq(grant.entityType, entityType),
-        eq(grant.entityId, entityId),
+        eq(grant.entityType, 'organization'),
+        eq(grant.entityId, organizationId),
+        eq(grant.permission, permission),
+        eq(grant.allowed, true),
+      ),
+    )
+    .limit(1)
+  return rows.length > 0
+}
+
+async function hasTeamGrant(
+  db: Db,
+  userId: string,
+  teamId: string,
+  permission: 'team:own' | 'team:manage',
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: grant.id })
+    .from(grant)
+    .where(
+      and(
+        eq(grant.subjectType, 'user'),
+        eq(grant.subjectId, userId),
+        eq(grant.entityType, 'team'),
+        eq(grant.entityId, teamId),
         eq(grant.permission, permission),
         eq(grant.allowed, true),
       ),
@@ -74,8 +82,8 @@ export async function canOwnOrganization(
   organizationId: string,
 ): Promise<boolean> {
   const role = await fetchUserRole(db, userId)
-  if (role !== null && isSuperAdmin({ id: userId, role })) return true
-  return can(db, userId, 'organization:owner', 'organization', organizationId)
+  if (role !== null && isPlatformAdmin({ id: userId, role })) return true
+  return hasOrganizationGrant(db, userId, organizationId, 'organization:own')
 }
 
 export async function canManageOrganization(
@@ -85,10 +93,10 @@ export async function canManageOrganization(
   userRole?: string | null,
 ): Promise<boolean> {
   const role = await resolveUserRole(db, userId, userRole)
-  if (role !== null && isSuperAdmin({ id: userId, role })) return true
+  if (role !== null && isPlatformAdmin({ id: userId, role })) return true
   const [isOwner, isManager] = await Promise.all([
-    can(db, userId, 'organization:owner', 'organization', organizationId),
-    can(db, userId, 'organization:manager', 'organization', organizationId),
+    can(db, userId, 'organization:own', 'organization', organizationId),
+    can(db, userId, 'organization:manage', 'organization', organizationId),
   ])
   return isOwner || isManager
 }
@@ -108,14 +116,8 @@ export async function canOwnTeam(
   userRole?: string | null,
 ): Promise<boolean> {
   const role = await resolveUserRole(db, userId, userRole)
-  if (role !== null && isSuperAdmin({ id: userId, role })) return true
-  const orgId = await fetchTeamOrganizationId(db, teamId)
-  if (!orgId) return false
-  const [isTeamOwner, canManageOrg] = await Promise.all([
-    can(db, userId, 'team:owner', 'team', teamId),
-    canManageOrganization(db, userId, orgId, role),
-  ])
-  return isTeamOwner || canManageOrg
+  if (role !== null && isPlatformAdmin({ id: userId, role })) return true
+  return hasTeamGrant(db, userId, teamId, 'team:own')
 }
 
 export async function canManageTeam(
@@ -125,15 +127,13 @@ export async function canManageTeam(
   userRole?: string | null,
 ): Promise<boolean> {
   const role = await resolveUserRole(db, userId, userRole)
-  if (role !== null && isSuperAdmin({ id: userId, role })) return true
-  const orgId = await fetchTeamOrganizationId(db, teamId)
-  if (!orgId) return false
-  const [isTeamOwner, isTeamManager, canManageOrg] = await Promise.all([
-    can(db, userId, 'team:owner', 'team', teamId),
-    can(db, userId, 'team:manager', 'team', teamId),
-    canManageOrganization(db, userId, orgId, role),
-  ])
-  return isTeamOwner || isTeamManager || canManageOrg
+  if (role !== null && isPlatformAdmin({ id: userId, role })) return true
+  if (await can(db, userId, 'team:own', 'team', teamId)) return true
+  if (await can(db, userId, 'team:manage', 'team', teamId)) return true
+  return (
+    (await hasTeamGrant(db, userId, teamId, 'team:own')) ||
+    (await hasTeamGrant(db, userId, teamId, 'team:manage'))
+  )
 }
 
 export async function canInviteToTeam(
@@ -144,48 +144,10 @@ export async function canInviteToTeam(
   return canManageTeam(db, userId, teamId)
 }
 
-export type GrantSpec = {
-  entityType: string
-  entityId: string
-  permission: PermissionKey
-}
-
-export async function canAssignGrant(
-  db: Db,
-  userId: string,
-  grantSpec: GrantSpec,
-  userRole?: string | null,
-): Promise<boolean> {
-  const role = await resolveUserRole(db, userId, userRole)
-  if (role !== null && isSuperAdmin({ id: userId, role })) return true
-
-  if (grantSpec.entityType === 'organization') {
-    return canManageOrganization(db, userId, grantSpec.entityId, role)
-  }
-
-  if (grantSpec.entityType === 'team') {
-    return canManageTeam(db, userId, grantSpec.entityId, role)
-  }
-
-  const orgId = await resolveEntityOrganizationId(
-    db,
-    grantSpec.entityType,
-    grantSpec.entityId,
-  )
-  if (!orgId) return false
-
-  const rwKey = `${grantSpec.entityType}:rw` as PermissionKey
-  const [canManageOrg, canRw] = await Promise.all([
-    canManageOrganization(db, userId, orgId, role),
-    can(db, userId, rwKey, grantSpec.entityType, grantSpec.entityId),
-  ])
-  return canManageOrg || canRw
-}
-
 export async function assertNotLastOrgOwner(
   db: Db,
   organizationId: string,
-  userId: string,
+  subjectId: string,
 ): Promise<void> {
   const rows = await db
     .select({ subjectId: grant.subjectId })
@@ -194,12 +156,34 @@ export async function assertNotLastOrgOwner(
       and(
         eq(grant.entityType, 'organization'),
         eq(grant.entityId, organizationId),
-        eq(grant.permission, 'organization:owner'),
+        eq(grant.permission, 'organization:own'),
         eq(grant.allowed, true),
       ),
     )
 
-  if (rows.length === 1 && rows[0]?.subjectId === userId) {
+  if (rows.length === 1 && rows[0]?.subjectId === subjectId) {
     throw new Error('Cannot remove the last owner of an organization')
+  }
+}
+
+export async function assertNotLastTeamOwner(
+  db: Db,
+  teamId: string,
+  subjectId: string,
+): Promise<void> {
+  const rows = await db
+    .select({ subjectId: grant.subjectId })
+    .from(grant)
+    .where(
+      and(
+        eq(grant.entityType, 'team'),
+        eq(grant.entityId, teamId),
+        eq(grant.permission, 'team:own'),
+        eq(grant.allowed, true),
+      ),
+    )
+
+  if (rows.length === 1 && rows[0]?.subjectId === subjectId) {
+    throw new Error('Cannot remove the last owner of a team')
   }
 }

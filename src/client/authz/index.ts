@@ -17,15 +17,14 @@ export { getAccessManagementPermission } from './access-management.ts'
 export {
   isPlatformAdmin,
   isSuperAdmin,
-  hasGrant,
   canManageOrganization,
   canOwnOrganization,
   canManageTeam,
   canOwnTeam,
   canInviteToOrganization,
   canInviteToTeam,
-  canAssignGrant,
   assertNotLastOrgOwner,
+  assertNotLastTeamOwner,
 } from './service.ts'
-export type { PlatformUser, GrantSpec } from './service.ts'
+export type { PlatformUser } from './service.ts'
 export { materializeInvitationGrants } from '../authn/invitation-grants.ts'

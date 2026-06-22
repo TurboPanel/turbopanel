@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import { organization } from '../../lib/db/schema.ts'
 import { GRANT_ENTITY_TYPES, isGrantEntityType } from './catalog.ts'
-import { resolveEntityOrganizationId } from './create-access-grant.ts'
+import { resolveEntityOrganizationId, verifyEntityExists } from './create-access-grant.ts'
 
 export type ResolvedEntity = {
   entityType: string
@@ -19,6 +19,10 @@ export async function resolveEntityById(
   entityId: string,
 ): Promise<ResolvedEntity | null> {
   for (const entityType of GRANT_ENTITY_TYPES) {
+    if (!(await verifyEntityExists(db, entityType, entityId))) {
+      continue
+    }
+
     const organizationId = await resolveEntityOrganizationId(db, entityType, entityId)
     if (organizationId !== null) {
       return { entityType, entityId, organizationId }

@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import {
   grant,
@@ -6,18 +6,15 @@ import {
   hosting,
   organization,
   project,
-  realm,
+  workspace,
   server,
   service,
   team,
   user,
 } from '../../lib/db/schema.ts'
 import {
-  ACCESS_PROFILES,
-  isAccessProfileKey,
   isGrantEntityType,
   isPermissionKey,
-  type AccessProfileKey,
   type PermissionKey,
 } from './catalog.ts'
 
@@ -30,8 +27,7 @@ export type CreateAccessGrantInput = {
   entityType: string
   entityId: string
   allowed?: boolean
-  accessProfileKey?: string
-  permissionKey?: string
+  permissionKey: string
 }
 
 export type CreateAccessGrantResult =
@@ -40,6 +36,41 @@ export type CreateAccessGrantResult =
 
 function isUuid(value: string): boolean {
   return UUID_RE.test(value)
+}
+
+const ACCESS_GRANT_ENTITY_TYPES = ['organization', 'team'] as const
+
+export function isAccessGrantEntityType(
+  entityType: string,
+): entityType is (typeof ACCESS_GRANT_ENTITY_TYPES)[number] {
+  return entityType === 'organization' || entityType === 'team'
+}
+
+export function validatePermissionEntityCompatibility(
+  permissionKey: PermissionKey,
+  entityType: string,
+): { ok: true } | { ok: false; error: string } {
+  if (
+    (permissionKey === 'organization:own' || permissionKey === 'organization:manage') &&
+    entityType !== 'organization'
+  ) {
+    return {
+      ok: false,
+      error: `${permissionKey} may only be granted on organization entities`,
+    }
+  }
+
+  if (
+    (permissionKey === 'team:own' || permissionKey === 'team:manage') &&
+    entityType !== 'team'
+  ) {
+    return {
+      ok: false,
+      error: `${permissionKey} may only be granted on team entities`,
+    }
+  }
+
+  return { ok: true }
 }
 
 export async function verifyEntityExists(
@@ -64,12 +95,11 @@ export async function verifyEntityExists(
         .limit(1)
       return rows.length > 0
     }
-    case 'workspace':
-    case 'realm': {
+    case 'workspace': {
       const rows = await db
-        .select({ id: realm.id })
-        .from(realm)
-        .where(eq(realm.id, entityId))
+        .select({ id: workspace.id })
+        .from(workspace)
+        .where(eq(workspace.id, entityId))
         .limit(1)
       return rows.length > 0
     }
@@ -177,12 +207,11 @@ export async function resolveEntityOrganizationId(
         .limit(1)
       return rows[0]?.organizationId ?? null
     }
-    case 'workspace':
-    case 'realm': {
+    case 'workspace': {
       const rows = await db
-        .select({ organizationId: realm.organizationId })
-        .from(realm)
-        .where(eq(realm.id, entityId))
+        .select({ organizationId: workspace.organizationId })
+        .from(workspace)
+        .where(eq(workspace.id, entityId))
         .limit(1)
       return rows[0]?.organizationId ?? null
     }
@@ -291,8 +320,12 @@ export async function createAccessGrant(
   db: Db,
   input: CreateAccessGrantInput,
 ): Promise<CreateAccessGrantResult> {
-  if (!isGrantEntityType(input.entityType)) {
-    return { ok: false, status: 400, error: 'Invalid entity type' }
+  if (!isAccessGrantEntityType(input.entityType)) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Access grants may only target organization or team entities',
+    }
   }
 
   const grantEntityType = input.entityType
@@ -309,23 +342,21 @@ export async function createAccessGrant(
     return { ok: false, status: 400, error: 'Invalid request' }
   }
 
-  const hasAccessProfileKey =
-    typeof input.accessProfileKey === 'string' && input.accessProfileKey.length > 0
-  const hasPermissionKey =
-    typeof input.permissionKey === 'string' && input.permissionKey.length > 0
-  if (hasAccessProfileKey === hasPermissionKey) {
-    return {
-      ok: false,
-      status: 400,
-      error: 'Exactly one of accessProfileKey or permissionKey is required',
-    }
+  if (
+    typeof input.permissionKey !== 'string' ||
+    input.permissionKey.length === 0 ||
+    !isPermissionKey(input.permissionKey)
+  ) {
+    return { ok: false, status: 400, error: 'Invalid permission key' }
   }
 
-  if (hasAccessProfileKey && !isAccessProfileKey(input.accessProfileKey!)) {
-    return { ok: false, status: 400, error: 'Invalid access profile key' }
-  }
-  if (hasPermissionKey && !isPermissionKey(input.permissionKey!)) {
-    return { ok: false, status: 400, error: 'Invalid permission key' }
+  const permission = input.permissionKey as PermissionKey
+  const permissionCompat = validatePermissionEntityCompatibility(
+    permission,
+    input.entityType,
+  )
+  if (!permissionCompat.ok) {
+    return { ok: false, status: 400, error: permissionCompat.error }
   }
 
   const entityResult = await validateGrantEntityTarget(
@@ -351,63 +382,6 @@ export async function createAccessGrant(
 
   const allowed = input.allowed ?? true
 
-  if (hasAccessProfileKey) {
-    const profileKey = input.accessProfileKey! as AccessProfileKey
-    const permissions = ACCESS_PROFILES[profileKey] as readonly PermissionKey[]
-
-    return db.transaction(async (tx) => {
-      let insertedCount = 0
-
-      for (const permission of permissions) {
-        const inserted = await tx
-          .insert(grant)
-          .values({
-            entityType: grantEntityType,
-            entityId: input.entityId,
-            subjectType: input.subjectType,
-            subjectId: input.subjectId,
-            permission,
-            allowed,
-          })
-          .onConflictDoNothing({
-            target: [
-              grant.entityType,
-              grant.entityId,
-              grant.subjectType,
-              grant.subjectId,
-              grant.permission,
-            ],
-          })
-          .returning({ id: grant.id })
-
-        if (inserted.length > 0) {
-          insertedCount += inserted.length
-        }
-      }
-
-      const rows = await tx
-        .select({ id: grant.id })
-        .from(grant)
-        .where(
-          and(
-            eq(grant.entityType, grantEntityType),
-            eq(grant.entityId, input.entityId),
-            eq(grant.subjectType, input.subjectType),
-            eq(grant.subjectId, input.subjectId),
-            inArray(grant.permission, [...permissions]),
-          ),
-        )
-
-      const ids = rows.map((row) => row.id)
-      if (ids.length === 0) {
-        return { ok: false, status: 409, error: 'Access grant conflict' } as const
-      }
-
-      return { ok: true, ids, created: insertedCount > 0 } as const
-    })
-  }
-
-  const permission = input.permissionKey! as PermissionKey
   const inserted = await db
     .insert(grant)
     .values({

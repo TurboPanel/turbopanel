@@ -4,7 +4,7 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { getDb } from '../../db.ts'
-import { realm } from '../../lib/db/schema.ts'
+import { workspace } from '../../lib/db/schema.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -41,15 +41,15 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const rows = await db
       .select({
-        id: realm.id,
-        displayName: realm.displayName,
-        organizationId: realm.organizationId,
-        createdAt: realm.createdAt,
-        updatedAt: realm.updatedAt,
+        id: workspace.id,
+        displayName: workspace.displayName,
+        organizationId: workspace.organizationId,
+        createdAt: workspace.createdAt,
+        updatedAt: workspace.updatedAt,
       })
-      .from(realm)
-      .where(inArray(realm.id, visibleIds))
-      .orderBy(realm.createdAt)
+      .from(workspace)
+      .where(inArray(workspace.id, visibleIds))
+      .orderBy(workspace.createdAt)
 
     return c.json({ workspaces: rows })
   })
@@ -68,14 +68,14 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
     const id = c.req.param('id')
     const rows = await db
       .select({
-        id: realm.id,
-        displayName: realm.displayName,
-        organizationId: realm.organizationId,
-        createdAt: realm.createdAt,
-        updatedAt: realm.updatedAt,
+        id: workspace.id,
+        displayName: workspace.displayName,
+        organizationId: workspace.organizationId,
+        createdAt: workspace.createdAt,
+        updatedAt: workspace.updatedAt,
       })
-      .from(realm)
-      .where(eq(realm.id, id))
+      .from(workspace)
+      .where(eq(workspace.id, id))
       .limit(1)
 
     const row = rows[0]
@@ -110,17 +110,14 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Invalid request' }, 400)
     }
 
-    const denied = await assertCanCreateOr403(c, 'organization', organizationId, [
-      'organization:rw',
-      'workspace:rw',
-    ])
+    const denied = await assertCanCreateOr403(c, 'organization', organizationId)
     if (denied) return denied
 
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
-        .insert(realm)
+        .insert(workspace)
         .values({ displayName, organizationId })
-        .returning({ id: realm.id })
+        .returning({ id: workspace.id })
       return inserted.id
     })
 
@@ -140,9 +137,9 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const id = c.req.param('id')
     const rows = await db
-      .select({ organizationId: realm.organizationId })
-      .from(realm)
-      .where(eq(realm.id, id))
+      .select({ organizationId: workspace.organizationId })
+      .from(workspace)
+      .where(eq(workspace.id, id))
       .limit(1)
 
     const row = rows[0]
@@ -150,7 +147,7 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanOr403(c, 'workspace:rw', 'workspace', id)
+    const denied = await assertCanOr403(c, 'organization:own', 'workspace', id)
     if (denied) return denied
 
     const body = await parseJsonBody(c)
@@ -164,9 +161,9 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
     }
 
     await db
-      .update(realm)
+      .update(workspace)
       .set(patchFields)
-      .where(eq(realm.id, id))
+      .where(eq(workspace.id, id))
 
     return c.json({ ok: true as const })
   })
@@ -184,9 +181,9 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const id = c.req.param('id')
     const rows = await db
-      .select({ organizationId: realm.organizationId })
-      .from(realm)
-      .where(eq(realm.id, id))
+      .select({ organizationId: workspace.organizationId })
+      .from(workspace)
+      .where(eq(workspace.id, id))
       .limit(1)
 
     const row = rows[0]
@@ -194,11 +191,11 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanOr403(c, 'workspace:rw', 'workspace', id)
+    const denied = await assertCanOr403(c, 'organization:own', 'workspace', id)
     if (denied) return denied
 
     await db.transaction(async (tx) => {
-      await tx.delete(realm).where(eq(realm.id, id))
+      await tx.delete(workspace).where(eq(workspace.id, id))
     })
 
     return c.json({ ok: true as const })

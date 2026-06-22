@@ -73,18 +73,18 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `sync
 |---|---|
 | **Identity** | `user`, `account`, `apikey`, `session`, `verification`, `passkey`, `2fa` |
 | **Organizations** | `organization`, `member`, `team`, `teammate`, `invitation`, `license` |
-| **Resource tree** | `realm`, `environment`, `project`, `service`, `hosting` |
+| **Resource tree** | `workspace`, `environment`, `project`, `service`, `hosting` |
 | **Authorization** | `grant` |
 | **Config** | `setting` |
 | **Runtime** | `server` |
 
-> The public API and authz layer expose this level as **workspace** (`/api/client/v1/workspaces`, entity type `workspace`), but the physical Postgres table is still **`realm`** (`environment.realm_id` → `realm.id`). Query or introspect with `realm`, not `workspace`.
+> The physical Postgres table is **`workspace`** (`environment.workspace_id` → `workspace.id`). The Drizzle export is `workspace`.
 
-> Access profiles and permissions are **static code constants** defined in `../../client/authz/catalog.ts` (`ACCESS_PROFILES`, `PERMISSIONS`, `ENTITY_TYPES`, `SUBJECT_TYPES`) — not DB rows. There are no `role`, `permission`, or `permit` tables. The Drizzle table export is **`grant`** (not `accessGrant`).
+> Permissions are **static code constants** defined in `../../client/authz/catalog.ts` (`PERMISSIONS`, `ENTITY_TYPES`, `SUBJECT_TYPES`) — not DB rows. There are no `role`, `permission`, or `permit` tables. The Drizzle table export is **`grant`** (not `accessGrant`).
 
 Drizzle relations are defined for future Better Auth adapter use. `IS_SIGNUP_ENABLED_CONFIG_KEY` is the `setting.key` for self-service signup.
 
-**Organizations:** `member` and `invitation` are **pure relationship tables** — `member.role` and `invitation.role` were removed because authorization is now derived exclusively from `grant` rows, not membership columns. **`invitation.grants`** (JSONB) stores the intended access grants (`InvitationGrantSpec[]` in `src/client/authn/invitation-grants.ts`); they are materialized into `grant` rows on accept. When `grants` is null, accept applies a default org-scoped member access-profile grant.
+**Organizations:** `member` and `invitation` are **pure relationship tables** — `member.role` and `invitation.role` were removed because authorization is now derived exclusively from `grant` rows, not membership columns. **`invitation.grants`** (JSONB) stores the intended access grants (`InvitationGrantSpec[]` in `src/client/authn/invitation-grants.ts`); they are materialized into `grant` rows on accept. When `grants` is null, accept applies a default `organization:manage` grant on the org.
 
 **Uniqueness:** `member(organization_id, user_id)` and `teammate(team_id, user_id)` prevent duplicate membership rows on concurrent invite acceptance/retries.
 
@@ -95,53 +95,52 @@ Drizzle relations are defined for future Better Auth adapter use. `IS_SIGNUP_ENA
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/api/client/v1/invitations/{id}/accept` | Accept a pending invitation; creates `member`/`teammate` rows, materializes `invitation.grants` into `grant` rows, updates session `organizationId` |
-| `GET` | `/api/client/v1/access-profiles` | Access profile catalog — static, no DB query (any authenticated user) |
 | `GET` | `/api/client/v1/permissions` | Permission catalog — static, no DB query (any authenticated user) |
-| `GET` | `/api/client/v1/access?resourceId=<uuid>` | List access grants for a resource; returns `{ access: AccessRecord[] }` with `subjectKind`, `subjectId`, `resourceId`, `effect`, and one of `accessProfileKey` / `permissionKey` |
+| `GET` | `/api/client/v1/access?resourceId=<uuid>` | List access grants for a resource; returns `{ access: AccessRecord[] }` with `subjectKind`, `subjectId`, `resourceId`, `effect`, and `permissionKey` |
 | `GET` | `/api/client/v1/access/check?resourceId=<uuid>&permissionKey=…` | Check a single permission for the signed-in user; returns `{ allowed: boolean }` |
 | `GET` | `/api/client/v1/access/resource-id?kind=<kind>&itemId=<uuid>` | Resolve `resourceId` for an entity in the session org; returns `{ resourceId, kind, itemId }` |
-| `POST` | `/api/client/v1/access` | Create an access grant; body: `{ subjectKind, subjectId, resourceId, effect, accessProfileKey?, permissionKey? }` — exactly one key required |
+| `POST` | `/api/client/v1/access` | Create an access grant; body: `{ subjectKind, subjectId, resourceId, effect, permissionKey }` |
 | `DELETE` | `/api/client/v1/access/{id}` | Revoke an access grant |
 
 #### Resource tree CRUD
 
-List and get enforce visibility via `listVisible` / `assertCanOr403` in SQL — never client-side. Create requires `<parent-kind>:rw` on the parent resource scope. Update and delete require `<kind>:rw` on the entity's own resource scope. All create/delete operations run entity insert/delete in a single transaction.
+List and get enforce visibility via `listVisible` / org-level grant checks in SQL — never client-side. Create, update, and delete require `organization:own` or `organization:manage` on the entity's org (via `can()`). All create/delete operations run entity insert/delete in a single transaction.
 
 | Method | Path | Permission |
 |---|---|---|
-| `GET` | `/api/client/v1/workspaces` | `workspace:ro` or `workspace:rw` (via `listVisible`) |
-| `GET` | `/api/client/v1/workspaces/{id}` | `workspace:ro` |
-| `POST` | `/api/client/v1/workspaces` | `organization:rw` on org resource |
-| `PATCH` | `/api/client/v1/workspaces/{id}` | `workspace:rw` |
-| `DELETE` | `/api/client/v1/workspaces/{id}` | `workspace:rw` |
-| `GET` | `/api/client/v1/environments` | `environment:ro` or `environment:rw` (optional `?workspaceId=`) |
-| `GET` | `/api/client/v1/environments/{id}` | `environment:ro` |
-| `POST` | `/api/client/v1/environments` | `workspace:rw` on parent workspace |
-| `PATCH` | `/api/client/v1/environments/{id}` | `environment:rw` |
-| `DELETE` | `/api/client/v1/environments/{id}` | `environment:rw` |
-| `GET` | `/api/client/v1/projects` | `project:ro` or `project:rw` (optional `?environmentId=`) |
-| `GET` | `/api/client/v1/projects/{id}` | `project:ro` |
-| `POST` | `/api/client/v1/projects` | `environment:rw` on parent environment |
-| `PATCH` | `/api/client/v1/projects/{id}` | `project:rw` |
-| `DELETE` | `/api/client/v1/projects/{id}` | `project:rw` |
-| `GET` | `/api/client/v1/services` | `service:ro` or `service:rw` (optional `?projectId=`) |
-| `GET` | `/api/client/v1/services/{id}` | `service:ro` |
-| `POST` | `/api/client/v1/services` | `project:rw` on parent project |
-| `PATCH` | `/api/client/v1/services/{id}` | `service:rw` |
-| `DELETE` | `/api/client/v1/services/{id}` | `service:rw` |
-| `GET` | `/api/client/v1/hostings` | `hosting:ro` or `hosting:rw` (optional `?projectId=`) |
-| `GET` | `/api/client/v1/hostings/{id}` | `hosting:ro` |
-| `POST` | `/api/client/v1/hostings` | `project:rw` on parent project |
-| `PATCH` | `/api/client/v1/hostings/{id}` | `hosting:rw` |
-| `DELETE` | `/api/client/v1/hostings/{id}` | `hosting:rw` |
+| `GET` | `/api/client/v1/workspaces` | org owner/manager or platform admin (via `listVisible`) |
+| `GET` | `/api/client/v1/workspaces/{id}` | org owner/manager or platform admin |
+| `POST` | `/api/client/v1/workspaces` | org owner/manager on org |
+| `PATCH` | `/api/client/v1/workspaces/{id}` | org owner/manager |
+| `DELETE` | `/api/client/v1/workspaces/{id}` | org owner/manager |
+| `GET` | `/api/client/v1/environments` | org owner/manager (optional `?workspaceId=`) |
+| `GET` | `/api/client/v1/environments/{id}` | org owner/manager |
+| `POST` | `/api/client/v1/environments` | org owner/manager on parent workspace |
+| `PATCH` | `/api/client/v1/environments/{id}` | org owner/manager |
+| `DELETE` | `/api/client/v1/environments/{id}` | org owner/manager |
+| `GET` | `/api/client/v1/projects` | org owner/manager (optional `?environmentId=`) |
+| `GET` | `/api/client/v1/projects/{id}` | org owner/manager |
+| `POST` | `/api/client/v1/projects` | org owner/manager on parent environment |
+| `PATCH` | `/api/client/v1/projects/{id}` | org owner/manager |
+| `DELETE` | `/api/client/v1/projects/{id}` | org owner/manager |
+| `GET` | `/api/client/v1/services` | org owner/manager (optional `?projectId=`) |
+| `GET` | `/api/client/v1/services/{id}` | org owner/manager |
+| `POST` | `/api/client/v1/services` | org owner/manager on parent project |
+| `PATCH` | `/api/client/v1/services/{id}` | org owner/manager |
+| `DELETE` | `/api/client/v1/services/{id}` | org owner/manager |
+| `GET` | `/api/client/v1/hostings` | org owner/manager (optional `?projectId=`) |
+| `GET` | `/api/client/v1/hostings/{id}` | org owner/manager |
+| `POST` | `/api/client/v1/hostings` | org owner/manager on parent project |
+| `PATCH` | `/api/client/v1/hostings/{id}` | org owner/manager |
+| `DELETE` | `/api/client/v1/hostings/{id}` | org owner/manager |
 
 Implemented in `src/resource-routes.ts`, registered from `registerClientRoutes`.
 
-`GET /api/client/v1/servers` uses `listVisible()` for server visibility (not raw org membership). License endpoints (`GET`/`POST` `/licenses`, `DELETE` `/licenses/{id}`) require `organization:billing`.
+`GET /api/client/v1/servers` uses `listVisible()` for server visibility (not raw org membership). License endpoints (`GET`/`POST` `/licenses`, `DELETE` `/licenses/{id}`) require org ownership (`organization:own`).
 
 ### Catalog
 
-Access profiles and permissions are **static code constants** in `src/clie../../client/authz/catalog.ts` — there is nothing to seed. Never edit access profiles or permissions in Studio — they do not exist as DB rows. **`ENTITY_TYPES`** and **`SUBJECT_TYPES`** are also exported from `catalog.ts` for route/body validation (`isEntityType`, `isSubjectType`).
+Permissions are **static code constants** in `../../client/authz/catalog.ts` — there is nothing to seed. Four permissions exist: `organization:own`, `organization:manage`, `team:own`, and `team:manage`. Never edit permissions in Studio — they do not exist as DB rows. **`ENTITY_TYPES`** and **`SUBJECT_TYPES`** are also exported from `catalog.ts` for route/body validation (`isEntityType`, `isSubjectType`).
 
 ### `license` table
 
@@ -167,16 +166,18 @@ Each physical server node gets a row in `server` (`id` uuidv7). On daemon connec
 
 ### Authz engine
 
-Runtime authorization lives in `../../client/authz/` (pure TypeScript, safe for both Deno and Workers — no Deno-only imports). Access profiles and permissions are static code constants in `catalog.ts`; `sync.ts` has been removed. The modules below evaluate access at request time against `grant`.
+Runtime authorization lives in `../../client/authz/` (pure TypeScript, safe for both Deno and Workers — no Deno-only imports). Permissions are static code constants in `catalog.ts`. The modules below evaluate access at request time against `grant`.
 
 | File | Purpose |
 |---|---|
-| `../../client/authz/catalog.ts` | Static `ACCESS_PROFILES`, `PERMISSIONS`, `ENTITY_TYPES`, `SUBJECT_TYPES`, `isAccessProfileKey`, `isPermissionKey`, `isEntityType`, `isSubjectType`, `getAccessProfileCatalog`, `getPermissionCatalog` — no DB access |
-| `../../client/authz/service.ts` | `isPlatformAdmin`, `isSuperAdmin`, `hasGrant`, `canManageOrganization`, `canOwnOrganization`, `canManageTeam`, `canOwnTeam`, `canInviteToOrganization`, `canInviteToTeam`, `canAssignGrant`, `assertNotLastOrgOwner` — higher-level org/team/grant management checks built on `can()` |
-| `../../client/authz/evaluator.ts` | `getSubjects`, `can`, `assertCan`, `listVisible`, `ForbiddenError` — domain-FK ancestry CTE; exact atomic permission checks against `grant`; superadmin and admin bypass in SQL |
+| `../../client/authz/catalog.ts` | Static `PERMISSIONS`, `ENTITY_TYPES`, `SUBJECT_TYPES`, `isPermissionKey`, `isEntityType`, `isSubjectType`, `getPermissionCatalog` — no DB access |
+| `../../client/authz/service.ts` | `isPlatformAdmin`, `isSuperAdmin`, `canManageOrganization`, `canOwnOrganization`, `canManageTeam`, `canOwnTeam`, `canInviteToOrganization`, `canInviteToTeam`, `assertNotLastOrgOwner` — higher-level org/team management checks built on `can()` |
+| `../../client/authz/evaluator.ts` | `getSubjects`, `can`, `assertCan`, `listVisible`, `ForbiddenError` — org-level grant checks via domain-FK ancestry; superadmin and admin bypass in SQL |
 | `../../client/authz/http.ts` | `assertCanOr403` Hono helper (503 / 401 / 403 short-circuit, `null` to continue) |
 
-`can()` resolves a permission in a **single CTE query** (`subjectset` → `ancestry` → `hits`) that matches the exact `permissionKey` against `grant` rows on the entity and its ancestors — one round-trip, no per-ancestor queries, no profile expansion at evaluation time. Grants are stored atomically (one row per permission); profile keys are expanded to multiple `grant` rows only at grant creation (`createAccessGrant`, invitation accept). A platform-admin bypass (`EXISTS … WHERE role IN ('superadmin', 'admin')`) is OR'd into the final result so no explicit grants are needed for superadmins or admins on resource access checks. Superadmin-only platform operations (e.g. developer reset-dev) remain gated separately by `user.role === 'superadmin'`. `listVisible()` applies the same leaf-first, deny-beats-allow resolution for `<kind>:ro` and `<kind>:rw` in SQL — **never rely on client-side filtering** for visibility.
+`can()` resolves org-level access in a **single CTE query** (`subjectset` → `ancestry` → org grant `hits`) — one round-trip. Users with `organization:own` or `organization:manage` on an org may access any entity in that org. A platform-admin bypass (`EXISTS … WHERE role IN ('superadmin', 'admin')`) is OR'd into the final result. Superadmin-only platform operations (e.g. developer reset-dev) remain gated separately by `user.role === 'superadmin'`. `listVisible()` returns all leaf ids in the org when the user has org-level access — **never rely on client-side filtering** for visibility.
+
+**Install (Deno):** `completeInstanceInstall` inserts exactly one `organization:own` grant on the org and one `team:own` grant on the default team for the superadmin user.
 
 **Completed:** Resource ancestry is computed directly from real domain tables (`organization → workspace → environment → project → service/hosting`, `organization → server`); the generic `resource` shadow table has been dropped.
 

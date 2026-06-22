@@ -1,7 +1,6 @@
 import type { Context } from 'hono'
 import { getDb } from '../db.ts'
 import { can } from './authz/index.ts'
-import type { PermissionKey } from './authz/index.ts'
 import type { SessionData } from './authn/middleware.ts'
 
 export const DISPLAY_NAME_RE = /^[A-Za-z0-9 ._-]+$/
@@ -48,7 +47,7 @@ export function buildPatchUpdateFields(
   return { displayName: name, updatedAt }
 }
 
-/** Read access: allow when either `<kind>:ro` or `<kind>:rw` is granted (matches listVisible). */
+/** Read access: org owners/managers and platform admins may read any entity in the org. */
 export async function assertCanReadOr403(
   c: Context,
   kind: string,
@@ -60,11 +59,7 @@ export async function assertCanReadOr403(
   const session = c.get('session')
   if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-  const roKey = `${kind}:ro` as PermissionKey
-  const rwKey = `${kind}:rw` as PermissionKey
-  const allowed =
-    (await can(db, session.userId, roKey, kind, entityId)) ||
-    (await can(db, session.userId, rwKey, kind, entityId))
+  const allowed = await can(db, session.userId, 'organization:own', kind, entityId)
 
   if (!allowed) {
     return c.json({ error: 'Forbidden' }, 403)
@@ -72,12 +67,11 @@ export async function assertCanReadOr403(
   return null
 }
 
-/** Create access: allow when any listed permission is granted on the parent scope. */
+/** Create access: org owners/managers and platform admins may create under the parent scope. */
 export async function assertCanCreateOr403(
   c: Context,
   parentKind: string,
   parentId: string,
-  permissionKeys: PermissionKey[],
 ): Promise<Response | null> {
   const db = getDb(c)
   if (!db) return c.json({ error: 'Database unavailable' }, 503)
@@ -85,12 +79,11 @@ export async function assertCanCreateOr403(
   const session = c.get('session')
   if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-  for (const key of permissionKeys) {
-    if (await can(db, session.userId, key, parentKind, parentId)) {
-      return null
-    }
+  const allowed = await can(db, session.userId, 'organization:own', parentKind, parentId)
+  if (!allowed) {
+    return c.json({ error: 'Forbidden' }, 403)
   }
-  return c.json({ error: 'Forbidden' }, 403)
+  return null
 }
 
 export async function parseJsonBody(

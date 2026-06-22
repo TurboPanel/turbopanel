@@ -1,29 +1,32 @@
 export const accessSchemas = {
+  PermissionKey: {
+    type: 'string',
+    enum: ['organization:own', 'organization:manage', 'team:own', 'team:manage'],
+    description: 'Atomic permission key from the fixed catalog.',
+  },
   InvitationGrantSpec: {
     type: 'object',
-    required: ['resourceKind', 'itemId'],
+    required: ['entityType', 'entityId', 'permissionKey'],
     properties: {
-      resourceKind: {
+      entityType: {
         type: 'string',
-        description: 'Entity kind (e.g. organization, workspace, project).',
+        enum: ['organization', 'team'],
+        description: 'Grant target entity kind. Only organization and team may hold access grants.',
       },
-      itemId: {
+      entityId: {
         type: 'string',
         format: 'uuid',
-        description: 'Primary key of the entity.',
+        description: 'Primary key of the organization or team entity.',
       },
       effect: { type: 'string', enum: ['allow', 'deny'], default: 'allow' },
-      accessProfileKey: {
-        type: 'string',
-        description: 'Access profile key expanded to atomic permissions on accept.',
-      },
       permissionKey: {
-        type: 'string',
-        description: 'Single atomic permission key.',
+        $ref: '#/components/schemas/PermissionKey',
+        description:
+          'Atomic permission key. Organization permissions require entityType organization; team permissions require entityType team.',
       },
     },
     description:
-      'One intended access grant stored on invitation.grants. Exactly one of accessProfileKey or permissionKey should be set. Materialized into grant rows on invitation accept.',
+      'One intended access grant stored on invitation.grants. Materialized into grant rows on invitation accept. Legacy payloads may use resourceKind/itemId aliases for entityType/entityId.',
   },
   InvitationAcceptResponse: {
     type: 'object',
@@ -37,33 +40,11 @@ export const accessSchemas = {
       },
     },
   },
-  AccessProfileRecord: {
-    type: 'object',
-    required: ['key', 'displayName', 'permissions'],
-    properties: {
-      key: { type: 'string' },
-      displayName: { type: 'string' },
-      permissions: {
-        type: 'array',
-        items: { type: 'string' },
-      },
-    },
-  },
-  AccessProfilesResponse: {
-    type: 'object',
-    required: ['accessProfiles'],
-    properties: {
-      accessProfiles: {
-        type: 'array',
-        items: { $ref: '#/components/schemas/AccessProfileRecord' },
-      },
-    },
-  },
   PermissionRecord: {
     type: 'object',
     required: ['key', 'displayName'],
     properties: {
-      key: { type: 'string' },
+      key: { $ref: '#/components/schemas/PermissionKey' },
       displayName: { type: 'string' },
     },
   },
@@ -85,18 +66,24 @@ export const accessSchemas = {
       'subjectId',
       'resourceId',
       'effect',
+      'permissionKey',
     ],
     properties: {
       id: { type: 'string', format: 'uuid' },
       subjectKind: {
         type: 'string',
         enum: ['user', 'team', 'organization'],
+        description: 'Kind of subject receiving the grant.',
       },
       subjectId: { type: 'string', format: 'uuid' },
-      resourceId: { type: 'string', format: 'uuid' },
+      resourceId: {
+        type: 'string',
+        format: 'uuid',
+        description:
+          'UUID of the grant target entity (organization or team primary key).',
+      },
       effect: { type: 'string', enum: ['allow', 'deny'] },
-      accessProfileKey: { type: ['string', 'null'] },
-      permissionKey: { type: ['string', 'null'] },
+      permissionKey: { $ref: '#/components/schemas/PermissionKey' },
     },
   },
   AccessListResponse: {
@@ -111,25 +98,25 @@ export const accessSchemas = {
   },
   CreateAccessRequest: {
     type: 'object',
-    required: ['subjectKind', 'subjectId', 'resourceId', 'effect'],
-    description:
-      'Exactly one of accessProfileKey or permissionKey must be provided. accessProfileKey is expanded server-side into multiple atomic grant rows in a single transaction.',
+    required: ['subjectKind', 'subjectId', 'resourceId', 'effect', 'permissionKey'],
     properties: {
       subjectKind: {
         type: 'string',
         enum: ['user', 'team', 'organization'],
+        description: 'Kind of subject receiving the grant.',
       },
       subjectId: { type: 'string', format: 'uuid' },
-      resourceId: { type: 'string', format: 'uuid' },
-      effect: { type: 'string', enum: ['allow', 'deny'] },
-      accessProfileKey: {
+      resourceId: {
         type: 'string',
+        format: 'uuid',
         description:
-          'Sugar: expanded to atomic permission rows server-side. Exactly one of `accessProfileKey` or `permissionKey` required.',
+          'UUID of the grant target entity. Must resolve to an organization or team row.',
       },
+      effect: { type: 'string', enum: ['allow', 'deny'] },
       permissionKey: {
-        type: 'string',
-        description: 'Single atomic permission key from the catalog.',
+        $ref: '#/components/schemas/PermissionKey',
+        description:
+          'Atomic permission key. Organization keys require an organization resourceId; team keys require a team resourceId.',
       },
     },
   },
@@ -160,7 +147,7 @@ export const accessPaths: Record<string, unknown> = {
       tags: ['client'],
       summary: 'Accept an organization invitation',
       description:
-        'Atomically claims a pending invitation, creates org membership (and optional team membership), materializes the invitation\'s `grants` JSON into `access` rows, and updates the active session `organizationId`. When `grants` is null, a default org-scoped `member` role grant is applied.',
+        'Atomically claims a pending invitation, creates org membership (and optional team membership), materializes the invitation\'s `grants` JSON into user-scoped grant rows, and updates the active session `organizationId`. When `grants` is null, a default `organization:manage` grant on the organization is applied. Grant targets must be organization or team entities with compatible permission keys.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -176,6 +163,18 @@ export const accessPaths: Record<string, unknown> = {
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/InvitationAcceptResponse' },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid invitation grants (incompatible permission and entity)',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string', example: 'Invalid invitation grants' } },
+              },
             },
           },
         },
@@ -242,35 +241,6 @@ export const accessPaths: Record<string, unknown> = {
       },
     },
   },
-  '/api/client/v1/access-profiles': {
-    get: {
-      tags: ['client'],
-      summary: 'List access profiles',
-      security: [{ cookieAuth: [] }],
-      responses: {
-        '200': {
-          description: 'Access profile catalog',
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/AccessProfilesResponse' },
-            },
-          },
-        },
-        '401': {
-          description: 'Unauthorized',
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                required: ['error'],
-                properties: { error: { type: 'string' } },
-              },
-            },
-          },
-        },
-      },
-    },
-  },
   '/api/client/v1/permissions': {
     get: {
       tags: ['client'],
@@ -316,7 +286,7 @@ export const accessPaths: Record<string, unknown> = {
           name: 'permissionKey',
           in: 'query',
           required: true,
-          schema: { type: 'string' },
+          schema: { $ref: '#/components/schemas/PermissionKey' },
         },
       ],
       responses: {
@@ -386,14 +356,16 @@ export const accessPaths: Record<string, unknown> = {
   '/api/client/v1/access/resource-id': {
     get: {
       tags: ['client'],
-      summary: 'Resolve a resource id for an entity',
+      summary: 'Resolve a resource id for an organization or team entity',
+      description:
+        'Maps a grant-target kind and item id to the resourceId used by other access endpoints. Only `organization` and `team` kinds are supported.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
           name: 'kind',
           in: 'query',
           required: true,
-          schema: { type: 'string' },
+          schema: { type: 'string', enum: ['organization', 'team'] },
         },
         {
           name: 'itemId',
@@ -481,9 +453,9 @@ export const accessPaths: Record<string, unknown> = {
   '/api/client/v1/access': {
     get: {
       tags: ['client'],
-      summary: 'List access grants for a resource',
+      summary: 'List access grants for an organization or team resource',
       description:
-        'Requires the resource-kind management permission: organization:members, team:members, or {kind}:rw for other kinds.',
+        'Requires `organization:own` on the resource (checked via `getAccessManagementPermission`). Only organization and team entities may hold grants.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -562,9 +534,9 @@ export const accessPaths: Record<string, unknown> = {
     },
     post: {
       tags: ['client'],
-      summary: 'Create an access grant',
+      summary: 'Create an access grant on an organization or team',
       description:
-        'Requires the resource-kind management permission on the target resourceId. Accepts accessProfileKey as sugar — expanded server-side to multiple atomic grant rows in one transaction.',
+        'Requires `organization:own` on the target resource (checked via `getAccessManagementPermission`). The resourceId must resolve to an organization or team entity; permission keys must match the entity kind.',
       security: [{ cookieAuth: [] }],
       requestBody: {
         required: true,
@@ -658,7 +630,7 @@ export const accessPaths: Record<string, unknown> = {
       tags: ['client'],
       summary: 'Revoke an access grant',
       description:
-        'Requires the resource-kind management permission on the grant\'s target resource.',
+        'Requires `organization:own` on the grant\'s target resource (checked via `getAccessManagementPermission`).',
       security: [{ cookieAuth: [] }],
       parameters: [
         {

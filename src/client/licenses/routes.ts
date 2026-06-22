@@ -12,7 +12,7 @@ async function assertBillingOrOrgMember(
   c: Context,
   organizationId: string,
 ): Promise<Response | null> {
-  return assertCanOr403(c, 'organization:billing', 'organization', organizationId)
+  return assertCanOr403(c, 'organization:own', 'organization', organizationId)
 }
 
 export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {

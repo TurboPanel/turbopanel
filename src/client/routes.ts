@@ -7,6 +7,7 @@ import { registerLicenseRoutes } from './licenses/routes.ts'
 import { registerProjectRoutes } from './projects/routes.ts'
 import { registerServerRoutes } from './servers/routes.ts'
 import { registerServiceRoutes } from './services/routes.ts'
+import { registerTeamRoutes } from './teams/routes.ts'
 import { registerWorkspaceRoutes } from './workspaces/routes.ts'
 import { getClientOpenApiSpec } from './openapi/index.ts'
 import { buildClientScalarHtml } from '../scalar-html.ts'
@@ -32,6 +33,7 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
   registerProjectRoutes(client, opts)
   registerServiceRoutes(client, opts)
   registerHostingRoutes(client, opts)
+  registerTeamRoutes(client, opts)
 
   client.get('/openapi.json', (c) => {
     const origin = new URL(c.req.url).origin

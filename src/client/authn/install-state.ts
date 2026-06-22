@@ -16,7 +16,6 @@ import {
   team,
   user,
 } from '../../lib/db/schema.ts'
-import { ACCESS_PROFILES } from '../authz/catalog.ts'
 import { createLicense } from './license.ts'
 import { hashPassword } from './password.ts'
 import { SUPERADMIN_ROLE } from './session-store.ts'
@@ -57,28 +56,25 @@ async function insertOwnerGrants(
   userId: string,
   organizationId: string,
 ): Promise<void> {
-  const permissions = ACCESS_PROFILES.owner
-  for (const permission of permissions) {
-    await db
-      .insert(grant)
-      .values({
-        entityType: 'organization',
-        entityId: organizationId,
-        subjectType: 'user',
-        subjectId: userId,
-        permission,
-        allowed: true,
-      })
-      .onConflictDoNothing({
-        target: [
-          grant.entityType,
-          grant.entityId,
-          grant.subjectType,
-          grant.subjectId,
-          grant.permission,
-        ],
-      })
-  }
+  await db
+    .insert(grant)
+    .values({
+      entityType: 'organization',
+      entityId: organizationId,
+      subjectType: 'user',
+      subjectId: userId,
+      permission: 'organization:own',
+      allowed: true,
+    })
+    .onConflictDoNothing({
+      target: [
+        grant.entityType,
+        grant.entityId,
+        grant.subjectType,
+        grant.subjectId,
+        grant.permission,
+      ],
+    })
 }
 
 const DEFAULT_DAEMON_STATE_DIR = '/opt/turbopanel/platform/daemon/state'
@@ -449,49 +445,25 @@ export async function completeInstanceInstall(
 
     await insertOwnerGrants(tx, userId, organizationId)
 
-    for (const permission of ['organization:owner', 'organization:manager'] as const) {
-      await tx
-        .insert(grant)
-        .values({
-          entityType: 'organization',
-          entityId: organizationId,
-          subjectType: 'user',
-          subjectId: userId,
-          permission,
-          allowed: true,
-        })
-        .onConflictDoNothing({
-          target: [
-            grant.entityType,
-            grant.entityId,
-            grant.subjectType,
-            grant.subjectId,
-            grant.permission,
-          ],
-        })
-    }
-
-    for (const permission of ['team:owner', 'team:manager'] as const) {
-      await tx
-        .insert(grant)
-        .values({
-          entityType: 'team',
-          entityId: teamId,
-          subjectType: 'user',
-          subjectId: userId,
-          permission,
-          allowed: true,
-        })
-        .onConflictDoNothing({
-          target: [
-            grant.entityType,
-            grant.entityId,
-            grant.subjectType,
-            grant.subjectId,
-            grant.permission,
-          ],
-        })
-    }
+    await tx
+      .insert(grant)
+      .values({
+        entityType: 'team',
+        entityId: teamId,
+        subjectType: 'user',
+        subjectId: userId,
+        permission: 'team:own',
+        allowed: true,
+      })
+      .onConflictDoNothing({
+        target: [
+          grant.entityType,
+          grant.entityId,
+          grant.subjectType,
+          grant.subjectId,
+          grant.permission,
+        ],
+      })
 
     const { licenseId, licenseToken } = await createLicense(tx, {
       organizationId,

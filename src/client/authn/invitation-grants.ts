@@ -1,7 +1,10 @@
 import type { Db } from '../../db.ts'
 import { grant } from '../../lib/db/schema.ts'
-import { ACCESS_PROFILES, isAccessProfileKey, isPermissionKey, type AccessProfileKey } from '../authz/catalog.ts'
-import { validateGrantEntityTarget } from '../authz/create-access-grant.ts'
+import { isPermissionKey, type PermissionKey } from '../authz/catalog.ts'
+import {
+  validateGrantEntityTarget,
+  validatePermissionEntityCompatibility,
+} from '../authz/create-access-grant.ts'
 
 /** Thrown when an invitation grant target fails validation before insert. */
 export class InvitationGrantValidationError extends Error {
@@ -19,8 +22,7 @@ export type InvitationGrantSpec = {
   entityType: string
   entityId: string
   allowed?: boolean
-  accessProfileKey?: string
-  permissionKey?: string
+  permissionKey: string
 }
 
 export function defaultInvitationGrants(
@@ -30,7 +32,7 @@ export function defaultInvitationGrants(
     {
       entityType: 'organization',
       entityId: organizationId,
-      accessProfileKey: 'member',
+      permissionKey: 'organization:manage',
       allowed: true,
     },
   ]
@@ -38,39 +40,14 @@ export function defaultInvitationGrants(
 
 function parseGrantTarget(
   record: Record<string, unknown>,
-): Pick<InvitationGrantSpec, 'accessProfileKey' | 'permissionKey'> | null {
-  const accessProfileKeyFromRecord =
-    typeof record.accessProfileKey === 'string' ? record.accessProfileKey : undefined
-  const roleKeyFromRecord =
-    typeof record.roleKey === 'string' ? record.roleKey : undefined
-  if (
-    accessProfileKeyFromRecord &&
-    roleKeyFromRecord &&
-    accessProfileKeyFromRecord !== roleKeyFromRecord
-  ) {
-    return null
-  }
-
-  const accessProfileKey = accessProfileKeyFromRecord ?? roleKeyFromRecord
+): Pick<InvitationGrantSpec, 'permissionKey'> | null {
   const permissionKey =
     typeof record.permissionKey === 'string' ? record.permissionKey : undefined
 
-  const hasRoleId = typeof record.roleId === 'string' && record.roleId.length > 0
-  const hasPermissionId =
-    typeof record.permissionId === 'string' && record.permissionId.length > 0
+  if (!permissionKey) return null
+  if (!isPermissionKey(permissionKey)) return null
 
-  if (hasRoleId && !accessProfileKey) return null
-  if (hasPermissionId && !permissionKey) return null
-  if (accessProfileKey && permissionKey) return null
-  if (!accessProfileKey && !permissionKey) return null
-
-  if (accessProfileKey && !isAccessProfileKey(accessProfileKey)) return null
-  if (permissionKey && !isPermissionKey(permissionKey)) return null
-
-  return {
-    ...(accessProfileKey ? { accessProfileKey } : {}),
-    ...(permissionKey ? { permissionKey } : {}),
-  }
+  return { permissionKey }
 }
 
 export function parseInvitationGrants(
@@ -125,13 +102,13 @@ export function parseInvitationGrants(
           ? false
           : undefined
 
-    const grant: InvitationGrantSpec = {
+    const grantSpec: InvitationGrantSpec = {
       entityType,
       entityId,
-      ...target,
+      permissionKey: target.permissionKey,
       ...(resolvedAllowed !== undefined ? { allowed: resolvedAllowed } : {}),
     }
-    grants.push(grant)
+    grants.push(grantSpec)
   }
 
   return grants.length > 0 ? grants : null
@@ -162,61 +139,34 @@ export async function materializeInvitationGrants(
       throw new InvitationGrantValidationError(targetResult.error, targetResult.status)
     }
 
-    const accessProfileKey = grantSpec.accessProfileKey ?? null
-    const permissionKey = grantSpec.permissionKey ?? null
-    if (accessProfileKey && permissionKey) {
-      throw new Error('GRANT_AMBIGUOUS_TARGET')
-    }
-    if (!accessProfileKey && !permissionKey) {
-      throw new Error('GRANT_MISSING_TARGET')
+    const permissionCompat = validatePermissionEntityCompatibility(
+      grantSpec.permissionKey as PermissionKey,
+      grantSpec.entityType,
+    )
+    if (!permissionCompat.ok) {
+      throw new InvitationGrantValidationError(permissionCompat.error, 400)
     }
 
     const allowed = grantSpec.allowed ?? true
 
-    if (accessProfileKey) {
-      const profileKey = accessProfileKey as AccessProfileKey
-      const permissions = ACCESS_PROFILES[profileKey]
-      for (const permission of permissions) {
-        await db
-          .insert(grant)
-          .values({
-            entityType: grantSpec.entityType,
-            entityId: grantSpec.entityId,
-            subjectType: 'user',
-            subjectId: userId,
-            permission,
-            allowed,
-          })
-          .onConflictDoNothing({
-            target: [
-              grant.entityType,
-              grant.entityId,
-              grant.subjectType,
-              grant.subjectId,
-              grant.permission,
-            ],
-          })
-      }
-    } else {
-      await db
-        .insert(grant)
-        .values({
-          entityType: grantSpec.entityType,
-          entityId: grantSpec.entityId,
-          subjectType: 'user',
-          subjectId: userId,
-          permission: permissionKey!,
-          allowed,
-        })
-        .onConflictDoNothing({
-          target: [
-            grant.entityType,
-            grant.entityId,
-            grant.subjectType,
-            grant.subjectId,
-            grant.permission,
-          ],
-        })
-    }
+    await db
+      .insert(grant)
+      .values({
+        entityType: grantSpec.entityType,
+        entityId: grantSpec.entityId,
+        subjectType: 'user',
+        subjectId: userId,
+        permission: grantSpec.permissionKey,
+        allowed,
+      })
+      .onConflictDoNothing({
+        target: [
+          grant.entityType,
+          grant.entityId,
+          grant.subjectType,
+          grant.subjectId,
+          grant.permission,
+        ],
+      })
   }
 }

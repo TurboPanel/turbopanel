@@ -11,19 +11,25 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { updateSessionOrganization } from '../authn/session-store.ts'
 import { getAccessManagementPermission } from '../authz/access-management.ts'
 import {
-  collapseAtomicGrants,
   mapEffectToAllowed,
+  mapGrantRows,
   revokeLegacyAccessGrant,
 } from '../authz/access-api-compat.ts'
-import { createAccessGrant } from '../authz/create-access-grant.ts'
+import { createAccessGrant, isAccessGrantEntityType } from '../authz/create-access-grant.ts'
 import {
   resolveEntityById,
   resolveEntityByKindAndItemId,
 } from '../authz/entity-resolver.ts'
-import { assertCanOr403, can } from '../authz/index.ts'
 import {
-  getAccessProfileCatalog,
+  assertCanOr403,
+  assertNotLastOrgOwner,
+  assertNotLastTeamOwner,
+  can,
+  canManageOrganization,
+} from '../authz/index.ts'
+import {
   getPermissionCatalog,
+  isPermissionKey,
   PERMISSIONS,
   type PermissionKey,
 } from '../authz/catalog.ts'
@@ -169,20 +175,11 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
     return c.json({ ok: true as const, organizationId: result.organizationId })
   })
 
-  router.use('/access-profiles', createSessionMiddleware(opts.secrets))
   router.use('/permissions', createSessionMiddleware(opts.secrets))
   router.use('/access/check', createSessionMiddleware(opts.secrets))
   router.use('/access/resource-id', createSessionMiddleware(opts.secrets))
   router.use('/access', createSessionMiddleware(opts.secrets))
   router.use('/access/:id', createSessionMiddleware(opts.secrets))
-
-  router.get('/access-profiles', async (c) => {
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const accessProfiles = getAccessProfileCatalog()
-    return c.json({ accessProfiles })
-  })
 
   router.get('/permissions', async (c) => {
     const session = c.get('session')
@@ -251,6 +248,10 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
       )
     }
 
+    if (!isAccessGrantEntityType(kind)) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
     const { organizationId } = session
     if (!organizationId) {
       return c.json({ error: 'Not found' }, 404)
@@ -272,13 +273,11 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
       })
     }
 
-    const roKey = `${kind}:ro` as PermissionKey
-    const rwKey = `${kind}:rw` as PermissionKey
-    const visible =
-      PERMISSIONS.includes(roKey) &&
-      PERMISSIONS.includes(rwKey) &&
-      ((await can(db, session.userId, roKey, entity.entityType, entity.entityId)) ||
-        (await can(db, session.userId, rwKey, entity.entityType, entity.entityId)))
+    const visible = await canManageOrganization(
+      db,
+      session.userId,
+      organizationId,
+    )
 
     if (!visible) {
       return c.json({ error: 'Forbidden' }, 403)
@@ -312,6 +311,10 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
+    if (!isAccessGrantEntityType(entity.entityType)) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
     const denied = await assertCanManageAccessOr403(c, db, resourceId)
     if (denied) return denied
 
@@ -334,7 +337,7 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
       )
       .orderBy(grant.createdAt)
 
-    return c.json({ access: collapseAtomicGrants(rows) })
+    return c.json({ access: mapGrantRows(rows) })
   })
 
   router.post('/access', async (c) => {
@@ -360,7 +363,6 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
     const subjectId = record.subjectId
     const resourceId = record.resourceId
     const effect = record.effect
-    const accessProfileKey = record.accessProfileKey
     const permissionKey = record.permissionKey
 
     if (
@@ -377,15 +379,12 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Invalid request' }, 400)
     }
 
-    const providedAccessProfileKey =
-      typeof accessProfileKey === 'string' && accessProfileKey.length > 0
-    const providedPermissionKey =
-      typeof permissionKey === 'string' && permissionKey.length > 0
-    if (providedAccessProfileKey === providedPermissionKey) {
-      return c.json(
-        { error: 'Exactly one of accessProfileKey or permissionKey is required' },
-        400,
-      )
+    if (
+      typeof permissionKey !== 'string' ||
+      permissionKey.length === 0 ||
+      !isPermissionKey(permissionKey)
+    ) {
+      return c.json({ error: 'permissionKey is required' }, 400)
     }
 
     if (!isUuid(resourceId) || !isUuid(subjectId)) {
@@ -394,6 +393,10 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const entity = await resolveEntityById(db, resourceId)
     if (!entity) {
+      return c.json({ error: 'Entity not found' }, 404)
+    }
+
+    if (!isAccessGrantEntityType(entity.entityType)) {
       return c.json({ error: 'Entity not found' }, 404)
     }
 
@@ -406,8 +409,7 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
       subjectType: subjectKind,
       subjectId,
       allowed: mapEffectToAllowed(effect),
-      accessProfileKey: providedAccessProfileKey ? accessProfileKey : undefined,
-      permissionKey: providedPermissionKey ? permissionKey : undefined,
+      permissionKey,
     })
 
     if (!result.ok) {
@@ -433,6 +435,9 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
       .select({
         entityType: grant.entityType,
         entityId: grant.entityId,
+        permission: grant.permission,
+        subjectId: grant.subjectId,
+        allowed: grant.allowed,
       })
       .from(grant)
       .where(eq(grant.id, accessId))
@@ -445,6 +450,32 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const denied = await assertCanManageAccessOr403(c, db, accessRow.entityId)
     if (denied) return denied
+
+    if (accessRow.allowed) {
+      try {
+        if (
+          accessRow.entityType === 'organization' &&
+          accessRow.permission === 'organization:own'
+        ) {
+          await assertNotLastOrgOwner(db, accessRow.entityId, accessRow.subjectId)
+        } else if (
+          accessRow.entityType === 'team' &&
+          accessRow.permission === 'team:own'
+        ) {
+          await assertNotLastTeamOwner(db, accessRow.entityId, accessRow.subjectId)
+        }
+      } catch (err) {
+        if (err instanceof Error) {
+          if (err.message === 'Cannot remove the last owner of an organization') {
+            return c.json({ error: err.message }, 409)
+          }
+          if (err.message === 'Cannot remove the last owner of a team') {
+            return c.json({ error: err.message }, 409)
+          }
+        }
+        throw err
+      }
+    }
 
     const revoked = await revokeLegacyAccessGrant(db, accessId)
     if (!revoked) {

@@ -5,7 +5,7 @@ import {
   grant,
   member,
   organization,
-  realm,
+  workspace,
   user,
 } from '../../lib/db/schema.ts'
 import {
@@ -13,44 +13,9 @@ import {
   InvitationGrantValidationError,
   materializeInvitationGrants,
 } from '../authn/invitation-grants.ts'
-import { ACCESS_PROFILES, type PermissionKey } from './catalog.ts'
-import { can } from './evaluator.ts'
+import { canManageOrganization } from './service.ts'
 
 const dbUrl = getDatabaseUrl()
-
-const WRITE_PERMISSIONS: PermissionKey[] = [
-  'realm:rw',
-  'environment:rw',
-  'project:rw',
-  'service:rw',
-  'hosting:rw',
-]
-
-async function assertMemberOrganizationGrantPermissions(
-  db: ReturnType<typeof createDenoDb>,
-  userId: string,
-  organizationId: string,
-): Promise<void> {
-  const rows = await db
-    .select({ permission: grant.permission })
-    .from(grant)
-    .where(
-      and(
-        eq(grant.subjectId, userId),
-        eq(grant.entityType, 'organization'),
-        eq(grant.entityId, organizationId),
-      ),
-    )
-
-  const actual = rows.map((row) => row.permission).sort()
-  const expected = [...ACCESS_PROFILES['member']].sort()
-
-  if (actual.length !== expected.length || actual.some((permission, index) => permission !== expected[index])) {
-    throw new Error(
-      `Expected member profile permissions on organization ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
-    )
-  }
-}
 
 async function withTestFixtures(
   fn: (ctx: {
@@ -85,13 +50,10 @@ async function withTestFixtures(
 
   await db.insert(member).values({ organizationId, userId })
 
-  const grants = defaultInvitationGrants(organizationId)
-  await materializeInvitationGrants(db, userId, grants, organizationId)
-
   const [insertedWorkspace] = await db
-    .insert(realm)
+    .insert(workspace)
     .values({ displayName: 'Test Workspace', organizationId })
-    .returning({ id: realm.id })
+    .returning({ id: workspace.id })
 
   const workspaceId = insertedWorkspace!.id
 
@@ -108,138 +70,69 @@ async function withTestFixtures(
       eq(member.userId, userId),
       eq(member.organizationId, organizationId),
     ))
-    await db.delete(realm).where(eq(realm.organizationId, organizationId))
+    await db.delete(workspace).where(eq(workspace.organizationId, organizationId))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
 }
 
-Deno.test('default invited member has read-only baseline on organization', async () => {
-  await withTestFixtures(async ({ db, userId, organizationId }) => {
-    await assertMemberOrganizationGrantPermissions(db, userId, organizationId)
-
-    const canRead = await can(db, userId, 'organization:ro', 'organization', organizationId)
-    const canWrite = await can(db, userId, 'organization:rw', 'organization', organizationId)
-    const canManageMembers = await can(
-      db,
-      userId,
-      'organization:members',
-      'organization',
-      organizationId,
-    )
-
-    if (!canRead) throw new Error('expected organization:ro')
-    if (canWrite) throw new Error('member must not have organization:rw')
-    if (canManageMembers) {
-      throw new Error('member must not have organization:members')
-    }
-  })
-})
-
-Deno.test('default invited member cannot mutate realm-tree resources', async () => {
-  await withTestFixtures(async ({ db, userId, organizationId, workspaceId }) => {
-    for (const permissionKey of WRITE_PERMISSIONS) {
-      const allowedOnOrg = await can(
-        db,
-        userId,
-        permissionKey,
-        'organization',
-        organizationId,
-      )
-      if (allowedOnOrg) {
-        throw new Error(`member must not have ${permissionKey} on organization`)
-      }
-
-      const allowedOnRealm = await can(db, userId, permissionKey, 'workspace', workspaceId)
-      if (allowedOnRealm) {
-        throw new Error(`member must not have ${permissionKey} on realm`)
-      }
-    }
-  })
-})
-
-Deno.test('elevated manager access profile grants realm write after explicit grant', async () => {
-  await withTestFixtures(async ({ db, userId, workspaceId }) => {
-    for (const permission of ACCESS_PROFILES['manager']) {
-      await db
-        .insert(grant)
-        .values({
-          entityType: 'realm',
-          entityId: workspaceId,
-          subjectType: 'user',
-          subjectId: userId,
-          permission,
-          allowed: true,
-        })
-        .onConflictDoNothing({
-          target: [
-            grant.entityType,
-            grant.entityId,
-            grant.subjectType,
-            grant.subjectId,
-            grant.permission,
-          ],
-        })
-    }
-
-    const allowed = await can(db, userId, 'realm:rw', 'workspace', workspaceId)
-    if (!allowed) throw new Error('manager grant should allow realm:rw')
-  })
-})
-
-Deno.test('profile expansion is idempotent', async () => {
+Deno.test('default invited member gets organization:manage grant', async () => {
   await withTestFixtures(async ({ db, userId, organizationId }) => {
     const grants = defaultInvitationGrants(organizationId)
-
-    // Call materializeInvitationGrants a second time — should be a no-op
     await materializeInvitationGrants(db, userId, grants, organizationId)
 
-    await assertMemberOrganizationGrantPermissions(db, userId, organizationId)
-  })
-})
-
-Deno.test('invitation grant accepts workspace entity type and stores realm rows', async () => {
-  await withTestFixtures(async ({ db, userId, organizationId, workspaceId }) => {
-    await materializeInvitationGrants(
-      db,
-      userId,
-      [
-        {
-          entityType: 'workspace',
-          entityId: workspaceId,
-          permissionKey: 'realm:ro',
-          allowed: true,
-        },
-      ],
-      organizationId,
-    )
-
     const rows = await db
-      .select({
-        entityType: grant.entityType,
-        permission: grant.permission,
-      })
+      .select({ permission: grant.permission })
       .from(grant)
       .where(
         and(
           eq(grant.subjectId, userId),
-          eq(grant.entityId, workspaceId),
+          eq(grant.entityType, 'organization'),
+          eq(grant.entityId, organizationId),
         ),
       )
 
     if (rows.length !== 1) {
       throw new Error(`expected one grant row, got ${rows.length}`)
     }
-    if (rows[0]!.entityType !== 'realm') {
-      throw new Error(`expected stored entityType realm, got ${rows[0]!.entityType}`)
+    if (rows[0]!.permission !== 'organization:manage') {
+      throw new Error(`expected organization:manage, got ${rows[0]!.permission}`)
     }
-    if (rows[0]!.permission !== 'realm:ro') {
-      throw new Error(`expected realm:ro permission, got ${rows[0]!.permission}`)
-    }
+  })
+})
 
-    const allowed = await can(db, userId, 'realm:ro', 'workspace', workspaceId)
-    if (!allowed) {
-      throw new Error('workspace-targeted invitation grant should authorize workspace reads')
+Deno.test('organization:manage grant allows canManageOrganization', async () => {
+  await withTestFixtures(async ({ db, userId, organizationId }) => {
+    const grants = defaultInvitationGrants(organizationId)
+    await materializeInvitationGrants(db, userId, grants, organizationId)
+
+    const managesOrg = await canManageOrganization(db, userId, organizationId)
+    if (!managesOrg) {
+      throw new Error('organization:manage grant should allow canManageOrganization')
+    }
+  })
+})
+
+Deno.test('invitation grant materialization is idempotent', async () => {
+  await withTestFixtures(async ({ db, userId, organizationId }) => {
+    const grants = defaultInvitationGrants(organizationId)
+
+    await materializeInvitationGrants(db, userId, grants, organizationId)
+    await materializeInvitationGrants(db, userId, grants, organizationId)
+
+    const rows = await db
+      .select({ id: grant.id })
+      .from(grant)
+      .where(
+        and(
+          eq(grant.subjectId, userId),
+          eq(grant.entityType, 'organization'),
+          eq(grant.entityId, organizationId),
+        ),
+      )
+
+    if (rows.length !== 1) {
+      throw new Error(`expected exactly one grant row after idempotent materialization, got ${rows.length}`)
     }
   })
 })
@@ -254,9 +147,9 @@ Deno.test('invitation grant rejects nonexistent entity id', async () => {
         userId,
         [
           {
-            entityType: 'realm',
+            entityType: 'workspace',
             entityId: missingEntityId,
-            accessProfileKey: 'member',
+            permissionKey: 'organization:manage',
             allowed: true,
           },
         ],
@@ -274,10 +167,8 @@ Deno.test('invitation grant rejects nonexistent entity id', async () => {
   })
 })
 
-Deno.test('invitation grant rejects nonexistent workspace entity id', async () => {
-  await withTestFixtures(async ({ db, userId, organizationId }) => {
-    const missingEntityId = crypto.randomUUID()
-
+Deno.test('invitation grant rejects incompatible permission on existing workspace entity', async () => {
+  await withTestFixtures(async ({ db, userId, organizationId, workspaceId }) => {
     try {
       await materializeInvitationGrants(
         db,
@@ -285,8 +176,8 @@ Deno.test('invitation grant rejects nonexistent workspace entity id', async () =
         [
           {
             entityType: 'workspace',
-            entityId: missingEntityId,
-            accessProfileKey: 'member',
+            entityId: workspaceId,
+            permissionKey: 'organization:manage',
             allowed: true,
           },
         ],
@@ -297,8 +188,14 @@ Deno.test('invitation grant rejects nonexistent workspace entity id', async () =
       if (!(err instanceof InvitationGrantValidationError)) {
         throw err
       }
-      if (err.message !== 'Entity not found') {
-        throw new Error(`expected Entity not found, got ${err.message}`)
+      if (
+        err.message !==
+        'organization:manage may only be granted on organization entities'
+      ) {
+        throw new Error(`expected permission compatibility rejection, got ${err.message}`)
+      }
+      if (err.status !== 400) {
+        throw new Error(`expected status 400, got ${err.status}`)
       }
     }
   })
@@ -320,9 +217,9 @@ Deno.test('invitation grant rejects cross-organization entity target', async () 
           userId,
           [
             {
-              entityType: 'realm',
+              entityType: 'workspace',
               entityId: workspaceId,
-              accessProfileKey: 'member',
+              permissionKey: 'organization:manage',
               allowed: true,
             },
           ],

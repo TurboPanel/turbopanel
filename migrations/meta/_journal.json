@@ -8,6 +8,20 @@
       "when": 1782069325365,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1782069500000,
+      "tag": "0001_rename_realm_to_workspace",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1782099474660,
+      "tag": "0002_drop_grant_updated_at",
+      "breakpoints": true
     }
   ]
 }

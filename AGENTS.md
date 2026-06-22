@@ -294,21 +294,20 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `GET` | `/api/install/v1/status` | Public: `{ needsInstall, isInstallMode, isSignupEnabled }` — Deno: install mode until org + superadmin exist; Workers: always `needsInstall: false`, `isSignupEnabled` from DB + env override |
 | `POST` | `/api/install/v1/bootstrap` | Deno: verify host PAM (root or sudo user), no cookies |
 | `POST` | `/api/install/v1/` | Deno: host PAM + superadmin setup → superadmin session only |
-| `GET` | `/api/client/v1/servers` | Session required: servers visible to the user via `listVisible` (`server:ro`/`server:rw`), with live `connected` / `hostname` from the daemon hub |
-| `POST` | `/api/client/v1/invitations/{id}/accept` | Accept a pending invitation; atomically claims the row, materializes `invitation.grants` into `grant` rows (default: org member access-profile grant), updates session `organizationId` |
-| `GET` | `/api/client/v1/access-profiles` | Access profile catalog — static, served from code constants (any authenticated user) |
-| `GET` | `/api/client/v1/permissions` | Permission catalog — static, served from code constants (any authenticated user) |
-| `GET` | `/api/client/v1/access?resourceId=<uuid>` | List access grants for a resource; requires the resource-kind management permission (`{kind}:rw` or `organization:members`); returns `{ access: AccessRecord[] }` |
-| `GET` | `/api/client/v1/access/check?resourceId=<uuid>&permissionKey=…` | Check a single permission for the signed-in user; returns `{ allowed: boolean }` |
+| `GET` | `/api/client/v1/servers` | Session required: servers visible to the user via `listVisible`, with live `connected` / `hostname` from the daemon hub |
+| `POST` | `/api/client/v1/invitations/{id}/accept` | Accept a pending invitation; atomically claims the row, materializes `invitation.grants` into `grant` rows (default: `organization:manage` grant on the org), updates session `organizationId` |
+| `GET` | `/api/client/v1/permissions` | Permission catalog — four fixed keys (`organization:own`, `organization:manage`, `team:own`, `team:manage`); any authenticated user |
+| `GET` | `/api/client/v1/access?resourceId=<uuid>` | List access grants for a resource; requires `organization:own` on the resource (via `getAccessManagementPermission`); returns `{ access: AccessRecord[] }` with `subjectKind`, `resourceId`, `effect`, and `permissionKey` |
+| `GET` | `/api/client/v1/access/check?resourceId=<uuid>&permissionKey=…` | Check a single permission for the signed-in user; `permissionKey` must be one of `organization:own`, `organization:manage`, `team:own`, `team:manage`; returns `{ allowed: boolean }` |
 | `GET` | `/api/client/v1/access/resource-id?kind=<kind>&itemId=<uuid>` | Resolve `resourceId` for an entity in the session org; returns `{ resourceId, kind, itemId }` |
-| `POST` | `/api/client/v1/access` | Create an access grant; body accepts `{ subjectKind, subjectId, resourceId, effect, accessProfileKey?, permissionKey? }` — exactly one of `accessProfileKey` (expanded server-side to atomic rows) or `permissionKey` |
-| `DELETE` | `/api/client/v1/access/{id}` | Revoke a `grant` row; management permission derived from the grant's target resource |
-| `GET` | `/api/client/v1/workspaces` | List workspaces visible via `listVisible` (`workspace:ro` / `workspace:rw`); full CRUD table in `src/lib/db/AGENTS.md` |
-| `GET` | `/api/client/v1/licenses` | List licenses (`organization:billing`) |
-| `POST` | `/api/client/v1/licenses` | Create a license (`organization:billing`) |
-| `DELETE` | `/api/client/v1/licenses/{id}` | Revoke a license (`organization:billing`) |
+| `POST` | `/api/client/v1/access` | Create an access grant; body accepts `{ subjectKind, subjectId, resourceId, effect, permissionKey }` where `permissionKey` is required and must be from the four-value catalog |
+| `DELETE` | `/api/client/v1/access/{id}` | Revoke a `grant` row; requires `organization:own` on the grant's target resource |
+| `GET` | `/api/client/v1/workspaces` | List workspaces visible via `listVisible` (org-level `organization:own` / `organization:manage` grants); full CRUD table in `src/lib/db/AGENTS.md` |
+| `GET` | `/api/client/v1/licenses` | List licenses (`organization:own`) |
+| `POST` | `/api/client/v1/licenses` | Create a license (`organization:own`) |
+| `DELETE` | `/api/client/v1/licenses/{id}` | Revoke a license (`organization:own`) |
 
-**Install mode (Deno self-hosted):** `isInstanceInstalled()` is false on a fresh DB. The UI `/install` page first verifies host PAM (`POST /api/install/v1/bootstrap`, client-side gate only), then collects superadmin email/password. Org/team names are fixed defaults. `completeInstanceInstall` inserts one `grant` row per permission in `ACCESS_PROFILES['owner']` for the superadmin on the org entity (`entity_type='organization'`, `entity_id=<orgId>`, `subject_type='user'`, `subject_id=<userId>`, `allowed=true`) — no `resource` registration, no `accessProfileKey` stored on rows. After install, sign-in uses superadmin email/password only. The co-located daemon's `server.organization_id` is assigned to **Default Organization** on install (`assignColocatedDaemonToOrganization` in `install-state.ts`, resolving the server row from the live hub or by `metadata.machineId` / hostname) and again when the Unix-socket daemon sends `hello` if still unassigned.
+**Install mode (Deno self-hosted):** `isInstanceInstalled()` is false on a fresh DB. The UI `/install` page first verifies host PAM (`POST /api/install/v1/bootstrap`, client-side gate only), then collects superadmin email/password. Org/team names are fixed defaults. `completeInstanceInstall` inserts exactly one `organization:own` grant on the org and one `team:own` grant on the default team for the superadmin user. After install, sign-in uses superadmin email/password only. The co-located daemon's `server.organization_id` is assigned to **Default Organization** on install (`assignColocatedDaemonToOrganization` in `install-state.ts`, resolving the server row from the live hub or by `metadata.machineId` / hostname) and again when the Unix-socket daemon sends `hello` if still unassigned.
 
 #### New files
 
@@ -391,7 +390,7 @@ sequenceDiagram
 - `src/openapi.ts` / `src/scalar-html.ts` — hand-authored OpenAPI 3.1 specs + Scalar embed HTML
 - `src/client/routes.ts` — client REST router; imports `src/client/authn/*` and `src/client/authz/*`
 - `src/client/authn/` — session, credentials, PAM install gate, license CRUD, HTTP auth handlers
-- `src/client/authz/` — static access profiles, `can`/`listVisible`, grant management
+- `src/client/authz/` — four-value permission catalog, `can`/`listVisible`, grant management
 - `src/daemon/api-routes.ts` / `src/daemon/hub.ts` / `src/daemon/ws-handlers.ts` / `src/daemon/deno-ws.ts` — daemon REST + WS hub
 - `src/daemon/authn/license.ts` — daemon hello license verification (`verifyDaemonLicense`)
 - `src/daemon/authz/` — daemon-side authorization placeholder
