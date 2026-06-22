@@ -2,6 +2,12 @@ import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import type { Context } from 'hono'
 import postgres from 'postgres'
 import type { DaemonCellRegistry } from './daemon/cell/contracts.ts'
+import type { DaemonChallengeStore } from './daemon/cell/challenge-store.ts'
+import {
+  createInMemoryChallengeStore,
+  DAEMON_CHALLENGE_TTL_MS,
+  DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+} from './daemon/cell/challenge-store.ts'
 import { getDatabaseUrl, resolvePostgresConnection } from './db-url.ts'
 import * as schema from './lib/db/schema.ts'
 
@@ -77,4 +83,24 @@ export function getDb(c: Context): Db | undefined {
 
 export function getDaemonCellRegistry(c: Context): DaemonCellRegistry | undefined {
   return c.get('daemonCellRegistry')
+}
+
+export type DaemonChallengeStoreProvider = {
+  enroll: DaemonChallengeStore
+  auth: DaemonChallengeStore
+  rotation: DaemonChallengeStore
+}
+
+export function getChallengeStoreProvider(
+  c: Context,
+  fallback?: DaemonChallengeStoreProvider,
+): DaemonChallengeStoreProvider {
+  const fromContext = c.get('challengeStoreProvider')
+  if (fromContext) return fromContext
+  if (fallback) return fallback
+  return {
+    enroll: createInMemoryChallengeStore(DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS),
+    auth: createInMemoryChallengeStore(DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS),
+    rotation: createInMemoryChallengeStore(DAEMON_CHALLENGE_TTL_MS),
+  }
 }

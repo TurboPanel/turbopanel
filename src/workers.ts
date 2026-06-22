@@ -5,7 +5,7 @@ import { createApp, type AppEnv } from './app'
 import { createDurableObjectDaemonCellRegistry } from './daemon/cell/do-registry.ts'
 import { createDurableObjectChallengeStore } from './daemon/cell/challenge-store.ts'
 import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
-import { createWorkersDb } from './db'
+import { createWorkersDb, type DaemonChallengeStoreProvider } from './db'
 import { registerWorkersDaemonWebSocket } from './daemon/workers-ws.ts'
 import { DAEMON_CHALLENGE_TTL_MS, DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS } from './daemon/authn/challenge.ts'
 import { createNoopQueue } from './lib/email/noop-queue.ts'
@@ -24,6 +24,26 @@ let cachedDaemonCellRegistryFactory:
     ReturnType<typeof createDurableObjectDaemonCellRegistry>)
   | null = null
 
+function createWorkersChallengeStoreProvider(
+  env: CloudflareBindings,
+): DaemonChallengeStoreProvider {
+  const challengeStub = env.DAEMON_CELL.getByName('challenge-store')
+  return {
+    enroll: createDurableObjectChallengeStore(
+      challengeStub,
+      DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+    ),
+    auth: createDurableObjectChallengeStore(
+      challengeStub,
+      DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+    ),
+    rotation: createDurableObjectChallengeStore(
+      challengeStub,
+      DAEMON_CHALLENGE_TTL_MS,
+    ),
+  }
+}
+
 async function initWorkerApp(env: CloudflareBindings) {
   const secretsConfig = parseSecretsEnv(
     env.TURBOPANEL_SECRET,
@@ -40,7 +60,8 @@ async function initWorkerApp(env: CloudflareBindings) {
       domain: mailgunDomain,
     })
     : createNoopQueue()
-  // DB is created per request — Workers forbid reusing I/O across fetch handlers.
+  // DB and DO challenge stubs are created per request — Workers forbid reusing I/O
+  // objects across fetch handlers.
   cachedApp = createApp({
     emailQueue: cachedEmailQueue,
     secrets: cachedSessionSecrets,
@@ -49,24 +70,8 @@ async function initWorkerApp(env: CloudflareBindings) {
     signupEnvOverride: env.TURBOPANEL_IS_SIGNUP_ENABLED,
     emailFrom: env.TURBOPANEL_SYSTEM_EMAIL_FROM ?? 'noreply@turbopanel.local',
   })
-  const challengeStub = env.DAEMON_CELL.getByName('challenge-store')
-  const challengeStoreProvider = {
-    enroll: createDurableObjectChallengeStore(
-      challengeStub,
-      DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-    ),
-    auth: createDurableObjectChallengeStore(
-      challengeStub,
-      DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-    ),
-    rotation: createDurableObjectChallengeStore(
-      challengeStub,
-      DAEMON_CHALLENGE_TTL_MS,
-    ),
-  }
   registerDaemonApiRoutes(cachedApp, {
     secrets: cachedDaemonJwtSecrets ?? undefined,
-    challengeStoreProvider,
   })
   registerWorkersDaemonWebSocket(cachedApp, {
     secrets: cachedDaemonJwtSecrets ?? undefined,
@@ -97,6 +102,7 @@ export default {
           cachedDaemonCellRegistryFactory(env, db),
         )
       }
+      c.set('challengeStoreProvider', createWorkersChallengeStoreProvider(env))
       await next()
     })
     requestApp.route('/', cachedApp!)

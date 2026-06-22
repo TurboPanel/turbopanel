@@ -4,6 +4,7 @@ import type { DerivedSecretsConfig } from './client/authn/secrets.ts'
 import { registerClientRoutes } from './client/routes.ts'
 import { registerCorsMiddleware } from './cors.ts'
 import type { DaemonCellRegistry } from './daemon/cell/contracts.ts'
+import type { DaemonChallengeStoreProvider } from './db.ts'
 import type { Db } from './db.ts'
 import type { EmailQueue } from './lib/email/types.ts'
 import { HEALTH_PATH } from './surfaces.ts'
@@ -18,6 +19,7 @@ export type AppEnv = {
     /** Hyperdrive or TURBOPANEL_DATABASE_URL for database status routes (Workers). */
     postgresConnectionString?: string
     daemonCellRegistry?: DaemonCellRegistry
+    challengeStoreProvider?: DaemonChallengeStoreProvider
   }
 }
 

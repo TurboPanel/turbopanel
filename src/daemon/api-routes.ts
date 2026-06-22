@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { Context, Next } from "hono";
 import { isInstanceInstalled } from "../client/authn/install-state.ts";
 import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
-import { getDb, getDaemonCellRegistry } from "../db.ts";
+import { getDb, getDaemonCellRegistry, getChallengeStoreProvider } from "../db.ts";
 import {
   touchDaemonSessionFromHeartbeat,
   touchServerMetadataFromSnapshot,
@@ -35,13 +35,8 @@ import {
   verifyDaemonSignature,
 } from "./authn/server-key.ts";
 import {
-  createInMemoryChallengeStore,
   type DaemonChallengeStore,
 } from "./cell/challenge-store.ts";
-import {
-  DAEMON_CHALLENGE_TTL_MS,
-  DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-} from "./authn/challenge.ts";
 
 function normalizeRequiredString(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -78,12 +73,7 @@ export function registerDaemonApiRoutes(
 ) {
   const daemon = new Hono();
   const { secrets } = options;
-  const enrollChallengeStore = options.challengeStoreProvider?.enroll
-    ?? createInMemoryChallengeStore(DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS);
-  const authChallengeStore = options.challengeStoreProvider?.auth
-    ?? createInMemoryChallengeStore(DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS);
-  const rotationChallengeStore = options.challengeStoreProvider?.rotation
-    ?? createInMemoryChallengeStore(DAEMON_CHALLENGE_TTL_MS);
+  const fallbackChallengeStores = options.challengeStoreProvider;
 
   const requireDaemonJwt = async (c: Context, next: Next) => {
     if (!secrets) {
@@ -175,6 +165,10 @@ export function registerDaemonApiRoutes(
         }
       }
 
+      const { auth: authChallengeStore } = getChallengeStoreProvider(
+        c,
+        fallbackChallengeStores,
+      );
       const challenge = await authChallengeStore.issue({ serverId, keyId });
       return c.json({
         challengeId: challenge.id,
@@ -184,6 +178,10 @@ export function registerDaemonApiRoutes(
       }, 200);
     }
 
+    const { enroll: enrollChallengeStore } = getChallengeStoreProvider(
+      c,
+      fallbackChallengeStores,
+    );
     const challenge = await enrollChallengeStore.issue();
     return c.json({
       challengeId: challenge.id,
@@ -220,6 +218,10 @@ export function registerDaemonApiRoutes(
       return c.json({ ok: false, error: "Missing required enroll fields" }, 400);
     }
 
+    const { enroll: enrollChallengeStore } = getChallengeStoreProvider(
+      c,
+      fallbackChallengeStores,
+    );
     const challenge = await enrollChallengeStore.consume({ challengeId });
     if (!challenge) {
       return c.json({ ok: false, error: "Invalid or expired challenge" }, 400);
@@ -323,6 +325,10 @@ export function registerDaemonApiRoutes(
       }
     }
 
+    const { auth: authChallengeStore } = getChallengeStoreProvider(
+      c,
+      fallbackChallengeStores,
+    );
     const challenge = await authChallengeStore.consume({ challengeId, serverId, keyId });
     if (!challenge) {
       return c.json({ ok: false, error: "Invalid or expired challenge" }, 400);
@@ -397,6 +403,10 @@ export function registerDaemonApiRoutes(
       }
     }
 
+    const { rotation: rotationChallengeStore } = getChallengeStoreProvider(
+      c,
+      fallbackChallengeStores,
+    );
     const challenge = await rotationChallengeStore.issue({ serverId, keyId });
     return c.json({
       challengeId: challenge.id,
@@ -447,6 +457,10 @@ export function registerDaemonApiRoutes(
       }
     }
 
+    const { rotation: rotationChallengeStore } = getChallengeStoreProvider(
+      c,
+      fallbackChallengeStores,
+    );
     const issuedChallenge = await rotationChallengeStore.consume({
       challengeId,
       serverId,
