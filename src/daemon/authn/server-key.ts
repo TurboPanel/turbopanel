@@ -1,7 +1,19 @@
-import { decodeBase64Url } from "@std/encoding/base64url"
-import { encodeHex } from "@std/encoding/hex"
-
 const textEncoder = new TextEncoder()
+
+function decodeBase64Url(input: string): Uint8Array {
+  const padded = input + "=".repeat((4 - (input.length % 4)) % 4)
+  const base64 = padded.replaceAll("-", "+").replaceAll("_", "/")
+  const binary = atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+  return bytes
+}
+
+function encodeHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")
+}
 
 export function buildEnrollmentPayload(params: {
   challengeId: string
@@ -94,7 +106,7 @@ export async function verifyDaemonSignature(
       false,
       ["verify"],
     )
-    const signatureBytes = decodeBase64Url(signatureB64url)
+    const signatureBytes = new Uint8Array(decodeBase64Url(signatureB64url))
     return await crypto.subtle.verify(
       { name: "Ed25519" },
       key,

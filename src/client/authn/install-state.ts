@@ -310,13 +310,8 @@ export async function resolveColocatedServerId(
   if (!hostname && typeof Deno !== 'undefined') {
     try {
       hostname = Deno.hostname()
-      // #region agent log
-      fetch('http://localhost:7882/ingest/09b3950f-5d3f-4c91-a3cf-e073cbcbe3cb',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'36c772'},body:JSON.stringify({sessionId:'36c772',location:'install-state.ts:resolveColocatedServerId',message:'Deno.hostname succeeded',data:{hostname},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
-    } catch (err) {
-      // #region agent log
-      fetch('http://localhost:7882/ingest/09b3950f-5d3f-4c91-a3cf-e073cbcbe3cb',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'36c772'},body:JSON.stringify({sessionId:'36c772',location:'install-state.ts:resolveColocatedServerId',message:'Deno.hostname failed',data:{error:err instanceof Error ? err.message : String(err)},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
+    } catch {
+      // hostname unavailable without --allow-sys=hostname
     }
   }
   if (hostname) {
@@ -579,17 +574,10 @@ export async function completeInstanceInstall(
     return { organizationId, userId, licenseId, licenseToken }
   })
 
-  // #region agent log
-  fetch('http://localhost:7882/ingest/09b3950f-5d3f-4c91-a3cf-e073cbcbe3cb',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'36c772'},body:JSON.stringify({sessionId:'36c772',location:'install-state.ts:completeInstanceInstall',message:'install transaction committed',data:{organizationId:result.organizationId,licenseId:result.licenseId},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
-  // #endregion
-
-  const licenseWritten = await persistColocatedLicenseCredentials(
+  await persistColocatedLicenseCredentials(
     result.licenseId,
     result.licenseToken,
   )
-  // #region agent log
-  fetch('http://localhost:7882/ingest/09b3950f-5d3f-4c91-a3cf-e073cbcbe3cb',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'36c772'},body:JSON.stringify({sessionId:'36c772',location:'install-state.ts:completeInstanceInstall',message:'license credentials persisted',data:{licenseWritten,stateDir:resolveColocatedDaemonStateDir()},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
-  // #endregion
 
   await assignColocatedDaemonToOrganization(db, result.organizationId)
 
