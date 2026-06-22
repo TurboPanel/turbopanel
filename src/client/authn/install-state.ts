@@ -308,7 +308,16 @@ export async function resolveColocatedServerId(
     hostname = await findColocatedHostnameFromRegistry(registry)
   }
   if (!hostname && typeof Deno !== 'undefined') {
-    hostname = Deno.hostname()
+    try {
+      hostname = Deno.hostname()
+      // #region agent log
+      fetch('http://localhost:7882/ingest/09b3950f-5d3f-4c91-a3cf-e073cbcbe3cb',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'36c772'},body:JSON.stringify({sessionId:'36c772',location:'install-state.ts:resolveColocatedServerId',message:'Deno.hostname succeeded',data:{hostname},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+    } catch (err) {
+      // #region agent log
+      fetch('http://localhost:7882/ingest/09b3950f-5d3f-4c91-a3cf-e073cbcbe3cb',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'36c772'},body:JSON.stringify({sessionId:'36c772',location:'install-state.ts:resolveColocatedServerId',message:'Deno.hostname failed',data:{error:err instanceof Error ? err.message : String(err)},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+    }
   }
   if (hostname) {
     const byHostname = await db
@@ -390,6 +399,67 @@ export async function assignColocatedDaemonToOrganization(
 export type CompleteInstallInput = {
   superadminEmail: string
   superadminPassword: string
+}
+
+/** Write colocated daemon license files for enrollment (self-hosted Deno only). */
+export async function persistColocatedLicenseCredentials(
+  licenseId: string,
+  licenseToken: string,
+): Promise<boolean> {
+  if (typeof Deno === 'undefined') return false
+
+  try {
+    const stateDir = resolveColocatedDaemonStateDir()
+    await Deno.mkdir(stateDir, { recursive: true })
+    await Deno.writeTextFile(`${stateDir}/license.id`, licenseId, {
+      create: true,
+    })
+    await Deno.writeTextFile(`${stateDir}/license.token`, licenseToken, {
+      create: true,
+    })
+    return true
+  } catch (err) {
+    compatLogWarn(
+      'install',
+      `failed to write license credentials to disk: ${err}`,
+    )
+    return false
+  }
+}
+
+/**
+ * After a partial install (DB configured but license files missing), mint a
+ * fresh colocated license and persist it so the daemon can enroll.
+ */
+export async function ensureColocatedLicenseCredentialsOnDisk(
+  db: Db,
+): Promise<void> {
+  if (typeof Deno === 'undefined') return
+
+  const stateDir = resolveColocatedDaemonStateDir()
+  try {
+    const licenseId = (await Deno.readTextFile(`${stateDir}/license.id`)).trim()
+    const licenseToken = (await Deno.readTextFile(`${stateDir}/license.token`))
+      .trim()
+    if (licenseId.length > 0 && licenseToken.length > 0) return
+  } catch {
+    // Missing or unreadable — recover below when installed.
+  }
+
+  if (!(await isInstanceInstalled(db))) return
+
+  const organizationId = await findDefaultInstalledOrganizationId(db)
+  if (!organizationId) return
+
+  const { licenseId, licenseToken } = await createLicense(db, {
+    organizationId,
+    displayName: 'Colocated server',
+  })
+  await persistColocatedLicenseCredentials(licenseId, licenseToken)
+  compatLogInfo(
+    'install',
+    'restored colocated license credentials on disk after partial install',
+  )
 }
 
 export async function completeInstanceInstall(
@@ -509,27 +579,19 @@ export async function completeInstanceInstall(
     return { organizationId, userId, licenseId, licenseToken }
   })
 
-  await assignColocatedDaemonToOrganization(db, result.organizationId)
+  // #region agent log
+  fetch('http://localhost:7882/ingest/09b3950f-5d3f-4c91-a3cf-e073cbcbe3cb',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'36c772'},body:JSON.stringify({sessionId:'36c772',location:'install-state.ts:completeInstanceInstall',message:'install transaction committed',data:{organizationId:result.organizationId,licenseId:result.licenseId},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
+  // #endregion
 
-  if (typeof Deno !== 'undefined') {
-    try {
-      const stateDir = resolveColocatedDaemonStateDir()
-      await Deno.mkdir(stateDir, { recursive: true })
-      await Deno.writeTextFile(`${stateDir}/license.id`, result.licenseId, {
-        create: true,
-      })
-      await Deno.writeTextFile(
-        `${stateDir}/license.token`,
-        result.licenseToken,
-        { create: true },
-      )
-    } catch (err) {
-      compatLogWarn(
-        'install',
-        `failed to write license credentials to disk: ${err}`,
-      )
-    }
-  }
+  const licenseWritten = await persistColocatedLicenseCredentials(
+    result.licenseId,
+    result.licenseToken,
+  )
+  // #region agent log
+  fetch('http://localhost:7882/ingest/09b3950f-5d3f-4c91-a3cf-e073cbcbe3cb',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'36c772'},body:JSON.stringify({sessionId:'36c772',location:'install-state.ts:completeInstanceInstall',message:'license credentials persisted',data:{licenseWritten,stateDir:resolveColocatedDaemonStateDir()},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
+  // #endregion
+
+  await assignColocatedDaemonToOrganization(db, result.organizationId)
 
   return {
     organizationId: result.organizationId,

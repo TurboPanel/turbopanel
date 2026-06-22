@@ -7,6 +7,9 @@ import { createRedisChallengeStore } from './daemon/cell/challenge-store.ts'
 import { createRedisDaemonCellRegistry } from './daemon/cell/redis/registry.ts'
 import { DAEMON_CHALLENGE_TTL_MS, DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS } from './daemon/authn/challenge.ts'
 import { DAEMON_PING_MS } from './daemon/cell/protocol.ts'
+import {
+  ensureColocatedLicenseCredentialsOnDisk,
+} from './client/authn/install-state.ts'
 import { registerInstallRoutes } from './lib/install/routes.ts'
 import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
 import { registerDaemonWebSocket } from './daemon/deno-ws.ts'
@@ -126,6 +129,10 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 await prepareInstanceSocket(socketPath)
+
+void ensureColocatedLicenseCredentialsOnDisk(db).catch((err) => {
+  logInfo('install', `license credential recovery skipped: ${String(err)}`)
+})
 
 Deno.serve({
   path: socketPath,
