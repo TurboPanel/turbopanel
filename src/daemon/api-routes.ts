@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { isInstanceInstalled } from '../client/authn/install-state.ts'
 import { getDb } from '../db.ts'
-import { getDaemonOpenApiSpec } from '../openapi.ts'
+import { getDaemonOpenApiSpec } from './openapi/index.ts'
 import { buildDaemonScalarHtml } from '../scalar-html.ts'
 import { resolveInstanceTlsCaPath } from '../server-paths.ts'
 import { DAEMON_API_PREFIX } from '../surfaces.ts'

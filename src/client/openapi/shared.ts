@@ -1,0 +1,192 @@
+export const clientErrorJson = {
+  type: 'object',
+  required: ['error'],
+  properties: { error: { type: 'string' } },
+}
+
+export function resourceErrorResponses(options?: {
+  badRequest?: boolean
+  forbidden?: boolean
+  notFound?: boolean
+}) {
+  const responses: Record<string, unknown> = {
+    '401': {
+      description: 'Unauthorized',
+      content: { 'application/json': { schema: clientErrorJson } },
+    },
+    '503': {
+      description: 'Database unavailable',
+      content: { 'application/json': { schema: clientErrorJson } },
+    },
+  }
+  if (options?.badRequest) {
+    responses['400'] = {
+      description: 'Invalid request',
+      content: { 'application/json': { schema: clientErrorJson } },
+    }
+  }
+  if (options?.forbidden !== false) {
+    responses['403'] = {
+      description: 'Forbidden',
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/ErrorResponse' },
+        },
+      },
+    }
+  }
+  if (options?.notFound) {
+    responses['404'] = {
+      description: 'Not found',
+      content: { 'application/json': { schema: clientErrorJson } },
+    }
+  }
+  return responses
+}
+
+export type ResourceCrudConfig = {
+  plural: string
+  singular: string
+  listSchema: string
+  rowSchema: string
+  createSchema: string
+  createBodyRequired?: boolean
+  parentQuery?: { name: string; description: string }
+}
+
+export function buildResourceCrudPaths(config: ResourceCrudConfig): Record<string, unknown> {
+  const base = `/api/client/v1/${config.plural}`
+  const idPath = `${base}/{id}`
+  const security = [{ cookieAuth: [] }]
+  const singleEntitySchema = {
+    type: 'object',
+    required: [config.singular],
+    properties: {
+      [config.singular]: { $ref: `#/components/schemas/${config.rowSchema}` },
+    },
+  }
+
+  const listGet: Record<string, unknown> = {
+    tags: ['resources'],
+    summary: `List ${config.plural}`,
+    security,
+    responses: {
+      '200': {
+        description: `Visible ${config.plural} for the signed-in organization`,
+        content: {
+          'application/json': {
+            schema: { $ref: `#/components/schemas/${config.listSchema}` },
+          },
+        },
+      },
+      ...resourceErrorResponses({ forbidden: false }),
+    },
+  }
+
+  if (config.parentQuery) {
+    listGet.parameters = [
+      {
+        name: config.parentQuery.name,
+        in: 'query',
+        required: false,
+        schema: { type: 'string' },
+        description: config.parentQuery.description,
+      },
+    ]
+  }
+
+  return {
+    [base]: {
+      get: listGet,
+      post: {
+        tags: ['resources'],
+        summary: `Create ${config.singular}`,
+        security,
+        requestBody: {
+          required: config.createBodyRequired ?? true,
+          content: {
+            'application/json': {
+              schema: { $ref: `#/components/schemas/${config.createSchema}` },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: `${config.singular} created`,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/EntityOkResponse' },
+              },
+            },
+          },
+          ...resourceErrorResponses({ badRequest: true, notFound: true }),
+        },
+      },
+    },
+    [idPath]: {
+      get: {
+        tags: ['resources'],
+        summary: `Get ${config.singular}`,
+        security,
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        responses: {
+          '200': {
+            description: `${config.singular} details`,
+            content: {
+              'application/json': { schema: singleEntitySchema },
+            },
+          },
+          ...resourceErrorResponses({ notFound: true }),
+        },
+      },
+      patch: {
+        tags: ['resources'],
+        summary: `Update ${config.singular}`,
+        security,
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/UpdateEntityRequest' },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: `${config.singular} updated`,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/UpdateEntityOkResponse' },
+              },
+            },
+          },
+          ...resourceErrorResponses({ badRequest: true, notFound: true }),
+        },
+      },
+      delete: {
+        tags: ['resources'],
+        summary: `Delete ${config.singular}`,
+        security,
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        responses: {
+          '200': {
+            description: `${config.singular} deleted`,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/UpdateEntityOkResponse' },
+              },
+            },
+          },
+          ...resourceErrorResponses({ notFound: true }),
+        },
+      },
+    },
+  }
+}
