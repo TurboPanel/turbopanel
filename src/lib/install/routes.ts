@@ -22,6 +22,7 @@ set -eu
 
 LICENSE=""
 HOST_URL=""
+BINARY_URL=""
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -39,6 +40,14 @@ while [ $# -gt 0 ]; do
 				exit 1
 			fi
 			HOST_URL="$2"
+			shift 2
+			;;
+		--binary-url)
+			if [ $# -lt 2 ]; then
+				echo "daemon-install.sh: --binary-url requires an argument" >&2
+				exit 1
+			fi
+			BINARY_URL="$2"
 			shift 2
 			;;
 		*)
@@ -71,6 +80,9 @@ printf '%s' "$LICENSE_TOKEN" > "$STAGING_DIR/license.token"
 
 INSTALLER_URL="\${TURBOPANEL_CDN_URL:-https://cdn.turbopanel.app/daemon/install.sh}"
 
+if [ -n "$BINARY_URL" ]; then
+	export TURBOPANEL_DAEMON_BINARY_URL="$BINARY_URL"
+fi
 if [ -n "$HOST_URL" ]; then
 	curl -fsSL "$INSTALLER_URL" | sh -s -- --instance-url "$HOST_URL"
 else

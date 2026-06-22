@@ -6,8 +6,15 @@ export function buildLicenseInstallCommand(opts: {
   origin: string
   licenseId: string
   licenseToken: string
+  binaryBaseUrl?: string
 }): string {
-  const { runtime, origin, licenseId, licenseToken } = opts
+  const {
+    runtime,
+    origin,
+    licenseId,
+    licenseToken,
+    binaryBaseUrl = `${origin}/downloads/daemon`,
+  } = opts
   const licenseArg = `${licenseId}:${licenseToken}`
   const includeHost = origin !== 'https://turbopanel.app'
 
@@ -15,7 +22,7 @@ export function buildLicenseInstallCommand(opts: {
     const hostFlag = includeHost ? ` --host ${origin}` : ''
     return (
       `curl -fsSL ${origin}/api/install/v1/daemon-install.sh | ` +
-      `sh -s -- --license ${licenseArg}${hostFlag}`
+      `sh -s -- --license ${licenseArg}${hostFlag} --binary-url ${binaryBaseUrl}`
     )
   }
 

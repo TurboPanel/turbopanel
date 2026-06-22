@@ -37,6 +37,7 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
         id: server.id,
         displayName: server.displayName,
         organizationId: server.organizationId,
+        licenseId: server.licenseId,
         options: server.options,
         createdAt: server.createdAt,
       })
@@ -58,6 +59,7 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
           connected: conn != null,
           hostname: conn?.hostname ?? null,
           remoteAddress: conn?.remoteAddress ?? null,
+          licenseId: row.licenseId ?? null,
         }
       }),
     })

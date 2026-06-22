@@ -10,6 +10,7 @@
 #   TURBOPANEL_UI_MODE       "dev" | "static" (default: static)
 #   EXPO_PORT                Expo dev server port when UI_MODE=dev (default: 8081)
 #   TURBOPANEL_UI_ROOT       Static export directory when UI_MODE=static
+#   TURBOPANEL_DOWNLOADS_ROOT  Directory for /downloads/* file_server (default: ../daemon/dist)
 #   TURBOPANEL_SOCKET_DIAL   Unix socket dial path for instance (Deno runtime)
 #   TURBOPANEL_INSTANCE_RUNTIME  "deno" | "workers" (default: deno)
 #   WRANGLER_DEV_PORT        wrangler dev port when runtime is workers (default: 18787)
@@ -77,6 +78,17 @@
 			rewrite * /expo-loading.html
 			file_server {
 				status 200
+			}
+		}
+	}
+
+	@downloads path /downloads/daemon/*
+	handle @downloads {
+		route {
+			root * {$TURBOPANEL_DOWNLOADS_ROOT:../daemon/dist}
+			uri strip_prefix /downloads/daemon
+			file_server {
+				browse
 			}
 		}
 	}
