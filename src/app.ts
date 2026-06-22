@@ -2,7 +2,6 @@ import { Hono } from 'hono'
 import type { SessionData } from './client/authn/session-store.ts'
 import type { DerivedSecretsConfig } from './client/authn/secrets.ts'
 import { registerClientRoutes } from './client/routes.ts'
-import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
 import { registerCorsMiddleware } from './cors.ts'
 import type { Db } from './db.ts'
 import type { EmailQueue } from './lib/email/types.ts'
@@ -74,6 +73,5 @@ export function createApp(
       baseUrl,
     })
   }
-  registerDaemonApiRoutes(routes)
   return app
 }

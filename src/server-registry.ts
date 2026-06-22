@@ -37,7 +37,7 @@ function nowTs(): string {
   return new Date().toISOString()
 }
 
-async function touchServerMetadata(
+export async function touchServerMetadata(
   db: Db,
   serverId: string,
   identity: ServerHelloIdentity,
@@ -168,9 +168,9 @@ async function resolveLicensedServerId(
 
 /**
  * Resolve the canonical server.id (uuidv7) for a connecting daemon.
- * Reuses by serverId, metadata.machineId, or hostname. Creates a row on first
- * sight when no match exists; organization assignment is operator-driven via
- * the developer console.
+ * Reuses by serverId, metadata.machineId, or hostname. Creates a row only when
+ * a valid license is presented. Returns null for unknown servers without a
+ * license.
  */
 export async function resolveServerId(
   db: Db,
@@ -185,28 +185,5 @@ export async function resolveServerId(
     await touchServerMetadata(db, existing, identity)
     return existing
   }
-
-  const patch = metadataPatch(identity)
-  const now = nowTs()
-  try {
-    const inserted = await db
-      .insert(server)
-      .values({
-        displayName: defaultDisplayName(identity),
-        createdAt: now,
-        updatedAt: now,
-        metadata: Object.keys(patch).length > 0 ? patch : null,
-      })
-      .returning({ id: server.id })
-
-    const id = inserted[0]?.id
-    if (!id) throw new Error('failed to insert server row')
-    return id
-  } catch (err) {
-    if (!isUniqueViolation(err)) throw err
-    const raced = await findExistingServerId(db, identity)
-    if (!raced) throw err
-    await touchServerMetadata(db, raced, identity)
-    return raced
-  }
+  return null
 }

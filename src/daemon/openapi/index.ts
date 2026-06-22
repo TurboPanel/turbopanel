@@ -1,3 +1,4 @@
+import { authPaths, authSchemas } from './auth.ts'
 import { caPaths } from './ca.ts'
 import { readinessPaths, readinessSchemas } from './readiness.ts'
 import { versionPaths, versionSchemas } from './version.ts'
@@ -14,21 +15,22 @@ export function getDaemonOpenApiSpec(serverUrl: string): object {
     servers: [{ url: serverUrl }],
     components: {
       securitySchemes: {
-        licenseAuth: {
+        bearerAuth: {
           type: 'http',
           scheme: 'bearer',
           description:
-            'License credentials as `licenseId:licenseToken`. On the WebSocket surface, ' +
-            'send `licenseId` and `licenseToken` in the first `hello` JSON message after ' +
-            'upgrade — not in HTTP Authorization headers.',
+            'Short-lived daemon JWT for authenticated daemon API and WebSocket access. ' +
+            'Send as `Authorization: Bearer <daemon-jwt>`.',
         },
       },
       schemas: {
+        ...authSchemas,
         ...readinessSchemas,
         ...versionSchemas,
       },
     },
     paths: {
+      ...authPaths,
       ...readinessPaths,
       ...caPaths,
       ...versionPaths,

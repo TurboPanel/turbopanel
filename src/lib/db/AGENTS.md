@@ -76,7 +76,7 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `sync
 | **Resource tree** | `workspace`, `environment`, `project`, `service`, `hosting` |
 | **Authorization** | `grant` |
 | **Config** | `setting` |
-| **Runtime** | `server` |
+| **Runtime** | `server`, `serverkey`, `daemonsession` |
 
 > The physical Postgres table is **`workspace`** (`environment.workspace_id` → `workspace.id`). The Drizzle export is `workspace`.
 
@@ -149,6 +149,16 @@ Organization-scoped API tokens for server registration. Each row belongs to an `
 ### `server` table
 
 Each physical server node gets a row in `server` (`id` uuidv7). On daemon connect the instance resolves `serverId` (reuse by persisted id, `metadata.machineId`, or `metadata.hostname`), tracks the websocket in `daemon-hub`, and returns `serverId` in `hello`. The daemon persists it at `/opt/turbopanel/platform/daemon/state/server.id` (writable by the `turbopanel` user). `display_name`, `organization_id`, and soft-delete via `deleted_at` match the old trunk shape; daemon registration stores `machineId` / `hostname` in `metadata` (see `server-metadata.ts`). `license_id` (nullable FK → `license.id`) records which license token the server registered with.
+
+### `serverkey` table
+
+`serverkey` stores Ed25519 public keys for enrolled daemons. Each row belongs to a `server` (`server_id`, cascade delete on server removal). `fingerprint` is SHA-256 over the canonical public JWK (`{ crv, kty, x }` sorted, JSON-stringified, hex-encoded) — unique across the table. `public_key` (JSONB) stores the raw public JWK. Multiple active (non-revoked, non-expired) keys per server are allowed to support key rotation. `revoked_at` is a soft-delete — revoked keys remain for audit. `expires_at` is nullable; null means no expiry. `last_used_at` is updated on every successful key-auth handshake. `algorithm` defaults to `Ed25519`. Key rotation: the old key signs a rotation request containing the new public key; the instance verifies and stores the new key row; the old key may then be revoked.
+
+Rotation endpoint: `POST /api/daemon/v1/server-key/rotate` — old key signs a rotation request; the instance verifies and inserts a new row; the old key may be revoked via `revokedAt`.
+
+### `daemonsession` table
+
+`daemonsession` tracks issued daemon JWT sessions for revocation and audit. Each row belongs to both a `server` (`server_id`) and a `serverkey` (`server_key_id`), with **cascade delete** on both foreign keys so session rows are removed automatically when either parent row is deleted. `expires_at` stores the JWT expiry time; `last_used_at` is updated when the session is used successfully. `revoked_at` is a soft-delete marker — revoked sessions remain queryable for history and should be treated as inactive in runtime checks.
 
 ## Layout
 

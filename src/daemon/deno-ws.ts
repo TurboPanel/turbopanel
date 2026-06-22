@@ -1,8 +1,8 @@
 import type { Hono } from 'hono'
 import { upgradeWebSocket } from 'hono/deno'
-import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import {
   createDaemonWebSocketSession,
+  type DaemonWebSocketIdentity,
   type DaemonWebSocketOptions,
 } from './ws-handlers.ts'
 import {
@@ -10,14 +10,31 @@ import {
   DAEMON_WS_PATH,
   DEVELOPER_WS_PATH,
 } from '../surfaces.ts'
+import { verifyDaemonJwt } from './authn/daemon-jwt.ts'
 
 export function registerDaemonWebSocket(
   app: Hono,
-  options: DaemonWebSocketOptions = {},
+  options: DaemonWebSocketOptions,
 ): void {
-  app.get(
-    DAEMON_WS_PATH,
-    upgradeWebSocket((c) => {
+  app.get(DAEMON_WS_PATH, async (c, next) => {
+    const authHeader = c.req.header('authorization')?.trim() ?? ''
+    const token = authHeader.startsWith('Bearer ')
+      ? authHeader.slice('Bearer '.length).trim()
+      : ''
+    if (!token || !options.secrets) {
+      return c.json({ ok: false, error: 'unauthorized' }, 401)
+    }
+    const payload = await verifyDaemonJwt(token, options.secrets)
+    if (!payload) {
+      return c.json({ ok: false, error: 'unauthorized' }, 401)
+    }
+    const identity: DaemonWebSocketIdentity = {
+      serverId: payload.sub,
+      keyId: payload.kid,
+      sessionId: payload.sid,
+    }
+
+    return upgradeWebSocket((c) => {
       // Capture proxy headers while the upgrade request is still open. Deno's
       // onOpen callback runs after the HTTP request closes — reading c.req there
       // throws "Request closed" and crashes the instance on every daemon connect.
@@ -26,7 +43,12 @@ export function registerDaemonWebSocket(
       let session: ReturnType<typeof createDaemonWebSocketSession> | undefined
       return {
         onOpen(_event, ws) {
-          session = createDaemonWebSocketSession(ws, options, { remoteAddress })
+          session = createDaemonWebSocketSession(
+            ws,
+            options,
+            identity,
+            { remoteAddress },
+          )
         },
         onMessage(event, ws) {
           session?.onMessage(event, ws)
@@ -38,8 +60,8 @@ export function registerDaemonWebSocket(
           session?.onError()
         },
       }
-    }),
-  )
+    })(c, next)
+  })
 
   if (options.developerSurface) {
     registerStubWebSocket(app, DEVELOPER_WS_PATH, 'developer')

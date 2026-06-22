@@ -4,6 +4,7 @@ import { createApp } from './app.ts'
 import { createDenoDb } from './db.ts'
 import { logInfo } from './logger.ts'
 import { registerInstallRoutes } from './lib/install/routes.ts'
+import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
 import { registerDaemonWebSocket } from './daemon/deno-ws.ts'
 import { registerVersionRoute } from './daemon/version.ts'
 import { registerSystemRoutes } from './developer/system-routes.ts'
@@ -48,11 +49,12 @@ const secretsConfig = parseSecretsEnv(
   Deno.env.get('TURBOPANEL_SECRETS'),
   'deno',
 )
-const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+const sessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+const daemonJwtSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-jwt-signing')
 const app = createApp({
   db,
   emailQueue,
-  secrets,
+  secrets: sessionSecrets,
   runtime: 'deno',
   corsOrigins: Deno.env.get('TURBOPANEL_UI_CORS_ORIGINS'),
   signupEnvOverride: Deno.env.get('TURBOPANEL_IS_SIGNUP_ENABLED'),
@@ -61,21 +63,22 @@ const app = createApp({
 })
 const routes = app as unknown as Hono
 registerInstallRoutes(routes, {
-  secrets,
+  secrets: sessionSecrets,
   runtime: 'deno',
   signupEnvOverride: Deno.env.get('TURBOPANEL_IS_SIGNUP_ENABLED'),
 })
 if (developerSurface) {
-  registerDeveloperRoutes(routes, { secrets, db, authRequired: false })
+  registerDeveloperRoutes(routes, { secrets: sessionSecrets, db, authRequired: false })
 }
+registerDaemonApiRoutes(routes, { secrets: daemonJwtSecrets })
 registerVersionRoute(routes)
 if (developerSurface) {
-  registerSystemRoutes(routes, { secrets, db, authRequired: false })
-  registerDevSyncRoutes(routes, { secrets, authRequired: false })
-  registerTunnelRoutes(routes, { secrets, authRequired: false })
-  registerUpdateRoutes(routes, { secrets, authRequired: false })
+  registerSystemRoutes(routes, { secrets: sessionSecrets, db, authRequired: false })
+  registerDevSyncRoutes(routes, { secrets: sessionSecrets, authRequired: false })
+  registerTunnelRoutes(routes, { secrets: sessionSecrets, authRequired: false })
+  registerUpdateRoutes(routes, { secrets: sessionSecrets, authRequired: false })
 }
-registerDaemonWebSocket(routes, { developerSurface, db, secrets })
+registerDaemonWebSocket(routes, { developerSurface, db, secrets: daemonJwtSecrets })
 const socketPath = resolveInstanceSocket()
 
 const abort = new AbortController()

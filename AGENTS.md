@@ -209,9 +209,15 @@ Four versioned surfaces each have REST + WS namespaces (where applicable). Prefi
 
 Server nodes register in `src/daemon/hub.ts` (keyed by `serverId` from the `server` table); the developer UI polls `/api/developer/v1/daemon/*`.
 
-- Each socket gets an internal id (`daemon-1`, …) for routing; **display** uses `hostname` from the daemon `hello` message (UI falls back to `X-Real-IP`, then the internal id).
-- On connect, resolve or create a `server` row (uuidv7 `serverId`), evict older sockets from the same `serverId`, `X-Real-IP`, or `hostname`; prune sockets with no inbound traffic (stale reconnect zombies). All connecting daemons auto-register; `organization_id` stays null until assigned in the developer **Servers** section (`PATCH /api/developer/v1/servers/:id`).
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `POST /api/daemon/v1/heartbeat` | daemon JWT | Daemon liveness signal; touches `server.metadata` and `daemonsession.lastUsedAt` |
+| `POST /api/daemon/v1/commands/lease` | daemon JWT | Poll for pending commands (stub — returns `{ commands: [] }`) |
+
+- Each socket gets an internal id (`daemon-1`, …) for routing; **display** uses tracked daemon hostname when available (UI falls back to `X-Real-IP`, then the internal id).
+- WS upgrade requires `Authorization: Bearer <daemon-jwt>`. The JWT is verified before upgrade completes; invalid or missing tokens return HTTP 401. The instance extracts `serverId`, `keyId`, and `sessionId` from the JWT and passes identity directly to `createDaemonWebSocketSession` (no post-upgrade handshake). Once connected, the hub marks the socket authenticated, evicts older sockets from the same `serverId`, `X-Real-IP`, or `hostname`, and prunes stale reconnect zombies. `organization_id` stays null until assigned in the developer **Servers** section (`PATCH /api/developer/v1/servers/:id`).
 - Co-located daemons that dial the instance Unix socket directly (no Caddy hop) collapse to a single local slot and are tagged `__direct__` (`getColocatedDaemonId`) — see `daemon` `AGENTS.md` for socket vs URL mode.
+- `DAEMON_INBOUND_ALLOWED` no longer includes `'hello'`, and the `challenge` / daemon-`hello` message variants were removed from `DaemonMessage`.
 - No `version` push / auto-update: the daemon never self-updates.
 
 ### Dev sync (push a daemon build without git)
@@ -234,7 +240,31 @@ The instance uses a **custom PAM-style auth model** built entirely on the **Web 
 
 Credential-account passwords use **PBKDF2-HMAC-SHA256** via `crypto.subtle` (`src/client/authn/password.ts`). This is the strongest password-hashing primitive available in native Workers/Deno Web Crypto — Argon2 and scrypt are not exposed, and WASM Argon2 is heavier and awkward in Workers. Stored format: `$pbkdf2-sha256$<iterations>$<base64url-salt>$<base64url-hash>` (100k iterations for new hashes — Workers PBKDF2 cap; iteration count is embedded so older hashes still verify). Verification uses constant-time byte comparison. Do not use plain SHA-256 for passwords.
 
-**License-based daemon auth:** Daemons connecting with a `licenseId` + `licenseToken` in their `hello` message are authenticated against the `license` table (PBKDF2-SHA256 token verification, same as account passwords). Invalid or revoked licenses cause the WS to be closed with code `4401`. Authenticated daemons have their `server.organizationId` set automatically from the license's org. The colocated daemon's license is auto-provisioned during install and written to `TURBOPANEL_DAEMON_STATE_DIR` (`license.id` / `license.token`).
+**Daemon key authentication:** daemon auth now starts with HTTP-first enrollment/session issuance, then uses a short-lived daemon JWT for protected daemon REST and daemon WebSocket upgrade authentication.
+- **Enrollment challenge + proof**: daemon requests `POST /api/daemon/v1/auth/challenge` (no credentials), signs `buildEnrollmentPayload()` (`turbopanel-daemon-enroll-v1` canonical format), then calls `POST /api/daemon/v1/enroll` with `{ licenseId, licenseToken, publicJwk, challengeId, signature, ... }`. The instance verifies license + proof-of-possession, resolves/creates `server`, and inserts/reuses `serverkey`.
+- **Auth challenge + session token**: enrolled daemon requests `POST /api/daemon/v1/auth/challenge` with `{ serverId, keyId }`, signs `buildAuthPayload()` (`turbopanel-daemon-auth-v1` canonical format), then calls `POST /api/daemon/v1/auth/session` to receive a **15-minute JWT**.
+- **JWT enforcement**: protected daemon REST routes use `requireDaemonJwt` middleware (`Authorization: Bearer <token>`), except `GET /readiness`, `GET /instance/ca`, `GET /openapi.json`, `GET /reference`, `POST /auth/challenge`, `POST /enroll`, and `POST /auth/session`.
+- **Canonical payload helper status**: `buildCanonicalPayload` is deprecated and aliases `buildAuthPayload` for compatibility (legacy `fingerprint` inputs are mapped to auth `keyId`).
+- Remote WSS connections require a valid daemon JWT at upgrade time; unauthenticated server row creation from `hostname`/`machineId` alone is disallowed.
+- Co-located socket daemons use the same auth model; there is no unauthenticated bypass.
+- `DAEMON_INBOUND_ALLOWED` in `hub.ts` is a static set of accepted post-auth message types — not an authz system.
+- Key rotation remains `POST /api/daemon/v1/server-key/rotate`; old keys remain revokable via `revokeServerKey`.
+
+```mermaid
+sequenceDiagram
+    participant Daemon
+    participant Instance as Instance API
+
+    Daemon->>Instance: POST /api/daemon/v1/auth/challenge
+    Instance-->>Daemon: { challengeId, nonce, expiresAt }
+    Daemon->>Instance: POST /api/daemon/v1/auth/session (signed payload)
+    Instance-->>Daemon: { token, expiresAt }
+    Daemon->>Instance: GET /ws/daemon/v1\nAuthorization: Bearer <token>
+    Instance-->>Daemon: 101 Switching Protocols
+    Note over Daemon,Instance: WS open - live streaming only
+    Instance->>Daemon: ping
+    Daemon-->>Instance: pong
+```
 
 #### Session model
 
@@ -354,10 +384,10 @@ Hand-authored API docs are split by surface and served from the client and daemo
 |---|---|---|
 | `GET /api/client/v1/openapi.json` | Client | `cookieAuth` (session cookie) |
 | `GET /api/client/v1/reference` | Client | Scalar embed with cookie auth |
-| `GET /api/daemon/v1/openapi.json` | Daemon | `licenseAuth` (Bearer) |
+| `GET /api/daemon/v1/openapi.json` | Daemon | `bearerAuth` (daemon JWT) |
 | `GET /api/daemon/v1/reference` | Daemon | Scalar embed with Bearer auth |
 
-`servers[0].url` in each spec is the request origin (`new URL(c.req.url).origin`). Client spec documents health, client/auth/install, and resource routes. Daemon spec documents readiness, platform CA, the co-located daemon checkout version endpoint (`GET /api/daemon/v1/version`), and the `/ws/daemon/v1` WebSocket upgrade — license credentials are sent in the first JSON `hello` message after upgrade, not in HTTP headers.
+`servers[0].url` in each spec is the request origin (`new URL(c.req.url).origin`). Client spec documents health, client/auth/install, and resource routes. Daemon spec documents readiness, platform CA, the co-located daemon checkout version endpoint (`GET /api/daemon/v1/version`), and the `/ws/daemon/v1` WebSocket upgrade — daemon JWT credentials are sent in the HTTP `Authorization` header before upgrade.
 
 The marketing site (`../website`) loads the client spec via its `/api/config` proxy for `/docs/api`; the instance also exposes Scalar directly for local/dev use.
 
@@ -378,7 +408,7 @@ sequenceDiagram
     Browser->>Instance: GET /api/daemon/v1/openapi.json
     Instance-->>Browser: OpenAPI 3.1 JSON (daemon surface)
     Browser->>Instance: GET /api/daemon/v1/reference
-    Instance-->>Browser: Scalar embed (licenseAuth Bearer)
+    Instance-->>Browser: Scalar embed (bearerAuth JWT)
 ```
 
 ## Layout
@@ -393,8 +423,12 @@ sequenceDiagram
 - `src/client/authz/` — four-value permission catalog, `can`/`listVisible`, grant management
 - `src/daemon/api-routes.ts` / `src/daemon/hub.ts` / `src/daemon/ws-handlers.ts` / `src/daemon/deno-ws.ts` — daemon REST + WS hub
 - `src/daemon/authn/license.ts` — daemon hello license verification (`verifyDaemonLicense`)
+- `src/daemon/authn/daemon-jwt.ts` — daemon JWT issue/verify (HMAC-SHA256, 15-minute lifetime)
+- `src/daemon/authn/daemon-session-db.ts` — DB helpers for `daemonsession` rows (insert/touch/revoke/find-active)
+- `src/daemon/authn/server-key.ts` — `buildCanonicalPayload`, `computePublicKeyFingerprint`, `verifyDaemonSignature`
+- `src/daemon/authn/server-key-db.ts` — DB helpers: `findActiveServerKeys`, `findServerKeyById`, `findServerKeyByFingerprint`, `insertServerKey`, `touchServerKeyLastUsed`, `revokeServerKey`
 - `src/daemon/authz/` — daemon-side authorization placeholder
-- `src/lib/db/schema.ts` — Drizzle table definitions (see `src/lib/db/AGENTS.md`); connection factories stay in `src/db.ts`
+- `src/lib/db/schema.ts` — Drizzle table definitions (`server`, `serverkey`, `daemonsession`, etc.; see `src/lib/db/AGENTS.md`); connection factories stay in `src/db.ts`
 - `src/lib/install/routes.ts` — self-hosted install wizard (`/api/install/v1/*`; Deno-only registration)
 - `src/lib/email/` — shared queue types/templates; `smtp/` (Deno/AMQP) and `mailgun/` (Workers) backends
 - `src/developer/` — developer surface (Deno-only routes + Workers-safe `routes-core.ts`)

@@ -11,11 +11,11 @@ export type VerifiedDaemonLicense = {
 /** Verify a daemon hello licenseId + licenseToken pair against the license table. */
 export async function verifyDaemonLicense(
   db: Db,
-  licenseId: string,
-  licenseToken: string,
+  licenseId?: string | null,
+  licenseToken?: string | null,
 ): Promise<VerifiedDaemonLicense | null> {
-  const id = licenseId.trim()
-  const token = licenseToken.trim()
+  const id = typeof licenseId === 'string' ? licenseId.trim() : ''
+  const token = typeof licenseToken === 'string' ? licenseToken.trim() : ''
   if (!id || !token) return null
 
   const activeLicense = await lookupActiveLicense(db, id)

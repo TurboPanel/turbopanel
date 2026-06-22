@@ -1,6 +1,7 @@
-import type { WSContext } from 'hono/ws'
-import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
+import type { WSContext } from "hono/ws";
+import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
 import {
+  DAEMON_INBOUND_ALLOWED,
   type DaemonMessage,
   evictDuplicateDaemons,
   parseDaemonMessage,
@@ -10,220 +11,198 @@ import {
   recordDaemonAck,
   recordDaemonMessage,
   registerDaemon,
-  setDaemonHostname,
-  setDaemonServerId,
+  setDaemonAuthenticated,
+  setDaemonKeyId,
   setDaemonRemoteAddress,
+  setDaemonServerId,
   touchDaemonInbound,
   unregisterDaemon,
-} from './hub.ts'
-import type { Db } from '../db.ts'
-import { tryAssignColocatedDaemonToInstalledOrganization } from '../client/authn/install-state.ts'
-import { resolveServerId } from '../server-registry.ts'
-import { compatLogError, compatLogInfo, compatLogWarn } from '../log-compat.ts'
+} from "./hub.ts";
+import type { Db } from "../db.ts";
+import { tryAssignColocatedDaemonToInstalledOrganization } from "../client/authn/install-state.ts";
+import { touchDaemonSessionLastUsed } from "./authn/daemon-session-db.ts";
+import { compatLogError, compatLogInfo, compatLogWarn } from "../log-compat.ts";
 
-let pruneTimer: ReturnType<typeof setInterval> | undefined
+let pruneTimer: ReturnType<typeof setInterval> | undefined;
 
 function runPruneCycle(): void {
-  const pruned = pruneStaleDaemons()
+  const pruned = pruneStaleDaemons();
   if (pruned.length > 0) {
-    compatLogInfo('ws', `pruned ${pruned.length} stale daemon connection(s): ${pruned.join(', ')}`)
+    compatLogInfo(
+      "ws",
+      `pruned ${pruned.length} stale daemon connection(s): ${
+        pruned.join(", ")
+      }`,
+    );
   }
 }
 
 function ensurePruneTimer(): void {
-  if (pruneTimer) return
-  pruneTimer = setInterval(runPruneCycle, 15_000)
+  if (pruneTimer) return;
+  pruneTimer = setInterval(runPruneCycle, 15_000);
 }
 
 export type DaemonWebSocketOptions = {
-  developerSurface?: boolean
-  db?: Db
-  secrets?: DerivedSecretsConfig
-}
+  developerSurface?: boolean;
+  db?: Db;
+  secrets?: DerivedSecretsConfig;
+};
+
+export type DaemonWebSocketIdentity = {
+  serverId: string;
+  keyId: string;
+  sessionId: string;
+};
 
 export type DaemonWebSocketSession = {
-  onMessage: (event: MessageEvent, ws: WSContext) => void
-  onClose: () => void
-  onError: () => void
-}
+  onMessage: (event: MessageEvent, ws: WSContext) => void;
+  onClose: () => void;
+  onError: () => void;
+};
 
 export type DaemonWebSocketConnectMeta = {
   /** From X-Real-IP / X-Forwarded-For; omit for direct Unix-socket dials. */
-  remoteAddress?: string
-}
+  remoteAddress?: string;
+};
 
 /** Shared daemon hub logic for Deno and Workers WebSocket upgrades. */
 export function createDaemonWebSocketSession(
   ws: WSContext,
-  { db }: DaemonWebSocketOptions = {},
+  { db }: DaemonWebSocketOptions,
+  identity: DaemonWebSocketIdentity,
   { remoteAddress }: DaemonWebSocketConnectMeta = {},
 ): DaemonWebSocketSession {
-  let connId: string | undefined
-  let identityAddress = remoteAddress ?? '__direct__'
-  let pingTimer: ReturnType<typeof setInterval> | undefined
+  let connId: string | undefined;
+  let identityAddress = remoteAddress ?? "__direct__";
+  let pingTimer: ReturnType<typeof setInterval> | undefined;
 
-  ensurePruneTimer()
+  ensurePruneTimer();
   const conn = registerDaemon(
     (data) => ws.send(data),
     () => ws.close(),
-  )
-  connId = conn.id
-  identityAddress = remoteAddress ?? '__direct__'
-  setDaemonRemoteAddress(conn.id, identityAddress)
-  compatLogInfo(
-    'ws',
-    `daemon connected: ${conn.id}${
-      remoteAddress ? ` from ${remoteAddress}` : ''
-    }`,
-  )
+  );
+  connId = conn.id;
+  identityAddress = remoteAddress ?? "__direct__";
+  setDaemonRemoteAddress(conn.id, identityAddress);
 
-  const hello: DaemonMessage = {
-    type: 'hello',
-    from: 'instance',
-    at: new Date().toISOString(),
+  connId = setDaemonServerId(conn.id, identity.serverId);
+  const activeId = connId ?? conn.id;
+  setDaemonKeyId(activeId, identity.keyId);
+  setDaemonAuthenticated(activeId);
+
+  if (db) {
+    touchDaemonSessionLastUsed(db, identity.sessionId).catch((err) => {
+      compatLogWarn(
+        "ws",
+        `failed to touch daemon session ${identity.sessionId}: ${String(err)}`,
+      );
+    });
   }
-  recordDaemonMessage(conn.id, 'out', hello)
-  ws.send(JSON.stringify(hello))
 
-  pingTimer = setInterval(() => {
-    const ping: DaemonMessage = {
-      type: 'ping',
-      id: crypto.randomUUID(),
-      at: new Date().toISOString(),
-    }
-    ws.send(JSON.stringify(ping))
-  }, 15_000)
+  compatLogInfo(
+    "ws",
+    `daemon connected: ${conn.id}${
+      remoteAddress ? ` from ${remoteAddress}` : ""
+    }`,
+  );
+
+  const startPingTimer = () => {
+    if (pingTimer) return;
+    pingTimer = setInterval(() => {
+      const ping: DaemonMessage = {
+        type: "ping",
+        id: crypto.randomUUID(),
+        at: new Date().toISOString(),
+      };
+      ws.send(JSON.stringify(ping));
+    }, 15_000);
+  };
+
+  const evicted = evictDuplicateDaemons(activeId, {
+    serverId: identity.serverId,
+    remoteAddress: identityAddress,
+  });
+  if (evicted.length > 0) {
+    compatLogInfo(
+      "ws",
+      `evicted ${evicted.length} duplicate connection(s) for ${
+        identity.serverId ?? activeId
+      }`,
+    );
+  }
+
+  if (identityAddress === "__direct__" && db) {
+    void tryAssignColocatedDaemonToInstalledOrganization(db).catch((err) => {
+      compatLogError("ws", `failed to assign colocated server: ${err}`);
+    });
+  }
+
+  startPingTimer();
 
   const onMessage = (event: MessageEvent, ws: WSContext) => {
-    const raw = typeof event.data === 'string'
+    const raw = typeof event.data === "string"
       ? event.data
-      : String(event.data)
-    const message = parseDaemonMessage(raw)
+      : String(event.data);
+    const message = parseDaemonMessage(raw);
     if (!message) {
-      compatLogWarn('ws', 'ignored non-JSON message from daemon')
-      return
+      compatLogWarn("ws", "ignored non-JSON message from daemon");
+      return;
     }
 
-    compatLogInfo('ws', `from ${connId ?? 'unknown'}: ${message.type}`)
+    compatLogInfo("ws", `from ${connId ?? "unknown"}: ${message.type}`);
     if (connId) {
-      touchDaemonInbound(connId)
-      recordDaemonMessage(connId, 'in', message)
+      touchDaemonInbound(connId);
+      recordDaemonMessage(connId, "in", message);
     }
 
-    if (message.type === 'hello' && message.from === 'daemon' && connId) {
-      const socketId = connId
-      void (async () => {
-        if (message.hostname) setDaemonHostname(socketId, message.hostname)
-
-        let serverId: string | null = null
-        if (db) {
-          try {
-            serverId = await resolveServerId(db, {
-              serverId: message.serverId,
-              machineId: message.machineId,
-              hostname: message.hostname,
-              licenseId: message.licenseId,
-              licenseToken: message.licenseToken,
-            })
-
-            if (!serverId && message.licenseId) {
-              compatLogWarn(
-                'ws',
-                `rejected daemon ${socketId}: invalid or revoked license ${message.licenseId}`,
-              )
-              ws.close(4401, 'invalid license')
-              return
-            }
-
-            if (serverId) {
-              connId = setDaemonServerId(socketId, serverId)
-            }
-          } catch (err) {
-            compatLogError('ws', `failed to resolve server id: ${err}`)
-          }
-        } else {
-          compatLogWarn('ws', 'no database configured — server id not assigned')
-        }
-
-        const activeId = connId ?? socketId
-        const evicted = evictDuplicateDaemons(activeId, {
-          hostname: message.hostname,
-          serverId: serverId ?? undefined,
-          remoteAddress: identityAddress,
-        })
-        if (evicted.length > 0) {
-          compatLogInfo(
-            'ws',
-            `evicted ${evicted.length} duplicate connection(s) for ${
-              serverId ?? message.hostname ?? activeId
-            }`,
-          )
-        }
-
-        if (serverId) {
-          const ack: DaemonMessage = {
-            type: 'hello',
-            from: 'instance',
-            serverId,
-            at: new Date().toISOString(),
-          }
-          recordDaemonMessage(activeId, 'out', ack)
-          ws.send(JSON.stringify(ack))
-          compatLogInfo('ws', `daemon server id: ${serverId} (${activeId})`)
-
-          if (db && identityAddress === '__direct__') {
-            try {
-              await tryAssignColocatedDaemonToInstalledOrganization(db)
-            } catch (err) {
-              compatLogError('ws', `failed to assign colocated server: ${err}`)
-            }
-          }
-        }
-
-        if (message.hostname) {
-          compatLogInfo('ws', `daemon hostname: ${message.hostname} (${activeId})`)
-        }
-      })()
+    if (!DAEMON_INBOUND_ALLOWED.has(message.type)) {
+      compatLogWarn(
+        "ws",
+        `ignored disallowed message type ${message.type} from ${
+          connId ?? "unknown"
+        }`,
+      );
+      return;
     }
 
-    if (message.type === 'ping') {
+    if (message.type === "ping") {
       const pong: DaemonMessage = {
-        type: 'pong',
+        type: "pong",
         id: message.id,
         at: new Date().toISOString(),
-      }
-      if (connId) recordDaemonMessage(connId, 'out', pong)
-      ws.send(JSON.stringify(pong))
+      };
+      if (connId) recordDaemonMessage(connId, "out", pong);
+      ws.send(JSON.stringify(pong));
     }
 
-    if (message.type === 'command-result') {
-      recordCommandResult(message)
+    if (message.type === "command-result") {
+      recordCommandResult(message);
     }
 
-    if (message.type === 'addresses-result') {
-      recordAddressesResult(message)
+    if (message.type === "addresses-result") {
+      recordAddressesResult(message);
     }
 
     if (
-      message.type === 'dev-sync-result' ||
-      message.type === 'tunnel-token-result' ||
-      message.type === 'update-result'
+      message.type === "dev-sync-result" ||
+      message.type === "tunnel-token-result" ||
+      message.type === "update-result"
     ) {
-      recordDaemonAck(message.id, message.ok, message.error)
+      recordDaemonAck(message.id, message.ok, message.error);
     }
-  }
+  };
 
   const cleanup = () => {
-    if (pingTimer) clearInterval(pingTimer)
+    if (pingTimer) clearInterval(pingTimer);
     if (connId) {
-      unregisterDaemon(connId)
-      compatLogInfo('ws', `daemon disconnected: ${connId}`)
+      unregisterDaemon(connId);
+      compatLogInfo("ws", `daemon disconnected: ${connId}`);
     }
-  }
+  };
 
   return {
     onMessage,
     onClose: cleanup,
     onError: cleanup,
-  }
+  };
 }

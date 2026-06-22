@@ -3,17 +3,6 @@ import type { ServerAddresses } from '../server-addresses.ts'
 
 /** JSON messages exchanged between the instance and daemon over /ws. */
 export type DaemonMessage =
-  | {
-    type: 'hello'
-    from: 'instance' | 'daemon'
-    at: string
-    hostname?: string
-    serverId?: string
-    /** Daemon-only: stable host fingerprint for first-time server row lookup. */
-    machineId?: string
-    licenseId?: string
-    licenseToken?: string
-  }
   | { type: 'ping'; id: string; at: string }
   | { type: 'pong'; id: string; at: string }
   | { type: 'echo'; payload: unknown; at: string }
@@ -63,10 +52,14 @@ export type DaemonClose = () => void
 export interface DaemonConnection {
   id: string
   connectedAt: string
-  /** Short hostname reported by the daemon in its hello message. */
+  /** Optional short hostname tracked for display and duplicate eviction. */
   hostname?: string
   /** Canonical server.id (uuidv7) for this physical server node. */
   serverId?: string
+  /** Canonical serverkey.id for this daemon connection. */
+  keyId?: string
+  /** True only after authentication completes. */
+  authenticated: boolean
   /** Client IP as seen by Caddy (X-Real-IP), used to collapse duplicate reconnects. */
   remoteAddress?: string
   lastInboundAt: number
@@ -123,10 +116,20 @@ const pendingAcks = new Map<string, {
 }>()
 
 const ADDRESSES_TIMEOUT_MS = 10_000
-/** Drop sockets with no inbound traffic (pong, hello, etc.) for this long. */
+/** Drop sockets with no inbound traffic (pong, results, etc.) for this long. */
 export const DAEMON_STALE_MS = 45_000
 /** Instance ping interval in deno-ws.ts — stale timeout must stay above this. */
 export const DAEMON_PING_MS = 15_000
+/** Message types accepted from daemons after authentication succeeds. */
+export const DAEMON_INBOUND_ALLOWED = new Set([
+  'ping',
+  'pong',
+  'command-result',
+  'addresses-result',
+  'dev-sync-result',
+  'tunnel-token-result',
+  'update-result',
+] as const)
 
 let nextId = 1
 
@@ -143,14 +146,9 @@ export function recordDaemonDisconnected(daemonId: string): void {
   recordEvent({ at: new Date().toISOString(), kind: 'disconnected', daemonId })
 }
 
-/** Strip one-time secrets before persisting daemon traffic to the event buffer. */
 export function sanitizeDaemonMessageForEvents(
   message: DaemonMessage,
 ): DaemonMessage {
-  if (message.type === 'hello' && 'licenseToken' in message) {
-    const { licenseToken: _token, ...rest } = message
-    return rest
-  }
   return message
 }
 
@@ -188,6 +186,7 @@ export function registerDaemon(send: DaemonSend, close: DaemonClose): DaemonConn
   const conn: DaemonConnection = {
     id,
     connectedAt: new Date().toISOString(),
+    authenticated: false,
     lastInboundAt: now,
     send,
     close,
@@ -246,6 +245,8 @@ export function setDaemonServerId(id: string, serverId: string): string {
       existing.close = incoming.close
       existing.lastInboundAt = Date.now()
       existing.hostname = incoming.hostname ?? existing.hostname
+      existing.keyId = incoming.keyId ?? existing.keyId
+      existing.authenticated = incoming.authenticated || existing.authenticated
       existing.remoteAddress = incoming.remoteAddress ?? existing.remoteAddress
       connections.delete(id)
       return existingId
@@ -259,6 +260,20 @@ export function setDaemonServerId(id: string, serverId: string): string {
   conn.serverId = trimmed
   serverIdIndex.set(trimmed, id)
   return id
+}
+
+export function setDaemonKeyId(id: string, keyId: string): void {
+  const conn = connections.get(id)
+  if (!conn) return
+  const trimmed = keyId.trim()
+  if (!trimmed) return
+  conn.keyId = trimmed
+}
+
+export function setDaemonAuthenticated(id: string): void {
+  const conn = connections.get(id)
+  if (!conn) return
+  conn.authenticated = true
 }
 
 export function setDaemonRemoteAddress(id: string, remoteAddress: string): void {
@@ -316,6 +331,8 @@ export function listDaemonConnections(): Omit<DaemonConnection, 'send' | 'close'
     connectedAt,
     hostname,
     serverId,
+    keyId,
+    authenticated,
     remoteAddress,
     lastInboundAt,
   }) => ({
@@ -323,6 +340,8 @@ export function listDaemonConnections(): Omit<DaemonConnection, 'send' | 'close'
     connectedAt,
     hostname: hostname ?? null,
     serverId: serverId ?? null,
+    keyId: keyId ?? null,
+    authenticated,
     remoteAddress: remoteAddress && remoteAddress !== '__direct__'
       ? remoteAddress
       : null,
@@ -352,7 +371,7 @@ export function getColocatedDaemonServerId(): string | null {
   return null
 }
 
-/** Hostname reported by the co-located daemon in its hello message, when connected. */
+/** Hostname tracked for the co-located daemon, when available. */
 export function getColocatedDaemonHostname(): string | null {
   for (const conn of connections.values()) {
     if (conn.remoteAddress === '__direct__' && conn.hostname) {
