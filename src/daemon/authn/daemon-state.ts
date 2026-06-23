@@ -4,14 +4,11 @@ export type ServerDaemonKey = {
   publicJwk: JsonWebKey
   fingerprint: string
   createdAt: string
-  lastUsedAt?: string | null
   revokedAt?: string | null
 }
 
 export type ServerDaemonState = {
   key: ServerDaemonKey
-  enrolledAt: string
-  lastSeenAt?: string | null
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -41,7 +38,6 @@ function parseServerDaemonKey(raw: unknown): ServerDaemonKey | null {
     !isPublicJwk(key.publicJwk) ||
     !isNonEmptyString(key.fingerprint) ||
     !isNonEmptyString(key.createdAt) ||
-    !isOptionalTimestamp(key.lastUsedAt) ||
     !isOptionalTimestamp(key.revokedAt)
   ) {
     return null
@@ -52,7 +48,6 @@ function parseServerDaemonKey(raw: unknown): ServerDaemonKey | null {
     publicJwk: key.publicJwk,
     fingerprint: key.fingerprint,
     createdAt: key.createdAt,
-    lastUsedAt: key.lastUsedAt ?? null,
     revokedAt: key.revokedAt ?? null,
   }
 }
@@ -63,16 +58,11 @@ export function parseServerDaemonState(raw: unknown): ServerDaemonState | null {
   }
   const state = raw as Record<string, unknown>
   const parsedKey = parseServerDaemonKey(state.key)
-  if (!parsedKey || !isNonEmptyString(state.enrolledAt)) {
-    return null
-  }
-  if (!isOptionalTimestamp(state.lastSeenAt)) {
+  if (!parsedKey) {
     return null
   }
   return {
     key: parsedKey,
-    enrolledAt: state.enrolledAt,
-    lastSeenAt: state.lastSeenAt ?? null,
   }
 }
 
@@ -93,10 +83,7 @@ export function buildServerDaemonState(params: {
       publicJwk: params.publicJwk,
       fingerprint: params.fingerprint,
       createdAt: now,
-      lastUsedAt: null,
       revokedAt: null,
     },
-    enrolledAt: now,
-    lastSeenAt: null,
   }
 }

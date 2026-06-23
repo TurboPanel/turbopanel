@@ -169,11 +169,8 @@ Each physical server node gets a row in `server` (`id` uuidv7). On daemon connec
     "publicJwk": {},
     "fingerprint": "sha256-public-jwk-fingerprint",
     "createdAt": "iso timestamp",
-    "lastUsedAt": "iso timestamp or null",
     "revokedAt": "iso timestamp or null"
-  },
-  "enrolledAt": "iso timestamp",
-  "lastSeenAt": "iso timestamp or null"
+  }
 }
 ```
 
@@ -182,10 +179,9 @@ Each physical server node gets a row in `server` (`id` uuidv7). On daemon connec
 | `key.id` | Logical key identifier returned to the daemon as `keyId` on enrollment |
 | `key.publicJwk` | Raw Ed25519 public JWK `{ crv, kty, x }` |
 | `key.fingerprint` | SHA-256 hex over the canonical public JWK — duplicate-checked at enrollment (no DB unique constraint for MVP) |
-| `key.lastUsedAt` | Updated on each successful auth/session handshake |
 | `key.revokedAt` | Non-null blocks new JWT issuance; existing JWTs remain valid until their 15-minute expiry |
-| `enrolledAt` | When the current daemon state was written (enrollment or re-enrollment) |
-| `lastSeenAt` | Updated on auth/session (not every heartbeat — cell handles live presence) |
+
+**Promoted to real columns:** `daemon_key_last_used_at` (`server.daemonKeyLastUsedAt`) — updated on each successful auth/session handshake. `last_seen_at` (`server.lastSeenAt`) — updated on heartbeat write-through from the cell snapshot. Both are nullable timestamps; direct column writes avoid jsonb read-modify-write churn.
 
 Re-enrollment with a valid license token replaces `server.daemon` atomically. No historical key rows are kept for MVP. To revoke daemon auth, set `server.daemon.key.revokedAt` (via `revokeDaemonKey` helper).
 

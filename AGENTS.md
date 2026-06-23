@@ -222,13 +222,13 @@ Postgres remains canonical for business data (`server`). The cell is the low-lat
 
 **Challenge stores:** enrollment and auth challenges use `createRedisChallengeStore` (Deno) or `createDurableObjectChallengeStore` (Workers) — single-use, hard TTL, no in-process Maps.
 
-**Heartbeat:** `POST /api/daemon/v1/heartbeat` calls `cell.heartbeat()` (renews the Redis lease / updates DO meta) then `touchServerMetadataFromSnapshot` to write through to Postgres.
+**Heartbeat:** `POST /api/daemon/v1/heartbeat` calls `cell.heartbeat()` (renews the Redis lease / updates DO meta) then `touchServerMetadataFromSnapshot` to write through `server.last_seen_at` and operational metadata fields to Postgres.
 
 **`DAEMON_INBOUND_ALLOWED`** is defined in `src/daemon/cell/protocol.ts` (not `hub.ts`).
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `POST /api/daemon/v1/heartbeat` | daemon JWT | Daemon liveness signal; touches `server.metadata` |
+| `POST /api/daemon/v1/heartbeat` | daemon JWT | Daemon liveness signal; updates `server.last_seen_at` |
 | `POST /api/daemon/v1/commands/lease` | daemon JWT | Poll for pending commands (stub — returns `{ commands: [] }`) |
 
 - No `version` push / auto-update: the daemon never self-updates.
@@ -261,7 +261,7 @@ Credential-account passwords use **PBKDF2-HMAC-SHA256** via `crypto.subtle` (`sr
 - Remote WSS connections require a valid daemon JWT at upgrade time; unauthenticated server row creation from `hostname`/`machineId` alone is disallowed.
 - Co-located socket daemons use the same auth model; there is no unauthenticated bypass.
 - `DAEMON_INBOUND_ALLOWED` in `src/daemon/cell/protocol.ts` is a static set of accepted post-auth message types — not an authz system.
-- Daemon identity is stored on the `server` row as typed jsonb `server.daemon` (`key`, `enrolledAt`, `lastSeenAt`). No `serverkey` or `daemonsession` tables.
+- Daemon identity is stored on the `server` row as typed jsonb `server.daemon` (`key` only). Hot-path timestamps live in `server.daemon_key_last_used_at` and `server.last_seen_at`. No `serverkey` or `daemonsession` tables.
 - Re-enrollment or recovery with a valid license replaces `server.daemon` entirely; old daemon keys are not kept for MVP.
 - JWT payload: `sub` (serverId), `kid` (`server.daemon.key.id`), `jti` (random uuid, logging only), `iss`, `aud`, `typ`, `iat`, `exp`. No `sid`.
 - Revoking daemon auth: set `server.daemon.key.revokedAt`. Existing JWTs remain valid until their 15-minute expiry. New JWT issuance fails.

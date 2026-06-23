@@ -125,6 +125,21 @@ async function readDaemonState(
   return parseServerDaemonState(row?.daemon);
 }
 
+async function readServerDaemonTimestamps(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string,
+): Promise<{ daemonKeyLastUsedAt: string | null; lastSeenAt: string | null } | null> {
+  const [row] = await db
+    .select({
+      daemonKeyLastUsedAt: server.daemonKeyLastUsedAt,
+      lastSeenAt: server.lastSeenAt,
+    })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1);
+  return row ?? null;
+}
+
 async function createTestApp(db: ReturnType<typeof createDenoDb>): Promise<Hono<AppEnv>> {
   const app = new Hono<AppEnv>();
   app.use("*", (c, next) => {
@@ -375,7 +390,6 @@ Deno.test("POST /enroll stores public key only after proof-of-possession", async
     assertEquals(daemonState.key.fingerprint, key.fingerprint);
     assertExists(daemonState.key.publicJwk);
     assertEquals(daemonState.key.algorithm, "Ed25519");
-    assertExists(daemonState.enrolledAt);
   });
 });
 
@@ -974,9 +988,9 @@ Deno.test("POST /auth/session returns a 15-minute JWT", async () => {
     assert(typeof jwtPayload.jti === "string" && jwtPayload.jti.length > 0);
     assertEquals("sid" in jwtPayload, false);
 
-    const daemonState = await readDaemonState(db, serverId);
-    assertExists(daemonState?.key.lastUsedAt);
-    assertExists(daemonState?.lastSeenAt);
+    const timestamps = await readServerDaemonTimestamps(db, serverId);
+    assertExists(timestamps?.daemonKeyLastUsedAt);
+    assertExists(timestamps?.lastSeenAt);
   });
 });
 

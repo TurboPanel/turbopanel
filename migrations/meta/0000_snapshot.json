@@ -1,5 +1,5 @@
 {
-  "id": "09e4b039-bde5-4c85-be0c-6d49a7f4b9b1",
+  "id": "c4a8f2e1-7b3d-4a9c-8e6f-1d2b3c4d5e6f",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -1421,6 +1421,18 @@
         "options": {
           "name": "options",
           "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "daemon_key_last_used_at": {
+          "name": "daemon_key_last_used_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "timestamp(3) with time zone",
           "primaryKey": false,
           "notNull": false
         },

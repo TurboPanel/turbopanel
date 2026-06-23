@@ -114,6 +114,8 @@ export const server = pgTable("server", {
 	displayName: varchar("display_name", { length: 255 }),
 	metadata: jsonb(),
 	options: jsonb(),
+	daemonKeyLastUsedAt: timestamp("daemon_key_last_used_at", { precision: 3, withTimezone: true, mode: 'string' }),
+	lastSeenAt: timestamp("last_seen_at", { precision: 3, withTimezone: true, mode: 'string' }),
 	daemon: jsonb("daemon"),
 }, (table) => [
 	foreignKey({
