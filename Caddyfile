@@ -71,6 +71,7 @@
 
 	@downloads path /downloads/daemon/*
 	handle @downloads {
+		header Cache-Control "no-store"
 		route {
 			root * {$TURBOPANEL_DOWNLOADS_ROOT:../daemon/dist}
 			uri strip_prefix /downloads/daemon
