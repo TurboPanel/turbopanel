@@ -7,6 +7,11 @@ export function buildLicenseSchemas(installCommandDescription: string) {
         id: { type: 'string' },
         displayName: { type: ['string', 'null'] },
         createdAt: { type: 'string', format: 'date-time' },
+        revocable: {
+          type: 'boolean',
+          description:
+            'When false, this license is for the co-located control plane daemon and cannot be revoked.',
+        },
       },
     },
     LicensesResponse: {
@@ -23,6 +28,11 @@ export function buildLicenseSchemas(installCommandDescription: string) {
       type: 'object',
       properties: {
         displayName: { type: 'string' },
+        installBaseUrl: {
+          type: 'string',
+          description:
+            'Development only: public https URL for install command --host and download paths.',
+        },
       },
     },
     CreateLicenseResponse: {
@@ -176,6 +186,18 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
           },
           '401': {
             description: 'Unauthorized',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['error'],
+                  properties: { error: { type: 'string' } },
+                },
+              },
+            },
+          },
+          '403': {
+            description: 'Co-located control plane license cannot be revoked',
             content: {
               'application/json': {
                 schema: {

@@ -75,7 +75,7 @@ mkdir -p "$STAGING_DIR"
 printf '%s' "$LICENSE_ID" > "$STAGING_DIR/license.id"
 printf '%s' "$LICENSE_TOKEN" > "$STAGING_DIR/license.token"
 
-INSTALLER_URL="\${TURBOPANEL_CDN_URL:-https://cdn.turbopanel.app/daemon/install.sh}"
+INSTALLER_URL="\${TURBOPANEL_INSTALLER_URL:-https://raw.githubusercontent.com/turbopanel/turbopanel-cdn/trunk/install.sh}"
 
 if [ -n "$BINARY_URL" ]; then
 	export TURBOPANEL_DAEMON_BINARY_URL="$BINARY_URL"

@@ -9,6 +9,7 @@ import {
   member,
   teammate,
   organization,
+  license,
   server,
   setting,
   team,
@@ -82,22 +83,8 @@ function stripTrailingSlash(path: string): string {
   return path.replace(/\/+$/, '')
 }
 
-function isTruthyEnvFlag(value: string | undefined): boolean {
-  const normalized = value?.trim().toLowerCase()
-  return normalized === '1' || normalized === 'true' || normalized === 'yes'
-}
-
-/** Mirrors daemon `resolveServerIdDir` in src/instance/client.ts. */
-function resolveColocatedDaemonStateDir(): string {
-  if (typeof Deno === 'undefined') return DEFAULT_DAEMON_STATE_DIR
-
-  const override = Deno.env.get('TURBOPANEL_DAEMON_STATE_DIR')?.trim()
-  if (override) return stripTrailingSlash(override)
-
-  if (isTruthyEnvFlag(Deno.env.get('TURBOPANEL_SKIP_ORCHESTRATION'))) {
-    return stripTrailingSlash(Deno.cwd())
-  }
-
+/** Daemon enrollment credentials always live under the canonical state dir. */
+function resolveColocatedLicenseCredentialsDir(): string {
   return DEFAULT_DAEMON_STATE_DIR
 }
 
@@ -380,6 +367,96 @@ export async function resolveColocatedServerId(
   return null
 }
 
+const COLOCATED_LICENSE_REVOKE_ERROR =
+  'The license for the co-located control plane daemon cannot be revoked'
+
+async function readColocatedDiskLicenseId(): Promise<string | null> {
+  if (typeof Deno === 'undefined') return null
+
+  const candidates = [resolveColocatedLicenseCredentialsDir()]
+  const instanceStateOverride = Deno.env.get('TURBOPANEL_DAEMON_STATE_DIR')?.trim()
+  if (instanceStateOverride) {
+    const normalized = stripTrailingSlash(instanceStateOverride)
+    candidates.push(normalized, `${normalized}/state`)
+  }
+
+  for (const dir of candidates) {
+    try {
+      const id = (await Deno.readTextFile(`${dir}/license.id`)).trim()
+      if (id.length > 0) return id
+    } catch {
+      // try next candidate path
+    }
+  }
+
+  return null
+}
+
+/**
+ * Licenses tied to the Unix-socket co-located daemon are not revocable — revoking
+ * would break the local control plane and dev stack.
+ */
+export async function resolveProtectedColocatedLicenseIds(
+  db: Db,
+  registry?: DaemonCellRegistry,
+  organizationId?: string,
+): Promise<Set<string>> {
+  const ids = new Set<string>()
+  if (typeof Deno === 'undefined') return ids
+
+  if (registry) {
+    const colocatedServerId = await findColocatedServerIdFromRegistry(db, registry)
+    if (colocatedServerId) {
+      const rows = await db
+        .select({ licenseId: server.licenseId })
+        .from(server)
+        .where(eq(server.id, colocatedServerId))
+        .limit(1)
+      const licenseId = rows[0]?.licenseId
+      if (licenseId != null) {
+        ids.add(licenseId)
+        return ids
+      }
+    }
+  }
+
+  const diskId = await readColocatedDiskLicenseId()
+  if (diskId) ids.add(diskId)
+
+  if (organizationId) {
+    const installLicense = await db
+      .select({ id: license.id })
+      .from(license)
+      .where(and(
+        eq(license.organizationId, organizationId),
+        eq(license.displayName, COLOCATED_SERVER_DISPLAY_NAME),
+        isNull(license.revokedAt),
+      ))
+      .limit(1)
+    if (installLicense[0]?.id) ids.add(installLicense[0].id)
+  }
+
+  return ids
+}
+
+export async function isProtectedColocatedLicenseId(
+  db: Db,
+  licenseId: string,
+  registry?: DaemonCellRegistry,
+  organizationId?: string,
+): Promise<boolean> {
+  const protectedIds = await resolveProtectedColocatedLicenseIds(
+    db,
+    registry,
+    organizationId,
+  )
+  return protectedIds.has(licenseId)
+}
+
+export function colocatedLicenseRevokeError(): string {
+  return COLOCATED_LICENSE_REVOKE_ERROR
+}
+
 /** Assign the co-located daemon to the default installed organization when possible. */
 export async function tryAssignColocatedDaemonToInstalledOrganization(
   db: Db,
@@ -452,7 +529,7 @@ export async function persistColocatedLicenseCredentials(
   if (typeof Deno === 'undefined') return false
 
   try {
-    const stateDir = resolveColocatedDaemonStateDir()
+    const stateDir = resolveColocatedLicenseCredentialsDir()
     await Deno.mkdir(stateDir, { recursive: true })
     await Deno.writeTextFile(`${stateDir}/license.id`, licenseId, {
       create: true,
@@ -479,7 +556,7 @@ export async function ensureColocatedLicenseCredentialsOnDisk(
 ): Promise<void> {
   if (typeof Deno === 'undefined') return
 
-  const stateDir = resolveColocatedDaemonStateDir()
+  const stateDir = resolveColocatedLicenseCredentialsDir()
   try {
     const licenseId = (await Deno.readTextFile(`${stateDir}/license.id`)).trim()
     const licenseToken = (await Deno.readTextFile(`${stateDir}/license.token`))

@@ -1,32 +1,47 @@
-const DEFAULT_CDN_INSTALLER_URL = 'https://cdn.turbopanel.app/daemon/install.sh'
+const DEFAULT_CDN_INSTALLER_URL =
+  'https://raw.githubusercontent.com/turbopanel/turbopanel-cdn/trunk/install.sh'
 const LICENSE_STAGING_DIR = '/opt/turbopanel/platform/config/daemon-license-staging'
 
 export function buildLicenseInstallCommand(opts: {
   runtime: 'deno' | 'workers'
-  origin: string
+  instanceUrl: string
   licenseId: string
   licenseToken: string
   binaryBaseUrl?: string
+  /** Co-located dev: curl run.sh from Caddy (same host as /downloads/daemon). */
+  devRunScript?: boolean
 }): string {
   const {
     runtime,
-    origin,
+    instanceUrl,
     licenseId,
     licenseToken,
-    binaryBaseUrl = `${origin}/downloads/daemon`,
+    binaryBaseUrl,
+    devRunScript,
   } = opts
   const licenseArg = `${licenseId}:${licenseToken}`
-  const includeHost = origin !== 'https://turbopanel.app'
+  const includeHost = instanceUrl !== 'https://turbopanel.app'
+  const scriptBase = instanceUrl.replace(/\/$/, '')
 
-  if (runtime === 'deno') {
-    const hostFlag = includeHost ? ` --host ${origin}` : ''
+  if (runtime === 'deno' && devRunScript) {
+    const binaryUrl = binaryBaseUrl ?? `${scriptBase}/downloads/daemon`
+    const hostFlag = includeHost ? ` --host ${instanceUrl}` : ''
     return (
-      `curl -fsSL ${origin}/api/install/v1/daemon-install.sh | ` +
-      `sh -s -- --license ${licenseArg}${hostFlag} --binary-url ${binaryBaseUrl}`
+      `curl -fsSL ${scriptBase}/run.sh | ` +
+      `sh -s -- --license ${licenseArg}${hostFlag} --binary-url ${binaryUrl}`
     )
   }
 
-  const instanceUrlFlag = includeHost ? ` --instance-url ${origin}` : ''
+  if (runtime === 'deno') {
+    const binaryUrl = binaryBaseUrl ?? `${instanceUrl}/downloads/daemon`
+    const hostFlag = includeHost ? ` --host ${instanceUrl}` : ''
+    return (
+      `curl -fsSL ${instanceUrl}/api/install/v1/daemon-install.sh | ` +
+      `sh -s -- --license ${licenseArg}${hostFlag} --binary-url ${binaryUrl}`
+    )
+  }
+
+  const instanceUrlFlag = includeHost ? ` --instance-url ${instanceUrl}` : ''
   return (
     `mkdir -p ${LICENSE_STAGING_DIR} && ` +
     `printf '%s' '${licenseId}' > ${LICENSE_STAGING_DIR}/license.id && ` +

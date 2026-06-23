@@ -5,7 +5,7 @@ export default defineWorkersConfig({
     configPath: './wrangler.vitest.jsonc',
   },
   test: {
-    include: ['src/daemon/durable-object.test.ts'],
+    include: ['src/daemon/durable-object.test.ts', 'src/lib/daemon-install-command.test.ts'],
     poolOptions: {
       workers: {
         wrangler: {
