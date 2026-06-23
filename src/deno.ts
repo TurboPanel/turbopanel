@@ -5,7 +5,7 @@ import { createDenoDb } from './db.ts'
 import { logInfo } from './logger.ts'
 import { createRedisChallengeStore } from './daemon/cell/challenge-store.ts'
 import { createRedisDaemonCellRegistry } from './daemon/cell/redis/registry.ts'
-import { DAEMON_CHALLENGE_TTL_MS, DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS } from './daemon/authn/challenge.ts'
+import { DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS } from './daemon/authn/challenge.ts'
 import { DAEMON_PING_MS } from './daemon/cell/protocol.ts'
 import {
   ensureColocatedLicenseCredentialsOnDisk,
@@ -67,10 +67,6 @@ const challengeStoreProvider = {
   auth: createRedisChallengeStore(
     daemonCellRegistry.client,
     DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-  ),
-  rotation: createRedisChallengeStore(
-    daemonCellRegistry.client,
-    DAEMON_CHALLENGE_TTL_MS,
   ),
 }
 const app = createApp({

@@ -5,7 +5,6 @@ import type { DaemonCellRegistry } from './daemon/cell/contracts.ts'
 import type { DaemonChallengeStore } from './daemon/cell/challenge-store.ts'
 import {
   createInMemoryChallengeStore,
-  DAEMON_CHALLENGE_TTL_MS,
   DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
 } from './daemon/cell/challenge-store.ts'
 import { getDatabaseUrl, resolvePostgresConnection } from './db-url.ts'
@@ -88,7 +87,6 @@ export function getDaemonCellRegistry(c: Context): DaemonCellRegistry | undefine
 export type DaemonChallengeStoreProvider = {
   enroll: DaemonChallengeStore
   auth: DaemonChallengeStore
-  rotation: DaemonChallengeStore
 }
 
 export function getChallengeStoreProvider(
@@ -101,6 +99,5 @@ export function getChallengeStoreProvider(
   return {
     enroll: createInMemoryChallengeStore(DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS),
     auth: createInMemoryChallengeStore(DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS),
-    rotation: createInMemoryChallengeStore(DAEMON_CHALLENGE_TTL_MS),
   }
 }

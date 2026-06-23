@@ -94,6 +94,40 @@ async function findExistingServerId(
   return undefined
 }
 
+type ServerLicenseBinding = {
+  licenseId: string | null
+  organizationId: string | null
+}
+
+async function getServerLicenseBinding(
+  db: Db,
+  serverId: string,
+): Promise<ServerLicenseBinding | null> {
+  const [row] = await db
+    .select({
+      licenseId: server.licenseId,
+      organizationId: server.organizationId,
+    })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+  return row ?? null
+}
+
+function credentialAuthorizedForServer(
+  binding: ServerLicenseBinding,
+  licenseId: string,
+  organizationId: string,
+): boolean {
+  if (!binding.licenseId) return true
+  if (binding.licenseId === licenseId) return true
+  // Recovery: any verified license credential from the server's organization.
+  if (binding.organizationId && binding.organizationId === organizationId) {
+    return true
+  }
+  return false
+}
+
 async function applyLicensedServerBinding(
   db: Db,
   serverId: string,
@@ -101,13 +135,25 @@ async function applyLicensedServerBinding(
   organizationId: string,
 ): Promise<void> {
   const licenseId = identity.licenseId!.trim()
-  const now = nowTs()
+  const binding = await getServerLicenseBinding(db, serverId)
+  if (!binding) return
 
-  await db.update(server).set({
-    licenseId,
-    organizationId,
-    updatedAt: now,
-  }).where(eq(server.id, serverId))
+  const now = nowTs()
+  if (!binding.licenseId) {
+    await db.update(server).set({
+      licenseId,
+      organizationId,
+      updatedAt: now,
+    }).where(eq(server.id, serverId))
+    return
+  }
+
+  if (binding.licenseId === licenseId && !binding.organizationId) {
+    await db.update(server).set({
+      organizationId,
+      updatedAt: now,
+    }).where(eq(server.id, serverId))
+  }
 }
 
 async function resolveLicensedServerId(
@@ -123,6 +169,13 @@ async function resolveLicensedServerId(
 
   const existing = await findExistingServerId(db, identity)
   if (existing) {
+    const binding = await getServerLicenseBinding(db, existing)
+    if (
+      !binding ||
+      !credentialAuthorizedForServer(binding, licenseId, verified.organizationId)
+    ) {
+      return null
+    }
     await touchServerMetadata(db, existing, identity)
     await applyLicensedServerBinding(
       db,
@@ -155,6 +208,17 @@ async function resolveLicensedServerId(
     if (!isUniqueViolation(err)) throw err
     const raced = await findExistingServerId(db, identity)
     if (!raced) throw err
+    const racedBinding = await getServerLicenseBinding(db, raced)
+    if (
+      !racedBinding ||
+      !credentialAuthorizedForServer(
+        racedBinding,
+        licenseId,
+        verified.organizationId,
+      )
+    ) {
+      return null
+    }
     await touchServerMetadata(db, raced, identity)
     await applyLicensedServerBinding(
       db,

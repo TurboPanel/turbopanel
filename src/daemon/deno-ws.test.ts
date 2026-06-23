@@ -21,15 +21,22 @@ async function createDaemonJwtSecrets() {
   return deriveSecretsConfig(parsed, 'daemon-jwt-signing')
 }
 
-function createMockDb(serverId = 'srv-test', keyId = 'key-test'): Db {
+function createMockDb(
+  serverId = 'srv-test',
+  keyId = 'key-test',
+  options: {
+    revoked?: boolean
+    mismatchedKeyId?: string
+  } = {},
+): Db {
   const keyRow = {
-    daemonKeyId: keyId,
+    daemonKeyId: options.mismatchedKeyId ?? keyId,
     daemonKeyAlgorithm: 'Ed25519',
     daemonPublicKey: { kty: 'OKP', crv: 'Ed25519', x: 'test' },
     daemonKeyFingerprint: 'abc123',
     daemonKeyCreatedAt: new Date().toISOString(),
     daemonKeyLastUsedAt: null,
-    daemonKeyRevokedAt: null,
+    daemonKeyRevokedAt: options.revoked ? new Date().toISOString() : null,
   }
   return {
     select: () => ({
@@ -277,4 +284,48 @@ Deno.test('WS lifecycle attaches, handles ping, and detaches through cell backen
   await new Promise((resolve) => setTimeout(resolve, 50))
   assertEquals(tracking.calls.detach, 1)
   assertEquals(tracking.getSnapshot().connected, false)
+})
+
+Deno.test('WS upgrade accepts HTTP 101 with valid JWT after daemon key is revoked', async () => {
+  const app = new Hono()
+  const secrets = await createDaemonJwtSecrets()
+  registerTestDaemonWebSocket(app, secrets, {
+    db: createMockDb('srv-test', 'key-test', { revoked: true }),
+  })
+
+  const issued = await issueDaemonJwt(
+    { sub: 'srv-test', kid: 'key-test' },
+    secrets,
+  )
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${issued.token}`,
+      ...WS_UPGRADE_HEADERS,
+    },
+  })
+  assertEquals(response.status, 101)
+})
+
+Deno.test('WS upgrade accepts HTTP 101 with valid JWT after daemon key is replaced', async () => {
+  const app = new Hono()
+  const secrets = await createDaemonJwtSecrets()
+  registerTestDaemonWebSocket(app, secrets, {
+    db: createMockDb('srv-test', 'key-test', {
+      mismatchedKeyId: crypto.randomUUID(),
+    }),
+  })
+
+  const issued = await issueDaemonJwt(
+    { sub: 'srv-test', kid: 'key-test' },
+    secrets,
+  )
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${issued.token}`,
+      ...WS_UPGRADE_HEADERS,
+    },
+  })
+  assertEquals(response.status, 101)
 })

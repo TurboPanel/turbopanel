@@ -2,7 +2,6 @@ import type { Hono } from 'hono'
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import { getDb } from '../db.ts'
 import { DAEMON_WS_PATH } from '../surfaces.ts'
-import { getServerDaemonKeyByServerId } from './authn/server-identity-db.ts'
 import { verifyDaemonJwt } from './authn/daemon-jwt.ts'
 import {
   resolveCellGeneration,
@@ -43,15 +42,6 @@ export function registerWorkersDaemonWebSocket(
     const db = getDb(c)
     if (db === undefined) {
       return new Response('Database unavailable', { status: 503 })
-    }
-
-    const keyRow = await getServerDaemonKeyByServerId(db, payload.sub)
-    if (
-      !keyRow ||
-      keyRow.daemonKeyId !== payload.kid ||
-      keyRow.daemonKeyRevokedAt !== null
-    ) {
-      return new Response('Unauthorized', { status: 401 })
     }
 
     const serverId = payload.sub

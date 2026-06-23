@@ -242,11 +242,8 @@ export function registerDaemonApiRoutes(
     }
 
     const existing = await getServerDaemonKeyByFingerprint(db, fingerprint);
-    if (existing) {
-      if (existing.serverId !== serverId) {
-        return c.json({ ok: false, error: "Fingerprint already exists" }, 409);
-      }
-      return c.json({ serverId, keyId: existing.daemonKeyId }, 200);
+    if (existing && existing.serverId !== serverId) {
+      return c.json({ ok: false, error: "Fingerprint already exists" }, 409);
     }
 
     const result = await attachDaemonKeyToServer(db, serverId, {
@@ -266,22 +263,19 @@ export function registerDaemonApiRoutes(
       return c.json({ ok: false, error: "Daemon auth unavailable" }, 503);
     }
 
-    const {
-      serverId,
-      keyId,
-      challengeId,
-      signature,
-      machineId,
-      hostname,
-    } = await c.req.json<{
-      serverId: string;
-      keyId: string;
-      challengeId: string;
-      signature: string;
-      machineId?: string;
-      hostname: string;
-      at: string;
-    }>();
+    const body = await c.req
+      .json<Record<string, unknown>>()
+      .catch(() => ({} as Record<string, unknown>));
+    const serverId = normalizeRequiredString(body.serverId);
+    const keyId = normalizeRequiredString(body.keyId);
+    const challengeId = normalizeRequiredString(body.challengeId);
+    const signature = normalizeRequiredString(body.signature);
+    const hostname = normalizeRequiredString(body.hostname);
+    const machineId = normalizeRequiredString(body.machineId) ?? undefined;
+
+    if (!serverId || !keyId || !challengeId || !signature || !hostname) {
+      return c.json({ ok: false, error: "Missing required session fields" }, 400);
+    }
 
     const server = await getServerDaemonKeyByServerId(db, serverId);
     if (!server) {

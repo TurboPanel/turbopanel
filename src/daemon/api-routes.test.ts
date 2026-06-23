@@ -9,7 +9,7 @@ import { getDatabaseUrl } from "../db-url.ts";
 import { createDenoDb } from "../db.ts";
 import { organization, server } from "../lib/db/schema.ts";
 import { registerDaemonApiRoutes } from "./api-routes.ts";
-import { createRedisChallengeStore, createInMemoryChallengeStore, DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS, DAEMON_CHALLENGE_TTL_MS } from "./cell/challenge-store.ts";
+import { createRedisChallengeStore, createInMemoryChallengeStore, DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS } from "./cell/challenge-store.ts";
 import { createRedisCellClient } from "./cell/redis/client.ts";
 import { issueDaemonJwt } from "./authn/daemon-jwt.ts";
 import {
@@ -118,7 +118,6 @@ async function createTestApp(db: ReturnType<typeof createDenoDb>): Promise<Hono<
   const challengeStoreProvider = {
     enroll: createInMemoryChallengeStore(DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS),
     auth: createInMemoryChallengeStore(DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS),
-    rotation: createInMemoryChallengeStore(DAEMON_CHALLENGE_TTL_MS),
   };
   registerDaemonApiRoutes(app, { secrets, challengeStoreProvider });
   return app;
@@ -140,7 +139,6 @@ async function createRedisBackedTestApp(
     challengeStoreProvider: {
       enroll: authStore,
       auth: authStore,
-      rotation: createInMemoryChallengeStore(DAEMON_CHALLENGE_TTL_MS),
     },
   });
   return app;
@@ -430,7 +428,7 @@ Deno.test("POST /enroll re-enrollment replaces daemon key on server row", async 
     assertEquals(enrollResponse.status, 200);
     const body = await enrollResponse.json() as { serverId: string; keyId: string };
     assertEquals(body.serverId, serverId);
-    assert(body.keyId !== keyId);
+    assertEquals(body.keyId, keyId);
 
     const rows = await db
       .select({
@@ -439,9 +437,412 @@ Deno.test("POST /enroll re-enrollment replaces daemon key on server row", async 
       })
       .from(server)
       .where(eq(server.id, serverId));
-    assertEquals(rows[0]?.daemonKeyId, body.keyId);
+    assertEquals(rows[0]?.daemonKeyId, keyId);
     assertEquals(rows[0]?.daemonKeyFingerprint, newKey.fingerprint);
     assertEquals(rows[0]?.daemonKeyFingerprint !== key.fingerprint, true);
+  });
+});
+
+Deno.test("POST /enroll re-enrollment with recovery credential from same organization", async () => {
+  await withEnrollFixture(async ({
+    db,
+    app,
+    organizationId,
+    licenseId,
+    licenseToken,
+    serverId,
+    keyId,
+    key,
+    machineId,
+    hostname,
+  }) => {
+    const { licenseId: recoveryLicenseId, licenseToken: recoveryLicenseToken } =
+      await createLicense(db, {
+        organizationId,
+        displayName: "Recovery Daemon API Routes Test License",
+      });
+
+    const challengeResponse = await app.request("/api/daemon/v1/auth/challenge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assertEquals(challengeResponse.status, 200);
+    const challenge = await challengeResponse.json() as { challengeId: string; nonce: string };
+    const newKey = await generateKeyMaterial();
+    const payload = buildEnrollmentPayload({
+      challengeId: challenge.challengeId,
+      nonce: challenge.nonce,
+      licenseId: recoveryLicenseId,
+      machineId,
+      hostname,
+      publicKeyFingerprint: newKey.fingerprint,
+    });
+    const signature = await signPayload(newKey.privateKey, payload);
+
+    const enrollResponse = await app.request("/api/daemon/v1/enroll", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        licenseId: recoveryLicenseId,
+        licenseToken: recoveryLicenseToken,
+        machineId,
+        hostname,
+        publicJwk: newKey.publicJwk,
+        challengeId: challenge.challengeId,
+        signature,
+      }),
+    });
+    assertEquals(enrollResponse.status, 200);
+    const body = await enrollResponse.json() as { serverId: string; keyId: string };
+    assertEquals(body.serverId, serverId);
+    assertEquals(body.keyId, keyId);
+
+    const rows = await db
+      .select({
+        licenseId: server.licenseId,
+        daemonKeyFingerprint: server.daemonKeyFingerprint,
+        daemonKeyRevokedAt: server.daemonKeyRevokedAt,
+      })
+      .from(server)
+      .where(eq(server.id, serverId));
+    assertEquals(rows[0]?.licenseId, licenseId);
+    assertEquals(rows[0]?.daemonKeyFingerprint, newKey.fingerprint);
+    assertEquals(rows[0]?.daemonKeyRevokedAt, null);
+    assertEquals(rows[0]?.daemonKeyFingerprint !== key.fingerprint, true);
+  });
+});
+
+Deno.test("POST /enroll re-enrollment with same key clears revocation", async () => {
+  await withEnrollFixture(async ({
+    db,
+    app,
+    licenseId,
+    licenseToken,
+    serverId,
+    keyId,
+    key,
+    machineId,
+    hostname,
+  }) => {
+    const now = new Date().toISOString();
+    await db
+      .update(server)
+      .set({ daemonKeyRevokedAt: now })
+      .where(eq(server.id, serverId));
+
+    const challengeResponse = await app.request("/api/daemon/v1/auth/challenge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assertEquals(challengeResponse.status, 200);
+    const challenge = await challengeResponse.json() as { challengeId: string; nonce: string };
+    const payload = buildEnrollmentPayload({
+      challengeId: challenge.challengeId,
+      nonce: challenge.nonce,
+      licenseId,
+      machineId,
+      hostname,
+      publicKeyFingerprint: key.fingerprint,
+    });
+    const signature = await signPayload(key.privateKey, payload);
+
+    const enrollResponse = await app.request("/api/daemon/v1/enroll", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        licenseId,
+        licenseToken,
+        machineId,
+        hostname,
+        publicJwk: key.publicJwk,
+        challengeId: challenge.challengeId,
+        signature,
+      }),
+    });
+    assertEquals(enrollResponse.status, 200);
+    const body = await enrollResponse.json() as { serverId: string; keyId: string };
+    assertEquals(body.serverId, serverId);
+    assertEquals(body.keyId, keyId);
+
+    const rows = await db
+      .select({
+        daemonKeyFingerprint: server.daemonKeyFingerprint,
+        daemonKeyRevokedAt: server.daemonKeyRevokedAt,
+      })
+      .from(server)
+      .where(eq(server.id, serverId));
+    assertEquals(rows[0]?.daemonKeyFingerprint, key.fingerprint);
+    assertEquals(rows[0]?.daemonKeyRevokedAt, null);
+
+    const authChallengeResponse = await app.request("/api/daemon/v1/auth/challenge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ serverId, keyId }),
+    });
+    assertEquals(authChallengeResponse.status, 200);
+  });
+});
+
+Deno.test("POST /auth/session rejects malformed JSON", async () => {
+  await withEnrollFixture(async ({ app }) => {
+    const response = await app.request("/api/daemon/v1/auth/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{not-json",
+    });
+    assertEquals(response.status, 400);
+    const body = await response.json() as { error?: string };
+    assertEquals(body.error, "Missing required session fields");
+  });
+});
+
+Deno.test("POST /auth/session rejects missing required fields", async () => {
+  await withEnrollFixture(async ({ app, serverId, keyId }) => {
+    const response = await app.request("/api/daemon/v1/auth/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        serverId,
+        keyId,
+      }),
+    });
+    assertEquals(response.status, 400);
+    const body = await response.json() as { error?: string };
+    assertEquals(body.error, "Missing required session fields");
+  });
+});
+
+Deno.test("POST /enroll rejects re-enrollment from a different license with matching machineId", async () => {
+  await withEnrollFixture(async ({
+    db,
+    app,
+    machineId,
+    hostname,
+    serverId,
+    licenseId,
+    organizationId,
+  }) => {
+    const [otherOrgRow] = await db
+      .insert(organization)
+      .values({ displayName: "Other Daemon API Routes Test Org" })
+      .returning({ id: organization.id });
+    const otherOrganizationId = otherOrgRow!.id;
+    const { licenseId: otherLicenseId, licenseToken: otherLicenseToken } =
+      await createLicense(db, {
+        organizationId: otherOrganizationId,
+        displayName: "Other Daemon API Routes Test License",
+      });
+
+    try {
+      const challengeResponse = await app.request("/api/daemon/v1/auth/challenge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      assertEquals(challengeResponse.status, 200);
+      const challenge = await challengeResponse.json() as {
+        challengeId: string;
+        nonce: string;
+      };
+      const otherKey = await generateKeyMaterial();
+      const payload = buildEnrollmentPayload({
+        challengeId: challenge.challengeId,
+        nonce: challenge.nonce,
+        licenseId: otherLicenseId,
+        machineId,
+        hostname,
+        publicKeyFingerprint: otherKey.fingerprint,
+      });
+      const signature = await signPayload(otherKey.privateKey, payload);
+
+      const enrollResponse = await app.request("/api/daemon/v1/enroll", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          licenseId: otherLicenseId,
+          licenseToken: otherLicenseToken,
+          machineId,
+          hostname,
+          publicJwk: otherKey.publicJwk,
+          challengeId: challenge.challengeId,
+          signature,
+        }),
+      });
+      assertEquals(enrollResponse.status, 400);
+      const body = await enrollResponse.json() as { error?: string };
+      assertEquals(body.error, "Unable to resolve server");
+
+      const rows = await db
+        .select({
+          id: server.id,
+          licenseId: server.licenseId,
+          organizationId: server.organizationId,
+        })
+        .from(server)
+        .where(eq(server.id, serverId));
+      assertEquals(rows.length, 1);
+      assertEquals(rows[0]?.licenseId, licenseId);
+      assertEquals(rows[0]?.organizationId, organizationId);
+    } finally {
+      await db.delete(organization).where(eq(organization.id, otherOrganizationId));
+    }
+  });
+});
+
+Deno.test("POST /enroll rejects re-enrollment from a different organization with matching hostname", async () => {
+  await withEnrollFixture(async ({
+    db,
+    app,
+    machineId,
+    hostname,
+    serverId,
+    licenseId,
+    organizationId,
+  }) => {
+    const [otherOrgRow] = await db
+      .insert(organization)
+      .values({ displayName: "Cross Org Daemon API Routes Test Org" })
+      .returning({ id: organization.id });
+    const otherOrganizationId = otherOrgRow!.id;
+    const { licenseId: otherLicenseId, licenseToken: otherLicenseToken } =
+      await createLicense(db, {
+        organizationId: otherOrganizationId,
+        displayName: "Cross Org Daemon API Routes Test License",
+      });
+
+    try {
+      const otherMachineId = `other-${crypto.randomUUID()}`;
+      const challengeResponse = await app.request("/api/daemon/v1/auth/challenge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      assertEquals(challengeResponse.status, 200);
+      const challenge = await challengeResponse.json() as {
+        challengeId: string;
+        nonce: string;
+      };
+      const otherKey = await generateKeyMaterial();
+      const payload = buildEnrollmentPayload({
+        challengeId: challenge.challengeId,
+        nonce: challenge.nonce,
+        licenseId: otherLicenseId,
+        machineId: otherMachineId,
+        hostname,
+        publicKeyFingerprint: otherKey.fingerprint,
+      });
+      const signature = await signPayload(otherKey.privateKey, payload);
+
+      const enrollResponse = await app.request("/api/daemon/v1/enroll", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          licenseId: otherLicenseId,
+          licenseToken: otherLicenseToken,
+          machineId: otherMachineId,
+          hostname,
+          publicJwk: otherKey.publicJwk,
+          challengeId: challenge.challengeId,
+          signature,
+        }),
+      });
+      assertEquals(enrollResponse.status, 400);
+      const body = await enrollResponse.json() as { error?: string };
+      assertEquals(body.error, "Unable to resolve server");
+
+      const rows = await db
+        .select({
+          id: server.id,
+          licenseId: server.licenseId,
+          organizationId: server.organizationId,
+        })
+        .from(server)
+        .where(eq(server.id, serverId));
+      assertEquals(rows.length, 1);
+      assertEquals(rows[0]?.licenseId, licenseId);
+      assertEquals(rows[0]?.organizationId, organizationId);
+    } finally {
+      await db.delete(organization).where(eq(organization.id, otherOrganizationId));
+    }
+  });
+});
+
+Deno.test("POST /heartbeat succeeds with valid JWT after daemon key is revoked", async () => {
+  await withEnrollFixture(async ({ db, app, serverId, keyId }) => {
+    const now = new Date().toISOString();
+    await db
+      .update(server)
+      .set({ daemonKeyRevokedAt: now })
+      .where(eq(server.id, serverId));
+
+    const daemonToken = await issueDaemonToken(serverId, keyId);
+    const response = await app.request("/api/daemon/v1/heartbeat", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${daemonToken}`,
+      },
+    });
+    assertEquals(response.status, 200);
+  });
+});
+
+Deno.test("POST /heartbeat succeeds with valid JWT after daemon key is replaced", async () => {
+  await withEnrollFixture(async ({
+    db,
+    app,
+    licenseId,
+    licenseToken,
+    serverId,
+    keyId,
+    machineId,
+    hostname,
+  }) => {
+    const daemonToken = await issueDaemonToken(serverId, keyId);
+
+    const challengeResponse = await app.request("/api/daemon/v1/auth/challenge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assertEquals(challengeResponse.status, 200);
+    const challenge = await challengeResponse.json() as {
+      challengeId: string;
+      nonce: string;
+    };
+    const newKey = await generateKeyMaterial();
+    const payload = buildEnrollmentPayload({
+      challengeId: challenge.challengeId,
+      nonce: challenge.nonce,
+      licenseId,
+      machineId,
+      hostname,
+      publicKeyFingerprint: newKey.fingerprint,
+    });
+    const signature = await signPayload(newKey.privateKey, payload);
+    const enrollResponse = await app.request("/api/daemon/v1/enroll", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        licenseId,
+        licenseToken,
+        machineId,
+        hostname,
+        publicJwk: newKey.publicJwk,
+        challengeId: challenge.challengeId,
+        signature,
+      }),
+    });
+    assertEquals(enrollResponse.status, 200);
+
+    const response = await app.request("/api/daemon/v1/heartbeat", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${daemonToken}`,
+      },
+    });
+    assertEquals(response.status, 200);
   });
 });
 

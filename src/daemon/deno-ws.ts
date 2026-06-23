@@ -19,7 +19,7 @@ import {
   DAEMON_WS_PATH,
   DEVELOPER_WS_PATH,
 } from '../surfaces.ts'
-import { getServerDaemonKeyByServerId, touchDaemonKeyLastUsed } from './authn/server-identity-db.ts'
+import { touchDaemonKeyLastUsed } from './authn/server-identity-db.ts'
 import { verifyDaemonJwt } from './authn/daemon-jwt.ts'
 
 export type DaemonWebSocketOptions = {
@@ -49,15 +49,6 @@ export function registerDaemonWebSocket(
     const db = options.db
     if (!db) {
       return c.json({ ok: false, error: 'Database unavailable' }, 503)
-    }
-
-    const keyRow = await getServerDaemonKeyByServerId(db, payload.sub)
-    if (
-      !keyRow ||
-      keyRow.daemonKeyId !== payload.kid ||
-      keyRow.daemonKeyRevokedAt !== null
-    ) {
-      return c.json({ ok: false, error: 'unauthorized' }, 401)
     }
 
     const registry = options.daemonCellRegistry

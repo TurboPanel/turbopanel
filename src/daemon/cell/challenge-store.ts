@@ -22,9 +22,8 @@ export interface DaemonChallengeStore {
 /**
  * DO-backed challenge store. Uses a well-known per-instance Durable Object
  * named `"challenge-store"` (not a per-server cell) because enrollment
- * challenges have no serverId yet. Auth and key-rotation challenges that
- * include serverId/keyId still work — consume validates those fields against
- * the stored row.
+ * challenges have no serverId yet. Auth challenges that include serverId/keyId
+ * still work — consume validates those fields against the stored row.
  */
 export function createDurableObjectChallengeStore(
   stub: DurableObjectStub,

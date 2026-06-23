@@ -101,7 +101,12 @@ export async function attachDaemonKeyToServer(
   },
 ): Promise<{ daemonKeyId: string }> {
   const now = nowTs()
-  const daemonKeyId = crypto.randomUUID()
+  const [existing] = await db
+    .select({ daemonKeyId: server.daemonKeyId })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+  const daemonKeyId = existing?.daemonKeyId ?? crypto.randomUUID()
 
   await db
     .update(server)

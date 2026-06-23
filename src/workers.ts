@@ -7,7 +7,7 @@ import { createDurableObjectChallengeStore } from './daemon/cell/challenge-store
 import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
 import { createWorkersDb, type DaemonChallengeStoreProvider } from './db'
 import { registerWorkersDaemonWebSocket } from './daemon/workers-ws.ts'
-import { DAEMON_CHALLENGE_TTL_MS, DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS } from './daemon/authn/challenge.ts'
+import { DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS } from './daemon/authn/challenge.ts'
 import { createNoopQueue } from './lib/email/noop-queue.ts'
 import { createWorkersMailgunQueue } from './lib/email/mailgun/workers-queue.ts'
 import type { EmailQueue } from './lib/email/types.ts'
@@ -36,10 +36,6 @@ function createWorkersChallengeStoreProvider(
     auth: createDurableObjectChallengeStore(
       challengeStub,
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-    ),
-    rotation: createDurableObjectChallengeStore(
-      challengeStub,
-      DAEMON_CHALLENGE_TTL_MS,
     ),
   }
 }
