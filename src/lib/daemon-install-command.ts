@@ -7,7 +7,7 @@ export function buildLicenseInstallCommand(opts: {
   licenseId: string
   licenseToken: string
   binaryBaseUrl?: string
-  /** Co-located dev: curl run.sh from Caddy (same host as /downloads/daemon). */
+  /** @deprecated Deno installs always use run.sh from the instance host. */
   devRunScript?: boolean
 }): string {
   const {
@@ -16,26 +16,16 @@ export function buildLicenseInstallCommand(opts: {
     licenseId,
     licenseToken,
     binaryBaseUrl,
-    devRunScript,
   } = opts
   const licenseArg = `${licenseId}:${licenseToken}`
   const includeHost = instanceUrl !== 'https://turbopanel.app'
   const scriptBase = instanceUrl.replace(/\/$/, '')
 
-  if (runtime === 'deno' && devRunScript) {
+  if (runtime === 'deno') {
     const binaryUrl = binaryBaseUrl ?? `${scriptBase}/downloads/daemon`
     const hostFlag = includeHost ? ` --host ${instanceUrl}` : ''
     return (
       `curl -fsSL ${scriptBase}/run.sh | ` +
-      `sh -s -- --license ${licenseArg}${hostFlag} --binary-url ${binaryUrl}`
-    )
-  }
-
-  if (runtime === 'deno') {
-    const binaryUrl = binaryBaseUrl ?? `${instanceUrl}/downloads/daemon`
-    const hostFlag = includeHost ? ` --host ${instanceUrl}` : ''
-    return (
-      `curl -fsSL ${instanceUrl}/api/install/v1/daemon-install.sh | ` +
       `sh -s -- --license ${licenseArg}${hostFlag} --binary-url ${binaryUrl}`
     )
   }

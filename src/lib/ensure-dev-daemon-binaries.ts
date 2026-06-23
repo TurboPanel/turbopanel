@@ -5,6 +5,8 @@ import { isDeveloperSurfaceEnabled } from '../dev-mode.ts'
 const REQUIRED_RELEASE_ARTIFACTS = [
   'turbopaneld-linux-amd64.tar.zst',
   'turbopaneld-linux-arm64.tar.zst',
+  'turbopanel-orchestration.tar.zst',
+  'turbopanel-bootstrap.tar.zst',
 ] as const
 
 const REQUIRED_COMPILE_ARTIFACTS = [

@@ -24,7 +24,7 @@ describe('buildLicenseInstallCommand', () => {
     expect(command).toContain('license-id:token')
   })
 
-  it('keeps the API install script outside dev run.sh mode', () => {
+  it('uses run.sh on self-hosted Deno installs', () => {
     const command = buildLicenseInstallCommand({
       runtime: 'deno',
       instanceUrl: 'https://huey.lan:8443',
@@ -32,10 +32,17 @@ describe('buildLicenseInstallCommand', () => {
       licenseToken: 'token',
     })
 
-    expect(command).toContain('/api/install/v1/daemon-install.sh')
+    expect(command).toContain(
+      'curl -fsSL https://huey.lan:8443/run.sh',
+    )
+    expect(command).not.toContain('/api/install/v1/daemon-install.sh')
+    expect(command).not.toContain('raw.githubusercontent.com')
     expect(command).toContain('| sh -s --')
     expect(command).not.toContain('sudo sh -s --')
     expect(command).toContain('--host https://huey.lan:8443')
+    expect(command).toContain(
+      '--binary-url https://huey.lan:8443/downloads/daemon',
+    )
   })
 
   it('uses the CDN installer on Workers', () => {

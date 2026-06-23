@@ -94,6 +94,8 @@ if [ -z "$HOST_URL" ]; then
 fi
 
 INSTALL_SCRIPT_URL="\${HOST_URL%/}/api/install/v1/daemon-install.sh"
+RUN_SCRIPT_URL="\${HOST_URL%/}/run.sh"
+DEFAULT_BINARY_URL="\${HOST_URL%/}/downloads/daemon"
 if ! tp_is_root; then
 	if tp_user_in_sudo_group && tp_sudo_installed; then
 		if [ -n "$BINARY_URL" ]; then
@@ -106,12 +108,11 @@ if ! tp_is_root; then
 	tp_install_privilege_denied daemon-install.sh
 fi
 
-INSTALLER_URL="\${TURBOPANEL_INSTALLER_URL:-https://raw.githubusercontent.com/turbopanel/turbopanel-cdn/trunk/install.sh}"
-
-if [ -n "$BINARY_URL" ]; then
-	export TURBOPANEL_DAEMON_BINARY_URL="$BINARY_URL"
+if [ -z "$BINARY_URL" ]; then
+	BINARY_URL="$DEFAULT_BINARY_URL"
 fi
-curl -fsSL "$INSTALLER_URL" | sh -s -- --instance-url "$HOST_URL" --license "$LICENSE"
+exec curl -fsSL "$RUN_SCRIPT_URL" | sh -s -- \
+	--license "$LICENSE" --host "$HOST_URL" --binary-url "$BINARY_URL"
 `
 
 async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
