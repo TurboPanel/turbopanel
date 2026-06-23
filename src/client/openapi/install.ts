@@ -1,26 +1,4 @@
 export const installOpenApiSchemas = {
-  InstallStatusResponse: {
-    type: 'object',
-    required: ['ok', 'needsInstall', 'isInstallMode', 'isSignupEnabled'],
-    description:
-      'Dedicated install surface (`/api/install/v1`). On Workers, needsInstall and isInstallMode are always false; isSignupEnabled reflects DB + env. On Deno, all fields reflect self-hosted install wizard state.',
-    properties: {
-      ok: { type: 'boolean', const: true },
-      needsInstall: {
-        type: 'boolean',
-        description: 'True when org + superadmin do not exist yet (Deno only).',
-      },
-      isInstallMode: {
-        type: 'boolean',
-        description: 'True while the install wizard is active (Deno only).',
-      },
-      isSignupEnabled: {
-        type: 'boolean',
-        description:
-          'Whether public sign-up is enabled (DB setting or TURBOPANEL_IS_SIGNUP_ENABLED env override).',
-      },
-    },
-  },
   InstallBootstrapRequest: {
     type: 'object',
     required: ['username', 'password'],
@@ -54,32 +32,6 @@ export const installOpenApiSchemas = {
 }
 
 export const installOpenApiPaths: Record<string, unknown> = {
-  '/api/install/v1/status': {
-    get: {
-      tags: ['install'],
-      summary: 'Install wizard status',
-      description:
-        'Dedicated install surface (`/api/install/v1`). Deno self-hosted only.',
-      responses: {
-        '200': {
-          description: 'Install status',
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/InstallStatusResponse' },
-            },
-          },
-        },
-        '503': {
-          description: 'Database unavailable',
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/ErrorResponse' },
-            },
-          },
-        },
-      },
-    },
-  },
   '/api/install/v1/bootstrap': {
     post: {
       tags: ['install'],

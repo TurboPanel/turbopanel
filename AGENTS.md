@@ -336,8 +336,8 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `POST` | `/api/client/v1/auth/sign-out` | Delete session, clear cookie |
 | `POST` | `/api/client/v1/auth/sign-up` | Create a regular user account when signup is enabled (`IS_SIGNUP_ENABLED = '1'` in DB, or `TURBOPANEL_IS_SIGNUP_ENABLED=1`/`true` env override); no session returned — user must sign in. Generates a 24h email verification token and enqueues a `signup-verification` email job (Deno → RabbitMQ → mailer → SMTP/Mailpit; Workers → Mailgun directly). Also logs the token and verify URL to console in dev |
 | `GET` | `/api/client/v1/auth/verify-email?token=<token>` | Consume a 24-hour email verification token; sets `user.isEmailVerified = true` |
-| `GET` | `/api/client/v1/auth/session` | Return current user session or 401 |
-| `GET` | `/api/install/v1/status` | Public: `{ needsInstall, isInstallMode, isSignupEnabled }` — Deno: install mode until org + superadmin exist; Workers: always `needsInstall: false`, `isSignupEnabled` from DB + env override |
+| `GET` | `/api/client/v1/authn/session` | Return current user session or 401 |
+| `GET` | `/api/client/v1/status` | Public: `{ needsInstall, isInstallMode, isSignupEnabled }` — Deno: install mode until org + superadmin exist; Workers: always `needsInstall: false`, `isSignupEnabled` from DB + env override |
 | `POST` | `/api/install/v1/bootstrap` | Deno: verify host PAM (root or sudo user), no cookies |
 | `POST` | `/api/install/v1/` | Deno: host PAM + superadmin setup → superadmin session only |
 | `GET` | `/api/client/v1/servers` | Session required: servers visible to the user via `listVisible`, with live `connected` / `hostname` from the daemon hub |

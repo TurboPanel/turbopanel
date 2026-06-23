@@ -8,10 +8,24 @@ export const authSchemas = {
   },
   ClientStatus: {
     type: 'object',
-    required: ['ok', 'surface'],
+    required: ['ok', 'needsInstall', 'isInstallMode', 'isSignupEnabled'],
+    description:
+      'Public client status. On Workers, needsInstall and isInstallMode are always false; isSignupEnabled reflects DB + env. On Deno self-hosted, all fields reflect install wizard and sign-up state.',
     properties: {
       ok: { type: 'boolean', const: true },
-      surface: { type: 'string', const: 'client' },
+      needsInstall: {
+        type: 'boolean',
+        description: 'True when org + superadmin do not exist yet (Deno only).',
+      },
+      isInstallMode: {
+        type: 'boolean',
+        description: 'True while the install wizard is active (Deno only).',
+      },
+      isSignupEnabled: {
+        type: 'boolean',
+        description:
+          'Whether public sign-up is enabled (DB setting or TURBOPANEL_IS_SIGNUP_ENABLED env override).',
+      },
     },
   },
   ErrorResponse: {
@@ -109,13 +123,23 @@ export const authPaths: Record<string, unknown> = {
   '/api/client/v1/status': {
     get: {
       tags: ['client'],
-      summary: 'Client surface status',
+      summary: 'Public client status',
+      description:
+        'Install and sign-up flags for the client UI. Replaces the former GET /api/install/v1/status for client callers.',
       responses: {
         '200': {
-          description: 'Client API is available',
+          description: 'Client status',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ClientStatus' },
+            },
+          },
+        },
+        '503': {
+          description: 'Database unavailable (Deno self-hosted only)',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
             },
           },
         },
@@ -199,7 +223,7 @@ export const authPaths: Record<string, unknown> = {
       },
     },
   },
-  '/api/client/v1/auth/session': {
+  '/api/client/v1/authn/session': {
     get: {
       tags: ['auth'],
       summary: 'Get current session',

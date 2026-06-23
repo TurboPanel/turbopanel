@@ -160,6 +160,40 @@ export async function getInstallStatus(
   }
 }
 
+export type ClientPublicStatus = InstallStatus & { ok: true }
+
+/** Public client status for GET /api/client/v1/status (both runtimes). */
+export async function getClientPublicStatus(
+  db: Db | undefined,
+  runtime: 'deno' | 'workers',
+  envOverride?: string,
+): Promise<ClientPublicStatus | null> {
+  if (runtime === 'workers') {
+    if (db === undefined) {
+      return {
+        ok: true,
+        needsInstall: false,
+        isInstallMode: false,
+        isSignupEnabled: false,
+      }
+    }
+    const signupEnabled = await isSignupEnabled(db, envOverride)
+    return {
+      ok: true,
+      needsInstall: false,
+      isInstallMode: false,
+      isSignupEnabled: signupEnabled,
+    }
+  }
+
+  if (db === undefined) {
+    return null
+  }
+
+  const status = await getInstallStatus(db, envOverride)
+  return { ok: true, ...status }
+}
+
 export async function getUserOrganizationId(
   db: Db,
   userId: string,

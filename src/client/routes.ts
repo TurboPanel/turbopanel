@@ -1,5 +1,11 @@
 import { Hono } from 'hono'
-import { registerAuthRoutes, type AuthRouteOpts } from './authn/http.ts'
+import {
+  registerAuthnRoutes,
+  registerAuthRoutes,
+  type AuthRouteOpts,
+} from './authn/http.ts'
+import { getClientPublicStatus } from './authn/install-state.ts'
+import { getDb } from '../db.ts'
 import { registerAccessRoutes } from './access/routes.ts'
 import { registerEnvironmentRoutes } from './environments/routes.ts'
 import { registerHostingRoutes } from './hostings/routes.ts'
@@ -22,8 +28,20 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
   const client = new Hono()
 
   registerAuthRoutes(client, opts)
+  registerAuthnRoutes(client, opts)
 
-  client.get('/status', (c) => c.json({ ok: true, surface: 'client' }))
+  client.get('/status', async (c) => {
+    const db = getDb(c)
+    const payload = await getClientPublicStatus(
+      db,
+      opts.runtime,
+      opts.signupEnvOverride,
+    )
+    if (payload === null) {
+      return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    }
+    return c.json(payload)
+  })
 
   registerServerRoutes(client, opts)
   registerLicenseRoutes(client, opts)

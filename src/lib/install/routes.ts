@@ -8,14 +8,11 @@ import { verifyInstallHostCredentials } from '../../client/authn/credentials.ts'
 import { buildSessionResponse, type AuthRouteOpts } from '../../client/authn/http.ts'
 import {
   completeInstanceInstall,
-  getInstallStatus,
   isInstanceInstalled,
-  isSignupEnabled,
 } from '../../client/authn/install-state.ts'
 import { createSession, getSession } from '../../client/authn/session-store.ts'
 import { getDb } from '../../db.ts'
 import { INSTALL_API_PREFIX } from '../../surfaces.ts'
-import { compatLogInfo } from '../../log-compat.ts'
 
 const DAEMON_INSTALL_SCRIPT = `#!/bin/sh
 set -eu
@@ -195,37 +192,6 @@ async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
  */
 export function registerInstallRoutes(app: Hono, opts: AuthRouteOpts) {
   const install = new Hono({ strict: false })
-
-  install.get('/status', async (c) => {
-    const startedAt = performance.now()
-    const db = getDb(c)
-    if (db === undefined) {
-      if (opts.runtime === 'workers') {
-        return c.json({
-          ok: true,
-          needsInstall: false,
-          isInstallMode: false,
-          isSignupEnabled: false,
-        })
-      }
-      return c.json({ ok: false, error: 'Database unavailable' }, 503)
-    }
-
-    if (opts.runtime === 'workers') {
-      const signupEnabled = await isSignupEnabled(db, opts.signupEnvOverride)
-      return c.json({
-        ok: true,
-        needsInstall: false,
-        isInstallMode: false,
-        isSignupEnabled: signupEnabled,
-      })
-    }
-
-    const status = await getInstallStatus(db, opts.signupEnvOverride)
-    const elapsed = (performance.now() - startedAt).toFixed(1)
-    compatLogInfo('auth', `install/status ${elapsed}ms`)
-    return c.json({ ok: true, ...status })
-  })
 
   install.post('/bootstrap', async (c) => {
     if (opts.runtime !== 'deno') {

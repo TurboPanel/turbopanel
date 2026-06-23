@@ -404,28 +404,6 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
     return c.json({ ok: true }, 201)
   })
 
-  auth.get('/session', async (c) => {
-    const db = getDb(c)
-
-    const cookieValue = readSessionCookie(c)
-    if (!cookieValue) {
-      return c.json({ ok: false }, 401)
-    }
-
-    const result = await verifySignedCookie(cookieValue, opts.secrets)
-    if (!result) {
-      return c.json({ ok: false }, 401)
-    }
-
-    const sessionData = await getSession(db, result.token)
-    if (!sessionData) {
-      return c.json({ ok: false }, 401)
-    }
-
-    const payload = await buildSessionResponse(db, opts.runtime, sessionData)
-    return c.json(payload)
-  })
-
   auth.get('/verify-email', async (c) => {
     const token = c.req.query('token')
     if (!token) {
@@ -451,5 +429,34 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
   })
 
   app.route('/auth', auth)
+  return app
+}
+
+export function registerAuthnRoutes(app: Hono, opts: AuthRouteOpts) {
+  const authn = new Hono()
+
+  authn.get('/session', async (c) => {
+    const db = getDb(c)
+
+    const cookieValue = readSessionCookie(c)
+    if (!cookieValue) {
+      return c.json({ ok: false }, 401)
+    }
+
+    const result = await verifySignedCookie(cookieValue, opts.secrets)
+    if (!result) {
+      return c.json({ ok: false }, 401)
+    }
+
+    const sessionData = await getSession(db, result.token)
+    if (!sessionData) {
+      return c.json({ ok: false }, 401)
+    }
+
+    const payload = await buildSessionResponse(db, opts.runtime, sessionData)
+    return c.json(payload)
+  })
+
+  app.route('/authn', authn)
   return app
 }
