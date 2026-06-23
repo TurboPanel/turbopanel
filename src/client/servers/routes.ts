@@ -4,6 +4,7 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { listVisible } from '../authz/index.ts'
 import { getDb, getDaemonCellRegistry } from '../../db.ts'
+import { resolveFleetPresence } from '../../daemon/cell/fleet-presence.ts'
 import { server } from '../../lib/db/schema.ts'
 
 export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
@@ -45,22 +46,24 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
       .orderBy(server.createdAt)
 
     const registry = getDaemonCellRegistry(c)
-    const snapshots = registry
-      ? await registry.getSnapshots(rows.map((row) => row.id))
-      : new Map()
+    const presence = await resolveFleetPresence(
+      db,
+      registry,
+      rows.map((row) => row.id),
+    )
 
     return c.json({
       servers: rows.map((row) => {
-        const snapshot = snapshots.get(row.id)
-        const remoteAddress = snapshot?.remoteAddress &&
-            snapshot.remoteAddress !== '__direct__'
-          ? snapshot.remoteAddress
-          : null
+        const live = presence.get(row.id)
         return {
           ...row,
-          connected: snapshot?.connected ?? false,
-          hostname: snapshot?.hostname ?? null,
-          remoteAddress,
+          connected: live?.connected ?? false,
+          hostname: live?.hostname ?? null,
+          remoteAddress: live?.remoteAddress ?? null,
+          status: live?.status ?? null,
+          healthyCount: live?.healthyCount ?? null,
+          degradedCount: live?.degradedCount ?? null,
+          unhealthyCount: live?.unhealthyCount ?? null,
           licenseId: row.licenseId ?? null,
         }
       }),

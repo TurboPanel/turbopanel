@@ -9,7 +9,12 @@ import { getDatabaseUrl } from "../db-url.ts";
 import { createDenoDb } from "../db.ts";
 import { organization, server } from "../lib/db/schema.ts";
 import { registerDaemonApiRoutes } from "./api-routes.ts";
-import { createRedisChallengeStore, createInMemoryChallengeStore, DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS } from "./cell/challenge-store.ts";
+import type { DaemonCell, DaemonCellRegistry } from "./cell/contracts.ts";
+import {
+  createInMemoryChallengeStore,
+  createRedisChallengeStore,
+  DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+} from "./cell/challenge-store.ts";
 import { createRedisCellClient } from "./cell/redis/client.ts";
 import { issueDaemonJwt } from "./authn/daemon-jwt.ts";
 import {
@@ -25,8 +30,8 @@ import {
 
 const dbUrl = getDatabaseUrl();
 const encoder = new TextEncoder();
-const redisSocket =
-  Deno.env.get("TURBOPANEL_REDIS_SOCKET") ?? "/run/turbopanel/redis.sock";
+const redisSocket = Deno.env.get("TURBOPANEL_REDIS_SOCKET") ??
+  "/run/turbopanel/redis.sock";
 
 async function redisAvailable(): Promise<boolean> {
   try {
@@ -88,7 +93,8 @@ function decodeJwtPayload(token: string): {
   typ: string;
 } {
   const [, encodedPayload] = token.split(".");
-  const padded = encodedPayload + "=".repeat((4 - (encodedPayload.length % 4)) % 4);
+  const padded = encodedPayload +
+    "=".repeat((4 - (encodedPayload.length % 4)) % 4);
   const base64 = padded.replaceAll("-", "+").replaceAll("_", "/");
   return JSON.parse(atob(base64)) as {
     sub: string;
@@ -128,7 +134,9 @@ async function readDaemonState(
 async function readServerDaemonTimestamps(
   db: ReturnType<typeof createDenoDb>,
   serverId: string,
-): Promise<{ daemonKeyLastUsedAt: string | null; lastSeenAt: string | null } | null> {
+): Promise<
+  { daemonKeyLastUsedAt: string | null; lastSeenAt: string | null } | null
+> {
   const [row] = await db
     .select({
       daemonKeyLastUsedAt: server.daemonKeyLastUsedAt,
@@ -140,7 +148,9 @@ async function readServerDaemonTimestamps(
   return row ?? null;
 }
 
-async function createTestApp(db: ReturnType<typeof createDenoDb>): Promise<Hono<AppEnv>> {
+async function createTestApp(
+  db: ReturnType<typeof createDenoDb>,
+): Promise<Hono<AppEnv>> {
   const app = new Hono<AppEnv>();
   app.use("*", (c, next) => {
     c.set("db", db);
@@ -153,6 +163,143 @@ async function createTestApp(db: ReturnType<typeof createDenoDb>): Promise<Hono<
   };
   registerDaemonApiRoutes(app, { secrets, challengeStoreProvider });
   return app;
+}
+
+function createMonitorTrackingCell(
+  serverId: string,
+  options: {
+    heartbeatResult?: { acceptedSequence: number; resyncNeeded: boolean };
+  } = {},
+): {
+  cell: DaemonCell;
+  applyMonitorHeartbeatCalls: number;
+  applyMonitorSyncCalls: number;
+} {
+  let applyMonitorHeartbeatCalls = 0;
+  let applyMonitorSyncCalls = 0;
+  const noopAsync = async () => {};
+  const cell: DaemonCell = {
+    attachDaemonSocket: async () => ({
+      connectionId: "conn",
+      lease: {
+        holder: "conn",
+        token: "conn",
+        expiresAt: new Date(Date.now() + 45_000).toISOString(),
+      },
+    }),
+    detachDaemonSocket: noopAsync,
+    heartbeat: noopAsync,
+    getSnapshot: async () => ({
+      serverId,
+      version: 0,
+      updatedAt: new Date().toISOString(),
+      connected: true,
+    }),
+    putSnapshot: async (patch) => ({
+      serverId,
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      connected: true,
+      ...patch,
+    }),
+    appendEvent: noopAsync,
+    listEvents: async () => [],
+    enqueue: async (outbound) => ({
+      serverId,
+      requestId: outbound.requestId,
+      requestKind: outbound.kind,
+      status: "queued" as const,
+      createdAt: outbound.at,
+      expiresAt: outbound.at,
+    }),
+    markSent: noopAsync,
+    handleInbound: async () => null,
+    getRequest: async () => null,
+    listRequests: async () => [],
+    waitForRequest: async () => null,
+    createRequestAndWait: async (outbound) => ({
+      serverId,
+      requestId: outbound.requestId,
+      requestKind: outbound.kind,
+      status: "expired" as const,
+      createdAt: outbound.at,
+      expiresAt: outbound.at,
+    }),
+    claimDeliveryLease: async () => null,
+    renewDeliveryLease: async () => null,
+    releaseDeliveryLease: noopAsync,
+    readOutboxBatch: async () => [],
+    ackOutbox: noopAsync,
+    prune: async () => false,
+    applyMonitorSync: async () => {
+      applyMonitorSyncCalls += 1;
+      return { acceptedSequence: 5, resyncNeeded: false };
+    },
+    applyMonitorHeartbeat: async () => {
+      applyMonitorHeartbeatCalls += 1;
+      return options.heartbeatResult ?? {
+        acceptedSequence: 1,
+        resyncNeeded: false,
+      };
+    },
+    applyMonitorTransition: async () => ({
+      acceptedSequence: 1,
+      resyncNeeded: false,
+    }),
+    getMonitorInstance: async () => null,
+    listMonitorResources: async () => [],
+    listMonitorEvents: async () => [],
+    listMonitorMetrics: async () => [],
+    drainNotificationCandidates: async () => [],
+  };
+  return {
+    cell,
+    get applyMonitorHeartbeatCalls() {
+      return applyMonitorHeartbeatCalls;
+    },
+    get applyMonitorSyncCalls() {
+      return applyMonitorSyncCalls;
+    },
+  };
+}
+
+async function createTestAppWithRegistry(
+  db: ReturnType<typeof createDenoDb>,
+  registry: DaemonCellRegistry,
+): Promise<Hono<AppEnv>> {
+  const app = new Hono<AppEnv>();
+  app.use("*", (c, next) => {
+    c.set("db", db);
+    c.set("daemonCellRegistry", registry);
+    return next();
+  });
+  const secrets = await createTestSecrets();
+  const challengeStoreProvider = {
+    enroll: createInMemoryChallengeStore(DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS),
+    auth: createInMemoryChallengeStore(DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS),
+  };
+  registerDaemonApiRoutes(app, { secrets, challengeStoreProvider });
+  return app;
+}
+
+function wrapDbWithUpdateSpy(db: ReturnType<typeof createDenoDb>): {
+  db: ReturnType<typeof createDenoDb>;
+  updateCalls: number;
+} {
+  let updateCalls = 0;
+  const originalUpdate = db.update.bind(db);
+  const spiedDb = Object.assign(db, {
+    update: (...args: Parameters<typeof db.update>) => {
+      updateCalls += 1;
+      return originalUpdate(...args);
+    },
+  });
+  return {
+    db: spiedDb,
+    get updateCalls() {
+      return updateCalls;
+    },
+  };
 }
 
 async function createRedisBackedTestApp(
@@ -176,7 +323,10 @@ async function createRedisBackedTestApp(
   return app;
 }
 
-async function issueDaemonToken(serverId: string, keyId: string): Promise<string> {
+async function issueDaemonToken(
+  serverId: string,
+  keyId: string,
+): Promise<string> {
   const secrets = await createTestSecrets();
   const issued = await issueDaemonJwt(
     { sub: serverId, kid: keyId },
@@ -230,7 +380,10 @@ async function withEnrollFixture(
     body: JSON.stringify({}),
   });
   assertEquals(challengeResponse.status, 200);
-  const challenge = await challengeResponse.json() as { challengeId: string; nonce: string };
+  const challenge = await challengeResponse.json() as {
+    challengeId: string;
+    nonce: string;
+  };
 
   const key = await generateKeyMaterial();
   const payload = buildEnrollmentPayload({
@@ -257,7 +410,10 @@ async function withEnrollFixture(
     }),
   });
   assertEquals(enrollResponse.status, 200);
-  const enrollBody = await enrollResponse.json() as { serverId: string; keyId: string };
+  const enrollBody = await enrollResponse.json() as {
+    serverId: string;
+    keyId: string;
+  };
 
   try {
     await fn({
@@ -281,13 +437,19 @@ async function withEnrollFixture(
 
 Deno.test("POST /enroll rejects invalid license", async () => {
   await withEnrollFixture(async ({ app, licenseId, machineId, hostname }) => {
-    const challengeResponse = await app.request("/api/daemon/v1/auth/challenge", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
+    const challengeResponse = await app.request(
+      "/api/daemon/v1/auth/challenge",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
     assertEquals(challengeResponse.status, 200);
-    const challenge = await challengeResponse.json() as { challengeId: string; nonce: string };
+    const challenge = await challengeResponse.json() as {
+      challengeId: string;
+      nonce: string;
+    };
     const key = await generateKeyMaterial();
     const payload = buildEnrollmentPayload({
       challengeId: challenge.challengeId,
@@ -318,13 +480,19 @@ Deno.test("POST /enroll rejects invalid license", async () => {
 
 Deno.test("POST /enroll rejects request without licenseToken", async () => {
   await withEnrollFixture(async ({ app, licenseId, machineId, hostname }) => {
-    const challengeResponse = await app.request("/api/daemon/v1/auth/challenge", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
+    const challengeResponse = await app.request(
+      "/api/daemon/v1/auth/challenge",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
     assertEquals(challengeResponse.status, 200);
-    const challenge = await challengeResponse.json() as { challengeId: string; nonce: string };
+    const challenge = await challengeResponse.json() as {
+      challengeId: string;
+      nonce: string;
+    };
     const key = await generateKeyMaterial();
     const payload = buildEnrollmentPayload({
       challengeId: challenge.challengeId,
@@ -355,31 +523,39 @@ Deno.test("POST /enroll rejects request without licenseToken", async () => {
 });
 
 Deno.test("POST /enroll rejects invalid signature", async () => {
-  await withEnrollFixture(async ({ app, licenseId, licenseToken, machineId, hostname }) => {
-    const challengeResponse = await app.request("/api/daemon/v1/auth/challenge", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
-    assertEquals(challengeResponse.status, 200);
-    const challenge = await challengeResponse.json() as { challengeId: string; nonce: string };
-    const key = await generateKeyMaterial();
+  await withEnrollFixture(
+    async ({ app, licenseId, licenseToken, machineId, hostname }) => {
+      const challengeResponse = await app.request(
+        "/api/daemon/v1/auth/challenge",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        },
+      );
+      assertEquals(challengeResponse.status, 200);
+      const challenge = await challengeResponse.json() as {
+        challengeId: string;
+        nonce: string;
+      };
+      const key = await generateKeyMaterial();
 
-    const response = await app.request("/api/daemon/v1/enroll", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        licenseId,
-        licenseToken,
-        machineId,
-        hostname,
-        publicJwk: key.publicJwk,
-        challengeId: challenge.challengeId,
-        signature: "invalid-signature",
-      }),
-    });
-    assertEquals(response.status, 403);
-  });
+      const response = await app.request("/api/daemon/v1/enroll", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          licenseId,
+          licenseToken,
+          machineId,
+          hostname,
+          publicJwk: key.publicJwk,
+          challengeId: challenge.challengeId,
+          signature: "invalid-signature",
+        }),
+      });
+      assertEquals(response.status, 403);
+    },
+  );
 });
 
 Deno.test("POST /enroll stores public key only after proof-of-possession", async () => {
@@ -414,13 +590,19 @@ Deno.test("POST /enroll re-enrollment replaces daemon key on server row", async 
     machineId,
     hostname,
   }) => {
-    const challengeResponse = await app.request("/api/daemon/v1/auth/challenge", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
+    const challengeResponse = await app.request(
+      "/api/daemon/v1/auth/challenge",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
     assertEquals(challengeResponse.status, 200);
-    const challenge = await challengeResponse.json() as { challengeId: string; nonce: string };
+    const challenge = await challengeResponse.json() as {
+      challengeId: string;
+      nonce: string;
+    };
     const newKey = await generateKeyMaterial();
     const payload = buildEnrollmentPayload({
       challengeId: challenge.challengeId,
@@ -446,7 +628,10 @@ Deno.test("POST /enroll re-enrollment replaces daemon key on server row", async 
       }),
     });
     assertEquals(enrollResponse.status, 200);
-    const body = await enrollResponse.json() as { serverId: string; keyId: string };
+    const body = await enrollResponse.json() as {
+      serverId: string;
+      keyId: string;
+    };
     assertEquals(body.serverId, serverId);
     assertEquals(body.keyId !== keyId, true);
 
@@ -477,13 +662,19 @@ Deno.test("POST /enroll re-enrollment with recovery credential from same organiz
         displayName: "Recovery Daemon API Routes Test License",
       });
 
-    const challengeResponse = await app.request("/api/daemon/v1/auth/challenge", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
+    const challengeResponse = await app.request(
+      "/api/daemon/v1/auth/challenge",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
     assertEquals(challengeResponse.status, 200);
-    const challenge = await challengeResponse.json() as { challengeId: string; nonce: string };
+    const challenge = await challengeResponse.json() as {
+      challengeId: string;
+      nonce: string;
+    };
     const newKey = await generateKeyMaterial();
     const payload = buildEnrollmentPayload({
       challengeId: challenge.challengeId,
@@ -509,7 +700,10 @@ Deno.test("POST /enroll re-enrollment with recovery credential from same organiz
       }),
     });
     assertEquals(enrollResponse.status, 200);
-    const body = await enrollResponse.json() as { serverId: string; keyId: string };
+    const body = await enrollResponse.json() as {
+      serverId: string;
+      keyId: string;
+    };
     assertEquals(body.serverId, serverId);
     assertEquals(body.keyId !== keyId, true);
 
@@ -544,13 +738,19 @@ Deno.test("POST /enroll re-enrollment with same key clears revocation", async ()
   }) => {
     await revokeDaemonKey(db, serverId);
 
-    const challengeResponse = await app.request("/api/daemon/v1/auth/challenge", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
+    const challengeResponse = await app.request(
+      "/api/daemon/v1/auth/challenge",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
     assertEquals(challengeResponse.status, 200);
-    const challenge = await challengeResponse.json() as { challengeId: string; nonce: string };
+    const challenge = await challengeResponse.json() as {
+      challengeId: string;
+      nonce: string;
+    };
     const payload = buildEnrollmentPayload({
       challengeId: challenge.challengeId,
       nonce: challenge.nonce,
@@ -575,7 +775,10 @@ Deno.test("POST /enroll re-enrollment with same key clears revocation", async ()
       }),
     });
     assertEquals(enrollResponse.status, 200);
-    const body = await enrollResponse.json() as { serverId: string; keyId: string };
+    const body = await enrollResponse.json() as {
+      serverId: string;
+      keyId: string;
+    };
     assertEquals(body.serverId, serverId);
     assertEquals(body.keyId !== keyId, true);
 
@@ -584,11 +787,14 @@ Deno.test("POST /enroll re-enrollment with same key clears revocation", async ()
     assertEquals(daemonState.key.fingerprint, key.fingerprint);
     assertEquals(daemonState.key.revokedAt, null);
 
-    const authChallengeResponse = await app.request("/api/daemon/v1/auth/challenge", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serverId, keyId: body.keyId }),
-    });
+    const authChallengeResponse = await app.request(
+      "/api/daemon/v1/auth/challenge",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ serverId, keyId: body.keyId }),
+      },
+    );
     assertEquals(authChallengeResponse.status, 200);
   });
 });
@@ -644,11 +850,14 @@ Deno.test("POST /enroll rejects re-enrollment from a different license with matc
       });
 
     try {
-      const challengeResponse = await app.request("/api/daemon/v1/auth/challenge", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
+      const challengeResponse = await app.request(
+        "/api/daemon/v1/auth/challenge",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        },
+      );
       assertEquals(challengeResponse.status, 200);
       const challenge = await challengeResponse.json() as {
         challengeId: string;
@@ -694,7 +903,9 @@ Deno.test("POST /enroll rejects re-enrollment from a different license with matc
       assertEquals(rows[0]?.licenseId, licenseId);
       assertEquals(rows[0]?.organizationId, organizationId);
     } finally {
-      await db.delete(organization).where(eq(organization.id, otherOrganizationId));
+      await db.delete(organization).where(
+        eq(organization.id, otherOrganizationId),
+      );
     }
   });
 });
@@ -722,11 +933,14 @@ Deno.test("POST /enroll rejects re-enrollment from a different organization with
 
     try {
       const otherMachineId = `other-${crypto.randomUUID()}`;
-      const challengeResponse = await app.request("/api/daemon/v1/auth/challenge", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
+      const challengeResponse = await app.request(
+        "/api/daemon/v1/auth/challenge",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        },
+      );
       assertEquals(challengeResponse.status, 200);
       const challenge = await challengeResponse.json() as {
         challengeId: string;
@@ -772,7 +986,9 @@ Deno.test("POST /enroll rejects re-enrollment from a different organization with
       assertEquals(rows[0]?.licenseId, licenseId);
       assertEquals(rows[0]?.organizationId, organizationId);
     } finally {
-      await db.delete(organization).where(eq(organization.id, otherOrganizationId));
+      await db.delete(organization).where(
+        eq(organization.id, otherOrganizationId),
+      );
     }
   });
 });
@@ -805,11 +1021,14 @@ Deno.test("POST /heartbeat succeeds with valid JWT after daemon key is replaced"
   }) => {
     const daemonToken = await issueDaemonToken(serverId, keyId);
 
-    const challengeResponse = await app.request("/api/daemon/v1/auth/challenge", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
+    const challengeResponse = await app.request(
+      "/api/daemon/v1/auth/challenge",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
     assertEquals(challengeResponse.status, 200);
     const challenge = await challengeResponse.json() as {
       challengeId: string;
@@ -890,108 +1109,114 @@ Deno.test("POST /auth/challenge rejects revoked daemon key", async () => {
 });
 
 Deno.test("POST /auth/session rejects expired or used challenge", async () => {
-  await withEnrollFixture(async ({ app, serverId, keyId, key, machineId, hostname }) => {
-    const challenge = await issueAuthChallenge(app, serverId, keyId);
-    const payload = buildAuthPayload({
-      challengeId: challenge.challengeId,
-      nonce: challenge.nonce,
-      serverId,
-      keyId,
-      machineId,
-      hostname,
-    });
-    const signature = await signPayload(key.privateKey, payload);
-
-    const first = await app.request("/api/daemon/v1/auth/session", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+  await withEnrollFixture(
+    async ({ app, serverId, keyId, key, machineId, hostname }) => {
+      const challenge = await issueAuthChallenge(app, serverId, keyId);
+      const payload = buildAuthPayload({
+        challengeId: challenge.challengeId,
+        nonce: challenge.nonce,
         serverId,
         keyId,
-        challengeId: challenge.challengeId,
-        signature,
         machineId,
         hostname,
-        at: new Date().toISOString(),
-      }),
-    });
-    assertEquals(first.status, 200);
+      });
+      const signature = await signPayload(key.privateKey, payload);
 
-    const second = await app.request("/api/daemon/v1/auth/session", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        serverId,
-        keyId,
-        challengeId: challenge.challengeId,
-        signature,
-        machineId,
-        hostname,
-        at: new Date().toISOString(),
-      }),
-    });
-    assertEquals(second.status, 400);
-  });
+      const first = await app.request("/api/daemon/v1/auth/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          serverId,
+          keyId,
+          challengeId: challenge.challengeId,
+          signature,
+          machineId,
+          hostname,
+          at: new Date().toISOString(),
+        }),
+      });
+      assertEquals(first.status, 200);
+
+      const second = await app.request("/api/daemon/v1/auth/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          serverId,
+          keyId,
+          challengeId: challenge.challengeId,
+          signature,
+          machineId,
+          hostname,
+          at: new Date().toISOString(),
+        }),
+      });
+      assertEquals(second.status, 400);
+    },
+  );
 });
 
 Deno.test("POST /auth/session rejects invalid signature", async () => {
-  await withEnrollFixture(async ({ app, serverId, keyId, machineId, hostname }) => {
-    const challenge = await issueAuthChallenge(app, serverId, keyId);
-    const response = await app.request("/api/daemon/v1/auth/session", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        serverId,
-        keyId,
-        challengeId: challenge.challengeId,
-        signature: "invalid-signature",
-        machineId,
-        hostname,
-        at: new Date().toISOString(),
-      }),
-    });
-    assertEquals(response.status, 403);
-  });
+  await withEnrollFixture(
+    async ({ app, serverId, keyId, machineId, hostname }) => {
+      const challenge = await issueAuthChallenge(app, serverId, keyId);
+      const response = await app.request("/api/daemon/v1/auth/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          serverId,
+          keyId,
+          challengeId: challenge.challengeId,
+          signature: "invalid-signature",
+          machineId,
+          hostname,
+          at: new Date().toISOString(),
+        }),
+      });
+      assertEquals(response.status, 403);
+    },
+  );
 });
 
 Deno.test("POST /auth/session returns a 15-minute JWT", async () => {
-  await withEnrollFixture(async ({ app, db, serverId, keyId, key, machineId, hostname }) => {
-    const challenge = await issueAuthChallenge(app, serverId, keyId);
-    const payload = buildAuthPayload({
-      challengeId: challenge.challengeId,
-      nonce: challenge.nonce,
-      serverId,
-      keyId,
-      machineId,
-      hostname,
-    });
-    const signature = await signPayload(key.privateKey, payload);
-    const response = await app.request("/api/daemon/v1/auth/session", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+  await withEnrollFixture(
+    async ({ app, db, serverId, keyId, key, machineId, hostname }) => {
+      const challenge = await issueAuthChallenge(app, serverId, keyId);
+      const payload = buildAuthPayload({
+        challengeId: challenge.challengeId,
+        nonce: challenge.nonce,
         serverId,
         keyId,
-        challengeId: challenge.challengeId,
-        signature,
         machineId,
         hostname,
-        at: new Date().toISOString(),
-      }),
-    });
-    assertEquals(response.status, 200);
-    const body = await response.json() as { token: string };
-    assertExists(body.token);
-    const jwtPayload = decodeJwtPayload(body.token);
-    assertEquals(jwtPayload.kid, keyId);
-    assertEquals(jwtPayload.exp - jwtPayload.iat, 900);
-    assert(typeof jwtPayload.jti === "string" && jwtPayload.jti.length > 0);
-    assertEquals("sid" in jwtPayload, false);
+      });
+      const signature = await signPayload(key.privateKey, payload);
+      const response = await app.request("/api/daemon/v1/auth/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          serverId,
+          keyId,
+          challengeId: challenge.challengeId,
+          signature,
+          machineId,
+          hostname,
+          at: new Date().toISOString(),
+        }),
+      });
+      assertEquals(response.status, 200);
+      const body = await response.json() as { token: string };
+      assertExists(body.token);
+      const jwtPayload = decodeJwtPayload(body.token);
+      assertEquals(jwtPayload.kid, keyId);
+      assertEquals(jwtPayload.exp - jwtPayload.iat, 900);
+      assert(typeof jwtPayload.jti === "string" && jwtPayload.jti.length > 0);
+      assertEquals("sid" in jwtPayload, false);
 
-    const timestamps = await readServerDaemonTimestamps(db, serverId);
-    assertExists(timestamps?.daemonKeyLastUsedAt);
-    assertExists(timestamps?.lastSeenAt);
-  });
+      const timestamps = await readServerDaemonTimestamps(db, serverId);
+      assertExists(timestamps?.daemonKeyLastUsedAt);
+      assertExists(timestamps?.lastSeenAt);
+    },
+  );
 });
 
 Deno.test("Protected route rejects missing JWT", async () => {
@@ -1076,62 +1301,64 @@ Deno.test("POST /commands/lease returns 200 with valid JWT", async () => {
 });
 
 Deno.test("Enrolled daemon can auto-refresh JWT", async () => {
-  await withEnrollFixture(async ({ app, serverId, keyId, key, machineId, hostname }) => {
-    const secrets = await createTestSecrets();
-    const nearExpiryIssued = await issueDaemonJwt(
-      { sub: serverId, kid: keyId },
-      secrets,
-      Date.now() - ((15 * 60 * 1000) - 30_000),
-    );
-    const nearExpiryPayload = decodeJwtPayload(nearExpiryIssued.token);
-    const nowBeforeRefresh = Math.floor(Date.now() / 1000);
-    const nearExpiryRemaining = nearExpiryPayload.exp - nowBeforeRefresh;
-    assert(
-      nearExpiryRemaining <= 60,
-      `expected near-expiry token to have <= 60s left, got ${nearExpiryRemaining}s`,
-    );
+  await withEnrollFixture(
+    async ({ app, serverId, keyId, key, machineId, hostname }) => {
+      const secrets = await createTestSecrets();
+      const nearExpiryIssued = await issueDaemonJwt(
+        { sub: serverId, kid: keyId },
+        secrets,
+        Date.now() - ((15 * 60 * 1000) - 30_000),
+      );
+      const nearExpiryPayload = decodeJwtPayload(nearExpiryIssued.token);
+      const nowBeforeRefresh = Math.floor(Date.now() / 1000);
+      const nearExpiryRemaining = nearExpiryPayload.exp - nowBeforeRefresh;
+      assert(
+        nearExpiryRemaining <= 60,
+        `expected near-expiry token to have <= 60s left, got ${nearExpiryRemaining}s`,
+      );
 
-    const challenge = await issueAuthChallenge(app, serverId, keyId);
-    const payload = buildAuthPayload({
-      challengeId: challenge.challengeId,
-      nonce: challenge.nonce,
-      serverId,
-      keyId,
-      machineId,
-      hostname,
-    });
-    const signature = await signPayload(key.privateKey, payload);
-    const response = await app.request("/api/daemon/v1/auth/session", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+      const challenge = await issueAuthChallenge(app, serverId, keyId);
+      const payload = buildAuthPayload({
+        challengeId: challenge.challengeId,
+        nonce: challenge.nonce,
         serverId,
         keyId,
-        challengeId: challenge.challengeId,
-        signature,
         machineId,
         hostname,
-        at: new Date().toISOString(),
-      }),
-    });
-    assertEquals(response.status, 200);
-    const body = await response.json() as { token: string };
-    const refreshedPayload = decodeJwtPayload(body.token);
-    const nowAfterRefresh = Math.floor(Date.now() / 1000);
-    const refreshedRemaining = refreshedPayload.exp - nowAfterRefresh;
-    assert(
-      refreshedRemaining > 14 * 60,
-      `expected refreshed token to have > 14 minutes left, got ${refreshedRemaining}s`,
-    );
-    assert(
-      refreshedPayload.exp > nearExpiryPayload.exp + (10 * 60),
-      "expected refresh token to meaningfully extend expiry over near-expiry token",
-    );
-    assert(
-      refreshedPayload.iat >= nearExpiryPayload.iat,
-      "expected refreshed token to be newly issued",
-    );
-  });
+      });
+      const signature = await signPayload(key.privateKey, payload);
+      const response = await app.request("/api/daemon/v1/auth/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          serverId,
+          keyId,
+          challengeId: challenge.challengeId,
+          signature,
+          machineId,
+          hostname,
+          at: new Date().toISOString(),
+        }),
+      });
+      assertEquals(response.status, 200);
+      const body = await response.json() as { token: string };
+      const refreshedPayload = decodeJwtPayload(body.token);
+      const nowAfterRefresh = Math.floor(Date.now() / 1000);
+      const refreshedRemaining = refreshedPayload.exp - nowAfterRefresh;
+      assert(
+        refreshedRemaining > 14 * 60,
+        `expected refreshed token to have > 14 minutes left, got ${refreshedRemaining}s`,
+      );
+      assert(
+        refreshedPayload.exp > nearExpiryPayload.exp + (10 * 60),
+        "expected refresh token to meaningfully extend expiry over near-expiry token",
+      );
+      assert(
+        refreshedPayload.iat >= nearExpiryPayload.iat,
+        "expected refreshed token to be newly issued",
+      );
+    },
+  );
 });
 
 Deno.test("JWT verification uses stateless token without sid claim", async () => {
@@ -1263,7 +1490,10 @@ Deno.test("POST /auth/session with Redis challenge store enforces single-use con
     }),
   });
   assertEquals(enrollResponse.status, 200);
-  const enrollBody = await enrollResponse.json() as { serverId: string; keyId: string };
+  const enrollBody = await enrollResponse.json() as {
+    serverId: string;
+    keyId: string;
+  };
 
   try {
     const authChallenge = await issueAuthChallenge(
@@ -1315,4 +1545,348 @@ Deno.test("POST /auth/session with Redis challenge store enforces single-use con
     await db.delete(organization).where(eq(organization.id, organizationId));
     await client.close();
   }
+});
+
+async function withMonitorHeartbeatFixture(
+  fn: (
+    fixture: EnrollFixture & {
+      tracking: ReturnType<typeof createMonitorTrackingCell>;
+    },
+  ) => Promise<void>,
+  options: { db?: ReturnType<typeof createDenoDb> } = {},
+): Promise<void> {
+  if (!dbUrl) {
+    console.warn(
+      "Skipping monitor heartbeat API tests: TURBOPANEL_DATABASE_URL not set",
+    );
+    return;
+  }
+
+  const db = options.db ?? createDenoDb();
+  const machineId = `machine-${crypto.randomUUID()}`;
+  const hostname = `host-${crypto.randomUUID()}`;
+  const [orgRow] = await db
+    .insert(organization)
+    .values({ displayName: "Monitor Heartbeat API Test Org" })
+    .returning({ id: organization.id });
+  const organizationId = orgRow!.id;
+  const { licenseId, licenseToken } = await createLicense(db, {
+    organizationId,
+    displayName: "Monitor Heartbeat API Test License",
+  });
+
+  const challengeResponse = await fetchChallenge(db);
+  const key = await generateKeyMaterial();
+  const enrollBody = await enrollServer(db, {
+    challengeResponse,
+    key,
+    licenseId,
+    licenseToken,
+    machineId,
+    hostname,
+  });
+
+  const tracking = createMonitorTrackingCell(enrollBody.serverId);
+  const registry: DaemonCellRegistry = {
+    getCell: () => tracking.cell,
+    listOnlineServerIds: async () => [],
+    getSnapshots: async () => new Map(),
+  };
+  const app = await createTestAppWithRegistry(db, registry);
+
+  try {
+    await fn({
+      db,
+      app,
+      organizationId,
+      licenseId,
+      licenseToken,
+      serverId: enrollBody.serverId,
+      keyId: enrollBody.keyId,
+      enrollBody,
+      key,
+      machineId,
+      hostname,
+      tracking,
+    });
+  } finally {
+    await db.delete(server).where(eq(server.id, enrollBody.serverId));
+    await db.delete(organization).where(eq(organization.id, organizationId));
+  }
+}
+
+async function fetchChallenge(_db: ReturnType<typeof createDenoDb>) {
+  const app = await createTestApp(_db);
+  const response = await app.request("/api/daemon/v1/auth/challenge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  assertEquals(response.status, 200);
+  return await response.json() as { challengeId: string; nonce: string };
+}
+
+async function enrollServer(
+  db: ReturnType<typeof createDenoDb>,
+  params: {
+    challengeResponse: { challengeId: string; nonce: string };
+    key: KeyMaterial;
+    licenseId: string;
+    licenseToken: string;
+    machineId: string;
+    hostname: string;
+  },
+): Promise<{ serverId: string; keyId: string }> {
+  const app = await createTestApp(db);
+  const payload = buildEnrollmentPayload({
+    challengeId: params.challengeResponse.challengeId,
+    nonce: params.challengeResponse.nonce,
+    licenseId: params.licenseId,
+    machineId: params.machineId,
+    hostname: params.hostname,
+    publicKeyFingerprint: params.key.fingerprint,
+  });
+  const signature = await signPayload(params.key.privateKey, payload);
+  const enrollResponse = await app.request("/api/daemon/v1/enroll", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      licenseId: params.licenseId,
+      licenseToken: params.licenseToken,
+      machineId: params.machineId,
+      hostname: params.hostname,
+      publicJwk: params.key.publicJwk,
+      challengeId: params.challengeResponse.challengeId,
+      signature,
+    }),
+  });
+  assertEquals(enrollResponse.status, 200);
+  return await enrollResponse.json() as { serverId: string; keyId: string };
+}
+
+Deno.test("POST /heartbeat with monitor payload does not write Postgres", async () => {
+  if (!dbUrl) {
+    console.warn("Skipping monitor heartbeat Postgres test: DB URL not set");
+    return;
+  }
+
+  const db = createDenoDb();
+  const spied = wrapDbWithUpdateSpy(db);
+  await withMonitorHeartbeatFixture(
+    async ({ app, serverId, keyId, tracking }) => {
+      const token = await issueDaemonToken(serverId, keyId);
+      const beforeUpdates = spied.updateCalls;
+      const response = await app.request("/api/daemon/v1/heartbeat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          hostname: "daemon-host",
+          monitor: {
+            type: "monitor.heartbeat",
+            from: "daemon",
+            serverId,
+            at: new Date().toISOString(),
+            sequence: 1,
+            instance: {},
+          },
+        }),
+      });
+      assertEquals(response.status, 200);
+      assertEquals(tracking.applyMonitorHeartbeatCalls, 1);
+      assertEquals(spied.updateCalls, beforeUpdates);
+    },
+    { db: spied.db },
+  );
+});
+
+Deno.test("POST /heartbeat routes valid monitor payload into cell", async () => {
+  await withMonitorHeartbeatFixture(
+    async ({ app, serverId, keyId, tracking }) => {
+      const token = await issueDaemonToken(serverId, keyId);
+      const response = await app.request("/api/daemon/v1/heartbeat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          monitor: {
+            type: "monitor.heartbeat",
+            from: "daemon",
+            serverId,
+            at: new Date().toISOString(),
+            sequence: 1,
+            instance: {},
+          },
+        }),
+      });
+      assertEquals(response.status, 200);
+      assertEquals(tracking.applyMonitorHeartbeatCalls, 1);
+    },
+  );
+});
+
+Deno.test("POST /heartbeat without monitor payload does not call applyMonitorHeartbeat", async () => {
+  await withMonitorHeartbeatFixture(
+    async ({ app, serverId, keyId, tracking }) => {
+      const token = await issueDaemonToken(serverId, keyId);
+      const response = await app.request("/api/daemon/v1/heartbeat", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ hostname: "daemon-host" }),
+      });
+      assertEquals(response.status, 200);
+      assertEquals(tracking.applyMonitorHeartbeatCalls, 0);
+    },
+  );
+});
+
+Deno.test("POST /heartbeat ignores invalid monitor payload without 500", async () => {
+  await withMonitorHeartbeatFixture(
+    async ({ app, serverId, keyId, tracking }) => {
+      const token = await issueDaemonToken(serverId, keyId);
+      const response = await app.request("/api/daemon/v1/heartbeat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          monitor: { type: "monitor.heartbeat", sequence: "bad" },
+        }),
+      });
+      assertEquals(response.status, 200);
+      assertEquals(tracking.applyMonitorHeartbeatCalls, 0);
+    },
+  );
+});
+
+Deno.test("POST /heartbeat returns resyncNeeded when cell rejects monitor sequence", async () => {
+  await withMonitorHeartbeatFixture(
+    async ({ serverId, keyId }) => {
+      const tracking = createMonitorTrackingCell(serverId, {
+        heartbeatResult: { acceptedSequence: 1, resyncNeeded: true },
+      });
+      const registry: DaemonCellRegistry = {
+        getCell: () => tracking.cell,
+        listOnlineServerIds: async () => [],
+        getSnapshots: async () => new Map(),
+      };
+      const db = createDenoDb();
+      const token = await issueDaemonToken(serverId, keyId);
+      const appWithTracking = await createTestAppWithRegistry(db, registry);
+      const response = await appWithTracking.request("/api/daemon/v1/heartbeat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          monitor: {
+            type: "monitor.heartbeat",
+            from: "daemon",
+            serverId,
+            at: new Date().toISOString(),
+            sequence: 99,
+            instance: {},
+          },
+        }),
+      });
+      assertEquals(response.status, 200);
+      const body = await response.json() as {
+        acceptedSequence: number;
+        resyncNeeded?: boolean;
+      };
+      assertEquals(body.acceptedSequence, 1);
+      assertEquals(body.resyncNeeded, true);
+      assertEquals(tracking.applyMonitorHeartbeatCalls, 1);
+    },
+  );
+});
+
+Deno.test("POST /heartbeat with rejected monitor payload does not write Postgres", async () => {
+  if (!dbUrl) {
+    console.warn("Skipping rejected monitor Postgres test: DB URL not set");
+    return;
+  }
+
+  const db = createDenoDb();
+  const spied = wrapDbWithUpdateSpy(db);
+  await withMonitorHeartbeatFixture(
+    async ({ serverId, keyId }) => {
+      const tracking = createMonitorTrackingCell(serverId, {
+        heartbeatResult: { acceptedSequence: 1, resyncNeeded: true },
+      });
+      const registry: DaemonCellRegistry = {
+        getCell: () => tracking.cell,
+        listOnlineServerIds: async () => [],
+        getSnapshots: async () => new Map(),
+      };
+      const appWithTracking = await createTestAppWithRegistry(spied.db, registry);
+      const token = await issueDaemonToken(serverId, keyId);
+      const beforeUpdates = spied.updateCalls;
+      const response = await appWithTracking.request("/api/daemon/v1/heartbeat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          monitor: {
+            type: "monitor.heartbeat",
+            from: "daemon",
+            serverId,
+            at: new Date().toISOString(),
+            sequence: 99,
+            instance: {},
+          },
+        }),
+      });
+      assertEquals(response.status, 200);
+      assertEquals(spied.updateCalls, beforeUpdates);
+    },
+    { db: spied.db },
+  );
+});
+
+Deno.test("POST /heartbeat routes monitor.sync fallback payload into cell", async () => {
+  await withMonitorHeartbeatFixture(
+    async ({ serverId, keyId }) => {
+      const tracking = createMonitorTrackingCell(serverId);
+      const registry: DaemonCellRegistry = {
+        getCell: () => tracking.cell,
+        listOnlineServerIds: async () => [],
+        getSnapshots: async () => new Map(),
+      };
+      const db = createDenoDb();
+      const appWithTracking = await createTestAppWithRegistry(db, registry);
+      const token = await issueDaemonToken(serverId, keyId);
+      const response = await appWithTracking.request("/api/daemon/v1/heartbeat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          monitor: {
+            type: "monitor.sync",
+            from: "daemon",
+            serverId,
+            at: new Date().toISOString(),
+            sequence: 5,
+            protocolVersion: 1,
+            instance: {},
+            resources: [],
+          },
+        }),
+      });
+      assertEquals(response.status, 200);
+      assertEquals(tracking.applyMonitorSyncCalls, 1);
+    },
+  );
 });

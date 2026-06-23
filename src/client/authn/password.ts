@@ -1,3 +1,23 @@
+export const DEFAULT_PBKDF2_ITERATIONS = 600_000
+
+const SALT_BYTES = 16
+const KEY_BYTES = 32
+
+let hashIterations = DEFAULT_PBKDF2_ITERATIONS
+
+/** Apply `TURBOPANEL_PBKDF2_ITERATIONS` at runtime boot (Workers env binding or Deno env). */
+export function configurePbkdf2Iterations(raw?: string | null): void {
+  const trimmed = raw?.trim()
+  if (!trimmed) {
+    hashIterations = DEFAULT_PBKDF2_ITERATIONS
+    return
+  }
+  const parsed = Number.parseInt(trimmed, 10)
+  hashIterations = Number.isFinite(parsed) && parsed >= 1
+    ? parsed
+    : DEFAULT_PBKDF2_ITERATIONS
+}
+
 function base64urlEncode(bytes: Uint8Array): string {
   let binary = ''
   for (let i = 0; i < bytes.length; i++) {
@@ -23,11 +43,6 @@ function base64urlDecode(encoded: string): Uint8Array | null {
     return null
   }
 }
-
-/** Workers Web Crypto PBKDF2 iteration cap; best native option (no Argon2/scrypt). */
-const ITERATIONS = 100_000
-const SALT_BYTES = 16
-const KEY_BYTES = 32
 
 async function deriveKey(
   password: string,
@@ -56,8 +71,8 @@ async function deriveKey(
 
 export async function hashPassword(password: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES))
-  const key = await deriveKey(password, salt, ITERATIONS)
-  return `$pbkdf2-sha256$${ITERATIONS}$${base64urlEncode(salt)}$${base64urlEncode(key)}`
+  const key = await deriveKey(password, salt, hashIterations)
+  return `$pbkdf2-sha256$${hashIterations}$${base64urlEncode(salt)}$${base64urlEncode(key)}`
 }
 
 export async function verifyPassword(

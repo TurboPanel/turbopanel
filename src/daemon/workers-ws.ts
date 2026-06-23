@@ -1,16 +1,16 @@
-import type { Hono } from 'hono'
-import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
-import { getDb } from '../db.ts'
-import { DAEMON_WS_PATH } from '../surfaces.ts'
-import { verifyDaemonJwt } from './authn/daemon-jwt.ts'
+import type { Hono } from "hono";
+import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
+import { getDb } from "../db.ts";
+import { DAEMON_WS_PATH } from "../surfaces.ts";
+import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
 import {
   resolveCellGeneration,
   resolveCellLocationHint,
-} from './cell/location.ts'
+} from "./cell/location.ts";
 
 export type WorkersDaemonWebSocketOptions = {
-  secrets?: DerivedSecretsConfig
-}
+  secrets?: DerivedSecretsConfig;
+};
 
 /**
  * Daemon WebSocket hub for Cloudflare Workers / wrangler dev.
@@ -23,41 +23,43 @@ export function registerWorkersDaemonWebSocket(
   options: WorkersDaemonWebSocketOptions,
 ): void {
   app.get(DAEMON_WS_PATH, async (c) => {
-    if (c.req.header('Upgrade')?.toLowerCase() !== 'websocket') {
-      return c.text('Expected WebSocket', 426)
+    if (c.req.header("Upgrade")?.toLowerCase() !== "websocket") {
+      return c.text("Expected WebSocket", 426);
     }
 
-    const authHeader = c.req.header('authorization')?.trim() ?? ''
-    const token = authHeader.startsWith('Bearer ')
-      ? authHeader.slice('Bearer '.length).trim()
-      : ''
+    const authHeader = c.req.header("authorization")?.trim() ?? "";
+    const token = authHeader.startsWith("Bearer ")
+      ? authHeader.slice("Bearer ".length).trim()
+      : "";
     if (!token || !options.secrets) {
-      return new Response('Unauthorized', { status: 401 })
+      return new Response("Unauthorized", { status: 401 });
     }
-    const payload = await verifyDaemonJwt(token, options.secrets)
+    const payload = await verifyDaemonJwt(token, options.secrets);
     if (!payload) {
-      return new Response('Unauthorized', { status: 401 })
+      return new Response("Unauthorized", { status: 401 });
     }
 
-    const db = getDb(c)
+    const db = getDb(c);
     if (db === undefined) {
-      return new Response('Database unavailable', { status: 503 })
+      return new Response("Database unavailable", { status: 503 });
     }
 
-    const serverId = payload.sub
+    const serverId = payload.sub;
     const [locationHint, generation] = await Promise.all([
       resolveCellLocationHint(db, serverId),
       resolveCellGeneration(db, serverId),
-    ])
-    const logicalName = generation > 1 ? `${serverId}:g${generation}` : serverId
+    ]);
+    const logicalName = generation > 1
+      ? `${serverId}:g${generation}`
+      : serverId;
 
-    const env = c.env as CloudflareBindings
+    const env = c.env as CloudflareBindings;
     const stub = locationHint
       ? env.DAEMON_CELL.getByName(logicalName, {
         locationHint: locationHint as DurableObjectLocationHint,
       })
-      : env.DAEMON_CELL.getByName(logicalName)
+      : env.DAEMON_CELL.getByName(logicalName);
 
-    return stub.fetch(c.req.raw)
-  })
+    return stub.fetch(c.req.raw);
+  });
 }

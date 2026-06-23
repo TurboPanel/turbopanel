@@ -1,27 +1,29 @@
-const textEncoder = new TextEncoder()
+const textEncoder = new TextEncoder();
 
 function decodeBase64Url(input: string): Uint8Array {
-  const padded = input + "=".repeat((4 - (input.length % 4)) % 4)
-  const base64 = padded.replaceAll("-", "+").replaceAll("_", "/")
-  const binary = atob(base64)
-  const bytes = new Uint8Array(binary.length)
+  const padded = input + "=".repeat((4 - (input.length % 4)) % 4);
+  const base64 = padded.replaceAll("-", "+").replaceAll("_", "/");
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.charCodeAt(i)
+    bytes[i] = binary.charCodeAt(i);
   }
-  return bytes
+  return bytes;
 }
 
 function encodeHex(bytes: Uint8Array): string {
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
 }
 
 export function buildEnrollmentPayload(params: {
-  challengeId: string
-  nonce: string
-  licenseId: string
-  machineId: string
-  hostname: string
-  publicKeyFingerprint: string
+  challengeId: string;
+  nonce: string;
+  licenseId: string;
+  machineId: string;
+  hostname: string;
+  publicKeyFingerprint: string;
 }): string {
   return [
     "turbopanel-daemon-enroll-v1",
@@ -31,16 +33,16 @@ export function buildEnrollmentPayload(params: {
     params.machineId,
     params.hostname,
     params.publicKeyFingerprint,
-  ].join("\n")
+  ].join("\n");
 }
 
 export function buildAuthPayload(params: {
-  challengeId: string
-  nonce: string
-  serverId: string
-  keyId: string
-  machineId: string
-  hostname: string
+  challengeId: string;
+  nonce: string;
+  serverId: string;
+  keyId: string;
+  machineId: string;
+  hostname: string;
 }): string {
   return [
     "turbopanel-daemon-auth-v1",
@@ -50,20 +52,20 @@ export function buildAuthPayload(params: {
     params.keyId,
     params.machineId,
     params.hostname,
-  ].join("\n")
+  ].join("\n");
 }
 
 /**
  * @deprecated Use `buildAuthPayload()` for daemon auth payloads.
  */
 export function buildCanonicalPayload(params: {
-  challengeId: string
-  nonce: string
-  serverId?: string
-  keyId?: string
-  machineId?: string
-  hostname?: string
-  fingerprint?: string
+  challengeId: string;
+  nonce: string;
+  serverId?: string;
+  keyId?: string;
+  machineId?: string;
+  hostname?: string;
+  fingerprint?: string;
 }): string {
   // Legacy callers may still pass `fingerprint` from the pre-split helper.
   // Keep that path working by mapping it to auth `keyId`.
@@ -74,7 +76,7 @@ export function buildCanonicalPayload(params: {
     keyId: params.keyId ?? params.fingerprint ?? "",
     machineId: params.machineId ?? "",
     hostname: params.hostname ?? "",
-  })
+  });
 }
 
 export async function computePublicKeyFingerprint(
@@ -84,13 +86,13 @@ export async function computePublicKeyFingerprint(
     crv: publicJwk.crv,
     kty: publicJwk.kty,
     x: publicJwk.x,
-  }
-  const canonicalJson = JSON.stringify(canonical)
+  };
+  const canonicalJson = JSON.stringify(canonical);
   const digest = await crypto.subtle.digest(
     "SHA-256",
     textEncoder.encode(canonicalJson),
-  )
-  return encodeHex(new Uint8Array(digest))
+  );
+  return encodeHex(new Uint8Array(digest));
 }
 
 export async function verifyDaemonSignature(
@@ -105,15 +107,15 @@ export async function verifyDaemonSignature(
       { name: "Ed25519" },
       false,
       ["verify"],
-    )
-    const signatureBytes = new Uint8Array(decodeBase64Url(signatureB64url))
+    );
+    const signatureBytes = new Uint8Array(decodeBase64Url(signatureB64url));
     return await crypto.subtle.verify(
       { name: "Ed25519" },
       key,
       signatureBytes,
       textEncoder.encode(payload),
-    )
+    );
   } catch {
-    return false
+    return false;
   }
 }

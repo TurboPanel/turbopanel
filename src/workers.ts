@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import type { DerivedSecretsConfig } from './client/authn/secrets.ts'
+import { configurePbkdf2Iterations } from './client/authn/password.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from './client/authn/secrets.ts'
 import { createApp, type AppEnv } from './app'
 import { createDurableObjectDaemonCellRegistry } from './daemon/cell/do-registry.ts'
@@ -8,6 +9,7 @@ import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
 import { createWorkersDb, type DaemonChallengeStoreProvider } from './db'
 import { registerWorkersDaemonWebSocket } from './daemon/workers-ws.ts'
 import { DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS } from './daemon/authn/challenge.ts'
+import { DAEMON_PING_MS } from './daemon/cell/protocol.ts'
 import { createNoopQueue } from './lib/email/noop-queue.ts'
 import { createWorkersMailgunQueue } from './lib/email/mailgun/workers-queue.ts'
 import type { EmailQueue } from './lib/email/types.ts'
@@ -23,6 +25,7 @@ let cachedDaemonCellRegistryFactory:
   | ((env: CloudflareBindings, db?: ReturnType<typeof createWorkersDb>) =>
     ReturnType<typeof createDurableObjectDaemonCellRegistry>)
   | null = null
+let lastControlPlaneMaintenanceAt = 0
 
 function createWorkersChallengeStoreProvider(
   env: CloudflareBindings,
@@ -41,6 +44,7 @@ function createWorkersChallengeStoreProvider(
 }
 
 async function initWorkerApp(env: CloudflareBindings) {
+  configurePbkdf2Iterations(env.TURBOPANEL_PBKDF2_ITERATIONS)
   const secretsConfig = parseSecretsEnv(
     env.TURBOPANEL_SECRET,
     env.TURBOPANEL_SECRETS,
@@ -93,10 +97,19 @@ export default {
         c.set('postgresConnectionString', postgresConnectionString)
       }
       if (cachedDaemonCellRegistryFactory) {
-        c.set(
-          'daemonCellRegistry',
-          cachedDaemonCellRegistryFactory(env, db),
-        )
+        const registry = cachedDaemonCellRegistryFactory(env, db)
+        c.set('daemonCellRegistry', registry)
+        if (db && 'maintain' in registry) {
+          const now = Date.now()
+          if (now - lastControlPlaneMaintenanceAt >= DAEMON_PING_MS) {
+            lastControlPlaneMaintenanceAt = now
+            ctx.waitUntil(
+              registry.maintain(db).catch((err) => {
+                console.error('control-plane maintenance error:', err)
+              }),
+            )
+          }
+        }
       }
       c.set('challengeStoreProvider', createWorkersChallengeStoreProvider(env))
       await next()

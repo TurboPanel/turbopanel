@@ -2,6 +2,7 @@ import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import { isMissingRelationError } from '../../db-errors.ts'
 import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
+import { resolveFleetPresence } from '../../daemon/cell/fleet-presence.ts'
 import {
   grant,
   account,
@@ -23,6 +24,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export const DEFAULT_ORGANIZATION_NAME = 'Default Organization'
 export const DEFAULT_TEAM_NAME = 'Default Team'
+export const COLOCATED_SERVER_DISPLAY_NAME = 'This server'
 
 export const IS_SIGNUP_ENABLED_CONFIG_KEY = 'IS_SIGNUP_ENABLED'
 
@@ -281,12 +283,15 @@ async function findDefaultInstalledOrganizationId(
 }
 
 async function findColocatedServerIdFromRegistry(
+  db: Db,
   registry: DaemonCellRegistry,
 ): Promise<string | null> {
   const onlineIds = await registry.listOnlineServerIds()
+  if (onlineIds.length === 0) return null
+  const presence = await resolveFleetPresence(db, registry, onlineIds)
   for (const id of onlineIds) {
-    const snapshot = await registry.getCell(id).getSnapshot()
-    if (snapshot.remoteAddress === '__direct__') {
+    const live = presence.get(id)
+    if (live?.directAttach && live.connected) {
       return id
     }
   }
@@ -294,13 +299,16 @@ async function findColocatedServerIdFromRegistry(
 }
 
 async function findColocatedHostnameFromRegistry(
+  db: Db,
   registry: DaemonCellRegistry,
 ): Promise<string | null> {
   const onlineIds = await registry.listOnlineServerIds()
+  if (onlineIds.length === 0) return null
+  const presence = await resolveFleetPresence(db, registry, onlineIds)
   for (const id of onlineIds) {
-    const snapshot = await registry.getCell(id).getSnapshot()
-    if (snapshot.remoteAddress === '__direct__' && snapshot.hostname) {
-      return snapshot.hostname
+    const live = presence.get(id)
+    if (live?.directAttach && live.connected && live.hostname) {
+      return live.hostname
     }
   }
   return null
@@ -316,7 +324,7 @@ export async function resolveColocatedServerId(
   registry?: DaemonCellRegistry,
 ): Promise<string | null> {
   if (registry) {
-    const fromRegistry = await findColocatedServerIdFromRegistry(registry)
+    const fromRegistry = await findColocatedServerIdFromRegistry(db, registry)
     if (fromRegistry) return fromRegistry
   }
 
@@ -336,7 +344,7 @@ export async function resolveColocatedServerId(
 
   let hostname: string | null = null
   if (registry) {
-    hostname = await findColocatedHostnameFromRegistry(registry)
+    hostname = await findColocatedHostnameFromRegistry(db, registry)
   }
   if (!hostname && typeof Deno !== 'undefined') {
     try {
@@ -397,9 +405,18 @@ export async function assignColocatedDaemonToOrganization(
     return false
   }
 
+  const now = nowTs()
+  await db
+    .update(server)
+    .set({
+      displayName: sql`coalesce(${server.displayName}, ${COLOCATED_SERVER_DISPLAY_NAME})`,
+      updatedAt: now,
+    })
+    .where(eq(server.id, serverId))
+
   const updated = await db
     .update(server)
-    .set({ organizationId, updatedAt: nowTs() })
+    .set({ organizationId, updatedAt: now })
     .where(and(eq(server.id, serverId), isNull(server.organizationId)))
     .returning({ id: server.id })
 
@@ -479,7 +496,7 @@ export async function ensureColocatedLicenseCredentialsOnDisk(
 
   const { licenseId, licenseToken } = await createLicense(db, {
     organizationId,
-    displayName: 'Colocated server',
+    displayName: COLOCATED_SERVER_DISPLAY_NAME,
   })
   await persistColocatedLicenseCredentials(licenseId, licenseToken)
   compatLogInfo(
@@ -599,7 +616,7 @@ export async function completeInstanceInstall(
 
     const { licenseId, licenseToken } = await createLicense(tx, {
       organizationId,
-      displayName: 'Colocated server',
+      displayName: COLOCATED_SERVER_DISPLAY_NAME,
     })
 
     return { organizationId, userId, licenseId, licenseToken }

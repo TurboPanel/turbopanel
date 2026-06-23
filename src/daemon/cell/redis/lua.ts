@@ -5,7 +5,7 @@ if redis.call("GET", KEYS[1]) == ARGV[1] then
 else
   return 0
 end
-`
+`;
 
 /** Atomically renew a lease only when the current token matches. */
 export const COMPARE_AND_RENEW = `
@@ -14,7 +14,7 @@ if redis.call("GET", KEYS[1]) == ARGV[1] then
 else
   return 0
 end
-`
+`;
 
 /** Read, validate, and delete a challenge hash in one round trip. */
 export const CONSUME_CHALLENGE = `
@@ -48,7 +48,7 @@ end
 
 redis.call("DEL", KEYS[1])
 return { data["nonce"], data["at"] }
-`
+`;
 
 /**
  * Demote stale daemon socket presence when the Redis lease has expired but
@@ -84,4 +84,4 @@ if connectionId ~= "" then
   return { 1, connectionId }
 end
 return 1
-`
+`;

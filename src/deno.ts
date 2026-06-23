@@ -1,4 +1,5 @@
 import type { Hono } from 'hono'
+import { configurePbkdf2Iterations } from './client/authn/password.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from './client/authn/secrets.ts'
 import { createApp } from './app.ts'
 import { createDenoDb } from './db.ts'
@@ -32,6 +33,8 @@ import {
   prepareInstanceSocket,
   resolveInstanceSocket,
 } from './server-paths.ts'
+configurePbkdf2Iterations(Deno.env.get('TURBOPANEL_PBKDF2_ITERATIONS'))
+
 const developerSurface = isDeveloperSurfaceEnabled()
 const db = createDenoDb()
 
@@ -110,7 +113,7 @@ const socketPath = resolveInstanceSocket()
 
 const abort = new AbortController()
 const maintenanceTimer = setInterval(() => {
-  void daemonCellRegistry.maintain().catch((err) => {
+  void daemonCellRegistry.maintain(db).catch((err) => {
     logInfo('daemon-cell', `maintenance error: ${String(err)}`)
   })
 }, DAEMON_PING_MS)

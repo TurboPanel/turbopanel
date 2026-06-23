@@ -11,4 +11,5 @@ interface CloudflareBindings {
   TURBOPANEL_MAILGUN_DOMAIN?: string
   TURBOPANEL_SYSTEM_EMAIL_FROM?: string
   TURBOPANEL_BASE_URL?: string
+  TURBOPANEL_PBKDF2_ITERATIONS?: string
 }

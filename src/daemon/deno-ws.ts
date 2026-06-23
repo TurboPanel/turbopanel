@@ -1,113 +1,126 @@
-import type { Hono } from 'hono'
-import { upgradeWebSocket } from 'hono/deno'
-import type { DaemonCellRegistry } from './cell/contracts.ts'
+import type { Hono } from "hono";
+import { upgradeWebSocket } from "hono/deno";
+import type { DaemonCellRegistry } from "./cell/contracts.ts";
 import {
   DAEMON_INBOUND_ALLOWED,
+  type DaemonMessage,
   generateDeliveryId,
   generateRequestId,
   outboundEnvelopeToWireMessage,
   parseDaemonMessage,
   wireMessageToInboundEnvelope,
-  type DaemonMessage,
-} from './cell/protocol.ts'
-import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
-import { tryAssignColocatedDaemonToInstalledOrganization } from '../client/authn/install-state.ts'
-import type { Db } from '../db.ts'
-import { compatLogError, compatLogInfo, compatLogWarn } from '../log-compat.ts'
+} from "./cell/protocol.ts";
+import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
+import { tryAssignColocatedDaemonToInstalledOrganization } from "../client/authn/install-state.ts";
+import type { Db } from "../db.ts";
+import { compatLogError, compatLogInfo, compatLogWarn } from "../log-compat.ts";
+import {
+  onDaemonConnected,
+  onMonitorMessageApplied,
+} from "./cell/control-plane-monitor.ts";
+import { incrementMonitorCounter } from "./cell/monitor-observability.ts";
 import {
   CLIENT_WS_PATH,
   DAEMON_WS_PATH,
   DEVELOPER_WS_PATH,
-} from '../surfaces.ts'
-import { touchDaemonKeyLastUsed } from './authn/server-identity-db.ts'
-import { verifyDaemonJwt } from './authn/daemon-jwt.ts'
+} from "../surfaces.ts";
+import { touchDaemonKeyLastUsed } from "./authn/server-identity-db.ts";
+import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
 
 export type DaemonWebSocketOptions = {
-  developerSurface?: boolean
-  db?: Db
-  secrets?: DerivedSecretsConfig
-  daemonCellRegistry?: DaemonCellRegistry
-}
+  developerSurface?: boolean;
+  db?: Db;
+  secrets?: DerivedSecretsConfig;
+  daemonCellRegistry?: DaemonCellRegistry;
+};
 
 export function registerDaemonWebSocket(
   app: Hono,
   options: DaemonWebSocketOptions,
 ): void {
   app.get(DAEMON_WS_PATH, async (c, next) => {
-    const authHeader = c.req.header('authorization')?.trim() ?? ''
-    const token = authHeader.startsWith('Bearer ')
-      ? authHeader.slice('Bearer '.length).trim()
-      : ''
+    const authHeader = c.req.header("authorization")?.trim() ?? "";
+    const token = authHeader.startsWith("Bearer ")
+      ? authHeader.slice("Bearer ".length).trim()
+      : "";
     if (!token || !options.secrets) {
-      return c.json({ ok: false, error: 'unauthorized' }, 401)
+      return c.json({ ok: false, error: "unauthorized" }, 401);
     }
-    const payload = await verifyDaemonJwt(token, options.secrets)
+    const payload = await verifyDaemonJwt(token, options.secrets);
     if (!payload) {
-      return c.json({ ok: false, error: 'unauthorized' }, 401)
+      return c.json({ ok: false, error: "unauthorized" }, 401);
     }
 
-    const db = options.db
+    const db = options.db;
     if (!db) {
-      return c.json({ ok: false, error: 'Database unavailable' }, 503)
+      return c.json({ ok: false, error: "Database unavailable" }, 503);
     }
 
-    const registry = options.daemonCellRegistry
+    const registry = options.daemonCellRegistry;
     if (!registry) {
-      return c.json({ ok: false, error: 'Daemon cell registry unavailable' }, 503)
+      return c.json(
+        { ok: false, error: "Daemon cell registry unavailable" },
+        503,
+      );
     }
 
     return upgradeWebSocket((c) => {
-      const remoteAddress = c.req.header('x-real-ip')?.trim() ||
-        c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
-      const identityAddress = remoteAddress ?? '__direct__'
-      const connectedAt = new Date().toISOString()
+      const remoteAddress = c.req.header("x-real-ip")?.trim() ||
+        c.req.header("x-forwarded-for")?.split(",")[0]?.trim();
+      const identityAddress = remoteAddress ?? "__direct__";
+      const connectedAt = new Date().toISOString();
 
-      let connectionId: string | undefined
-      let leaseToken: string | undefined
-      let pumpAbort = false
-      let pingTimer: ReturnType<typeof setInterval> | undefined
-      let keyTouched = false
+      let connectionId: string | undefined;
+      let leaseToken: string | undefined;
+      let pumpAbort = false;
+      let pingTimer: ReturnType<typeof setInterval> | undefined;
+      let keyTouched = false;
 
       const touchKey = () => {
-        if (keyTouched) return
-        keyTouched = true
+        if (keyTouched) return;
+        keyTouched = true;
         touchDaemonKeyLastUsed(db, payload.sub).catch((err) => {
           compatLogWarn(
-            'ws',
+            "ws",
             `failed to touch daemon key for ${payload.sub}: ${String(err)}`,
-          )
-        })
-      }
+          );
+        });
+      };
 
       return {
         async onOpen(_event, ws) {
-          const cell = registry.getCell(payload.sub)
+          const cell = registry.getCell(payload.sub);
           const attached = await cell.attachDaemonSocket({
             keyId: payload.kid,
             hostname: undefined,
             remoteAddress: identityAddress,
             connectedAt,
-          })
-          connectionId = attached.connectionId
-          leaseToken = attached.lease.token
+          });
+          connectionId = attached.connectionId;
+          leaseToken = attached.lease.token;
+
+          await onDaemonConnected(db, payload.sub, cell, connectedAt);
 
           compatLogInfo(
-            'ws',
+            "ws",
             `daemon connected: ${connectionId}${
-              remoteAddress ? ` from ${remoteAddress}` : ''
+              remoteAddress ? ` from ${remoteAddress}` : ""
             }`,
-          )
+          );
 
-          touchKey()
+          touchKey();
 
-          if (identityAddress === '__direct__') {
+          if (identityAddress === "__direct__") {
             void tryAssignColocatedDaemonToInstalledOrganization(db, registry)
               .catch((err) => {
-                compatLogError('ws', `failed to assign colocated server: ${err}`)
-              })
+                compatLogError(
+                  "ws",
+                  `failed to assign colocated server: ${err}`,
+                );
+              });
           }
 
-          const consumer = `ws:${connectionId}`
+          const consumer = `ws:${connectionId}`;
 
           const outboxPump = async () => {
             while (!pumpAbort) {
@@ -116,121 +129,200 @@ export function registerDaemonWebSocket(
                   consumer,
                   count: 50,
                   blockMs: 15_000,
-                })
+                });
                 for (const envelope of batch) {
-                  const wireMsg = outboundEnvelopeToWireMessage(envelope)
-                  ws.send(JSON.stringify(wireMsg))
-                  await cell.ackOutbox([envelope.deliveryId], consumer)
-                  await cell.markSent(envelope.deliveryId, connectionId!)
+                  const wireMsg = outboundEnvelopeToWireMessage(envelope);
+                  ws.send(JSON.stringify(wireMsg));
+                  await cell.ackOutbox([envelope.deliveryId], consumer);
+                  await cell.markSent(envelope.deliveryId, connectionId!);
                 }
                 if (batch.length > 0) {
                   await cell.putSnapshot({
                     lastOutboundAt: new Date().toISOString(),
-                  })
+                  });
                 }
               } catch (err) {
                 if (!pumpAbort) {
-                  compatLogWarn('ws', `outbox pump error: ${String(err)}`)
+                  compatLogWarn("ws", `outbox pump error: ${String(err)}`);
                 }
               }
             }
-          }
-          void outboxPump()
+          };
+          void outboxPump();
 
           pingTimer = setInterval(() => {
             void cell.enqueue({
-              kind: 'ping',
+              kind: "ping",
               deliveryId: generateDeliveryId(),
               requestId: generateRequestId(),
               at: new Date().toISOString(),
-            })
-          }, 15_000)
+            });
+          }, 15_000);
         },
-        onMessage(event, ws) {
-          const raw = typeof event.data === 'string'
+        async onMessage(event, ws) {
+          const raw = typeof event.data === "string"
             ? event.data
-            : String(event.data)
-          const message = parseDaemonMessage(raw)
+            : String(event.data);
+          const message = parseDaemonMessage(raw);
           if (!message) {
-            compatLogWarn('ws', 'ignored non-JSON message from daemon')
-            return
+            compatLogWarn("ws", "ignored non-JSON message from daemon");
+            return;
           }
 
-          compatLogInfo('ws', `from ${connectionId ?? 'unknown'}: ${message.type}`)
+          compatLogInfo(
+            "ws",
+            `from ${connectionId ?? "unknown"}: ${message.type}`,
+          );
 
           if (!DAEMON_INBOUND_ALLOWED.has(message.type)) {
             compatLogWarn(
-              'ws',
+              "ws",
               `ignored disallowed message type ${message.type} from ${
-                connectionId ?? 'unknown'
+                connectionId ?? "unknown"
               }`,
-            )
-            return
+            );
+            return;
           }
 
-          const cell = registry.getCell(payload.sub)
+          const cell = registry.getCell(payload.sub);
 
-          if (message.type === 'ping') {
+          if (message.type === "ping") {
             const pong: DaemonMessage = {
-              type: 'pong',
+              type: "pong",
               id: message.id,
               at: new Date().toISOString(),
-            }
-            ws.send(JSON.stringify(pong))
+            };
+            ws.send(JSON.stringify(pong));
             if (connectionId) {
-              void cell.heartbeat({ connectionId })
-              void cell.putSnapshot({ lastInboundAt: message.at })
+              void cell.heartbeat({ connectionId });
+              void cell.putSnapshot({ lastInboundAt: message.at });
             }
-            touchKey()
-            return
+            touchKey();
+            return;
           }
 
-          const envelope = wireMessageToInboundEnvelope(message)
+          const envelope = wireMessageToInboundEnvelope(message);
+          if (
+            envelope?.kind === "monitor-sync" ||
+            envelope?.kind === "monitor-heartbeat" ||
+            envelope?.kind === "monitor-transition"
+          ) {
+            let acceptedSequence = 0;
+            let resyncNeeded = false;
+            if (envelope.kind === "monitor-sync") {
+              incrementMonitorCounter("monitorFullSync");
+              const result = await cell.applyMonitorSync(envelope);
+              acceptedSequence = result.acceptedSequence;
+              resyncNeeded = result.resyncNeeded;
+              if (!result.resyncNeeded) {
+                await onMonitorMessageApplied(
+                  db,
+                  payload.sub,
+                  cell,
+                  "monitor-sync",
+                  envelope,
+                );
+              }
+            } else if (envelope.kind === "monitor-heartbeat") {
+              const result = await cell.applyMonitorHeartbeat(envelope);
+              acceptedSequence = result.acceptedSequence;
+              resyncNeeded = result.resyncNeeded;
+              if (!result.resyncNeeded) {
+                await onMonitorMessageApplied(
+                  db,
+                  payload.sub,
+                  cell,
+                  "monitor-heartbeat",
+                  envelope,
+                );
+              }
+            } else {
+              const result = await cell.applyMonitorTransition(envelope);
+              acceptedSequence = result.acceptedSequence;
+              resyncNeeded = result.resyncNeeded;
+              if (!result.resyncNeeded) {
+                await onMonitorMessageApplied(
+                  db,
+                  payload.sub,
+                  cell,
+                  "monitor-transition",
+                  envelope,
+                );
+              }
+            }
+
+            await cell.putSnapshot({
+              lastHeartbeatAt: new Date().toISOString(),
+            });
+
+            const ackWire = outboundEnvelopeToWireMessage({
+              kind: "monitor-ack",
+              serverId: payload.sub,
+              acceptedSequence,
+              resyncNeeded: resyncNeeded || undefined,
+              deliveryId: generateDeliveryId(),
+              requestId: generateRequestId(),
+              at: new Date().toISOString(),
+            });
+            ws.send(JSON.stringify(ackWire));
+
+            compatLogInfo(
+              "ws",
+              `monitor ack for ${payload.sub}: acceptedSequence=${acceptedSequence}${
+                resyncNeeded ? ", resyncNeeded" : ""
+              }`,
+            );
+            touchKey();
+            return;
+          }
+
           if (envelope) {
-            void cell.handleInbound(envelope)
-            void cell.putSnapshot({ lastInboundAt: message.at })
+            void cell.handleInbound(envelope);
+            void cell.putSnapshot({ lastInboundAt: message.at });
           }
 
-          if (message.type === 'pong' && connectionId) {
-            void cell.heartbeat({ connectionId })
+          if (message.type === "pong" && connectionId) {
+            void cell.heartbeat({ connectionId });
           }
 
-          touchKey()
+          touchKey();
         },
         onClose() {
-          pumpAbort = true
-          if (pingTimer) clearInterval(pingTimer)
+          pumpAbort = true;
+          if (pingTimer) clearInterval(pingTimer);
           if (connectionId && leaseToken) {
             void registry.getCell(payload.sub).detachDaemonSocket({
               connectionId,
               leaseToken,
-              reason: 'closed',
+              reason: "closed",
               closedAt: new Date().toISOString(),
-            })
-            compatLogInfo('ws', `daemon disconnected: ${connectionId}`)
+            }).then(() => {
+              compatLogInfo("ws", `daemon disconnected: ${connectionId}`);
+            });
           }
         },
         onError() {
-          pumpAbort = true
-          if (pingTimer) clearInterval(pingTimer)
+          pumpAbort = true;
+          if (pingTimer) clearInterval(pingTimer);
           if (connectionId && leaseToken) {
             void registry.getCell(payload.sub).detachDaemonSocket({
               connectionId,
               leaseToken,
-              reason: 'closed',
+              reason: "error",
               closedAt: new Date().toISOString(),
-            })
-            compatLogInfo('ws', `daemon disconnected: ${connectionId}`)
+            }).then(() => {
+              compatLogInfo("ws", `daemon disconnected: ${connectionId}`);
+            });
           }
         },
-      }
-    })(c, next)
-  })
+      };
+    })(c, next);
+  });
 
   if (options.developerSurface) {
-    registerStubWebSocket(app, DEVELOPER_WS_PATH, 'developer')
+    registerStubWebSocket(app, DEVELOPER_WS_PATH, "developer");
   }
-  registerStubWebSocket(app, CLIENT_WS_PATH, 'client')
+  registerStubWebSocket(app, CLIENT_WS_PATH, "client");
 }
 
 /**
@@ -244,11 +336,11 @@ function registerStubWebSocket(app: Hono, path: string, surface: string): void {
     upgradeWebSocket(() => ({
       onOpen(_event, ws) {
         ws.send(JSON.stringify({
-          type: 'hello',
+          type: "hello",
           surface,
           at: new Date().toISOString(),
-        }))
+        }));
       },
     })),
-  )
+  );
 }

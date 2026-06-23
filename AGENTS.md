@@ -216,19 +216,27 @@ Server nodes are tracked by a **Daemon Cell** abstraction keyed by `serverId`. T
 
 Postgres remains canonical for business data (`server`). The cell is the low-latency hot projection and coordination layer.
 
+**Monitoring storage:** the cell is the live source of truth for machine and service state. Dedicated tables/keys — `monitor_instance`, `monitor_resource`, `monitor_metric_minute`, `monitor_event`, `monitor_alert`, `monitor_deadline` — hold current resource state (latest only), minute-bucket metrics (72h rolling window), transition event history (bounded), alert dedupe/cooldown state, and scheduled offline/cooldown deadlines. `DaemonCellSnapshot` remains connection-oriented (presence, liveness timestamps) — it does not hold the full resource graph.
+
+**Monitoring message types:** `monitor.sync` (full baseline on connect), `monitor.heartbeat` (60s delta), `monitor.transition` (focused single-resource event), `monitor.ack` (cell → daemon, with `acceptedSequence` and optional `resyncNeeded`). Defined in `src/daemon/cell/protocol.ts` and `src/daemon/cell/monitor-contracts.ts`.
+
+**Offline deadline:** the cell schedules an offline deadline ~150s after the last monitor heartbeat. Workers: single DO alarm processes the nearest deadline and reschedules. Redis: deadline sorted set processed by `maintain()` in the registry loop.
+
+**Sparse Postgres projection:** ordinary heartbeats do **not** write Postgres. `server.daemon.projection` is updated only on: online/offline transitions, meaningful service/project transitions, daemon identity changes, and slow summary refreshes (capped at 15 minutes). `server.lastSeenAt` is updated only on liveness transitions.
+
+**Cheap fleet index:** `listOnlineServerIds()` reads the Redis online set (Deno) or the sparse `server.daemon.projection.connected` field (Workers) — it does not fan out across all cells.
+
 **WS upgrade flow:** JWT verified in the main isolate/process → cell `attachDaemonSocket` acquires the single-writer lease → outbox pump loop (`readOutboxBatch` → `ws.send` → `ackOutbox`) runs until close → `detachDaemonSocket` releases the lease.
 
 **Co-located daemon** (`__direct__`): stored in cell meta (`remoteAddress = '__direct__'`) so `tryAssignColocatedDaemonToInstalledOrganization` and tunnel routing still work.
 
 **Challenge stores:** enrollment and auth challenges use `createRedisChallengeStore` (Deno) or `createDurableObjectChallengeStore` (Workers) — single-use, hard TTL, no in-process Maps.
 
-**Heartbeat:** `POST /api/daemon/v1/heartbeat` calls `cell.heartbeat()` (renews the Redis lease / updates DO meta) then `touchServerMetadataFromSnapshot` to write through `server.last_seen_at` and operational metadata fields to Postgres.
-
 **`DAEMON_INBOUND_ALLOWED`** is defined in `src/daemon/cell/protocol.ts` (not `hub.ts`).
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `POST /api/daemon/v1/heartbeat` | daemon JWT | Daemon liveness signal; updates `server.last_seen_at` |
+| `POST /api/daemon/v1/heartbeat` | daemon JWT | degraded fallback ingestion only; routes monitor payloads into the cell but **never writes Postgres** on every call |
 | `POST /api/daemon/v1/commands/lease` | daemon JWT | Poll for pending commands (stub — returns `{ commands: [] }`) |
 
 - No `version` push / auto-update: the daemon never self-updates.
@@ -251,7 +259,7 @@ The instance uses a **custom PAM-style auth model** built entirely on the **Web 
 
 #### Password hashing
 
-Credential-account passwords use **PBKDF2-HMAC-SHA256** via `crypto.subtle` (`src/client/authn/password.ts`). This is the strongest password-hashing primitive available in native Workers/Deno Web Crypto — Argon2 and scrypt are not exposed, and WASM Argon2 is heavier and awkward in Workers. Stored format: `$pbkdf2-sha256$<iterations>$<base64url-salt>$<base64url-hash>` (100k iterations for new hashes — Workers PBKDF2 cap; iteration count is embedded so older hashes still verify). Verification uses constant-time byte comparison. Do not use plain SHA-256 for passwords.
+Credential-account passwords use **PBKDF2-HMAC-SHA256** via `crypto.subtle` (`src/client/authn/password.ts`). This is the strongest password-hashing primitive available in native Workers/Deno Web Crypto — Argon2 and scrypt are not exposed, and WASM Argon2 is heavier and awkward in Workers. Stored format: `$pbkdf2-sha256$<iterations>$<base64url-salt>$<base64url-hash>`. New hashes use `TURBOPANEL_PBKDF2_ITERATIONS` (default **600,000** when unset); the iteration count is embedded so existing hashes still verify. Verification uses constant-time byte comparison. Do not use plain SHA-256 for passwords.
 
 **Daemon key authentication:** daemon auth now starts with HTTP-first enrollment/session issuance, then uses a short-lived stateless daemon JWT for protected daemon REST and daemon WebSocket upgrade authentication.
 - **Enrollment challenge + proof**: daemon requests `POST /api/daemon/v1/auth/challenge` (no credentials), signs `buildEnrollmentPayload()` (`turbopanel-daemon-enroll-v1` canonical format), then calls `POST /api/daemon/v1/enroll` with `{ licenseId, licenseToken, publicJwk, challengeId, signature, ... }`. The instance verifies license + proof-of-possession, resolves/creates `server`, and stores the daemon public key on the server row.

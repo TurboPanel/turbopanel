@@ -1,7 +1,10 @@
-import { eq } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
-import { server } from '../../lib/db/schema.ts'
-import type { ServerMetadata, ServerOptions } from '../../lib/db/server-metadata.ts'
+import { eq } from "drizzle-orm";
+import type { Db } from "../../db.ts";
+import { server } from "../../lib/db/schema.ts";
+import type {
+  ServerMetadata,
+  ServerOptions,
+} from "../../lib/db/server-metadata.ts";
 
 /**
  * Precedence when resolving cell fields: `server.options` overrides
@@ -12,36 +15,36 @@ function resolveCellLocationHintFromRow(
   metadata: ServerMetadata | null | undefined,
   options: ServerOptions | null | undefined,
 ): string | undefined {
-  return options?.cellLocationHint ?? metadata?.cellLocationHint
+  return options?.cellLocationHint ?? metadata?.cellLocationHint;
 }
 
 function resolveCellGenerationFromRow(
   metadata: ServerMetadata | null | undefined,
   options: ServerOptions | null | undefined,
 ): number {
-  const fromOptions = options?.cellGeneration
-  if (fromOptions != null) return fromOptions
-  return metadata?.cellGeneration ?? 1
+  const fromOptions = options?.cellGeneration;
+  if (fromOptions != null) return fromOptions;
+  return metadata?.cellGeneration ?? 1;
 }
 
 async function loadServerCellColumns(
   db: Db,
   serverId: string,
 ): Promise<{
-  metadata: ServerMetadata | null | undefined
-  options: ServerOptions | null | undefined
+  metadata: ServerMetadata | null | undefined;
+  options: ServerOptions | null | undefined;
 }> {
   const rows = await db
     .select({ metadata: server.metadata, options: server.options })
     .from(server)
     .where(eq(server.id, serverId))
-    .limit(1)
+    .limit(1);
 
-  const row = rows[0]
+  const row = rows[0];
   return {
     metadata: row?.metadata as ServerMetadata | null | undefined,
     options: row?.options as ServerOptions | null | undefined,
-  }
+  };
 }
 
 /**
@@ -57,8 +60,8 @@ export async function resolveCellLocationHint(
   db: Db,
   serverId: string,
 ): Promise<string | undefined> {
-  const { metadata, options } = await loadServerCellColumns(db, serverId)
-  return resolveCellLocationHintFromRow(metadata, options)
+  const { metadata, options } = await loadServerCellColumns(db, serverId);
+  return resolveCellLocationHintFromRow(metadata, options);
 }
 
 /**
@@ -75,6 +78,6 @@ export async function resolveCellGeneration(
   db: Db,
   serverId: string,
 ): Promise<number> {
-  const { metadata, options } = await loadServerCellColumns(db, serverId)
-  return resolveCellGenerationFromRow(metadata, options)
+  const { metadata, options } = await loadServerCellColumns(db, serverId);
+  return resolveCellGenerationFromRow(metadata, options);
 }

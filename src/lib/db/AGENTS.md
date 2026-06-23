@@ -181,7 +181,9 @@ Each physical server node gets a row in `server` (`id` uuidv7). On daemon connec
 | `key.fingerprint` | SHA-256 hex over the canonical public JWK — duplicate-checked at enrollment (no DB unique constraint for MVP) |
 | `key.revokedAt` | Non-null blocks new JWT issuance; existing JWTs remain valid until their 15-minute expiry |
 
-**Promoted to real columns:** `daemon_key_last_used_at` (`server.daemonKeyLastUsedAt`) — updated on each successful auth/session handshake. `last_seen_at` (`server.lastSeenAt`) — updated on heartbeat write-through from the cell snapshot. Both are nullable timestamps; direct column writes avoid jsonb read-modify-write churn.
+**Promoted to real columns:** `daemon_key_last_used_at` (`server.daemonKeyLastUsedAt`) — updated on each successful auth/session handshake. `last_seen_at` (`server.lastSeenAt`) — updated on liveness transitions (online/offline), not on every monitor heartbeat. Both are nullable timestamps; direct column writes avoid jsonb read-modify-write churn.
+
+**`server.daemon.projection` (sparse monitoring summary):** the `projection` field inside `server.daemon` jsonb holds a slowly-changing summary — `hostname`, `machineId`, `remoteAddress`, `keyId`, `connected`, `status` (effective `MonitorResourceStatus`), `healthyCount`, `degradedCount`, `unhealthyCount`, `lastProjectedAt`, `connectedAt`. It is updated only on transitions and slow refreshes (≤15 min). It never holds raw per-minute metrics or the full resource graph. The `key` field is always preserved on write (read-modify-write via `parseServerDaemonState` + merge).
 
 Re-enrollment with a valid license token replaces `server.daemon` atomically. No historical key rows are kept for MVP. To revoke daemon auth, set `server.daemon.key.revokedAt` (via `revokeDaemonKey` helper).
 

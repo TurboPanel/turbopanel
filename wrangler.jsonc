@@ -58,6 +58,7 @@
         }
       ],
       "vars": {
+        "TURBOPANEL_PBKDF2_ITERATIONS": "100000",
         "TURBOPANEL_UI_CORS_ORIGINS": "https://testing.turbopanel.io"
       }
     },
@@ -88,6 +89,7 @@
         }
       ],
       "vars": {
+        "TURBOPANEL_PBKDF2_ITERATIONS": "100000",
         "TURBOPANEL_UI_CORS_ORIGINS": "https://turbopanel.io"
       }
     }

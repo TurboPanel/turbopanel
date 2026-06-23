@@ -1,58 +1,58 @@
 export const readinessSchemas = {
   DaemonErrorResponse: {
-    type: 'object',
-    required: ['error'],
+    type: "object",
+    required: ["error"],
     properties: {
-      error: { type: 'string' },
+      error: { type: "string" },
     },
   },
-}
+};
 
 export const readinessPaths: Record<string, unknown> = {
-  '/api/daemon/v1/readiness': {
+  "/api/daemon/v1/readiness": {
     get: {
-      tags: ['daemon'],
-      summary: 'Install readiness probe',
+      tags: ["daemon"],
+      summary: "Install readiness probe",
       description:
-        'Co-located self-hosted daemons poll this before opening the daemon WebSocket. ' +
-        'Returns 503 until the install wizard has created org + superadmin.',
+        "Co-located self-hosted daemons poll this before opening the daemon WebSocket. " +
+        "Returns 503 until the install wizard has created org + superadmin.",
       responses: {
-        '200': {
-          description: 'Instance is ready for daemon connections',
+        "200": {
+          description: "Instance is ready for daemon connections",
           content: {
-            'application/json': {
+            "application/json": {
               schema: {
-                type: 'object',
-                required: ['ok', 'ready'],
+                type: "object",
+                required: ["ok", "ready"],
                 properties: {
-                  ok: { type: 'boolean', const: true },
-                  ready: { type: 'boolean', const: true },
+                  ok: { type: "boolean", const: true },
+                  ready: { type: "boolean", const: true },
                 },
               },
             },
           },
         },
-        '503': {
-          description: 'Not ready or database unavailable',
+        "503": {
+          description: "Not ready or database unavailable",
           content: {
-            'application/json': {
+            "application/json": {
               schema: {
                 oneOf: [
                   {
-                    type: 'object',
-                    required: ['ok', 'ready', 'needsInstall'],
+                    type: "object",
+                    required: ["ok", "ready", "needsInstall"],
                     properties: {
-                      ok: { type: 'boolean', const: true },
-                      ready: { type: 'boolean', const: false },
-                      needsInstall: { type: 'boolean', const: true },
+                      ok: { type: "boolean", const: true },
+                      ready: { type: "boolean", const: false },
+                      needsInstall: { type: "boolean", const: true },
                     },
                   },
                   {
-                    type: 'object',
-                    required: ['ok', 'error'],
+                    type: "object",
+                    required: ["ok", "error"],
                     properties: {
-                      ok: { type: 'boolean', const: false },
-                      error: { type: 'string' },
+                      ok: { type: "boolean", const: false },
+                      error: { type: "string" },
                     },
                   },
                 ],
@@ -63,4 +63,4 @@ export const readinessPaths: Record<string, unknown> = {
       },
     },
   },
-}
+};

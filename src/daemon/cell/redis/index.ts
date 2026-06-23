@@ -1,7 +1,7 @@
 export {
-  createRedisDaemonCellRegistry,
   createRedisCellClient,
+  createRedisDaemonCellRegistry,
   RedisCellClient,
   RedisDaemonCell,
-} from './registry.ts'
-export type { RedisDaemonCellRegistry } from './registry.ts'
+} from "./registry.ts";
+export type { RedisDaemonCellRegistry } from "./registry.ts";

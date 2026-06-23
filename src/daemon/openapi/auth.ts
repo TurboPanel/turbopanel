@@ -17,7 +17,8 @@ export const authSchemas = {
       keyId: {
         type: "string",
         format: "uuid",
-        description: "server.daemon.key.id — the one active Ed25519 daemon identity key",
+        description:
+          "server.daemon.key.id — the one active Ed25519 daemon identity key",
       },
     },
   },
@@ -134,7 +135,9 @@ export const authPaths: Record<string, unknown> = {
           description: "No pending commands",
           content: {
             "application/json": {
-              schema: { $ref: "#/components/schemas/DaemonCommandsLeaseResponse" },
+              schema: {
+                $ref: "#/components/schemas/DaemonCommandsLeaseResponse",
+              },
             },
           },
         },
