@@ -9,6 +9,8 @@ export function buildLicenseInstallCommand(opts: {
   binaryBaseUrl?: string
   /** @deprecated Deno installs always use run.sh from the instance host. */
   devRunScript?: boolean
+  /** Dev/self-signed installs: curl -k and pass --insecure-tls to run.sh. */
+  insecureTls?: boolean
 }): string {
   const {
     runtime,
@@ -16,6 +18,7 @@ export function buildLicenseInstallCommand(opts: {
     licenseId,
     licenseToken,
     binaryBaseUrl,
+    insecureTls = false,
   } = opts
   const licenseArg = `${licenseId}:${licenseToken}`
   const includeHost = instanceUrl !== 'https://turbopanel.app'
@@ -24,9 +27,11 @@ export function buildLicenseInstallCommand(opts: {
   if (runtime === 'deno') {
     const binaryUrl = binaryBaseUrl ?? `${scriptBase}/downloads/daemon`
     const hostFlag = includeHost ? ` --host ${instanceUrl}` : ''
+    const tlsFlag = insecureTls ? ' --insecure-tls' : ''
+    const curl = insecureTls ? 'curl -fsSLk' : 'curl -fsSL'
     return (
-      `curl -fsSL ${scriptBase}/run.sh | ` +
-      `sh -s -- --license ${licenseArg}${hostFlag} --binary-url ${binaryUrl}`
+      `${curl} ${scriptBase}/run.sh | ` +
+      `sh -s -- --license ${licenseArg}${hostFlag} --binary-url ${binaryUrl}${tlsFlag}`
     )
   }
 

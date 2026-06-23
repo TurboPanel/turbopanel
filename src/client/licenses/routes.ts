@@ -138,6 +138,7 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
       licenseId,
       licenseToken,
       devRunScript,
+      insecureTls: devRunScript,
     })
 
     compatLogInfo('auth', 'license created; licenseToken is shown once and not stored in plaintext')

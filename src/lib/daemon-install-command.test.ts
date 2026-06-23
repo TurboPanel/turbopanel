@@ -9,10 +9,11 @@ describe('buildLicenseInstallCommand', () => {
       licenseId: 'license-id',
       licenseToken: 'token',
       devRunScript: true,
+      insecureTls: true,
     })
 
     expect(command).toContain(
-      'curl -fsSL https://huey.turbopanel.dev:8443/run.sh',
+      'curl -fsSLk https://huey.turbopanel.dev:8443/run.sh',
     )
     expect(command).not.toContain('/api/install/v1/daemon-install.sh')
     expect(command).toContain('| sh -s --')
@@ -21,6 +22,7 @@ describe('buildLicenseInstallCommand', () => {
     expect(command).toContain(
       '--binary-url https://huey.turbopanel.dev:8443/downloads/daemon',
     )
+    expect(command).toContain('--insecure-tls')
     expect(command).toContain('license-id:token')
   })
 
@@ -30,10 +32,11 @@ describe('buildLicenseInstallCommand', () => {
       instanceUrl: 'https://huey.lan:8443',
       licenseId: 'license-id',
       licenseToken: 'token',
+      insecureTls: true,
     })
 
     expect(command).toContain(
-      'curl -fsSL https://huey.lan:8443/run.sh',
+      'curl -fsSLk https://huey.lan:8443/run.sh',
     )
     expect(command).not.toContain('/api/install/v1/daemon-install.sh')
     expect(command).not.toContain('raw.githubusercontent.com')
@@ -43,6 +46,7 @@ describe('buildLicenseInstallCommand', () => {
     expect(command).toContain(
       '--binary-url https://huey.lan:8443/downloads/daemon',
     )
+    expect(command).toContain('--insecure-tls')
   })
 
   it('uses the CDN installer on Workers', () => {
