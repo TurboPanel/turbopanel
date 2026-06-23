@@ -7,6 +7,11 @@ const REQUIRED_RELEASE_ARTIFACTS = [
   'turbopaneld-linux-arm64.tar.zst',
 ] as const
 
+const REQUIRED_COMPILE_ARTIFACTS = [
+  'turbopaneld-linux-amd64',
+  'turbopaneld-linux-arm64',
+] as const
+
 function resolveDenoBin(): string {
   const override = Deno.env.get('TURBOPANEL_DENO')?.trim()
   if (override) return override
@@ -33,6 +38,34 @@ async function allDevReleaseArtifactsPresent(distDir: string): Promise<boolean> 
   return true
 }
 
+async function allCompileArtifactsPresent(distDir: string): Promise<boolean> {
+  for (const name of REQUIRED_COMPILE_ARTIFACTS) {
+    if (!(await artifactExists(join(distDir, name)))) return false
+  }
+  return true
+}
+
+async function runDaemonTask(
+  daemonRepo: string,
+  denoBin: string,
+  daemonUser: string,
+  task: string,
+): Promise<void> {
+  const shellCommand = `cd '${daemonRepo}' && exec '${denoBin}' task ${task}`
+  const command = new Deno.Command('sudo', {
+    args: ['-u', daemonUser, '/bin/sh', '-c', shellCommand],
+    stdout: 'piped',
+    stderr: 'piped',
+  })
+  const out = await command.output()
+  if (!out.success) {
+    const stderr = new TextDecoder().decode(out.stderr).trim()
+    const stdout = new TextDecoder().decode(out.stdout).trim()
+    const detail = stderr || stdout || `${task} failed`
+    throw new Error(`daemon release step failed (${task}): ${detail}`)
+  }
+}
+
 /**
  * Ensure zstd-compressed cross-arch daemon release tarballs exist before showing
  * a dev install command. Skips when the developer surface is disabled or
@@ -47,19 +80,11 @@ export async function ensureDevDaemonBinaries(): Promise<void> {
 
   const denoBin = resolveDenoBin()
   const daemonUser = resolveDaemonUser()
-  const shellCommand = `cd '${daemonRepo}' && exec '${denoBin}' task release:package`
 
-  const command = new Deno.Command('sudo', {
-    args: ['-u', daemonUser, '/bin/sh', '-c', shellCommand],
-    stdout: 'piped',
-    stderr: 'piped',
-  })
-  const out = await command.output()
-  if (!out.success) {
-    const stderr = new TextDecoder().decode(out.stderr).trim()
-    const stdout = new TextDecoder().decode(out.stdout).trim()
-    const detail = stderr || stdout || 'release:package failed'
-    throw new Error(`daemon release packaging failed: ${detail}`)
+  if (await allCompileArtifactsPresent(distDir)) {
+    await runDaemonTask(daemonRepo, denoBin, daemonUser, 'package:release')
+  } else {
+    await runDaemonTask(daemonRepo, denoBin, daemonUser, 'release:package')
   }
 
   if (!(await allDevReleaseArtifactsPresent(distDir))) {
