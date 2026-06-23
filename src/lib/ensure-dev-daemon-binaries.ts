@@ -15,11 +15,13 @@ const REQUIRED_COMPILE_ARTIFACTS = [
 function resolveDenoBin(): string {
   const override = Deno.env.get('TURBOPANEL_DENO')?.trim()
   if (override) return override
-  return '/opt/turbopanel/runtimes/deno/current/deno'
-}
-
-function resolveDaemonUser(): string {
-  return Deno.env.get('TURBOPANEL_USER')?.trim() || 'turbopanel'
+  const runtimeDeno = '/opt/turbopanel/runtimes/deno/current/deno'
+  try {
+    Deno.statSync(runtimeDeno)
+    return runtimeDeno
+  } catch {
+    return '/usr/local/bin/deno'
+  }
 }
 
 async function artifactExists(path: string): Promise<boolean> {
@@ -45,17 +47,25 @@ async function allCompileArtifactsPresent(distDir: string): Promise<boolean> {
   return true
 }
 
+/**
+ * Run a daemon deno task as the instance process user (turbopaneli). The checkout
+ * is group-writable via the turbopanel supplementary group — no sudo to turbopanel.
+ */
 async function runDaemonTask(
   daemonRepo: string,
   denoBin: string,
-  daemonUser: string,
   task: string,
 ): Promise<void> {
-  const shellCommand = `cd '${daemonRepo}' && exec '${denoBin}' task ${task}`
-  const command = new Deno.Command('sudo', {
-    args: ['-u', daemonUser, '/bin/sh', '-c', shellCommand],
+  const command = new Deno.Command(denoBin, {
+    args: ['task', task],
+    cwd: daemonRepo,
     stdout: 'piped',
     stderr: 'piped',
+    env: {
+      HOME: Deno.env.get('HOME') ?? '',
+      PATH: Deno.env.get('PATH') ?? '/usr/local/bin:/usr/bin:/bin',
+      DENO_DIR: Deno.env.get('DENO_DIR') ?? '',
+    },
   })
   const out = await command.output()
   if (!out.success) {
@@ -79,12 +89,11 @@ export async function ensureDevDaemonBinaries(): Promise<void> {
   if (await allDevReleaseArtifactsPresent(distDir)) return
 
   const denoBin = resolveDenoBin()
-  const daemonUser = resolveDaemonUser()
 
   if (await allCompileArtifactsPresent(distDir)) {
-    await runDaemonTask(daemonRepo, denoBin, daemonUser, 'package:release')
+    await runDaemonTask(daemonRepo, denoBin, 'package:release')
   } else {
-    await runDaemonTask(daemonRepo, denoBin, daemonUser, 'release:package')
+    await runDaemonTask(daemonRepo, denoBin, 'release:package')
   }
 
   if (!(await allDevReleaseArtifactsPresent(distDir))) {
