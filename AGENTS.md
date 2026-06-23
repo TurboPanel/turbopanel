@@ -261,10 +261,10 @@ Credential-account passwords use **PBKDF2-HMAC-SHA256** via `crypto.subtle` (`sr
 - Remote WSS connections require a valid daemon JWT at upgrade time; unauthenticated server row creation from `hostname`/`machineId` alone is disallowed.
 - Co-located socket daemons use the same auth model; there is no unauthenticated bypass.
 - `DAEMON_INBOUND_ALLOWED` in `src/daemon/cell/protocol.ts` is a static set of accepted post-auth message types — not an authz system.
-- Daemon public key is stored directly on the `server` row (`daemonPublicKey`, `daemonKeyId`, `daemonKeyFingerprint`, `daemonKeyRevokedAt`). No `serverkey` or `daemonsession` tables.
-- Re-enrollment with a valid license token replaces the daemon key on the server row. No historical key storage.
-- JWT payload: `sub` (serverId), `kid` (daemonKeyId), `jti` (random uuid, logging only), `iss`, `aud`, `typ`, `iat`, `exp`. No `sid`.
-- Revoking daemon auth: set `daemonKeyRevokedAt` on the server row. Existing JWTs remain valid until their 15-minute expiry. New JWT issuance fails.
+- Daemon identity is stored on the `server` row as typed jsonb `server.daemon` (`key`, `enrolledAt`, `lastSeenAt`). No `serverkey` or `daemonsession` tables.
+- Re-enrollment or recovery with a valid license replaces `server.daemon` entirely; old daemon keys are not kept for MVP.
+- JWT payload: `sub` (serverId), `kid` (`server.daemon.key.id`), `jti` (random uuid, logging only), `iss`, `aud`, `typ`, `iat`, `exp`. No `sid`.
+- Revoking daemon auth: set `server.daemon.key.revokedAt`. Existing JWTs remain valid until their 15-minute expiry. New JWT issuance fails.
 
 ```mermaid
 sequenceDiagram
@@ -449,7 +449,8 @@ sequenceDiagram
 - `src/daemon/cell/snapshot-merge.ts` — `mergeSnapshotPresence`
 - `src/daemon/authn/license.ts` — daemon hello license verification (`verifyDaemonLicense`)
 - `src/daemon/authn/daemon-jwt.ts` — daemon JWT issue/verify (HMAC-SHA256, 15-minute lifetime)
-- `src/daemon/authn/server-identity-db.ts` — DB helpers for daemon key columns on the `server` row (`getServerDaemonKeyByServerId`, `attachDaemonKeyToServer`, `touchDaemonKeyLastUsed`, `revokeDaemonKey`)
+- `src/daemon/authn/daemon-state.ts` — `ServerDaemonState` / `ServerDaemonKey` types and parsers for `server.daemon` jsonb
+- `src/daemon/authn/server-identity-db.ts` — DB helpers for `server.daemon` (`getServerDaemonStateByServerId`, `attachDaemonStateToServer`, `touchDaemonKeyLastUsed`, `revokeDaemonKey`, `clearServerDaemonState`)
 - `src/daemon/authn/server-key.ts` — `buildCanonicalPayload`, `computePublicKeyFingerprint`, `verifyDaemonSignature`
 - `src/daemon/authz/` — daemon-side authorization placeholder
 - `src/lib/db/schema.ts` — Drizzle table definitions (`server`, etc.; see `src/lib/db/AGENTS.md`); connection factories stay in `src/db.ts`

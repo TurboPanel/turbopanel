@@ -1424,45 +1424,9 @@
           "primaryKey": false,
           "notNull": false
         },
-        "daemon_key_id": {
-          "name": "daemon_key_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "daemon_key_algorithm": {
-          "name": "daemon_key_algorithm",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "daemon_public_key": {
-          "name": "daemon_public_key",
+        "daemon": {
+          "name": "daemon",
           "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "daemon_key_fingerprint": {
-          "name": "daemon_key_fingerprint",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "daemon_key_created_at": {
-          "name": "daemon_key_created_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "daemon_key_last_used_at": {
-          "name": "daemon_key_last_used_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "daemon_key_revoked_at": {
-          "name": "daemon_key_revoked_at",
-          "type": "timestamp(3) with time zone",
           "primaryKey": false,
           "notNull": false
         }
@@ -1497,15 +1461,7 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "server_daemon_key_fingerprint_unique": {
-          "name": "server_daemon_key_fingerprint_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "daemon_key_fingerprint"
-          ]
-        }
-      },
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false

@@ -13,6 +13,11 @@ import { createRedisChallengeStore, createInMemoryChallengeStore, DAEMON_ENROLL_
 import { createRedisCellClient } from "./cell/redis/client.ts";
 import { issueDaemonJwt } from "./authn/daemon-jwt.ts";
 import {
+  parseServerDaemonState,
+  type ServerDaemonState,
+} from "./authn/daemon-state.ts";
+import { revokeDaemonKey } from "./authn/server-identity-db.ts";
+import {
   buildAuthPayload,
   buildEnrollmentPayload,
   computePublicKeyFingerprint,
@@ -106,6 +111,18 @@ async function signPayload(
     encoder.encode(payload),
   );
   return encodeBase64Url(new Uint8Array(signature));
+}
+
+async function readDaemonState(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string,
+): Promise<ServerDaemonState | null> {
+  const [row] = await db
+    .select({ daemon: server.daemon })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1);
+  return parseServerDaemonState(row?.daemon);
 }
 
 async function createTestApp(db: ReturnType<typeof createDenoDb>): Promise<Hono<AppEnv>> {
@@ -352,33 +369,22 @@ Deno.test("POST /enroll rejects invalid signature", async () => {
 
 Deno.test("POST /enroll stores public key only after proof-of-possession", async () => {
   await withEnrollFixture(async ({ db, serverId, keyId, key }) => {
-    const rows = await db
-      .select({
-        daemonKeyId: server.daemonKeyId,
-        daemonPublicKey: server.daemonPublicKey,
-        daemonKeyFingerprint: server.daemonKeyFingerprint,
-      })
-      .from(server)
-      .where(eq(server.id, serverId));
-    assertEquals(rows.length, 1);
-    assertEquals(rows[0]?.daemonKeyId, keyId);
-    assertEquals(rows[0]?.daemonKeyFingerprint, key.fingerprint);
-    assertExists(rows[0]?.daemonPublicKey);
+    const daemonState = await readDaemonState(db, serverId);
+    assertExists(daemonState);
+    assertEquals(daemonState.key.id, keyId);
+    assertEquals(daemonState.key.fingerprint, key.fingerprint);
+    assertExists(daemonState.key.publicJwk);
+    assertEquals(daemonState.key.algorithm, "Ed25519");
+    assertExists(daemonState.enrolledAt);
   });
 });
 
-Deno.test("POST /enroll returns serverId and daemonKeyId", async () => {
+Deno.test("POST /enroll returns serverId and server.daemon.key.id", async () => {
   await withEnrollFixture(async ({ enrollBody, db }) => {
     assertExists(enrollBody.serverId);
     assertExists(enrollBody.keyId);
-    const rows = await db
-      .select({
-        daemonKeyId: server.daemonKeyId,
-      })
-      .from(server)
-      .where(eq(server.id, enrollBody.serverId));
-    assertEquals(rows.length, 1);
-    assertEquals(rows[0]?.daemonKeyId, enrollBody.keyId);
+    const daemonState = await readDaemonState(db, enrollBody.serverId);
+    assertEquals(daemonState?.key.id, enrollBody.keyId);
   });
 });
 
@@ -428,18 +434,13 @@ Deno.test("POST /enroll re-enrollment replaces daemon key on server row", async 
     assertEquals(enrollResponse.status, 200);
     const body = await enrollResponse.json() as { serverId: string; keyId: string };
     assertEquals(body.serverId, serverId);
-    assertEquals(body.keyId, keyId);
+    assertEquals(body.keyId !== keyId, true);
 
-    const rows = await db
-      .select({
-        daemonKeyId: server.daemonKeyId,
-        daemonKeyFingerprint: server.daemonKeyFingerprint,
-      })
-      .from(server)
-      .where(eq(server.id, serverId));
-    assertEquals(rows[0]?.daemonKeyId, keyId);
-    assertEquals(rows[0]?.daemonKeyFingerprint, newKey.fingerprint);
-    assertEquals(rows[0]?.daemonKeyFingerprint !== key.fingerprint, true);
+    const daemonState = await readDaemonState(db, serverId);
+    assertExists(daemonState);
+    assertEquals(daemonState.key.id, body.keyId);
+    assertEquals(daemonState.key.fingerprint, newKey.fingerprint);
+    assertEquals(daemonState.key.fingerprint !== key.fingerprint, true);
   });
 });
 
@@ -496,20 +497,22 @@ Deno.test("POST /enroll re-enrollment with recovery credential from same organiz
     assertEquals(enrollResponse.status, 200);
     const body = await enrollResponse.json() as { serverId: string; keyId: string };
     assertEquals(body.serverId, serverId);
-    assertEquals(body.keyId, keyId);
+    assertEquals(body.keyId !== keyId, true);
 
-    const rows = await db
+    const [row] = await db
       .select({
         licenseId: server.licenseId,
-        daemonKeyFingerprint: server.daemonKeyFingerprint,
-        daemonKeyRevokedAt: server.daemonKeyRevokedAt,
+        daemon: server.daemon,
       })
       .from(server)
       .where(eq(server.id, serverId));
-    assertEquals(rows[0]?.licenseId, licenseId);
-    assertEquals(rows[0]?.daemonKeyFingerprint, newKey.fingerprint);
-    assertEquals(rows[0]?.daemonKeyRevokedAt, null);
-    assertEquals(rows[0]?.daemonKeyFingerprint !== key.fingerprint, true);
+    const daemonState = parseServerDaemonState(row?.daemon);
+    assertExists(daemonState);
+    assertEquals(row?.licenseId, licenseId);
+    assertEquals(daemonState.key.id, body.keyId);
+    assertEquals(daemonState.key.fingerprint, newKey.fingerprint);
+    assertEquals(daemonState.key.revokedAt, null);
+    assertEquals(daemonState.key.fingerprint !== key.fingerprint, true);
   });
 });
 
@@ -525,11 +528,7 @@ Deno.test("POST /enroll re-enrollment with same key clears revocation", async ()
     machineId,
     hostname,
   }) => {
-    const now = new Date().toISOString();
-    await db
-      .update(server)
-      .set({ daemonKeyRevokedAt: now })
-      .where(eq(server.id, serverId));
+    await revokeDaemonKey(db, serverId);
 
     const challengeResponse = await app.request("/api/daemon/v1/auth/challenge", {
       method: "POST",
@@ -564,22 +563,17 @@ Deno.test("POST /enroll re-enrollment with same key clears revocation", async ()
     assertEquals(enrollResponse.status, 200);
     const body = await enrollResponse.json() as { serverId: string; keyId: string };
     assertEquals(body.serverId, serverId);
-    assertEquals(body.keyId, keyId);
+    assertEquals(body.keyId !== keyId, true);
 
-    const rows = await db
-      .select({
-        daemonKeyFingerprint: server.daemonKeyFingerprint,
-        daemonKeyRevokedAt: server.daemonKeyRevokedAt,
-      })
-      .from(server)
-      .where(eq(server.id, serverId));
-    assertEquals(rows[0]?.daemonKeyFingerprint, key.fingerprint);
-    assertEquals(rows[0]?.daemonKeyRevokedAt, null);
+    const daemonState = await readDaemonState(db, serverId);
+    assertExists(daemonState);
+    assertEquals(daemonState.key.fingerprint, key.fingerprint);
+    assertEquals(daemonState.key.revokedAt, null);
 
     const authChallengeResponse = await app.request("/api/daemon/v1/auth/challenge", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serverId, keyId }),
+      body: JSON.stringify({ serverId, keyId: body.keyId }),
     });
     assertEquals(authChallengeResponse.status, 200);
   });
@@ -771,11 +765,7 @@ Deno.test("POST /enroll rejects re-enrollment from a different organization with
 
 Deno.test("POST /heartbeat succeeds with valid JWT after daemon key is revoked", async () => {
   await withEnrollFixture(async ({ db, app, serverId, keyId }) => {
-    const now = new Date().toISOString();
-    await db
-      .update(server)
-      .set({ daemonKeyRevokedAt: now })
-      .where(eq(server.id, serverId));
+    await revokeDaemonKey(db, serverId);
 
     const daemonToken = await issueDaemonToken(serverId, keyId);
     const response = await app.request("/api/daemon/v1/heartbeat", {
@@ -857,7 +847,7 @@ Deno.test("POST /auth/challenge rejects unknown keyId", async () => {
   });
 });
 
-Deno.test("POST /auth/challenge rejects mismatched daemonKeyId", async () => {
+Deno.test("POST /auth/challenge rejects mismatched keyId", async () => {
   await withEnrollFixture(async ({ app, serverId }) => {
     const response = await app.request("/api/daemon/v1/auth/challenge", {
       method: "POST",
@@ -872,11 +862,7 @@ Deno.test("POST /auth/challenge rejects mismatched daemonKeyId", async () => {
 
 Deno.test("POST /auth/challenge rejects revoked daemon key", async () => {
   await withEnrollFixture(async ({ db, app, serverId, keyId }) => {
-    const now = new Date().toISOString();
-    await db
-      .update(server)
-      .set({ daemonKeyRevokedAt: now })
-      .where(eq(server.id, serverId));
+    await revokeDaemonKey(db, serverId);
 
     const response = await app.request("/api/daemon/v1/auth/challenge", {
       method: "POST",
@@ -955,7 +941,7 @@ Deno.test("POST /auth/session rejects invalid signature", async () => {
 });
 
 Deno.test("POST /auth/session returns a 15-minute JWT", async () => {
-  await withEnrollFixture(async ({ app, serverId, keyId, key, machineId, hostname }) => {
+  await withEnrollFixture(async ({ app, db, serverId, keyId, key, machineId, hostname }) => {
     const challenge = await issueAuthChallenge(app, serverId, keyId);
     const payload = buildAuthPayload({
       challengeId: challenge.challengeId,
@@ -983,9 +969,14 @@ Deno.test("POST /auth/session returns a 15-minute JWT", async () => {
     const body = await response.json() as { token: string };
     assertExists(body.token);
     const jwtPayload = decodeJwtPayload(body.token);
+    assertEquals(jwtPayload.kid, keyId);
     assertEquals(jwtPayload.exp - jwtPayload.iat, 900);
     assert(typeof jwtPayload.jti === "string" && jwtPayload.jti.length > 0);
     assertEquals("sid" in jwtPayload, false);
+
+    const daemonState = await readDaemonState(db, serverId);
+    assertExists(daemonState?.key.lastUsedAt);
+    assertExists(daemonState?.lastSeenAt);
   });
 });
 

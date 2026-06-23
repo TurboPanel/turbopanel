@@ -114,13 +114,7 @@ export const server = pgTable("server", {
 	displayName: varchar("display_name", { length: 255 }),
 	metadata: jsonb(),
 	options: jsonb(),
-	daemonKeyId: uuid("daemon_key_id"),
-	daemonKeyAlgorithm: text("daemon_key_algorithm"),
-	daemonPublicKey: jsonb("daemon_public_key"),
-	daemonKeyFingerprint: text("daemon_key_fingerprint"),
-	daemonKeyCreatedAt: timestamp("daemon_key_created_at", { precision: 3, withTimezone: true, mode: 'string' }),
-	daemonKeyLastUsedAt: timestamp("daemon_key_last_used_at", { precision: 3, withTimezone: true, mode: 'string' }),
-	daemonKeyRevokedAt: timestamp("daemon_key_revoked_at", { precision: 3, withTimezone: true, mode: 'string' }),
+	daemon: jsonb("daemon"),
 }, (table) => [
 	foreignKey({
 			columns: [table.organizationId],
@@ -132,7 +126,6 @@ export const server = pgTable("server", {
 			foreignColumns: [license.id],
 			name: "server_license_id_license_id_fk"
 		}),
-	unique("server_daemon_key_fingerprint_unique").on(table.daemonKeyFingerprint),
 ]);
 export const workspace = pgTable("workspace", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),

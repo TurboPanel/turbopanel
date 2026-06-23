@@ -21,28 +21,12 @@ async function createDaemonJwtSecrets() {
   return deriveSecretsConfig(parsed, 'daemon-jwt-signing')
 }
 
-function createMockDb(
-  serverId = 'srv-test',
-  keyId = 'key-test',
-  options: {
-    revoked?: boolean
-    mismatchedKeyId?: string
-  } = {},
-): Db {
-  const keyRow = {
-    daemonKeyId: options.mismatchedKeyId ?? keyId,
-    daemonKeyAlgorithm: 'Ed25519',
-    daemonPublicKey: { kty: 'OKP', crv: 'Ed25519', x: 'test' },
-    daemonKeyFingerprint: 'abc123',
-    daemonKeyCreatedAt: new Date().toISOString(),
-    daemonKeyLastUsedAt: null,
-    daemonKeyRevokedAt: options.revoked ? new Date().toISOString() : null,
-  }
+function createMockDb(): Db {
   return {
     select: () => ({
       from: () => ({
         where: () => ({
-          limit: () => Promise.resolve([keyRow]),
+          limit: () => Promise.resolve([]),
         }),
       }),
     }),
@@ -240,7 +224,7 @@ Deno.test('WS lifecycle attaches, handles ping, and detaches through cell backen
   const serverId = 'srv-lifecycle'
   const tracking = createTrackingDaemonCell(serverId)
   registerTestDaemonWebSocket(app, secrets, {
-    db: createMockDb(serverId),
+    db: createMockDb(),
     registry: createTrackingRegistry(tracking.cell),
   })
 
@@ -290,7 +274,7 @@ Deno.test('WS upgrade accepts HTTP 101 with valid JWT after daemon key is revoke
   const app = new Hono()
   const secrets = await createDaemonJwtSecrets()
   registerTestDaemonWebSocket(app, secrets, {
-    db: createMockDb('srv-test', 'key-test', { revoked: true }),
+    db: createMockDb(),
   })
 
   const issued = await issueDaemonJwt(
@@ -311,9 +295,7 @@ Deno.test('WS upgrade accepts HTTP 101 with valid JWT after daemon key is replac
   const app = new Hono()
   const secrets = await createDaemonJwtSecrets()
   registerTestDaemonWebSocket(app, secrets, {
-    db: createMockDb('srv-test', 'key-test', {
-      mismatchedKeyId: crypto.randomUUID(),
-    }),
+    db: createMockDb(),
   })
 
   const issued = await issueDaemonJwt(

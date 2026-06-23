@@ -1,128 +1,93 @@
-import { eq } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import type { Db } from "../../db.ts"
 import { server } from "../../lib/db/schema.ts"
+import {
+  buildServerDaemonState,
+  parseServerDaemonState,
+  type ServerDaemonState,
+} from "./daemon-state.ts"
 
 function nowTs(): string {
   return new Date().toISOString()
 }
 
-export interface ServerDaemonKey {
-  daemonKeyId: string
-  daemonKeyAlgorithm: string
-  daemonPublicKey: JsonWebKey
-  daemonKeyFingerprint: string
-  daemonKeyCreatedAt: string
-  daemonKeyLastUsedAt: string | null
-  daemonKeyRevokedAt: string | null
-}
+export type { ServerDaemonKey, ServerDaemonState } from "./daemon-state.ts"
+export { isDaemonKeyActive, parseServerDaemonState } from "./daemon-state.ts"
 
-type DaemonKeyRow = {
-  daemonKeyId: string | null
-  daemonKeyAlgorithm: string | null
-  daemonPublicKey: unknown
-  daemonKeyFingerprint: string | null
-  daemonKeyCreatedAt: string | null
-  daemonKeyLastUsedAt: string | null
-  daemonKeyRevokedAt: string | null
-}
-
-function mapDaemonKeyRow(row: DaemonKeyRow): ServerDaemonKey | null {
-  if (
-    !row.daemonKeyId ||
-    !row.daemonKeyAlgorithm ||
-    !row.daemonPublicKey ||
-    !row.daemonKeyFingerprint ||
-    !row.daemonKeyCreatedAt
-  ) {
-    return null
-  }
-
-  return {
-    daemonKeyId: row.daemonKeyId,
-    daemonKeyAlgorithm: row.daemonKeyAlgorithm,
-    daemonPublicKey: row.daemonPublicKey as JsonWebKey,
-    daemonKeyFingerprint: row.daemonKeyFingerprint,
-    daemonKeyCreatedAt: row.daemonKeyCreatedAt,
-    daemonKeyLastUsedAt: row.daemonKeyLastUsedAt,
-    daemonKeyRevokedAt: row.daemonKeyRevokedAt,
-  }
-}
-
-const daemonKeySelect = {
-  daemonKeyId: server.daemonKeyId,
-  daemonKeyAlgorithm: server.daemonKeyAlgorithm,
-  daemonPublicKey: server.daemonPublicKey,
-  daemonKeyFingerprint: server.daemonKeyFingerprint,
-  daemonKeyCreatedAt: server.daemonKeyCreatedAt,
-  daemonKeyLastUsedAt: server.daemonKeyLastUsedAt,
-  daemonKeyRevokedAt: server.daemonKeyRevokedAt,
-}
-
-export async function getServerDaemonKeyByServerId(
+export async function getServerDaemonStateByServerId(
   db: Db,
   serverId: string,
-): Promise<ServerDaemonKey | null> {
+): Promise<ServerDaemonState | null> {
   const [row] = await db
-    .select(daemonKeySelect)
+    .select({ daemon: server.daemon })
     .from(server)
     .where(eq(server.id, serverId))
     .limit(1)
 
   if (!row) return null
-  return mapDaemonKeyRow(row)
+  return parseServerDaemonState(row.daemon)
 }
 
-export async function getServerDaemonKeyByFingerprint(
+export async function getServerDaemonStateByFingerprint(
   db: Db,
   fingerprint: string,
-): Promise<(ServerDaemonKey & { serverId: string }) | null> {
+): Promise<(ServerDaemonState & { serverId: string }) | null> {
   const [row] = await db
     .select({
       serverId: server.id,
-      ...daemonKeySelect,
+      daemon: server.daemon,
     })
     .from(server)
-    .where(eq(server.daemonKeyFingerprint, fingerprint))
+    .where(sql`${server.daemon}->'key'->>'fingerprint' = ${fingerprint}`)
     .limit(1)
 
   if (!row) return null
-  const key = mapDaemonKeyRow(row)
-  if (!key) return null
-  return { ...key, serverId: row.serverId }
+  const state = parseServerDaemonState(row.daemon)
+  if (!state) return null
+  return { ...state, serverId: row.serverId }
 }
 
-export async function attachDaemonKeyToServer(
+export async function attachDaemonStateToServer(
   db: Db,
   serverId: string,
   params: {
     publicJwk: JsonWebKey
     fingerprint: string
-    algorithm?: string
+    algorithm?: "Ed25519"
   },
-): Promise<{ daemonKeyId: string }> {
+): Promise<{ keyId: string }> {
   const now = nowTs()
-  const [existing] = await db
-    .select({ daemonKeyId: server.daemonKeyId })
-    .from(server)
-    .where(eq(server.id, serverId))
-    .limit(1)
-  const daemonKeyId = existing?.daemonKeyId ?? crypto.randomUUID()
+  const daemonState = buildServerDaemonState(params)
 
   await db
     .update(server)
     .set({
-      daemonKeyId,
-      daemonKeyAlgorithm: params.algorithm ?? "Ed25519",
-      daemonPublicKey: params.publicJwk,
-      daemonKeyFingerprint: params.fingerprint,
-      daemonKeyCreatedAt: now,
-      daemonKeyLastUsedAt: null,
-      daemonKeyRevokedAt: null,
+      daemon: daemonState,
       updatedAt: now,
     })
     .where(eq(server.id, serverId))
 
-  return { daemonKeyId }
+  return { keyId: daemonState.key.id }
+}
+
+async function updateServerDaemonState(
+  db: Db,
+  serverId: string,
+  updater: (state: ServerDaemonState) => ServerDaemonState,
+): Promise<boolean> {
+  const existing = await getServerDaemonStateByServerId(db, serverId)
+  if (!existing) return false
+
+  const now = nowTs()
+  await db
+    .update(server)
+    .set({
+      daemon: updater(existing),
+      updatedAt: now,
+    })
+    .where(eq(server.id, serverId))
+
+  return true
 }
 
 export async function touchDaemonKeyLastUsed(
@@ -130,21 +95,61 @@ export async function touchDaemonKeyLastUsed(
   serverId: string,
 ): Promise<void> {
   const now = nowTs()
-  await db
-    .update(server)
-    .set({
-      daemonKeyLastUsedAt: now,
-      updatedAt: now,
-    })
-    .where(eq(server.id, serverId))
+  await updateServerDaemonState(db, serverId, (state) => ({
+    ...state,
+    key: {
+      ...state.key,
+      lastUsedAt: now,
+    },
+  }))
+}
+
+export async function touchDaemonLastSeen(
+  db: Db,
+  serverId: string,
+): Promise<void> {
+  const now = nowTs()
+  await updateServerDaemonState(db, serverId, (state) => ({
+    ...state,
+    lastSeenAt: now,
+  }))
+}
+
+export async function touchDaemonKeyLastUsedAndLastSeen(
+  db: Db,
+  serverId: string,
+): Promise<void> {
+  const now = nowTs()
+  await updateServerDaemonState(db, serverId, (state) => ({
+    ...state,
+    lastSeenAt: now,
+    key: {
+      ...state.key,
+      lastUsedAt: now,
+    },
+  }))
 }
 
 export async function revokeDaemonKey(db: Db, serverId: string): Promise<void> {
   const now = nowTs()
+  await updateServerDaemonState(db, serverId, (state) => ({
+    ...state,
+    key: {
+      ...state.key,
+      revokedAt: now,
+    },
+  }))
+}
+
+export async function clearServerDaemonState(
+  db: Db,
+  serverId: string,
+): Promise<void> {
+  const now = nowTs()
   await db
     .update(server)
     .set({
-      daemonKeyRevokedAt: now,
+      daemon: null,
       updatedAt: now,
     })
     .where(eq(server.id, serverId))

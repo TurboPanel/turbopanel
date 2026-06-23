@@ -15,10 +15,11 @@ import {
   verifyDaemonJwt,
 } from "./authn/daemon-jwt.ts";
 import {
-  attachDaemonKeyToServer,
-  getServerDaemonKeyByFingerprint,
-  getServerDaemonKeyByServerId,
-  touchDaemonKeyLastUsed,
+  attachDaemonStateToServer,
+  getServerDaemonStateByFingerprint,
+  getServerDaemonStateByServerId,
+  isDaemonKeyActive,
+  touchDaemonKeyLastUsedAndLastSeen,
 } from "./authn/server-identity-db.ts";
 import {
   buildAuthPayload,
@@ -139,14 +140,14 @@ export function registerDaemonApiRoutes(
         return c.json({ ok: false, error: "Missing serverId or keyId" }, 400);
       }
 
-      const server = await getServerDaemonKeyByServerId(db, serverId);
-      if (!server) {
+      const daemonState = await getServerDaemonStateByServerId(db, serverId);
+      if (!daemonState) {
         return c.json({ ok: false, error: "Server key not found" }, 404);
       }
-      if (server.daemonKeyId !== keyId) {
+      if (daemonState.key.id !== keyId) {
         return c.json({ ok: false, error: "Server key mismatch" }, 400);
       }
-      if (server.daemonKeyRevokedAt !== null) {
+      if (!isDaemonKeyActive(daemonState.key)) {
         return c.json({ ok: false, error: "Server key is inactive" }, 400);
       }
 
@@ -241,17 +242,17 @@ export function registerDaemonApiRoutes(
       return c.json({ ok: false, error: "Unable to resolve server" }, 400);
     }
 
-    const existing = await getServerDaemonKeyByFingerprint(db, fingerprint);
+    const existing = await getServerDaemonStateByFingerprint(db, fingerprint);
     if (existing && existing.serverId !== serverId) {
       return c.json({ ok: false, error: "Fingerprint already exists" }, 409);
     }
 
-    const result = await attachDaemonKeyToServer(db, serverId, {
+    const result = await attachDaemonStateToServer(db, serverId, {
       publicJwk,
       fingerprint,
     });
 
-    return c.json({ serverId, keyId: result.daemonKeyId }, 200);
+    return c.json({ serverId, keyId: result.keyId }, 200);
   });
 
   daemon.post("/auth/session", async (c) => {
@@ -277,14 +278,14 @@ export function registerDaemonApiRoutes(
       return c.json({ ok: false, error: "Missing required session fields" }, 400);
     }
 
-    const server = await getServerDaemonKeyByServerId(db, serverId);
-    if (!server) {
+    const daemonState = await getServerDaemonStateByServerId(db, serverId);
+    if (!daemonState) {
       return c.json({ ok: false, error: "Server key not found" }, 404);
     }
-    if (server.daemonKeyId !== keyId) {
+    if (daemonState.key.id !== keyId) {
       return c.json({ ok: false, error: "Server key mismatch" }, 400);
     }
-    if (server.daemonKeyRevokedAt !== null) {
+    if (!isDaemonKeyActive(daemonState.key)) {
       return c.json({ ok: false, error: "Server key is inactive" }, 400);
     }
 
@@ -306,7 +307,7 @@ export function registerDaemonApiRoutes(
       hostname,
     });
     const verified = await verifyDaemonSignature(
-      server.daemonPublicKey,
+      daemonState.key.publicJwk,
       payload,
       signature,
     );
@@ -314,7 +315,7 @@ export function registerDaemonApiRoutes(
       return c.json({ ok: false, error: "Invalid signature" }, 403);
     }
 
-    void touchDaemonKeyLastUsed(db, serverId).catch((err) => {
+    void touchDaemonKeyLastUsedAndLastSeen(db, serverId).catch((err) => {
       console.warn("failed to touch daemon server key", err);
     });
     await touchServerMetadata(db, serverId, { machineId, hostname });

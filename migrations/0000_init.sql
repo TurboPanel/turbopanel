@@ -150,14 +150,7 @@ CREATE TABLE "server" (
 	"display_name" varchar(255),
 	"metadata" jsonb,
 	"options" jsonb,
-	"daemon_key_id" uuid,
-	"daemon_key_algorithm" text,
-	"daemon_public_key" jsonb,
-	"daemon_key_fingerprint" text,
-	"daemon_key_created_at" timestamp(3) with time zone,
-	"daemon_key_last_used_at" timestamp(3) with time zone,
-	"daemon_key_revoked_at" timestamp(3) with time zone,
-	CONSTRAINT "server_daemon_key_fingerprint_unique" UNIQUE("daemon_key_fingerprint")
+	"daemon" jsonb
 );
 --> statement-breakpoint
 CREATE TABLE "service" (
