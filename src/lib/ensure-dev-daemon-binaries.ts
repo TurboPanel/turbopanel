@@ -8,10 +8,10 @@ const REQUIRED_RELEASE_ARTIFACTS = [
 ] as const
 
 const REQUIRED_COMPILE_ARTIFACTS = [
-  'turbopaneld-linux-amd64',
-  'turbopaneld-linux-arm64',
-  'turbopanel-bootstrap-orchestration-linux-amd64',
-  'turbopanel-bootstrap-orchestration-linux-arm64',
+  '.build/turbopaneld-linux-amd64',
+  '.build/turbopaneld-linux-arm64',
+  '.build/turbopanel-bootstrap-orchestration-linux-amd64',
+  '.build/turbopanel-bootstrap-orchestration-linux-arm64',
 ] as const
 
 function resolveDenoBin(): string {
