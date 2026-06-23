@@ -24,7 +24,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export const DEFAULT_ORGANIZATION_NAME = 'Default Organization'
 export const DEFAULT_TEAM_NAME = 'Default Team'
-export const COLOCATED_SERVER_DISPLAY_NAME = 'This server'
+export const COLOCATED_SERVER_DISPLAY_NAME = 'this server'
 
 export const IS_SIGNUP_ENABLED_CONFIG_KEY = 'IS_SIGNUP_ENABLED'
 
