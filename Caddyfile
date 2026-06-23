@@ -82,7 +82,7 @@
 
 	# Dev: daemon bootstrap script (same host as /downloads/daemon — not the install API).
 	@dev_daemon_run {
-		path /run.sh /install.sh
+		path /run.sh
 		expression `"{$TURBOPANEL_UI_MODE:static}" == "dev"`
 	}
 	handle @dev_daemon_run {
