@@ -44,7 +44,8 @@ export type SessionResponse = {
   username: string | null
   email: string | null
   role: string | null
-  needsInstall: boolean
+  /** Deno self-hosted only — omitted on Workers (no install wizard). */
+  needsInstall?: boolean
   organizationId: string | null
 }
 
@@ -138,7 +139,6 @@ export async function buildSessionResponse(
     username: sessionData.username,
     email: sessionData.email,
     role: sessionData.role,
-    needsInstall: false,
     organizationId: sessionData.organizationId,
   }
 
@@ -151,13 +151,10 @@ export async function buildSessionResponse(
     if (needsInstall) {
       return { ...base, needsInstall: true, organizationId: null }
     }
+    return { ...base, needsInstall: false, organizationId: sessionData.organizationId }
   }
 
-  return {
-    ...base,
-    needsInstall: false,
-    organizationId: sessionData.organizationId,
-  }
+  return base
 }
 
 export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {

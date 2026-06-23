@@ -1,6 +1,6 @@
 import { resolveSessionCookieName } from '../authn/crypto.ts'
 import { accessPaths, accessSchemas } from './access.ts'
-import { authPaths, authSchemas } from './auth.ts'
+import { authPaths, buildAuthSchemas } from './auth.ts'
 import { environmentPaths, environmentSchemas } from './environments.ts'
 import { hostingPaths, hostingSchemas } from './hostings.ts'
 import { installOpenApiPaths, installOpenApiSchemas } from './install.ts'
@@ -41,7 +41,7 @@ export function getClientOpenApiSpec(
         },
       },
       schemas: {
-        ...authSchemas,
+        ...buildAuthSchemas(options?.runtime),
         ...serverSchemas,
         ...buildLicenseSchemas(installCommandDescription),
         ...accessSchemas,

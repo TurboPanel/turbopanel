@@ -160,7 +160,14 @@ export async function getInstallStatus(
   }
 }
 
-export type ClientPublicStatus = InstallStatus & { ok: true }
+export type DenoClientPublicStatus = InstallStatus & { ok: true }
+
+export type WorkersClientPublicStatus = {
+  ok: true
+  isSignupEnabled: boolean
+}
+
+export type ClientPublicStatus = DenoClientPublicStatus | WorkersClientPublicStatus
 
 /** Public client status for GET /api/client/v1/status (both runtimes). */
 export async function getClientPublicStatus(
@@ -170,20 +177,10 @@ export async function getClientPublicStatus(
 ): Promise<ClientPublicStatus | null> {
   if (runtime === 'workers') {
     if (db === undefined) {
-      return {
-        ok: true,
-        needsInstall: false,
-        isInstallMode: false,
-        isSignupEnabled: false,
-      }
+      return { ok: true, isSignupEnabled: false }
     }
     const signupEnabled = await isSignupEnabled(db, envOverride)
-    return {
-      ok: true,
-      needsInstall: false,
-      isInstallMode: false,
-      isSignupEnabled: signupEnabled,
-    }
+    return { ok: true, isSignupEnabled: signupEnabled }
   }
 
   if (db === undefined) {

@@ -1,106 +1,145 @@
-export const authSchemas = {
-  OkHealth: {
-    type: 'object',
-    required: ['ok'],
-    properties: {
-      ok: { type: 'boolean', const: true },
+const denoClientStatusSchema = {
+  type: 'object',
+  required: ['ok', 'needsInstall', 'isInstallMode', 'isSignupEnabled'],
+  description:
+    'Public client status on Deno self-hosted. Reflects install wizard and sign-up state.',
+  properties: {
+    ok: { type: 'boolean', const: true },
+    needsInstall: {
+      type: 'boolean',
+      description: 'True when org + superadmin do not exist yet.',
+    },
+    isInstallMode: {
+      type: 'boolean',
+      description: 'True while the install wizard is active.',
+    },
+    isSignupEnabled: {
+      type: 'boolean',
+      description:
+        'Whether public sign-up is enabled (DB setting or TURBOPANEL_IS_SIGNUP_ENABLED env override).',
     },
   },
-  ClientStatus: {
-    type: 'object',
-    required: ['ok', 'needsInstall', 'isInstallMode', 'isSignupEnabled'],
-    description:
-      'Public client status. On Workers, needsInstall and isInstallMode are always false; isSignupEnabled reflects DB + env. On Deno self-hosted, all fields reflect install wizard and sign-up state.',
-    properties: {
-      ok: { type: 'boolean', const: true },
-      needsInstall: {
-        type: 'boolean',
-        description: 'True when org + superadmin do not exist yet (Deno only).',
+} as const
+
+const workersClientStatusSchema = {
+  type: 'object',
+  required: ['ok', 'isSignupEnabled'],
+  description:
+    'Public client status on Cloudflare Workers. Install fields are omitted — Workers has no self-hosted install wizard.',
+  properties: {
+    ok: { type: 'boolean', const: true },
+    isSignupEnabled: {
+      type: 'boolean',
+      description:
+        'Whether public sign-up is enabled (DB setting or TURBOPANEL_IS_SIGNUP_ENABLED env override).',
+    },
+  },
+} as const
+
+const denoSessionResponseSchema = {
+  type: 'object',
+  required: [
+    'ok',
+    'userId',
+    'username',
+    'email',
+    'role',
+    'needsInstall',
+    'organizationId',
+  ],
+  properties: {
+    ok: { type: 'boolean', const: true },
+    userId: { type: ['string', 'null'] },
+    username: { type: ['string', 'null'] },
+    email: { type: ['string', 'null'] },
+    role: { type: ['string', 'null'] },
+    needsInstall: { type: 'boolean' },
+    organizationId: { type: ['string', 'null'] },
+  },
+} as const
+
+const workersSessionResponseSchema = {
+  type: 'object',
+  required: ['ok', 'userId', 'username', 'email', 'role', 'organizationId'],
+  description:
+    'Session payload on Workers. needsInstall is omitted — Workers has no install wizard.',
+  properties: {
+    ok: { type: 'boolean', const: true },
+    userId: { type: ['string', 'null'] },
+    username: { type: ['string', 'null'] },
+    email: { type: ['string', 'null'] },
+    role: { type: ['string', 'null'] },
+    organizationId: { type: ['string', 'null'] },
+  },
+} as const
+
+export function buildAuthSchemas(runtime?: 'deno' | 'workers') {
+  const includeInstall = runtime !== 'workers'
+  return {
+    OkHealth: {
+      type: 'object',
+      required: ['ok'],
+      properties: {
+        ok: { type: 'boolean', const: true },
       },
-      isInstallMode: {
-        type: 'boolean',
-        description: 'True while the install wizard is active (Deno only).',
+    },
+    ClientStatus: includeInstall ? denoClientStatusSchema : workersClientStatusSchema,
+    ErrorResponse: {
+      type: 'object',
+      required: ['ok'],
+      properties: {
+        ok: { type: 'boolean', const: false },
+        error: { type: 'string' },
       },
-      isSignupEnabled: {
-        type: 'boolean',
-        description:
-          'Whether public sign-up is enabled (DB setting or TURBOPANEL_IS_SIGNUP_ENABLED env override).',
+    },
+    UnauthorizedResponse: {
+      type: 'object',
+      required: ['ok'],
+      properties: {
+        ok: { type: 'boolean', const: false },
       },
     },
-  },
-  ErrorResponse: {
-    type: 'object',
-    required: ['ok'],
-    properties: {
-      ok: { type: 'boolean', const: false },
-      error: { type: 'string' },
+    SignInRequest: {
+      type: 'object',
+      required: ['username', 'password'],
+      properties: {
+        username: { type: 'string' },
+        password: { type: 'string', format: 'password' },
+      },
     },
-  },
-  UnauthorizedResponse: {
-    type: 'object',
-    required: ['ok'],
-    properties: {
-      ok: { type: 'boolean', const: false },
+    SessionResponse: includeInstall
+      ? denoSessionResponseSchema
+      : workersSessionResponseSchema,
+    SignOutResponse: {
+      type: 'object',
+      required: ['ok'],
+      properties: {
+        ok: { type: 'boolean', const: true },
+      },
     },
-  },
-  SignInRequest: {
-    type: 'object',
-    required: ['username', 'password'],
-    properties: {
-      username: { type: 'string' },
-      password: { type: 'string', format: 'password' },
+    SignUpRequest: {
+      type: 'object',
+      required: ['email', 'password'],
+      properties: {
+        email: { type: 'string', format: 'email' },
+        password: { type: 'string', format: 'password' },
+      },
     },
-  },
-  SessionResponse: {
-    type: 'object',
-    required: [
-      'ok',
-      'userId',
-      'username',
-      'email',
-      'role',
-      'needsInstall',
-      'organizationId',
-    ],
-    properties: {
-      ok: { type: 'boolean', const: true },
-      userId: { type: ['string', 'null'] },
-      username: { type: ['string', 'null'] },
-      email: { type: ['string', 'null'] },
-      role: { type: ['string', 'null'] },
-      needsInstall: { type: 'boolean' },
-      organizationId: { type: ['string', 'null'] },
+    SignUpResponse: {
+      type: 'object',
+      required: ['ok'],
+      properties: {
+        ok: { type: 'boolean', const: true },
+      },
     },
-  },
-  SignOutResponse: {
-    type: 'object',
-    required: ['ok'],
-    properties: {
-      ok: { type: 'boolean', const: true },
+    VerifyEmailResponse: {
+      type: 'object',
+      required: ['ok'],
+      properties: {
+        ok: { type: 'boolean', const: true },
+      },
     },
-  },
-  SignUpRequest: {
-    type: 'object',
-    required: ['email', 'password'],
-    properties: {
-      email: { type: 'string', format: 'email' },
-      password: { type: 'string', format: 'password' },
-    },
-  },
-  SignUpResponse: {
-    type: 'object',
-    required: ['ok'],
-    properties: {
-      ok: { type: 'boolean', const: true },
-    },
-  },
-  VerifyEmailResponse: {
-    type: 'object',
-    required: ['ok'],
-    properties: {
-      ok: { type: 'boolean', const: true },
-    },
-  },
+  }
 }
 
 export const authPaths: Record<string, unknown> = {
