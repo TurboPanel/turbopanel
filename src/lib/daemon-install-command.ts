@@ -1,6 +1,5 @@
 const DEFAULT_CDN_INSTALLER_URL =
   'https://raw.githubusercontent.com/turbopanel/turbopanel-cdn/trunk/install.sh'
-const LICENSE_STAGING_DIR = '/opt/turbopanel/platform/config/daemon-license-staging'
 
 export function buildLicenseInstallCommand(opts: {
   runtime: 'deno' | 'workers'
@@ -43,9 +42,8 @@ export function buildLicenseInstallCommand(opts: {
 
   const instanceUrlFlag = includeHost ? ` --instance-url ${instanceUrl}` : ''
   return (
-    `mkdir -p ${LICENSE_STAGING_DIR} && ` +
-    `printf '%s' '${licenseId}' > ${LICENSE_STAGING_DIR}/license.id && ` +
-    `printf '%s' '${licenseToken}' > ${LICENSE_STAGING_DIR}/license.token && ` +
-    `curl -fsSL ${DEFAULT_CDN_INSTALLER_URL} | sh -s --${instanceUrlFlag}`
+    `TURBOPANEL_INSTALL_SCRIPT_URL=${DEFAULT_CDN_INSTALLER_URL} ` +
+    `curl -fsSL ${DEFAULT_CDN_INSTALLER_URL} | ` +
+    `sh -s -- --license ${licenseArg}${instanceUrlFlag}`
   )
 }

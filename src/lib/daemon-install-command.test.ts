@@ -15,6 +15,8 @@ describe('buildLicenseInstallCommand', () => {
       'curl -fsSL https://huey.turbopanel.dev:8443/run.sh',
     )
     expect(command).not.toContain('/api/install/v1/daemon-install.sh')
+    expect(command).toContain('| sh -s --')
+    expect(command).not.toContain('sudo sh -s --')
     expect(command).toContain('--host https://huey.turbopanel.dev:8443')
     expect(command).toContain(
       '--binary-url https://huey.turbopanel.dev:8443/downloads/daemon',
@@ -31,6 +33,8 @@ describe('buildLicenseInstallCommand', () => {
     })
 
     expect(command).toContain('/api/install/v1/daemon-install.sh')
+    expect(command).toContain('| sh -s --')
+    expect(command).not.toContain('sudo sh -s --')
     expect(command).toContain('--host https://huey.lan:8443')
   })
 
@@ -43,6 +47,23 @@ describe('buildLicenseInstallCommand', () => {
     })
 
     expect(command).toContain('raw.githubusercontent.com/turbopanel/turbopanel-cdn/trunk/install.sh')
+    expect(command).toContain('--license license-id:token')
+    expect(command).toContain('| sh -s --')
+    expect(command).not.toContain('sudo')
     expect(command).not.toContain('--instance-url')
+  })
+
+  it('does not require the operator to prefix sudo', () => {
+    const command = buildLicenseInstallCommand({
+      runtime: 'deno',
+      instanceUrl: 'https://node.example.com:8443',
+      licenseId: 'abc',
+      licenseToken: 'secret',
+    })
+
+    expect(command).toMatch(/curl -fsSL .+ \| sh -s --/)
+    expect(command).toContain('--license abc:secret')
+    expect(command).toContain('--binary-url')
+    expect(command).not.toContain('sudo')
   })
 })

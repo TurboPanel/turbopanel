@@ -17,6 +17,27 @@ import { INSTALL_API_PREFIX } from '../../surfaces.ts'
 const DAEMON_INSTALL_SCRIPT = `#!/bin/sh
 set -eu
 
+tp_is_root() { [ "$(id -u)" = "0" ]; }
+tp_user_in_sudo_group() {
+	_groups="$(id -nG 2>/dev/null)" || return 1
+	for _g in $_groups; do
+		case "$_g" in
+		sudo | wheel | admin) return 0 ;;
+		esac
+	done
+	return 1
+}
+tp_sudo_installed() { command -v sudo >/dev/null 2>&1; }
+tp_install_privilege_denied() {
+	_script="$1"
+	if tp_user_in_sudo_group; then
+		echo "$_script: run as root (su -); sudo is not installed yet — the daemon installer will install it" >&2
+	else
+		echo "$_script: must run as root or as a user in the sudo group" >&2
+	fi
+	exit 1
+}
+
 LICENSE=""
 HOST_URL=""
 BINARY_URL=""
@@ -67,24 +88,30 @@ if [ -z "$LICENSE_ID" ] || [ -z "$LICENSE_TOKEN" ]; then
 	exit 1
 fi
 
-# Stage outside the daemon checkout — git clone into turbopanel_daemon_dir fails
-# when that path already contains files (see daemon-repo role).
-STAGING_DIR="/opt/turbopanel/platform/config/daemon-license-staging"
-mkdir -p "$STAGING_DIR"
+if [ -z "$HOST_URL" ]; then
+	echo "daemon-install.sh: --host is required" >&2
+	exit 1
+fi
 
-printf '%s' "$LICENSE_ID" > "$STAGING_DIR/license.id"
-printf '%s' "$LICENSE_TOKEN" > "$STAGING_DIR/license.token"
+INSTALL_SCRIPT_URL="\${HOST_URL%/}/api/install/v1/daemon-install.sh"
+if ! tp_is_root; then
+	if tp_user_in_sudo_group && tp_sudo_installed; then
+		if [ -n "$BINARY_URL" ]; then
+			exec curl -fsSL "$INSTALL_SCRIPT_URL" | sudo sh -s -- \
+				--license "$LICENSE" --host "$HOST_URL" --binary-url "$BINARY_URL"
+		fi
+		exec curl -fsSL "$INSTALL_SCRIPT_URL" | sudo sh -s -- \
+			--license "$LICENSE" --host "$HOST_URL"
+	fi
+	tp_install_privilege_denied daemon-install.sh
+fi
 
 INSTALLER_URL="\${TURBOPANEL_INSTALLER_URL:-https://raw.githubusercontent.com/turbopanel/turbopanel-cdn/trunk/install.sh}"
 
 if [ -n "$BINARY_URL" ]; then
 	export TURBOPANEL_DAEMON_BINARY_URL="$BINARY_URL"
 fi
-if [ -n "$HOST_URL" ]; then
-	curl -fsSL "$INSTALLER_URL" | sh -s -- --instance-url "$HOST_URL"
-else
-	curl -fsSL "$INSTALLER_URL" | sh
-fi
+curl -fsSL "$INSTALLER_URL" | sh -s -- --instance-url "$HOST_URL" --license "$LICENSE"
 `
 
 async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
