@@ -10,8 +10,8 @@
 #   TURBOPANEL_UI_MODE       "dev" | "static" (default: static)
 #   EXPO_PORT                Expo dev server port when UI_MODE=dev (default: 8081)
 #   TURBOPANEL_UI_ROOT       Static export directory when UI_MODE=static
-#   TURBOPANEL_DOWNLOADS_ROOT  Directory for /downloads/* file_server (default: ../daemon/dist)
-#   TURBOPANEL_DAEMON_REPO     Daemon checkout root for /run.sh when UI_MODE=dev
+#   TURBOPANEL_DAEMON_REPO      Daemon checkout root in dev (default: ../daemon); Caddy serves
+#                               /downloads/daemon from {repo}/dist when UI_MODE=dev
 #   TURBOPANEL_SOCKET_DIAL   Unix socket dial path for instance (Deno runtime)
 #   TURBOPANEL_INSTANCE_RUNTIME  "deno" | "workers" (default: deno)
 #   WRANGLER_DEV_PORT        wrangler dev port when runtime is workers (default: 18787)
@@ -69,11 +69,14 @@
 		}
 	}
 
-	@downloads path /downloads/daemon/*
-	handle @downloads {
+	@dev_daemon_downloads {
+		path /downloads/daemon/*
+		expression `"{$TURBOPANEL_UI_MODE:static}" == "dev"`
+	}
+	handle @dev_daemon_downloads {
 		header Cache-Control "no-store"
 		route {
-			root * {$TURBOPANEL_DOWNLOADS_ROOT:../daemon/dist}
+			root * {$TURBOPANEL_DAEMON_REPO:../daemon}/dist
 			uri strip_prefix /downloads/daemon
 			file_server {
 				browse
