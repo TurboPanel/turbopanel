@@ -94,6 +94,43 @@ async function findExistingServerId(
   return undefined
 }
 
+/**
+ * Resolve an existing server row to reuse for a licensed enrollment.
+ *
+ * Reuse is keyed on hardware-independent identity only:
+ *  1. an explicit persisted `serverId` (the daemon's own canonical id), or
+ *  2. a server already bound to *this exact license* (idempotent re-enroll).
+ *
+ * `machineId` / `hostname` are intentionally NOT used here: cloned VMs share
+ * `/etc/machine-id` (and often hostnames), so matching on them lets a brand-new
+ * server silently hijack/overwrite an existing server row. A new license must
+ * always create a new server.
+ */
+async function findReusableLicensedServerId(
+  db: Db,
+  identity: ServerHelloIdentity,
+  licenseId: string,
+): Promise<string | undefined> {
+  const hinted = identity.serverId?.trim()
+  if (hinted && UUID_RE.test(hinted)) {
+    const byId = await db
+      .select({ id: server.id })
+      .from(server)
+      .where(eq(server.id, hinted))
+      .limit(1)
+    if (byId.length > 0) return byId[0].id
+  }
+
+  const byLicense = await db
+    .select({ id: server.id })
+    .from(server)
+    .where(eq(server.licenseId, licenseId))
+    .limit(1)
+  if (byLicense.length > 0) return byLicense[0].id
+
+  return undefined
+}
+
 type ServerLicenseBinding = {
   licenseId: string | null
   organizationId: string | null
@@ -167,7 +204,7 @@ async function resolveLicensedServerId(
   const verified = await verifyDaemonLicense(db, licenseId, licenseToken)
   if (!verified) return null
 
-  const existing = await findExistingServerId(db, identity)
+  const existing = await findReusableLicensedServerId(db, identity, licenseId)
   if (existing) {
     const binding = await getServerLicenseBinding(db, existing)
     if (
@@ -206,7 +243,7 @@ async function resolveLicensedServerId(
     return id
   } catch (err) {
     if (!isUniqueViolation(err)) throw err
-    const raced = await findExistingServerId(db, identity)
+    const raced = await findReusableLicensedServerId(db, identity, licenseId)
     if (!raced) throw err
     const racedBinding = await getServerLicenseBinding(db, raced)
     if (
