@@ -66,12 +66,69 @@ function normalizeSan(entry) {
   return `IP:${normalizeIp(entry.slice(3))}`
 }
 
+// Env vars whose URL host(s) should be covered by the server cert. These are
+// the address(es) daemons actually dial, so the leaf cert must be valid for
+// them. Keeping this as the single source of truth means any hostname works
+// without hardcoding — set the URL(s) and the SAN follows.
+//
+// A control plane can be reachable at MULTIPLE addresses at once (e.g. an
+// internal LAN host AND an external/tunnel hostname), so every var is treated
+// as a comma-separated list. `TURBOPANEL_PUBLIC_URLS` (plural) is the canonical
+// operator-managed list; the singular vars are accepted for convenience.
+const PUBLIC_URL_ENV_KEYS = [
+  'TURBOPANEL_PUBLIC_URLS',
+  'TURBOPANEL_PUBLIC_URL',
+  'TURBOPANEL_BASE_URL',
+  'TURBOPANEL_INSTANCE_URL',
+]
+
+function isIpLiteral(host) {
+  if (!host) return false
+  if (host.includes(':')) return true // IPv6
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(host) // IPv4
+}
+
+/** Parse one URL or bare host into a normalized hostname, or null to skip. */
+function hostFromEntry(entry) {
+  const trimmed = entry.trim()
+  if (!trimmed) return null
+  let host
+  try {
+    // Accept full URLs ("https://host:port") and bare hosts ("host" / "host:port").
+    host = new URL(trimmed.includes('://') ? trimmed : `https://${trimmed}`).hostname
+  } catch {
+    return null
+  }
+  // URL() wraps IPv6 literals in brackets; strip them for SAN emission.
+  host = host.replace(/^\[/, '').replace(/\]$/, '')
+  if (!host || host === 'localhost') return null
+  return host
+}
+
+/** Hostnames/IPs parsed from the configured public/instance URL list(s). */
+function urlDerivedHosts() {
+  const dns = new Set()
+  const ip = new Set()
+  for (const key of PUBLIC_URL_ENV_KEYS) {
+    const raw = process.env[key]
+    if (!raw) continue
+    for (const entry of raw.split(',')) {
+      const host = hostFromEntry(entry)
+      if (!host) continue
+      if (isIpLiteral(host)) ip.add(host)
+      else dns.add(host)
+    }
+  }
+  return { dns, ip }
+}
+
 function explicitDnsNames() {
   const names = new Set()
   for (const entry of process.env.TURBOPANEL_TLS_EXTRA_SANS?.split(',') ?? []) {
     const trimmed = entry.trim()
     if (trimmed) names.add(trimmed)
   }
+  for (const name of urlDerivedHosts().dns) names.add(name)
   return names
 }
 
@@ -101,6 +158,7 @@ function extraDnsSans() {
 function subjectAltNames() {
   const sans = new Set(['DNS:localhost', 'IP:127.0.0.1', 'IP:0:0:0:0:0:0:0:1'])
   for (const entry of extraDnsSans()) sans.add(entry)
+  for (const addr of urlDerivedHosts().ip) sans.add(normalizeSan(`IP:${addr}`))
 
   for (const entries of Object.values(networkInterfaces())) {
     for (const ni of entries ?? []) {

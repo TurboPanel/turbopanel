@@ -9,6 +9,12 @@ export function isSuperadminRole(role: string | null | undefined): boolean {
   return role === SUPERADMIN_ROLE
 }
 
+export const ADMIN_ROLE = 'admin'
+
+export function isAdminRole(role: string | null | undefined): boolean {
+  return role === SUPERADMIN_ROLE || role === ADMIN_ROLE
+}
+
 export type SessionData = {
   sessionId: string
   userId: string

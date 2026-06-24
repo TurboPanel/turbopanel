@@ -12,4 +12,6 @@ interface CloudflareBindings {
   TURBOPANEL_SYSTEM_EMAIL_FROM?: string
   TURBOPANEL_BASE_URL?: string
   TURBOPANEL_PBKDF2_ITERATIONS?: string
+  /** When `1` or `true`, expose dev-only admin OpenAPI/Scalar routes (`wrangler dev` only). */
+  TURBOPANEL_DEV_SURFACE?: string
 }

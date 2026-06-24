@@ -1533,6 +1533,7 @@ export class DaemonCellObject {
           lastInboundAt: inbound.at,
         });
         break;
+      case "public-urls-update-result":
       case "dev-sync-result":
       case "tunnel-token-result":
       case "update-result":

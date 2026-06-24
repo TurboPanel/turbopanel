@@ -5,6 +5,7 @@ import { deriveSecretsConfig, parseSecretsEnv } from './client/authn/secrets.ts'
 import { createApp, type AppEnv } from './app'
 import { createDurableObjectDaemonCellRegistry } from './daemon/cell/do-registry.ts'
 import { createDurableObjectChallengeStore } from './daemon/cell/challenge-store.ts'
+import { registerAdminRoutes } from './admin/routes.ts'
 import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
 import { createWorkersDb, type DaemonChallengeStoreProvider } from './db'
 import { registerWorkersDaemonWebSocket } from './daemon/workers-ws.ts'
@@ -26,6 +27,11 @@ let cachedDaemonCellRegistryFactory:
     ReturnType<typeof createDurableObjectDaemonCellRegistry>)
   | null = null
 let lastControlPlaneMaintenanceAt = 0
+
+function isWorkersDevSurface(env: CloudflareBindings): boolean {
+  const flag = env.TURBOPANEL_DEV_SURFACE?.trim().toLowerCase()
+  return flag === '1' || flag === 'true'
+}
 
 function createWorkersChallengeStoreProvider(
   env: CloudflareBindings,
@@ -75,6 +81,11 @@ async function initWorkerApp(env: CloudflareBindings) {
   })
   registerWorkersDaemonWebSocket(cachedApp, {
     secrets: cachedDaemonJwtSecrets ?? undefined,
+  })
+  registerAdminRoutes(cachedApp, {
+    secrets: cachedSessionSecrets!,
+    runtime: 'workers',
+    devSurface: isWorkersDevSurface(env),
   })
   cachedDaemonCellRegistryFactory = (env, db) =>
     createDurableObjectDaemonCellRegistry(env, db)

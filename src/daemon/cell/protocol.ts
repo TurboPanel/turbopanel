@@ -67,6 +67,14 @@ export type DaemonMessage =
     error?: string;
     at: string;
   }
+  | { type: "public-urls-update"; id: string; urls: string[]; at: string }
+  | {
+    type: "public-urls-update-result";
+    id: string;
+    ok: boolean;
+    error?: string;
+    at: string;
+  }
   | { type: "update"; id: string; updateUrl: string; at: string }
   | {
     type: "update-result";
@@ -90,6 +98,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set(
     "addresses-result",
     "dev-sync-result",
     "tunnel-token-result",
+    "public-urls-update-result",
     "update-result",
     "monitor.sync",
     "monitor.heartbeat",
@@ -129,6 +138,7 @@ export type DaemonOutboundEnvelope =
   })
   | (OutboundEnvelopeBase & { kind: "dev-sync"; phase: "end" })
   | (OutboundEnvelopeBase & { kind: "tunnel-token"; token: string })
+  | (OutboundEnvelopeBase & { kind: "public-urls-update"; urls: string[] })
   | (OutboundEnvelopeBase & { kind: "update"; updateUrl: string })
   | (OutboundEnvelopeBase & { kind: "ping" })
   | (OutboundEnvelopeBase & { kind: "echo"; payload: unknown })
@@ -165,6 +175,13 @@ export type DaemonInboundEnvelope =
   }
   | {
     kind: "tunnel-token-result";
+    requestId: string;
+    at: string;
+    ok: boolean;
+    error?: string;
+  }
+  | {
+    kind: "public-urls-update-result";
     requestId: string;
     at: string;
     ok: boolean;
@@ -246,6 +263,14 @@ export function wireMessageToInboundEnvelope(
     case "tunnel-token-result":
       return {
         kind: "tunnel-token-result",
+        requestId: msg.id,
+        at: msg.at,
+        ok: msg.ok,
+        error: msg.error,
+      };
+    case "public-urls-update-result":
+      return {
+        kind: "public-urls-update-result",
         requestId: msg.id,
         at: msg.at,
         ok: msg.ok,
@@ -339,6 +364,13 @@ export function outboundEnvelopeToWireMessage(
         type: "tunnel-token",
         id: env.requestId,
         token: env.token,
+        at: env.at,
+      };
+    case "public-urls-update":
+      return {
+        type: "public-urls-update",
+        id: env.requestId,
+        urls: env.urls,
         at: env.at,
       };
     case "update":

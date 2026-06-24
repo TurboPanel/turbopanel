@@ -130,7 +130,7 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
       displayName,
     })
 
-    const instanceUrl = parsedInstallBaseUrl ?? resolvePublicBaseUrl(c, opts)
+    const instanceUrl = parsedInstallBaseUrl ?? await resolvePublicBaseUrl(c, opts)
     const devRunScript = devSurface || parsedInstallBaseUrl != null
     const installCommand = buildLicenseInstallCommand({
       runtime: opts.runtime,

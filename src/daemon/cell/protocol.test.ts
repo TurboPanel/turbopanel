@@ -119,6 +119,39 @@ Deno.test("wireMessageToInboundEnvelope maps inbound wire types", () => {
     }),
     { kind: "update-result", requestId: "r6", at, ok: true, error: undefined },
   );
+
+  assertEquals(
+    wireMessageToInboundEnvelope({
+      type: "public-urls-update-result",
+      id: "r7",
+      at,
+      ok: true,
+    }),
+    {
+      kind: "public-urls-update-result",
+      requestId: "r7",
+      at,
+      ok: true,
+      error: undefined,
+    },
+  );
+
+  assertEquals(
+    wireMessageToInboundEnvelope({
+      type: "public-urls-update-result",
+      id: "r8",
+      at,
+      ok: false,
+      error: "cert regen failed",
+    }),
+    {
+      kind: "public-urls-update-result",
+      requestId: "r8",
+      at,
+      ok: false,
+      error: "cert regen failed",
+    },
+  );
 });
 
 Deno.test("wireMessageToInboundEnvelope returns null for non-inbound types", () => {
@@ -324,6 +357,20 @@ Deno.test("outboundEnvelopeToWireMessage maps outbound kinds", () => {
       token: "tok",
     }),
     { type: "tunnel-token", id: "req-1", token: "tok", at: base.at },
+  );
+
+  assertEquals(
+    outboundEnvelopeToWireMessage({
+      ...base,
+      kind: "public-urls-update",
+      urls: ["https://panel.example.com", "huey.lan:8443"],
+    }),
+    {
+      type: "public-urls-update",
+      id: "req-1",
+      urls: ["https://panel.example.com", "huey.lan:8443"],
+      at: base.at,
+    },
   );
 
   assertEquals(

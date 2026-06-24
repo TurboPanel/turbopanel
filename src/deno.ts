@@ -11,6 +11,7 @@ import { DAEMON_PING_MS } from './daemon/cell/protocol.ts'
 import {
   ensureColocatedLicenseCredentialsOnDisk,
 } from './client/authn/install-state.ts'
+import { registerAdminRoutes } from './admin/routes.ts'
 import { registerInstallRoutes } from './lib/install/routes.ts'
 import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
 import { registerDaemonWebSocket } from './daemon/deno-ws.ts'
@@ -108,6 +109,11 @@ registerDaemonWebSocket(routes, {
   db,
   secrets: daemonJwtSecrets,
   daemonCellRegistry,
+})
+registerAdminRoutes(routes, {
+  secrets: sessionSecrets,
+  runtime: 'deno',
+  devSurface: developerSurface,
 })
 const socketPath = resolveInstanceSocket()
 

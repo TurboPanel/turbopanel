@@ -12,12 +12,17 @@ import {
 import type { DerivedSecretsConfig } from './secrets.ts'
 import {
   getSession,
+  isAdminRole,
   isSuperadminRole,
   type SessionData,
 } from './session-store.ts'
 
 function isSuperadmin(sessionData: SessionData): boolean {
   return isSuperadminRole(sessionData.role)
+}
+
+function isAdmin(sessionData: SessionData): boolean {
+  return isAdminRole(sessionData.role)
 }
 
 export type { SessionData }
@@ -104,6 +109,24 @@ export function createRootOnlyMiddleware(
     }
 
     if (!isSuperadmin(resolved.data)) {
+      return c.json({ ok: false, error: 'Forbidden' }, 403)
+    }
+
+    c.set('session', resolved.data)
+    await next()
+  }
+}
+
+export function createAdminAccessMiddleware(
+  secrets: DerivedSecretsConfig,
+): MiddlewareHandler<AppEnv> {
+  return async (c, next) => {
+    const resolved = await resolveSession(c, secrets, getDb(c))
+    if (!resolved) {
+      return c.json({ ok: false, error: 'Unauthorized' }, 401)
+    }
+
+    if (!isAdmin(resolved.data)) {
       return c.json({ ok: false, error: 'Forbidden' }, 403)
     }
 

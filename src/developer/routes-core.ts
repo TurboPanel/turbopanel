@@ -24,7 +24,7 @@ import {
 } from '../daemon/cell/protocol.ts'
 import type { ServerAddresses } from '../server-addresses.ts'
 import { organization, server } from '../lib/db/schema.ts'
-import { collectServerAddresses } from '../server-addresses.ts'
+import { collectServerAddresses } from '../server-addresses-deno.ts'
 import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
 import { registerDatabaseRoutes } from './database-routes.ts'
 

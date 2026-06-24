@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
-import { createSessionMiddleware } from '../client/authn/middleware.ts'
+import { createAdminAccessMiddleware, createRootOnlyMiddleware } from '../client/authn/middleware.ts'
+import { resolveColocatedServerId } from '../client/authn/install-state.ts'
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import {
   broadcastEchoToFleet,
@@ -21,11 +22,19 @@ import {
 } from '../daemon/cell/protocol.ts'
 import { getDaemonCellRegistry, getDb } from '../db.ts'
 import type { ServerAddresses } from '../server-addresses.ts'
-import { collectServerAddresses } from '../server-addresses.ts'
+import { emptyServerAddresses } from '../server-addresses.ts'
+import { buildAdminScalarHtml } from '../scalar-html.ts'
 import { ADMIN_API_PREFIX } from '../surfaces.ts'
+import { getAdminOpenApiSpec } from './openapi/index.ts'
+import {
+  getPublicUrls,
+  parsePublicUrlEntries,
+  setPublicUrls,
+} from './public-urls.ts'
 
 const COMMAND_TIMEOUT_MS = 30_000
 const ADDRESSES_TIMEOUT_MS = 10_000
+const PUBLIC_URLS_APPLY_TIMEOUT_MS = 60_000
 
 function nowTs(): string {
   return new Date().toISOString()
@@ -43,12 +52,15 @@ function extractAddresses(record: { status: string; result?: unknown }): ServerA
 }
 
 /**
- * Admin UI surface: fleet management, diagnostics, shell, addresses.
- * Unmounted until a real, documented admin surface ships.
+ * Admin UI surface: fleet diagnostics, public URL management, and (dev-only) shell.
  */
-export function registerAdminRoutes(app: Hono, opts: { secrets: DerivedSecretsConfig }) {
+export function registerAdminRoutes(app: Hono, opts: {
+  secrets: DerivedSecretsConfig
+  runtime: 'deno' | 'workers'
+  devSurface: boolean
+}) {
   const admin = new Hono()
-  admin.use('*', createSessionMiddleware(opts.secrets))
+  admin.use('*', createAdminAccessMiddleware(opts.secrets))
 
   admin.get('/daemon/connections', async (c) => {
     const registry = getDaemonCellRegistry(c)
@@ -111,68 +123,184 @@ export function registerAdminRoutes(app: Hono, opts: { secrets: DerivedSecretsCo
     return c.json({ commands })
   })
 
-  admin.post('/daemon/command', async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
-    const body = await c.req.json().catch(() => null)
-    const command = typeof body?.command === 'string' ? body.command.trim() : ''
-    if (!command) return c.json({ error: 'expected { command: string }' }, 400)
+  if (opts.devSurface) {
+    admin.post('/daemon/command', createRootOnlyMiddleware(opts.secrets), async (c) => {
+      const registry = getDaemonCellRegistry(c)
+      if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
+      const body = await c.req.json().catch(() => null)
+      const command = typeof body?.command === 'string' ? body.command.trim() : ''
+      if (!command) return c.json({ error: 'expected { command: string }' }, 400)
 
-    const ids = await registry.listOnlineServerIds()
-    const commandIds = (
-      await Promise.all(
-        ids.map(async (serverId) => {
-          const requestId = generateRequestId()
-          const envelope: DaemonOutboundEnvelope = {
-            kind: 'command',
-            deliveryId: generateDeliveryId(),
-            requestId,
-            at: nowTs(),
-            command,
-          }
-          try {
-            await registry.getCell(serverId).createRequestAndWait(
-              envelope,
-              COMMAND_TIMEOUT_MS,
-            )
-            return requestId
-          } catch {
-            return null
-          }
-        }),
-      )
-    ).filter((id): id is string => id !== null)
-    return c.json({ ok: true, sent: commandIds.length, commandIds })
-  })
+      const ids = await registry.listOnlineServerIds()
+      const commandIds = (
+        await Promise.all(
+          ids.map(async (serverId) => {
+            const requestId = generateRequestId()
+            const envelope: DaemonOutboundEnvelope = {
+              kind: 'command',
+              deliveryId: generateDeliveryId(),
+              requestId,
+              at: nowTs(),
+              command,
+            }
+            try {
+              await registry.getCell(serverId).createRequestAndWait(
+                envelope,
+                COMMAND_TIMEOUT_MS,
+              )
+              return requestId
+            } catch {
+              return null
+            }
+          }),
+        )
+      ).filter((id): id is string => id !== null)
+      return c.json({ ok: true, sent: commandIds.length, commandIds })
+    })
 
-  admin.post('/daemon/:id/command', async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    const db = getDb(c)
-    if (!registry || !db) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
-    const id = c.req.param('id')
-    const body = await c.req.json().catch(() => null)
-    const command = typeof body?.command === 'string' ? body.command.trim() : ''
-    if (!command) return c.json({ error: 'expected { command: string }' }, 400)
+    admin.post('/daemon/:id/command', createRootOnlyMiddleware(opts.secrets), async (c) => {
+      const registry = getDaemonCellRegistry(c)
+      const db = getDb(c)
+      if (!registry || !db) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
+      const id = c.req.param('id')
+      const body = await c.req.json().catch(() => null)
+      const command = typeof body?.command === 'string' ? body.command.trim() : ''
+      if (!command) return c.json({ error: 'expected { command: string }' }, 400)
 
-    if (!await isServerConnected(db, registry, id)) {
-      return c.json({ error: 'daemon not connected' }, 404)
+      if (!await isServerConnected(db, registry, id)) {
+        return c.json({ error: 'daemon not connected' }, 404)
+      }
+
+      const requestId = generateRequestId()
+      const envelope: DaemonOutboundEnvelope = {
+        kind: 'command',
+        deliveryId: generateDeliveryId(),
+        requestId,
+        at: nowTs(),
+        command,
+      }
+      await registry.getCell(id).createRequestAndWait(envelope, COMMAND_TIMEOUT_MS)
+      return c.json({ ok: true, commandId: requestId })
+    })
+  }
+
+  admin.get('/instance/addresses', async (c) => {
+    if (opts.runtime !== 'deno') {
+      return c.json({
+        ok: false,
+        error: 'instance address collection is not available on this runtime',
+        addresses: emptyServerAddresses(),
+      }, 422)
     }
-
-    const requestId = generateRequestId()
-    const envelope: DaemonOutboundEnvelope = {
-      kind: 'command',
-      deliveryId: generateDeliveryId(),
-      requestId,
-      at: nowTs(),
-      command,
-    }
-    await registry.getCell(id).createRequestAndWait(envelope, COMMAND_TIMEOUT_MS)
-    return c.json({ ok: true, commandId: requestId })
-  })
-
-  admin.get('/instance/addresses', (c) => {
+    const { collectServerAddresses } = await import('../server-addresses-deno.ts')
     const addresses = collectServerAddresses()
     return c.json({ ok: true, source: 'instance', addresses })
+  })
+
+  admin.get('/instance/public-urls', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ ok: true, urls: [] })
+    const urls = await getPublicUrls(db)
+    return c.json({ ok: true, urls })
+  })
+
+  admin.put('/instance/public-urls', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+
+    const body = await c.req.json().catch(() => null)
+    if (!body || typeof body !== 'object' || !('urls' in body)) {
+      return c.json({ ok: false, error: 'expected { urls: string[] }' }, 400)
+    }
+    if (!Array.isArray(body.urls) || !body.urls.every((u: unknown) => typeof u === 'string')) {
+      return c.json({ ok: false, error: 'expected { urls: string[] }' }, 400)
+    }
+
+    const parsed = parsePublicUrlEntries(body.urls)
+    if (!parsed.ok) {
+      return c.json(parsed, 422)
+    }
+
+    await setPublicUrls(db, parsed.urls)
+    return c.json({ ok: true, urls: parsed.urls, applied: false })
+  })
+
+  admin.post('/instance/public-urls/apply', async (c) => {
+    if (opts.runtime === 'workers') {
+      return c.json(
+        { ok: false, error: 'cert apply is not applicable on this runtime' },
+        422,
+      )
+    }
+
+    const db = getDb(c)
+    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+
+    const body = await c.req.json().catch(() => null)
+    let urls: string[]
+
+    if (body && typeof body === 'object' && 'urls' in body) {
+      if (!Array.isArray(body.urls) || !body.urls.every((u: unknown) => typeof u === 'string')) {
+        return c.json({ ok: false, error: 'expected { urls?: string[] }' }, 400)
+      }
+      const parsed = parsePublicUrlEntries(body.urls)
+      if (!parsed.ok) {
+        return c.json(parsed, 422)
+      }
+      await setPublicUrls(db, parsed.urls)
+      urls = parsed.urls
+    } else {
+      urls = await getPublicUrls(db)
+    }
+
+    const registry = getDaemonCellRegistry(c)
+    if (!registry) {
+      return c.json({ ok: false, error: 'Daemon cell registry unavailable' }, 503)
+    }
+
+    const serverId = await resolveColocatedServerId(db, registry)
+    if (!serverId) {
+      return c.json(
+        { ok: false, error: 'no co-located daemon connected to apply public URLs' },
+        503,
+      )
+    }
+
+    const snapshots = await registry.getSnapshots([serverId])
+    if (!snapshots.get(serverId)?.connected) {
+      return c.json({ ok: false, error: 'co-located daemon disconnected' }, 503)
+    }
+
+    const envelope: DaemonOutboundEnvelope = {
+      kind: 'public-urls-update',
+      deliveryId: generateDeliveryId(),
+      requestId: generateRequestId(),
+      at: nowTs(),
+      urls,
+    }
+
+    try {
+      const record = await registry.getCell(serverId).createRequestAndWait(
+        envelope,
+        PUBLIC_URLS_APPLY_TIMEOUT_MS,
+      )
+      if (record.status === 'done') {
+        return c.json({ ok: true, applied: true })
+      }
+      if (record.status === 'failed') {
+        return c.json(
+          { ok: false, applied: false, error: record.error ?? 'daemon reported failure' },
+          500,
+        )
+      }
+      return c.json(
+        { ok: false, applied: false, error: 'timeout waiting for daemon' },
+        500,
+      )
+    } catch (err) {
+      const errMessage = err instanceof Error ? err.message : String(err)
+      return c.json({ ok: false, applied: false, error: errMessage }, 500)
+    }
   })
 
   admin.get('/daemon/addresses', async (c) => {
@@ -246,6 +374,18 @@ export function registerAdminRoutes(app: Hono, opts: { secrets: DerivedSecretsCo
       return c.json({ error: message }, status)
     }
   })
+
+  if (opts.devSurface) {
+    admin.get('/openapi.json', (c) => {
+      const origin = new URL(c.req.url).origin
+      return c.json(getAdminOpenApiSpec(origin, { devSurface: opts.devSurface }))
+    })
+    admin.get('/reference', (c) => {
+      const origin = new URL(c.req.url).origin
+      const specUrl = `${ADMIN_API_PREFIX}/openapi.json`
+      return c.html(buildAdminScalarHtml(specUrl, origin))
+    })
+  }
 
   app.route(ADMIN_API_PREFIX, admin)
   return app

@@ -1,5 +1,7 @@
 import type { Context } from 'hono'
-import { collectServerAddresses } from '../server-addresses.ts'
+import { getPublicUrls, publicUrlEntryToInstallOrigin } from '../admin/public-urls.ts'
+import { getDb } from '../db.ts'
+import { collectServerAddresses } from '../server-addresses-deno.ts'
 
 function trimTrailingSlash(url: string): string {
   return url.replace(/\/$/, '')
@@ -18,26 +20,47 @@ function readCaddyPort(): string {
 export function parseInstallBaseUrl(value: string | undefined): string | null {
   const trimmed = value?.trim()
   if (!trimmed) return null
+  return publicUrlEntryToInstallOrigin(trimmed, readCaddyPort())
+}
 
-  try {
-    const url = new URL(trimmed)
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null
-    if (!url.hostname || url.hostname === 'null') return null
-    return trimTrailingSlash(url.origin)
-  } catch {
-    return null
+async function resolveStoredPublicUrlOrigin(c: Context): Promise<string | null> {
+  const db = getDb(c)
+  if (db) {
+    const urls = await getPublicUrls(db)
+    const first = urls[0]?.trim()
+    if (first) {
+      const parsed = publicUrlEntryToInstallOrigin(first, readCaddyPort())
+      if (parsed) return parsed
+    }
   }
+
+  if (typeof Deno !== 'undefined') {
+    const publicUrls = Deno.env.get('TURBOPANEL_PUBLIC_URLS')?.trim()
+    if (publicUrls) {
+      const first = publicUrls.split(',')[0]?.trim()
+      if (first) {
+        const parsed = publicUrlEntryToInstallOrigin(first, readCaddyPort())
+        if (parsed) return parsed
+      }
+    }
+  }
+
+  return null
 }
 
 /**
  * Public HTTPS base URL for the instance (Caddy entrypoint), used in install commands
  * and verification links. Behind the Unix socket, `new URL(c.req.url).origin` is null —
- * prefer TURBOPANEL_BASE_URL, forwarded headers, or a discovered host address.
+ * prefer operator-managed public URLs, then TURBOPANEL_BASE_URL, forwarded headers, or
+ * a discovered host address.
  */
-export function resolvePublicBaseUrl(
+export async function resolvePublicBaseUrl(
   c: Context,
   opts?: { baseUrl?: string },
-): string {
+): Promise<string> {
+  const fromStored = await resolveStoredPublicUrlOrigin(c)
+  if (fromStored) return fromStored
+
   const fromOpts = opts?.baseUrl?.trim()
   if (fromOpts) return trimTrailingSlash(fromOpts)
 
