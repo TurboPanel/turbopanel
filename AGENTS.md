@@ -104,14 +104,14 @@ The instance uses **Drizzle ORM** over **postgres.js** with `prepare: false` (re
 
 | Runtime | Factory | When connected |
 |---|---|---|
-| Cloudflare Workers | `createWorkersDb(env.HYPERDRIVE)` | `HYPERDRIVE` binding present in `wrangler.jsonc` |
+| Cloudflare Workers | `createWorkersDb(env.HYPERDRIVE)` or `createWorkersDb({ connectionString })` | `HYPERDRIVE` binding in `wrangler.jsonc` (all named envs including `testing`); **`wrangler dev`** may fall back to `TURBOPANEL_DATABASE_URL` when Hyperdrive is absent |
 | Deno (self-hosted) | `createDenoDb()` | `TURBOPANEL_DATABASE_URL` set by `instance-launch` |
 
 Route handlers read the per-request client via `getDb(c)` (set by `createApp({ db })`). **Deno boot requires `TURBOPANEL_DATABASE_URL`:** `createDenoDb()` throws before `createApp()` when the variable is missing or blank, so the process exits instead of serving without a database.
 
 | Variable | Purpose |
 |---|---|
-| `TURBOPANEL_DATABASE_URL` | Full postgres connection URL. **Deno mode:** required at boot — `createDenoDb()` throws immediately when missing or blank (self-hosted instance will not start). Passed directly to postgres.js (supports Unix socket URLs: `postgresql://user:pass@/db?host=/var/run/turbopanel/postgres`). **Workers runtime:** uses the `HYPERDRIVE` binding, not this env var. When the URL uses `?host=` for a Unix socket, ensure Deno has read access to that directory (`/run/turbopanel` covers the default Docker bind-mount path). |
+| `TURBOPANEL_DATABASE_URL` | Full postgres connection URL. **Deno mode:** required at boot — `createDenoDb()` throws immediately when missing or blank (self-hosted instance will not start). Passed directly to postgres.js (supports Unix socket URLs: `postgresql://user:pass@/db?host=/var/run/turbopanel/postgres`). **Workers runtime:** prefers the `HYPERDRIVE` binding; `src/workers.ts` falls back to this env var when Hyperdrive is unset (local `wrangler dev` without a binding). When the URL uses `?host=` for a Unix socket, ensure Deno has read access to that directory (`/run/turbopanel` covers the default Docker bind-mount path). |
 | `DATABASE_URL` | **Tooling only** (drizzle-kit, `pnpm migrate`, `./introspect.sh` / `./sync.sh` overrides). Accepted as a fallback when `TURBOPANEL_DATABASE_URL` is unset — common in CI and Cloudflare dashboard deploy workflows. Not read by the Deno instance or Workers runtime at request time. |
 
 ### Workers Hyperdrive

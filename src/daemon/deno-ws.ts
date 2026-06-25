@@ -75,6 +75,8 @@ export function registerDaemonWebSocket(
       let pumpAbort = false;
       let pingTimer: ReturnType<typeof setInterval> | undefined;
       let keyTouched = false;
+      let attachReady = false;
+      const pendingMessages: string[] = [];
 
       const touchKey = () => {
         if (keyTouched) return;
@@ -87,11 +89,141 @@ export function registerDaemonWebSocket(
         });
       };
 
+      const handleInboundMessage = async (
+        raw: string,
+        ws: WebSocket,
+      ): Promise<void> => {
+        const message = parseDaemonMessage(raw);
+        if (!message) {
+          compatLogWarn("ws", "ignored non-JSON message from daemon");
+          return;
+        }
+
+        compatLogInfo(
+          "ws",
+          `from ${connectionId ?? "unknown"}: ${message.type}`,
+        );
+
+        if (!DAEMON_INBOUND_ALLOWED.has(message.type)) {
+          compatLogWarn(
+            "ws",
+            `ignored disallowed message type ${message.type} from ${
+              connectionId ?? "unknown"
+            }`,
+          );
+          return;
+        }
+
+        const cell = registry.getCell(payload.sub);
+
+        if (message.type === "ping") {
+          const pong: DaemonMessage = {
+            type: "pong",
+            id: message.id,
+            at: new Date().toISOString(),
+          };
+          ws.send(JSON.stringify(pong));
+          if (connectionId) {
+            void cell.heartbeat({ connectionId });
+            void cell.putSnapshot({ lastInboundAt: message.at });
+          }
+          touchKey();
+          return;
+        }
+
+        const envelope = wireMessageToInboundEnvelope(message);
+        if (
+          envelope?.kind === "monitor-sync" ||
+          envelope?.kind === "monitor-heartbeat" ||
+          envelope?.kind === "monitor-transition"
+        ) {
+          let acceptedSequence = 0;
+          let resyncNeeded = false;
+          if (envelope.kind === "monitor-sync") {
+            incrementMonitorCounter("monitorFullSync");
+            const result = await cell.applyMonitorSync(envelope);
+            acceptedSequence = result.acceptedSequence;
+            resyncNeeded = result.resyncNeeded;
+            if (!result.resyncNeeded) {
+              await onMonitorMessageApplied(
+                db,
+                payload.sub,
+                cell,
+                "monitor-sync",
+                envelope,
+              );
+            }
+          } else if (envelope.kind === "monitor-heartbeat") {
+            const result = await cell.applyMonitorHeartbeat(envelope);
+            acceptedSequence = result.acceptedSequence;
+            resyncNeeded = result.resyncNeeded;
+            if (!result.resyncNeeded) {
+              await onMonitorMessageApplied(
+                db,
+                payload.sub,
+                cell,
+                "monitor-heartbeat",
+                envelope,
+              );
+            }
+          } else {
+            const result = await cell.applyMonitorTransition(envelope);
+            acceptedSequence = result.acceptedSequence;
+            resyncNeeded = result.resyncNeeded;
+            if (!result.resyncNeeded) {
+              await onMonitorMessageApplied(
+                db,
+                payload.sub,
+                cell,
+                "monitor-transition",
+                envelope,
+              );
+            }
+          }
+
+          await cell.putSnapshot({
+            lastHeartbeatAt: new Date().toISOString(),
+          });
+
+          const ackWire = outboundEnvelopeToWireMessage({
+            kind: "monitor-ack",
+            serverId: payload.sub,
+            acceptedSequence,
+            resyncNeeded: resyncNeeded || undefined,
+            deliveryId: generateDeliveryId(),
+            requestId: generateRequestId(),
+            at: new Date().toISOString(),
+          });
+          ws.send(JSON.stringify(ackWire));
+
+          compatLogInfo(
+            "ws",
+            `monitor ack for ${payload.sub}: acceptedSequence=${acceptedSequence}${
+              resyncNeeded ? ", resyncNeeded" : ""
+            }`,
+          );
+          touchKey();
+          return;
+        }
+
+        if (envelope) {
+          void cell.handleInbound(envelope);
+          void cell.putSnapshot({ lastInboundAt: message.at });
+        }
+
+        if (message.type === "pong" && connectionId) {
+          void cell.heartbeat({ connectionId });
+        }
+
+        touchKey();
+      };
+
       return {
         async onOpen(_event, ws) {
           const cell = registry.getCell(payload.sub);
           const attached = await cell.attachDaemonSocket({
             keyId: payload.kid,
+            sessionId: payload.jti,
             hostname: undefined,
             remoteAddress: identityAddress,
             connectedAt,
@@ -115,7 +247,8 @@ export function registerDaemonWebSocket(
               .catch((err) => {
                 compatLogError(
                   "ws",
-                  `failed to assign colocated server: ${err}`,
+                  "failed to assign colocated server:",
+                  String(err),
                 );
               });
           }
@@ -132,9 +265,9 @@ export function registerDaemonWebSocket(
                 });
                 for (const envelope of batch) {
                   const wireMsg = outboundEnvelopeToWireMessage(envelope);
+                  await cell.markSent(envelope.deliveryId, connectionId!);
                   ws.send(JSON.stringify(wireMsg));
                   await cell.ackOutbox([envelope.deliveryId], consumer);
-                  await cell.markSent(envelope.deliveryId, connectionId!);
                 }
                 if (batch.length > 0) {
                   await cell.putSnapshot({
@@ -158,134 +291,21 @@ export function registerDaemonWebSocket(
               at: new Date().toISOString(),
             });
           }, 15_000);
+
+          attachReady = true;
+          for (const raw of pendingMessages.splice(0)) {
+            await handleInboundMessage(raw, ws);
+          }
         },
         async onMessage(event, ws) {
           const raw = typeof event.data === "string"
             ? event.data
             : String(event.data);
-          const message = parseDaemonMessage(raw);
-          if (!message) {
-            compatLogWarn("ws", "ignored non-JSON message from daemon");
+          if (!attachReady) {
+            pendingMessages.push(raw);
             return;
           }
-
-          compatLogInfo(
-            "ws",
-            `from ${connectionId ?? "unknown"}: ${message.type}`,
-          );
-
-          if (!DAEMON_INBOUND_ALLOWED.has(message.type)) {
-            compatLogWarn(
-              "ws",
-              `ignored disallowed message type ${message.type} from ${
-                connectionId ?? "unknown"
-              }`,
-            );
-            return;
-          }
-
-          const cell = registry.getCell(payload.sub);
-
-          if (message.type === "ping") {
-            const pong: DaemonMessage = {
-              type: "pong",
-              id: message.id,
-              at: new Date().toISOString(),
-            };
-            ws.send(JSON.stringify(pong));
-            if (connectionId) {
-              void cell.heartbeat({ connectionId });
-              void cell.putSnapshot({ lastInboundAt: message.at });
-            }
-            touchKey();
-            return;
-          }
-
-          const envelope = wireMessageToInboundEnvelope(message);
-          if (
-            envelope?.kind === "monitor-sync" ||
-            envelope?.kind === "monitor-heartbeat" ||
-            envelope?.kind === "monitor-transition"
-          ) {
-            let acceptedSequence = 0;
-            let resyncNeeded = false;
-            if (envelope.kind === "monitor-sync") {
-              incrementMonitorCounter("monitorFullSync");
-              const result = await cell.applyMonitorSync(envelope);
-              acceptedSequence = result.acceptedSequence;
-              resyncNeeded = result.resyncNeeded;
-              if (!result.resyncNeeded) {
-                await onMonitorMessageApplied(
-                  db,
-                  payload.sub,
-                  cell,
-                  "monitor-sync",
-                  envelope,
-                );
-              }
-            } else if (envelope.kind === "monitor-heartbeat") {
-              const result = await cell.applyMonitorHeartbeat(envelope);
-              acceptedSequence = result.acceptedSequence;
-              resyncNeeded = result.resyncNeeded;
-              if (!result.resyncNeeded) {
-                await onMonitorMessageApplied(
-                  db,
-                  payload.sub,
-                  cell,
-                  "monitor-heartbeat",
-                  envelope,
-                );
-              }
-            } else {
-              const result = await cell.applyMonitorTransition(envelope);
-              acceptedSequence = result.acceptedSequence;
-              resyncNeeded = result.resyncNeeded;
-              if (!result.resyncNeeded) {
-                await onMonitorMessageApplied(
-                  db,
-                  payload.sub,
-                  cell,
-                  "monitor-transition",
-                  envelope,
-                );
-              }
-            }
-
-            await cell.putSnapshot({
-              lastHeartbeatAt: new Date().toISOString(),
-            });
-
-            const ackWire = outboundEnvelopeToWireMessage({
-              kind: "monitor-ack",
-              serverId: payload.sub,
-              acceptedSequence,
-              resyncNeeded: resyncNeeded || undefined,
-              deliveryId: generateDeliveryId(),
-              requestId: generateRequestId(),
-              at: new Date().toISOString(),
-            });
-            ws.send(JSON.stringify(ackWire));
-
-            compatLogInfo(
-              "ws",
-              `monitor ack for ${payload.sub}: acceptedSequence=${acceptedSequence}${
-                resyncNeeded ? ", resyncNeeded" : ""
-              }`,
-            );
-            touchKey();
-            return;
-          }
-
-          if (envelope) {
-            void cell.handleInbound(envelope);
-            void cell.putSnapshot({ lastInboundAt: message.at });
-          }
-
-          if (message.type === "pong" && connectionId) {
-            void cell.heartbeat({ connectionId });
-          }
-
-          touchKey();
+          await handleInboundMessage(raw, ws);
         },
         onClose() {
           pumpAbort = true;

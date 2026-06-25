@@ -167,7 +167,7 @@ Deno.test("projectServerDaemon offline writes lastSeenAt and status offline", as
   assertEquals(merged?.projection?.connected, false);
 });
 
-Deno.test("onDaemonDisconnected does not project offline", async () => {
+Deno.test("onDaemonDisconnected projects disconnected without marking status offline", async () => {
   const { db, updateCalls } = createMockDb({
     key: baseKey,
     projection: {
@@ -182,7 +182,10 @@ Deno.test("onDaemonDisconnected does not project offline", async () => {
 
   await onDaemonDisconnected(db, serverId);
 
-  assertEquals(updateCalls.length, 0);
+  assertEquals(updateCalls.length, 1);
+  const merged = parseServerDaemonState(updateCalls[0]?.daemon);
+  assertEquals(merged?.projection?.connected, false);
+  assertEquals(merged?.projection?.status, "healthy");
 });
 
 Deno.test("projectServerDaemon preserves server.daemon.key on write", async () => {

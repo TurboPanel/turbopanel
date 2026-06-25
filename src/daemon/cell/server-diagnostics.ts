@@ -61,12 +61,13 @@ export async function pingDaemonServer(
     return { ok: false, status: 504, error: 'ping timed out' }
   }
 
+  const sentAt = record.sentAt ?? envelope.at
   const pongAt = record.finishedAt ?? record.expiresAt
-  const tripMs = Math.max(0, Date.parse(pongAt) - Date.parse(record.sentAt!))
+  const tripMs = Math.max(0, Date.parse(pongAt) - Date.parse(sentAt))
   return {
     ok: true,
     tripMs,
-    sentAt: record.sentAt!,
+    sentAt,
     pongAt,
   }
 }

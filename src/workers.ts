@@ -91,6 +91,17 @@ async function initWorkerApp(env: CloudflareBindings) {
     createDurableObjectDaemonCellRegistry(env, db)
 }
 
+function resolveWorkersDb(env: CloudflareBindings): ReturnType<typeof createWorkersDb> | undefined {
+  if (env.HYPERDRIVE) {
+    return createWorkersDb(env.HYPERDRIVE)
+  }
+  const databaseUrl = env.TURBOPANEL_DATABASE_URL?.trim()
+  if (databaseUrl) {
+    return createWorkersDb({ connectionString: databaseUrl })
+  }
+  return undefined
+}
+
 export default {
   async fetch(request: Request, env: CloudflareBindings, ctx: ExecutionContext) {
     if (!initPromise) initPromise = initWorkerApp(env)
@@ -99,7 +110,7 @@ export default {
     const postgresConnectionString = env.HYPERDRIVE?.connectionString
       ?? env.TURBOPANEL_DATABASE_URL?.trim()
       ?? undefined
-    const db = env.HYPERDRIVE ? createWorkersDb(env.HYPERDRIVE) : undefined
+    const db = resolveWorkersDb(env)
     const requestApp = new Hono<AppEnv>()
     requestApp.use('*', async (c, next) => {
       if (db) c.set('db', db)

@@ -42,16 +42,18 @@ import {
   wireMessageToInboundEnvelope,
 } from "./protocol.ts";
 import { mergeSnapshotPresence } from "./snapshot-merge.ts";
-import { onMonitorMessageApplied } from "./control-plane-monitor.ts";
+import { onDaemonDisconnected, onMonitorMessageApplied } from "./control-plane-monitor.ts";
 import { projectServerDaemon } from "./postgres-projection.ts";
 
 const TERMINAL_STATUSES = new Set<PendingRequestStatus>([
+  "acked",
   "done",
   "failed",
   "expired",
 ]);
 
 const DAEMON_SOCKET_LEASE_MS = 45_000;
+const OUTBOX_INFLIGHT_LEASE_MS = 30_000;
 const DELIVERY_LEASE_NAME = "delivery";
 const DAEMON_SOCKET_LEASE_NAME = "daemon-socket";
 const OUTBOX_PUMP_ALARM_MS = 2_000;
@@ -540,6 +542,8 @@ export class DaemonCellObject {
 
     this.#appendEventInternal("connected", { connectionId });
 
+    this.#resetMonitorSequenceForReconnect(serverId);
+
     void this.#projectOnline(serverId, meta, connectedAt);
 
     return {
@@ -586,20 +590,50 @@ export class DaemonCellObject {
         if (!Number.isNaN(ms)) candidates.push(ms);
       }
     }
-    if (this.#ctx.getWebSockets().length > 0) {
+    if (this.#hasDeliverableOutbox() && this.#ctx.getWebSockets().length > 0) {
       candidates.push(Date.now() + OUTBOX_PUMP_ALARM_MS);
     }
-    if (candidates.length === 0) return;
+    if (candidates.length === 0) {
+      await this.#ctx.storage.deleteAlarm();
+      return;
+    }
     await this.#ctx.storage.setAlarm(Math.min(...candidates));
   }
 
-  async #ensureOutboxPumpAlarm(): Promise<void> {
+  #hasDeliverableOutbox(): boolean {
+    const cursor = this.#ctx.storage.sql.exec(
+      `SELECT seq FROM outbox WHERE status IN ('queued', 'inflight') LIMIT 1`,
+    );
+    for (const _ of cursor) return true;
+    return false;
+  }
+
+  #requeueExpiredInflightOutbox(nowMs = Date.now()): void {
+    const cutoff = nowIso(nowMs - OUTBOX_INFLIGHT_LEASE_MS);
+    this.#ctx.storage.sql.exec(
+      `UPDATE outbox SET status = 'queued', sent_at = NULL
+       WHERE status = 'inflight' AND sent_at IS NOT NULL AND sent_at <= ?`,
+      cutoff,
+    );
+  }
+
+  #requeueOutbox(deliveryId: string): void {
+    this.#ctx.storage.sql.exec(
+      `UPDATE outbox SET status = 'queued', sent_at = NULL WHERE delivery_id = ?`,
+      deliveryId,
+    );
+  }
+
+  async #scheduleOutboxRetryIfNeeded(): Promise<void> {
+    if (!this.#hasDeliverableOutbox()) return;
     await this.#scheduleNearestAlarm();
   }
 
   async #pumpOutboxToDaemonSockets(serverId: string): Promise<void> {
     const sockets = this.#ctx.getWebSockets();
     if (sockets.length === 0) return;
+
+    this.#requeueExpiredInflightOutbox();
 
     const batch = await this.#readOutboxBatch(serverId, {
       consumer: "do-ws",
@@ -619,15 +653,15 @@ export class DaemonCellObject {
         try {
           const wireMsg = outboundEnvelopeToWireMessage(envelope);
           ws.send(JSON.stringify(wireMsg));
-          await this.#ackOutbox(serverId, [envelope.deliveryId]);
           await this.#markSent(
             serverId,
             envelope.deliveryId,
             attachment.connectionId,
           );
+          await this.#ackOutbox(serverId, [envelope.deliveryId]);
           delivered = true;
         } catch {
-          // Socket may have closed between read and send.
+          this.#requeueOutbox(envelope.deliveryId);
         }
       }
     }
@@ -642,12 +676,8 @@ export class DaemonCellObject {
       );
     }
 
-    const queuedCursor = this.#ctx.storage.sql.exec(
-      `SELECT seq FROM outbox WHERE status = 'queued' LIMIT 1`,
-    );
-    for (const _ of queuedCursor) {
-      await this.#pumpOutboxToDaemonSockets(serverId);
-      return;
+    if (this.#hasDeliverableOutbox()) {
+      await this.#scheduleOutboxRetryIfNeeded();
     }
   }
 
@@ -697,7 +727,7 @@ export class DaemonCellObject {
     await this.#cancelOfflineDeadline(serverId);
 
     void this.#pumpOutboxToDaemonSockets(serverId);
-    await this.#ensureOutboxPumpAlarm();
+    await this.#scheduleOutboxRetryIfNeeded();
 
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -839,12 +869,17 @@ export class DaemonCellObject {
     const closedAt = nowIso();
     const reasonText = reason || String(code);
 
+    let isCurrentConnection = false;
     this.#ctx.storage.transactionSync(() => {
-      this.#ctx.storage.sql.exec(
-        "UPDATE cell_meta SET connected = 0, updated_at = ? WHERE server_id = ?",
-        closedAt,
+      const metaCursor = this.#ctx.storage.sql.exec(
+        "SELECT connection_id FROM cell_meta WHERE server_id = ?",
         attachment.serverId,
       );
+      for (const row of metaCursor) {
+        isCurrentConnection =
+          String(row.connection_id ?? "") === attachment.connectionId;
+      }
+
       this.#ctx.storage.sql.exec(
         `UPDATE connections SET closed_at = ?, reason = ?
          WHERE connection_id = ?`,
@@ -859,6 +894,14 @@ export class DaemonCellObject {
         attachment.connectionId,
         attachment.connectionId,
       );
+
+      if (isCurrentConnection) {
+        this.#ctx.storage.sql.exec(
+          "UPDATE cell_meta SET connected = 0, updated_at = ? WHERE server_id = ?",
+          closedAt,
+          attachment.serverId,
+        );
+      }
     });
 
     this.#appendEventInternal("disconnected", {
@@ -866,6 +909,10 @@ export class DaemonCellObject {
       reason: reasonText,
     });
 
+    if (isCurrentConnection) {
+      await this.#scheduleOfflineDeadline(attachment.serverId);
+      void this.#projectDisconnected(attachment.serverId);
+    }
   }
 
   async alarm(): Promise<void> {
@@ -896,6 +943,7 @@ export class DaemonCellObject {
 
     const serverId = this.#resolveServerId(new Request("https://do.internal/"));
     if (serverId) {
+      this.#requeueExpiredInflightOutbox(nowMs);
       await this.#processDueMonitorDeadlines(serverId, now, nowMs);
       this.#pruneMonitorTables(nowMs);
       await this.#pumpOutboxToDaemonSockets(serverId);
@@ -1399,7 +1447,7 @@ export class DaemonCellObject {
         );
       });
       void this.#pumpOutboxToDaemonSockets(serverId);
-      void this.#ensureOutboxPumpAlarm();
+      void this.#scheduleOutboxRetryIfNeeded();
       return parseRequestRow(serverId, row);
     }
 
@@ -1434,12 +1482,12 @@ export class DaemonCellObject {
     );
     for (const row of cursor) {
       void this.#pumpOutboxToDaemonSockets(serverId);
-      void this.#ensureOutboxPumpAlarm();
+      void this.#scheduleOutboxRetryIfNeeded();
       return parseRequestRow(serverId, row);
     }
 
     void this.#pumpOutboxToDaemonSockets(serverId);
-    void this.#ensureOutboxPumpAlarm();
+    void this.#scheduleOutboxRetryIfNeeded();
     return {
       serverId,
       requestId: outbound.requestId,
@@ -1863,7 +1911,10 @@ export class DaemonCellObject {
       await scheduler.wait(params.blockMs);
     }
 
+    this.#requeueExpiredInflightOutbox();
+
     const envelopes: DaemonOutboundEnvelope[] = [];
+    const claimedAt = nowIso();
     this.#ctx.storage.transactionSync(() => {
       const cursor = this.#ctx.storage.sql.exec(
         `SELECT seq, payload_json, delivery_id FROM outbox
@@ -1879,8 +1930,8 @@ export class DaemonCellObject {
           continue;
         }
         this.#ctx.storage.sql.exec(
-          `UPDATE outbox SET status = 'sent', sent_at = ? WHERE seq = ?`,
-          nowIso(),
+          `UPDATE outbox SET status = 'inflight', sent_at = ? WHERE seq = ?`,
+          claimedAt,
           row.seq,
         );
       }
@@ -2039,6 +2090,21 @@ export class DaemonCellObject {
       return Number(row.sequence ?? 0);
     }
     return 0;
+  }
+
+  #resetMonitorSequence(serverId: string): void {
+    this.#ctx.storage.sql.exec(
+      "UPDATE monitor_instance SET sequence = 0 WHERE server_id = ?",
+      serverId,
+    );
+  }
+
+  #resetMonitorSequenceForReconnect(serverId: string): void {
+    this.#resetMonitorSequence(serverId);
+    this.#ctx.storage.sql.exec(
+      "DELETE FROM monitor_deadline WHERE deadline_name = 'offline' AND server_id = ?",
+      serverId,
+    );
   }
 
   #persistMonitorSequence(serverId: string, sequence: number): void {
@@ -2632,13 +2698,30 @@ export class DaemonCellObject {
     serverId: string,
     msg: DaemonInboundEnvelope & { kind: "monitor-sync" },
   ): Promise<{ acceptedSequence: number; resyncNeeded: boolean }> {
-    const currentSequence = this.#readMonitorSequence(serverId);
-    const decision = evaluateFullSyncSequence(currentSequence, msg.sequence);
-    if (decision.action !== "accept") {
+    let currentSequence = this.#readMonitorSequence(serverId);
+    let decision = evaluateFullSyncSequence(currentSequence, msg.sequence);
+    if (decision.action === "gap") {
       return {
         acceptedSequence: decision.acceptedSequence,
         resyncNeeded: decision.resyncNeeded,
       };
+    }
+
+    const hasResources = msg.resources.length > 0;
+    const isStaleNoop = decision.action === "noop" &&
+      msg.sequence <= currentSequence;
+
+    if (isStaleNoop && !hasResources) {
+      return {
+        acceptedSequence: currentSequence,
+        resyncNeeded: false,
+      };
+    }
+
+    if (isStaleNoop && hasResources && msg.sequence < currentSequence) {
+      this.#resetMonitorSequence(serverId);
+      currentSequence = 0;
+      decision = evaluateFullSyncSequence(0, msg.sequence);
     }
 
     const nowMs = Date.now();
@@ -2656,14 +2739,16 @@ export class DaemonCellObject {
         incomingKeys.add(resource.resourceKey);
         this.#upsertMonitorResource(serverId, resource);
       }
-      this.#reconcileMonitorResources(serverId, incomingKeys);
+      if (hasResources) {
+        this.#reconcileMonitorResources(serverId, incomingKeys);
+      }
       this.#insertMonitorMetric(serverId, msg.at, msg.instance);
       this.#persistMonitorSequence(serverId, msg.sequence);
     });
     await this.#scheduleOfflineDeadline(serverId, nowMs);
     return {
-      acceptedSequence: decision.acceptedSequence,
-      resyncNeeded: decision.resyncNeeded,
+      acceptedSequence: msg.sequence,
+      resyncNeeded: false,
     };
   }
 
@@ -2700,8 +2785,8 @@ export class DaemonCellObject {
     });
     await this.#scheduleOfflineDeadline(serverId, nowMs);
     return {
-      acceptedSequence: decision.acceptedSequence,
-      resyncNeeded: decision.resyncNeeded,
+      acceptedSequence: msg.sequence,
+      resyncNeeded: false,
     };
   }
 
@@ -2903,6 +2988,12 @@ export class DaemonCellObject {
     const db = this.#getProjectionDb();
     if (!db) return;
     await projectServerDaemon(db, serverId, { kind: "offline" });
+  }
+
+  async #projectDisconnected(serverId: string): Promise<void> {
+    const db = this.#getProjectionDb();
+    if (!db) return;
+    await onDaemonDisconnected(db, serverId);
   }
 
   async #projectMonitorMessage(

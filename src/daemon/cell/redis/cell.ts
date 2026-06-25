@@ -61,6 +61,7 @@ import {
 } from "./lua.ts";
 
 const TERMINAL_STATUSES = new Set<PendingRequestStatus>([
+  "acked",
   "done",
   "failed",
   "expired",
@@ -308,6 +309,7 @@ export class RedisDaemonCell implements DaemonCell {
 
   async attachDaemonSocket(meta: {
     keyId: string;
+    sessionId?: string;
     hostname?: string;
     machineId?: string;
     remoteAddress?: string;
@@ -339,6 +341,7 @@ export class RedisDaemonCell implements DaemonCell {
       connected: "1",
       connectionId,
       keyId: meta.keyId,
+      sessionId: meta.sessionId ?? "",
       hostname: meta.hostname ?? "",
       machineId: meta.machineId ?? "",
       remoteAddress: meta.remoteAddress ?? "",
@@ -368,7 +371,17 @@ export class RedisDaemonCell implements DaemonCell {
       this.#rememberOutboxEntries(reclaimed);
     }
 
+    await this.putSnapshot({
+      sessionId: meta.sessionId,
+      keyId: meta.keyId,
+      remoteAddress: meta.remoteAddress,
+      connected: true,
+      connectedAt,
+    });
+
     await this.appendEvent("connected", { connectionId });
+
+    await this.#resetMonitorSequenceForReconnect();
 
     return {
       connectionId,
@@ -378,6 +391,11 @@ export class RedisDaemonCell implements DaemonCell {
         expiresAt,
       },
     };
+  }
+
+  async #resetMonitorSequenceForReconnect(): Promise<void> {
+    await this.#client.del(monitorSequenceKey(this.#serverId));
+    await this.#client.zrem(monitorDeadlinesKey(this.#serverId), "offline");
   }
 
   async detachDaemonSocket(params: {
@@ -1291,13 +1309,30 @@ export class RedisDaemonCell implements DaemonCell {
   async applyMonitorSync(
     msg: DaemonInboundEnvelope & { kind: "monitor-sync" },
   ): Promise<{ acceptedSequence: number; resyncNeeded: boolean }> {
-    const currentSequence = await this.#readMonitorSequence();
-    const decision = evaluateFullSyncSequence(currentSequence, msg.sequence);
-    if (decision.action !== "accept") {
+    let currentSequence = await this.#readMonitorSequence();
+    let decision = evaluateFullSyncSequence(currentSequence, msg.sequence);
+    if (decision.action === "gap") {
       return {
         acceptedSequence: decision.acceptedSequence,
         resyncNeeded: decision.resyncNeeded,
       };
+    }
+
+    const hasResources = msg.resources.length > 0;
+    const isStaleNoop = decision.action === "noop" &&
+      msg.sequence <= currentSequence;
+
+    if (isStaleNoop && !hasResources) {
+      return {
+        acceptedSequence: currentSequence,
+        resyncNeeded: false,
+      };
+    }
+
+    if (isStaleNoop && hasResources && msg.sequence < currentSequence) {
+      await this.#resetMonitorSequenceForReconnect();
+      currentSequence = 0;
+      decision = evaluateFullSyncSequence(0, msg.sequence);
     }
 
     const now = Date.now();
@@ -1319,39 +1354,41 @@ export class RedisDaemonCell implements DaemonCell {
       await this.#upsertMonitorResourceFields(resource);
     }
 
-    const indexKey = monitorResourcesIndexKey(this.#serverId);
-    const existingKeys = await this.#client.smembers(indexKey);
-    for (const resourceKey of existingKeys) {
-      if (incomingKeys.has(resourceKey)) continue;
+    if (hasResources) {
+      const indexKey = monitorResourcesIndexKey(this.#serverId);
+      const existingKeys = await this.#client.smembers(indexKey);
+      for (const resourceKey of existingKeys) {
+        if (incomingKeys.has(resourceKey)) continue;
 
-      const resourceFields = await this.#client.hgetall(
-        monitorResourceKey(this.#serverId, resourceKey),
-      );
-      if (resourceFields) {
-        const currentStatus = resourceFields.status as MonitorResourceStatus;
-        if (
-          currentStatus !== "offline" &&
-          currentStatus !== "stopped" &&
-          currentStatus !== "failed"
-        ) {
-          await this.#client.xadd(
-            monitorEventsKey(this.#serverId),
-            "*",
-            monitorEventStreamFields({
-              resourceKey,
-              kind: resourceFields.kind as MonitorResourceKind,
-              fromStatus: currentStatus,
-              toStatus: "offline",
-              at,
-              reason: "reconcile-removed",
-            }),
-            MONITOR_EVENT_RETAIN,
-          );
+        const resourceFields = await this.#client.hgetall(
+          monitorResourceKey(this.#serverId, resourceKey),
+        );
+        if (resourceFields) {
+          const currentStatus = resourceFields.status as MonitorResourceStatus;
+          if (
+            currentStatus !== "offline" &&
+            currentStatus !== "stopped" &&
+            currentStatus !== "failed"
+          ) {
+            await this.#client.xadd(
+              monitorEventsKey(this.#serverId),
+              "*",
+              monitorEventStreamFields({
+                resourceKey,
+                kind: resourceFields.kind as MonitorResourceKind,
+                fromStatus: currentStatus,
+                toStatus: "offline",
+                at,
+                reason: "reconcile-removed",
+              }),
+              MONITOR_EVENT_RETAIN,
+            );
+          }
         }
-      }
 
-      await this.#client.del(monitorResourceKey(this.#serverId, resourceKey));
-      await this.#client.srem(indexKey, resourceKey);
+        await this.#client.del(monitorResourceKey(this.#serverId, resourceKey));
+        await this.#client.srem(indexKey, resourceKey);
+      }
     }
 
     await this.#insertMonitorMetric(msg.at, msg.instance);
@@ -1359,8 +1396,8 @@ export class RedisDaemonCell implements DaemonCell {
     await this.#scheduleOfflineDeadline(now);
 
     return {
-      acceptedSequence: decision.acceptedSequence,
-      resyncNeeded: decision.resyncNeeded,
+      acceptedSequence: msg.sequence,
+      resyncNeeded: false,
     };
   }
 
@@ -1399,8 +1436,8 @@ export class RedisDaemonCell implements DaemonCell {
     await this.#scheduleOfflineDeadline(now);
 
     return {
-      acceptedSequence: decision.acceptedSequence,
-      resyncNeeded: decision.resyncNeeded,
+      acceptedSequence: msg.sequence,
+      resyncNeeded: false,
     };
   }
 

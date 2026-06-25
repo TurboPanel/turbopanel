@@ -805,4 +805,266 @@ describe("DaemonCellObject", () => {
     };
     expect(metricsBody.metrics.length).toBe(0);
   });
+
+  it("idle websocket attach does not schedule a recurring outbox alarm", async () => {
+    const serverId = "test-srv-idle-alarm";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const { ws } = await openDaemonWebSocket(stub, serverId);
+
+    const alarm = await runInDurableObject(
+      stub,
+      async (_instance, state) => await state.storage.getAlarm(),
+    );
+    expect(alarm).toBeNull();
+
+    ws.close(1000, "test done");
+  });
+
+  it("enqueue without websocket does not schedule an outbox pump alarm", async () => {
+    const serverId = "test-srv-outbox-no-alarm";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+
+    await cellRpc(stub, serverId, "/rpc/enqueue", {
+      method: "POST",
+      body: JSON.stringify({
+        outbound: {
+          kind: "command",
+          deliveryId: generateDeliveryId(),
+          requestId: generateRequestId(),
+          at: new Date().toISOString(),
+          command: "queued-without-socket",
+        },
+      }),
+    });
+
+    const alarm = await runInDurableObject(
+      stub,
+      async (_instance, state) => await state.storage.getAlarm(),
+    );
+    expect(alarm).toBeNull();
+  });
+
+  it(
+    "websocket stays open across one monitor heartbeat interval without instance pings",
+    async () => {
+      const serverId = "test-srv-idle-ws";
+      const stub = env.DAEMON_CELL.getByName(serverId);
+      const { ws } = await openDaemonWebSocket(stub, serverId);
+
+      ws.send(JSON.stringify({
+        type: "monitor.sync",
+        from: "daemon",
+        serverId,
+        sequence: 1,
+        at: new Date().toISOString(),
+        protocolVersion: 1,
+        instance: {},
+        resources: [],
+      }));
+
+      await waitForWebSocketMessage(ws);
+
+      await new Promise((resolve) => setTimeout(resolve, 65_000));
+
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+
+      ws.close(1000, "test done");
+    },
+    75_000,
+  );
+
+  it("attach resets monitor sequence for reconnect sync", async () => {
+    const serverId = "test-srv-reconnect-seq";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+
+    await cellRpc(stub, serverId, "/rpc/monitor/sync", {
+      method: "POST",
+      body: JSON.stringify({
+        serverId,
+        msg: {
+          kind: "monitor-sync",
+          serverId,
+          sequence: 4,
+          at: new Date().toISOString(),
+          protocolVersion: 1,
+          instance: {},
+          resources: [{
+            resourceKey: "container:reconnect",
+            kind: "container",
+            status: "healthy",
+          }],
+        },
+      }),
+    });
+
+    await cellRpc(stub, serverId, "/rpc/attach", {
+      method: "POST",
+      body: JSON.stringify({
+        serverId,
+        meta: { keyId: crypto.randomUUID() },
+      }),
+    });
+
+    const emptySync = await cellRpc(stub, serverId, "/rpc/monitor/sync", {
+      method: "POST",
+      body: JSON.stringify({
+        serverId,
+        msg: {
+          kind: "monitor-sync",
+          serverId,
+          sequence: 1,
+          at: new Date().toISOString(),
+          protocolVersion: 1,
+          instance: {},
+          resources: [],
+        },
+      }),
+    });
+    const emptyBody = await emptySync.json() as {
+      acceptedSequence: number;
+      resyncNeeded: boolean;
+    };
+    expect(emptyBody.acceptedSequence).toBe(1);
+    expect(emptyBody.resyncNeeded).toBe(false);
+
+    const fullSync = await cellRpc(stub, serverId, "/rpc/monitor/sync", {
+      method: "POST",
+      body: JSON.stringify({
+        serverId,
+        msg: {
+          kind: "monitor-sync",
+          serverId,
+          sequence: 2,
+          at: new Date().toISOString(),
+          protocolVersion: 1,
+          instance: {},
+          resources: [{
+            resourceKey: "container:reconnect",
+            kind: "container",
+            status: "degraded",
+          }],
+        },
+      }),
+    });
+    const fullBody = await fullSync.json() as {
+      acceptedSequence: number;
+      resyncNeeded: boolean;
+    };
+    expect(fullBody.acceptedSequence).toBe(2);
+    expect(fullBody.resyncNeeded).toBe(false);
+  });
+
+  it("websocket close marks snapshot disconnected", async () => {
+    const serverId = "test-srv-ws-disconnect";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const { ws } = await openDaemonWebSocket(stub, serverId);
+
+    ws.close(1000, "test done");
+    await waitFor(async () => {
+      const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
+        method: "GET",
+      });
+      const snapshot = await snapshotResponse.json() as { connected: boolean };
+      expect(snapshot.connected).toBe(false);
+    });
+  });
+
+  it(
+    "stale websocket close does not mark a newer attach offline",
+    async () => {
+      const serverId = "test-srv-stale-close";
+      const stub = env.DAEMON_CELL.getByName(serverId);
+
+      const first = await openDaemonWebSocket(stub, serverId);
+      const second = await openDaemonWebSocket(stub, serverId);
+
+      await waitFor(() => {
+        expect([WebSocket.CLOSING, WebSocket.CLOSED]).toContain(
+          first.ws.readyState,
+        );
+      });
+
+      const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
+        method: "GET",
+      });
+      const snapshot = await snapshotResponse.json() as {
+        connected: boolean;
+        sessionId?: string;
+      };
+      expect(snapshot.connected).toBe(true);
+      expect(snapshot.sessionId).toBe(second.tokenId);
+
+      second.ws.close(1000, "test done");
+    },
+    15_000,
+  );
+
+  it(
+    "requeues and redelivers outbox commands after socket closes during delivery",
+    async () => {
+      const serverId = "test-srv-outbox-reconnect";
+      const stub = env.DAEMON_CELL.getByName(serverId);
+      const requestId = generateRequestId();
+      const deliveryId = generateDeliveryId();
+      const at = new Date().toISOString();
+
+      const first = await openDaemonWebSocket(stub, serverId);
+      let firstReceived = false;
+      first.ws.addEventListener("message", () => {
+        firstReceived = true;
+      });
+
+      const enqueueResponse = cellRpc(stub, serverId, "/rpc/enqueue", {
+        method: "POST",
+        body: JSON.stringify({
+          outbound: {
+            kind: "command",
+            deliveryId,
+            requestId,
+            at,
+            command: "retry-after-reconnect",
+          },
+        }),
+      });
+      first.ws.close(4000, "simulate delivery failure");
+      await enqueueResponse;
+
+      await runInDurableObject(stub, async (instance: DaemonCellObject, state) => {
+        const cursor = state.storage.sql.exec(
+          "SELECT status FROM outbox WHERE delivery_id = ?",
+          deliveryId,
+        );
+        let status = "missing";
+        for (const row of cursor) {
+          status = String(row.status ?? "");
+        }
+        if (status === "acked") {
+          throw new Error("outbox item was acked before reconnect test could run");
+        }
+        if (status === "inflight") {
+          state.storage.sql.exec(
+            `UPDATE outbox SET sent_at = ? WHERE delivery_id = ?`,
+            new Date(Date.now() - 60_000).toISOString(),
+            deliveryId,
+          );
+          await instance.alarm();
+        }
+      });
+
+      const second = await openDaemonWebSocket(stub, serverId);
+      const raw = await waitForWebSocketMessage(second.ws);
+      const msg = JSON.parse(raw) as {
+        type: string;
+        command?: string;
+        id?: string;
+      };
+      expect(msg.type).toBe("command");
+      expect(msg.command).toBe("retry-after-reconnect");
+      expect(msg.id).toBe(requestId);
+      expect(firstReceived).toBe(false);
+
+      second.ws.close(1000, "test done");
+    },
+    15_000,
+  );
 });

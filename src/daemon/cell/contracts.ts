@@ -114,6 +114,7 @@ export type PendingRequestRecord = {
 export interface DaemonCell {
   attachDaemonSocket(meta: {
     keyId: string;
+    sessionId?: string;
     hostname?: string;
     machineId?: string;
     remoteAddress?: string;

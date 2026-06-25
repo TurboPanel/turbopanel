@@ -31,6 +31,7 @@ export type ProjectionIdentity = {
 export type ProjectionTrigger =
   | { kind: "online"; identity: ProjectionIdentity; connectedAt?: string }
   | { kind: "offline" }
+  | { kind: "disconnected" }
   | { kind: "identity"; identity: ProjectionIdentity }
   | { kind: "resource_transition"; events: MonitorEvent[] }
   | { kind: "summary_refresh" };
@@ -218,6 +219,23 @@ export async function projectServerDaemon(
         connected: false,
         connectedAt: currentProjection?.connectedAt,
         status: "offline",
+        healthyCount: currentProjection?.healthyCount ?? 0,
+        degradedCount: currentProjection?.degradedCount ?? 0,
+        unhealthyCount: currentProjection?.unhealthyCount ?? 0,
+        lastProjectedAt: now,
+      };
+      break;
+    }
+    case "disconnected": {
+      touchLastSeen = true;
+      nextProjection = {
+        hostname: currentProjection?.hostname,
+        machineId: currentProjection?.machineId,
+        remoteAddress: currentProjection?.remoteAddress,
+        keyId: currentProjection?.keyId,
+        connected: false,
+        connectedAt: currentProjection?.connectedAt,
+        status: currentProjection?.status ?? "unknown",
         healthyCount: currentProjection?.healthyCount ?? 0,
         degradedCount: currentProjection?.degradedCount ?? 0,
         unhealthyCount: currentProjection?.unhealthyCount ?? 0,

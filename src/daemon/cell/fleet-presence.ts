@@ -66,10 +66,12 @@ export async function resolveFleetPresence(
     const metadata = (row.metadata ?? {}) as ServerMetadata;
     const state = parseServerDaemonState(row.daemon);
     const rawRemote = projection?.remoteAddress ?? null;
-    const connected = onlineSet
+    const snapshot = snapshots.get(row.id);
+    const connected = snapshot !== undefined
+      ? snapshot.connected
+      : onlineSet
       ? onlineSet.has(row.id)
       : (projection?.connected ?? state?.projection?.connected ?? false);
-    const snapshot = snapshots.get(row.id);
 
     result.set(row.id, {
       serverId: row.id,

@@ -13,6 +13,8 @@ import {
   leaseKey,
   metaKey,
   monitorDeadlinesKey,
+  monitorInstanceKey,
+  monitorSequenceKey,
   onlineSetKey,
   outboxKey,
   requestKey,
@@ -360,6 +362,109 @@ Deno.test(
     const record = await waitPromise;
     assertEquals(record.status, "done");
     assertEquals(record.result, { exitCode: 0, stdout: "hi", stderr: "" });
+  }),
+);
+
+Deno.test(
+  "createRequestAndWait resolves acked when pong arrives",
+  withRedisCell(async ({ cell }) => {
+    const requestId = generateRequestId();
+    const at = new Date().toISOString();
+    const outbound = {
+      kind: "ping" as const,
+      deliveryId: generateDeliveryId(),
+      requestId,
+      at,
+    };
+
+    const waitPromise = cell.createRequestAndWait(outbound, 5000);
+    await cell.enqueue(outbound);
+    await cell.handleInbound({
+      kind: "pong",
+      requestId,
+      at,
+    });
+
+    const record = await waitPromise;
+    assertEquals(record.status, "acked");
+  }),
+);
+
+Deno.test(
+  "attachDaemonSocket resets monitor sequence for reconnect sync",
+  withRedisCell(async ({ cell, client, serverId }) => {
+    await client.set(monitorSequenceKey(serverId), "6");
+    await client.hset(monitorInstanceKey(serverId), {
+      sequence: "6",
+      at: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      instanceJson: "{}",
+    });
+
+    await cell.attachDaemonSocket({ keyId: crypto.randomUUID() });
+
+    const sequence = await client.get(monitorSequenceKey(serverId));
+    assertEquals(sequence, null);
+  }),
+);
+
+Deno.test(
+  "reconnect accepts empty monitor sync after attach",
+  withRedisCell(async ({ cell, serverId }) => {
+    await cell.applyMonitorSync(
+      monitorSyncEnvelope(serverId, [
+        { resourceKey: "container:a", kind: "container", status: "healthy" },
+      ], 3),
+    );
+
+    const attached = await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    });
+    await cell.detachDaemonSocket({
+      connectionId: attached.connectionId,
+      leaseToken: attached.lease.token,
+    });
+
+    await cell.attachDaemonSocket({ keyId: crypto.randomUUID() });
+
+    const result = await cell.applyMonitorSync(
+      monitorSyncEnvelope(serverId, [], 1),
+    );
+    assertEquals(result.acceptedSequence, 1);
+    assertEquals(result.resyncNeeded, false);
+  }),
+);
+
+Deno.test(
+  "reconnect accepts non-empty monitor sync after attach",
+  withRedisCell(async ({ cell, serverId }) => {
+    await cell.applyMonitorSync(
+      monitorSyncEnvelope(serverId, [
+        { resourceKey: "container:a", kind: "container", status: "healthy" },
+      ], 5),
+    );
+
+    const attached = await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    });
+    await cell.detachDaemonSocket({
+      connectionId: attached.connectionId,
+      leaseToken: attached.lease.token,
+    });
+
+    await cell.attachDaemonSocket({ keyId: crypto.randomUUID() });
+
+    const result = await cell.applyMonitorSync(
+      monitorSyncEnvelope(serverId, [
+        { resourceKey: "container:b", kind: "container", status: "degraded" },
+      ], 1),
+    );
+    assertEquals(result.acceptedSequence, 1);
+    assertEquals(result.resyncNeeded, false);
+
+    const resources = await cell.listMonitorResources(serverId);
+    const b = resources.find((row) => row.resourceKey === "container:b");
+    assertEquals(b?.status, "degraded");
   }),
 );
 

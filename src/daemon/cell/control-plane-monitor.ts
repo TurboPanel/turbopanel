@@ -24,10 +24,10 @@ export async function onDaemonConnected(
 }
 
 export async function onDaemonDisconnected(
-  _db: Db,
-  _serverId: string,
+  db: Db,
+  serverId: string,
 ): Promise<void> {
-  // connection presence only — monitor deadline handling owns offline projection.
+  await projectServerDaemon(db, serverId, { kind: "disconnected" });
 }
 
 export async function onMonitorMessageApplied(
