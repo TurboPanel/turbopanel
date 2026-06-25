@@ -8,10 +8,7 @@
   "compatibility_flags": ["nodejs_compat"],
   "dev": {
     "port": 18787,
-    "ip": "0.0.0.0",
-    "vars": {
-      "TURBOPANEL_DEV_SURFACE": "1"
-    }
+    "ip": "0.0.0.0"
   },
   "workers_dev": false,
   "preview_urls": false,
