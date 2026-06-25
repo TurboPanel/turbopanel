@@ -22,6 +22,12 @@ export type ServerFleetPresence = {
   connectedAt: string | null;
   lastProjectedAt: string | null;
   lastHeartbeatAt: string | null;
+  agent?: {
+    commit?: string;
+    buildId?: string;
+    builtAt?: string;
+    channel?: string;
+  };
 };
 
 function normalizeRemoteAddress(
@@ -89,6 +95,7 @@ export async function resolveFleetPresence(
       lastProjectedAt: projection?.lastProjectedAt ?? null,
       lastHeartbeatAt: snapshot?.lastHeartbeatAt ?? snapshot?.lastInboundAt ??
         null,
+      agent: projection?.agent ?? undefined,
     });
   }
 

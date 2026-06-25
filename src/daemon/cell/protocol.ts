@@ -1,6 +1,7 @@
 import type { ServerAddresses } from "../../server-addresses.ts";
 import {
   MONITOR_PROTOCOL_VERSION,
+  type DaemonAgentInfo,
   type MonitorEvent,
   type MonitorInstanceSummary,
   type MonitorMessage,
@@ -75,7 +76,14 @@ export type DaemonMessage =
     error?: string;
     at: string;
   }
-  | { type: "update"; id: string; updateUrl: string; at: string }
+  | {
+    type: "update";
+    id: string;
+    channel?: string;
+    updateUrl?: string;
+    updateSha256?: string;
+    at: string;
+  }
   | {
     type: "update-result";
     id: string;
@@ -139,7 +147,12 @@ export type DaemonOutboundEnvelope =
   | (OutboundEnvelopeBase & { kind: "dev-sync"; phase: "end" })
   | (OutboundEnvelopeBase & { kind: "tunnel-token"; token: string })
   | (OutboundEnvelopeBase & { kind: "public-urls-update"; urls: string[] })
-  | (OutboundEnvelopeBase & { kind: "update"; updateUrl: string })
+  | (OutboundEnvelopeBase & {
+    kind: "update";
+    channel?: string;
+    updateUrl?: string;
+    updateSha256?: string;
+  })
   | (OutboundEnvelopeBase & { kind: "ping" })
   | (OutboundEnvelopeBase & { kind: "echo"; payload: unknown })
   | (OutboundEnvelopeBase & {
@@ -203,6 +216,7 @@ export type DaemonInboundEnvelope =
     instance: MonitorInstanceSummary;
     resources: MonitorResourceState[];
     events?: MonitorEvent[];
+    agent?: DaemonAgentInfo;
   }
   | {
     kind: "monitor-heartbeat";
@@ -212,6 +226,7 @@ export type DaemonInboundEnvelope =
     instance: MonitorInstanceSummary;
     resources?: MonitorResourceState[];
     events?: MonitorEvent[];
+    agent?: DaemonAgentInfo;
   }
   | {
     kind: "monitor-transition";
@@ -299,6 +314,7 @@ export function wireMessageToInboundEnvelope(
           instance: validated.instance,
           resources: validated.resources,
           events: validated.events,
+          agent: validated.agent,
         };
       }
       if (validated.type === "monitor.heartbeat") {
@@ -310,6 +326,7 @@ export function wireMessageToInboundEnvelope(
           instance: validated.instance,
           resources: validated.resources,
           events: validated.events,
+          agent: validated.agent,
         };
       }
       return {
@@ -377,8 +394,12 @@ export function outboundEnvelopeToWireMessage(
       return {
         type: "update",
         id: env.requestId,
-        updateUrl: env.updateUrl,
         at: env.at,
+        ...(env.channel !== undefined ? { channel: env.channel } : {}),
+        ...(env.updateUrl !== undefined ? { updateUrl: env.updateUrl } : {}),
+        ...(env.updateSha256 !== undefined
+          ? { updateSha256: env.updateSha256 }
+          : {}),
       };
     case "ping":
       return { type: "ping", id: env.requestId, at: env.at };

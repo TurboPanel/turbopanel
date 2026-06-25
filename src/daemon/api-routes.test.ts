@@ -1890,3 +1890,77 @@ Deno.test("POST /heartbeat routes monitor.sync fallback payload into cell", asyn
     },
   );
 });
+
+Deno.test("POST /heartbeat fallback monitor.sync persists agent in projection", async () => {
+  await withMonitorHeartbeatFixture(
+    async ({ db, app, serverId, keyId }) => {
+      const token = await issueDaemonToken(serverId, keyId);
+      const agent = {
+        commit: "fallback-sync-commit",
+        buildId: "fallback-sync-build",
+        channel: "trunk",
+      };
+      const response = await app.request("/api/daemon/v1/heartbeat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          monitor: {
+            type: "monitor.sync",
+            from: "daemon",
+            serverId,
+            at: new Date().toISOString(),
+            sequence: 5,
+            protocolVersion: 1,
+            instance: {},
+            resources: [],
+            agent,
+          },
+        }),
+      });
+      assertEquals(response.status, 200);
+
+      const daemonState = await readDaemonState(db, serverId);
+      assertEquals(daemonState?.projection?.agent?.commit, agent.commit);
+      assertEquals(daemonState?.projection?.agent?.buildId, agent.buildId);
+    },
+  );
+});
+
+Deno.test("POST /heartbeat fallback monitor.heartbeat persists agent in projection", async () => {
+  await withMonitorHeartbeatFixture(
+    async ({ db, app, serverId, keyId }) => {
+      const token = await issueDaemonToken(serverId, keyId);
+      const agent = {
+        commit: "fallback-heartbeat-commit",
+        buildId: "fallback-heartbeat-build",
+        channel: "trunk",
+      };
+      const response = await app.request("/api/daemon/v1/heartbeat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          monitor: {
+            type: "monitor.heartbeat",
+            from: "daemon",
+            serverId,
+            at: new Date().toISOString(),
+            sequence: 1,
+            instance: {},
+            agent,
+          },
+        }),
+      });
+      assertEquals(response.status, 200);
+
+      const daemonState = await readDaemonState(db, serverId);
+      assertEquals(daemonState?.projection?.agent?.commit, agent.commit);
+      assertEquals(daemonState?.projection?.agent?.buildId, agent.buildId);
+    },
+  );
+});

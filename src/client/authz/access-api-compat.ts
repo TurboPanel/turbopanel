@@ -18,7 +18,7 @@ type AtomicGrantRow = {
   subjectType: string
   subjectId: string
   permission: string
-  allowed: boolean
+  allow: boolean
 }
 
 /** Map atomic `grant` rows to access API records. */
@@ -28,7 +28,7 @@ export function mapGrantRows(rows: AtomicGrantRow[]): AccessRecord[] {
     subjectKind: row.subjectType as AccessRecord['subjectKind'],
     subjectId: row.subjectId,
     resourceId: row.entityId,
-    effect: row.allowed ? 'allow' : 'deny',
+    effect: row.allow ? 'allow' : 'deny',
     permissionKey: row.permission,
   }))
 }

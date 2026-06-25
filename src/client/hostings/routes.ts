@@ -3,8 +3,9 @@ import { Hono } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
+import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db.ts'
-import { hosting, project } from '../../lib/db/schema.ts'
+import { hosting, service } from '../../lib/db/schema.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -12,8 +13,23 @@ import {
   getOrgId,
   parseDisplayName,
   parseJsonBody,
-  requireStringField,
 } from '../shared.ts'
+
+function parseOptionalServiceId(
+  body: Record<string, unknown>,
+): string | null | 'invalid' {
+  if (!('serviceId' in body)) {
+    return null
+  }
+  const serviceId = body.serviceId
+  if (serviceId === null) {
+    return null
+  }
+  if (typeof serviceId !== 'string' || serviceId.trim().length === 0) {
+    return 'invalid'
+  }
+  return serviceId.trim()
+}
 
 export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
   router.use('/hostings', createSessionMiddleware(opts.secrets))
@@ -30,7 +46,7 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
     if (orgResult instanceof Response) return orgResult
     const organizationId = orgResult
 
-    const projectId = c.req.query('projectId')
+    const serviceId = c.req.query('serviceId')
 
     const visibleIds = await listVisible(db, {
       kind: 'hosting',
@@ -43,16 +59,15 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
     }
 
     const conditions = [inArray(hosting.id, visibleIds)]
-    if (projectId) {
-      conditions.push(eq(hosting.projectId, projectId))
+    if (serviceId) {
+      conditions.push(eq(hosting.serviceId, serviceId))
     }
 
     const rows = await db
       .select({
         id: hosting.id,
         displayName: hosting.displayName,
-        organizationId: hosting.organizationId,
-        projectId: hosting.projectId,
+        serviceId: hosting.serviceId,
         createdAt: hosting.createdAt,
         updatedAt: hosting.updatedAt,
       })
@@ -75,12 +90,16 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
     const organizationId = orgResult
 
     const id = c.req.param('id')
+    const entityOrgId = await resolveEntityOrganizationId(db, 'hosting', id)
+    if (!entityOrgId || entityOrgId !== organizationId) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
     const rows = await db
       .select({
         id: hosting.id,
         displayName: hosting.displayName,
-        organizationId: hosting.organizationId,
-        projectId: hosting.projectId,
+        serviceId: hosting.serviceId,
         createdAt: hosting.createdAt,
         updatedAt: hosting.updatedAt,
       })
@@ -89,7 +108,7 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
       .limit(1)
 
     const row = rows[0]
-    if (!row || row.organizationId !== organizationId) {
+    if (!row) {
       return c.json({ error: 'Not found' }, 404)
     }
 
@@ -113,23 +132,28 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const projectId = requireStringField(c, body, 'projectId')
-    if (projectId instanceof Response) return projectId
-
-    const projectRows = await db
-      .select({ id: project.id })
-      .from(project)
-      .where(
-        and(eq(project.id, projectId), eq(project.organizationId, organizationId)),
-      )
-      .limit(1)
-
-    if (!projectRows[0]) {
-      return c.json({ error: 'Not found' }, 404)
+    const serviceIdResult = parseOptionalServiceId(body)
+    if (serviceIdResult === 'invalid') {
+      return c.json({ error: 'Invalid request' }, 400)
     }
 
-    const denied = await assertCanCreateOr403(c, 'project', projectId)
-    if (denied) return denied
+    if (serviceIdResult) {
+      const serviceOrgId = await resolveEntityOrganizationId(db, 'service', serviceIdResult)
+      if (!serviceOrgId || serviceOrgId !== organizationId) {
+        return c.json({ error: 'Not found' }, 404)
+      }
+
+      const denied = await assertCanCreateOr403(c, 'service', serviceIdResult)
+      if (denied) return denied
+    } else {
+      const denied = await assertCanOr403(
+        c,
+        'organization:own',
+        'organization',
+        organizationId,
+      )
+      if (denied) return denied
+    }
 
     let displayName: string | null
     try {
@@ -141,7 +165,11 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(hosting)
-        .values({ displayName, organizationId, projectId })
+        .values({
+          displayName,
+          serviceId: serviceIdResult,
+          organizationId: serviceIdResult ? null : organizationId,
+        })
         .returning({ id: hosting.id })
       return inserted.id
     })
@@ -161,14 +189,8 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
     const organizationId = orgResult
 
     const id = c.req.param('id')
-    const rows = await db
-      .select({ organizationId: hosting.organizationId })
-      .from(hosting)
-      .where(eq(hosting.id, id))
-      .limit(1)
-
-    const row = rows[0]
-    if (!row || row.organizationId !== organizationId) {
+    const entityOrgId = await resolveEntityOrganizationId(db, 'hosting', id)
+    if (!entityOrgId || entityOrgId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 
@@ -205,14 +227,8 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
     const organizationId = orgResult
 
     const id = c.req.param('id')
-    const rows = await db
-      .select({ organizationId: hosting.organizationId })
-      .from(hosting)
-      .where(eq(hosting.id, id))
-      .limit(1)
-
-    const row = rows[0]
-    if (!row || row.organizationId !== organizationId) {
+    const entityOrgId = await resolveEntityOrganizationId(db, 'hosting', id)
+    if (!entityOrgId || entityOrgId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 

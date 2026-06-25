@@ -1,5 +1,5 @@
 import type { Db } from "../../db.ts";
-import type { DaemonCell, DaemonCellRegistry } from "./contracts.ts";
+import type { DaemonCell } from "./contracts.ts";
 import type { MonitorEvent } from "./monitor-contracts.ts";
 import type { DaemonInboundEnvelope } from "./protocol.ts";
 import { incrementMonitorCounter } from "./monitor-observability.ts";
@@ -7,6 +7,7 @@ import {
   identityFromSnapshot,
   isMeaningfulMonitorTransition,
   projectServerDaemon,
+  type ProjectionAgent,
 } from "./postgres-projection.ts";
 
 export async function onDaemonConnected(
@@ -30,6 +31,20 @@ export async function onDaemonDisconnected(
   await projectServerDaemon(db, serverId, { kind: "disconnected" });
 }
 
+function extractAgent(msg: DaemonInboundEnvelope): ProjectionAgent | undefined {
+  if (msg.kind !== "monitor-sync" && msg.kind !== "monitor-heartbeat") {
+    return undefined;
+  }
+  const agent = msg.agent;
+  if (!agent?.commit || !agent?.buildId) return undefined;
+  return {
+    commit: agent.commit,
+    buildId: agent.buildId,
+    builtAt: agent.builtAt,
+    channel: agent.channel,
+  };
+}
+
 export async function onMonitorMessageApplied(
   db: Db,
   serverId: string,
@@ -45,6 +60,9 @@ export async function onMonitorMessageApplied(
     incrementMonitorCounter("monitorDeltaHeartbeat");
   }
 
+  const agent = extractAgent(msg);
+  const projectionContext = { cell, agent };
+
   const events = extractMonitorEvents(msg);
   const meaningful = events.filter(isMeaningfulMonitorTransition);
   if (meaningful.length > 0) {
@@ -52,15 +70,26 @@ export async function onMonitorMessageApplied(
       db,
       serverId,
       { kind: "resource_transition", events: meaningful },
-      { cell },
+      projectionContext,
     );
     return;
   }
 
   if (kind === "monitor-sync") {
-    await projectServerDaemon(db, serverId, { kind: "summary_refresh" }, {
-      cell,
-    });
+    const wrote = await projectServerDaemon(
+      db,
+      serverId,
+      { kind: "summary_refresh" },
+      projectionContext,
+    );
+    if (!wrote && agent) {
+      await projectServerDaemon(db, serverId, { kind: "agent", agent });
+    }
+    return;
+  }
+
+  if (kind === "monitor-heartbeat" && agent) {
+    await projectServerDaemon(db, serverId, { kind: "agent", agent });
   }
 }
 

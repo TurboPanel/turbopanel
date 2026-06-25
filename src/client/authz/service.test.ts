@@ -95,7 +95,7 @@ Deno.test('org owner can manage org', async () => {
       subjectType: 'user',
       subjectId: userId,
       permission: 'organization:own',
-      allowed: true,
+      allow: true,
     })
 
     const ownsOrg = await canOwnOrganization(db, userId, organizationId)
@@ -114,7 +114,7 @@ Deno.test('org manager can invite and manage org members', async () => {
       subjectType: 'user',
       subjectId: userId,
       permission: 'organization:manage',
-      allowed: true,
+      allow: true,
     })
 
     const managesOrg = await canManageOrganization(db, userId, organizationId)
@@ -135,7 +135,7 @@ Deno.test('team owner can manage team', async () => {
       subjectType: 'user',
       subjectId: userId,
       permission: 'team:own',
-      allowed: true,
+      allow: true,
     })
 
     const ownsTeam = await canOwnTeam(db, userId, teamId)
@@ -154,7 +154,7 @@ Deno.test('team manager can invite and manage team members', async () => {
       subjectType: 'user',
       subjectId: userId,
       permission: 'team:manage',
-      allowed: true,
+      allow: true,
     })
 
     const managesTeam = await canManageTeam(db, userId, teamId)
@@ -175,7 +175,7 @@ Deno.test('org manager can manage any team in their org', async () => {
       subjectType: 'user',
       subjectId: userId,
       permission: 'organization:manage',
-      allowed: true,
+      allow: true,
     })
 
     const managesTeam = await canManageTeam(db, userId, teamId)
@@ -199,7 +199,7 @@ Deno.test('invitation grant materialization creates grant rows and enables canOw
         entityType: 'organization',
         entityId: organizationId,
         permissionKey: 'organization:own',
-        allowed: true,
+        allow: true,
       }],
       organizationId,
     )
@@ -234,7 +234,7 @@ Deno.test('assertNotLastOrgOwner throws when removing the sole owner', async () 
       subjectType: 'user',
       subjectId: userId,
       permission: 'organization:own',
-      allowed: true,
+      allow: true,
     })
 
     let threw = false
@@ -263,7 +263,7 @@ Deno.test('assertNotLastOrgOwner throws when removing the sole owner', async () 
         subjectType: 'user',
         subjectId: secondUserId,
         permission: 'organization:own',
-        allowed: true,
+        allow: true,
       })
 
       await assertNotLastOrgOwner(db, organizationId, userId)
@@ -282,7 +282,7 @@ Deno.test('assertNotLastTeamOwner throws when removing the sole owner', async ()
       subjectType: 'user',
       subjectId: userId,
       permission: 'team:own',
-      allowed: true,
+      allow: true,
     })
 
     let threw = false
@@ -311,7 +311,7 @@ Deno.test('assertNotLastTeamOwner throws when removing the sole owner', async ()
         subjectType: 'user',
         subjectId: secondUserId,
         permission: 'team:own',
-        allowed: true,
+        allow: true,
       })
 
       await assertNotLastTeamOwner(db, teamId, userId)
@@ -380,7 +380,7 @@ Deno.test('org manager is not treated as team owner without direct team:own gran
       subjectType: 'user',
       subjectId: userId,
       permission: 'organization:manage',
-      allowed: true,
+      allow: true,
     })
 
     const ownsTeam = await canOwnTeam(db, userId, teamId)

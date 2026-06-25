@@ -76,7 +76,6 @@ async function withTestFixtures(
       eq(member.userId, userId),
       eq(member.organizationId, organizationId),
     ))
-    await db.delete(environment).where(eq(environment.organizationId, organizationId))
     await db.delete(workspace).where(eq(workspace.organizationId, organizationId))
     await db.delete(team).where(eq(team.organizationId, organizationId))
     await db.delete(user).where(eq(user.id, userId))
@@ -92,7 +91,7 @@ Deno.test('organization:own grant allows full org access', async () => {
       subjectType: 'user',
       subjectId: userId,
       permission: 'organization:own',
-      allowed: true,
+      allow: true,
     })
 
     const canWorkspace = await can(db, userId, 'organization:own', 'workspace', workspaceId)
@@ -111,7 +110,7 @@ Deno.test('organization:manage grant allows full org access', async () => {
       subjectType: 'user',
       subjectId: userId,
       permission: 'organization:manage',
-      allowed: true,
+      allow: true,
     })
 
     const canWorkspace = await can(db, userId, 'organization:manage', 'workspace', workspaceId)
@@ -200,7 +199,7 @@ Deno.test('listVisible returns all leaves for org owner', async () => {
       subjectType: 'user',
       subjectId: userId,
       permission: 'organization:own',
-      allowed: true,
+      allow: true,
     })
 
     const visible = await listVisible(db, {
@@ -223,7 +222,7 @@ Deno.test('team:own grant allows team ownership check via can()', async () => {
       subjectType: 'user',
       subjectId: userId,
       permission: 'team:own',
-      allowed: true,
+      allow: true,
     })
 
     const canOwn = await can(db, userId, 'team:own', 'team', teamId)
@@ -242,7 +241,7 @@ Deno.test('team:manage grant allows team management but not ownership via can()'
       subjectType: 'user',
       subjectId: userId,
       permission: 'team:manage',
-      allowed: true,
+      allow: true,
     })
 
     const canOwn = await can(db, userId, 'team:own', 'team', teamId)
@@ -261,7 +260,7 @@ Deno.test('team grant without org grant is denied for org-scoped workspace check
       subjectType: 'user',
       subjectId: userId,
       permission: 'team:manage',
-      allowed: true,
+      allow: true,
     })
 
     const canWorkspace = await can(db, userId, 'organization:own', 'workspace', workspaceId)

@@ -3,8 +3,9 @@ import { Hono } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
+import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db.ts'
-import { environment, project } from '../../lib/db/schema.ts'
+import { project, workspace } from '../../lib/db/schema.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -30,7 +31,7 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
     if (orgResult instanceof Response) return orgResult
     const organizationId = orgResult
 
-    const environmentId = c.req.query('environmentId')
+    const workspaceId = c.req.query('workspaceId')
 
     const visibleIds = await listVisible(db, {
       kind: 'project',
@@ -43,16 +44,15 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
     }
 
     const conditions = [inArray(project.id, visibleIds)]
-    if (environmentId) {
-      conditions.push(eq(project.environmentId, environmentId))
+    if (workspaceId) {
+      conditions.push(eq(project.workspaceId, workspaceId))
     }
 
     const rows = await db
       .select({
         id: project.id,
         displayName: project.displayName,
-        organizationId: project.organizationId,
-        environmentId: project.environmentId,
+        workspaceId: project.workspaceId,
         createdAt: project.createdAt,
         updatedAt: project.updatedAt,
       })
@@ -75,12 +75,16 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
     const organizationId = orgResult
 
     const id = c.req.param('id')
+    const entityOrgId = await resolveEntityOrganizationId(db, 'project', id)
+    if (!entityOrgId || entityOrgId !== organizationId) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
     const rows = await db
       .select({
         id: project.id,
         displayName: project.displayName,
-        organizationId: project.organizationId,
-        environmentId: project.environmentId,
+        workspaceId: project.workspaceId,
         createdAt: project.createdAt,
         updatedAt: project.updatedAt,
       })
@@ -89,7 +93,7 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
       .limit(1)
 
     const row = rows[0]
-    if (!row || row.organizationId !== organizationId) {
+    if (!row) {
       return c.json({ error: 'Not found' }, 404)
     }
 
@@ -113,25 +117,20 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const environmentId = requireStringField(c, body, 'environmentId')
-    if (environmentId instanceof Response) return environmentId
+    const workspaceId = requireStringField(c, body, 'workspaceId')
+    if (workspaceId instanceof Response) return workspaceId
 
-    const envRows = await db
-      .select({ id: environment.id })
-      .from(environment)
-      .where(
-        and(
-          eq(environment.id, environmentId),
-          eq(environment.organizationId, organizationId),
-        ),
-      )
+    const workspaceRows = await db
+      .select({ id: workspace.id })
+      .from(workspace)
+      .where(and(eq(workspace.id, workspaceId), eq(workspace.organizationId, organizationId)))
       .limit(1)
 
-    if (!envRows[0]) {
+    if (!workspaceRows[0]) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanCreateOr403(c, 'environment', environmentId)
+    const denied = await assertCanCreateOr403(c, 'workspace', workspaceId)
     if (denied) return denied
 
     let displayName: string | null
@@ -144,7 +143,7 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(project)
-        .values({ displayName, organizationId, environmentId })
+        .values({ displayName, workspaceId })
         .returning({ id: project.id })
       return inserted.id
     })
@@ -164,14 +163,8 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
     const organizationId = orgResult
 
     const id = c.req.param('id')
-    const rows = await db
-      .select({ organizationId: project.organizationId })
-      .from(project)
-      .where(eq(project.id, id))
-      .limit(1)
-
-    const row = rows[0]
-    if (!row || row.organizationId !== organizationId) {
+    const entityOrgId = await resolveEntityOrganizationId(db, 'project', id)
+    if (!entityOrgId || entityOrgId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 
@@ -208,14 +201,8 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
     const organizationId = orgResult
 
     const id = c.req.param('id')
-    const rows = await db
-      .select({ organizationId: project.organizationId })
-      .from(project)
-      .where(eq(project.id, id))
-      .limit(1)
-
-    const row = rows[0]
-    if (!row || row.organizationId !== organizationId) {
+    const entityOrgId = await resolveEntityOrganizationId(db, 'project', id)
+    if (!entityOrgId || entityOrgId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 

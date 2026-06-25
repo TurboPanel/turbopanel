@@ -67,6 +67,26 @@ export async function assertCanReadOr403(
   return null
 }
 
+/** Manage access: org managers and platform admins may manage entities in the org. */
+export async function assertCanManageOr403(
+  c: Context,
+  kind: string,
+  entityId: string,
+): Promise<Response | null> {
+  const db = getDb(c)
+  if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+  const session = c.get('session')
+  if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+  const allowed = await can(db, session.userId, 'organization:manage', kind, entityId)
+
+  if (!allowed) {
+    return c.json({ error: 'Forbidden' }, 403)
+  }
+  return null
+}
+
 /** Create access: org owners/managers and platform admins may create under the parent scope. */
 export async function assertCanCreateOr403(
   c: Context,

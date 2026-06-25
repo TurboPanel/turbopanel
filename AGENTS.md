@@ -236,7 +236,7 @@ Postgres remains canonical for business data (`server`). The cell is the low-lat
 
 **Offline deadline:** the cell schedules an offline deadline ~150s after the last monitor heartbeat. Workers: single DO alarm processes the nearest deadline and reschedules. Redis: deadline sorted set processed by `maintain()` in the registry loop.
 
-**Sparse Postgres projection:** ordinary heartbeats do **not** write Postgres. `server.daemon.projection` is updated only on: online/offline transitions, meaningful service/project transitions, daemon identity changes, and slow summary refreshes (capped at 15 minutes). `server.lastSeenAt` is updated only on liveness transitions.
+**Sparse Postgres projection:** ordinary heartbeats do **not** write Postgres. `server.daemon.projection` is updated only on: online/offline transitions, meaningful service/project transitions, daemon identity changes, slow summary refreshes (capped at 15 minutes), and agent build identity changes. `server.daemon.projection` now carries an optional `agent` field (`commit`/`buildId`/`builtAt`/`channel`) written through only when it changes (new `"agent"` trigger kind). `ServerFleetPresence` exposes it for the client update API. `server.lastSeenAt` is updated only on liveness transitions.
 
 **Cheap fleet index:** `listOnlineServerIds()` reads the Redis online set (Deno) or the sparse `server.daemon.projection.connected` field (Workers) — it does not fan out across all cells.
 
@@ -384,6 +384,8 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `POST` | `/api/install/v1/bootstrap` | Deno: verify host PAM (root or sudo user), no cookies |
 | `POST` | `/api/install/v1/` | Deno: host PAM + superadmin setup → superadmin session only |
 | `GET` | `/api/client/v1/servers` | Session required: servers visible to the user via `listVisible`, with live `connected` / `hostname` from the daemon hub |
+| `GET` | `/api/client/v1/servers/:id/update` | Read update status (current agent commit vs trunk manifest commit); requires server read access |
+| `POST` | `/api/client/v1/servers/:id/update` | Trigger a trunk update on the connected daemon; requires `organization:manage` on the server's org |
 | `POST` | `/api/client/v1/invitations/{id}/accept` | Accept a pending invitation; atomically claims the row, materializes `invitation.grants` into `grant` rows (default: `organization:manage` grant on the org), updates session `organizationId` |
 | `GET` | `/api/client/v1/permissions` | Permission catalog — four fixed keys (`organization:own`, `organization:manage`, `team:own`, `team:manage`); any authenticated user |
 | `GET` | `/api/client/v1/access?resourceId=<uuid>` | List access grants for a resource; requires `organization:own` on the resource (via `getAccessManagementPermission`); returns `{ access: AccessRecord[] }` with `subjectKind`, `resourceId`, `effect`, and `permissionKey` |
@@ -498,6 +500,7 @@ sequenceDiagram
 - `src/daemon/authz/` — daemon-side authorization placeholder
 - `src/lib/db/schema.ts` — Drizzle table definitions (`server`, etc.; see `src/lib/db/AGENTS.md`); connection factories stay in `src/db.ts`
 - `src/lib/install/routes.ts` — self-hosted install wizard (`/api/install/v1/*`; Deno-only registration)
+- `src/lib/update/manifest.ts` — Workers-safe trunk manifest resolver (`fetch`-only; returns `null` on any failure)
 - `src/lib/email/` — shared queue types/templates; `smtp/` (Deno/AMQP) and `mailgun/` (Workers) backends
 - `src/developer/` — developer surface (Deno-only routes + Workers-safe `routes-core.ts`)
 - `src/admin/routes.ts` — admin surface (`/api/admin/v1`); **now mounted** on both runtimes; gated to `superadmin` or `admin` via `createAdminAccessMiddleware`; dev-only OpenAPI/Scalar; `GET/PUT /instance/public-urls` persists `TURBOPANEL_PUBLIC_URLS` in the `setting` table.

@@ -141,7 +141,7 @@ Deno.test('DELETE /access/:id rejects revoking the sole organization owner', asy
         subjectType: 'user',
         subjectId: actorId,
         permission: 'organization:own',
-        allowed: true,
+        allow: true,
       })
       .returning({ id: grant.id })
 
@@ -165,7 +165,7 @@ Deno.test('DELETE /access/:id allows revoking a non-final organization owner', a
       subjectType: 'user',
       subjectId: actorId,
       permission: 'organization:own',
-      allowed: true,
+      allow: true,
     })
 
     const [targetGrant] = await db
@@ -176,7 +176,7 @@ Deno.test('DELETE /access/:id allows revoking a non-final organization owner', a
         subjectType: 'user',
         subjectId: targetId,
         permission: 'organization:own',
-        allowed: true,
+        allow: true,
       })
       .returning({ id: grant.id })
 
@@ -200,7 +200,7 @@ Deno.test('DELETE /access/:id rejects revoking the sole team owner', async () =>
       subjectType: 'user',
       subjectId: actorId,
       permission: 'organization:own',
-      allowed: true,
+      allow: true,
     })
 
     const [teamOwnerGrant] = await db
@@ -211,7 +211,7 @@ Deno.test('DELETE /access/:id rejects revoking the sole team owner', async () =>
         subjectType: 'user',
         subjectId: targetId,
         permission: 'team:own',
-        allowed: true,
+        allow: true,
       })
       .returning({ id: grant.id })
 
@@ -235,7 +235,7 @@ Deno.test('GET /access/check honors team-scoped grants without org grants', asyn
       subjectType: 'user',
       subjectId: targetId,
       permission: 'team:manage',
-      allowed: true,
+      allow: true,
     })
 
     const cookie = await sessionCookie(db, secrets, targetId, organizationId)
@@ -271,7 +271,7 @@ Deno.test('POST /access rejects organization permission on workspace entity', as
       subjectType: 'user',
       subjectId: actorId,
       permission: 'organization:own',
-      allowed: true,
+      allow: true,
     })
 
     const cookie = await sessionCookie(db, secrets, actorId, organizationId)

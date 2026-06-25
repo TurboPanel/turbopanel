@@ -6,8 +6,7 @@ export const projectSchemas = {
     properties: {
       id: { type: 'string' },
       displayName: { type: ['string', 'null'] },
-      organizationId: { type: 'string' },
-      environmentId: { type: 'string' },
+      workspaceId: { type: 'string' },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
     },
@@ -24,10 +23,10 @@ export const projectSchemas = {
   },
   CreateProjectRequest: {
     type: 'object',
-    required: ['environmentId'],
+    required: ['workspaceId'],
     properties: {
       displayName: { type: 'string' },
-      environmentId: { type: 'string' },
+      workspaceId: { type: 'string' },
     },
   },
 }
@@ -39,7 +38,7 @@ export const projectPaths = buildResourceCrudPaths({
   rowSchema: 'ProjectRow',
   createSchema: 'CreateProjectRequest',
   parentQuery: {
-    name: 'environmentId',
-    description: 'Filter projects under an environment',
+    name: 'workspaceId',
+    description: 'Filter projects under a workspace',
   },
 })

@@ -21,7 +21,7 @@ export async function verifyDaemonLicense(
   const activeLicense = await lookupActiveLicense(db, id);
   if (!activeLicense) return null;
 
-  const tokenValid = await verifyLicenseToken(token, activeLicense.hashedToken);
+  const tokenValid = await verifyLicenseToken(token, activeLicense.token);
   if (!tokenValid) return null;
 
   return { organizationId: activeLicense.organizationId };

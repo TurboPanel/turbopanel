@@ -3,8 +3,9 @@ import { Hono } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
+import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db.ts'
-import { project, service } from '../../lib/db/schema.ts'
+import { environment, service } from '../../lib/db/schema.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -30,7 +31,7 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
     if (orgResult instanceof Response) return orgResult
     const organizationId = orgResult
 
-    const projectId = c.req.query('projectId')
+    const environmentId = c.req.query('environmentId')
 
     const visibleIds = await listVisible(db, {
       kind: 'service',
@@ -43,16 +44,15 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
     }
 
     const conditions = [inArray(service.id, visibleIds)]
-    if (projectId) {
-      conditions.push(eq(service.projectId, projectId))
+    if (environmentId) {
+      conditions.push(eq(service.environmentId, environmentId))
     }
 
     const rows = await db
       .select({
         id: service.id,
         displayName: service.displayName,
-        organizationId: service.organizationId,
-        projectId: service.projectId,
+        environmentId: service.environmentId,
         createdAt: service.createdAt,
         updatedAt: service.updatedAt,
       })
@@ -75,12 +75,16 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
     const organizationId = orgResult
 
     const id = c.req.param('id')
+    const entityOrgId = await resolveEntityOrganizationId(db, 'service', id)
+    if (!entityOrgId || entityOrgId !== organizationId) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
     const rows = await db
       .select({
         id: service.id,
         displayName: service.displayName,
-        organizationId: service.organizationId,
-        projectId: service.projectId,
+        environmentId: service.environmentId,
         createdAt: service.createdAt,
         updatedAt: service.updatedAt,
       })
@@ -89,7 +93,7 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
       .limit(1)
 
     const row = rows[0]
-    if (!row || row.organizationId !== organizationId) {
+    if (!row) {
       return c.json({ error: 'Not found' }, 404)
     }
 
@@ -113,22 +117,15 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const projectId = requireStringField(c, body, 'projectId')
-    if (projectId instanceof Response) return projectId
+    const environmentId = requireStringField(c, body, 'environmentId')
+    if (environmentId instanceof Response) return environmentId
 
-    const projectRows = await db
-      .select({ id: project.id })
-      .from(project)
-      .where(
-        and(eq(project.id, projectId), eq(project.organizationId, organizationId)),
-      )
-      .limit(1)
-
-    if (!projectRows[0]) {
+    const environmentOrgId = await resolveEntityOrganizationId(db, 'environment', environmentId)
+    if (!environmentOrgId || environmentOrgId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanCreateOr403(c, 'project', projectId)
+    const denied = await assertCanCreateOr403(c, 'environment', environmentId)
     if (denied) return denied
 
     let displayName: string | null
@@ -141,7 +138,7 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(service)
-        .values({ displayName, organizationId, projectId })
+        .values({ displayName, environmentId })
         .returning({ id: service.id })
       return inserted.id
     })
@@ -161,14 +158,8 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
     const organizationId = orgResult
 
     const id = c.req.param('id')
-    const rows = await db
-      .select({ organizationId: service.organizationId })
-      .from(service)
-      .where(eq(service.id, id))
-      .limit(1)
-
-    const row = rows[0]
-    if (!row || row.organizationId !== organizationId) {
+    const entityOrgId = await resolveEntityOrganizationId(db, 'service', id)
+    if (!entityOrgId || entityOrgId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 
@@ -205,14 +196,8 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
     const organizationId = orgResult
 
     const id = c.req.param('id')
-    const rows = await db
-      .select({ organizationId: service.organizationId })
-      .from(service)
-      .where(eq(service.id, id))
-      .limit(1)
-
-    const row = rows[0]
-    if (!row || row.organizationId !== organizationId) {
+    const entityOrgId = await resolveEntityOrganizationId(db, 'service', id)
+    if (!entityOrgId || entityOrgId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 

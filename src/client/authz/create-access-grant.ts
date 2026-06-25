@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import {
   grant,
@@ -27,6 +27,8 @@ export type CreateAccessGrantInput = {
   entityType: string
   entityId: string
   allowed?: boolean
+  /** Alias for {@link allowed} — preferred name matching the `grant.allow` column. */
+  allow?: boolean
   permissionKey: string
 }
 
@@ -216,36 +218,54 @@ export async function resolveEntityOrganizationId(
       return rows[0]?.organizationId ?? null
     }
     case 'environment': {
-      const rows = await db
-        .select({ organizationId: environment.organizationId })
-        .from(environment)
-        .where(eq(environment.id, entityId))
-        .limit(1)
-      return rows[0]?.organizationId ?? null
+      const rows = await db.execute<{ organization_id: string }>(sql`
+        SELECT w.organization_id
+        FROM environment e
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE e.id = ${entityId}::uuid
+        LIMIT 1
+      `)
+      return rows[0]?.organization_id ?? null
     }
     case 'project': {
-      const rows = await db
-        .select({ organizationId: project.organizationId })
-        .from(project)
-        .where(eq(project.id, entityId))
-        .limit(1)
-      return rows[0]?.organizationId ?? null
+      const rows = await db.execute<{ organization_id: string }>(sql`
+        SELECT w.organization_id
+        FROM project p
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE p.id = ${entityId}::uuid
+        LIMIT 1
+      `)
+      return rows[0]?.organization_id ?? null
     }
     case 'service': {
-      const rows = await db
-        .select({ organizationId: service.organizationId })
-        .from(service)
-        .where(eq(service.id, entityId))
-        .limit(1)
-      return rows[0]?.organizationId ?? null
+      const rows = await db.execute<{ organization_id: string }>(sql`
+        SELECT w.organization_id
+        FROM service s
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE s.id = ${entityId}::uuid
+        LIMIT 1
+      `)
+      return rows[0]?.organization_id ?? null
     }
     case 'hosting': {
-      const rows = await db
-        .select({ organizationId: hosting.organizationId })
-        .from(hosting)
-        .where(eq(hosting.id, entityId))
-        .limit(1)
-      return rows[0]?.organizationId ?? null
+      const rows = await db.execute<{ organization_id: string }>(sql`
+        SELECT w.organization_id AS organization_id
+        FROM hosting h
+        JOIN service s ON s.id = h.service_id
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE h.id = ${entityId}::uuid AND h.service_id IS NOT NULL
+        UNION ALL
+        SELECT h.organization_id AS organization_id
+        FROM hosting h
+        WHERE h.id = ${entityId}::uuid AND h.service_id IS NULL
+        LIMIT 1
+      `)
+      return rows[0]?.organization_id ?? null
     }
     case 'server': {
       const rows = await db
@@ -380,7 +400,7 @@ export async function createAccessGrant(
     return subjectResult
   }
 
-  const allowed = input.allowed ?? true
+  const allow = input.allow ?? input.allowed ?? true
 
   const inserted = await db
     .insert(grant)
@@ -390,7 +410,7 @@ export async function createAccessGrant(
       subjectType: input.subjectType,
       subjectId: input.subjectId,
       permission,
-      allowed,
+      allow,
     })
     .onConflictDoNothing({
       target: [

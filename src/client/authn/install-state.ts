@@ -64,7 +64,7 @@ async function insertOwnerGrants(
       subjectType: 'user',
       subjectId: userId,
       permission: 'organization:own',
-      allowed: true,
+      allow: true,
     })
     .onConflictDoNothing({
       target: [
@@ -679,7 +679,7 @@ export async function completeInstanceInstall(
         subjectType: 'user',
         subjectId: userId,
         permission: 'team:own',
-        allowed: true,
+        allow: true,
       })
       .onConflictDoNothing({
         target: [

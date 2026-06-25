@@ -28,13 +28,29 @@ export type ProjectionIdentity = {
   keyId?: string;
 };
 
+export type ProjectionAgent = {
+  commit: string;
+  buildId: string;
+  builtAt?: string;
+  channel?: string;
+};
+
 export type ProjectionTrigger =
   | { kind: "online"; identity: ProjectionIdentity; connectedAt?: string }
   | { kind: "offline" }
   | { kind: "disconnected" }
   | { kind: "identity"; identity: ProjectionIdentity }
   | { kind: "resource_transition"; events: MonitorEvent[] }
-  | { kind: "summary_refresh" };
+  | { kind: "summary_refresh" }
+  | {
+    kind: "agent";
+    agent: {
+      commit: string;
+      buildId: string;
+      builtAt?: string;
+      channel?: string;
+    };
+  };
 
 const UX_RESOURCE_KINDS = new Set<MonitorResourceKind>([
   "instance",
@@ -132,6 +148,54 @@ function summaryNeedsRefresh(lastProjectedAt: string | undefined): boolean {
   return Date.now() - parsed >= PROJECTION_SUMMARY_REFRESH_MS;
 }
 
+export function agentChanged(
+  current: ServerDaemonProjection | undefined,
+  agent: ProjectionAgent,
+): boolean {
+  const existing = current?.agent;
+  if (existing?.commit !== agent.commit || existing?.buildId !== agent.buildId) {
+    return true;
+  }
+  if (agent.builtAt !== undefined && agent.builtAt !== existing?.builtAt) {
+    return true;
+  }
+  if (agent.channel !== undefined && agent.channel !== existing?.channel) {
+    return true;
+  }
+  return false;
+}
+
+/** Retain the persisted build identity unless an incoming agent payload replaces it. */
+export function mergeAgentPreserving(
+  current: ServerDaemonProjection | undefined,
+  incoming?: ProjectionAgent,
+): ServerDaemonProjection["agent"] | undefined {
+  if (!incoming) return current?.agent;
+  const existing = current?.agent;
+  if (
+    existing &&
+    existing.commit === incoming.commit &&
+    existing.buildId === incoming.buildId
+  ) {
+    return {
+      commit: incoming.commit,
+      buildId: incoming.buildId,
+      builtAt: incoming.builtAt ?? existing.builtAt,
+      channel: incoming.channel ?? existing.channel,
+    };
+  }
+  return incoming;
+}
+
+function attachPreservedAgent(
+  projection: ServerDaemonProjection,
+  current: ServerDaemonProjection | undefined,
+  incoming?: ProjectionAgent,
+): ServerDaemonProjection {
+  const agent = mergeAgentPreserving(current, incoming);
+  return agent ? { ...projection, agent } : projection;
+}
+
 async function writeMergedDaemonState(
   db: Db,
   serverId: string,
@@ -162,6 +226,7 @@ export async function projectServerDaemon(
     cell?: DaemonCell;
     resources?: MonitorResourceRow[];
     instanceAt?: string;
+    agent?: ProjectionAgent;
   } = {},
 ): Promise<boolean> {
   const existing = await getServerDaemonStateByServerId(db, serverId);
@@ -325,9 +390,40 @@ export async function projectServerDaemon(
       };
       break;
     }
+    case "agent": {
+      if (!agentChanged(currentProjection, trigger.agent)) {
+        return false;
+      }
+      touchLastSeen = false;
+      const mergedAgent = mergeAgentPreserving(
+        currentProjection,
+        trigger.agent,
+      );
+      nextProjection = {
+        ...(currentProjection ?? {
+          connected: false,
+          status: "unknown" as MonitorResourceStatus,
+          healthyCount: 0,
+          degradedCount: 0,
+          unhealthyCount: 0,
+          lastProjectedAt: now,
+        }),
+        agent: mergedAgent,
+        lastProjectedAt: now,
+      };
+      break;
+    }
   }
 
   if (!nextProjection) return false;
+
+  if (trigger.kind !== "agent") {
+    nextProjection = attachPreservedAgent(
+      nextProjection,
+      currentProjection,
+      context.agent,
+    );
+  }
 
   await writeMergedDaemonState(db, serverId, {
     key: existing.key,

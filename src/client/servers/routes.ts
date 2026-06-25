@@ -3,14 +3,22 @@ import { Hono } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { listVisible } from '../authz/index.ts'
-import { assertCanReadOr403 } from '../shared.ts'
+import { assertCanManageOr403, assertCanReadOr403 } from '../shared.ts'
 import { getDb, getDaemonCellRegistry } from '../../db.ts'
 import {
   fetchDaemonServerCell,
   pingDaemonServer,
 } from '../../daemon/cell/server-diagnostics.ts'
 import { resolveFleetPresence } from '../../daemon/cell/fleet-presence.ts'
+import {
+  generateDeliveryId,
+  generateRequestId,
+  type DaemonOutboundEnvelope,
+} from '../../daemon/cell/protocol.ts'
 import { server } from '../../lib/db/schema.ts'
+import { resolveServerUpdateStatus } from './update-status.ts'
+
+const UPDATE_TIMEOUT_MS = 120_000
 
 export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
   router.use('/servers', createSessionMiddleware(opts.secrets))
@@ -108,5 +116,91 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: result.error }, result.status)
     }
     return c.json(result)
+  })
+
+  router.get('/servers/:id/update', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const id = c.req.param('id')
+    const denied = await assertCanReadOr403(c, 'server', id)
+    if (denied) return denied
+
+    const registry = getDaemonCellRegistry(c)
+    const presence = await resolveFleetPresence(db, registry, [id])
+    const agent = presence.get(id)?.agent
+
+    const current = agent?.commit
+      ? {
+        commit: agent.commit,
+        buildId: agent.buildId ?? '',
+        builtAt: agent.builtAt ?? '',
+      }
+      : null
+
+    const resolved = await resolveServerUpdateStatus({
+      serverId: id,
+      current,
+      listUpdateRequests: async () => {
+        if (!registry) return []
+        return registry.getCell(id).listRequests(10, { requestKind: 'update' })
+      },
+    })
+
+    return c.json({
+      ok: true,
+      serverId: id,
+      channel: 'trunk',
+      current,
+      ...resolved,
+    })
+  })
+
+  router.post('/servers/:id/update', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const id = c.req.param('id')
+    const denied = await assertCanManageOr403(c, 'server', id)
+    if (denied) return denied
+
+    const registry = getDaemonCellRegistry(c)
+    if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
+
+    const presence = await resolveFleetPresence(db, registry, [id])
+    if (!presence.get(id)?.connected) {
+      return c.json({ error: 'Daemon not connected' }, 404)
+    }
+
+    const envelope: DaemonOutboundEnvelope = {
+      kind: 'update',
+      deliveryId: generateDeliveryId(),
+      requestId: generateRequestId(),
+      at: new Date().toISOString(),
+      channel: 'trunk',
+    }
+
+    const record = await registry.getCell(id).createRequestAndWait(
+      envelope,
+      UPDATE_TIMEOUT_MS,
+    )
+
+    if (record.status === 'done') {
+      return c.json({ ok: true, queued: true, status: 'updating' })
+    }
+    if (record.status === 'failed') {
+      return c.json(
+        { ok: false, error: record.error ?? 'daemon reported failure' },
+        500,
+      )
+    }
+    if (record.status === 'expired') {
+      return c.json(
+        { ok: false, error: 'timeout waiting for daemon acknowledgement' },
+        504,
+      )
+    }
+
+    return c.json({ ok: false, error: `unexpected update status: ${record.status}` }, 500)
   })
 }

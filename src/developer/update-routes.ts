@@ -11,11 +11,48 @@ import { getDaemonCellRegistry } from '../db.ts'
 import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
 
 const UPDATE_TIMEOUT_MS = 120_000
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/i
+
+function parseUpdateOverride(body: {
+  updateUrl?: unknown
+  updateSha256?: unknown
+}): { updateUrl?: string; updateSha256?: string } | { error: string } {
+  const updateUrl = typeof body.updateUrl === 'string' ? body.updateUrl.trim() : ''
+  const updateSha256 =
+    typeof body.updateSha256 === 'string' ? body.updateSha256.trim().toLowerCase() : ''
+
+  if (!updateUrl && !updateSha256) {
+    return {}
+  }
+
+  if (!updateUrl || !updateSha256) {
+    return {
+      error: 'updateUrl and updateSha256 must both be provided for explicit URL updates',
+    }
+  }
+
+  let parsedUrl: URL
+  try {
+    parsedUrl = new URL(updateUrl)
+  } catch {
+    return { error: 'updateUrl must be a valid absolute URL' }
+  }
+
+  if (parsedUrl.protocol !== 'https:') {
+    return { error: 'updateUrl must use HTTPS' }
+  }
+
+  if (!SHA256_HEX_RE.test(updateSha256)) {
+    return { error: 'updateSha256 must be a 64-character hex string' }
+  }
+
+  return { updateUrl, updateSha256 }
+}
 
 async function updateDaemon(
   registry: DaemonCellRegistry,
   serverId: string,
-  updateUrl: string,
+  options: { channel?: string; updateUrl?: string; updateSha256?: string },
 ): Promise<void> {
   const requestId = generateRequestId()
   const envelope: DaemonOutboundEnvelope = {
@@ -23,7 +60,11 @@ async function updateDaemon(
     deliveryId: generateDeliveryId(),
     requestId,
     at: new Date().toISOString(),
-    updateUrl,
+    channel: options.channel ?? 'trunk',
+    ...(options.updateUrl !== undefined ? { updateUrl: options.updateUrl } : {}),
+    ...(options.updateSha256 !== undefined
+      ? { updateSha256: options.updateSha256 }
+      : {}),
   }
 
   const snapshots = await registry.getSnapshots([serverId])
@@ -47,8 +88,8 @@ async function updateDaemon(
 }
 
 /**
- * Push a daemon update URL to connected agents. Each daemon downloads the
- * binary, refreshes its checkout, and restarts via update.sh.
+ * Push a daemon update trigger to connected agents. Defaults to channel-based
+ * resolution (trunk); optional updateUrl + updateSha256 for explicit-URL triggers.
  */
 export function registerUpdateRoutes(
   app: Hono,
@@ -62,14 +103,20 @@ export function registerUpdateRoutes(
   app.post(`${DEVELOPER_API_PREFIX}/daemon/:id/update`, async (c) => {
     const registry = getDaemonCellRegistry(c)
     if (!registry) return c.json({ ok: false, error: 'Daemon cell registry unavailable' }, 503)
-    const body = await c.req.json().catch(() => null)
-    if (!body || typeof body !== 'object' || typeof body.updateUrl !== 'string') {
-      return c.json({ ok: false, error: 'expected { updateUrl: string }' }, 400)
+    const body = await c.req.json().catch(() => ({})) as {
+      updateUrl?: unknown
+      updateSha256?: unknown
+      channel?: unknown
+    }
+    const channel = typeof body.channel === 'string' ? body.channel : 'trunk'
+    const override = parseUpdateOverride(body)
+    if ('error' in override) {
+      return c.json({ ok: false, error: override.error }, 400)
     }
 
     const serverId = c.req.param('id')
     try {
-      await updateDaemon(registry, serverId, body.updateUrl)
+      await updateDaemon(registry, serverId, { channel, ...override })
       return c.json({ ok: true, results: [{ daemonId: serverId, ok: true }] })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -84,16 +131,22 @@ export function registerUpdateRoutes(
   app.post(`${DEVELOPER_API_PREFIX}/daemon/update`, async (c) => {
     const registry = getDaemonCellRegistry(c)
     if (!registry) return c.json({ ok: false, error: 'Daemon cell registry unavailable' }, 503)
-    const body = await c.req.json().catch(() => null)
-    if (!body || typeof body !== 'object' || typeof body.updateUrl !== 'string') {
-      return c.json({ ok: false, error: 'expected { updateUrl: string }' }, 400)
+    const body = await c.req.json().catch(() => ({})) as {
+      updateUrl?: unknown
+      updateSha256?: unknown
+      channel?: unknown
+    }
+    const channel = typeof body.channel === 'string' ? body.channel : 'trunk'
+    const override = parseUpdateOverride(body)
+    if ('error' in override) {
+      return c.json({ ok: false, error: override.error }, 400)
     }
 
     const ids = await registry.listOnlineServerIds()
     const results = await Promise.all(
       ids.map(async (serverId) => {
         try {
-          await updateDaemon(registry, serverId, body.updateUrl)
+          await updateDaemon(registry, serverId, { channel, ...override })
           return { daemonId: serverId, ok: true }
         } catch (err) {
           return {

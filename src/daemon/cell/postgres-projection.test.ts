@@ -6,9 +6,14 @@ import {
 } from "../authn/daemon-state.ts";
 import {
   PROJECTION_SUMMARY_REFRESH_MS,
+  agentChanged,
+  mergeAgentPreserving,
   projectServerDaemon,
 } from "./postgres-projection.ts";
-import { onDaemonDisconnected } from "./control-plane-monitor.ts";
+import {
+  onDaemonDisconnected,
+  onMonitorMessageApplied,
+} from "./control-plane-monitor.ts";
 
 const serverId = "srv-projection-test";
 
@@ -49,6 +54,12 @@ const baseKey = {
   publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
   fingerprint: "fp-1",
   createdAt: "2020-01-01T00:00:00.000Z",
+};
+
+const testAgent = {
+  commit: "abc123",
+  buildId: "build-1",
+  channel: "trunk",
 };
 
 Deno.test("projectServerDaemon summary_refresh skips when lastProjectedAt is recent", async () => {
@@ -212,4 +223,375 @@ Deno.test("projectServerDaemon preserves server.daemon.key on write", async () =
   const merged = parseServerDaemonState(updateCalls[0]?.daemon);
   assertEquals(merged?.key?.id, baseKey.id);
   assertEquals(merged?.key?.fingerprint, baseKey.fingerprint);
+});
+
+Deno.test("projectServerDaemon disconnect preserves agent", async () => {
+  const { db, updateCalls } = createMockDb({
+    key: baseKey,
+    projection: {
+      connected: true,
+      status: "healthy",
+      healthyCount: 1,
+      degradedCount: 0,
+      unhealthyCount: 0,
+      lastProjectedAt: "2020-01-01T00:00:00.000Z",
+      agent: testAgent,
+    },
+  });
+
+  await projectServerDaemon(db, serverId, { kind: "disconnected" });
+
+  assertEquals(updateCalls.length, 1);
+  const merged = parseServerDaemonState(updateCalls[0]?.daemon);
+  assertEquals(merged?.projection?.agent, testAgent);
+});
+
+Deno.test("projectServerDaemon offline preserves agent", async () => {
+  const { db, updateCalls } = createMockDb({
+    key: baseKey,
+    projection: {
+      connected: true,
+      status: "healthy",
+      healthyCount: 1,
+      degradedCount: 0,
+      unhealthyCount: 0,
+      lastProjectedAt: "2020-01-01T00:00:00.000Z",
+      agent: testAgent,
+    },
+  });
+
+  await projectServerDaemon(db, serverId, { kind: "offline" });
+
+  assertEquals(updateCalls.length, 1);
+  const merged = parseServerDaemonState(updateCalls[0]?.daemon);
+  assertEquals(merged?.projection?.agent, testAgent);
+});
+
+Deno.test("projectServerDaemon identity refresh preserves agent", async () => {
+  const { db, updateCalls } = createMockDb({
+    key: baseKey,
+    projection: {
+      hostname: "old-host",
+      connected: true,
+      status: "healthy",
+      healthyCount: 1,
+      degradedCount: 0,
+      unhealthyCount: 0,
+      lastProjectedAt: "2020-01-01T00:00:00.000Z",
+      agent: testAgent,
+    },
+  });
+
+  await projectServerDaemon(db, serverId, {
+    kind: "identity",
+    identity: { hostname: "new-host" },
+  });
+
+  assert(updateCalls.length >= 1);
+  const projectionUpdate = updateCalls.find((call) => call.daemon != null);
+  const merged = parseServerDaemonState(projectionUpdate?.daemon);
+  assertEquals(merged?.projection?.hostname, "new-host");
+  assertEquals(merged?.projection?.agent, testAgent);
+});
+
+Deno.test("projectServerDaemon summary_refresh preserves agent", async () => {
+  const stale = new Date(Date.now() - PROJECTION_SUMMARY_REFRESH_MS - 1)
+    .toISOString();
+  const { db, updateCalls } = createMockDb({
+    key: baseKey,
+    projection: {
+      connected: true,
+      status: "healthy",
+      healthyCount: 0,
+      degradedCount: 0,
+      unhealthyCount: 0,
+      lastProjectedAt: stale,
+      agent: testAgent,
+    },
+  });
+
+  await projectServerDaemon(db, serverId, { kind: "summary_refresh" }, {
+    resources: [],
+    instanceAt: stale,
+  });
+
+  assertEquals(updateCalls.length, 1);
+  const merged = parseServerDaemonState(updateCalls[0]?.daemon);
+  assertEquals(merged?.projection?.agent, testAgent);
+});
+
+Deno.test("onMonitorMessageApplied heartbeat without projection triggers skips Postgres writes", async () => {
+  const { db, updateCalls } = createMockDb({
+    key: baseKey,
+    projection: {
+      connected: true,
+      status: "healthy",
+      healthyCount: 1,
+      degradedCount: 0,
+      unhealthyCount: 0,
+      lastProjectedAt: new Date().toISOString(),
+      agent: testAgent,
+    },
+  });
+
+  const cell = {
+    listMonitorResources: async () => [],
+    getMonitorInstance: async () => null,
+    getSnapshot: async () => ({
+      serverId,
+      version: 0,
+      updatedAt: new Date().toISOString(),
+      connected: true,
+    }),
+  };
+
+  await onMonitorMessageApplied(
+    db,
+    serverId,
+    cell as unknown as import("./contracts.ts").DaemonCell,
+    "monitor-heartbeat",
+    {
+      kind: "monitor-heartbeat",
+      serverId,
+      sequence: 1,
+      at: new Date().toISOString(),
+      instance: {},
+    },
+  );
+
+  assertEquals(updateCalls.length, 0);
+});
+
+Deno.test("onMonitorMessageApplied merges agent into resource transition write", async () => {
+  const { db, updateCalls } = createMockDb({
+    key: baseKey,
+    projection: {
+      connected: true,
+      status: "healthy",
+      healthyCount: 1,
+      degradedCount: 0,
+      unhealthyCount: 0,
+      lastProjectedAt: "2020-01-01T00:00:00.000Z",
+    },
+  });
+
+  const cell = {
+    listMonitorResources: async () => [{
+      resourceKey: "container:abc",
+      serverId,
+      kind: "container" as const,
+      status: "unhealthy" as const,
+      state: {
+        resourceKey: "container:abc",
+        kind: "container" as const,
+        status: "unhealthy" as const,
+      },
+      updatedAt: "2020-01-01T00:00:00.000Z",
+    }],
+    getMonitorInstance: async () => ({
+      serverId,
+      sequence: 1,
+      at: new Date().toISOString(),
+      instance: {},
+      updatedAt: new Date().toISOString(),
+    }),
+    getSnapshot: async () => ({
+      serverId,
+      version: 0,
+      updatedAt: new Date().toISOString(),
+      connected: true,
+    }),
+  };
+
+  await onMonitorMessageApplied(
+    db,
+    serverId,
+    cell as unknown as import("./contracts.ts").DaemonCell,
+    "monitor-heartbeat",
+    {
+      kind: "monitor-heartbeat",
+      serverId,
+      sequence: 2,
+      at: new Date().toISOString(),
+      instance: {},
+      agent: testAgent,
+      events: [{
+        resourceKey: "container:abc",
+        kind: "container",
+        fromStatus: "healthy",
+        toStatus: "unhealthy",
+        at: "2020-01-01T00:00:00.000Z",
+      }],
+    },
+  );
+
+  assertEquals(updateCalls.length, 1);
+  const merged = parseServerDaemonState(updateCalls[0]?.daemon);
+  assertEquals(merged?.projection?.agent, testAgent);
+  assertEquals(merged?.projection?.status, "unhealthy");
+});
+
+Deno.test("agentChanged detects optional field backfill for unchanged build", () => {
+  const current = {
+    connected: true,
+    status: "healthy" as const,
+    healthyCount: 1,
+    degradedCount: 0,
+    unhealthyCount: 0,
+    lastProjectedAt: "2020-01-01T00:00:00.000Z",
+    agent: {
+      commit: "abc123",
+      buildId: "build-1",
+    },
+  };
+
+  assertEquals(
+    agentChanged(current, {
+      commit: "abc123",
+      buildId: "build-1",
+      builtAt: "2020-01-02T00:00:00.000Z",
+    }),
+    true,
+  );
+  assertEquals(
+    agentChanged(current, {
+      commit: "abc123",
+      buildId: "build-1",
+      channel: "trunk",
+    }),
+    true,
+  );
+  assertEquals(
+    agentChanged(current, {
+      commit: "abc123",
+      buildId: "build-1",
+    }),
+    false,
+  );
+});
+
+Deno.test("mergeAgentPreserving backfills optional fields for unchanged build", () => {
+  const current = {
+    connected: true,
+    status: "healthy" as const,
+    healthyCount: 1,
+    degradedCount: 0,
+    unhealthyCount: 0,
+    lastProjectedAt: "2020-01-01T00:00:00.000Z",
+    agent: {
+      commit: "abc123",
+      buildId: "build-1",
+    },
+  };
+
+  assertEquals(
+    mergeAgentPreserving(current, {
+      commit: "abc123",
+      buildId: "build-1",
+      builtAt: "2020-01-02T00:00:00.000Z",
+      channel: "trunk",
+    }),
+    {
+      commit: "abc123",
+      buildId: "build-1",
+      builtAt: "2020-01-02T00:00:00.000Z",
+      channel: "trunk",
+    },
+  );
+});
+
+Deno.test("projectServerDaemon agent trigger backfills builtAt for unchanged build", async () => {
+  const { db, updateCalls } = createMockDb({
+    key: baseKey,
+    projection: {
+      connected: true,
+      status: "healthy",
+      healthyCount: 1,
+      degradedCount: 0,
+      unhealthyCount: 0,
+      lastProjectedAt: "2020-01-01T00:00:00.000Z",
+      agent: {
+        commit: "abc123",
+        buildId: "build-1",
+      },
+    },
+  });
+
+  const wrote = await projectServerDaemon(db, serverId, {
+    kind: "agent",
+    agent: {
+      commit: "abc123",
+      buildId: "build-1",
+      builtAt: "2020-01-02T00:00:00.000Z",
+      channel: "trunk",
+    },
+  });
+
+  assertEquals(wrote, true);
+  assertEquals(updateCalls.length, 1);
+  const merged = parseServerDaemonState(updateCalls[0]?.daemon);
+  assertEquals(merged?.projection?.agent, {
+    commit: "abc123",
+    buildId: "build-1",
+    builtAt: "2020-01-02T00:00:00.000Z",
+    channel: "trunk",
+  });
+});
+
+Deno.test("onMonitorMessageApplied heartbeat backfills builtAt for unchanged build", async () => {
+  const { db, updateCalls } = createMockDb({
+    key: baseKey,
+    projection: {
+      connected: true,
+      status: "healthy",
+      healthyCount: 1,
+      degradedCount: 0,
+      unhealthyCount: 0,
+      lastProjectedAt: "2020-01-01T00:00:00.000Z",
+      agent: {
+        commit: "abc123",
+        buildId: "build-1",
+      },
+    },
+  });
+
+  const cell = {
+    listMonitorResources: async () => [],
+    getMonitorInstance: async () => null,
+    getSnapshot: async () => ({
+      serverId,
+      version: 0,
+      updatedAt: new Date().toISOString(),
+      connected: true,
+    }),
+  };
+
+  await onMonitorMessageApplied(
+    db,
+    serverId,
+    cell as unknown as import("./contracts.ts").DaemonCell,
+    "monitor-heartbeat",
+    {
+      kind: "monitor-heartbeat",
+      serverId,
+      sequence: 3,
+      at: new Date().toISOString(),
+      instance: {},
+      agent: {
+        commit: "abc123",
+        buildId: "build-1",
+        builtAt: "2020-01-02T00:00:00.000Z",
+        channel: "trunk",
+      },
+    },
+  );
+
+  assertEquals(updateCalls.length, 1);
+  const merged = parseServerDaemonState(updateCalls[0]?.daemon);
+  assertEquals(merged?.projection?.agent, {
+    commit: "abc123",
+    buildId: "build-1",
+    builtAt: "2020-01-02T00:00:00.000Z",
+    channel: "trunk",
+  });
 });

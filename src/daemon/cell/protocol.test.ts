@@ -378,11 +378,27 @@ Deno.test("outboundEnvelopeToWireMessage maps outbound kinds", () => {
       ...base,
       kind: "update",
       updateUrl: "https://example.com/update",
+      updateSha256: "a".repeat(64),
     }),
     {
       type: "update",
       id: "req-1",
       updateUrl: "https://example.com/update",
+      updateSha256: "a".repeat(64),
+      at: base.at,
+    },
+  );
+
+  assertEquals(
+    outboundEnvelopeToWireMessage({
+      ...base,
+      kind: "update",
+      channel: "trunk",
+    }),
+    {
+      type: "update",
+      id: "req-1",
+      channel: "trunk",
       at: base.at,
     },
   );

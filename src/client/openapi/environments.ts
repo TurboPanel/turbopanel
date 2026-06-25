@@ -6,8 +6,7 @@ export const environmentSchemas = {
     properties: {
       id: { type: 'string' },
       displayName: { type: ['string', 'null'] },
-      organizationId: { type: 'string' },
-      workspaceId: { type: 'string' },
+      projectId: { type: 'string' },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
     },
@@ -24,10 +23,10 @@ export const environmentSchemas = {
   },
   CreateEnvironmentRequest: {
     type: 'object',
-    required: ['workspaceId'],
+    required: ['projectId'],
     properties: {
       displayName: { type: 'string' },
-      workspaceId: { type: 'string' },
+      projectId: { type: 'string' },
     },
   },
 }
@@ -39,7 +38,7 @@ export const environmentPaths = buildResourceCrudPaths({
   rowSchema: 'EnvironmentRow',
   createSchema: 'CreateEnvironmentRequest',
   parentQuery: {
-    name: 'workspaceId',
-    description: 'Filter environments under a workspace',
+    name: 'projectId',
+    description: 'Filter environments under a project',
   },
 })

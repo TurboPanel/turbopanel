@@ -43,7 +43,7 @@ export async function createLicense(
     .values({
       organizationId: opts.organizationId,
       displayName: opts.displayName ?? null,
-      hashedToken: hashed,
+      token: hashed,
       createdAt: now,
       updatedAt: now,
     })
@@ -96,11 +96,11 @@ export async function listLicenses(
 export async function lookupActiveLicense(
   db: Db,
   licenseId: string,
-): Promise<{ organizationId: string; hashedToken: string } | null> {
+): Promise<{ organizationId: string; token: string } | null> {
   const rows = await db
     .select({
       organizationId: license.organizationId,
-      hashedToken: license.hashedToken,
+      token: license.token,
     })
     .from(license)
     .where(and(eq(license.id, licenseId), isNull(license.revokedAt)))

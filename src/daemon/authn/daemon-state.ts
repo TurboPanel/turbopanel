@@ -22,6 +22,12 @@ export type ServerDaemonProjection = {
   unhealthyCount: number;
   lastProjectedAt: string;
   connectedAt?: string;
+  agent?: {
+    commit?: string;
+    buildId?: string;
+    builtAt?: string;
+    channel?: string;
+  };
 };
 
 export type ServerDaemonState = {
@@ -63,6 +69,22 @@ function parseProjectionStatus(value: unknown): MonitorResourceStatus | null {
   return allowed.has(value) ? value as MonitorResourceStatus : null;
 }
 
+function parseProjectionAgent(
+  raw: unknown,
+): ServerDaemonProjection["agent"] | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return undefined;
+  }
+  const agent = raw as Record<string, unknown>;
+  const result: NonNullable<ServerDaemonProjection["agent"]> = {};
+  if (isNonEmptyString(agent.commit)) result.commit = agent.commit;
+  if (isNonEmptyString(agent.buildId)) result.buildId = agent.buildId;
+  if (isNonEmptyString(agent.builtAt)) result.builtAt = agent.builtAt;
+  if (isNonEmptyString(agent.channel)) result.channel = agent.channel;
+  if (Object.keys(result).length === 0) return undefined;
+  return result;
+}
+
 function parseServerDaemonProjection(
   raw: unknown,
 ): ServerDaemonProjection | null {
@@ -81,6 +103,8 @@ function parseServerDaemonProjection(
   ) {
     return null;
   }
+
+  const parsedAgent = parseProjectionAgent(projection.agent);
 
   return {
     hostname: isNonEmptyString(projection.hostname)
@@ -102,6 +126,7 @@ function parseServerDaemonProjection(
     connectedAt: isNonEmptyString(projection.connectedAt)
       ? projection.connectedAt
       : undefined,
+    ...(parsedAgent ? { agent: parsedAgent } : {}),
   };
 }
 

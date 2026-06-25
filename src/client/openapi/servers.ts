@@ -79,6 +79,54 @@ export const serverSchemas = {
       },
     },
   },
+  ServerUpdateCurrent: {
+    type: 'object',
+    properties: {
+      commit: { type: 'string' },
+      buildId: { type: 'string' },
+      builtAt: { type: 'string' },
+    },
+  },
+  ServerUpdateTarget: {
+    type: 'object',
+    properties: {
+      commit: { type: 'string' },
+      buildId: { type: 'string' },
+      manifestUrl: { type: 'string' },
+    },
+  },
+  ServerUpdateStatusResponse: {
+    type: 'object',
+    required: ['ok', 'serverId', 'channel', 'updateAvailable', 'status'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      serverId: { type: 'string' },
+      channel: { type: 'string' },
+      current: {
+        oneOf: [
+          { $ref: '#/components/schemas/ServerUpdateCurrent' },
+          { type: 'null' },
+        ],
+      },
+      target: {
+        oneOf: [
+          { $ref: '#/components/schemas/ServerUpdateTarget' },
+          { type: 'null' },
+        ],
+      },
+      updateAvailable: { type: 'boolean' },
+      status: { type: 'string' },
+    },
+  },
+  TriggerServerUpdateResponse: {
+    type: 'object',
+    required: ['ok', 'queued', 'status'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      queued: { type: 'boolean', const: true },
+      status: { type: 'string' },
+    },
+  },
 }
 
 export const serverPaths: Record<string, unknown> = {
@@ -226,6 +274,153 @@ export const serverPaths: Record<string, unknown> = {
                 type: 'object',
                 required: ['error'],
                 properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/servers/{id}/update': {
+    get: {
+      tags: ['client'],
+      summary: 'Read daemon update status for a visible server',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Current agent build vs trunk manifest target',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ServerUpdateStatusResponse' },
+            },
+          },
+        },
+        '401': {
+          description: 'Unauthorized',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '503': {
+          description: 'Database unavailable',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    },
+    post: {
+      tags: ['client'],
+      summary: 'Trigger a trunk daemon update on a connected server',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Update queued on the daemon',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/TriggerServerUpdateResponse' },
+            },
+          },
+        },
+        '401': {
+          description: 'Unauthorized',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '404': {
+          description: 'Daemon not connected',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '503': {
+          description: 'Daemon cell registry unavailable',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '504': {
+          description: 'Timeout waiting for daemon acknowledgement',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'error'],
+                properties: {
+                  ok: { type: 'boolean', const: false },
+                  error: { type: 'string' },
+                },
               },
             },
           },

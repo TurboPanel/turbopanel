@@ -147,7 +147,7 @@ export async function materializeInvitationGrants(
       throw new InvitationGrantValidationError(permissionCompat.error, 400)
     }
 
-    const allowed = grantSpec.allowed ?? true
+    const allow = grantSpec.allow ?? grantSpec.allowed ?? true
 
     await db
       .insert(grant)
@@ -157,7 +157,7 @@ export async function materializeInvitationGrants(
         subjectType: 'user',
         subjectId: userId,
         permission: grantSpec.permissionKey,
-        allowed,
+        allow,
       })
       .onConflictDoNothing({
         target: [

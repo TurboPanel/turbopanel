@@ -326,7 +326,7 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
         subjectType: grant.subjectType,
         subjectId: grant.subjectId,
         permission: grant.permission,
-        allowed: grant.allowed,
+        allow: grant.allow,
       })
       .from(grant)
       .where(
@@ -408,7 +408,7 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
       entityId: entity.entityId,
       subjectType: subjectKind,
       subjectId,
-      allowed: mapEffectToAllowed(effect),
+      allow: mapEffectToAllowed(effect),
       permissionKey,
     })
 
@@ -437,7 +437,7 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
         entityId: grant.entityId,
         permission: grant.permission,
         subjectId: grant.subjectId,
-        allowed: grant.allowed,
+        allow: grant.allow,
       })
       .from(grant)
       .where(eq(grant.id, accessId))
@@ -451,7 +451,7 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
     const denied = await assertCanManageAccessOr403(c, db, accessRow.entityId)
     if (denied) return denied
 
-    if (accessRow.allowed) {
+    if (accessRow.allow) {
       try {
         if (
           accessRow.entityType === 'organization' &&

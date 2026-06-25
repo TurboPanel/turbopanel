@@ -6,8 +6,7 @@ export const hostingSchemas = {
     properties: {
       id: { type: 'string' },
       displayName: { type: ['string', 'null'] },
-      organizationId: { type: 'string' },
-      projectId: { type: 'string' },
+      serviceId: { type: ['string', 'null'] },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
     },
@@ -24,10 +23,9 @@ export const hostingSchemas = {
   },
   CreateHostingRequest: {
     type: 'object',
-    required: ['projectId'],
     properties: {
       displayName: { type: 'string' },
-      projectId: { type: 'string' },
+      serviceId: { type: ['string', 'null'] },
     },
   },
 }
@@ -39,7 +37,7 @@ export const hostingPaths = buildResourceCrudPaths({
   rowSchema: 'HostingRow',
   createSchema: 'CreateHostingRequest',
   parentQuery: {
-    name: 'projectId',
-    description: 'Filter hostings under a project',
+    name: 'serviceId',
+    description: 'Filter hostings linked to a service',
   },
 })

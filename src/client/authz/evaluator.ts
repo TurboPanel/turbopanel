@@ -105,71 +105,95 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         SELECT 'environment'::text AS entity_type, e.id AS entity_id, 0 AS depth
         FROM environment e WHERE e.id = ${entityId}::uuid
         UNION ALL
-        SELECT 'workspace'::text, e.workspace_id, 1
+        SELECT 'project'::text, e.project_id, 1
         FROM environment e WHERE e.id = ${entityId}::uuid
         UNION ALL
-        SELECT 'organization'::text, e.organization_id, 2
-        FROM environment e WHERE e.id = ${entityId}::uuid
+        SELECT 'workspace'::text, p.workspace_id, 2
+        FROM environment e
+        JOIN project p ON p.id = e.project_id
+        WHERE e.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'organization'::text, w.organization_id, 3
+        FROM environment e
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE e.id = ${entityId}::uuid
       `
     case 'project':
       return sql`
         SELECT 'project'::text AS entity_type, p.id AS entity_id, 0 AS depth
         FROM project p WHERE p.id = ${entityId}::uuid
         UNION ALL
-        SELECT 'environment'::text, p.environment_id, 1
+        SELECT 'workspace'::text, p.workspace_id, 1
         FROM project p WHERE p.id = ${entityId}::uuid
         UNION ALL
-        SELECT 'workspace'::text, e.workspace_id, 2
+        SELECT 'organization'::text, w.organization_id, 2
         FROM project p
-        JOIN environment e ON e.id = p.environment_id
+        JOIN workspace w ON w.id = p.workspace_id
         WHERE p.id = ${entityId}::uuid
-        UNION ALL
-        SELECT 'organization'::text, p.organization_id, 3
-        FROM project p WHERE p.id = ${entityId}::uuid
       `
     case 'service':
       return sql`
         SELECT 'service'::text AS entity_type, s.id AS entity_id, 0 AS depth
         FROM service s WHERE s.id = ${entityId}::uuid
         UNION ALL
-        SELECT 'project'::text, s.project_id, 1
+        SELECT 'environment'::text, s.environment_id, 1
         FROM service s WHERE s.id = ${entityId}::uuid
         UNION ALL
-        SELECT 'environment'::text, p.environment_id, 2
+        SELECT 'project'::text, e.project_id, 2
         FROM service s
-        JOIN project p ON p.id = s.project_id
+        JOIN environment e ON e.id = s.environment_id
         WHERE s.id = ${entityId}::uuid
         UNION ALL
-        SELECT 'workspace'::text, e.workspace_id, 3
+        SELECT 'workspace'::text, p.workspace_id, 3
         FROM service s
-        JOIN project p ON p.id = s.project_id
-        JOIN environment e ON e.id = p.environment_id
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project p ON p.id = e.project_id
         WHERE s.id = ${entityId}::uuid
         UNION ALL
-        SELECT 'organization'::text, s.organization_id, 4
-        FROM service s WHERE s.id = ${entityId}::uuid
+        SELECT 'organization'::text, w.organization_id, 4
+        FROM service s
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE s.id = ${entityId}::uuid
       `
     case 'hosting':
       return sql`
         SELECT 'hosting'::text AS entity_type, h.id AS entity_id, 0 AS depth
         FROM hosting h WHERE h.id = ${entityId}::uuid
         UNION ALL
-        SELECT 'project'::text, h.project_id, 1
-        FROM hosting h WHERE h.id = ${entityId}::uuid
+        SELECT 'service'::text, h.service_id, 1
+        FROM hosting h WHERE h.id = ${entityId}::uuid AND h.service_id IS NOT NULL
         UNION ALL
-        SELECT 'environment'::text, p.environment_id, 2
+        SELECT 'environment'::text, s.environment_id, 2
         FROM hosting h
-        JOIN project p ON p.id = h.project_id
-        WHERE h.id = ${entityId}::uuid
+        JOIN service s ON s.id = h.service_id
+        WHERE h.id = ${entityId}::uuid AND h.service_id IS NOT NULL
         UNION ALL
-        SELECT 'workspace'::text, e.workspace_id, 3
+        SELECT 'project'::text, e.project_id, 3
         FROM hosting h
-        JOIN project p ON p.id = h.project_id
-        JOIN environment e ON e.id = p.environment_id
-        WHERE h.id = ${entityId}::uuid
+        JOIN service s ON s.id = h.service_id
+        JOIN environment e ON e.id = s.environment_id
+        WHERE h.id = ${entityId}::uuid AND h.service_id IS NOT NULL
         UNION ALL
-        SELECT 'organization'::text, h.organization_id, 4
-        FROM hosting h WHERE h.id = ${entityId}::uuid
+        SELECT 'workspace'::text, p.workspace_id, 4
+        FROM hosting h
+        JOIN service s ON s.id = h.service_id
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project p ON p.id = e.project_id
+        WHERE h.id = ${entityId}::uuid AND h.service_id IS NOT NULL
+        UNION ALL
+        SELECT 'organization'::text, w.organization_id, 5
+        FROM hosting h
+        JOIN service s ON s.id = h.service_id
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE h.id = ${entityId}::uuid AND h.service_id IS NOT NULL
+        UNION ALL
+        SELECT 'organization'::text, h.organization_id, 1
+        FROM hosting h WHERE h.id = ${entityId}::uuid AND h.service_id IS NULL
       `
     case 'server':
       return sql`
@@ -191,13 +215,30 @@ function buildLeavesBody(kind: string, organizationId: string): SQL {
     case 'workspace':
       return sql`SELECT id FROM workspace WHERE organization_id = ${organizationId}::uuid`
     case 'environment':
-      return sql`SELECT id FROM environment WHERE organization_id = ${organizationId}::uuid`
+      return sql`SELECT e.id FROM environment e
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE w.organization_id = ${organizationId}::uuid`
     case 'project':
-      return sql`SELECT id FROM project WHERE organization_id = ${organizationId}::uuid`
+      return sql`SELECT p.id FROM project p
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE w.organization_id = ${organizationId}::uuid`
     case 'service':
-      return sql`SELECT id FROM service WHERE organization_id = ${organizationId}::uuid`
+      return sql`SELECT s.id FROM service s
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE w.organization_id = ${organizationId}::uuid`
     case 'hosting':
-      return sql`SELECT id FROM hosting WHERE organization_id = ${organizationId}::uuid`
+      return sql`SELECT h.id FROM hosting h
+        JOIN service s ON s.id = h.service_id
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE w.organization_id = ${organizationId}::uuid
+        UNION
+        SELECT h.id FROM hosting h
+        WHERE h.service_id IS NULL AND h.organization_id = ${organizationId}::uuid`
     case 'server':
       return sql`SELECT id FROM server WHERE organization_id = ${organizationId}::uuid`
     default:
@@ -245,25 +286,25 @@ export async function can(
       SELECT entity_id FROM ancestry WHERE entity_type = 'organization' LIMIT 1
     ),
     org_hits AS (
-      SELECT ag.allowed
+      SELECT ag.allow
       FROM ${grant} ag
       JOIN subjectset ss
         ON ss.subject_type = ag.subject_type AND ss.subject_id = ag.subject_id
       WHERE ag.entity_type = 'organization'
         AND ag.entity_id = (SELECT entity_id FROM org_id)
         AND ag.permission IN ('organization:own', 'organization:manage')
-        AND ag.allowed = true
+        AND ag.allow = true
       LIMIT 1
     ),
     team_hits AS (
-      SELECT ag.allowed
+      SELECT ag.allow
       FROM ${grant} ag
       JOIN subjectset ss
         ON ss.subject_type = ag.subject_type AND ss.subject_id = ag.subject_id
       WHERE ${isTeamScopedCheck ? sql`ag.entity_type = 'team'` : sql`false`}
         AND ${isTeamScopedCheck ? sql`ag.entity_id = ${entityId}::uuid` : sql`false`}
         AND ${teamPermissionFilter}
-        AND ag.allowed = true
+        AND ag.allow = true
       LIMIT 1
     )
     SELECT (
@@ -327,7 +368,7 @@ export async function listVisible(
         WHERE ag.entity_type = 'organization'
           AND ag.entity_id = ${organizationId}::uuid
           AND ag.permission IN ('organization:own', 'organization:manage')
-          AND ag.allowed = true
+          AND ag.allow = true
       ) AS val
     ),
     leaves AS (

@@ -6,8 +6,7 @@ export const serviceSchemas = {
     properties: {
       id: { type: 'string' },
       displayName: { type: ['string', 'null'] },
-      organizationId: { type: 'string' },
-      projectId: { type: 'string' },
+      environmentId: { type: 'string' },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
     },
@@ -24,10 +23,10 @@ export const serviceSchemas = {
   },
   CreateServiceRequest: {
     type: 'object',
-    required: ['projectId'],
+    required: ['environmentId'],
     properties: {
       displayName: { type: 'string' },
-      projectId: { type: 'string' },
+      environmentId: { type: 'string' },
     },
   },
 }
@@ -39,7 +38,7 @@ export const servicePaths = buildResourceCrudPaths({
   rowSchema: 'ServiceRow',
   createSchema: 'CreateServiceRequest',
   parentQuery: {
-    name: 'projectId',
-    description: 'Filter services under a project',
+    name: 'environmentId',
+    description: 'Filter services under an environment',
   },
 })

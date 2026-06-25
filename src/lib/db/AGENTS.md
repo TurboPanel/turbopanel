@@ -73,12 +73,30 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `sync
 |---|---|
 | **Identity** | `user`, `account`, `apikey`, `session`, `verification`, `passkey`, `2fa` |
 | **Organizations** | `organization`, `member`, `team`, `teammate`, `invitation`, `license` |
-| **Resource tree** | `workspace`, `environment`, `project`, `service`, `hosting` |
+| **Resource tree** | `workspace`, `project`, `environment`, `service`, `hosting` |
 | **Authorization** | `grant` |
 | **Config** | `setting` |
 | **Runtime** | `server` |
 
-> The physical Postgres table is **`workspace`** (`environment.workspace_id` → `workspace.id`). The Drizzle export is `workspace`.
+> The physical Postgres table is **`workspace`** (`project.workspace_id` → `workspace.id`). The Drizzle export is `workspace`.
+
+### Resource hierarchy
+
+Canonical order (org scope is derived via joins — not stored on child rows except standalone hosting):
+
+```
+organization → workspace → project → environment → service → hosting (optional)
+```
+
+| Entity | Parent FK | Notes |
+|---|---|---|
+| `workspace` | `organization_id` | Root of the resource tree |
+| `project` | `workspace_id` | Docker-compose equivalent; env-specific vars live on environments |
+| `environment` | `project_id` | Staging/production/etc. within a project |
+| `service` | `environment_id` | Deployable unit within an environment |
+| `hosting` | `service_id` (nullable) | When `service_id` is null, `organization_id` scopes standalone traditional hosting at org level; when set, org is derived via the service chain |
+
+Authorization ancestry and `listVisible()` resolve organization through this chain in SQL (`evaluator.ts`, `create-access-grant.ts`).
 
 > Permissions are **static code constants** defined in `../../client/authz/catalog.ts` (`PERMISSIONS`, `ENTITY_TYPES`, `SUBJECT_TYPES`) — not DB rows. There are no `role`, `permission`, or `permit` tables. The Drizzle table export is **`grant`** (not `accessGrant`).
 
@@ -113,24 +131,24 @@ List and get enforce visibility via `listVisible` / org-level grant checks in SQ
 | `POST` | `/api/client/v1/workspaces` | org owner/manager on org |
 | `PATCH` | `/api/client/v1/workspaces/{id}` | org owner/manager |
 | `DELETE` | `/api/client/v1/workspaces/{id}` | org owner/manager |
-| `GET` | `/api/client/v1/environments` | org owner/manager (optional `?workspaceId=`) |
+| `GET` | `/api/client/v1/environments` | org owner/manager (optional `?projectId=`) |
 | `GET` | `/api/client/v1/environments/{id}` | org owner/manager |
-| `POST` | `/api/client/v1/environments` | org owner/manager on parent workspace |
+| `POST` | `/api/client/v1/environments` | org owner/manager on parent project |
 | `PATCH` | `/api/client/v1/environments/{id}` | org owner/manager |
 | `DELETE` | `/api/client/v1/environments/{id}` | org owner/manager |
-| `GET` | `/api/client/v1/projects` | org owner/manager (optional `?environmentId=`) |
+| `GET` | `/api/client/v1/projects` | org owner/manager (optional `?workspaceId=`) |
 | `GET` | `/api/client/v1/projects/{id}` | org owner/manager |
-| `POST` | `/api/client/v1/projects` | org owner/manager on parent environment |
+| `POST` | `/api/client/v1/projects` | org owner/manager on parent workspace |
 | `PATCH` | `/api/client/v1/projects/{id}` | org owner/manager |
 | `DELETE` | `/api/client/v1/projects/{id}` | org owner/manager |
-| `GET` | `/api/client/v1/services` | org owner/manager (optional `?projectId=`) |
+| `GET` | `/api/client/v1/services` | org owner/manager (optional `?environmentId=`) |
 | `GET` | `/api/client/v1/services/{id}` | org owner/manager |
-| `POST` | `/api/client/v1/services` | org owner/manager on parent project |
+| `POST` | `/api/client/v1/services` | org owner/manager on parent environment |
 | `PATCH` | `/api/client/v1/services/{id}` | org owner/manager |
 | `DELETE` | `/api/client/v1/services/{id}` | org owner/manager |
-| `GET` | `/api/client/v1/hostings` | org owner/manager (optional `?projectId=`) |
+| `GET` | `/api/client/v1/hostings` | org owner/manager (optional `?serviceId=`) |
 | `GET` | `/api/client/v1/hostings/{id}` | org owner/manager |
-| `POST` | `/api/client/v1/hostings` | org owner/manager on parent project |
+| `POST` | `/api/client/v1/hostings` | org owner/manager; optional `serviceId` (standalone when omitted) |
 | `PATCH` | `/api/client/v1/hostings/{id}` | org owner/manager |
 | `DELETE` | `/api/client/v1/hostings/{id}` | org owner/manager |
 
@@ -144,7 +162,7 @@ Permissions are **static code constants** in `../../client/authz/catalog.ts` —
 
 ### `license` table
 
-Organization-scoped API tokens for server registration. Each row belongs to an `organization` (`organization_id`, cascade delete). `display_name` is optional. `hashed_token` stores a PBKDF2-SHA256 hash in the same `$pbkdf2-sha256$…` format as `account.password`. Soft-delete via `revoked_at` — revoked licenses remain in the table for audit; application code should treat non-null `revoked_at` as inactive.
+Organization-scoped API tokens for server registration. Each row belongs to an `organization` (`organization_id`, cascade delete). `display_name` is optional. `token` stores a PBKDF2-SHA256 hash in the same `$pbkdf2-sha256$…` format as `account.password`. Soft-delete via `revoked_at` — revoked licenses remain in the table for audit; application code should treat non-null `revoked_at` as inactive.
 
 ### `server` table
 
@@ -216,7 +234,7 @@ Runtime authorization lives in `../../client/authz/` (pure TypeScript, safe for 
 
 **Install (Deno):** `completeInstanceInstall` inserts exactly one `organization:own` grant on the org and one `team:own` grant on the default team for the superadmin user.
 
-**Completed:** Resource ancestry is computed directly from real domain tables (`organization → workspace → environment → project → service/hosting`, `organization → server`); the generic `resource` shadow table has been dropped.
+**Completed:** Resource ancestry is computed directly from real domain tables (`organization → workspace → project → environment → service/hosting`, `organization → server`); the generic `resource` shadow table has been dropped. The `grant.allow` column (formerly `allowed`) stores whether a grant permits (`true`) or denies (`false`) the listed permission.
 
 ## Connection (self-hosted dev)
 
