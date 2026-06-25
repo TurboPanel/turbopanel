@@ -774,6 +774,7 @@ export class DaemonCellObject {
     }
 
     if (parsed.type === "pong") {
+      await this.#handleInboundMessage(attachment.serverId, parsed);
       await this.#heartbeat(attachment.serverId, {
         connectionId: attachment.connectionId,
         at,
