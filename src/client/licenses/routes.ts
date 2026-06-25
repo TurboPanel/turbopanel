@@ -12,7 +12,6 @@ import { assertCanOr403 } from '../authz/index.ts'
 import { compatLogInfo } from '../../log-compat.ts'
 import { getDb, getDaemonCellRegistry } from '../../db.ts'
 import { isDeveloperSurfaceEnabled } from '../../dev-mode.ts'
-import { ensureDevDaemonBinaries } from '../../lib/ensure-dev-daemon-binaries.ts'
 import { buildLicenseInstallCommand } from '../../lib/daemon-install-command.ts'
 import {
   parseInstallBaseUrl,
@@ -116,15 +115,9 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'installBaseUrl must be a valid http(s) URL' }, 400)
     }
 
-    if (devSurface) {
-      try {
-        await ensureDevDaemonBinaries()
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        return c.json({ error: message }, 500)
-      }
-    }
-
+    // The instance does not build daemon release artifacts. In self-hosted dev
+    // the operator builds them via the console (daemon `deno task release:package`);
+    // Caddy serves whatever is present under the daemon checkout's `dist/`.
     const { licenseId, licenseToken } = await createLicense(db, {
       organizationId,
       displayName,
