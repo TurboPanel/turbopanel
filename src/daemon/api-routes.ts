@@ -110,6 +110,26 @@ export function registerDaemonApiRoutes(
 
   // Platform CA PEM — daemons add this to their trust store before dialing in.
   daemon.get("/instance/ca", async (c) => {
+    // The Workers runtime has no `Deno` global and no filesystem, so it cannot
+    // read the CA from disk. In co-located Workers dev the platform CA PEM is
+    // injected (base64) into the Worker env; production Workers use publicly
+    // trusted certs and have no platform CA to serve.
+    if (typeof Deno === "undefined") {
+      const env = c.env as
+        | { TURBOPANEL_TLS_CA_PEM_B64?: string }
+        | undefined;
+      const b64 = env?.TURBOPANEL_TLS_CA_PEM_B64?.trim();
+      if (!b64) {
+        return c.json({ error: "platform CA not configured" }, 404);
+      }
+      try {
+        const pem = atob(b64);
+        return c.body(pem, 200, { "content-type": "application/x-pem-file" });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return c.json({ error: message }, 500);
+      }
+    }
     try {
       const cert = await Deno.readTextFile(resolveInstanceTlsCaPath());
       return c.body(cert, 200, { "content-type": "application/x-pem-file" });

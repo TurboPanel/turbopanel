@@ -108,9 +108,11 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
     if (denied) return denied
 
     const devSurface = opts.runtime === 'deno' && isDeveloperSurfaceEnabled()
-    const parsedInstallBaseUrl = devSurface
-      ? parseInstallBaseUrl(installBaseUrl)
-      : null
+    // The install base URL override is a runtime-agnostic developer convenience
+    // (the UI only surfaces it in __DEV__). Parsing is safe on both Deno and
+    // Workers, so don't gate it behind the Deno-only devSurface — that left
+    // Workers dev unable to use the override at all.
+    const parsedInstallBaseUrl = parseInstallBaseUrl(installBaseUrl)
     if (installBaseUrl !== undefined && installBaseUrl.trim() && !parsedInstallBaseUrl) {
       return c.json({ error: 'installBaseUrl must be a valid http(s) URL' }, 400)
     }
