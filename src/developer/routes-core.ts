@@ -18,6 +18,10 @@ import {
   listFleetServerIds,
 } from '../daemon/cell/fleet-diagnostics.ts'
 import {
+  fetchDaemonServerCell,
+  pingDaemonServer,
+} from '../daemon/cell/server-diagnostics.ts'
+import {
   generateDeliveryId,
   generateRequestId,
   type DaemonOutboundEnvelope,
@@ -37,7 +41,6 @@ const UUID_RE =
 
 const COMMAND_TIMEOUT_MS = 30_000
 const ADDRESSES_TIMEOUT_MS = 10_000
-
 function nowTs(): string {
   return new Date().toISOString()
 }
@@ -180,6 +183,32 @@ export function buildDeveloperRouter(
     }
     await registry.getCell(id).createRequestAndWait(envelope, COMMAND_TIMEOUT_MS)
     return c.json({ ok: true, commandId: requestId })
+  })
+
+  developer.post('/daemon/:id/ping', async (c) => {
+    const registry = getDaemonCellRegistry(c)
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+    const id = c.req.param('id')
+
+    const result = await pingDaemonServer(db, registry, id)
+    if (!result.ok) {
+      return c.json({ error: result.error }, result.status)
+    }
+    return c.json(result)
+  })
+
+  developer.get('/daemon/:id/cell', async (c) => {
+    const registry = getDaemonCellRegistry(c)
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+    const id = c.req.param('id')
+
+    const result = await fetchDaemonServerCell(db, registry, id)
+    if (!result.ok) {
+      return c.json({ error: result.error }, result.status)
+    }
+    return c.json(result)
   })
 
   developer.get('/instance/addresses', (c) => {

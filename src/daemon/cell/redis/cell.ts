@@ -121,6 +121,7 @@ function parseRequestRecord(
     createdAt: fields.createdAt ?? nowIso(),
     expiresAt: fields.expiresAt ?? nowIso(),
   };
+  if (fields.sentAt) record.sentAt = fields.sentAt;
   if (fields.ackAt) record.ackAt = fields.ackAt;
   if (fields.finishedAt) record.finishedAt = fields.finishedAt;
   if (fields.error) record.error = fields.error;

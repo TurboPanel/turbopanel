@@ -103,6 +103,7 @@ export type PendingRequestRecord = {
   status: PendingRequestStatus;
   createdAt: string;
   expiresAt: string;
+  sentAt?: string;
   command?: string;
   ackAt?: string;
   finishedAt?: string;

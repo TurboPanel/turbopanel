@@ -120,6 +120,7 @@ function parseRequestRow(
     createdAt: String(row.created_at ?? nowIso()),
     expiresAt: String(row.expires_at ?? nowIso()),
   };
+  if (row.sent_at) record.sentAt = String(row.sent_at);
   if (row.ack_at) record.ackAt = String(row.ack_at);
   if (row.finished_at) record.finishedAt = String(row.finished_at);
   if (row.error) record.error = String(row.error);

@@ -3,12 +3,18 @@ import { Hono } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { listVisible } from '../authz/index.ts'
+import { assertCanReadOr403 } from '../shared.ts'
 import { getDb, getDaemonCellRegistry } from '../../db.ts'
+import {
+  fetchDaemonServerCell,
+  pingDaemonServer,
+} from '../../daemon/cell/server-diagnostics.ts'
 import { resolveFleetPresence } from '../../daemon/cell/fleet-presence.ts'
 import { server } from '../../lib/db/schema.ts'
 
 export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
   router.use('/servers', createSessionMiddleware(opts.secrets))
+  router.use('/servers/*', createSessionMiddleware(opts.secrets))
 
   router.get('/servers', async (c) => {
     const db = getDb(c)
@@ -64,9 +70,43 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
           healthyCount: live?.healthyCount ?? null,
           degradedCount: live?.degradedCount ?? null,
           unhealthyCount: live?.unhealthyCount ?? null,
+          lastHeartbeatAt: live?.lastHeartbeatAt ?? null,
+          connectedAt: live?.connectedAt ?? null,
           licenseId: row.licenseId ?? null,
         }
       }),
     })
+  })
+
+  router.post('/servers/:id/ping', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const id = c.req.param('id')
+    const denied = await assertCanReadOr403(c, 'server', id)
+    if (denied) return denied
+
+    const registry = getDaemonCellRegistry(c)
+    const result = await pingDaemonServer(db, registry, id)
+    if (!result.ok) {
+      return c.json({ error: result.error }, result.status)
+    }
+    return c.json(result)
+  })
+
+  router.get('/servers/:id/cell', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const id = c.req.param('id')
+    const denied = await assertCanReadOr403(c, 'server', id)
+    if (denied) return denied
+
+    const registry = getDaemonCellRegistry(c)
+    const result = await fetchDaemonServerCell(db, registry, id)
+    if (!result.ok) {
+      return c.json({ error: result.error }, result.status)
+    }
+    return c.json(result)
   })
 }

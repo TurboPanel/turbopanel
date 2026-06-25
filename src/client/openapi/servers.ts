@@ -5,6 +5,7 @@ export const serverSchemas = {
       id: { type: 'string' },
       displayName: { type: ['string', 'null'] },
       organizationId: { type: ['string', 'null'] },
+      licenseId: { type: ['string', 'null'] },
       options: { type: ['object', 'null'], additionalProperties: true },
       createdAt: { type: 'string', format: 'date-time' },
       connected: { type: 'boolean' },
@@ -13,6 +14,58 @@ export const serverSchemas = {
         type: ['string', 'null'],
         description:
           'Client IP as seen by the instance (X-Real-IP from Caddy). Null when offline or co-located on a Unix socket.',
+      },
+      status: {
+        type: ['string', 'null'],
+        description:
+          'Aggregate monitor health for connected servers. Null when offline or not yet projected.',
+      },
+      healthyCount: {
+        type: ['integer', 'null'],
+        description: 'Count of healthy monitored resources. Null when offline or not yet projected.',
+      },
+      degradedCount: {
+        type: ['integer', 'null'],
+        description: 'Count of degraded monitored resources. Null when offline or not yet projected.',
+      },
+      unhealthyCount: {
+        type: ['integer', 'null'],
+        description: 'Count of unhealthy monitored resources. Null when offline or not yet projected.',
+      },
+      lastHeartbeatAt: {
+        type: ['string', 'null'],
+        format: 'date-time',
+        description:
+          'Last heartbeat/inbound time recorded in the daemon cell snapshot. Null when the daemon has never connected.',
+      },
+      connectedAt: {
+        type: ['string', 'null'],
+        format: 'date-time',
+        description:
+          'Time the current daemon WebSocket connection was established (resets on reconnect). Null when offline.',
+      },
+    },
+  },
+  PingServerResponse: {
+    type: 'object',
+    required: ['ok', 'tripMs', 'sentAt', 'pongAt'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      tripMs: { type: 'number' },
+      sentAt: { type: 'string', format: 'date-time' },
+      pongAt: { type: 'string', format: 'date-time' },
+    },
+  },
+  FetchServerCellResponse: {
+    type: 'object',
+    required: ['ok', 'snapshot', 'resources'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      snapshot: { type: 'object', additionalProperties: true },
+      monitorInstance: { type: ['object', 'null'], additionalProperties: true },
+      resources: {
+        type: 'array',
+        items: { type: 'object', additionalProperties: true },
       },
     },
   },
@@ -57,6 +110,116 @@ export const serverPaths: Record<string, unknown> = {
         },
         '503': {
           description: 'Database unavailable',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/servers/{id}/ping': {
+    post: {
+      tags: ['client'],
+      summary: 'Ping a visible server daemon over WebSocket',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Round-trip ping succeeded',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/PingServerResponse' },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '404': {
+          description: 'Daemon not connected',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '504': {
+          description: 'Ping timed out',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/servers/{id}/cell': {
+    get: {
+      tags: ['client'],
+      summary: 'Fetch daemon cell snapshot for a visible server',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Daemon cell data',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/FetchServerCellResponse' },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '404': {
+          description: 'Server not found',
           content: {
             'application/json': {
               schema: {

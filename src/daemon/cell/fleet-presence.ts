@@ -3,7 +3,7 @@ import type { Db } from "../../db.ts";
 import { parseServerDaemonState } from "../authn/daemon-state.ts";
 import type { ServerMetadata } from "../../lib/db/server-metadata.ts";
 import { server } from "../../lib/db/schema.ts";
-import type { DaemonCellRegistry } from "./contracts.ts";
+import type { DaemonCellRegistry, DaemonCellSnapshot } from "./contracts.ts";
 import type { MonitorResourceStatus } from "./monitor-contracts.ts";
 import { readProjectionsForServers } from "./postgres-projection.ts";
 
@@ -21,6 +21,7 @@ export type ServerFleetPresence = {
   unhealthyCount: number | null;
   connectedAt: string | null;
   lastProjectedAt: string | null;
+  lastHeartbeatAt: string | null;
 };
 
 function normalizeRemoteAddress(
@@ -41,7 +42,7 @@ export async function resolveFleetPresence(
 ): Promise<Map<string, ServerFleetPresence>> {
   if (serverIds.length === 0) return new Map();
 
-  const [rows, projections, onlineSet] = await Promise.all([
+  const [rows, projections, onlineSet, snapshots] = await Promise.all([
     db
       .select({
         id: server.id,
@@ -54,6 +55,9 @@ export async function resolveFleetPresence(
     registry
       ? registry.listOnlineServerIds().then((ids) => new Set(ids))
       : Promise.resolve<Set<string> | null>(null),
+    registry
+      ? registry.getSnapshots(serverIds)
+      : Promise.resolve(new Map<string, DaemonCellSnapshot>()),
   ]);
 
   const result = new Map<string, ServerFleetPresence>();
@@ -65,6 +69,7 @@ export async function resolveFleetPresence(
     const connected = onlineSet
       ? onlineSet.has(row.id)
       : (projection?.connected ?? state?.projection?.connected ?? false);
+    const snapshot = snapshots.get(row.id);
 
     result.set(row.id, {
       serverId: row.id,
@@ -78,8 +83,10 @@ export async function resolveFleetPresence(
       healthyCount: projection?.healthyCount ?? null,
       degradedCount: projection?.degradedCount ?? null,
       unhealthyCount: projection?.unhealthyCount ?? null,
-      connectedAt: projection?.connectedAt ?? null,
+      connectedAt: snapshot?.connectedAt ?? projection?.connectedAt ?? null,
       lastProjectedAt: projection?.lastProjectedAt ?? null,
+      lastHeartbeatAt: snapshot?.lastHeartbeatAt ?? snapshot?.lastInboundAt ??
+        null,
     });
   }
 
