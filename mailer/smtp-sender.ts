@@ -1,35 +1,28 @@
 import nodemailer from 'nodemailer'
 import type { Transporter } from 'nodemailer'
-import { createEmailVerificationLinkEmail } from '../src/lib/email/templates.ts'
 import {
-  resolveSelfHostedMailFromAddress,
-  resolveSelfHostedSmtpConfig,
-  smtpConfigFromRuntimeEnv,
-  smtpEnvOverrideActive,
-  type SmtpConfig,
-  type SmtpRuntimeEnv,
-} from '../src/lib/email/smtp/smtp-resolve.ts'
+  createEmailOtpEmail,
+  createEmailVerificationLinkEmail,
+} from '../src/lib/email/templates.ts'
+import { resolveEmailSettings, type ResolvedEmailSettings } from '../src/lib/settings/email-settings.ts'
 import type { EmailJob } from '../src/lib/email/types.ts'
+import type { MailerSendResult } from '../src/lib/email/sender-types.ts'
+import { PermanentSendError, validateEmailAddress } from '../src/lib/email/validate-address.ts'
 import type { Db } from './db.ts'
 import { logError } from '../src/logger.ts'
+import type { SmtpConfig } from '../src/lib/email/smtp/smtp-resolve.ts'
 
 const POOL_OPTS = { pool: true, maxConnections: 5, maxMessages: 100 }
-const DEFAULT_FROM = 'noreply@turbopanel.local'
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
-export type MailerSendResult =
-  | { success: true }
-  | { success: false; error: string; permanent: boolean }
+export type { MailerSendResult }
 
-class PermanentSendError extends Error {}
-
-function mailpitPort(): number {
-  const mailpit = Deno.env.get('MAILPIT_SMTP_PORT')?.trim()
+function mailpitPort(env: Record<string, string | undefined>): number {
+  const mailpit = env.MAILPIT_SMTP_PORT?.trim()
   if (mailpit) {
     const parsed = Number.parseInt(mailpit, 10)
     if (!Number.isNaN(parsed)) return parsed
   }
-  const smtp = Deno.env.get('SMTP_PORT')?.trim()
+  const smtp = env.SMTP_PORT?.trim() ?? env.TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT?.trim()
   if (smtp) {
     const parsed = Number.parseInt(smtp, 10)
     if (!Number.isNaN(parsed)) return parsed
@@ -37,7 +30,33 @@ function mailpitPort(): number {
   return 1025
 }
 
-function buildTransport(cfg: SmtpConfig | undefined): Transporter {
+const SMTP_SETTING_KEYS = ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS'] as const
+
+function smtpConfigAttempted(resolved: ResolvedEmailSettings): boolean {
+  for (const key of SMTP_SETTING_KEYS) {
+    const meta = resolved.keys[key]
+    if (meta.isEnvOverridden || meta.isDbSet) return true
+  }
+  return resolved.keys.SMTP_HOST.value.trim() !== '' ||
+    resolved.keys.SMTP_PORT.value.trim() !== ''
+}
+
+function validateResolvedSmtpConfig(resolved: ResolvedEmailSettings): SmtpConfig | undefined {
+  if (resolved.provider !== 'smtp') {
+    throw new PermanentSendError(`email provider is ${resolved.provider}, not smtp`)
+  }
+
+  if (smtpConfigAttempted(resolved) && !resolved.smtp) {
+    throw new PermanentSendError('invalid SMTP configuration')
+  }
+
+  return resolved.smtp
+}
+
+function buildTransport(
+  cfg: SmtpConfig | undefined,
+  env: Record<string, string | undefined>,
+): Transporter {
   if (cfg) {
     const auth =
       typeof cfg.user === 'string' &&
@@ -56,38 +75,11 @@ function buildTransport(cfg: SmtpConfig | undefined): Transporter {
   }
   return nodemailer.createTransport({
     host: 'localhost',
-    port: mailpitPort(),
+    port: mailpitPort(env),
     secure: false,
     tls: { rejectUnauthorized: false },
     ...POOL_OPTS,
   })
-}
-
-function runtimeEnvFromDeno(): SmtpRuntimeEnv {
-  return {
-    SMTP_HOST: Deno.env.get('SMTP_HOST') ?? undefined,
-    SMTP_PORT: Deno.env.get('SMTP_PORT') ?? undefined,
-    SMTP_USER: Deno.env.get('SMTP_USER') ?? undefined,
-    SMTP_PASS: Deno.env.get('SMTP_PASS') ?? undefined,
-    SMTP_FROM: Deno.env.get('SMTP_FROM') ?? undefined,
-    TURBOPANEL_SYSTEM_EMAIL_FROM: Deno.env.get('TURBOPANEL_SYSTEM_EMAIL_FROM') ?? undefined,
-  }
-}
-
-function fromRuntimeEnv(runtimeEnv: SmtpRuntimeEnv): string {
-  return runtimeEnv.TURBOPANEL_SYSTEM_EMAIL_FROM?.trim() ||
-    runtimeEnv.SMTP_FROM?.trim() ||
-    DEFAULT_FROM
-}
-
-function validateEmailAddress(address: string, label: string): void {
-  const trimmed = address.trim()
-  const addressOnly = trimmed.endsWith('>')
-    ? trimmed.slice(trimmed.lastIndexOf('<') + 1, -1).trim()
-    : trimmed
-  if (addressOnly === '' || !EMAIL_RE.test(addressOnly)) {
-    throw new PermanentSendError(`malformed ${label} address`)
-  }
 }
 
 function isPermanentSmtpError(error: unknown): boolean {
@@ -109,10 +101,15 @@ function isPermanentSmtpError(error: unknown): boolean {
 
 export class MailerSmtpSender {
   private readonly db: Db | undefined
+  private readonly env: Record<string, string | undefined>
   private transportCache: { sig: string; transport: Transporter } | null = null
 
-  constructor(opts: { db: Db | undefined }) {
+  constructor(opts: {
+    db: Db | undefined
+    env?: Record<string, string | undefined>
+  }) {
     this.db = opts.db
+    this.env = opts.env ?? Deno.env.toObject()
   }
 
   private smtpSignature(cfg: SmtpConfig | undefined): string {
@@ -120,37 +117,25 @@ export class MailerSmtpSender {
     return `${cfg.host}:${cfg.port}:${cfg.user ?? ''}:${cfg.pass ?? ''}`
   }
 
+  private async resolveEmailConfig(): Promise<Awaited<ReturnType<typeof resolveEmailSettings>>> {
+    return await resolveEmailSettings(this.db, this.env)
+  }
+
   private async resolveSmtpConfig(): Promise<SmtpConfig | undefined> {
-    const runtimeEnv = runtimeEnvFromDeno()
-    if (smtpEnvOverrideActive(runtimeEnv) && !smtpConfigFromRuntimeEnv(runtimeEnv)) {
-      throw new PermanentSendError('invalid SMTP configuration')
-    }
-    if (this.db) {
-      return await resolveSelfHostedSmtpConfig(this.db, runtimeEnv)
-    }
-    if (smtpEnvOverrideActive(runtimeEnv)) {
-      const cfg = smtpConfigFromRuntimeEnv(runtimeEnv)
-      if (!cfg) {
-        throw new PermanentSendError('invalid SMTP configuration')
-      }
-      return cfg
-    }
-    return undefined
+    const resolved = await this.resolveEmailConfig()
+    return validateResolvedSmtpConfig(resolved)
   }
 
   private async resolveFromAddress(): Promise<string> {
-    const runtimeEnv = runtimeEnvFromDeno()
-    if (this.db) {
-      return await resolveSelfHostedMailFromAddress(this.db, runtimeEnv)
-    }
-    return fromRuntimeEnv(runtimeEnv)
+    const resolved = await this.resolveEmailConfig()
+    return resolved.from
   }
 
   private async transporterForCurrentSmtp(): Promise<Transporter> {
     const cfg = await this.resolveSmtpConfig()
     const sig = this.smtpSignature(cfg)
     if (this.transportCache?.sig === sig) return this.transportCache.transport
-    const transport = buildTransport(cfg)
+    const transport = buildTransport(cfg, this.env)
     this.transportCache = { sig, transport }
     return transport
   }
@@ -223,6 +208,25 @@ export class MailerSmtpSender {
           })
           return { success: true }
         }
+        case 'email-otp': {
+          const from = await this.resolveFromAddress()
+          validateEmailAddress(from, 'from')
+          validateEmailAddress(job.to, 'recipient')
+          const { subject, html, text } = createEmailOtpEmail(
+            job.to,
+            job.otp,
+            job.otpType,
+          )
+          const transporter = await this.transporterForCurrentSmtp()
+          await transporter.sendMail({
+            from,
+            to: job.to,
+            subject,
+            html,
+            text: text ?? this.stripHtml(html),
+          })
+          return { success: true }
+        }
         default:
           return {
             success: false,
@@ -238,6 +242,9 @@ export class MailerSmtpSender {
   }
 }
 
-export function createMailerSmtpSender(opts: { db: Db | undefined }): MailerSmtpSender {
+export function createMailerSmtpSender(opts: {
+  db: Db | undefined
+  env?: Record<string, string | undefined>
+}): MailerSmtpSender {
   return new MailerSmtpSender(opts)
 }

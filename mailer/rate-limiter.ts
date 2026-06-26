@@ -1,16 +1,44 @@
+function parsePositiveInt(raw: string | undefined, fallback: number): number {
+  if (!raw) return fallback
+  const n = Number.parseInt(raw, 10)
+  return Number.isFinite(n) && n > 0 ? n : fallback
+}
+
+function readRateFromEnv(): number {
+  const hierarchical = Deno.env.get('TURBOPANEL_SYSTEM_EMAIL__RATE_LIMIT_PER_MINUTE')
+  if (hierarchical !== undefined && hierarchical !== '') {
+    const n = parsePositiveInt(hierarchical, 0)
+    if (n > 0) return n
+  }
+  const legacy = Deno.env.get('TURBOPANEL_MAILER_RATE_LIMIT_PER_MINUTE')
+  if (legacy !== undefined && legacy !== '') {
+    const n = parsePositiveInt(legacy, 0)
+    if (n > 0) return n
+  }
+  return 60
+}
+
+function readBurstFromEnv(defaultRate: number): number {
+  const hierarchical = Deno.env.get('TURBOPANEL_SYSTEM_EMAIL__RATE_LIMIT_BURST')
+  if (hierarchical !== undefined && hierarchical !== '') {
+    const n = parsePositiveInt(hierarchical, 0)
+    if (n > 0) return n
+  }
+  return defaultRate
+}
+
 export class RateLimiter {
   private readonly capacity: number
   private readonly msPerToken: number
   private tokens: number
   private lastRefillMs: number
 
-  constructor(ratePerMinute?: number) {
-    const parsedRate = ratePerMinute ??
-      Number.parseInt(Deno.env.get('TURBOPANEL_MAILER_RATE_LIMIT_PER_MINUTE') ?? '60', 10)
-    const rate = Number.isFinite(parsedRate) && parsedRate > 0 ? parsedRate : 60
-    this.capacity = rate
+  constructor(ratePerMinute?: number, burstCapacity?: number) {
+    const rate = ratePerMinute && ratePerMinute > 0 ? ratePerMinute : readRateFromEnv()
+    const burst = burstCapacity && burstCapacity > 0 ? burstCapacity : readBurstFromEnv(rate)
+    this.capacity = burst
     this.msPerToken = 60_000 / rate
-    this.tokens = rate
+    this.tokens = burst
     this.lastRefillMs = Date.now()
   }
 

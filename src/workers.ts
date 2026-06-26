@@ -11,8 +11,8 @@ import { createWorkersDb, type DaemonChallengeStoreProvider } from './db'
 import { registerWorkersDaemonWebSocket } from './daemon/workers-ws.ts'
 import { DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS } from './daemon/authn/challenge.ts'
 import { DAEMON_PING_MS } from './daemon/cell/protocol.ts'
-import { createNoopQueue } from './lib/email/noop-queue.ts'
-import { createWorkersMailgunQueue } from './lib/email/mailgun/workers-queue.ts'
+import { resolveWorkersEmailQueue } from './lib/email/mailgun/workers-queue.ts'
+import { resolveEmailSettings } from './lib/settings/email-settings.ts'
 import type { EmailQueue } from './lib/email/types.ts'
 
 export { DaemonCellObject } from './daemon/cell/do.ts'
@@ -58,14 +58,13 @@ async function initWorkerApp(env: CloudflareBindings) {
   )
   cachedSessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   cachedDaemonJwtSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-jwt-signing')
-  const mailgunApiKey = env.TURBOPANEL_MAILGUN_API_KEY?.trim() ?? ''
-  const mailgunDomain = env.TURBOPANEL_MAILGUN_DOMAIN?.trim() ?? ''
-  cachedEmailQueue = mailgunApiKey !== '' && mailgunDomain !== ''
-    ? createWorkersMailgunQueue({
-      apiKey: mailgunApiKey,
-      domain: mailgunDomain,
-    })
-    : createNoopQueue()
+  const platformEnv = stringBindingEnv(env)
+  const db = resolveWorkersDb(env)
+  // Workers Mailgun path sends directly (no AMQP/RabbitMQ). Cloudflare Workers provides
+  // its own concurrency, retries, and queueing at the platform level, so the instance
+  // enqueues to Mailgun immediately via resolveWorkersEmailQueue -> WorkersMailgunQueue.
+  cachedEmailQueue = await resolveWorkersEmailQueue(db, platformEnv)
+  const emailSettings = await resolveEmailSettings(db, platformEnv)
   // DB and DO challenge stubs are created per request — Workers forbid reusing I/O
   // objects across fetch handlers.
   cachedApp = createApp({
@@ -74,7 +73,7 @@ async function initWorkerApp(env: CloudflareBindings) {
     runtime: 'workers',
     corsOrigins: env.TURBOPANEL_UI_CORS_ORIGINS,
     signupEnvOverride: env.TURBOPANEL_IS_SIGNUP_ENABLED,
-    emailFrom: env.TURBOPANEL_SYSTEM_EMAIL_FROM ?? 'noreply@turbopanel.local',
+    emailFrom: emailSettings.from,
   })
   registerDaemonApiRoutes(cachedApp, {
     secrets: cachedDaemonJwtSecrets ?? undefined,
@@ -102,6 +101,14 @@ function resolveWorkersDb(env: CloudflareBindings): ReturnType<typeof createWork
   return undefined
 }
 
+function stringBindingEnv(env: CloudflareBindings): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = {}
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === 'string') out[key] = value
+  }
+  return out
+}
+
 export default {
   async fetch(request: Request, env: CloudflareBindings, ctx: ExecutionContext) {
     if (!initPromise) initPromise = initWorkerApp(env)
@@ -115,6 +122,7 @@ export default {
     requestApp.use('*', async (c, next) => {
       if (db) c.set('db', db)
       if (cachedEmailQueue) c.set('emailQueue', cachedEmailQueue)
+      c.set('platformEnv', stringBindingEnv(env))
       if (postgresConnectionString) {
         c.set('postgresConnectionString', postgresConnectionString)
       }

@@ -139,6 +139,67 @@ export function buildAuthSchemas(runtime?: 'deno' | 'workers') {
         ok: { type: 'boolean', const: true },
       },
     },
+    OtpType: {
+      type: 'string',
+      enum: ['sign-in', 'email-verification', 'forget-password'],
+    },
+    SendOtpRequest: {
+      type: 'object',
+      required: ['email', 'type'],
+      properties: {
+        email: { type: 'string', format: 'email' },
+        type: { $ref: '#/components/schemas/OtpType' },
+      },
+    },
+    VerifyOtpRequest: {
+      type: 'object',
+      required: ['email', 'otp', 'type'],
+      properties: {
+        email: { type: 'string', format: 'email' },
+        otp: { type: 'string' },
+        type: { $ref: '#/components/schemas/OtpType' },
+      },
+    },
+    SignInOtpRequest: {
+      type: 'object',
+      required: ['email', 'otp'],
+      properties: {
+        email: { type: 'string', format: 'email' },
+        otp: { type: 'string' },
+        name: { type: 'string' },
+      },
+    },
+    VerifyEmailOtpRequest: {
+      type: 'object',
+      required: ['email', 'otp'],
+      properties: {
+        email: { type: 'string', format: 'email' },
+        otp: { type: 'string' },
+      },
+    },
+    RequestPasswordResetOtpRequest: {
+      type: 'object',
+      required: ['email'],
+      properties: {
+        email: { type: 'string', format: 'email' },
+      },
+    },
+    ResetPasswordOtpRequest: {
+      type: 'object',
+      required: ['email', 'otp', 'password'],
+      properties: {
+        email: { type: 'string', format: 'email' },
+        otp: { type: 'string' },
+        password: { type: 'string', format: 'password' },
+      },
+    },
+    OkResponse: {
+      type: 'object',
+      required: ['ok'],
+      properties: {
+        ok: { type: 'boolean', const: true },
+      },
+    },
   }
 }
 
@@ -379,6 +440,321 @@ export const authPaths: Record<string, unknown> = {
         },
         '400': {
           description: 'Missing, invalid, or expired token',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '503': {
+          description: 'Database unavailable',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/auth/send-otp': {
+    post: {
+      tags: ['auth'],
+      summary: 'Send an OTP to an email address',
+      description:
+        'Generates a short-lived OTP and queues an email. Never reveals whether the email is registered. `email-verification` requires an active session.',
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/SendOtpRequest' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'OTP queued (or silently accepted)',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/OkResponse' },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid request body',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '401': {
+          description: 'Session required for email-verification OTP',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '503': {
+          description: 'Database unavailable',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/auth/verify-otp': {
+    post: {
+      tags: ['auth'],
+      summary: 'Check OTP validity (optional step)',
+      description:
+        'Validates an OTP without consuming it. Failed attempts count toward the per-OTP attempt limit.',
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/VerifyOtpRequest' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'OTP is valid',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/OkResponse' },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid or expired OTP',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '429': {
+          description: 'Too many attempts',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '503': {
+          description: 'Database unavailable',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/auth/sign-in/otp': {
+    post: {
+      tags: ['auth'],
+      summary: 'Sign in (or auto-register) with OTP',
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/SignInOtpRequest' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Signed in; session cookie set',
+          headers: {
+            'Set-Cookie': {
+              schema: { type: 'string' },
+              description: 'Signed session cookie',
+            },
+          },
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/SessionResponse' },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid request or OTP',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '403': {
+          description: 'Auto-registration disabled',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '429': {
+          description: 'Too many OTP attempts',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '503': {
+          description: 'Database unavailable',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/auth/verify-email/otp': {
+    post: {
+      tags: ['auth'],
+      summary: 'Verify email address with OTP',
+      security: [{ cookieAuth: [] }],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/VerifyEmailOtpRequest' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Email verified',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/OkResponse' },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid or expired OTP',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '401': {
+          description: 'Session required',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '429': {
+          description: 'Too many attempts',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '503': {
+          description: 'Database unavailable',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/auth/reset-password/request-otp': {
+    post: {
+      tags: ['auth'],
+      summary: 'Request a password-reset OTP',
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/RequestPasswordResetOtpRequest' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'OTP queued (or silently accepted)',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/OkResponse' },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid request body',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '503': {
+          description: 'Database unavailable',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/auth/reset-password/otp': {
+    post: {
+      tags: ['auth'],
+      summary: 'Reset password using OTP',
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/ResetPasswordOtpRequest' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Password updated',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/OkResponse' },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid request, OTP, or password',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'User or credential account not found',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '429': {
+          description: 'Too many OTP attempts',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },

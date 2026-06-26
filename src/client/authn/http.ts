@@ -28,6 +28,7 @@ import { getDb } from '../../db.ts'
 import type { Db } from '../../db.ts'
 import { account, user } from '../../lib/db/schema.ts'
 import { getEmailQueue } from '../../lib/email/types.ts'
+import { registerOtpRoutes } from './otp-http.ts'
 
 export type AuthRouteOpts = {
   secrets?: DerivedSecretsConfig
@@ -424,6 +425,8 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
 
     return c.json({ ok: true }, 200)
   })
+
+  registerOtpRoutes(auth, opts)
 
   app.route('/auth', auth)
   return app

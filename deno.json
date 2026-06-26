@@ -15,6 +15,7 @@
     "postgres": "npm:postgres@^3.4.7",
     "amqplib": "npm:amqplib@^0.10.4",
     "nodemailer": "npm:nodemailer@^6.10.1",
+    "@turbopanel/email/smtp-sender": "./src/lib/email/smtp/smtp-sender.ts",
     "ioredis": "npm:ioredis@^5.11.1"
   },
   "lint": {

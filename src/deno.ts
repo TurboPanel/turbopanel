@@ -27,8 +27,10 @@ import {
   DEFAULT_AMQP_URL,
   probeAmqpBrokerReachable,
 } from './lib/email/smtp/deno-amqp-queue.ts'
+import { resolveEmailSettings } from './lib/settings/email-settings.ts'
 import { createNoopQueue } from './lib/email/noop-queue.ts'
 import type { EmailQueue } from './lib/email/types.ts'
+import type { Db } from './db.ts'
 import {
   hardenInstanceSocket,
   prepareInstanceSocket,
@@ -39,9 +41,10 @@ configurePbkdf2Iterations(Deno.env.get('TURBOPANEL_PBKDF2_ITERATIONS'))
 const developerSurface = isDeveloperSurfaceEnabled()
 const db = createDenoDb()
 
-async function resolveEmailQueue(): Promise<EmailQueue> {
+async function resolveEmailQueue(_db: Db): Promise<EmailQueue> {
   const envUrl = Deno.env.get('TURBOPANEL_AMQP_URL')
   if (envUrl !== undefined && envUrl.trim() === '') {
+    logInfo('email', 'TURBOPANEL_AMQP_URL is empty; using noop queue')
     return createNoopQueue()
   }
   if (envUrl !== undefined) {
@@ -50,11 +53,14 @@ async function resolveEmailQueue(): Promise<EmailQueue> {
   if (await probeAmqpBrokerReachable(DEFAULT_AMQP_URL)) {
     return createDenoAmqpQueue({ amqpUrl: DEFAULT_AMQP_URL })
   }
+
   logInfo('email', 'AMQP broker unavailable; using noop queue')
   return createNoopQueue()
 }
 
-const emailQueue = await resolveEmailQueue()
+const emailQueue = await resolveEmailQueue(db)
+const runtimeEnv = Deno.env.toObject()
+const emailSettings = await resolveEmailSettings(db, runtimeEnv)
 const secretsConfig = parseSecretsEnv(
   Deno.env.get('TURBOPANEL_SECRET'),
   Deno.env.get('TURBOPANEL_SECRETS'),
@@ -80,11 +86,15 @@ const app = createApp({
   runtime: 'deno',
   corsOrigins: Deno.env.get('TURBOPANEL_UI_CORS_ORIGINS'),
   signupEnvOverride: Deno.env.get('TURBOPANEL_IS_SIGNUP_ENABLED'),
-  emailFrom: Deno.env.get('TURBOPANEL_SYSTEM_EMAIL_FROM') ?? 'noreply@turbopanel.local',
+  emailFrom: emailSettings.from,
   baseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? undefined,
   daemonCellRegistry,
 })
 const routes = app as unknown as Hono
+routes.use('*', (c, next) => {
+  c.set('platformEnv', Deno.env.toObject())
+  return next()
+})
 registerInstallRoutes(routes, {
   secrets: sessionSecrets,
   runtime: 'deno',

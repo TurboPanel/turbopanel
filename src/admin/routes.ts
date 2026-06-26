@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import { createAdminAccessMiddleware, createRootOnlyMiddleware } from '../client/authn/middleware.ts'
 import { resolveColocatedServerId } from '../client/authn/install-state.ts'
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
@@ -31,6 +32,11 @@ import {
   parsePublicUrlEntries,
   setPublicUrls,
 } from './public-urls.ts'
+import {
+  emailSettingsToApiShape,
+  resolveEmailSettings,
+  updateEmailSettings,
+} from '../lib/settings/email-settings.ts'
 
 const COMMAND_TIMEOUT_MS = 30_000
 const ADDRESSES_TIMEOUT_MS = 10_000
@@ -38,6 +44,16 @@ const PUBLIC_URLS_APPLY_TIMEOUT_MS = 60_000
 
 function nowTs(): string {
   return new Date().toISOString()
+}
+
+function resolvePlatformEnv(
+  c: Context,
+  opts: { getEnv?: () => Record<string, string | undefined> },
+): Record<string, string | undefined> {
+  const fromContext = c.get('platformEnv')
+  if (fromContext) return fromContext
+  if (opts.getEnv) return opts.getEnv()
+  return {}
 }
 
 function extractAddresses(record: { status: string; result?: unknown }): ServerAddresses {
@@ -58,6 +74,7 @@ export function registerAdminRoutes(app: Hono, opts: {
   secrets: DerivedSecretsConfig
   runtime: 'deno' | 'workers'
   devSurface: boolean
+  getEnv?: () => Record<string, string | undefined>
 }) {
   const admin = new Hono()
   admin.use('*', createAdminAccessMiddleware(opts.secrets))
@@ -223,6 +240,33 @@ export function registerAdminRoutes(app: Hono, opts: {
 
     await setPublicUrls(db, parsed.urls)
     return c.json({ ok: true, urls: parsed.urls, applied: false })
+  })
+
+  admin.get('/settings/email', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const resolved = await resolveEmailSettings(db, resolvePlatformEnv(c, opts))
+    return c.json({ settings: emailSettingsToApiShape(resolved) })
+  })
+
+  admin.put('/settings/email', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const body = await c.req.json().catch(() => null)
+    if (!body || typeof body !== 'object') {
+      return c.json({ error: 'expected a JSON object of setting keys' }, 400)
+    }
+
+    const updates: Record<string, string | null> = {}
+    for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
+      if (typeof value === 'string' || value === null) updates[key] = value
+    }
+
+    const env = resolvePlatformEnv(c, opts)
+    const resolved = await updateEmailSettings(db, env, updates)
+    return c.json({ settings: emailSettingsToApiShape(resolved) })
   })
 
   admin.post('/instance/public-urls/apply', async (c) => {

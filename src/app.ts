@@ -20,6 +20,8 @@ export type AppEnv = {
     postgresConnectionString?: string
     daemonCellRegistry?: DaemonCellRegistry
     challengeStoreProvider?: DaemonChallengeStoreProvider
+    /** Platform env bindings for settings resolution (Workers per-request; Deno process env). */
+    platformEnv?: Record<string, string | undefined>
   }
 }
 

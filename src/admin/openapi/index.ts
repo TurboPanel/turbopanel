@@ -97,6 +97,28 @@ export function getAdminOpenApiSpec(
             error: { type: 'string' },
           },
         },
+        EmailSettingEntry: {
+          type: 'object',
+          required: ['value', 'source'],
+          properties: {
+            value: { type: 'string', nullable: true },
+            source: { type: 'string', enum: ['env', 'db', 'default'] },
+          },
+        },
+        EmailSettingsResponse: {
+          type: 'object',
+          required: ['settings'],
+          properties: {
+            settings: {
+              type: 'object',
+              additionalProperties: { $ref: '#/components/schemas/EmailSettingEntry' },
+            },
+          },
+        },
+        EmailSettingsPutBody: {
+          type: 'object',
+          additionalProperties: { type: 'string', nullable: true },
+        },
       },
     },
     paths: {
@@ -148,6 +170,54 @@ export function getAdminOpenApiSpec(
                 },
               },
             },
+          },
+        },
+      },
+      [`${ADMIN_API_PREFIX}/settings/email`]: {
+        get: {
+          summary: 'Read resolved email settings',
+          security: [...cookieSecurity],
+          responses: {
+            '200': {
+              description: 'Email settings with source metadata',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/EmailSettingsResponse' },
+                },
+              },
+            },
+            '401': { description: 'Unauthorized' },
+            '403': { description: 'Forbidden — requires admin or superadmin role' },
+            '503': { description: 'Database unavailable' },
+          },
+        },
+        put: {
+          summary: 'Persist email settings to the database',
+          description:
+            'Env-overridden keys are accepted but ignored. Secret values from env are never returned. ' +
+            'Send null for a key to clear a database-backed value and revert to defaults.',
+          security: [...cookieSecurity],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/EmailSettingsPutBody' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Updated settings',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/EmailSettingsResponse' },
+                },
+              },
+            },
+            '400': { description: 'Invalid request body' },
+            '401': { description: 'Unauthorized' },
+            '403': { description: 'Forbidden — requires admin or superadmin role' },
+            '503': { description: 'Database unavailable' },
           },
         },
       },

@@ -1,49 +1,54 @@
-import { createEmailVerificationLinkEmail } from '../templates.ts'
+import {
+  resolveEmailSettings,
+  resolveWorkersEmailProvider,
+} from '../../settings/email-settings.ts'
+import type { Db } from '../../../db.ts'
+import { createNoopQueue } from '../noop-queue.ts'
 import type { EmailJob, EmailQueue } from '../types.ts'
+import { sendMailgunJob } from './send.ts'
 
 type WorkersMailgunQueueOptions = {
   apiKey: string
   domain: string
+  from: string
 }
 
 class WorkersMailgunQueue implements EmailQueue {
   constructor(private readonly opts: WorkersMailgunQueueOptions) {}
 
   async enqueue(job: EmailJob): Promise<void> {
-    if (job.type !== 'signup-verification') return
-
-    const template = createEmailVerificationLinkEmail(job.to, job.verificationUrl)
-    const body = new URLSearchParams({
-      from: job.from,
-      to: job.to,
-      subject: template.subject,
-      text: template.text,
-      html: template.html,
+    const outcome = await sendMailgunJob(job, {
+      apiKey: this.opts.apiKey,
+      domain: this.opts.domain,
+      from: this.opts.from,
     })
-
-    try {
-      const res = await fetch(`https://api.mailgun.net/v3/${this.opts.domain}/messages`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Basic ${btoa(`api:${this.opts.apiKey}`)}`,
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body,
+    if (!outcome.ok) {
+      console.error('[TurboPanel email] Mailgun send failed', {
+        error: outcome.error,
+        permanent: outcome.permanent,
       })
-      if (!res.ok) {
-        const message = await res.text()
-        console.error('[TurboPanel email] Mailgun send failed', {
-          status: res.status,
-          statusText: res.statusText,
-          message,
-        })
-      }
-    } catch (error) {
-      console.error('[TurboPanel email] Mailgun send error', error)
     }
   }
 }
 
 export function createWorkersMailgunQueue(opts: WorkersMailgunQueueOptions): EmailQueue {
   return new WorkersMailgunQueue(opts)
+}
+
+export async function resolveWorkersEmailQueue(
+  db: Db | undefined,
+  env: Record<string, string | undefined>,
+): Promise<EmailQueue> {
+  const resolved = await resolveEmailSettings(db, env)
+  if (resolveWorkersEmailProvider(resolved) !== 'mailgun') {
+    return createNoopQueue()
+  }
+
+  const apiKey = resolved.mailgunApiKey?.trim() ?? ''
+  const domain = resolved.mailgunDomain?.trim() ?? ''
+  if (apiKey === '' || domain === '') {
+    return createNoopQueue()
+  }
+
+  return createWorkersMailgunQueue({ apiKey, domain, from: resolved.from })
 }
