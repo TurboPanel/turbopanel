@@ -3,10 +3,11 @@ import { buildResourceCrudPaths } from './shared.ts'
 export const hostingSchemas = {
   HostingRow: {
     type: 'object',
+    required: ['id', 'serviceId', 'createdAt', 'updatedAt'],
     properties: {
       id: { type: 'string' },
       displayName: { type: ['string', 'null'] },
-      serviceId: { type: ['string', 'null'] },
+      serviceId: { type: 'string' },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
     },
@@ -23,9 +24,10 @@ export const hostingSchemas = {
   },
   CreateHostingRequest: {
     type: 'object',
+    required: ['serviceId'],
     properties: {
       displayName: { type: 'string' },
-      serviceId: { type: ['string', 'null'] },
+      serviceId: { type: 'string' },
     },
   },
 }

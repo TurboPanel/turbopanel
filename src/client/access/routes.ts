@@ -35,7 +35,7 @@ import {
 } from '../authz/catalog.ts'
 import type { Db } from '../../db.ts'
 import { getDb } from '../../db.ts'
-import { grant, invitation, member, teammate } from '../../lib/db/schema.ts'
+import { grant, invitation, member, team, teammate } from '../../lib/db/schema.ts'
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -115,31 +115,40 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
         return { error: 'gone' as const }
       }
 
+      const teamRows = await tx
+        .select({ organizationId: team.organizationId })
+        .from(team)
+        .where(eq(team.id, invite.teamId))
+        .limit(1)
+
+      const organizationId = teamRows[0]?.organizationId
+      if (!organizationId) {
+        return { error: 'gone' as const }
+      }
+
       await tx
         .insert(member)
         .values({
-          organizationId: invite.organizationId,
+          organizationId,
           userId: session.userId,
         })
         .onConflictDoNothing({
           target: [member.organizationId, member.userId],
         })
 
-      if (invite.teamId) {
-        await tx
-          .insert(teammate)
-          .values({
-            teamId: invite.teamId,
-            userId: session.userId,
-          })
-          .onConflictDoNothing({
-            target: [teammate.teamId, teammate.userId],
-          })
-      }
+      await tx
+        .insert(teammate)
+        .values({
+          teamId: invite.teamId,
+          userId: session.userId,
+        })
+        .onConflictDoNothing({
+          target: [teammate.teamId, teammate.userId],
+        })
 
       const grants = resolveInvitationGrants(
         invite.grants,
-        invite.organizationId,
+        organizationId,
       )
 
       try {
@@ -147,7 +156,7 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
           tx,
           session.userId,
           grants,
-          invite.organizationId,
+          organizationId,
         )
       } catch (err) {
         if (err instanceof InvitationGrantValidationError) {
@@ -156,7 +165,7 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
         throw err
       }
 
-      return { ok: true as const, organizationId: invite.organizationId }
+      return { ok: true as const, organizationId }
     })
 
     if ('error' in result) {

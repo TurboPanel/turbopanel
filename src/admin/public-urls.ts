@@ -148,23 +148,25 @@ export async function getPublicUrls(db: Db): Promise<string[]> {
     .from(setting)
     .where(eq(setting.key, PUBLIC_URLS_SETTING_KEY))
     .limit(1)
-  const raw = rows[0]?.value
-  if (!raw) return []
+  const raw = rows[0]?.value as string[] | string | null | undefined
+  if (raw == null) return []
+  if (Array.isArray(raw)) {
+    return raw.filter((entry): entry is string => typeof entry === 'string' && entry.trim() !== '')
+  }
   return raw.split(',').map((s) => s.trim()).filter((s) => s !== '')
 }
 
 export async function setPublicUrls(db: Db, urls: string[]): Promise<void> {
-  const value = urls.join(',')
   await db
     .insert(setting)
     .values({
       key: PUBLIC_URLS_SETTING_KEY,
-      value,
+      value: urls,
     })
     .onConflictDoUpdate({
       target: setting.key,
       set: {
-        value,
+        value: urls,
         updatedAt: new Date().toISOString(),
       },
     })

@@ -1,5 +1,5 @@
 {
-  "id": "c4a8f2e1-7b3d-4a9c-8e6f-1d2b3c4d5e6f",
+  "id": "aed4f235-2bdd-45eb-aa57-13617035b47a",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -354,41 +354,19 @@
           "primaryKey": false,
           "notNull": false
         },
-        "organization_id": {
-          "name": "organization_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "workspace_id": {
-          "name": "workspace_id",
+        "project_id": {
+          "name": "project_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
         }
       },
       "indexes": {
-        "idx_environment_workspace_id": {
-          "name": "idx_environment_workspace_id",
+        "idx_environment_project_id": {
+          "name": "idx_environment_project_id",
           "columns": [
             {
-              "expression": "workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_environment_organization_id": {
-          "name": "idx_environment_organization_id",
-          "columns": [
-            {
-              "expression": "organization_id",
+              "expression": "project_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last",
@@ -402,46 +380,22 @@
         }
       },
       "foreignKeys": {
-        "environment_organization_id_organization_id_fk": {
-          "name": "environment_organization_id_organization_id_fk",
+        "environment_project_id_project_id_fk": {
+          "name": "environment_project_id_project_id_fk",
           "tableFrom": "environment",
-          "tableTo": "organization",
+          "tableTo": "project",
           "columnsFrom": [
-            "organization_id"
+            "project_id"
           ],
           "columnsTo": [
             "id"
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
-        },
-        "environment_workspace_org_fk": {
-          "name": "environment_workspace_org_fk",
-          "tableFrom": "environment",
-          "tableTo": "workspace",
-          "columnsFrom": [
-            "workspace_id",
-            "organization_id"
-          ],
-          "columnsTo": [
-            "id",
-            "organization_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "environment_id_org_unique": {
-          "name": "environment_id_org_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "id",
-            "organization_id"
-          ]
-        }
-      },
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
         "environment_display_name_format_check": {
@@ -492,8 +446,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "allowed": {
-          "name": "allowed",
+        "allow": {
+          "name": "allow",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
@@ -601,41 +555,19 @@
           "primaryKey": false,
           "notNull": false
         },
-        "organization_id": {
-          "name": "organization_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "project_id": {
-          "name": "project_id",
+        "service_id": {
+          "name": "service_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
         }
       },
       "indexes": {
-        "idx_hosting_project_id": {
-          "name": "idx_hosting_project_id",
+        "idx_hosting_service_id": {
+          "name": "idx_hosting_service_id",
           "columns": [
             {
-              "expression": "project_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_hosting_organization_id": {
-          "name": "idx_hosting_organization_id",
-          "columns": [
-            {
-              "expression": "organization_id",
+              "expression": "service_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last",
@@ -649,46 +581,22 @@
         }
       },
       "foreignKeys": {
-        "hosting_organization_id_organization_id_fk": {
-          "name": "hosting_organization_id_organization_id_fk",
+        "hosting_service_id_service_id_fk": {
+          "name": "hosting_service_id_service_id_fk",
           "tableFrom": "hosting",
-          "tableTo": "organization",
+          "tableTo": "service",
           "columnsFrom": [
-            "organization_id"
+            "service_id"
           ],
           "columnsTo": [
             "id"
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
-        },
-        "hosting_project_org_fk": {
-          "name": "hosting_project_org_fk",
-          "tableFrom": "hosting",
-          "tableTo": "project",
-          "columnsFrom": [
-            "project_id",
-            "organization_id"
-          ],
-          "columnsTo": [
-            "id",
-            "organization_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "hosting_id_org_unique": {
-          "name": "hosting_id_org_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "id",
-            "organization_id"
-          ]
-        }
-      },
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
         "hosting_display_name_format_check": {
@@ -728,17 +636,11 @@
           "primaryKey": false,
           "notNull": true
         },
-        "organization_id": {
-          "name": "organization_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
         "team_id": {
           "name": "team_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "email": {
           "name": "email",
@@ -775,22 +677,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "idx_invitation_organization_id": {
-          "name": "idx_invitation_organization_id",
-          "columns": [
-            {
-              "expression": "organization_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -800,19 +686,6 @@
           "tableTo": "user",
           "columnsFrom": [
             "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "invitation_organization_id_organization_id_fk": {
-          "name": "invitation_organization_id_organization_id_fk",
-          "tableFrom": "invitation",
-          "tableTo": "organization",
-          "columnsFrom": [
-            "organization_id"
           ],
           "columnsTo": [
             "id"
@@ -877,8 +750,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "hashed_token": {
-          "name": "hashed_token",
+        "token": {
+          "name": "token",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -1033,6 +906,77 @@
           ]
         }
       },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.network": {
+      "name": "network",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "idx_network_server_id": {
+          "name": "idx_network_server_id",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "network_server_id_server_id_fk": {
+          "name": "network_server_id_server_id_fk",
+          "tableFrom": "network",
+          "tableTo": "server",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -1268,41 +1212,19 @@
           "primaryKey": false,
           "notNull": false
         },
-        "organization_id": {
-          "name": "organization_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "environment_id": {
-          "name": "environment_id",
+        "workspace_id": {
+          "name": "workspace_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
         }
       },
       "indexes": {
-        "idx_project_environment_id": {
-          "name": "idx_project_environment_id",
+        "idx_project_workspace_id": {
+          "name": "idx_project_workspace_id",
           "columns": [
             {
-              "expression": "environment_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_project_organization_id": {
-          "name": "idx_project_organization_id",
-          "columns": [
-            {
-              "expression": "organization_id",
+              "expression": "workspace_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last",
@@ -1316,46 +1238,22 @@
         }
       },
       "foreignKeys": {
-        "project_organization_id_organization_id_fk": {
-          "name": "project_organization_id_organization_id_fk",
+        "project_workspace_id_workspace_id_fk": {
+          "name": "project_workspace_id_workspace_id_fk",
           "tableFrom": "project",
-          "tableTo": "organization",
+          "tableTo": "workspace",
           "columnsFrom": [
-            "organization_id"
+            "workspace_id"
           ],
           "columnsTo": [
             "id"
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
-        },
-        "project_environment_org_fk": {
-          "name": "project_environment_org_fk",
-          "tableFrom": "project",
-          "tableTo": "environment",
-          "columnsFrom": [
-            "environment_id",
-            "organization_id"
-          ],
-          "columnsTo": [
-            "id",
-            "organization_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "project_id_org_unique": {
-          "name": "project_id_org_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "id",
-            "organization_id"
-          ]
-        }
-      },
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
         "project_display_name_format_check": {
@@ -1509,41 +1407,19 @@
           "primaryKey": false,
           "notNull": false
         },
-        "organization_id": {
-          "name": "organization_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "project_id": {
-          "name": "project_id",
+        "environment_id": {
+          "name": "environment_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
         }
       },
       "indexes": {
-        "idx_service_project_id": {
-          "name": "idx_service_project_id",
+        "idx_service_environment_id": {
+          "name": "idx_service_environment_id",
           "columns": [
             {
-              "expression": "project_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_service_organization_id": {
-          "name": "idx_service_organization_id",
-          "columns": [
-            {
-              "expression": "organization_id",
+              "expression": "environment_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last",
@@ -1557,46 +1433,22 @@
         }
       },
       "foreignKeys": {
-        "service_organization_id_organization_id_fk": {
-          "name": "service_organization_id_organization_id_fk",
+        "service_environment_id_environment_id_fk": {
+          "name": "service_environment_id_environment_id_fk",
           "tableFrom": "service",
-          "tableTo": "organization",
+          "tableTo": "environment",
           "columnsFrom": [
-            "organization_id"
+            "environment_id"
           ],
           "columnsTo": [
             "id"
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
-        },
-        "service_project_org_fk": {
-          "name": "service_project_org_fk",
-          "tableFrom": "service",
-          "tableTo": "project",
-          "columnsFrom": [
-            "project_id",
-            "organization_id"
-          ],
-          "columnsTo": [
-            "id",
-            "organization_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "service_id_org_unique": {
-          "name": "service_id_org_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "id",
-            "organization_id"
-          ]
-        }
-      },
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
         "service_display_name_format_check": {
@@ -1777,7 +1629,7 @@
         },
         "value": {
           "name": "value",
-          "type": "text",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": true
         }

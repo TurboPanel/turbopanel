@@ -44,9 +44,7 @@ CREATE TABLE "environment" (
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"display_name" varchar(255),
-	"organization_id" uuid NOT NULL,
-	"workspace_id" uuid NOT NULL,
-	CONSTRAINT "environment_id_org_unique" UNIQUE("id","organization_id"),
+	"project_id" uuid NOT NULL,
 	CONSTRAINT "environment_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint
@@ -57,7 +55,7 @@ CREATE TABLE "grant" (
 	"subject_type" text NOT NULL,
 	"subject_id" uuid NOT NULL,
 	"permission" text NOT NULL,
-	"allowed" boolean DEFAULT true NOT NULL,
+	"allow" boolean DEFAULT true NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "grant_unique" UNIQUE("entity_type","entity_id","subject_type","subject_id","permission")
 );
@@ -67,9 +65,7 @@ CREATE TABLE "hosting" (
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"display_name" varchar(255),
-	"organization_id" uuid NOT NULL,
-	"project_id" uuid NOT NULL,
-	CONSTRAINT "hosting_id_org_unique" UNIQUE("id","organization_id"),
+	"service_id" uuid NOT NULL,
 	CONSTRAINT "hosting_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint
@@ -78,8 +74,7 @@ CREATE TABLE "invitation" (
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"expires_at" timestamp(3) with time zone NOT NULL,
 	"user_id" uuid NOT NULL,
-	"organization_id" uuid NOT NULL,
-	"team_id" uuid,
+	"team_id" uuid NOT NULL,
 	"email" varchar(255) NOT NULL,
 	"status" varchar(255) NOT NULL,
 	"grants" jsonb
@@ -91,7 +86,7 @@ CREATE TABLE "license" (
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"organization_id" uuid NOT NULL,
 	"display_name" varchar(255),
-	"hashed_token" text NOT NULL,
+	"token" text NOT NULL,
 	"revoked_at" timestamp(3) with time zone
 );
 --> statement-breakpoint
@@ -101,6 +96,13 @@ CREATE TABLE "member" (
 	"organization_id" uuid NOT NULL,
 	"user_id" uuid NOT NULL,
 	CONSTRAINT "member_org_user_unique" UNIQUE("organization_id","user_id")
+);
+--> statement-breakpoint
+CREATE TABLE "network" (
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"server_id" uuid NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "organization" (
@@ -134,9 +136,7 @@ CREATE TABLE "project" (
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"display_name" varchar(255),
-	"organization_id" uuid NOT NULL,
-	"environment_id" uuid NOT NULL,
-	CONSTRAINT "project_id_org_unique" UNIQUE("id","organization_id"),
+	"workspace_id" uuid NOT NULL,
 	CONSTRAINT "project_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint
@@ -160,9 +160,7 @@ CREATE TABLE "service" (
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"display_name" varchar(255),
-	"organization_id" uuid NOT NULL,
-	"project_id" uuid NOT NULL,
-	CONSTRAINT "service_id_org_unique" UNIQUE("id","organization_id"),
+	"environment_id" uuid NOT NULL,
 	CONSTRAINT "service_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint
@@ -184,7 +182,7 @@ CREATE TABLE "setting" (
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"key" text NOT NULL,
-	"value" text NOT NULL,
+	"value" jsonb NOT NULL,
 	CONSTRAINT "setting_key_unique" UNIQUE("key")
 );
 --> statement-breakpoint
@@ -257,23 +255,19 @@ CREATE TABLE "workspace" (
 );
 --> statement-breakpoint
 ALTER TABLE "account" ADD CONSTRAINT "account_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "environment" ADD CONSTRAINT "environment_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "environment" ADD CONSTRAINT "environment_workspace_org_fk" FOREIGN KEY ("workspace_id","organization_id") REFERENCES "public"."workspace"("id","organization_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "hosting" ADD CONSTRAINT "hosting_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "hosting" ADD CONSTRAINT "hosting_project_org_fk" FOREIGN KEY ("project_id","organization_id") REFERENCES "public"."project"("id","organization_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "environment" ADD CONSTRAINT "environment_project_id_project_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."project"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "hosting" ADD CONSTRAINT "hosting_service_id_service_id_fk" FOREIGN KEY ("service_id") REFERENCES "public"."service"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "invitation" ADD CONSTRAINT "invitation_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "invitation" ADD CONSTRAINT "invitation_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "invitation" ADD CONSTRAINT "invitation_team_id_team_id_fk" FOREIGN KEY ("team_id") REFERENCES "public"."team"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "license" ADD CONSTRAINT "license_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "member" ADD CONSTRAINT "member_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "member" ADD CONSTRAINT "member_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "network" ADD CONSTRAINT "network_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "passkey" ADD CONSTRAINT "passkey_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project" ADD CONSTRAINT "project_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project" ADD CONSTRAINT "project_environment_org_fk" FOREIGN KEY ("environment_id","organization_id") REFERENCES "public"."environment"("id","organization_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "project" ADD CONSTRAINT "project_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "server" ADD CONSTRAINT "server_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "server" ADD CONSTRAINT "server_license_id_license_id_fk" FOREIGN KEY ("license_id") REFERENCES "public"."license"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "service" ADD CONSTRAINT "service_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "service" ADD CONSTRAINT "service_project_org_fk" FOREIGN KEY ("project_id","organization_id") REFERENCES "public"."project"("id","organization_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "service" ADD CONSTRAINT "service_environment_id_environment_id_fk" FOREIGN KEY ("environment_id") REFERENCES "public"."environment"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "session" ADD CONSTRAINT "session_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "session" ADD CONSTRAINT "session_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "team" ADD CONSTRAINT "team_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -285,23 +279,19 @@ CREATE INDEX "idx_account_user_id" ON "account" USING btree ("user_id" uuid_ops)
 CREATE INDEX "idx_apikey_config_id" ON "apikey" USING btree ("config_id" text_ops);--> statement-breakpoint
 CREATE INDEX "idx_apikey_reference_id" ON "apikey" USING btree ("reference_id" text_ops);--> statement-breakpoint
 CREATE INDEX "idx_apikey_key" ON "apikey" USING btree ("key" text_ops);--> statement-breakpoint
-CREATE INDEX "idx_environment_workspace_id" ON "environment" USING btree ("workspace_id" uuid_ops);--> statement-breakpoint
-CREATE INDEX "idx_environment_organization_id" ON "environment" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_environment_project_id" ON "environment" USING btree ("project_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_grant_entity" ON "grant" USING btree ("entity_type","entity_id");--> statement-breakpoint
 CREATE INDEX "idx_grant_subject" ON "grant" USING btree ("subject_type","subject_id");--> statement-breakpoint
-CREATE INDEX "idx_hosting_project_id" ON "hosting" USING btree ("project_id" uuid_ops);--> statement-breakpoint
-CREATE INDEX "idx_hosting_organization_id" ON "hosting" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_hosting_service_id" ON "hosting" USING btree ("service_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_invitation_email" ON "invitation" USING btree ("email" text_ops);--> statement-breakpoint
-CREATE INDEX "idx_invitation_organization_id" ON "invitation" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_license_organization_id" ON "license" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_member_organization_id" ON "member" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_member_user_id" ON "member" USING btree ("user_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_network_server_id" ON "network" USING btree ("server_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_passkey_credential_id" ON "passkey" USING btree ("credential_id" text_ops);--> statement-breakpoint
 CREATE INDEX "idx_passkey_user_id" ON "passkey" USING btree ("user_id" uuid_ops);--> statement-breakpoint
-CREATE INDEX "idx_project_environment_id" ON "project" USING btree ("environment_id" uuid_ops);--> statement-breakpoint
-CREATE INDEX "idx_project_organization_id" ON "project" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
-CREATE INDEX "idx_service_project_id" ON "service" USING btree ("project_id" uuid_ops);--> statement-breakpoint
-CREATE INDEX "idx_service_organization_id" ON "service" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_project_workspace_id" ON "project" USING btree ("workspace_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_service_environment_id" ON "service" USING btree ("environment_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_session_user_id" ON "session" USING btree ("user_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_session_organization_id" ON "session" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_team_organization_id" ON "team" USING btree ("organization_id" uuid_ops);--> statement-breakpoint

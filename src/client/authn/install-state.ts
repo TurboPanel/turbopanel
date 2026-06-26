@@ -181,7 +181,10 @@ export async function isSignupEnabled(
       .where(eq(setting.key, IS_SIGNUP_ENABLED_CONFIG_KEY))
       .limit(1)
 
-    return resolveIsSignupEnabled(rows[0]?.value, envOverride, { runtime })
+    const raw = rows[0]?.value
+    const dbValue =
+      typeof raw === 'string' ? raw : raw != null ? String(raw) : null
+    return resolveIsSignupEnabled(dbValue, envOverride, { runtime })
   } catch (err) {
     if (isMissingRelationError(err)) {
       return resolveIsSignupEnabled(undefined, envOverride, { runtime })
@@ -202,7 +205,10 @@ export async function isSignupEmailVerificationEnabled(
       .where(eq(setting.key, IS_SIGNUP_EMAIL_VERIFICATION_ENABLED_CONFIG_KEY))
       .limit(1)
 
-    return resolveIsSignupEmailVerificationEnabled(rows[0]?.value, envOverride, {
+    const raw = rows[0]?.value
+    const dbValue =
+      typeof raw === 'string' ? raw : raw != null ? String(raw) : null
+    return resolveIsSignupEmailVerificationEnabled(dbValue, envOverride, {
       runtime,
     })
   } catch (err) {

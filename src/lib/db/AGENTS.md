@@ -72,20 +72,21 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `sync
 | Group | Tables |
 |---|---|
 | **Identity** | `user`, `account`, `apikey`, `session`, `verification`, `passkey`, `2fa` |
-| **Organizations** | `organization`, `member`, `team`, `teammate`, `invitation`, `license` |
-| **Resource tree** | `workspace`, `project`, `environment`, `service`, `hosting` |
+| **Organizations** | `organization`, `member`, `team`, `teammate`, `invitation` (no `organization_id`; `team_id NOT NULL`), `license` |
+| **Resource tree** | `workspace`, `project`, `environment`, `service`, `hosting`, `network` |
 | **Authorization** | `grant` |
-| **Config** | `setting` |
+| **Config** | `setting` (`value` is `jsonb`) |
 | **Runtime** | `server` |
 
 > The physical Postgres table is **`workspace`** (`project.workspace_id` → `workspace.id`). The Drizzle export is `workspace`.
 
 ### Resource hierarchy
 
-Canonical order (org scope is derived via joins — not stored on child rows except standalone hosting):
+Canonical order (org scope is derived via joins — not stored on child rows):
 
 ```
-organization → workspace → project → environment → service → hosting (optional)
+organization → workspace → project → environment → service → hosting
+organization → server → network
 ```
 
 | Entity | Parent FK | Notes |
@@ -94,13 +95,14 @@ organization → workspace → project → environment → service → hosting (
 | `project` | `workspace_id` | Docker-compose equivalent; env-specific vars live on environments |
 | `environment` | `project_id` | Staging/production/etc. within a project |
 | `service` | `environment_id` | Deployable unit within an environment |
-| `hosting` | `service_id` (nullable) | When `service_id` is null, `organization_id` scopes standalone traditional hosting at org level; when set, org is derived via the service chain |
+| `hosting` | `service_id NOT NULL` | Org is always derived via the service chain |
+| `network` | `server_id NOT NULL` | Linked to a server; org derived via server. Cascade delete. |
 
 Authorization ancestry and `listVisible()` resolve organization through this chain in SQL (`evaluator.ts`, `create-access-grant.ts`).
 
 > Permissions are **static code constants** defined in `../../client/authz/catalog.ts` (`PERMISSIONS`, `ENTITY_TYPES`, `SUBJECT_TYPES`) — not DB rows. There are no `role`, `permission`, or `permit` tables. The Drizzle table export is **`grant`** (not `accessGrant`).
 
-Drizzle relations are defined for future Better Auth adapter use. `IS_SIGNUP_ENABLED_CONFIG_KEY` is the `setting.key` for self-service signup.
+Drizzle relations are defined for future Better Auth adapter use. `IS_SIGNUP_ENABLED_CONFIG_KEY` is the `setting.key` for self-service signup. `setting.value` is `jsonb`. The `SYSTEM_EMAIL` key stores all email settings as a single JSON object (self-hosted mode only; env vars take precedence and leave this table empty).
 
 **Organizations:** `member` and `invitation` are **pure relationship tables** — `member.role` and `invitation.role` were removed because authorization is now derived exclusively from `grant` rows, not membership columns. **`invitation.grants`** (JSONB) stores the intended access grants (`InvitationGrantSpec[]` in `src/client/authn/invitation-grants.ts`); they are materialized into `grant` rows on accept. When `grants` is null, accept applies a default `organization:manage` grant on the org.
 
@@ -148,11 +150,14 @@ List and get enforce visibility via `listVisible` / org-level grant checks in SQ
 | `DELETE` | `/api/client/v1/services/{id}` | org owner/manager |
 | `GET` | `/api/client/v1/hostings` | org owner/manager (optional `?serviceId=`) |
 | `GET` | `/api/client/v1/hostings/{id}` | org owner/manager |
-| `POST` | `/api/client/v1/hostings` | org owner/manager; optional `serviceId` (standalone when omitted) |
+| `POST` | `/api/client/v1/hostings` | org owner/manager; `serviceId` required |
 | `PATCH` | `/api/client/v1/hostings/{id}` | org owner/manager |
 | `DELETE` | `/api/client/v1/hostings/{id}` | org owner/manager |
+| `GET` | `/api/client/v1/networks` | org manager (`organization:manage`; requires `?serverId=`) |
+| `POST` | `/api/client/v1/networks` | org manager; body `{ serverId }` |
+| `DELETE` | `/api/client/v1/networks/{id}` | org manager |
 
-Implemented in `src/resource-routes.ts`, registered from `registerClientRoutes`.
+Implemented in `src/client/*/routes.ts`, registered from `registerClientRoutes`.
 
 `GET /api/client/v1/servers` uses `listVisible()` for server visibility (not raw org membership). License endpoints (`GET`/`POST` `/licenses`, `DELETE` `/licenses/{id}`) require org ownership (`organization:own`).
 

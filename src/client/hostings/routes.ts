@@ -2,34 +2,19 @@ import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { assertCanOr403, listVisible } from '../authz/index.ts'
+import { listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db.ts'
-import { hosting, service } from '../../lib/db/schema.ts'
+import { hosting } from '../../lib/db/schema.ts'
 import {
   assertCanCreateOr403,
+  assertCanOr403,
   assertCanReadOr403,
   buildPatchUpdateFields,
   getOrgId,
   parseDisplayName,
   parseJsonBody,
 } from '../shared.ts'
-
-function parseOptionalServiceId(
-  body: Record<string, unknown>,
-): string | null | 'invalid' {
-  if (!('serviceId' in body)) {
-    return null
-  }
-  const serviceId = body.serviceId
-  if (serviceId === null) {
-    return null
-  }
-  if (typeof serviceId !== 'string' || serviceId.trim().length === 0) {
-    return 'invalid'
-  }
-  return serviceId.trim()
-}
 
 export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
   router.use('/hostings', createSessionMiddleware(opts.secrets))
@@ -132,28 +117,19 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const serviceIdResult = parseOptionalServiceId(body)
-    if (serviceIdResult === 'invalid') {
+    const serviceIdRaw = body.serviceId
+    if (typeof serviceIdRaw !== 'string' || serviceIdRaw.trim().length === 0) {
       return c.json({ error: 'Invalid request' }, 400)
     }
+    const serviceId = serviceIdRaw.trim()
 
-    if (serviceIdResult) {
-      const serviceOrgId = await resolveEntityOrganizationId(db, 'service', serviceIdResult)
-      if (!serviceOrgId || serviceOrgId !== organizationId) {
-        return c.json({ error: 'Not found' }, 404)
-      }
-
-      const denied = await assertCanCreateOr403(c, 'service', serviceIdResult)
-      if (denied) return denied
-    } else {
-      const denied = await assertCanOr403(
-        c,
-        'organization:own',
-        'organization',
-        organizationId,
-      )
-      if (denied) return denied
+    const serviceOrgId = await resolveEntityOrganizationId(db, 'service', serviceId)
+    if (!serviceOrgId || serviceOrgId !== organizationId) {
+      return c.json({ error: 'Not found' }, 404)
     }
+
+    const denied = await assertCanCreateOr403(c, 'service', serviceId)
+    if (denied) return denied
 
     let displayName: string | null
     try {
@@ -167,8 +143,7 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
         .insert(hosting)
         .values({
           displayName,
-          serviceId: serviceIdResult,
-          organizationId: serviceIdResult ? null : organizationId,
+          serviceId,
         })
         .returning({ id: hosting.id })
       return inserted.id

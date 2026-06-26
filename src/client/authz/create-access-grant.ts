@@ -258,11 +258,7 @@ export async function resolveEntityOrganizationId(
         JOIN environment e ON e.id = s.environment_id
         JOIN project p ON p.id = e.project_id
         JOIN workspace w ON w.id = p.workspace_id
-        WHERE h.id = ${entityId}::uuid AND h.service_id IS NOT NULL
-        UNION ALL
-        SELECT h.organization_id AS organization_id
-        FROM hosting h
-        WHERE h.id = ${entityId}::uuid AND h.service_id IS NULL
+        WHERE h.id = ${entityId}::uuid
         LIMIT 1
       `)
       return rows[0]?.organization_id ?? null

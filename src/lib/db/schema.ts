@@ -8,24 +8,17 @@ export const invitation = pgTable("invitation", {
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	expiresAt: timestamp("expires_at", { precision: 3, withTimezone: true, mode: 'string' }).notNull(),
 	userId: uuid("user_id").notNull(),
-	organizationId: uuid("organization_id").notNull(),
-	teamId: uuid("team_id"),
+	teamId: uuid("team_id").notNull(),
 	email: varchar({ length: 255 }).notNull(),
 	status: varchar({ length: 255 }).notNull(),
 	/** Intended access grants materialized on accept — see `InvitationGrantSpec`. */
 	grants: jsonb(),
 }, (table) => [
 	index("idx_invitation_email").using("btree", table.email.asc().nullsLast().op("text_ops")),
-	index("idx_invitation_organization_id").using("btree", table.organizationId.asc().nullsLast().op("uuid_ops")),
 	foreignKey({
 			columns: [table.userId],
 			foreignColumns: [user.id],
 			name: "invitation_user_id_user_id_fk"
-		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.organizationId],
-			foreignColumns: [organization.id],
-			name: "invitation_organization_id_organization_id_fk"
 		}).onDelete("cascade"),
 	foreignKey({
 			columns: [table.teamId],
@@ -129,6 +122,19 @@ export const server = pgTable("server", {
 			name: "server_license_id_license_id_fk"
 		}),
 ]);
+export const network = pgTable("network", {
+	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
+	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	serverId: uuid("server_id").notNull(),
+}, (table) => [
+	index("idx_network_server_id").using("btree", table.serverId.asc().nullsLast().op("uuid_ops")),
+	foreignKey({
+		columns: [table.serverId],
+		foreignColumns: [server.id],
+		name: "network_server_id_server_id_fk",
+	}).onDelete("cascade"),
+]);
 export const workspace = pgTable("workspace", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
@@ -195,24 +201,14 @@ export const hosting = pgTable("hosting", {
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	displayName: varchar("display_name", { length: 255 }),
-	/** When set, org is derived via service → environment → project → workspace. */
-	serviceId: uuid("service_id"),
-	/** Required when `service_id` is null (standalone org-level hosting). */
-	organizationId: uuid("organization_id"),
+	serviceId: uuid("service_id").notNull(),
 }, (table) => [
 	index("idx_hosting_service_id").using("btree", table.serviceId.asc().nullsLast().op("uuid_ops")),
-	index("idx_hosting_organization_id").using("btree", table.organizationId.asc().nullsLast().op("uuid_ops")),
 	foreignKey({
 			columns: [table.serviceId],
 			foreignColumns: [service.id],
 			name: "hosting_service_id_service_id_fk"
 		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.organizationId],
-			foreignColumns: [organization.id],
-			name: "hosting_organization_id_organization_id_fk"
-		}).onDelete("cascade"),
-	check("hosting_scope_check", sql`((service_id IS NOT NULL) AND (organization_id IS NULL)) OR ((service_id IS NULL) AND (organization_id IS NOT NULL))`),
 	check("hosting_display_name_format_check", sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`),
 ]);
 export const grant = pgTable("grant", {
@@ -259,7 +255,7 @@ export const setting = pgTable("setting", {
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	key: text().notNull(),
-	value: text().notNull(),
+	value: jsonb().notNull(),
 }, (table) => [
 	unique("setting_key_unique").on(table.key),
 ]);

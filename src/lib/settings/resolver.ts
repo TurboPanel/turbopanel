@@ -20,6 +20,15 @@ function normalizeFullKey(key: string): string {
 
 export type SettingSource = 'env' | 'db' | 'default'
 
+/** JSON-compatible values stored in `setting.value` (jsonb). */
+export type SettingValue =
+  | string
+  | number
+  | boolean
+  | null
+  | SettingValue[]
+  | { [key: string]: SettingValue }
+
 export type ResolvedSetting = {
   value: string
   source: SettingSource
@@ -29,18 +38,25 @@ export type SettingsSchema = Record<string, string | undefined>
 
 export type EnvAliases = Record<string, readonly string[]>
 
+function coerceSettingValueToString(value: SettingValue): string {
+  if (typeof value === 'string') return value
+  if (value === null) return ''
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  return JSON.stringify(value)
+}
+
 export class SettingsResolver {
   private readonly prefix: string
   private readonly keys: SettingsSchema
   private readonly env: Record<string, string | undefined>
-  private readonly dbValues: Map<string, string>
+  private readonly dbValues: Map<string, SettingValue>
   private readonly envAliases: EnvAliases
 
   constructor(opts: {
     prefix: string
     keys: SettingsSchema
     env: Record<string, string | undefined>
-    dbValues: Map<string, string>
+    dbValues: Map<string, SettingValue>
     envAliases?: EnvAliases
   }) {
     this.prefix = normalizeSettingPrefix(opts.prefix)
@@ -62,7 +78,10 @@ export class SettingsResolver {
     }
 
     const fullKey = this.fullKey(normalizedShortKey)
-    const dbValue = this.dbValues.get(fullKey)?.trim()
+    const rawDbValue = this.dbValues.get(fullKey)
+    const dbValue = rawDbValue !== undefined
+      ? coerceSettingValueToString(rawDbValue).trim()
+      : undefined
     if (dbValue !== undefined && dbValue !== '') {
       return { value: dbValue, source: 'db' }
     }
@@ -77,7 +96,10 @@ export class SettingsResolver {
 
   isDbSet(shortKey: string): boolean {
     const fullKey = this.fullKey(shortKey)
-    const dbValue = this.dbValues.get(fullKey)?.trim()
+    const rawDbValue = this.dbValues.get(fullKey)
+    const dbValue = rawDbValue !== undefined
+      ? coerceSettingValueToString(rawDbValue).trim()
+      : undefined
     return dbValue !== undefined && dbValue !== ''
   }
 
@@ -97,7 +119,10 @@ export class SettingsResolver {
   }
 }
 
-export async function loadSettingValues(db: Db, fullKeys: string[]): Promise<Map<string, string>> {
+export async function loadSettingValues(
+  db: Db,
+  fullKeys: string[],
+): Promise<Map<string, SettingValue>> {
   if (fullKeys.length === 0) return new Map()
 
   const normalizedKeys = fullKeys.map((key) => normalizeFullKey(key))
@@ -106,10 +131,19 @@ export async function loadSettingValues(db: Db, fullKeys: string[]): Promise<Map
     .from(setting)
     .where(inArray(setting.key, normalizedKeys))
 
-  return new Map(rows.map((row) => [normalizeFullKey(row.key), row.value]))
+  return new Map(
+    rows.map((row) => [
+      normalizeFullKey(row.key),
+      row.value as SettingValue,
+    ]),
+  )
 }
 
-export async function upsertSettingValue(db: Db, key: string, value: string): Promise<void> {
+export async function upsertSettingValue(
+  db: Db,
+  key: string,
+  value: SettingValue,
+): Promise<void> {
   const normalizedKey = normalizeFullKey(key)
   await db
     .insert(setting)

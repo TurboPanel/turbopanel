@@ -454,6 +454,8 @@ Examples: `TURBOPANEL_SYSTEM_EMAIL__PROVIDER`, `TURBOPANEL_SYSTEM_EMAIL__FROM`, 
 
 **Env-wins semantics**: when an env var for a key (primary full key or documented legacy alias) is present and non-empty, it takes precedence over any DB value and the default. DB values are only used when no overriding env var is set. The admin UI reflects this (env-overridden secrets are hidden; DB secrets are masked).
 
+**DB storage (self-hosted):** email settings are persisted as a single `setting` row with `key = 'SYSTEM_EMAIL'` and `value` as a JSON object (e.g. `{ "PROVIDER": "smtp", "FROM": "noreply@turbopanel.local" }`). Short keys match `EMAIL_SETTING_SHORT_KEYS` in `src/lib/settings/email-settings.ts`. When env vars (`TURBOPANEL_SYSTEM_EMAIL__*`) override all keys, the `SYSTEM_EMAIL` row may remain absent — env always wins and the resolver never reads per-key `setting` rows for email.
+
 Short keys and new rate/queue keys (added to `src/lib/settings/email-settings.ts`):
 
 | Short key | Default | Legacy alias (env) | Notes |

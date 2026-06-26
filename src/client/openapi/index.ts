@@ -4,6 +4,7 @@ import { authPaths, buildAuthSchemas } from './auth.ts'
 import { environmentPaths, environmentSchemas } from './environments.ts'
 import { hostingPaths, hostingSchemas } from './hostings.ts'
 import { installOpenApiPaths, installOpenApiSchemas } from './install.ts'
+import { networkPaths, networkSchemas } from './networks.ts'
 import { buildLicensePaths, buildLicenseSchemas } from './licenses.ts'
 import { projectPaths, projectSchemas } from './projects.ts'
 import { serverPaths, serverSchemas } from './servers.ts'
@@ -43,6 +44,7 @@ export function getClientOpenApiSpec(
       schemas: {
         ...buildAuthSchemas(options?.runtime),
         ...serverSchemas,
+        ...networkSchemas,
         ...buildLicenseSchemas(installCommandDescription),
         ...accessSchemas,
         ...workspaceSchemas,
@@ -56,6 +58,7 @@ export function getClientOpenApiSpec(
     paths: {
       ...authPaths,
       ...serverPaths,
+      ...networkPaths,
       ...buildLicensePaths(installCommandDescription),
       ...accessPaths,
       ...workspacePaths,

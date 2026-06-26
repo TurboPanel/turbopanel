@@ -164,25 +164,25 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         FROM hosting h WHERE h.id = ${entityId}::uuid
         UNION ALL
         SELECT 'service'::text, h.service_id, 1
-        FROM hosting h WHERE h.id = ${entityId}::uuid AND h.service_id IS NOT NULL
+        FROM hosting h WHERE h.id = ${entityId}::uuid
         UNION ALL
         SELECT 'environment'::text, s.environment_id, 2
         FROM hosting h
         JOIN service s ON s.id = h.service_id
-        WHERE h.id = ${entityId}::uuid AND h.service_id IS NOT NULL
+        WHERE h.id = ${entityId}::uuid
         UNION ALL
         SELECT 'project'::text, e.project_id, 3
         FROM hosting h
         JOIN service s ON s.id = h.service_id
         JOIN environment e ON e.id = s.environment_id
-        WHERE h.id = ${entityId}::uuid AND h.service_id IS NOT NULL
+        WHERE h.id = ${entityId}::uuid
         UNION ALL
         SELECT 'workspace'::text, p.workspace_id, 4
         FROM hosting h
         JOIN service s ON s.id = h.service_id
         JOIN environment e ON e.id = s.environment_id
         JOIN project p ON p.id = e.project_id
-        WHERE h.id = ${entityId}::uuid AND h.service_id IS NOT NULL
+        WHERE h.id = ${entityId}::uuid
         UNION ALL
         SELECT 'organization'::text, w.organization_id, 5
         FROM hosting h
@@ -190,10 +190,7 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         JOIN environment e ON e.id = s.environment_id
         JOIN project p ON p.id = e.project_id
         JOIN workspace w ON w.id = p.workspace_id
-        WHERE h.id = ${entityId}::uuid AND h.service_id IS NOT NULL
-        UNION ALL
-        SELECT 'organization'::text, h.organization_id, 1
-        FROM hosting h WHERE h.id = ${entityId}::uuid AND h.service_id IS NULL
+        WHERE h.id = ${entityId}::uuid
       `
     case 'server':
       return sql`
@@ -235,10 +232,7 @@ function buildLeavesBody(kind: string, organizationId: string): SQL {
         JOIN environment e ON e.id = s.environment_id
         JOIN project p ON p.id = e.project_id
         JOIN workspace w ON w.id = p.workspace_id
-        WHERE w.organization_id = ${organizationId}::uuid
-        UNION
-        SELECT h.id FROM hosting h
-        WHERE h.service_id IS NULL AND h.organization_id = ${organizationId}::uuid`
+        WHERE w.organization_id = ${organizationId}::uuid`
     case 'server':
       return sql`SELECT id FROM server WHERE organization_id = ${organizationId}::uuid`
     default:

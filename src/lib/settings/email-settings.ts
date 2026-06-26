@@ -1,14 +1,15 @@
+import { eq } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
+import { setting } from '../db/schema.ts'
 import type { SmtpConfig } from '../email/smtp/smtp-resolve.ts'
 import {
-  deleteSettingValue,
-  loadSettingValues,
   normalizeSettingFullKey,
   SettingsResolver,
   type ResolvedSetting,
   type SettingSource,
-  upsertSettingValue,
 } from './resolver.ts'
+
+const SYSTEM_EMAIL_DB_KEY = 'SYSTEM_EMAIL'
 
 export const EMAIL_SETTINGS_PREFIX = 'TURBOPANEL_SYSTEM_EMAIL'
 
@@ -65,15 +66,6 @@ export const EMAIL_SECRET_KEYS: ReadonlySet<EmailSettingShortKey> = new Set([
   'MAILGUN_API_KEY',
   'SMTP_PASS',
 ])
-
-/** Legacy flat `setting.key` values used before hierarchical email settings. */
-const LEGACY_DB_KEYS: Partial<Record<EmailSettingShortKey, string>> = {
-  FROM: 'SMTP_FROM',
-  SMTP_HOST: 'SMTP_HOST',
-  SMTP_PORT: 'SMTP_PORT',
-  SMTP_USER: 'SMTP_USER',
-  SMTP_PASS: 'SMTP_PASS',
-}
 
 export type EmailSettingMeta = {
   fullKey: string
@@ -161,26 +153,124 @@ function metaFromResolved(
   }
 }
 
-async function loadEmailSettingDbValues(db: Db): Promise<Map<string, string>> {
-  const fullKeys = EMAIL_SETTING_SHORT_KEYS.map((shortKey) => fullEmailSettingKey(shortKey))
-  const legacyKeys = Object.values(LEGACY_DB_KEYS)
-  const raw = await loadSettingValues(db, [...fullKeys, ...legacyKeys])
+function readSystemEmailObject(value: unknown): Record<string, string> {
+  if (value === null || value === undefined || typeof value !== 'object' || Array.isArray(value)) {
+    return {}
+  }
 
-  const out = new Map<string, string>()
-  for (const shortKey of EMAIL_SETTING_SHORT_KEYS) {
-    const fullKey = fullEmailSettingKey(shortKey)
-    const primary = raw.get(fullKey)
-    if (primary !== undefined && primary !== '') {
-      out.set(fullKey, primary)
-      continue
-    }
-    const legacyKey = LEGACY_DB_KEYS[shortKey]
-    if (!legacyKey) continue
-    const legacyValue = raw.get(legacyKey)
-    if (legacyValue !== undefined && legacyValue !== '') {
-      out.set(fullKey, legacyValue)
+  const out: Record<string, string> = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof raw === 'string') {
+      out[key] = raw
+    } else if (raw != null) {
+      out[key] = String(raw)
     }
   }
+  return out
+}
+
+async function loadSystemEmailObject(db: Db): Promise<Record<string, string>> {
+  const rows = await db
+    .select({ value: setting.value })
+    .from(setting)
+    .where(eq(setting.key, SYSTEM_EMAIL_DB_KEY))
+    .limit(1)
+
+  return readSystemEmailObject(rows[0]?.value)
+}
+
+type EmailSettingMutation = {
+  shortKey: EmailSettingShortKey
+  value: string | null
+}
+
+function collectEmailSettingMutations(
+  resolver: SettingsResolver,
+  updates: Record<string, string | null>,
+): EmailSettingMutation[] {
+  const mutations: EmailSettingMutation[] = []
+
+  for (const [key, rawValue] of Object.entries(updates)) {
+    if (rawValue !== null && typeof rawValue !== 'string') continue
+
+    const shortKey = resolveShortKeyFromInput(key)
+    if (!shortKey) continue
+    if (resolver.isEnvOverridden(shortKey)) continue
+
+    if (rawValue === null) {
+      mutations.push({ shortKey, value: null })
+      continue
+    }
+
+    const trimmed = rawValue.trim()
+    if (trimmed === '') continue
+
+    if (shortKey === 'PROVIDER' && trimmed !== 'smtp' && trimmed !== 'mailgun' && trimmed !== 'mailpit') {
+      continue
+    }
+    if (shortKey === 'MAILGUN_REGION' && trimmed !== 'us' && trimmed !== 'eu') {
+      continue
+    }
+
+    mutations.push({ shortKey, value: trimmed })
+  }
+
+  return mutations
+}
+
+async function applyEmailSettingMutations(
+  db: Db,
+  mutations: EmailSettingMutation[],
+): Promise<void> {
+  if (mutations.length === 0) return
+
+  await db.transaction(async (tx) => {
+    const rows = await tx
+      .select({ value: setting.value })
+      .from(setting)
+      .where(eq(setting.key, SYSTEM_EMAIL_DB_KEY))
+      .for('update')
+      .limit(1)
+
+    const obj = readSystemEmailObject(rows[0]?.value)
+
+    for (const { shortKey, value } of mutations) {
+      if (value === null) {
+        delete obj[shortKey]
+      } else {
+        obj[shortKey] = value
+      }
+    }
+
+    if (Object.keys(obj).length === 0) {
+      await tx.delete(setting).where(eq(setting.key, SYSTEM_EMAIL_DB_KEY))
+      return
+    }
+
+    await tx
+      .insert(setting)
+      .values({ key: SYSTEM_EMAIL_DB_KEY, value: obj })
+      .onConflictDoUpdate({
+        target: setting.key,
+        set: {
+          value: obj,
+          updatedAt: new Date().toISOString(),
+        },
+      })
+  })
+}
+
+async function loadEmailSettingDbValues(db: Db): Promise<Map<string, string>> {
+  const obj = await loadSystemEmailObject(db)
+  const out = new Map<string, string>()
+
+  for (const shortKey of EMAIL_SETTING_SHORT_KEYS) {
+    const stored = obj[shortKey]
+    if (stored !== undefined && stored !== '') {
+      out.set(fullEmailSettingKey(shortKey), stored)
+    }
+  }
+
   return out
 }
 
@@ -289,41 +379,9 @@ export async function updateEmailSettings(
   updates: Record<string, string | null>,
 ): Promise<ResolvedEmailSettings> {
   const resolver = await createEmailSettingsResolver(db, env)
-
-  for (const [key, rawValue] of Object.entries(updates)) {
-    if (rawValue !== null && typeof rawValue !== 'string') continue
-
-    const shortKey = resolveShortKeyFromInput(key)
-    if (!shortKey) continue
-    if (resolver.isEnvOverridden(shortKey)) continue
-
-    if (rawValue === null) {
-      await deleteEmailSetting(db, shortKey)
-      continue
-    }
-
-    const trimmed = rawValue.trim()
-    if (trimmed === '') continue
-
-    if (shortKey === 'PROVIDER' && trimmed !== 'smtp' && trimmed !== 'mailgun' && trimmed !== 'mailpit') {
-      continue
-    }
-    if (shortKey === 'MAILGUN_REGION' && trimmed !== 'us' && trimmed !== 'eu') {
-      continue
-    }
-
-    await upsertSettingValue(db, fullEmailSettingKey(shortKey), trimmed)
-  }
-
+  const mutations = collectEmailSettingMutations(resolver, updates)
+  await applyEmailSettingMutations(db, mutations)
   return await resolveEmailSettings(db, env)
-}
-
-async function deleteEmailSetting(db: Db, shortKey: EmailSettingShortKey): Promise<void> {
-  await deleteSettingValue(db, fullEmailSettingKey(shortKey))
-  const legacyKey = LEGACY_DB_KEYS[shortKey]
-  if (legacyKey) {
-    await deleteSettingValue(db, legacyKey)
-  }
 }
 
 function resolveShortKeyFromInput(key: string): EmailSettingShortKey | null {
