@@ -7,6 +7,7 @@ export const hostingSchemas = {
     properties: {
       id: { type: 'string' },
       displayName: { type: ['string', 'null'] },
+      description: { type: ['string', 'null'] },
       serviceId: { type: 'string' },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
@@ -27,6 +28,7 @@ export const hostingSchemas = {
     required: ['serviceId'],
     properties: {
       displayName: { type: 'string' },
+      description: { type: 'string' },
       serviceId: { type: 'string' },
     },
   },

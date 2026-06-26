@@ -4,6 +4,16 @@ export const clientErrorJson = {
   properties: { error: { type: 'string' } },
 }
 
+export const sharedSchemas = {
+  UpdateEntityRequest: {
+    type: 'object',
+    properties: {
+      displayName: { type: 'string' },
+      description: { type: 'string' },
+    },
+  },
+}
+
 export function resourceErrorResponses(options?: {
   badRequest?: boolean
   forbidden?: boolean

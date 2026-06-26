@@ -6,6 +6,7 @@ export const environmentSchemas = {
     properties: {
       id: { type: 'string' },
       displayName: { type: ['string', 'null'] },
+      description: { type: ['string', 'null'] },
       projectId: { type: 'string' },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
@@ -26,6 +27,7 @@ export const environmentSchemas = {
     required: ['projectId'],
     properties: {
       displayName: { type: 'string' },
+      description: { type: 'string' },
       projectId: { type: 'string' },
     },
   },

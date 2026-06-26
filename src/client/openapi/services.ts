@@ -6,6 +6,7 @@ export const serviceSchemas = {
     properties: {
       id: { type: 'string' },
       displayName: { type: ['string', 'null'] },
+      description: { type: ['string', 'null'] },
       environmentId: { type: 'string' },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
@@ -26,6 +27,7 @@ export const serviceSchemas = {
     required: ['environmentId'],
     properties: {
       displayName: { type: 'string' },
+      description: { type: 'string' },
       environmentId: { type: 'string' },
     },
   },

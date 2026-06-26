@@ -12,6 +12,7 @@ import {
   buildPatchUpdateFields,
   getOrgId,
   parseDisplayName,
+  parseDescription,
   parseJsonBody,
 } from '../shared.ts'
 
@@ -51,6 +52,7 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
       .select({
         id: hosting.id,
         displayName: hosting.displayName,
+        description: hosting.description,
         serviceId: hosting.serviceId,
         createdAt: hosting.createdAt,
         updatedAt: hosting.updatedAt,
@@ -83,6 +85,7 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
       .select({
         id: hosting.id,
         displayName: hosting.displayName,
+        description: hosting.description,
         serviceId: hosting.serviceId,
         createdAt: hosting.createdAt,
         updatedAt: hosting.updatedAt,
@@ -131,8 +134,10 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
     if (denied) return denied
 
     let displayName: string | null
+    let description: string | null
     try {
       displayName = parseDisplayName(body)
+      description = parseDescription(body)
     } catch {
       return c.json({ error: 'Invalid request' }, 400)
     }
@@ -142,6 +147,7 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
         .insert(hosting)
         .values({
           displayName,
+          description,
           serviceId,
         })
         .returning({ id: hosting.id })
@@ -174,7 +180,7 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    let patchFields: { displayName?: string | null; updatedAt: string }
+    let patchFields: { displayName?: string | null; description?: string | null; updatedAt: string }
     try {
       patchFields = buildPatchUpdateFields(body)
     } catch {

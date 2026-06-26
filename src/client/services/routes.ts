@@ -12,6 +12,7 @@ import {
   buildPatchUpdateFields,
   getOrgId,
   parseDisplayName,
+  parseDescription,
   parseJsonBody,
   requireStringField,
 } from '../shared.ts'
@@ -52,6 +53,7 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
       .select({
         id: service.id,
         displayName: service.displayName,
+        description: service.description,
         environmentId: service.environmentId,
         createdAt: service.createdAt,
         updatedAt: service.updatedAt,
@@ -84,6 +86,7 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
       .select({
         id: service.id,
         displayName: service.displayName,
+        description: service.description,
         environmentId: service.environmentId,
         createdAt: service.createdAt,
         updatedAt: service.updatedAt,
@@ -129,8 +132,10 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
     if (denied) return denied
 
     let displayName: string | null
+    let description: string | null
     try {
       displayName = parseDisplayName(body)
+      description = parseDescription(body)
     } catch {
       return c.json({ error: 'Invalid request' }, 400)
     }
@@ -138,7 +143,7 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(service)
-        .values({ displayName, environmentId })
+        .values({ displayName, description, environmentId })
         .returning({ id: service.id })
       return inserted.id
     })
@@ -169,7 +174,7 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    let patchFields: { displayName?: string | null; updatedAt: string }
+    let patchFields: { displayName?: string | null; description?: string | null; updatedAt: string }
     try {
       patchFields = buildPatchUpdateFields(body)
     } catch {

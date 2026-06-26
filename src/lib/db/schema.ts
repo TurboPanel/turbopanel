@@ -140,6 +140,7 @@ export const workspace = pgTable("workspace", {
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	displayName: varchar("display_name", { length: 255 }),
+	description: varchar("description", { length: 255 }),
 	organizationId: uuid("organization_id").notNull(),
 }, (table) => [
 	unique("workspace_id_org_unique").on(table.id, table.organizationId),
@@ -156,6 +157,7 @@ export const project = pgTable("project", {
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	displayName: varchar("display_name", { length: 255 }),
+	description: varchar("description", { length: 255 }),
 	workspaceId: uuid("workspace_id").notNull(),
 }, (table) => [
 	index("idx_project_workspace_id").using("btree", table.workspaceId.asc().nullsLast().op("uuid_ops")),
@@ -171,6 +173,7 @@ export const environment = pgTable("environment", {
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	displayName: varchar("display_name", { length: 255 }),
+	description: varchar("description", { length: 255 }),
 	projectId: uuid("project_id").notNull(),
 }, (table) => [
 	index("idx_environment_project_id").using("btree", table.projectId.asc().nullsLast().op("uuid_ops")),
@@ -186,6 +189,7 @@ export const service = pgTable("service", {
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	displayName: varchar("display_name", { length: 255 }),
+	description: varchar("description", { length: 255 }),
 	environmentId: uuid("environment_id").notNull(),
 }, (table) => [
 	index("idx_service_environment_id").using("btree", table.environmentId.asc().nullsLast().op("uuid_ops")),
@@ -201,6 +205,7 @@ export const hosting = pgTable("hosting", {
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	displayName: varchar("display_name", { length: 255 }),
+	description: varchar("description", { length: 255 }),
 	serviceId: uuid("service_id").notNull(),
 }, (table) => [
 	index("idx_hosting_service_id").using("btree", table.serviceId.asc().nullsLast().op("uuid_ops")),

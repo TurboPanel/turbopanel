@@ -6,6 +6,7 @@ export const projectSchemas = {
     properties: {
       id: { type: 'string' },
       displayName: { type: ['string', 'null'] },
+      description: { type: ['string', 'null'] },
       workspaceId: { type: 'string' },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
@@ -26,6 +27,7 @@ export const projectSchemas = {
     required: ['workspaceId'],
     properties: {
       displayName: { type: 'string' },
+      description: { type: 'string' },
       workspaceId: { type: 'string' },
     },
   },

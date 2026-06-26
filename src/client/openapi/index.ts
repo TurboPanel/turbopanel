@@ -1,4 +1,5 @@
 import { resolveSessionCookieName } from '../authn/crypto.ts'
+import { sharedSchemas } from './shared.ts'
 import { accessPaths, accessSchemas } from './access.ts'
 import { authPaths, buildAuthSchemas } from './auth.ts'
 import { environmentPaths, environmentSchemas } from './environments.ts'
@@ -42,6 +43,7 @@ export function getClientOpenApiSpec(
         },
       },
       schemas: {
+        ...sharedSchemas,
         ...buildAuthSchemas(options?.runtime),
         ...serverSchemas,
         ...networkSchemas,

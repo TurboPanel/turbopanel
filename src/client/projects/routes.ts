@@ -12,6 +12,7 @@ import {
   buildPatchUpdateFields,
   getOrgId,
   parseDisplayName,
+  parseDescription,
   parseJsonBody,
   requireStringField,
 } from '../shared.ts'
@@ -52,6 +53,7 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
       .select({
         id: project.id,
         displayName: project.displayName,
+        description: project.description,
         workspaceId: project.workspaceId,
         createdAt: project.createdAt,
         updatedAt: project.updatedAt,
@@ -84,6 +86,7 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
       .select({
         id: project.id,
         displayName: project.displayName,
+        description: project.description,
         workspaceId: project.workspaceId,
         createdAt: project.createdAt,
         updatedAt: project.updatedAt,
@@ -134,8 +137,10 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
     if (denied) return denied
 
     let displayName: string | null
+    let description: string | null
     try {
       displayName = parseDisplayName(body)
+      description = parseDescription(body)
     } catch {
       return c.json({ error: 'Invalid request' }, 400)
     }
@@ -143,7 +148,7 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(project)
-        .values({ displayName, workspaceId })
+        .values({ displayName, description, workspaceId })
         .returning({ id: project.id })
       return inserted.id
     })
@@ -174,7 +179,7 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    let patchFields: { displayName?: string | null; updatedAt: string }
+    let patchFields: { displayName?: string | null; description?: string | null; updatedAt: string }
     try {
       patchFields = buildPatchUpdateFields(body)
     } catch {

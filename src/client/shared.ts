@@ -29,22 +29,52 @@ export function parseDisplayName(body: Record<string, unknown>): string | null {
   return name
 }
 
+export function parseDescription(body: Record<string, unknown>): string | null {
+  if (body.description === undefined) {
+    return null
+  }
+  if (typeof body.description !== 'string') {
+    throw new BadRequestError('Invalid request')
+  }
+  if (body.description.length > 255) {
+    throw new BadRequestError('Invalid request')
+  }
+  return body.description
+}
+
 /** PATCH payload: omit `displayName` when absent so partial updates do not clear it. */
 export function buildPatchUpdateFields(
   body: Record<string, unknown>,
-): { displayName?: string | null; updatedAt: string } {
+): { displayName?: string | null; description?: string | null; updatedAt: string } {
   const updatedAt = new Date().toISOString()
-  if (body.displayName === undefined) {
-    return { updatedAt }
+  const result: {
+    displayName?: string | null
+    description?: string | null
+    updatedAt: string
+  } = { updatedAt }
+
+  if (body.displayName !== undefined) {
+    if (typeof body.displayName !== 'string') {
+      throw new BadRequestError('Invalid request')
+    }
+    const name = body.displayName
+    if (name.length < 1 || name.length > 255 || !DISPLAY_NAME_RE.test(name)) {
+      throw new BadRequestError('Invalid request')
+    }
+    result.displayName = name
   }
-  if (typeof body.displayName !== 'string') {
-    throw new BadRequestError('Invalid request')
+
+  if (body.description !== undefined) {
+    if (typeof body.description !== 'string') {
+      throw new BadRequestError('Invalid request')
+    }
+    if (body.description.length > 255) {
+      throw new BadRequestError('Invalid request')
+    }
+    result.description = body.description
   }
-  const name = body.displayName
-  if (name.length < 1 || name.length > 255 || !DISPLAY_NAME_RE.test(name)) {
-    throw new BadRequestError('Invalid request')
-  }
-  return { displayName: name, updatedAt }
+
+  return result
 }
 
 /** Read access: org owners/managers and platform admins may read any entity in the org. */

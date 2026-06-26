@@ -11,6 +11,7 @@ import {
   buildPatchUpdateFields,
   getOrgId,
   parseDisplayName,
+  parseDescription,
   parseJsonBody,
 } from '../shared.ts'
 
@@ -43,6 +44,7 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
       .select({
         id: workspace.id,
         displayName: workspace.displayName,
+        description: workspace.description,
         organizationId: workspace.organizationId,
         createdAt: workspace.createdAt,
         updatedAt: workspace.updatedAt,
@@ -70,6 +72,7 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
       .select({
         id: workspace.id,
         displayName: workspace.displayName,
+        description: workspace.description,
         organizationId: workspace.organizationId,
         createdAt: workspace.createdAt,
         updatedAt: workspace.updatedAt,
@@ -104,8 +107,10 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
     if (body instanceof Response) return body
 
     let displayName: string | null
+    let description: string | null
     try {
       displayName = parseDisplayName(body)
+      description = parseDescription(body)
     } catch {
       return c.json({ error: 'Invalid request' }, 400)
     }
@@ -116,7 +121,7 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(workspace)
-        .values({ displayName, organizationId })
+        .values({ displayName, description, organizationId })
         .returning({ id: workspace.id })
       return inserted.id
     })
@@ -153,7 +158,7 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    let patchFields: { displayName?: string | null; updatedAt: string }
+    let patchFields: { displayName?: string | null; description?: string | null; updatedAt: string }
     try {
       patchFields = buildPatchUpdateFields(body)
     } catch {

@@ -6,6 +6,7 @@ export const workspaceSchemas = {
     properties: {
       id: { type: 'string' },
       displayName: { type: ['string', 'null'] },
+      description: { type: ['string', 'null'] },
       organizationId: { type: 'string' },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
@@ -25,6 +26,7 @@ export const workspaceSchemas = {
     type: 'object',
     properties: {
       displayName: { type: 'string' },
+      description: { type: 'string' },
     },
   },
   EntityOkResponse: {
@@ -33,12 +35,6 @@ export const workspaceSchemas = {
     properties: {
       ok: { type: 'boolean', const: true },
       id: { type: 'string' },
-    },
-  },
-  UpdateEntityRequest: {
-    type: 'object',
-    properties: {
-      displayName: { type: 'string' },
     },
   },
   UpdateEntityOkResponse: {
