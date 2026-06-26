@@ -101,7 +101,7 @@
       ],
       "vars": {
         "TURBOPANEL_BASE_URL": "https://turbopanel.app",
-        "TURBOPANEL_IS_SIGNUP_ENABLED": "1",
+        "TURBOPANEL_IS_SIGNUP_ENABLED": "0",
         "TURBOPANEL_UI_CORS_ORIGINS": "https://turbopanel.io"
       }
     }
