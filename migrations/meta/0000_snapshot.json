@@ -1,5 +1,5 @@
 {
-  "id": "aed4f235-2bdd-45eb-aa57-13617035b47a",
+  "id": "dd9ff68f-5412-40d9-9cc5-3145aea34c0c",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -354,6 +354,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "description": {
+          "name": "description",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "project_id": {
           "name": "project_id",
           "type": "uuid",
@@ -551,6 +557,12 @@
         },
         "display_name": {
           "name": "display_name",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "description": {
+          "name": "description",
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
@@ -1212,6 +1224,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "description": {
+          "name": "description",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "workspace_id": {
           "name": "workspace_id",
           "type": "uuid",
@@ -1403,6 +1421,12 @@
         },
         "display_name": {
           "name": "display_name",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "description": {
+          "name": "description",
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
@@ -2173,6 +2197,12 @@
         },
         "display_name": {
           "name": "display_name",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "description": {
+          "name": "description",
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
