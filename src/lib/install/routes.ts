@@ -40,7 +40,6 @@ tp_install_privilege_denied() {
 
 LICENSE=""
 HOST_URL=""
-BINARY_URL=""
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -58,14 +57,6 @@ while [ $# -gt 0 ]; do
 				exit 1
 			fi
 			HOST_URL="$2"
-			shift 2
-			;;
-		--binary-url)
-			if [ $# -lt 2 ]; then
-				echo "daemon-install.sh: --binary-url requires an argument" >&2
-				exit 1
-			fi
-			BINARY_URL="$2"
 			shift 2
 			;;
 		*)
@@ -95,24 +86,15 @@ fi
 
 INSTALL_SCRIPT_URL="\${HOST_URL%/}/api/install/v1/daemon-install.sh"
 RUN_SCRIPT_URL="\${HOST_URL%/}/run.sh"
-DEFAULT_BINARY_URL="\${HOST_URL%/}/downloads/daemon"
 if ! tp_is_root; then
 	if tp_user_in_sudo_group && tp_sudo_installed; then
-		if [ -n "$BINARY_URL" ]; then
-			exec curl -fsSL "$INSTALL_SCRIPT_URL" | sudo sh -s -- \
-				--license "$LICENSE" --host "$HOST_URL" --binary-url "$BINARY_URL"
-		fi
 		exec curl -fsSL "$INSTALL_SCRIPT_URL" | sudo sh -s -- \
 			--license "$LICENSE" --host "$HOST_URL"
 	fi
 	tp_install_privilege_denied daemon-install.sh
 fi
-
-if [ -z "$BINARY_URL" ]; then
-	BINARY_URL="$DEFAULT_BINARY_URL"
-fi
 exec curl -fsSL "$RUN_SCRIPT_URL" | sh -s -- \
-	--license "$LICENSE" --host "$HOST_URL" --binary-url "$BINARY_URL"
+	--license "$LICENSE" --host "$HOST_URL"
 `
 
 async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {

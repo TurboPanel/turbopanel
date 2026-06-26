@@ -91,7 +91,7 @@
 	}
 	handle @dev_daemon_run {
 		root * {$TURBOPANEL_DAEMON_REPO:../daemon}
-		rewrite * {http.request.uri.path}
+		rewrite * /scripts/run.sh
 		file_server
 	}
 
