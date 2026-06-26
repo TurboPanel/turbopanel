@@ -30,7 +30,7 @@
     "jsxImportSource": "hono/jsx"
   },
   "tasks": {
-    "compile": "deno compile --allow-env --allow-sys=networkInterfaces,hostname --allow-read=/run/turbopanel,/opt/turbopanel/platform/daemon,/opt/turbopanel/platform/instance,/opt/turbopanel/platform/instance/.local --allow-write=/run/turbopanel,/opt/turbopanel/platform/instance/.local --allow-net=127.0.0.1:4983,127.0.0.1:5672 --allow-run=git,systemctl,tar,sudo,/usr/bin/sudo,/bin/sh,mkfifo,/usr/bin/mkfifo,pamtester,/usr/bin/pamtester,/opt/turbopanel/runtimes/node/current/bin/node -o dist/turbopanel-instance src/deno.ts",
+    "compile": "deno compile --allow-env --allow-sys=networkInterfaces,hostname --allow-read=/run/turbopanel,/opt/turbopanel/platform/daemon,/opt/turbopanel/platform/instance,/opt/turbopanel/platform/instance/.local --allow-write=/run/turbopanel,/opt/turbopanel/platform/instance/.local --allow-net=127.0.0.1:4983,127.0.0.1:5672,127.0.0.1:1025 --allow-run=git,systemctl,tar,sudo,/usr/bin/sudo,/bin/sh,mkfifo,/usr/bin/mkfifo,pamtester,/usr/bin/pamtester,/opt/turbopanel/runtimes/node/current/bin/node -o dist/turbopanel-instance src/deno.ts",
     "test:authz": "deno test --allow-env --allow-net --allow-read src/client/authz/",
     "test:authn": "deno test --no-check --allow-env --allow-net --allow-read src/client/authn/workers-onboarding.test.ts"
   }

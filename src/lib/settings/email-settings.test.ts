@@ -45,6 +45,14 @@ describe('resolveWorkersEmailProvider', () => {
 
     expect(resolveWorkersEmailProvider(resolved)).toBe('mailgun')
   })
+
+  it('uses mailpit when provider is explicitly set to mailpit', async () => {
+    const resolved = await resolveEmailSettings(undefined, {
+      TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
+    })
+
+    expect(resolveWorkersEmailProvider(resolved)).toBe('mailpit')
+  })
 })
 
 describe('resolveWorkersEmailQueue', () => {
@@ -65,6 +73,15 @@ describe('resolveWorkersEmailQueue', () => {
     })
 
     expect(queue.constructor.name).toBe('NoopQueue')
+  })
+
+  it('builds a Mailpit queue when provider is mailpit', async () => {
+    const queue = await resolveWorkersEmailQueue(undefined, {
+      TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
+      MAILPIT_API_URL: 'http://127.0.0.1:8025',
+    })
+
+    expect(queue.constructor.name).toBe('WorkersMailpitQueue')
   })
 })
 

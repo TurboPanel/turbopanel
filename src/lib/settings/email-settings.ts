@@ -29,7 +29,7 @@ export const EMAIL_SETTING_SHORT_KEYS = [
 
 export type EmailSettingShortKey = (typeof EMAIL_SETTING_SHORT_KEYS)[number]
 
-export type EmailProvider = 'smtp' | 'mailgun'
+export type EmailProvider = 'smtp' | 'mailgun' | 'mailpit'
 
 export const EMAIL_SETTINGS_SCHEMA: Record<EmailSettingShortKey, string | undefined> = {
   PROVIDER: 'smtp',
@@ -111,7 +111,9 @@ function fullEmailSettingKey(shortKey: EmailSettingShortKey): string {
 }
 
 function parseProvider(value: string): EmailProvider {
-  return value === 'mailgun' ? 'mailgun' : 'smtp'
+  if (value === 'mailgun') return 'mailgun'
+  if (value === 'mailpit') return 'mailpit'
+  return 'smtp'
 }
 
 function hasConfiguredMailgunCredentials(resolved: ResolvedEmailSettings): boolean {
@@ -303,7 +305,7 @@ export async function updateEmailSettings(
     const trimmed = rawValue.trim()
     if (trimmed === '') continue
 
-    if (shortKey === 'PROVIDER' && trimmed !== 'smtp' && trimmed !== 'mailgun') {
+    if (shortKey === 'PROVIDER' && trimmed !== 'smtp' && trimmed !== 'mailgun' && trimmed !== 'mailpit') {
       continue
     }
     if (shortKey === 'MAILGUN_REGION' && trimmed !== 'us' && trimmed !== 'eu') {

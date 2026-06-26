@@ -11,6 +11,7 @@ import {
 import type { MailerSender } from '../src/lib/email/sender-types.ts'
 import { createMailerDb } from './db.ts'
 import { createMailerMailgunSender } from './mailgun-sender.ts'
+import { createMailerMailpitSender } from './mailpit-sender.ts'
 import { RateLimiter } from './rate-limiter.ts'
 import { createMailerSmtpSender } from '@turbopanel/email/smtp-sender'
 import type { EmailJob, OtpType } from '../src/lib/email/types.ts'
@@ -172,9 +173,13 @@ lastAppliedRate = initialRate
 lastAppliedBurst = initialBurst
 
 function createSenderForProvider(provider: EmailProvider): MailerSender {
-  return provider === 'mailgun'
-    ? createMailerMailgunSender({ db, env: mailerEnv })
-    : createMailerSmtpSender({ db, env: mailerEnv })
+  if (provider === 'mailgun') {
+    return createMailerMailgunSender({ db, env: mailerEnv })
+  }
+  if (provider === 'mailpit') {
+    return createMailerMailpitSender({ db, env: mailerEnv })
+  }
+  return createMailerSmtpSender({ db, env: mailerEnv })
 }
 
 const senderHolder: { current: MailerSender } = {

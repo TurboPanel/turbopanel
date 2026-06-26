@@ -3,6 +3,7 @@ import {
   resolveWorkersEmailProvider,
 } from '../../settings/email-settings.ts'
 import type { Db } from '../../../db.ts'
+import { resolveMailpitApiBaseUrl, sendMailpitJob } from '../mailpit/send.ts'
 import { createNoopQueue } from '../noop-queue.ts'
 import type { EmailJob, EmailQueue } from '../types.ts'
 import { sendMailgunJob } from './send.ts'
@@ -38,12 +39,45 @@ export function createWorkersMailgunQueue(opts: WorkersMailgunQueueOptions): Ema
   return new WorkersMailgunQueue(opts)
 }
 
+type WorkersMailpitQueueOptions = {
+  apiBaseUrl: string
+  from: string
+}
+
+class WorkersMailpitQueue implements EmailQueue {
+  constructor(private readonly opts: WorkersMailpitQueueOptions) {}
+
+  async enqueue(job: EmailJob): Promise<void> {
+    const outcome = await sendMailpitJob(job, {
+      apiBaseUrl: this.opts.apiBaseUrl,
+      from: this.opts.from,
+    })
+    if (!outcome.ok) {
+      console.error('[TurboPanel email] Mailpit send failed', {
+        error: outcome.error,
+        permanent: outcome.permanent,
+      })
+      throw new Error(outcome.error)
+    }
+  }
+}
+
+export function createWorkersMailpitQueue(opts: WorkersMailpitQueueOptions): EmailQueue {
+  return new WorkersMailpitQueue(opts)
+}
+
 export async function resolveWorkersEmailQueue(
   db: Db | undefined,
   env: Record<string, string | undefined>,
 ): Promise<EmailQueue> {
   const resolved = await resolveEmailSettings(db, env)
   const workersProvider = resolveWorkersEmailProvider(resolved)
+  if (workersProvider === 'mailpit') {
+    return createWorkersMailpitQueue({
+      apiBaseUrl: resolveMailpitApiBaseUrl(env),
+      from: resolved.from,
+    })
+  }
   if (workersProvider !== 'mailgun') {
     return createNoopQueue()
   }
