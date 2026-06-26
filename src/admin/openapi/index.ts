@@ -17,6 +17,15 @@ export function getAdminOpenApiSpec(
       version: '0.1.0',
     },
     servers: [{ url: serverUrl }],
+    tags: [
+      { name: 'Instance', description: 'Control-plane instance configuration' },
+      { name: 'Settings', description: 'System settings (email, etc.)' },
+      { name: 'Daemon Fleet', description: 'Fleet-wide daemon management' },
+    ],
+    'x-tagGroups': [
+      { name: 'Instance', tags: ['Instance', 'Settings'] },
+      { name: 'Fleet', tags: ['Daemon Fleet'] },
+    ],
     components: {
       securitySchemes: {
         cookieAuth: {
@@ -124,6 +133,7 @@ export function getAdminOpenApiSpec(
     paths: {
       [`${ADMIN_API_PREFIX}/instance/public-urls`]: {
         get: {
+          tags: ['Instance'],
           summary: 'List configured public URLs',
           security: [...cookieSecurity],
           responses: {
@@ -140,6 +150,7 @@ export function getAdminOpenApiSpec(
           },
         },
         put: {
+          tags: ['Instance'],
           summary: 'Persist public URL entries',
           security: [...cookieSecurity],
           requestBody: {
@@ -175,6 +186,7 @@ export function getAdminOpenApiSpec(
       },
       [`${ADMIN_API_PREFIX}/settings/email`]: {
         get: {
+          tags: ['Settings'],
           summary: 'Read resolved email settings',
           security: [...cookieSecurity],
           responses: {
@@ -192,6 +204,7 @@ export function getAdminOpenApiSpec(
           },
         },
         put: {
+          tags: ['Settings'],
           summary: 'Persist email settings to the database',
           description:
             'Env-overridden keys are accepted but ignored. Secret values from env are never returned. ' +
@@ -223,6 +236,7 @@ export function getAdminOpenApiSpec(
       },
       [`${ADMIN_API_PREFIX}/instance/public-urls/apply`]: {
         post: {
+          tags: ['Instance'],
           summary: 'Apply public URLs to co-located daemon (cert regen + Caddy reload)',
           description:
             'Deno only. Sends a public-urls-update WS message to the co-located daemon. ' +
@@ -282,6 +296,7 @@ export function getAdminOpenApiSpec(
       },
       [`${ADMIN_API_PREFIX}/daemon/connections`]: {
         get: {
+          tags: ['Daemon Fleet'],
           summary: 'List connected daemons',
           security: [...cookieSecurity],
           responses: {
@@ -293,6 +308,7 @@ export function getAdminOpenApiSpec(
       },
       [`${ADMIN_API_PREFIX}/daemon/events`]: {
         get: {
+          tags: ['Daemon Fleet'],
           summary: 'Collect recent daemon events across the fleet',
           security: [...cookieSecurity],
           parameters: [
@@ -311,6 +327,7 @@ export function getAdminOpenApiSpec(
       },
       [`${ADMIN_API_PREFIX}/daemon/commands`]: {
         get: {
+          tags: ['Daemon Fleet'],
           summary: 'Collect recent daemon commands across the fleet',
           security: [...cookieSecurity],
           parameters: [
@@ -329,6 +346,7 @@ export function getAdminOpenApiSpec(
       },
       [`${ADMIN_API_PREFIX}/daemon/broadcast`]: {
         post: {
+          tags: ['Daemon Fleet'],
           summary: 'Broadcast a payload to all connected daemons',
           security: [...cookieSecurity],
           responses: {
@@ -342,6 +360,7 @@ export function getAdminOpenApiSpec(
         ? {
           [`${ADMIN_API_PREFIX}/daemon/command`]: {
             post: {
+              tags: ['Daemon Fleet'],
               summary: 'Run a shell command on all connected daemons (dev superadmin only)',
               security: [...cookieSecurity],
               responses: {
@@ -355,6 +374,7 @@ export function getAdminOpenApiSpec(
         : {}),
       [`${ADMIN_API_PREFIX}/instance/addresses`]: {
         get: {
+          tags: ['Instance'],
           summary: 'Collect instance network addresses',
           description: 'Deno only. Workers returns 422 with an empty address payload.',
           security: [...cookieSecurity],
@@ -368,6 +388,7 @@ export function getAdminOpenApiSpec(
       },
       [`${ADMIN_API_PREFIX}/daemon/addresses`]: {
         get: {
+          tags: ['Daemon Fleet'],
           summary: 'Collect network addresses from all connected daemons',
           security: [...cookieSecurity],
           responses: {

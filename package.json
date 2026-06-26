@@ -11,6 +11,7 @@
     "deploy:workers": "pnpm run deploy",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
     "generate:secret": "node scripts/generate-secret.mjs",
+    "generate": "drizzle-kit generate --config drizzle.config.mjs",
     "migrate": "drizzle-kit migrate --config drizzle.config.mjs",
     "test:do": "vitest run --config vitest.config.ts"
   },

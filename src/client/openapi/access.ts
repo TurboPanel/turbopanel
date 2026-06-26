@@ -36,7 +36,7 @@ export const accessSchemas = {
       organizationId: {
         type: 'string',
         description:
-          'Organization joined by the invitation. The active session organizationId is updated to this value.',
+          'Organization joined by the invitation. The client should navigate to this organization explicitly after accept.',
       },
     },
   },
@@ -144,10 +144,10 @@ export const accessSchemas = {
 export const accessPaths: Record<string, unknown> = {
   '/api/client/v1/invitations/{id}/accept': {
     post: {
-      tags: ['client'],
+      tags: ['Authorization'],
       summary: 'Accept an organization invitation',
       description:
-        'Atomically claims a pending invitation, creates org membership (and optional team membership), materializes the invitation\'s `grants` JSON into user-scoped grant rows, and updates the active session `organizationId`. When `grants` is null, a default `organization:manage` grant on the organization is applied. Grant targets must be organization or team entities with compatible permission keys.',
+        'Atomically claims a pending invitation, creates org membership (and optional team membership), materializes the invitation\'s `grants` JSON into user-scoped grant rows, and returns the accepted organization id. When `grants` is null, a default `organization:manage` grant on the organization is applied. Grant targets must be organization or team entities with compatible permission keys.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -243,7 +243,7 @@ export const accessPaths: Record<string, unknown> = {
   },
   '/api/client/v1/permissions': {
     get: {
-      tags: ['client'],
+      tags: ['Authorization'],
       summary: 'List authorization permissions',
       security: [{ cookieAuth: [] }],
       responses: {
@@ -272,7 +272,7 @@ export const accessPaths: Record<string, unknown> = {
   },
   '/api/client/v1/access/check': {
     get: {
-      tags: ['client'],
+      tags: ['Authorization'],
       summary: 'Check a permission for the signed-in user',
       security: [{ cookieAuth: [] }],
       parameters: [
@@ -355,7 +355,7 @@ export const accessPaths: Record<string, unknown> = {
   },
   '/api/client/v1/access/resource-id': {
     get: {
-      tags: ['client'],
+      tags: ['Authorization'],
       summary: 'Resolve a resource id for an organization or team entity',
       description:
         'Maps a grant-target kind and item id to the resourceId used by other access endpoints. Only `organization` and `team` kinds are supported.',
@@ -452,7 +452,7 @@ export const accessPaths: Record<string, unknown> = {
   },
   '/api/client/v1/access': {
     get: {
-      tags: ['client'],
+      tags: ['Authorization'],
       summary: 'List access grants for an organization or team resource',
       description:
         'Requires `organization:own` on the resource (checked via `getAccessManagementPermission`). Only organization and team entities may hold grants.',
@@ -533,7 +533,7 @@ export const accessPaths: Record<string, unknown> = {
       },
     },
     post: {
-      tags: ['client'],
+      tags: ['Authorization'],
       summary: 'Create an access grant on an organization or team',
       description:
         'Requires `organization:own` on the target resource (checked via `getAccessManagementPermission`). The resourceId must resolve to an organization or team entity; permission keys must match the entity kind.',
@@ -627,7 +627,7 @@ export const accessPaths: Record<string, unknown> = {
   },
   '/api/client/v1/access/{id}': {
     delete: {
-      tags: ['client'],
+      tags: ['Authorization'],
       summary: 'Revoke an access grant',
       description:
         'Requires `organization:own` on the grant\'s target resource (checked via `getAccessManagementPermission`).',

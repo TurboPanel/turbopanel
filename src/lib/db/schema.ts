@@ -135,87 +135,172 @@ export const network = pgTable("network", {
 		name: "network_server_id_server_id_fk",
 	}).onDelete("cascade"),
 ]);
-export const workspace = pgTable("workspace", {
-	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
-	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	displayName: varchar("display_name", { length: 255 }),
-	description: varchar("description", { length: 255 }),
-	organizationId: uuid("organization_id").notNull(),
-}, (table) => [
-	unique("workspace_id_org_unique").on(table.id, table.organizationId),
-	index("idx_workspace_organization_id").using("btree", table.organizationId.asc().nullsLast().op("uuid_ops")),
-	foreignKey({
-			columns: [table.organizationId],
-			foreignColumns: [organization.id],
-			name: "workspace_organization_id_organization_id_fk"
-		}).onDelete("cascade"),
-	check("workspace_display_name_format_check", sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`),
-]);
-export const project = pgTable("project", {
-	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
-	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	displayName: varchar("display_name", { length: 255 }),
-	description: varchar("description", { length: 255 }),
-	workspaceId: uuid("workspace_id").notNull(),
-}, (table) => [
-	index("idx_project_workspace_id").using("btree", table.workspaceId.asc().nullsLast().op("uuid_ops")),
-	foreignKey({
-			columns: [table.workspaceId],
-			foreignColumns: [workspace.id],
-			name: "project_workspace_id_workspace_id_fk"
-		}).onDelete("cascade"),
-	check("project_display_name_format_check", sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`),
-]);
-export const environment = pgTable("environment", {
-	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
-	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	displayName: varchar("display_name", { length: 255 }),
-	description: varchar("description", { length: 255 }),
-	projectId: uuid("project_id").notNull(),
-}, (table) => [
-	index("idx_environment_project_id").using("btree", table.projectId.asc().nullsLast().op("uuid_ops")),
-	foreignKey({
-			columns: [table.projectId],
-			foreignColumns: [project.id],
-			name: "environment_project_id_project_id_fk"
-		}).onDelete("cascade"),
-	check("environment_display_name_format_check", sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`),
-]);
-export const service = pgTable("service", {
-	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
-	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	displayName: varchar("display_name", { length: 255 }),
-	description: varchar("description", { length: 255 }),
-	environmentId: uuid("environment_id").notNull(),
-}, (table) => [
-	index("idx_service_environment_id").using("btree", table.environmentId.asc().nullsLast().op("uuid_ops")),
-	foreignKey({
-			columns: [table.environmentId],
-			foreignColumns: [environment.id],
-			name: "service_environment_id_environment_id_fk"
-		}).onDelete("cascade"),
-	check("service_display_name_format_check", sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`),
-]);
-export const hosting = pgTable("hosting", {
-	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
-	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	displayName: varchar("display_name", { length: 255 }),
-	description: varchar("description", { length: 255 }),
-	serviceId: uuid("service_id").notNull(),
-}, (table) => [
-	index("idx_hosting_service_id").using("btree", table.serviceId.asc().nullsLast().op("uuid_ops")),
-	foreignKey({
-			columns: [table.serviceId],
-			foreignColumns: [service.id],
-			name: "hosting_service_id_service_id_fk"
-		}).onDelete("cascade"),
-	check("hosting_display_name_format_check", sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`),
-]);
+export const workspace = pgTable(
+  'workspace',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    organizationId: uuid('organization_id').notNull(),
+    displayName: varchar('display_name', { length: 255 }),
+    description: varchar('description', { length: 255 }),
+  },
+  (table) => [
+    unique('workspace_id_org_unique').on(table.id, table.organizationId),
+    index('idx_workspace_organization_id').using(
+      'btree',
+      table.organizationId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'workspace_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    check(
+      'workspace_display_name_format_check',
+      sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+    ),
+  ]
+)
+export const project = pgTable(
+  'project',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    workspaceId: uuid('workspace_id').notNull(),
+    displayName: varchar('display_name', { length: 255 }),
+    description: varchar('description', { length: 255 }),
+  },
+  (table) => [
+    index('idx_project_workspace_id').using(
+      'btree',
+      table.workspaceId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.workspaceId],
+      foreignColumns: [workspace.id],
+      name: 'project_workspace_id_workspace_id_fk',
+    }).onDelete('cascade'),
+    check(
+      'project_display_name_format_check',
+      sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+    ),
+  ]
+)
+export const environment = pgTable(
+  'environment',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    projectId: uuid('project_id').notNull(),
+    displayName: varchar('display_name', { length: 255 }),
+    description: varchar('description', { length: 255 }),
+  },
+  (table) => [
+    index('idx_environment_project_id').using(
+      'btree',
+      table.projectId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.projectId],
+      foreignColumns: [project.id],
+      name: 'environment_project_id_project_id_fk',
+    }).onDelete('cascade'),
+    check(
+      'environment_display_name_format_check',
+      sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+    ),
+  ]
+)
+export const service = pgTable(
+  'service',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    environmentId: uuid('environment_id').notNull(),
+    displayName: varchar('display_name', { length: 255 }),
+    description: varchar('description', { length: 255 }),
+  },
+  (table) => [
+    index('idx_service_environment_id').using(
+      'btree',
+      table.environmentId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.environmentId],
+      foreignColumns: [environment.id],
+      name: 'service_environment_id_environment_id_fk',
+    }).onDelete('cascade'),
+    check(
+      'service_display_name_format_check',
+      sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+    ),
+  ]
+)
+export const hosting = pgTable(
+  'hosting',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    serviceId: uuid('service_id').notNull(),
+    displayName: varchar('display_name', { length: 255 }),
+    description: varchar('description', { length: 255 }),
+  },
+  (table) => [
+    index('idx_hosting_service_id').using(
+      'btree',
+      table.serviceId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.serviceId],
+      foreignColumns: [service.id],
+      name: 'hosting_service_id_service_id_fk',
+    }).onDelete('cascade'),
+    check(
+      'hosting_display_name_format_check',
+      sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+    ),
+  ]
+)
 export const grant = pgTable("grant", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
 	entityType: text("entity_type").notNull(),
@@ -230,31 +315,39 @@ export const grant = pgTable("grant", {
 	index("idx_grant_entity").on(table.entityType, table.entityId),
 	index("idx_grant_subject").on(table.subjectType, table.subjectId),
 ]);
-export const session = pgTable("session", {
-	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
-	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	updatedAt: timestamp("updated_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-	expiresAt: timestamp("expires_at", { precision: 3, withTimezone: true, mode: 'string' }).notNull(),
-	userId: uuid("user_id").notNull(),
-	organizationId: uuid("organization_id"),
-	token: varchar({ length: 255 }).notNull(),
-	ipAddress: varchar("ip_address", { length: 45 }),
-	userAgent: text("user_agent"),
-}, (table) => [
-	index("idx_session_user_id").using("btree", table.userId.asc().nullsLast().op("uuid_ops")),
-	index("idx_session_organization_id").using("btree", table.organizationId.asc().nullsLast().op("uuid_ops")),
-	foreignKey({
-			columns: [table.userId],
-			foreignColumns: [user.id],
-			name: "session_user_id_user_id_fk"
-		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.organizationId],
-			foreignColumns: [organization.id],
-			name: "session_organization_id_organization_id_fk"
-		}).onDelete("set null"),
-	unique("session_token_unique").on(table.token),
-]);
+export const session = pgTable(
+  'session',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    expiresAt: timestamp('expires_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }).notNull(),
+    userId: uuid('user_id').notNull(),
+    token: varchar({ length: 255 }).notNull(),
+    ipAddress: varchar('ip_address', { length: 45 }),
+    userAgent: text('user_agent'),
+  },
+  (table) => [
+    index('idx_session_user_id').using('btree', table.userId.asc().nullsLast().op('uuid_ops')),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [user.id],
+      name: 'session_user_id_user_id_fk',
+    }).onDelete('cascade'),
+    unique('session_token_unique').on(table.token),
+  ]
+)
 export const setting = pgTable("setting", {
 	id: uuid().default(sql`uuidv7()`).primaryKey().notNull(),
 	createdAt: timestamp("created_at", { precision: 3, withTimezone: true, mode: 'string' }).defaultNow().notNull(),

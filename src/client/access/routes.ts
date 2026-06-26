@@ -8,7 +8,6 @@ import {
   resolveInvitationGrants,
 } from '../authn/invitation-grants.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { updateSessionOrganization } from '../authn/session-store.ts'
 import { getAccessManagementPermission } from '../authz/access-management.ts'
 import {
   mapEffectToAllowed,
@@ -36,6 +35,7 @@ import {
 import type { Db } from '../../db.ts'
 import { getDb } from '../../db.ts'
 import { grant, invitation, member, team, teammate } from '../../lib/db/schema.ts'
+import { getOrgId } from '../shared.ts'
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -175,12 +175,6 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Invitation expired or already used' }, 410)
     }
 
-    await updateSessionOrganization(
-      db,
-      session.sessionId,
-      result.organizationId,
-    )
-
     return c.json({ ok: true as const, organizationId: result.organizationId })
   })
 
@@ -261,10 +255,9 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const { organizationId } = session
-    if (!organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
 
     const entity = await resolveEntityByKindAndItemId(db, kind, itemId)
     if (!entity || entity.organizationId !== organizationId) {

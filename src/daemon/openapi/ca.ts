@@ -1,7 +1,7 @@
 export const caPaths: Record<string, unknown> = {
   "/api/daemon/v1/instance/ca": {
     get: {
-      tags: ["daemon"],
+      tags: ["Daemon"],
       summary: "Platform TLS CA certificate",
       description:
         "Returns the PEM-encoded platform CA for daemon trust stores.",

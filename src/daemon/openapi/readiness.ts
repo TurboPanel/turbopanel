@@ -11,7 +11,7 @@ export const readinessSchemas = {
 export const readinessPaths: Record<string, unknown> = {
   "/api/daemon/v1/readiness": {
     get: {
-      tags: ["daemon"],
+      tags: ["Daemon"],
       summary: "Install readiness probe",
       description:
         "Co-located self-hosted daemons poll this before opening the daemon WebSocket. " +

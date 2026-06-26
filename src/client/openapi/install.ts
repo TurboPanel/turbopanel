@@ -34,7 +34,7 @@ export const installOpenApiSchemas = {
 export const installOpenApiPaths: Record<string, unknown> = {
   '/api/install/v1/bootstrap': {
     post: {
-      tags: ['install'],
+      tags: ['Install'],
       summary: 'Verify host PAM credentials (install step 1)',
       description: 'Deno self-hosted only.',
       requestBody: {
@@ -91,7 +91,7 @@ export const installOpenApiPaths: Record<string, unknown> = {
   },
   '/api/install/v1/': {
     post: {
-      tags: ['install'],
+      tags: ['Install'],
       summary: 'Complete initial install (install step 2)',
       description:
         'Deno self-hosted only. Creates org, team, superadmin, and session. Requires host credentials as `username`/`password`.',
@@ -155,7 +155,7 @@ export const installOpenApiPaths: Record<string, unknown> = {
   },
   '/api/install/v1/daemon-install.sh': {
     get: {
-      tags: ['install'],
+      tags: ['Install'],
       summary: 'Daemon install script',
       description:
         'Returns a POSIX sh script for installing a managed daemon. ' +

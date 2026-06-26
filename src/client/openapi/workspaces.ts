@@ -49,6 +49,7 @@ export const workspaceSchemas = {
 export const workspacePaths = buildResourceCrudPaths({
   plural: 'workspaces',
   singular: 'workspace',
+  tag: 'Workspaces',
   listSchema: 'WorkspacesResponse',
   rowSchema: 'WorkspaceRow',
   createSchema: 'CreateWorkspaceRequest',

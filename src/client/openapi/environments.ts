@@ -36,6 +36,7 @@ export const environmentSchemas = {
 export const environmentPaths = buildResourceCrudPaths({
   plural: 'environments',
   singular: 'environment',
+  tag: 'Environments',
   listSchema: 'EnvironmentsResponse',
   rowSchema: 'EnvironmentRow',
   createSchema: 'CreateEnvironmentRequest',

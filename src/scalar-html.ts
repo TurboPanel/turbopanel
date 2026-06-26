@@ -41,9 +41,10 @@ export function buildDaemonScalarHtml(specUrl: string): string {
     layout: 'modern',
     pageTitle: 'TurboPanel Daemon API Reference',
     authentication: {
-      preferredSecurityScheme: 'licenseAuth',
-      http: {
-        bearer: {
+      preferredSecurityScheme: 'bearerAuth',
+      createAnySecurityScheme: false,
+      securitySchemes: {
+        bearerAuth: {
           token: '',
         },
       },

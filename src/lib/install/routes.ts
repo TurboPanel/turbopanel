@@ -159,7 +159,6 @@ async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
     const { token } = await createSession(db, result.userId, {
       ipAddress: c.req.header('X-Real-IP') ?? undefined,
       userAgent: c.req.header('User-Agent') ?? undefined,
-      organizationId: result.organizationId,
     })
     const sessionCookie = await buildSignedCookie(token, opts.secrets)
     const tls = resolveRequestTls(c.req.url, c.req.header('x-forwarded-proto'))

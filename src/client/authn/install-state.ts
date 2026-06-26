@@ -238,19 +238,6 @@ export async function getClientPublicStatus(
   return { ok: true, ...status }
 }
 
-export async function getUserOrganizationId(
-  db: Db,
-  userId: string,
-): Promise<string | null> {
-  const rows = await db
-    .select({ organizationId: member.organizationId })
-    .from(member)
-    .where(eq(member.userId, userId))
-    .limit(1)
-
-  return rows[0]?.organizationId ?? null
-}
-
 export function validateOrganizationName(name: string): string | null {
   const trimmed = name.trim()
   if (trimmed.length < 1 || trimmed.length > 255) {

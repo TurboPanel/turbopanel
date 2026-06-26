@@ -36,6 +36,7 @@ export const serviceSchemas = {
 export const servicePaths = buildResourceCrudPaths({
   plural: 'services',
   singular: 'service',
+  tag: 'Services',
   listSchema: 'ServicesResponse',
   rowSchema: 'ServiceRow',
   createSchema: 'CreateServiceRequest',

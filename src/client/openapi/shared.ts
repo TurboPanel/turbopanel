@@ -62,12 +62,18 @@ export type ResourceCrudConfig = {
   createSchema: string
   createBodyRequired?: boolean
   parentQuery?: { name: string; description: string }
+  tag?: string
+}
+
+function defaultResourceTag(plural: string): string {
+  return plural.charAt(0).toUpperCase() + plural.slice(1)
 }
 
 export function buildResourceCrudPaths(config: ResourceCrudConfig): Record<string, unknown> {
   const base = `/api/client/v1/${config.plural}`
   const idPath = `${base}/{id}`
   const security = [{ cookieAuth: [] }]
+  const tag = config.tag ?? defaultResourceTag(config.plural)
   const singleEntitySchema = {
     type: 'object',
     required: [config.singular],
@@ -77,7 +83,7 @@ export function buildResourceCrudPaths(config: ResourceCrudConfig): Record<strin
   }
 
   const listGet: Record<string, unknown> = {
-    tags: ['resources'],
+    tags: [tag],
     summary: `List ${config.plural}`,
     security,
     responses: {
@@ -109,7 +115,7 @@ export function buildResourceCrudPaths(config: ResourceCrudConfig): Record<strin
     [base]: {
       get: listGet,
       post: {
-        tags: ['resources'],
+        tags: [tag],
         summary: `Create ${config.singular}`,
         security,
         requestBody: {
@@ -135,7 +141,7 @@ export function buildResourceCrudPaths(config: ResourceCrudConfig): Record<strin
     },
     [idPath]: {
       get: {
-        tags: ['resources'],
+        tags: [tag],
         summary: `Get ${config.singular}`,
         security,
         parameters: [
@@ -152,7 +158,7 @@ export function buildResourceCrudPaths(config: ResourceCrudConfig): Record<strin
         },
       },
       patch: {
-        tags: ['resources'],
+        tags: [tag],
         summary: `Update ${config.singular}`,
         security,
         parameters: [
@@ -179,7 +185,7 @@ export function buildResourceCrudPaths(config: ResourceCrudConfig): Record<strin
         },
       },
       delete: {
-        tags: ['resources'],
+        tags: [tag],
         summary: `Delete ${config.singular}`,
         security,
         parameters: [

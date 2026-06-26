@@ -1,18 +1,14 @@
 import type { Context } from 'hono'
 import { getDb } from '../db.ts'
 import { can } from './authz/index.ts'
-import type { SessionData } from './authn/middleware.ts'
+import { resolveOrgId } from './org-context.ts'
 
 export const DISPLAY_NAME_RE = /^[A-Za-z0-9 ._-]+$/
 
 export class BadRequestError extends Error {}
 
-export function getOrgId(c: Context, session: SessionData): string | Response {
-  const { organizationId } = session
-  if (!organizationId) {
-    return c.json({ error: 'No organization' }, 400)
-  }
-  return organizationId
+export async function getOrgId(c: Context, userId: string): Promise<string | Response> {
+  return resolveOrgId(c, userId)
 }
 
 export function parseDisplayName(body: Record<string, unknown>): string | null {

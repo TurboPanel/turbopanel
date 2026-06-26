@@ -36,6 +36,7 @@ export const projectSchemas = {
 export const projectPaths = buildResourceCrudPaths({
   plural: 'projects',
   singular: 'project',
+  tag: 'Projects',
   listSchema: 'ProjectsResponse',
   rowSchema: 'ProjectRow',
   createSchema: 'CreateProjectRequest',

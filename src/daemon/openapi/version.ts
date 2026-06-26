@@ -19,7 +19,7 @@ export const versionSchemas = {
 export const versionPaths: Record<string, unknown> = {
   "/api/daemon/v1/version": {
     get: {
-      tags: ["daemon"],
+      tags: ["Daemon"],
       summary: "Co-located daemon checkout version",
       description:
         "Informational daemon repo commit and branch on this host (Deno self-hosted only). " +

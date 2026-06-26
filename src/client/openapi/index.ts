@@ -7,6 +7,7 @@ import { hostingPaths, hostingSchemas } from './hostings.ts'
 import { installOpenApiPaths, installOpenApiSchemas } from './install.ts'
 import { networkPaths, networkSchemas } from './networks.ts'
 import { buildLicensePaths, buildLicenseSchemas } from './licenses.ts'
+import { organizationPaths, organizationSchemas } from './organizations.ts'
 import { projectPaths, projectSchemas } from './projects.ts'
 import { serverPaths, serverSchemas } from './servers.ts'
 import { servicePaths, serviceSchemas } from './services.ts'
@@ -34,6 +35,34 @@ export function getClientOpenApiSpec(
       version: '0.1.0',
     },
     servers: [{ url: serverUrl }],
+    tags: [
+      { name: 'Health', description: 'Liveness and status probes' },
+      {
+        name: 'Authentication',
+        description: 'Sign-in, sign-up, OTP, and password reset flows',
+      },
+      {
+        name: 'Authorization',
+        description: 'Session, organizations, access grants, and permission catalog',
+      },
+      { name: 'Workspaces', description: 'Workspace CRUD' },
+      { name: 'Projects', description: 'Project CRUD' },
+      { name: 'Environments', description: 'Environment CRUD' },
+      { name: 'Services', description: 'Service CRUD' },
+      { name: 'Hostings', description: 'Hosting CRUD' },
+      { name: 'Servers', description: 'Server fleet and update management' },
+      { name: 'Networks', description: 'Server network management' },
+      { name: 'Licenses', description: 'License lifecycle' },
+      ...(includeInstall
+        ? [{ name: 'Install', description: 'Self-hosted install wizard (Deno only)' }]
+        : []),
+    ],
+    'x-tagGroups': [
+      { name: 'Authentication & Authorization', tags: ['Authentication', 'Authorization'] },
+      { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Services', 'Hostings'] },
+      { name: 'Infrastructure', tags: ['Servers', 'Networks', 'Licenses'] },
+      { name: 'Platform', tags: ['Health', ...(includeInstall ? ['Install'] : [])] },
+    ],
     components: {
       securitySchemes: {
         cookieAuth: {
@@ -49,6 +78,7 @@ export function getClientOpenApiSpec(
         ...networkSchemas,
         ...buildLicenseSchemas(installCommandDescription),
         ...accessSchemas,
+        ...organizationSchemas,
         ...workspaceSchemas,
         ...environmentSchemas,
         ...projectSchemas,
@@ -63,6 +93,7 @@ export function getClientOpenApiSpec(
       ...networkPaths,
       ...buildLicensePaths(installCommandDescription),
       ...accessPaths,
+      ...organizationPaths,
       ...workspacePaths,
       ...environmentPaths,
       ...projectPaths,

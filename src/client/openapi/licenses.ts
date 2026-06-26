@@ -64,7 +64,7 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
   return {
     '/api/client/v1/licenses': {
       get: {
-        tags: ['client'],
+        tags: ['Licenses'],
         summary: 'List active licenses for org',
         security: [{ cookieAuth: [] }],
         responses: {
@@ -103,7 +103,7 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
         },
       },
       post: {
-        tags: ['client'],
+        tags: ['Licenses'],
         summary: 'Create a license',
         security: [{ cookieAuth: [] }],
         requestBody: {
@@ -164,7 +164,7 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
     },
     '/api/client/v1/licenses/{id}': {
       delete: {
-        tags: ['client'],
+        tags: ['Licenses'],
         summary: 'Revoke a license',
         security: [{ cookieAuth: [] }],
         parameters: [

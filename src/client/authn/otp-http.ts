@@ -14,7 +14,6 @@ import {
   type VerifyEmailOtpResult,
 } from './email-otp.ts'
 import {
-  getUserOrganizationId,
   isInstanceInstalled,
   isSignupEnabled,
   validateSuperadminEmail,
@@ -296,7 +295,6 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
     const { token } = await createSession(db, userId, {
       ipAddress: c.req.header('X-Real-IP') ?? undefined,
       userAgent: c.req.header('User-Agent') ?? undefined,
-      organizationId: await getUserOrganizationId(db, userId),
     })
     const cookieValue = await buildSignedCookie(token, opts.secrets)
     const tls = requestTls(c)

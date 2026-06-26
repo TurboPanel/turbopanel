@@ -1,7 +1,7 @@
 export const websocketPaths: Record<string, unknown> = {
   "/ws/daemon/v1": {
     get: {
-      tags: ["daemon"],
+      tags: ["Daemon"],
       summary: "Daemon WebSocket",
       description:
         "WebSocket upgrade endpoint for managed daemons. Authenticate by passing a valid " +

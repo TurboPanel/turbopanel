@@ -18,6 +18,7 @@ import {
   workspace,
 } from '../../lib/db/schema.ts'
 import { registerAccessRoutes } from './routes.ts'
+import { ORG_ID_HEADER } from '../org-context.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -39,11 +40,20 @@ async function sessionCookie(
   db: ReturnType<typeof createDenoDb>,
   secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>,
   userId: string,
-  organizationId: string,
 ): Promise<string> {
-  const { token } = await createSession(db, userId, { organizationId })
+  const { token } = await createSession(db, userId, {})
   const signed = await buildSignedCookie(token, secrets)
   return `${HTTP_SESSION_COOKIE_NAME}=${signed}`
+}
+
+function orgRequestHeaders(
+  cookie: string,
+  organizationId: string,
+): Record<string, string> {
+  return {
+    Cookie: cookie,
+    [ORG_ID_HEADER]: organizationId,
+  }
 }
 
 async function withTestFixtures(
@@ -145,10 +155,10 @@ Deno.test('DELETE /access/:id rejects revoking the sole organization owner', asy
       })
       .returning({ id: grant.id })
 
-    const cookie = await sessionCookie(db, secrets, actorId, organizationId)
+    const cookie = await sessionCookie(db, secrets, actorId)
     const res = await app.request(`/access/${soleOwnerGrant!.id}`, {
       method: 'DELETE',
-      headers: { Cookie: cookie },
+      headers: orgRequestHeaders(cookie, organizationId),
     })
 
     if (res.status !== 409) {
@@ -180,10 +190,10 @@ Deno.test('DELETE /access/:id allows revoking a non-final organization owner', a
       })
       .returning({ id: grant.id })
 
-    const cookie = await sessionCookie(db, secrets, actorId, organizationId)
+    const cookie = await sessionCookie(db, secrets, actorId)
     const res = await app.request(`/access/${targetGrant!.id}`, {
       method: 'DELETE',
-      headers: { Cookie: cookie },
+      headers: orgRequestHeaders(cookie, organizationId),
     })
 
     if (res.status !== 200) {
@@ -215,10 +225,10 @@ Deno.test('DELETE /access/:id rejects revoking the sole team owner', async () =>
       })
       .returning({ id: grant.id })
 
-    const cookie = await sessionCookie(db, secrets, actorId, organizationId)
+    const cookie = await sessionCookie(db, secrets, actorId)
     const res = await app.request(`/access/${teamOwnerGrant!.id}`, {
       method: 'DELETE',
-      headers: { Cookie: cookie },
+      headers: orgRequestHeaders(cookie, organizationId),
     })
 
     if (res.status !== 409) {
@@ -238,10 +248,10 @@ Deno.test('GET /access/check honors team-scoped grants without org grants', asyn
       allow: true,
     })
 
-    const cookie = await sessionCookie(db, secrets, targetId, organizationId)
+    const cookie = await sessionCookie(db, secrets, targetId)
     const res = await app.request(
       `/access/check?resourceId=${teamId}&permissionKey=team:manage`,
-      { headers: { Cookie: cookie } },
+      { headers: orgRequestHeaders(cookie, organizationId) },
     )
 
     if (res.status !== 200) {
@@ -274,11 +284,11 @@ Deno.test('POST /access rejects organization permission on workspace entity', as
       allow: true,
     })
 
-    const cookie = await sessionCookie(db, secrets, actorId, organizationId)
+    const cookie = await sessionCookie(db, secrets, actorId)
     const res = await app.request('/access', {
       method: 'POST',
       headers: {
-        Cookie: cookie,
+        ...orgRequestHeaders(cookie, organizationId),
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -305,10 +315,10 @@ Deno.test('GET /access/resource-id rejects unsupported workspace kind', async ()
     organizationId,
     workspaceId,
   }) => {
-    const cookie = await sessionCookie(db, secrets, actorId, organizationId)
+    const cookie = await sessionCookie(db, secrets, actorId)
     const res = await app.request(
       `/access/resource-id?kind=workspace&itemId=${workspaceId}`,
-      { headers: { Cookie: cookie } },
+      { headers: orgRequestHeaders(cookie, organizationId) },
     )
 
     if (res.status !== 404) {
@@ -331,10 +341,10 @@ Deno.test('GET /access/resource-id allows admin session for team kind', async ()
     try {
       await db.insert(member).values({ organizationId, userId: adminId })
 
-      const cookie = await sessionCookie(db, secrets, adminId, organizationId)
+      const cookie = await sessionCookie(db, secrets, adminId)
       const res = await app.request(
         `/access/resource-id?kind=team&itemId=${teamId}`,
-        { headers: { Cookie: cookie } },
+        { headers: orgRequestHeaders(cookie, organizationId) },
       )
 
       if (res.status !== 200) {

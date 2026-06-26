@@ -11,7 +11,6 @@ import {
 import { PAM_ROOT_USERNAME, verifyCredentials } from './credentials.ts'
 import {
   createOrganizationForUser,
-  getUserOrganizationId,
   isInstanceInstalled,
   isSignupEnabled,
   type SignupEnvOverride,
@@ -55,7 +54,6 @@ export type SessionResponse = {
   role: string | null
   /** Deno self-hosted only — omitted on Workers (no install wizard). */
   needsInstall?: boolean
-  organizationId: string | null
 }
 
 function readSessionCookie(c: Context): string | null {
@@ -157,7 +155,6 @@ export async function buildSessionResponse(
     username: string | null
     email: string
     role: string
-    organizationId: string | null
   },
 ): Promise<SessionResponse> {
   const base: SessionResponse = {
@@ -166,7 +163,6 @@ export async function buildSessionResponse(
     username: sessionData.username,
     email: sessionData.email,
     role: sessionData.role,
-    organizationId: sessionData.organizationId,
   }
 
   if (db === undefined) {
@@ -175,10 +171,7 @@ export async function buildSessionResponse(
 
   if (runtime === 'deno') {
     const needsInstall = !(await isInstanceInstalled(db))
-    if (needsInstall) {
-      return { ...base, needsInstall: true, organizationId: null }
-    }
-    return { ...base, needsInstall: false, organizationId: sessionData.organizationId }
+    return { ...base, needsInstall }
   }
 
   return base
@@ -250,9 +243,6 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
     const { token } = await createSession(db, result.userId, {
       ipAddress: c.req.header('X-Real-IP') ?? undefined,
       userAgent: c.req.header('User-Agent') ?? undefined,
-      organizationId: db
-        ? await getUserOrganizationId(db, result.userId)
-        : null,
     })
     const cookieValue = await buildSignedCookie(token, opts.secrets)
     const tls = requestTls(c)

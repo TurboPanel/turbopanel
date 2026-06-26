@@ -17,6 +17,7 @@ import {
   parseInstallBaseUrl,
   resolvePublicBaseUrl,
 } from '../../lib/resolve-public-base-url.ts'
+import { getOrgId } from '../shared.ts'
 
 async function assertBillingOrOrgMember(
   c: Context,
@@ -36,10 +37,9 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
     const session = c.get('session')
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const { organizationId } = session
-    if (!organizationId) {
-      return c.json({ licenses: [] })
-    }
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
 
     const denied = await assertBillingOrOrgMember(c, organizationId)
     if (denied) return denied
@@ -99,10 +99,9 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
       }
     }
 
-    const { organizationId } = session
-    if (!organizationId) {
-      return c.json({ error: 'No organization' }, 400)
-    }
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
 
     const denied = await assertBillingOrOrgMember(c, organizationId)
     if (denied) return denied
@@ -148,10 +147,9 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
     const session = c.get('session')
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const { organizationId } = session
-    if (!organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
 
     const denied = await assertBillingOrOrgMember(c, organizationId)
     if (denied) return denied

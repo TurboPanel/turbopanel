@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { listVisible } from '../authz/index.ts'
-import { assertCanManageOr403, assertCanReadOr403 } from '../shared.ts'
+import { assertCanManageOr403, assertCanReadOr403, getOrgId } from '../shared.ts'
 import { getDb, getDaemonCellRegistry } from '../../db.ts'
 import {
   fetchDaemonServerCell,
@@ -31,10 +31,9 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
     const session = c.get('session')
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const { organizationId } = session
-    if (!organizationId) {
-      return c.json({ servers: [] })
-    }
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
 
     const visibleIds = await listVisible(db, {
       kind: 'server',

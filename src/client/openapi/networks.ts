@@ -38,7 +38,7 @@ export const networkSchemas = {
 export const networkPaths: Record<string, unknown> = {
   '/api/client/v1/networks': {
     get: {
-      tags: ['client'],
+      tags: ['Networks'],
       summary: 'List networks for a server',
       security: [{ cookieAuth: [] }],
       parameters: [
@@ -109,7 +109,7 @@ export const networkPaths: Record<string, unknown> = {
       },
     },
     post: {
-      tags: ['client'],
+      tags: ['Networks'],
       summary: 'Create a network for a server',
       security: [{ cookieAuth: [] }],
       requestBody: {
@@ -182,7 +182,7 @@ export const networkPaths: Record<string, unknown> = {
   },
   '/api/client/v1/networks/{id}': {
     delete: {
-      tags: ['client'],
+      tags: ['Networks'],
       summary: 'Delete a network',
       security: [{ cookieAuth: [] }],
       parameters: [

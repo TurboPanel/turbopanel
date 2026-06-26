@@ -37,6 +37,7 @@ export const hostingSchemas = {
 export const hostingPaths = buildResourceCrudPaths({
   plural: 'hostings',
   singular: 'hosting',
+  tag: 'Hostings',
   listSchema: 'HostingsResponse',
   rowSchema: 'HostingRow',
   createSchema: 'CreateHostingRequest',

@@ -45,7 +45,6 @@ const denoSessionResponseSchema = {
     'email',
     'role',
     'needsInstall',
-    'organizationId',
   ],
   properties: {
     ok: { type: 'boolean', const: true },
@@ -54,13 +53,12 @@ const denoSessionResponseSchema = {
     email: { type: ['string', 'null'] },
     role: { type: ['string', 'null'] },
     needsInstall: { type: 'boolean' },
-    organizationId: { type: ['string', 'null'] },
   },
 } as const
 
 const workersSessionResponseSchema = {
   type: 'object',
-  required: ['ok', 'userId', 'username', 'email', 'role', 'organizationId'],
+  required: ['ok', 'userId', 'username', 'email', 'role'],
   description:
     'Session payload on Workers. needsInstall is omitted — Workers has no install wizard.',
   properties: {
@@ -69,7 +67,6 @@ const workersSessionResponseSchema = {
     username: { type: ['string', 'null'] },
     email: { type: ['string', 'null'] },
     role: { type: ['string', 'null'] },
-    organizationId: { type: ['string', 'null'] },
   },
 } as const
 
@@ -206,7 +203,7 @@ export function buildAuthSchemas(runtime?: 'deno' | 'workers') {
 export const authPaths: Record<string, unknown> = {
   '/api/health': {
     get: {
-      tags: ['health'],
+      tags: ['Health'],
       summary: 'Health probe',
       responses: {
         '200': {
@@ -222,7 +219,7 @@ export const authPaths: Record<string, unknown> = {
   },
   '/api/client/v1/status': {
     get: {
-      tags: ['client'],
+      tags: ['Health'],
       summary: 'Public client status',
       description:
         'Install and sign-up flags for the client UI. Replaces the former GET /api/install/v1/status for client callers.',
@@ -248,7 +245,7 @@ export const authPaths: Record<string, unknown> = {
   },
   '/api/client/v1/auth/sign-in': {
     post: {
-      tags: ['auth'],
+      tags: ['Authentication'],
       summary: 'Sign in with email credentials',
       requestBody: {
         required: true,
@@ -302,7 +299,7 @@ export const authPaths: Record<string, unknown> = {
   },
   '/api/client/v1/auth/sign-out': {
     post: {
-      tags: ['auth'],
+      tags: ['Authentication'],
       summary: 'Sign out and clear session cookie',
       security: [{ cookieAuth: [] }],
       responses: {
@@ -325,7 +322,7 @@ export const authPaths: Record<string, unknown> = {
   },
   '/api/client/v1/authn/session': {
     get: {
-      tags: ['auth'],
+      tags: ['Authorization'],
       summary: 'Get current session',
       security: [{ cookieAuth: [] }],
       responses: {
@@ -350,7 +347,7 @@ export const authPaths: Record<string, unknown> = {
   },
   '/api/client/v1/auth/sign-up': {
     post: {
-      tags: ['auth'],
+      tags: ['Authentication'],
       summary: 'Create a user account when sign-up is enabled',
       description:
         'Creates a regular user account when sign-up is enabled (`IS_SIGNUP_ENABLED` in DB or `TURBOPANEL_IS_SIGNUP_ENABLED` env override). On Deno self-hosted, the install wizard must complete first. On Workers, sign-up is the first-user bootstrap path. No session is returned — the user must sign in after verifying email.',
@@ -417,7 +414,7 @@ export const authPaths: Record<string, unknown> = {
   },
   '/api/client/v1/auth/verify-email': {
     get: {
-      tags: ['auth'],
+      tags: ['Authentication'],
       summary: 'Verify email with a one-time token',
       description:
         'Consumes a 24-hour email verification token and sets `user.isEmailVerified` to true.',
@@ -460,7 +457,7 @@ export const authPaths: Record<string, unknown> = {
   },
   '/api/client/v1/auth/send-otp': {
     post: {
-      tags: ['auth'],
+      tags: ['Authentication'],
       summary: 'Send an OTP to an email address',
       description:
         'Generates a short-lived OTP and queues an email. Never reveals whether the email is registered. `email-verification` requires an active session.',
@@ -510,7 +507,7 @@ export const authPaths: Record<string, unknown> = {
   },
   '/api/client/v1/auth/verify-otp': {
     post: {
-      tags: ['auth'],
+      tags: ['Authentication'],
       summary: 'Check OTP validity (optional step)',
       description:
         'Validates an OTP without consuming it. Failed attempts count toward the per-OTP attempt limit.',
@@ -560,7 +557,7 @@ export const authPaths: Record<string, unknown> = {
   },
   '/api/client/v1/auth/sign-in/otp': {
     post: {
-      tags: ['auth'],
+      tags: ['Authentication'],
       summary: 'Sign in (or auto-register) with OTP',
       requestBody: {
         required: true,
@@ -623,7 +620,7 @@ export const authPaths: Record<string, unknown> = {
   },
   '/api/client/v1/auth/verify-email/otp': {
     post: {
-      tags: ['auth'],
+      tags: ['Authentication'],
       summary: 'Verify email address with OTP',
       security: [{ cookieAuth: [] }],
       requestBody: {
@@ -680,7 +677,7 @@ export const authPaths: Record<string, unknown> = {
   },
   '/api/client/v1/auth/reset-password/request-otp': {
     post: {
-      tags: ['auth'],
+      tags: ['Authentication'],
       summary: 'Request a password-reset OTP',
       requestBody: {
         required: true,
@@ -720,7 +717,7 @@ export const authPaths: Record<string, unknown> = {
   },
   '/api/client/v1/auth/reset-password/otp': {
     post: {
-      tags: ['auth'],
+      tags: ['Authentication'],
       summary: 'Reset password using OTP',
       requestBody: {
         required: true,

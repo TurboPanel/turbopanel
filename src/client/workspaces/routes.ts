@@ -26,7 +26,7 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
     const session = c.get('session')
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = getOrgId(c, session)
+    const orgResult = await getOrgId(c, session.userId)
     if (orgResult instanceof Response) return orgResult
     const organizationId = orgResult
 
@@ -63,7 +63,7 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
     const session = c.get('session')
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = getOrgId(c, session)
+    const orgResult = await getOrgId(c, session.userId)
     if (orgResult instanceof Response) return orgResult
     const organizationId = orgResult
 
@@ -99,7 +99,7 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
     const session = c.get('session')
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = getOrgId(c, session)
+    const orgResult = await getOrgId(c, session.userId)
     if (orgResult instanceof Response) return orgResult
     const organizationId = orgResult
 
@@ -136,7 +136,7 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
     const session = c.get('session')
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = getOrgId(c, session)
+    const orgResult = await getOrgId(c, session.userId)
     if (orgResult instanceof Response) return orgResult
     const organizationId = orgResult
 
@@ -180,7 +180,7 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
     const session = c.get('session')
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = getOrgId(c, session)
+    const orgResult = await getOrgId(c, session.userId)
     if (orgResult instanceof Response) return orgResult
     const organizationId = orgResult
 

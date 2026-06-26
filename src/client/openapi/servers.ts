@@ -132,7 +132,7 @@ export const serverSchemas = {
 export const serverPaths: Record<string, unknown> = {
   '/api/client/v1/servers': {
     get: {
-      tags: ['client'],
+      tags: ['Servers'],
       summary: 'List servers for the signed-in organization',
       security: [{ cookieAuth: [] }],
       responses: {
@@ -173,7 +173,7 @@ export const serverPaths: Record<string, unknown> = {
   },
   '/api/client/v1/servers/{id}/ping': {
     post: {
-      tags: ['client'],
+      tags: ['Servers'],
       summary: 'Ping a visible server daemon over WebSocket',
       security: [{ cookieAuth: [] }],
       parameters: [
@@ -234,7 +234,7 @@ export const serverPaths: Record<string, unknown> = {
   },
   '/api/client/v1/servers/{id}/cell': {
     get: {
-      tags: ['client'],
+      tags: ['Servers'],
       summary: 'Fetch daemon cell snapshot for a visible server',
       security: [{ cookieAuth: [] }],
       parameters: [
@@ -283,7 +283,7 @@ export const serverPaths: Record<string, unknown> = {
   },
   '/api/client/v1/servers/{id}/update': {
     get: {
-      tags: ['client'],
+      tags: ['Servers'],
       summary: 'Read daemon update status for a visible server',
       security: [{ cookieAuth: [] }],
       parameters: [
@@ -342,7 +342,7 @@ export const serverPaths: Record<string, unknown> = {
       },
     },
     post: {
-      tags: ['client'],
+      tags: ['Servers'],
       summary: 'Trigger a trunk daemon update on a connected server',
       security: [{ cookieAuth: [] }],
       parameters: [
