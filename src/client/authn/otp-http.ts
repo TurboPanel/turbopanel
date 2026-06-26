@@ -264,11 +264,11 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
     let userId: string
 
     if (existingUsers.length === 0) {
-      if (!(await isInstanceInstalled(db))) {
+      if (opts.runtime === 'deno' && !(await isInstanceInstalled(db))) {
         return c.json({ ok: false, error: 'Complete initial setup first' }, 403)
       }
 
-      if (!(await isSignupEnabled(db, opts.signupEnvOverride))) {
+      if (!(await isSignupEnabled(db, opts.signupEnvOverride, opts.runtime))) {
         return c.json({ ok: false, error: 'Sign-up is not enabled' }, 403)
       }
 

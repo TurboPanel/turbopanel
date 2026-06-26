@@ -25,13 +25,13 @@ const workersClientStatusSchema = {
   type: 'object',
   required: ['ok', 'isSignupEnabled'],
   description:
-    'Public client status on Cloudflare Workers. Install fields are omitted — Workers has no self-hosted install wizard.',
+    'Public client status on Cloudflare Workers. Install fields are omitted — Workers bootstraps via public sign-up.',
   properties: {
     ok: { type: 'boolean', const: true },
     isSignupEnabled: {
       type: 'boolean',
       description:
-        'Whether public sign-up is enabled (DB setting or TURBOPANEL_IS_SIGNUP_ENABLED env override).',
+        'Whether public sign-up is enabled (DB setting or TURBOPANEL_IS_SIGNUP_ENABLED env override). Defaults to true when unset.',
     },
   },
 } as const
@@ -353,7 +353,7 @@ export const authPaths: Record<string, unknown> = {
       tags: ['auth'],
       summary: 'Create a user account when sign-up is enabled',
       description:
-        'Creates a regular user account when sign-up is enabled (`IS_SIGNUP_ENABLED` in DB or `TURBOPANEL_IS_SIGNUP_ENABLED` env override). No session is returned — the user must sign in after verifying email.',
+        'Creates a regular user account when sign-up is enabled (`IS_SIGNUP_ENABLED` in DB or `TURBOPANEL_IS_SIGNUP_ENABLED` env override). On Deno self-hosted, the install wizard must complete first. On Workers, sign-up is the first-user bootstrap path. No session is returned — the user must sign in after verifying email.',
       requestBody: {
         required: true,
         content: {
@@ -380,7 +380,8 @@ export const authPaths: Record<string, unknown> = {
           },
         },
         '403': {
-          description: 'Install incomplete or sign-up disabled',
+          description:
+            'Deno self-hosted: install incomplete. Any runtime: sign-up disabled.',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },
@@ -593,7 +594,8 @@ export const authPaths: Record<string, unknown> = {
           },
         },
         '403': {
-          description: 'Auto-registration disabled',
+          description:
+            'Deno self-hosted: install incomplete. Any runtime: auto-registration disabled.',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },

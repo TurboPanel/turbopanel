@@ -6,6 +6,7 @@ import { registerCorsMiddleware } from './cors.ts'
 import type { DaemonCellRegistry } from './daemon/cell/contracts.ts'
 import type { DaemonChallengeStoreProvider } from './db.ts'
 import type { Db } from './db.ts'
+import type { SignupEnvOverride } from './client/authn/install-state.ts'
 import type { EmailQueue } from './lib/email/types.ts'
 import { HEALTH_PATH } from './surfaces.ts'
 
@@ -44,7 +45,7 @@ export function createApp(
     secrets?: DerivedSecretsConfig
     runtime?: 'deno' | 'workers'
     corsOrigins?: string
-    signupEnvOverride?: string
+    signupEnvOverride?: SignupEnvOverride
     daemonCellRegistry?: DaemonCellRegistry
   } = {},
 ): Hono<AppEnv> {

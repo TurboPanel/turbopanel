@@ -13,6 +13,7 @@ import {
   getUserOrganizationId,
   isInstanceInstalled,
   isSignupEnabled,
+  type SignupEnvOverride,
   validateSuperadminEmail,
   validateSuperadminPassword,
 } from './install-state.ts'
@@ -33,8 +34,8 @@ import { registerOtpRoutes } from './otp-http.ts'
 export type AuthRouteOpts = {
   secrets?: DerivedSecretsConfig
   runtime: 'deno' | 'workers'
-  /** `TURBOPANEL_IS_SIGNUP_ENABLED` — env override for Workers dev and self-hosted. */
-  signupEnvOverride?: string
+  /** `TURBOPANEL_IS_SIGNUP_ENABLED` — env override for Workers and self-hosted. */
+  signupEnvOverride?: SignupEnvOverride
   emailFrom?: string
   baseUrl?: string
 }
@@ -276,11 +277,11 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Database unavailable' }, 503)
     }
 
-    if (!(await isInstanceInstalled(db))) {
+    if (opts.runtime === 'deno' && !(await isInstanceInstalled(db))) {
       return c.json({ ok: false, error: 'Complete initial setup first' }, 403)
     }
 
-    if (!(await isSignupEnabled(db, opts.signupEnvOverride))) {
+    if (!(await isSignupEnabled(db, opts.signupEnvOverride, opts.runtime))) {
       return c.json({ ok: false, error: 'Sign-up is not enabled' }, 403)
     }
 

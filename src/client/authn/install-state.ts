@@ -29,16 +29,46 @@ export const COLOCATED_SERVER_DISPLAY_NAME = 'this server'
 
 export const IS_SIGNUP_ENABLED_CONFIG_KEY = 'IS_SIGNUP_ENABLED'
 
-/** Env override wins; otherwise true only when the DB setting is `'1'`. */
+/** Wrangler / platform env bindings may arrive as strings, numbers, or booleans. */
+export type SignupEnvOverride = string | number | boolean | null | undefined
+
+/** Normalize signup env bindings to a trimmed string flag, or `undefined` when unset. */
+export function normalizeSignupEnvOverride(
+  value: SignupEnvOverride,
+): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value === 'boolean') return value ? '1' : '0'
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return undefined
+    return String(Math.trunc(value))
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    return trimmed.length > 0 ? trimmed : undefined
+  }
+  return undefined
+}
+
+/**
+ * Env override wins when it is a recognized enable/disable flag; otherwise the DB
+ * setting applies. On Workers, sign-up defaults to enabled when both are unset so
+ * fresh deployments can bootstrap via public sign-up (no Deno install wizard).
+ */
 export function resolveIsSignupEnabled(
   dbValue: string | null | undefined,
-  envOverride: string | undefined,
+  envOverride: SignupEnvOverride,
+  options?: { runtime?: 'deno' | 'workers' },
 ): boolean {
-  if (envOverride !== undefined) {
-    const normalized = envOverride.trim().toLowerCase()
-    if (normalized === '1' || normalized === 'true') return true
+  const normalizedEnv = normalizeSignupEnvOverride(envOverride)
+  if (normalizedEnv !== undefined) {
+    const flag = normalizedEnv.toLowerCase()
+    if (flag === '1' || flag === 'true') return true
+    if (flag === '0' || flag === 'false') return false
   }
-  return dbValue === '1'
+  if (dbValue === '1') return true
+  if (dbValue === '0') return false
+  if (options?.runtime === 'workers') return true
+  return false
 }
 
 export type InstallStatus = {
@@ -116,7 +146,8 @@ export async function isInstanceInstalled(db: Db): Promise<boolean> {
 
 export async function isSignupEnabled(
   db: Db,
-  envOverride?: string,
+  envOverride?: SignupEnvOverride,
+  runtime: 'deno' | 'workers' = 'deno',
 ): Promise<boolean> {
   try {
     const rows = await db
@@ -125,10 +156,10 @@ export async function isSignupEnabled(
       .where(eq(setting.key, IS_SIGNUP_ENABLED_CONFIG_KEY))
       .limit(1)
 
-    return resolveIsSignupEnabled(rows[0]?.value, envOverride)
+    return resolveIsSignupEnabled(rows[0]?.value, envOverride, { runtime })
   } catch (err) {
     if (isMissingRelationError(err)) {
-      return resolveIsSignupEnabled(undefined, envOverride)
+      return resolveIsSignupEnabled(undefined, envOverride, { runtime })
     }
     throw err
   }
@@ -162,13 +193,18 @@ export type ClientPublicStatus = DenoClientPublicStatus | WorkersClientPublicSta
 export async function getClientPublicStatus(
   db: Db | undefined,
   runtime: 'deno' | 'workers',
-  envOverride?: string,
+  envOverride?: SignupEnvOverride,
 ): Promise<ClientPublicStatus | null> {
   if (runtime === 'workers') {
     if (db === undefined) {
-      return { ok: true, isSignupEnabled: false }
+      return {
+        ok: true,
+        isSignupEnabled: resolveIsSignupEnabled(undefined, envOverride, {
+          runtime: 'workers',
+        }),
+      }
     }
-    const signupEnabled = await isSignupEnabled(db, envOverride)
+    const signupEnabled = await isSignupEnabled(db, envOverride, 'workers')
     return { ok: true, isSignupEnabled: signupEnabled }
   }
 

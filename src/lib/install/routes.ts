@@ -215,8 +215,11 @@ async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
 }
 
 /**
- * Self-hosted install wizard surface. Mounted under {@link INSTALL_API_PREFIX}
- * (`/api/install/v1`).
+ * Self-hosted install wizard surface (Deno only). Mounted under
+ * {@link INSTALL_API_PREFIX} (`/api/install/v1`).
+ *
+ * Cloudflare Workers has no install wizard — first-user bootstrap uses public
+ * sign-up (`POST /api/client/v1/auth/sign-up` or OTP auto-registration).
  */
 export function registerInstallRoutes(app: Hono, opts: AuthRouteOpts) {
   const install = new Hono({ strict: false })
