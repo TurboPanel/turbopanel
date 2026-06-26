@@ -91,6 +91,20 @@ describe('rate limit and prefetch settings keys', () => {
     expect(resolved.keys.RATE_LIMIT_BURST.value).toBe('20')
   })
 
+  it('honors TURBOPANEL_SYSTEM_EMAIL__MAILGUN_REGION=eu', async () => {
+    const resolved = await resolveEmailSettings(undefined, {
+      TURBOPANEL_SYSTEM_EMAIL__MAILGUN_REGION: 'eu',
+    })
+    expect(resolved.mailgunRegion).toBe('eu')
+    expect(resolved.mailgunApiBase).toBe('https://api.eu.mailgun.net/v3')
+  })
+
+  it('defaults Mailgun region to US API base', async () => {
+    const resolved = await resolveEmailSettings(undefined, {})
+    expect(resolved.mailgunRegion).toBe('us')
+    expect(resolved.mailgunApiBase).toBe('https://api.mailgun.net/v3')
+  })
+
   it('honors TURBOPANEL_SYSTEM_EMAIL__RATE_LIMIT_* and legacy alias for per-minute', async () => {
     const resolved = await resolveEmailSettings(undefined, {
       TURBOPANEL_SYSTEM_EMAIL__RATE_LIMIT_PER_MINUTE: '120',

@@ -10,7 +10,7 @@ class MailgunConfigError extends Error {}
 
 function validateMailgunSettings(
   resolved: Awaited<ReturnType<typeof resolveEmailSettings>>,
-): { apiKey: string; domain: string; from: string } {
+): { apiKey: string; domain: string; from: string; apiBase: string } {
   if (resolved.provider !== 'mailgun') {
     throw new MailgunConfigError(`email provider is ${resolved.provider}, not mailgun`)
   }
@@ -19,7 +19,12 @@ function validateMailgunSettings(
   if (apiKey === '' || domain === '') {
     throw new MailgunConfigError('Mailgun API key and domain are required')
   }
-  return { apiKey, domain, from: resolved.from }
+  return {
+    apiKey,
+    domain,
+    from: resolved.from,
+    apiBase: resolved.mailgunApiBase,
+  }
 }
 
 function isPermanentError(error: unknown): boolean {
@@ -39,7 +44,12 @@ export class MailerMailgunSender {
     this.env = opts.env ?? Deno.env.toObject()
   }
 
-  private async resolveMailgunConfig(): Promise<{ apiKey: string; domain: string; from: string }> {
+  private async resolveMailgunConfig(): Promise<{
+    apiKey: string
+    domain: string
+    from: string
+    apiBase: string
+  }> {
     const resolved = await resolveEmailSettings(this.db, this.env)
     return validateMailgunSettings(resolved)
   }
@@ -56,6 +66,7 @@ export class MailerMailgunSender {
         apiKey: config.apiKey,
         domain: config.domain,
         from: config.from,
+        apiBase: config.apiBase,
       })
 
       if (outcome.ok) return { success: true }

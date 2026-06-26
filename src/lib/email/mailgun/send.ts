@@ -5,6 +5,8 @@ export type MailgunSendConfig = {
   apiKey: string
   domain: string
   from: string
+  /** Defaults to US (`https://api.mailgun.net/v3`). Use EU base when region is `eu`. */
+  apiBase?: string
 }
 
 export type MailgunSendOutcome =
@@ -42,17 +44,27 @@ export async function sendMailgunJob(
     html: template.html,
   })
 
+  const apiBase = (config.apiBase ?? 'https://api.mailgun.net/v3').replace(/\/$/, '')
+  const domain = config.domain.trim()
+  const apiKey = config.apiKey.trim()
+
   try {
-    const res = await fetch(`https://api.mailgun.net/v3/${config.domain}/messages`, {
+    const res = await fetch(`${apiBase}/${encodeURIComponent(domain)}/messages`, {
       method: 'POST',
       headers: {
-        Authorization: `Basic ${btoa(`api:${config.apiKey}`)}`,
+        Authorization: `Basic ${btoa(`api:${apiKey}`)}`,
         'Content-Type': 'application/x-www-form-urlencoded',
       },
       body,
     })
     if (!res.ok) {
       const message = await res.text()
+      if (res.status === 401) {
+        console.error(
+          '[TurboPanel email] Mailgun 401 — verify the Private API key, sending domain, and region (set TURBOPANEL_SYSTEM_EMAIL__MAILGUN_REGION=eu for EU accounts)',
+          { apiBase, domain },
+        )
+      }
       return {
         ok: false,
         error: `Mailgun ${res.status}: ${message}`,

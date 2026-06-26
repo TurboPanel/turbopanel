@@ -11,6 +11,7 @@ type WorkersMailgunQueueOptions = {
   apiKey: string
   domain: string
   from: string
+  apiBase: string
 }
 
 class WorkersMailgunQueue implements EmailQueue {
@@ -21,9 +22,10 @@ class WorkersMailgunQueue implements EmailQueue {
       apiKey: this.opts.apiKey,
       domain: this.opts.domain,
       from: this.opts.from,
+      apiBase: this.opts.apiBase,
     })
     // #region agent log
-    fetch('http://localhost:7440/ingest/3e0179a5-fa63-49e5-b717-b62ee1a155c9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'543aa9'},body:JSON.stringify({sessionId:'543aa9',location:'workers-queue.ts:enqueue',message:'mailgun enqueue outcome',data:{jobType:job.type,to:job.to,ok:outcome.ok,permanent:!outcome.ok?outcome.permanent:undefined,error:!outcome.ok?outcome.error.slice(0,120):undefined,domain:this.opts.domain,from:this.opts.from},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
+    fetch('http://localhost:7440/ingest/3e0179a5-fa63-49e5-b717-b62ee1a155c9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'543aa9'},body:JSON.stringify({sessionId:'543aa9',location:'workers-queue.ts:enqueue',message:'mailgun enqueue outcome',data:{jobType:job.type,to:job.to,ok:outcome.ok,permanent:!outcome.ok?outcome.permanent:undefined,error:!outcome.ok?outcome.error.slice(0,120):undefined,domain:this.opts.domain,from:this.opts.from,apiBase:this.opts.apiBase},timestamp:Date.now(),hypothesisId:'B',runId:'post-fix'})}).catch(()=>{});
     // #endregion
     if (!outcome.ok) {
       console.error('[TurboPanel email] Mailgun send failed', {
@@ -61,5 +63,10 @@ export async function resolveWorkersEmailQueue(
     return createNoopQueue()
   }
 
-  return createWorkersMailgunQueue({ apiKey, domain, from: resolved.from })
+  return createWorkersMailgunQueue({
+    apiKey,
+    domain,
+    from: resolved.from,
+    apiBase: resolved.mailgunApiBase,
+  })
 }

@@ -26,7 +26,12 @@ class DenoMailgunQueue implements EmailQueue {
       return
     }
 
-    const outcome = await sendMailgunJob(job, { apiKey, domain, from: resolved.from })
+    const outcome = await sendMailgunJob(job, {
+      apiKey,
+      domain,
+      from: resolved.from,
+      apiBase: resolved.mailgunApiBase,
+    })
     if (!outcome.ok) {
       compatLogWarn('email', `Mailgun send failed: ${outcome.error}`)
     }

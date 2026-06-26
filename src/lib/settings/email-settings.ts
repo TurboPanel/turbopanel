@@ -17,6 +17,7 @@ export const EMAIL_SETTING_SHORT_KEYS = [
   'FROM',
   'MAILGUN_API_KEY',
   'MAILGUN_DOMAIN',
+  'MAILGUN_REGION',
   'SMTP_HOST',
   'SMTP_PORT',
   'SMTP_USER',
@@ -35,6 +36,7 @@ export const EMAIL_SETTINGS_SCHEMA: Record<EmailSettingShortKey, string | undefi
   FROM: 'noreply@turbopanel.local',
   MAILGUN_API_KEY: undefined,
   MAILGUN_DOMAIN: undefined,
+  MAILGUN_REGION: 'us',
   SMTP_HOST: undefined,
   SMTP_PORT: undefined,
   SMTP_USER: undefined,
@@ -49,6 +51,7 @@ export const EMAIL_ENV_ALIASES: Record<EmailSettingShortKey, readonly string[]> 
   FROM: ['TURBOPANEL_SYSTEM_EMAIL_FROM', 'SMTP_FROM'],
   MAILGUN_API_KEY: ['TURBOPANEL_MAILGUN_API_KEY'],
   MAILGUN_DOMAIN: ['TURBOPANEL_MAILGUN_DOMAIN'],
+  MAILGUN_REGION: [],
   SMTP_HOST: ['SMTP_HOST'],
   SMTP_PORT: ['SMTP_PORT'],
   SMTP_USER: ['SMTP_USER'],
@@ -80,13 +83,27 @@ export type EmailSettingMeta = {
   isDbSet: boolean
 }
 
+export type MailgunRegion = 'us' | 'eu'
+
 export type ResolvedEmailSettings = {
   provider: EmailProvider
   from: string
   mailgunApiKey?: string
   mailgunDomain?: string
+  mailgunRegion: MailgunRegion
+  mailgunApiBase: string
   smtp?: SmtpConfig
   keys: Record<EmailSettingShortKey, EmailSettingMeta>
+}
+
+export function resolveMailgunApiBase(region: string | undefined): string {
+  const normalized = region?.trim().toLowerCase()
+  if (normalized === 'eu') return 'https://api.eu.mailgun.net/v3'
+  return 'https://api.mailgun.net/v3'
+}
+
+function parseMailgunRegion(value: string): MailgunRegion {
+  return value.trim().toLowerCase() === 'eu' ? 'eu' : 'us'
 }
 
 function fullEmailSettingKey(shortKey: EmailSettingShortKey): string {
@@ -207,6 +224,10 @@ export async function resolveEmailSettings(
   }
   const mailgunApiKey = keys.MAILGUN_API_KEY.value.trim()
   const mailgunDomain = keys.MAILGUN_DOMAIN.value.trim()
+  const mailgunRegion = parseMailgunRegion(
+    keys.MAILGUN_REGION.value.trim() || EMAIL_SETTINGS_SCHEMA.MAILGUN_REGION!,
+  )
+  const mailgunApiBase = resolveMailgunApiBase(mailgunRegion)
   const smtp = buildSmtpConfig(
     keys.SMTP_HOST.value,
     keys.SMTP_PORT.value,
@@ -219,6 +240,8 @@ export async function resolveEmailSettings(
     from,
     ...(mailgunApiKey !== '' ? { mailgunApiKey } : {}),
     ...(mailgunDomain !== '' ? { mailgunDomain } : {}),
+    mailgunRegion,
+    mailgunApiBase,
     ...(smtp ? { smtp } : {}),
     keys,
   }
@@ -281,6 +304,9 @@ export async function updateEmailSettings(
     if (trimmed === '') continue
 
     if (shortKey === 'PROVIDER' && trimmed !== 'smtp' && trimmed !== 'mailgun') {
+      continue
+    }
+    if (shortKey === 'MAILGUN_REGION' && trimmed !== 'us' && trimmed !== 'eu') {
       continue
     }
 
