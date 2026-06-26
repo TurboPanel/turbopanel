@@ -17,6 +17,7 @@ import {
   validateSuperadminEmail,
   validateSuperadminPassword,
 } from './install-state.ts'
+import { resolvePublicBaseUrl } from '../../lib/resolve-public-base-url.ts'
 import { hashPassword } from './password.ts'
 import {
   consumeEmailVerificationToken,
@@ -122,7 +123,25 @@ function resolveVerificationBaseUrl(
         : undefined) ||
       new URL(c.req.url).origin
   }
+  const platformEnv = c.get('platformEnv') as Record<string, string | undefined> | undefined
+  const fromEnv = platformEnv?.TURBOPANEL_BASE_URL?.trim()
+  if (fromEnv) return fromEnv.replace(/\/$/, '')
   return new URL(c.req.url).origin
+}
+
+async function resolveVerificationBaseUrlAsync(
+  c: Context,
+  opts: AuthRouteOpts,
+): Promise<string> {
+  const direct = resolveVerificationBaseUrl(c, opts).trim()
+  if (opts.runtime === 'deno') {
+    return direct.replace(/\/$/, '')
+  }
+  if (direct && direct !== 'null' && !direct.includes('://null')) {
+    return direct.replace(/\/$/, '')
+  }
+  const fromPublic = await resolvePublicBaseUrl(c, { baseUrl: opts.baseUrl })
+  return fromPublic.replace(/\/$/, '')
 }
 
 export async function buildSessionResponse(
@@ -401,7 +420,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
     // Token generation must not roll back the already-committed user creation.
     try {
       const verificationToken = await createEmailVerificationToken(db, trimmedEmail)
-      const baseOrigin = resolveVerificationBaseUrl(c, opts)
+      const baseOrigin = await resolveVerificationBaseUrlAsync(c, opts)
       const verificationUrl =
         `${baseOrigin}/verify-email?token=${encodeURIComponent(verificationToken)}`
 
@@ -472,13 +491,29 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
 
     const identifier = await consumeEmailVerificationToken(db, token)
     if (identifier === null) {
+      // #region agent log
+      fetch('http://localhost:7440/ingest/3e0179a5-fa63-49e5-b717-b62ee1a155c9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'543aa9'},body:JSON.stringify({sessionId:'543aa9',location:'http.ts:verify-email',message:'verify token invalid or expired',data:{tokenLength:token.length},timestamp:Date.now(),hypothesisId:'F',runId:'post-fix'})}).catch(()=>{});
+      // #endregion
       return c.json({ ok: false, error: 'Invalid or expired token' }, 400)
     }
 
-    await db
+    const normalizedEmail = identifier.trim().toLowerCase()
+    const updated = await db
       .update(user)
       .set({ isEmailVerified: true, updatedAt: nowTs() })
-      .where(eq(user.email, identifier))
+      .where(eq(user.email, normalizedEmail))
+      .returning({ id: user.id, isEmailVerified: user.isEmailVerified })
+
+    if (updated.length === 0) {
+      // #region agent log
+      fetch('http://localhost:7440/ingest/3e0179a5-fa63-49e5-b717-b62ee1a155c9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'543aa9'},body:JSON.stringify({sessionId:'543aa9',location:'http.ts:verify-email',message:'verify token ok but no user row updated',data:{normalizedEmail},timestamp:Date.now(),hypothesisId:'G',runId:'post-fix'})}).catch(()=>{});
+      // #endregion
+      return c.json({ ok: false, error: 'User not found for verification token' }, 404)
+    }
+
+    // #region agent log
+    fetch('http://localhost:7440/ingest/3e0179a5-fa63-49e5-b717-b62ee1a155c9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'543aa9'},body:JSON.stringify({sessionId:'543aa9',location:'http.ts:verify-email',message:'verify email succeeded',data:{userId:updated[0]?.id,normalizedEmail,isEmailVerified:updated[0]?.isEmailVerified},timestamp:Date.now(),hypothesisId:'F,G',runId:'post-fix'})}).catch(()=>{});
+    // #endregion
 
     return c.json({ ok: true }, 200)
   })

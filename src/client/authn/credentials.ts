@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import { account, user } from '../../lib/db/schema.ts'
 import { isInstanceInstalled } from './install-state.ts'
@@ -11,6 +11,11 @@ const HOST_USERNAME_RE = /^[a-zA-Z0-9._-]+$/
 const INSTALL_SUDO_GROUPS = ['sudo', 'wheel', 'admin']
 
 export type AuthRuntime = 'deno' | 'workers'
+
+/** Hyperdrive caches SELECTs; auth reads after verify must not serve stale rows. */
+function bypassHyperdriveQueryCache() {
+  return sql`random() >= 0`
+}
 
 export type VerifyResult =
   | { ok: true; username: string; isRoot: true }
@@ -119,9 +124,12 @@ async function verifyDbUserCredentials(
       and(eq(account.userId, user.id), eq(account.providerId, 'credential')),
     )
     .where(
-      byEmail
-        ? eq(user.email, trimmed.toLowerCase())
-        : eq(user.username, trimmed),
+      and(
+        byEmail
+          ? eq(user.email, trimmed.toLowerCase())
+          : eq(user.username, trimmed),
+        bypassHyperdriveQueryCache(),
+      ),
     )
     .limit(1)
 

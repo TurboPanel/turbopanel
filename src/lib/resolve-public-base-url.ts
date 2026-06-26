@@ -64,6 +64,10 @@ export async function resolvePublicBaseUrl(
   const fromOpts = opts?.baseUrl?.trim()
   if (fromOpts) return trimTrailingSlash(fromOpts)
 
+  const platformEnv = c.get('platformEnv') as Record<string, string | undefined> | undefined
+  const fromWorkersEnv = platformEnv?.TURBOPANEL_BASE_URL?.trim()
+  if (fromWorkersEnv) return trimTrailingSlash(fromWorkersEnv)
+
   if (typeof Deno !== 'undefined') {
     const fromEnv = Deno.env.get('TURBOPANEL_BASE_URL')?.trim()
     if (fromEnv) return trimTrailingSlash(fromEnv)
