@@ -14,7 +14,6 @@ import {
   getUserOrganizationId,
   isInstanceInstalled,
   isSignupEnabled,
-  isSignupEmailVerificationEnabled,
   type SignupEnvOverride,
   validateSuperadminEmail,
   validateSuperadminPassword,
@@ -33,6 +32,10 @@ import type { Db } from '../../db.ts'
 import { account, user } from '../../lib/db/schema.ts'
 import { getEmailQueue } from '../../lib/email/types.ts'
 import { isNoopEmailQueue } from '../../lib/email/noop-queue.ts'
+import {
+  isEmailActiveForRuntime,
+  resolveEmailSettings,
+} from '../../lib/settings/email-settings.ts'
 import { registerOtpRoutes } from './otp-http.ts'
 
 export type AuthRouteOpts = {
@@ -40,8 +43,6 @@ export type AuthRouteOpts = {
   runtime: 'deno' | 'workers'
   /** `TURBOPANEL_IS_SIGNUP_ENABLED` — env override for Workers and self-hosted. */
   signupEnvOverride?: SignupEnvOverride
-  /** `TURBOPANEL_IS_SIGNUP_EMAIL_VERIFICATION_ENABLED` — env override for sign-up email verification. */
-  signupEmailVerificationEnvOverride?: SignupEnvOverride
   emailFrom?: string
   baseUrl?: string
 }
@@ -318,9 +319,17 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Sign-up is not enabled' }, 403)
     }
 
-    const emailVerificationEnabled = await isSignupEmailVerificationEnabled(
-      db,
-      opts.signupEmailVerificationEnvOverride,
+    const platformEnv = c.get('platformEnv') as
+      | Record<string, string | undefined>
+      | undefined
+    const env =
+      platformEnv ??
+      (opts.runtime === 'deno' && typeof Deno !== 'undefined'
+        ? Deno.env.toObject()
+        : {})
+    const emailSettings = await resolveEmailSettings(db, env)
+    const emailVerificationEnabled = isEmailActiveForRuntime(
+      emailSettings,
       opts.runtime,
     )
 
@@ -372,11 +381,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
     }
 
     const signupQueue = getEmailQueue(c)
-    if (
-      emailVerificationEnabled &&
-      opts.runtime === 'workers' &&
-      isNoopEmailQueue(signupQueue)
-    ) {
+    if (emailVerificationEnabled && isNoopEmailQueue(signupQueue)) {
       return c.json(
         {
           ok: false,

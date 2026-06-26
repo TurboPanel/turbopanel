@@ -37,7 +37,7 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
       db,
       opts.runtime,
       opts.signupEnvOverride,
-      opts.signupEmailVerificationEnvOverride,
+      c.get('platformEnv'),
     )
     if (payload === null) {
       return c.json({ ok: false, error: 'Database unavailable' }, 503)

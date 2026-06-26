@@ -75,8 +75,6 @@ async function initWorkerApp(env: CloudflareBindings) {
     runtime: 'workers',
     corsOrigins: env.TURBOPANEL_UI_CORS_ORIGINS,
     signupEnvOverride: env.TURBOPANEL_IS_SIGNUP_ENABLED,
-    signupEmailVerificationEnvOverride:
-      env.TURBOPANEL_IS_SIGNUP_EMAIL_VERIFICATION_ENABLED,
     emailFrom: emailSettings.from,
   })
   registerDaemonApiRoutes(cachedApp, {

@@ -20,6 +20,7 @@ import {
 import { CLIENT_API_PREFIX } from '../../surfaces.ts'
 import type { SignupEnvOverride } from './install-state.ts'
 import type { EmailJob, EmailQueue } from '../../lib/email/types.ts'
+import { createNoopQueue } from '../../lib/email/noop-queue.ts'
 
 class DeliveringEmailQueue implements EmailQueue {
   async enqueue(_job: EmailJob): Promise<void> {}
@@ -34,20 +35,34 @@ class FailingEmailQueue implements EmailQueue {
 const dbUrl = getDatabaseUrl()
 const TEST_SECRET = 'Aa1Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2_Mm3Nn4Oo5Pp6'
 
+const MAILGUN_PLATFORM_ENV = {
+  TURBOPANEL_MAILGUN_API_KEY: 'key-test',
+  TURBOPANEL_MAILGUN_DOMAIN: 'mg.example.com',
+} as const
+
+const MAILPIT_PLATFORM_ENV = {
+  TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
+} as const
+
 async function createAuthRouteApp(
   db: ReturnType<typeof createDenoDb>,
   runtime: 'deno' | 'workers',
   signupEnvOverride?: SignupEnvOverride,
-  signupEmailVerificationEnvOverride?: SignupEnvOverride,
-  emailQueue: EmailQueue = new DeliveringEmailQueue(),
+  options?: {
+    emailQueue?: EmailQueue
+    platformEnv?: Record<string, string | undefined>
+  },
 ) {
   const secretsConfig = parseSecretsEnv(TEST_SECRET, undefined, runtime)
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
-    if (runtime === 'workers') {
-      c.set('emailQueue', emailQueue)
+    if (options?.platformEnv) {
+      c.set('platformEnv', options.platformEnv)
+    }
+    if (options?.emailQueue) {
+      c.set('emailQueue', options.emailQueue)
     }
     return next()
   })
@@ -56,7 +71,6 @@ async function createAuthRouteApp(
     secrets,
     runtime,
     signupEnvOverride,
-    signupEmailVerificationEnvOverride,
     emailFrom: 'noreply@turbopanel.local',
   })
   app.route(CLIENT_API_PREFIX, client)
@@ -67,15 +81,15 @@ async function createClientRouteApp(
   db: ReturnType<typeof createDenoDb>,
   runtime: 'deno' | 'workers',
   signupEnvOverride?: SignupEnvOverride,
-  signupEmailVerificationEnvOverride?: SignupEnvOverride,
+  platformEnv?: Record<string, string | undefined>,
 ) {
   const secretsConfig = parseSecretsEnv(TEST_SECRET, undefined, runtime)
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
-    if (runtime === 'workers') {
-      c.set('emailQueue', new DeliveringEmailQueue())
+    if (platformEnv) {
+      c.set('platformEnv', platformEnv)
     }
     return next()
   })
@@ -83,7 +97,6 @@ async function createClientRouteApp(
     secrets,
     runtime,
     signupEnvOverride,
-    signupEmailVerificationEnvOverride,
     emailFrom: 'noreply@turbopanel.local',
   })
   return app
@@ -262,7 +275,7 @@ Deno.test('Deno sign-up still requires install completion on a fresh database', 
   }
 })
 
-Deno.test('Deno status reflects signup email verification env override', async () => {
+Deno.test('Deno status reflects email verification from resolved email settings', async () => {
   if (!dbUrl) {
     console.warn(
       'Skipping Deno email verification status test: TURBOPANEL_DATABASE_URL not set',
@@ -278,7 +291,7 @@ Deno.test('Deno status reflects signup email verification env override', async (
     return
   }
 
-  const app = await createClientRouteApp(db, 'deno', '1', '1')
+  const app = await createClientRouteApp(db, 'deno', '1', MAILPIT_PLATFORM_ENV)
   const res = await app.request(`${CLIENT_API_PREFIX}/status`)
   if (res.status !== 200) {
     const body = await res.text()
@@ -290,15 +303,15 @@ Deno.test('Deno status reflects signup email verification env override', async (
   }
   if (payload.isSignupEmailVerificationEnabled !== true) {
     throw new Error(
-      `expected email verification enabled via env override, got ${JSON.stringify(payload)}`,
+      `expected email verification enabled via mailpit settings, got ${JSON.stringify(payload)}`,
     )
   }
 })
 
-Deno.test('Deno sign-up honors email verification env override', async () => {
+Deno.test('Deno sign-up auto-verifies when email delivery is not configured', async () => {
   if (!dbUrl) {
     console.warn(
-      'Skipping Deno sign-up verification override test: TURBOPANEL_DATABASE_URL not set',
+      'Skipping Deno sign-up auto-verify test: TURBOPANEL_DATABASE_URL not set',
     )
     return
   }
@@ -306,13 +319,13 @@ Deno.test('Deno sign-up honors email verification env override', async () => {
   const db = createDenoDb()
   if (!(await isInstanceInstalled(db))) {
     console.warn(
-      'Skipping Deno sign-up verification override test: instance not installed',
+      'Skipping Deno sign-up auto-verify test: instance not installed',
     )
     return
   }
 
-  const email = `deno-verify-override-${crypto.randomUUID()}@example.com`
-  const app = await createAuthRouteApp(db, 'deno', '1', '0')
+  const email = `deno-auto-verify-${crypto.randomUUID()}@example.com`
+  const app = await createAuthRouteApp(db, 'deno', '1')
 
   try {
     const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
@@ -333,8 +346,54 @@ Deno.test('Deno sign-up honors email verification env override', async () => {
       .limit(1)
     if (userRows[0]?.isEmailVerified !== true) {
       throw new Error(
-        `expected isEmailVerified=true when env override disables verification, got ${JSON.stringify(userRows[0])}`,
+        `expected isEmailVerified=true when email is not configured, got ${JSON.stringify(userRows[0])}`,
       )
+    }
+  } finally {
+    await cleanupUser(db, email)
+  }
+})
+
+Deno.test('Deno sign-up rejects when verification is required but the queue is noop', async () => {
+  if (!dbUrl) {
+    console.warn(
+      'Skipping Deno noop queue sign-up test: TURBOPANEL_DATABASE_URL not set',
+    )
+    return
+  }
+
+  const db = createDenoDb()
+  if (!(await isInstanceInstalled(db))) {
+    console.warn(
+      'Skipping Deno noop queue sign-up test: instance not installed',
+    )
+    return
+  }
+
+  const email = `deno-noop-queue-${crypto.randomUUID()}@example.com`
+  const app = await createAuthRouteApp(db, 'deno', '1', {
+    platformEnv: MAILPIT_PLATFORM_ENV,
+    emailQueue: createNoopQueue(),
+  })
+
+  try {
+    const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email, password: 'password1' }),
+    })
+
+    if (res.status !== 503) {
+      const body = await res.text()
+      throw new Error(`expected 503, got ${res.status}: ${body}`)
+    }
+
+    const userRows = await db
+      .select({ id: user.id })
+      .from(user)
+      .where(eq(user.email, email))
+    if (userRows.length !== 0) {
+      throw new Error(`expected no user row after noop queue rejection, got ${userRows.length}`)
     }
   } finally {
     await cleanupUser(db, email)
@@ -351,13 +410,10 @@ Deno.test('Workers sign-up leaves no org residue when verification email enqueue
 
   const db = createDenoDb()
   const email = `workers-enqueue-fail-${crypto.randomUUID()}@example.com`
-  const app = await createAuthRouteApp(
-    db,
-    'workers',
-    '1',
-    '1',
-    new FailingEmailQueue(),
-  )
+  const app = await createAuthRouteApp(db, 'workers', '1', {
+    platformEnv: MAILGUN_PLATFORM_ENV,
+    emailQueue: new FailingEmailQueue(),
+  })
 
   const orgCountBefore = (await db.select({ id: organization.id }).from(organization))
     .length

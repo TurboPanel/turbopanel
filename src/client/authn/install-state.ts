@@ -19,6 +19,10 @@ import { createLicense } from './license.ts'
 import { hashPassword } from './password.ts'
 import { SUPERADMIN_ROLE } from './session-store.ts'
 import { compatLogInfo, compatLogWarn } from '../../log-compat.ts'
+import {
+  isEmailActiveForRuntime,
+  resolveEmailSettings,
+} from '../../lib/settings/email-settings.ts'
 
 const ORG_NAME_RE = /^[A-Za-z0-9 ._-]+$/
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -28,8 +32,6 @@ export const DEFAULT_TEAM_NAME = 'Default Team'
 export const COLOCATED_SERVER_DISPLAY_NAME = 'this server'
 
 export const IS_SIGNUP_ENABLED_CONFIG_KEY = 'IS_SIGNUP_ENABLED'
-export const IS_SIGNUP_EMAIL_VERIFICATION_ENABLED_CONFIG_KEY =
-  'IS_SIGNUP_EMAIL_VERIFICATION_ENABLED'
 
 /** Wrangler / platform env bindings may arrive as strings, numbers, or booleans. */
 export type SignupEnvOverride = string | number | boolean | null | undefined
@@ -57,28 +59,6 @@ export function normalizeSignupEnvOverride(
  * fresh deployments can bootstrap via public sign-up (no Deno install wizard).
  */
 export function resolveIsSignupEnabled(
-  dbValue: string | null | undefined,
-  envOverride: SignupEnvOverride,
-  options?: { runtime?: 'deno' | 'workers' },
-): boolean {
-  const normalizedEnv = normalizeSignupEnvOverride(envOverride)
-  if (normalizedEnv !== undefined) {
-    const flag = normalizedEnv.toLowerCase()
-    if (flag === '1' || flag === 'true') return true
-    if (flag === '0' || flag === 'false') return false
-  }
-  if (dbValue === '1') return true
-  if (dbValue === '0') return false
-  if (options?.runtime === 'workers') return true
-  return false
-}
-
-/**
- * Env override wins when it is a recognized enable/disable flag; otherwise the DB
- * setting applies. On Workers, email verification defaults to enabled when both are
- * unset. Self-hosted Deno defaults to disabled when email may not be configured.
- */
-export function resolveIsSignupEmailVerificationEnabled(
   dbValue: string | null | undefined,
   envOverride: SignupEnvOverride,
   options?: { runtime?: 'deno' | 'workers' },
@@ -193,46 +173,16 @@ export async function isSignupEnabled(
   }
 }
 
-export async function isSignupEmailVerificationEnabled(
-  db: Db,
-  envOverride?: SignupEnvOverride,
-  runtime: 'deno' | 'workers' = 'deno',
-): Promise<boolean> {
-  try {
-    const rows = await db
-      .select({ value: setting.value })
-      .from(setting)
-      .where(eq(setting.key, IS_SIGNUP_EMAIL_VERIFICATION_ENABLED_CONFIG_KEY))
-      .limit(1)
-
-    const raw = rows[0]?.value
-    const dbValue =
-      typeof raw === 'string' ? raw : raw != null ? String(raw) : null
-    return resolveIsSignupEmailVerificationEnabled(dbValue, envOverride, {
-      runtime,
-    })
-  } catch (err) {
-    if (isMissingRelationError(err)) {
-      return resolveIsSignupEmailVerificationEnabled(undefined, envOverride, {
-        runtime,
-      })
-    }
-    throw err
-  }
-}
-
 export async function getInstallStatus(
   db: Db,
   envOverride?: SignupEnvOverride,
-  emailVerificationEnvOverride?: SignupEnvOverride,
+  platformEnv: Record<string, string | undefined> = {},
 ): Promise<InstallStatus> {
   // Sequential: parallel drizzle queries on postgres.js can wedge the pool (Deno dev).
   const installed = await isInstanceInstalled(db)
   const signupEnabled = await isSignupEnabled(db, envOverride)
-  const emailVerificationEnabled = await isSignupEmailVerificationEnabled(
-    db,
-    emailVerificationEnvOverride,
-  )
+  const emailSettings = await resolveEmailSettings(db, platformEnv)
+  const emailVerificationEnabled = isEmailActiveForRuntime(emailSettings, 'deno')
   const needsInstall = !installed
   return {
     needsInstall,
@@ -257,8 +207,11 @@ export async function getClientPublicStatus(
   db: Db | undefined,
   runtime: 'deno' | 'workers',
   envOverride?: SignupEnvOverride,
-  emailVerificationEnvOverride?: SignupEnvOverride,
+  platformEnv: Record<string, string | undefined> = {},
 ): Promise<ClientPublicStatus | null> {
+  const emailSettings = await resolveEmailSettings(db, platformEnv)
+  const emailVerificationEnabled = isEmailActiveForRuntime(emailSettings, runtime)
+
   if (runtime === 'workers') {
     if (db === undefined) {
       return {
@@ -266,19 +219,10 @@ export async function getClientPublicStatus(
         isSignupEnabled: resolveIsSignupEnabled(undefined, envOverride, {
           runtime: 'workers',
         }),
-        isSignupEmailVerificationEnabled: resolveIsSignupEmailVerificationEnabled(
-          undefined,
-          emailVerificationEnvOverride,
-          { runtime: 'workers' },
-        ),
+        isSignupEmailVerificationEnabled: emailVerificationEnabled,
       }
     }
     const signupEnabled = await isSignupEnabled(db, envOverride, 'workers')
-    const emailVerificationEnabled = await isSignupEmailVerificationEnabled(
-      db,
-      emailVerificationEnvOverride,
-      'workers',
-    )
     return {
       ok: true,
       isSignupEnabled: signupEnabled,
@@ -290,7 +234,7 @@ export async function getClientPublicStatus(
     return null
   }
 
-  const status = await getInstallStatus(db, envOverride, emailVerificationEnvOverride)
+  const status = await getInstallStatus(db, envOverride, platformEnv)
   return { ok: true, ...status }
 }
 

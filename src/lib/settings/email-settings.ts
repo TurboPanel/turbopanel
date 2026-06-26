@@ -88,6 +88,37 @@ export type ResolvedEmailSettings = {
   keys: Record<EmailSettingShortKey, EmailSettingMeta>
 }
 
+/** True when email is configured and usable for outbound delivery. */
+export function isEmailActive(settings: ResolvedEmailSettings): boolean {
+  if (settings.provider === 'mailpit') return true
+  if (settings.provider === 'smtp') return settings.smtp !== undefined
+  if (settings.provider === 'mailgun') {
+    const apiKey = settings.mailgunApiKey?.trim() ?? ''
+    const domain = settings.mailgunDomain?.trim() ?? ''
+    return apiKey !== '' && domain !== ''
+  }
+  return false
+}
+
+/** Apply runtime-specific provider normalization before activation checks. */
+export function normalizeEmailSettingsForRuntime(
+  settings: ResolvedEmailSettings,
+  runtime: 'deno' | 'workers',
+): ResolvedEmailSettings {
+  if (runtime !== 'workers') return settings
+  const provider = resolveWorkersEmailProvider(settings)
+  if (provider === settings.provider) return settings
+  return { ...settings, provider }
+}
+
+/** Settings-based signup verification gate (Workers legacy Mailgun env included). */
+export function isEmailActiveForRuntime(
+  settings: ResolvedEmailSettings,
+  runtime: 'deno' | 'workers',
+): boolean {
+  return isEmailActive(normalizeEmailSettingsForRuntime(settings, runtime))
+}
+
 export function resolveMailgunApiBase(region: string | undefined): string {
   const normalized = region?.trim().toLowerCase()
   if (normalized === 'eu') return 'https://api.eu.mailgun.net/v3'

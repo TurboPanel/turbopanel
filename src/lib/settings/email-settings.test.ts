@@ -3,6 +3,7 @@ import { createMailerSmtpSender } from '@turbopanel/email/smtp-sender'
 import {
   resolveEmailSettings,
   resolveWorkersEmailProvider,
+  isEmailActiveForRuntime,
 } from './email-settings.ts'
 import { resolveWorkersEmailQueue } from '../email/mailgun/workers-queue.ts'
 
@@ -52,6 +53,43 @@ describe('resolveWorkersEmailProvider', () => {
     })
 
     expect(resolveWorkersEmailProvider(resolved)).toBe('mailpit')
+  })
+})
+
+describe('isEmailActiveForRuntime', () => {
+  it('treats legacy Mailgun env-only config as active on Workers', async () => {
+    const resolved = await resolveEmailSettings(undefined, {
+      TURBOPANEL_MAILGUN_API_KEY: 'key-abc',
+      TURBOPANEL_MAILGUN_DOMAIN: 'mg.example.com',
+    })
+
+    expect(isEmailActiveForRuntime(resolved, 'workers')).toBe(true)
+    expect(isEmailActiveForRuntime(resolved, 'deno')).toBe(false)
+  })
+
+  it('treats mailpit provider as active on both runtimes', async () => {
+    const resolved = await resolveEmailSettings(undefined, {
+      TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
+    })
+
+    expect(isEmailActiveForRuntime(resolved, 'workers')).toBe(true)
+    expect(isEmailActiveForRuntime(resolved, 'deno')).toBe(true)
+  })
+
+  it('requires SMTP host and port when provider is smtp', async () => {
+    const withoutSmtp = await resolveEmailSettings(undefined, {
+      TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'smtp',
+    })
+    expect(isEmailActiveForRuntime(withoutSmtp, 'deno')).toBe(false)
+    expect(isEmailActiveForRuntime(withoutSmtp, 'workers')).toBe(false)
+
+    const withSmtp = await resolveEmailSettings(undefined, {
+      TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'smtp',
+      TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST: '127.0.0.1',
+      TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT: '1025',
+    })
+    expect(isEmailActiveForRuntime(withSmtp, 'deno')).toBe(true)
+    expect(isEmailActiveForRuntime(withSmtp, 'workers')).toBe(true)
   })
 })
 

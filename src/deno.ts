@@ -86,9 +86,6 @@ const app = createApp({
   runtime: 'deno',
   corsOrigins: Deno.env.get('TURBOPANEL_UI_CORS_ORIGINS'),
   signupEnvOverride: Deno.env.get('TURBOPANEL_IS_SIGNUP_ENABLED'),
-  signupEmailVerificationEnvOverride: Deno.env.get(
-    'TURBOPANEL_IS_SIGNUP_EMAIL_VERIFICATION_ENABLED',
-  ),
   emailFrom: emailSettings.from,
   baseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? undefined,
   daemonCellRegistry,

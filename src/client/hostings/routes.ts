@@ -2,13 +2,12 @@ import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { listVisible } from '../authz/index.ts'
+import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db.ts'
 import { hosting } from '../../lib/db/schema.ts'
 import {
   assertCanCreateOr403,
-  assertCanOr403,
   assertCanReadOr403,
   buildPatchUpdateFields,
   getOrgId,

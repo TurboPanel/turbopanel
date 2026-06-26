@@ -36,7 +36,6 @@ export function createApp(
     runtime,
     corsOrigins,
     signupEnvOverride,
-    signupEmailVerificationEnvOverride,
     daemonCellRegistry,
   }: {
     db?: Db
@@ -47,7 +46,6 @@ export function createApp(
     runtime?: 'deno' | 'workers'
     corsOrigins?: string
     signupEnvOverride?: SignupEnvOverride
-    signupEmailVerificationEnvOverride?: SignupEnvOverride
     daemonCellRegistry?: DaemonCellRegistry
   } = {},
 ): Hono<AppEnv> {
@@ -86,7 +84,6 @@ export function createApp(
       secrets,
       runtime: runtime ?? 'workers',
       signupEnvOverride,
-      signupEmailVerificationEnvOverride,
       emailFrom,
       baseUrl,
     })
