@@ -29,6 +29,7 @@ import { getDb } from '../../db.ts'
 import type { Db } from '../../db.ts'
 import { account, user } from '../../lib/db/schema.ts'
 import { getEmailQueue } from '../../lib/email/types.ts'
+import { isNoopEmailQueue } from '../../lib/email/noop-queue.ts'
 import { registerOtpRoutes } from './otp-http.ts'
 
 export type AuthRouteOpts = {
@@ -206,12 +207,28 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
 
     const result = await verifyCredentials(username, password, opts.runtime, db)
     if (!result.ok) {
+      if (result.reason === 'email_not_verified') {
+        // #region agent log
+        fetch('http://localhost:7440/ingest/3e0179a5-fa63-49e5-b717-b62ee1a155c9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'543aa9'},body:JSON.stringify({sessionId:'543aa9',location:'http.ts:sign-in',message:'sign-in blocked unverified email',data:{runtime:opts.runtime,isEmailVerified:false,willCreateSession:false},timestamp:Date.now(),hypothesisId:'D',runId:'post-fix'})}).catch(()=>{});
+        // #endregion
+        return c.json(
+          {
+            ok: false,
+            error: 'Verify your email before signing in. Check your inbox for the verification link.',
+          },
+          403,
+        )
+      }
       return c.json({ ok: false, error: 'Invalid credentials' }, 401)
     }
 
     if (result.isRoot) {
       return c.json({ ok: false, error: 'Invalid credentials' }, 401)
     }
+
+    // #region agent log
+    fetch('http://localhost:7440/ingest/3e0179a5-fa63-49e5-b717-b62ee1a155c9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'543aa9'},body:JSON.stringify({sessionId:'543aa9',location:'http.ts:sign-in',message:'sign-in credential check',data:{runtime:opts.runtime,isEmailVerified:true,willCreateSession:true},timestamp:Date.now(),hypothesisId:'D',runId:'post-fix'})}).catch(()=>{});
+    // #endregion
 
     const { token } = await createSession(db, result.userId, {
       ipAddress: c.req.header('X-Real-IP') ?? undefined,
@@ -332,7 +349,22 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Email is already registered' }, 409)
     }
 
+    const signupQueue = getEmailQueue(c)
+    if (opts.runtime === 'workers' && isNoopEmailQueue(signupQueue)) {
+      // #region agent log
+      fetch('http://localhost:7440/ingest/3e0179a5-fa63-49e5-b717-b62ee1a155c9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'543aa9'},body:JSON.stringify({sessionId:'543aa9',location:'http.ts:sign-up',message:'sign-up rejected noop email queue',data:{runtime:opts.runtime},timestamp:Date.now(),hypothesisId:'A',runId:'post-fix'})}).catch(()=>{});
+      // #endregion
+      return c.json(
+        {
+          ok: false,
+          error: 'Sign-up is temporarily unavailable — email delivery is not configured.',
+        },
+        503,
+      )
+    }
+
     const hashedPassword = await hashPassword(password)
+    let createdUserId: string | undefined
 
     try {
       await db.transaction(async (tx) => {
@@ -349,6 +381,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
         if (!userId) {
           throw new Error('User creation failed')
         }
+        createdUserId = userId
 
         await tx.insert(account).values({
           userId,
@@ -372,9 +405,12 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       const verificationUrl =
         `${baseOrigin}/verify-email?token=${encodeURIComponent(verificationToken)}`
 
-      const queue = getEmailQueue(c)
+      const queue = signupQueue
       const emailFrom =
         c.get('emailFrom') ?? opts.emailFrom ?? 'noreply@turbopanel.local'
+      // #region agent log
+      fetch('http://localhost:7440/ingest/3e0179a5-fa63-49e5-b717-b62ee1a155c9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'543aa9'},body:JSON.stringify({sessionId:'543aa9',location:'http.ts:sign-up',message:'sign-up verification email attempt',data:{runtime:opts.runtime,queueType:queue?.constructor.name??'null',hasQueue:Boolean(queue),emailFrom,verificationUrlHost:new URL(verificationUrl).host},timestamp:Date.now(),hypothesisId:'A,E',runId:'post-fix'})}).catch(()=>{});
+      // #endregion
       if (queue) {
         try {
           await queue.enqueue({
@@ -383,14 +419,34 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
             from: emailFrom,
             verificationUrl,
           })
+          // #region agent log
+          fetch('http://localhost:7440/ingest/3e0179a5-fa63-49e5-b717-b62ee1a155c9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'543aa9'},body:JSON.stringify({sessionId:'543aa9',location:'http.ts:sign-up',message:'sign-up verification enqueue completed',data:{to:trimmedEmail,queueType:queue.constructor.name},timestamp:Date.now(),hypothesisId:'B,E'})}).catch(()=>{});
+          // #endregion
           if (isVerificationDevLoggingEnabled(opts)) {
             compatLogInfo('dev', `verification email queued for ${trimmedEmail}`)
             compatLogInfo('dev', `verify URL: ${verificationUrl}`)
           }
         } catch (err) {
+          // #region agent log
+          fetch('http://localhost:7440/ingest/3e0179a5-fa63-49e5-b717-b62ee1a155c9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'543aa9'},body:JSON.stringify({sessionId:'543aa9',location:'http.ts:sign-up',message:'sign-up verification enqueue failed',data:{error:String(err)},timestamp:Date.now(),hypothesisId:'B,E',runId:'post-fix'})}).catch(()=>{});
+          // #endregion
           compatLogWarn('email', `verification email enqueue failed: ${err}`)
+          if (opts.runtime === 'workers' && createdUserId) {
+            await db.delete(account).where(eq(account.userId, createdUserId))
+            await db.delete(user).where(eq(user.id, createdUserId))
+            return c.json(
+              {
+                ok: false,
+                error: 'Could not send verification email. Please try again later.',
+              },
+              503,
+            )
+          }
         }
       } else {
+        // #region agent log
+        fetch('http://localhost:7440/ingest/3e0179a5-fa63-49e5-b717-b62ee1a155c9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'543aa9'},body:JSON.stringify({sessionId:'543aa9',location:'http.ts:sign-up',message:'sign-up no email queue',data:{runtime:opts.runtime},timestamp:Date.now(),hypothesisId:'A,E'})}).catch(()=>{});
+        // #endregion
         compatLogWarn(
           'email',
           `verification email not sent for ${trimmedEmail}: email queue unavailable`,

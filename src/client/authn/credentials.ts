@@ -15,7 +15,7 @@ export type AuthRuntime = 'deno' | 'workers'
 export type VerifyResult =
   | { ok: true; username: string; isRoot: true }
   | { ok: true; userId: string; username: string | null; email: string; isRoot: false }
-  | { ok: false }
+  | { ok: false; reason?: 'email_not_verified' }
 
 async function verifyPamLogin(username: string, password: string): Promise<boolean> {
   if (!HOST_USERNAME_RE.test(username)) return false
@@ -111,6 +111,7 @@ async function verifyDbUserCredentials(
       email: user.email,
       password: account.password,
       isDisabled: user.isDisabled,
+      isEmailVerified: user.isEmailVerified,
     })
     .from(user)
     .innerJoin(
@@ -132,6 +133,10 @@ async function verifyDbUserCredentials(
   const valid = await verifyPassword(password, row.password)
   if (!valid) {
     return { ok: false }
+  }
+
+  if (!row.isEmailVerified) {
+    return { ok: false, reason: 'email_not_verified' }
   }
 
   return {

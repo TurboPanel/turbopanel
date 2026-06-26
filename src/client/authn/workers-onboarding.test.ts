@@ -10,6 +10,11 @@ import { deriveSecretsConfig, parseSecretsEnv } from './secrets.ts'
 import { account, user } from '../../lib/db/schema.ts'
 import { CLIENT_API_PREFIX } from '../../surfaces.ts'
 import type { SignupEnvOverride } from './install-state.ts'
+import type { EmailJob, EmailQueue } from '../../lib/email/types.ts'
+
+class DeliveringEmailQueue implements EmailQueue {
+  async enqueue(_job: EmailJob): Promise<void> {}
+}
 
 const dbUrl = getDatabaseUrl()
 const TEST_SECRET = 'Aa1Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2_Mm3Nn4Oo5Pp6'
@@ -24,6 +29,9 @@ async function createAuthRouteApp(
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
+    if (runtime === 'workers') {
+      c.set('emailQueue', new DeliveringEmailQueue())
+    }
     return next()
   })
   const client = new Hono()

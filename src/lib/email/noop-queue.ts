@@ -10,3 +10,7 @@ class NoopQueue implements EmailQueue {
 export function createNoopQueue(): EmailQueue {
   return new NoopQueue()
 }
+
+export function isNoopEmailQueue(queue: EmailQueue | undefined): boolean {
+  return queue === undefined || queue.constructor.name === 'NoopQueue'
+}
