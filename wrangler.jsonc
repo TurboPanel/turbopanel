@@ -41,6 +41,9 @@
       "new_sqlite_classes": ["DaemonCellObject"]
     }
   ],
+  "vars": {
+    "TURBOPANEL_IS_SIGNUP_EMAIL_VERIFICATION_ENABLED": "1"
+  },
   "env": {
     "testing": {
       "durable_objects": {

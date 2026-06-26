@@ -10,9 +10,11 @@ import {
 } from './crypto.ts'
 import { PAM_ROOT_USERNAME, verifyCredentials } from './credentials.ts'
 import {
+  createOrganizationForUser,
   getUserOrganizationId,
   isInstanceInstalled,
   isSignupEnabled,
+  isSignupEmailVerificationEnabled,
   type SignupEnvOverride,
   validateSuperadminEmail,
   validateSuperadminPassword,
@@ -38,6 +40,8 @@ export type AuthRouteOpts = {
   runtime: 'deno' | 'workers'
   /** `TURBOPANEL_IS_SIGNUP_ENABLED` — env override for Workers and self-hosted. */
   signupEnvOverride?: SignupEnvOverride
+  /** `TURBOPANEL_IS_SIGNUP_EMAIL_VERIFICATION_ENABLED` — env override for sign-up email verification. */
+  signupEmailVerificationEnvOverride?: SignupEnvOverride
   emailFrom?: string
   baseUrl?: string
 }
@@ -314,6 +318,12 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Sign-up is not enabled' }, 403)
     }
 
+    const emailVerificationEnabled = await isSignupEmailVerificationEnabled(
+      db,
+      opts.signupEmailVerificationEnvOverride,
+      opts.runtime,
+    )
+
     let body: unknown
     try {
       body = await c.req.json()
@@ -362,7 +372,11 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
     }
 
     const signupQueue = getEmailQueue(c)
-    if (opts.runtime === 'workers' && isNoopEmailQueue(signupQueue)) {
+    if (
+      emailVerificationEnabled &&
+      opts.runtime === 'workers' &&
+      isNoopEmailQueue(signupQueue)
+    ) {
       return c.json(
         {
           ok: false,
@@ -381,7 +395,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
           .insert(user)
           .values({
             email: trimmedEmail,
-            isEmailVerified: false,
+            isEmailVerified: !emailVerificationEnabled,
             role: 'user',
           })
           .returning({ id: user.id })
@@ -407,6 +421,21 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Sign-up failed' }, 500)
     }
 
+    const provisionWorkersOrganization = async () => {
+      if (opts.runtime === 'workers' && createdUserId) {
+        try {
+          await createOrganizationForUser(db, createdUserId)
+        } catch (err) {
+          compatLogWarn('auth', `Workers sign-up org creation failed: ${err}`)
+        }
+      }
+    }
+
+    if (!emailVerificationEnabled) {
+      await provisionWorkersOrganization()
+      return c.json({ ok: true }, 201)
+    }
+
     // Token generation must not roll back the already-committed user creation.
     try {
       const verificationToken = await createEmailVerificationToken(db, trimmedEmail)
@@ -425,6 +454,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
             from: emailFrom,
             verificationUrl,
           })
+          await provisionWorkersOrganization()
           if (isVerificationDevLoggingEnabled(opts)) {
             compatLogInfo('dev', `verification email queued for ${trimmedEmail}`)
             compatLogInfo('dev', `verify URL: ${verificationUrl}`)

@@ -28,6 +28,8 @@ export const DEFAULT_TEAM_NAME = 'Default Team'
 export const COLOCATED_SERVER_DISPLAY_NAME = 'this server'
 
 export const IS_SIGNUP_ENABLED_CONFIG_KEY = 'IS_SIGNUP_ENABLED'
+export const IS_SIGNUP_EMAIL_VERIFICATION_ENABLED_CONFIG_KEY =
+  'IS_SIGNUP_EMAIL_VERIFICATION_ENABLED'
 
 /** Wrangler / platform env bindings may arrive as strings, numbers, or booleans. */
 export type SignupEnvOverride = string | number | boolean | null | undefined
@@ -71,17 +73,40 @@ export function resolveIsSignupEnabled(
   return false
 }
 
+/**
+ * Env override wins when it is a recognized enable/disable flag; otherwise the DB
+ * setting applies. On Workers, email verification defaults to enabled when both are
+ * unset. Self-hosted Deno defaults to disabled when email may not be configured.
+ */
+export function resolveIsSignupEmailVerificationEnabled(
+  dbValue: string | null | undefined,
+  envOverride: SignupEnvOverride,
+  options?: { runtime?: 'deno' | 'workers' },
+): boolean {
+  const normalizedEnv = normalizeSignupEnvOverride(envOverride)
+  if (normalizedEnv !== undefined) {
+    const flag = normalizedEnv.toLowerCase()
+    if (flag === '1' || flag === 'true') return true
+    if (flag === '0' || flag === 'false') return false
+  }
+  if (dbValue === '1') return true
+  if (dbValue === '0') return false
+  if (options?.runtime === 'workers') return true
+  return false
+}
+
 export type InstallStatus = {
   needsInstall: boolean
   isInstallMode: boolean
   isSignupEnabled: boolean
+  isSignupEmailVerificationEnabled: boolean
 }
 
 function nowTs(): string {
   return new Date().toISOString()
 }
 
-async function insertOwnerGrants(
+export async function insertOwnerGrants(
   db: Db,
   userId: string,
   organizationId: string,
@@ -165,18 +190,49 @@ export async function isSignupEnabled(
   }
 }
 
+export async function isSignupEmailVerificationEnabled(
+  db: Db,
+  envOverride?: SignupEnvOverride,
+  runtime: 'deno' | 'workers' = 'deno',
+): Promise<boolean> {
+  try {
+    const rows = await db
+      .select({ value: setting.value })
+      .from(setting)
+      .where(eq(setting.key, IS_SIGNUP_EMAIL_VERIFICATION_ENABLED_CONFIG_KEY))
+      .limit(1)
+
+    return resolveIsSignupEmailVerificationEnabled(rows[0]?.value, envOverride, {
+      runtime,
+    })
+  } catch (err) {
+    if (isMissingRelationError(err)) {
+      return resolveIsSignupEmailVerificationEnabled(undefined, envOverride, {
+        runtime,
+      })
+    }
+    throw err
+  }
+}
+
 export async function getInstallStatus(
   db: Db,
-  envOverride?: string,
+  envOverride?: SignupEnvOverride,
+  emailVerificationEnvOverride?: SignupEnvOverride,
 ): Promise<InstallStatus> {
   // Sequential: parallel drizzle queries on postgres.js can wedge the pool (Deno dev).
   const installed = await isInstanceInstalled(db)
   const signupEnabled = await isSignupEnabled(db, envOverride)
+  const emailVerificationEnabled = await isSignupEmailVerificationEnabled(
+    db,
+    emailVerificationEnvOverride,
+  )
   const needsInstall = !installed
   return {
     needsInstall,
     isInstallMode: needsInstall,
     isSignupEnabled: signupEnabled,
+    isSignupEmailVerificationEnabled: emailVerificationEnabled,
   }
 }
 
@@ -185,6 +241,7 @@ export type DenoClientPublicStatus = InstallStatus & { ok: true }
 export type WorkersClientPublicStatus = {
   ok: true
   isSignupEnabled: boolean
+  isSignupEmailVerificationEnabled: boolean
 }
 
 export type ClientPublicStatus = DenoClientPublicStatus | WorkersClientPublicStatus
@@ -194,6 +251,7 @@ export async function getClientPublicStatus(
   db: Db | undefined,
   runtime: 'deno' | 'workers',
   envOverride?: SignupEnvOverride,
+  emailVerificationEnvOverride?: SignupEnvOverride,
 ): Promise<ClientPublicStatus | null> {
   if (runtime === 'workers') {
     if (db === undefined) {
@@ -202,17 +260,31 @@ export async function getClientPublicStatus(
         isSignupEnabled: resolveIsSignupEnabled(undefined, envOverride, {
           runtime: 'workers',
         }),
+        isSignupEmailVerificationEnabled: resolveIsSignupEmailVerificationEnabled(
+          undefined,
+          emailVerificationEnvOverride,
+          { runtime: 'workers' },
+        ),
       }
     }
     const signupEnabled = await isSignupEnabled(db, envOverride, 'workers')
-    return { ok: true, isSignupEnabled: signupEnabled }
+    const emailVerificationEnabled = await isSignupEmailVerificationEnabled(
+      db,
+      emailVerificationEnvOverride,
+      'workers',
+    )
+    return {
+      ok: true,
+      isSignupEnabled: signupEnabled,
+      isSignupEmailVerificationEnabled: emailVerificationEnabled,
+    }
   }
 
   if (db === undefined) {
     return null
   }
 
-  const status = await getInstallStatus(db, envOverride)
+  const status = await getInstallStatus(db, envOverride, emailVerificationEnvOverride)
   return { ok: true, ...status }
 }
 
@@ -616,6 +688,75 @@ export async function ensureColocatedLicenseCredentialsOnDisk(
     'install',
     'restored colocated license credentials on disk after partial install',
   )
+}
+
+export async function createOrganizationForUser(
+  db: Db,
+  userId: string,
+  orgName?: string,
+): Promise<{ organizationId: string; teamId: string }> {
+  const displayName = orgName?.trim() || DEFAULT_ORGANIZATION_NAME
+
+  return await db.transaction(async (tx) => {
+    const insertedOrg = await tx
+      .insert(organization)
+      .values({
+        displayName,
+      })
+      .returning({ id: organization.id })
+
+    const organizationId = insertedOrg[0]?.id
+    if (!organizationId) {
+      throw new Error('Organization creation failed')
+    }
+
+    const insertedTeam = await tx
+      .insert(team)
+      .values({
+        organizationId,
+        displayName: DEFAULT_TEAM_NAME,
+      })
+      .returning({ id: team.id })
+
+    const teamId = insertedTeam[0]?.id
+    if (!teamId) {
+      throw new Error('Team creation failed')
+    }
+
+    await tx.insert(member).values({
+      organizationId,
+      userId,
+    })
+
+    await tx.insert(teammate).values({
+      teamId,
+      userId,
+    })
+
+    await insertOwnerGrants(tx, userId, organizationId)
+
+    await tx
+      .insert(grant)
+      .values({
+        entityType: 'team',
+        entityId: teamId,
+        subjectType: 'user',
+        subjectId: userId,
+        permission: 'team:own',
+        allow: true,
+      })
+      .onConflictDoNothing({
+        target: [
+          grant.entityType,
+          grant.entityId,
+          grant.subjectType,
+          grant.subjectId,
+          grant.permission,
+        ],
+      })
+
+    return { organizationId, teamId }
+  })
 }
 
 export async function completeInstanceInstall(

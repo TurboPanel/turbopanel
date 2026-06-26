@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   getClientPublicStatus,
   normalizeSignupEnvOverride,
+  resolveIsSignupEmailVerificationEnabled,
   resolveIsSignupEnabled,
 } from './install-state.ts'
 
@@ -65,23 +66,58 @@ describe('resolveIsSignupEnabled', () => {
   })
 })
 
+describe('resolveIsSignupEmailVerificationEnabled', () => {
+  it('honors string env overrides on Deno self-hosted', () => {
+    expect(
+      resolveIsSignupEmailVerificationEnabled(undefined, '1', { runtime: 'deno' }),
+    ).toBe(true)
+    expect(
+      resolveIsSignupEmailVerificationEnabled(undefined, 'true', { runtime: 'deno' }),
+    ).toBe(true)
+    expect(
+      resolveIsSignupEmailVerificationEnabled(undefined, '0', { runtime: 'deno' }),
+    ).toBe(false)
+    expect(
+      resolveIsSignupEmailVerificationEnabled(undefined, false, { runtime: 'deno' }),
+    ).toBe(false)
+  })
+
+  it('defaults Deno to disabled when env and DB are unset', () => {
+    expect(
+      resolveIsSignupEmailVerificationEnabled(undefined, undefined, { runtime: 'deno' }),
+    ).toBe(false)
+  })
+
+  it('defaults Workers to enabled when env and DB are unset', () => {
+    expect(
+      resolveIsSignupEmailVerificationEnabled(undefined, undefined, {
+        runtime: 'workers',
+      }),
+    ).toBe(true)
+  })
+})
+
 describe('getClientPublicStatus (Workers)', () => {
   it('reflects numeric and string signup env bindings without a database', async () => {
     await expect(getClientPublicStatus(undefined, 'workers', 1)).resolves.toEqual({
       ok: true,
       isSignupEnabled: true,
+      isSignupEmailVerificationEnabled: true,
     })
     await expect(getClientPublicStatus(undefined, 'workers', 0)).resolves.toEqual({
       ok: true,
       isSignupEnabled: false,
+      isSignupEmailVerificationEnabled: true,
     })
     await expect(getClientPublicStatus(undefined, 'workers', '1')).resolves.toEqual({
       ok: true,
       isSignupEnabled: true,
+      isSignupEmailVerificationEnabled: true,
     })
     await expect(getClientPublicStatus(undefined, 'workers', '0')).resolves.toEqual({
       ok: true,
       isSignupEnabled: false,
+      isSignupEmailVerificationEnabled: true,
     })
   })
 
@@ -89,6 +125,24 @@ describe('getClientPublicStatus (Workers)', () => {
     await expect(getClientPublicStatus(undefined, 'workers', undefined)).resolves.toEqual({
       ok: true,
       isSignupEnabled: true,
+      isSignupEmailVerificationEnabled: true,
+    })
+  })
+
+  it('honors email verification env override without a database', async () => {
+    await expect(
+      getClientPublicStatus(undefined, 'workers', '1', '0'),
+    ).resolves.toEqual({
+      ok: true,
+      isSignupEnabled: true,
+      isSignupEmailVerificationEnabled: false,
+    })
+    await expect(
+      getClientPublicStatus(undefined, 'workers', '1', '1'),
+    ).resolves.toEqual({
+      ok: true,
+      isSignupEnabled: true,
+      isSignupEmailVerificationEnabled: true,
     })
   })
 })
