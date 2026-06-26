@@ -14,7 +14,6 @@ import { DAEMON_PING_MS } from './daemon/cell/protocol.ts'
 import { resolveWorkersEmailQueue } from './lib/email/mailgun/workers-queue.ts'
 import {
   resolveEmailSettings,
-  resolveWorkersEmailProvider,
 } from './lib/settings/email-settings.ts'
 import type { EmailQueue } from './lib/email/types.ts'
 
@@ -68,14 +67,6 @@ async function initWorkerApp(env: CloudflareBindings) {
   // enqueues to Mailgun immediately via resolveWorkersEmailQueue -> WorkersMailgunQueue.
   cachedEmailQueue = await resolveWorkersEmailQueue(db, platformEnv)
   const emailSettings = await resolveEmailSettings(db, platformEnv)
-  // #region agent log
-  {
-    const workersProvider = resolveWorkersEmailProvider(emailSettings)
-    const hasMailgunKey = Boolean(emailSettings.mailgunApiKey?.trim())
-    const hasMailgunDomain = Boolean(emailSettings.mailgunDomain?.trim())
-    fetch('http://localhost:7440/ingest/3e0179a5-fa63-49e5-b717-b62ee1a155c9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'543aa9'},body:JSON.stringify({sessionId:'543aa9',location:'workers.ts:initWorkerApp',message:'workers email queue init',data:{queueType:cachedEmailQueue?.constructor.name??'null',provider:emailSettings.provider,workersProvider,hasMailgunKey,hasMailgunDomain,mailgunRegion:emailSettings.mailgunRegion,mailgunApiBase:emailSettings.mailgunApiBase,providerSource:emailSettings.keys.PROVIDER.source,from:emailSettings.from},timestamp:Date.now(),hypothesisId:'A,C,B1',runId:'post-fix'})}).catch(()=>{});
-  }
-  // #endregion
   // DB and DO challenge stubs are created per request — Workers forbid reusing I/O
   // objects across fetch handlers.
   cachedApp = createApp({

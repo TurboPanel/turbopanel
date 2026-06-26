@@ -24,9 +24,6 @@ class WorkersMailgunQueue implements EmailQueue {
       from: this.opts.from,
       apiBase: this.opts.apiBase,
     })
-    // #region agent log
-    fetch('http://localhost:7440/ingest/3e0179a5-fa63-49e5-b717-b62ee1a155c9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'543aa9'},body:JSON.stringify({sessionId:'543aa9',location:'workers-queue.ts:enqueue',message:'mailgun enqueue outcome',data:{jobType:job.type,to:job.to,ok:outcome.ok,permanent:!outcome.ok?outcome.permanent:undefined,error:!outcome.ok?outcome.error.slice(0,120):undefined,domain:this.opts.domain,from:this.opts.from,apiBase:this.opts.apiBase},timestamp:Date.now(),hypothesisId:'B',runId:'post-fix'})}).catch(()=>{});
-    // #endregion
     if (!outcome.ok) {
       console.error('[TurboPanel email] Mailgun send failed', {
         error: outcome.error,
@@ -48,18 +45,12 @@ export async function resolveWorkersEmailQueue(
   const resolved = await resolveEmailSettings(db, env)
   const workersProvider = resolveWorkersEmailProvider(resolved)
   if (workersProvider !== 'mailgun') {
-    // #region agent log
-    fetch('http://localhost:7440/ingest/3e0179a5-fa63-49e5-b717-b62ee1a155c9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'543aa9'},body:JSON.stringify({sessionId:'543aa9',location:'workers-queue.ts:resolveWorkersEmailQueue',message:'noop queue: provider not mailgun',data:{provider:resolved.provider,workersProvider,providerSource:resolved.keys.PROVIDER.source},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
-    // #endregion
     return createNoopQueue()
   }
 
   const apiKey = resolved.mailgunApiKey?.trim() ?? ''
   const domain = resolved.mailgunDomain?.trim() ?? ''
   if (apiKey === '' || domain === '') {
-    // #region agent log
-    fetch('http://localhost:7440/ingest/3e0179a5-fa63-49e5-b717-b62ee1a155c9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'543aa9'},body:JSON.stringify({sessionId:'543aa9',location:'workers-queue.ts:resolveWorkersEmailQueue',message:'noop queue: missing mailgun credentials',data:{hasApiKey:apiKey!=='',hasDomain:domain!=='',providerSource:resolved.keys.PROVIDER.source},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
     return createNoopQueue()
   }
 
