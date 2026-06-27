@@ -367,7 +367,6 @@ export async function resolveColocatedServerId(
       .from(server)
       .where(and(
         isNull(server.organizationId),
-        isNull(server.deletedAt),
         sql`${server.metadata}->>'machineId' = ${machineId}`,
       ))
       .limit(1)
@@ -391,7 +390,6 @@ export async function resolveColocatedServerId(
       .from(server)
       .where(and(
         isNull(server.organizationId),
-        isNull(server.deletedAt),
         sql`${server.metadata}->>'hostname' = ${hostname}`,
       ))
       .limit(1)
@@ -403,7 +401,7 @@ export async function resolveColocatedServerId(
     const unassigned = await db
       .select({ id: server.id })
       .from(server)
-      .where(and(isNull(server.organizationId), isNull(server.deletedAt)))
+      .where(isNull(server.organizationId))
     if (unassigned.length === 1 && unassigned[0]?.id) {
       return unassigned[0].id
     }

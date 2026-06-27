@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { eq, isNull } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import { createRootOnlyMiddleware } from '../client/authn/middleware.ts'
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import type { Db } from '../db.ts'
@@ -314,7 +314,6 @@ export function buildDeveloperRouter(
         createdAt: server.createdAt,
       })
       .from(server)
-      .where(isNull(server.deletedAt))
       .orderBy(server.createdAt)
     return c.json({ servers: rows })
   })

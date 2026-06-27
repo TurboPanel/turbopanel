@@ -1,5 +1,5 @@
 {
-  "id": "ac19339a-0437-4118-a12f-31fedcb8434d",
+  "id": "cfa2201c-4806-4641-8d3c-c46196d1f1f0",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -129,200 +129,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.apikey": {
-      "name": "apikey",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "config_id": {
-          "name": "config_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "start": {
-          "name": "start",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "prefix": {
-          "name": "prefix",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "key": {
-          "name": "key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "reference_id": {
-          "name": "reference_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "refill_interval": {
-          "name": "refill_interval",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "refill_amount": {
-          "name": "refill_amount",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_refill_at": {
-          "name": "last_refill_at",
-          "type": "timestamp(6) with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "enabled": {
-          "name": "enabled",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rate_limit_enabled": {
-          "name": "rate_limit_enabled",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rate_limit_time_window": {
-          "name": "rate_limit_time_window",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rate_limit_max": {
-          "name": "rate_limit_max",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "request_count": {
-          "name": "request_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "remaining": {
-          "name": "remaining",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_request": {
-          "name": "last_request",
-          "type": "timestamp(6) with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp(6) with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp(6) with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp(6) with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "permissions": {
-          "name": "permissions",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "metadata": {
-          "name": "metadata",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "idx_apikey_config_id": {
-          "name": "idx_apikey_config_id",
-          "columns": [
-            {
-              "expression": "config_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "text_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_apikey_reference_id": {
-          "name": "idx_apikey_reference_id",
-          "columns": [
-            {
-              "expression": "reference_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "text_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_apikey_key": {
-          "name": "idx_apikey_key",
-          "columns": [
-            {
-              "expression": "key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "text_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.environment": {
       "name": "environment",
       "schema": "",
@@ -396,7 +202,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
+          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },
@@ -421,6 +227,13 @@
           "primaryKey": true,
           "notNull": true,
           "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
         },
         "entity_type": {
           "name": "entity_type",
@@ -458,13 +271,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
         }
       },
       "indexes": {
@@ -603,7 +409,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
+          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },
@@ -983,7 +789,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
+          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },
@@ -1266,7 +1072,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
+          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },
@@ -1303,12 +1109,6 @@
           "type": "timestamp(3) with time zone",
           "primaryKey": false,
           "notNull": true
-        },
-        "deleted_at": {
-          "name": "deleted_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": false
         },
         "organization_id": {
           "name": "organization_id",
@@ -1359,7 +1159,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
+          "onDelete": "restrict",
           "onUpdate": "no action"
         },
         "server_license_id_license_id_fk": {
@@ -1372,7 +1172,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
+          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },
@@ -1455,7 +1255,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
+          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },

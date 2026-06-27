@@ -1,4 +1,4 @@
-import { and, inArray, isNull } from 'drizzle-orm'
+import { inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -55,7 +55,7 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
         createdAt: server.createdAt,
       })
       .from(server)
-      .where(and(inArray(server.id, visibleIds), isNull(server.deletedAt)))
+      .where(inArray(server.id, visibleIds))
       .orderBy(server.createdAt)
 
     const registry = getDaemonCellRegistry(c)

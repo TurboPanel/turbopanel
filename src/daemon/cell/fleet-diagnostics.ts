@@ -1,4 +1,3 @@
-import { isNull } from "drizzle-orm";
 import type { Db } from "../../db.ts";
 import { server } from "../../lib/db/schema.ts";
 import type { DaemonCellRegistry, PendingRequestRecord } from "./contracts.ts";
@@ -39,8 +38,7 @@ function nowTs(): string {
 export async function listFleetServerIds(db: Db): Promise<string[]> {
   const rows = await db
     .select({ id: server.id })
-    .from(server)
-    .where(isNull(server.deletedAt));
+    .from(server);
   return rows.map((row) => row.id);
 }
 
