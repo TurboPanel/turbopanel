@@ -14,6 +14,10 @@ import {
   parseDescription,
   parseJsonBody,
 } from '../shared.ts'
+import {
+  hierarchyDeleteHasChildrenResponse,
+  runHierarchyDelete,
+} from '../hierarchy-delete.ts'
 
 export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
   router.use('/workspaces', createSessionMiddleware(opts.secrets))
@@ -199,9 +203,12 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
     const denied = await assertCanOr403(c, 'organization:own', 'workspace', id)
     if (denied) return denied
 
-    await db.transaction(async (tx) => {
+    const result = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(workspace).where(eq(workspace.id, id))
     })
+    if (result === 'has_children') {
+      return hierarchyDeleteHasChildrenResponse(c)
+    }
 
     return c.json({ ok: true as const })
   })

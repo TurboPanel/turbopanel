@@ -16,6 +16,10 @@ import {
   parseJsonBody,
   requireStringField,
 } from '../shared.ts'
+import {
+  hierarchyDeleteHasChildrenResponse,
+  runHierarchyDelete,
+} from '../hierarchy-delete.ts'
 
 export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
   router.use('/projects', createSessionMiddleware(opts.secrets))
@@ -214,9 +218,12 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
     const denied = await assertCanOr403(c, 'organization:own', 'project', id)
     if (denied) return denied
 
-    await db.transaction(async (tx) => {
+    const result = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(project).where(eq(project.id, id))
     })
+    if (result === 'has_children') {
+      return hierarchyDeleteHasChildrenResponse(c)
+    }
 
     return c.json({ ok: true as const })
   })

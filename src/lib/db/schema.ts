@@ -194,7 +194,6 @@ export const server = pgTable(
       withTimezone: true,
       mode: 'string',
     }).notNull(),
-    deletedAt: timestamp('deleted_at', { precision: 3, withTimezone: true, mode: 'string' }),
     organizationId: uuid('organization_id'),
     licenseId: uuid('license_id'),
     displayName: varchar('display_name', { length: 255 }),
@@ -207,12 +206,12 @@ export const server = pgTable(
       columns: [table.organizationId],
       foreignColumns: [organization.id],
       name: 'server_organization_id_organization_id_fk',
-    }),
+    }).onDelete('restrict'),
     foreignKey({
       columns: [table.licenseId],
       foreignColumns: [license.id],
       name: 'server_license_id_license_id_fk',
-    }),
+    }).onDelete('restrict'),
   ]
 )
 export const network = pgTable(
@@ -236,7 +235,7 @@ export const network = pgTable(
       columns: [table.serverId],
       foreignColumns: [server.id],
       name: 'network_server_id_server_id_fk',
-    }).onDelete('cascade'),
+    }).onDelete('restrict'),
   ]
 )
 export const workspace = pgTable(
@@ -299,7 +298,7 @@ export const project = pgTable(
       columns: [table.workspaceId],
       foreignColumns: [workspace.id],
       name: 'project_workspace_id_workspace_id_fk',
-    }).onDelete('cascade'),
+    }).onDelete('restrict'),
     check(
       'project_display_name_format_check',
       sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
@@ -332,7 +331,7 @@ export const environment = pgTable(
       columns: [table.projectId],
       foreignColumns: [project.id],
       name: 'environment_project_id_project_id_fk',
-    }).onDelete('cascade'),
+    }).onDelete('restrict'),
     check(
       'environment_display_name_format_check',
       sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
@@ -365,7 +364,7 @@ export const service = pgTable(
       columns: [table.environmentId],
       foreignColumns: [environment.id],
       name: 'service_environment_id_environment_id_fk',
-    }).onDelete('cascade'),
+    }).onDelete('restrict'),
     check(
       'service_display_name_format_check',
       sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
@@ -398,7 +397,7 @@ export const hosting = pgTable(
       columns: [table.serviceId],
       foreignColumns: [service.id],
       name: 'hosting_service_id_service_id_fk',
-    }).onDelete('cascade'),
+    }).onDelete('restrict'),
     check(
       'hosting_display_name_format_check',
       sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
