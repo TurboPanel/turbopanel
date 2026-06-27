@@ -27,9 +27,16 @@ declare namespace Deno {
   ): Promise<Conn>
   function chmod(path: string, mode: number): Promise<void>
   function remove(path: string): Promise<void>
+  function mkdir(path: string, options?: { recursive?: boolean }): Promise<void>
   function readTextFile(path: string): Promise<string>
+  function writeTextFile(
+    path: string,
+    data: string,
+    options?: { create?: boolean },
+  ): Promise<void>
   function readFile(path: string): Promise<Uint8Array>
   function makeTempFile(options?: { suffix?: string }): Promise<string>
+  function hostname(): string
   function networkInterfaces(): Iterable<{
     name: string
     address: string
