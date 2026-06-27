@@ -3,8 +3,15 @@ import {
   deriveSecretsConfig,
   parseSecretsEnv,
 } from "../../client/authn/secrets.ts";
+import { createWorkersDb, type Db } from "../../db.ts";
 import { verifyDaemonJwt } from "../authn/daemon-jwt.ts";
+import {
+  onDaemonConnected,
+  onDaemonDisconnected,
+  onDaemonHeartbeat,
+} from "./control-plane-monitor.ts";
 import type {
+  DaemonCell,
   DaemonCellLease,
   DaemonCellSnapshot,
   PendingRequestRecord,
@@ -235,6 +242,93 @@ export class DaemonCellObject {
       serverId,
       nowIso(),
     );
+  }
+
+  /**
+   * Build a Postgres client for the sparse presence projection. The native
+   * Workers WebSocket path terminates inside the Durable Object (hibernation),
+   * so connect/disconnect/agent transitions must be projected from here rather
+   * than from the main worker. Returns `null` when no database binding is
+   * configured (e.g. unit tests), making projection a no-op.
+   */
+  #newProjectionDb(): Db | null {
+    if (this.#env.HYPERDRIVE) {
+      return createWorkersDb(this.#env.HYPERDRIVE);
+    }
+    const url = this.#env.TURBOPANEL_DATABASE_URL?.trim();
+    if (url) {
+      return createWorkersDb({ connectionString: url });
+    }
+    return null;
+  }
+
+  /**
+   * Minimal in-process `DaemonCell` facade backed by this cell's own storage so
+   * the shared `control-plane-monitor` projection helpers can read/patch the
+   * snapshot without an extra RPC round-trip.
+   */
+  #projectionCell(serverId: string): DaemonCell {
+    return {
+      getSnapshot: () => this.#getSnapshot(serverId),
+      putSnapshot: (patch: Partial<DaemonCellSnapshot>) =>
+        this.#putSnapshot(serverId, patch),
+    } as unknown as DaemonCell;
+  }
+
+  async #projectConnected(serverId: string, connectedAt: string): Promise<void> {
+    const db = this.#newProjectionDb();
+    if (!db) return;
+    try {
+      await onDaemonConnected(
+        db,
+        serverId,
+        this.#projectionCell(serverId),
+        connectedAt,
+      );
+    } catch (err) {
+      console.error(
+        `daemon cell connect projection failed (${serverId}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  async #projectDisconnected(serverId: string): Promise<void> {
+    const db = this.#newProjectionDb();
+    if (!db) return;
+    try {
+      await onDaemonDisconnected(db, serverId, this.#projectionCell(serverId));
+    } catch (err) {
+      console.error(
+        `daemon cell disconnect projection failed (${serverId}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  async #projectAgent(
+    serverId: string,
+    agent: DaemonAgentInfo | undefined,
+  ): Promise<void> {
+    if (!agent?.commit || !agent?.buildId) return;
+    const db = this.#newProjectionDb();
+    if (!db) return;
+    try {
+      await onDaemonHeartbeat(
+        db,
+        serverId,
+        this.#projectionCell(serverId),
+        agent,
+      );
+    } catch (err) {
+      console.error(
+        `daemon cell agent projection failed (${serverId}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -489,6 +583,7 @@ export class DaemonCellObject {
       connectedAt,
     });
 
+    void this.#projectConnected(serverId, connectedAt);
     void this.#pumpOutboxToDaemonSockets(serverId);
     await this.#scheduleOutboxRetryIfNeeded();
 
@@ -605,6 +700,7 @@ export class DaemonCellObject {
 
     if (parsed.type === "hello") {
       this.#recordInbound(attachment.serverId, parsed.at, parsed.agent);
+      await this.#projectAgent(attachment.serverId, parsed.agent);
       return;
     }
 
@@ -614,6 +710,7 @@ export class DaemonCellObject {
         parsed.at,
         parsed.agent,
       );
+      await this.#projectAgent(attachment.serverId, parsed.agent);
       return;
     }
 
@@ -679,6 +776,7 @@ export class DaemonCellObject {
     });
 
     if (isCurrentConnection) {
+      await this.#projectDisconnected(attachment.serverId);
       await this.#scheduleNearestAlarm();
     }
   }
@@ -943,8 +1041,11 @@ export class DaemonCellObject {
         connected: false,
       };
     }
-    this.#ensureServerId(serverId);
 
+    // Read-only: never insert `cell_meta` here. Reading a missing or purged
+    // snapshot returns a synthetic disconnected snapshot without recreating the
+    // row. Row creation belongs only on mutation paths (attach, patch, enqueue,
+    // and other writes that go through `#ensureServerId`).
     const metaCursor = this.#ctx.storage.sql.exec(
       "SELECT * FROM cell_meta WHERE server_id = ?",
       serverId,

@@ -663,6 +663,50 @@ describe("DaemonCellObject", () => {
     },
     15_000,
   );
+
+  it("snapshot read does not recreate cell_meta for a missing server", async () => {
+    const serverId = "test-srv-readonly-missing";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+
+    const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
+      method: "GET",
+    });
+    const snapshot = await snapshotResponse.json() as { connected: boolean };
+    expect(snapshot.connected).toBe(false);
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      const cursor = state.storage.sql.exec("SELECT server_id FROM cell_meta");
+      for (const _ of cursor) {
+        throw new Error("expected snapshot read to not create cell_meta");
+      }
+    });
+  });
+
+  it("snapshot read after purge does not recreate cell_meta", async () => {
+    const serverId = "test-srv-readonly-purge";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const { ws } = await openDaemonWebSocket(stub, serverId);
+    ws.close(1000, "test done");
+
+    const purgeResponse = await cellRpc(stub, serverId, "/rpc/purge-cell", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    expect(purgeResponse.status).toBe(200);
+
+    const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
+      method: "GET",
+    });
+    const snapshot = await snapshotResponse.json() as { connected: boolean };
+    expect(snapshot.connected).toBe(false);
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      const cursor = state.storage.sql.exec("SELECT server_id FROM cell_meta");
+      for (const _ of cursor) {
+        throw new Error("expected snapshot read to not recreate cell_meta");
+      }
+    });
+  });
 });
 
 function wsSendCommandResult(ws: WebSocket, requestId: string): void {

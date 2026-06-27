@@ -7,6 +7,8 @@ import {
   resolveCellLocationHint,
 } from "./cell/location.ts";
 
+const CELL_SERVER_ID_HEADER = "X-Turbopanel-Cell-Server-Id";
+
 export type WorkersDaemonWebSocketOptions = {
   secrets?: DerivedSecretsConfig;
 };
@@ -14,8 +16,13 @@ export type WorkersDaemonWebSocketOptions = {
 /**
  * Daemon WebSocket hub for Cloudflare Workers / wrangler dev.
  *
- * Verifies the daemon JWT, then forwards the raw upgrade request
- * to the per-server Durable Object cell.
+ * Verifies the daemon JWT, then forwards the upgrade request to the per-server
+ * Durable Object cell. The native Workers WebSocket lifecycle runs inside the
+ * Durable Object (hibernation), so the Postgres presence projection — the
+ * equivalent of `onDaemonConnected()` / `onDaemonDisconnected()` and agent
+ * updates — is driven from `DaemonCellObject` itself rather than here. We stamp
+ * the resolved server id onto the forwarded request so the cell resolves its
+ * identity consistently across the WS and RPC entry paths.
  */
 export function registerWorkersDaemonWebSocket(
   app: Hono,
@@ -54,6 +61,8 @@ export function registerWorkersDaemonWebSocket(
       })
       : env.DAEMON_CELL.getByName(logicalName);
 
-    return stub.fetch(c.req.raw);
+    const headers = new Headers(c.req.raw.headers);
+    headers.set(CELL_SERVER_ID_HEADER, serverId);
+    return stub.fetch(new Request(c.req.raw, { headers }));
   });
 }

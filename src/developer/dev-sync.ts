@@ -11,6 +11,7 @@ import {
 import { getDaemonCellRegistry } from '../db.ts'
 import { getDaemonRepoPath } from '../daemon/version.ts'
 import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
+import { buildDevSyncTarArgs } from './dev-sync-archive.ts'
 
 /** Base64 characters per chunk (~256 KiB of payload before encoding). */
 const CHUNK_CHARS = 256 * 1024
@@ -18,24 +19,17 @@ const CHUNK_CHARS = 256 * 1024
 const DEV_SYNC_TIMEOUT_MS = 180_000
 
 /**
- * Build a gzipped tarball of the local daemon checkout, excluding heavy,
- * host-specific, or generated paths. Requires `--allow-run=tar`.
+ * Build a gzipped tarball of the local daemon checkout from an explicit source
+ * allowlist (see {@link buildDevSyncTarArgs}). Only the source files an official
+ * install ships are included — host-local/runtime paths such as `.env`, tunnel
+ * state, logs, caches, and `node_modules` are never copied to other nodes, while
+ * the checked-in `orchestration/roles` tree is. Requires `--allow-run=tar`.
  */
 async function buildDaemonTarball(repo: string): Promise<Uint8Array> {
   const tmp = await Deno.makeTempFile({ suffix: '.tgz' })
   try {
     const command = new Deno.Command('tar', {
-      args: [
-        '-czf',
-        tmp,
-        '-C',
-        repo,
-        '--exclude=./.git',
-        '--exclude=./orchestration/roles',
-        '--exclude=./cloudflared/tunnels',
-        '--exclude=./node_modules',
-        '.',
-      ],
+      args: buildDevSyncTarArgs(repo, tmp),
       stdout: 'piped',
       stderr: 'piped',
     })

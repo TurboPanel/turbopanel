@@ -78,7 +78,9 @@ Deno.test("resolveFleetPresence prefers live snapshot.connected over stale proje
     ]),
   });
 
-  const presence = await resolveFleetPresence(db, registry, [serverId]);
+  const presence = await resolveFleetPresence(db, registry, [serverId], {
+    withSnapshots: true,
+  });
   assertEquals(presence.get(serverId)?.connected, false);
 });
 
@@ -118,7 +120,9 @@ Deno.test("resolveFleetPresence treats stale lastSeenAt as disconnected", async 
     ]),
   });
 
-  const presence = await resolveFleetPresence(db, registry, [serverId]);
+  const presence = await resolveFleetPresence(db, registry, [serverId], {
+    withSnapshots: true,
+  });
   assertEquals(presence.get(serverId)?.connected, false);
 });
 
@@ -137,6 +141,8 @@ Deno.test("resolveFleetPresence keeps connected when lastSeenAt is fresh", async
     ]),
   });
 
-  const presence = await resolveFleetPresence(db, registry, [serverId]);
+  const presence = await resolveFleetPresence(db, registry, [serverId], {
+    withSnapshots: true,
+  });
   assertEquals(presence.get(serverId)?.connected, true);
 });

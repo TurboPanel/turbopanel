@@ -53,16 +53,34 @@ function isSnapshotConnected(snapshot: DaemonCellSnapshot): boolean {
   return Date.now() - lastInboundMs < STALE_THRESHOLD_MS;
 }
 
+export type ResolveFleetPresenceOptions = {
+  /**
+   * Read live Durable Object / Redis snapshots and prefer them over the sparse
+   * Postgres projection. This costs one cell read per server, so it is reserved
+   * for explicit diagnostics-only callers. Defaults to `false`, in which case
+   * coarse presence and agent data are served from the Postgres projection.
+   */
+  withSnapshots?: boolean;
+};
+
 /**
- * Resolve fleet presence from sparse Postgres projection, optionally overlaying
- * live connected state from the cell online index (Redis on Deno).
+ * Resolve fleet presence.
+ *
+ * By default this serves coarse presence and agent data from the sparse
+ * Postgres projection (plus the cheap online index from the cell registry —
+ * Redis on Deno, projection on Workers), and performs **no** per-server cell
+ * snapshot reads. Pass `{ withSnapshots: true }` from diagnostics-only endpoints
+ * to overlay live Durable Object / Redis snapshots.
  */
 export async function resolveFleetPresence(
   db: Db,
   registry: DaemonCellRegistry | undefined,
   serverIds: string[],
+  options: ResolveFleetPresenceOptions = {},
 ): Promise<Map<string, ServerFleetPresence>> {
   if (serverIds.length === 0) return new Map();
+
+  const withSnapshots = options.withSnapshots ?? false;
 
   const [rows, projections, onlineSet, snapshots] = await Promise.all([
     db
@@ -77,7 +95,7 @@ export async function resolveFleetPresence(
     registry
       ? registry.listOnlineServerIds().then((ids) => new Set(ids))
       : Promise.resolve<Set<string> | null>(null),
-    registry
+    withSnapshots && registry
       ? registry.getSnapshots(serverIds)
       : Promise.resolve(new Map<string, DaemonCellSnapshot>()),
   ]);
@@ -97,7 +115,7 @@ export async function resolveFleetPresence(
 
     const lastInboundAt = snapshot
       ? resolveLastInboundAt(snapshot)
-      : null;
+      : projection?.lastProjectedAt ?? null;
 
     result.set(row.id, {
       serverId: row.id,
@@ -111,7 +129,7 @@ export async function resolveFleetPresence(
       lastProjectedAt: projection?.lastProjectedAt ?? null,
       lastInboundAt,
       lastHeartbeatAt: lastInboundAt,
-      lastSeenAt: snapshot?.lastSeenAt ?? null,
+      lastSeenAt: snapshot?.lastSeenAt ?? projection?.lastProjectedAt ?? null,
       keyLastUsedAt: snapshot?.keyLastUsedAt ?? null,
       agent: projection?.agent ?? snapshot?.agent ?? undefined,
     });
