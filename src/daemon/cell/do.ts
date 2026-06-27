@@ -107,6 +107,10 @@ function snapshotFromMetaRow(
     lastHeartbeatAt: row.last_heartbeat_at
       ? String(row.last_heartbeat_at)
       : undefined,
+    lastSeenAt: row.last_seen_at ? String(row.last_seen_at) : undefined,
+    keyLastUsedAt: row.key_last_used_at
+      ? String(row.key_last_used_at)
+      : undefined,
   };
 }
 
@@ -345,7 +349,28 @@ export class DaemonCellObject {
       )
     `);
     this.#ensureMonitorAlertSchema();
+    this.#ensureCellMetaSchema();
     this.#schemaReady = true;
+  }
+
+  #ensureCellMetaSchema(): void {
+    const info = this.#ctx.storage.sql.exec("PRAGMA table_info(cell_meta)");
+    let hasLastSeenAt = false;
+    let hasKeyLastUsedAt = false;
+    for (const row of info) {
+      if (String(row.name) === "last_seen_at") hasLastSeenAt = true;
+      if (String(row.name) === "key_last_used_at") hasKeyLastUsedAt = true;
+    }
+    if (!hasLastSeenAt) {
+      this.#ctx.storage.sql.exec(
+        "ALTER TABLE cell_meta ADD COLUMN last_seen_at TEXT",
+      );
+    }
+    if (!hasKeyLastUsedAt) {
+      this.#ctx.storage.sql.exec(
+        "ALTER TABLE cell_meta ADD COLUMN key_last_used_at TEXT",
+      );
+    }
   }
 
   #ensureRequestsSchema(): void {
@@ -484,6 +509,7 @@ export class DaemonCellObject {
     },
   ): DaemonCellLease {
     const connectedAt = meta.connectedAt ?? nowIso();
+    const keyLastUsedAt = nowIso();
     const sessionId = meta.sessionId ?? "";
     const leaseExpiresAt = new Date(Date.now() + DAEMON_SOCKET_LEASE_MS)
       .toISOString();
@@ -494,8 +520,9 @@ export class DaemonCellObject {
         `INSERT INTO cell_meta (
           server_id, connected, connection_id, session_id, key_id,
           hostname, machine_id, remote_address, connected_at,
+          last_seen_at, key_last_used_at,
           snapshot_version, generation, updated_at
-        ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?)
+        ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?)
         ON CONFLICT(server_id) DO UPDATE SET
           connected = 1,
           connection_id = excluded.connection_id,
@@ -505,6 +532,8 @@ export class DaemonCellObject {
           machine_id = excluded.machine_id,
           remote_address = excluded.remote_address,
           connected_at = excluded.connected_at,
+          last_seen_at = excluded.last_seen_at,
+          key_last_used_at = excluded.key_last_used_at,
           updated_at = excluded.updated_at`,
         serverId,
         connectionId,
@@ -514,6 +543,8 @@ export class DaemonCellObject {
         meta.machineId ?? "",
         meta.remoteAddress ?? "",
         connectedAt,
+        connectedAt,
+        keyLastUsedAt,
         connectedAt,
       );
       this.#ctx.storage.sql.exec(
@@ -1319,12 +1350,23 @@ export class DaemonCellObject {
         JSON.stringify(updated),
         updated.updatedAt,
       );
-      this.#ctx.storage.sql.exec(
-        `UPDATE cell_meta SET snapshot_version = ?, updated_at = ? WHERE server_id = ?`,
+      const metaUpdates: Array<string | number> = [
         updated.version,
         updated.updatedAt,
-        serverId,
-      );
+      ];
+      let metaSql =
+        "UPDATE cell_meta SET snapshot_version = ?, updated_at = ?";
+      if (patch.lastSeenAt !== undefined) {
+        metaSql += ", last_seen_at = ?";
+        metaUpdates.push(patch.lastSeenAt);
+      }
+      if (patch.keyLastUsedAt !== undefined) {
+        metaSql += ", key_last_used_at = ?";
+        metaUpdates.push(patch.keyLastUsedAt);
+      }
+      metaSql += " WHERE server_id = ?";
+      metaUpdates.push(serverId);
+      this.#ctx.storage.sql.exec(metaSql, ...metaUpdates);
     });
 
     return updated;
@@ -1816,8 +1858,9 @@ export class DaemonCellObject {
     );
     if (!renewed) return;
 
-    const fields: Array<string | null> = [at, at, serverId];
-    let sql = "UPDATE cell_meta SET last_heartbeat_at = ?, updated_at = ?";
+    const fields: Array<string | null> = [at, at, at, serverId];
+    let sql =
+      "UPDATE cell_meta SET last_heartbeat_at = ?, key_last_used_at = ?, updated_at = ?";
     if (params.hostname) {
       sql += ", hostname = ?";
       fields.splice(2, 0, params.hostname);
@@ -2985,16 +3028,36 @@ export class DaemonCellObject {
     });
   }
 
+  #createProjectionCellAdapter(
+    serverId: string,
+  ): Pick<import("./contracts.ts").DaemonCell, "putSnapshot"> {
+    return {
+      putSnapshot: (patch) => this.#putSnapshot(serverId, patch),
+    };
+  }
+
   async #projectOffline(serverId: string): Promise<void> {
+    const cell = this.#createProjectionCellAdapter(serverId);
     const db = this.#getProjectionDb();
-    if (!db) return;
-    await projectServerDaemon(db, serverId, { kind: "offline" });
+    if (db) {
+      await projectServerDaemon(db, serverId, { kind: "offline" }, { cell });
+      return;
+    }
+    await cell.putSnapshot({ lastSeenAt: nowIso() });
   }
 
   async #projectDisconnected(serverId: string): Promise<void> {
+    const cell = this.#createProjectionCellAdapter(serverId);
     const db = this.#getProjectionDb();
-    if (!db) return;
-    await onDaemonDisconnected(db, serverId);
+    if (db) {
+      await onDaemonDisconnected(
+        db,
+        serverId,
+        cell as import("./contracts.ts").DaemonCell,
+      );
+      return;
+    }
+    await cell.putSnapshot({ lastSeenAt: nowIso() });
   }
 
   async #projectMonitorMessage(

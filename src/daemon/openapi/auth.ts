@@ -93,7 +93,7 @@ export const authPaths: Record<string, unknown> = {
       tags: ["Authentication"],
       summary: "Exchange a signed challenge for a 15-minute daemon JWT",
       description:
-        "Exchange a signed challenge for a 15-minute stateless daemon JWT. Public key verified against server.daemon.key.publicJwk. Updates server.daemon_key_last_used_at and server.last_seen_at columns. No daemon session row stored.",
+        "Exchange a signed challenge for a 15-minute stateless daemon JWT. Public key verified against server.daemon.key.publicJwk. Updates daemon cell snapshot timestamps (keyLastUsedAt, lastSeenAt). No daemon session row stored.",
       responses: {
         "200": {
           description: "Session token issued",

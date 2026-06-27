@@ -969,6 +969,106 @@ describe("DaemonCellObject", () => {
     });
   });
 
+  it("websocket close advances lastSeenAt on the cell snapshot", async () => {
+    const serverId = "test-srv-ws-last-seen";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const { ws } = await openDaemonWebSocket(stub, serverId);
+
+    const connectedResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
+      method: "GET",
+    });
+    const connectedSnapshot = await connectedResponse.json() as {
+      connected: boolean;
+      lastSeenAt?: string;
+    };
+    expect(connectedSnapshot.connected).toBe(true);
+    expect(connectedSnapshot.lastSeenAt).toBeTruthy();
+    const connectedLastSeenMs = Date.parse(connectedSnapshot.lastSeenAt!);
+    expect(Number.isNaN(connectedLastSeenMs)).toBe(false);
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    ws.close(1000, "test done");
+    await waitFor(async () => {
+      const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
+        method: "GET",
+      });
+      const snapshot = await snapshotResponse.json() as {
+        connected: boolean;
+        lastSeenAt?: string;
+      };
+      expect(snapshot.connected).toBe(false);
+      expect(snapshot.lastSeenAt).toBeTruthy();
+      const disconnectedLastSeenMs = Date.parse(snapshot.lastSeenAt!);
+      expect(disconnectedLastSeenMs).toBeGreaterThanOrEqual(connectedLastSeenMs);
+    });
+  });
+
+  it("offline deadline processing advances lastSeenAt on the cell snapshot", async () => {
+    const serverId = "test-srv-monitor-offline-last-seen";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const staleAt = new Date(Date.now() - MONITOR_OFFLINE_GRACE_MS - 60_000)
+      .toISOString();
+
+    const { ws } = await openDaemonWebSocket(stub, serverId);
+    await cellRpc(stub, serverId, "/rpc/monitor/sync", {
+      method: "POST",
+      body: JSON.stringify({
+        serverId,
+        msg: {
+          kind: "monitor-sync",
+          serverId,
+          sequence: 1,
+          at: staleAt,
+          protocolVersion: 1,
+          instance: {},
+          resources: [{
+            resourceKey: "container:offline-last-seen",
+            kind: "container",
+            status: "healthy",
+          }],
+        },
+      }),
+    });
+
+    const connectedResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
+      method: "GET",
+    });
+    const connectedSnapshot = await connectedResponse.json() as {
+      lastSeenAt?: string;
+    };
+    expect(connectedSnapshot.lastSeenAt).toBeTruthy();
+    const beforeOfflineMs = Date.parse(connectedSnapshot.lastSeenAt!);
+
+    ws.close(1000, "test done");
+    await waitFor(async () => {
+      const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
+        method: "GET",
+      });
+      const snapshot = await snapshotResponse.json() as { connected: boolean };
+      expect(snapshot.connected).toBe(false);
+    });
+
+    await cellRpc(stub, serverId, "/rpc/prune", {
+      method: "POST",
+      body: JSON.stringify({
+        now: Date.now() + MONITOR_OFFLINE_GRACE_MS + 60_000,
+      }),
+    });
+
+    await waitFor(async () => {
+      const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
+        method: "GET",
+      });
+      const snapshot = await snapshotResponse.json() as {
+        lastSeenAt?: string;
+      };
+      expect(snapshot.lastSeenAt).toBeTruthy();
+      const afterOfflineMs = Date.parse(snapshot.lastSeenAt!);
+      expect(afterOfflineMs).toBeGreaterThanOrEqual(beforeOfflineMs);
+    });
+  });
+
   it(
     "stale websocket close does not mark a newer attach offline",
     async () => {

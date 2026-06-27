@@ -90,49 +90,6 @@ async function updateServerDaemonState(
   return true;
 }
 
-export async function touchDaemonKeyLastUsed(
-  db: Db,
-  serverId: string,
-): Promise<void> {
-  const now = nowTs();
-  await db
-    .update(server)
-    .set({
-      daemonKeyLastUsedAt: now,
-      updatedAt: now,
-    })
-    .where(eq(server.id, serverId));
-}
-
-export async function touchDaemonLastSeen(
-  db: Db,
-  serverId: string,
-): Promise<void> {
-  const now = nowTs();
-  await db
-    .update(server)
-    .set({
-      lastSeenAt: now,
-      updatedAt: now,
-    })
-    .where(eq(server.id, serverId));
-}
-
-export async function touchDaemonKeyLastUsedAndLastSeen(
-  db: Db,
-  serverId: string,
-): Promise<void> {
-  const now = nowTs();
-  await db
-    .update(server)
-    .set({
-      daemonKeyLastUsedAt: now,
-      lastSeenAt: now,
-      updatedAt: now,
-    })
-    .where(eq(server.id, serverId));
-}
-
 export async function revokeDaemonKey(db: Db, serverId: string): Promise<void> {
   const now = nowTs();
   await updateServerDaemonState(db, serverId, (state) => ({

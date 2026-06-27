@@ -27,8 +27,9 @@ export async function onDaemonConnected(
 export async function onDaemonDisconnected(
   db: Db,
   serverId: string,
+  cell?: DaemonCell,
 ): Promise<void> {
-  await projectServerDaemon(db, serverId, { kind: "disconnected" });
+  await projectServerDaemon(db, serverId, { kind: "disconnected" }, { cell });
 }
 
 function extractAgent(msg: DaemonInboundEnvelope): ProjectionAgent | undefined {

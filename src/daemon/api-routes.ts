@@ -25,7 +25,6 @@ import {
   getServerDaemonStateByFingerprint,
   getServerDaemonStateByServerId,
   isDaemonKeyActive,
-  touchDaemonKeyLastUsedAndLastSeen,
 } from "./authn/server-identity-db.ts";
 import {
   buildAuthPayload,
@@ -353,9 +352,16 @@ export function registerDaemonApiRoutes(
       return c.json({ ok: false, error: "Invalid signature" }, 403);
     }
 
-    void touchDaemonKeyLastUsedAndLastSeen(db, serverId).catch((err) => {
-      console.warn("failed to touch daemon server key", err);
-    });
+    const now = new Date().toISOString();
+    const registry = getDaemonCellRegistry(c);
+    if (registry) {
+      void registry.getCell(serverId).putSnapshot({
+        keyLastUsedAt: now,
+        lastSeenAt: now,
+      }).catch((err) => {
+        console.warn("failed to touch daemon cell timestamps", err);
+      });
+    }
     await touchServerMetadata(db, serverId, { machineId, hostname });
 
     const issued = await issueDaemonJwt(

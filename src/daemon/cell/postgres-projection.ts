@@ -200,23 +200,18 @@ async function writeMergedDaemonState(
   db: Db,
   serverId: string,
   merged: ServerDaemonState,
-  touchLastSeen: boolean,
 ): Promise<void> {
   const now = nowTs();
-  const patch: Record<string, unknown> = {
+  await db.update(server).set({
     daemon: merged,
     updatedAt: now,
-  };
-  if (touchLastSeen) {
-    patch.lastSeenAt = now;
-  }
-  await db.update(server).set(patch).where(eq(server.id, serverId));
+  }).where(eq(server.id, serverId));
   incrementMonitorCounter("postgresProjectionsWritten");
 }
 
 /**
  * Sparse projection into `server.daemon.projection` — never clobbers `server.daemon.key`.
- * Also updates `server.lastSeenAt` only on online/offline liveness transitions.
+ * `lastSeenAt` is written to the daemon cell snapshot on online/offline liveness transitions.
  */
 export async function projectServerDaemon(
   db: Db,
@@ -428,7 +423,11 @@ export async function projectServerDaemon(
   await writeMergedDaemonState(db, serverId, {
     key: existing.key,
     projection: nextProjection,
-  }, touchLastSeen);
+  });
+
+  if (touchLastSeen && context.cell) {
+    void context.cell.putSnapshot({ lastSeenAt: now }).catch(() => {});
+  }
 
   if (touchMetadata) {
     await touchServerMetadata(db, serverId, {

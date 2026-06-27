@@ -9,7 +9,7 @@ import { getDatabaseUrl } from "../db-url.ts";
 import { createDenoDb } from "../db.ts";
 import { organization, server } from "../lib/db/schema.ts";
 import { registerDaemonApiRoutes } from "./api-routes.ts";
-import type { DaemonCell, DaemonCellRegistry } from "./cell/contracts.ts";
+import type { DaemonCell, DaemonCellRegistry, DaemonCellSnapshot } from "./cell/contracts.ts";
 import {
   createInMemoryChallengeStore,
   createRedisChallengeStore,
@@ -131,23 +131,6 @@ async function readDaemonState(
   return parseServerDaemonState(row?.daemon);
 }
 
-async function readServerDaemonTimestamps(
-  db: ReturnType<typeof createDenoDb>,
-  serverId: string,
-): Promise<
-  { daemonKeyLastUsedAt: string | null; lastSeenAt: string | null } | null
-> {
-  const [row] = await db
-    .select({
-      daemonKeyLastUsedAt: server.daemonKeyLastUsedAt,
-      lastSeenAt: server.lastSeenAt,
-    })
-    .from(server)
-    .where(eq(server.id, serverId))
-    .limit(1);
-  return row ?? null;
-}
-
 async function createTestApp(
   db: ReturnType<typeof createDenoDb>,
 ): Promise<Hono<AppEnv>> {
@@ -163,6 +146,91 @@ async function createTestApp(
   };
   registerDaemonApiRoutes(app, { secrets, challengeStoreProvider });
   return app;
+}
+
+function createSnapshotTrackingCell(
+  serverId: string,
+): {
+  cell: DaemonCell;
+  putSnapshotPatches: Partial<DaemonCellSnapshot>[];
+} {
+  const putSnapshotPatches: Partial<DaemonCellSnapshot>[] = [];
+  const noopAsync = async () => {};
+  const cell: DaemonCell = {
+    attachDaemonSocket: async () => ({
+      connectionId: "conn",
+      lease: {
+        holder: "conn",
+        token: "conn",
+        expiresAt: new Date(Date.now() + 45_000).toISOString(),
+      },
+    }),
+    detachDaemonSocket: noopAsync,
+    heartbeat: noopAsync,
+    getSnapshot: async () => ({
+      serverId,
+      version: 0,
+      updatedAt: new Date().toISOString(),
+      connected: false,
+    }),
+    putSnapshot: async (patch) => {
+      putSnapshotPatches.push(patch);
+      return {
+        serverId,
+        version: putSnapshotPatches.length,
+        updatedAt: new Date().toISOString(),
+        connected: false,
+        ...patch,
+      };
+    },
+    appendEvent: noopAsync,
+    listEvents: async () => [],
+    enqueue: async (outbound) => ({
+      serverId,
+      requestId: outbound.requestId,
+      requestKind: outbound.kind,
+      status: "queued" as const,
+      createdAt: outbound.at,
+      expiresAt: outbound.at,
+    }),
+    markSent: noopAsync,
+    handleInbound: async () => null,
+    getRequest: async () => null,
+    listRequests: async () => [],
+    waitForRequest: async () => null,
+    createRequestAndWait: async (outbound) => ({
+      serverId,
+      requestId: outbound.requestId,
+      requestKind: outbound.kind,
+      status: "expired" as const,
+      createdAt: outbound.at,
+      expiresAt: outbound.at,
+    }),
+    claimDeliveryLease: async () => null,
+    renewDeliveryLease: async () => null,
+    releaseDeliveryLease: noopAsync,
+    readOutboxBatch: async () => [],
+    ackOutbox: noopAsync,
+    prune: async () => false,
+    applyMonitorSync: async () => ({
+      acceptedSequence: 0,
+      resyncNeeded: false,
+    }),
+    applyMonitorHeartbeat: async () => ({
+      acceptedSequence: 0,
+      resyncNeeded: false,
+    }),
+    applyMonitorTransition: async () => ({
+      acceptedSequence: 0,
+      resyncNeeded: false,
+    }),
+    getMonitorInstance: async () => null,
+    listMonitorResources: async () => [],
+    listMonitorEvents: async () => [],
+    listMonitorMetrics: async () => [],
+    drainNotificationCandidates: async () => [],
+  };
+  return { cell, putSnapshotPatches };
 }
 
 function createMonitorTrackingCell(
@@ -1179,7 +1247,15 @@ Deno.test("POST /auth/session rejects invalid signature", async () => {
 
 Deno.test("POST /auth/session returns a 15-minute JWT", async () => {
   await withEnrollFixture(
-    async ({ app, db, serverId, keyId, key, machineId, hostname }) => {
+    async ({ db, serverId, keyId, key, machineId, hostname }) => {
+      const tracking = createSnapshotTrackingCell(serverId);
+      const registry: DaemonCellRegistry = {
+        getCell: () => tracking.cell,
+        listOnlineServerIds: async () => [],
+        getSnapshots: async () => new Map(),
+      };
+      const app = await createTestAppWithRegistry(db, registry);
+
       const challenge = await issueAuthChallenge(app, serverId, keyId);
       const payload = buildAuthPayload({
         challengeId: challenge.challengeId,
@@ -1212,9 +1288,10 @@ Deno.test("POST /auth/session returns a 15-minute JWT", async () => {
       assert(typeof jwtPayload.jti === "string" && jwtPayload.jti.length > 0);
       assertEquals("sid" in jwtPayload, false);
 
-      const timestamps = await readServerDaemonTimestamps(db, serverId);
-      assertExists(timestamps?.daemonKeyLastUsedAt);
-      assertExists(timestamps?.lastSeenAt);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assertEquals(tracking.putSnapshotPatches.length, 1);
+      assertExists(tracking.putSnapshotPatches[0]?.keyLastUsedAt);
+      assertExists(tracking.putSnapshotPatches[0]?.lastSeenAt);
     },
   );
 });

@@ -12,6 +12,8 @@ const PRESENCE_FIELDS = [
   "lastInboundAt",
   "lastOutboundAt",
   "lastHeartbeatAt",
+  "lastSeenAt",
+  "keyLastUsedAt",
 ] as const satisfies ReadonlyArray<keyof DaemonCellSnapshot>;
 
 /**

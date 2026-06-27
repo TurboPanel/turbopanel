@@ -143,20 +143,61 @@ Deno.test("projectServerDaemon resource_transition writes only meaningful transi
   assertEquals(merged?.projection?.status, "unhealthy");
 });
 
-Deno.test("projectServerDaemon online writes lastSeenAt", async () => {
-  const { db, updateCalls } = createMockDb({ key: baseKey });
+Deno.test("projectServerDaemon online writes lastSeenAt to cell snapshot", async () => {
+  const putSnapshotPatches: Partial<import("./contracts.ts").DaemonCellSnapshot>[] =
+    [];
+  const cell = {
+    putSnapshot: async (
+      patch: Partial<import("./contracts.ts").DaemonCellSnapshot>,
+    ) => {
+      putSnapshotPatches.push(patch);
+      return {
+        serverId,
+        version: putSnapshotPatches.length,
+        updatedAt: new Date().toISOString(),
+        connected: true,
+        ...patch,
+      };
+    },
+    listMonitorResources: async () => [],
+    getMonitorInstance: async () => null,
+  };
+
+  const { db } = createMockDb({ key: baseKey });
 
   await projectServerDaemon(db, serverId, {
     kind: "online",
     identity: { hostname: "host-1", machineId: "mid-1" },
     connectedAt: "2020-01-01T00:00:00.000Z",
-  }, { resources: [], instanceAt: "2020-01-01T00:00:00.000Z" });
+  }, {
+    cell: cell as unknown as import("./contracts.ts").DaemonCell,
+    resources: [],
+    instanceAt: "2020-01-01T00:00:00.000Z",
+  });
 
-  assert(updateCalls.length >= 1);
-  assertEquals(typeof updateCalls[0]?.lastSeenAt, "string");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assertEquals(putSnapshotPatches.length, 1);
+  assertEquals(typeof putSnapshotPatches[0]?.lastSeenAt, "string");
 });
 
-Deno.test("projectServerDaemon offline writes lastSeenAt and status offline", async () => {
+Deno.test("projectServerDaemon offline writes lastSeenAt to cell and status offline", async () => {
+  const putSnapshotPatches: Partial<import("./contracts.ts").DaemonCellSnapshot>[] =
+    [];
+  const cell = {
+    putSnapshot: async (
+      patch: Partial<import("./contracts.ts").DaemonCellSnapshot>,
+    ) => {
+      putSnapshotPatches.push(patch);
+      return {
+        serverId,
+        version: putSnapshotPatches.length,
+        updatedAt: new Date().toISOString(),
+        connected: false,
+        ...patch,
+      };
+    },
+  };
+
   const { db, updateCalls } = createMockDb({
     key: baseKey,
     projection: {
@@ -169,10 +210,12 @@ Deno.test("projectServerDaemon offline writes lastSeenAt and status offline", as
     },
   });
 
-  await projectServerDaemon(db, serverId, { kind: "offline" });
+  await projectServerDaemon(db, serverId, { kind: "offline" }, { cell: cell as unknown as import("./contracts.ts").DaemonCell });
 
+  await new Promise((resolve) => setTimeout(resolve, 10));
   assertEquals(updateCalls.length, 1);
-  assertEquals(typeof updateCalls[0]?.lastSeenAt, "string");
+  assertEquals(putSnapshotPatches.length, 1);
+  assertEquals(typeof putSnapshotPatches[0]?.lastSeenAt, "string");
   const merged = parseServerDaemonState(updateCalls[0]?.daemon);
   assertEquals(merged?.projection?.status, "offline");
   assertEquals(merged?.projection?.connected, false);

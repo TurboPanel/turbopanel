@@ -106,6 +106,8 @@ function snapshotFromMeta(
     lastInboundAt: meta.lastInboundAt || undefined,
     lastOutboundAt: meta.lastOutboundAt || undefined,
     lastHeartbeatAt: meta.lastHeartbeatAt || undefined,
+    lastSeenAt: meta.lastSeenAt || undefined,
+    keyLastUsedAt: meta.keyLastUsedAt || undefined,
   };
 }
 
@@ -336,6 +338,7 @@ export class RedisDaemonCell implements DaemonCell {
     }
 
     const expiresAt = new Date(Date.now() + LEASE_TTL_MS).toISOString();
+    const keyLastUsedAt = nowIso();
 
     await this.#client.hset(metaKey(this.#serverId), {
       connected: "1",
@@ -346,6 +349,8 @@ export class RedisDaemonCell implements DaemonCell {
       machineId: meta.machineId ?? "",
       remoteAddress: meta.remoteAddress ?? "",
       connectedAt,
+      lastSeenAt: connectedAt,
+      keyLastUsedAt,
     });
     await this.#client.sadd(onlineSetKey(), this.#serverId);
     await this.#client.hset(connKey(this.#serverId, connectionId), {
@@ -448,8 +453,10 @@ export class RedisDaemonCell implements DaemonCell {
     const renewed = await this.#renewDaemonSocketLease(connectionId);
     if (!renewed) return;
 
+    const at = params.at ?? nowIso();
     const fields: Record<string, string> = {
-      lastHeartbeatAt: params.at ?? nowIso(),
+      lastHeartbeatAt: at,
+      keyLastUsedAt: at,
     };
     if (params.hostname) fields.hostname = params.hostname;
     await this.#client.hset(metaKey(this.#serverId), fields);
@@ -491,10 +498,17 @@ export class RedisDaemonCell implements DaemonCell {
       snapshotKey(this.#serverId),
       JSON.stringify(updated),
     );
-    await this.#client.hset(metaKey(this.#serverId), {
+    const metaFields: Record<string, string> = {
       snapshotVersion: String(updated.version),
       updatedAt: updated.updatedAt,
-    });
+    };
+    if (patch.lastSeenAt !== undefined) {
+      metaFields.lastSeenAt = patch.lastSeenAt;
+    }
+    if (patch.keyLastUsedAt !== undefined) {
+      metaFields.keyLastUsedAt = patch.keyLastUsedAt;
+    }
+    await this.#client.hset(metaKey(this.#serverId), metaFields);
     return updated;
   }
 

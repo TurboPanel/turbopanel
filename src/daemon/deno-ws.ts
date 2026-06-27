@@ -24,7 +24,6 @@ import {
   DAEMON_WS_PATH,
   DEVELOPER_WS_PATH,
 } from "../surfaces.ts";
-import { touchDaemonKeyLastUsed } from "./authn/server-identity-db.ts";
 import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
 
 export type DaemonWebSocketOptions = {
@@ -81,12 +80,15 @@ export function registerDaemonWebSocket(
       const touchKey = () => {
         if (keyTouched) return;
         keyTouched = true;
-        touchDaemonKeyLastUsed(db, payload.sub).catch((err) => {
-          compatLogWarn(
-            "ws",
-            `failed to touch daemon key for ${payload.sub}: ${String(err)}`,
-          );
-        });
+        const now = new Date().toISOString();
+        registry.getCell(payload.sub).putSnapshot({ keyLastUsedAt: now }).catch(
+          (err) => {
+            compatLogWarn(
+              "ws",
+              `failed to touch daemon key for ${payload.sub}: ${String(err)}`,
+            );
+          },
+        );
       };
 
       const handleInboundMessage = async (

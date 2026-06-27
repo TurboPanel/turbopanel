@@ -22,6 +22,8 @@ export type ServerFleetPresence = {
   connectedAt: string | null;
   lastProjectedAt: string | null;
   lastHeartbeatAt: string | null;
+  lastSeenAt: string | null;
+  keyLastUsedAt: string | null;
   agent?: {
     commit?: string;
     buildId?: string;
@@ -95,6 +97,8 @@ export async function resolveFleetPresence(
       lastProjectedAt: projection?.lastProjectedAt ?? null,
       lastHeartbeatAt: snapshot?.lastHeartbeatAt ?? snapshot?.lastInboundAt ??
         null,
+      lastSeenAt: snapshot?.lastSeenAt ?? null,
+      keyLastUsedAt: snapshot?.keyLastUsedAt ?? null,
       agent: projection?.agent ?? undefined,
     });
   }

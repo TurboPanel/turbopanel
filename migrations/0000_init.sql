@@ -153,8 +153,6 @@ CREATE TABLE "server" (
 	"display_name" varchar(255),
 	"metadata" jsonb,
 	"options" jsonb,
-	"daemon_key_last_used_at" timestamp(3) with time zone,
-	"last_seen_at" timestamp(3) with time zone,
 	"daemon" jsonb
 );
 --> statement-breakpoint
