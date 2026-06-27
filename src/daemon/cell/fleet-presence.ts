@@ -4,8 +4,9 @@ import { parseServerDaemonState } from "../authn/daemon-state.ts";
 import type { ServerMetadata } from "../../lib/db/server-metadata.ts";
 import { server } from "../../lib/db/schema.ts";
 import type { DaemonCellRegistry, DaemonCellSnapshot } from "./contracts.ts";
-import type { MonitorResourceStatus } from "./monitor-contracts.ts";
 import { readProjectionsForServers } from "./postgres-projection.ts";
+
+const STALE_THRESHOLD_MS = 150_000;
 
 export type ServerFleetPresence = {
   serverId: string;
@@ -15,10 +16,6 @@ export type ServerFleetPresence = {
   remoteAddress: string | null;
   directAttach: boolean;
   keyId: string | null;
-  status: MonitorResourceStatus | null;
-  healthyCount: number | null;
-  degradedCount: number | null;
-  unhealthyCount: number | null;
   connectedAt: string | null;
   lastProjectedAt: string | null;
   lastHeartbeatAt: string | null;
@@ -37,6 +34,13 @@ function normalizeRemoteAddress(
 ): string | null {
   if (!value || value === "__direct__") return null;
   return value;
+}
+
+function isSnapshotConnected(snapshot: DaemonCellSnapshot): boolean {
+  if (!snapshot.connected) return false;
+  const lastSeenMs = Date.parse(snapshot.lastSeenAt ?? "0");
+  if (Number.isNaN(lastSeenMs)) return false;
+  return Date.now() - lastSeenMs < STALE_THRESHOLD_MS;
 }
 
 /**
@@ -76,7 +80,7 @@ export async function resolveFleetPresence(
     const rawRemote = projection?.remoteAddress ?? null;
     const snapshot = snapshots.get(row.id);
     const connected = snapshot !== undefined
-      ? snapshot.connected
+      ? isSnapshotConnected(snapshot)
       : onlineSet
       ? onlineSet.has(row.id)
       : (projection?.connected ?? state?.projection?.connected ?? false);
@@ -89,10 +93,6 @@ export async function resolveFleetPresence(
       remoteAddress: normalizeRemoteAddress(rawRemote),
       directAttach: rawRemote === "__direct__",
       keyId: projection?.keyId ?? state?.key.id ?? null,
-      status: projection?.status ?? null,
-      healthyCount: projection?.healthyCount ?? null,
-      degradedCount: projection?.degradedCount ?? null,
-      unhealthyCount: projection?.unhealthyCount ?? null,
       connectedAt: snapshot?.connectedAt ?? projection?.connectedAt ?? null,
       lastProjectedAt: projection?.lastProjectedAt ?? null,
       lastHeartbeatAt: snapshot?.lastHeartbeatAt ?? snapshot?.lastInboundAt ??

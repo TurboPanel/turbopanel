@@ -3,10 +3,12 @@
   "specifiers": {
     "jsr:@hono/hono@^4.12.23": "4.12.23",
     "jsr:@std/assert@*": "1.0.19",
+    "jsr:@std/assert@^1.0.19": "1.0.19",
     "jsr:@std/encoding@1": "1.0.10",
     "jsr:@std/internal@^1.0.12": "1.0.14",
     "jsr:@std/internal@^1.0.14": "1.0.14",
     "jsr:@std/path@1": "1.1.5",
+    "jsr:@std/testing@1": "1.0.19",
     "npm:@cloudflare/vitest-pool-workers@~0.8.38": "0.8.71_@vitest+runner@3.0.9_@vitest+snapshot@3.0.9_vitest@3.0.9",
     "npm:amqplib@^2.0.1": "2.0.1",
     "npm:amqplib@~0.10.4": "0.10.9",
@@ -39,6 +41,12 @@
       "integrity": "ccea00982ea28c36becaf6e62f855406c76a8c32d462f66f415bbb7d83a271bc",
       "dependencies": [
         "jsr:@std/internal@^1.0.14"
+      ]
+    },
+    "@std/testing@1.0.19": {
+      "integrity": "f4236172365b216728dc3cc8b5e80a9f4c33083d1e4ede7613d5b25b4014898e",
+      "dependencies": [
+        "jsr:@std/assert@^1.0.19"
       ]
     }
   },

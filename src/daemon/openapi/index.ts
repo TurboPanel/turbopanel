@@ -20,16 +20,12 @@ export function getDaemonOpenApiSpec(serverUrl: string): object {
           "Daemon enrollment and session token issuance (Ed25519 challenge-response)",
       },
       {
-        name: "Authorization",
-        description: "JWT-authenticated daemon endpoints (heartbeat, command lease)",
-      },
-      {
         name: "Daemon",
         description: "Readiness, platform CA, version, and WebSocket upgrade",
       },
     ],
     "x-tagGroups": [
-      { name: "Authentication & Authorization", tags: ["Authentication", "Authorization"] },
+      { name: "Authentication", tags: ["Authentication"] },
       { name: "Daemon", tags: ["Daemon"] },
     ],
     components: {

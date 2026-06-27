@@ -9,11 +9,7 @@ const PRESENCE_FIELDS = [
   "sessionId",
   "keyId",
   "connectedAt",
-  "lastInboundAt",
-  "lastOutboundAt",
-  "lastHeartbeatAt",
   "lastSeenAt",
-  "keyLastUsedAt",
 ] as const satisfies ReadonlyArray<keyof DaemonCellSnapshot>;
 
 /**

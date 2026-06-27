@@ -124,7 +124,7 @@ Deno.test(
 );
 
 Deno.test(
-  "cell-backed inbound ping updates lastInboundAt via putSnapshot path",
+  "cell-backed inbound updates lastInboundAt via putSnapshot path",
   withRedisCell(async ({ cell }) => {
     await cell.attachDaemonSocket({
       keyId: crypto.randomUUID(),
@@ -211,86 +211,5 @@ Deno.test(
       Error,
       "daemon socket lease held",
     );
-  }),
-);
-
-function monitorSyncEnvelope(
-  serverId: string,
-  resources: Array<{
-    resourceKey: string;
-    kind: "container";
-    status: "healthy" | "unhealthy" | "degraded";
-  }>,
-  sequence = 1,
-) {
-  return {
-    kind: "monitor-sync" as const,
-    serverId,
-    sequence,
-    at: new Date().toISOString(),
-    protocolVersion: 1 as const,
-    instance: {},
-    resources,
-  };
-}
-
-Deno.test(
-  "applyMonitorSync stores resources and returns ack sequence",
-  withRedisCell(async ({ cell, serverId }) => {
-    const result = await cell.applyMonitorSync(
-      monitorSyncEnvelope(serverId, [
-        { resourceKey: "container:a", kind: "container", status: "healthy" },
-        { resourceKey: "container:b", kind: "container", status: "healthy" },
-      ]),
-    );
-    assertEquals(result, { acceptedSequence: 1, resyncNeeded: false });
-
-    const resources = await cell.listMonitorResources(serverId);
-    assertEquals(resources.length, 2);
-    assert(resources.some((row) => row.resourceKey === "container:a"));
-    assert(resources.some((row) => row.resourceKey === "container:b"));
-  }),
-);
-
-Deno.test(
-  "applyMonitorHeartbeat is idempotent on duplicate sequence",
-  withRedisCell(async ({ cell, serverId }) => {
-    await cell.applyMonitorSync(
-      monitorSyncEnvelope(serverId, [
-        { resourceKey: "container:a", kind: "container", status: "healthy" },
-      ]),
-    );
-
-    const heartbeat = {
-      kind: "monitor-heartbeat" as const,
-      serverId,
-      sequence: 2,
-      at: new Date().toISOString(),
-      instance: {},
-    };
-    const first = await cell.applyMonitorHeartbeat(heartbeat);
-    const second = await cell.applyMonitorHeartbeat(heartbeat);
-    assertEquals(first, { acceptedSequence: 2, resyncNeeded: false });
-    assertEquals(second, { acceptedSequence: 2, resyncNeeded: false });
-  }),
-);
-
-Deno.test(
-  "applyMonitorHeartbeat gap after sync requests resync",
-  withRedisCell(async ({ cell, serverId }) => {
-    await cell.applyMonitorSync(
-      monitorSyncEnvelope(serverId, [
-        { resourceKey: "container:a", kind: "container", status: "healthy" },
-      ], 1),
-    );
-
-    const gap = await cell.applyMonitorHeartbeat({
-      kind: "monitor-heartbeat",
-      serverId,
-      sequence: 5,
-      at: new Date().toISOString(),
-      instance: {},
-    });
-    assertEquals(gap.resyncNeeded, true);
   }),
 );

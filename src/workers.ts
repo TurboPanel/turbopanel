@@ -4,13 +4,10 @@ import { configurePbkdf2Iterations } from './client/authn/password.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from './client/authn/secrets.ts'
 import { createApp, type AppEnv } from './app'
 import { createDurableObjectDaemonCellRegistry } from './daemon/cell/do-registry.ts'
-import { createDurableObjectChallengeStore } from './daemon/cell/challenge-store.ts'
 import { registerAdminRoutes } from './admin/routes.ts'
 import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
-import { createWorkersDb, type DaemonChallengeStoreProvider } from './db'
+import { createWorkersDb } from './db'
 import { registerWorkersDaemonWebSocket } from './daemon/workers-ws.ts'
-import { DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS } from './daemon/authn/challenge.ts'
-import { DAEMON_PING_MS } from './daemon/cell/protocol.ts'
 import { resolveWorkersEmailQueue } from './lib/email/mailgun/workers-queue.ts'
 import {
   resolveEmailSettings,
@@ -23,33 +20,12 @@ let initPromise: Promise<void> | null = null
 let cachedApp: ReturnType<typeof createApp> | null = null
 let cachedSessionSecrets: DerivedSecretsConfig | null = null
 let cachedDaemonJwtSecrets: DerivedSecretsConfig | null = null
+let cachedChallengeSigningSecrets: DerivedSecretsConfig | null = null
 let cachedEmailQueue: EmailQueue | null = null
 let cachedDaemonCellRegistryFactory:
   | ((env: CloudflareBindings, db?: ReturnType<typeof createWorkersDb>) =>
     ReturnType<typeof createDurableObjectDaemonCellRegistry>)
   | null = null
-let lastControlPlaneMaintenanceAt = 0
-
-function isWorkersDevSurface(env: CloudflareBindings): boolean {
-  const flag = env.TURBOPANEL_DEV_SURFACE?.trim().toLowerCase()
-  return flag === '1' || flag === 'true'
-}
-
-function createWorkersChallengeStoreProvider(
-  env: CloudflareBindings,
-): DaemonChallengeStoreProvider {
-  const challengeStub = env.DAEMON_CELL.getByName('challenge-store')
-  return {
-    enroll: createDurableObjectChallengeStore(
-      challengeStub,
-      DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-    ),
-    auth: createDurableObjectChallengeStore(
-      challengeStub,
-      DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-    ),
-  }
-}
 
 async function initWorkerApp(env: CloudflareBindings) {
   configurePbkdf2Iterations(env.TURBOPANEL_PBKDF2_ITERATIONS)
@@ -60,6 +36,7 @@ async function initWorkerApp(env: CloudflareBindings) {
   )
   cachedSessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   cachedDaemonJwtSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-jwt-signing')
+  cachedChallengeSigningSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-challenge-signing')
   const platformEnv = stringBindingEnv(env)
   const db = resolveWorkersDb(env)
   // Workers Mailgun path sends directly (no AMQP/RabbitMQ). Cloudflare Workers provides
@@ -67,8 +44,7 @@ async function initWorkerApp(env: CloudflareBindings) {
   // enqueues to Mailgun immediately via resolveWorkersEmailQueue -> WorkersMailgunQueue.
   cachedEmailQueue = await resolveWorkersEmailQueue(db, platformEnv)
   const emailSettings = await resolveEmailSettings(db, platformEnv)
-  // DB and DO challenge stubs are created per request — Workers forbid reusing I/O
-  // objects across fetch handlers.
+  // DB is created per request — Workers forbid reusing I/O objects across fetch handlers.
   cachedApp = createApp({
     emailQueue: cachedEmailQueue,
     secrets: cachedSessionSecrets,
@@ -79,6 +55,7 @@ async function initWorkerApp(env: CloudflareBindings) {
   })
   registerDaemonApiRoutes(cachedApp, {
     secrets: cachedDaemonJwtSecrets ?? undefined,
+    challengeSigningSecrets: cachedChallengeSigningSecrets ?? undefined,
   })
   registerWorkersDaemonWebSocket(cachedApp, {
     secrets: cachedDaemonJwtSecrets ?? undefined,
@@ -90,6 +67,11 @@ async function initWorkerApp(env: CloudflareBindings) {
   })
   cachedDaemonCellRegistryFactory = (env, db) =>
     createDurableObjectDaemonCellRegistry(env, db)
+}
+
+function isWorkersDevSurface(env: CloudflareBindings): boolean {
+  const flag = env.TURBOPANEL_DEV_SURFACE?.trim().toLowerCase()
+  return flag === '1' || flag === 'true'
 }
 
 function resolveWorkersDb(env: CloudflareBindings): ReturnType<typeof createWorkersDb> | undefined {
@@ -131,19 +113,7 @@ export default {
       if (cachedDaemonCellRegistryFactory) {
         const registry = cachedDaemonCellRegistryFactory(env, db)
         c.set('daemonCellRegistry', registry)
-        if (db && 'maintain' in registry) {
-          const now = Date.now()
-          if (now - lastControlPlaneMaintenanceAt >= DAEMON_PING_MS) {
-            lastControlPlaneMaintenanceAt = now
-            ctx.waitUntil(
-              registry.maintain(db).catch((err) => {
-                console.error('control-plane maintenance error:', err)
-              }),
-            )
-          }
-        }
       }
-      c.set('challengeStoreProvider', createWorkersChallengeStoreProvider(env))
       await next()
     })
     requestApp.route('/', cachedApp!)

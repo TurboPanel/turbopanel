@@ -4,22 +4,11 @@ import type {
   DaemonCellLease,
   DaemonCellRegistry,
   DaemonCellSnapshot,
-  MonitorAlertRow,
-  MonitorEventRow,
-  MonitorInstanceRow,
-  MonitorMetricRow,
-  MonitorResourceRow,
   PendingRequestRecord,
 } from "./contracts.ts";
-import { resolveCellGeneration, resolveCellLocationHint } from "./location.ts";
-import {
-  listConnectedServerIdsFromProjection,
-  listEnrolledDaemonServerIds,
-} from "./postgres-projection.ts";
-import { runControlPlaneMaintenance } from "./notification-delivery.ts";
-import {
-  onDaemonConnected,
-} from "./control-plane-monitor.ts";
+import { resolveCellLocationHint } from "./location.ts";
+import { listConnectedServerIdsFromProjection } from "./postgres-projection.ts";
+import { onDaemonConnected, onDaemonDisconnected, onDaemonHeartbeat } from "./control-plane-monitor.ts";
 import type {
   DaemonInboundEnvelope,
   DaemonOutboundEnvelope,
@@ -46,17 +35,13 @@ async function resolveLogicalCellName(
   db: Db | undefined,
   serverId: string,
 ): Promise<{ logicalName: string; locationHint?: DurableObjectLocationHint }> {
-  let generation = 1;
   let locationHint: string | undefined;
 
   if (db) {
-    [locationHint, generation] = await Promise.all([
-      resolveCellLocationHint(db, serverId),
-      resolveCellGeneration(db, serverId),
-    ]);
+    locationHint = await resolveCellLocationHint(db, serverId);
   }
 
-  const logicalName = generation > 1 ? `${serverId}:g${generation}` : serverId;
+  const logicalName = serverId;
   const getOptions = locationHint
     ? { locationHint: locationHint as DurableObjectLocationHint }
     : undefined;
@@ -176,18 +161,27 @@ class DurableObjectStubDaemonCell implements DaemonCell {
     return this.#rpc("/rpc/detach", {
       serverId: this.#serverId,
       body: { params },
-    }).then(() => undefined);
+    }).then(async () => {
+      if (this.#db) {
+        await onDaemonDisconnected(this.#db, this.#serverId, this);
+      }
+    });
   }
 
   heartbeat(params: {
     connectionId?: string;
     hostname?: string;
     at?: string;
+    agent?: import("./protocol.ts").DaemonAgentInfo;
   }): Promise<void> {
     return this.#rpc("/rpc/heartbeat", {
       serverId: this.#serverId,
       body: { params },
-    }).then(() => undefined);
+    }).then(async () => {
+      if (this.#db) {
+        await onDaemonHeartbeat(this.#db, this.#serverId, this, params.agent);
+      }
+    });
   }
 
   getSnapshot(): Promise<DaemonCellSnapshot> {
@@ -204,40 +198,6 @@ class DurableObjectStubDaemonCell implements DaemonCell {
       body: { patch },
       idempotent: true,
     });
-  }
-
-  appendEvent(
-    kind: string,
-    payload: Record<string, unknown>,
-    ttlSeconds?: number,
-  ): Promise<void> {
-    return this.#rpc("/rpc/event", {
-      serverId: this.#serverId,
-      body: { kind, payload, ttlSeconds },
-      idempotent: true,
-    }).then(() => undefined);
-  }
-
-  async listEvents(limit = 50): Promise<
-    Array<{
-      seq: string;
-      kind: string;
-      at: string;
-      payload: Record<string, unknown>;
-    }>
-  > {
-    const result = await this.#rpc<{
-      events: Array<{
-        seq: string;
-        kind: string;
-        at: string;
-        payload: Record<string, unknown>;
-      }>;
-    }>(`/rpc/events?limit=${limit}`, {
-      serverId: this.#serverId,
-      method: "GET",
-    });
-    return result.events;
   }
 
   enqueue(
@@ -366,95 +326,22 @@ class DurableObjectStubDaemonCell implements DaemonCell {
     }).then(() => undefined);
   }
 
-  prune(now?: number): Promise<boolean> {
-    return this.#rpc("/rpc/prune", {
+  prune(): Promise<boolean> {
+    return Promise.resolve(false);
+  }
+
+  purge(): Promise<void> {
+    return this.#rpc("/rpc/purge-cell", {
       serverId: this.#serverId,
-      body: { now },
-    }).then((body) => Boolean((body as { offlineApplied?: boolean }).offlineApplied));
-  }
-
-  applyMonitorSync(
-    msg: DaemonInboundEnvelope & { kind: "monitor-sync" },
-  ): Promise<{ acceptedSequence: number; resyncNeeded: boolean }> {
-    return this.#rpc("/rpc/monitor/sync", {
-      serverId: this.#serverId,
-      body: { msg },
-    });
-  }
-
-  applyMonitorHeartbeat(
-    msg: DaemonInboundEnvelope & { kind: "monitor-heartbeat" },
-  ): Promise<{ acceptedSequence: number; resyncNeeded: boolean }> {
-    return this.#rpc("/rpc/monitor/heartbeat", {
-      serverId: this.#serverId,
-      body: { msg },
-    });
-  }
-
-  applyMonitorTransition(
-    msg: DaemonInboundEnvelope & { kind: "monitor-transition" },
-  ): Promise<{ acceptedSequence: number; resyncNeeded: boolean }> {
-    return this.#rpc("/rpc/monitor/transition", {
-      serverId: this.#serverId,
-      body: { msg },
-    });
-  }
-
-  async getMonitorInstance(
-    _serverId: string,
-  ): Promise<MonitorInstanceRow | null> {
-    const result = await this.#rpc<{ instance: MonitorInstanceRow | null }>(
-      "/rpc/monitor/instance",
-      { serverId: this.#serverId, method: "GET" },
-    );
-    return result.instance;
-  }
-
-  async listMonitorResources(_serverId: string): Promise<MonitorResourceRow[]> {
-    const result = await this.#rpc<{ resources: MonitorResourceRow[] }>(
-      "/rpc/monitor/resources",
-      { serverId: this.#serverId, method: "GET" },
-    );
-    return result.resources;
-  }
-
-  async listMonitorEvents(
-    _serverId: string,
-    limit = 50,
-  ): Promise<MonitorEventRow[]> {
-    const result = await this.#rpc<{ events: MonitorEventRow[] }>(
-      `/rpc/monitor/events?limit=${limit}`,
-      { serverId: this.#serverId, method: "GET" },
-    );
-    return result.events;
-  }
-
-  async listMonitorMetrics(
-    _serverId: string,
-    limit = 50,
-  ): Promise<MonitorMetricRow[]> {
-    const result = await this.#rpc<{ metrics: MonitorMetricRow[] }>(
-      `/rpc/monitor/metrics?limit=${limit}`,
-      { serverId: this.#serverId, method: "GET" },
-    );
-    return result.metrics;
-  }
-
-  async drainNotificationCandidates(
-    _serverId: string,
-  ): Promise<MonitorAlertRow[]> {
-    const result = await this.#rpc<{ alerts: MonitorAlertRow[] }>(
-      "/rpc/monitor/drain-candidates",
-      { serverId: this.#serverId, body: {} },
-    );
-    return result.alerts;
+      body: {},
+    }).then(() => undefined);
   }
 }
 
 export function createDurableObjectDaemonCellRegistry(
   env: CloudflareBindings,
   db?: Db,
-): DaemonCellRegistry & { maintain(db: Db): Promise<void> } {
+): DaemonCellRegistry {
   const cells = new Map<string, DurableObjectStubDaemonCell>();
 
   const getCell = (serverId: string): DaemonCell => {
@@ -468,6 +355,10 @@ export function createDurableObjectDaemonCellRegistry(
 
   return {
     getCell,
+
+    async purge(serverId: string): Promise<void> {
+      await getCell(serverId).purge();
+    },
 
     async listOnlineServerIds(): Promise<string[]> {
       if (!db) return [];
@@ -484,11 +375,6 @@ export function createDurableObjectDaemonCellRegistry(
         }),
       );
       return new Map(snapshots);
-    },
-
-    async maintain(maintenanceDb: Db): Promise<void> {
-      const enrolledIds = await listEnrolledDaemonServerIds(maintenanceDb);
-      await runControlPlaneMaintenance(maintenanceDb, this, enrolledIds);
     },
   };
 }

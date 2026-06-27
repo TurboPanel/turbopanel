@@ -1,5 +1,4 @@
 import { assert, assertEquals, assertRejects } from "jsr:@std/assert";
-import { createRedisChallengeStore } from "./cell/challenge-store.ts";
 import { RedisDaemonCell } from "./cell/redis/cell.ts";
 import {
   createRedisCellClient,
@@ -10,15 +9,14 @@ import {
   type RedisDaemonCellRegistry,
 } from "./cell/redis/registry.ts";
 import {
+  cellKeyPattern,
+  connKey,
+  LEASE_TTL_MS,
   leaseKey,
   metaKey,
-  monitorDeadlinesKey,
-  monitorInstanceKey,
-  monitorSequenceKey,
   onlineSetKey,
   outboxKey,
   requestKey,
-  requestsKey,
   snapshotKey,
 } from "./cell/redis/keys.ts";
 import { generateDeliveryId, generateRequestId } from "./cell/protocol.ts";
@@ -39,20 +37,7 @@ async function cleanupServerCell(
   client: RedisCellClient,
   serverId: string,
 ): Promise<void> {
-  const requestIds = await client.zrangebyscore(
-    requestsKey(serverId),
-    "-inf",
-    "+inf",
-  );
-  const keys = [
-    metaKey(serverId),
-    snapshotKey(serverId),
-    outboxKey(serverId),
-    requestsKey(serverId),
-    leaseKey(serverId),
-    ...requestIds.map((id) => requestKey(serverId, id)),
-  ];
-  if (keys.length > 0) await client.del(...keys);
+  await client.deleteByPattern(cellKeyPattern(serverId));
   await client.srem(onlineSetKey(), serverId);
 }
 
@@ -181,8 +166,8 @@ Deno.test(
 );
 
 Deno.test(
-  "ackOutbox clears pending entries for the consumer",
-  withRedisCell(async ({ cell }) => {
+  "ackOutbox clears pending entries and drops outbox stream length",
+  withRedisCell(async ({ cell, client, serverId }) => {
     const attached = await cell.attachDaemonSocket({
       keyId: crypto.randomUUID(),
     });
@@ -198,6 +183,8 @@ Deno.test(
       command: "echo",
     });
 
+    assertEquals(await client.xlen(outboxKey(serverId)), 1);
+
     const batch = await cell.readOutboxBatch({ consumer, count: 10 });
     assertEquals(batch.length, 1);
     await cell.ackOutbox([deliveryId], consumer);
@@ -207,6 +194,7 @@ Deno.test(
       count: 10,
     });
     assertEquals(pending.length, 0);
+    assertEquals(await client.xlen(outboxKey(serverId)), 0);
   }),
 );
 
@@ -288,17 +276,6 @@ Deno.test(
 );
 
 Deno.test(
-  "challenge store expires after TTL",
-  withRedisCell(async ({ client }) => {
-    const store = createRedisChallengeStore(client, 1000);
-    const issued = await store.issue();
-    await new Promise((resolve) => setTimeout(resolve, 1100));
-    const consumed = await store.consume({ challengeId: issued.id });
-    assertEquals(consumed, null);
-  }),
-);
-
-Deno.test(
   "request record expires after TTL",
   withRedisCell(async ({ cell }) => {
     const requestId = generateRequestId();
@@ -321,17 +298,51 @@ Deno.test(
 Deno.test(
   "createRequestAndWait returns expired when no daemon responds",
   withRedisCell(async ({ cell }) => {
+    const requestId = generateRequestId();
     const record = await cell.createRequestAndWait(
       {
         kind: "command",
         deliveryId: generateDeliveryId(),
-        requestId: generateRequestId(),
+        requestId,
         at: new Date().toISOString(),
         command: "noop",
       },
       300,
     );
     assertEquals(record.status, "expired");
+    assertEquals(await cell.getRequest(requestId), null);
+    assertEquals(await cell.listRequests(), []);
+  }),
+);
+
+Deno.test(
+  "timed-out request is not delivered after reconnect",
+  withRedisCell(async ({ cell }) => {
+    const requestId = generateRequestId();
+    const deliveryId = generateDeliveryId();
+    const outbound = {
+      kind: "command" as const,
+      deliveryId,
+      requestId,
+      at: new Date().toISOString(),
+      command: "stale-command",
+    };
+
+    const expired = await cell.createRequestAndWait(outbound, 300);
+    assertEquals(expired.status, "expired");
+    assertEquals(await cell.getRequest(requestId), null);
+
+    const attached = await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    });
+    const batch = await cell.readOutboxBatch({
+      consumer: `ws:${attached.connectionId}`,
+      count: 10,
+    });
+    assertEquals(
+      batch.some((entry) => entry.requestId === requestId),
+      false,
+    );
   }),
 );
 
@@ -362,109 +373,6 @@ Deno.test(
     const record = await waitPromise;
     assertEquals(record.status, "done");
     assertEquals(record.result, { exitCode: 0, stdout: "hi", stderr: "" });
-  }),
-);
-
-Deno.test(
-  "createRequestAndWait resolves acked when pong arrives",
-  withRedisCell(async ({ cell }) => {
-    const requestId = generateRequestId();
-    const at = new Date().toISOString();
-    const outbound = {
-      kind: "ping" as const,
-      deliveryId: generateDeliveryId(),
-      requestId,
-      at,
-    };
-
-    const waitPromise = cell.createRequestAndWait(outbound, 5000);
-    await cell.enqueue(outbound);
-    await cell.handleInbound({
-      kind: "pong",
-      requestId,
-      at,
-    });
-
-    const record = await waitPromise;
-    assertEquals(record.status, "acked");
-  }),
-);
-
-Deno.test(
-  "attachDaemonSocket resets monitor sequence for reconnect sync",
-  withRedisCell(async ({ cell, client, serverId }) => {
-    await client.set(monitorSequenceKey(serverId), "6");
-    await client.hset(monitorInstanceKey(serverId), {
-      sequence: "6",
-      at: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      instanceJson: "{}",
-    });
-
-    await cell.attachDaemonSocket({ keyId: crypto.randomUUID() });
-
-    const sequence = await client.get(monitorSequenceKey(serverId));
-    assertEquals(sequence, null);
-  }),
-);
-
-Deno.test(
-  "reconnect accepts empty monitor sync after attach",
-  withRedisCell(async ({ cell, serverId }) => {
-    await cell.applyMonitorSync(
-      monitorSyncEnvelope(serverId, [
-        { resourceKey: "container:a", kind: "container", status: "healthy" },
-      ], 3),
-    );
-
-    const attached = await cell.attachDaemonSocket({
-      keyId: crypto.randomUUID(),
-    });
-    await cell.detachDaemonSocket({
-      connectionId: attached.connectionId,
-      leaseToken: attached.lease.token,
-    });
-
-    await cell.attachDaemonSocket({ keyId: crypto.randomUUID() });
-
-    const result = await cell.applyMonitorSync(
-      monitorSyncEnvelope(serverId, [], 1),
-    );
-    assertEquals(result.acceptedSequence, 1);
-    assertEquals(result.resyncNeeded, false);
-  }),
-);
-
-Deno.test(
-  "reconnect accepts non-empty monitor sync after attach",
-  withRedisCell(async ({ cell, serverId }) => {
-    await cell.applyMonitorSync(
-      monitorSyncEnvelope(serverId, [
-        { resourceKey: "container:a", kind: "container", status: "healthy" },
-      ], 5),
-    );
-
-    const attached = await cell.attachDaemonSocket({
-      keyId: crypto.randomUUID(),
-    });
-    await cell.detachDaemonSocket({
-      connectionId: attached.connectionId,
-      leaseToken: attached.lease.token,
-    });
-
-    await cell.attachDaemonSocket({ keyId: crypto.randomUUID() });
-
-    const result = await cell.applyMonitorSync(
-      monitorSyncEnvelope(serverId, [
-        { resourceKey: "container:b", kind: "container", status: "degraded" },
-      ], 1),
-    );
-    assertEquals(result.acceptedSequence, 1);
-    assertEquals(result.resyncNeeded, false);
-
-    const resources = await cell.listMonitorResources(serverId);
-    const b = resources.find((row) => row.resourceKey === "container:b");
-    assertEquals(b?.status, "degraded");
   }),
 );
 
@@ -508,353 +416,211 @@ Deno.test(
 );
 
 Deno.test(
-  "createRedisChallengeStore issue returns id, nonce, and at",
-  withRedisCell(async ({ client }) => {
-    const store = createRedisChallengeStore(client);
-    const challenge = await store.issue();
-    assertEquals(typeof challenge.id, "string");
-    assertEquals(typeof challenge.nonce, "string");
-    assertEquals(typeof challenge.at, "string");
-  }),
-);
-
-Deno.test(
-  "createRedisChallengeStore consume is single-use",
-  withRedisCell(async ({ client }) => {
-    const store = createRedisChallengeStore(client);
-    const issued = await store.issue();
-    const first = await store.consume({ challengeId: issued.id });
-    assertEquals(first?.id, issued.id);
-    const second = await store.consume({ challengeId: issued.id });
-    assertEquals(second, null);
-  }),
-);
-
-Deno.test(
-  "createRedisChallengeStore consume rejects mismatched serverId",
-  withRedisCell(async ({ client }) => {
-    const store = createRedisChallengeStore(client);
-    const serverId = crypto.randomUUID();
-    const keyId = crypto.randomUUID();
-    const issued = await store.issue({ serverId, keyId });
-    const consumed = await store.consume({
-      challengeId: issued.id,
-      serverId: crypto.randomUUID(),
-      keyId,
-    });
-    assertEquals(consumed, null);
-  }),
-);
-
-Deno.test(
-  "createRedisChallengeStore consume rejects mismatched keyId",
-  withRedisCell(async ({ client }) => {
-    const store = createRedisChallengeStore(client);
-    const serverId = crypto.randomUUID();
-    const keyId = crypto.randomUUID();
-    const issued = await store.issue({ serverId, keyId });
-    const consumed = await store.consume({
-      challengeId: issued.id,
-      serverId,
+  "heartbeat updates lastSeenAt in meta",
+  withRedisCell(async ({ cell, client, serverId }) => {
+    const attached = await cell.attachDaemonSocket({
       keyId: crypto.randomUUID(),
     });
-    assertEquals(consumed, null);
-  }),
-);
+    const staleAt = new Date(Date.now() - 61_000).toISOString();
+    await client.hset(metaKey(serverId), { lastSeenAt: staleAt });
 
-Deno.test(
-  "createRedisChallengeStore consume returns null when TTL elapsed",
-  withRedisCell(async ({ client }) => {
-    const store = createRedisChallengeStore(client, 1000);
-    const issued = await store.issue();
-    await new Promise((resolve) => setTimeout(resolve, 1100));
-    const consumed = await store.consume({ challengeId: issued.id });
-    assertEquals(consumed, null);
-  }),
-);
-
-function monitorSyncEnvelope(
-  serverId: string,
-  resources: Array<{
-    resourceKey: string;
-    kind: "container";
-    status: "healthy" | "unhealthy" | "degraded";
-  }>,
-  sequence = 1,
-) {
-  return {
-    kind: "monitor-sync" as const,
-    serverId,
-    sequence,
-    at: new Date().toISOString(),
-    protocolVersion: 1 as const,
-    instance: {},
-    resources,
-  };
-}
-
-Deno.test(
-  "applyMonitorSync full reconcile stores resources",
-  withRedisCell(async ({ cell, serverId }) => {
-    await cell.applyMonitorSync(
-      monitorSyncEnvelope(serverId, [
-        { resourceKey: "container:a", kind: "container", status: "healthy" },
-        { resourceKey: "container:b", kind: "container", status: "healthy" },
-      ]),
-    );
-    const resources = await cell.listMonitorResources(serverId);
-    assertEquals(resources.length, 2);
-  }),
-);
-
-Deno.test(
-  "applyMonitorHeartbeat applies resource delta",
-  withRedisCell(async ({ cell, serverId }) => {
-    await cell.applyMonitorSync(
-      monitorSyncEnvelope(serverId, [
-        { resourceKey: "container:a", kind: "container", status: "healthy" },
-        { resourceKey: "container:b", kind: "container", status: "healthy" },
-      ]),
-    );
-
-    await cell.applyMonitorHeartbeat({
-      kind: "monitor-heartbeat",
-      serverId,
-      sequence: 2,
-      at: new Date().toISOString(),
-      instance: {},
-      resources: [{
-        resourceKey: "container:a",
-        kind: "container",
-        status: "degraded",
-      }],
+    const at = new Date().toISOString();
+    await cell.heartbeat({
+      connectionId: attached.connectionId,
+      at,
     });
 
-    const resources = await cell.listMonitorResources(serverId);
-    const a = resources.find((row) => row.resourceKey === "container:a");
-    const b = resources.find((row) => row.resourceKey === "container:b");
-    assertEquals(a?.status, "degraded");
-    assertEquals(b?.status, "healthy");
+    const meta = await client.hgetall(metaKey(serverId));
+    assertEquals(meta?.lastSeenAt, at);
   }),
 );
 
 Deno.test(
-  "applyMonitorSync schedules offline deadline entry",
+  "heartbeat is coalesced within 60s",
   withRedisCell(async ({ cell, client, serverId }) => {
-    await cell.applyMonitorSync(
-      monitorSyncEnvelope(serverId, [
-        { resourceKey: "container:a", kind: "container", status: "healthy" },
-      ]),
-    );
+    const attached = await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    });
+    const staleAt = new Date(Date.now() - 61_000).toISOString();
+    await client.hset(metaKey(serverId), { lastSeenAt: staleAt });
 
-    const deadlines = await client.zrangebyscore(
-      monitorDeadlinesKey(serverId),
-      "-inf",
-      "+inf",
-    );
-    assert(deadlines.includes("offline"));
+    const firstAt = new Date().toISOString();
+    await cell.heartbeat({
+      connectionId: attached.connectionId,
+      at: firstAt,
+    });
+
+    const secondAt = new Date(Date.now() + 1000).toISOString();
+    await cell.heartbeat({
+      connectionId: attached.connectionId,
+      at: secondAt,
+    });
+
+    const meta = await client.hgetall(metaKey(serverId));
+    assertEquals(meta?.lastSeenAt, firstAt);
   }),
 );
 
 Deno.test(
-  "duplicate still-healthy heartbeats do not append duplicate events",
-  withRedisCell(async ({ cell, serverId }) => {
-    await cell.applyMonitorSync(
-      monitorSyncEnvelope(serverId, [
-        { resourceKey: "container:a", kind: "container", status: "healthy" },
-      ]),
-    );
+  "coalesced heartbeat renews daemon socket lease",
+  withRedisCell(async ({ cell, client, serverId }) => {
+    const attached = await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    });
+    const metaBefore = await client.hgetall(metaKey(serverId));
+    const lastSeenBefore = metaBefore?.lastSeenAt;
 
-    const heartbeat = {
-      kind: "monitor-heartbeat" as const,
-      serverId,
-      sequence: 2,
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    const ttlBefore = await client.pttl(leaseKey(serverId));
+    assert(ttlBefore > 0 && ttlBefore < LEASE_TTL_MS);
+
+    await cell.heartbeat({
+      connectionId: attached.connectionId,
       at: new Date().toISOString(),
-      instance: {},
-      resources: [{
-        resourceKey: "container:a",
-        kind: "container" as const,
-        status: "healthy" as const,
-      }],
+    });
+
+    const ttlAfter = await client.pttl(leaseKey(serverId));
+    assert(ttlAfter > ttlBefore);
+    assert(ttlAfter >= LEASE_TTL_MS - 2000);
+
+    const metaAfter = await client.hgetall(metaKey(serverId));
+    assertEquals(metaAfter?.lastSeenAt, lastSeenBefore);
+  }),
+);
+
+Deno.test(
+  "coalesced heartbeat persists agent on first heartbeat after attach",
+  withRedisCell(async ({ cell, client, serverId }) => {
+    const attached = await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    });
+    const agent = {
+      commit: "abc123",
+      buildId: "build-1",
+      builtAt: new Date().toISOString(),
+      channel: "trunk" as const,
     };
-    await cell.applyMonitorHeartbeat(heartbeat);
-    await cell.applyMonitorHeartbeat({
-      ...heartbeat,
-      sequence: 3,
+
+    await cell.heartbeat({
+      connectionId: attached.connectionId,
+      at: new Date().toISOString(),
+      agent,
     });
 
-    const events = await cell.listMonitorEvents(serverId, 100);
-    const forResource = events.filter((event) =>
-      event.resourceKey === "container:a"
-    );
-    assert(forResource.length <= 1);
+    const meta = await client.hgetall(metaKey(serverId));
+    assertEquals(meta?.agent, JSON.stringify(agent));
   }),
 );
 
 Deno.test(
-  "applyMonitorSync accepts newer sequence after heartbeat gap",
-  withRedisCell(async ({ cell, serverId }) => {
-    await cell.applyMonitorSync(
-      monitorSyncEnvelope(serverId, [], 1),
-    );
-
-    const gap = await cell.applyMonitorHeartbeat({
-      kind: "monitor-heartbeat",
-      serverId,
-      sequence: 3,
-      at: new Date().toISOString(),
-      instance: {},
+  "purge deletes all cell keys and removes from online set",
+  withRedisCell(async ({ cell, client, registry, serverId }) => {
+    await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
     });
-    assertEquals(gap.resyncNeeded, true);
-    assertEquals(gap.acceptedSequence, 1);
 
-    const resync = await cell.applyMonitorSync(
-      monitorSyncEnvelope(serverId, [
-        { resourceKey: "container:gap", kind: "container", status: "healthy" },
-      ], 5),
+    await cell.purge();
+
+    assertEquals(await client.get(metaKey(serverId)), null);
+    assertEquals(await client.get(snapshotKey(serverId)), null);
+    assertEquals(await client.get(outboxKey(serverId)), null);
+    assertEquals(await client.get(leaseKey(serverId)), null);
+
+    const online = await registry.listOnlineServerIds();
+    assert(!online.includes(serverId));
+  }),
+);
+
+Deno.test(
+  "purge deletes historical connection hashes after reconnect",
+  withRedisCell(async ({ cell, client, serverId }) => {
+    const first = await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    });
+    await cell.detachDaemonSocket({
+      connectionId: first.connectionId,
+      leaseToken: first.lease.token,
+    });
+
+    const second = await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    });
+
+    assert(
+      (await client.hgetall(connKey(serverId, first.connectionId))) !== null,
     );
-    assertEquals(resync.acceptedSequence, 5);
-    assertEquals(resync.resyncNeeded, false);
+    assert(
+      (await client.hgetall(connKey(serverId, second.connectionId))) !== null,
+    );
 
-    const resources = await cell.listMonitorResources(serverId);
+    await cell.purge();
+
     assertEquals(
-      resources.some((row) => row.resourceKey === "container:gap"),
-      true,
+      await client.scanKeys(cellKeyPattern(serverId)),
+      [],
     );
   }),
 );
 
 Deno.test(
-  "drainNotificationCandidates returns and clears candidates",
-  withRedisCell(async ({ cell, serverId }) => {
-    await cell.applyMonitorSync(
-      monitorSyncEnvelope(serverId, [
-        { resourceKey: "container:a", kind: "container", status: "healthy" },
-      ]),
-    );
-
-    await cell.applyMonitorTransition({
-      kind: "monitor-transition",
-      serverId,
-      sequence: 2,
-      at: new Date().toISOString(),
-      events: [{
-        resourceKey: "container:a",
-        kind: "container",
-        fromStatus: "healthy",
-        toStatus: "unhealthy",
-        at: new Date().toISOString(),
-      }],
-      resources: [{
-        resourceKey: "container:a",
-        kind: "container",
-        status: "unhealthy",
-      }],
+  "heartbeat past one interval keeps server online and advances lastSeenAt",
+  withRedisCell(async ({ cell, client, registry, serverId }) => {
+    const attached = await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
     });
 
-    const first = await cell.drainNotificationCandidates(serverId);
-    assertEquals(first.length, 1);
-    const second = await cell.drainNotificationCandidates(serverId);
-    assertEquals(second.length, 0);
+    const firstAt = new Date().toISOString();
+    await cell.heartbeat({
+      connectionId: attached.connectionId,
+      at: firstAt,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 61_000));
+
+    const secondAt = new Date().toISOString();
+    await cell.heartbeat({
+      connectionId: attached.connectionId,
+      at: secondAt,
+    });
+
+    const online = await registry.listOnlineServerIds();
+    assert(online.includes(serverId));
+
+    const meta = await client.hgetall(metaKey(serverId));
+    assertEquals(meta?.connected, "1");
+    assertEquals(meta?.lastSeenAt, secondAt);
+    assert(Date.parse(meta?.lastSeenAt ?? "") > Date.parse(firstAt));
   }),
 );
 
 Deno.test(
-  "alert cooldown suppresses duplicate unhealthy notifications",
-  withRedisCell(async ({ cell, serverId }) => {
-    await cell.applyMonitorSync(
-      monitorSyncEnvelope(serverId, [
-        { resourceKey: "container:a", kind: "container", status: "healthy" },
-      ]),
-    );
-
-    const transition = {
-      kind: "monitor-transition" as const,
-      serverId,
-      sequence: 2,
-      at: new Date().toISOString(),
-      events: [{
-        resourceKey: "container:a",
-        kind: "container" as const,
-        fromStatus: "healthy" as const,
-        toStatus: "unhealthy" as const,
-        at: new Date().toISOString(),
-      }],
-      resources: [{
-        resourceKey: "container:a",
-        kind: "container" as const,
-        status: "unhealthy" as const,
-      }],
-    };
-    await cell.applyMonitorTransition(transition);
-    await cell.applyMonitorTransition({
-      ...transition,
-      sequence: 3,
-      events: [{
-        resourceKey: "container:a",
-        kind: "container",
-        fromStatus: "unhealthy",
-        toStatus: "unhealthy",
-        at: new Date().toISOString(),
-      }],
+  "handleInbound deletes request row on terminal status",
+  withRedisCell(async ({ cell, client, serverId }) => {
+    const requestId = generateRequestId();
+    const at = new Date().toISOString();
+    await cell.enqueue({
+      kind: "command",
+      deliveryId: generateDeliveryId(),
+      requestId,
+      at,
+      command: "done",
     });
 
-    const drained = await cell.drainNotificationCandidates(serverId);
-    assertEquals(drained.length, 1);
-  }),
-);
-
-Deno.test(
-  "recovery closes open alert and emits recovery candidate",
-  withRedisCell(async ({ cell, serverId }) => {
-    await cell.applyMonitorSync(
-      monitorSyncEnvelope(serverId, [
-        { resourceKey: "container:a", kind: "container", status: "healthy" },
-      ]),
-    );
-
-    await cell.applyMonitorTransition({
-      kind: "monitor-transition",
-      serverId,
-      sequence: 2,
-      at: new Date().toISOString(),
-      events: [{
-        resourceKey: "container:a",
-        kind: "container",
-        fromStatus: "healthy",
-        toStatus: "unhealthy",
-        at: new Date().toISOString(),
-      }],
-      resources: [{
-        resourceKey: "container:a",
-        kind: "container",
-        status: "unhealthy",
-      }],
+    await cell.handleInbound({
+      kind: "command-result",
+      requestId,
+      at,
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
     });
 
-    await cell.applyMonitorTransition({
-      kind: "monitor-transition",
-      serverId,
-      sequence: 3,
-      at: new Date().toISOString(),
-      events: [{
-        resourceKey: "container:a",
-        kind: "container",
-        fromStatus: "unhealthy",
-        toStatus: "healthy",
-        at: new Date().toISOString(),
-      }],
-      resources: [{
-        resourceKey: "container:a",
-        kind: "container",
-        status: "healthy",
-      }],
-    });
-
-    const resources = await cell.listMonitorResources(serverId);
-    const recovered = resources.find((row) =>
-      row.resourceKey === "container:a"
+    const record = await cell.getRequest(requestId);
+    assertEquals(record?.status, "done");
+    assertEquals(
+      await client.hgetall(requestKey(serverId, requestId)),
+      null,
     );
-    assertEquals(recovered?.status, "healthy");
+    assertEquals(await cell.listRequests(), []);
   }),
 );

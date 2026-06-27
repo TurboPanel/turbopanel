@@ -128,6 +128,53 @@ export function getAdminOpenApiSpec(
           type: 'object',
           additionalProperties: { type: 'string', nullable: true },
         },
+        CellPurgeBatchBody: {
+          type: 'object',
+          required: ['serverIds'],
+          properties: {
+            serverIds: {
+              type: 'array',
+              items: { type: 'string' },
+              minItems: 1,
+            },
+          },
+        },
+        CellPurgeResponse: {
+          type: 'object',
+          required: ['ok', 'serverId', 'purged'],
+          properties: {
+            ok: { type: 'boolean', const: true },
+            serverId: { type: 'string' },
+            purged: { type: 'boolean', const: true },
+          },
+        },
+        CellPurgeErrorResponse: {
+          type: 'object',
+          required: ['ok', 'error'],
+          properties: {
+            ok: { type: 'boolean', const: false },
+            error: { type: 'string' },
+          },
+        },
+        CellPurgeBatchResponse: {
+          type: 'object',
+          required: ['ok', 'results'],
+          properties: {
+            ok: { type: 'boolean', const: true },
+            results: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['serverId', 'ok'],
+                properties: {
+                  serverId: { type: 'string' },
+                  ok: { type: 'boolean' },
+                  error: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
       },
     },
     paths: {
@@ -395,6 +442,76 @@ export function getAdminOpenApiSpec(
             '200': { description: 'Per-daemon address summaries' },
             '401': { description: 'Unauthorized' },
             '403': { description: 'Forbidden' },
+          },
+        },
+      },
+      [`${ADMIN_API_PREFIX}/cells/purge-batch`]: {
+        post: {
+          tags: ['Daemon Fleet'],
+          summary: 'Purge daemon cells for multiple server IDs',
+          description:
+            'Works even when Postgres server rows are already deleted (orphaned cells). ' +
+            'Per-id failures are reported in the results array.',
+          security: [...cookieSecurity],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/CellPurgeBatchBody' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Batch purge completed',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/CellPurgeBatchResponse' },
+                },
+              },
+            },
+            '400': { description: 'Invalid request body' },
+            '401': { description: 'Unauthorized' },
+            '403': { description: 'Superadmin access required' },
+            '503': { description: 'Daemon cell registry unavailable' },
+          },
+        },
+      },
+      [`${ADMIN_API_PREFIX}/cells/{serverId}/purge`]: {
+        post: {
+          tags: ['Daemon Fleet'],
+          summary: 'Purge a single daemon cell by server ID',
+          description:
+            'Works even when the Postgres server row is already deleted (orphaned test-server DOs).',
+          security: [...cookieSecurity],
+          parameters: [
+            {
+              name: 'serverId',
+              in: 'path',
+              required: true,
+              schema: { type: 'string' },
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'Cell purged',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/CellPurgeResponse' },
+                },
+              },
+            },
+            '401': { description: 'Unauthorized' },
+            '403': { description: 'Superadmin access required' },
+            '500': {
+              description: 'Purge failed',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/CellPurgeErrorResponse' },
+                },
+              },
+            },
+            '503': { description: 'Daemon cell registry unavailable' },
           },
         },
       },

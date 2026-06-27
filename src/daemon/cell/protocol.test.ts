@@ -13,8 +13,7 @@ const UUID_RE =
 
 Deno.test("parseDaemonMessage round-trips valid JSON", () => {
   const msg: DaemonMessage = {
-    type: "pong",
-    id: "req-1",
+    type: "heartbeat",
     at: "2020-01-01T00:00:00.000Z",
   };
   const parsed = parseDaemonMessage(JSON.stringify(msg));
@@ -27,11 +26,6 @@ Deno.test("parseDaemonMessage returns null for invalid JSON", () => {
 
 Deno.test("wireMessageToInboundEnvelope maps inbound wire types", () => {
   const at = "2020-01-01T00:00:00.000Z";
-
-  assertEquals(
-    wireMessageToInboundEnvelope({ type: "pong", id: "r1", at }),
-    { kind: "pong", requestId: "r1", at },
-  );
 
   assertEquals(
     wireMessageToInboundEnvelope({
@@ -166,130 +160,6 @@ Deno.test("wireMessageToInboundEnvelope returns null for non-inbound types", () 
   );
 });
 
-Deno.test("wireMessageToInboundEnvelope validates monitor.sync shape", () => {
-  const at = "2020-01-01T00:00:00.000Z";
-  assertEquals(
-    wireMessageToInboundEnvelope({
-      type: "monitor.sync",
-      from: "daemon",
-      serverId: "srv-1",
-      at,
-      sequence: 1,
-      instance: {},
-      resources: [{
-        resourceKey: "container:abc",
-        kind: "container",
-        status: "healthy",
-      }],
-      protocolVersion: 1,
-    }),
-    {
-      kind: "monitor-sync",
-      serverId: "srv-1",
-      sequence: 1,
-      at,
-      protocolVersion: 1,
-      instance: {},
-      resources: [{
-        resourceKey: "container:abc",
-        kind: "container",
-        status: "healthy",
-      }],
-      events: undefined,
-    },
-  );
-  assertEquals(
-    wireMessageToInboundEnvelope({
-      type: "monitor.sync",
-      from: "daemon",
-      serverId: "srv-1",
-      at,
-      sequence: 1,
-      instance: {},
-      resources: "not-an-array",
-      protocolVersion: 1,
-    } as unknown as DaemonMessage),
-    null,
-  );
-});
-
-Deno.test("wireMessageToInboundEnvelope validates monitor.transition shape", () => {
-  const at = "2020-01-01T00:00:00.000Z";
-  assertEquals(
-    wireMessageToInboundEnvelope({
-      type: "monitor.transition",
-      from: "daemon",
-      serverId: "srv-1",
-      at,
-      sequence: 2,
-      events: [{
-        resourceKey: "container:abc",
-        kind: "container",
-        toStatus: "unhealthy",
-        at,
-      }],
-    }),
-    {
-      kind: "monitor-transition",
-      serverId: "srv-1",
-      sequence: 2,
-      at,
-      events: [{
-        resourceKey: "container:abc",
-        kind: "container",
-        toStatus: "unhealthy",
-        at,
-      }],
-      resources: undefined,
-    },
-  );
-  assertEquals(
-    wireMessageToInboundEnvelope({
-      type: "monitor.transition",
-      from: "daemon",
-      serverId: "srv-1",
-      at,
-      sequence: 2,
-    } as unknown as DaemonMessage),
-    null,
-  );
-});
-
-Deno.test("wireMessageToInboundEnvelope validates monitor.heartbeat shape", () => {
-  const at = "2020-01-01T00:00:00.000Z";
-  assertEquals(
-    wireMessageToInboundEnvelope({
-      type: "monitor.heartbeat",
-      from: "daemon",
-      serverId: "srv-1",
-      at,
-      sequence: 3,
-      instance: {},
-    }),
-    {
-      kind: "monitor-heartbeat",
-      serverId: "srv-1",
-      sequence: 3,
-      at,
-      instance: {},
-      resources: undefined,
-      events: undefined,
-    },
-  );
-  assertEquals(
-    wireMessageToInboundEnvelope({
-      type: "monitor.heartbeat",
-      from: "daemon",
-      serverId: "srv-1",
-      at,
-      sequence: 3,
-      instance: {},
-      resources: "bad",
-    } as unknown as DaemonMessage),
-    null,
-  );
-});
-
 Deno.test("outboundEnvelopeToWireMessage maps outbound kinds", () => {
   const base = {
     deliveryId: crypto.randomUUID(),
@@ -402,59 +272,14 @@ Deno.test("outboundEnvelopeToWireMessage maps outbound kinds", () => {
       at: base.at,
     },
   );
-});
 
-Deno.test("outboundEnvelopeToWireMessage maps monitor-ack", () => {
-  const at = "2020-01-01T00:00:00.000Z";
   assertEquals(
     outboundEnvelopeToWireMessage({
-      kind: "monitor-ack",
-      deliveryId: crypto.randomUUID(),
-      requestId: "req-ack",
-      at,
-      serverId: "srv-1",
-      acceptedSequence: 7,
+      ...base,
+      kind: "heartbeat-ack",
+      at: base.at,
     }),
-    {
-      type: "monitor.ack",
-      from: "instance",
-      serverId: "srv-1",
-      at,
-      acceptedSequence: 7,
-      resyncNeeded: undefined,
-    },
-  );
-  assertEquals(
-    outboundEnvelopeToWireMessage({
-      kind: "monitor-ack",
-      deliveryId: crypto.randomUUID(),
-      requestId: "req-ack-2",
-      at,
-      serverId: "srv-1",
-      acceptedSequence: 7,
-      resyncNeeded: true,
-    }),
-    {
-      type: "monitor.ack",
-      from: "instance",
-      serverId: "srv-1",
-      at,
-      acceptedSequence: 7,
-      resyncNeeded: true,
-    },
-  );
-});
-
-Deno.test("wireMessageToInboundEnvelope rejects monitor.ack from daemon", () => {
-  assertEquals(
-    wireMessageToInboundEnvelope({
-      type: "monitor.ack",
-      from: "daemon",
-      serverId: "srv-1",
-      at: "2020-01-01T00:00:00.000Z",
-      acceptedSequence: 1,
-    } as unknown as DaemonMessage),
-    null,
+    { type: "heartbeat-ack", at: base.at },
   );
 });
 

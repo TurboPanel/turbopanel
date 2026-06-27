@@ -32,13 +32,6 @@ export const authSchemas = {
       expiresAt: { type: "string", format: "date-time" },
     },
   },
-  DaemonHeartbeatResponse: {
-    type: "object",
-    required: ["ok"],
-    properties: {
-      ok: { type: "boolean", const: true },
-    },
-  },
   DaemonCommandsLeaseResponse: {
     type: "object",
     required: ["commands"],
@@ -106,28 +99,9 @@ export const authPaths: Record<string, unknown> = {
       },
     },
   },
-  "/api/daemon/v1/heartbeat": {
-    post: {
-      tags: ["Authorization"],
-      summary: "Daemon liveness signal",
-      description:
-        "Daemon liveness signal. Validates stateless JWT only (no daemon session lookup). Live presence is tracked in the Daemon Cell; this endpoint does not require daemonSessionId.",
-      security: [{ bearerAuth: [] }],
-      responses: {
-        "200": {
-          description: "Heartbeat accepted",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/DaemonHeartbeatResponse" },
-            },
-          },
-        },
-      },
-    },
-  },
   "/api/daemon/v1/commands/lease": {
     post: {
-      tags: ["Authorization"],
+      tags: ["Daemon"],
       summary: "Lease pending commands (stub)",
       security: [{ bearerAuth: [] }],
       responses: {

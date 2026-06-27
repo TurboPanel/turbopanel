@@ -6,7 +6,6 @@ import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import {
   broadcastEchoToFleet,
   collectFleetCommands,
-  collectFleetEvents,
   enqueueEchoToServer,
   listFleetServerIds,
 } from '../daemon/cell/fleet-diagnostics.ts'
@@ -41,6 +40,7 @@ import {
 const COMMAND_TIMEOUT_MS = 30_000
 const ADDRESSES_TIMEOUT_MS = 10_000
 const PUBLIC_URLS_APPLY_TIMEOUT_MS = 60_000
+const MAX_CELL_PURGE_BATCH_SIZE = 200
 
 function nowTs(): string {
   return new Date().toISOString()
@@ -89,15 +89,7 @@ export function registerAdminRoutes(app: Hono, opts: {
   })
 
   admin.get('/daemon/events', async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    if (!registry) return c.json({ events: [] })
-    const db = getDb(c)
-    if (!db) return c.json({ events: [] })
-    const limit = Number(c.req.query('limit') ?? 50)
-    const perServerLimit = Number.isFinite(limit) ? limit : 50
-    const serverIds = await listFleetServerIds(db)
-    const events = await collectFleetEvents(registry, serverIds, perServerLimit)
-    return c.json({ events })
+    return c.json({ events: [] })
   })
 
   admin.post('/daemon/broadcast', async (c) => {
@@ -416,6 +408,62 @@ export function registerAdminRoutes(app: Hono, opts: {
       const message = err instanceof Error ? err.message : String(err)
       const status = message === 'daemon not connected' ? 404 : 500
       return c.json({ error: message }, status)
+    }
+  })
+
+  admin.post('/cells/purge-batch', createRootOnlyMiddleware(opts.secrets), async (c) => {
+    const registry = getDaemonCellRegistry(c)
+    if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
+
+    const body = await c.req.json().catch(() => null)
+    if (
+      !body ||
+      typeof body !== 'object' ||
+      !Array.isArray(body.serverIds) ||
+      body.serverIds.length === 0 ||
+      !body.serverIds.every((id: unknown) => typeof id === 'string' && id.length > 0)
+    ) {
+      return c.json({ error: 'expected { serverIds: string[] } with at least one id' }, 400)
+    }
+    if (body.serverIds.length > MAX_CELL_PURGE_BATCH_SIZE) {
+      return c.json(
+        { error: `serverIds exceeds maximum batch size of ${MAX_CELL_PURGE_BATCH_SIZE}` },
+        400,
+      )
+    }
+
+    const settled = await Promise.allSettled(
+      body.serverIds.map((serverId: string) => registry.purge(serverId)),
+    )
+    const results = body.serverIds.map((serverId: string, index: number) => {
+      const outcome = settled[index]!
+      if (outcome.status === 'fulfilled') {
+        return { serverId, ok: true as const }
+      }
+      const error = outcome.reason instanceof Error
+        ? outcome.reason.message
+        : String(outcome.reason)
+      return { serverId, ok: false as const, error }
+    })
+
+    return c.json({ ok: true, results })
+  })
+
+  admin.post('/cells/:serverId/purge', createRootOnlyMiddleware(opts.secrets), async (c) => {
+    const registry = getDaemonCellRegistry(c)
+    if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
+
+    const serverId = c.req.param('serverId')
+    if (!serverId) {
+      return c.json({ error: 'serverId is required' }, 400)
+    }
+
+    try {
+      await registry.getCell(serverId).purge()
+      return c.json({ ok: true, serverId, purged: true })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return c.json({ ok: false, error: message }, 500)
     }
   })
 

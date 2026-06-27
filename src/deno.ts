@@ -4,9 +4,7 @@ import { deriveSecretsConfig, parseSecretsEnv } from './client/authn/secrets.ts'
 import { createApp } from './app.ts'
 import { createDenoDb } from './db.ts'
 import { logInfo } from './logger.ts'
-import { createRedisChallengeStore } from './daemon/cell/challenge-store.ts'
 import { createRedisDaemonCellRegistry } from './daemon/cell/redis/registry.ts'
-import { DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS } from './daemon/authn/challenge.ts'
 import { DAEMON_PING_MS } from './daemon/cell/protocol.ts'
 import {
   ensureColocatedLicenseCredentialsOnDisk,
@@ -68,17 +66,8 @@ const secretsConfig = parseSecretsEnv(
 )
 const sessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
 const daemonJwtSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-jwt-signing')
+const challengeSigningSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-challenge-signing')
 const daemonCellRegistry = createRedisDaemonCellRegistry()
-const challengeStoreProvider = {
-  enroll: createRedisChallengeStore(
-    daemonCellRegistry.client,
-    DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-  ),
-  auth: createRedisChallengeStore(
-    daemonCellRegistry.client,
-    DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-  ),
-}
 const app = createApp({
   db,
   emailQueue,
@@ -105,7 +94,7 @@ if (developerSurface) {
 }
 registerDaemonApiRoutes(routes, {
   secrets: daemonJwtSecrets,
-  challengeStoreProvider,
+  challengeSigningSecrets,
 })
 registerVersionRoute(routes)
 if (developerSurface) {
@@ -129,7 +118,7 @@ const socketPath = resolveInstanceSocket()
 
 const abort = new AbortController()
 const maintenanceTimer = setInterval(() => {
-  void daemonCellRegistry.maintain(db).catch((err) => {
+  void daemonCellRegistry.maintain().catch((err) => {
     logInfo('daemon-cell', `maintenance error: ${String(err)}`)
   })
 }, DAEMON_PING_MS)

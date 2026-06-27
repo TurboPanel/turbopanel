@@ -3,35 +3,15 @@ import {
   deriveSecretsConfig,
   parseSecretsEnv,
 } from "../../client/authn/secrets.ts";
-import { createWorkersDb, type Db } from "../../db.ts";
-import { DAEMON_CHALLENGE_TTL_MS } from "../authn/challenge.ts";
 import { verifyDaemonJwt } from "../authn/daemon-jwt.ts";
 import type {
   DaemonCellLease,
   DaemonCellSnapshot,
-  MonitorAlertRow,
-  MonitorEventRow,
-  MonitorInstanceRow,
-  MonitorMetricRow,
-  MonitorResourceRow,
   PendingRequestRecord,
   PendingRequestStatus,
 } from "./contracts.ts";
 import type {
-  MonitorEvent,
-  MonitorInstanceSummary,
-  MonitorResourceKind,
-  MonitorResourceState,
-  MonitorResourceStatus,
-} from "./monitor-contracts.ts";
-import {
-  evaluateFullSyncSequence,
-  evaluateMonitorSequence,
-  MONITOR_ALERT_COOLDOWN_MS,
-  MONITOR_OFFLINE_GRACE_MS,
-  normalizeMonitorMetricBucket,
-} from "./monitor-contracts.ts";
-import type {
+  DaemonAgentInfo,
   DaemonInboundEnvelope,
   DaemonOutboundEnvelope,
   OutboxDeliveryId,
@@ -41,9 +21,6 @@ import {
   parseDaemonMessage,
   wireMessageToInboundEnvelope,
 } from "./protocol.ts";
-import { mergeSnapshotPresence } from "./snapshot-merge.ts";
-import { onDaemonDisconnected, onMonitorMessageApplied } from "./control-plane-monitor.ts";
-import { projectServerDaemon } from "./postgres-projection.ts";
 
 const TERMINAL_STATUSES = new Set<PendingRequestStatus>([
   "acked",
@@ -52,15 +29,12 @@ const TERMINAL_STATUSES = new Set<PendingRequestStatus>([
   "expired",
 ]);
 
-const DAEMON_SOCKET_LEASE_MS = 45_000;
+const DAEMON_SOCKET_LEASE_MS = 180_000;
 const OUTBOX_INFLIGHT_LEASE_MS = 30_000;
 const DELIVERY_LEASE_NAME = "delivery";
 const DAEMON_SOCKET_LEASE_NAME = "daemon-socket";
 const OUTBOX_PUMP_ALARM_MS = 2_000;
-const MONITOR_EVENT_RETAIN = 500;
-const MONITOR_ALERT_RESOLVED_RETAIN = 100;
-const MONITOR_METRIC_RETAIN_HOURS = 72;
-const MONITOR_ALERT_RESOLVED_RETAIN_DAYS = 7;
+const HEARTBEAT_COALESCE_MS = 60_000;
 
 function nowIso(now = Date.now()): string {
   return new Date(now).toISOString();
@@ -70,17 +44,25 @@ function isTerminalStatus(status: PendingRequestStatus): boolean {
   return TERMINAL_STATUSES.has(status);
 }
 
-function parseSnapshotJson(
-  raw: string | null,
-  serverId: string,
-): DaemonCellSnapshot | null {
-  if (!raw) return null;
+function parseAgentJson(raw: string | null): DaemonAgentInfo | undefined {
+  if (!raw) return undefined;
   try {
-    const parsed = JSON.parse(raw) as DaemonCellSnapshot;
-    return { ...parsed, serverId };
+    return JSON.parse(raw) as DaemonAgentInfo;
   } catch {
-    return null;
+    return undefined;
   }
+}
+
+function agentIdentityEqual(
+  a: DaemonAgentInfo | undefined,
+  b: DaemonAgentInfo | undefined,
+): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return a.commit === b.commit &&
+    a.buildId === b.buildId &&
+    a.builtAt === b.builtAt &&
+    a.channel === b.channel;
 }
 
 function snapshotFromMetaRow(
@@ -89,7 +71,7 @@ function snapshotFromMetaRow(
 ): DaemonCellSnapshot {
   return {
     serverId,
-    version: Number(row.snapshot_version ?? 0),
+    version: 0,
     updatedAt: String(row.updated_at ?? nowIso()),
     hostname: row.hostname ? String(row.hostname) : undefined,
     machineId: row.machine_id ? String(row.machine_id) : undefined,
@@ -98,19 +80,8 @@ function snapshotFromMetaRow(
     keyId: row.key_id ? String(row.key_id) : undefined,
     connected: Number(row.connected ?? 0) === 1,
     connectedAt: row.connected_at ? String(row.connected_at) : undefined,
-    lastInboundAt: row.last_inbound_at
-      ? String(row.last_inbound_at)
-      : undefined,
-    lastOutboundAt: row.last_outbound_at
-      ? String(row.last_outbound_at)
-      : undefined,
-    lastHeartbeatAt: row.last_heartbeat_at
-      ? String(row.last_heartbeat_at)
-      : undefined,
     lastSeenAt: row.last_seen_at ? String(row.last_seen_at) : undefined,
-    keyLastUsedAt: row.key_last_used_at
-      ? String(row.key_last_used_at)
-      : undefined,
+    agent: parseAgentJson(row.agent_json ? String(row.agent_json) : null),
   };
 }
 
@@ -155,7 +126,6 @@ export class DaemonCellObject {
   #schemaReady = false;
   #daemonJwtSecrets: DerivedSecretsConfig | null = null;
   #daemonJwtSecretsPromise: Promise<DerivedSecretsConfig> | null = null;
-  #projectionDb: Db | null = null;
 
   constructor(ctx: DurableObjectState, env: CloudflareBindings) {
     this.#ctx = ctx;
@@ -195,21 +165,18 @@ export class DaemonCellObject {
         machine_id TEXT,
         remote_address TEXT,
         connected_at TEXT,
-        last_inbound_at TEXT,
-        last_outbound_at TEXT,
-        last_heartbeat_at TEXT,
-        snapshot_version INTEGER DEFAULT 0,
-        location_hint TEXT,
-        generation INTEGER DEFAULT 1,
+        last_seen_at TEXT,
+        key_last_used_at TEXT,
+        agent_json TEXT,
         updated_at TEXT
       )
     `);
     this.#ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS snapshot (
-        server_id TEXT PRIMARY KEY,
-        version INTEGER,
-        snapshot_json TEXT,
-        updated_at TEXT
+      CREATE TABLE IF NOT EXISTS leases (
+        lease_name TEXT PRIMARY KEY,
+        holder TEXT,
+        token TEXT,
+        expires_at TEXT
       )
     `);
     this.#ctx.storage.sql.exec(`
@@ -242,167 +209,7 @@ export class DaemonCellObject {
         sent_at TEXT
       )
     `);
-    this.#ensureRequestsSchema();
-    this.#ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS event_log (
-        seq INTEGER PRIMARY KEY AUTOINCREMENT,
-        kind TEXT,
-        payload_json TEXT,
-        created_at TEXT,
-        expires_at TEXT
-      )
-    `);
-    this.#ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS leases (
-        lease_name TEXT PRIMARY KEY,
-        holder TEXT,
-        token TEXT,
-        expires_at TEXT
-      )
-    `);
-    this.#ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS connections (
-        connection_id TEXT PRIMARY KEY,
-        session_id TEXT,
-        key_id TEXT,
-        connected_at TEXT,
-        closed_at TEXT,
-        remote_address TEXT,
-        reason TEXT
-      )
-    `);
-    this.#ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS challenges (
-        challenge_id TEXT PRIMARY KEY,
-        challenge_type TEXT,
-        server_id TEXT,
-        key_id TEXT,
-        nonce TEXT,
-        at TEXT,
-        issued_at_ms INTEGER,
-        expires_at TEXT
-      )
-    `);
-    this.#ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS monitor_instance (
-        server_id TEXT PRIMARY KEY,
-        sequence INTEGER,
-        at TEXT,
-        instance_json TEXT,
-        updated_at TEXT
-      )
-    `);
-    this.#ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS monitor_resource (
-        resource_key TEXT PRIMARY KEY,
-        server_id TEXT,
-        kind TEXT,
-        status TEXT,
-        state_json TEXT,
-        updated_at TEXT
-      )
-    `);
-    this.#ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS monitor_metric_minute (
-        seq INTEGER PRIMARY KEY AUTOINCREMENT,
-        server_id TEXT,
-        bucket_at TEXT,
-        cpu REAL,
-        memory REAL,
-        disk REAL,
-        load REAL,
-        created_at TEXT
-      )
-    `);
-    this.#ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS monitor_event (
-        seq INTEGER PRIMARY KEY AUTOINCREMENT,
-        server_id TEXT,
-        resource_key TEXT,
-        kind TEXT,
-        from_status TEXT,
-        to_status TEXT,
-        reason TEXT,
-        at TEXT,
-        created_at TEXT
-      )
-    `);
-    this.#ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS monitor_alert (
-        resource_key TEXT PRIMARY KEY,
-        server_id TEXT,
-        status TEXT,
-        opened_at TEXT,
-        last_notified_at TEXT,
-        last_delivered_at TEXT,
-        cooldown_until TEXT,
-        resolved_at TEXT
-      )
-    `);
-    this.#ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS monitor_deadline (
-        deadline_name TEXT PRIMARY KEY,
-        server_id TEXT,
-        due_at TEXT,
-        kind TEXT,
-        payload_json TEXT
-      )
-    `);
-    this.#ensureMonitorAlertSchema();
-    this.#ensureCellMetaSchema();
     this.#schemaReady = true;
-  }
-
-  #ensureCellMetaSchema(): void {
-    const info = this.#ctx.storage.sql.exec("PRAGMA table_info(cell_meta)");
-    let hasLastSeenAt = false;
-    let hasKeyLastUsedAt = false;
-    for (const row of info) {
-      if (String(row.name) === "last_seen_at") hasLastSeenAt = true;
-      if (String(row.name) === "key_last_used_at") hasKeyLastUsedAt = true;
-    }
-    if (!hasLastSeenAt) {
-      this.#ctx.storage.sql.exec(
-        "ALTER TABLE cell_meta ADD COLUMN last_seen_at TEXT",
-      );
-    }
-    if (!hasKeyLastUsedAt) {
-      this.#ctx.storage.sql.exec(
-        "ALTER TABLE cell_meta ADD COLUMN key_last_used_at TEXT",
-      );
-    }
-  }
-
-  #ensureRequestsSchema(): void {
-    const info = this.#ctx.storage.sql.exec("PRAGMA table_info(requests)");
-    let hasCommandText = false;
-    for (const row of info) {
-      if (String(row.name) === "command_text") {
-        hasCommandText = true;
-        break;
-      }
-    }
-    if (!hasCommandText) {
-      this.#ctx.storage.sql.exec(
-        "ALTER TABLE requests ADD COLUMN command_text TEXT",
-      );
-    }
-  }
-
-  #ensureMonitorAlertSchema(): void {
-    const info = this.#ctx.storage.sql.exec("PRAGMA table_info(monitor_alert)");
-    let hasLastDeliveredAt = false;
-    for (const row of info) {
-      if (String(row.name) === "last_delivered_at") {
-        hasLastDeliveredAt = true;
-        break;
-      }
-    }
-    if (!hasLastDeliveredAt) {
-      this.#ctx.storage.sql.exec(
-        "ALTER TABLE monitor_alert ADD COLUMN last_delivered_at TEXT",
-      );
-    }
   }
 
   #resolveServerId(request: Request): string | null {
@@ -420,8 +227,8 @@ export class DaemonCellObject {
 
   #ensureServerId(serverId: string): void {
     this.#ctx.storage.sql.exec(
-      `INSERT INTO cell_meta (server_id, connected, snapshot_version, generation, updated_at)
-       VALUES (?, 0, 0, 1, ?)
+      `INSERT INTO cell_meta (server_id, connected, updated_at)
+       VALUES (?, 0, ?)
        ON CONFLICT(server_id) DO NOTHING`,
       serverId,
       nowIso(),
@@ -476,23 +283,14 @@ export class DaemonCellObject {
       for (const row of metaCursor) {
         if (String(row.connection_id) === connectionId) {
           this.#ctx.storage.sql.exec(
-            "UPDATE cell_meta SET connected = 0, updated_at = ? WHERE server_id = ?",
+            `UPDATE cell_meta SET connected = 0, last_seen_at = ?, updated_at = ?
+             WHERE server_id = ?`,
+            closedAt,
             closedAt,
             serverId,
           );
         }
       }
-      this.#ctx.storage.sql.exec(
-        `UPDATE connections SET closed_at = ?, reason = ?
-         WHERE connection_id = ?`,
-        closedAt,
-        "replaced by new connection",
-        connectionId,
-      );
-    });
-    this.#appendEventInternal("disconnected", {
-      connectionId,
-      reason: "replaced by new connection",
     });
   }
 
@@ -520,9 +318,8 @@ export class DaemonCellObject {
         `INSERT INTO cell_meta (
           server_id, connected, connection_id, session_id, key_id,
           hostname, machine_id, remote_address, connected_at,
-          last_seen_at, key_last_used_at,
-          snapshot_version, generation, updated_at
-        ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?)
+          last_seen_at, key_last_used_at, updated_at
+        ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(server_id) DO UPDATE SET
           connected = 1,
           connection_id = excluded.connection_id,
@@ -548,16 +345,6 @@ export class DaemonCellObject {
         connectedAt,
       );
       this.#ctx.storage.sql.exec(
-        `INSERT INTO connections (
-          connection_id, session_id, key_id, connected_at, remote_address
-        ) VALUES (?, ?, ?, ?, ?)`,
-        connectionId,
-        sessionId,
-        meta.keyId,
-        connectedAt,
-        meta.remoteAddress ?? "",
-      );
-      this.#ctx.storage.sql.exec(
         `INSERT INTO leases (lease_name, holder, token, expires_at)
          VALUES (?, ?, ?, ?)
          ON CONFLICT(lease_name) DO UPDATE SET
@@ -571,12 +358,6 @@ export class DaemonCellObject {
       );
     });
 
-    this.#appendEventInternal("connected", { connectionId });
-
-    this.#resetMonitorSequenceForReconnect(serverId);
-
-    void this.#projectOnline(serverId, meta, connectedAt);
-
     return {
       holder: connectionId,
       token: connectionId,
@@ -584,51 +365,12 @@ export class DaemonCellObject {
     };
   }
 
-  async #scheduleOfflineDeadline(
-    serverId: string,
-    now = Date.now(),
-  ): Promise<void> {
-    const dueAt = nowIso(now + MONITOR_OFFLINE_GRACE_MS);
-    this.#ctx.storage.sql.exec(
-      `INSERT INTO monitor_deadline (deadline_name, server_id, due_at, kind, payload_json)
-       VALUES ('offline', ?, ?, 'offline', NULL)
-       ON CONFLICT(deadline_name) DO UPDATE SET
-         server_id = excluded.server_id,
-         due_at = excluded.due_at,
-         kind = excluded.kind`,
-      serverId,
-      dueAt,
-    );
-    await this.#scheduleNearestAlarm();
-  }
-
-  async #cancelOfflineDeadline(serverId: string): Promise<void> {
-    this.#ctx.storage.sql.exec(
-      "DELETE FROM monitor_deadline WHERE deadline_name = 'offline' AND server_id = ?",
-      serverId,
-    );
-    await this.#scheduleNearestAlarm();
-  }
-
   async #scheduleNearestAlarm(): Promise<void> {
-    const candidates: number[] = [];
-    const cursor = this.#ctx.storage.sql.exec(
-      "SELECT MIN(due_at) AS min_due FROM monitor_deadline",
-    );
-    for (const row of cursor) {
-      if (row.min_due) {
-        const ms = Date.parse(String(row.min_due));
-        if (!Number.isNaN(ms)) candidates.push(ms);
-      }
-    }
     if (this.#hasDeliverableOutbox() && this.#ctx.getWebSockets().length > 0) {
-      candidates.push(Date.now() + OUTBOX_PUMP_ALARM_MS);
-    }
-    if (candidates.length === 0) {
-      await this.#ctx.storage.deleteAlarm();
+      await this.#ctx.storage.setAlarm(Date.now() + OUTBOX_PUMP_ALARM_MS);
       return;
     }
-    await this.#ctx.storage.setAlarm(Math.min(...candidates));
+    await this.#ctx.storage.deleteAlarm();
   }
 
   #hasDeliverableOutbox(): boolean {
@@ -672,7 +414,6 @@ export class DaemonCellObject {
     });
     if (batch.length === 0) return;
 
-    let delivered = false;
     for (const ws of sockets) {
       const attachment = ws.deserializeAttachment() as {
         connectionId: string;
@@ -690,25 +431,16 @@ export class DaemonCellObject {
             attachment.connectionId,
           );
           await this.#ackOutbox(serverId, [envelope.deliveryId]);
-          delivered = true;
         } catch {
           this.#requeueOutbox(envelope.deliveryId);
         }
       }
     }
 
-    if (delivered) {
-      const at = nowIso();
-      this.#ctx.storage.sql.exec(
-        "UPDATE cell_meta SET last_outbound_at = ?, updated_at = ? WHERE server_id = ?",
-        at,
-        at,
-        serverId,
-      );
-    }
-
     if (this.#hasDeliverableOutbox()) {
       await this.#scheduleOutboxRetryIfNeeded();
+    } else {
+      await this.#scheduleNearestAlarm();
     }
   }
 
@@ -755,12 +487,79 @@ export class DaemonCellObject {
       connectedAt,
     });
 
-    await this.#cancelOfflineDeadline(serverId);
-
     void this.#pumpOutboxToDaemonSockets(serverId);
     await this.#scheduleOutboxRetryIfNeeded();
 
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  #shouldCoalesceLastSeenAt(serverId: string, atMs: number): boolean {
+    const cursor = this.#ctx.storage.sql.exec(
+      "SELECT last_seen_at FROM cell_meta WHERE server_id = ?",
+      serverId,
+    );
+    for (const row of cursor) {
+      const lastSeenAt = row.last_seen_at ? String(row.last_seen_at) : null;
+      if (!lastSeenAt) return true;
+      const lastSeenMs = Date.parse(lastSeenAt);
+      if (Number.isNaN(lastSeenMs)) return true;
+      return atMs - lastSeenMs >= HEARTBEAT_COALESCE_MS;
+    }
+    return true;
+  }
+
+  #readStoredAgent(serverId: string): DaemonAgentInfo | undefined {
+    const cursor = this.#ctx.storage.sql.exec(
+      "SELECT agent_json FROM cell_meta WHERE server_id = ?",
+      serverId,
+    );
+    for (const row of cursor) {
+      return parseAgentJson(
+        row.agent_json ? String(row.agent_json) : null,
+      );
+    }
+    return undefined;
+  }
+
+  #persistHeartbeatFields(
+    serverId: string,
+    at: string,
+    agent?: DaemonAgentInfo,
+  ): void {
+    const atMs = Date.parse(at);
+    const coalesce = Number.isNaN(atMs) ||
+      this.#shouldCoalesceLastSeenAt(serverId, atMs);
+
+    if (agent) {
+      const agentChanged = !agentIdentityEqual(agent, this.#readStoredAgent(serverId));
+      if (coalesce) {
+        this.#ctx.storage.sql.exec(
+          `UPDATE cell_meta SET last_seen_at = ?, agent_json = ?, updated_at = ?
+           WHERE server_id = ?`,
+          at,
+          JSON.stringify(agent),
+          nowIso(),
+          serverId,
+        );
+      } else if (agentChanged) {
+        this.#ctx.storage.sql.exec(
+          `UPDATE cell_meta SET agent_json = ?, updated_at = ? WHERE server_id = ?`,
+          JSON.stringify(agent),
+          nowIso(),
+          serverId,
+        );
+      }
+      return;
+    }
+
+    if (coalesce) {
+      this.#ctx.storage.sql.exec(
+        "UPDATE cell_meta SET last_seen_at = ?, updated_at = ? WHERE server_id = ?",
+        at,
+        nowIso(),
+        serverId,
+      );
+    }
   }
 
   async webSocketMessage(
@@ -780,93 +579,19 @@ export class DaemonCellObject {
       ? message
       : new TextDecoder().decode(message);
 
-    const at = nowIso();
-    this.#ctx.storage.sql.exec(
-      "UPDATE cell_meta SET last_inbound_at = ?, updated_at = ? WHERE server_id = ?",
-      at,
-      at,
-      attachment.serverId,
-    );
-
     const parsed = parseDaemonMessage(raw);
     if (!parsed) return;
 
-    if (parsed.type === "ping") {
-      ws.send(JSON.stringify({
-        type: "pong",
-        id: parsed.id,
-        at: nowIso(),
-      }));
-      await this.#heartbeat(attachment.serverId, {
-        connectionId: attachment.connectionId,
-        at,
-      });
-      return;
-    }
-
-    if (parsed.type === "pong") {
-      await this.#handleInboundMessage(attachment.serverId, parsed);
-      await this.#heartbeat(attachment.serverId, {
-        connectionId: attachment.connectionId,
-        at,
-      });
-      return;
-    }
-
-    const monitorInbound = wireMessageToInboundEnvelope(parsed);
-    if (
-      monitorInbound?.kind === "monitor-sync" ||
-      monitorInbound?.kind === "monitor-heartbeat" ||
-      monitorInbound?.kind === "monitor-transition"
-    ) {
-      let acceptedSequence = 0;
-      let resyncNeeded = false;
-      if (monitorInbound.kind === "monitor-sync") {
-        const result = await this.#applyMonitorSync(
-          attachment.serverId,
-          monitorInbound,
-        );
-        acceptedSequence = result.acceptedSequence;
-        resyncNeeded = result.resyncNeeded;
-      } else if (monitorInbound.kind === "monitor-heartbeat") {
-        const result = await this.#applyMonitorHeartbeat(
-          attachment.serverId,
-          monitorInbound,
-        );
-        acceptedSequence = result.acceptedSequence;
-        resyncNeeded = result.resyncNeeded;
-      } else {
-        const result = await this.#applyMonitorTransition(
-          attachment.serverId,
-          monitorInbound,
-        );
-        acceptedSequence = result.acceptedSequence;
-        resyncNeeded = result.resyncNeeded;
-      }
-
-      this.#ctx.storage.sql.exec(
-        "UPDATE cell_meta SET last_heartbeat_at = ?, updated_at = ? WHERE server_id = ?",
-        at,
-        at,
+    if (parsed.type === "heartbeat") {
+      this.#persistHeartbeatFields(
         attachment.serverId,
+        parsed.at,
+        parsed.agent,
       );
-      await this.#scheduleOfflineDeadline(attachment.serverId);
-
       ws.send(JSON.stringify({
-        type: "monitor.ack",
-        from: "instance",
-        serverId: attachment.serverId,
+        type: "heartbeat-ack",
         at: nowIso(),
-        acceptedSequence,
-        resyncNeeded: resyncNeeded || undefined,
       }));
-
-      if (!resyncNeeded) {
-        void this.#projectMonitorMessage(
-          attachment.serverId,
-          monitorInbound,
-        );
-      }
       return;
     }
 
@@ -899,7 +624,6 @@ export class DaemonCellObject {
     if (!attachment) return;
 
     const closedAt = nowIso();
-    const reasonText = reason || String(code);
 
     let isCurrentConnection = false;
     this.#ctx.storage.transactionSync(() => {
@@ -913,13 +637,6 @@ export class DaemonCellObject {
       }
 
       this.#ctx.storage.sql.exec(
-        `UPDATE connections SET closed_at = ?, reason = ?
-         WHERE connection_id = ?`,
-        closedAt,
-        reasonText,
-        attachment.connectionId,
-      );
-      this.#ctx.storage.sql.exec(
         `DELETE FROM leases
          WHERE lease_name = ? AND holder = ? AND token = ?`,
         DAEMON_SOCKET_LEASE_NAME,
@@ -929,21 +646,17 @@ export class DaemonCellObject {
 
       if (isCurrentConnection) {
         this.#ctx.storage.sql.exec(
-          "UPDATE cell_meta SET connected = 0, updated_at = ? WHERE server_id = ?",
+          `UPDATE cell_meta SET connected = 0, last_seen_at = ?, updated_at = ?
+           WHERE server_id = ?`,
+          closedAt,
           closedAt,
           attachment.serverId,
         );
       }
     });
 
-    this.#appendEventInternal("disconnected", {
-      connectionId: attachment.connectionId,
-      reason: reasonText,
-    });
-
     if (isCurrentConnection) {
-      await this.#scheduleOfflineDeadline(attachment.serverId);
-      void this.#projectDisconnected(attachment.serverId);
+      await this.#scheduleNearestAlarm();
     }
   }
 
@@ -953,35 +666,60 @@ export class DaemonCellObject {
     const now = nowIso(nowMs);
 
     this.#ctx.storage.sql.exec(
-      "DELETE FROM challenges WHERE expires_at <= ?",
-      now,
-    );
-    this.#ctx.storage.sql.exec(
       "DELETE FROM requests WHERE expires_at <= ?",
       now,
     );
-    this.#ctx.storage.sql.exec(`
-      DELETE FROM event_log
-      WHERE seq NOT IN (
-        SELECT seq FROM event_log ORDER BY seq DESC LIMIT 500
-      )
-    `);
-    this.#ctx.storage.sql.exec(`
-      DELETE FROM outbox
-      WHERE seq NOT IN (
-        SELECT seq FROM outbox ORDER BY seq DESC LIMIT 1000
-      )
-    `);
+    this.#ctx.storage.sql.exec(
+      `DELETE FROM requests
+       WHERE status IN ('acked', 'done', 'failed', 'expired')
+       AND finished_at IS NOT NULL
+       AND finished_at <= ?`,
+      nowIso(nowMs - 60_000),
+    );
+    this.#ctx.storage.sql.exec(
+      "DELETE FROM outbox WHERE expires_at <= ?",
+      now,
+    );
 
     const serverId = this.#resolveServerId(new Request("https://do.internal/"));
     if (serverId) {
       this.#requeueExpiredInflightOutbox(nowMs);
-      await this.#processDueMonitorDeadlines(serverId, now, nowMs);
-      this.#pruneMonitorTables(nowMs);
       await this.#pumpOutboxToDaemonSockets(serverId);
     }
 
     await this.#scheduleNearestAlarm();
+  }
+
+  async purge(): Promise<void> {
+    for (const ws of this.#ctx.getWebSockets()) {
+      try {
+        ws.close(1000, "cell purged");
+      } catch {
+        // Socket may already be closed.
+      }
+    }
+
+    const serverId = this.#resolveServerId(new Request("https://do.internal/"));
+    if (serverId) {
+      const clearedAt = nowIso();
+      this.#ctx.storage.transactionSync(() => {
+        this.#ctx.storage.sql.exec("DELETE FROM leases");
+        this.#ctx.storage.sql.exec(
+          `UPDATE cell_meta SET
+             connected = 0,
+             connection_id = NULL,
+             session_id = NULL,
+             updated_at = ?
+           WHERE server_id = ?`,
+          clearedAt,
+          serverId,
+        );
+      });
+    }
+
+    await this.#ctx.storage.deleteAlarm();
+    await this.#ctx.storage.deleteAll();
+    this.#schemaReady = false;
   }
 
   async #handleRpc(request: Request, url: URL): Promise<Response> {
@@ -1007,25 +745,6 @@ export class DaemonCellObject {
             (body?.patch ?? body) as Partial<DaemonCellSnapshot>,
           ),
         );
-
-      case "/rpc/event":
-        if (method !== "POST") return errorResponse("method not allowed", 405);
-        await this.#appendEvent(
-          this.#requireServerId(request, body),
-          String(body?.kind ?? ""),
-          (body?.payload ?? {}) as Record<string, unknown>,
-          body?.ttlSeconds as number | undefined,
-        );
-        return jsonResponse({ ok: true });
-
-      case "/rpc/events":
-        if (method !== "GET") return errorResponse("method not allowed", 405);
-        return jsonResponse({
-          events: await this.#listEvents(
-            this.#resolveServerId(request),
-            Number(url.searchParams.get("limit") ?? 50),
-          ),
-        });
 
       case "/rpc/enqueue":
         return jsonResponse(
@@ -1123,6 +842,7 @@ export class DaemonCellObject {
             connectionId?: string;
             hostname?: string;
             at?: string;
+            agent?: DaemonAgentInfo;
           },
         );
         return jsonResponse({ ok: true });
@@ -1173,90 +893,9 @@ export class DaemonCellObject {
         );
         return jsonResponse({ ok: true });
 
-      case "/rpc/prune":
-        const offlineApplied = await this.#prune(body?.now as number | undefined);
-        return jsonResponse({ ok: true, offlineApplied });
-
-      case "/rpc/challenge/issue":
-        return jsonResponse(await this.#issueChallenge(body));
-
-      case "/rpc/challenge/consume":
-        return jsonResponse({
-          challenge: await this.#consumeChallenge(body),
-        });
-
-      case "/rpc/monitor/sync":
-        if (method !== "POST") return errorResponse("method not allowed", 405);
-        return jsonResponse(
-          await this.#applyMonitorSync(
-            this.#requireServerId(request, body),
-            body?.msg as DaemonInboundEnvelope & { kind: "monitor-sync" },
-          ),
-        );
-
-      case "/rpc/monitor/heartbeat":
-        if (method !== "POST") return errorResponse("method not allowed", 405);
-        return jsonResponse(
-          await this.#applyMonitorHeartbeat(
-            this.#requireServerId(request, body),
-            body?.msg as DaemonInboundEnvelope & { kind: "monitor-heartbeat" },
-          ),
-        );
-
-      case "/rpc/monitor/transition":
-        if (method !== "POST") return errorResponse("method not allowed", 405);
-        return jsonResponse(
-          await this.#applyMonitorTransition(
-            this.#requireServerId(request, body),
-            body?.msg as DaemonInboundEnvelope & { kind: "monitor-transition" },
-          ),
-        );
-
-      case "/rpc/monitor/instance":
-        if (method !== "GET") return errorResponse("method not allowed", 405);
-        return jsonResponse({
-          instance: this.#getMonitorInstance(this.#resolveServerId(request)),
-        });
-
-      case "/rpc/monitor/resources":
-        if (method !== "GET") return errorResponse("method not allowed", 405);
-        return jsonResponse({
-          resources: this.#listMonitorResources(this.#resolveServerId(request)),
-        });
-
-      case "/rpc/monitor/events":
-        if (method !== "GET") return errorResponse("method not allowed", 405);
-        return jsonResponse({
-          events: this.#listMonitorEvents(
-            this.#resolveServerId(request),
-            Number(url.searchParams.get("limit") ?? 50),
-          ),
-        });
-
-      case "/rpc/monitor/metrics":
-        if (method !== "GET") return errorResponse("method not allowed", 405);
-        return jsonResponse({
-          metrics: this.#listMonitorMetrics(
-            this.#resolveServerId(request),
-            Number(url.searchParams.get("limit") ?? 50),
-          ),
-        });
-
-      case "/rpc/monitor/alerts":
-        if (method !== "GET") return errorResponse("method not allowed", 405);
-        return jsonResponse({
-          alerts: this.#listMonitorAlerts(this.#resolveServerId(request)),
-        });
-
-      case "/rpc/monitor/drain-candidates":
-        if (method !== "POST") {
-          return errorResponse("method not allowed", 405);
-        }
-        return jsonResponse({
-          alerts: this.#drainNotificationCandidates(
-            this.#requireServerId(request, body),
-          ),
-        });
+      case "/rpc/purge-cell":
+        await this.purge();
+        return jsonResponse({ ok: true });
 
       default:
         return errorResponse("not found", 404);
@@ -1287,34 +926,13 @@ export class DaemonCellObject {
     }
     this.#ensureServerId(serverId);
 
-    const snapCursor = this.#ctx.storage.sql.exec(
-      "SELECT snapshot_json FROM snapshot WHERE server_id = ?",
-      serverId,
-    );
-    let fromJson: DaemonCellSnapshot | null = null;
-    for (const row of snapCursor) {
-      fromJson = parseSnapshotJson(
-        row.snapshot_json ? String(row.snapshot_json) : null,
-        serverId,
-      );
-      if (fromJson) break;
-    }
-
     const metaCursor = this.#ctx.storage.sql.exec(
       "SELECT * FROM cell_meta WHERE server_id = ?",
       serverId,
     );
-    let fromMeta: DaemonCellSnapshot | null = null;
     for (const row of metaCursor) {
-      fromMeta = snapshotFromMetaRow(serverId, row);
-      break;
+      return snapshotFromMetaRow(serverId, row);
     }
-
-    if (fromJson && fromMeta) {
-      return mergeSnapshotPresence(fromJson, fromMeta);
-    }
-    if (fromJson) return fromJson;
-    if (fromMeta) return fromMeta;
 
     return {
       serverId,
@@ -1328,122 +946,27 @@ export class DaemonCellObject {
     serverId: string,
     patch: Partial<DaemonCellSnapshot>,
   ): Promise<DaemonCellSnapshot> {
-    const current = await this.#getSnapshot(serverId);
-    const updated: DaemonCellSnapshot = {
-      ...current,
-      ...patch,
-      serverId,
-      version: current.version + 1,
-      updatedAt: nowIso(),
-    };
+    const updatedAt = nowIso();
+    const fields: Array<string | null> = [updatedAt];
+    let sql = "UPDATE cell_meta SET updated_at = ?";
 
-    this.#ctx.storage.transactionSync(() => {
-      this.#ctx.storage.sql.exec(
-        `INSERT INTO snapshot (server_id, version, snapshot_json, updated_at)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(server_id) DO UPDATE SET
-           version = excluded.version,
-           snapshot_json = excluded.snapshot_json,
-           updated_at = excluded.updated_at`,
-        serverId,
-        updated.version,
-        JSON.stringify(updated),
-        updated.updatedAt,
-      );
-      const metaUpdates: Array<string | number> = [
-        updated.version,
-        updated.updatedAt,
-      ];
-      let metaSql =
-        "UPDATE cell_meta SET snapshot_version = ?, updated_at = ?";
-      if (patch.lastSeenAt !== undefined) {
-        metaSql += ", last_seen_at = ?";
-        metaUpdates.push(patch.lastSeenAt);
-      }
-      if (patch.keyLastUsedAt !== undefined) {
-        metaSql += ", key_last_used_at = ?";
-        metaUpdates.push(patch.keyLastUsedAt);
-      }
-      metaSql += " WHERE server_id = ?";
-      metaUpdates.push(serverId);
-      this.#ctx.storage.sql.exec(metaSql, ...metaUpdates);
-    });
-
-    return updated;
-  }
-
-  #appendEventInternal(
-    kind: string,
-    payload: Record<string, unknown>,
-    ttlSeconds?: number,
-  ): void {
-    const at = nowIso();
-    const expiresAt = ttlSeconds != null
-      ? nowIso(Date.now() + ttlSeconds * 1000)
-      : null;
-    this.#ctx.storage.sql.exec(
-      `INSERT INTO event_log (kind, payload_json, created_at, expires_at)
-       VALUES (?, ?, ?, ?)`,
-      kind,
-      JSON.stringify(payload),
-      at,
-      expiresAt,
-    );
-  }
-
-  async #appendEvent(
-    serverId: string,
-    kind: string,
-    payload: Record<string, unknown>,
-    ttlSeconds?: number,
-  ): Promise<void> {
-    this.#ensureServerId(serverId);
-    this.#appendEventInternal(kind, payload, ttlSeconds);
-  }
-
-  async #listEvents(
-    serverId: string | null,
-    limit: number,
-  ): Promise<
-    Array<{
-      seq: string;
-      kind: string;
-      at: string;
-      payload: Record<string, unknown>;
-    }>
-  > {
-    if (!serverId) return [];
-    const cursor = this.#ctx.storage.sql.exec(
-      `SELECT seq, kind, payload_json, created_at
-       FROM event_log ORDER BY seq DESC LIMIT ?`,
-      limit,
-    );
-    const events: Array<{
-      seq: string;
-      kind: string;
-      at: string;
-      payload: Record<string, unknown>;
-    }> = [];
-    for (const row of cursor) {
-      let payload: Record<string, unknown> = {};
-      if (row.payload_json) {
-        try {
-          payload = JSON.parse(String(row.payload_json)) as Record<
-            string,
-            unknown
-          >;
-        } catch {
-          payload = {};
-        }
-      }
-      events.push({
-        seq: String(row.seq),
-        kind: String(row.kind ?? ""),
-        at: String(row.created_at ?? ""),
-        payload,
-      });
+    if (patch.hostname !== undefined) {
+      sql += ", hostname = ?";
+      fields.push(patch.hostname);
     }
-    return events.reverse();
+    if (patch.lastSeenAt !== undefined) {
+      sql += ", last_seen_at = ?";
+      fields.push(patch.lastSeenAt);
+    }
+    if (patch.keyLastUsedAt !== undefined) {
+      sql += ", key_last_used_at = ?";
+      fields.push(patch.keyLastUsedAt);
+    }
+
+    sql += " WHERE server_id = ?";
+    fields.push(serverId);
+    this.#ctx.storage.sql.exec(sql, ...fields);
+    return await this.#getSnapshot(serverId);
   }
 
   async #enqueue(
@@ -1542,7 +1065,7 @@ export class DaemonCellObject {
   }
 
   async #markSent(
-    serverId: string,
+    _serverId: string,
     deliveryId: string,
     _connectionId: string,
     sentAt?: string,
@@ -1568,12 +1091,6 @@ export class DaemonCellObject {
         );
       }
     });
-    this.#ctx.storage.sql.exec(
-      "UPDATE cell_meta SET last_outbound_at = ?, updated_at = ? WHERE server_id = ?",
-      at,
-      at,
-      serverId,
-    );
   }
 
   async #handleInboundMessage(
@@ -1606,9 +1123,6 @@ export class DaemonCellObject {
     let error: string | undefined;
 
     switch (inbound.kind) {
-      case "pong":
-        status = "acked";
-        break;
       case "command-result":
         status = "done";
         result = {
@@ -1620,10 +1134,6 @@ export class DaemonCellObject {
       case "addresses-result":
         status = "done";
         result = { addresses: inbound.addresses };
-        await this.#putSnapshot(serverId, {
-          addresses: inbound.addresses,
-          lastInboundAt: inbound.at,
-        });
         break;
       case "public-urls-update-result":
       case "dev-sync-result":
@@ -1649,28 +1159,26 @@ export class DaemonCellObject {
       inbound.requestId,
     );
 
-    if (inbound.kind !== "addresses-result") {
-      this.#ctx.storage.sql.exec(
-        "UPDATE cell_meta SET last_inbound_at = ?, updated_at = ? WHERE server_id = ?",
-        inbound.at,
-        nowIso(),
-        serverId,
-      );
-    }
-
-    this.#appendEventInternal("inbound", {
-      kind: inbound.kind,
-      requestId: inbound.requestId,
-    });
-
     const updatedCursor = this.#ctx.storage.sql.exec(
       "SELECT * FROM requests WHERE request_id = ?",
       inbound.requestId,
     );
     for (const updated of updatedCursor) {
-      return parseRequestRow(serverId, updated);
+      const record = parseRequestRow(serverId, updated);
+      if (isTerminalStatus(record.status)) {
+        this.#reclaimTerminalOutbox(inbound.requestId);
+        await this.#scheduleNearestAlarm();
+      }
+      return record;
     }
     return existing;
+  }
+
+  #reclaimTerminalOutbox(requestId: string): void {
+    this.#ctx.storage.sql.exec(
+      "DELETE FROM outbox WHERE request_id = ?",
+      requestId,
+    );
   }
 
   async #getRequest(
@@ -1722,10 +1230,21 @@ export class DaemonCellObject {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const record = await this.#getRequest(serverId, requestId);
-      if (record && isTerminalStatus(record.status)) return record;
+      if (record && isTerminalStatus(record.status)) {
+        this.#reclaimTerminalRequest(requestId);
+        return record;
+      }
       await scheduler.wait(250);
     }
     return null;
+  }
+
+  #reclaimTerminalRequest(requestId: string): void {
+    this.#ctx.storage.sql.exec(
+      `DELETE FROM requests
+       WHERE request_id = ? AND status IN ('acked', 'done', 'failed', 'expired')`,
+      requestId,
+    );
   }
 
   async #createRequestAndWait(
@@ -1749,7 +1268,8 @@ export class DaemonCellObject {
       expiredAt,
       outbound.requestId,
     );
-    return {
+    this.#reclaimTerminalOutbox(outbound.requestId);
+    const expiredRecord: PendingRequestRecord = {
       serverId,
       requestId: outbound.requestId,
       requestKind: outbound.kind,
@@ -1758,6 +1278,8 @@ export class DaemonCellObject {
       expiresAt: expiredAt,
       finishedAt: expiredAt,
     };
+    this.#reclaimTerminalRequest(outbound.requestId);
+    return expiredRecord;
   }
 
   async #attachDaemonSocket(
@@ -1780,8 +1302,6 @@ export class DaemonCellObject {
     }
 
     const lease = this.#applyDaemonSocketAttach(serverId, connectionId, meta);
-    await this.#cancelOfflineDeadline(serverId);
-
     return { connectionId, lease };
   }
 
@@ -1810,24 +1330,14 @@ export class DaemonCellObject {
       for (const row of metaCursor) {
         if (String(row.connection_id) === params.connectionId) {
           this.#ctx.storage.sql.exec(
-            "UPDATE cell_meta SET connected = 0, updated_at = ? WHERE server_id = ?",
+            `UPDATE cell_meta SET connected = 0, last_seen_at = ?, updated_at = ?
+             WHERE server_id = ?`,
+            closedAt,
             closedAt,
             serverId,
           );
         }
       }
-      this.#ctx.storage.sql.exec(
-        `UPDATE connections SET closed_at = ?, reason = ?
-         WHERE connection_id = ?`,
-        closedAt,
-        params.reason ?? "",
-        params.connectionId,
-      );
-    });
-
-    this.#appendEventInternal("disconnected", {
-      connectionId: params.connectionId,
-      reason: params.reason ?? "",
     });
   }
 
@@ -1837,6 +1347,7 @@ export class DaemonCellObject {
       connectionId?: string;
       hostname?: string;
       at?: string;
+      agent?: DaemonAgentInfo;
     },
   ): Promise<void> {
     const at = params.at ?? nowIso();
@@ -1858,15 +1369,16 @@ export class DaemonCellObject {
     );
     if (!renewed) return;
 
-    const fields: Array<string | null> = [at, at, at, serverId];
-    let sql =
-      "UPDATE cell_meta SET last_heartbeat_at = ?, key_last_used_at = ?, updated_at = ?";
+    this.#persistHeartbeatFields(serverId, at, params.agent);
+
     if (params.hostname) {
-      sql += ", hostname = ?";
-      fields.splice(2, 0, params.hostname);
+      this.#ctx.storage.sql.exec(
+        "UPDATE cell_meta SET hostname = ?, updated_at = ? WHERE server_id = ?",
+        params.hostname,
+        nowIso(),
+        serverId,
+      );
     }
-    sql += " WHERE server_id = ?";
-    this.#ctx.storage.sql.exec(sql, ...fields);
   }
 
   async #claimDeliveryLease(
@@ -1987,1108 +1499,12 @@ export class DaemonCellObject {
     _serverId: string,
     deliveryIds: OutboxDeliveryId[],
   ): Promise<void> {
-    const at = nowIso();
     for (const deliveryId of deliveryIds) {
       this.#ctx.storage.sql.exec(
-        `UPDATE outbox SET status = 'acked', acked_at = ? WHERE delivery_id = ?`,
-        at,
+        "DELETE FROM outbox WHERE delivery_id = ?",
         deliveryId,
       );
     }
-  }
-
-  async #prune(now = Date.now()): Promise<boolean> {
-    const nowStr = nowIso(now);
-    this.#ctx.storage.sql.exec(
-      "DELETE FROM challenges WHERE expires_at <= ?",
-      nowStr,
-    );
-    this.#ctx.storage.sql.exec(
-      "DELETE FROM requests WHERE expires_at <= ?",
-      nowStr,
-    );
-    this.#ctx.storage.sql.exec(`
-      DELETE FROM event_log
-      WHERE seq NOT IN (
-        SELECT seq FROM event_log ORDER BY seq DESC LIMIT 500
-      )
-    `);
-    this.#ctx.storage.sql.exec(`
-      DELETE FROM outbox
-      WHERE seq NOT IN (
-        SELECT seq FROM outbox ORDER BY seq DESC LIMIT 1000
-      )
-    `);
-
-    const serverId = this.#resolveServerId(new Request("https://do.internal/"));
-    if (!serverId) return false;
-    const offlineApplied = await this.#processDueMonitorDeadlines(
-      serverId,
-      nowStr,
-      now,
-    );
-    this.#pruneMonitorTables(now);
-    return offlineApplied;
-  }
-
-  async #issueChallenge(
-    body: Record<string, unknown> | null,
-  ): Promise<{ id: string; nonce: string; at: string }> {
-    const ttlMs = typeof body?.ttlMs === "number" && body.ttlMs > 0
-      ? body.ttlMs
-      : DAEMON_CHALLENGE_TTL_MS;
-    const challengeId = crypto.randomUUID();
-    const nonce = crypto.randomUUID();
-    const at = nowIso();
-    const issuedAtMs = Date.now();
-    const expiresAt = nowIso(issuedAtMs + ttlMs);
-    const serverId = typeof body?.serverId === "string" ? body.serverId : "";
-    const keyId = typeof body?.keyId === "string" ? body.keyId : "";
-
-    this.#ctx.storage.sql.exec(
-      `INSERT INTO challenges (
-        challenge_id, challenge_type, server_id, key_id, nonce, at,
-        issued_at_ms, expires_at
-      ) VALUES (?, 'daemon', ?, ?, ?, ?, ?, ?)`,
-      challengeId,
-      serverId,
-      keyId,
-      nonce,
-      at,
-      issuedAtMs,
-      expiresAt,
-    );
-
-    return { id: challengeId, nonce, at };
-  }
-
-  async #consumeChallenge(
-    body: Record<string, unknown> | null,
-  ): Promise<{ id: string; nonce: string; at: string } | null> {
-    const challengeId = String(body?.challengeId ?? "");
-    if (!challengeId) return null;
-    const serverId = typeof body?.serverId === "string" ? body.serverId : "";
-    const keyId = typeof body?.keyId === "string" ? body.keyId : "";
-    const ttlMs = typeof body?.ttlMs === "number" && body.ttlMs > 0
-      ? body.ttlMs
-      : DAEMON_CHALLENGE_TTL_MS;
-
-    const cursor = this.#ctx.storage.sql.exec(
-      "SELECT * FROM challenges WHERE challenge_id = ?",
-      challengeId,
-    );
-    let row: Record<string, SqlStorageValue> | null = null;
-    for (const r of cursor) row = r;
-    if (!row) return null;
-
-    const storedServerId = row.server_id ? String(row.server_id) : "";
-    const storedKeyId = row.key_id ? String(row.key_id) : "";
-    if (storedServerId && storedServerId !== serverId) return null;
-    if (storedKeyId && storedKeyId !== keyId) return null;
-
-    const issuedAtMs = Number(row.issued_at_ms ?? 0);
-    const expiresAt = row.expires_at ? String(row.expires_at) : "";
-    const expiredByStoredAt = expiresAt && Date.parse(expiresAt) <= Date.now();
-    const expiredByIssuedAt = issuedAtMs > 0 &&
-      issuedAtMs + ttlMs <= Date.now();
-    if (expiredByStoredAt || expiredByIssuedAt) {
-      this.#ctx.storage.sql.exec(
-        "DELETE FROM challenges WHERE challenge_id = ?",
-        challengeId,
-      );
-      return null;
-    }
-
-    this.#ctx.storage.sql.exec(
-      "DELETE FROM challenges WHERE challenge_id = ?",
-      challengeId,
-    );
-
-    return {
-      id: challengeId,
-      nonce: String(row.nonce),
-      at: String(row.at),
-    };
-  }
-
-  #metricValuesFromInstance(instance: MonitorInstanceSummary): {
-    cpu?: number;
-    memory?: number;
-    disk?: number;
-    load?: number;
-  } {
-    return {
-      cpu: instance.cpu?.usagePercent,
-      memory: instance.memory?.usagePercent,
-      disk: instance.disk?.usagePercent,
-      load: instance.load?.one,
-    };
-  }
-
-  #readMonitorSequence(serverId: string): number {
-    const cursor = this.#ctx.storage.sql.exec(
-      "SELECT sequence FROM monitor_instance WHERE server_id = ?",
-      serverId,
-    );
-    for (const row of cursor) {
-      return Number(row.sequence ?? 0);
-    }
-    return 0;
-  }
-
-  #resetMonitorSequence(serverId: string): void {
-    this.#ctx.storage.sql.exec(
-      "UPDATE monitor_instance SET sequence = 0 WHERE server_id = ?",
-      serverId,
-    );
-  }
-
-  #resetMonitorSequenceForReconnect(serverId: string): void {
-    this.#resetMonitorSequence(serverId);
-    this.#ctx.storage.sql.exec(
-      "DELETE FROM monitor_deadline WHERE deadline_name = 'offline' AND server_id = ?",
-      serverId,
-    );
-  }
-
-  #persistMonitorSequence(serverId: string, sequence: number): void {
-    const updatedAt = nowIso();
-    const cursor = this.#ctx.storage.sql.exec(
-      "SELECT server_id FROM monitor_instance WHERE server_id = ?",
-      serverId,
-    );
-    let exists = false;
-    for (const _ of cursor) exists = true;
-
-    if (exists) {
-      this.#ctx.storage.sql.exec(
-        "UPDATE monitor_instance SET sequence = ?, updated_at = ? WHERE server_id = ?",
-        sequence,
-        updatedAt,
-        serverId,
-      );
-      return;
-    }
-
-    this.#ctx.storage.sql.exec(
-      `INSERT INTO monitor_instance (server_id, sequence, at, instance_json, updated_at)
-       VALUES (?, ?, ?, ?, ?)`,
-      serverId,
-      sequence,
-      updatedAt,
-      "{}",
-      updatedAt,
-    );
-  }
-
-  #upsertMonitorInstance(
-    serverId: string,
-    sequence: number,
-    at: string,
-    instance: MonitorInstanceSummary,
-  ): void {
-    this.#ctx.storage.sql.exec(
-      `INSERT INTO monitor_instance (server_id, sequence, at, instance_json, updated_at)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(server_id) DO UPDATE SET
-         sequence = excluded.sequence,
-         at = excluded.at,
-         instance_json = excluded.instance_json,
-         updated_at = excluded.updated_at`,
-      serverId,
-      sequence,
-      at,
-      JSON.stringify(instance),
-      nowIso(),
-    );
-  }
-
-  #upsertMonitorResource(
-    serverId: string,
-    resource: MonitorResourceState,
-  ): void {
-    this.#ctx.storage.sql.exec(
-      `INSERT INTO monitor_resource (
-         resource_key, server_id, kind, status, state_json, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(resource_key) DO UPDATE SET
-         server_id = excluded.server_id,
-         kind = excluded.kind,
-         status = excluded.status,
-         state_json = excluded.state_json,
-         updated_at = excluded.updated_at`,
-      resource.resourceKey,
-      serverId,
-      resource.kind,
-      resource.status,
-      JSON.stringify(resource),
-      nowIso(),
-    );
-  }
-
-  #readMonitorResourceStatus(
-    serverId: string,
-    resourceKey: string,
-  ): MonitorResourceStatus | null {
-    const cursor = this.#ctx.storage.sql.exec(
-      "SELECT status FROM monitor_resource WHERE server_id = ? AND resource_key = ?",
-      serverId,
-      resourceKey,
-    );
-    for (const row of cursor) {
-      return String(row.status) as MonitorResourceStatus;
-    }
-    return null;
-  }
-
-  #insertMonitorEvent(serverId: string, event: MonitorEvent): void {
-    this.#ctx.storage.sql.exec(
-      `INSERT INTO monitor_event (
-         server_id, resource_key, kind, from_status, to_status, reason, at, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      serverId,
-      event.resourceKey ?? null,
-      event.kind ?? null,
-      event.fromStatus ?? null,
-      event.toStatus,
-      event.reason ?? null,
-      event.at,
-      nowIso(),
-    );
-  }
-
-  #emitMonitorTransition(
-    serverId: string,
-    event: MonitorEvent,
-    nowMs = Date.now(),
-  ): void {
-    this.#insertMonitorEvent(serverId, event);
-    this.#handleMonitorTransitionAlerts(serverId, event, nowMs);
-  }
-
-  #deriveAndEmitResourceTransitions(
-    serverId: string,
-    resources: MonitorResourceState[],
-    at: string,
-    nowMs: number,
-  ): void {
-    for (const resource of resources) {
-      const previousStatus = this.#readMonitorResourceStatus(
-        serverId,
-        resource.resourceKey,
-      );
-      if (previousStatus === resource.status) continue;
-      this.#emitMonitorTransition(
-        serverId,
-        {
-          resourceKey: resource.resourceKey,
-          kind: resource.kind,
-          fromStatus: previousStatus ?? undefined,
-          toStatus: resource.status,
-          at,
-          reason: previousStatus == null ? "sync-initial" : "sync-changed",
-        },
-        nowMs,
-      );
-    }
-  }
-
-  #resolveServerOfflineAlert(serverId: string, nowMs: number): void {
-    this.#resolveAlert(serverId, serverId, nowMs);
-  }
-
-  #patchMonitorResourceFromTransition(
-    serverId: string,
-    event: MonitorEvent,
-    at: string,
-  ): void {
-    if (!event.resourceKey) return;
-
-    const resourceKey = event.resourceKey;
-    const cursor = this.#ctx.storage.sql.exec(
-      "SELECT kind, state_json FROM monitor_resource WHERE resource_key = ?",
-      resourceKey,
-    );
-    let state: MonitorResourceState | null = null;
-    for (const row of cursor) {
-      try {
-        state = JSON.parse(String(row.state_json)) as MonitorResourceState;
-      } catch {
-        state = {
-          resourceKey,
-          kind: String(row.kind) as MonitorResourceKind,
-          status: event.toStatus,
-        };
-      }
-      break;
-    }
-
-    if (!state) {
-      state = {
-        resourceKey,
-        kind: (event.kind ?? "service") as MonitorResourceKind,
-        status: event.toStatus,
-      };
-    }
-
-    state.status = event.toStatus;
-    state.updatedAt = at;
-    if (event.kind) state.kind = event.kind;
-    this.#upsertMonitorResource(serverId, state);
-  }
-
-  #markMonitorResourceOffline(
-    serverId: string,
-    resourceKey: string,
-    kind: MonitorResourceKind,
-    currentStatus: MonitorResourceStatus,
-    at: string,
-    reason: string,
-  ): void {
-    this.#insertMonitorEvent(serverId, {
-      resourceKey,
-      kind,
-      fromStatus: currentStatus,
-      toStatus: "offline",
-      at,
-      reason,
-    });
-    const cursor = this.#ctx.storage.sql.exec(
-      "SELECT state_json FROM monitor_resource WHERE resource_key = ?",
-      resourceKey,
-    );
-    for (const row of cursor) {
-      let state: MonitorResourceState;
-      try {
-        state = JSON.parse(String(row.state_json)) as MonitorResourceState;
-      } catch {
-        state = { resourceKey, kind, status: currentStatus };
-      }
-      state.status = "offline";
-      state.updatedAt = at;
-      this.#ctx.storage.sql.exec(
-        `UPDATE monitor_resource SET status = 'offline', state_json = ?, updated_at = ?
-         WHERE resource_key = ?`,
-        JSON.stringify(state),
-        at,
-        resourceKey,
-      );
-      return;
-    }
-  }
-
-  #openOrUpdateAlert(
-    serverId: string,
-    resourceKey: string,
-    toStatus: MonitorResourceStatus,
-    nowMs: number,
-  ): void {
-    const now = nowIso(nowMs);
-    const cursor = this.#ctx.storage.sql.exec(
-      "SELECT * FROM monitor_alert WHERE resource_key = ?",
-      resourceKey,
-    );
-    let existing: Record<string, SqlStorageValue> | null = null;
-    for (const row of cursor) existing = row;
-
-    if (!existing || existing.resolved_at) {
-      this.#ctx.storage.sql.exec(
-        `INSERT INTO monitor_alert (
-           resource_key, server_id, status, opened_at, last_notified_at,
-           last_delivered_at, cooldown_until, resolved_at
-         ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL)
-         ON CONFLICT(resource_key) DO UPDATE SET
-           server_id = excluded.server_id,
-           status = excluded.status,
-           opened_at = excluded.opened_at,
-           last_notified_at = excluded.last_notified_at,
-           last_delivered_at = NULL,
-           cooldown_until = NULL,
-           resolved_at = NULL`,
-        resourceKey,
-        serverId,
-        toStatus,
-        now,
-        now,
-      );
-      return;
-    }
-
-    const cooldownUntil = existing.cooldown_until
-      ? String(existing.cooldown_until)
-      : null;
-    if (cooldownUntil && Date.parse(cooldownUntil) > nowMs) return;
-
-    const newCooldownUntil = nowIso(nowMs + MONITOR_ALERT_COOLDOWN_MS);
-    this.#ctx.storage.sql.exec(
-      `UPDATE monitor_alert
-       SET status = ?, last_notified_at = ?, cooldown_until = ?
-       WHERE resource_key = ?`,
-      toStatus,
-      now,
-      newCooldownUntil,
-      resourceKey,
-    );
-    this.#ctx.storage.sql.exec(
-      `INSERT INTO monitor_deadline (deadline_name, server_id, due_at, kind, payload_json)
-       VALUES (?, ?, ?, 'cooldown', NULL)
-       ON CONFLICT(deadline_name) DO UPDATE SET
-         server_id = excluded.server_id,
-         due_at = excluded.due_at,
-         kind = excluded.kind`,
-      `cooldown:${resourceKey}`,
-      serverId,
-      newCooldownUntil,
-    );
-  }
-
-  #resolveAlert(
-    serverId: string,
-    resourceKey: string,
-    nowMs: number,
-  ): void {
-    const now = nowIso(nowMs);
-    this.#ctx.storage.sql.exec(
-      "UPDATE monitor_alert SET resolved_at = ?, cooldown_until = NULL WHERE resource_key = ?",
-      now,
-      resourceKey,
-    );
-    this.#ctx.storage.sql.exec(
-      "DELETE FROM monitor_deadline WHERE deadline_name = ?",
-      `cooldown:${resourceKey}`,
-    );
-  }
-
-  #handleMonitorTransitionAlerts(
-    serverId: string,
-    event: MonitorEvent,
-    nowMs: number,
-  ): void {
-    const resourceKey = event.resourceKey ?? serverId;
-    if (
-      event.toStatus === "degraded" ||
-      event.toStatus === "unhealthy" ||
-      event.toStatus === "failed"
-    ) {
-      this.#openOrUpdateAlert(serverId, resourceKey, event.toStatus, nowMs);
-      return;
-    }
-    if (event.toStatus === "healthy" || event.toStatus === "stopped") {
-      if (event.resourceKey) {
-        this.#resolveAlert(serverId, event.resourceKey, nowMs);
-      }
-    }
-  }
-
-  async #processDueMonitorDeadlines(
-    serverId: string,
-    now: string,
-    nowMs: number,
-  ): Promise<boolean> {
-    const cursor = this.#ctx.storage.sql.exec(
-      "SELECT deadline_name, kind FROM monitor_deadline WHERE due_at <= ?",
-      now,
-    );
-    const due: Array<{ deadlineName: string; kind: string }> = [];
-    for (const row of cursor) {
-      due.push({
-        deadlineName: String(row.deadline_name),
-        kind: String(row.kind),
-      });
-    }
-
-    let offlineApplied = false;
-    for (const { deadlineName, kind } of due) {
-      if (kind === "offline") {
-        offlineApplied = this.#processOfflineDeadline(serverId, nowMs) ||
-          offlineApplied;
-      } else if (kind === "cooldown") {
-        const resourceKey = deadlineName.startsWith("cooldown:")
-          ? deadlineName.slice("cooldown:".length)
-          : deadlineName;
-        this.#ctx.storage.sql.exec(
-          "UPDATE monitor_alert SET cooldown_until = NULL WHERE resource_key = ?",
-          resourceKey,
-        );
-      }
-      this.#ctx.storage.sql.exec(
-        "DELETE FROM monitor_deadline WHERE deadline_name = ?",
-        deadlineName,
-      );
-    }
-    return offlineApplied;
-  }
-
-  #processOfflineDeadline(serverId: string, nowMs: number): boolean {
-    const instance = this.#getMonitorInstance(serverId);
-    if (!instance) return false;
-
-    const lastHeartbeatMs = Date.parse(instance.at);
-    if (
-      Number.isNaN(lastHeartbeatMs) ||
-      nowMs - lastHeartbeatMs < MONITOR_OFFLINE_GRACE_MS
-    ) {
-      return false;
-    }
-
-    const at = nowIso(nowMs);
-    let offlineApplied = false;
-    this.#ctx.storage.transactionSync(() => {
-      const resourceCursor = this.#ctx.storage.sql.exec(
-        "SELECT resource_key, kind, status FROM monitor_resource WHERE server_id = ?",
-        serverId,
-      );
-      for (const row of resourceCursor) {
-        const resourceKey = String(row.resource_key);
-        const currentStatus = String(row.status) as MonitorResourceStatus;
-        if (
-          currentStatus === "offline" ||
-          currentStatus === "stopped" ||
-          currentStatus === "failed"
-        ) {
-          continue;
-        }
-        const kind = String(row.kind) as MonitorResourceKind;
-        this.#markMonitorResourceOffline(
-          serverId,
-          resourceKey,
-          kind,
-          currentStatus,
-          at,
-          "heartbeat-timeout",
-        );
-        offlineApplied = true;
-      }
-      this.#openOrUpdateAlert(serverId, serverId, "offline", nowMs);
-      offlineApplied = true;
-    });
-
-    if (offlineApplied) {
-      void this.#projectOffline(serverId);
-    }
-    return offlineApplied;
-  }
-
-  #pruneMonitorTables(nowMs: number): void {
-    this.#ctx.storage.sql.exec(
-      `
-      DELETE FROM monitor_event
-      WHERE seq NOT IN (
-        SELECT seq FROM monitor_event ORDER BY seq DESC LIMIT ?
-      )
-    `,
-      MONITOR_EVENT_RETAIN,
-    );
-
-    const metricCutoff = nowIso(
-      nowMs - MONITOR_METRIC_RETAIN_HOURS * 60 * 60 * 1000,
-    );
-    this.#ctx.storage.sql.exec(
-      "DELETE FROM monitor_metric_minute WHERE bucket_at < ?",
-      metricCutoff,
-    );
-
-    const alertCutoff = nowIso(
-      nowMs - MONITOR_ALERT_RESOLVED_RETAIN_DAYS * 24 * 60 * 60 * 1000,
-    );
-    this.#ctx.storage.sql.exec(
-      "DELETE FROM monitor_alert WHERE resolved_at IS NOT NULL AND resolved_at < ?",
-      alertCutoff,
-    );
-    this.#ctx.storage.sql.exec(
-      `
-      DELETE FROM monitor_alert
-      WHERE resolved_at IS NOT NULL
-        AND resource_key NOT IN (
-          SELECT resource_key FROM monitor_alert
-          WHERE resolved_at IS NOT NULL
-          ORDER BY resolved_at DESC
-          LIMIT ?
-        )
-    `,
-      MONITOR_ALERT_RESOLVED_RETAIN,
-    );
-  }
-
-  #listMonitorAlerts(serverId: string | null): MonitorAlertRow[] {
-    if (!serverId) return [];
-    const cursor = this.#ctx.storage.sql.exec(
-      `SELECT * FROM monitor_alert
-       WHERE server_id = ? AND resolved_at IS NULL
-       ORDER BY opened_at DESC`,
-      serverId,
-    );
-    const rows: MonitorAlertRow[] = [];
-    for (const row of cursor) {
-      rows.push({
-        resourceKey: String(row.resource_key),
-        serverId,
-        status: String(row.status) as MonitorResourceStatus,
-        openedAt: String(row.opened_at ?? ""),
-        lastNotifiedAt: row.last_notified_at
-          ? String(row.last_notified_at)
-          : undefined,
-        cooldownUntil: row.cooldown_until
-          ? String(row.cooldown_until)
-          : undefined,
-        resolvedAt: row.resolved_at ? String(row.resolved_at) : undefined,
-      });
-    }
-    return rows;
-  }
-
-  #drainNotificationCandidates(
-    serverId: string,
-  ): MonitorAlertRow[] {
-    const cursor = this.#ctx.storage.sql.exec(
-      `SELECT * FROM monitor_alert
-       WHERE server_id = ?
-         AND resolved_at IS NULL
-         AND last_notified_at IS NOT NULL
-         AND (last_delivered_at IS NULL OR last_delivered_at < last_notified_at)`,
-      serverId,
-    );
-    const rows: MonitorAlertRow[] = [];
-    const drained: Array<{ resourceKey: string; lastNotifiedAt: string }> = [];
-    for (const row of cursor) {
-      const resourceKey = String(row.resource_key);
-      const lastNotifiedAt = String(row.last_notified_at ?? "");
-      rows.push({
-        resourceKey,
-        serverId,
-        status: String(row.status) as MonitorResourceStatus,
-        openedAt: String(row.opened_at ?? ""),
-        lastNotifiedAt,
-        cooldownUntil: row.cooldown_until
-          ? String(row.cooldown_until)
-          : undefined,
-      });
-      drained.push({ resourceKey, lastNotifiedAt });
-    }
-    for (const { resourceKey, lastNotifiedAt } of drained) {
-      this.#ctx.storage.sql.exec(
-        "UPDATE monitor_alert SET last_delivered_at = ? WHERE resource_key = ?",
-        lastNotifiedAt,
-        resourceKey,
-      );
-    }
-    return rows;
-  }
-
-  #insertMonitorMetric(
-    serverId: string,
-    at: string,
-    instance: MonitorInstanceSummary,
-  ): void {
-    const bucketAt = normalizeMonitorMetricBucket(at);
-    const metrics = this.#metricValuesFromInstance(instance);
-    const createdAt = nowIso();
-    this.#ctx.storage.sql.exec(
-      `DELETE FROM monitor_metric_minute WHERE server_id = ? AND bucket_at = ?`,
-      serverId,
-      bucketAt,
-    );
-    this.#ctx.storage.sql.exec(
-      `INSERT INTO monitor_metric_minute (
-         server_id, bucket_at, cpu, memory, disk, load, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      serverId,
-      bucketAt,
-      metrics.cpu ?? null,
-      metrics.memory ?? null,
-      metrics.disk ?? null,
-      metrics.load ?? null,
-      createdAt,
-    );
-  }
-
-  #reconcileMonitorResources(
-    serverId: string,
-    incomingKeys: Set<string>,
-  ): void {
-    const cursor = this.#ctx.storage.sql.exec(
-      "SELECT resource_key, kind, status FROM monitor_resource WHERE server_id = ?",
-      serverId,
-    );
-    const at = nowIso();
-    for (const row of cursor) {
-      const resourceKey = String(row.resource_key);
-      if (incomingKeys.has(resourceKey)) continue;
-
-      const currentStatus = String(row.status) as MonitorResourceStatus;
-      if (
-        currentStatus !== "offline" &&
-        currentStatus !== "stopped" &&
-        currentStatus !== "failed"
-      ) {
-        this.#insertMonitorEvent(serverId, {
-          resourceKey,
-          kind: String(row.kind) as MonitorResourceKind,
-          fromStatus: currentStatus,
-          toStatus: "offline",
-          at,
-          reason: "reconcile-removed",
-        });
-      }
-
-      this.#ctx.storage.sql.exec(
-        "DELETE FROM monitor_resource WHERE resource_key = ?",
-        resourceKey,
-      );
-    }
-  }
-
-  async #applyMonitorSync(
-    serverId: string,
-    msg: DaemonInboundEnvelope & { kind: "monitor-sync" },
-  ): Promise<{ acceptedSequence: number; resyncNeeded: boolean }> {
-    let currentSequence = this.#readMonitorSequence(serverId);
-    let decision = evaluateFullSyncSequence(currentSequence, msg.sequence);
-    if (decision.action === "gap") {
-      return {
-        acceptedSequence: decision.acceptedSequence,
-        resyncNeeded: decision.resyncNeeded,
-      };
-    }
-
-    const hasResources = msg.resources.length > 0;
-    const isStaleNoop = decision.action === "noop" &&
-      msg.sequence <= currentSequence;
-
-    if (isStaleNoop && !hasResources) {
-      return {
-        acceptedSequence: currentSequence,
-        resyncNeeded: false,
-      };
-    }
-
-    if (isStaleNoop && hasResources && msg.sequence < currentSequence) {
-      this.#resetMonitorSequence(serverId);
-      currentSequence = 0;
-      decision = evaluateFullSyncSequence(0, msg.sequence);
-    }
-
-    const nowMs = Date.now();
-    this.#ctx.storage.transactionSync(() => {
-      this.#upsertMonitorInstance(serverId, msg.sequence, msg.at, msg.instance);
-      this.#resolveServerOfflineAlert(serverId, nowMs);
-      this.#deriveAndEmitResourceTransitions(
-        serverId,
-        msg.resources,
-        msg.at,
-        nowMs,
-      );
-      const incomingKeys = new Set<string>();
-      for (const resource of msg.resources) {
-        incomingKeys.add(resource.resourceKey);
-        this.#upsertMonitorResource(serverId, resource);
-      }
-      if (hasResources) {
-        this.#reconcileMonitorResources(serverId, incomingKeys);
-      }
-      this.#insertMonitorMetric(serverId, msg.at, msg.instance);
-      this.#persistMonitorSequence(serverId, msg.sequence);
-    });
-    await this.#scheduleOfflineDeadline(serverId, nowMs);
-    return {
-      acceptedSequence: msg.sequence,
-      resyncNeeded: false,
-    };
-  }
-
-  async #applyMonitorHeartbeat(
-    serverId: string,
-    msg: DaemonInboundEnvelope & { kind: "monitor-heartbeat" },
-  ): Promise<{ acceptedSequence: number; resyncNeeded: boolean }> {
-    const currentSequence = this.#readMonitorSequence(serverId);
-    const decision = evaluateMonitorSequence(currentSequence, msg.sequence);
-    if (decision.action !== "accept") {
-      return {
-        acceptedSequence: decision.acceptedSequence,
-        resyncNeeded: decision.resyncNeeded,
-      };
-    }
-
-    const nowMs = Date.now();
-    this.#ctx.storage.transactionSync(() => {
-      this.#upsertMonitorInstance(serverId, msg.sequence, msg.at, msg.instance);
-      this.#resolveServerOfflineAlert(serverId, nowMs);
-      if (msg.resources) {
-        this.#deriveAndEmitResourceTransitions(
-          serverId,
-          msg.resources,
-          msg.at,
-          nowMs,
-        );
-        for (const resource of msg.resources) {
-          this.#upsertMonitorResource(serverId, resource);
-        }
-      }
-      this.#insertMonitorMetric(serverId, msg.at, msg.instance);
-      this.#persistMonitorSequence(serverId, msg.sequence);
-    });
-    await this.#scheduleOfflineDeadline(serverId, nowMs);
-    return {
-      acceptedSequence: msg.sequence,
-      resyncNeeded: false,
-    };
-  }
-
-  async #applyMonitorTransition(
-    serverId: string,
-    msg: DaemonInboundEnvelope & { kind: "monitor-transition" },
-  ): Promise<{ acceptedSequence: number; resyncNeeded: boolean }> {
-    const currentSequence = this.#readMonitorSequence(serverId);
-    const decision = evaluateMonitorSequence(currentSequence, msg.sequence);
-    if (decision.action !== "accept") {
-      return {
-        acceptedSequence: decision.acceptedSequence,
-        resyncNeeded: decision.resyncNeeded,
-      };
-    }
-
-    const nowMs = Date.now();
-    this.#ctx.storage.transactionSync(() => {
-      for (const event of msg.events) {
-        const previousStatus = event.resourceKey
-          ? this.#readMonitorResourceStatus(serverId, event.resourceKey)
-          : null;
-        if (!event.resourceKey || previousStatus !== event.toStatus) {
-          this.#emitMonitorTransition(
-            serverId,
-            {
-              ...event,
-              fromStatus: event.fromStatus ?? previousStatus ?? undefined,
-            },
-            nowMs,
-          );
-        }
-        this.#patchMonitorResourceFromTransition(serverId, event, msg.at);
-      }
-      if (msg.resources) {
-        for (const resource of msg.resources) {
-          this.#upsertMonitorResource(serverId, resource);
-        }
-      }
-      this.#persistMonitorSequence(serverId, msg.sequence);
-    });
-    await this.#scheduleOfflineDeadline(serverId, nowMs);
-    return {
-      acceptedSequence: decision.acceptedSequence,
-      resyncNeeded: decision.resyncNeeded,
-    };
-  }
-
-  #getMonitorInstance(serverId: string | null): MonitorInstanceRow | null {
-    if (!serverId) return null;
-    const cursor = this.#ctx.storage.sql.exec(
-      "SELECT * FROM monitor_instance WHERE server_id = ?",
-      serverId,
-    );
-    for (const row of cursor) {
-      let instance: MonitorInstanceSummary = {};
-      try {
-        instance = JSON.parse(
-          String(row.instance_json),
-        ) as MonitorInstanceSummary;
-      } catch {
-        instance = {};
-      }
-      return {
-        serverId,
-        sequence: Number(row.sequence ?? 0),
-        at: String(row.at ?? ""),
-        instance,
-        updatedAt: String(row.updated_at ?? ""),
-      };
-    }
-    return null;
-  }
-
-  #listMonitorResources(serverId: string | null): MonitorResourceRow[] {
-    if (!serverId) return [];
-    const cursor = this.#ctx.storage.sql.exec(
-      "SELECT * FROM monitor_resource WHERE server_id = ? ORDER BY resource_key",
-      serverId,
-    );
-    const rows: MonitorResourceRow[] = [];
-    for (const row of cursor) {
-      let state: MonitorResourceState;
-      try {
-        state = JSON.parse(String(row.state_json)) as MonitorResourceState;
-      } catch {
-        state = {
-          resourceKey: String(row.resource_key),
-          kind: String(row.kind) as MonitorResourceState["kind"],
-          status: String(row.status) as MonitorResourceState["status"],
-        };
-      }
-      rows.push({
-        resourceKey: String(row.resource_key),
-        serverId,
-        kind: state.kind,
-        status: state.status,
-        state,
-        updatedAt: String(row.updated_at ?? ""),
-      });
-    }
-    return rows;
-  }
-
-  #listMonitorEvents(serverId: string | null, limit = 50): MonitorEventRow[] {
-    if (!serverId) return [];
-    const cursor = this.#ctx.storage.sql.exec(
-      `SELECT * FROM monitor_event
-       WHERE server_id = ?
-       ORDER BY seq DESC
-       LIMIT ?`,
-      serverId,
-      limit,
-    );
-    const rows: MonitorEventRow[] = [];
-    for (const row of cursor) {
-      rows.push({
-        seq: Number(row.seq),
-        serverId,
-        resourceKey: row.resource_key ? String(row.resource_key) : undefined,
-        kind: row.kind
-          ? String(row.kind) as MonitorEventRow["kind"]
-          : undefined,
-        fromStatus: row.from_status
-          ? String(row.from_status) as MonitorEventRow["fromStatus"]
-          : undefined,
-        toStatus: String(row.to_status) as MonitorEventRow["toStatus"],
-        reason: row.reason ? String(row.reason) : undefined,
-        at: String(row.at ?? ""),
-        createdAt: String(row.created_at ?? ""),
-      });
-    }
-    return rows;
-  }
-
-  #listMonitorMetrics(serverId: string | null, limit = 50): MonitorMetricRow[] {
-    if (!serverId) return [];
-    const cursor = this.#ctx.storage.sql.exec(
-      `SELECT * FROM monitor_metric_minute
-       WHERE server_id = ?
-       ORDER BY bucket_at DESC
-       LIMIT ?`,
-      serverId,
-      limit,
-    );
-    const rows: MonitorMetricRow[] = [];
-    for (const row of cursor) {
-      const metric: MonitorMetricRow = {
-        seq: Number(row.seq),
-        serverId,
-        bucketAt: String(row.bucket_at ?? ""),
-        createdAt: String(row.created_at ?? ""),
-      };
-      if (row.cpu != null) metric.cpu = Number(row.cpu);
-      if (row.memory != null) metric.memory = Number(row.memory);
-      if (row.disk != null) metric.disk = Number(row.disk);
-      if (row.load != null) metric.load = Number(row.load);
-      rows.push(metric);
-    }
-    return rows;
-  }
-
-  #getProjectionDb(): Db | null {
-    if (!this.#env.HYPERDRIVE) return null;
-    if (!this.#projectionDb) {
-      this.#projectionDb = createWorkersDb(this.#env.HYPERDRIVE);
-    }
-    return this.#projectionDb;
-  }
-
-  async #projectOnline(
-    serverId: string,
-    meta: {
-      keyId: string;
-      hostname?: string;
-      machineId?: string;
-      remoteAddress?: string;
-    },
-    connectedAt: string,
-  ): Promise<void> {
-    const db = this.#getProjectionDb();
-    if (!db) return;
-    await projectServerDaemon(db, serverId, {
-      kind: "online",
-      identity: {
-        hostname: meta.hostname || undefined,
-        machineId: meta.machineId || undefined,
-        remoteAddress: meta.remoteAddress || undefined,
-        keyId: meta.keyId,
-      },
-      connectedAt,
-    }, {
-      resources: this.#listMonitorResources(serverId),
-      instanceAt: this.#getMonitorInstance(serverId)?.at,
-    });
-  }
-
-  #createProjectionCellAdapter(
-    serverId: string,
-  ): Pick<import("./contracts.ts").DaemonCell, "putSnapshot"> {
-    return {
-      putSnapshot: (patch) => this.#putSnapshot(serverId, patch),
-    };
-  }
-
-  async #projectOffline(serverId: string): Promise<void> {
-    const cell = this.#createProjectionCellAdapter(serverId);
-    const db = this.#getProjectionDb();
-    if (db) {
-      await projectServerDaemon(db, serverId, { kind: "offline" }, { cell });
-      return;
-    }
-    await cell.putSnapshot({ lastSeenAt: nowIso() });
-  }
-
-  async #projectDisconnected(serverId: string): Promise<void> {
-    const cell = this.#createProjectionCellAdapter(serverId);
-    const db = this.#getProjectionDb();
-    if (db) {
-      await onDaemonDisconnected(
-        db,
-        serverId,
-        cell as import("./contracts.ts").DaemonCell,
-      );
-      return;
-    }
-    await cell.putSnapshot({ lastSeenAt: nowIso() });
-  }
-
-  async #projectMonitorMessage(
-    serverId: string,
-    msg: DaemonInboundEnvelope,
-  ): Promise<void> {
-    const db = this.#getProjectionDb();
-    if (!db) return;
-    if (
-      msg.kind !== "monitor-sync" &&
-      msg.kind !== "monitor-heartbeat" &&
-      msg.kind !== "monitor-transition"
-    ) {
-      return;
-    }
-
-    const cellAdapter = {
-      listMonitorResources: async () => this.#listMonitorResources(serverId),
-      getMonitorInstance: async () => this.#getMonitorInstance(serverId),
-      getSnapshot: async () => this.#getSnapshot(serverId),
-    } as Pick<
-      import("./contracts.ts").DaemonCell,
-      "listMonitorResources" | "getMonitorInstance" | "getSnapshot"
-    >;
-
-    await onMonitorMessageApplied(
-      db,
-      serverId,
-      cellAdapter as import("./contracts.ts").DaemonCell,
-      msg.kind,
-      msg,
-    );
+    await this.#scheduleNearestAlarm();
   }
 }

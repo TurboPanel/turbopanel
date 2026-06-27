@@ -8,18 +8,8 @@ import {
 import { getServerDaemonStateByServerId } from "../authn/server-identity-db.ts";
 import { server } from "../../lib/db/schema.ts";
 import { touchServerMetadata } from "../../server-registry.ts";
-import type { DaemonCell, MonitorResourceRow } from "./contracts.ts";
+import type { DaemonCell } from "./contracts.ts";
 import type { DaemonCellSnapshot } from "./contracts.ts";
-import {
-  computeEffectiveStatus,
-  type MonitorEvent,
-  type MonitorResourceKind,
-  type MonitorResourceStatus,
-} from "./monitor-contracts.ts";
-import { incrementMonitorCounter } from "./monitor-observability.ts";
-
-/** cap for slow summary refresh without a triggering transition. */
-export const PROJECTION_SUMMARY_REFRESH_MS = 15 * 60 * 1000;
 
 export type ProjectionIdentity = {
   hostname?: string;
@@ -40,8 +30,6 @@ export type ProjectionTrigger =
   | { kind: "offline" }
   | { kind: "disconnected" }
   | { kind: "identity"; identity: ProjectionIdentity }
-  | { kind: "resource_transition"; events: MonitorEvent[] }
-  | { kind: "summary_refresh" }
   | {
     kind: "agent";
     agent: {
@@ -52,68 +40,8 @@ export type ProjectionTrigger =
     };
   };
 
-const UX_RESOURCE_KINDS = new Set<MonitorResourceKind>([
-  "instance",
-  "project",
-  "service",
-  "container",
-]);
-
-const UX_STATUSES = new Set<MonitorResourceStatus>([
-  "healthy",
-  "degraded",
-  "unhealthy",
-  "failed",
-  "offline",
-]);
-
 function nowTs(): string {
   return new Date().toISOString();
-}
-
-export function isMeaningfulMonitorTransition(event: MonitorEvent): boolean {
-  if (!event.resourceKey) {
-    return event.toStatus === "offline";
-  }
-  if (event.kind && !UX_RESOURCE_KINDS.has(event.kind)) {
-    return false;
-  }
-  return UX_STATUSES.has(event.toStatus) ||
-    (event.fromStatus != null && UX_STATUSES.has(event.fromStatus));
-}
-
-export function summarizeMonitorResources(
-  resources: MonitorResourceRow[],
-  instanceAt: string,
-): Pick<
-  ServerDaemonProjection,
-  "status" | "healthyCount" | "degradedCount" | "unhealthyCount"
-> {
-  let healthyCount = 0;
-  let degradedCount = 0;
-  let unhealthyCount = 0;
-
-  for (const resource of resources) {
-    const effective = computeEffectiveStatus(resource.status, instanceAt);
-    if (effective === "healthy" || effective === "starting") {
-      healthyCount += 1;
-    } else if (effective === "degraded") {
-      degradedCount += 1;
-    } else if (effective === "unhealthy" || effective === "failed") {
-      unhealthyCount += 1;
-    }
-  }
-
-  let status: MonitorResourceStatus = "healthy";
-  if (unhealthyCount > 0) {
-    status = "unhealthy";
-  } else if (degradedCount > 0) {
-    status = "degraded";
-  } else if (resources.length === 0) {
-    status = "unknown";
-  }
-
-  return { status, healthyCount, degradedCount, unhealthyCount };
 }
 
 function identityChanged(
@@ -139,13 +67,6 @@ function mergeIdentity(
     remoteAddress: identity.remoteAddress ?? current?.remoteAddress,
     keyId: identity.keyId ?? current?.keyId,
   };
-}
-
-function summaryNeedsRefresh(lastProjectedAt: string | undefined): boolean {
-  if (!lastProjectedAt) return true;
-  const parsed = Date.parse(lastProjectedAt);
-  if (Number.isNaN(parsed)) return true;
-  return Date.now() - parsed >= PROJECTION_SUMMARY_REFRESH_MS;
 }
 
 export function agentChanged(
@@ -206,7 +127,6 @@ async function writeMergedDaemonState(
     daemon: merged,
     updatedAt: now,
   }).where(eq(server.id, serverId));
-  incrementMonitorCounter("postgresProjectionsWritten");
 }
 
 /**
@@ -219,8 +139,6 @@ export async function projectServerDaemon(
   trigger: ProjectionTrigger,
   context: {
     cell?: DaemonCell;
-    resources?: MonitorResourceRow[];
-    instanceAt?: string;
     agent?: ProjectionAgent;
   } = {},
 ): Promise<boolean> {
@@ -238,39 +156,17 @@ export async function projectServerDaemon(
       touchLastSeen = true;
       const identity = mergeIdentity(currentProjection, trigger.identity);
       touchMetadata = identityChanged(currentProjection, identity);
-      let summary = currentProjection
-        ? {
-          status: currentProjection.status,
-          healthyCount: currentProjection.healthyCount,
-          degradedCount: currentProjection.degradedCount,
-          unhealthyCount: currentProjection.unhealthyCount,
-        }
-        : summarizeMonitorResources([], now);
-
-      if (context.cell) {
-        const [resources, instance] = await Promise.all([
-          context.resources ?? context.cell.listMonitorResources(serverId),
-          context.cell.getMonitorInstance(serverId),
-        ]);
-        summary = summarizeMonitorResources(
-          resources,
-          instance?.at ?? context.instanceAt ?? now,
-        );
-      }
-
       nextProjection = {
         ...identity,
         connected: true,
         connectedAt: trigger.connectedAt ?? currentProjection?.connectedAt ??
           now,
         lastProjectedAt: now,
-        ...summary,
       };
       break;
     }
     case "offline": {
       touchLastSeen = true;
-      incrementMonitorCounter("offlineTransitions");
       nextProjection = {
         hostname: currentProjection?.hostname,
         machineId: currentProjection?.machineId,
@@ -278,10 +174,6 @@ export async function projectServerDaemon(
         keyId: currentProjection?.keyId,
         connected: false,
         connectedAt: currentProjection?.connectedAt,
-        status: "offline",
-        healthyCount: currentProjection?.healthyCount ?? 0,
-        degradedCount: currentProjection?.degradedCount ?? 0,
-        unhealthyCount: currentProjection?.unhealthyCount ?? 0,
         lastProjectedAt: now,
       };
       break;
@@ -295,10 +187,6 @@ export async function projectServerDaemon(
         keyId: currentProjection?.keyId,
         connected: false,
         connectedAt: currentProjection?.connectedAt,
-        status: currentProjection?.status ?? "unknown",
-        healthyCount: currentProjection?.healthyCount ?? 0,
-        degradedCount: currentProjection?.degradedCount ?? 0,
-        unhealthyCount: currentProjection?.unhealthyCount ?? 0,
         lastProjectedAt: now,
       };
       break;
@@ -316,72 +204,7 @@ export async function projectServerDaemon(
         keyId: identity.keyId,
         connected: currentProjection?.connected ?? false,
         connectedAt: currentProjection?.connectedAt,
-        status: currentProjection?.status ?? "unknown",
-        healthyCount: currentProjection?.healthyCount ?? 0,
-        degradedCount: currentProjection?.degradedCount ?? 0,
-        unhealthyCount: currentProjection?.unhealthyCount ?? 0,
         lastProjectedAt: now,
-      };
-      break;
-    }
-    case "resource_transition": {
-      const meaningful = trigger.events.filter(isMeaningfulMonitorTransition);
-      if (meaningful.length === 0) return false;
-      incrementMonitorCounter("resourceTransitions", meaningful.length);
-
-      if (!context.cell && !context.resources) return false;
-
-      const [resources, instance] = await Promise.all([
-        context.resources ?? context.cell!.listMonitorResources(serverId),
-        context.cell?.getMonitorInstance(serverId) ?? Promise.resolve(null),
-      ]);
-      const summary = summarizeMonitorResources(
-        resources,
-        instance?.at ?? context.instanceAt ?? now,
-      );
-      const identity = mergeIdentity(currentProjection, {
-        hostname: currentProjection?.hostname,
-        machineId: currentProjection?.machineId,
-        remoteAddress: currentProjection?.remoteAddress,
-        keyId: currentProjection?.keyId,
-      });
-
-      nextProjection = {
-        ...identity,
-        connected: currentProjection?.connected ?? false,
-        connectedAt: currentProjection?.connectedAt,
-        lastProjectedAt: now,
-        ...summary,
-      };
-      break;
-    }
-    case "summary_refresh": {
-      if (!summaryNeedsRefresh(currentProjection?.lastProjectedAt)) {
-        return false;
-      }
-      if (!context.cell && !context.resources) return false;
-
-      const [resources, instance] = await Promise.all([
-        context.resources ?? context.cell!.listMonitorResources(serverId),
-        context.cell?.getMonitorInstance(serverId) ?? Promise.resolve(null),
-      ]);
-      const summary = summarizeMonitorResources(
-        resources,
-        instance?.at ?? context.instanceAt ?? now,
-      );
-      const identity = mergeIdentity(currentProjection, {
-        hostname: currentProjection?.hostname,
-        machineId: currentProjection?.machineId,
-        remoteAddress: currentProjection?.remoteAddress,
-        keyId: currentProjection?.keyId,
-      });
-
-      nextProjection = {
-        ...identity,
-        connected: currentProjection?.connected ?? false,
-        connectedAt: currentProjection?.connectedAt,
-        lastProjectedAt: now,
-        ...summary,
       };
       break;
     }
@@ -397,10 +220,6 @@ export async function projectServerDaemon(
       nextProjection = {
         ...(currentProjection ?? {
           connected: false,
-          status: "unknown" as MonitorResourceStatus,
-          healthyCount: 0,
-          degradedCount: 0,
-          unhealthyCount: 0,
           lastProjectedAt: now,
         }),
         agent: mergedAgent,

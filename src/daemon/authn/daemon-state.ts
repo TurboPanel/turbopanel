@@ -1,5 +1,3 @@
-import type { MonitorResourceStatus } from "../cell/monitor-contracts.ts";
-
 export type ServerDaemonKey = {
   id: string;
   algorithm: "Ed25519";
@@ -9,17 +7,13 @@ export type ServerDaemonKey = {
   revokedAt?: string | null;
 };
 
-/** sparse Postgres projection of daemon presence + monitor summary (never full resource graph). */
+/** sparse Postgres projection of daemon presence (never full resource graph). */
 export type ServerDaemonProjection = {
   hostname?: string;
   machineId?: string;
   remoteAddress?: string;
   keyId?: string;
   connected: boolean;
-  status: MonitorResourceStatus;
-  healthyCount: number;
-  degradedCount: number;
-  unhealthyCount: number;
   lastProjectedAt: string;
   connectedAt?: string;
   agent?: {
@@ -54,21 +48,6 @@ function isPublicJwk(value: unknown): value is JsonWebKey {
     isNonEmptyString(jwk.x);
 }
 
-function parseProjectionStatus(value: unknown): MonitorResourceStatus | null {
-  if (typeof value !== "string") return null;
-  const allowed = new Set([
-    "unknown",
-    "starting",
-    "healthy",
-    "degraded",
-    "unhealthy",
-    "stopped",
-    "failed",
-    "offline",
-  ]);
-  return allowed.has(value) ? value as MonitorResourceStatus : null;
-}
-
 function parseProjectionAgent(
   raw: unknown,
 ): ServerDaemonProjection["agent"] | undefined {
@@ -92,13 +71,8 @@ function parseServerDaemonProjection(
     return null;
   }
   const projection = raw as Record<string, unknown>;
-  const status = parseProjectionStatus(projection.status);
   if (
     typeof projection.connected !== "boolean" ||
-    !status ||
-    typeof projection.healthyCount !== "number" ||
-    typeof projection.degradedCount !== "number" ||
-    typeof projection.unhealthyCount !== "number" ||
     !isNonEmptyString(projection.lastProjectedAt)
   ) {
     return null;
@@ -118,10 +92,6 @@ function parseServerDaemonProjection(
       : undefined,
     keyId: isNonEmptyString(projection.keyId) ? projection.keyId : undefined,
     connected: projection.connected,
-    status,
-    healthyCount: projection.healthyCount,
-    degradedCount: projection.degradedCount,
-    unhealthyCount: projection.unhealthyCount,
     lastProjectedAt: projection.lastProjectedAt,
     connectedAt: isNonEmptyString(projection.connectedAt)
       ? projection.connectedAt

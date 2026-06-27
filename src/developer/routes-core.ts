@@ -13,13 +13,11 @@ import {
 import {
   broadcastEchoToFleet,
   collectFleetCommands,
-  collectFleetEvents,
   enqueueEchoToServer,
   listFleetServerIds,
 } from '../daemon/cell/fleet-diagnostics.ts'
 import {
   fetchDaemonServerCell,
-  pingDaemonServer,
 } from '../daemon/cell/server-diagnostics.ts'
 import {
   generateDeliveryId,
@@ -75,15 +73,7 @@ export function buildDeveloperRouter(
   })
 
   developer.get('/daemon/events', async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    if (!registry) return c.json({ events: [] })
-    const db = getDb(c)
-    if (!db) return c.json({ events: [] })
-    const limit = Number(c.req.query('limit') ?? 50)
-    const perServerLimit = Number.isFinite(limit) ? limit : 50
-    const serverIds = await listFleetServerIds(db)
-    const events = await collectFleetEvents(registry, serverIds, perServerLimit)
-    return c.json({ events })
+    return c.json({ events: [] })
   })
 
   developer.post('/daemon/broadcast', async (c) => {
@@ -183,19 +173,6 @@ export function buildDeveloperRouter(
     }
     await registry.getCell(id).createRequestAndWait(envelope, COMMAND_TIMEOUT_MS)
     return c.json({ ok: true, commandId: requestId })
-  })
-
-  developer.post('/daemon/:id/ping', async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-    const id = c.req.param('id')
-
-    const result = await pingDaemonServer(db, registry, id)
-    if (!result.ok) {
-      return c.json({ error: result.error }, result.status)
-    }
-    return c.json(result)
   })
 
   developer.get('/daemon/:id/cell', async (c) => {

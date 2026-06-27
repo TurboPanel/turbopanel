@@ -2,28 +2,9 @@ import type {
   DaemonCell,
   DaemonCellLease,
   DaemonCellSnapshot,
-  MonitorAlertRow,
-  MonitorEventRow,
-  MonitorInstanceRow,
-  MonitorMetricRow,
-  MonitorResourceRow,
   PendingRequestRecord,
   PendingRequestStatus,
 } from "../contracts.ts";
-import type {
-  MonitorEvent,
-  MonitorInstanceSummary,
-  MonitorResourceKind,
-  MonitorResourceState,
-  MonitorResourceStatus,
-} from "../monitor-contracts.ts";
-import {
-  evaluateFullSyncSequence,
-  evaluateMonitorSequence,
-  MONITOR_ALERT_COOLDOWN_MS,
-  MONITOR_OFFLINE_GRACE_MS,
-  normalizeMonitorMetricBucket,
-} from "../monitor-contracts.ts";
 import type {
   DaemonInboundEnvelope,
   DaemonOutboundEnvelope,
@@ -32,21 +13,12 @@ import type {
 import { mergeSnapshotPresence } from "../snapshot-merge.ts";
 import type { RedisCellClient, StreamEntry } from "./client.ts";
 import {
+  cellKeyPattern,
   connKey,
-  eventsKey,
+  HEARTBEAT_COALESCE_MS,
   LEASE_TTL_MS,
   leaseKey,
   metaKey,
-  monitorAlertKey,
-  monitorAlertsIndexKey,
-  monitorDeadlinesKey,
-  monitorEventsKey,
-  monitorInstanceKey,
-  monitorMaintenanceSetKey,
-  monitorMetricsKey,
-  monitorResourceKey,
-  monitorResourcesIndexKey,
-  monitorSequenceKey,
   onlineSetKey,
   OUTBOX_GROUP,
   outboxKey,
@@ -66,10 +38,6 @@ const TERMINAL_STATUSES = new Set<PendingRequestStatus>([
   "failed",
   "expired",
 ]);
-
-const MONITOR_EVENT_RETAIN = 500;
-const MONITOR_METRIC_RETAIN = 72 * 60;
-const MONITOR_ALERT_RESOLVED_RETAIN_SECONDS = 7 * 24 * 60 * 60;
 
 function nowIso(now = Date.now()): string {
   return new Date(now).toISOString();
@@ -164,53 +132,38 @@ function parseDeliveryMap(raw: string | undefined): Record<string, string> {
   }
 }
 
+function shouldCoalesceLastSeenAt(
+  lastSeenAt: string | undefined,
+  atMs: number,
+): boolean {
+  if (!lastSeenAt) return true;
+  const lastSeenMs = Date.parse(lastSeenAt);
+  if (Number.isNaN(lastSeenMs) || Number.isNaN(atMs)) return true;
+  return atMs - lastSeenMs >= HEARTBEAT_COALESCE_MS;
+}
+
+function parseStoredAgent(raw: string | undefined): import("../protocol.ts").DaemonAgentInfo | undefined {
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw) as import("../protocol.ts").DaemonAgentInfo;
+  } catch {
+    return undefined;
+  }
+}
+
+function agentIdentityEqual(
+  a: import("../protocol.ts").DaemonAgentInfo,
+  b: import("../protocol.ts").DaemonAgentInfo | undefined,
+): boolean {
+  if (!b) return false;
+  return a.commit === b.commit &&
+    a.buildId === b.buildId &&
+    (a.builtAt ?? "") === (b.builtAt ?? "") &&
+    (a.channel ?? "") === (b.channel ?? "");
+}
+
 function isLeaseOpSuccess(result: unknown): boolean {
   return result === "OK" || result === 1;
-}
-
-function metricValuesFromInstance(instance: MonitorInstanceSummary): {
-  cpu?: number;
-  memory?: number;
-  disk?: number;
-  load?: number;
-} {
-  return {
-    cpu: instance.cpu?.usagePercent,
-    memory: instance.memory?.usagePercent,
-    disk: instance.disk?.usagePercent,
-    load: instance.load?.one,
-  };
-}
-
-function monitorEventStreamFields(event: MonitorEvent): Record<string, string> {
-  const fields: Record<string, string> = {
-    toStatus: event.toStatus,
-    at: event.at,
-  };
-  if (event.resourceKey) fields.resourceKey = event.resourceKey;
-  if (event.kind) fields.kind = event.kind;
-  if (event.fromStatus) fields.fromStatus = event.fromStatus;
-  if (event.reason) fields.reason = event.reason;
-  if (event.sequence != null) fields.sequence = String(event.sequence);
-  return fields;
-}
-
-function parseMonitorEventRow(
-  serverId: string,
-  seq: string,
-  fields: Record<string, string>,
-): MonitorEventRow {
-  return {
-    seq: Number(seq.split("-")[0] ?? seq),
-    serverId,
-    resourceKey: fields.resourceKey || undefined,
-    kind: fields.kind as MonitorEventRow["kind"] | undefined,
-    fromStatus: fields.fromStatus as MonitorEventRow["fromStatus"] | undefined,
-    toStatus: fields.toStatus as MonitorEventRow["toStatus"],
-    reason: fields.reason || undefined,
-    at: fields.at ?? "",
-    createdAt: fields.at ?? "",
-  };
 }
 
 export class RedisDaemonCell implements DaemonCell {
@@ -218,6 +171,7 @@ export class RedisDaemonCell implements DaemonCell {
   readonly #serverId: string;
   readonly #reclaimedByConsumer = new Map<string, StreamEntry[]>();
   readonly #deliveryToStreamId = new Map<string, string>();
+  readonly #terminalResults = new Map<string, PendingRequestRecord>();
 
   constructor(client: RedisCellClient, serverId: string) {
     this.#client = client;
@@ -295,18 +249,32 @@ export class RedisDaemonCell implements DaemonCell {
     const demoted = Array.isArray(result)
       ? result[0] === 1 || result[0] === "1"
       : result === 1;
-    if (!demoted) return false;
+    return demoted;
+  }
 
-    const staleConnectionId = Array.isArray(result) && result[1]
-      ? String(result[1])
-      : undefined;
-    if (staleConnectionId) {
-      await this.appendEvent("disconnected", {
-        connectionId: staleConnectionId,
-        reason: "lease-expired",
-      });
+  async #cleanupTerminalRequest(
+    requestId: string,
+    fields?: Record<string, string>,
+  ): Promise<void> {
+    const reqKey = requestKey(this.#serverId, requestId);
+    const indexKey = requestsKey(this.#serverId);
+    const recordFields = fields ?? await this.#client.hgetall(reqKey);
+    if (!recordFields) {
+      await this.#client.zrem(indexKey, requestId);
+      return;
     }
-    return true;
+
+    const deliveries = parseDeliveryMap(recordFields.deliveries);
+    const streamIds = Object.values(deliveries);
+    if (streamIds.length > 0) {
+      await this.#client.xdel(outboxKey(this.#serverId), ...streamIds);
+      for (const deliveryId of Object.keys(deliveries)) {
+        this.#deliveryToStreamId.delete(deliveryId);
+      }
+    }
+
+    await this.#client.del(reqKey);
+    await this.#client.zrem(indexKey, requestId);
   }
 
   async attachDaemonSocket(meta: {
@@ -384,10 +352,6 @@ export class RedisDaemonCell implements DaemonCell {
       connectedAt,
     });
 
-    await this.appendEvent("connected", { connectionId });
-
-    await this.#resetMonitorSequenceForReconnect();
-
     return {
       connectionId,
       lease: {
@@ -396,11 +360,6 @@ export class RedisDaemonCell implements DaemonCell {
         expiresAt,
       },
     };
-  }
-
-  async #resetMonitorSequenceForReconnect(): Promise<void> {
-    await this.#client.del(monitorSequenceKey(this.#serverId));
-    await this.#client.zrem(monitorDeadlinesKey(this.#serverId), "offline");
   }
 
   async detachDaemonSocket(params: {
@@ -434,17 +393,13 @@ export class RedisDaemonCell implements DaemonCell {
     );
 
     this.#reclaimedByConsumer.delete(`ws:${params.connectionId}`);
-
-    await this.appendEvent("disconnected", {
-      connectionId: params.connectionId,
-      reason: params.reason ?? "",
-    });
   }
 
   async heartbeat(params: {
     connectionId?: string;
     hostname?: string;
     at?: string;
+    agent?: import("../protocol.ts").DaemonAgentInfo;
   }): Promise<void> {
     const meta = await this.#client.hgetall(metaKey(this.#serverId));
     const connectionId = params.connectionId ?? meta?.connectionId;
@@ -454,11 +409,27 @@ export class RedisDaemonCell implements DaemonCell {
     if (!renewed) return;
 
     const at = params.at ?? nowIso();
+    const atMs = Date.parse(at);
+    const bumpLastSeen = shouldCoalesceLastSeenAt(meta?.lastSeenAt, atMs);
+
     const fields: Record<string, string> = {
       lastHeartbeatAt: at,
       keyLastUsedAt: at,
     };
+    if (bumpLastSeen) fields.lastSeenAt = at;
     if (params.hostname) fields.hostname = params.hostname;
+
+    if (params.agent?.commit && params.agent?.buildId) {
+      const storedAgent = parseStoredAgent(meta?.agent);
+      const agentChanged = !agentIdentityEqual(params.agent, storedAgent);
+      if (agentChanged) fields.agent = JSON.stringify(params.agent);
+      await this.putSnapshot({
+        agent: params.agent,
+        lastHeartbeatAt: at,
+        ...(bumpLastSeen ? { lastSeenAt: at } : {}),
+      });
+    }
+
     await this.#client.hset(metaKey(this.#serverId), fields);
     await this.#client.sadd(onlineSetKey(), this.#serverId);
   }
@@ -510,55 +481,6 @@ export class RedisDaemonCell implements DaemonCell {
     }
     await this.#client.hset(metaKey(this.#serverId), metaFields);
     return updated;
-  }
-
-  async appendEvent(
-    kind: string,
-    payload: Record<string, unknown>,
-    ttlSeconds?: number,
-  ): Promise<void> {
-    const at = nowIso();
-    const key = eventsKey(this.#serverId);
-    await this.#client.xadd(key, "*", {
-      kind,
-      at,
-      payload: JSON.stringify(payload),
-    }, 500);
-    if (ttlSeconds != null) {
-      await this.#client.expire(key, ttlSeconds, "GT");
-    }
-  }
-
-  async listEvents(limit = 50): Promise<
-    Array<{
-      seq: string;
-      kind: string;
-      at: string;
-      payload: Record<string, unknown>;
-    }>
-  > {
-    const entries = await this.#client.xrange(
-      eventsKey(this.#serverId),
-      "-",
-      "+",
-      limit,
-    );
-    return entries.map((entry) => {
-      let payload: Record<string, unknown> = {};
-      if (entry.fields.payload) {
-        try {
-          payload = JSON.parse(entry.fields.payload) as Record<string, unknown>;
-        } catch {
-          payload = {};
-        }
-      }
-      return {
-        seq: entry.id,
-        kind: entry.fields.kind ?? "",
-        at: entry.fields.at ?? "",
-        payload,
-      };
-    });
   }
 
   async enqueue(
@@ -679,9 +601,6 @@ export class RedisDaemonCell implements DaemonCell {
     let error: string | undefined;
 
     switch (inbound.kind) {
-      case "pong":
-        status = "acked";
-        break;
       case "command-result":
         status = "done";
         result = {
@@ -718,10 +637,6 @@ export class RedisDaemonCell implements DaemonCell {
     if (error) updates.error = error;
 
     await this.#client.hset(reqKey, updates);
-    await this.appendEvent("inbound", {
-      kind: inbound.kind,
-      requestId: inbound.requestId,
-    });
 
     if (inbound.kind !== "addresses-result") {
       await this.#client.hset(metaKey(this.#serverId), {
@@ -729,14 +644,26 @@ export class RedisDaemonCell implements DaemonCell {
       });
     }
 
-    return parseRequestRecord(
+    const terminalRecord = parseRequestRecord(
       this.#serverId,
       inbound.requestId,
       { ...fields, ...updates },
     );
+    if (isTerminalStatus(terminalRecord.status)) {
+      this.#terminalResults.set(inbound.requestId, terminalRecord);
+      await this.#cleanupTerminalRequest(inbound.requestId, {
+        ...fields,
+        ...updates,
+      });
+    }
+
+    return terminalRecord;
   }
 
   async getRequest(requestId: string): Promise<PendingRequestRecord | null> {
+    const cached = this.#terminalResults.get(requestId);
+    if (cached) return cached;
+
     const fields = await this.#client.hgetall(
       requestKey(this.#serverId, requestId),
     );
@@ -789,7 +716,13 @@ export class RedisDaemonCell implements DaemonCell {
   ): Promise<PendingRequestRecord> {
     await this.enqueue(outbound);
     const result = await this.waitForRequest(outbound.requestId, timeoutMs);
-    if (result) return result;
+    if (result) {
+      if (isTerminalStatus(result.status)) {
+        await this.#cleanupTerminalRequest(outbound.requestId);
+        this.#terminalResults.delete(outbound.requestId);
+      }
+      return result;
+    }
 
     const expiredAt = nowIso();
     const reqKey = requestKey(this.#serverId, outbound.requestId);
@@ -797,15 +730,18 @@ export class RedisDaemonCell implements DaemonCell {
       status: "expired",
       finishedAt: expiredAt,
     });
-    return {
+    const expiredRecord = {
       serverId: this.#serverId,
       requestId: outbound.requestId,
       requestKind: outbound.kind,
-      status: "expired",
+      status: "expired" as const,
       createdAt: outbound.at,
       expiresAt: expiredAt,
       finishedAt: expiredAt,
     };
+    await this.#cleanupTerminalRequest(outbound.requestId);
+    this.#terminalResults.delete(outbound.requestId);
+    return expiredRecord;
   }
 
   async claimDeliveryLease(
@@ -914,6 +850,7 @@ export class RedisDaemonCell implements DaemonCell {
         OUTBOX_GROUP,
         ...streamIds,
       );
+      await this.#client.xdel(outboxKey(this.#serverId), ...streamIds);
       for (const deliveryId of deliveryIds) {
         this.#deliveryToStreamId.delete(deliveryId);
       }
@@ -921,20 +858,6 @@ export class RedisDaemonCell implements DaemonCell {
   }
 
   async prune(now = Date.now()): Promise<boolean> {
-    await this.reconcileStalePresence(now);
-    const offlineApplied = await this.#processDueMonitorDeadlines(now);
-    await this.#client.xtrimMaxLen(eventsKey(this.#serverId), 500);
-    await this.#client.xtrimMaxLen(outboxKey(this.#serverId), 1000);
-    await this.#client.xtrimMaxLen(
-      monitorEventsKey(this.#serverId),
-      MONITOR_EVENT_RETAIN,
-    );
-    await this.#client.xtrimMaxLen(
-      monitorMetricsKey(this.#serverId),
-      MONITOR_METRIC_RETAIN,
-    );
-    await this.#pruneResolvedMonitorAlerts(now);
-
     const indexKey = requestsKey(this.#serverId);
     const requestIds = await this.#client.zrangebyscore(
       indexKey,
@@ -955,689 +878,15 @@ export class RedisDaemonCell implements DaemonCell {
         await this.#client.zrem(indexKey, requestId);
       }
     }
-    return offlineApplied;
+    return false;
   }
 
-  async #scheduleOfflineDeadline(now = Date.now()): Promise<void> {
-    await this.#client.zadd(
-      monitorDeadlinesKey(this.#serverId),
-      now + MONITOR_OFFLINE_GRACE_MS,
-      "offline",
-    );
-    await this.#ensureMonitorMaintenanceRegistered();
-  }
-
-  async #cancelOfflineDeadline(): Promise<void> {
-    await this.#client.zrem(monitorDeadlinesKey(this.#serverId), "offline");
-    await this.#maybeClearMonitorMaintenanceRegistration();
-  }
-
-  async #ensureMonitorMaintenanceRegistered(): Promise<void> {
-    await this.#client.sadd(monitorMaintenanceSetKey(), this.#serverId);
-  }
-
-  async #maybeClearMonitorMaintenanceRegistration(): Promise<void> {
-    const pending = await this.#client.zcard(
-      monitorDeadlinesKey(this.#serverId),
-    );
-    if (pending === 0) {
-      await this.#client.srem(monitorMaintenanceSetKey(), this.#serverId);
-    }
-  }
-
-  async #readMonitorResourceStatus(
-    resourceKey: string,
-  ): Promise<MonitorResourceStatus | null> {
-    const fields = await this.#client.hgetall(
-      monitorResourceKey(this.#serverId, resourceKey),
-    );
-    return fields?.status ? fields.status as MonitorResourceStatus : null;
-  }
-
-  async #emitMonitorTransition(
-    event: MonitorEvent,
-    now = Date.now(),
-  ): Promise<void> {
-    await this.#client.xadd(
-      monitorEventsKey(this.#serverId),
-      "*",
-      monitorEventStreamFields(event),
-      MONITOR_EVENT_RETAIN,
-    );
-    await this.#handleMonitorTransitionAlerts(event, now);
-  }
-
-  async #deriveAndEmitResourceTransitions(
-    resources: MonitorResourceState[],
-    at: string,
-    now: number,
-  ): Promise<void> {
-    for (const resource of resources) {
-      const previousStatus = await this.#readMonitorResourceStatus(
-        resource.resourceKey,
-      );
-      if (previousStatus === resource.status) continue;
-      await this.#emitMonitorTransition(
-        {
-          resourceKey: resource.resourceKey,
-          kind: resource.kind,
-          fromStatus: previousStatus ?? undefined,
-          toStatus: resource.status,
-          at,
-          reason: previousStatus == null ? "sync-initial" : "sync-changed",
-        },
-        now,
-      );
-    }
-  }
-
-  async #resolveServerOfflineAlert(now: number): Promise<void> {
-    await this.#resolveAlert(this.#serverId, now);
-  }
-
-  async #openOrUpdateAlert(
-    resourceKey: string,
-    toStatus: MonitorResourceStatus,
-    now: number,
-  ): Promise<void> {
-    const alertKey = monitorAlertKey(this.#serverId, resourceKey);
-    const fields = await this.#client.hgetall(alertKey);
-    const nowStr = nowIso(now);
-
-    if (!fields || fields.resolvedAt) {
-      await this.#client.hset(alertKey, {
-        serverId: this.#serverId,
-        status: toStatus,
-        openedAt: nowStr,
-        lastNotifiedAt: nowStr,
-        lastDeliveredAt: "",
-        cooldownUntil: "",
-        resolvedAt: "",
-      });
-      await this.#client.sadd(
-        monitorAlertsIndexKey(this.#serverId),
-        resourceKey,
-      );
-      return;
-    }
-
-    const cooldownUntil = fields.cooldownUntil ?? "";
-    if (cooldownUntil && Date.parse(cooldownUntil) > now) return;
-
-    const newCooldownUntil = nowIso(now + MONITOR_ALERT_COOLDOWN_MS);
-    await this.#client.hset(alertKey, {
-      status: toStatus,
-      lastNotifiedAt: nowStr,
-      cooldownUntil: newCooldownUntil,
-    });
-    await this.#client.zadd(
-      monitorDeadlinesKey(this.#serverId),
-      Date.parse(newCooldownUntil),
-      `cooldown:${resourceKey}`,
-    );
-    await this.#ensureMonitorMaintenanceRegistered();
-  }
-
-  async #resolveAlert(resourceKey: string, now: number): Promise<void> {
-    const alertKey = monitorAlertKey(this.#serverId, resourceKey);
-    await this.#client.hset(alertKey, {
-      resolvedAt: nowIso(now),
-      cooldownUntil: "",
-    });
-    await this.#client.zrem(
-      monitorDeadlinesKey(this.#serverId),
-      `cooldown:${resourceKey}`,
-    );
-    await this.#client.srem(monitorAlertsIndexKey(this.#serverId), resourceKey);
-    await this.#client.expire(alertKey, MONITOR_ALERT_RESOLVED_RETAIN_SECONDS);
-    await this.#maybeClearMonitorMaintenanceRegistration();
-  }
-
-  async #handleMonitorTransitionAlerts(
-    event: MonitorEvent,
-    now: number,
-  ): Promise<void> {
-    const resourceKey = event.resourceKey ?? this.#serverId;
-    if (
-      event.toStatus === "degraded" ||
-      event.toStatus === "unhealthy" ||
-      event.toStatus === "failed"
-    ) {
-      await this.#openOrUpdateAlert(resourceKey, event.toStatus, now);
-      return;
-    }
-    if (
-      (event.toStatus === "healthy" || event.toStatus === "stopped") &&
-      event.resourceKey
-    ) {
-      await this.#resolveAlert(event.resourceKey, now);
-    }
-  }
-
-  async #processDueMonitorDeadlines(now: number): Promise<boolean> {
-    const dueNames = await this.#client.zrangebyscore(
-      monitorDeadlinesKey(this.#serverId),
-      "-inf",
-      now,
-    );
-
-    let offlineApplied = false;
-    for (const deadlineName of dueNames) {
-      if (deadlineName === "offline") {
-        offlineApplied = await this.#processOfflineDeadline(now) ||
-          offlineApplied;
-      } else if (deadlineName.startsWith("cooldown:")) {
-        const resourceKey = deadlineName.slice("cooldown:".length);
-        await this.#client.hset(
-          monitorAlertKey(this.#serverId, resourceKey),
-          { cooldownUntil: "" },
-        );
-      }
-      await this.#client.zrem(
-        monitorDeadlinesKey(this.#serverId),
-        deadlineName,
-      );
-    }
-    await this.#maybeClearMonitorMaintenanceRegistration();
-    return offlineApplied;
-  }
-
-  async #processOfflineDeadline(now: number): Promise<boolean> {
-    const fields = await this.#client.hgetall(
-      monitorInstanceKey(this.#serverId),
-    );
-    if (!fields?.at) return false;
-
-    const lastHeartbeatMs = Date.parse(fields.at);
-    if (
-      Number.isNaN(lastHeartbeatMs) ||
-      now - lastHeartbeatMs < MONITOR_OFFLINE_GRACE_MS
-    ) {
-      return false;
-    }
-
-    const at = nowIso(now);
-    const resourceKeys = await this.#client.smembers(
-      monitorResourcesIndexKey(this.#serverId),
-    );
-    for (const resourceKey of resourceKeys) {
-      const resourceFields = await this.#client.hgetall(
-        monitorResourceKey(this.#serverId, resourceKey),
-      );
-      if (!resourceFields) continue;
-
-      const currentStatus = resourceFields.status as MonitorResourceStatus;
-      if (
-        currentStatus === "offline" ||
-        currentStatus === "stopped" ||
-        currentStatus === "failed"
-      ) {
-        continue;
-      }
-
-      const kind = resourceFields.kind as MonitorResourceKind;
-      await this.#client.xadd(
-        monitorEventsKey(this.#serverId),
-        "*",
-        monitorEventStreamFields({
-          resourceKey,
-          kind,
-          fromStatus: currentStatus,
-          toStatus: "offline",
-          at,
-          reason: "heartbeat-timeout",
-        }),
-        MONITOR_EVENT_RETAIN,
-      );
-
-      let state: MonitorResourceState;
-      try {
-        state = JSON.parse(resourceFields.stateJson) as MonitorResourceState;
-      } catch {
-        state = { resourceKey, kind, status: currentStatus };
-      }
-      state.status = "offline";
-      state.updatedAt = at;
-      await this.#client.hset(
-        monitorResourceKey(this.#serverId, resourceKey),
-        {
-          status: "offline",
-          stateJson: JSON.stringify(state),
-          updatedAt: at,
-        },
-      );
-    }
-
-    await this.#openOrUpdateAlert(this.#serverId, "offline", now);
-    return true;
-  }
-
-  async #pruneResolvedMonitorAlerts(now: number): Promise<void> {
-    const alertKeys = await this.#client.smembers(
-      monitorAlertsIndexKey(this.#serverId),
-    );
-    const cutoffMs = now - MONITOR_ALERT_RESOLVED_RETAIN_SECONDS * 1000;
-    for (const resourceKey of alertKeys) {
-      const fields = await this.#client.hgetall(
-        monitorAlertKey(this.#serverId, resourceKey),
-      );
-      if (!fields?.resolvedAt) continue;
-      const resolvedMs = Date.parse(fields.resolvedAt);
-      if (!Number.isNaN(resolvedMs) && resolvedMs < cutoffMs) {
-        await this.#client.del(monitorAlertKey(this.#serverId, resourceKey));
-        await this.#client.srem(
-          monitorAlertsIndexKey(this.#serverId),
-          resourceKey,
-        );
-      }
-    }
-  }
-
-  async #upsertMonitorResourceFields(
-    resource: MonitorResourceState,
-  ): Promise<void> {
-    await this.#client.hset(
-      monitorResourceKey(this.#serverId, resource.resourceKey),
-      {
-        kind: resource.kind,
-        status: resource.status,
-        stateJson: JSON.stringify(resource),
-        updatedAt: nowIso(),
-      },
-    );
-    await this.#client.sadd(
-      monitorResourcesIndexKey(this.#serverId),
-      resource.resourceKey,
-    );
-  }
-
-  async #patchMonitorResourceFromTransition(
-    event: MonitorEvent,
-    at: string,
-  ): Promise<void> {
-    if (!event.resourceKey) return;
-
-    const resourceKey = event.resourceKey;
-    const fields = await this.#client.hgetall(
-      monitorResourceKey(this.#serverId, resourceKey),
-    );
-
-    let state: MonitorResourceState;
-    if (fields?.stateJson) {
-      try {
-        state = JSON.parse(fields.stateJson) as MonitorResourceState;
-      } catch {
-        state = {
-          resourceKey,
-          kind: (event.kind ?? fields.kind) as MonitorResourceKind,
-          status: event.toStatus,
-        };
-      }
-    } else {
-      state = {
-        resourceKey,
-        kind: (event.kind ?? "service") as MonitorResourceKind,
-        status: event.toStatus,
-      };
-    }
-
-    state.status = event.toStatus;
-    state.updatedAt = at;
-    if (event.kind) state.kind = event.kind;
-
-    await this.#upsertMonitorResourceFields(state);
-  }
-
-  async #readMonitorSequence(): Promise<number> {
-    const currentRaw = await this.#client.get(
-      monitorSequenceKey(this.#serverId),
-    );
-    return currentRaw ? Number(currentRaw) : 0;
-  }
-
-  async #persistMonitorSequence(sequence: number): Promise<void> {
-    await this.#client.set(
-      monitorSequenceKey(this.#serverId),
-      String(sequence),
-    );
-  }
-
-  async #insertMonitorMetric(
-    at: string,
-    instance: MonitorInstanceSummary,
-  ): Promise<void> {
-    const bucketAt = normalizeMonitorMetricBucket(at);
-    const metrics = metricValuesFromInstance(instance);
-    const fields: Record<string, string> = { bucketAt };
-    if (metrics.cpu != null) fields.cpu = String(metrics.cpu);
-    if (metrics.memory != null) fields.memory = String(metrics.memory);
-    if (metrics.disk != null) fields.disk = String(metrics.disk);
-    if (metrics.load != null) fields.load = String(metrics.load);
-    await this.#client.xadd(
-      monitorMetricsKey(this.#serverId),
-      "*",
-      fields,
-    );
-  }
-
-  async applyMonitorSync(
-    msg: DaemonInboundEnvelope & { kind: "monitor-sync" },
-  ): Promise<{ acceptedSequence: number; resyncNeeded: boolean }> {
-    let currentSequence = await this.#readMonitorSequence();
-    let decision = evaluateFullSyncSequence(currentSequence, msg.sequence);
-    if (decision.action === "gap") {
-      return {
-        acceptedSequence: decision.acceptedSequence,
-        resyncNeeded: decision.resyncNeeded,
-      };
-    }
-
-    const hasResources = msg.resources.length > 0;
-    const isStaleNoop = decision.action === "noop" &&
-      msg.sequence <= currentSequence;
-
-    if (isStaleNoop && !hasResources) {
-      return {
-        acceptedSequence: currentSequence,
-        resyncNeeded: false,
-      };
-    }
-
-    if (isStaleNoop && hasResources && msg.sequence < currentSequence) {
-      await this.#resetMonitorSequenceForReconnect();
-      currentSequence = 0;
-      decision = evaluateFullSyncSequence(0, msg.sequence);
-    }
-
-    const now = Date.now();
-    const at = nowIso(now);
-
-    await this.#client.hset(monitorInstanceKey(this.#serverId), {
-      sequence: String(msg.sequence),
-      at: msg.at,
-      instanceJson: JSON.stringify(msg.instance),
-      updatedAt: nowIso(),
-    });
-
-    await this.#resolveServerOfflineAlert(now);
-    await this.#deriveAndEmitResourceTransitions(msg.resources, msg.at, now);
-
-    const incomingKeys = new Set<string>();
-    for (const resource of msg.resources) {
-      incomingKeys.add(resource.resourceKey);
-      await this.#upsertMonitorResourceFields(resource);
-    }
-
-    if (hasResources) {
-      const indexKey = monitorResourcesIndexKey(this.#serverId);
-      const existingKeys = await this.#client.smembers(indexKey);
-      for (const resourceKey of existingKeys) {
-        if (incomingKeys.has(resourceKey)) continue;
-
-        const resourceFields = await this.#client.hgetall(
-          monitorResourceKey(this.#serverId, resourceKey),
-        );
-        if (resourceFields) {
-          const currentStatus = resourceFields.status as MonitorResourceStatus;
-          if (
-            currentStatus !== "offline" &&
-            currentStatus !== "stopped" &&
-            currentStatus !== "failed"
-          ) {
-            await this.#client.xadd(
-              monitorEventsKey(this.#serverId),
-              "*",
-              monitorEventStreamFields({
-                resourceKey,
-                kind: resourceFields.kind as MonitorResourceKind,
-                fromStatus: currentStatus,
-                toStatus: "offline",
-                at,
-                reason: "reconcile-removed",
-              }),
-              MONITOR_EVENT_RETAIN,
-            );
-          }
-        }
-
-        await this.#client.del(monitorResourceKey(this.#serverId, resourceKey));
-        await this.#client.srem(indexKey, resourceKey);
-      }
-    }
-
-    await this.#insertMonitorMetric(msg.at, msg.instance);
-    await this.#persistMonitorSequence(msg.sequence);
-    await this.#scheduleOfflineDeadline(now);
-
-    return {
-      acceptedSequence: msg.sequence,
-      resyncNeeded: false,
-    };
-  }
-
-  async applyMonitorHeartbeat(
-    msg: DaemonInboundEnvelope & { kind: "monitor-heartbeat" },
-  ): Promise<{ acceptedSequence: number; resyncNeeded: boolean }> {
-    const currentSequence = await this.#readMonitorSequence();
-    const decision = evaluateMonitorSequence(currentSequence, msg.sequence);
-    if (decision.action !== "accept") {
-      return {
-        acceptedSequence: decision.acceptedSequence,
-        resyncNeeded: decision.resyncNeeded,
-      };
-    }
-
-    const now = Date.now();
-
-    await this.#client.hset(monitorInstanceKey(this.#serverId), {
-      sequence: String(msg.sequence),
-      at: msg.at,
-      instanceJson: JSON.stringify(msg.instance),
-      updatedAt: nowIso(),
-    });
-
-    await this.#resolveServerOfflineAlert(now);
-
-    if (msg.resources) {
-      await this.#deriveAndEmitResourceTransitions(msg.resources, msg.at, now);
-      for (const resource of msg.resources) {
-        await this.#upsertMonitorResourceFields(resource);
-      }
-    }
-
-    await this.#insertMonitorMetric(msg.at, msg.instance);
-    await this.#persistMonitorSequence(msg.sequence);
-    await this.#scheduleOfflineDeadline(now);
-
-    return {
-      acceptedSequence: msg.sequence,
-      resyncNeeded: false,
-    };
-  }
-
-  async applyMonitorTransition(
-    msg: DaemonInboundEnvelope & { kind: "monitor-transition" },
-  ): Promise<{ acceptedSequence: number; resyncNeeded: boolean }> {
-    const currentSequence = await this.#readMonitorSequence();
-    const decision = evaluateMonitorSequence(currentSequence, msg.sequence);
-    if (decision.action !== "accept") {
-      return {
-        acceptedSequence: decision.acceptedSequence,
-        resyncNeeded: decision.resyncNeeded,
-      };
-    }
-
-    const now = Date.now();
-
-    for (const event of msg.events) {
-      const previousStatus = event.resourceKey
-        ? await this.#readMonitorResourceStatus(event.resourceKey)
-        : null;
-      if (!event.resourceKey || previousStatus !== event.toStatus) {
-        await this.#emitMonitorTransition(
-          {
-            ...event,
-            fromStatus: event.fromStatus ?? previousStatus ?? undefined,
-          },
-          now,
-        );
-      }
-      await this.#patchMonitorResourceFromTransition(event, msg.at);
-    }
-
-    if (msg.resources) {
-      for (const resource of msg.resources) {
-        await this.#upsertMonitorResourceFields(resource);
-      }
-    }
-    await this.#persistMonitorSequence(msg.sequence);
-    await this.#scheduleOfflineDeadline(now);
-
-    return {
-      acceptedSequence: decision.acceptedSequence,
-      resyncNeeded: decision.resyncNeeded,
-    };
-  }
-
-  async drainNotificationCandidates(
-    _serverId: string,
-  ): Promise<MonitorAlertRow[]> {
-    const resourceKeys = await this.#client.smembers(
-      monitorAlertsIndexKey(this.#serverId),
-    );
-    const rows: MonitorAlertRow[] = [];
-    const drained: Array<{ resourceKey: string; lastNotifiedAt: string }> = [];
-    for (const resourceKey of resourceKeys) {
-      const fields = await this.#client.hgetall(
-        monitorAlertKey(this.#serverId, resourceKey),
-      );
-      if (!fields || fields.resolvedAt) continue;
-      const lastNotifiedAt = fields.lastNotifiedAt ?? "";
-      if (!lastNotifiedAt) continue;
-      const lastDeliveredAt = fields.lastDeliveredAt ?? "";
-      if (lastDeliveredAt && lastDeliveredAt >= lastNotifiedAt) continue;
-      rows.push({
-        resourceKey,
-        serverId: this.#serverId,
-        status: fields.status as MonitorResourceStatus,
-        openedAt: fields.openedAt ?? "",
-        lastNotifiedAt,
-        cooldownUntil: fields.cooldownUntil || undefined,
-      });
-      drained.push({ resourceKey, lastNotifiedAt });
-    }
-    for (const { resourceKey, lastNotifiedAt } of drained) {
-      await this.#client.hset(monitorAlertKey(this.#serverId, resourceKey), {
-        lastDeliveredAt: lastNotifiedAt,
-      });
-    }
-    return rows;
-  }
-
-  async getMonitorInstance(
-    _serverId: string,
-  ): Promise<MonitorInstanceRow | null> {
-    const fields = await this.#client.hgetall(
-      monitorInstanceKey(this.#serverId),
-    );
-    if (!fields) return null;
-
-    let instance: MonitorInstanceSummary = {};
-    if (fields.instanceJson) {
-      try {
-        instance = JSON.parse(fields.instanceJson) as MonitorInstanceSummary;
-      } catch {
-        instance = {};
-      }
-    }
-
-    return {
-      serverId: this.#serverId,
-      sequence: Number(fields.sequence ?? 0),
-      at: fields.at ?? "",
-      instance,
-      updatedAt: fields.updatedAt ?? "",
-    };
-  }
-
-  async listMonitorResources(_serverId: string): Promise<MonitorResourceRow[]> {
-    const resourceKeys = await this.#client.smembers(
-      monitorResourcesIndexKey(this.#serverId),
-    );
-    const rows: MonitorResourceRow[] = [];
-    for (const resourceKey of resourceKeys) {
-      const fields = await this.#client.hgetall(
-        monitorResourceKey(this.#serverId, resourceKey),
-      );
-      if (!fields) continue;
-
-      let state: MonitorResourceState;
-      try {
-        state = JSON.parse(fields.stateJson) as MonitorResourceState;
-      } catch {
-        state = {
-          resourceKey,
-          kind: fields.kind as MonitorResourceState["kind"],
-          status: fields.status as MonitorResourceState["status"],
-        };
-      }
-
-      rows.push({
-        resourceKey,
-        serverId: this.#serverId,
-        kind: state.kind,
-        status: state.status,
-        state,
-        updatedAt: fields.updatedAt ?? "",
-      });
-    }
-    rows.sort((a, b) => a.resourceKey.localeCompare(b.resourceKey));
-    return rows;
-  }
-
-  async listMonitorEvents(
-    _serverId: string,
-    limit = 50,
-  ): Promise<MonitorEventRow[]> {
-    const entries = await this.#client.xrevrange(
-      monitorEventsKey(this.#serverId),
-      "+",
-      "-",
-      limit,
-    );
-    return entries.map((entry) =>
-      parseMonitorEventRow(this.#serverId, entry.id, entry.fields)
-    );
-  }
-
-  async listMonitorMetrics(
-    _serverId: string,
-    limit = 50,
-  ): Promise<MonitorMetricRow[]> {
-    const entries = await this.#client.xrevrange(
-      monitorMetricsKey(this.#serverId),
-      "+",
-      "-",
-    );
-    const byBucket = new Map<string, MonitorMetricRow>();
-    for (const entry of entries) {
-      const bucketAt = entry.fields.bucketAt ?? "";
-      if (!bucketAt || byBucket.has(bucketAt)) continue;
-      const metric: MonitorMetricRow = {
-        seq: Number(entry.id.split("-")[0] ?? entry.id),
-        serverId: this.#serverId,
-        bucketAt,
-        createdAt: bucketAt,
-      };
-      if (entry.fields.cpu != null) metric.cpu = Number(entry.fields.cpu);
-      if (entry.fields.memory != null) {
-        metric.memory = Number(entry.fields.memory);
-      }
-      if (entry.fields.disk != null) metric.disk = Number(entry.fields.disk);
-      if (entry.fields.load != null) metric.load = Number(entry.fields.load);
-      byBucket.set(bucketAt, metric);
-      if (byBucket.size >= limit) break;
-    }
-    return [...byBucket.values()];
+  async purge(): Promise<void> {
+    await this.#client.deleteByPattern(cellKeyPattern(this.#serverId));
+    await this.#client.srem(onlineSetKey(), this.#serverId);
+
+    this.#reclaimedByConsumer.clear();
+    this.#deliveryToStreamId.clear();
+    this.#terminalResults.clear();
   }
 }

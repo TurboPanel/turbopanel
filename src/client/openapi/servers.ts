@@ -15,23 +15,6 @@ export const serverSchemas = {
         description:
           'Client IP as seen by the instance (X-Real-IP from Caddy). Null when offline or co-located on a Unix socket.',
       },
-      status: {
-        type: ['string', 'null'],
-        description:
-          'Aggregate monitor health for connected servers. Null when offline or not yet projected.',
-      },
-      healthyCount: {
-        type: ['integer', 'null'],
-        description: 'Count of healthy monitored resources. Null when offline or not yet projected.',
-      },
-      degradedCount: {
-        type: ['integer', 'null'],
-        description: 'Count of degraded monitored resources. Null when offline or not yet projected.',
-      },
-      unhealthyCount: {
-        type: ['integer', 'null'],
-        description: 'Count of unhealthy monitored resources. Null when offline or not yet projected.',
-      },
       lastHeartbeatAt: {
         type: ['string', 'null'],
         format: 'date-time',
@@ -46,27 +29,12 @@ export const serverSchemas = {
       },
     },
   },
-  PingServerResponse: {
-    type: 'object',
-    required: ['ok', 'tripMs', 'sentAt', 'pongAt'],
-    properties: {
-      ok: { type: 'boolean', const: true },
-      tripMs: { type: 'number' },
-      sentAt: { type: 'string', format: 'date-time' },
-      pongAt: { type: 'string', format: 'date-time' },
-    },
-  },
   FetchServerCellResponse: {
     type: 'object',
-    required: ['ok', 'snapshot', 'resources'],
+    required: ['ok', 'snapshot'],
     properties: {
       ok: { type: 'boolean', const: true },
       snapshot: { type: 'object', additionalProperties: true },
-      monitorInstance: { type: ['object', 'null'], additionalProperties: true },
-      resources: {
-        type: 'array',
-        items: { type: 'object', additionalProperties: true },
-      },
     },
   },
   ServersResponse: {
@@ -127,6 +95,37 @@ export const serverSchemas = {
       status: { type: 'string' },
     },
   },
+  DeleteServerResponse: {
+    type: 'object',
+    required: ['ok', 'serverId'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      serverId: { type: 'string', format: 'uuid' },
+    },
+  },
+  DeleteServerPartialFailure: {
+    type: 'object',
+    required: ['ok', 'serverId', 'deleted', 'error'],
+    properties: {
+      ok: { type: 'boolean', const: false },
+      serverId: { type: 'string', format: 'uuid' },
+      deleted: { type: 'boolean', const: true },
+      error: {
+        type: 'string',
+        description: 'The Postgres row was deleted but daemon cell purge did not complete.',
+      },
+    },
+  },
+  HierarchyDeleteConflict: {
+    type: 'object',
+    required: ['error'],
+    properties: {
+      error: {
+        type: 'string',
+        const: 'Cannot delete while child resources exist',
+      },
+    },
+  },
 }
 
 export const serverPaths: Record<string, unknown> = {
@@ -158,67 +157,6 @@ export const serverPaths: Record<string, unknown> = {
         },
         '503': {
           description: 'Database unavailable',
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                required: ['error'],
-                properties: { error: { type: 'string' } },
-              },
-            },
-          },
-        },
-      },
-    },
-  },
-  '/api/client/v1/servers/{id}/ping': {
-    post: {
-      tags: ['Servers'],
-      summary: 'Ping a visible server daemon over WebSocket',
-      security: [{ cookieAuth: [] }],
-      parameters: [
-        {
-          name: 'id',
-          in: 'path',
-          required: true,
-          schema: { type: 'string', format: 'uuid' },
-        },
-      ],
-      responses: {
-        '200': {
-          description: 'Round-trip ping succeeded',
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/PingServerResponse' },
-            },
-          },
-        },
-        '403': {
-          description: 'Forbidden',
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                required: ['error'],
-                properties: { error: { type: 'string' } },
-              },
-            },
-          },
-        },
-        '404': {
-          description: 'Daemon not connected',
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                required: ['error'],
-                properties: { error: { type: 'string' } },
-              },
-            },
-          },
-        },
-        '504': {
-          description: 'Ping timed out',
           content: {
             'application/json': {
               schema: {
@@ -422,6 +360,96 @@ export const serverPaths: Record<string, unknown> = {
                   error: { type: 'string' },
                 },
               },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/servers/{id}': {
+    delete: {
+      tags: ['Servers'],
+      summary: 'Delete a server and purge its daemon cell',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Server deleted and daemon cell purged',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/DeleteServerResponse' },
+            },
+          },
+        },
+        '401': {
+          description: 'Unauthorized',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '404': {
+          description: 'Server not found',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '409': {
+          description: 'Child resources block deletion',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/HierarchyDeleteConflict' },
+            },
+          },
+        },
+        '503': {
+          description: 'Database or daemon cell registry unavailable',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '500': {
+          description:
+            'Server row deleted but daemon cell purge failed; cleanup is incomplete',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/DeleteServerPartialFailure' },
             },
           },
         },

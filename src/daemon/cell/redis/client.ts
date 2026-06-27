@@ -117,9 +117,38 @@ export class RedisCellClient {
     return result ?? null;
   }
 
+  async pttl(key: string): Promise<number> {
+    return await this.#cmd.pttl(key);
+  }
+
   async del(...keys: string[]): Promise<number> {
     if (keys.length === 0) return 0;
     return await this.#cmd.del(...keys);
+  }
+
+  async scanKeys(pattern: string): Promise<string[]> {
+    const keys: string[] = [];
+    let cursor = "0";
+    do {
+      const [nextCursor, batch] = await this.#cmd.scan(
+        cursor,
+        "MATCH",
+        pattern,
+        "COUNT",
+        100,
+      );
+      cursor = nextCursor;
+      if (Array.isArray(batch) && batch.length > 0) {
+        keys.push(...batch.map(String));
+      }
+    } while (cursor !== "0");
+    return keys;
+  }
+
+  async deleteByPattern(pattern: string): Promise<number> {
+    const keys = await this.scanKeys(pattern);
+    if (keys.length === 0) return 0;
+    return await this.del(...keys);
   }
 
   async expire(
@@ -196,6 +225,11 @@ export class RedisCellClient {
   async xack(key: string, group: string, ...ids: string[]): Promise<number> {
     if (ids.length === 0) return 0;
     return await this.#cmd.xack(key, group, ...ids);
+  }
+
+  async xdel(key: string, ...ids: string[]): Promise<number> {
+    if (ids.length === 0) return 0;
+    return await this.#cmd.xdel(key, ...ids);
   }
 
   async xautoclaim(

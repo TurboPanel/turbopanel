@@ -177,8 +177,7 @@ Each physical server node gets a row in `server` (`id` uuidv7). On daemon connec
 
 | Field | Column | Purpose |
 |---|---|---|
-| `cellLocationHint` | `options` (preferred) or `metadata` | Cloudflare Durable Object `locationHint` chosen at enrollment time. Immutable after first `getByName` — region moves require a new `cellGeneration`. |
-| `cellGeneration` | `options` (preferred) or `metadata` | Integer (default 1). Increment to create a new DO logical name `${serverId}:g${n}` when the server's physical region changes materially. |
+| `cellLocationHint` | `options` (preferred) or `metadata` | Cloudflare Durable Object `locationHint` chosen at enrollment time. |
 
 `options` takes precedence over `metadata` when both define a value (see `src/daemon/cell/location.ts`).
 
@@ -204,9 +203,9 @@ Each physical server node gets a row in `server` (`id` uuidv7). On daemon connec
 | `key.fingerprint` | SHA-256 hex over the canonical public JWK — duplicate-checked at enrollment (no DB unique constraint for MVP) |
 | `key.revokedAt` | Non-null blocks new JWT issuance; existing JWTs remain valid until their 15-minute expiry |
 
-**Daemon liveness timestamps:** `lastSeenAt` and `keyLastUsedAt` live in the daemon cell snapshot (`DaemonCellSnapshot.lastSeenAt`, `DaemonCellSnapshot.keyLastUsedAt`) — not Postgres columns. `lastSeenAt` is set on online/offline liveness transitions; `keyLastUsedAt` is set on each successful key use (WS connect, ping, `/auth/session`).
+**Daemon liveness timestamps:** `lastSeenAt` and `keyLastUsedAt` live in the daemon cell snapshot (`DaemonCellSnapshot.lastSeenAt`, `DaemonCellSnapshot.keyLastUsedAt`) — not Postgres columns. `lastSeenAt` advances on the 60 s WS heartbeat cadence (coalesced in the cell) and on online/offline transitions; `keyLastUsedAt` is set on each successful key use (WS connect, heartbeat, `/auth/session`).
 
-**`server.daemon.projection` (sparse monitoring summary):** the `projection` field inside `server.daemon` jsonb holds a slowly-changing summary — `hostname`, `machineId`, `remoteAddress`, `keyId`, `connected`, `status` (effective `MonitorResourceStatus`), `healthyCount`, `degradedCount`, `unhealthyCount`, `lastProjectedAt`, `connectedAt`. It is updated only on transitions and slow refreshes (≤15 min). It never holds raw per-minute metrics or the full resource graph. The `key` field is always preserved on write (read-modify-write via `parseServerDaemonState` + merge).
+**`server.daemon.projection` (sparse presence summary):** the `projection` field inside `server.daemon` jsonb holds a slowly-changing summary — `hostname`, `machineId`, `remoteAddress`, `keyId`, `connected`, optional `agent` (`commit`/`buildId`/`builtAt`/`channel`), `lastProjectedAt`, `connectedAt`. It is updated only on online/offline transitions and agent build identity changes (via `control-plane-monitor.ts` outside the DO hot path on Workers). No monitor health counts or resource graph are stored. The `key` field is always preserved on write (read-modify-write via `parseServerDaemonState` + merge).
 
 Re-enrollment with a valid license token replaces `server.daemon` atomically. No historical key rows are kept for MVP. To revoke daemon auth, set `server.daemon.key.revokedAt` (via `revokeDaemonKey` helper).
 

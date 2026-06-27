@@ -4,7 +4,6 @@ import { getDb } from "../db.ts";
 import { DAEMON_WS_PATH } from "../surfaces.ts";
 import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
 import {
-  resolveCellGeneration,
   resolveCellLocationHint,
 } from "./cell/location.ts";
 
@@ -45,13 +44,8 @@ export function registerWorkersDaemonWebSocket(
     }
 
     const serverId = payload.sub;
-    const [locationHint, generation] = await Promise.all([
-      resolveCellLocationHint(db, serverId),
-      resolveCellGeneration(db, serverId),
-    ]);
-    const logicalName = generation > 1
-      ? `${serverId}:g${generation}`
-      : serverId;
+    const locationHint = await resolveCellLocationHint(db, serverId);
+    const logicalName = serverId;
 
     const env = c.env as CloudflareBindings;
     const stub = locationHint

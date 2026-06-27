@@ -1,66 +1,10 @@
 import type { ServerAddresses } from "../../server-addresses.ts";
 import type { ServerMetadata } from "../../lib/db/server-metadata.ts";
 import type {
-  MonitorInstanceSummary,
-  MonitorResourceKind,
-  MonitorResourceState,
-  MonitorResourceStatus,
-} from "./monitor-contracts.ts";
-import type {
   DaemonInboundEnvelope,
   DaemonOutboundEnvelope,
   OutboxDeliveryId,
 } from "./protocol.ts";
-
-export type MonitorInstanceRow = {
-  serverId: string;
-  sequence: number;
-  at: string;
-  instance: MonitorInstanceSummary;
-  updatedAt: string;
-};
-
-export type MonitorResourceRow = {
-  resourceKey: string;
-  serverId: string;
-  kind: MonitorResourceKind;
-  status: MonitorResourceStatus;
-  state: MonitorResourceState;
-  updatedAt: string;
-};
-
-export type MonitorEventRow = {
-  seq: number;
-  serverId: string;
-  resourceKey?: string;
-  kind?: MonitorResourceKind;
-  fromStatus?: MonitorResourceStatus;
-  toStatus: MonitorResourceStatus;
-  reason?: string;
-  at: string;
-  createdAt: string;
-};
-
-export type MonitorMetricRow = {
-  seq: number;
-  serverId: string;
-  bucketAt: string;
-  cpu?: number;
-  memory?: number;
-  disk?: number;
-  load?: number;
-  createdAt: string;
-};
-
-export type MonitorAlertRow = {
-  resourceKey: string;
-  serverId: string;
-  status: MonitorResourceStatus;
-  openedAt: string;
-  lastNotifiedAt?: string;
-  cooldownUntil?: string;
-  resolvedAt?: string;
-};
 
 export type DaemonCellBackend = "durable-object" | "redis";
 
@@ -88,6 +32,7 @@ export type DaemonCellSnapshot = {
   keyLastUsedAt?: string;
   addresses?: ServerAddresses;
   metadata?: ServerMetadata;
+  agent?: import("./protocol.ts").DaemonAgentInfo;
 };
 
 export type PendingRequestStatus =
@@ -134,23 +79,11 @@ export interface DaemonCell {
     connectionId?: string;
     hostname?: string;
     at?: string;
+    agent?: import("./protocol.ts").DaemonAgentInfo;
   }): Promise<void>;
 
   getSnapshot(): Promise<DaemonCellSnapshot>;
   putSnapshot(patch: Partial<DaemonCellSnapshot>): Promise<DaemonCellSnapshot>;
-  appendEvent(
-    kind: string,
-    payload: Record<string, unknown>,
-    ttlSeconds?: number,
-  ): Promise<void>;
-  listEvents(limit?: number): Promise<
-    Array<{
-      seq: string;
-      kind: string;
-      at: string;
-      payload: Record<string, unknown>;
-    }>
-  >;
 
   enqueue(
     outbound: DaemonOutboundEnvelope,
@@ -196,31 +129,12 @@ export interface DaemonCell {
   ackOutbox(deliveryIds: OutboxDeliveryId[], consumer: string): Promise<void>;
 
   prune(now?: number): Promise<boolean>;
-
-  applyMonitorSync(
-    msg: DaemonInboundEnvelope & { kind: "monitor-sync" },
-  ): Promise<{ acceptedSequence: number; resyncNeeded: boolean }>;
-  applyMonitorHeartbeat(
-    msg: DaemonInboundEnvelope & { kind: "monitor-heartbeat" },
-  ): Promise<{ acceptedSequence: number; resyncNeeded: boolean }>;
-  applyMonitorTransition(
-    msg: DaemonInboundEnvelope & { kind: "monitor-transition" },
-  ): Promise<{ acceptedSequence: number; resyncNeeded: boolean }>;
-  getMonitorInstance(serverId: string): Promise<MonitorInstanceRow | null>;
-  listMonitorResources(serverId: string): Promise<MonitorResourceRow[]>;
-  listMonitorEvents(
-    serverId: string,
-    limit?: number,
-  ): Promise<MonitorEventRow[]>;
-  listMonitorMetrics(
-    serverId: string,
-    limit?: number,
-  ): Promise<MonitorMetricRow[]>;
-  drainNotificationCandidates(serverId: string): Promise<MonitorAlertRow[]>;
+  purge(): Promise<void>;
 }
 
 export interface DaemonCellRegistry {
   getCell(serverId: string): DaemonCell;
   listOnlineServerIds(): Promise<string[]>;
   getSnapshots(serverIds: string[]): Promise<Map<string, DaemonCellSnapshot>>;
+  purge(serverId: string): Promise<void>;
 }

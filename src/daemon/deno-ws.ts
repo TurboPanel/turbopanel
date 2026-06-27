@@ -4,8 +4,6 @@ import type { DaemonCellRegistry } from "./cell/contracts.ts";
 import {
   DAEMON_INBOUND_ALLOWED,
   type DaemonMessage,
-  generateDeliveryId,
-  generateRequestId,
   outboundEnvelopeToWireMessage,
   parseDaemonMessage,
   wireMessageToInboundEnvelope,
@@ -16,9 +14,9 @@ import type { Db } from "../db.ts";
 import { compatLogError, compatLogInfo, compatLogWarn } from "../log-compat.ts";
 import {
   onDaemonConnected,
-  onMonitorMessageApplied,
+  onDaemonDisconnected,
+  onDaemonHeartbeat,
 } from "./cell/control-plane-monitor.ts";
-import { incrementMonitorCounter } from "./cell/monitor-observability.ts";
 import {
   CLIENT_WS_PATH,
   DAEMON_WS_PATH,
@@ -72,7 +70,6 @@ export function registerDaemonWebSocket(
       let connectionId: string | undefined;
       let leaseToken: string | undefined;
       let pumpAbort = false;
-      let pingTimer: ReturnType<typeof setInterval> | undefined;
       let keyTouched = false;
       let attachReady = false;
       const pendingMessages: string[] = [];
@@ -118,103 +115,25 @@ export function registerDaemonWebSocket(
 
         const cell = registry.getCell(payload.sub);
 
-        if (message.type === "ping") {
-          const pong: DaemonMessage = {
-            type: "pong",
-            id: message.id,
+        if (message.type === "heartbeat") {
+          await cell.heartbeat({
+            connectionId,
+            at: message.at,
+            agent: message.agent,
+          });
+          await onDaemonHeartbeat(db, payload.sub, cell, message.agent);
+          const ack: DaemonMessage = {
+            type: "heartbeat-ack",
             at: new Date().toISOString(),
           };
-          ws.send(JSON.stringify(pong));
-          if (connectionId) {
-            void cell.heartbeat({ connectionId });
-            void cell.putSnapshot({ lastInboundAt: message.at });
-          }
+          ws.send(JSON.stringify(ack));
           touchKey();
           return;
         }
 
         const envelope = wireMessageToInboundEnvelope(message);
-        if (
-          envelope?.kind === "monitor-sync" ||
-          envelope?.kind === "monitor-heartbeat" ||
-          envelope?.kind === "monitor-transition"
-        ) {
-          let acceptedSequence = 0;
-          let resyncNeeded = false;
-          if (envelope.kind === "monitor-sync") {
-            incrementMonitorCounter("monitorFullSync");
-            const result = await cell.applyMonitorSync(envelope);
-            acceptedSequence = result.acceptedSequence;
-            resyncNeeded = result.resyncNeeded;
-            if (!result.resyncNeeded) {
-              await onMonitorMessageApplied(
-                db,
-                payload.sub,
-                cell,
-                "monitor-sync",
-                envelope,
-              );
-            }
-          } else if (envelope.kind === "monitor-heartbeat") {
-            const result = await cell.applyMonitorHeartbeat(envelope);
-            acceptedSequence = result.acceptedSequence;
-            resyncNeeded = result.resyncNeeded;
-            if (!result.resyncNeeded) {
-              await onMonitorMessageApplied(
-                db,
-                payload.sub,
-                cell,
-                "monitor-heartbeat",
-                envelope,
-              );
-            }
-          } else {
-            const result = await cell.applyMonitorTransition(envelope);
-            acceptedSequence = result.acceptedSequence;
-            resyncNeeded = result.resyncNeeded;
-            if (!result.resyncNeeded) {
-              await onMonitorMessageApplied(
-                db,
-                payload.sub,
-                cell,
-                "monitor-transition",
-                envelope,
-              );
-            }
-          }
-
-          await cell.putSnapshot({
-            lastHeartbeatAt: new Date().toISOString(),
-          });
-
-          const ackWire = outboundEnvelopeToWireMessage({
-            kind: "monitor-ack",
-            serverId: payload.sub,
-            acceptedSequence,
-            resyncNeeded: resyncNeeded || undefined,
-            deliveryId: generateDeliveryId(),
-            requestId: generateRequestId(),
-            at: new Date().toISOString(),
-          });
-          ws.send(JSON.stringify(ackWire));
-
-          compatLogInfo(
-            "ws",
-            `monitor ack for ${payload.sub}: acceptedSequence=${acceptedSequence}${
-              resyncNeeded ? ", resyncNeeded" : ""
-            }`,
-          );
-          touchKey();
-          return;
-        }
-
         if (envelope) {
           void cell.handleInbound(envelope);
-          void cell.putSnapshot({ lastInboundAt: message.at });
-        }
-
-        if (message.type === "pong" && connectionId) {
-          void cell.heartbeat({ connectionId });
         }
 
         touchKey();
@@ -285,15 +204,6 @@ export function registerDaemonWebSocket(
           };
           void outboxPump();
 
-          pingTimer = setInterval(() => {
-            void cell.enqueue({
-              kind: "ping",
-              deliveryId: generateDeliveryId(),
-              requestId: generateRequestId(),
-              at: new Date().toISOString(),
-            });
-          }, 15_000);
-
           attachReady = true;
           for (const raw of pendingMessages.splice(0)) {
             await handleInboundMessage(raw, ws);
@@ -311,28 +221,30 @@ export function registerDaemonWebSocket(
         },
         onClose() {
           pumpAbort = true;
-          if (pingTimer) clearInterval(pingTimer);
           if (connectionId && leaseToken) {
-            void registry.getCell(payload.sub).detachDaemonSocket({
+            const cell = registry.getCell(payload.sub);
+            void cell.detachDaemonSocket({
               connectionId,
               leaseToken,
               reason: "closed",
               closedAt: new Date().toISOString(),
-            }).then(() => {
+            }).then(async () => {
+              await onDaemonDisconnected(db, payload.sub, cell);
               compatLogInfo("ws", `daemon disconnected: ${connectionId}`);
             });
           }
         },
         onError() {
           pumpAbort = true;
-          if (pingTimer) clearInterval(pingTimer);
           if (connectionId && leaseToken) {
-            void registry.getCell(payload.sub).detachDaemonSocket({
+            const cell = registry.getCell(payload.sub);
+            void cell.detachDaemonSocket({
               connectionId,
               leaseToken,
               reason: "error",
               closedAt: new Date().toISOString(),
-            }).then(() => {
+            }).then(async () => {
+              await onDaemonDisconnected(db, payload.sub, cell);
               compatLogInfo("ws", `daemon disconnected: ${connectionId}`);
             });
           }

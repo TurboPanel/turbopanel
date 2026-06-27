@@ -1,5 +1,7 @@
 export const OUTBOX_GROUP = "daemon";
-export const LEASE_TTL_MS = 45_000;
+/** Must exceed the 60s daemon heartbeat interval and read-time stale window (150s). */
+export const LEASE_TTL_MS = 180_000;
+export const HEARTBEAT_COALESCE_MS = 60_000;
 
 export function metaKey(serverId: string): string {
   return `tp:cell:${serverId}:meta`;
@@ -37,50 +39,6 @@ export function onlineSetKey(): string {
   return "tp:cell:online";
 }
 
-export function challengeKey(challengeId: string): string {
-  return `tp:daemon:challenge:${challengeId}`;
-}
-
-export function monitorInstanceKey(serverId: string): string {
-  return `tp:cell:${serverId}:monitor:instance`;
-}
-
-export function monitorResourceKey(
-  serverId: string,
-  resourceKey: string,
-): string {
-  return `tp:cell:${serverId}:monitor:resource:${resourceKey}`;
-}
-
-export function monitorResourcesIndexKey(serverId: string): string {
-  return `tp:cell:${serverId}:monitor:resources`;
-}
-
-export function monitorEventsKey(serverId: string): string {
-  return `tp:cell:${serverId}:monitor:events`;
-}
-
-export function monitorMetricsKey(serverId: string): string {
-  return `tp:cell:${serverId}:monitor:metrics`;
-}
-
-export function monitorAlertKey(serverId: string, resourceKey: string): string {
-  return `tp:cell:${serverId}:monitor:alert:${resourceKey}`;
-}
-
-export function monitorAlertsIndexKey(serverId: string): string {
-  return `tp:cell:${serverId}:monitor:alerts`;
-}
-
-export function monitorDeadlinesKey(serverId: string): string {
-  return `tp:cell:${serverId}:monitor:deadlines`;
-}
-
-/** server ids with pending monitor deadlines (offline grace, alert cooldowns). */
-export function monitorMaintenanceSetKey(): string {
-  return "tp:cell:monitor:maintenance";
-}
-
-export function monitorSequenceKey(serverId: string): string {
-  return `tp:cell:${serverId}:monitor:seq`;
+export function cellKeyPattern(serverId: string): string {
+  return `tp:cell:${serverId}:*`;
 }

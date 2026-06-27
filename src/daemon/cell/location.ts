@@ -18,15 +18,6 @@ function resolveCellLocationHintFromRow(
   return options?.cellLocationHint ?? metadata?.cellLocationHint;
 }
 
-function resolveCellGenerationFromRow(
-  metadata: ServerMetadata | null | undefined,
-  options: ServerOptions | null | undefined,
-): number {
-  const fromOptions = options?.cellGeneration;
-  if (fromOptions != null) return fromOptions;
-  return metadata?.cellGeneration ?? 1;
-}
-
 async function loadServerCellColumns(
   db: Db,
   serverId: string,
@@ -51,10 +42,7 @@ async function loadServerCellColumns(
  * Reads `cellLocationHint` from `server.options` then `server.metadata`.
  *
  * `locationHint` is an enrollment-time decision. Cloudflare only respects it on
- * the first `getByName()` call for a given object name. If a server's physical
- * region changes materially, increment `cellGeneration` and use the new logical
- * name `${serverId}:g${generation}` so a fresh object is created in the new
- * region. The old object ages out naturally.
+ * the first `getByName()` call for a given object name.
  */
 export async function resolveCellLocationHint(
   db: Db,
@@ -62,22 +50,4 @@ export async function resolveCellLocationHint(
 ): Promise<string | undefined> {
   const { metadata, options } = await loadServerCellColumns(db, serverId);
   return resolveCellLocationHintFromRow(metadata, options);
-}
-
-/**
- * Reads `cellGeneration` from `server.options` then `server.metadata`,
- * defaulting to `1` when neither column provides a value.
- *
- * `locationHint` is an enrollment-time decision. Cloudflare only respects it on
- * the first `getByName()` call for a given object name. If a server's physical
- * region changes materially, increment `cellGeneration` and use the new logical
- * name `${serverId}:g${generation}` so a fresh object is created in the new
- * region. The old object ages out naturally.
- */
-export async function resolveCellGeneration(
-  db: Db,
-  serverId: string,
-): Promise<number> {
-  const { metadata, options } = await loadServerCellColumns(db, serverId);
-  return resolveCellGenerationFromRow(metadata, options);
 }

@@ -16,40 +16,6 @@ else
 end
 `;
 
-/** Read, validate, and delete a challenge hash in one round trip. */
-export const CONSUME_CHALLENGE = `
-local fields = redis.call("HGETALL", KEYS[1])
-if #fields == 0 then
-  return nil
-end
-
-local data = {}
-for i = 1, #fields, 2 do
-  data[fields[i]] = fields[i + 1]
-end
-
-local storedServerId = data["serverId"] or ""
-local storedKeyId = data["keyId"] or ""
-local issuedAtMs = tonumber(data["issuedAtMs"] or "0")
-local expectServerId = ARGV[1]
-local expectKeyId = ARGV[2]
-local nowMs = tonumber(ARGV[3])
-local ttlMs = tonumber(ARGV[4])
-
-if storedServerId ~= "" and expectServerId ~= "" and storedServerId ~= expectServerId then
-  return nil
-end
-if storedKeyId ~= "" and expectKeyId ~= "" and storedKeyId ~= expectKeyId then
-  return nil
-end
-if issuedAtMs + ttlMs <= nowMs then
-  return nil
-end
-
-redis.call("DEL", KEYS[1])
-return { data["nonce"], data["at"] }
-`;
-
 /**
  * Demote stale daemon socket presence when the Redis lease has expired but
  * meta still marks the server connected (unclean disconnect / crash).

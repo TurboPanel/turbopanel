@@ -2,17 +2,11 @@ import { Hono } from "hono";
 import type { Context, Next } from "hono";
 import { isInstanceInstalled } from "../client/authn/install-state.ts";
 import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
+import { getDaemonCellRegistry, getDb } from "../db.ts";
 import {
-  getChallengeStoreProvider,
-  getDaemonCellRegistry,
-  getDb,
-} from "../db.ts";
-import {
-  onMonitorMessageApplied,
-  projectIdentityIfChanged,
-} from "./cell/control-plane-monitor.ts";
-import { parseMonitorMessage } from "./cell/monitor-contracts.ts";
-import { wireMessageToInboundEnvelope } from "./cell/protocol.ts";
+  createStatelessChallengeStore,
+  DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+} from "./cell/stateless-challenge.ts";
 import { getDaemonOpenApiSpec } from "./openapi/index.ts";
 import { buildDaemonScalarHtml } from "../scalar-html.ts";
 import { resolveInstanceTlsCaPath } from "../server-paths.ts";
@@ -32,8 +26,6 @@ import {
   computePublicKeyFingerprint,
   verifyDaemonSignature,
 } from "./authn/server-key.ts";
-import { type DaemonChallengeStore } from "./cell/challenge-store.ts";
-
 function normalizeRequiredString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -60,15 +52,23 @@ export function registerDaemonApiRoutes(
   app: Hono,
   options: {
     secrets?: DerivedSecretsConfig;
-    challengeStoreProvider?: {
-      enroll: DaemonChallengeStore;
-      auth: DaemonChallengeStore;
-    };
+    challengeSigningSecrets?: DerivedSecretsConfig;
   } = {},
 ) {
   const daemon = new Hono();
-  const { secrets } = options;
-  const fallbackChallengeStores = options.challengeStoreProvider;
+  const { secrets, challengeSigningSecrets } = options;
+  const enrollStore = challengeSigningSecrets
+    ? createStatelessChallengeStore(
+      challengeSigningSecrets,
+      DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+    )
+    : null;
+  const authStore = challengeSigningSecrets
+    ? createStatelessChallengeStore(
+      challengeSigningSecrets,
+      DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+    )
+    : null;
 
   const requireDaemonJwt = async (c: Context, next: Next) => {
     if (!secrets) {
@@ -174,29 +174,27 @@ export function registerDaemonApiRoutes(
         return c.json({ ok: false, error: "Server key is inactive" }, 400);
       }
 
-      const { auth: authChallengeStore } = getChallengeStoreProvider(
-        c,
-        fallbackChallengeStores,
-      );
-      const challenge = await authChallengeStore.issue({ serverId, keyId });
+      if (!authStore) {
+        return c.json({ ok: false, error: "Challenge unavailable" }, 503);
+      }
+      const challenge = await authStore.issue({ serverId, keyId });
       return c.json({
         challengeId: challenge.id,
         nonce: challenge.nonce,
         at: challenge.at,
-        expiresAt: challengeExpiresAt(challenge.at, authChallengeStore.ttlMs),
+        expiresAt: challengeExpiresAt(challenge.at, authStore.ttlMs),
       }, 200);
     }
 
-    const { enroll: enrollChallengeStore } = getChallengeStoreProvider(
-      c,
-      fallbackChallengeStores,
-    );
-    const challenge = await enrollChallengeStore.issue();
+    if (!enrollStore) {
+      return c.json({ ok: false, error: "Challenge unavailable" }, 503);
+    }
+    const challenge = await enrollStore.issue();
     return c.json({
       challengeId: challenge.id,
       nonce: challenge.nonce,
       at: challenge.at,
-      expiresAt: challengeExpiresAt(challenge.at, enrollChallengeStore.ttlMs),
+      expiresAt: challengeExpiresAt(challenge.at, enrollStore.ttlMs),
     }, 200);
   });
 
@@ -230,11 +228,10 @@ export function registerDaemonApiRoutes(
       );
     }
 
-    const { enroll: enrollChallengeStore } = getChallengeStoreProvider(
-      c,
-      fallbackChallengeStores,
-    );
-    const challenge = await enrollChallengeStore.consume({ challengeId });
+    if (!enrollStore) {
+      return c.json({ ok: false, error: "Challenge unavailable" }, 503);
+    }
+    const challenge = await enrollStore.consume({ challengeId });
     if (!challenge) {
       return c.json({ ok: false, error: "Invalid or expired challenge" }, 400);
     }
@@ -322,11 +319,10 @@ export function registerDaemonApiRoutes(
       return c.json({ ok: false, error: "Server key is inactive" }, 400);
     }
 
-    const { auth: authChallengeStore } = getChallengeStoreProvider(
-      c,
-      fallbackChallengeStores,
-    );
-    const challenge = await authChallengeStore.consume({
+    if (!authStore) {
+      return c.json({ ok: false, error: "Challenge unavailable" }, 503);
+    }
+    const challenge = await authStore.consume({
       challengeId,
       serverId,
       keyId,
@@ -372,80 +368,6 @@ export function registerDaemonApiRoutes(
       token: issued.token,
       expiresAt: issued.expiresAt,
     }, 200);
-  });
-
-  daemon.post("/heartbeat", requireDaemonJwt, async (c) => {
-    const db = getDb(c);
-    if (db === undefined) {
-      return c.json({ ok: false, error: "Database unavailable" }, 503);
-    }
-
-    const serverId = (c as Context<any>).get("daemonServerId") as
-      | string
-      | undefined;
-    if (!serverId) {
-      return c.json({ ok: false, error: "unauthorized" }, 401);
-    }
-
-    const body = await c.req
-      .json<{ hostname?: string; monitor?: unknown }>()
-      .catch(() => ({} as { hostname?: string; monitor?: unknown }));
-    const hostname = typeof body.hostname === "string"
-      ? body.hostname.trim()
-      : undefined;
-    const at = new Date().toISOString();
-
-    const registry = getDaemonCellRegistry(c);
-    let acceptedSequence = 0;
-    let resyncNeeded = false;
-
-    if (registry) {
-      const cell = registry.getCell(serverId);
-      await cell.heartbeat({ hostname, at });
-
-      if (hostname) {
-        await projectIdentityIfChanged(db, serverId, cell);
-      }
-
-      const monitorMessage = body.monitor != null
-        ? parseMonitorMessage(body.monitor)
-        : null;
-      if (monitorMessage?.from === "daemon") {
-        const envelope = wireMessageToInboundEnvelope(monitorMessage);
-        if (envelope?.kind === "monitor-sync") {
-          const result = await cell.applyMonitorSync(envelope);
-          acceptedSequence = result.acceptedSequence;
-          resyncNeeded = result.resyncNeeded;
-          if (!result.resyncNeeded) {
-            await onMonitorMessageApplied(
-              db,
-              serverId,
-              cell,
-              "monitor-sync",
-              envelope,
-            );
-          }
-        } else if (envelope?.kind === "monitor-heartbeat") {
-          const result = await cell.applyMonitorHeartbeat(envelope);
-          acceptedSequence = result.acceptedSequence;
-          resyncNeeded = result.resyncNeeded;
-          if (!result.resyncNeeded) {
-            await onMonitorMessageApplied(
-              db,
-              serverId,
-              cell,
-              "monitor-heartbeat",
-              envelope,
-            );
-          }
-        }
-      }
-    }
-
-    return c.json({
-      acceptedSequence,
-      resyncNeeded: resyncNeeded || undefined,
-    });
   });
 
   daemon.post("/commands/lease", requireDaemonJwt, (c) => {

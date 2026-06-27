@@ -36,7 +36,6 @@ Deno.test("mergeSnapshotPresence prefers meta-layer presence fields", () => {
   const merged = mergeSnapshotPresence(stored, meta);
   assertEquals(merged.connected, true);
   assertEquals(merged.connectedAt, "2020-01-02T00:00:00.000Z");
-  assertEquals(merged.lastHeartbeatAt, "2020-01-02T00:00:00.000Z");
   assertEquals(merged.hostname, "live-host");
   assertEquals(merged.updatedAt, "2020-01-02T00:00:00.000Z");
 });
@@ -60,7 +59,6 @@ Deno.test("mergeSnapshotPresence falls back when meta fields are absent", () => 
   const merged = mergeSnapshotPresence(stored, meta);
   assertEquals(merged.connected, false);
   assertEquals(merged.connectedAt, "2020-01-01T00:00:00.000Z");
-  assertEquals(merged.lastHeartbeatAt, "2020-01-01T00:00:00.000Z");
 });
 
 Deno.test("PendingRequestStatus terminal check mirrors Redis cell semantics", () => {

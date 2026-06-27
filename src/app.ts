@@ -4,7 +4,6 @@ import type { DerivedSecretsConfig } from './client/authn/secrets.ts'
 import { registerClientRoutes } from './client/routes.ts'
 import { registerCorsMiddleware } from './cors.ts'
 import type { DaemonCellRegistry } from './daemon/cell/contracts.ts'
-import type { DaemonChallengeStoreProvider } from './db.ts'
 import type { Db } from './db.ts'
 import type { SignupEnvOverride } from './client/authn/install-state.ts'
 import type { EmailQueue } from './lib/email/types.ts'
@@ -20,7 +19,6 @@ export type AppEnv = {
     /** Hyperdrive or TURBOPANEL_DATABASE_URL for database status routes (Workers). */
     postgresConnectionString?: string
     daemonCellRegistry?: DaemonCellRegistry
-    challengeStoreProvider?: DaemonChallengeStoreProvider
     /** Platform env bindings for settings resolution (Workers per-request; Deno process env). */
     platformEnv?: Record<string, string | undefined>
   }

@@ -1,4 +1,4 @@
-import { inArray } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -7,7 +7,6 @@ import { assertCanManageOr403, assertCanReadOr403, getOrgId } from '../shared.ts
 import { getDb, getDaemonCellRegistry } from '../../db.ts'
 import {
   fetchDaemonServerCell,
-  pingDaemonServer,
 } from '../../daemon/cell/server-diagnostics.ts'
 import { resolveFleetPresence } from '../../daemon/cell/fleet-presence.ts'
 import {
@@ -15,7 +14,12 @@ import {
   generateRequestId,
   type DaemonOutboundEnvelope,
 } from '../../daemon/cell/protocol.ts'
+import { clearServerDaemonState } from '../../daemon/authn/server-identity-db.ts'
 import { server } from '../../lib/db/schema.ts'
+import {
+  hierarchyDeleteHasChildrenResponse,
+  runHierarchyDelete,
+} from '../hierarchy-delete.ts'
 import { resolveServerUpdateStatus } from './update-status.ts'
 
 const UPDATE_TIMEOUT_MS = 120_000
@@ -73,32 +77,12 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
           connected: live?.connected ?? false,
           hostname: live?.hostname ?? null,
           remoteAddress: live?.remoteAddress ?? null,
-          status: live?.status ?? null,
-          healthyCount: live?.healthyCount ?? null,
-          degradedCount: live?.degradedCount ?? null,
-          unhealthyCount: live?.unhealthyCount ?? null,
           lastHeartbeatAt: live?.lastHeartbeatAt ?? null,
           connectedAt: live?.connectedAt ?? null,
           licenseId: row.licenseId ?? null,
         }
       }),
     })
-  })
-
-  router.post('/servers/:id/ping', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertCanReadOr403(c, 'server', id)
-    if (denied) return denied
-
-    const registry = getDaemonCellRegistry(c)
-    const result = await pingDaemonServer(db, registry, id)
-    if (!result.ok) {
-      return c.json({ error: result.error }, result.status)
-    }
-    return c.json(result)
   })
 
   router.get('/servers/:id/cell', async (c) => {
@@ -201,5 +185,59 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
     }
 
     return c.json({ ok: false, error: `unexpected update status: ${record.status}` }, 500)
+  })
+
+  router.delete('/servers/:id', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+    const id = c.req.param('id')
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
+
+    const [row] = await db
+      .select({ id: server.id })
+      .from(server)
+      .where(and(eq(server.id, id), eq(server.organizationId, organizationId)))
+      .limit(1)
+    if (!row) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
+    const denied = await assertCanManageOr403(c, 'server', id)
+    if (denied) return denied
+
+    const registry = getDaemonCellRegistry(c)
+    if (!registry) {
+      return c.json({ error: 'Daemon cell registry unavailable' }, 503)
+    }
+
+    const result = await runHierarchyDelete(db, async (tx) => {
+      await tx.delete(server).where(eq(server.id, id))
+    })
+    if (result === 'has_children') {
+      return hierarchyDeleteHasChildrenResponse(c)
+    }
+
+    await clearServerDaemonState(db, id)
+
+    try {
+      await registry.getCell(id).purge()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(`Failed to purge daemon cell for server ${id}: ${message}`)
+      return c.json({
+        ok: false,
+        serverId: id,
+        deleted: true,
+        error: `Server deleted but daemon cell purge failed: ${message}`,
+      }, 500)
+    }
+
+    return c.json({ ok: true, serverId: id })
   })
 }

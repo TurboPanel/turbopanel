@@ -1,4 +1,3 @@
-import type { Db } from "../../db.ts";
 import type {
   DaemonCell,
   DaemonCellRegistry,
@@ -7,13 +6,12 @@ import type {
 import type { RedisClientOptions } from "./client.ts";
 import { createRedisCellClient, RedisCellClient } from "./client.ts";
 import { RedisDaemonCell } from "./cell.ts";
-import { runControlPlaneMaintenance } from "../notification-delivery.ts";
-import { projectServerDaemon } from "../postgres-projection.ts";
-import { monitorMaintenanceSetKey, onlineSetKey } from "./keys.ts";
+import { onlineSetKey } from "./keys.ts";
 
 export type RedisDaemonCellRegistry = DaemonCellRegistry & {
   client: RedisCellClient;
-  maintain(db?: Db): Promise<void>;
+  maintain(): Promise<void>;
+  purge(serverId: string): Promise<void>;
   close(): Promise<void>;
 };
 
@@ -52,31 +50,18 @@ export function createRedisDaemonCellRegistry(
       return new Map(snapshots);
     },
 
-    async maintain(db?: Db): Promise<void> {
-      const [onlineServerIds, maintenanceServerIds] = await Promise.all([
-        client.smembers(onlineSetKey()),
-        client.smembers(monitorMaintenanceSetKey()),
-      ]);
-      const serverIds = [
-        ...new Set([...onlineServerIds, ...maintenanceServerIds]),
-      ];
-      const offlineServerIds: string[] = [];
+    async maintain(): Promise<void> {
+      const onlineServerIds = await client.smembers(onlineSetKey());
       await Promise.all(
-        serverIds.map(async (serverId) => {
-          const offlineApplied = await getCell(serverId).prune();
-          if (offlineApplied) offlineServerIds.push(serverId);
+        onlineServerIds.map(async (serverId) => {
+          const cell = getCell(serverId) as RedisDaemonCell;
+          await cell.prune();
         }),
       );
-      if (db) {
-        await Promise.all(
-          offlineServerIds.map(async (serverId) => {
-            await projectServerDaemon(db, serverId, { kind: "offline" }, {
-              cell: getCell(serverId),
-            });
-          }),
-        );
-        await runControlPlaneMaintenance(db, this, maintenanceServerIds);
-      }
+    },
+
+    async purge(serverId: string): Promise<void> {
+      await getCell(serverId).purge();
     },
 
     async close(): Promise<void> {

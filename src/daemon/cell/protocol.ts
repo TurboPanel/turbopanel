@@ -1,20 +1,39 @@
 import type { ServerAddresses } from "../../server-addresses.ts";
-import {
-  MONITOR_PROTOCOL_VERSION,
-  type DaemonAgentInfo,
-  type MonitorEvent,
-  type MonitorInstanceSummary,
-  type MonitorMessage,
-  type MonitorResourceState,
-  parseMonitorMessage,
-} from "./monitor-contracts.ts";
 
-export { MONITOR_PROTOCOL_VERSION };
+export type DaemonAgentInfo = {
+  commit: string;
+  buildId: string;
+  builtAt?: string;
+  channel?: string;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === "string";
+}
+
+export function parseDaemonAgentInfo(
+  value: unknown,
+): DaemonAgentInfo | undefined {
+  if (!isRecord(value)) return undefined;
+  if (!isString(value.commit) || value.commit.length === 0) return undefined;
+  if (!isString(value.buildId) || value.buildId.length === 0) return undefined;
+  const agent: DaemonAgentInfo = {
+    commit: value.commit,
+    buildId: value.buildId,
+  };
+  if (isString(value.builtAt)) agent.builtAt = value.builtAt;
+  if (isString(value.channel)) agent.channel = value.channel;
+  return agent;
+}
 
 /** JSON messages exchanged between the instance and daemon over /ws. */
 export type DaemonMessage =
-  | { type: "ping"; id: string; at: string }
-  | { type: "pong"; id: string; at: string }
+  | { type: "heartbeat"; at: string; agent?: DaemonAgentInfo }
+  | { type: "heartbeat-ack"; at: string }
   | { type: "echo"; payload: unknown; at: string }
   | { type: "version"; commit: string; branch: string; at: string }
   | { type: "command"; id: string; command: string; at: string }
@@ -33,9 +52,6 @@ export type DaemonMessage =
     addresses: ServerAddresses;
     at: string;
   }
-  // Dev-only: push the instance host's current daemon build to an agent without
-  // git. The tarball is streamed as base64 chunks (begin -> chunk* -> end), then
-  // the daemon unpacks, caches, restarts, and replies with dev-sync-result.
   | {
     type: "dev-sync-begin";
     id: string;
@@ -58,8 +74,6 @@ export type DaemonMessage =
     error?: string;
     at: string;
   }
-  // Dev/self-hosted: set the instance's Cloudflare tunnel token on the
-  // co-located daemon, which (re)starts cloudflared to expose this instance.
   | { type: "tunnel-token"; id: string; token: string; at: string }
   | {
     type: "tunnel-token-result";
@@ -90,27 +104,23 @@ export type DaemonMessage =
     ok: boolean;
     error?: string;
     at: string;
-  }
-  | MonitorMessage;
+  };
 
-/** Drop sockets with no inbound traffic (pong, results, etc.) for this long. */
-export const DAEMON_STALE_MS = 45_000;
-/** Instance ping interval in deno-ws.ts — stale timeout must stay above this. */
-export const DAEMON_PING_MS = 15_000;
+/** Drop sockets with no inbound traffic (results, etc.) for this long. */
+export const DAEMON_STALE_MS = 150_000;
+/** Registry maintenance interval — must not race the 60s heartbeat cadence. */
+export const DAEMON_PING_MS = 60_000;
+
 /** Message types accepted from daemons after authentication succeeds. */
 export const DAEMON_INBOUND_ALLOWED = new Set(
   [
-    "ping",
-    "pong",
+    "heartbeat",
     "command-result",
     "addresses-result",
     "dev-sync-result",
     "tunnel-token-result",
     "public-urls-update-result",
     "update-result",
-    "monitor.sync",
-    "monitor.heartbeat",
-    "monitor.transition",
   ] as const,
 );
 
@@ -153,18 +163,11 @@ export type DaemonOutboundEnvelope =
     updateUrl?: string;
     updateSha256?: string;
   })
-  | (OutboundEnvelopeBase & { kind: "ping" })
-  | (OutboundEnvelopeBase & { kind: "echo"; payload: unknown })
-  | (OutboundEnvelopeBase & {
-    kind: "monitor-ack";
-    serverId: string;
-    acceptedSequence: number;
-    resyncNeeded?: boolean;
-  });
+  | (OutboundEnvelopeBase & { kind: "heartbeat-ack"; at: string })
+  | (OutboundEnvelopeBase & { kind: "echo"; payload: unknown });
 
 /** Cell-internal inbound envelope (normalized form, distinct from wire `DaemonMessage`). */
 export type DaemonInboundEnvelope =
-  | { kind: "pong"; requestId: string; at: string }
   | {
     kind: "addresses-result";
     requestId: string;
@@ -207,35 +210,6 @@ export type DaemonInboundEnvelope =
     ok: boolean;
     error?: string;
   }
-  | {
-    kind: "monitor-sync";
-    serverId: string;
-    sequence: number;
-    at: string;
-    protocolVersion: typeof MONITOR_PROTOCOL_VERSION;
-    instance: MonitorInstanceSummary;
-    resources: MonitorResourceState[];
-    events?: MonitorEvent[];
-    agent?: DaemonAgentInfo;
-  }
-  | {
-    kind: "monitor-heartbeat";
-    serverId: string;
-    sequence: number;
-    at: string;
-    instance: MonitorInstanceSummary;
-    resources?: MonitorResourceState[];
-    events?: MonitorEvent[];
-    agent?: DaemonAgentInfo;
-  }
-  | {
-    kind: "monitor-transition";
-    serverId: string;
-    sequence: number;
-    at: string;
-    events: MonitorEvent[];
-    resources?: MonitorResourceState[];
-  };
 
 export function parseDaemonMessage(raw: string): DaemonMessage | null {
   try {
@@ -249,8 +223,8 @@ export function wireMessageToInboundEnvelope(
   msg: DaemonMessage,
 ): DaemonInboundEnvelope | null {
   switch (msg.type) {
-    case "pong":
-      return { kind: "pong", requestId: msg.id, at: msg.at };
+    case "heartbeat":
+      return null;
     case "addresses-result":
       return {
         kind: "addresses-result",
@@ -299,45 +273,6 @@ export function wireMessageToInboundEnvelope(
         ok: msg.ok,
         error: msg.error,
       };
-    case "monitor.sync":
-    case "monitor.heartbeat":
-    case "monitor.transition": {
-      const validated = parseMonitorMessage(msg);
-      if (!validated || validated.type === "monitor.ack") return null;
-      if (validated.type === "monitor.sync") {
-        return {
-          kind: "monitor-sync",
-          serverId: validated.serverId,
-          sequence: validated.sequence,
-          at: validated.at,
-          protocolVersion: validated.protocolVersion,
-          instance: validated.instance,
-          resources: validated.resources,
-          events: validated.events,
-          agent: validated.agent,
-        };
-      }
-      if (validated.type === "monitor.heartbeat") {
-        return {
-          kind: "monitor-heartbeat",
-          serverId: validated.serverId,
-          sequence: validated.sequence,
-          at: validated.at,
-          instance: validated.instance,
-          resources: validated.resources,
-          events: validated.events,
-          agent: validated.agent,
-        };
-      }
-      return {
-        kind: "monitor-transition",
-        serverId: validated.serverId,
-        sequence: validated.sequence,
-        at: validated.at,
-        resources: validated.resources,
-        events: validated.events,
-      };
-    }
     default:
       return null;
   }
@@ -401,19 +336,10 @@ export function outboundEnvelopeToWireMessage(
           ? { updateSha256: env.updateSha256 }
           : {}),
       };
-    case "ping":
-      return { type: "ping", id: env.requestId, at: env.at };
+    case "heartbeat-ack":
+      return { type: "heartbeat-ack", at: env.at };
     case "echo":
       return { type: "echo", payload: env.payload, at: env.at };
-    case "monitor-ack":
-      return {
-        type: "monitor.ack",
-        from: "instance",
-        serverId: env.serverId,
-        at: env.at,
-        acceptedSequence: env.acceptedSequence,
-        resyncNeeded: env.resyncNeeded,
-      };
   }
 }
 

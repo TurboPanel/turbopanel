@@ -221,22 +221,18 @@ Four versioned surfaces each have REST + WS namespaces (where applicable). Prefi
 
 ## Daemon Cell (`/ws/daemon/v1`)
 
-Server nodes are tracked by a **Daemon Cell** abstraction keyed by `serverId`. There is no in-process daemon state — all connection presence, snapshots, outbox, request records, challenges, and event buffers live in the cell backend.
+Server nodes are tracked by a **Daemon Cell** abstraction keyed by `serverId`. There is no in-process daemon state — connection presence, snapshots, outbox, and pending request records live in the cell backend.
 
 | Runtime | Backend | Storage |
 |---|---|---|
 | Deno (self-hosted) | `RedisDaemonCell` (`src/daemon/cell/redis/`) | Redis Streams + HASH + SET at `tp:cell:{serverId}:*`; Unix socket `/run/turbopanel/redis.sock` |
-| Cloudflare Workers | `DaemonCellObject` (`src/daemon/cell/do.ts`) | SQLite-backed Durable Object per server, named by `serverId` (or `serverId:g{n}` for relocated generations) |
+| Cloudflare Workers | `DaemonCellObject` (`src/daemon/cell/do.ts`) | SQLite-backed Durable Object per server, named by `serverId` |
 
-Postgres remains canonical for business data (`server`). The cell is the low-latency hot projection and coordination layer.
+Postgres remains canonical for business data (`server`). The cell is the low-latency hot projection and coordination layer for **presence only** — no monitor tables, no monitor wire payloads, and no HTTP heartbeat ingestion path.
 
-**Monitoring storage:** the cell is the live source of truth for machine and service state. Dedicated tables/keys — `monitor_instance`, `monitor_resource`, `monitor_metric_minute`, `monitor_event`, `monitor_alert`, `monitor_deadline` — hold current resource state (latest only), minute-bucket metrics (72h rolling window), transition event history (bounded), alert dedupe/cooldown state, and scheduled offline/cooldown deadlines. `DaemonCellSnapshot` remains connection-oriented (presence, liveness timestamps) — it does not hold the full resource graph.
+**Presence model:** daemons send `{ type: "heartbeat", at, agent? }` over `/ws/daemon/v1` every 60 s; the instance replies with `{ type: "heartbeat-ack", at }`. `DaemonCellSnapshot` holds connection-oriented fields (`connected`, `connectedAt`, `lastHeartbeatAt`, `lastSeenAt`, optional `agent`). Offline is derived read-time when `lastSeenAt` is older than ~150 s (`fleet-presence.ts`), not from a separate monitor deadline store.
 
-**Monitoring message types:** `monitor.sync` (full baseline on connect), `monitor.heartbeat` (60s delta), `monitor.transition` (focused single-resource event), `monitor.ack` (cell → daemon, with `acceptedSequence` and optional `resyncNeeded`). Defined in `src/daemon/cell/protocol.ts` and `src/daemon/cell/monitor-contracts.ts`.
-
-**Offline deadline:** the cell schedules an offline deadline ~150s after the last monitor heartbeat. Workers: single DO alarm processes the nearest deadline and reschedules. Redis: deadline sorted set processed by `maintain()` in the registry loop.
-
-**Sparse Postgres projection:** ordinary heartbeats do **not** write Postgres. `server.daemon.projection` is updated only on: online/offline transitions, meaningful service/project transitions, daemon identity changes, slow summary refreshes (capped at 15 minutes), and agent build identity changes. `server.daemon.projection` now carries an optional `agent` field (`commit`/`buildId`/`builtAt`/`channel`) written through only when it changes (new `"agent"` trigger kind). `ServerFleetPresence` exposes it for the client update API. `server.lastSeenAt` is updated only on liveness transitions.
+**Sparse Postgres projection:** ordinary heartbeats do **not** write Postgres from inside the Durable Object. Deno/Workers outer layers call `onDaemonConnected` / `onDaemonDisconnected` / `onDaemonHeartbeat` (`control-plane-monitor.ts`) to update `server.daemon.projection` only on online/offline transitions and agent build identity changes. `ServerFleetPresence` exposes `agent` for the client update API.
 
 **Cheap fleet index:** `listOnlineServerIds()` reads the Redis online set (Deno) or the sparse `server.daemon.projection.connected` field (Workers) — it does not fan out across all cells.
 
@@ -244,13 +240,14 @@ Postgres remains canonical for business data (`server`). The cell is the low-lat
 
 **Co-located daemon** (`__direct__`): stored in cell meta (`remoteAddress = '__direct__'`) so `tryAssignColocatedDaemonToInstalledOrganization` and tunnel routing still work.
 
-**Challenge stores:** enrollment and auth challenges use `createRedisChallengeStore` (Deno) or `createDurableObjectChallengeStore` (Workers) — single-use, hard TTL, no in-process Maps.
+**Challenge stores:** enrollment and auth challenges are **stateless HMAC-signed tokens** (`src/daemon/cell/stateless-challenge.ts`). `issue()` returns a self-contained `challengeId = base64url(payload).base64url(HMAC)` signed with the `daemon-challenge-signing` derived key. `consume()` re-derives and verifies — no storage, no DO, no Redis key. Replay protection relies on the short TTL (60s) and the daemon's Ed25519 private key requirement.
 
-**`DAEMON_INBOUND_ALLOWED`** is defined in `src/daemon/cell/protocol.ts` (not `hub.ts`).
+**`DAEMON_INBOUND_ALLOWED`** is defined in `src/daemon/cell/protocol.ts` (not `hub.ts`). App-level `ping`/`pong` messages were removed — liveness is heartbeat-only.
+
+**Purge:** `DELETE /api/client/v1/servers/:id` hard-deletes the Postgres row and calls `DaemonCell.purge()` to wipe all `tp:cell:{serverId}:*` keys (Redis) or DO SQLite state (Workers).
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `POST /api/daemon/v1/heartbeat` | daemon JWT | degraded fallback ingestion only; routes monitor payloads into the cell but **never writes Postgres** on every call |
 | `POST /api/daemon/v1/commands/lease` | daemon JWT | Poll for pending commands (stub — returns `{ commands: [] }`) |
 
 - No `version` push / auto-update: the daemon never self-updates.
@@ -545,7 +542,7 @@ sequenceDiagram
 - `src/daemon/cell/do.ts` — `DaemonCellObject` (SQLite-backed Durable Object, Workers)
 - `src/daemon/cell/do-registry.ts` — `createDurableObjectDaemonCellRegistry`
 - `src/daemon/cell/redis/` — `RedisDaemonCell`, `RedisCellClient`, `createRedisDaemonCellRegistry` (Deno only)
-- `src/daemon/cell/challenge-store.ts` — `DaemonChallengeStore` interface + Redis/DO/in-memory variants
+- `src/daemon/cell/stateless-challenge.ts` — stateless HMAC-signed challenge tokens (`DaemonChallengeStore`)
 - `src/daemon/cell/location.ts` — `resolveCellLocationHint`, `resolveCellGeneration`
 - `src/daemon/cell/postgres-projection.ts` — write-through helpers for canonical Postgres fields
 - `src/daemon/cell/snapshot-merge.ts` — `mergeSnapshotPresence`

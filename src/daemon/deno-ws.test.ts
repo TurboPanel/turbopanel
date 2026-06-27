@@ -6,6 +6,10 @@ import {
 } from "../client/authn/secrets.ts";
 import type { Db } from "../db.ts";
 import { generateSecret } from "../generate-secret.ts";
+import {
+  parseServerDaemonState,
+  type ServerDaemonState,
+} from "./authn/daemon-state.ts";
 import type {
   DaemonCell,
   DaemonCellRegistry,
@@ -41,6 +45,43 @@ function createMockDb(): Db {
   } as unknown as Db;
 }
 
+const baseDaemonKey = {
+  id: "key-1",
+  algorithm: "Ed25519" as const,
+  publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
+  fingerprint: "fp-1",
+  createdAt: "2020-01-01T00:00:00.000Z",
+};
+
+function createProjectionTrackingDb(
+  serverId: string,
+  initialDaemon: ServerDaemonState,
+): { db: Db; getDaemon: () => ServerDaemonState } {
+  let daemon = initialDaemon;
+
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([{ daemon }]),
+        }),
+      }),
+    }),
+    update: () => ({
+      set: (patch: Record<string, unknown>) => {
+        if (patch.daemon) {
+          daemon = patch.daemon as ServerDaemonState;
+        }
+        return {
+          where: () => Promise.resolve(undefined),
+        };
+      },
+    }),
+  } as unknown as Db;
+
+  return { db, getDaemon: () => daemon };
+}
+
 function createTrackingDaemonCell(serverId: string) {
   const calls = {
     attach: 0,
@@ -49,12 +90,7 @@ function createTrackingDaemonCell(serverId: string) {
     putSnapshot: 0,
     handleInbound: 0,
     readOutboxBatch: 0,
-    applyMonitorSync: 0,
-    applyMonitorHeartbeat: 0,
-    applyMonitorTransition: 0,
-    drainNotificationCandidates: 0,
   };
-  let monitorSequence = 0;
   let snapshot: DaemonCellSnapshot = {
     serverId,
     version: 0,
@@ -104,8 +140,6 @@ function createTrackingDaemonCell(serverId: string) {
       };
       return snapshot;
     },
-    appendEvent: async () => {},
-    listEvents: async () => [],
     enqueue: async (outbound: DaemonOutboundEnvelope) => {
       return {
         serverId,
@@ -141,54 +175,13 @@ function createTrackingDaemonCell(serverId: string) {
     },
     ackOutbox: async () => {},
     prune: async () => false,
-    applyMonitorSync: async (msg) => {
-      calls.applyMonitorSync += 1;
-      if (msg.sequence === monitorSequence + 1) {
-        monitorSequence = msg.sequence;
-        return { acceptedSequence: msg.sequence, resyncNeeded: false };
-      }
-      if (msg.sequence > monitorSequence + 1) {
-        return { acceptedSequence: monitorSequence, resyncNeeded: true };
-      }
-      return { acceptedSequence: monitorSequence, resyncNeeded: false };
-    },
-    applyMonitorHeartbeat: async (msg) => {
-      calls.applyMonitorHeartbeat += 1;
-      if (msg.sequence === monitorSequence + 1) {
-        monitorSequence = msg.sequence;
-        return { acceptedSequence: msg.sequence, resyncNeeded: false };
-      }
-      if (msg.sequence > monitorSequence + 1) {
-        return { acceptedSequence: monitorSequence, resyncNeeded: true };
-      }
-      return { acceptedSequence: monitorSequence, resyncNeeded: false };
-    },
-    applyMonitorTransition: async (msg) => {
-      calls.applyMonitorTransition += 1;
-      if (msg.sequence === monitorSequence + 1) {
-        monitorSequence = msg.sequence;
-        return { acceptedSequence: msg.sequence, resyncNeeded: false };
-      }
-      if (msg.sequence > monitorSequence + 1) {
-        return { acceptedSequence: monitorSequence, resyncNeeded: true };
-      }
-      return { acceptedSequence: monitorSequence, resyncNeeded: false };
-    },
-    getMonitorInstance: async () => null,
-    listMonitorResources: async () => [],
-    listMonitorEvents: async () => [],
-    listMonitorMetrics: async () => [],
-    drainNotificationCandidates: async () => {
-      calls.drainNotificationCandidates += 1;
-      return [];
-    },
+    purge: async () => {},
   };
 
   return {
     cell,
     calls,
     getSnapshot: () => snapshot,
-    getMonitorSequence: () => monitorSequence,
   };
 }
 
@@ -197,6 +190,7 @@ function createTrackingRegistry(cell: DaemonCell): DaemonCellRegistry {
     getCell: () => cell,
     listOnlineServerIds: async () => [],
     getSnapshots: async () => new Map(),
+    purge: async () => {},
   };
 }
 
@@ -272,7 +266,7 @@ Deno.test("WS upgrade rejects HTTP 401 when JWT is invalid", async () => {
   assertEquals(response.status, 401);
 });
 
-Deno.test("WS lifecycle attaches, handles ping, and detaches through cell backend", async () => {
+Deno.test("WS lifecycle attaches, handles heartbeat, and detaches through cell backend", async () => {
   const app = new Hono();
   const secrets = await createDaemonJwtSecrets();
   const serverId = "srv-lifecycle";
@@ -308,15 +302,15 @@ Deno.test("WS lifecycle attaches, handles ping, and detaches through cell backen
   assertEquals(tracking.calls.attach, 1);
   assertEquals(tracking.getSnapshot().connected, true);
 
+  const ackPromise = waitForWsJson(ws);
   ws.send(JSON.stringify({
-    type: "ping",
-    id: crypto.randomUUID(),
+    type: "heartbeat",
     at: new Date().toISOString(),
   }));
 
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  const ack = await ackPromise;
+  assertEquals(ack.type, "heartbeat-ack");
   assertEquals(tracking.calls.heartbeat >= 1, true);
-  assertEquals(tracking.calls.putSnapshot >= 1, true);
 
   ws.close(1000, "test done");
   await new Promise((resolve) => setTimeout(resolve, 50));
@@ -366,51 +360,6 @@ Deno.test("WS upgrade accepts HTTP 101 with valid JWT after daemon key is replac
   assertEquals(response.status, 101);
 });
 
-function monitorSyncFrame(serverId: string, sequence = 1) {
-  return {
-    type: "monitor.sync",
-    from: "daemon",
-    serverId,
-    at: new Date().toISOString(),
-    sequence,
-    instance: {},
-    resources: [{
-      resourceKey: "container:abc",
-      kind: "container",
-      status: "healthy",
-    }],
-    protocolVersion: 1,
-  };
-}
-
-function monitorHeartbeatFrame(serverId: string, sequence: number) {
-  return {
-    type: "monitor.heartbeat",
-    from: "daemon",
-    serverId,
-    at: new Date().toISOString(),
-    sequence,
-    instance: {},
-  };
-}
-
-function monitorTransitionFrame(serverId: string, sequence: number) {
-  const at = new Date().toISOString();
-  return {
-    type: "monitor.transition",
-    from: "daemon",
-    serverId,
-    at,
-    sequence,
-    events: [{
-      resourceKey: "container:abc",
-      kind: "container",
-      toStatus: "unhealthy",
-      at,
-    }],
-  };
-}
-
 async function openTestWebSocket(
   serverId: string,
   secrets: Awaited<ReturnType<typeof createDaemonJwtSecrets>>,
@@ -459,121 +408,128 @@ function waitForWsJson(
   });
 }
 
-Deno.test("monitor.sync over WS dispatches to applyMonitorSync and sends monitor.ack", async () => {
+Deno.test("heartbeat over WS calls cell.heartbeat and sends heartbeat-ack", async () => {
   const secrets = await createDaemonJwtSecrets();
-  const opened = await openTestWebSocket("srv-monitor-sync", secrets);
+  const opened = await openTestWebSocket("srv-heartbeat", secrets);
   if (!opened) {
     console.warn(
-      "Skipping monitor.sync WS test: response.webSocket unavailable",
+      "Skipping heartbeat WS test: response.webSocket unavailable",
     );
     return;
   }
   const { ws, tracking } = opened;
 
   const ackPromise = waitForWsJson(ws);
-  ws.send(JSON.stringify(monitorSyncFrame("srv-monitor-sync", 1)));
+  ws.send(JSON.stringify({
+    type: "heartbeat",
+    at: new Date().toISOString(),
+  }));
   const ack = await ackPromise;
 
-  assertEquals(tracking.calls.applyMonitorSync, 1);
-  assertEquals(ack.type, "monitor.ack");
-  assertEquals(ack.acceptedSequence, 1);
-  assertEquals(ack.resyncNeeded, undefined);
+  assertEquals(ack.type, "heartbeat-ack");
+  assertEquals(tracking.calls.heartbeat, 1);
   ws.close(1000, "done");
 });
 
-Deno.test("monitor.heartbeat over WS dispatches to applyMonitorHeartbeat and sends monitor.ack", async () => {
+Deno.test("heartbeat over WS with agent projects commit for update status", async () => {
   const secrets = await createDaemonJwtSecrets();
-  const opened = await openTestWebSocket("srv-monitor-heartbeat", secrets);
-  if (!opened) {
+  const serverId = "srv-heartbeat-agent-ws";
+  const { db, getDaemon } = createProjectionTrackingDb(serverId, {
+    key: baseDaemonKey,
+    projection: {
+      connected: true,
+      lastProjectedAt: "2020-01-01T00:00:00.000Z",
+    },
+  });
+  const tracking = createTrackingDaemonCell(serverId);
+  const app = new Hono();
+  registerTestDaemonWebSocket(app, secrets, {
+    db,
+    registry: createTrackingRegistry(tracking.cell),
+  });
+
+  const issued = await issueDaemonJwt(
+    { sub: serverId, kid: "key-test" },
+    secrets,
+  );
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${issued.token}`,
+      ...WS_UPGRADE_HEADERS,
+    },
+  });
+  if (response.status !== 101 || !response.webSocket) {
     console.warn(
-      "Skipping monitor.heartbeat WS test: response.webSocket unavailable",
+      "Skipping heartbeat agent WS test: response.webSocket unavailable",
     );
     return;
   }
-  const { ws, tracking } = opened;
 
-  ws.send(JSON.stringify(monitorSyncFrame("srv-monitor-heartbeat", 1)));
-  await waitForWsJson(ws);
+  const ws = response.webSocket;
+  ws.accept();
+  await new Promise((resolve) => setTimeout(resolve, 50));
 
   const ackPromise = waitForWsJson(ws);
-  ws.send(JSON.stringify(monitorHeartbeatFrame("srv-monitor-heartbeat", 2)));
+  ws.send(JSON.stringify({
+    type: "heartbeat",
+    at: new Date().toISOString(),
+    agent: {
+      commit: "ws-heartbeat-commit",
+      buildId: "ws-heartbeat-build",
+      channel: "trunk",
+    },
+  }));
   const ack = await ackPromise;
+  assertEquals(ack.type, "heartbeat-ack");
 
-  assertEquals(tracking.calls.applyMonitorHeartbeat, 1);
-  assertEquals(ack.type, "monitor.ack");
-  assertEquals(ack.acceptedSequence, 2);
+  const merged = parseServerDaemonState(getDaemon());
+  assertEquals(merged?.projection?.agent?.commit, "ws-heartbeat-commit");
   ws.close(1000, "done");
 });
 
-Deno.test("monitor.transition over WS dispatches to applyMonitorTransition and sends monitor.ack", async () => {
+Deno.test("WS close projects disconnected to Postgres", async () => {
   const secrets = await createDaemonJwtSecrets();
-  const opened = await openTestWebSocket("srv-monitor-transition", secrets);
-  if (!opened) {
+  const serverId = "srv-disconnect-projection";
+  const { db, getDaemon } = createProjectionTrackingDb(serverId, {
+    key: baseDaemonKey,
+    projection: {
+      connected: true,
+      lastProjectedAt: "2020-01-01T00:00:00.000Z",
+    },
+  });
+  const tracking = createTrackingDaemonCell(serverId);
+  const app = new Hono();
+  registerTestDaemonWebSocket(app, secrets, {
+    db,
+    registry: createTrackingRegistry(tracking.cell),
+  });
+
+  const issued = await issueDaemonJwt(
+    { sub: serverId, kid: "key-test" },
+    secrets,
+  );
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${issued.token}`,
+      ...WS_UPGRADE_HEADERS,
+    },
+  });
+  if (response.status !== 101 || !response.webSocket) {
     console.warn(
-      "Skipping monitor.transition WS test: response.webSocket unavailable",
+      "Skipping WS disconnect projection test: response.webSocket unavailable",
     );
     return;
   }
-  const { ws, tracking } = opened;
 
-  ws.send(JSON.stringify(monitorSyncFrame("srv-monitor-transition", 1)));
-  await waitForWsJson(ws);
+  const ws = response.webSocket;
+  ws.accept();
+  await new Promise((resolve) => setTimeout(resolve, 50));
 
-  const ackPromise = waitForWsJson(ws);
-  ws.send(JSON.stringify(monitorTransitionFrame("srv-monitor-transition", 2)));
-  const ack = await ackPromise;
+  ws.close(1000, "test done");
+  await new Promise((resolve) => setTimeout(resolve, 50));
 
-  assertEquals(tracking.calls.applyMonitorTransition, 1);
-  assertEquals(ack.type, "monitor.ack");
-  assertEquals(ack.acceptedSequence, 2);
-  ws.close(1000, "done");
-});
-
-Deno.test("monitor gap detection sends resyncNeeded on heartbeat", async () => {
-  const secrets = await createDaemonJwtSecrets();
-  const opened = await openTestWebSocket("srv-monitor-gap", secrets);
-  if (!opened) {
-    console.warn(
-      "Skipping monitor gap WS test: response.webSocket unavailable",
-    );
-    return;
-  }
-  const { ws, tracking } = opened;
-
-  ws.send(JSON.stringify(monitorSyncFrame("srv-monitor-gap", 1)));
-  await waitForWsJson(ws);
-
-  const ackPromise = waitForWsJson(ws);
-  ws.send(JSON.stringify(monitorHeartbeatFrame("srv-monitor-gap", 5)));
-  const ack = await ackPromise;
-
-  assertEquals(tracking.calls.applyMonitorHeartbeat, 1);
-  assertEquals(ack.resyncNeeded, true);
-  ws.close(1000, "done");
-});
-
-Deno.test("duplicate monitor sequence is a noop on applyMonitorHeartbeat", async () => {
-  const secrets = await createDaemonJwtSecrets();
-  const opened = await openTestWebSocket("srv-monitor-dup", secrets);
-  if (!opened) {
-    console.warn(
-      "Skipping monitor duplicate WS test: response.webSocket unavailable",
-    );
-    return;
-  }
-  const { ws, tracking } = opened;
-
-  ws.send(JSON.stringify(monitorSyncFrame("srv-monitor-dup", 1)));
-  await waitForWsJson(ws);
-
-  ws.send(JSON.stringify(monitorHeartbeatFrame("srv-monitor-dup", 2)));
-  await waitForWsJson(ws);
-
-  ws.send(JSON.stringify(monitorHeartbeatFrame("srv-monitor-dup", 2)));
-  const ack = await waitForWsJson(ws);
-
-  assertEquals(tracking.calls.applyMonitorHeartbeat, 2);
-  assertEquals(ack.acceptedSequence, 2);
-  assertEquals(tracking.getMonitorSequence(), 2);
-  ws.close(1000, "done");
+  const merged = parseServerDaemonState(getDaemon());
+  assertEquals(merged?.projection?.connected, false);
 });

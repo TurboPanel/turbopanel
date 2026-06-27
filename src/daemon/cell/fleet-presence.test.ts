@@ -45,6 +45,7 @@ function createMockRegistry(
       }
       return result;
     },
+    purge: async () => {},
   };
 }
 
@@ -58,10 +59,6 @@ const baseDaemon: ServerDaemonState = {
   },
   projection: {
     connected: true,
-    status: "healthy",
-    healthyCount: 1,
-    degradedCount: 0,
-    unhealthyCount: 0,
     lastProjectedAt: "2020-01-01T00:00:00.000Z",
   },
 };
@@ -76,6 +73,7 @@ Deno.test("resolveFleetPresence prefers live snapshot.connected over stale proje
         version: 1,
         updatedAt: new Date().toISOString(),
         connected: false,
+        lastSeenAt: new Date().toISOString(),
       }],
     ]),
   });
@@ -103,6 +101,42 @@ Deno.test("resolveFleetPresence falls back to projection when registry unavailab
   const db = createMockDb(baseDaemon);
   const presence = await resolveFleetPresence(db, undefined, [serverId]);
   assertEquals(presence.get(serverId)?.connected, true);
-  const merged = parseServerDaemonState(baseDaemon);
-  assertEquals(presence.get(serverId)?.status, merged?.projection?.status);
+});
+
+Deno.test("resolveFleetPresence treats stale lastSeenAt as disconnected", async () => {
+  const db = createMockDb(baseDaemon);
+  const staleLastSeen = new Date(Date.now() - 200_000).toISOString();
+  const registry = createMockRegistry({
+    snapshots: new Map([
+      [serverId, {
+        serverId,
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        connected: true,
+        lastSeenAt: staleLastSeen,
+      }],
+    ]),
+  });
+
+  const presence = await resolveFleetPresence(db, registry, [serverId]);
+  assertEquals(presence.get(serverId)?.connected, false);
+});
+
+Deno.test("resolveFleetPresence keeps connected when lastSeenAt is fresh", async () => {
+  const db = createMockDb(baseDaemon);
+  const freshLastSeen = new Date().toISOString();
+  const registry = createMockRegistry({
+    snapshots: new Map([
+      [serverId, {
+        serverId,
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        connected: true,
+        lastSeenAt: freshLastSeen,
+      }],
+    ]),
+  });
+
+  const presence = await resolveFleetPresence(db, registry, [serverId]);
+  assertEquals(presence.get(serverId)?.connected, true);
 });
