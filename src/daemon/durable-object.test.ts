@@ -361,33 +361,29 @@ describe("DaemonCellObject", () => {
     expect(stubWithHint).toBeDefined();
   });
 
-  it("heartbeat message updates last_seen_at and returns heartbeat-ack", async () => {
-    const serverId = "test-srv-heartbeat";
+  it("hello message updates last_seen_at without ack", async () => {
+    const serverId = "test-srv-hello";
     const stub = env.DAEMON_CELL.getByName(serverId);
     const { ws } = await openDaemonWebSocket(stub, serverId);
 
-    const ackPromise = waitForWebSocketMessage(ws);
     ws.send(JSON.stringify({
-      type: "heartbeat",
+      type: "hello",
       at: new Date().toISOString(),
       agent: { commit: "abc", buildId: "1" },
     }));
 
-    const raw = await ackPromise;
-    const ack = JSON.parse(raw) as { type: string; at?: string };
-    expect(ack.type).toBe("heartbeat-ack");
-    expect(typeof ack.at).toBe("string");
-
-    const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
-      method: "GET",
+    await waitFor(async () => {
+      const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
+        method: "GET",
+      });
+      const snapshot = await snapshotResponse.json() as {
+        lastSeenAt?: string;
+        agent?: { commit: string; buildId: string };
+      };
+      expect(snapshot.lastSeenAt).toBeTruthy();
+      expect(snapshot.agent?.commit).toBe("abc");
+      expect(snapshot.agent?.buildId).toBe("1");
     });
-    const snapshot = await snapshotResponse.json() as {
-      lastSeenAt?: string;
-      agent?: { commit: string; buildId: string };
-    };
-    expect(snapshot.lastSeenAt).toBeTruthy();
-    expect(snapshot.agent?.commit).toBe("abc");
-    expect(snapshot.agent?.buildId).toBe("1");
 
     ws.close(1000, "test done");
   });

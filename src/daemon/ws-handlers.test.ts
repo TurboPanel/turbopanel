@@ -101,21 +101,21 @@ Deno.test(
 );
 
 Deno.test(
-  "cell-backed heartbeat renews lease and updates lastHeartbeatAt",
+  "cell-backed recordInbound updates lastInboundAt and hostname",
   withRedisCell(async ({ cell, client, serverId }) => {
     const attached = await cell.attachDaemonSocket({
       keyId: crypto.randomUUID(),
     });
     const at = new Date().toISOString();
 
-    await cell.heartbeat({
+    await cell.recordInbound({
       connectionId: attached.connectionId,
       hostname: "test-host",
       at,
     });
 
     const snapshot = await cell.getSnapshot();
-    assertEquals(snapshot.lastHeartbeatAt, at);
+    assertEquals(snapshot.lastInboundAt, at);
     assertEquals(snapshot.hostname, "test-host");
 
     const leaseHolder = await client.get(leaseKey(serverId));

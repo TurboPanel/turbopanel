@@ -422,10 +422,10 @@ Deno.test(
       keyId: crypto.randomUUID(),
     });
     const staleAt = new Date(Date.now() - 61_000).toISOString();
-    await client.hset(metaKey(serverId), { lastSeenAt: staleAt });
+    await client.hset(metaKey(serverId), { lastInboundAt: staleAt, lastSeenAt: staleAt });
 
     const at = new Date().toISOString();
-    await cell.heartbeat({
+    await cell.recordInbound({
       connectionId: attached.connectionId,
       at,
     });
@@ -442,16 +442,16 @@ Deno.test(
       keyId: crypto.randomUUID(),
     });
     const staleAt = new Date(Date.now() - 61_000).toISOString();
-    await client.hset(metaKey(serverId), { lastSeenAt: staleAt });
+    await client.hset(metaKey(serverId), { lastInboundAt: staleAt, lastSeenAt: staleAt });
 
     const firstAt = new Date().toISOString();
-    await cell.heartbeat({
+    await cell.recordInbound({
       connectionId: attached.connectionId,
       at: firstAt,
     });
 
     const secondAt = new Date(Date.now() + 1000).toISOString();
-    await cell.heartbeat({
+    await cell.recordInbound({
       connectionId: attached.connectionId,
       at: secondAt,
     });
@@ -462,7 +462,19 @@ Deno.test(
 );
 
 Deno.test(
-  "coalesced heartbeat renews daemon socket lease",
+  "attach uses persistent daemon socket lease",
+  withRedisCell(async ({ cell, client, serverId }) => {
+    await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    });
+
+    const ttl = await client.pttl(leaseKey(serverId));
+    assertEquals(ttl, -1);
+  }),
+);
+
+Deno.test(
+  "coalesced recordInbound does not bump lastSeenAt within 60s",
   withRedisCell(async ({ cell, client, serverId }) => {
     const attached = await cell.attachDaemonSocket({
       keyId: crypto.randomUUID(),
@@ -470,18 +482,10 @@ Deno.test(
     const metaBefore = await client.hgetall(metaKey(serverId));
     const lastSeenBefore = metaBefore?.lastSeenAt;
 
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    const ttlBefore = await client.pttl(leaseKey(serverId));
-    assert(ttlBefore > 0 && ttlBefore < LEASE_TTL_MS);
-
-    await cell.heartbeat({
+    await cell.recordInbound({
       connectionId: attached.connectionId,
       at: new Date().toISOString(),
     });
-
-    const ttlAfter = await client.pttl(leaseKey(serverId));
-    assert(ttlAfter > ttlBefore);
-    assert(ttlAfter >= LEASE_TTL_MS - 2000);
 
     const metaAfter = await client.hgetall(metaKey(serverId));
     assertEquals(metaAfter?.lastSeenAt, lastSeenBefore);
@@ -501,7 +505,7 @@ Deno.test(
       channel: "trunk" as const,
     };
 
-    await cell.heartbeat({
+    await cell.recordInbound({
       connectionId: attached.connectionId,
       at: new Date().toISOString(),
       agent,
@@ -570,7 +574,7 @@ Deno.test(
     });
 
     const firstAt = new Date().toISOString();
-    await cell.heartbeat({
+    await cell.recordInbound({
       connectionId: attached.connectionId,
       at: firstAt,
     });
@@ -578,7 +582,7 @@ Deno.test(
     await new Promise((resolve) => setTimeout(resolve, 61_000));
 
     const secondAt = new Date().toISOString();
-    await cell.heartbeat({
+    await cell.recordInbound({
       connectionId: attached.connectionId,
       at: secondAt,
     });

@@ -203,7 +203,7 @@ Each physical server node gets a row in `server` (`id` uuidv7). On daemon connec
 | `key.fingerprint` | SHA-256 hex over the canonical public JWK — duplicate-checked at enrollment (no DB unique constraint for MVP) |
 | `key.revokedAt` | Non-null blocks new JWT issuance; existing JWTs remain valid until their 15-minute expiry |
 
-**Daemon liveness timestamps:** `lastSeenAt` and `keyLastUsedAt` live in the daemon cell snapshot (`DaemonCellSnapshot.lastSeenAt`, `DaemonCellSnapshot.keyLastUsedAt`) — not Postgres columns. `lastSeenAt` advances on the 60 s WS heartbeat cadence (coalesced in the cell) and on online/offline transitions; `keyLastUsedAt` is set on each successful key use (WS connect, heartbeat, `/auth/session`).
+**Daemon liveness timestamps:** `lastInboundAt`, `lastSeenAt`, and `keyLastUsedAt` live in the daemon cell snapshot — not Postgres columns. `lastInboundAt` advances on inbound WS activity (coalesced to at most once per 60 s) and on connect; `lastSeenAt` also advances on online/offline transitions; `keyLastUsedAt` is set on each inbound message and `/auth/session`.
 
 **`server.daemon.projection` (sparse presence summary):** the `projection` field inside `server.daemon` jsonb holds a slowly-changing summary — `hostname`, `machineId`, `remoteAddress`, `keyId`, `connected`, optional `agent` (`commit`/`buildId`/`builtAt`/`channel`), `lastProjectedAt`, `connectedAt`. It is updated only on online/offline transitions and agent build identity changes (via `control-plane-monitor.ts` outside the DO hot path on Workers). No monitor health counts or resource graph are stored. The `key` field is always preserved on write (read-modify-write via `parseServerDaemonState` + merge).
 

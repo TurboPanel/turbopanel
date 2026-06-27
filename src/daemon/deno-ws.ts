@@ -3,7 +3,6 @@ import { upgradeWebSocket } from "hono/deno";
 import type { DaemonCellRegistry } from "./cell/contracts.ts";
 import {
   DAEMON_INBOUND_ALLOWED,
-  type DaemonMessage,
   outboundEnvelopeToWireMessage,
   parseDaemonMessage,
   wireMessageToInboundEnvelope,
@@ -70,27 +69,12 @@ export function registerDaemonWebSocket(
       let connectionId: string | undefined;
       let leaseToken: string | undefined;
       let pumpAbort = false;
-      let keyTouched = false;
       let attachReady = false;
       const pendingMessages: string[] = [];
 
-      const touchKey = () => {
-        if (keyTouched) return;
-        keyTouched = true;
-        const now = new Date().toISOString();
-        registry.getCell(payload.sub).putSnapshot({ keyLastUsedAt: now }).catch(
-          (err) => {
-            compatLogWarn(
-              "ws",
-              `failed to touch daemon key for ${payload.sub}: ${String(err)}`,
-            );
-          },
-        );
-      };
-
       const handleInboundMessage = async (
         raw: string,
-        ws: WebSocket,
+        _ws: WebSocket,
       ): Promise<void> => {
         const message = parseDaemonMessage(raw);
         if (!message) {
@@ -115,28 +99,35 @@ export function registerDaemonWebSocket(
 
         const cell = registry.getCell(payload.sub);
 
+        if (message.type === "hello") {
+          await cell.recordInbound({
+            connectionId,
+            at: message.at,
+            agent: message.agent,
+            hostname: message.hostname,
+          });
+          await onDaemonHeartbeat(db, payload.sub, cell, message.agent);
+          return;
+        }
+
         if (message.type === "heartbeat") {
-          await cell.heartbeat({
+          await cell.recordInbound({
             connectionId,
             at: message.at,
             agent: message.agent,
           });
-          await onDaemonHeartbeat(db, payload.sub, cell, message.agent);
-          const ack: DaemonMessage = {
-            type: "heartbeat-ack",
-            at: new Date().toISOString(),
-          };
-          ws.send(JSON.stringify(ack));
-          touchKey();
+          if (message.agent) {
+            await onDaemonHeartbeat(db, payload.sub, cell, message.agent);
+          }
           return;
         }
+
+        await cell.recordInbound({ connectionId, at: message.at });
 
         const envelope = wireMessageToInboundEnvelope(message);
         if (envelope) {
           void cell.handleInbound(envelope);
         }
-
-        touchKey();
       };
 
       return {
@@ -160,8 +151,6 @@ export function registerDaemonWebSocket(
               remoteAddress ? ` from ${remoteAddress}` : ""
             }`,
           );
-
-          touchKey();
 
           if (identityAddress === "__direct__") {
             void tryAssignColocatedDaemonToInstalledOrganization(db, registry)

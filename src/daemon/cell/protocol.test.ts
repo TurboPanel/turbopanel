@@ -276,10 +276,10 @@ Deno.test("outboundEnvelopeToWireMessage maps outbound kinds", () => {
   assertEquals(
     outboundEnvelopeToWireMessage({
       ...base,
-      kind: "heartbeat-ack",
-      at: base.at,
+      kind: "echo",
+      payload: { ok: true },
     }),
-    { type: "heartbeat-ack", at: base.at },
+    { type: "echo", payload: { ok: true }, at: base.at },
   );
 });
 

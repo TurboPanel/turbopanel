@@ -34,7 +34,7 @@ function createMockCell(
       },
     }),
     detachDaemonSocket: noopAsync,
-    heartbeat: noopAsync,
+    recordInbound: noopAsync,
     getSnapshot: async () => ({
       serverId,
       version: 0,

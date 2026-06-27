@@ -1,7 +1,8 @@
 export const OUTBOX_GROUP = "daemon";
-/** Must exceed the 60s daemon heartbeat interval and read-time stale window (150s). */
-export const LEASE_TTL_MS = 180_000;
+/** Read-time stale window for fleet presence; inbound coalesce interval. */
 export const HEARTBEAT_COALESCE_MS = 60_000;
+/** Daemon socket lease TTL — renewed on inbound traffic. */
+export const LEASE_TTL_MS = 120_000;
 
 export function metaKey(serverId: string): string {
   return `tp:cell:${serverId}:meta`;

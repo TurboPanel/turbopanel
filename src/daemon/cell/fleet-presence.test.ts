@@ -105,7 +105,7 @@ Deno.test("resolveFleetPresence falls back to projection when registry unavailab
 
 Deno.test("resolveFleetPresence treats stale lastSeenAt as disconnected", async () => {
   const db = createMockDb(baseDaemon);
-  const staleLastSeen = new Date(Date.now() - 200_000).toISOString();
+  const staleLastSeen = new Date(Date.now() - 90_000).toISOString();
   const registry = createMockRegistry({
     snapshots: new Map([
       [serverId, {

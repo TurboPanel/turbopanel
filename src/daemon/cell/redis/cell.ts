@@ -10,13 +10,13 @@ import type {
   DaemonOutboundEnvelope,
   OutboxDeliveryId,
 } from "../protocol.ts";
+import { DAEMON_STALE_MS } from "../protocol.ts";
 import { mergeSnapshotPresence } from "../snapshot-merge.ts";
 import type { RedisCellClient, StreamEntry } from "./client.ts";
 import {
   cellKeyPattern,
   connKey,
   HEARTBEAT_COALESCE_MS,
-  LEASE_TTL_MS,
   leaseKey,
   metaKey,
   onlineSetKey,
@@ -166,6 +166,16 @@ function isLeaseOpSuccess(result: unknown): boolean {
   return result === "OK" || result === 1;
 }
 
+function isInboundStale(
+  meta: Record<string, string> | null | undefined,
+  now = Date.now(),
+): boolean {
+  const lastInboundAt =
+    meta?.lastInboundAt ?? meta?.lastSeenAt ?? meta?.connectedAt;
+  if (!lastInboundAt) return true;
+  return now - Date.parse(lastInboundAt) >= DAEMON_STALE_MS;
+}
+
 export class RedisDaemonCell implements DaemonCell {
   readonly #client: RedisCellClient;
   readonly #serverId: string;
@@ -176,20 +186,6 @@ export class RedisDaemonCell implements DaemonCell {
   constructor(client: RedisCellClient, serverId: string) {
     this.#client = client;
     this.#serverId = serverId;
-  }
-
-  async #renewDaemonSocketLease(
-    connectionId: string,
-  ): Promise<boolean> {
-    const renewed = await this.#client.eval(
-      COMPARE_AND_RENEW,
-      1,
-      leaseKey(this.#serverId),
-      connectionId,
-      connectionId,
-      LEASE_TTL_MS,
-    );
-    return isLeaseOpSuccess(renewed);
   }
 
   #rememberOutboxEntries(entries: StreamEntry[]): void {
@@ -291,21 +287,25 @@ export class RedisDaemonCell implements DaemonCell {
     const connectedAt = meta.connectedAt ?? nowIso();
     const leaseK = leaseKey(this.#serverId);
 
-    let acquired = await this.#client.setnx(leaseK, connectionId, LEASE_TTL_MS);
-    if (!acquired) {
-      const existing = await this.#client.get(leaseK);
-      if (existing) {
-        throw new Error(
-          `daemon socket lease held by another connection (${existing})`,
-        );
+    const existingHolder = await this.#client.get(leaseK);
+    if (existingHolder) {
+      const staleMeta = await this.#client.hgetall(metaKey(this.#serverId));
+      if (!isInboundStale(staleMeta)) {
+        throw new Error("daemon socket lease held");
       }
-      acquired = await this.#client.setnx(leaseK, connectionId, LEASE_TTL_MS);
-      if (!acquired) {
-        throw new Error("daemon socket lease acquisition failed");
+      await this.#client.del(leaseK);
+      if (staleMeta?.connectionId === existingHolder) {
+        await this.#client.hset(metaKey(this.#serverId), { connected: "0" });
+        await this.#client.srem(onlineSetKey(), this.#serverId);
       }
     }
 
-    const expiresAt = new Date(Date.now() + LEASE_TTL_MS).toISOString();
+    const acquired = await this.#client.setnxPersistent(leaseK, connectionId);
+    if (!acquired) {
+      throw new Error("daemon socket lease acquisition failed");
+    }
+
+    const expiresAt = "persistent";
     const keyLastUsedAt = nowIso();
 
     await this.#client.hset(metaKey(this.#serverId), {
@@ -318,6 +318,7 @@ export class RedisDaemonCell implements DaemonCell {
       remoteAddress: meta.remoteAddress ?? "",
       connectedAt,
       lastSeenAt: connectedAt,
+      lastInboundAt: connectedAt,
       keyLastUsedAt,
     });
     await this.#client.sadd(onlineSetKey(), this.#serverId);
@@ -395,7 +396,7 @@ export class RedisDaemonCell implements DaemonCell {
     this.#reclaimedByConsumer.delete(`ws:${params.connectionId}`);
   }
 
-  async heartbeat(params: {
+  async recordInbound(params: {
     connectionId?: string;
     hostname?: string;
     at?: string;
@@ -405,18 +406,17 @@ export class RedisDaemonCell implements DaemonCell {
     const connectionId = params.connectionId ?? meta?.connectionId;
     if (!connectionId) return;
 
-    const renewed = await this.#renewDaemonSocketLease(connectionId);
-    if (!renewed) return;
-
     const at = params.at ?? nowIso();
     const atMs = Date.parse(at);
-    const bumpLastSeen = shouldCoalesceLastSeenAt(meta?.lastSeenAt, atMs);
+    const bumpInbound = shouldCoalesceLastSeenAt(meta?.lastInboundAt, atMs);
 
     const fields: Record<string, string> = {
-      lastHeartbeatAt: at,
       keyLastUsedAt: at,
     };
-    if (bumpLastSeen) fields.lastSeenAt = at;
+    if (bumpInbound) {
+      fields.lastInboundAt = at;
+      fields.lastSeenAt = at;
+    }
     if (params.hostname) fields.hostname = params.hostname;
 
     if (params.agent?.commit && params.agent?.buildId) {
@@ -425,9 +425,10 @@ export class RedisDaemonCell implements DaemonCell {
       if (agentChanged) fields.agent = JSON.stringify(params.agent);
       await this.putSnapshot({
         agent: params.agent,
-        lastHeartbeatAt: at,
-        ...(bumpLastSeen ? { lastSeenAt: at } : {}),
+        ...(bumpInbound ? { lastInboundAt: at, lastSeenAt: at } : {}),
       });
+    } else if (bumpInbound) {
+      await this.putSnapshot({ lastInboundAt: at, lastSeenAt: at });
     }
 
     await this.#client.hset(metaKey(this.#serverId), fields);
@@ -475,6 +476,9 @@ export class RedisDaemonCell implements DaemonCell {
     };
     if (patch.lastSeenAt !== undefined) {
       metaFields.lastSeenAt = patch.lastSeenAt;
+    }
+    if (patch.lastInboundAt !== undefined) {
+      metaFields.lastInboundAt = patch.lastInboundAt;
     }
     if (patch.keyLastUsedAt !== undefined) {
       metaFields.keyLastUsedAt = patch.keyLastUsedAt;

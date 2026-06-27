@@ -15,11 +15,18 @@ export const serverSchemas = {
         description:
           'Client IP as seen by the instance (X-Real-IP from Caddy). Null when offline or co-located on a Unix socket.',
       },
-      lastHeartbeatAt: {
+      lastInboundAt: {
         type: ['string', 'null'],
         format: 'date-time',
         description:
-          'Last heartbeat/inbound time recorded in the daemon cell snapshot. Null when the daemon has never connected.',
+          'Last inbound WebSocket activity recorded in the daemon cell snapshot. Servers with no activity for 60s are treated as offline. Null when the daemon has never connected.',
+      },
+      lastHeartbeatAt: {
+        type: ['string', 'null'],
+        format: 'date-time',
+        deprecated: true,
+        description:
+          'Deprecated alias for lastInboundAt.',
       },
       connectedAt: {
         type: ['string', 'null'],

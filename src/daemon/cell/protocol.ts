@@ -32,8 +32,14 @@ export function parseDaemonAgentInfo(
 
 /** JSON messages exchanged between the instance and daemon over /ws. */
 export type DaemonMessage =
+  | {
+    type: "hello";
+    at: string;
+    agent: DaemonAgentInfo;
+    hostname?: string;
+    machineId?: string;
+  }
   | { type: "heartbeat"; at: string; agent?: DaemonAgentInfo }
-  | { type: "heartbeat-ack"; at: string }
   | { type: "echo"; payload: unknown; at: string }
   | { type: "version"; commit: string; branch: string; at: string }
   | { type: "command"; id: string; command: string; at: string }
@@ -106,14 +112,17 @@ export type DaemonMessage =
     at: string;
   };
 
-/** Drop sockets with no inbound traffic (results, etc.) for this long. */
-export const DAEMON_STALE_MS = 150_000;
-/** Registry maintenance interval — must not race the 60s heartbeat cadence. */
-export const DAEMON_PING_MS = 60_000;
+/** Read-time stale window when no inbound traffic is recorded on the cell. */
+export const DAEMON_STALE_MS = 60_000;
+/** Redis cell registry maintenance interval (prune); not used for liveness. */
+export const DAEMON_CELL_MAINTAIN_MS = 60_000;
+/** @deprecated use {@link DAEMON_CELL_MAINTAIN_MS} */
+export const DAEMON_PING_MS = DAEMON_CELL_MAINTAIN_MS;
 
 /** Message types accepted from daemons after authentication succeeds. */
 export const DAEMON_INBOUND_ALLOWED = new Set(
   [
+    "hello",
     "heartbeat",
     "command-result",
     "addresses-result",
@@ -163,7 +172,6 @@ export type DaemonOutboundEnvelope =
     updateUrl?: string;
     updateSha256?: string;
   })
-  | (OutboundEnvelopeBase & { kind: "heartbeat-ack"; at: string })
   | (OutboundEnvelopeBase & { kind: "echo"; payload: unknown });
 
 /** Cell-internal inbound envelope (normalized form, distinct from wire `DaemonMessage`). */
@@ -223,6 +231,7 @@ export function wireMessageToInboundEnvelope(
   msg: DaemonMessage,
 ): DaemonInboundEnvelope | null {
   switch (msg.type) {
+    case "hello":
     case "heartbeat":
       return null;
     case "addresses-result":
@@ -336,8 +345,6 @@ export function outboundEnvelopeToWireMessage(
           ? { updateSha256: env.updateSha256 }
           : {}),
       };
-    case "heartbeat-ack":
-      return { type: "heartbeat-ack", at: env.at };
     case "echo":
       return { type: "echo", payload: env.payload, at: env.at };
   }

@@ -230,9 +230,9 @@ Server nodes are tracked by a **Daemon Cell** abstraction keyed by `serverId`. T
 
 Postgres remains canonical for business data (`server`). The cell is the low-latency hot projection and coordination layer for **presence only** — no monitor tables, no monitor wire payloads, and no HTTP heartbeat ingestion path.
 
-**Presence model:** daemons send `{ type: "heartbeat", at, agent? }` over `/ws/daemon/v1` every 60 s; the instance replies with `{ type: "heartbeat-ack", at }`. `DaemonCellSnapshot` holds connection-oriented fields (`connected`, `connectedAt`, `lastHeartbeatAt`, `lastSeenAt`, optional `agent`). Offline is derived read-time when `lastSeenAt` is older than ~150 s (`fleet-presence.ts`), not from a separate monitor deadline store.
+**Presence model:** daemons send `{ type: "hello", at, agent }` once on connect, then `{ type: "heartbeat", at }` only when idle (no other WS traffic for 60 s). Clean disconnects mark offline immediately via attach/close; silent failures go stale read-time when `lastInboundAt` is older than 60 s (`fleet-presence.ts`). `DaemonCellSnapshot` holds `connected`, `connectedAt`, `lastInboundAt`, `lastSeenAt`, and optional `agent`.
 
-**Sparse Postgres projection:** ordinary heartbeats do **not** write Postgres from inside the Durable Object. Deno/Workers outer layers call `onDaemonConnected` / `onDaemonDisconnected` / `onDaemonHeartbeat` (`control-plane-monitor.ts`) to update `server.daemon.projection` only on online/offline transitions and agent build identity changes. `ServerFleetPresence` exposes `agent` for the client update API.
+**Sparse Postgres projection:** ordinary idle heartbeats do **not** write Postgres from inside the Durable Object. Deno/Workers outer layers call `onDaemonConnected` / `onDaemonDisconnected` / `onDaemonHeartbeat` (`control-plane-monitor.ts`) to update `server.daemon.projection` on online/offline transitions and agent identity from `hello`. `ServerFleetPresence` exposes `agent` for the client update API (with cell snapshot fallback on Workers native WS).
 
 **Cheap fleet index:** `listOnlineServerIds()` reads the Redis online set (Deno) or the sparse `server.daemon.projection.connected` field (Workers) — it does not fan out across all cells.
 
@@ -242,7 +242,7 @@ Postgres remains canonical for business data (`server`). The cell is the low-lat
 
 **Challenge stores:** enrollment and auth challenges are **stateless HMAC-signed tokens** (`src/daemon/cell/stateless-challenge.ts`). `issue()` returns a self-contained `challengeId = base64url(payload).base64url(HMAC)` signed with the `daemon-challenge-signing` derived key. `consume()` re-derives and verifies — no storage, no DO, no Redis key. Replay protection relies on the short TTL (60s) and the daemon's Ed25519 private key requirement.
 
-**`DAEMON_INBOUND_ALLOWED`** is defined in `src/daemon/cell/protocol.ts` (not `hub.ts`). App-level `ping`/`pong` messages were removed — liveness is heartbeat-only.
+**`DAEMON_INBOUND_ALLOWED`** is defined in `src/daemon/cell/protocol.ts` (not `hub.ts`). App-level `ping`/`pong` messages were removed — liveness is hello-on-connect plus idle heartbeat when quiet.
 
 **Purge:** `DELETE /api/client/v1/servers/:id` hard-deletes the Postgres row and calls `DaemonCell.purge()` to wipe all `tp:cell:{serverId}:*` keys (Redis) or DO SQLite state (Workers).
 

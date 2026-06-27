@@ -168,17 +168,17 @@ class DurableObjectStubDaemonCell implements DaemonCell {
     });
   }
 
-  heartbeat(params: {
+  recordInbound(params: {
     connectionId?: string;
     hostname?: string;
     at?: string;
     agent?: import("./protocol.ts").DaemonAgentInfo;
   }): Promise<void> {
-    return this.#rpc("/rpc/heartbeat", {
+    return this.#rpc("/rpc/record-inbound", {
       serverId: this.#serverId,
       body: { params },
     }).then(async () => {
-      if (this.#db) {
+      if (this.#db && params.agent) {
         await onDaemonHeartbeat(this.#db, this.#serverId, this, params.agent);
       }
     });

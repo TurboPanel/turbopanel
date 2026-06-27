@@ -112,6 +112,11 @@ export class RedisCellClient {
     return result === "OK";
   }
 
+  async setnxPersistent(key: string, value: string): Promise<boolean> {
+    const result = await this.#cmd.set(key, value, "NX");
+    return result === "OK";
+  }
+
   async get(key: string): Promise<string | null> {
     const result = await this.#cmd.get(key);
     return result ?? null;

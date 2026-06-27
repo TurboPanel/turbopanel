@@ -77,7 +77,8 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
           connected: live?.connected ?? false,
           hostname: live?.hostname ?? null,
           remoteAddress: live?.remoteAddress ?? null,
-          lastHeartbeatAt: live?.lastHeartbeatAt ?? null,
+          lastInboundAt: live?.lastInboundAt ?? live?.lastHeartbeatAt ?? null,
+          lastHeartbeatAt: live?.lastInboundAt ?? live?.lastHeartbeatAt ?? null,
           connectedAt: live?.connectedAt ?? null,
           licenseId: row.licenseId ?? null,
         }

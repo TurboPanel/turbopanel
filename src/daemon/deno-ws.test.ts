@@ -86,7 +86,7 @@ function createTrackingDaemonCell(serverId: string) {
   const calls = {
     attach: 0,
     detach: 0,
-    heartbeat: 0,
+    recordInbound: 0,
     putSnapshot: 0,
     handleInbound: 0,
     readOutboxBatch: 0,
@@ -125,8 +125,8 @@ function createTrackingDaemonCell(serverId: string) {
         updatedAt: new Date().toISOString(),
       };
     },
-    heartbeat: async () => {
-      calls.heartbeat += 1;
+    recordInbound: async () => {
+      calls.recordInbound += 1;
     },
     getSnapshot: async () => snapshot,
     putSnapshot: async (patch) => {
@@ -266,7 +266,7 @@ Deno.test("WS upgrade rejects HTTP 401 when JWT is invalid", async () => {
   assertEquals(response.status, 401);
 });
 
-Deno.test("WS lifecycle attaches, handles heartbeat, and detaches through cell backend", async () => {
+Deno.test("WS lifecycle attaches, handles hello, and detaches through cell backend", async () => {
   const app = new Hono();
   const secrets = await createDaemonJwtSecrets();
   const serverId = "srv-lifecycle";
@@ -302,15 +302,14 @@ Deno.test("WS lifecycle attaches, handles heartbeat, and detaches through cell b
   assertEquals(tracking.calls.attach, 1);
   assertEquals(tracking.getSnapshot().connected, true);
 
-  const ackPromise = waitForWsJson(ws);
   ws.send(JSON.stringify({
-    type: "heartbeat",
+    type: "hello",
     at: new Date().toISOString(),
+    agent: { commit: "hello-commit", buildId: "hello-build" },
   }));
 
-  const ack = await ackPromise;
-  assertEquals(ack.type, "heartbeat-ack");
-  assertEquals(tracking.calls.heartbeat >= 1, true);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assertEquals(tracking.calls.recordInbound >= 1, true);
 
   ws.close(1000, "test done");
   await new Promise((resolve) => setTimeout(resolve, 50));
@@ -408,30 +407,29 @@ function waitForWsJson(
   });
 }
 
-Deno.test("heartbeat over WS calls cell.heartbeat and sends heartbeat-ack", async () => {
+Deno.test("hello over WS calls cell.recordInbound", async () => {
   const secrets = await createDaemonJwtSecrets();
-  const opened = await openTestWebSocket("srv-heartbeat", secrets);
+  const opened = await openTestWebSocket("srv-hello", secrets);
   if (!opened) {
     console.warn(
-      "Skipping heartbeat WS test: response.webSocket unavailable",
+      "Skipping hello WS test: response.webSocket unavailable",
     );
     return;
   }
   const { ws, tracking } = opened;
 
-  const ackPromise = waitForWsJson(ws);
   ws.send(JSON.stringify({
-    type: "heartbeat",
+    type: "hello",
     at: new Date().toISOString(),
+    agent: { commit: "hello-commit", buildId: "hello-build" },
   }));
-  const ack = await ackPromise;
+  await new Promise((resolve) => setTimeout(resolve, 50));
 
-  assertEquals(ack.type, "heartbeat-ack");
-  assertEquals(tracking.calls.heartbeat, 1);
+  assertEquals(tracking.calls.recordInbound, 1);
   ws.close(1000, "done");
 });
 
-Deno.test("heartbeat over WS with agent projects commit for update status", async () => {
+Deno.test("hello over WS with agent projects commit for update status", async () => {
   const secrets = await createDaemonJwtSecrets();
   const serverId = "srv-heartbeat-agent-ws";
   const { db, getDaemon } = createProjectionTrackingDb(serverId, {
@@ -470,21 +468,19 @@ Deno.test("heartbeat over WS with agent projects commit for update status", asyn
   ws.accept();
   await new Promise((resolve) => setTimeout(resolve, 50));
 
-  const ackPromise = waitForWsJson(ws);
   ws.send(JSON.stringify({
-    type: "heartbeat",
+    type: "hello",
     at: new Date().toISOString(),
     agent: {
-      commit: "ws-heartbeat-commit",
-      buildId: "ws-heartbeat-build",
+      commit: "ws-hello-commit",
+      buildId: "ws-hello-build",
       channel: "trunk",
     },
   }));
-  const ack = await ackPromise;
-  assertEquals(ack.type, "heartbeat-ack");
+  await new Promise((resolve) => setTimeout(resolve, 50));
 
   const merged = parseServerDaemonState(getDaemon());
-  assertEquals(merged?.projection?.agent?.commit, "ws-heartbeat-commit");
+  assertEquals(merged?.projection?.agent?.commit, "ws-hello-commit");
   ws.close(1000, "done");
 });
 

@@ -4,9 +4,10 @@ import { parseServerDaemonState } from "../authn/daemon-state.ts";
 import type { ServerMetadata } from "../../lib/db/server-metadata.ts";
 import { server } from "../../lib/db/schema.ts";
 import type { DaemonCellRegistry, DaemonCellSnapshot } from "./contracts.ts";
+import { DAEMON_STALE_MS } from "./protocol.ts";
 import { readProjectionsForServers } from "./postgres-projection.ts";
 
-const STALE_THRESHOLD_MS = 150_000;
+const STALE_THRESHOLD_MS = DAEMON_STALE_MS;
 
 export type ServerFleetPresence = {
   serverId: string;
@@ -18,7 +19,9 @@ export type ServerFleetPresence = {
   keyId: string | null;
   connectedAt: string | null;
   lastProjectedAt: string | null;
+  /** @deprecated use {@link ServerFleetPresence.lastInboundAt} */
   lastHeartbeatAt: string | null;
+  lastInboundAt: string | null;
   lastSeenAt: string | null;
   keyLastUsedAt: string | null;
   agent?: {
@@ -36,11 +39,18 @@ function normalizeRemoteAddress(
   return value;
 }
 
+function resolveLastInboundAt(snapshot: DaemonCellSnapshot): string | null {
+  return snapshot.lastInboundAt ?? snapshot.lastSeenAt ?? snapshot.connectedAt ??
+    null;
+}
+
 function isSnapshotConnected(snapshot: DaemonCellSnapshot): boolean {
   if (!snapshot.connected) return false;
-  const lastSeenMs = Date.parse(snapshot.lastSeenAt ?? "0");
-  if (Number.isNaN(lastSeenMs)) return false;
-  return Date.now() - lastSeenMs < STALE_THRESHOLD_MS;
+  const lastInbound = resolveLastInboundAt(snapshot);
+  if (!lastInbound) return false;
+  const lastInboundMs = Date.parse(lastInbound);
+  if (Number.isNaN(lastInboundMs)) return false;
+  return Date.now() - lastInboundMs < STALE_THRESHOLD_MS;
 }
 
 /**
@@ -85,6 +95,10 @@ export async function resolveFleetPresence(
       ? onlineSet.has(row.id)
       : (projection?.connected ?? state?.projection?.connected ?? false);
 
+    const lastInboundAt = snapshot
+      ? resolveLastInboundAt(snapshot)
+      : null;
+
     result.set(row.id, {
       serverId: row.id,
       connected,
@@ -95,11 +109,11 @@ export async function resolveFleetPresence(
       keyId: projection?.keyId ?? state?.key.id ?? null,
       connectedAt: snapshot?.connectedAt ?? projection?.connectedAt ?? null,
       lastProjectedAt: projection?.lastProjectedAt ?? null,
-      lastHeartbeatAt: snapshot?.lastHeartbeatAt ?? snapshot?.lastInboundAt ??
-        null,
+      lastInboundAt,
+      lastHeartbeatAt: lastInboundAt,
       lastSeenAt: snapshot?.lastSeenAt ?? null,
       keyLastUsedAt: snapshot?.keyLastUsedAt ?? null,
-      agent: projection?.agent ?? undefined,
+      agent: projection?.agent ?? snapshot?.agent ?? undefined,
     });
   }
 
@@ -127,8 +141,8 @@ export function fleetPresenceToConnection(presence: ServerFleetPresence) {
     keyId: presence.keyId,
     authenticated: presence.connected,
     remoteAddress: presence.remoteAddress,
-    lastInboundAt: presence.lastProjectedAt
-      ? Date.parse(presence.lastProjectedAt)
+    lastInboundAt: presence.lastInboundAt ?? presence.lastHeartbeatAt
+      ? Date.parse(presence.lastInboundAt ?? presence.lastHeartbeatAt ?? "")
       : 0,
     connected: presence.connected,
   };

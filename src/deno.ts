@@ -5,7 +5,7 @@ import { createApp } from './app.ts'
 import { createDenoDb } from './db.ts'
 import { logInfo } from './logger.ts'
 import { createRedisDaemonCellRegistry } from './daemon/cell/redis/registry.ts'
-import { DAEMON_PING_MS } from './daemon/cell/protocol.ts'
+import { DAEMON_CELL_MAINTAIN_MS } from './daemon/cell/protocol.ts'
 import {
   ensureColocatedLicenseCredentialsOnDisk,
 } from './client/authn/install-state.ts'
@@ -121,7 +121,7 @@ const maintenanceTimer = setInterval(() => {
   void daemonCellRegistry.maintain().catch((err) => {
     logInfo('daemon-cell', `maintenance error: ${String(err)}`)
   })
-}, DAEMON_PING_MS)
+}, DAEMON_CELL_MAINTAIN_MS)
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   Deno.addSignalListener(signal, async () => {

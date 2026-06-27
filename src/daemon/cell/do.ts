@@ -80,7 +80,9 @@ function snapshotFromMetaRow(
     keyId: row.key_id ? String(row.key_id) : undefined,
     connected: Number(row.connected ?? 0) === 1,
     connectedAt: row.connected_at ? String(row.connected_at) : undefined,
+    lastInboundAt: row.last_seen_at ? String(row.last_seen_at) : undefined,
     lastSeenAt: row.last_seen_at ? String(row.last_seen_at) : undefined,
+    keyLastUsedAt: row.key_last_used_at ? String(row.key_last_used_at) : undefined,
     agent: parseAgentJson(row.agent_json ? String(row.agent_json) : null),
   };
 }
@@ -521,7 +523,7 @@ export class DaemonCellObject {
     return undefined;
   }
 
-  #persistHeartbeatFields(
+  #recordInbound(
     serverId: string,
     at: string,
     agent?: DaemonAgentInfo,
@@ -529,23 +531,33 @@ export class DaemonCellObject {
     const atMs = Date.parse(at);
     const coalesce = Number.isNaN(atMs) ||
       this.#shouldCoalesceLastSeenAt(serverId, atMs);
+    const now = nowIso();
 
     if (agent) {
       const agentChanged = !agentIdentityEqual(agent, this.#readStoredAgent(serverId));
       if (coalesce) {
         this.#ctx.storage.sql.exec(
-          `UPDATE cell_meta SET last_seen_at = ?, agent_json = ?, updated_at = ?
+          `UPDATE cell_meta SET last_seen_at = ?, key_last_used_at = ?, agent_json = ?, updated_at = ?
            WHERE server_id = ?`,
           at,
+          at,
           JSON.stringify(agent),
-          nowIso(),
+          now,
           serverId,
         );
       } else if (agentChanged) {
         this.#ctx.storage.sql.exec(
-          `UPDATE cell_meta SET agent_json = ?, updated_at = ? WHERE server_id = ?`,
+          `UPDATE cell_meta SET key_last_used_at = ?, agent_json = ?, updated_at = ? WHERE server_id = ?`,
+          at,
           JSON.stringify(agent),
-          nowIso(),
+          now,
+          serverId,
+        );
+      } else {
+        this.#ctx.storage.sql.exec(
+          "UPDATE cell_meta SET key_last_used_at = ?, updated_at = ? WHERE server_id = ?",
+          at,
+          now,
           serverId,
         );
       }
@@ -554,9 +566,18 @@ export class DaemonCellObject {
 
     if (coalesce) {
       this.#ctx.storage.sql.exec(
-        "UPDATE cell_meta SET last_seen_at = ?, updated_at = ? WHERE server_id = ?",
+        `UPDATE cell_meta SET last_seen_at = ?, key_last_used_at = ?, updated_at = ?
+         WHERE server_id = ?`,
         at,
-        nowIso(),
+        at,
+        now,
+        serverId,
+      );
+    } else {
+      this.#ctx.storage.sql.exec(
+        "UPDATE cell_meta SET key_last_used_at = ?, updated_at = ? WHERE server_id = ?",
+        at,
+        now,
         serverId,
       );
     }
@@ -582,19 +603,21 @@ export class DaemonCellObject {
     const parsed = parseDaemonMessage(raw);
     if (!parsed) return;
 
+    if (parsed.type === "hello") {
+      this.#recordInbound(attachment.serverId, parsed.at, parsed.agent);
+      return;
+    }
+
     if (parsed.type === "heartbeat") {
-      this.#persistHeartbeatFields(
+      this.#recordInbound(
         attachment.serverId,
         parsed.at,
         parsed.agent,
       );
-      ws.send(JSON.stringify({
-        type: "heartbeat-ack",
-        at: nowIso(),
-      }));
       return;
     }
 
+    this.#recordInbound(attachment.serverId, parsed.at);
     await this.#handleInboundMessage(attachment.serverId, parsed);
   }
 
@@ -835,15 +858,11 @@ export class DaemonCellObject {
         );
         return jsonResponse({ ok: true });
 
-      case "/rpc/heartbeat":
-        await this.#heartbeat(
+      case "/rpc/record-inbound":
+        this.#recordInbound(
           this.#requireServerId(request, body),
-          body?.params as {
-            connectionId?: string;
-            hostname?: string;
-            at?: string;
-            agent?: DaemonAgentInfo;
-          },
+          String((body?.params as { at?: string })?.at ?? nowIso()),
+          (body?.params as { agent?: DaemonAgentInfo })?.agent,
         );
         return jsonResponse({ ok: true });
 
@@ -1339,46 +1358,6 @@ export class DaemonCellObject {
         }
       }
     });
-  }
-
-  async #heartbeat(
-    serverId: string,
-    params: {
-      connectionId?: string;
-      hostname?: string;
-      at?: string;
-      agent?: DaemonAgentInfo;
-    },
-  ): Promise<void> {
-    const at = params.at ?? nowIso();
-    const metaCursor = this.#ctx.storage.sql.exec(
-      "SELECT connection_id FROM cell_meta WHERE server_id = ?",
-      serverId,
-    );
-    let connectionId = params.connectionId;
-    for (const row of metaCursor) {
-      if (!connectionId) connectionId = String(row.connection_id ?? "");
-    }
-    if (!connectionId) return;
-
-    const renewed = await this.#renewLease(
-      DAEMON_SOCKET_LEASE_NAME,
-      connectionId,
-      connectionId,
-      DAEMON_SOCKET_LEASE_MS,
-    );
-    if (!renewed) return;
-
-    this.#persistHeartbeatFields(serverId, at, params.agent);
-
-    if (params.hostname) {
-      this.#ctx.storage.sql.exec(
-        "UPDATE cell_meta SET hostname = ?, updated_at = ? WHERE server_id = ?",
-        params.hostname,
-        nowIso(),
-        serverId,
-      );
-    }
   }
 
   async #claimDeliveryLease(

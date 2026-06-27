@@ -75,7 +75,7 @@ export interface DaemonCell {
     closedAt?: string;
   }): Promise<void>;
 
-  heartbeat(params: {
+  recordInbound(params: {
     connectionId?: string;
     hostname?: string;
     at?: string;
