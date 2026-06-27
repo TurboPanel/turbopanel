@@ -15,86 +15,116 @@ import { getDb } from '../../db.ts'
 import { INSTALL_API_PREFIX } from '../../surfaces.ts'
 
 const DAEMON_INSTALL_SCRIPT = `#!/bin/sh
+# Legacy self-hosted shim — delegates to run.sh with the same contract.
 set -eu
 
 tp_is_root() { [ "$(id -u)" = "0" ]; }
-tp_user_in_sudo_group() {
-	_groups="$(id -nG 2>/dev/null)" || return 1
-	for _g in $_groups; do
-		case "$_g" in
-		sudo | wheel | admin) return 0 ;;
-		esac
-	done
-	return 1
+tp_is_interactive() {
+	if [ -t 0 ]; then
+		return 0
+	fi
+	[ -r /dev/tty ] && [ -w /dev/tty ] 2>/dev/null
 }
 tp_sudo_installed() { command -v sudo >/dev/null 2>&1; }
-tp_install_privilege_denied() {
-	_script="$1"
-	if tp_user_in_sudo_group; then
-		echo "$_script: run as root (su -); sudo is not installed yet — the daemon installer will install it" >&2
-	else
-		echo "$_script: must run as root or as a user in the sudo group" >&2
+tp_validate_sudo() {
+	if ! tp_sudo_installed; then
+		return 2
 	fi
+	if sudo -n true 2>/dev/null; then
+		return 0
+	fi
+	if tp_is_interactive; then
+		if sudo -v 2>/dev/null; then
+			return 0
+		fi
+	fi
+	return 1
+}
+tp_install_privilege_denied() {
+	_reason="\${1:-}"
+	case "\$_reason" in
+	no_sudo)
+		echo "daemon-install.sh: run as root (su -); sudo is not installed yet — the daemon installer will install it" >&2
+		;;
+	sudo_failed)
+		echo "daemon-install.sh: sudo validation failed — run as root or enter a valid sudo password" >&2
+		;;
+	*)
+		echo "daemon-install.sh: must run as root or have sudo privileges" >&2
+		;;
+	esac
 	exit 1
 }
 
 LICENSE=""
 HOST_URL=""
+INSECURE_TLS=false
 
-while [ $# -gt 0 ]; do
-	case "$1" in
+while [ \$# -gt 0 ]; do
+	case "\$1" in
 		--license)
-			if [ $# -lt 2 ]; then
-				echo "daemon-install.sh: --license requires an argument" >&2
-				exit 1
-			fi
-			LICENSE="$2"
-			shift 2
-			;;
+			[ \$# -ge 2 ] || { echo "daemon-install.sh: --license requires an argument" >&2; exit 1; }
+			LICENSE="\$2"; shift 2 ;;
 		--host)
-			if [ $# -lt 2 ]; then
-				echo "daemon-install.sh: --host requires an argument" >&2
-				exit 1
-			fi
-			HOST_URL="$2"
-			shift 2
-			;;
+			[ \$# -ge 2 ] || { echo "daemon-install.sh: --host requires an argument" >&2; exit 1; }
+			HOST_URL="\$2"; shift 2 ;;
+		--insecure-tls)
+			INSECURE_TLS=true; shift ;;
 		*)
-			echo "daemon-install.sh: unknown option: $1" >&2
+			echo "daemon-install.sh: unknown option: \$1" >&2
 			exit 1
 			;;
 	esac
 done
 
-if [ -z "$LICENSE" ]; then
-	echo "daemon-install.sh: --license is required (id:token)" >&2
+if [ -z "\$LICENSE" ]; then
+	echo "daemon-install.sh: --license is required (base64url-encoded id:token)" >&2
 	exit 1
 fi
 
-LICENSE_ID="$(echo "$LICENSE" | cut -d: -f1)"
-LICENSE_TOKEN="$(echo "$LICENSE" | cut -d: -f2-)"
-
-if [ -z "$LICENSE_ID" ] || [ -z "$LICENSE_TOKEN" ]; then
-	echo "daemon-install.sh: invalid --license format; expected id:token" >&2
+_padded="\$LICENSE"
+while [ \$(( \${#_padded} % 4 )) -ne 0 ]; do
+	_padded="\${_padded}="
+done
+_decoded="\$(printf '%s' "\$_padded" | tr -- '-_' '+/' | base64 -d 2>/dev/null)" || {
+	echo "daemon-install.sh: invalid --license format; expected base64url-encoded id:token" >&2
+	exit 1
+}
+LICENSE_ID="\$(echo "\$_decoded" | cut -d: -f1)"
+LICENSE_TOKEN="\$(echo "\$_decoded" | cut -d: -f2-)"
+if [ -z "\$LICENSE_ID" ] || [ -z "\$LICENSE_TOKEN" ]; then
+	echo "daemon-install.sh: invalid --license format; expected base64url-encoded id:token" >&2
 	exit 1
 fi
 
-if [ -z "$HOST_URL" ]; then
-	echo "daemon-install.sh: --host is required" >&2
-	exit 1
+if [ -n "\$HOST_URL" ]; then
+	RUN_SCRIPT_URL="\${HOST_URL%/}/run.sh"
+else
+	RUN_SCRIPT_URL="https://trbp.nl/run.sh"
 fi
 
-INSTALL_SCRIPT_URL="\${HOST_URL%/}/api/install/v1/daemon-install.sh"
-RUN_SCRIPT_URL="\${HOST_URL%/}/run.sh"
+_curl="curl -fsSL"
+[ "\$INSECURE_TLS" = true ] && _curl="curl -fsSLk"
+
+set -- --license "\$LICENSE"
+[ -n "\$HOST_URL" ] && set -- "\$@" --host "\$HOST_URL"
+[ "\$INSECURE_TLS" = true ] && set -- "\$@" --insecure-tls
+
 if ! tp_is_root; then
-	if tp_user_in_sudo_group && tp_sudo_installed; then
-		exec curl -fsSL "$INSTALL_SCRIPT_URL" | sudo sh -s -- \
-			--license "$LICENSE" --host "$HOST_URL"
+	_sudo_rc=0
+	tp_validate_sudo || _sudo_rc=\$?
+	if [ "\$_sudo_rc" -eq 2 ]; then
+		tp_install_privilege_denied no_sudo
 	fi
-	tp_install_privilege_denied daemon-install.sh
+	if [ "\$_sudo_rc" -ne 0 ]; then
+		tp_install_privilege_denied sudo_failed
+	fi
+	# shellcheck disable=SC2086
+	exec \$_curl "\$RUN_SCRIPT_URL" | sudo sh -s -- "\$@"
 fi
-exec curl -fsSL "$RUN_SCRIPT_URL" | sh -s -- \
-	--license "$LICENSE" --host "$HOST_URL"
+
+# shellcheck disable=SC2086
+exec \$_curl "\$RUN_SCRIPT_URL" | sh -s -- "\$@"
 `
 
 async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {

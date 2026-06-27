@@ -158,10 +158,13 @@ export const installOpenApiPaths: Record<string, unknown> = {
       tags: ['Install'],
       summary: 'Daemon install script',
       description:
-        'Returns a POSIX sh script for installing a managed daemon. ' +
-        'Shell arguments (not HTTP query params): `--license <id:token>` (required) ' +
-        'and optional `--host <instance-url>` to set TURBOPANEL_INSTANCE_URL before ' +
-        'delegating to the CDN installer. Deno self-hosted only.',
+        'Returns a POSIX sh shim that validates privilege, accepts the same ' +
+        'base64url-encoded `--license` value as `run.sh`, and delegates to ' +
+        '`run.sh` on the instance host (or the CDN when `--host` is omitted). ' +
+        'Shell arguments (not HTTP query params): `--license <base64url>` ' +
+        '(required), optional `--host <instance-url>`, and optional ' +
+        '`--insecure-tls`. The script self-escalates with sudo when needed. ' +
+        'Deno self-hosted only.',
       responses: {
         '200': {
           description: 'Install script',

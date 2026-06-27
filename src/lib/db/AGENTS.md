@@ -71,7 +71,7 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `sync
 
 | Group | Tables |
 |---|---|
-| **Identity** | `user`, `account`, `apikey`, `session`, `verification`, `passkey`, `2fa` |
+| **Identity** | `user`, `account`, `session`, `verification`, `passkey`, `2fa` |
 | **Organizations** | `organization`, `member`, `team`, `teammate`, `invitation` (no `organization_id`; `team_id NOT NULL`), `license` |
 | **Resource tree** | `workspace`, `project`, `environment`, `service`, `hosting`, `network` |
 | **Authorization** | `grant` |
