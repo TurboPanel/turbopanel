@@ -583,7 +583,7 @@ export class DaemonCellObject {
       connectedAt,
     });
 
-    void this.#projectConnected(serverId, connectedAt);
+    this.#ctx.waitUntil(this.#projectConnected(serverId, connectedAt));
     void this.#pumpOutboxToDaemonSockets(serverId);
     await this.#scheduleOutboxRetryIfNeeded();
 
@@ -700,6 +700,10 @@ export class DaemonCellObject {
 
     if (parsed.type === "hello") {
       this.#recordInbound(attachment.serverId, parsed.at, parsed.agent);
+      await this.#projectConnected(
+        attachment.serverId,
+        parsed.at ?? nowIso(),
+      );
       await this.#projectAgent(attachment.serverId, parsed.agent);
       return;
     }

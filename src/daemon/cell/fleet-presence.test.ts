@@ -63,6 +63,35 @@ const baseDaemon: ServerDaemonState = {
   },
 };
 
+Deno.test("resolveFleetPresence overlays live snapshot when projection marks offline", async () => {
+  const disconnectedDaemon: ServerDaemonState = {
+    ...baseDaemon,
+    projection: {
+      ...baseDaemon.projection!,
+      connected: false,
+    },
+  };
+  const db = createMockDb(disconnectedDaemon);
+  const freshLastSeen = new Date().toISOString();
+  const registry = createMockRegistry({
+    onlineIds: [],
+    snapshots: new Map([
+      [serverId, {
+        serverId,
+        version: 1,
+        updatedAt: freshLastSeen,
+        connected: true,
+        lastSeenAt: freshLastSeen,
+        lastInboundAt: freshLastSeen,
+      }],
+    ]),
+  });
+
+  const presence = await resolveFleetPresence(db, registry, [serverId]);
+  assertEquals(presence.get(serverId)?.connected, true);
+  assertEquals(presence.get(serverId)?.lastInboundAt, freshLastSeen);
+});
+
 Deno.test("resolveFleetPresence prefers live snapshot.connected over stale projection", async () => {
   const db = createMockDb(baseDaemon);
   const registry = createMockRegistry({

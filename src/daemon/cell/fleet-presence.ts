@@ -68,9 +68,10 @@ export type ResolveFleetPresenceOptions = {
  *
  * By default this serves coarse presence and agent data from the sparse
  * Postgres projection (plus the cheap online index from the cell registry —
- * Redis on Deno, projection on Workers), and performs **no** per-server cell
- * snapshot reads. Pass `{ withSnapshots: true }` from diagnostics-only endpoints
- * to overlay live Durable Object / Redis snapshots.
+ * Redis on Deno, projection on Workers). When the projection marks a server
+ * offline, a follow-up live cell snapshot read is performed for those servers
+ * only so a stale `connected: false` row cannot hide an active WebSocket.
+ * Pass `{ withSnapshots: true }` to read live snapshots for every server.
  */
 export async function resolveFleetPresence(
   db: Db,
@@ -133,6 +134,27 @@ export async function resolveFleetPresence(
       keyLastUsedAt: snapshot?.keyLastUsedAt ?? null,
       agent: projection?.agent ?? snapshot?.agent ?? undefined,
     });
+  }
+
+  if (!withSnapshots && registry) {
+    const staleOfflineIds = [...result.entries()]
+      .filter(([, presence]) => !presence.connected)
+      .map(([id]) => id);
+    if (staleOfflineIds.length > 0) {
+      const liveSnapshots = await registry.getSnapshots(staleOfflineIds);
+      for (const id of staleOfflineIds) {
+        const live = liveSnapshots.get(id);
+        if (!live || !isSnapshotConnected(live)) continue;
+        const entry = result.get(id);
+        if (!entry) continue;
+        entry.connected = true;
+        entry.connectedAt = live.connectedAt ?? entry.connectedAt;
+        entry.lastInboundAt = resolveLastInboundAt(live);
+        entry.lastHeartbeatAt = entry.lastInboundAt;
+        entry.lastSeenAt = live.lastSeenAt ?? entry.lastSeenAt;
+        entry.agent = entry.agent ?? live.agent;
+      }
+    }
   }
 
   return result;
