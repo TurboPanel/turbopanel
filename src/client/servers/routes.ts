@@ -350,6 +350,47 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
     return c.json(result)
   })
 
+  router.post('/servers/:id/update/reset', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const id = c.req.param('id')
+    const denied = await assertCanManageOr403(c, 'server', id)
+    if (denied) return denied
+
+    const registry = getDaemonCellRegistry(c)
+    if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
+
+    try {
+      const { cleared } = await registry.getCell(id).clearUpdateStatus()
+      const presence = await resolveFleetPresence(db, registry, [id])
+      const colocatedIds = await resolveColocatedServerIdSet(db, registry, [id])
+      const current = currentCommitFromAgent(presence.get(id)?.agent)
+      const resolved = await resolveServerUpdateStatus({
+        serverId: id,
+        current,
+        colocatedWithInstance: colocatedIds.has(id),
+        listUpdateRequests: async () => [],
+      })
+
+      return c.json({
+        ok: true,
+        serverId: id,
+        cleared,
+        channel: UPDATE_CHANNEL,
+        current,
+        colocatedWithInstance: colocatedIds.has(id),
+        ...resolved,
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (message === 'update in progress') {
+        return c.json({ ok: false, error: message }, 409)
+      }
+      return c.json({ ok: false, error: message }, 500)
+    }
+  })
+
   router.get('/servers/:id/update', async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)

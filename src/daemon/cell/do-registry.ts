@@ -326,6 +326,14 @@ class DurableObjectStubDaemonCell implements DaemonCell {
     }).then(() => undefined);
   }
 
+  clearUpdateStatus(): Promise<{ cleared: number }> {
+    return this.#rpc<{ cleared: number }>("/rpc/clear-update-status", {
+      serverId: this.#serverId,
+      body: {},
+      idempotent: true,
+    });
+  }
+
   prune(): Promise<boolean> {
     return Promise.resolve(false);
   }

@@ -661,3 +661,33 @@ Deno.test(
     assertEquals(listed[0]?.requestId, requestId);
   }),
 );
+
+Deno.test(
+  "clearUpdateStatus removes terminal update request rows",
+  withRedisCell(async ({ cell, serverId }) => {
+    const requestId = generateRequestId();
+    const at = new Date().toISOString();
+    await cell.enqueue({
+      kind: "update",
+      deliveryId: generateDeliveryId(),
+      requestId,
+      at,
+      channel: "trunk",
+    });
+
+    await cell.handleInbound({
+      kind: "update-result",
+      requestId,
+      at,
+      ok: false,
+      error: "reconcile failed",
+    });
+
+    const cleared = await cell.clearUpdateStatus();
+    assertEquals(cleared.cleared, 1);
+    assertEquals(
+      await cell.listRequests(10, { requestKind: "update" }),
+      [],
+    );
+  }),
+);

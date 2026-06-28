@@ -129,6 +129,8 @@ export interface DaemonCell {
   ackOutbox(deliveryIds: OutboxDeliveryId[], consumer: string): Promise<void>;
 
   prune(now?: number): Promise<boolean>;
+  /** Drop terminal update request rows so org update status can be cleared manually. */
+  clearUpdateStatus(): Promise<{ cleared: number }>;
   purge(): Promise<void>;
 }
 

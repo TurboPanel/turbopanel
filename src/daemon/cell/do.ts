@@ -463,11 +463,62 @@ export class DaemonCellObject {
   }
 
   async #scheduleNearestAlarm(): Promise<void> {
+    const nowMs = Date.now();
+    const candidates: number[] = [];
+
     if (this.#hasDeliverableOutbox() && this.#ctx.getWebSockets().length > 0) {
-      await this.#ctx.storage.setAlarm(Date.now() + OUTBOX_PUMP_ALARM_MS);
+      candidates.push(nowMs + OUTBOX_PUMP_ALARM_MS);
+    }
+
+    const cleanupAt = this.#nextCleanupAlarmMs(nowMs);
+    if (cleanupAt !== null) {
+      candidates.push(cleanupAt);
+    }
+
+    if (candidates.length === 0) {
+      await this.#ctx.storage.deleteAlarm();
       return;
     }
-    await this.#ctx.storage.deleteAlarm();
+
+    await this.#ctx.storage.setAlarm(Math.min(...candidates));
+  }
+
+  #nextCleanupAlarmMs(nowMs: number): number | null {
+    let next: number | null = null;
+    const bump = (candidateMs: number) => {
+      if (candidateMs <= nowMs) return;
+      if (next === null || candidateMs < next) next = candidateMs;
+    };
+
+    const expiresCursor = this.#ctx.storage.sql.exec(
+      "SELECT expires_at FROM requests WHERE expires_at IS NOT NULL",
+    );
+    for (const row of expiresCursor) {
+      const expiresMs = Date.parse(String(row.expires_at ?? ""));
+      if (!Number.isNaN(expiresMs)) bump(expiresMs);
+    }
+
+    const terminalCursor = this.#ctx.storage.sql.exec(
+      `SELECT finished_at FROM requests
+       WHERE status IN ('acked', 'done', 'failed', 'expired')
+       AND finished_at IS NOT NULL`,
+    );
+    for (const row of terminalCursor) {
+      const finishedMs = Date.parse(String(row.finished_at ?? ""));
+      if (!Number.isNaN(finishedMs)) {
+        bump(finishedMs + TERMINAL_UPDATE_RETENTION_MS);
+      }
+    }
+
+    const outboxCursor = this.#ctx.storage.sql.exec(
+      "SELECT expires_at FROM outbox WHERE expires_at IS NOT NULL",
+    );
+    for (const row of outboxCursor) {
+      const expiresMs = Date.parse(String(row.expires_at ?? ""));
+      if (!Number.isNaN(expiresMs)) bump(expiresMs);
+    }
+
+    return next;
   }
 
   #hasDeliverableOutbox(): boolean {
@@ -1015,6 +1066,11 @@ export class DaemonCellObject {
         );
         return jsonResponse({ ok: true });
 
+      case "/rpc/clear-update-status":
+        return jsonResponse(
+          await this.#clearUpdateStatus(this.#requireServerId(request, body)),
+        );
+
       case "/rpc/purge-cell":
         await this.purge();
         return jsonResponse({ ok: true });
@@ -1344,7 +1400,7 @@ export class DaemonCellObject {
     for (const row of cursor) {
       records.push(parseRequestRow(serverId, row));
     }
-    return records.reverse();
+    return records;
   }
 
   async #waitForRequest(
@@ -1372,6 +1428,40 @@ export class DaemonCellObject {
        WHERE request_id = ? AND status IN ('acked', 'done', 'failed', 'expired')`,
       requestId,
     );
+  }
+
+  async #clearUpdateStatus(serverId: string): Promise<{ cleared: number }> {
+    const inFlightCursor = this.#ctx.storage.sql.exec(
+      `SELECT request_id FROM requests
+       WHERE request_kind = 'update'
+       AND status NOT IN ('acked', 'done', 'failed', 'expired')`,
+    );
+    for (const _ of inFlightCursor) {
+      throw new Error("update in progress");
+    }
+
+    const terminalCursor = this.#ctx.storage.sql.exec(
+      `SELECT request_id FROM requests
+       WHERE request_kind = 'update'
+       AND status IN ('acked', 'done', 'failed', 'expired')`,
+    );
+    const requestIds: string[] = [];
+    for (const row of terminalCursor) {
+      requestIds.push(String(row.request_id ?? ""));
+    }
+
+    this.#ctx.storage.transactionSync(() => {
+      for (const requestId of requestIds) {
+        this.#reclaimTerminalOutbox(requestId);
+        this.#ctx.storage.sql.exec(
+          "DELETE FROM requests WHERE request_id = ?",
+          requestId,
+        );
+      }
+    });
+
+    await this.#scheduleNearestAlarm();
+    return { cleared: requestIds.length };
   }
 
   async #createRequestAndWait(

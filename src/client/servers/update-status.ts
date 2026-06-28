@@ -15,6 +15,20 @@ function isTerminalRequestStatus(status: PendingRequestStatus): boolean {
   return TERMINAL_STATUSES.has(status)
 }
 
+function pickLatestUpdateRequest(
+  requests: PendingRequestRecord[],
+): PendingRequestRecord | undefined {
+  if (requests.length === 0) return undefined
+  return requests.reduce((latest, candidate) => {
+    const latestMs = Date.parse(latest.createdAt)
+    const candidateMs = Date.parse(candidate.createdAt)
+    if (Number.isNaN(latestMs) || Number.isNaN(candidateMs)) {
+      return candidate
+    }
+    return candidateMs > latestMs ? candidate : latest
+  })
+}
+
 export type ServerUpdateCommit = {
   commit: string
   buildId: string
@@ -89,13 +103,17 @@ export async function resolveServerUpdateStatus(params: {
   let status: ServerUpdateGetResponse['status'] = 'idle'
 
   const requests = await params.listUpdateRequests()
-  const latest = requests[0]
+  const latest = pickLatestUpdateRequest(requests)
 
   if (latest) {
     if (!isTerminalRequestStatus(latest.status)) {
       status = 'updating'
     } else if (latest.status === 'failed' || latest.status === 'expired') {
-      status = 'error'
+      // Stale control-plane failures are not actionable once the daemon matches trunk
+      // (e.g. operator updated the node manually out of band).
+      if (updateAvailable) {
+        status = 'error'
+      }
     } else if (
       latest.status === 'done' &&
       target &&

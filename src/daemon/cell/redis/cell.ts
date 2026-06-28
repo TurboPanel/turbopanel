@@ -254,20 +254,10 @@ export class RedisDaemonCell implements DaemonCell {
     fields?: Record<string, string>,
   ): Promise<void> {
     const reqKey = requestKey(this.#serverId, requestId);
-    const indexKey = requestsKey(this.#serverId);
     const recordFields = fields ?? await this.#client.hgetall(reqKey);
     if (!recordFields) {
-      await this.#client.zrem(indexKey, requestId);
+      await this.#client.zrem(requestsKey(this.#serverId), requestId);
       return;
-    }
-
-    const deliveries = parseDeliveryMap(recordFields.deliveries);
-    const streamIds = Object.values(deliveries);
-    if (streamIds.length > 0) {
-      await this.#client.xdel(outboxKey(this.#serverId), ...streamIds);
-      for (const deliveryId of Object.keys(deliveries)) {
-        this.#deliveryToStreamId.delete(deliveryId);
-      }
     }
 
     const retainMs = recordFields.requestKind === "update"
@@ -280,8 +270,7 @@ export class RedisDaemonCell implements DaemonCell {
       return;
     }
 
-    await this.#client.del(reqKey);
-    await this.#client.zrem(indexKey, requestId);
+    await this.#purgeRequestRecord(requestId, recordFields);
   }
 
   async attachDaemonSocket(meta: {
@@ -896,6 +885,54 @@ export class RedisDaemonCell implements DaemonCell {
         this.#deliveryToStreamId.delete(deliveryId);
       }
     }
+  }
+
+  async clearUpdateStatus(): Promise<{ cleared: number }> {
+    const indexKey = requestsKey(this.#serverId);
+    const requestIds = await this.#client.zrangebyscore(
+      indexKey,
+      "-inf",
+      "+inf",
+    );
+    let cleared = 0;
+    for (const requestId of requestIds) {
+      const reqKey = requestKey(this.#serverId, requestId);
+      const fields = await this.#client.hgetall(reqKey);
+      if (!fields || fields.requestKind !== "update") continue;
+      const status = fields.status as PendingRequestStatus;
+      if (!isTerminalStatus(status)) {
+        throw new Error("update in progress");
+      }
+      await this.#purgeRequestRecord(requestId, fields);
+      this.#terminalResults.delete(requestId);
+      cleared++;
+    }
+    return { cleared };
+  }
+
+  async #purgeRequestRecord(
+    requestId: string,
+    fields?: Record<string, string>,
+  ): Promise<void> {
+    const reqKey = requestKey(this.#serverId, requestId);
+    const indexKey = requestsKey(this.#serverId);
+    const recordFields = fields ?? await this.#client.hgetall(reqKey);
+    if (!recordFields) {
+      await this.#client.zrem(indexKey, requestId);
+      return;
+    }
+
+    const deliveries = parseDeliveryMap(recordFields.deliveries);
+    const streamIds = Object.values(deliveries);
+    if (streamIds.length > 0) {
+      await this.#client.xdel(outboxKey(this.#serverId), ...streamIds);
+      for (const deliveryId of Object.keys(deliveries)) {
+        this.#deliveryToStreamId.delete(deliveryId);
+      }
+    }
+
+    await this.#client.del(reqKey);
+    await this.#client.zrem(indexKey, requestId);
   }
 
   async prune(now = Date.now()): Promise<boolean> {

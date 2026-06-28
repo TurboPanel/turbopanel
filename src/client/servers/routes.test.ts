@@ -83,6 +83,7 @@ function createMockCell(
     readOutboxBatch: async () => [],
     ackOutbox: noopAsync,
     prune: async () => false,
+    clearUpdateStatus: async () => ({ cleared: 0 }),
     purge: async () => {
       if (failPurge) {
         throw new Error(`purge failed for ${serverId}`)

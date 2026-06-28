@@ -104,12 +104,49 @@ Deno.test("resolveServerUpdateStatus returns error for failed update request", a
   const resolved = await resolveServerUpdateStatus({
     serverId: "srv-1",
     current: { commit: "aaa", buildId: "b1" },
+    targetManifest: {
+      commit: "bbb",
+      buildId: "b2",
+      builtAt: "2020-01-01T00:00:00.000Z",
+      channel: "trunk",
+      manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+    },
     listUpdateRequests: async () => [
       request({ status: "failed", error: "checksum mismatch" }),
     ],
   });
 
   assertEquals(resolved.status, "error");
+});
+
+Deno.test("resolveServerUpdateStatus ignores stale failed request when daemon matches trunk", async () => {
+  const commit = "51e32ad";
+  const resolved = await resolveServerUpdateStatus({
+    serverId: "srv-1",
+    current: { commit, buildId: "b1" },
+    targetManifest: {
+      commit,
+      buildId: "b2",
+      builtAt: "2020-01-01T00:00:00.000Z",
+      channel: "trunk",
+      manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+    },
+    listUpdateRequests: async () => [
+      request({
+        status: "failed",
+        error: "reconcile failed",
+        createdAt: "2020-01-01T00:00:00.000Z",
+      }),
+      request({
+        status: "done",
+        createdAt: "2020-01-02T00:00:00.000Z",
+        finishedAt: "2020-01-02T00:00:01.000Z",
+      }),
+    ],
+  });
+
+  assertEquals(resolved.status, "idle");
+  assertEquals(resolved.updateAvailable, false);
 });
 
 Deno.test("resolveServerUpdateStatus blocks remote updates for co-located daemons", async () => {

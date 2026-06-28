@@ -175,6 +175,7 @@ function createTrackingDaemonCell(serverId: string) {
     },
     ackOutbox: async () => {},
     prune: async () => false,
+    clearUpdateStatus: async () => ({ cleared: 0 }),
     purge: async () => {},
   };
 

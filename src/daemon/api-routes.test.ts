@@ -201,6 +201,7 @@ function createSnapshotTrackingCell(
     readOutboxBatch: async () => [],
     ackOutbox: noopAsync,
     prune: async () => false,
+    clearUpdateStatus: async () => ({ cleared: 0 }),
     purge: noopAsync,
   };
   return { cell, putSnapshotPatches };
