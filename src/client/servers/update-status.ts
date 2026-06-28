@@ -55,6 +55,8 @@ export type ServerUpdateGetResponse = {
   status: 'idle' | 'updating' | 'error'
   targetStatus: 'ok' | 'unknown'
   targetError?: string
+  /** Set when the latest terminal update attempt failed or timed out. */
+  lastUpdateError?: string
 }
 
 export async function resolveServerUpdateStatus(params: {
@@ -75,6 +77,7 @@ export async function resolveServerUpdateStatus(params: {
     | 'status'
     | 'targetStatus'
     | 'targetError'
+    | 'lastUpdateError'
   >
 > {
   const manifest = params.targetManifest !== undefined
@@ -101,6 +104,7 @@ export async function resolveServerUpdateStatus(params: {
   const updateAvailable = updateBlocked ? false : commitDrift
 
   let status: ServerUpdateGetResponse['status'] = 'idle'
+  let lastUpdateError: string | undefined
 
   const requests = await params.listUpdateRequests()
   const latest = pickLatestUpdateRequest(requests)
@@ -109,9 +113,14 @@ export async function resolveServerUpdateStatus(params: {
     if (!isTerminalRequestStatus(latest.status)) {
       status = 'updating'
     } else if (latest.status === 'failed' || latest.status === 'expired') {
-      // Stale control-plane failures are not actionable once the daemon matches trunk
-      // (e.g. operator updated the node manually out of band).
-      if (updateAvailable) {
+      lastUpdateError = latest.error ??
+        (latest.status === 'expired'
+          ? 'Update timed out waiting for daemon acknowledgement'
+          : 'Update failed')
+      // Only block the badge with "Update error" once the daemon already matches
+      // trunk (e.g. operator fixed the node manually). When still behind trunk,
+      // keep status idle so the UI shows "Update available" and a retry works.
+      if (!updateAvailable) {
         status = 'error'
       }
     } else if (
@@ -138,5 +147,6 @@ export async function resolveServerUpdateStatus(params: {
     status,
     targetStatus,
     targetError,
+    ...(lastUpdateError ? { lastUpdateError } : {}),
   }
 }

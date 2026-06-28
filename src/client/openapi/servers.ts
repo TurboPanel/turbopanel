@@ -110,6 +110,11 @@ export const serverSchemas = {
         description:
           'Human-readable reason remote updates are blocked for this server.',
       },
+      lastUpdateError: {
+        type: 'string',
+        description:
+          'Error from the most recent terminal update attempt, when present.',
+      },
       status: { type: 'string' },
     },
   },

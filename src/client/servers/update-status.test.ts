@@ -100,12 +100,34 @@ Deno.test("resolveServerUpdateStatus returns idle after pending window expires",
   assertEquals(resolved.updateAvailable, true);
 });
 
-Deno.test("resolveServerUpdateStatus returns error for failed update request", async () => {
+Deno.test("resolveServerUpdateStatus surfaces last error but stays idle when update still available", async () => {
   const resolved = await resolveServerUpdateStatus({
     serverId: "srv-1",
-    current: { commit: "aaa", buildId: "b1" },
+    current: { commit: "51e32ad", buildId: "b1" },
     targetManifest: {
-      commit: "bbb",
+      commit: "203fcb3",
+      buildId: "b2",
+      builtAt: "2020-01-01T00:00:00.000Z",
+      channel: "trunk",
+      manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+    },
+    listUpdateRequests: async () => [
+      request({ status: "failed", error: "reconcile failed" }),
+    ],
+  });
+
+  assertEquals(resolved.status, "idle");
+  assertEquals(resolved.updateAvailable, true);
+  assertEquals(resolved.lastUpdateError, "reconcile failed");
+});
+
+Deno.test("resolveServerUpdateStatus returns error for failed update when already on trunk", async () => {
+  const commit = "51e32ad";
+  const resolved = await resolveServerUpdateStatus({
+    serverId: "srv-1",
+    current: { commit, buildId: "b1" },
+    targetManifest: {
+      commit,
       buildId: "b2",
       builtAt: "2020-01-01T00:00:00.000Z",
       channel: "trunk",
@@ -117,6 +139,8 @@ Deno.test("resolveServerUpdateStatus returns error for failed update request", a
   });
 
   assertEquals(resolved.status, "error");
+  assertEquals(resolved.updateAvailable, false);
+  assertEquals(resolved.lastUpdateError, "checksum mismatch");
 });
 
 Deno.test("resolveServerUpdateStatus ignores stale failed request when daemon matches trunk", async () => {
