@@ -34,6 +34,11 @@ export const serverSchemas = {
         description:
           'Time the current daemon WebSocket connection was established (resets on reconnect). Null when offline.',
       },
+      colocatedWithInstance: {
+        type: 'boolean',
+        description:
+          'True when this server is the daemon co-located on the same host as this control plane instance.',
+      },
     },
   },
   FetchServerCellResponse: {
@@ -90,6 +95,11 @@ export const serverSchemas = {
         ],
       },
       updateAvailable: { type: 'boolean' },
+      colocatedWithInstance: {
+        type: 'boolean',
+        description:
+          'True when this server is the daemon co-located on the same host as this control plane instance.',
+      },
       updateBlocked: {
         type: 'boolean',
         description:

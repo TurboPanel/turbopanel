@@ -275,7 +275,7 @@ export function validateSuperadminPassword(password: string): string | null {
   return null
 }
 
-async function readLocalMachineId(): Promise<string | undefined> {
+export async function readLocalMachineId(): Promise<string | undefined> {
   if (typeof Deno === 'undefined') return undefined
   try {
     const id = await Deno.readTextFile('/etc/machine-id')

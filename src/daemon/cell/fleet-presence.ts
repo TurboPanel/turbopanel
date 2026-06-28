@@ -137,6 +137,31 @@ export async function resolveFleetPresence(
   }
 
   if (!withSnapshots && registry) {
+    const connectedOnlineIds = registry && onlineSet
+      ? [...result.entries()]
+        .filter(([id, presence]) => presence.connected && onlineSet.has(id))
+        .map(([id]) => id)
+      : [];
+    if (connectedOnlineIds.length > 0) {
+      const liveSnapshots = await registry.getSnapshots(connectedOnlineIds);
+      for (const id of connectedOnlineIds) {
+        const live = liveSnapshots.get(id);
+        const entry = result.get(id);
+        if (!live || !entry) continue;
+        if (live.remoteAddress) {
+          entry.directAttach = live.remoteAddress === "__direct__";
+          entry.remoteAddress = normalizeRemoteAddress(live.remoteAddress);
+        }
+        if (live.agent) {
+          entry.agent = live.agent;
+        }
+        entry.connectedAt = live.connectedAt ?? entry.connectedAt;
+        entry.lastInboundAt = resolveLastInboundAt(live);
+        entry.lastHeartbeatAt = entry.lastInboundAt;
+        entry.lastSeenAt = live.lastSeenAt ?? entry.lastSeenAt;
+      }
+    }
+
     const staleOfflineIds = [...result.entries()]
       .filter(([, presence]) => !presence.connected)
       .map(([id]) => id);

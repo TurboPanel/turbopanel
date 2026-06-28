@@ -23,6 +23,9 @@ import {
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
 import {
+  resolveColocatedServerIdSet,
+} from './colocated.ts'
+import {
   colocatedServerUpdateBlockedReason,
   resolveServerUpdateStatus,
   type ServerUpdateCommit,
@@ -55,7 +58,8 @@ async function queueServerUpdate(
   if (!live?.connected) {
     return { ok: false, error: 'Daemon not connected' }
   }
-  if (live.directAttach) {
+  const colocatedIds = await resolveColocatedServerIdSet(db, registry, [serverId])
+  if (colocatedIds.has(serverId)) {
     return { ok: false, error: colocatedServerUpdateBlockedReason() }
   }
 
@@ -138,6 +142,11 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
       registry,
       rows.map((row) => row.id),
     )
+    const colocatedIds = await resolveColocatedServerIdSet(
+      db,
+      registry,
+      rows.map((row) => row.id),
+    )
 
     return c.json({
       servers: rows.map((row) => {
@@ -147,6 +156,7 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
           connected: live?.connected ?? false,
           hostname: live?.hostname ?? null,
           remoteAddress: live?.remoteAddress ?? null,
+          colocatedWithInstance: colocatedIds.has(row.id),
           lastInboundAt: live?.lastInboundAt ?? live?.lastHeartbeatAt ?? null,
           lastHeartbeatAt: live?.lastInboundAt ?? live?.lastHeartbeatAt ?? null,
           connectedAt: live?.connectedAt ?? null,
@@ -186,6 +196,7 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const registry = getDaemonCellRegistry(c)
     const presence = await resolveFleetPresence(db, registry, visibleIds)
+    const colocatedIds = await resolveColocatedServerIdSet(db, registry, visibleIds)
     const targetManifest = await resolveTrunkManifest()
     const target = targetManifest
       ? {
@@ -210,12 +221,13 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
           serverId,
           current,
           targetManifest,
-          directAttach: presence.get(serverId)?.directAttach,
+          colocatedWithInstance: colocatedIds.has(serverId),
           listUpdateRequests: async () => updateRequests,
         })
         return {
           serverId,
           current,
+          colocatedWithInstance: colocatedIds.has(serverId),
           ...resolved,
         }
       }),
@@ -253,6 +265,7 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const targetManifest = await resolveTrunkManifest()
     const presence = await resolveFleetPresence(db, registry, visibleIds)
+    const colocatedIds = await resolveColocatedServerIdSet(db, registry, visibleIds)
 
     const results = await Promise.all(
       visibleIds.map(async (serverId) => {
@@ -279,7 +292,7 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
           }
         }
 
-        if (presence.get(serverId)?.directAttach) {
+        if (colocatedIds.has(serverId)) {
           return {
             serverId,
             ok: false,
@@ -347,6 +360,7 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const registry = getDaemonCellRegistry(c)
     const presence = await resolveFleetPresence(db, registry, [id])
+    const colocatedIds = await resolveColocatedServerIdSet(db, registry, [id])
     const current = currentCommitFromAgent(presence.get(id)?.agent)
 
     const updateRequests = registry
@@ -356,7 +370,7 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
     const resolved = await resolveServerUpdateStatus({
       serverId: id,
       current,
-      directAttach: presence.get(id)?.directAttach,
+      colocatedWithInstance: colocatedIds.has(id),
       listUpdateRequests: async () => updateRequests,
     })
 
@@ -365,6 +379,7 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
       serverId: id,
       channel: UPDATE_CHANNEL,
       current,
+      colocatedWithInstance: colocatedIds.has(id),
       ...resolved,
     })
   })

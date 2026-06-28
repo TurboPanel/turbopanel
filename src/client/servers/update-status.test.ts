@@ -116,7 +116,7 @@ Deno.test("resolveServerUpdateStatus blocks remote updates for co-located daemon
   const resolved = await resolveServerUpdateStatus({
     serverId: "srv-1",
     current: { commit: "aaa", buildId: "b1" },
-    directAttach: true,
+    colocatedWithInstance: true,
     targetManifest: {
       commit: "bbb",
       buildId: "b2",

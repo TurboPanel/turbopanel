@@ -155,6 +155,38 @@ Deno.test("resolveFleetPresence treats stale lastSeenAt as disconnected", async 
   assertEquals(presence.get(serverId)?.connected, false);
 });
 
+Deno.test("resolveFleetPresence reads __direct__ from live snapshot for connected servers", async () => {
+  const projectedDaemon: ServerDaemonState = {
+    ...baseDaemon,
+    projection: {
+      ...baseDaemon.projection!,
+      connected: true,
+      remoteAddress: "203.0.113.10",
+      lastProjectedAt: "2020-01-01T00:00:00.000Z",
+    },
+  };
+  const db = createMockDb(projectedDaemon);
+  const freshLastSeen = new Date().toISOString();
+  const registry = createMockRegistry({
+    onlineIds: [serverId],
+    snapshots: new Map([
+      [serverId, {
+        serverId,
+        version: 1,
+        updatedAt: freshLastSeen,
+        connected: true,
+        remoteAddress: "__direct__",
+        lastInboundAt: freshLastSeen,
+        lastSeenAt: freshLastSeen,
+      }],
+    ]),
+  });
+
+  const presence = await resolveFleetPresence(db, registry, [serverId]);
+  assertEquals(presence.get(serverId)?.directAttach, true);
+  assertEquals(presence.get(serverId)?.remoteAddress, null);
+});
+
 Deno.test("resolveFleetPresence keeps connected when lastSeenAt is fresh", async () => {
   const db = createMockDb(baseDaemon);
   const freshLastSeen = new Date().toISOString();
