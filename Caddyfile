@@ -84,14 +84,15 @@
 		}
 	}
 
-	# Dev: daemon bootstrap script (same host as /downloads/daemon — not the install API).
+	# Dev: daemon bootstrap scripts (same host as /downloads/daemon — not the install API).
 	@dev_daemon_run {
-		path /run.sh
+		path /run.sh /update.sh
 		expression `"{$TURBOPANEL_UI_MODE:static}" == "dev"`
 	}
 	handle @dev_daemon_run {
 		root * {$TURBOPANEL_DAEMON_REPO:../daemon}
-		rewrite * /scripts/run.sh
+		rewrite /run.sh /scripts/run.sh
+		rewrite /update.sh /scripts/update.sh
 		file_server
 	}
 
