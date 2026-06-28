@@ -40,21 +40,12 @@ export function registerDaemonWebSocket(
       ? authHeader.slice("Bearer ".length).trim()
       : "";
     if (!token || !options.secrets) {
-      // #region agent log
-      console.error('[DBG5d6f57] ' + JSON.stringify({ sessionId: '5d6f57', runId: 'ws-auth', hypothesisId: 'A,B', location: 'instance/src/daemon/deno-ws.ts:wsUpgrade', message: 'daemon ws upgrade rejected: no token/secrets', data: { hasAuthHeader: authHeader.length > 0, hasToken: token.length > 0, hasSecrets: Boolean(options.secrets), remoteIp: c.req.header('x-real-ip')?.trim() ?? c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? '__direct__' }, timestamp: Date.now() }))
-      // #endregion
       return c.json({ ok: false, error: "unauthorized" }, 401);
     }
     const payload = await verifyDaemonJwt(token, options.secrets);
     if (!payload) {
-      // #region agent log
-      console.error('[DBG5d6f57] ' + JSON.stringify({ sessionId: '5d6f57', runId: 'ws-auth', hypothesisId: 'A,B', location: 'instance/src/daemon/deno-ws.ts:wsUpgrade', message: 'daemon ws upgrade rejected: jwt verify failed (likely stale secret)', data: { tokenLength: token.length, remoteIp: c.req.header('x-real-ip')?.trim() ?? c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? '__direct__' }, timestamp: Date.now() }))
-      // #endregion
       return c.json({ ok: false, error: "unauthorized" }, 401);
     }
-    // #region agent log
-    console.error('[DBG5d6f57] ' + JSON.stringify({ sessionId: '5d6f57', runId: 'ws-auth', hypothesisId: 'A,B', location: 'instance/src/daemon/deno-ws.ts:wsUpgrade', message: 'daemon ws upgrade auth ok', data: { serverId: payload.sub, keyId: payload.kid ?? null, remoteIp: c.req.header('x-real-ip')?.trim() ?? c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? '__direct__' }, timestamp: Date.now() }))
-    // #endregion
 
     const db = options.db;
     if (!db) {

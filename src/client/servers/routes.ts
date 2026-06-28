@@ -23,6 +23,7 @@ import {
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
 import {
+  colocatedServerUpdateBlockedReason,
   resolveServerUpdateStatus,
   type ServerUpdateCommit,
 } from './update-status.ts'
@@ -50,8 +51,12 @@ async function queueServerUpdate(
   serverId: string,
 ): Promise<QueuedUpdateResult | QueueUpdateFailure> {
   const presence = await resolveFleetPresence(db, registry, [serverId])
-  if (!presence.get(serverId)?.connected) {
+  const live = presence.get(serverId)
+  if (!live?.connected) {
     return { ok: false, error: 'Daemon not connected' }
+  }
+  if (live.directAttach) {
+    return { ok: false, error: colocatedServerUpdateBlockedReason() }
   }
 
   const requestId = generateRequestId()
@@ -198,14 +203,15 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
     const servers = await Promise.all(
       visibleIds.map(async (serverId) => {
         const current = currentCommitFromAgent(presence.get(serverId)?.agent)
+        const updateRequests = registry
+          ? await registry.getCell(serverId).listRequests(10, { requestKind: 'update' })
+          : []
         const resolved = await resolveServerUpdateStatus({
           serverId,
           current,
           targetManifest,
-          listUpdateRequests: async () => {
-            if (!registry) return []
-            return registry.getCell(serverId).listRequests(10, { requestKind: 'update' })
-          },
+          directAttach: presence.get(serverId)?.directAttach,
+          listUpdateRequests: async () => updateRequests,
         })
         return {
           serverId,
@@ -270,6 +276,14 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
             serverId,
             ok: false,
             error: 'Daemon not connected',
+          }
+        }
+
+        if (presence.get(serverId)?.directAttach) {
+          return {
+            serverId,
+            ok: false,
+            error: colocatedServerUpdateBlockedReason(),
           }
         }
 
@@ -342,13 +356,9 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
     const resolved = await resolveServerUpdateStatus({
       serverId: id,
       current,
+      directAttach: presence.get(id)?.directAttach,
       listUpdateRequests: async () => updateRequests,
     })
-
-    // #region agent log
-    const latest = updateRequests[0]
-    console.error('[DBG5d6f57] ' + JSON.stringify({ sessionId: '5d6f57', runId: 'louie-update', hypothesisId: 'H1,H2,H3,H4,H5', location: 'instance/src/client/servers/routes.ts:getUpdateStatus', message: 'server update status resolved', data: { serverId: id, connected: presence.get(id)?.connected ?? false, currentCommit: current?.commit ?? null, targetCommit: resolved.target?.commit ?? null, status: resolved.status, updateAvailable: resolved.updateAvailable, requestCount: updateRequests.length, latestRequestId: latest?.requestId ?? null, latestStatus: latest?.status ?? null, latestError: latest?.error ?? null, latestCreatedAt: latest?.createdAt ?? null, latestFinishedAt: latest?.finishedAt ?? null }, timestamp: Date.now() }))
-    // #endregion
 
     return c.json({
       ok: true,
@@ -372,7 +382,10 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const queued = await queueServerUpdate(registry, db, id)
     if (!queued.ok) {
-      return c.json({ ok: false, error: queued.error }, 404)
+      const status = queued.error === colocatedServerUpdateBlockedReason()
+        ? 403
+        : 404
+      return c.json({ ok: false, error: queued.error }, status)
     }
 
     return c.json({ ok: true, ...queued })

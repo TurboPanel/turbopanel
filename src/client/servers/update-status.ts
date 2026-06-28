@@ -21,6 +21,13 @@ export type ServerUpdateCommit = {
   builtAt?: string
 }
 
+export const COLOCATED_SERVER_UPDATE_BLOCKED_REASON =
+  'The co-located development daemon cannot be updated from the control plane'
+
+export function colocatedServerUpdateBlockedReason(): string {
+  return COLOCATED_SERVER_UPDATE_BLOCKED_REASON
+}
+
 export type ServerUpdateGetResponse = {
   ok: boolean
   serverId: string
@@ -28,6 +35,8 @@ export type ServerUpdateGetResponse = {
   current: ServerUpdateCommit | null
   target: (ServerUpdateCommit & { manifestUrl?: string }) | null
   updateAvailable: boolean
+  updateBlocked?: boolean
+  updateBlockedReason?: string
   status: 'idle' | 'updating' | 'error'
   targetStatus: 'ok' | 'unknown'
   targetError?: string
@@ -39,10 +48,18 @@ export async function resolveServerUpdateStatus(params: {
   listUpdateRequests: () => Promise<PendingRequestRecord[]>
   /** When batching status checks, pass a shared manifest lookup result. */
   targetManifest?: TrunkManifestTarget | null
+  /** Co-located Unix-socket daemon on the dev control plane host. */
+  directAttach?: boolean
 }): Promise<
   Pick<
     ServerUpdateGetResponse,
-    'target' | 'updateAvailable' | 'status' | 'targetStatus' | 'targetError'
+    | 'target'
+    | 'updateAvailable'
+    | 'updateBlocked'
+    | 'updateBlockedReason'
+    | 'status'
+    | 'targetStatus'
+    | 'targetError'
   >
 > {
   const manifest = params.targetManifest !== undefined
@@ -62,9 +79,11 @@ export async function resolveServerUpdateStatus(params: {
     ? undefined
     : 'Could not resolve trunk channel manifest'
 
-  const updateAvailable = target
+  const commitDrift = target
     ? params.current?.commit !== target.commit
     : false
+  const updateBlocked = params.directAttach === true
+  const updateAvailable = updateBlocked ? false : commitDrift
 
   let status: ServerUpdateGetResponse['status'] = 'idle'
 
@@ -91,6 +110,12 @@ export async function resolveServerUpdateStatus(params: {
   return {
     target,
     updateAvailable,
+    ...(updateBlocked
+      ? {
+        updateBlocked: true,
+        updateBlockedReason: colocatedServerUpdateBlockedReason(),
+      }
+      : {}),
     status,
     targetStatus,
     targetError,

@@ -112,6 +112,29 @@ Deno.test("resolveServerUpdateStatus returns error for failed update request", a
   assertEquals(resolved.status, "error");
 });
 
+Deno.test("resolveServerUpdateStatus blocks remote updates for co-located daemons", async () => {
+  const resolved = await resolveServerUpdateStatus({
+    serverId: "srv-1",
+    current: { commit: "aaa", buildId: "b1" },
+    directAttach: true,
+    targetManifest: {
+      commit: "bbb",
+      buildId: "b2",
+      builtAt: "2020-01-01T00:00:00.000Z",
+      channel: "trunk",
+      manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+    },
+    listUpdateRequests: async () => [],
+  });
+
+  assertEquals(resolved.updateAvailable, false);
+  assertEquals(resolved.updateBlocked, true);
+  assertEquals(
+    resolved.updateBlockedReason,
+    "The co-located development daemon cannot be updated from the control plane",
+  );
+});
+
 Deno.test("resolveServerUpdateStatus computes updateAvailable only with known target", async () => {
   const current = { commit: "aaa", buildId: "b1" };
   const resolved = await resolveServerUpdateStatus({

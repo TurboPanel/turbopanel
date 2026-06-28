@@ -624,7 +624,9 @@ export class RedisDaemonCell implements DaemonCell {
   ): Promise<PendingRequestRecord | null> {
     const reqKey = requestKey(this.#serverId, inbound.requestId);
     const fields = await this.#client.hgetall(reqKey);
-    if (!fields) return null;
+    if (!fields) {
+      return null;
+    }
 
     const existing = parseRequestRecord(
       this.#serverId,

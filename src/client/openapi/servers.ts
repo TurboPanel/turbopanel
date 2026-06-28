@@ -90,6 +90,16 @@ export const serverSchemas = {
         ],
       },
       updateAvailable: { type: 'boolean' },
+      updateBlocked: {
+        type: 'boolean',
+        description:
+          'True when the co-located development daemon cannot be updated remotely.',
+      },
+      updateBlockedReason: {
+        type: 'string',
+        description:
+          'Human-readable reason remote updates are blocked for this server.',
+      },
       status: { type: 'string' },
     },
   },
@@ -320,7 +330,8 @@ export const serverPaths: Record<string, unknown> = {
           },
         },
         '403': {
-          description: 'Forbidden',
+          description:
+            'Forbidden, or update blocked for the co-located development daemon',
           content: {
             'application/json': {
               schema: {
