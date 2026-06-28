@@ -32,8 +32,7 @@ class FailingEmailQueue implements EmailQueue {
   }
 }
 
-const dbUrl = getDatabaseUrl()
-const TEST_SECRET = 'Aa1Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2_Mm3Nn4Oo5Pp6'
+import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 
 const MAILGUN_PLATFORM_ENV = {
   TURBOPANEL_MAILGUN_API_KEY: 'key-test',
@@ -53,7 +52,7 @@ async function createAuthRouteApp(
     platformEnv?: Record<string, string | undefined>
   },
 ) {
-  const secretsConfig = parseSecretsEnv(TEST_SECRET, undefined, runtime)
+  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, runtime)
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -83,7 +82,7 @@ async function createClientRouteApp(
   signupEnvOverride?: SignupEnvOverride,
   platformEnv?: Record<string, string | undefined>,
 ) {
-  const secretsConfig = parseSecretsEnv(TEST_SECRET, undefined, runtime)
+  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, runtime)
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {

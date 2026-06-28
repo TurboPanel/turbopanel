@@ -26,9 +26,10 @@ load_database_url() {
   if [[ -n "${TURBOPANEL_DATABASE_URL:-}" ]]; then
     return 0
   fi
-  if [[ -f "$ROOT/.env" ]]; then
+  local runtime_env="${TURBOPANEL_INSTANCE_RUNTIME_ENV:-/opt/turbopanel/platform/config/instance/runtime.env}"
+  if [[ -f "$runtime_env" ]]; then
     local line
-    line="$(grep -E '^TURBOPANEL_DATABASE_URL=' "$ROOT/.env" | tail -1 || true)"
+    line="$(grep -E '^TURBOPANEL_DATABASE_URL=' "$runtime_env" | tail -1 || true)"
     if [[ -n "$line" ]]; then
       export TURBOPANEL_DATABASE_URL="${line#TURBOPANEL_DATABASE_URL=}"
     fi

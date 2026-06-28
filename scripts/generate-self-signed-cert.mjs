@@ -19,7 +19,9 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, '..')
 
 function loadEnvFile() {
-  const envPath = path.join(repoRoot, '.env')
+  const envPath =
+    process.env.TURBOPANEL_INSTANCE_RUNTIME_ENV?.trim() ||
+    '/opt/turbopanel/platform/config/instance/runtime.env'
   if (!existsSync(envPath)) return
 
   for (const line of readFileSync(envPath, 'utf-8').split('\n')) {

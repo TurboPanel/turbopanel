@@ -6,5 +6,36 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 WRANGLER_PORT="${WRANGLER_DEV_PORT:-18787}"
+RUNTIME_ENV="${TURBOPANEL_INSTANCE_RUNTIME_ENV:-/opt/turbopanel/platform/config/instance/runtime.env}"
+RUNTIME_DEV_VARS="${TURBOPANEL_INSTANCE_RUNTIME_DEV_VARS:-/opt/turbopanel/platform/config/instance/runtime.dev-vars}"
+
+load_runtime_dev_vars() {
+  local file="$1"
+  [[ -f "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"
+    line="$(printf '%s' "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [[ -z "$line" ]] && continue
+    case "$line" in
+      *=*) export "$line" ;;
+    esac
+  done < "$file"
+}
+
+load_runtime_env() {
+  local file="$1"
+  [[ -f "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"
+    line="$(printf '%s' "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [[ -z "$line" ]] && continue
+    case "$line" in
+      *=*) export "$line" ;;
+    esac
+  done < "$file"
+}
+
+load_runtime_env "$RUNTIME_ENV"
+load_runtime_dev_vars "$RUNTIME_DEV_VARS"
 
 exec "$ROOT/node_modules/.bin/wrangler" dev --port "$WRANGLER_PORT" --ip 127.0.0.1

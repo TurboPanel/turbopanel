@@ -38,14 +38,17 @@ The **daemon is the constant** installed on every TurboPanel-managed host and is
 
 `README.md` is for humans getting started; `AGENTS.md` is for agents maintaining the system.
 
+Unit tests use non-production secrets from `src/test-fixtures/secrets.ts` (`TEST_ONLY_TURBOPANEL_SECRET`). Vitest Workers config uses the same naming convention in `wrangler.vitest.jsonc`. The secret scanner allowlists only exact fixture lines in `.secretscan-allowlist` — do not add broad exclusions.
+
 ## Setup
 
 - **Deno** — <https://docs.deno.com/runtime/getting_started/installation/>
 - **pnpm** — <https://pnpm.io/installation>
 - **Node.js** and **openssl** — required for cert generation (`scripts/*.mjs`); Node.js also used for Caddy download
 - Run `./console` from the `turbopanel-dev` checkout. The console installs Deno, clones the daemon, and drives the full dev stack via `scripts/bootstrap-orchestration.ts` + `scripts/install-daemon-systemd.sh` (shared orchestration under `/opt/turbopanel/runtimes/` — not `orchestration/runtime/venv`).
+- Managed/co-located installs: secret-bearing runtime env lives under **`/opt/turbopanel/platform/config/instance/`** (`runtime.env`, `runtime.dev-vars`) — **never** in the git checkout root. `scripts/generate-self-signed-cert.mjs` and daemon `public-urls-apply` read/write `runtime.env` there. Do not reintroduce checkout-root `.env` / `.dev.vars` generation.
 - `pnpm install` — installs Hono and Wrangler into `node_modules/` for Workers bundling
-- Local Wrangler secrets live in `.dev.vars` (`TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS`; gitignored — Tilt `sync-env.sh` writes from `dev/.env`)
+- Local **Tilt** Wrangler secrets still live in `dev/.env` → `sync-env.sh` → instance `.dev.vars`; that path is separate from managed Ansible installs above.
 - `pnpm dev` (wrangler) still runs the **Cloudflare Workers** path for full-stack testing — unchanged. **`wrangler.jsonc` `dev.ip` is `0.0.0.0`** so Docker Caddy (`host.docker.internal`) can reach the dev server; default localhost-only bind causes Caddy **502**s.
 - **`pnpm deploy`** — applies pending migrations (`TURBOPANEL_DATABASE_URL` or `DATABASE_URL` required for tooling) then deploys to Cloudflare Workers (`CLOUDFLARE_ENV` required, e.g. `live` or `testing`). Works from any environment with internet access to the database — self-hosted dev, CI, or production. Requires **Node** only (`pnpm migrate` runs `drizzle-kit migrate`; no Deno prerequisite). Equivalent to `pnpm migrate && wrangler deploy --env $CLOUDFLARE_ENV --minify`.
 - `pnpm cf-typegen` — regenerate `worker-configuration.d.ts`
@@ -264,7 +267,7 @@ Correlated request/ack helpers (`awaitDaemonAck` / `recordDaemonAck`) back both 
 
 ### Public URL apply
 
-**Public URL apply**: `POST /api/admin/v1/instance/public-urls/apply` (Deno only) sends a `public-urls-update` WS message to the co-located daemon with the current URL list. The daemon writes `TURBOPANEL_PUBLIC_URLS` to the instance `.env`, re-runs the `instance-certs` Ansible role (regenerating the leaf cert with updated SANs, CA preserved), and reloads `turbopanel-caddy`. Replies with `public-urls-update-result { ok, error? }`. On Workers, the endpoint returns 422 (cert apply not applicable). Timeout: 60 s.
+**Public URL apply**: `POST /api/admin/v1/instance/public-urls/apply` (Deno only) sends a `public-urls-update` WS message to the co-located daemon with the current URL list. The daemon writes `TURBOPANEL_PUBLIC_URLS` to `/opt/turbopanel/platform/config/instance/runtime.env` (not the checkout), re-runs the `instance-certs` Ansible role (regenerating the leaf cert with updated SANs, CA preserved), and reloads `turbopanel-caddy`. Replies with `public-urls-update-result { ok, error? }`. On Workers, the endpoint returns 422 (cert apply not applicable). Timeout: 60 s.
 
 ```mermaid
 sequenceDiagram
@@ -277,7 +280,7 @@ sequenceDiagram
     Instance->>Instance: setPublicUrls(db, urls)
     Instance->>Cell: enqueue public-urls-update envelope
     Cell->>Daemon: WS: { type: "public-urls-update", urls }
-    Daemon->>Daemon: write .env, run instance-certs, reload caddy
+    Daemon->>Daemon: write runtime.env, run instance-certs, reload caddy
     Daemon->>Cell: WS: { type: "public-urls-update-result", ok }
     Cell->>Instance: PendingRequestRecord { status: "done" }
     Instance-->>UI: { ok: true, applied: true }

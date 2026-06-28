@@ -16,7 +16,7 @@ import { ADMIN_API_PREFIX } from '../surfaces.ts'
 import { registerAdminRoutes } from './routes.ts'
 
 const dbUrl = getDatabaseUrl()
-const TEST_SECRET = 'Aa1Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2_Mm3Nn4Oo5Pp6'
+import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 
 function createMockCell(
   serverId: string,
@@ -112,7 +112,7 @@ function createTrackingRegistry(failIds: Set<string> = new Set()): {
 }
 
 async function createAdminTestApp(registry: DaemonCellRegistry) {
-  const secretsConfig = parseSecretsEnv(TEST_SECRET, undefined, 'deno')
+  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -217,7 +217,7 @@ Deno.test('POST /api/admin/v1/cells/purge-batch reports per-id results for super
     const failIds = new Set([failId])
     const { registry, purgedIds } = createTrackingRegistry(failIds)
 
-    const secretsConfig = parseSecretsEnv(TEST_SECRET, undefined, 'deno')
+    const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
     const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
     const batchApp = new Hono<AppEnv>()
     batchApp.use('*', (c, next) => {

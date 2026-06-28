@@ -23,6 +23,6 @@
     }
   ],
   "vars": {
-    "TURBOPANEL_SECRET": "aa_daemon_cell_vitest_secret_value_aaaa_b"
+    "TURBOPANEL_SECRET": "TEST_ONLY_TURBOPANEL_SECRET_aa_daemon_cell_vitest_b"
   }
 }
