@@ -134,6 +134,8 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 
 await prepareInstanceSocket(socketPath)
 
+await daemonCellRegistry.reclaimOrphanedSocketLeasesOnStartup()
+
 void ensureColocatedLicenseCredentialsOnDisk(db).catch((err) => {
   logInfo('install', `license credential recovery skipped: ${String(err)}`)
 })

@@ -133,15 +133,24 @@ export function registerDaemonWebSocket(
       return {
         async onOpen(_event, ws) {
           const cell = registry.getCell(payload.sub);
-          const attached = await cell.attachDaemonSocket({
-            keyId: payload.kid,
-            sessionId: payload.jti,
-            hostname: undefined,
-            remoteAddress: identityAddress,
-            connectedAt,
-          });
-          connectionId = attached.connectionId;
-          leaseToken = attached.lease.token;
+          try {
+            const attached = await cell.attachDaemonSocket({
+              keyId: payload.kid,
+              sessionId: payload.jti,
+              hostname: undefined,
+              remoteAddress: identityAddress,
+              connectedAt,
+            });
+            connectionId = attached.connectionId;
+            leaseToken = attached.lease.token;
+          } catch (err) {
+            compatLogWarn(
+              "ws",
+              `daemon attach failed for ${payload.sub}: ${String(err)}`,
+            );
+            ws.close(1013, "attach failed");
+            return;
+          }
 
           await onDaemonConnected(db, payload.sub, cell, connectedAt);
 

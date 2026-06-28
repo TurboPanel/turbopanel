@@ -11,6 +11,7 @@ import { onlineSetKey } from "./keys.ts";
 export type RedisDaemonCellRegistry = DaemonCellRegistry & {
   client: RedisCellClient;
   maintain(): Promise<void>;
+  reclaimOrphanedSocketLeasesOnStartup(): Promise<void>;
   purge(serverId: string): Promise<void>;
   close(): Promise<void>;
 };
@@ -56,6 +57,18 @@ export function createRedisDaemonCellRegistry(
         onlineServerIds.map(async (serverId) => {
           const cell = getCell(serverId) as RedisDaemonCell;
           await cell.prune();
+        }),
+      );
+    },
+
+    async reclaimOrphanedSocketLeasesOnStartup(): Promise<void> {
+      const leaseKeys = await client.scanKeys("tp:cell:*:lease:daemon-socket");
+      await Promise.all(
+        leaseKeys.map(async (key) => {
+          const match = /^tp:cell:(.+):lease:daemon-socket$/.exec(key);
+          if (!match) return;
+          const cell = getCell(match[1]) as RedisDaemonCell;
+          await cell.reclaimOrphanedSocketLeaseOnStartup();
         }),
       );
     },

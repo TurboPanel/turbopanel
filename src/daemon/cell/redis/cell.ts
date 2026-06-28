@@ -374,6 +374,28 @@ export class RedisDaemonCell implements DaemonCell {
     };
   }
 
+  async reclaimOrphanedSocketLeaseOnStartup(): Promise<void> {
+    const leaseK = leaseKey(this.#serverId);
+    const holder = await this.#client.get(leaseK);
+    if (!holder) return;
+
+    await this.#client.del(leaseK);
+    const meta = await this.#client.hgetall(metaKey(this.#serverId));
+    if (meta?.connectionId === holder && meta?.connected === "1") {
+      await this.#client.hset(metaKey(this.#serverId), { connected: "0" });
+      await this.#client.srem(onlineSetKey(), this.#serverId);
+      const closedAt = nowIso();
+      await this.#client.hset(connKey(this.#serverId, holder), {
+        closedAt,
+        reason: "instance-restart",
+      });
+      await this.#client.expire(
+        connKey(this.#serverId, holder),
+        86_400,
+      );
+    }
+  }
+
   async detachDaemonSocket(params: {
     connectionId: string;
     leaseToken: string;
