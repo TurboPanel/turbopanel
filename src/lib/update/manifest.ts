@@ -1,3 +1,5 @@
+import { TRUNK_MANIFEST_CACHE_MS } from './constants.ts'
+
 export const DL_BASE_URL = 'https://dl.trbp.nl'
 
 export type TrunkManifestTarget = {
@@ -16,7 +18,7 @@ function requireHttpsUrl(url: string): boolean {
   }
 }
 
-export async function resolveTrunkManifest(): Promise<TrunkManifestTarget | null> {
+async function fetchTrunkManifestUncached(): Promise<TrunkManifestTarget | null> {
   try {
     if (!requireHttpsUrl(`${DL_BASE_URL}/channels.json`)) {
       return null
@@ -60,4 +62,42 @@ export async function resolveTrunkManifest(): Promise<TrunkManifestTarget | null
   } catch {
     return null
   }
+}
+
+let cachedManifest: TrunkManifestTarget | null | undefined
+let cacheExpiresAt = 0
+let inflightManifest: Promise<TrunkManifestTarget | null> | null = null
+
+/** Reset manifest cache — for tests only. */
+export function resetTrunkManifestCacheForTests(): void {
+  cachedManifest = undefined
+  cacheExpiresAt = 0
+  inflightManifest = null
+}
+
+export async function resolveTrunkManifest(): Promise<TrunkManifestTarget | null> {
+  const now = Date.now()
+  if (cachedManifest !== undefined && now < cacheExpiresAt) {
+    return cachedManifest
+  }
+
+  if (inflightManifest) {
+    return inflightManifest
+  }
+
+  inflightManifest = fetchTrunkManifestUncached()
+    .then((manifest) => {
+      cachedManifest = manifest
+      cacheExpiresAt = Date.now() + TRUNK_MANIFEST_CACHE_MS
+      inflightManifest = null
+      return manifest
+    })
+    .catch(() => {
+      inflightManifest = null
+      cachedManifest = null
+      cacheExpiresAt = Date.now() + TRUNK_MANIFEST_CACHE_MS
+      return null
+    })
+
+  return inflightManifest
 }

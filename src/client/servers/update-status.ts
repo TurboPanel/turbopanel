@@ -1,7 +1,9 @@
 import type { PendingRequestRecord, PendingRequestStatus } from '../../daemon/cell/contracts.ts'
-import { resolveTrunkManifest } from '../../lib/update/manifest.ts'
-
-const UPDATE_PENDING_MS = 120_000
+import { UPDATE_PENDING_MS } from '../../lib/update/constants.ts'
+import {
+  resolveTrunkManifest,
+  type TrunkManifestTarget,
+} from '../../lib/update/manifest.ts'
 
 const TERMINAL_STATUSES = new Set<PendingRequestStatus>([
   'done',
@@ -35,13 +37,17 @@ export async function resolveServerUpdateStatus(params: {
   serverId: string
   current: ServerUpdateCommit | null
   listUpdateRequests: () => Promise<PendingRequestRecord[]>
+  /** When batching status checks, pass a shared manifest lookup result. */
+  targetManifest?: TrunkManifestTarget | null
 }): Promise<
   Pick<
     ServerUpdateGetResponse,
     'target' | 'updateAvailable' | 'status' | 'targetStatus' | 'targetError'
   >
 > {
-  const manifest = await resolveTrunkManifest()
+  const manifest = params.targetManifest !== undefined
+    ? params.targetManifest
+    : await resolveTrunkManifest()
   const target = manifest
     ? {
       commit: manifest.commit,

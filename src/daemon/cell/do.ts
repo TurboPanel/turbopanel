@@ -4,6 +4,7 @@ import {
   parseSecretsEnv,
 } from "../../client/authn/secrets.ts";
 import { createWorkersDb, type Db } from "../../db.ts";
+import { TERMINAL_UPDATE_RETENTION_MS } from "../../lib/update/constants.ts";
 import { verifyDaemonJwt } from "../authn/daemon-jwt.ts";
 import {
   onDaemonConnected,
@@ -799,7 +800,7 @@ export class DaemonCellObject {
        WHERE status IN ('acked', 'done', 'failed', 'expired')
        AND finished_at IS NOT NULL
        AND finished_at <= ?`,
-      nowIso(nowMs - 60_000),
+      nowIso(nowMs - TERMINAL_UPDATE_RETENTION_MS),
     );
     this.#ctx.storage.sql.exec(
       "DELETE FROM outbox WHERE expires_at <= ?",
@@ -1355,7 +1356,9 @@ export class DaemonCellObject {
     while (Date.now() < deadline) {
       const record = await this.#getRequest(serverId, requestId);
       if (record && isTerminalStatus(record.status)) {
-        this.#reclaimTerminalRequest(requestId);
+        if (record.requestKind !== "update") {
+          this.#reclaimTerminalRequest(requestId);
+        }
         return record;
       }
       await scheduler.wait(250);

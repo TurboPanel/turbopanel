@@ -45,14 +45,59 @@ Deno.test("resolveServerUpdateStatus returns updating after successful ack until
   const resolved = await resolveServerUpdateStatus({
     serverId: "srv-1",
     current,
+    targetManifest: {
+      commit: "bbb",
+      buildId: "b2",
+      builtAt: "2020-01-01T00:00:00.000Z",
+      channel: "trunk",
+      manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+    },
     listUpdateRequests: async () => [
       request({ status: "done", finishedAt }),
     ],
   });
 
-  if (resolved.target && current.commit !== resolved.target.commit) {
-    assertEquals(resolved.status, "updating");
-  }
+  assertEquals(resolved.status, "updating");
+});
+
+Deno.test("resolveServerUpdateStatus uses shared target manifest without refetching", async () => {
+  const resolved = await resolveServerUpdateStatus({
+    serverId: "srv-1",
+    current: { commit: "aaa", buildId: "b1" },
+    targetManifest: {
+      commit: "bbb",
+      buildId: "b2",
+      builtAt: "2020-01-01T00:00:00.000Z",
+      channel: "trunk",
+      manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+    },
+    listUpdateRequests: async () => [],
+  });
+
+  assertEquals(resolved.targetStatus, "ok");
+  assertEquals(resolved.target?.commit, "bbb");
+  assertEquals(resolved.updateAvailable, true);
+});
+
+Deno.test("resolveServerUpdateStatus returns idle after pending window expires", async () => {
+  const finishedAt = new Date(Date.now() - 121_000).toISOString();
+  const resolved = await resolveServerUpdateStatus({
+    serverId: "srv-1",
+    current: { commit: "aaa", buildId: "b1" },
+    targetManifest: {
+      commit: "bbb",
+      buildId: "b2",
+      builtAt: "2020-01-01T00:00:00.000Z",
+      channel: "trunk",
+      manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+    },
+    listUpdateRequests: async () => [
+      request({ status: "done", finishedAt }),
+    ],
+  });
+
+  assertEquals(resolved.status, "idle");
+  assertEquals(resolved.updateAvailable, true);
 });
 
 Deno.test("resolveServerUpdateStatus returns error for failed update request", async () => {

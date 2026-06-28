@@ -598,7 +598,7 @@ Deno.test(
 );
 
 Deno.test(
-  "handleInbound deletes request row on terminal status",
+  "handleInbound deletes non-update request row on terminal status",
   withRedisCell(async ({ cell, client, serverId }) => {
     const requestId = generateRequestId();
     const at = new Date().toISOString();
@@ -626,5 +626,38 @@ Deno.test(
       null,
     );
     assertEquals(await cell.listRequests(), []);
+  }),
+);
+
+Deno.test(
+  "handleInbound retains update request row through pending window",
+  withRedisCell(async ({ cell, client, serverId }) => {
+    const requestId = generateRequestId();
+    const at = new Date().toISOString();
+    await cell.enqueue({
+      kind: "update",
+      deliveryId: generateDeliveryId(),
+      requestId,
+      at,
+      channel: "trunk",
+    });
+
+    await cell.handleInbound({
+      kind: "update-result",
+      requestId,
+      at,
+      ok: true,
+    });
+
+    const record = await cell.getRequest(requestId);
+    assertEquals(record?.status, "done");
+    assertEquals(
+      (await client.hgetall(requestKey(serverId, requestId)))?.status,
+      "done",
+    );
+
+    const listed = await cell.listRequests(10, { requestKind: "update" });
+    assertEquals(listed.length, 1);
+    assertEquals(listed[0]?.requestId, requestId);
   }),
 );

@@ -11,6 +11,7 @@ import type {
   OutboxDeliveryId,
 } from "../protocol.ts";
 import { DAEMON_STALE_MS } from "../protocol.ts";
+import { TERMINAL_UPDATE_RETENTION_MS } from "../../../lib/update/constants.ts";
 import { mergeSnapshotPresence } from "../snapshot-merge.ts";
 import type { RedisCellClient, StreamEntry } from "./client.ts";
 import {
@@ -267,6 +268,16 @@ export class RedisDaemonCell implements DaemonCell {
       for (const deliveryId of Object.keys(deliveries)) {
         this.#deliveryToStreamId.delete(deliveryId);
       }
+    }
+
+    const retainMs = recordFields.requestKind === "update"
+      ? TERMINAL_UPDATE_RETENTION_MS
+      : 0;
+    if (retainMs > 0) {
+      const retainUntil = nowIso(Date.now() + retainMs);
+      await this.#client.hset(reqKey, { expiresAt: retainUntil });
+      await this.#client.expire(reqKey, Math.ceil(retainMs / 1000));
+      return;
     }
 
     await this.#client.del(reqKey);
@@ -722,7 +733,9 @@ export class RedisDaemonCell implements DaemonCell {
     const result = await this.waitForRequest(outbound.requestId, timeoutMs);
     if (result) {
       if (isTerminalStatus(result.status)) {
-        await this.#cleanupTerminalRequest(outbound.requestId);
+        if (result.requestKind !== "update") {
+          await this.#cleanupTerminalRequest(outbound.requestId);
+        }
         this.#terminalResults.delete(outbound.requestId);
       }
       return result;

@@ -2,13 +2,14 @@ import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { listVisible } from '../authz/index.ts'
+import { can, listVisible } from '../authz/index.ts'
 import { assertCanManageOr403, assertCanReadOr403, getOrgId } from '../shared.ts'
-import { getDb, getDaemonCellRegistry } from '../../db.ts'
+import { getDb, getDaemonCellRegistry, type Db } from '../../db.ts'
 import {
   fetchDaemonServerCell,
 } from '../../daemon/cell/server-diagnostics.ts'
 import { resolveFleetPresence } from '../../daemon/cell/fleet-presence.ts'
+import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
 import {
   generateDeliveryId,
   generateRequestId,
@@ -16,13 +17,77 @@ import {
 } from '../../daemon/cell/protocol.ts'
 import { clearServerDaemonState } from '../../daemon/authn/server-identity-db.ts'
 import { server } from '../../lib/db/schema.ts'
+import { resolveTrunkManifest } from '../../lib/update/manifest.ts'
 import {
   hierarchyDeleteHasChildrenResponse,
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
-import { resolveServerUpdateStatus } from './update-status.ts'
+import {
+  resolveServerUpdateStatus,
+  type ServerUpdateCommit,
+} from './update-status.ts'
 
-const UPDATE_TIMEOUT_MS = 120_000
+const UPDATE_CHANNEL = 'trunk'
+const UPDATE_REQUEST_TTL_SECONDS = 300
+
+type QueuedUpdateResult = {
+  ok: true
+  queued: true
+  status: 'updating'
+  serverId: string
+  requestId: string
+  channel: typeof UPDATE_CHANNEL
+}
+
+type QueueUpdateFailure = {
+  ok: false
+  error: string
+}
+
+async function queueServerUpdate(
+  registry: DaemonCellRegistry,
+  db: Db,
+  serverId: string,
+): Promise<QueuedUpdateResult | QueueUpdateFailure> {
+  const presence = await resolveFleetPresence(db, registry, [serverId])
+  if (!presence.get(serverId)?.connected) {
+    return { ok: false, error: 'Daemon not connected' }
+  }
+
+  const requestId = generateRequestId()
+  const envelope: DaemonOutboundEnvelope = {
+    kind: 'update',
+    deliveryId: generateDeliveryId(),
+    requestId,
+    at: new Date().toISOString(),
+    channel: UPDATE_CHANNEL,
+  }
+
+  await registry.getCell(serverId).enqueue(envelope, {
+    ttlSeconds: UPDATE_REQUEST_TTL_SECONDS,
+  })
+
+  return {
+    ok: true,
+    queued: true,
+    status: 'updating',
+    serverId,
+    requestId,
+    channel: UPDATE_CHANNEL,
+  }
+}
+
+function currentCommitFromAgent(
+  agent: { commit?: string; buildId?: string; builtAt?: string } | undefined,
+): ServerUpdateCommit | null {
+  return agent?.commit
+    ? {
+      commit: agent.commit,
+      buildId: agent.buildId ?? '',
+      builtAt: agent.builtAt ?? '',
+    }
+    : null
+}
 
 export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
   router.use('/servers', createSessionMiddleware(opts.secrets))
@@ -86,6 +151,162 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
     })
   })
 
+  router.get('/servers/updates', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
+
+    const visibleIds = await listVisible(db, {
+      kind: 'server',
+      userId: session.userId,
+      organizationId,
+    })
+
+    if (visibleIds.length === 0) {
+      return c.json({
+        ok: true,
+        channel: UPDATE_CHANNEL,
+        target: null,
+        targetStatus: 'unknown' as const,
+        targetError: 'Could not resolve trunk channel manifest',
+        servers: [],
+      })
+    }
+
+    const registry = getDaemonCellRegistry(c)
+    const presence = await resolveFleetPresence(db, registry, visibleIds)
+    const targetManifest = await resolveTrunkManifest()
+    const target = targetManifest
+      ? {
+        commit: targetManifest.commit,
+        buildId: targetManifest.buildId,
+        builtAt: targetManifest.builtAt,
+        manifestUrl: targetManifest.manifestUrl,
+      }
+      : null
+    const targetStatus = target ? 'ok' as const : 'unknown' as const
+    const targetError = target
+      ? undefined
+      : 'Could not resolve trunk channel manifest'
+
+    const servers = await Promise.all(
+      visibleIds.map(async (serverId) => {
+        const current = currentCommitFromAgent(presence.get(serverId)?.agent)
+        const resolved = await resolveServerUpdateStatus({
+          serverId,
+          current,
+          targetManifest,
+          listUpdateRequests: async () => {
+            if (!registry) return []
+            return registry.getCell(serverId).listRequests(10, { requestKind: 'update' })
+          },
+        })
+        return {
+          serverId,
+          current,
+          ...resolved,
+        }
+      }),
+    )
+
+    return c.json({
+      ok: true,
+      channel: UPDATE_CHANNEL,
+      target,
+      targetStatus,
+      targetError,
+      servers,
+    })
+  })
+
+  router.post('/servers/updates', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
+
+    const registry = getDaemonCellRegistry(c)
+    if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
+
+    const visibleIds = await listVisible(db, {
+      kind: 'server',
+      userId: session.userId,
+      organizationId,
+    })
+
+    const targetManifest = await resolveTrunkManifest()
+    const presence = await resolveFleetPresence(db, registry, visibleIds)
+
+    const results = await Promise.all(
+      visibleIds.map(async (serverId) => {
+        const manageable = await can(
+          db,
+          session.userId,
+          'organization:manage',
+          'server',
+          serverId,
+        )
+        if (!manageable) {
+          return {
+            serverId,
+            ok: false,
+            error: 'Forbidden',
+          }
+        }
+
+        if (!presence.get(serverId)?.connected) {
+          return {
+            serverId,
+            ok: false,
+            error: 'Daemon not connected',
+          }
+        }
+
+        const current = currentCommitFromAgent(presence.get(serverId)?.agent)
+        const updateAvailable = targetManifest
+          ? current?.commit !== targetManifest.commit
+          : false
+        if (!updateAvailable) {
+          return {
+            serverId,
+            ok: false,
+            error: targetManifest ? 'Up to date' : 'Target unavailable',
+          }
+        }
+
+        const queued = await queueServerUpdate(registry, db, serverId)
+        if (!queued.ok) {
+          return { serverId, ok: false, error: queued.error }
+        }
+
+        return {
+          serverId,
+          ok: true,
+          queued: true,
+          status: queued.status,
+          requestId: queued.requestId,
+          channel: queued.channel,
+        }
+      }),
+    )
+
+    return c.json({
+      ok: results.every((result) => result.ok),
+      results,
+    })
+  })
+
   router.get('/servers/:id/cell', async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
@@ -112,15 +333,7 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const registry = getDaemonCellRegistry(c)
     const presence = await resolveFleetPresence(db, registry, [id])
-    const agent = presence.get(id)?.agent
-
-    const current = agent?.commit
-      ? {
-        commit: agent.commit,
-        buildId: agent.buildId ?? '',
-        builtAt: agent.builtAt ?? '',
-      }
-      : null
+    const current = currentCommitFromAgent(presence.get(id)?.agent)
 
     const resolved = await resolveServerUpdateStatus({
       serverId: id,
@@ -134,7 +347,7 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
     return c.json({
       ok: true,
       serverId: id,
-      channel: 'trunk',
+      channel: UPDATE_CHANNEL,
       current,
       ...resolved,
     })
@@ -151,41 +364,12 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
     const registry = getDaemonCellRegistry(c)
     if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
 
-    const presence = await resolveFleetPresence(db, registry, [id])
-    if (!presence.get(id)?.connected) {
-      return c.json({ error: 'Daemon not connected' }, 404)
+    const queued = await queueServerUpdate(registry, db, id)
+    if (!queued.ok) {
+      return c.json({ ok: false, error: queued.error }, 404)
     }
 
-    const envelope: DaemonOutboundEnvelope = {
-      kind: 'update',
-      deliveryId: generateDeliveryId(),
-      requestId: generateRequestId(),
-      at: new Date().toISOString(),
-      channel: 'trunk',
-    }
-
-    const record = await registry.getCell(id).createRequestAndWait(
-      envelope,
-      UPDATE_TIMEOUT_MS,
-    )
-
-    if (record.status === 'done') {
-      return c.json({ ok: true, queued: true, status: 'updating' })
-    }
-    if (record.status === 'failed') {
-      return c.json(
-        { ok: false, error: record.error ?? 'daemon reported failure' },
-        500,
-      )
-    }
-    if (record.status === 'expired') {
-      return c.json(
-        { ok: false, error: 'timeout waiting for daemon acknowledgement' },
-        504,
-      )
-    }
-
-    return c.json({ ok: false, error: `unexpected update status: ${record.status}` }, 500)
+    return c.json({ ok: true, ...queued })
   })
 
   router.delete('/servers/:id', async (c) => {
