@@ -26,21 +26,20 @@ const DEV_SYNC_TIMEOUT_MS = 180_000
  * the checked-in `orchestration/roles` tree is. Requires `--allow-run=tar`.
  */
 async function buildDaemonTarball(repo: string): Promise<Uint8Array> {
-  const tmp = await Deno.makeTempFile({ suffix: '.tgz' })
-  try {
-    const command = new Deno.Command('tar', {
-      args: buildDevSyncTarArgs(repo, tmp),
-      stdout: 'piped',
-      stderr: 'piped',
-    })
-    const out = await command.output()
-    if (!out.success) {
-      throw new Error(`tar failed: ${new TextDecoder().decode(out.stderr).trim()}`)
-    }
-    return await Deno.readFile(tmp)
-  } finally {
-    await Deno.remove(tmp).catch(() => {})
+  // Stream the archive to stdout (`-f -`) rather than a temp file. The instance
+  // runs as a sandboxed Deno process whose `--allow-write` does not include the
+  // OS temp dir, so `Deno.makeTempFile()` throws "Requires write access to
+  // <TMP>". Writing to stdout needs no filesystem write permission.
+  const command = new Deno.Command('tar', {
+    args: buildDevSyncTarArgs(repo, '-'),
+    stdout: 'piped',
+    stderr: 'piped',
+  })
+  const out = await command.output()
+  if (!out.success) {
+    throw new Error(`tar failed: ${new TextDecoder().decode(out.stderr).trim()}`)
   }
+  return out.stdout
 }
 
 async function syncDevToDaemonWithRegistry(
