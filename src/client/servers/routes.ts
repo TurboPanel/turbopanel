@@ -335,14 +335,20 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
     const presence = await resolveFleetPresence(db, registry, [id])
     const current = currentCommitFromAgent(presence.get(id)?.agent)
 
+    const updateRequests = registry
+      ? await registry.getCell(id).listRequests(10, { requestKind: 'update' })
+      : []
+
     const resolved = await resolveServerUpdateStatus({
       serverId: id,
       current,
-      listUpdateRequests: async () => {
-        if (!registry) return []
-        return registry.getCell(id).listRequests(10, { requestKind: 'update' })
-      },
+      listUpdateRequests: async () => updateRequests,
     })
+
+    // #region agent log
+    const latest = updateRequests[0]
+    fetch('http://localhost:7440/ingest/3e0179a5-fa63-49e5-b717-b62ee1a155c9', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '5d6f57' }, body: JSON.stringify({ sessionId: '5d6f57', runId: 'louie-update', hypothesisId: 'H1,H2,H3,H4,H5', location: 'instance/src/client/servers/routes.ts:getUpdateStatus', message: 'server update status resolved', data: { serverId: id, connected: presence.get(id)?.connected ?? false, currentCommit: current?.commit ?? null, targetCommit: resolved.target?.commit ?? null, status: resolved.status, updateAvailable: resolved.updateAvailable, requestCount: updateRequests.length, latestRequestId: latest?.requestId ?? null, latestStatus: latest?.status ?? null, latestError: latest?.error ?? null, latestCreatedAt: latest?.createdAt ?? null, latestFinishedAt: latest?.finishedAt ?? null }, timestamp: Date.now() }) }).catch(() => {})
+    // #endregion
 
     return c.json({
       ok: true,
