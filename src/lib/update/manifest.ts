@@ -75,6 +75,15 @@ export function resetTrunkManifestCacheForTests(): void {
   inflightManifest = null
 }
 
+/** Seed manifest cache — for tests only. */
+export function seedTrunkManifestCacheForTests(
+  manifest: TrunkManifestTarget | null,
+): void {
+  cachedManifest = manifest
+  cacheExpiresAt = Date.now() + TRUNK_MANIFEST_CACHE_MS
+  inflightManifest = null
+}
+
 export async function resolveTrunkManifest(): Promise<TrunkManifestTarget | null> {
   const now = Date.now()
   if (cachedManifest !== undefined && now < cacheExpiresAt) {

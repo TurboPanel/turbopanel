@@ -266,3 +266,27 @@ Deno.test("resolveServerUpdateStatus returns idle from projected idle summary", 
 
   assertEquals(resolved.status, "idle");
 });
+
+Deno.test("resolveServerUpdateStatus ignores stale projected updating when daemon matches trunk", async () => {
+  const commit = "51e32ad";
+  const resolved = await resolveServerUpdateStatus({
+    serverId: "srv-1",
+    current: { commit, buildId: "b1" },
+    targetManifest: {
+      commit,
+      buildId: "b2",
+      builtAt: "2020-01-01T00:00:00.000Z",
+      channel: "trunk",
+      manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+    },
+    projectedUpdate: {
+      status: "updating",
+      requestId: "req-stale",
+      queuedAt: "2020-01-01T00:00:00.000Z",
+    },
+  });
+
+  assertEquals(resolved.status, "idle");
+  assertEquals(resolved.updateAvailable, false);
+  assertEquals(resolved.canResetUpdateStatus, true);
+});

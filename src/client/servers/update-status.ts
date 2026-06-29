@@ -15,7 +15,7 @@ import {
 import type { Db } from '../../db.ts'
 import { server } from '../../lib/db/schema.ts'
 import { resolveColocatedServerIdSet } from './colocated.ts'
-import { UPDATE_PENDING_MS } from '../../lib/update/constants.ts'
+import { UPDATE_PENDING_MS, UPDATE_REQUEST_TTL_MS } from '../../lib/update/constants.ts'
 import {
   resolveTrunkManifest,
   type TrunkManifestTarget,
@@ -91,6 +91,33 @@ export function colocatedServerUpdateBlockedReason(): string {
   return COLOCATED_SERVER_UPDATE_BLOCKED_REASON
 }
 
+export function isStaleProjectedUpdating(params: {
+  projectedUpdate?: UpdateProjection | null
+  currentCommit?: string | null
+  targetCommit?: string | null
+  updateTtlMs?: number
+}): boolean {
+  const update = params.projectedUpdate
+  if (!update || update.status !== 'updating') return false
+
+  if (
+    params.targetCommit &&
+    params.currentCommit &&
+    params.currentCommit === params.targetCommit
+  ) {
+    return true
+  }
+
+  if (update.queuedAt && params.updateTtlMs) {
+    const queuedMs = Date.parse(update.queuedAt)
+    if (!Number.isNaN(queuedMs) && Date.now() - queuedMs >= params.updateTtlMs) {
+      return true
+    }
+  }
+
+  return false
+}
+
 export type ServerUpdateGetResponse = {
   ok: boolean
   serverId: string
@@ -106,6 +133,10 @@ export type ServerUpdateGetResponse = {
   targetError?: string
   /** Set when the latest terminal update attempt failed or timed out. */
   lastUpdateError?: string
+  /** ISO timestamp of the in-flight or latest update request, when known. */
+  queuedAt?: string
+  /** True when operators may clear a stale non-terminal update projection. */
+  canResetUpdateStatus?: boolean
 }
 
 export async function resolveServerUpdateStatus(params: {
@@ -128,6 +159,8 @@ export async function resolveServerUpdateStatus(params: {
     | 'targetStatus'
     | 'targetError'
     | 'lastUpdateError'
+    | 'queuedAt'
+    | 'canResetUpdateStatus'
   >
 > {
   const manifest = params.targetManifest !== undefined
@@ -167,6 +200,13 @@ export async function resolveServerUpdateStatus(params: {
     requests = await (params.listUpdateRequests ?? (async () => []))()
   }
   const latest = pickLatestUpdateRequest(requests)
+  const queuedAt = params.projectedUpdate?.queuedAt ?? latest?.createdAt
+  const staleUpdating = isStaleProjectedUpdating({
+    projectedUpdate: params.projectedUpdate,
+    currentCommit: params.current?.commit,
+    targetCommit: target?.commit,
+    updateTtlMs: UPDATE_REQUEST_TTL_MS,
+  })
 
   if (latest) {
     if (!isTerminalRequestStatus(latest.status)) {
@@ -194,6 +234,19 @@ export async function resolveServerUpdateStatus(params: {
     }
   }
 
+  // Terminal evidence wins over a stale projected in-flight update.
+  if (
+    target &&
+    params.current?.commit === target.commit &&
+    status === 'updating'
+  ) {
+    status = 'idle'
+  }
+
+  const canResetUpdateStatus = staleUpdating ||
+    (status === 'error' && !!lastUpdateError) ||
+    (status === 'idle' && !!lastUpdateError && !updateAvailable)
+
   return {
     target,
     updateAvailable,
@@ -207,6 +260,8 @@ export async function resolveServerUpdateStatus(params: {
     targetStatus,
     targetError,
     ...(lastUpdateError ? { lastUpdateError } : {}),
+    ...(queuedAt ? { queuedAt } : {}),
+    ...(canResetUpdateStatus ? { canResetUpdateStatus: true } : {}),
   }
 }
 

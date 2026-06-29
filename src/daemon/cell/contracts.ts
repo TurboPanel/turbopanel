@@ -63,6 +63,15 @@ export type ExpiredUpdateRequest = {
   finishedAt: string;
 };
 
+export type ClearUpdateStatusOptions = {
+  /** When true, expire or clear non-terminal updates that are stale. */
+  allowStale?: boolean;
+  currentCommit?: string;
+  targetCommit?: string;
+  queuedAt?: string;
+  updateTtlMs?: number;
+};
+
 /**
  * DaemonCell — the live daemon connection owner.
  *
@@ -149,7 +158,7 @@ export interface DaemonCell {
 
   prune(now?: number): Promise<ExpiredUpdateRequest[]>;
   /** Drop terminal update request rows so org update status can be cleared manually. */
-  clearUpdateStatus(): Promise<{ cleared: number }>;
+  clearUpdateStatus(opts?: ClearUpdateStatusOptions): Promise<{ cleared: number }>;
   purge(): Promise<void>;
 }
 

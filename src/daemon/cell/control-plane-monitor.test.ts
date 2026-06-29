@@ -476,3 +476,67 @@ Deno.test("onDaemonUpdateExpired writes projection.update as expired", async () 
     "Update timed out waiting for daemon acknowledgement",
   );
 });
+
+Deno.test("repairStaleProjectedUpdate marks done when daemon commit matches trunk", async () => {
+  const { db, getDaemon } = createTrackingDb({
+    key: baseKey,
+    projection: {
+      update: {
+        status: "updating",
+        requestId: "req-1",
+        channel: "trunk",
+        queuedAt: "2020-01-01T00:00:00.000Z",
+      },
+    },
+  });
+
+  const { repairStaleProjectedUpdate } = await import("./control-plane-monitor.ts");
+  const repaired = await repairStaleProjectedUpdate(
+    db,
+    serverId,
+    {
+      status: "updating",
+      requestId: "req-1",
+      channel: "trunk",
+      queuedAt: "2020-01-01T00:00:00.000Z",
+    },
+    {
+      currentCommit: "target-commit",
+      targetCommit: "target-commit",
+    },
+  );
+
+  assertEquals(repaired, true);
+  const update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "done");
+});
+
+Deno.test("maybeRepairUpdateFromAgentHello clears updating when agent matches trunk", async () => {
+  const { db, getDaemon } = createTrackingDb({
+    key: baseKey,
+    projection: {
+      update: {
+        status: "updating",
+        requestId: "req-1",
+        channel: "trunk",
+        queuedAt: "2020-01-01T00:00:00.000Z",
+      },
+    },
+  });
+
+  const { maybeRepairUpdateFromAgentHello } = await import("./control-plane-monitor.ts");
+  await maybeRepairUpdateFromAgentHello(
+    db,
+    serverId,
+    {
+      commit: "target-commit",
+      buildId: "b1",
+      channel: "trunk",
+    },
+    "target-commit",
+  );
+
+  const update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "done");
+  assertEquals(update?.requestId, "req-1");
+});

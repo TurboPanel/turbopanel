@@ -14,6 +14,7 @@ import {
   onDaemonUpdateResult,
 } from "./control-plane-monitor.ts";
 import type {
+  ClearUpdateStatusOptions,
   DaemonCell,
   DaemonCellLease,
   DaemonCellSnapshot,
@@ -1228,7 +1229,10 @@ export class DaemonCellObject {
 
       case "/rpc/clear-update-status":
         return jsonResponse(
-          await this.#clearUpdateStatus(this.#requireServerId(request, body)),
+          await this.#clearUpdateStatus(
+            this.#requireServerId(request, body),
+            body as ClearUpdateStatusOptions | null,
+          ),
         );
 
       case "/rpc/purge-cell":
@@ -1599,14 +1603,43 @@ export class DaemonCellObject {
     );
   }
 
-  async #clearUpdateStatus(serverId: string): Promise<{ cleared: number }> {
+  async #clearUpdateStatus(
+    serverId: string,
+    opts?: ClearUpdateStatusOptions | null,
+  ): Promise<{ cleared: number }> {
     const inFlightCursor = this.#ctx.storage.sql.exec(
-      `SELECT request_id FROM requests
+      `SELECT request_id, status, created_at FROM requests
        WHERE request_kind = 'update'
        AND status NOT IN ('acked', 'done', 'failed', 'expired')`,
     );
-    for (const _ of inFlightCursor) {
+    let cleared = 0;
+    const staleRequestIds: string[] = [];
+    for (const row of inFlightCursor) {
+      const requestId = String(row.request_id ?? "");
+      const createdAt = String(row.created_at ?? "");
+      const stale = opts?.allowStale && this.#isStaleInFlightUpdate(
+        createdAt,
+        opts,
+      );
+      if (stale) {
+        staleRequestIds.push(requestId);
+        continue;
+      }
       throw new Error("update in progress");
+    }
+
+    const finishedAt = nowIso();
+    for (const requestId of staleRequestIds) {
+      this.#ctx.storage.sql.exec(
+        `UPDATE requests SET status = 'expired', finished_at = ?, updated_at = ?
+         WHERE request_id = ?`,
+        finishedAt,
+        finishedAt,
+        requestId,
+      );
+      this.#reclaimTerminalOutbox(requestId);
+      await this.#projectUpdateExpired(serverId, requestId, finishedAt);
+      cleared++;
     }
 
     const terminalCursor = this.#ctx.storage.sql.exec(
@@ -1630,7 +1663,30 @@ export class DaemonCellObject {
     });
 
     await this.#scheduleNearestAlarm();
-    return { cleared: requestIds.length };
+    return { cleared: cleared + requestIds.length };
+  }
+
+  #isStaleInFlightUpdate(
+    createdAt: string,
+    opts: ClearUpdateStatusOptions,
+  ): boolean {
+    if (
+      opts.targetCommit &&
+      opts.currentCommit &&
+      opts.currentCommit === opts.targetCommit
+    ) {
+      return true;
+    }
+
+    const queuedAt = opts.queuedAt ?? createdAt;
+    if (queuedAt && opts.updateTtlMs) {
+      const queuedMs = Date.parse(queuedAt);
+      if (!Number.isNaN(queuedMs) && Date.now() - queuedMs >= opts.updateTtlMs) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   async #createRequestAndWait(

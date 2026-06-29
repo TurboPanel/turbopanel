@@ -499,3 +499,16 @@ export async function readProjectionsForServers(
   }
   return result;
 }
+
+export async function listServerIdsWithUpdatingProjection(
+  db: Db,
+): Promise<string[]> {
+  const rows = await db
+    .select({ id: server.id })
+    .from(server)
+    .where(
+      sql`${server.daemon}->'projection'->'update'->>'status' = 'updating'`,
+    );
+
+  return rows.map((row) => row.id);
+}

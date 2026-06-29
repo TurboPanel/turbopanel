@@ -8,6 +8,7 @@
  */
 import type { Db } from "../../db.ts";
 import { getServerDaemonStateByServerId } from "../authn/server-identity-db.ts";
+import type { UpdateProjection } from "../authn/daemon-state.ts";
 import type { DaemonCell } from "./contracts.ts";
 import {
   agentChanged,
@@ -15,6 +16,9 @@ import {
   projectServerDaemon,
   type ProjectionAgent,
 } from "./postgres-projection.ts";
+import { resolveTrunkManifest } from "../../lib/update/manifest.ts";
+import { isStaleProjectedUpdating } from "../../client/servers/update-status.ts";
+import { UPDATE_REQUEST_TTL_MS } from "../../lib/update/constants.ts";
 import { RedisDaemonCell } from "./redis/cell.ts";
 import type { RedisDaemonCellRegistry } from "./redis/registry.ts";
 
@@ -53,6 +57,10 @@ export async function onDaemonInbound(
   cell: DaemonCell,
   opts: { at?: string; agent?: ProjectionAgent } = {},
 ): Promise<void> {
+  if (opts.agent?.commit && opts.agent?.buildId) {
+    await maybeRepairUpdateFromAgentHello(db, serverId, opts.agent);
+  }
+
   const existing = await getServerDaemonStateByServerId(db, serverId);
   const snapshot = await cell.getSnapshot();
   const projectedOffline = existing?.status?.connected === false;
@@ -132,6 +140,78 @@ export async function onDaemonUpdateExpired(
     requestId,
     finishedAt,
     error,
+  });
+}
+
+/** Repair a stale `updating` Postgres projection when terminal evidence is available. */
+export async function repairStaleProjectedUpdate(
+  db: Db,
+  serverId: string,
+  projectedUpdate: UpdateProjection,
+  opts: {
+    currentCommit?: string | null;
+    targetCommit?: string | null;
+    updateTtlMs?: number;
+  } = {},
+): Promise<boolean> {
+  if (
+    !isStaleProjectedUpdating({
+      projectedUpdate,
+      currentCommit: opts.currentCommit,
+      targetCommit: opts.targetCommit,
+      updateTtlMs: opts.updateTtlMs ?? UPDATE_REQUEST_TTL_MS,
+    })
+  ) {
+    return false;
+  }
+
+  const finishedAt = new Date().toISOString();
+  const requestId = projectedUpdate.requestId ?? "";
+
+  if (
+    opts.targetCommit &&
+    opts.currentCommit &&
+    opts.currentCommit === opts.targetCommit
+  ) {
+    await projectServerDaemon(db, serverId, {
+      kind: "update-result",
+      requestId,
+      ok: true,
+      finishedAt,
+    });
+    return true;
+  }
+
+  await projectServerDaemon(db, serverId, {
+    kind: "update-expired",
+    requestId,
+    finishedAt,
+  });
+  return true;
+}
+
+/** Self-heal when a reconnecting daemon already reports the trunk target commit. */
+export async function maybeRepairUpdateFromAgentHello(
+  db: Db,
+  serverId: string,
+  agent?: ProjectionAgent,
+  targetCommit?: string,
+): Promise<void> {
+  if (!agent?.commit || !agent?.buildId) return;
+
+  const existing = await getServerDaemonStateByServerId(db, serverId);
+  const update = existing?.projection?.update;
+  if (!update || update.status !== "updating") return;
+
+  const manifestCommit = targetCommit ??
+    (await resolveTrunkManifest())?.commit;
+  if (!manifestCommit || agent.commit !== manifestCommit) return;
+
+  await projectServerDaemon(db, serverId, {
+    kind: "update-result",
+    requestId: update.requestId ?? "",
+    ok: true,
+    finishedAt: new Date().toISOString(),
   });
 }
 

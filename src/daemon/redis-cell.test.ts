@@ -2,6 +2,7 @@ import { assert, assertEquals, assertRejects } from "jsr:@std/assert";
 import type { Db } from "../db.ts";
 import {
   buildDefaultDaemonStatus,
+  parseServerDaemonState,
   type ServerDaemonState,
 } from "./authn/daemon-state.ts";
 import { sweepStalePresence, onDaemonInbound, onDaemonConnected, onDaemonHeartbeat } from "./cell/control-plane-monitor.ts";
@@ -911,6 +912,122 @@ Deno.test(
     });
 
     const cleared = await cell.clearUpdateStatus();
+    assertEquals(cleared.cleared, 1);
+    assertEquals(
+      await cell.listRequests(10, { requestKind: "update" }),
+      [],
+    );
+  }),
+);
+
+function createProjectionTrackingDb(serverId: string): {
+  db: Db;
+  getDaemon: () => ServerDaemonState;
+} {
+  let daemon: ServerDaemonState = {
+    key: {
+      id: "key-1",
+      algorithm: "Ed25519",
+      publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
+      fingerprint: "fp-1",
+      createdAt: "2020-01-01T00:00:00.000Z",
+    },
+    projection: {
+      update: {
+        status: "updating",
+        requestId: "pending",
+        channel: "trunk",
+        queuedAt: new Date(Date.now() - 400_000).toISOString(),
+      },
+    },
+    status: buildDefaultDaemonStatus(),
+  };
+
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([{ id: serverId, daemon }]),
+          then: (
+            resolve: (value: unknown) => void,
+            reject?: (reason: unknown) => void,
+          ) => {
+            const rows = daemon.projection?.update?.status === "updating"
+              ? [{ id: serverId }]
+              : [{ id: serverId, daemon }];
+            return Promise.resolve(rows).then(resolve, reject);
+          },
+        }),
+      }),
+    }),
+    update: () => ({
+      set: (patch: Record<string, unknown>) => {
+        if (patch.daemon) {
+          daemon = patch.daemon as ServerDaemonState;
+        }
+        return {
+          where: () => Promise.resolve(undefined),
+        };
+      },
+    }),
+  } as unknown as Db;
+
+  return { db, getDaemon: () => daemon };
+}
+
+Deno.test(
+  "maintain expires offline in-flight update and projects Postgres state",
+  withRedisCell(async ({ client, serverId }) => {
+    const { db, getDaemon } = createProjectionTrackingDb(serverId);
+    const registry = createRedisDaemonCellRegistry({ db });
+    const cell = registry.getCell(serverId) as RedisDaemonCell;
+
+    const requestId = generateRequestId();
+    const queuedAt = new Date(Date.now() - 400_000).toISOString();
+    await cell.enqueue({
+      kind: "update",
+      deliveryId: generateDeliveryId(),
+      requestId,
+      at: queuedAt,
+      channel: "trunk",
+    }, { ttlSeconds: 300 });
+
+    await client.hset(requestKey(serverId, requestId), {
+      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+      createdAt: queuedAt,
+    });
+    await client.srem(onlineSetKey(), serverId);
+
+    await registry.maintain();
+
+    assertEquals(await cell.getRequest(requestId), null);
+    assertEquals(
+      parseServerDaemonState(getDaemon())?.projection?.update?.status,
+      "expired",
+    );
+
+    await registry.close();
+  }),
+);
+
+Deno.test(
+  "clearUpdateStatus expires stale in-flight update when allowStale is set",
+  withRedisCell(async ({ cell, serverId }) => {
+    const requestId = generateRequestId();
+    const at = new Date().toISOString();
+    await cell.enqueue({
+      kind: "update",
+      deliveryId: generateDeliveryId(),
+      requestId,
+      at,
+      channel: "trunk",
+    });
+
+    const cleared = await cell.clearUpdateStatus({
+      allowStale: true,
+      currentCommit: "same-commit",
+      targetCommit: "same-commit",
+    });
     assertEquals(cleared.cleared, 1);
     assertEquals(
       await cell.listRequests(10, { requestKind: "update" }),

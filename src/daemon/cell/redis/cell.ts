@@ -1,4 +1,5 @@
 import type {
+  ClearUpdateStatusOptions,
   DaemonCell,
   DaemonCellLease,
   DaemonCellSnapshot,
@@ -114,6 +115,33 @@ function parseRequestRecord(
 
 function isTerminalStatus(status: PendingRequestStatus): boolean {
   return TERMINAL_STATUSES.has(status);
+}
+
+function isStaleInFlightUpdate(
+  fields: Record<string, string>,
+  opts?: ClearUpdateStatusOptions,
+): boolean {
+  if (!opts?.allowStale) return false;
+  const status = fields.status as PendingRequestStatus;
+  if (isTerminalStatus(status)) return false;
+
+  if (
+    opts.targetCommit &&
+    opts.currentCommit &&
+    opts.currentCommit === opts.targetCommit
+  ) {
+    return true;
+  }
+
+  const queuedAt = opts.queuedAt ?? fields.createdAt;
+  if (queuedAt && opts.updateTtlMs) {
+    const queuedMs = Date.parse(queuedAt);
+    if (!Number.isNaN(queuedMs) && Date.now() - queuedMs >= opts.updateTtlMs) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function envelopeFromOutboxFields(
@@ -607,7 +635,9 @@ export class RedisDaemonCell implements DaemonCell {
     }
 
     await this.#client.hset(reqKey, recordFields);
-    await this.#client.expire(reqKey, ttlSeconds);
+    if (outbound.kind !== "update") {
+      await this.#client.expire(reqKey, ttlSeconds);
+    }
     await this.#client.zadd(indexKey, now, outbound.requestId);
     this.#deliveryToStreamId.set(outbound.deliveryId, streamId);
 
@@ -922,7 +952,9 @@ export class RedisDaemonCell implements DaemonCell {
     }
   }
 
-  async clearUpdateStatus(): Promise<{ cleared: number }> {
+  async clearUpdateStatus(
+    opts?: ClearUpdateStatusOptions,
+  ): Promise<{ cleared: number }> {
     const indexKey = requestsKey(this.#serverId);
     const requestIds = await this.#client.zrangebyscore(
       indexKey,
@@ -936,6 +968,23 @@ export class RedisDaemonCell implements DaemonCell {
       if (!fields || fields.requestKind !== "update") continue;
       const status = fields.status as PendingRequestStatus;
       if (!isTerminalStatus(status)) {
+        if (isStaleInFlightUpdate(fields, opts)) {
+          const finishedAt = nowIso();
+          await this.#client.hset(reqKey, {
+            status: "expired",
+            finishedAt,
+            error: "Update timed out waiting for daemon acknowledgement",
+          });
+          await this.#projectUpdateExpired(requestId, finishedAt);
+          await this.#cleanupTerminalRequest(requestId, {
+            ...fields,
+            status: "expired",
+            finishedAt,
+          });
+          this.#terminalResults.delete(requestId);
+          cleared++;
+          continue;
+        }
         throw new Error("update in progress");
       }
       await this.#purgeRequestRecord(requestId, fields);

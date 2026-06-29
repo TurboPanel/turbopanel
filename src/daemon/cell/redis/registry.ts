@@ -1,5 +1,6 @@
 import type { Db } from "../../db.ts";
 import type {
+  ClearUpdateStatusOptions,
   DaemonCell,
   DaemonCellRegistry,
   DaemonCellSnapshot,
@@ -9,6 +10,7 @@ import type { RedisClientOptions } from "./client.ts";
 import { createRedisCellClient, RedisCellClient } from "./client.ts";
 import { RedisDaemonCell } from "./cell.ts";
 import { onlineSetKey } from "./keys.ts";
+import { listServerIdsWithUpdatingProjection } from "../postgres-projection.ts";
 
 export type RedisDaemonCellRegistryOptions = RedisClientOptions & {
   db?: Db;
@@ -59,9 +61,25 @@ export function createRedisDaemonCellRegistry(
     },
 
     async maintain(): Promise<void> {
-      const onlineServerIds = await client.smembers(onlineSetKey());
+      const serverIds = new Set<string>();
+
+      for (const serverId of await client.smembers(onlineSetKey())) {
+        serverIds.add(serverId);
+      }
+
+      for (const key of await client.scanKeys("tp:cell:*:requests")) {
+        const match = /^tp:cell:(.+):requests$/.exec(key);
+        if (match?.[1]) serverIds.add(match[1]);
+      }
+
+      if (db) {
+        for (const serverId of await listServerIdsWithUpdatingProjection(db)) {
+          serverIds.add(serverId);
+        }
+      }
+
       await Promise.all(
-        onlineServerIds.map(async (serverId) => {
+        [...serverIds].map(async (serverId) => {
           const cell = getCell(serverId) as RedisDaemonCell;
           try {
             await cell.prune();

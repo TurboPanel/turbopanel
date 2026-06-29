@@ -14,8 +14,12 @@ import { readProjectionsForServers } from '../../daemon/cell/postgres-projection
 import {
   onDaemonUpdateQueued,
   onDaemonUpdateReset,
+  onDaemonUpdateResult,
+  onDaemonUpdateExpired,
+  repairStaleProjectedUpdate,
 } from '../../daemon/cell/control-plane-monitor.ts'
 import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
+import type { UpdateProjection } from '../../daemon/authn/daemon-state.ts'
 import {
   generateDeliveryId,
   generateRequestId,
@@ -33,10 +37,12 @@ import {
 } from './colocated.ts'
 import {
   colocatedServerUpdateBlockedReason,
+  isStaleProjectedUpdating,
   loadServerStatusRecords,
   resolveServerUpdateStatus,
   type ServerUpdateCommit,
 } from './update-status.ts'
+import { UPDATE_REQUEST_TTL_MS } from '../../lib/update/constants.ts'
 
 const UPDATE_CHANNEL = 'trunk'
 const UPDATE_REQUEST_TTL_SECONDS = 300
@@ -138,6 +144,42 @@ function currentCommitFromAgent(
       builtAt: agent.builtAt ?? '',
     }
     : null
+}
+
+async function repairProjectedUpdateIfStale(
+  db: Db,
+  serverId: string,
+  projectedUpdate: UpdateProjection | null | undefined,
+  current: ServerUpdateCommit | null,
+  targetCommit?: string,
+): Promise<UpdateProjection | null | undefined> {
+  if (!projectedUpdate || projectedUpdate.status !== 'updating') {
+    return projectedUpdate
+  }
+
+  const repaired = await repairStaleProjectedUpdate(
+    db,
+    serverId,
+    projectedUpdate,
+    {
+      currentCommit: current?.commit,
+      targetCommit,
+      updateTtlMs: UPDATE_REQUEST_TTL_MS,
+    },
+  )
+  if (!repaired) return projectedUpdate
+
+  if (targetCommit && current?.commit === targetCommit) {
+    return {
+      status: 'done',
+      requestId: projectedUpdate.requestId,
+      channel: projectedUpdate.channel,
+      queuedAt: projectedUpdate.queuedAt,
+      finishedAt: new Date().toISOString(),
+    }
+  }
+
+  return { status: 'idle' }
 }
 
 export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
@@ -257,13 +299,20 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
     const servers = await Promise.all(
       visibleIds.map(async (serverId) => {
         const current = currentCommitFromAgent(presence.get(serverId)?.agent)
-        const projection = projections.get(serverId)
+        let projection = projections.get(serverId)
+        const repairedUpdate = await repairProjectedUpdateIfStale(
+          db,
+          serverId,
+          projection?.update ?? null,
+          current,
+          targetManifest?.commit,
+        )
         const resolved = await resolveServerUpdateStatus({
           serverId,
           current,
           targetManifest,
           colocatedWithInstance: colocatedIds.has(serverId),
-          projectedUpdate: projection?.update ?? null,
+          projectedUpdate: repairedUpdate ?? null,
         })
         return {
           serverId,
@@ -498,14 +547,43 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
     if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
 
     try {
-      const { cleared } = await registry.getCell(id).clearUpdateStatus()
-      await onDaemonUpdateReset(db, id)
       const presence = await resolveFleetPresence(db, registry, [id])
+      const projections = await readProjectionsForServers(db, [id])
       const colocatedIds = await resolveColocatedServerIdSet(db, registry, [id])
       const current = currentCommitFromAgent(presence.get(id)?.agent)
+      const targetManifest = await resolveTrunkManifest()
+      const projectedUpdate = projections.get(id)?.update
+      const stale = isStaleProjectedUpdating({
+        projectedUpdate,
+        currentCommit: current?.commit,
+        targetCommit: targetManifest?.commit,
+        updateTtlMs: UPDATE_REQUEST_TTL_MS,
+      })
+
+      const { cleared } = await registry.getCell(id).clearUpdateStatus({
+        allowStale: stale,
+        currentCommit: current?.commit,
+        targetCommit: targetManifest?.commit,
+        queuedAt: projectedUpdate?.queuedAt,
+        updateTtlMs: UPDATE_REQUEST_TTL_MS,
+      })
+
+      if (stale && projectedUpdate?.status === 'updating') {
+        const finishedAt = new Date().toISOString()
+        const requestId = projectedUpdate.requestId ?? ''
+        if (targetManifest && current?.commit === targetManifest.commit) {
+          await onDaemonUpdateResult(db, id, requestId, true, finishedAt)
+        } else {
+          await onDaemonUpdateExpired(db, id, requestId, finishedAt)
+        }
+      } else {
+        await onDaemonUpdateReset(db, id)
+      }
+
       const resolved = await resolveServerUpdateStatus({
         serverId: id,
         current,
+        targetManifest,
         colocatedWithInstance: colocatedIds.has(id),
         projectedUpdate: { status: 'idle' },
       })
@@ -541,12 +619,21 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
     const projections = await readProjectionsForServers(db, [id])
     const colocatedIds = await resolveColocatedServerIdSet(db, registry, [id])
     const current = currentCommitFromAgent(presence.get(id)?.agent)
+    const targetManifest = await resolveTrunkManifest()
+    const repairedUpdate = await repairProjectedUpdateIfStale(
+      db,
+      id,
+      projections.get(id)?.update ?? null,
+      current,
+      targetManifest?.commit,
+    )
 
     const resolved = await resolveServerUpdateStatus({
       serverId: id,
       current,
+      targetManifest,
       colocatedWithInstance: colocatedIds.has(id),
-      projectedUpdate: projections.get(id)?.update ?? null,
+      projectedUpdate: repairedUpdate ?? null,
     })
 
     return c.json({

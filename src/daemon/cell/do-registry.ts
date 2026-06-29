@@ -1,5 +1,6 @@
 import type { Db } from "../../db.ts";
 import type {
+  ClearUpdateStatusOptions,
   DaemonCell,
   DaemonCellLease,
   DaemonCellRegistry,
@@ -333,10 +334,10 @@ class DurableObjectStubDaemonCell implements DaemonCell {
     }).then(() => undefined);
   }
 
-  clearUpdateStatus(): Promise<{ cleared: number }> {
+  clearUpdateStatus(opts?: ClearUpdateStatusOptions): Promise<{ cleared: number }> {
     return this.#rpc<{ cleared: number }>("/rpc/clear-update-status", {
       serverId: this.#serverId,
-      body: {},
+      body: opts ?? {},
       idempotent: true,
     });
   }

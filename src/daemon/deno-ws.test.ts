@@ -24,6 +24,10 @@ import type {
 import { issueDaemonJwt } from "./authn/daemon-jwt.ts";
 import { registerDaemonWebSocket } from "./deno-ws.ts";
 import { DAEMON_WS_PATH } from "../surfaces.ts";
+import {
+  resetTrunkManifestCacheForTests,
+  seedTrunkManifestCacheForTests,
+} from "../lib/update/manifest.ts";
 
 async function createDaemonJwtSecrets() {
   const parsed = parseSecretsEnv(generateSecret(), undefined, "deno");
@@ -684,5 +688,97 @@ Deno.test("update-result over WS projects update summary to Postgres", async () 
   assertEquals(update?.status, "done");
   assertEquals(update?.requestId, "req-update-1");
   assertEquals(update?.finishedAt, "2020-01-01T00:01:00.000Z");
+  ws.close(1000, "done");
+});
+
+Deno.test("hello over WS clears stale updating when agent matches trunk", async () => {
+  resetTrunkManifestCacheForTests();
+  seedTrunkManifestCacheForTests({
+    commit: "target-commit",
+    buildId: "b2",
+    builtAt: "2020-01-01T00:00:00.000Z",
+    channel: "trunk",
+    manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+  });
+
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-hello-repair";
+  const { db, getDaemon } = createProjectionTrackingDb(serverId, {
+    key: baseDaemonKey,
+    projection: {
+      hostname: "host-1",
+      agent: {
+        commit: "target-commit",
+        buildId: "b1",
+        channel: "trunk",
+      },
+      update: {
+        status: "updating",
+        requestId: "req-update-1",
+        channel: "trunk",
+        queuedAt: "2020-01-01T00:00:00.000Z",
+      },
+    },
+  }, {
+    connected: true,
+    daemonStatus: "online",
+    lastSeenAt: "2020-01-01T00:00:00.000Z",
+    connectedAt: "2020-01-01T00:00:00.000Z",
+  });
+  const tracking = createTrackingDaemonCell(serverId);
+  tracking.cell.getSnapshot = async () => ({
+    serverId,
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    connected: true,
+    agent: {
+      commit: "target-commit",
+      buildId: "b1",
+      channel: "trunk",
+    },
+  });
+  const app = new Hono();
+  registerTestDaemonWebSocket(app, secrets, {
+    db,
+    registry: createTrackingRegistry(tracking.cell),
+  });
+
+  const issued = await issueDaemonJwt(
+    { sub: serverId, kid: "key-test" },
+    secrets,
+  );
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${issued.token}`,
+      ...WS_UPGRADE_HEADERS,
+    },
+  });
+  if (response.status !== 101 || !response.webSocket) {
+    console.warn(
+      "Skipping hello repair WS test: response.webSocket unavailable",
+    );
+    return;
+  }
+
+  const ws = response.webSocket;
+  ws.accept();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  ws.send(JSON.stringify({
+    type: "hello",
+    at: new Date().toISOString(),
+    agent: {
+      commit: "target-commit",
+      buildId: "b1",
+      channel: "trunk",
+    },
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "done");
+  assertEquals(update?.requestId, "req-update-1");
+  resetTrunkManifestCacheForTests();
   ws.close(1000, "done");
 });
