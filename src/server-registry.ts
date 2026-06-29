@@ -24,6 +24,16 @@ function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
   return patch
 }
 
+/** Pure merge of hostname/machineId into `server.metadata` — no DB I/O. */
+export function mergeServerMetadataIdentity(
+  current: ServerMetadata | null | undefined,
+  identity: Pick<ServerHelloIdentity, 'hostname' | 'machineId'>,
+): ServerMetadata | null {
+  const patch = metadataPatch(identity)
+  if (Object.keys(patch).length === 0) return null
+  return { ...(current ?? {}), ...patch }
+}
+
 function defaultDisplayName(_identity: ServerHelloIdentity): string | null {
   return null
 }
@@ -42,16 +52,18 @@ export async function touchServerMetadata(
   serverId: string,
   identity: ServerHelloIdentity,
 ): Promise<void> {
-  const patch = metadataPatch(identity)
-  if (Object.keys(patch).length === 0) return
   const rows = await db
     .select({ metadata: server.metadata })
     .from(server)
     .where(eq(server.id, serverId))
     .limit(1)
-  const current = (rows[0]?.metadata ?? {}) as ServerMetadata
+  const merged = mergeServerMetadataIdentity(
+    rows[0]?.metadata as ServerMetadata | null | undefined,
+    identity,
+  )
+  if (!merged) return
   await db.update(server).set({
-    metadata: { ...current, ...patch },
+    metadata: merged,
     updatedAt: nowTs(),
   }).where(eq(server.id, serverId))
 }

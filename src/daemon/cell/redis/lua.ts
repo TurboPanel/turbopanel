@@ -17,33 +17,49 @@ end
 `;
 
 /**
- * Demote stale daemon socket presence when the Redis lease has expired but
- * meta still marks the server connected (unclean disconnect / crash).
+ * Demote stale daemon socket presence when the Redis lease has expired or
+ * inbound activity is older than the sweep threshold.
  *
  * KEYS[1] lease key, KEYS[2] meta hash, KEYS[3] online set
- * ARGV[1] serverId, ARGV[2] closedAt, ARGV[3] reason
+ * ARGV[1] serverId, ARGV[2] closedAt, ARGV[3] reason, ARGV[4] staleBeforeIso
  */
 export const RECONCILE_STALE_SOCKET_PRESENCE = `
-if redis.call("GET", KEYS[1]) then
-  return 0
+local connected = redis.call("HGET", KEYS[2], "connected")
+local wasOnline = 0
+
+if connected ~= "1" then
+  wasOnline = redis.call("SREM", KEYS[3], ARGV[1])
+  if wasOnline == 0 then
+    return 0
+  end
 end
 
-local connected = redis.call("HGET", KEYS[2], "connected")
-local wasOnline = redis.call("SREM", KEYS[3], ARGV[1])
-
-if connected ~= "1" and wasOnline == 0 then
-  return 0
+local leaseHeld = redis.call("GET", KEYS[1])
+if leaseHeld then
+  local lastInbound = redis.call("HGET", KEYS[2], "lastInboundAt")
+  if not lastInbound or lastInbound == "" then
+    lastInbound = redis.call("HGET", KEYS[2], "lastSeenAt")
+  end
+  if not lastInbound or lastInbound == "" then
+    lastInbound = redis.call("HGET", KEYS[2], "connectedAt")
+  end
+  if lastInbound and lastInbound > ARGV[4] then
+    return 0
+  end
 end
 
 local connectionId = redis.call("HGET", KEYS[2], "connectionId") or ""
 
 if connected == "1" then
   redis.call("HSET", KEYS[2], "connected", "0")
+  redis.call("SREM", KEYS[3], ARGV[1])
   if connectionId ~= "" then
     local connKey = "tp:cell:" .. ARGV[1] .. ":conn:" .. connectionId
     redis.call("HSET", connKey, "closedAt", ARGV[2], "reason", ARGV[3])
     redis.call("EXPIRE", connKey, 86400)
   end
+elseif wasOnline == 1 then
+  redis.call("SREM", KEYS[3], ARGV[1])
 end
 
 if connectionId ~= "" then

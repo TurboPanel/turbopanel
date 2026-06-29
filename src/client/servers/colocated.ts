@@ -1,7 +1,7 @@
 import { inArray } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
-import { resolveFleetPresence } from '../../daemon/cell/fleet-presence.ts'
+import { readProjectionsForServers } from '../../daemon/cell/postgres-projection.ts'
 import { resolveColocatedServerId, readLocalMachineId } from '../authn/install-state.ts'
 import type { ServerMetadata } from '../../lib/db/server-metadata.ts'
 import { server } from '../../lib/db/schema.ts'
@@ -9,23 +9,21 @@ import { server } from '../../lib/db/schema.ts'
 /** Server ids for daemons co-located with this control plane instance. */
 export async function resolveColocatedServerIdSet(
   db: Db,
-  registry: DaemonCellRegistry | undefined,
+  _registry: DaemonCellRegistry | undefined,
   serverIds: string[],
 ): Promise<Set<string>> {
   const colocated = new Set<string>()
   if (serverIds.length === 0) return colocated
 
-  if (registry) {
-    const canonical = await resolveColocatedServerId(db, registry)
-    if (canonical && serverIds.includes(canonical)) {
-      colocated.add(canonical)
-    }
+  const canonical = await resolveColocatedServerId(db)
+  if (canonical && serverIds.includes(canonical)) {
+    colocated.add(canonical)
+  }
 
-    const presence = await resolveFleetPresence(db, registry, serverIds)
-    for (const id of serverIds) {
-      if (presence.get(id)?.directAttach) {
-        colocated.add(id)
-      }
+  const projections = await readProjectionsForServers(db, serverIds)
+  for (const id of serverIds) {
+    if (projections.get(id)?.remoteAddress === '__direct__') {
+      colocated.add(id)
     }
   }
 

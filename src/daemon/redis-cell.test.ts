@@ -1,4 +1,10 @@
 import { assert, assertEquals, assertRejects } from "jsr:@std/assert";
+import type { Db } from "../db.ts";
+import {
+  buildDefaultDaemonStatus,
+  type ServerDaemonState,
+} from "./authn/daemon-state.ts";
+import { sweepStalePresence, onDaemonInbound, onDaemonConnected, onDaemonHeartbeat } from "./cell/control-plane-monitor.ts";
 import { RedisDaemonCell } from "./cell/redis/cell.ts";
 import {
   createRedisCellClient,
@@ -19,7 +25,7 @@ import {
   requestKey,
   snapshotKey,
 } from "./cell/redis/keys.ts";
-import { generateDeliveryId, generateRequestId } from "./cell/protocol.ts";
+import { generateDeliveryId, generateRequestId, DAEMON_OFFLINE_SWEEP_MS } from "./cell/protocol.ts";
 
 const DEFAULT_SOCKET = Deno.env.get("TURBOPANEL_REDIS_SOCKET") ??
   "/run/turbopanel/redis.sock";
@@ -412,6 +418,227 @@ Deno.test(
       connectionId: attached.connectionId,
       leaseToken: attached.lease.token,
     });
+  }),
+);
+
+Deno.test(
+  "reconcileStalePresence demotes when lastInboundAt exceeds offline sweep threshold",
+  withRedisCell(async ({ cell, client, registry, serverId }) => {
+    await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    });
+
+    const staleAt = new Date(Date.now() - DAEMON_OFFLINE_SWEEP_MS - 1000)
+      .toISOString();
+    await client.hset(metaKey(serverId), {
+      lastInboundAt: staleAt,
+      lastSeenAt: staleAt,
+    });
+    await client.del(leaseKey(serverId));
+
+    const demoted = await cell.reconcileStalePresence();
+    assert(demoted);
+
+    const online = await registry.listOnlineServerIds();
+    assert(!online.includes(serverId));
+  }),
+);
+
+function createSweepMockDb(initialDaemon: ServerDaemonState): {
+  db: Db;
+  updateCalls: Array<Record<string, unknown>>;
+} {
+  const updateCalls: Array<Record<string, unknown>> = [];
+  let daemon = initialDaemon;
+
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([{ daemon, metadata: null }]),
+        }),
+      }),
+    }),
+    update: () => ({
+      set: (patch: Record<string, unknown>) => {
+        updateCalls.push(patch);
+        if (patch.daemon) {
+          daemon = patch.daemon as ServerDaemonState;
+        }
+        return {
+          where: () => Promise.resolve(undefined),
+        };
+      },
+    }),
+  } as unknown as Db;
+
+  return { db, updateCalls };
+}
+
+Deno.test(
+  "attach and onDaemonConnected projects online status to postgres",
+  withRedisCell(async ({ cell, serverId }) => {
+    const connectedAt = new Date().toISOString();
+    await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    });
+
+    const { db, updateCalls } = createSweepMockDb({
+      key: {
+        id: "key-1",
+        algorithm: "Ed25519",
+        publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
+        fingerprint: "fp-1",
+        createdAt: "2020-01-01T00:00:00.000Z",
+      },
+      projection: { hostname: "host-1" },
+      status: {
+        ...buildDefaultDaemonStatus(),
+        connected: false,
+        daemonStatus: "offline",
+      },
+    });
+
+    await onDaemonConnected(db, serverId, cell, connectedAt);
+
+    assertEquals(updateCalls.length, 1);
+    const status = (updateCalls[0]?.daemon as ServerDaemonState)?.status;
+    assertEquals(status?.connected, true);
+    assertEquals(status?.connectedAt, connectedAt);
+  }),
+);
+
+Deno.test(
+  "onDaemonHeartbeat debounces postgres lastSeenAt to at most once per 60s",
+  withRedisCell(async ({ cell, serverId }) => {
+    const staleAt = new Date(Date.now() - 61_000).toISOString();
+    await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    });
+
+    const { db, updateCalls } = createSweepMockDb({
+      key: {
+        id: "key-1",
+        algorithm: "Ed25519",
+        publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
+        fingerprint: "fp-1",
+        createdAt: "2020-01-01T00:00:00.000Z",
+      },
+      projection: { hostname: "host-1" },
+      status: {
+        ...buildDefaultDaemonStatus(),
+        connected: true,
+        daemonStatus: "online",
+        lastSeenAt: staleAt,
+        connectedAt: staleAt,
+      },
+    });
+
+    await onDaemonHeartbeat(db, serverId, cell);
+    assertEquals(updateCalls.length, 1);
+
+    await onDaemonHeartbeat(db, serverId, cell);
+    assertEquals(updateCalls.length, 1);
+  }),
+);
+
+Deno.test(
+  "sweepStalePresence projects offline when reconcileStalePresence demotes",
+  withRedisCell(async ({ cell, client, registry, serverId }) => {
+    await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    });
+
+    const staleAt = new Date(Date.now() - DAEMON_OFFLINE_SWEEP_MS - 1000)
+      .toISOString();
+    await client.hset(metaKey(serverId), {
+      lastInboundAt: staleAt,
+      lastSeenAt: staleAt,
+    });
+    await client.del(leaseKey(serverId));
+
+    const { db, updateCalls } = createSweepMockDb({
+      key: {
+        id: "key-1",
+        algorithm: "Ed25519",
+        publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
+        fingerprint: "fp-1",
+        createdAt: "2020-01-01T00:00:00.000Z",
+      },
+      projection: { hostname: "host-1" },
+      status: {
+        ...buildDefaultDaemonStatus(),
+        connected: true,
+        daemonStatus: "online",
+        lastSeenAt: staleAt,
+      },
+    });
+
+    await sweepStalePresence(db, registry);
+
+    assertEquals(updateCalls.length, 1);
+    const status = (updateCalls[0]?.daemon as ServerDaemonState)?.status;
+    assertEquals(status?.connected, false);
+  }),
+);
+
+Deno.test(
+  "inbound after stale sweep restores postgres online status",
+  withRedisCell(async ({ cell, client, registry, serverId }) => {
+    const attached = await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    });
+
+    const staleAt = new Date(Date.now() - DAEMON_OFFLINE_SWEEP_MS - 1000)
+      .toISOString();
+    await client.hset(metaKey(serverId), {
+      lastInboundAt: staleAt,
+      lastSeenAt: staleAt,
+    });
+    await client.del(leaseKey(serverId));
+
+    const { db, updateCalls } = createSweepMockDb({
+      key: {
+        id: "key-1",
+        algorithm: "Ed25519",
+        publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
+        fingerprint: "fp-1",
+        createdAt: "2020-01-01T00:00:00.000Z",
+      },
+      projection: { hostname: "host-1" },
+      status: {
+        ...buildDefaultDaemonStatus(),
+        connected: false,
+        daemonStatus: "offline",
+        lastSeenAt: staleAt,
+        disconnectedAt: staleAt,
+      },
+    });
+
+    await sweepStalePresence(db, registry);
+
+    const at = new Date().toISOString();
+    await cell.recordInbound({
+      connectionId: attached.connectionId,
+      at,
+      agent: { commit: "recovered", buildId: "1", channel: "trunk" },
+    });
+    await onDaemonInbound(db, serverId, cell, {
+      at,
+      agent: { commit: "recovered", buildId: "1", channel: "trunk" },
+    });
+
+    const meta = await client.hgetall(metaKey(serverId));
+    assertEquals(meta?.connected, "1");
+
+    const online = await registry.listOnlineServerIds();
+    assert(online.includes(serverId));
+
+    assertEquals(updateCalls.length, 2);
+    const status = (updateCalls[updateCalls.length - 1]?.daemon as ServerDaemonState)
+      ?.status;
+    assertEquals(status?.connected, true);
+    assertEquals(status?.daemonStatus, "online");
   }),
 );
 

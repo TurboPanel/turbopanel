@@ -1,7 +1,9 @@
 import { eq, sql } from "drizzle-orm";
 import type { Db } from "../../db.ts";
+import type { ServerMetadata } from "../../lib/db/server-metadata.ts";
 import { server } from "../../lib/db/schema.ts";
 import {
+  buildDefaultDaemonStatus,
   buildServerDaemonState,
   parseServerDaemonState,
   type ServerDaemonState,
@@ -14,18 +16,31 @@ function nowTs(): string {
 export type { ServerDaemonKey, ServerDaemonState } from "./daemon-state.ts";
 export { isDaemonKeyActive, parseServerDaemonState } from "./daemon-state.ts";
 
+export type ServerDaemonStateWithMetadata = ServerDaemonState & {
+  metadata: ServerMetadata | null;
+};
+
 export async function getServerDaemonStateByServerId(
   db: Db,
   serverId: string,
-): Promise<ServerDaemonState | null> {
+): Promise<ServerDaemonStateWithMetadata | null> {
   const [row] = await db
-    .select({ daemon: server.daemon })
+    .select({
+      daemon: server.daemon,
+      metadata: server.metadata,
+    })
     .from(server)
     .where(eq(server.id, serverId))
     .limit(1);
 
   if (!row) return null;
-  return parseServerDaemonState(row.daemon);
+  const state = parseServerDaemonState(row.daemon);
+  if (!state) return null;
+  return {
+    ...state,
+    status: state.status ?? buildDefaultDaemonStatus(),
+    metadata: (row.metadata ?? null) as ServerMetadata | null,
+  };
 }
 
 export async function getServerDaemonStateByFingerprint(
@@ -78,11 +93,17 @@ async function updateServerDaemonState(
   const existing = await getServerDaemonStateByServerId(db, serverId);
   if (!existing) return false;
 
+  const daemonState: ServerDaemonState = {
+    key: existing.key,
+    ...(existing.projection ? { projection: existing.projection } : {}),
+    ...(existing.status ? { status: existing.status } : {}),
+  };
+
   const now = nowTs();
   await db
     .update(server)
     .set({
-      daemon: updater(existing),
+      daemon: updater(daemonState),
       updatedAt: now,
     })
     .where(eq(server.id, serverId));

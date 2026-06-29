@@ -9,7 +9,9 @@ import { verifyDaemonJwt } from "../authn/daemon-jwt.ts";
 import {
   onDaemonConnected,
   onDaemonDisconnected,
-  onDaemonHeartbeat,
+  onDaemonInbound,
+  onDaemonUpdateExpired,
+  onDaemonUpdateResult,
 } from "./control-plane-monitor.ts";
 import type {
   DaemonCell,
@@ -25,6 +27,7 @@ import type {
   OutboxDeliveryId,
 } from "./protocol.ts";
 import {
+  DAEMON_OFFLINE_SWEEP_MS,
   outboundEnvelopeToWireMessage,
   parseDaemonMessage,
   wireMessageToInboundEnvelope,
@@ -43,6 +46,17 @@ const DELIVERY_LEASE_NAME = "delivery";
 const DAEMON_SOCKET_LEASE_NAME = "daemon-socket";
 const OUTBOX_PUMP_ALARM_MS = 2_000;
 const HEARTBEAT_COALESCE_MS = 60_000;
+
+type ProjectionDbFactory = () => Db | null;
+
+let projectionDbFactoryForTests: ProjectionDbFactory | null = null;
+
+/** Test-only seam: override Postgres client used by DO→Postgres projection writes. */
+export function setDaemonCellProjectionDbFactoryForTests(
+  factory: ProjectionDbFactory | null,
+): void {
+  projectionDbFactoryForTests = factory;
+}
 
 function nowIso(now = Date.now()): string {
   return new Date(now).toISOString();
@@ -140,6 +154,11 @@ export class DaemonCellObject {
   constructor(ctx: DurableObjectState, env: CloudflareBindings) {
     this.#ctx = ctx;
     this.#env = env;
+  }
+
+  #isDaemonDebug(): boolean {
+    return this.#env.TURBOPANEL_DAEMON_DEBUG === "1" ||
+      this.#env.TURBOPANEL_DAEMON_DEBUG === "true";
   }
 
   async #getDaemonJwtSecrets(): Promise<DerivedSecretsConfig> {
@@ -253,6 +272,9 @@ export class DaemonCellObject {
    * configured (e.g. unit tests), making projection a no-op.
    */
   #newProjectionDb(): Db | null {
+    if (projectionDbFactoryForTests) {
+      return projectionDbFactoryForTests();
+    }
     if (this.#env.HYPERDRIVE) {
       return createWorkersDb(this.#env.HYPERDRIVE);
     }
@@ -286,6 +308,9 @@ export class DaemonCellObject {
         this.#projectionCell(serverId),
         connectedAt,
       );
+      if (this.#isDaemonDebug()) {
+        console.debug(`daemon cell projection: connected (${serverId})`);
+      }
     } catch (err) {
       console.error(
         `daemon cell connect projection failed (${serverId}): ${
@@ -300,6 +325,9 @@ export class DaemonCellObject {
     if (!db) return;
     try {
       await onDaemonDisconnected(db, serverId, this.#projectionCell(serverId));
+      if (this.#isDaemonDebug()) {
+        console.debug(`daemon cell projection: disconnected (${serverId})`);
+      }
     } catch (err) {
       console.error(
         `daemon cell disconnect projection failed (${serverId}): ${
@@ -309,23 +337,81 @@ export class DaemonCellObject {
     }
   }
 
-  async #projectAgent(
+  async #projectUpdateResult(
     serverId: string,
-    agent: DaemonAgentInfo | undefined,
+    requestId: string,
+    ok: boolean,
+    finishedAt: string,
+    error?: string,
   ): Promise<void> {
-    if (!agent?.commit || !agent?.buildId) return;
     const db = this.#newProjectionDb();
     if (!db) return;
     try {
-      await onDaemonHeartbeat(
+      await onDaemonUpdateResult(
+        db,
+        serverId,
+        requestId,
+        ok,
+        finishedAt,
+        error,
+      );
+      if (this.#isDaemonDebug()) {
+        console.debug(`daemon cell projection: update-result (${serverId})`);
+      }
+    } catch (err) {
+      console.error(
+        `daemon cell update-result projection failed (${serverId}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  async #projectUpdateExpired(
+    serverId: string,
+    requestId: string,
+    finishedAt: string,
+    error?: string,
+  ): Promise<void> {
+    const db = this.#newProjectionDb();
+    if (!db) return;
+    try {
+      await onDaemonUpdateExpired(
+        db,
+        serverId,
+        requestId,
+        finishedAt,
+        error,
+      );
+      if (this.#isDaemonDebug()) {
+        console.debug(`daemon cell projection: update-expired (${serverId})`);
+      }
+    } catch (err) {
+      console.error(
+        `daemon cell update-expired projection failed (${serverId}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  async #projectInbound(
+    serverId: string,
+    at?: string,
+    agent?: DaemonAgentInfo,
+  ): Promise<void> {
+    const db = this.#newProjectionDb();
+    if (!db) return;
+    try {
+      await onDaemonInbound(
         db,
         serverId,
         this.#projectionCell(serverId),
-        agent,
+        { at, agent },
       );
     } catch (err) {
       console.error(
-        `daemon cell agent projection failed (${serverId}): ${
+        `daemon cell inbound projection failed (${serverId}): ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
@@ -518,6 +604,17 @@ export class DaemonCellObject {
       if (!Number.isNaN(expiresMs)) bump(expiresMs);
     }
 
+    const staleSweepCursor = this.#ctx.storage.sql.exec(
+      `SELECT last_seen_at FROM cell_meta
+       WHERE connected = 1 AND last_seen_at IS NOT NULL`,
+    );
+    for (const row of staleSweepCursor) {
+      const lastSeenMs = Date.parse(String(row.last_seen_at ?? ""));
+      if (!Number.isNaN(lastSeenMs)) {
+        bump(lastSeenMs + DAEMON_OFFLINE_SWEEP_MS);
+      }
+    }
+
     return next;
   }
 
@@ -635,9 +732,11 @@ export class DaemonCellObject {
       connectedAt,
     });
 
+    console.info(`daemon cell connected (${serverId}) conn=${connectionId}`);
+
     this.#ctx.waitUntil(this.#projectConnected(serverId, connectedAt));
     void this.#pumpOutboxToDaemonSockets(serverId);
-    await this.#scheduleOutboxRetryIfNeeded();
+    await this.#scheduleNearestAlarm();
 
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -670,15 +769,31 @@ export class DaemonCellObject {
     return undefined;
   }
 
+  #restoreRuntimeConnected(serverId: string): void {
+    const now = nowIso();
+    this.#ctx.storage.sql.exec(
+      `UPDATE cell_meta SET connected = 1, updated_at = ?
+       WHERE server_id = ? AND connected = 0`,
+      now,
+      serverId,
+    );
+  }
+
   #recordInbound(
     serverId: string,
     at: string,
     agent?: DaemonAgentInfo,
   ): void {
+    this.#restoreRuntimeConnected(serverId);
+
     const atMs = Date.parse(at);
     const coalesce = Number.isNaN(atMs) ||
       this.#shouldCoalesceLastSeenAt(serverId, atMs);
     const now = nowIso();
+
+    if (coalesce && this.#isDaemonDebug()) {
+      console.debug(`daemon cell inbound (${serverId}) last_seen_at bumped`);
+    }
 
     if (agent) {
       const agentChanged = !agentIdentityEqual(agent, this.#readStoredAgent(serverId));
@@ -752,11 +867,12 @@ export class DaemonCellObject {
 
     if (parsed.type === "hello") {
       this.#recordInbound(attachment.serverId, parsed.at, parsed.agent);
-      await this.#projectConnected(
+      await this.#projectInbound(
         attachment.serverId,
         parsed.at ?? nowIso(),
+        parsed.agent,
       );
-      await this.#projectAgent(attachment.serverId, parsed.agent);
+      await this.#scheduleNearestAlarm();
       return;
     }
 
@@ -766,12 +882,18 @@ export class DaemonCellObject {
         parsed.at,
         parsed.agent,
       );
-      await this.#projectAgent(attachment.serverId, parsed.agent);
+      await this.#projectInbound(
+        attachment.serverId,
+        parsed.at ?? nowIso(),
+        parsed.agent,
+      );
+      await this.#scheduleNearestAlarm();
       return;
     }
 
     this.#recordInbound(attachment.serverId, parsed.at);
     await this.#handleInboundMessage(attachment.serverId, parsed);
+    await this.#scheduleNearestAlarm();
   }
 
   async webSocketClose(
@@ -833,6 +955,9 @@ export class DaemonCellObject {
 
     if (isCurrentConnection) {
       await this.#projectDisconnected(attachment.serverId);
+      console.info(
+        `daemon cell disconnected (${attachment.serverId}) conn=${attachment.connectionId} code=${code}`,
+      );
       await this.#scheduleNearestAlarm();
     }
   }
@@ -841,6 +966,23 @@ export class DaemonCellObject {
     this.#ensureSchema();
     const nowMs = Date.now();
     const now = nowIso(nowMs);
+    const serverId = this.#resolveServerId(new Request("https://do.internal/"));
+
+    const expiringCursor = this.#ctx.storage.sql.exec(
+      `SELECT request_id, request_kind, status FROM requests
+       WHERE expires_at <= ?
+       AND request_kind = 'update'
+       AND status NOT IN ('done', 'failed', 'expired', 'acked')`,
+      now,
+    );
+    for (const row of expiringCursor) {
+      if (!serverId) continue;
+      await this.#projectUpdateExpired(
+        serverId,
+        String(row.request_id ?? ""),
+        now,
+      );
+    }
 
     this.#ctx.storage.sql.exec(
       "DELETE FROM requests WHERE expires_at <= ?",
@@ -858,7 +1000,25 @@ export class DaemonCellObject {
       now,
     );
 
-    const serverId = this.#resolveServerId(new Request("https://do.internal/"));
+    const staleCutoff = nowIso(nowMs - DAEMON_OFFLINE_SWEEP_MS);
+    const staleCursor = this.#ctx.storage.sql.exec(
+      `SELECT server_id FROM cell_meta
+       WHERE connected = 1 AND last_seen_at IS NOT NULL AND last_seen_at <= ?`,
+      staleCutoff,
+    );
+    for (const row of staleCursor) {
+      const staleServerId = String(row.server_id);
+      this.#ctx.storage.sql.exec(
+        `UPDATE cell_meta SET connected = 0, updated_at = ? WHERE server_id = ?`,
+        now,
+        staleServerId,
+      );
+      console.info(
+        `daemon cell offline transition (${staleServerId}): alarm-stale`,
+      );
+      await this.#projectDisconnected(staleServerId);
+    }
+
     if (serverId) {
       this.#requeueExpiredInflightOutbox(nowMs);
       await this.#pumpOutboxToDaemonSockets(serverId);
@@ -1350,6 +1510,15 @@ export class DaemonCellObject {
         this.#reclaimTerminalOutbox(inbound.requestId);
         await this.#scheduleNearestAlarm();
       }
+      if (inbound.kind === "update-result") {
+        await this.#projectUpdateResult(
+          serverId,
+          inbound.requestId,
+          inbound.ok,
+          inbound.at,
+          inbound.error,
+        );
+      }
       return record;
     }
     return existing;
@@ -1495,6 +1664,13 @@ export class DaemonCellObject {
       expiresAt: expiredAt,
       finishedAt: expiredAt,
     };
+    if (outbound.kind === "update") {
+      await this.#projectUpdateExpired(
+        serverId,
+        outbound.requestId,
+        expiredAt,
+      );
+    }
     this.#reclaimTerminalRequest(outbound.requestId);
     return expiredRecord;
   }

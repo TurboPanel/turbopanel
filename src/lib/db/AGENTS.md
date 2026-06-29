@@ -181,7 +181,7 @@ Each physical server node gets a row in `server` (`id` uuidv7). On daemon connec
 
 `options` takes precedence over `metadata` when both define a value (see `src/daemon/cell/location.ts`).
 
-**Daemon identity (`server.daemon` jsonb):** the `server` row stores the one active daemon Ed25519 identity as structured jsonb. No separate `serverkey` table exists for MVP.
+**Daemon identity (`server.daemon` jsonb):** the `server` row stores the one active daemon Ed25519 identity and sparse presence summary as structured jsonb. Shape: `{ key, projection?, status? }`. No separate `serverkey` table exists for MVP.
 
 ```json
 {
@@ -192,6 +192,21 @@ Each physical server node gets a row in `server` (`id` uuidv7). On daemon connec
     "fingerprint": "sha256-public-jwk-fingerprint",
     "createdAt": "iso timestamp",
     "revokedAt": "iso timestamp or null"
+  },
+  "projection": {
+    "hostname": "host.example",
+    "machineId": "machine-id",
+    "remoteAddress": "203.0.113.1",
+    "keyId": "uuid",
+    "agent": { "commit": "abc", "buildId": "build-1", "builtAt": "iso", "channel": "trunk" }
+  },
+  "status": {
+    "connected": true,
+    "daemonStatus": "online",
+    "lastSeenAt": "iso timestamp",
+    "connectedAt": "iso timestamp",
+    "disconnectedAt": null,
+    "statusChangedAt": "iso timestamp"
   }
 }
 ```
@@ -203,9 +218,15 @@ Each physical server node gets a row in `server` (`id` uuidv7). On daemon connec
 | `key.fingerprint` | SHA-256 hex over the canonical public JWK — duplicate-checked at enrollment (no DB unique constraint for MVP) |
 | `key.revokedAt` | Non-null blocks new JWT issuance; existing JWTs remain valid until their 15-minute expiry |
 
-**Daemon liveness timestamps:** `lastInboundAt`, `lastSeenAt`, and `keyLastUsedAt` live in the daemon cell snapshot — not Postgres columns. `lastInboundAt` advances on inbound WS activity (coalesced to at most once per 60 s) and on connect; `lastSeenAt` also advances on online/offline transitions; `keyLastUsedAt` is set on each inbound message and `/auth/session`.
+**`server.daemon.projection` (sparse identity summary):** `hostname`, `machineId`, `remoteAddress`, `keyId`, optional `agent` (`commit`/`buildId`/`builtAt`/`channel`). Updated on identity changes and agent build identity changes (via `control-plane-monitor.ts` outside the DO hot path on Workers). No monitor health counts or resource graph are stored.
 
-**`server.daemon.projection` (sparse presence summary):** the `projection` field inside `server.daemon` jsonb holds a slowly-changing summary — `hostname`, `machineId`, `remoteAddress`, `keyId`, `connected`, optional `agent` (`commit`/`buildId`/`builtAt`/`channel`), `lastProjectedAt`, `connectedAt`. It is updated only on online/offline transitions and agent build identity changes (via `control-plane-monitor.ts` outside the DO hot path on Workers). No monitor health counts or resource graph are stored. The `key` field is always preserved on write (read-modify-write via `parseServerDaemonState` + merge).
+**`server.daemon.status` (liveness projection):** `connected`, `daemonStatus` (`online` \| `offline` \| `unknown`), `lastSeenAt`, `connectedAt`, `disconnectedAt`, `statusChangedAt`. Updated on online/offline transitions and debounced heartbeats (60 s). There are no dedicated Postgres columns for these fields — reads use jsonb path queries (e.g. `daemon->'status'->>'connected'`).
+
+**Status read model:** `server.daemon.status` is the Postgres-projected liveness read model. UI and API status reads go through `src/daemon/cell/server-status.ts` (formerly `fleet-presence.ts`). Do not read `server.daemon.status` directly from routes — use `resolveFleetPresence` / `loadServerStatusRecords`. The `/servers/status` and `/servers/:id/status` endpoints serve this jsonb read model; reads are Postgres-only and do not call the DO/Redis cell; both runtimes share the same response shape. There are **no** dedicated status columns — jsonb path queries only. See the instance `AGENTS.md` Daemon Cell section for cost/parity rules.
+
+**Cell-only liveness timestamps:** `lastInboundAt` and `keyLastUsedAt` live in the daemon cell snapshot only — not in Postgres. `lastInboundAt` advances on inbound WS activity (coalesced to at most once per 60 s) and on connect; `keyLastUsedAt` is set on each inbound message and `/auth/session`.
+
+The `key` field is always preserved on write (read-modify-write via `parseServerDaemonState` + merge).
 
 Re-enrollment with a valid license token replaces `server.daemon` atomically. No historical key rows are kept for MVP. To revoke daemon auth, set `server.daemon.key.revokedAt` (via `revokeDaemonKey` helper).
 

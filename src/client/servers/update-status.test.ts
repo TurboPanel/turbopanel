@@ -210,3 +210,59 @@ Deno.test("resolveServerUpdateStatus computes updateAvailable only with known ta
     assertEquals(resolved.updateAvailable, false);
   }
 });
+
+Deno.test("resolveServerUpdateStatus returns updating from projected update summary", async () => {
+  const resolved = await resolveServerUpdateStatus({
+    serverId: "srv-1",
+    current: { commit: "aaa", buildId: "b1" },
+    projectedUpdate: { status: "updating" },
+  });
+
+  assertEquals(resolved.status, "updating");
+});
+
+Deno.test("resolveServerUpdateStatus returns updating from projected done with commit drift", async () => {
+  const finishedAt = new Date().toISOString();
+  const resolved = await resolveServerUpdateStatus({
+    serverId: "srv-1",
+    current: { commit: "aaa", buildId: "b1" },
+    targetManifest: {
+      commit: "bbb",
+      buildId: "b2",
+      builtAt: "2020-01-01T00:00:00.000Z",
+      channel: "trunk",
+      manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+    },
+    projectedUpdate: { status: "done", finishedAt },
+  });
+
+  assertEquals(resolved.status, "updating");
+});
+
+Deno.test("resolveServerUpdateStatus surfaces last error from projected failed update", async () => {
+  const resolved = await resolveServerUpdateStatus({
+    serverId: "srv-1",
+    current: { commit: "51e32ad", buildId: "b1" },
+    targetManifest: {
+      commit: "203fcb3",
+      buildId: "b2",
+      builtAt: "2020-01-01T00:00:00.000Z",
+      channel: "trunk",
+      manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+    },
+    projectedUpdate: { status: "failed", error: "reconcile failed" },
+  });
+
+  assertEquals(resolved.status, "idle");
+  assertEquals(resolved.lastUpdateError, "reconcile failed");
+});
+
+Deno.test("resolveServerUpdateStatus returns idle from projected idle summary", async () => {
+  const resolved = await resolveServerUpdateStatus({
+    serverId: "srv-1",
+    current: { commit: "aaa", buildId: "b1" },
+    projectedUpdate: { status: "idle" },
+  });
+
+  assertEquals(resolved.status, "idle");
+});

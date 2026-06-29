@@ -58,6 +58,25 @@ export type PendingRequestRecord = {
   result?: unknown;
 };
 
+export type ExpiredUpdateRequest = {
+  requestId: string;
+  finishedAt: string;
+};
+
+/**
+ * DaemonCell — the live daemon connection owner.
+ *
+ * Vocabulary:
+ *   DaemonCell         = live connection owner (one per serverId)
+ *   DaemonCellRegistry = factory/registry for DaemonCell instances
+ *   Implementations:
+ *     Workers → DaemonCellObject (SQLite-backed Durable Object, do.ts)
+ *     Deno    → RedisDaemonCell (Redis-backed, redis/cell.ts)
+ *
+ * The DaemonCell is NOT a status read API. Status reads go through the
+ * server status read model (server-status.ts / fleet-presence.ts) backed by Postgres.
+ * Any new DaemonCell RPC must justify why it cannot be served from Postgres or the normal API.
+ */
 export interface DaemonCell {
   attachDaemonSocket(meta: {
     keyId: string;
@@ -128,7 +147,7 @@ export interface DaemonCell {
   }): Promise<DaemonOutboundEnvelope[]>;
   ackOutbox(deliveryIds: OutboxDeliveryId[], consumer: string): Promise<void>;
 
-  prune(now?: number): Promise<boolean>;
+  prune(now?: number): Promise<ExpiredUpdateRequest[]>;
   /** Drop terminal update request rows so org update status can be cleared manually. */
   clearUpdateStatus(): Promise<{ cleared: number }>;
   purge(): Promise<void>;

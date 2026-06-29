@@ -1,11 +1,23 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assert, assertEquals } from "jsr:@std/assert";
 import type { Db } from "../../db.ts";
 import {
+  buildDefaultDaemonStatus,
   parseServerDaemonState,
   type ServerDaemonState,
+  type ServerDaemonStatus,
 } from "../authn/daemon-state.ts";
 import type { DaemonCellRegistry } from "./contracts.ts";
-import { onDaemonHeartbeat } from "./control-plane-monitor.ts";
+import { DAEMON_OFFLINE_SWEEP_MS } from "./protocol.ts";
+import {
+  onDaemonConnected,
+  onDaemonDisconnected,
+  onDaemonHeartbeat,
+  onDaemonInbound,
+  onDaemonUpdateExpired,
+  onDaemonUpdateQueued,
+  onDaemonUpdateResult,
+  onDaemonUpdateReset,
+} from "./control-plane-monitor.ts";
 import { resolveFleetPresence } from "./fleet-presence.ts";
 
 const serverId = "srv-heartbeat-agent";
@@ -18,23 +30,45 @@ const baseKey = {
   createdAt: "2020-01-01T00:00:00.000Z",
 };
 
-function createTrackingDb(initialDaemon: ServerDaemonState): {
+function mergeDaemonStatus(
+  daemon: ServerDaemonState,
+  statusOverrides: Partial<ServerDaemonStatus> = {},
+): ServerDaemonState {
+  return {
+    ...daemon,
+    status: {
+      ...buildDefaultDaemonStatus(),
+      ...(daemon.status ?? {}),
+      ...statusOverrides,
+    },
+  };
+}
+
+function createTrackingDb(
+  initialDaemon: ServerDaemonState,
+  statusOverrides: Partial<ServerDaemonStatus> = {},
+): {
   db: Db;
+  updateCalls: Array<Record<string, unknown>>;
   getDaemon: () => ServerDaemonState;
 } {
-  let daemon = initialDaemon;
+  const updateCalls: Array<Record<string, unknown>> = [];
+  let daemon = mergeDaemonStatus(initialDaemon, statusOverrides);
 
   const row = {
     id: serverId,
     daemon,
-    metadata: { hostname: "host-1" },
+    metadata: { hostname: "host-1" } as Record<string, unknown>,
   };
 
   const db = {
     select: () => ({
       from: () => ({
         where: () => ({
-          limit: () => Promise.resolve([{ daemon }]),
+          limit: () => Promise.resolve([{
+            daemon,
+            metadata: row.metadata,
+          }]),
           then: (
             resolve: (value: unknown) => void,
             reject?: (reason: unknown) => void,
@@ -47,9 +81,13 @@ function createTrackingDb(initialDaemon: ServerDaemonState): {
     }),
     update: () => ({
       set: (patch: Record<string, unknown>) => {
+        updateCalls.push(patch);
         if (patch.daemon) {
           daemon = patch.daemon as ServerDaemonState;
           row.daemon = daemon;
+        }
+        if (patch.metadata !== undefined) {
+          row.metadata = patch.metadata as Record<string, unknown>;
         }
         return {
           where: () => Promise.resolve(undefined),
@@ -58,7 +96,13 @@ function createTrackingDb(initialDaemon: ServerDaemonState): {
     }),
   } as unknown as Db;
 
-  return { db, getDaemon: () => daemon };
+  return { db, updateCalls, getDaemon: () => daemon };
+}
+
+function statusFromPatch(
+  patch: Record<string, unknown> | undefined,
+): ServerDaemonStatus | undefined {
+  return parseServerDaemonState(patch?.daemon)?.status ?? undefined;
 }
 
 function createEmptyRegistry(): DaemonCellRegistry {
@@ -67,19 +111,36 @@ function createEmptyRegistry(): DaemonCellRegistry {
       throw new Error("not used");
     },
     listOnlineServerIds: async () => [],
-    getSnapshots: async () => new Map(),
+    getSnapshots: async () => {
+      throw new Error("getSnapshots must not be called");
+    },
     purge: async () => {},
   };
 }
 
-Deno.test("onDaemonHeartbeat projects agent.commit for update status via resolveFleetPresence", async () => {
-  const { db, getDaemon } = createTrackingDb({
-    key: baseKey,
-    projection: {
+function createMockCell(snapshot: Record<string, unknown> = {}) {
+  return {
+    getSnapshot: async () => ({
+      serverId,
+      version: 1,
+      updatedAt: new Date().toISOString(),
       connected: true,
-      lastProjectedAt: "2020-01-01T00:00:00.000Z",
+      hostname: "host-1",
+      machineId: "mid-1",
+      ...snapshot,
+    }),
+  };
+}
+
+Deno.test("onDaemonHeartbeat projects agent.commit for update status via resolveFleetPresence", async () => {
+  const { db, getDaemon } = createTrackingDb(
+    { key: baseKey, projection: { hostname: "host-1" } },
+    {
+      connected: true,
+      daemonStatus: "online",
+      lastSeenAt: new Date(Date.now() - 61_000).toISOString(),
     },
-  });
+  );
 
   const agent = {
     commit: "heartbeat-commit",
@@ -109,4 +170,309 @@ Deno.test("onDaemonHeartbeat projects agent.commit for update status via resolve
     }
     : null;
   assertEquals(current?.commit, agent.commit);
+});
+
+Deno.test("onDaemonConnected sets status in daemon jsonb", async () => {
+  const { db, updateCalls } = createTrackingDb({ key: baseKey });
+
+  await onDaemonConnected(
+    db,
+    serverId,
+    createMockCell({ connectedAt: "2020-01-01T00:00:00.000Z" }) as never,
+    "2020-01-01T00:00:00.000Z",
+  );
+
+  assertEquals(updateCalls.length, 1);
+  const status = statusFromPatch(updateCalls[0]);
+  assert(status);
+  assertEquals(status?.connected, true);
+  assertEquals(status?.connectedAt, "2020-01-01T00:00:00.000Z");
+  assertEquals(typeof status?.statusChangedAt, "string");
+  assertEquals(typeof status?.lastSeenAt, "string");
+});
+
+Deno.test("onDaemonConnected repeated within 60s skips write when already online", async () => {
+  const connectedAt = "2020-01-01T00:00:00.000Z";
+  const recent = new Date().toISOString();
+  const { db, updateCalls } = createTrackingDb(
+    {
+      key: baseKey,
+      projection: { hostname: "host-1", machineId: "mid-1" },
+    },
+    {
+      connected: true,
+      daemonStatus: "online",
+      lastSeenAt: recent,
+      connectedAt,
+    },
+  );
+
+  await onDaemonConnected(
+    db,
+    serverId,
+    createMockCell({ connectedAt: "2020-06-01T00:00:00.000Z" }) as never,
+    "2020-06-01T00:00:00.000Z",
+  );
+
+  assertEquals(updateCalls.length, 0);
+});
+
+Deno.test("onDaemonConnected repeated after 60s updates lastSeenAt only", async () => {
+  const connectedAt = "2020-01-01T00:00:00.000Z";
+  const stale = new Date(Date.now() - 61_000).toISOString();
+  const { db, updateCalls } = createTrackingDb(
+    {
+      key: baseKey,
+      projection: { hostname: "host-1", machineId: "mid-1" },
+    },
+    {
+      connected: true,
+      daemonStatus: "online",
+      lastSeenAt: stale,
+      connectedAt,
+    },
+  );
+
+  await onDaemonConnected(
+    db,
+    serverId,
+    createMockCell({ connectedAt: "2020-06-01T00:00:00.000Z" }) as never,
+    "2020-06-01T00:00:00.000Z",
+  );
+
+  assertEquals(updateCalls.length, 1);
+  const status = statusFromPatch(updateCalls[0]);
+  assertEquals(typeof status?.lastSeenAt, "string");
+  assertEquals(status?.connectedAt, connectedAt);
+  assertEquals(status?.statusChangedAt, null);
+});
+
+Deno.test("onDaemonDisconnected sets offline status in daemon jsonb without lastSeenAt change", async () => {
+  const { db, updateCalls } = createTrackingDb(
+    { key: baseKey, projection: { hostname: "host-1" } },
+    {
+      connected: true,
+      daemonStatus: "online",
+      lastSeenAt: "2020-01-01T00:00:00.000Z",
+    },
+  );
+
+  await onDaemonDisconnected(db, serverId);
+
+  assertEquals(updateCalls.length, 1);
+  const status = statusFromPatch(updateCalls[0]);
+  assertEquals(status?.connected, false);
+  assertEquals(typeof status?.disconnectedAt, "string");
+  assertEquals(typeof status?.statusChangedAt, "string");
+  assertEquals(status?.lastSeenAt, "2020-01-01T00:00:00.000Z");
+});
+
+Deno.test("onDaemonHeartbeat within 60s skips DB write when agent unchanged", async () => {
+  const agent = {
+    commit: "abc123",
+    buildId: "build-1",
+    channel: "trunk" as const,
+  };
+  const { db, updateCalls } = createTrackingDb(
+    {
+      key: baseKey,
+      projection: { agent },
+    },
+    {
+      connected: true,
+      daemonStatus: "online",
+      lastSeenAt: new Date().toISOString(),
+    },
+  );
+
+  await onDaemonHeartbeat(db, serverId, {} as never, agent);
+
+  assertEquals(updateCalls.length, 0);
+});
+
+Deno.test("onDaemonHeartbeat after 60s writes lastSeenAt", async () => {
+  const agent = {
+    commit: "abc123",
+    buildId: "build-1",
+    channel: "trunk" as const,
+  };
+  const { db, updateCalls } = createTrackingDb(
+    {
+      key: baseKey,
+      projection: { agent },
+    },
+    {
+      connected: true,
+      daemonStatus: "online",
+      lastSeenAt: new Date(Date.now() - 61_000).toISOString(),
+    },
+  );
+
+  await onDaemonHeartbeat(db, serverId, {} as never, agent);
+
+  assertEquals(updateCalls.length, 1);
+  const status = statusFromPatch(updateCalls[0]);
+  assertEquals(typeof status?.lastSeenAt, "string");
+});
+
+Deno.test("onDaemonHeartbeat without agent after 60s writes lastSeenAt", async () => {
+  const stale = new Date(Date.now() - 61_000).toISOString();
+  const { db, updateCalls } = createTrackingDb(
+    {
+      key: baseKey,
+      projection: { hostname: "host-1", agent: { commit: "abc", buildId: "1" } },
+    },
+    {
+      connected: true,
+      daemonStatus: "online",
+      lastSeenAt: stale,
+      connectedAt: "2020-01-01T00:00:00.000Z",
+    },
+  );
+
+  await onDaemonHeartbeat(db, serverId, {} as never);
+
+  assertEquals(updateCalls.length, 1);
+  const status = statusFromPatch(updateCalls[0]);
+  assert(status);
+  assertEquals(typeof status?.lastSeenAt, "string");
+  assertEquals(status?.lastSeenAt !== stale, true);
+  assertEquals(status?.connected, true);
+});
+
+Deno.test("onDaemonInbound restores online projection after stale sweep", async () => {
+  const stale = new Date(Date.now() - DAEMON_OFFLINE_SWEEP_MS - 1000)
+    .toISOString();
+  const { db, updateCalls } = createTrackingDb(
+    {
+      key: baseKey,
+      projection: { hostname: "host-1", agent: { commit: "abc", buildId: "1" } },
+    },
+    {
+      connected: false,
+      daemonStatus: "offline",
+      lastSeenAt: stale,
+      disconnectedAt: stale,
+    },
+  );
+
+  const at = new Date().toISOString();
+  await onDaemonInbound(
+    db,
+    serverId,
+    createMockCell({ connected: false, lastSeenAt: stale }) as never,
+    { at, agent: { commit: "recovered", buildId: "2", channel: "trunk" } },
+  );
+
+  assertEquals(updateCalls.length, 1);
+  const status = statusFromPatch(updateCalls[0]);
+  assertEquals(status?.connected, true);
+  assertEquals(status?.daemonStatus, "online");
+});
+
+Deno.test("onDaemonUpdateQueued writes projection.update as updating", async () => {
+  const { db, getDaemon } = createTrackingDb({ key: baseKey });
+
+  await onDaemonUpdateQueued(
+    db,
+    serverId,
+    "req-1",
+    "trunk",
+    "2020-01-01T00:00:00.000Z",
+  );
+
+  const update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "updating");
+  assertEquals(update?.requestId, "req-1");
+  assertEquals(update?.channel, "trunk");
+  assertEquals(update?.queuedAt, "2020-01-01T00:00:00.000Z");
+});
+
+Deno.test("onDaemonUpdateResult writes projection.update as done or failed", async () => {
+  const { db, getDaemon } = createTrackingDb({
+    key: baseKey,
+    projection: {
+      update: {
+        status: "updating",
+        requestId: "req-1",
+        channel: "trunk",
+        queuedAt: "2020-01-01T00:00:00.000Z",
+      },
+    },
+  });
+
+  await onDaemonUpdateResult(
+    db,
+    serverId,
+    "req-1",
+    true,
+    "2020-01-01T00:01:00.000Z",
+  );
+
+  let update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "done");
+  assertEquals(update?.requestId, "req-1");
+  assertEquals(update?.finishedAt, "2020-01-01T00:01:00.000Z");
+
+  await onDaemonUpdateResult(
+    db,
+    serverId,
+    "req-2",
+    false,
+    "2020-01-01T00:02:00.000Z",
+    "reconcile failed",
+  );
+
+  update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "failed");
+  assertEquals(update?.requestId, "req-2");
+  assertEquals(update?.error, "reconcile failed");
+});
+
+Deno.test("onDaemonUpdateReset clears projection.update to idle", async () => {
+  const { db, getDaemon } = createTrackingDb({
+    key: baseKey,
+    projection: {
+      update: {
+        status: "failed",
+        requestId: "req-1",
+        error: "reconcile failed",
+      },
+    },
+  });
+
+  await onDaemonUpdateReset(db, serverId);
+
+  const update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "idle");
+});
+
+Deno.test("onDaemonUpdateExpired writes projection.update as expired", async () => {
+  const { db, getDaemon } = createTrackingDb({
+    key: baseKey,
+    projection: {
+      update: {
+        status: "updating",
+        requestId: "req-1",
+        channel: "trunk",
+        queuedAt: "2020-01-01T00:00:00.000Z",
+      },
+    },
+  });
+
+  await onDaemonUpdateExpired(
+    db,
+    serverId,
+    "req-1",
+    "2020-01-01T00:05:00.000Z",
+  );
+
+  const update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "expired");
+  assertEquals(update?.requestId, "req-1");
+  assertEquals(update?.finishedAt, "2020-01-01T00:05:00.000Z");
+  assertEquals(
+    update?.error,
+    "Update timed out waiting for daemon acknowledgement",
+  );
 });

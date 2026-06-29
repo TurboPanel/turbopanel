@@ -1,13 +1,23 @@
-import { eq, inArray } from "drizzle-orm";
+/**
+ * Projection layer — the daemon cell writes meaningful state changes to Postgres here.
+ *
+ * Vocabulary:
+ *   projection  = daemon cell → Postgres write (this module)
+ *   server status read model = fleet-presence.ts / server-status.ts
+ */
+import { eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "../../db.ts";
 import {
+  buildDefaultDaemonStatus,
   parseServerDaemonState,
   type ServerDaemonProjection,
   type ServerDaemonState,
+  type ServerDaemonStatus,
+  type UpdateProjection,
 } from "../authn/daemon-state.ts";
 import { getServerDaemonStateByServerId } from "../authn/server-identity-db.ts";
 import { server } from "../../lib/db/schema.ts";
-import { touchServerMetadata } from "../../server-registry.ts";
+import { mergeServerMetadataIdentity } from "../../server-registry.ts";
 import type { DaemonCell } from "./contracts.ts";
 import type { DaemonCellSnapshot } from "./contracts.ts";
 
@@ -29,6 +39,7 @@ export type ProjectionTrigger =
   | { kind: "online"; identity: ProjectionIdentity; connectedAt?: string }
   | { kind: "offline" }
   | { kind: "disconnected" }
+  | { kind: "heartbeat"; agent?: ProjectionAgent }
   | { kind: "identity"; identity: ProjectionIdentity }
   | {
     kind: "agent";
@@ -38,7 +49,43 @@ export type ProjectionTrigger =
       builtAt?: string;
       channel?: string;
     };
-  };
+  }
+  | {
+    kind: "update-queued";
+    requestId: string;
+    channel: string;
+    queuedAt: string;
+  }
+  | {
+    kind: "update-result";
+    requestId: string;
+    ok: boolean;
+    finishedAt: string;
+    error?: string;
+  }
+  | {
+    kind: "update-expired";
+    requestId: string;
+    finishedAt: string;
+    error?: string;
+  }
+  | { kind: "update-reset" };
+
+/** Status-backed read model for fleet presence — excludes hostname/machineId (metadata). */
+export type ServerDaemonProjectionRead = Omit<
+  ServerDaemonProjection,
+  "hostname" | "machineId"
+> & {
+  update?: UpdateProjection;
+  connected: boolean;
+  connectedAt?: string | null;
+  lastProjectedAt?: string | null;
+  daemonConnected: boolean;
+  daemonConnectedAt?: string | null;
+  lastSeenAt?: string | null;
+};
+
+const HEARTBEAT_DEBOUNCE_MS = 60_000;
 
 function nowTs(): string {
   return new Date().toISOString();
@@ -108,30 +155,42 @@ export function mergeAgentPreserving(
   return incoming;
 }
 
-function attachPreservedAgent(
-  projection: ServerDaemonProjection,
+function buildIdentityProjection(
   current: ServerDaemonProjection | undefined,
-  incoming?: ProjectionAgent,
+  identity: ProjectionIdentity,
 ): ServerDaemonProjection {
-  const agent = mergeAgentPreserving(current, incoming);
-  return agent ? { ...projection, agent } : projection;
+  return {
+    hostname: identity.hostname,
+    machineId: identity.machineId,
+    remoteAddress: identity.remoteAddress,
+    keyId: identity.keyId,
+    ...(current?.agent ? { agent: current.agent } : {}),
+    ...(current?.update ? { update: current.update } : {}),
+  };
 }
 
-async function writeMergedDaemonState(
-  db: Db,
-  serverId: string,
-  merged: ServerDaemonState,
-): Promise<void> {
-  const now = nowTs();
-  await db.update(server).set({
-    daemon: merged,
-    updatedAt: now,
-  }).where(eq(server.id, serverId));
+function heartbeatDebounceElapsed(lastSeenAt: string | null, nowMs: number): boolean {
+  if (!lastSeenAt) return true;
+  const lastSeenMs = Date.parse(lastSeenAt);
+  if (Number.isNaN(lastSeenMs)) return true;
+  return nowMs - lastSeenMs >= HEARTBEAT_DEBOUNCE_MS;
+}
+
+function buildMergedDaemonState(
+  existing: ServerDaemonState,
+  nextProjection: ServerDaemonProjection | undefined,
+  nextStatus: ServerDaemonStatus,
+): ServerDaemonState {
+  return {
+    key: existing.key,
+    ...(nextProjection ? { projection: nextProjection } : {}),
+    status: nextStatus,
+  };
 }
 
 /**
- * Sparse projection into `server.daemon.projection` — never clobbers `server.daemon.key`.
- * `lastSeenAt` is written to the daemon cell snapshot on online/offline liveness transitions.
+ * Sparse projection into `server.daemon` — never clobbers `server.daemon.key`.
+ * Liveness timestamps and connection status live in `server.daemon.status` jsonb.
  */
 export async function projectServerDaemon(
   db: Db,
@@ -146,49 +205,95 @@ export async function projectServerDaemon(
   if (!existing) return false;
 
   const currentProjection = existing.projection;
+  const existingStatus = existing.status ?? buildDefaultDaemonStatus();
   const now = nowTs();
-  let nextProjection: ServerDaemonProjection | null = null;
-  let touchLastSeen = false;
+  const nowMs = Date.parse(now);
+  const patch: Record<string, unknown> = { updatedAt: now };
   let touchMetadata = false;
+  let nextProjection: ServerDaemonProjection | undefined = currentProjection;
+  let writeProjection = false;
+  let nextStatus: ServerDaemonStatus = { ...existingStatus };
+  let writeStatus = false;
 
   switch (trigger.kind) {
     case "online": {
-      touchLastSeen = true;
       const identity = mergeIdentity(currentProjection, trigger.identity);
+      const isOfflineToOnline = !existingStatus.connected;
+      const lastSeenDue = isOfflineToOnline ||
+        heartbeatDebounceElapsed(existingStatus.lastSeenAt, nowMs);
       touchMetadata = identityChanged(currentProjection, identity);
-      nextProjection = {
-        ...identity,
-        connected: true,
-        connectedAt: trigger.connectedAt ?? currentProjection?.connectedAt ??
-          now,
-        lastProjectedAt: now,
-      };
+      if (touchMetadata || !currentProjection) {
+        nextProjection = buildIdentityProjection(currentProjection, identity);
+        if (context.agent) {
+          nextProjection = {
+            ...nextProjection,
+            agent: mergeAgentPreserving(currentProjection, context.agent),
+          };
+        }
+        writeProjection = true;
+      } else if (context.agent && agentChanged(currentProjection, context.agent)) {
+        nextProjection = {
+          ...currentProjection,
+          agent: mergeAgentPreserving(currentProjection, context.agent),
+        };
+        writeProjection = true;
+      }
+
+      if (!isOfflineToOnline && !lastSeenDue && !writeProjection) {
+        return false;
+      }
+
+      if (isOfflineToOnline) {
+        nextStatus = {
+          ...nextStatus,
+          connected: true,
+          daemonStatus: "online",
+          connectedAt: trigger.connectedAt ?? now,
+          statusChangedAt: now,
+        };
+        writeStatus = true;
+      }
+
+      if (lastSeenDue) {
+        nextStatus = { ...nextStatus, lastSeenAt: now };
+        writeStatus = true;
+      }
       break;
     }
-    case "offline": {
-      touchLastSeen = true;
-      nextProjection = {
-        hostname: currentProjection?.hostname,
-        machineId: currentProjection?.machineId,
-        remoteAddress: currentProjection?.remoteAddress,
-        keyId: currentProjection?.keyId,
-        connected: false,
-        connectedAt: currentProjection?.connectedAt,
-        lastProjectedAt: now,
-      };
-      break;
-    }
+    case "offline":
     case "disconnected": {
-      touchLastSeen = true;
-      nextProjection = {
-        hostname: currentProjection?.hostname,
-        machineId: currentProjection?.machineId,
-        remoteAddress: currentProjection?.remoteAddress,
-        keyId: currentProjection?.keyId,
+      nextStatus = {
+        ...nextStatus,
         connected: false,
-        connectedAt: currentProjection?.connectedAt,
-        lastProjectedAt: now,
+        daemonStatus: "offline",
+        disconnectedAt: now,
+        statusChangedAt: now,
       };
+      writeStatus = true;
+      break;
+    }
+    case "heartbeat": {
+      const agent = trigger.agent ?? context.agent;
+      const lastSeenDue = heartbeatDebounceElapsed(existingStatus.lastSeenAt, nowMs);
+      const agentDue = agent?.commit && agent?.buildId &&
+        agentChanged(currentProjection, agent);
+
+      if (!lastSeenDue && !agentDue) {
+        return false;
+      }
+
+      if (lastSeenDue) {
+        nextStatus = { ...nextStatus, lastSeenAt: now };
+        writeStatus = true;
+      }
+
+      if (agentDue && agent) {
+        nextProjection = {
+          ...(currentProjection ?? {}),
+          agent: mergeAgentPreserving(currentProjection, agent),
+        };
+        writeProjection = true;
+      }
       break;
     }
     case "identity": {
@@ -197,63 +302,101 @@ export async function projectServerDaemon(
       }
       touchMetadata = true;
       const identity = mergeIdentity(currentProjection, trigger.identity);
-      nextProjection = {
-        hostname: identity.hostname,
-        machineId: identity.machineId,
-        remoteAddress: identity.remoteAddress,
-        keyId: identity.keyId,
-        connected: currentProjection?.connected ?? false,
-        connectedAt: currentProjection?.connectedAt,
-        lastProjectedAt: now,
-      };
+      nextProjection = buildIdentityProjection(currentProjection, identity);
+      writeProjection = true;
       break;
     }
     case "agent": {
       if (!agentChanged(currentProjection, trigger.agent)) {
         return false;
       }
-      touchLastSeen = false;
-      const mergedAgent = mergeAgentPreserving(
-        currentProjection,
-        trigger.agent,
-      );
       nextProjection = {
-        ...(currentProjection ?? {
-          connected: false,
-          lastProjectedAt: now,
-        }),
-        agent: mergedAgent,
-        lastProjectedAt: now,
+        ...(currentProjection ?? {}),
+        agent: mergeAgentPreserving(currentProjection, trigger.agent),
       };
+      writeProjection = true;
+      break;
+    }
+    case "update-queued": {
+      nextProjection = {
+        ...(currentProjection ?? {}),
+        update: {
+          status: "updating",
+          requestId: trigger.requestId,
+          channel: trigger.channel,
+          queuedAt: trigger.queuedAt,
+        },
+      };
+      writeProjection = true;
+      break;
+    }
+    case "update-result": {
+      nextProjection = {
+        ...(currentProjection ?? {}),
+        update: {
+          status: trigger.ok ? "done" : "failed",
+          requestId: trigger.requestId,
+          finishedAt: trigger.finishedAt,
+          ...(trigger.error ? { error: trigger.error } : {}),
+        },
+      };
+      writeProjection = true;
+      break;
+    }
+    case "update-expired": {
+      const currentUpdate = currentProjection?.update;
+      if (currentUpdate?.status !== "updating") {
+        return false;
+      }
+      if (
+        currentUpdate.requestId &&
+        trigger.requestId &&
+        currentUpdate.requestId !== trigger.requestId
+      ) {
+        return false;
+      }
+      nextProjection = {
+        ...(currentProjection ?? {}),
+        update: {
+          status: "expired",
+          requestId: trigger.requestId ?? currentUpdate.requestId,
+          channel: currentUpdate.channel,
+          queuedAt: currentUpdate.queuedAt,
+          finishedAt: trigger.finishedAt,
+          error: trigger.error ??
+            "Update timed out waiting for daemon acknowledgement",
+        },
+      };
+      writeProjection = true;
+      break;
+    }
+    case "update-reset": {
+      nextProjection = {
+        ...(currentProjection ?? {}),
+        update: { status: "idle" },
+      };
+      writeProjection = true;
       break;
     }
   }
 
-  if (!nextProjection) return false;
-
-  if (trigger.kind !== "agent") {
-    nextProjection = attachPreservedAgent(
-      nextProjection,
-      currentProjection,
-      context.agent,
-    );
+  if (!writeStatus && !writeProjection) {
+    return false;
   }
 
-  await writeMergedDaemonState(db, serverId, {
-    key: existing.key,
-    projection: nextProjection,
-  });
+  patch.daemon = buildMergedDaemonState(existing, nextProjection, nextStatus);
 
-  if (touchLastSeen && context.cell) {
-    void context.cell.putSnapshot({ lastSeenAt: now }).catch(() => {});
-  }
-
-  if (touchMetadata) {
-    await touchServerMetadata(db, serverId, {
+  if (touchMetadata && nextProjection) {
+    const mergedMetadata = mergeServerMetadataIdentity(existing.metadata, {
       hostname: nextProjection.hostname,
       machineId: nextProjection.machineId,
     });
+    if (mergedMetadata) {
+      patch.metadata = mergedMetadata;
+    }
   }
+
+  await db.update(server).set(patch).where(eq(server.id, serverId));
 
   return true;
 }
@@ -269,46 +412,25 @@ export function identityFromSnapshot(
   };
 }
 
-/** @deprecated use {@link projectServerDaemon} with explicit triggers */
-export async function touchServerMetadataFromSnapshot(
-  db: Db,
-  serverId: string,
-  snapshot: DaemonCellSnapshot,
-): Promise<void> {
-  const trigger: ProjectionTrigger = snapshot.connected
-    ? {
-      kind: "online",
-      identity: identityFromSnapshot(snapshot),
-      connectedAt: snapshot.connectedAt,
-    }
-    : { kind: "offline" };
-  await projectServerDaemon(db, serverId, trigger, { cell: undefined });
-  if (
-    identityFromSnapshot(snapshot).hostname ||
-    identityFromSnapshot(snapshot).machineId
-  ) {
-    await projectServerDaemon(db, serverId, {
-      kind: "identity",
-      identity: identityFromSnapshot(snapshot),
-    });
-  }
-}
-
 export async function listConnectedServerIdsFromProjection(
   db: Db,
 ): Promise<string[]> {
   const rows = await db
     .select({ id: server.id, daemon: server.daemon })
-    .from(server);
+    .from(server)
+    .where(sql`(
+      ${server.daemon}->'status'->>'connected' = 'true'
+      OR ${server.daemon}->'projection'->>'connected' = 'true'
+    )`);
 
-  const online: string[] = [];
+  const connected: string[] = [];
   for (const row of rows) {
     const state = parseServerDaemonState(row.daemon);
-    if (state?.projection?.connected === true) {
-      online.push(row.id);
+    if (state?.status?.connected) {
+      connected.push(row.id);
     }
   }
-  return online;
+  return connected;
 }
 
 /** All servers with an enrolled daemon key — used to scope Workers maintenance drains. */
@@ -327,22 +449,52 @@ export async function listEnrolledDaemonServerIds(db: Db): Promise<string[]> {
   return enrolled;
 }
 
+function toProjectionRead(row: {
+  id: string;
+  daemon: unknown;
+}): ServerDaemonProjectionRead | null {
+  const state = parseServerDaemonState(row.daemon);
+  const status = state?.status ?? buildDefaultDaemonStatus();
+  if (!state?.projection && !status.connected && !status.lastSeenAt) {
+    return null;
+  }
+
+  const projection = state?.projection ?? {};
+  const {
+    hostname: _hostname,
+    machineId: _machineId,
+    ...presenceProjection
+  } = projection;
+  return {
+    ...presenceProjection,
+    connected: status.connected,
+    connectedAt: status.connectedAt,
+    lastProjectedAt: status.lastSeenAt,
+    daemonConnected: status.connected,
+    daemonConnectedAt: status.connectedAt,
+    lastSeenAt: status.lastSeenAt,
+  };
+}
+
 export async function readProjectionsForServers(
   db: Db,
   serverIds: string[],
-): Promise<Map<string, ServerDaemonProjection>> {
+): Promise<Map<string, ServerDaemonProjectionRead>> {
   if (serverIds.length === 0) return new Map();
 
   const rows = await db
-    .select({ id: server.id, daemon: server.daemon })
+    .select({
+      id: server.id,
+      daemon: server.daemon,
+    })
     .from(server)
     .where(inArray(server.id, serverIds));
 
-  const result = new Map<string, ServerDaemonProjection>();
+  const result = new Map<string, ServerDaemonProjectionRead>();
   for (const row of rows) {
-    const state = parseServerDaemonState(row.daemon);
-    if (state?.projection) {
-      result.set(row.id, state.projection);
+    const read = toProjectionRead(row);
+    if (read) {
+      result.set(row.id, read);
     }
   }
   return result;

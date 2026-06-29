@@ -2,6 +2,7 @@ import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
+import { isAdminRole } from '../authn/session-store.ts'
 import { can, listVisible } from '../authz/index.ts'
 import { assertCanManageOr403, assertCanReadOr403, getOrgId } from '../shared.ts'
 import { getDb, getDaemonCellRegistry, type Db } from '../../db.ts'
@@ -9,6 +10,11 @@ import {
   fetchDaemonServerCell,
 } from '../../daemon/cell/server-diagnostics.ts'
 import { resolveFleetPresence } from '../../daemon/cell/fleet-presence.ts'
+import { readProjectionsForServers } from '../../daemon/cell/postgres-projection.ts'
+import {
+  onDaemonUpdateQueued,
+  onDaemonUpdateReset,
+} from '../../daemon/cell/control-plane-monitor.ts'
 import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
 import {
   generateDeliveryId,
@@ -27,12 +33,46 @@ import {
 } from './colocated.ts'
 import {
   colocatedServerUpdateBlockedReason,
+  loadServerStatusRecords,
   resolveServerUpdateStatus,
   type ServerUpdateCommit,
 } from './update-status.ts'
 
 const UPDATE_CHANNEL = 'trunk'
 const UPDATE_REQUEST_TTL_SECONDS = 300
+
+const STATUS_CACHE_CONTROL = 'private, max-age=5'
+const STATUS_CACHE_MAX_AGE_MS = 5_000
+
+type BatchStatusPayload = {
+  servers: Awaited<ReturnType<typeof loadServerStatusRecords>>
+}
+
+type BatchStatusCoalesceEntry = {
+  expiresAt: number
+  promise?: Promise<BatchStatusPayload>
+  result?: BatchStatusPayload
+}
+
+const batchStatusCoalesce = new Map<string, BatchStatusCoalesceEntry>()
+
+function buildBatchStatusCoalesceKey(
+  userId: string,
+  organizationId: string,
+  visibleIds: string[],
+): string {
+  const sortedIds = [...visibleIds].sort()
+  return `${userId}:${organizationId}:${sortedIds.join(',')}`
+}
+
+function evictExpiredBatchStatusEntries(now = Date.now()): void {
+  for (const [key, entry] of batchStatusCoalesce) {
+    if (entry.promise) continue
+    if (entry.expiresAt <= now) {
+      batchStatusCoalesce.delete(key)
+    }
+  }
+}
 
 type QueuedUpdateResult = {
   ok: true
@@ -75,6 +115,8 @@ async function queueServerUpdate(
   await registry.getCell(serverId).enqueue(envelope, {
     ttlSeconds: UPDATE_REQUEST_TTL_SECONDS,
   })
+
+  await onDaemonUpdateQueued(db, serverId, requestId, UPDATE_CHANNEL, envelope.at)
 
   return {
     ok: true,
@@ -196,6 +238,7 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const registry = getDaemonCellRegistry(c)
     const presence = await resolveFleetPresence(db, registry, visibleIds)
+    const projections = await readProjectionsForServers(db, visibleIds)
     const colocatedIds = await resolveColocatedServerIdSet(db, registry, visibleIds)
     const targetManifest = await resolveTrunkManifest()
     const target = targetManifest
@@ -214,15 +257,13 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
     const servers = await Promise.all(
       visibleIds.map(async (serverId) => {
         const current = currentCommitFromAgent(presence.get(serverId)?.agent)
-        const updateRequests = registry
-          ? await registry.getCell(serverId).listRequests(10, { requestKind: 'update' })
-          : []
+        const projection = projections.get(serverId)
         const resolved = await resolveServerUpdateStatus({
           serverId,
           current,
           targetManifest,
           colocatedWithInstance: colocatedIds.has(serverId),
-          listUpdateRequests: async () => updateRequests,
+          projectedUpdate: projection?.update ?? null,
         })
         return {
           serverId,
@@ -334,13 +375,108 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
     })
   })
 
-  router.get('/servers/:id/cell', async (c) => {
+  router.get('/servers/status', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
+
+    const visibleIds = await listVisible(db, {
+      kind: 'server',
+      userId: session.userId,
+      organizationId,
+    })
+
+    // TODO: global rate limiting hooks here
+
+    evictExpiredBatchStatusEntries()
+    const coalesceKey = buildBatchStatusCoalesceKey(
+      session.userId,
+      organizationId,
+      visibleIds,
+    )
+    const now = Date.now()
+
+    let entry = batchStatusCoalesce.get(coalesceKey)
+    if (entry && entry.expiresAt > now) {
+      if (entry.result) {
+        return c.json(entry.result, 200, { 'Cache-Control': STATUS_CACHE_CONTROL })
+      }
+      if (entry.promise) {
+        const result = await entry.promise
+        return c.json(result, 200, { 'Cache-Control': STATUS_CACHE_CONTROL })
+      }
+    }
+
+    if (!batchStatusCoalesce.get(coalesceKey)?.promise) {
+      const registry = getDaemonCellRegistry(c)
+      const promise = loadServerStatusRecords(db, registry, visibleIds)
+        .then((servers) => ({ servers }))
+        .then((result) => {
+          const current = batchStatusCoalesce.get(coalesceKey)
+          if (current) {
+            current.result = result
+            current.promise = undefined
+            current.expiresAt = Date.now() + STATUS_CACHE_MAX_AGE_MS
+          }
+          return result
+        })
+        .catch((err) => {
+          const current = batchStatusCoalesce.get(coalesceKey)
+          if (current?.promise === promise) {
+            batchStatusCoalesce.delete(coalesceKey)
+          }
+          throw err
+        })
+
+      batchStatusCoalesce.set(coalesceKey, {
+        expiresAt: now + STATUS_CACHE_MAX_AGE_MS,
+        promise,
+      })
+    }
+
+    entry = batchStatusCoalesce.get(coalesceKey)!
+    const result = entry.result ?? await entry.promise!
+    return c.json(result, 200, { 'Cache-Control': STATUS_CACHE_CONTROL })
+  })
+
+  router.get('/servers/:id/status', async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
     const id = c.req.param('id')
     const denied = await assertCanReadOr403(c, 'server', id)
     if (denied) return denied
+
+    // TODO: global rate limiting hooks here
+
+    const registry = getDaemonCellRegistry(c)
+    const records = await loadServerStatusRecords(db, registry, [id])
+    if (records.length === 0) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
+    return c.json(records[0], 200, { 'Cache-Control': STATUS_CACHE_CONTROL })
+  })
+
+  router.get('/servers/:id/cell', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+    if (!isAdminRole(session.role)) {
+      return c.json({ error: 'Forbidden' }, 403)
+    }
+
+    const id = c.req.param('id')
+
+    // **ADMIN/DEBUG ONLY** — hits the Durable Object directly. Must never be polled by normal UI. Use `/servers/status` for status reads.
 
     const registry = getDaemonCellRegistry(c)
     const result = await fetchDaemonServerCell(db, registry, id)
@@ -363,6 +499,7 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
 
     try {
       const { cleared } = await registry.getCell(id).clearUpdateStatus()
+      await onDaemonUpdateReset(db, id)
       const presence = await resolveFleetPresence(db, registry, [id])
       const colocatedIds = await resolveColocatedServerIdSet(db, registry, [id])
       const current = currentCommitFromAgent(presence.get(id)?.agent)
@@ -370,7 +507,7 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
         serverId: id,
         current,
         colocatedWithInstance: colocatedIds.has(id),
-        listUpdateRequests: async () => [],
+        projectedUpdate: { status: 'idle' },
       })
 
       return c.json({
@@ -401,18 +538,15 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const registry = getDaemonCellRegistry(c)
     const presence = await resolveFleetPresence(db, registry, [id])
+    const projections = await readProjectionsForServers(db, [id])
     const colocatedIds = await resolveColocatedServerIdSet(db, registry, [id])
     const current = currentCommitFromAgent(presence.get(id)?.agent)
-
-    const updateRequests = registry
-      ? await registry.getCell(id).listRequests(10, { requestKind: 'update' })
-      : []
 
     const resolved = await resolveServerUpdateStatus({
       serverId: id,
       current,
       colocatedWithInstance: colocatedIds.has(id),
-      listUpdateRequests: async () => updateRequests,
+      projectedUpdate: projections.get(id)?.update ?? null,
     })
 
     return c.json({

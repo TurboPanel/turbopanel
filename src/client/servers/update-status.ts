@@ -1,4 +1,20 @@
-import type { PendingRequestRecord, PendingRequestStatus } from '../../daemon/cell/contracts.ts'
+import { inArray } from 'drizzle-orm'
+import type {
+  DaemonCellRegistry,
+  PendingRequestRecord,
+  PendingRequestStatus,
+} from '../../daemon/cell/contracts.ts'
+import type { ServerFleetPresence } from '../../daemon/cell/fleet-presence.ts'
+import { resolveFleetPresence } from '../../daemon/cell/fleet-presence.ts'
+import {
+  buildDefaultDaemonStatus,
+  parseServerDaemonState,
+  type ServerDaemonStatus,
+  type UpdateProjection,
+} from '../../daemon/authn/daemon-state.ts'
+import type { Db } from '../../db.ts'
+import { server } from '../../lib/db/schema.ts'
+import { resolveColocatedServerIdSet } from './colocated.ts'
 import { UPDATE_PENDING_MS } from '../../lib/update/constants.ts'
 import {
   resolveTrunkManifest,
@@ -27,6 +43,39 @@ function pickLatestUpdateRequest(
     }
     return candidateMs > latestMs ? candidate : latest
   })
+}
+
+function projectedUpdateToRequest(
+  serverId: string,
+  projected: UpdateProjection,
+): PendingRequestRecord | undefined {
+  if (projected.status === 'idle') return undefined
+
+  const statusMap: Record<
+    Exclude<UpdateProjection['status'], 'idle'>,
+    PendingRequestStatus
+  > = {
+    updating: 'sent',
+    done: 'done',
+    failed: 'failed',
+    expired: 'expired',
+  }
+  const status = statusMap[projected.status as Exclude<UpdateProjection['status'], 'idle'>]
+  if (!status) return undefined
+
+  const createdAt = projected.queuedAt ?? projected.finishedAt ??
+    new Date(0).toISOString()
+
+  return {
+    serverId,
+    requestId: projected.requestId ?? '',
+    requestKind: 'update',
+    status,
+    createdAt,
+    expiresAt: projected.finishedAt ?? createdAt,
+    finishedAt: projected.finishedAt,
+    error: projected.error,
+  }
 }
 
 export type ServerUpdateCommit = {
@@ -62,7 +111,8 @@ export type ServerUpdateGetResponse = {
 export async function resolveServerUpdateStatus(params: {
   serverId: string
   current: ServerUpdateCommit | null
-  listUpdateRequests: () => Promise<PendingRequestRecord[]>
+  listUpdateRequests?: () => Promise<PendingRequestRecord[]>
+  projectedUpdate?: UpdateProjection | null
   /** When batching status checks, pass a shared manifest lookup result. */
   targetManifest?: TrunkManifestTarget | null
   /** Co-located daemon on this control plane host — remote trunk updates blocked. */
@@ -106,7 +156,16 @@ export async function resolveServerUpdateStatus(params: {
   let status: ServerUpdateGetResponse['status'] = 'idle'
   let lastUpdateError: string | undefined
 
-  const requests = await params.listUpdateRequests()
+  let requests: PendingRequestRecord[]
+  if (params.projectedUpdate !== undefined && params.projectedUpdate !== null) {
+    const synthesized = projectedUpdateToRequest(
+      params.serverId,
+      params.projectedUpdate,
+    )
+    requests = synthesized ? [synthesized] : []
+  } else {
+    requests = await (params.listUpdateRequests ?? (async () => []))()
+  }
   const latest = pickLatestUpdateRequest(requests)
 
   if (latest) {
@@ -149,4 +208,80 @@ export async function resolveServerUpdateStatus(params: {
     targetError,
     ...(lastUpdateError ? { lastUpdateError } : {}),
   }
+}
+
+export type ServerStatusRecord = {
+  serverId: string
+  connected: boolean
+  daemonStatus: ServerDaemonStatus['daemonStatus']
+  lastSeenAt: string | null
+  connectedAt: string | null
+  disconnectedAt: string | null
+  statusChangedAt: string | null
+  hostname: string | null
+  remoteAddress: string | null
+  colocatedWithInstance: boolean
+}
+
+export async function readDaemonStatusesForServers(
+  db: Db,
+  serverIds: string[],
+): Promise<Map<string, ServerDaemonStatus>> {
+  if (serverIds.length === 0) return new Map()
+
+  const rows = await db
+    .select({ id: server.id, daemon: server.daemon })
+    .from(server)
+    .where(inArray(server.id, serverIds))
+
+  const result = new Map<string, ServerDaemonStatus>()
+  for (const row of rows) {
+    const state = parseServerDaemonState(row.daemon)
+    result.set(row.id, state?.status ?? buildDefaultDaemonStatus())
+  }
+  return result
+}
+
+export function buildServerStatusRecord(
+  presence: ServerFleetPresence,
+  colocatedWithInstance: boolean,
+  status?: ServerDaemonStatus | null,
+): ServerStatusRecord {
+  const resolved = status ?? buildDefaultDaemonStatus()
+  return {
+    serverId: presence.serverId,
+    connected: presence.connected,
+    daemonStatus: resolved.daemonStatus,
+    lastSeenAt: presence.lastSeenAt ?? resolved.lastSeenAt,
+    connectedAt: presence.connectedAt ?? resolved.connectedAt,
+    disconnectedAt: resolved.disconnectedAt,
+    statusChangedAt: resolved.statusChangedAt,
+    hostname: presence.hostname,
+    remoteAddress: presence.remoteAddress,
+    colocatedWithInstance,
+  }
+}
+
+export async function loadServerStatusRecords(
+  db: Db,
+  registry: DaemonCellRegistry | undefined,
+  serverIds: string[],
+): Promise<ServerStatusRecord[]> {
+  if (serverIds.length === 0) return []
+
+  const [presence, colocatedIds, statuses] = await Promise.all([
+    resolveFleetPresence(db, registry, serverIds),
+    resolveColocatedServerIdSet(db, registry, serverIds),
+    readDaemonStatusesForServers(db, serverIds),
+  ])
+
+  return serverIds.flatMap((id) => {
+    const live = presence.get(id)
+    if (!live) return []
+    return [buildServerStatusRecord(
+      live,
+      colocatedIds.has(id),
+      statuses.get(id),
+    )]
+  })
 }

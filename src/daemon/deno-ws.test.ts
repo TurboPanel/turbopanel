@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assert, assertEquals } from "jsr:@std/assert";
 import { Hono } from "hono";
 import {
   deriveSecretsConfig,
@@ -7,8 +7,10 @@ import {
 import type { Db } from "../db.ts";
 import { generateSecret } from "../generate-secret.ts";
 import {
+  buildDefaultDaemonStatus,
   parseServerDaemonState,
   type ServerDaemonState,
+  type ServerDaemonStatus,
 } from "./authn/daemon-state.ts";
 import type {
   DaemonCell,
@@ -53,11 +55,30 @@ const baseDaemonKey = {
   createdAt: "2020-01-01T00:00:00.000Z",
 };
 
+function mergeDaemonStatus(
+  daemon: ServerDaemonState,
+  statusOverrides: Partial<ServerDaemonStatus> = {},
+): ServerDaemonState {
+  return {
+    ...daemon,
+    status: {
+      ...buildDefaultDaemonStatus(),
+      ...(daemon.status ?? {}),
+      ...statusOverrides,
+    },
+  };
+}
+
 function createProjectionTrackingDb(
-  serverId: string,
+  _serverId: string,
   initialDaemon: ServerDaemonState,
-): { db: Db; getDaemon: () => ServerDaemonState } {
-  let daemon = initialDaemon;
+  statusOverrides: Partial<ServerDaemonStatus> = {},
+): {
+  db: Db;
+  getDaemon: () => ServerDaemonState;
+  getStatus: () => ServerDaemonStatus;
+} {
+  let daemon = mergeDaemonStatus(initialDaemon, statusOverrides);
 
   const db = {
     select: () => ({
@@ -79,7 +100,11 @@ function createProjectionTrackingDb(
     }),
   } as unknown as Db;
 
-  return { db, getDaemon: () => daemon };
+  return {
+    db,
+    getDaemon: () => daemon,
+    getStatus: () => daemon.status ?? buildDefaultDaemonStatus(),
+  };
 }
 
 function createTrackingDaemonCell(serverId: string) {
@@ -435,10 +460,12 @@ Deno.test("hello over WS with agent projects commit for update status", async ()
   const serverId = "srv-heartbeat-agent-ws";
   const { db, getDaemon } = createProjectionTrackingDb(serverId, {
     key: baseDaemonKey,
-    projection: {
-      connected: true,
-      lastProjectedAt: "2020-01-01T00:00:00.000Z",
-    },
+    projection: { hostname: "host-1" },
+  }, {
+    connected: true,
+    daemonStatus: "online",
+    lastSeenAt: "2020-01-01T00:00:00.000Z",
+    connectedAt: "2020-01-01T00:00:00.000Z",
   });
   const tracking = createTrackingDaemonCell(serverId);
   const app = new Hono();
@@ -485,15 +512,72 @@ Deno.test("hello over WS with agent projects commit for update status", async ()
   ws.close(1000, "done");
 });
 
+Deno.test("heartbeat over WS without agent advances status.lastSeenAt in Postgres", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-heartbeat-no-agent-ws";
+  const stale = new Date(Date.now() - 61_000).toISOString();
+  const { db, getStatus } = createProjectionTrackingDb(serverId, {
+    key: baseDaemonKey,
+    projection: { hostname: "host-1", agent: { commit: "abc", buildId: "1" } },
+  }, {
+    connected: true,
+    daemonStatus: "online",
+    lastSeenAt: stale,
+    connectedAt: "2020-01-01T00:00:00.000Z",
+  });
+  const tracking = createTrackingDaemonCell(serverId);
+  const app = new Hono();
+  registerTestDaemonWebSocket(app, secrets, {
+    db,
+    registry: createTrackingRegistry(tracking.cell),
+  });
+
+  const issued = await issueDaemonJwt(
+    { sub: serverId, kid: "key-test" },
+    secrets,
+  );
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${issued.token}`,
+      ...WS_UPGRADE_HEADERS,
+    },
+  });
+  if (response.status !== 101 || !response.webSocket) {
+    console.warn(
+      "Skipping heartbeat no-agent WS test: response.webSocket unavailable",
+    );
+    return;
+  }
+
+  const ws = response.webSocket;
+  ws.accept();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  ws.send(JSON.stringify({
+    type: "heartbeat",
+    at: new Date().toISOString(),
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const status = getStatus();
+  assert(status.lastSeenAt);
+  assertEquals(status.lastSeenAt !== stale, true);
+  assertEquals(status.connected, true);
+  ws.close(1000, "done");
+});
+
 Deno.test("WS close projects disconnected to Postgres", async () => {
   const secrets = await createDaemonJwtSecrets();
   const serverId = "srv-disconnect-projection";
-  const { db, getDaemon } = createProjectionTrackingDb(serverId, {
+  const { db, getStatus } = createProjectionTrackingDb(serverId, {
     key: baseDaemonKey,
-    projection: {
-      connected: true,
-      lastProjectedAt: "2020-01-01T00:00:00.000Z",
-    },
+    projection: { hostname: "host-1" },
+  }, {
+    connected: true,
+    daemonStatus: "online",
+    lastSeenAt: "2020-01-01T00:00:00.000Z",
+    connectedAt: "2020-01-01T00:00:00.000Z",
   });
   const tracking = createTrackingDaemonCell(serverId);
   const app = new Hono();
@@ -527,6 +611,78 @@ Deno.test("WS close projects disconnected to Postgres", async () => {
   ws.close(1000, "test done");
   await new Promise((resolve) => setTimeout(resolve, 50));
 
-  const merged = parseServerDaemonState(getDaemon());
-  assertEquals(merged?.projection?.connected, false);
+  assertEquals(getStatus().connected, false);
+});
+
+Deno.test("update-result over WS projects update summary to Postgres", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-update-result-ws";
+  const { db, getDaemon } = createProjectionTrackingDb(serverId, {
+    key: baseDaemonKey,
+    projection: {
+      hostname: "host-1",
+      update: {
+        status: "updating",
+        requestId: "req-update-1",
+        channel: "trunk",
+        queuedAt: "2020-01-01T00:00:00.000Z",
+      },
+    },
+  }, {
+    connected: true,
+    daemonStatus: "online",
+    lastSeenAt: "2020-01-01T00:00:00.000Z",
+    connectedAt: "2020-01-01T00:00:00.000Z",
+  });
+  const tracking = createTrackingDaemonCell(serverId);
+  tracking.cell.handleInbound = async () => ({
+    serverId,
+    requestId: "req-update-1",
+    requestKind: "update",
+    status: "done" as const,
+    createdAt: "2020-01-01T00:00:00.000Z",
+    expiresAt: "2020-01-01T00:05:00.000Z",
+    finishedAt: "2020-01-01T00:01:00.000Z",
+  });
+  const app = new Hono();
+  registerTestDaemonWebSocket(app, secrets, {
+    db,
+    registry: createTrackingRegistry(tracking.cell),
+  });
+
+  const issued = await issueDaemonJwt(
+    { sub: serverId, kid: "key-test" },
+    secrets,
+  );
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${issued.token}`,
+      ...WS_UPGRADE_HEADERS,
+    },
+  });
+  if (response.status !== 101 || !response.webSocket) {
+    console.warn(
+      "Skipping update-result WS test: response.webSocket unavailable",
+    );
+    return;
+  }
+
+  const ws = response.webSocket;
+  ws.accept();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  ws.send(JSON.stringify({
+    type: "update-result",
+    id: "req-update-1",
+    at: "2020-01-01T00:01:00.000Z",
+    ok: true,
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "done");
+  assertEquals(update?.requestId, "req-update-1");
+  assertEquals(update?.finishedAt, "2020-01-01T00:01:00.000Z");
+  ws.close(1000, "done");
 });

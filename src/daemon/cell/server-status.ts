@@ -1,0 +1,180 @@
+/**
+ * Server status read model — Postgres-backed, no Durable Object reads on the default path.
+ *
+ * Vocabulary:
+ *   daemon cell     = live connection owner (DaemonCell / DaemonCellObject / RedisDaemonCell)
+ *   server status   = DB-projected read model (this module)
+ *   projection      = daemon cell writing meaningful state to Postgres (postgres-projection.ts)
+ */
+import { inArray } from "drizzle-orm";
+import type { Db } from "../../db.ts";
+import { parseServerDaemonState } from "../authn/daemon-state.ts";
+import type { ServerMetadata } from "../../lib/db/server-metadata.ts";
+import { server } from "../../lib/db/schema.ts";
+import type { DaemonCellRegistry, DaemonCellSnapshot } from "./contracts.ts";
+import { DAEMON_STALE_MS } from "./protocol.ts";
+import { readProjectionsForServers } from "./postgres-projection.ts";
+
+export type ServerFleetPresence = {
+  serverId: string;
+  connected: boolean;
+  hostname: string | null;
+  machineId: string | null;
+  remoteAddress: string | null;
+  directAttach: boolean;
+  keyId: string | null;
+  connectedAt: string | null;
+  lastProjectedAt: string | null;
+  /** @deprecated use {@link ServerFleetPresence.lastInboundAt} */
+  lastHeartbeatAt: string | null;
+  lastInboundAt: string | null;
+  lastSeenAt: string | null;
+  keyLastUsedAt: string | null;
+  agent?: {
+    commit?: string;
+    buildId?: string;
+    builtAt?: string;
+    channel?: string;
+  };
+};
+
+function normalizeRemoteAddress(
+  value: string | undefined | null,
+): string | null {
+  if (!value || value === "__direct__") return null;
+  return value;
+}
+
+function resolveLastInboundAt(snapshot: DaemonCellSnapshot): string | null {
+  return snapshot.lastInboundAt ?? snapshot.lastSeenAt ?? snapshot.connectedAt ??
+    null;
+}
+
+function isSnapshotConnected(snapshot: DaemonCellSnapshot): boolean {
+  if (!snapshot.connected) return false;
+  const lastInbound = resolveLastInboundAt(snapshot);
+  if (!lastInbound) return false;
+  const lastInboundMs = Date.parse(lastInbound);
+  if (Number.isNaN(lastInboundMs)) return false;
+  return Date.now() - lastInboundMs < DAEMON_STALE_MS;
+}
+
+export type ResolveFleetPresenceOptions = {
+  /**
+   * Read live Durable Object / Redis snapshots and prefer them over the sparse
+   * Postgres projection. This costs one cell read per server, so it is reserved
+   * for explicit diagnostics-only callers. Defaults to `false`, in which case
+   * coarse presence and agent data are served from the Postgres projection.
+   */
+  withSnapshots?: boolean;
+};
+
+/**
+ * Resolve fleet presence.
+ *
+ * By default this path is Postgres-only: coarse presence and agent data come
+ * from the sparse Postgres projection (`server.daemon.status` and
+ * `server.daemon.projection`). It never calls `listOnlineServerIds` or
+ * `getSnapshots`. Silent-failure offline correctness relies on the offline
+ * sweep (DO `alarm()` / Redis `maintain()`), not read-time registry reads.
+ * Pass `{ withSnapshots: true }` for explicit diagnostics/admin callers that
+ * read live cell snapshots for every server up front.
+ */
+export async function resolveFleetPresence(
+  db: Db,
+  registry: DaemonCellRegistry | undefined,
+  serverIds: string[],
+  options: ResolveFleetPresenceOptions = {},
+): Promise<Map<string, ServerFleetPresence>> {
+  if (serverIds.length === 0) return new Map();
+
+  const withSnapshots = options.withSnapshots ?? false;
+
+  const [rows, projections, snapshots] = await Promise.all([
+    db
+      .select({
+        id: server.id,
+        daemon: server.daemon,
+        metadata: server.metadata,
+      })
+      .from(server)
+      .where(inArray(server.id, serverIds)),
+    readProjectionsForServers(db, serverIds),
+    withSnapshots && registry
+      ? registry.getSnapshots(serverIds)
+      : Promise.resolve(new Map<string, DaemonCellSnapshot>()),
+  ]);
+
+  const result = new Map<string, ServerFleetPresence>();
+  for (const row of rows) {
+    const projection = projections.get(row.id);
+    const metadata = (row.metadata ?? {}) as ServerMetadata;
+    const state = parseServerDaemonState(row.daemon);
+    const rawRemote = projection?.remoteAddress ?? null;
+    const snapshot = snapshots.get(row.id);
+    const connected = snapshot !== undefined
+      ? isSnapshotConnected(snapshot)
+      : (projection?.connected ?? state?.status?.connected ?? false);
+
+    const lastInboundAt = snapshot
+      ? resolveLastInboundAt(snapshot)
+      : projection?.lastSeenAt ?? projection?.lastProjectedAt ?? null;
+
+    result.set(row.id, {
+      serverId: row.id,
+      connected,
+      hostname: metadata.hostname ?? null,
+      machineId: metadata.machineId ?? null,
+      remoteAddress: normalizeRemoteAddress(rawRemote),
+      directAttach: rawRemote === "__direct__",
+      keyId: projection?.keyId ?? state?.key.id ?? null,
+      connectedAt: snapshot?.connectedAt ?? projection?.connectedAt ?? null,
+      lastProjectedAt: projection?.lastProjectedAt ?? null,
+      lastInboundAt,
+      lastHeartbeatAt: lastInboundAt,
+      lastSeenAt: snapshot?.lastSeenAt ?? projection?.lastSeenAt ??
+        projection?.lastProjectedAt ?? null,
+      keyLastUsedAt: snapshot?.keyLastUsedAt ?? null,
+      agent: projection?.agent ?? snapshot?.agent ?? undefined,
+    });
+  }
+
+  return result;
+}
+
+export async function resolveOnlineFleetPresence(
+  db: Db,
+  registry: DaemonCellRegistry,
+): Promise<ServerFleetPresence[]> {
+  const onlineIds = await registry.listOnlineServerIds();
+  if (onlineIds.length === 0) return [];
+  const presence = await resolveFleetPresence(db, registry, onlineIds);
+  return onlineIds
+    .map((id) => presence.get(id))
+    .filter((row): row is ServerFleetPresence => row !== undefined);
+}
+
+export function fleetPresenceToConnection(presence: ServerFleetPresence) {
+  return {
+    id: presence.serverId,
+    connectedAt: presence.connectedAt ?? presence.lastProjectedAt ?? "",
+    hostname: presence.hostname,
+    serverId: presence.serverId,
+    keyId: presence.keyId,
+    authenticated: presence.connected,
+    remoteAddress: presence.remoteAddress,
+    lastInboundAt: presence.lastInboundAt ?? presence.lastHeartbeatAt
+      ? Date.parse(presence.lastInboundAt ?? presence.lastHeartbeatAt ?? "")
+      : 0,
+    connected: presence.connected,
+  };
+}
+
+export async function isServerConnected(
+  db: Db,
+  registry: DaemonCellRegistry,
+  serverId: string,
+): Promise<boolean> {
+  const presence = await resolveFleetPresence(db, registry, [serverId]);
+  return presence.get(serverId)?.connected ?? false;
+}

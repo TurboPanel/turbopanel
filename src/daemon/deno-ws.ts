@@ -10,11 +10,13 @@ import {
 import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
 import { tryAssignColocatedDaemonToInstalledOrganization } from "../client/authn/install-state.ts";
 import type { Db } from "../db.ts";
-import { compatLogError, compatLogInfo, compatLogWarn } from "../log-compat.ts";
+import { compatLogError, compatLogWarn } from "../log-compat.ts";
+import { daemonCellLog } from "../logger.ts";
 import {
   onDaemonConnected,
   onDaemonDisconnected,
-  onDaemonHeartbeat,
+  onDaemonInbound,
+  onDaemonUpdateResult,
 } from "./cell/control-plane-monitor.ts";
 import {
   CLIENT_WS_PATH,
@@ -82,8 +84,10 @@ export function registerDaemonWebSocket(
           return;
         }
 
-        compatLogInfo(
-          "ws",
+        daemonCellLog(
+          "DEBUG",
+          payload.sub,
+          connectionId,
           `from ${connectionId ?? "unknown"}: ${message.type}`,
         );
 
@@ -106,7 +110,10 @@ export function registerDaemonWebSocket(
             agent: message.agent,
             hostname: message.hostname,
           });
-          await onDaemonHeartbeat(db, payload.sub, cell, message.agent);
+          await onDaemonInbound(db, payload.sub, cell, {
+            at: message.at,
+            agent: message.agent,
+          });
           return;
         }
 
@@ -116,9 +123,10 @@ export function registerDaemonWebSocket(
             at: message.at,
             agent: message.agent,
           });
-          if (message.agent) {
-            await onDaemonHeartbeat(db, payload.sub, cell, message.agent);
-          }
+          await onDaemonInbound(db, payload.sub, cell, {
+            at: message.at,
+            agent: message.agent,
+          });
           return;
         }
 
@@ -126,7 +134,17 @@ export function registerDaemonWebSocket(
 
         const envelope = wireMessageToInboundEnvelope(message);
         if (envelope) {
-          void cell.handleInbound(envelope);
+          const record = await cell.handleInbound(envelope);
+          if (envelope.kind === "update-result" && record) {
+            await onDaemonUpdateResult(
+              db,
+              payload.sub,
+              envelope.requestId,
+              envelope.ok,
+              envelope.at,
+              envelope.error,
+            );
+          }
         }
       };
 
@@ -144,9 +162,11 @@ export function registerDaemonWebSocket(
             connectionId = attached.connectionId;
             leaseToken = attached.lease.token;
           } catch (err) {
-            compatLogWarn(
-              "ws",
-              `daemon attach failed for ${payload.sub}: ${String(err)}`,
+            daemonCellLog(
+              "WARN",
+              payload.sub,
+              undefined,
+              `daemon attach failed: ${String(err)}`,
             );
             ws.close(1013, "attach failed");
             return;
@@ -154,9 +174,11 @@ export function registerDaemonWebSocket(
 
           await onDaemonConnected(db, payload.sub, cell, connectedAt);
 
-          compatLogInfo(
-            "ws",
-            `daemon connected: ${connectionId}${
+          daemonCellLog(
+            "INFO",
+            payload.sub,
+            connectionId,
+            `daemon connected${
               remoteAddress ? ` from ${remoteAddress}` : ""
             }`,
           );
@@ -228,7 +250,12 @@ export function registerDaemonWebSocket(
               closedAt: new Date().toISOString(),
             }).then(async () => {
               await onDaemonDisconnected(db, payload.sub, cell);
-              compatLogInfo("ws", `daemon disconnected: ${connectionId}`);
+              daemonCellLog(
+                "INFO",
+                payload.sub,
+                connectionId,
+                "daemon disconnected",
+              );
             });
           }
         },
@@ -243,7 +270,12 @@ export function registerDaemonWebSocket(
               closedAt: new Date().toISOString(),
             }).then(async () => {
               await onDaemonDisconnected(db, payload.sub, cell);
-              compatLogInfo("ws", `daemon disconnected: ${connectionId}`);
+              daemonCellLog(
+                "INFO",
+                payload.sub,
+                connectionId,
+                "daemon disconnected",
+              );
             });
           }
         },

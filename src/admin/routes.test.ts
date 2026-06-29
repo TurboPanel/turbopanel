@@ -102,6 +102,7 @@ function createTrackingRegistry(failIds: Set<string> = new Set()): {
       return cell
     },
     listOnlineServerIds: async () => [],
+    // Admin diagnostics (`GET /servers/:id/cell`) legitimately reads live snapshots.
     getSnapshots: async () => new Map(),
     purge: async (serverId: string) => {
       await registry.getCell(serverId).purge()

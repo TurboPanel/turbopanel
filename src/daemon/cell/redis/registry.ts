@@ -1,12 +1,18 @@
+import type { Db } from "../../db.ts";
 import type {
   DaemonCell,
   DaemonCellRegistry,
   DaemonCellSnapshot,
 } from "../contracts.ts";
+import { logWarn } from "../../../logger.ts";
 import type { RedisClientOptions } from "./client.ts";
 import { createRedisCellClient, RedisCellClient } from "./client.ts";
 import { RedisDaemonCell } from "./cell.ts";
 import { onlineSetKey } from "./keys.ts";
+
+export type RedisDaemonCellRegistryOptions = RedisClientOptions & {
+  db?: Db;
+};
 
 export type RedisDaemonCellRegistry = DaemonCellRegistry & {
   client: RedisCellClient;
@@ -17,15 +23,16 @@ export type RedisDaemonCellRegistry = DaemonCellRegistry & {
 };
 
 export function createRedisDaemonCellRegistry(
-  opts?: RedisClientOptions,
+  opts?: RedisDaemonCellRegistryOptions,
 ): RedisDaemonCellRegistry {
   const client = createRedisCellClient(opts);
+  const db = opts?.db;
   const cells = new Map<string, RedisDaemonCell>();
 
   const getCell = (serverId: string): DaemonCell => {
     let cell = cells.get(serverId);
     if (!cell) {
-      cell = new RedisDaemonCell(client, serverId);
+      cell = new RedisDaemonCell(client, serverId, db);
       cells.set(serverId, cell);
     }
     return cell;
@@ -56,7 +63,14 @@ export function createRedisDaemonCellRegistry(
       await Promise.all(
         onlineServerIds.map(async (serverId) => {
           const cell = getCell(serverId) as RedisDaemonCell;
-          await cell.prune();
+          try {
+            await cell.prune();
+          } catch (err) {
+            logWarn(
+              "daemon-cell",
+              `prune error for ${serverId}: ${String(err)}`,
+            );
+          }
         }),
       );
     },

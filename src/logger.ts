@@ -1,5 +1,17 @@
 const encoder = new TextEncoder()
 
+function readEnv(name: string): string | undefined {
+  if (typeof Deno !== 'undefined') {
+    return Deno.env.get(name) ?? undefined
+  }
+  return process.env[name]
+}
+
+const DAEMON_DEBUG_ENABLED =
+  readEnv('TURBOPANEL_DAEMON_DEBUG') === '1' ||
+  readEnv('TURBOPANEL_DAEMON_DEBUG') === 'true' ||
+  readEnv('TURBOPANEL_LOG_LEVEL') === 'debug'
+
 function formatParts(parts: unknown[]): string {
   return parts.map((part) => String(part)).join(' ')
 }
@@ -52,7 +64,23 @@ export function logInfo(component: string, ...parts: unknown[]): void {
 }
 
 export function logDebug(component: string, ...parts: unknown[]): void {
+  if (!DAEMON_DEBUG_ENABLED) return
   log('DEBUG', component, ...parts)
+}
+
+export function daemonCellLog(
+  level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR',
+  serverId: string,
+  connectionId: string | undefined,
+  message: string,
+): void {
+  if (level === 'DEBUG' && !DAEMON_DEBUG_ENABLED) return
+  const conn = connectionId ?? 'unknown'
+  log(
+    level,
+    'daemon-cell',
+    `[daemon-cell serverId=${serverId} conn=${conn}] ${message}`,
+  )
 }
 
 export function logWarn(component: string, ...parts: unknown[]): void {

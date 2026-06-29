@@ -1,13 +1,22 @@
 /// <reference types="@cloudflare/vitest-pool-workers" />
 import { env, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   deriveSecretsConfig,
   parseSecretsEnv,
 } from "../client/authn/secrets.ts";
+import type { Db } from "../db.ts";
 import { issueDaemonJwt } from "./authn/daemon-jwt.ts";
-import { generateDeliveryId, generateRequestId } from "./cell/protocol.ts";
-import type { DaemonCellObject } from "./cell/do.ts";
+import {
+  buildDefaultDaemonStatus,
+  type ServerDaemonState,
+  type ServerDaemonStatus,
+} from "./authn/daemon-state.ts";
+import {
+  DaemonCellObject,
+  setDaemonCellProjectionDbFactoryForTests,
+} from "./cell/do.ts";
+import { generateDeliveryId, generateRequestId, DAEMON_OFFLINE_SWEEP_MS } from "./cell/protocol.ts";
 
 const CELL_HEADER = "X-Turbopanel-Cell-Server-Id";
 
@@ -104,7 +113,202 @@ async function waitFor(
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
+function mergeDaemonStatus(
+  daemon: ServerDaemonState,
+  statusOverrides: Partial<ServerDaemonStatus> = {},
+): ServerDaemonState {
+  return {
+    ...daemon,
+    status: {
+      ...buildDefaultDaemonStatus(),
+      ...(daemon.status ?? {}),
+      ...statusOverrides,
+    },
+  };
+}
+
+function createProjectionRecordingDb(
+  statusOverrides: Partial<ServerDaemonStatus> = {},
+): {
+  db: Db;
+  updateCalls: Array<Record<string, unknown>>;
+  getStatus: () => ServerDaemonStatus;
+  setDaemonStatus: (patch: Partial<ServerDaemonStatus>) => void;
+} {
+  const updateCalls: Array<Record<string, unknown>> = [];
+  let daemon = mergeDaemonStatus({
+    key: {
+      id: "key-1",
+      algorithm: "Ed25519",
+      publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
+      fingerprint: "fp-1",
+      createdAt: "2020-01-01T00:00:00.000Z",
+    },
+    projection: { hostname: "host-1" },
+  }, statusOverrides);
+
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([{
+            daemon,
+            metadata: { hostname: "host-1" },
+          }]),
+        }),
+      }),
+    }),
+    update: () => ({
+      set: (patch: Record<string, unknown>) => {
+        updateCalls.push(patch);
+        if (patch.daemon) {
+          daemon = patch.daemon as ServerDaemonState;
+        }
+        return {
+          where: () => Promise.resolve(undefined),
+        };
+      },
+    }),
+  } as unknown as Db;
+
+  return {
+    db,
+    updateCalls,
+    getStatus: () => daemon.status ?? buildDefaultDaemonStatus(),
+    setDaemonStatus: (patch: Partial<ServerDaemonStatus>) => {
+      daemon = mergeDaemonStatus(daemon, patch);
+    },
+  };
+}
+
+function statusFromPatch(
+  patch: Record<string, unknown> | undefined,
+): ServerDaemonStatus | undefined {
+  const daemon = patch?.daemon as ServerDaemonState | undefined;
+  return daemon?.status;
+}
+
 describe("DaemonCellObject", () => {
+  beforeEach(() => {
+    setDaemonCellProjectionDbFactoryForTests(null);
+  });
+
+  afterEach(() => {
+    setDaemonCellProjectionDbFactoryForTests(null);
+  });
+  it("projects connect to Postgres after websocket attach", async () => {
+    const serverId = "test-srv-proj-connect";
+    const { db, updateCalls } = createProjectionRecordingDb({
+      connected: false,
+      daemonStatus: "offline",
+    });
+    setDaemonCellProjectionDbFactoryForTests(() => db);
+
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const { ws } = await openDaemonWebSocket(stub, serverId);
+
+    await waitFor(() => {
+      const connectedPatch = updateCalls.find((patch) =>
+        statusFromPatch(patch)?.connected === true
+      );
+      expect(connectedPatch).toBeDefined();
+      const status = statusFromPatch(connectedPatch);
+      expect(status?.connectedAt).toEqual(expect.any(String));
+      expect(status?.statusChangedAt).toEqual(expect.any(String));
+      expect(status?.lastSeenAt).toEqual(expect.any(String));
+    });
+
+    ws.close(1000, "test done");
+  });
+
+  it("projects disconnect to Postgres after websocket close", async () => {
+    const serverId = "test-srv-proj-disconnect";
+    const { db, updateCalls } = createProjectionRecordingDb({
+      connected: true,
+      daemonStatus: "online",
+      connectedAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+    setDaemonCellProjectionDbFactoryForTests(() => db);
+
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const { ws } = await openDaemonWebSocket(stub, serverId);
+
+    await waitFor(() => {
+      expect(updateCalls.some((patch) =>
+        statusFromPatch(patch)?.connected === true
+      )).toBe(true);
+    });
+
+    ws.close(1000, "test done");
+
+    await waitFor(() => {
+      const disconnectedPatch = updateCalls.find((patch) =>
+        statusFromPatch(patch)?.connected === false
+      );
+      expect(disconnectedPatch).toBeDefined();
+      expect(statusFromPatch(disconnectedPatch)?.disconnectedAt).toEqual(
+        expect.any(String),
+      );
+    });
+  });
+
+  it("debounces heartbeat projection writes to at most once per 60s", async () => {
+    const serverId = "test-srv-proj-heartbeat-debounce";
+    const staleAt = new Date(Date.now() - 61_000).toISOString();
+    const { db, updateCalls, setDaemonStatus } = createProjectionRecordingDb({
+      connected: true,
+      daemonStatus: "online",
+      connectedAt: staleAt,
+      lastSeenAt: staleAt,
+    });
+    setDaemonCellProjectionDbFactoryForTests(() => db);
+
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const { ws } = await openDaemonWebSocket(stub, serverId);
+
+    await waitFor(() => {
+      expect(updateCalls.length).toBeGreaterThan(0);
+    });
+
+    setDaemonStatus({
+      connected: true,
+      daemonStatus: "online",
+      lastSeenAt: staleAt,
+    });
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE cell_meta SET last_seen_at = ? WHERE server_id = ?",
+        staleAt,
+        serverId,
+      );
+    });
+
+    const countBeforeHeartbeat = updateCalls.length;
+
+    ws.send(JSON.stringify({
+      type: "heartbeat",
+      at: new Date().toISOString(),
+    }));
+
+    await waitFor(() => {
+      expect(updateCalls.length).toBeGreaterThan(countBeforeHeartbeat);
+    });
+
+    const countAfterFirstHeartbeat = updateCalls.length;
+
+    ws.send(JSON.stringify({
+      type: "heartbeat",
+      at: new Date(Date.now() + 1000).toISOString(),
+    }));
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(updateCalls.length).toBe(countAfterFirstHeartbeat);
+
+    ws.close(1000, "test done");
+  }, 10_000);
+
   it("accepts hibernation-safe WebSocket attach with valid JWT", async () => {
     const serverId = "test-srv-1";
     const keyId = crypto.randomUUID();
@@ -388,6 +592,42 @@ describe("DaemonCellObject", () => {
     ws.close(1000, "test done");
   });
 
+  it("heartbeat without agent updates last_seen_at on the cell snapshot", async () => {
+    const serverId = "test-srv-heartbeat-no-agent";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const { ws } = await openDaemonWebSocket(stub, serverId);
+
+    const connectedResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
+      method: "GET",
+    });
+    const connectedSnapshot = await connectedResponse.json() as {
+      lastSeenAt?: string;
+    };
+    expect(connectedSnapshot.lastSeenAt).toBeTruthy();
+    const connectedLastSeenMs = Date.parse(connectedSnapshot.lastSeenAt!);
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    ws.send(JSON.stringify({
+      type: "heartbeat",
+      at: new Date().toISOString(),
+    }));
+
+    await waitFor(async () => {
+      const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
+        method: "GET",
+      });
+      const snapshot = await snapshotResponse.json() as {
+        lastSeenAt?: string;
+      };
+      expect(snapshot.lastSeenAt).toBeTruthy();
+      const heartbeatLastSeenMs = Date.parse(snapshot.lastSeenAt!);
+      expect(heartbeatLastSeenMs).toBeGreaterThanOrEqual(connectedLastSeenMs);
+    });
+
+    ws.close(1000, "test done");
+  });
+
   it("purge-cell clears storage and resets snapshot", async () => {
     const serverId = "test-srv-purge";
     const stub = env.DAEMON_CELL.getByName(serverId);
@@ -461,16 +701,31 @@ describe("DaemonCellObject", () => {
     });
   });
 
-  it("idle websocket attach does not schedule a recurring outbox alarm", async () => {
+  it("idle websocket attach schedules stale-sweep alarm", async () => {
     const serverId = "test-srv-idle-alarm";
     const stub = env.DAEMON_CELL.getByName(serverId);
     const { ws } = await openDaemonWebSocket(stub, serverId);
 
-    const alarm = await runInDurableObject(
+    const { alarm, lastSeenAt } = await runInDurableObject(
       stub,
-      async (_instance, state) => await state.storage.getAlarm(),
+      async (_instance, state) => {
+        const scheduled = await state.storage.getAlarm();
+        const cursor = state.storage.sql.exec(
+          "SELECT last_seen_at FROM cell_meta WHERE server_id = ?",
+          serverId,
+        );
+        let seenAt: string | null = null;
+        for (const row of cursor) {
+          seenAt = String(row.last_seen_at ?? "");
+        }
+        return { alarm: scheduled, lastSeenAt: seenAt };
+      },
     );
-    expect(alarm).toBeNull();
+    expect(alarm).not.toBeNull();
+    expect(lastSeenAt).toBeTruthy();
+    const expectedSweepAt = Date.parse(lastSeenAt!) + DAEMON_OFFLINE_SWEEP_MS;
+    expect(alarm).toBeGreaterThanOrEqual(expectedSweepAt - 1000);
+    expect(alarm).toBeLessThanOrEqual(expectedSweepAt + 1000);
 
     ws.close(1000, "test done");
   });
@@ -499,7 +754,7 @@ describe("DaemonCellObject", () => {
     expect(alarm).toBeNull();
   });
 
-  it("idle alarm clears after outbox drains", async () => {
+  it("outbox drain retains stale-sweep alarm while socket stays attached", async () => {
     const serverId = "test-srv-outbox-drain-alarm";
     const stub = env.DAEMON_CELL.getByName(serverId);
     const { ws } = await openDaemonWebSocket(stub, serverId);
@@ -538,7 +793,7 @@ describe("DaemonCellObject", () => {
         stub,
         async (_instance, state) => await state.storage.getAlarm(),
       );
-      expect(alarm).toBeNull();
+      expect(alarm).not.toBeNull();
     });
 
     ws.close(1000, "test done");
@@ -706,6 +961,113 @@ describe("DaemonCellObject", () => {
         throw new Error("expected snapshot read to not recreate cell_meta");
       }
     });
+  });
+
+  it("alarm sweeps stale connected cells based on last_seen_at", async () => {
+    const serverId = "test-srv-alarm-stale";
+    const { db, updateCalls } = createProjectionRecordingDb({
+      connected: true,
+      daemonStatus: "online",
+      connectedAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+    setDaemonCellProjectionDbFactoryForTests(() => db);
+
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const { ws } = await openDaemonWebSocket(stub, serverId);
+
+    ws.send(JSON.stringify({
+      type: "hello",
+      at: new Date().toISOString(),
+      agent: { commit: "abc", buildId: "1" },
+    }));
+
+    await waitFor(async () => {
+      const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
+        method: "GET",
+      });
+      const snapshot = await snapshotResponse.json() as { connected: boolean };
+      expect(snapshot.connected).toBe(true);
+    });
+
+    const staleLastSeen = new Date(
+      Date.now() - DAEMON_OFFLINE_SWEEP_MS - 1000,
+    ).toISOString();
+
+    await runInDurableObject(stub, async (instance: DaemonCellObject, state) => {
+      state.storage.sql.exec(
+        "UPDATE cell_meta SET last_seen_at = ? WHERE server_id = ?",
+        staleLastSeen,
+        serverId,
+      );
+      await instance.alarm();
+    });
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      const cursor = state.storage.sql.exec(
+        "SELECT connected FROM cell_meta WHERE server_id = ?",
+        serverId,
+      );
+      let connected: number | null = null;
+      for (const row of cursor) {
+        connected = Number(row.connected);
+      }
+      expect(connected).toBe(0);
+    });
+
+    await waitFor(() => {
+      const offlinePatch = updateCalls.find((patch) =>
+        statusFromPatch(patch)?.connected === false
+      );
+      expect(offlinePatch).toBeDefined();
+    });
+
+    ws.close(1000, "test done");
+  });
+
+  it("hello after stale sweep restores runtime connected flag", async () => {
+    const serverId = "test-srv-alarm-stale-recover";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const { ws } = await openDaemonWebSocket(stub, serverId);
+
+    const staleLastSeen = new Date(
+      Date.now() - DAEMON_OFFLINE_SWEEP_MS - 1000,
+    ).toISOString();
+
+    await runInDurableObject(stub, async (instance: DaemonCellObject, state) => {
+      state.storage.sql.exec(
+        "UPDATE cell_meta SET last_seen_at = ? WHERE server_id = ?",
+        staleLastSeen,
+        serverId,
+      );
+      await instance.alarm();
+    });
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      const cursor = state.storage.sql.exec(
+        "SELECT connected FROM cell_meta WHERE server_id = ?",
+        serverId,
+      );
+      for (const row of cursor) {
+        expect(Number(row.connected)).toBe(0);
+      }
+    });
+
+    ws.send(JSON.stringify({
+      type: "hello",
+      at: new Date().toISOString(),
+      agent: { commit: "recovered", buildId: "1" },
+    }));
+
+    await waitFor(async () => {
+      const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
+        method: "GET",
+      });
+      const snapshot = await snapshotResponse.json() as { connected: boolean };
+      expect(snapshot.connected).toBe(true);
+    });
+
+    ws.close(1000, "test done");
   });
 });
 

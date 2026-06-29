@@ -114,6 +114,8 @@ export type DaemonMessage =
 
 /** Read-time stale window when no inbound traffic is recorded on the cell. */
 export const DAEMON_STALE_MS = 60_000;
+/** Background sweep threshold for marking connected cells offline (DO alarm + Redis maintain). */
+export const DAEMON_OFFLINE_SWEEP_MS = 150_000;
 /** Redis cell registry maintenance interval (prune); not used for liveness. */
 export const DAEMON_CELL_MAINTAIN_MS = 60_000;
 /** @deprecated use {@link DAEMON_CELL_MAINTAIN_MS} */

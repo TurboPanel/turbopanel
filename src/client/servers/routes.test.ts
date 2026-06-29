@@ -21,9 +21,25 @@ import {
 } from '../../lib/db/schema.ts'
 import * as hierarchyDelete from '../hierarchy-delete.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
+import { buildServerDaemonState } from '../../daemon/authn/daemon-state.ts'
+import { attachDaemonStateToServer } from '../../daemon/authn/server-identity-db.ts'
 import { registerServerRoutes } from './routes.ts'
+import type { ServerStatusRecord } from './update-status.ts'
 
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+
+const SERVER_STATUS_RECORD_KEYS: (keyof ServerStatusRecord)[] = [
+  'serverId',
+  'connected',
+  'daemonStatus',
+  'lastSeenAt',
+  'connectedAt',
+  'disconnectedAt',
+  'statusChangedAt',
+  'hostname',
+  'remoteAddress',
+  'colocatedWithInstance',
+]
 
 const dbUrl = getDatabaseUrl()
 
@@ -31,6 +47,7 @@ function createMockCell(
   serverId: string,
   purgedIds: string[],
   failPurge = false,
+  options?: { listRequestsThrows?: boolean },
 ): DaemonCell {
   const noopAsync = async () => {}
   return {
@@ -68,7 +85,11 @@ function createMockCell(
     markSent: noopAsync,
     handleInbound: async () => null,
     getRequest: async () => null,
-    listRequests: async () => [],
+    listRequests: options?.listRequestsThrows
+      ? async () => {
+        throw new Error('listRequests should not be called')
+      }
+      : async () => [],
     waitForRequest: async () => null,
     createRequestAndWait: async (outbound) => ({
       serverId,
@@ -96,23 +117,45 @@ function createMockCell(
 
 function createTrackingRegistry(options?: {
   failPurgeIds?: Set<string>
+  listRequestsThrows?: boolean
+  getCellThrows?: boolean
+  getSnapshotsThrows?: boolean
+  listOnlineServerIdsThrows?: boolean
+  onlineIds?: string[]
 }): DaemonCellRegistry & { purgedIds: string[] } {
   const purgedIds: string[] = []
   const failPurgeIds = options?.failPurgeIds ?? new Set<string>()
   const cells = new Map<string, DaemonCell>()
+  const onlineIds = options?.onlineIds ?? []
 
   return {
     purgedIds,
     getCell(serverId: string): DaemonCell {
+      if (options?.getCellThrows) {
+        throw new Error('getCell must not be called')
+      }
       let cell = cells.get(serverId)
       if (!cell) {
-        cell = createMockCell(serverId, purgedIds, failPurgeIds.has(serverId))
+        cell = createMockCell(
+          serverId,
+          purgedIds,
+          failPurgeIds.has(serverId),
+          { listRequestsThrows: options?.listRequestsThrows },
+        )
         cells.set(serverId, cell)
       }
       return cell
     },
-    listOnlineServerIds: async () => [],
-    getSnapshots: async () => new Map(),
+    listOnlineServerIds: options?.listOnlineServerIdsThrows
+      ? async () => {
+        throw new Error('listOnlineServerIds must not be called')
+      }
+      : async () => onlineIds,
+    getSnapshots: options?.getSnapshotsThrows
+      ? async () => {
+        throw new Error('getSnapshots must not be called')
+      }
+      : async () => new Map(),
     purge: async (serverId: string) => {
       await this.getCell(serverId).purge()
     },
@@ -476,6 +519,321 @@ Deno.test('DELETE /servers/:id returns 500 when purge fails after row delete', a
       eq(grant.subjectId, userId),
       eq(grant.entityId, organizationId),
     ))
+    await db.delete(member).where(and(
+      eq(member.userId, userId),
+      eq(member.organizationId, organizationId),
+    ))
+    await db.delete(user).where(eq(user.id, userId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+})
+
+Deno.test('GET /servers/updates does not call listRequests on the cell', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping server route tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+  const registry = createTrackingRegistry({ listRequestsThrows: true })
+  const { app, secrets } = await createServerRoutesTestApp(db, registry)
+
+  const email = `server-updates-batch-${crypto.randomUUID()}@example.com`
+  const [insertedOrg] = await db
+    .insert(organization)
+    .values({ displayName: 'Server Updates Batch Org' })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg!.id
+
+  const [insertedUser] = await db
+    .insert(user)
+    .values({ email, isEmailVerified: true, role: 'user' })
+    .returning({ id: user.id })
+  const userId = insertedUser!.id
+
+  await db.insert(member).values({ organizationId, userId })
+  await db.insert(grant).values({
+    entityType: 'organization',
+    entityId: organizationId,
+    subjectType: 'user',
+    subjectId: userId,
+    permission: 'organization:manage',
+    allow: true,
+  })
+
+  const now = new Date().toISOString()
+  const [insertedServer] = await db
+    .insert(server)
+    .values({
+      createdAt: now,
+      updatedAt: now,
+      organizationId,
+      displayName: 'Updates Batch',
+    })
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
+
+  try {
+    await attachDaemonStateToServer(db, serverId, {
+      publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
+      fingerprint: 'fp-test',
+    })
+    const daemonState = buildServerDaemonState({
+      publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
+      fingerprint: 'fp-test',
+    })
+    daemonState.projection = {
+      agent: { commit: 'aaa', buildId: 'b1' },
+      update: { status: 'updating', requestId: 'req-1', channel: 'trunk' },
+    }
+    await db.update(server).set({
+      daemon: daemonState,
+      updatedAt: new Date().toISOString(),
+    }).where(eq(server.id, serverId))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request('/servers/updates', {
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 200)
+    const body = await res.json()
+    assertEquals(body.ok, true)
+    assertEquals(body.servers.length, 1)
+    assertEquals(body.servers[0].serverId, serverId)
+    assertEquals(body.servers[0].status, 'updating')
+  } finally {
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(grant).where(and(
+      eq(grant.subjectId, userId),
+      eq(grant.entityId, organizationId),
+    ))
+    await db.delete(member).where(and(
+      eq(member.userId, userId),
+      eq(member.organizationId, organizationId),
+    ))
+    await db.delete(user).where(eq(user.id, userId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+})
+
+async function attachConnectedDaemonStatus(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string,
+): Promise<void> {
+  await attachDaemonStateToServer(db, serverId, {
+    publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
+    fingerprint: 'fp-test',
+  })
+  const daemonState = buildServerDaemonState({
+    publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
+    fingerprint: 'fp-test',
+  })
+  const now = new Date().toISOString()
+  daemonState.status = {
+    connected: true,
+    daemonStatus: 'online',
+    lastSeenAt: now,
+    connectedAt: now,
+    disconnectedAt: null,
+    statusChangedAt: now,
+  }
+  await db.update(server).set({
+    daemon: daemonState,
+    updatedAt: now,
+  }).where(eq(server.id, serverId))
+}
+
+function assertServerStatusRecordShape(record: Record<string, unknown>): void {
+  assertEquals(Object.keys(record).sort(), [...SERVER_STATUS_RECORD_KEYS].sort())
+}
+
+Deno.test('GET /servers returns Postgres data without calling getSnapshots', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const registry = createTrackingRegistry({
+      getCellThrows: true,
+      getSnapshotsThrows: true,
+      listOnlineServerIdsThrows: true,
+    })
+    const { app: listApp, secrets: listSecrets } = await createServerRoutesTestApp(
+      db,
+      registry,
+    )
+
+    await attachConnectedDaemonStatus(db, serverId)
+
+    const cookie = await sessionCookie(db, listSecrets, userId)
+    const res = await listApp.request('/servers', {
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 200)
+    const body = await res.json()
+    assertEquals(body.servers.length, 1)
+    assertEquals(body.servers[0].id, serverId)
+    assertEquals(body.servers[0].connected, true)
+  })
+})
+
+Deno.test('GET /servers/status returns Postgres data without calling getSnapshots', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const registry = createTrackingRegistry({
+      getCellThrows: true,
+      getSnapshotsThrows: true,
+      listOnlineServerIdsThrows: true,
+    })
+    const { app: statusApp, secrets: statusSecrets } = await createServerRoutesTestApp(
+      db,
+      registry,
+    )
+
+    await attachConnectedDaemonStatus(db, serverId)
+
+    const cookie = await sessionCookie(db, statusSecrets, userId)
+    const res = await statusApp.request('/servers/status', {
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 200)
+    assertEquals(res.headers.get('Cache-Control'), 'private, max-age=5')
+    const body = await res.json()
+    assertEquals(body.servers.length, 1)
+    assertEquals(body.servers[0].serverId, serverId)
+    assertEquals(body.servers[0].connected, true)
+    assertServerStatusRecordShape(body.servers[0])
+  })
+})
+
+Deno.test('GET /servers/:id/status returns Postgres data without calling getSnapshots', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const registry = createTrackingRegistry({
+      getCellThrows: true,
+      getSnapshotsThrows: true,
+      listOnlineServerIdsThrows: true,
+    })
+    const { app: statusApp, secrets: statusSecrets } = await createServerRoutesTestApp(
+      db,
+      registry,
+    )
+
+    await attachConnectedDaemonStatus(db, serverId)
+
+    const cookie = await sessionCookie(db, statusSecrets, userId)
+    const res = await statusApp.request(`/servers/${serverId}/status`, {
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 200)
+    assertEquals(res.headers.get('Cache-Control'), 'private, max-age=5')
+    const body = await res.json()
+    assertEquals(body.serverId, serverId)
+    assertEquals(body.connected, true)
+    assertServerStatusRecordShape(body)
+  })
+})
+
+Deno.test('GET /servers/:id/cell returns 403 for a non-admin session user', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/servers/${serverId}/cell`, {
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 403)
+  })
+})
+
+Deno.test('GET /servers/:id/cell returns data for an admin user', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping server route tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+  const registry = createTrackingRegistry()
+  const { app, secrets } = await createServerRoutesTestApp(db, registry)
+
+  const email = `server-cell-admin-${crypto.randomUUID()}@example.com`
+  const [insertedOrg] = await db
+    .insert(organization)
+    .values({ displayName: 'Server Cell Admin Org' })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg!.id
+
+  const [insertedUser] = await db
+    .insert(user)
+    .values({ email, isEmailVerified: true, role: 'admin' })
+    .returning({ id: user.id })
+  const userId = insertedUser!.id
+
+  await db.insert(member).values({ organizationId, userId })
+
+  const now = new Date().toISOString()
+  const [insertedServer] = await db
+    .insert(server)
+    .values({
+      createdAt: now,
+      updatedAt: now,
+      organizationId,
+      displayName: 'Cell Admin',
+    })
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
+
+  try {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/servers/${serverId}/cell`, {
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 200)
+    const body = await res.json()
+    assertEquals(body.ok, true)
+    assertEquals(body.snapshot.serverId, serverId)
+  } finally {
+    await db.delete(server).where(eq(server.id, serverId))
     await db.delete(member).where(and(
       eq(member.userId, userId),
       eq(member.organizationId, organizationId),

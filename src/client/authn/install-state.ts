@@ -330,36 +330,15 @@ async function findColocatedServerIdFromRegistry(
   return null
 }
 
-async function findColocatedHostnameFromRegistry(
-  db: Db,
-  registry: DaemonCellRegistry,
-): Promise<string | null> {
-  const onlineIds = await registry.listOnlineServerIds()
-  if (onlineIds.length === 0) return null
-  const presence = await resolveFleetPresence(db, registry, onlineIds)
-  for (const id of onlineIds) {
-    const live = presence.get(id)
-    if (live?.directAttach && live.connected && live.hostname) {
-      return live.hostname
-    }
-  }
-  return null
-}
-
 /**
- * Resolve the co-located server row id from the live cell registry or persisted
- * daemon metadata (machineId / hostname). Used when no daemon is connected
- * during install or right after an instance restart.
+ * Resolve the co-located server row id from persisted daemon metadata
+ * (machineId / hostname). Used when no daemon is connected during install or
+ * right after an instance restart.
  */
 export async function resolveColocatedServerId(
   db: Db,
-  registry?: DaemonCellRegistry,
+  _registry?: DaemonCellRegistry,
 ): Promise<string | null> {
-  if (registry) {
-    const fromRegistry = await findColocatedServerIdFromRegistry(db, registry)
-    if (fromRegistry) return fromRegistry
-  }
-
   const machineId = await readLocalMachineId()
   if (machineId) {
     const byMachine = await db
@@ -374,10 +353,7 @@ export async function resolveColocatedServerId(
   }
 
   let hostname: string | null = null
-  if (registry) {
-    hostname = await findColocatedHostnameFromRegistry(db, registry)
-  }
-  if (!hostname && typeof Deno !== 'undefined') {
+  if (typeof Deno !== 'undefined') {
     try {
       hostname = Deno.hostname()
     } catch {

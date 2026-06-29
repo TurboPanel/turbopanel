@@ -8,7 +8,11 @@ import type {
 } from "./contracts.ts";
 import { resolveCellLocationHint } from "./location.ts";
 import { listConnectedServerIdsFromProjection } from "./postgres-projection.ts";
-import { onDaemonConnected, onDaemonDisconnected, onDaemonHeartbeat } from "./control-plane-monitor.ts";
+import {
+  onDaemonConnected,
+  onDaemonDisconnected,
+  onDaemonInbound,
+} from "./control-plane-monitor.ts";
 import type {
   DaemonInboundEnvelope,
   DaemonOutboundEnvelope,
@@ -178,8 +182,11 @@ class DurableObjectStubDaemonCell implements DaemonCell {
       serverId: this.#serverId,
       body: { params },
     }).then(async () => {
-      if (this.#db && params.agent) {
-        await onDaemonHeartbeat(this.#db, this.#serverId, this, params.agent);
+      if (this.#db) {
+        await onDaemonInbound(this.#db, this.#serverId, this, {
+          at: params.at,
+          agent: params.agent,
+        });
       }
     });
   }
@@ -334,8 +341,8 @@ class DurableObjectStubDaemonCell implements DaemonCell {
     });
   }
 
-  prune(): Promise<boolean> {
-    return Promise.resolve(false);
+  prune(): Promise<import("../contracts.ts").ExpiredUpdateRequest[]> {
+    return Promise.resolve([]);
   }
 
   purge(): Promise<void> {

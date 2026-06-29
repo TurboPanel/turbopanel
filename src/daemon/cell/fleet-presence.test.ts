@@ -1,16 +1,35 @@
 import { assertEquals } from "jsr:@std/assert";
 import type { Db } from "../../db.ts";
 import {
-  parseServerDaemonState,
+  buildDefaultDaemonStatus,
   type ServerDaemonState,
+  type ServerDaemonStatus,
 } from "../authn/daemon-state.ts";
 import type { DaemonCellRegistry, DaemonCellSnapshot } from "./contracts.ts";
-import { resolveFleetPresence } from "./fleet-presence.ts";
+// Canonical import path: ./server-status.ts (fleet-presence.ts is a re-export shim).
+import { resolveFleetPresence } from "./server-status.ts";
 
 const serverId = "srv-fleet-presence";
 
-function createMockDb(initialDaemon: ServerDaemonState): Db {
-  let daemon = initialDaemon;
+function mergeDaemonStatus(
+  daemon: ServerDaemonState,
+  statusOverrides: Partial<ServerDaemonStatus> = {},
+): ServerDaemonState {
+  return {
+    ...daemon,
+    status: {
+      ...buildDefaultDaemonStatus(),
+      ...(daemon.status ?? {}),
+      ...statusOverrides,
+    },
+  };
+}
+
+function createMockDb(
+  initialDaemon: ServerDaemonState,
+  statusOverrides: Partial<ServerDaemonStatus> = {},
+): Db {
+  const daemon = mergeDaemonStatus(initialDaemon, statusOverrides);
   const db = {
     select: () => ({
       from: () => ({
@@ -25,7 +44,22 @@ function createMockDb(initialDaemon: ServerDaemonState): Db {
   return db;
 }
 
-function createMockRegistry(
+function createThrowingSnapshotRegistry(
+  options: { onlineIds?: string[] } = {},
+): DaemonCellRegistry {
+  return {
+    getCell: () => {
+      throw new Error("getSnapshots must not be called on default path");
+    },
+    listOnlineServerIds: async () => options.onlineIds ?? [],
+    getSnapshots: async () => {
+      throw new Error("getSnapshots must not be called on default path");
+    },
+    purge: async () => {},
+  };
+}
+
+function createSnapshotRegistry(
   options: {
     onlineIds?: string[];
     snapshots?: Map<string, DaemonCellSnapshot>;
@@ -58,22 +92,60 @@ const baseDaemon: ServerDaemonState = {
     createdAt: "2020-01-01T00:00:00.000Z",
   },
   projection: {
-    connected: true,
-    lastProjectedAt: "2020-01-01T00:00:00.000Z",
+    hostname: "host-1",
   },
 };
 
-Deno.test("resolveFleetPresence overlays live snapshot when projection marks offline", async () => {
-  const disconnectedDaemon: ServerDaemonState = {
+const baseConnectedStatus: Partial<ServerDaemonStatus> = {
+  connected: true,
+  daemonStatus: "online",
+  connectedAt: "2020-01-01T00:00:00.000Z",
+  lastSeenAt: "2020-01-01T00:00:00.000Z",
+};
+
+Deno.test("resolveFleetPresence default path is Postgres-only (never calls getSnapshots)", async () => {
+  const projectedDaemon: ServerDaemonState = {
     ...baseDaemon,
     projection: {
       ...baseDaemon.projection!,
-      connected: false,
+      agent: { commit: "proj-commit", buildId: "proj-build" },
+      remoteAddress: "203.0.113.1",
     },
   };
-  const db = createMockDb(disconnectedDaemon);
+  const lastSeenAt = new Date().toISOString();
+  const db = createMockDb(projectedDaemon, {
+    ...baseConnectedStatus,
+    lastSeenAt,
+  });
+  const registry = createThrowingSnapshotRegistry({ onlineIds: [serverId] });
+
+  const presence = await resolveFleetPresence(db, registry, [serverId]);
+  assertEquals(presence.get(serverId)?.connected, true);
+  assertEquals(presence.get(serverId)?.lastInboundAt, lastSeenAt);
+  assertEquals(presence.get(serverId)?.agent?.commit, "proj-commit");
+  assertEquals(presence.get(serverId)?.remoteAddress, "203.0.113.1");
+});
+
+Deno.test("resolveFleetPresence online index corrects stale offline projection without snapshots", async () => {
+  const db = createMockDb(baseDaemon, {
+    connected: false,
+    daemonStatus: "offline",
+    lastSeenAt: "2020-01-01T00:00:00.000Z",
+  });
+  const registry = createThrowingSnapshotRegistry({ onlineIds: [serverId] });
+
+  const presence = await resolveFleetPresence(db, registry, [serverId]);
+  assertEquals(presence.get(serverId)?.connected, true);
+});
+
+Deno.test("resolveFleetPresence overlays live snapshot when projection marks offline with withSnapshots", async () => {
+  const db = createMockDb(baseDaemon, {
+    connected: false,
+    daemonStatus: "offline",
+    lastSeenAt: "2020-01-01T00:00:00.000Z",
+  });
   const freshLastSeen = new Date().toISOString();
-  const registry = createMockRegistry({
+  const registry = createSnapshotRegistry({
     onlineIds: [],
     snapshots: new Map([
       [serverId, {
@@ -87,14 +159,16 @@ Deno.test("resolveFleetPresence overlays live snapshot when projection marks off
     ]),
   });
 
-  const presence = await resolveFleetPresence(db, registry, [serverId]);
+  const presence = await resolveFleetPresence(db, registry, [serverId], {
+    withSnapshots: true,
+  });
   assertEquals(presence.get(serverId)?.connected, true);
   assertEquals(presence.get(serverId)?.lastInboundAt, freshLastSeen);
 });
 
 Deno.test("resolveFleetPresence prefers live snapshot.connected over stale projection", async () => {
-  const db = createMockDb(baseDaemon);
-  const registry = createMockRegistry({
+  const db = createMockDb(baseDaemon, baseConnectedStatus);
+  const registry = createSnapshotRegistry({
     onlineIds: [serverId],
     snapshots: new Map([
       [serverId, {
@@ -114,30 +188,27 @@ Deno.test("resolveFleetPresence prefers live snapshot.connected over stale proje
 });
 
 Deno.test("resolveFleetPresence uses online index when snapshot is absent", async () => {
-  const disconnectedDaemon: ServerDaemonState = {
-    ...baseDaemon,
-    projection: {
-      ...baseDaemon.projection!,
-      connected: false,
-    },
-  };
-  const db = createMockDb(disconnectedDaemon);
-  const registry = createMockRegistry({ onlineIds: [serverId] });
+  const db = createMockDb(baseDaemon, {
+    connected: false,
+    daemonStatus: "offline",
+    lastSeenAt: "2020-01-01T00:00:00.000Z",
+  });
+  const registry = createThrowingSnapshotRegistry({ onlineIds: [serverId] });
 
   const presence = await resolveFleetPresence(db, registry, [serverId]);
   assertEquals(presence.get(serverId)?.connected, true);
 });
 
 Deno.test("resolveFleetPresence falls back to projection when registry unavailable", async () => {
-  const db = createMockDb(baseDaemon);
+  const db = createMockDb(baseDaemon, baseConnectedStatus);
   const presence = await resolveFleetPresence(db, undefined, [serverId]);
   assertEquals(presence.get(serverId)?.connected, true);
 });
 
 Deno.test("resolveFleetPresence treats stale lastSeenAt as disconnected", async () => {
-  const db = createMockDb(baseDaemon);
+  const db = createMockDb(baseDaemon, baseConnectedStatus);
   const staleLastSeen = new Date(Date.now() - 90_000).toISOString();
-  const registry = createMockRegistry({
+  const registry = createSnapshotRegistry({
     snapshots: new Map([
       [serverId, {
         serverId,
@@ -155,42 +226,58 @@ Deno.test("resolveFleetPresence treats stale lastSeenAt as disconnected", async 
   assertEquals(presence.get(serverId)?.connected, false);
 });
 
-Deno.test("resolveFleetPresence reads __direct__ from live snapshot for connected servers", async () => {
+Deno.test("resolveFleetPresence reads __direct__ from projection for connected servers", async () => {
   const projectedDaemon: ServerDaemonState = {
     ...baseDaemon,
     projection: {
       ...baseDaemon.projection!,
-      connected: true,
-      remoteAddress: "203.0.113.10",
-      lastProjectedAt: "2020-01-01T00:00:00.000Z",
+      remoteAddress: "__direct__",
     },
   };
-  const db = createMockDb(projectedDaemon);
-  const freshLastSeen = new Date().toISOString();
-  const registry = createMockRegistry({
-    onlineIds: [serverId],
-    snapshots: new Map([
-      [serverId, {
-        serverId,
-        version: 1,
-        updatedAt: freshLastSeen,
-        connected: true,
-        remoteAddress: "__direct__",
-        lastInboundAt: freshLastSeen,
-        lastSeenAt: freshLastSeen,
-      }],
-    ]),
+  const db = createMockDb(projectedDaemon, {
+    ...baseConnectedStatus,
+    lastSeenAt: "2020-01-01T00:00:00.000Z",
   });
+  const registry = createThrowingSnapshotRegistry({ onlineIds: [serverId] });
 
   const presence = await resolveFleetPresence(db, registry, [serverId]);
   assertEquals(presence.get(serverId)?.directAttach, true);
   assertEquals(presence.get(serverId)?.remoteAddress, null);
 });
 
+Deno.test("resolveFleetPresence reads hostname and machineId from metadata over projection", async () => {
+  const projectedDaemon: ServerDaemonState = {
+    ...baseDaemon,
+    projection: {
+      hostname: "stale-projection-host",
+      machineId: "stale-projection-mid",
+    },
+  };
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: () => Promise.resolve([{
+          id: serverId,
+          daemon: mergeDaemonStatus(projectedDaemon, baseConnectedStatus),
+          metadata: {
+            hostname: "canonical-host",
+            machineId: "canonical-mid",
+          },
+        }]),
+      }),
+    }),
+  } as unknown as Db;
+  const registry = createThrowingSnapshotRegistry({ onlineIds: [serverId] });
+
+  const presence = await resolveFleetPresence(db, registry, [serverId]);
+  assertEquals(presence.get(serverId)?.hostname, "canonical-host");
+  assertEquals(presence.get(serverId)?.machineId, "canonical-mid");
+});
+
 Deno.test("resolveFleetPresence keeps connected when lastSeenAt is fresh", async () => {
-  const db = createMockDb(baseDaemon);
+  const db = createMockDb(baseDaemon, baseConnectedStatus);
   const freshLastSeen = new Date().toISOString();
-  const registry = createMockRegistry({
+  const registry = createSnapshotRegistry({
     snapshots: new Map([
       [serverId, {
         serverId,

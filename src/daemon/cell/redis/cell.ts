@@ -2,6 +2,7 @@ import type {
   DaemonCell,
   DaemonCellLease,
   DaemonCellSnapshot,
+  ExpiredUpdateRequest,
   PendingRequestRecord,
   PendingRequestStatus,
 } from "../contracts.ts";
@@ -10,8 +11,11 @@ import type {
   DaemonOutboundEnvelope,
   OutboxDeliveryId,
 } from "../protocol.ts";
-import { DAEMON_STALE_MS } from "../protocol.ts";
+import { DAEMON_OFFLINE_SWEEP_MS, DAEMON_STALE_MS } from "../protocol.ts";
 import { TERMINAL_UPDATE_RETENTION_MS } from "../../../lib/update/constants.ts";
+import { logDebug, logInfo } from "../../../logger.ts";
+import { onDaemonUpdateExpired } from "../control-plane-monitor.ts";
+import type { Db } from "../../../db.ts";
 import { mergeSnapshotPresence } from "../snapshot-merge.ts";
 import type { RedisCellClient, StreamEntry } from "./client.ts";
 import {
@@ -180,13 +184,23 @@ function isInboundStale(
 export class RedisDaemonCell implements DaemonCell {
   readonly #client: RedisCellClient;
   readonly #serverId: string;
+  readonly #db: Db | undefined;
   readonly #reclaimedByConsumer = new Map<string, StreamEntry[]>();
   readonly #deliveryToStreamId = new Map<string, string>();
   readonly #terminalResults = new Map<string, PendingRequestRecord>();
 
-  constructor(client: RedisCellClient, serverId: string) {
+  constructor(client: RedisCellClient, serverId: string, db?: Db) {
     this.#client = client;
     this.#serverId = serverId;
+    this.#db = db;
+  }
+
+  async #projectUpdateExpired(
+    requestId: string,
+    finishedAt: string,
+  ): Promise<void> {
+    if (!this.#db) return;
+    await onDaemonUpdateExpired(this.#db, this.#serverId, requestId, finishedAt);
   }
 
   #rememberOutboxEntries(entries: StreamEntry[]): void {
@@ -232,6 +246,7 @@ export class RedisDaemonCell implements DaemonCell {
   }
 
   async reconcileStalePresence(now = Date.now()): Promise<boolean> {
+    const staleBeforeIso = new Date(now - DAEMON_OFFLINE_SWEEP_MS).toISOString();
     const result = await this.#client.eval(
       RECONCILE_STALE_SOCKET_PRESENCE,
       3,
@@ -241,11 +256,15 @@ export class RedisDaemonCell implements DaemonCell {
       this.#serverId,
       nowIso(now),
       "lease-expired",
+      staleBeforeIso,
     );
 
     const demoted = Array.isArray(result)
       ? result[0] === 1 || result[0] === "1"
       : result === 1;
+    if (demoted) {
+      logInfo("daemon-cell", `stale presence demoted: ${this.#serverId}`);
+    }
     return demoted;
   }
 
@@ -353,6 +372,8 @@ export class RedisDaemonCell implements DaemonCell {
       connectedAt,
     });
 
+    logDebug("daemon-cell", `attach: ${this.#serverId} conn=${connectionId}`);
+
     return {
       connectionId,
       lease: {
@@ -416,6 +437,11 @@ export class RedisDaemonCell implements DaemonCell {
     );
 
     this.#reclaimedByConsumer.delete(`ws:${params.connectionId}`);
+
+    logDebug(
+      "daemon-cell",
+      `detach: ${this.#serverId} conn=${params.connectionId}`,
+    );
   }
 
   async recordInbound(params: {
@@ -428,6 +454,11 @@ export class RedisDaemonCell implements DaemonCell {
     const connectionId = params.connectionId ?? meta?.connectionId;
     if (!connectionId) return;
 
+    if (meta?.connected !== "1") {
+      await this.#client.hset(metaKey(this.#serverId), { connected: "1" });
+      await this.putSnapshot({ connected: true });
+    }
+
     const at = params.at ?? nowIso();
     const atMs = Date.parse(at);
     const bumpInbound = shouldCoalesceLastSeenAt(meta?.lastInboundAt, atMs);
@@ -438,6 +469,7 @@ export class RedisDaemonCell implements DaemonCell {
     if (bumpInbound) {
       fields.lastInboundAt = at;
       fields.lastSeenAt = at;
+      logDebug("daemon-cell", `inbound coalesce: ${this.#serverId}`);
     }
     if (params.hostname) fields.hostname = params.hostname;
 
@@ -769,6 +801,9 @@ export class RedisDaemonCell implements DaemonCell {
       expiresAt: expiredAt,
       finishedAt: expiredAt,
     };
+    if (outbound.kind === "update") {
+      await this.#projectUpdateExpired(outbound.requestId, expiredAt);
+    }
     await this.#cleanupTerminalRequest(outbound.requestId);
     this.#terminalResults.delete(outbound.requestId);
     return expiredRecord;
@@ -935,13 +970,14 @@ export class RedisDaemonCell implements DaemonCell {
     await this.#client.zrem(indexKey, requestId);
   }
 
-  async prune(now = Date.now()): Promise<boolean> {
+  async prune(now = Date.now()): Promise<ExpiredUpdateRequest[]> {
     const indexKey = requestsKey(this.#serverId);
     const requestIds = await this.#client.zrangebyscore(
       indexKey,
       "-inf",
       "+inf",
     );
+    const expiredUpdates: ExpiredUpdateRequest[] = [];
     for (const requestId of requestIds) {
       const fields = await this.#client.hgetall(
         requestKey(this.#serverId, requestId),
@@ -952,11 +988,19 @@ export class RedisDaemonCell implements DaemonCell {
       }
       const expiresAtMs = Date.parse(fields.expiresAt ?? "");
       if (!Number.isNaN(expiresAtMs) && expiresAtMs <= now) {
+        if (
+          fields.requestKind === "update" &&
+          !isTerminalStatus(fields.status as PendingRequestStatus)
+        ) {
+          const finishedAt = nowIso(now);
+          expiredUpdates.push({ requestId, finishedAt });
+          await this.#projectUpdateExpired(requestId, finishedAt);
+        }
         await this.#client.del(requestKey(this.#serverId, requestId));
         await this.#client.zrem(indexKey, requestId);
       }
     }
-    return false;
+    return expiredUpdates;
   }
 
   async purge(): Promise<void> {

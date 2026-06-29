@@ -3,8 +3,9 @@ import { configurePbkdf2Iterations } from './client/authn/password.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from './client/authn/secrets.ts'
 import { createApp } from './app.ts'
 import { createDenoDb } from './db.ts'
-import { logInfo } from './logger.ts'
+import { logInfo, logWarn } from './logger.ts'
 import { createRedisDaemonCellRegistry } from './daemon/cell/redis/registry.ts'
+import { sweepStalePresence } from './daemon/cell/control-plane-monitor.ts'
 import { DAEMON_CELL_MAINTAIN_MS } from './daemon/cell/protocol.ts'
 import {
   ensureColocatedLicenseCredentialsOnDisk,
@@ -67,7 +68,7 @@ const secretsConfig = parseSecretsEnv(
 const sessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
 const daemonJwtSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-jwt-signing')
 const challengeSigningSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-challenge-signing')
-const daemonCellRegistry = createRedisDaemonCellRegistry()
+const daemonCellRegistry = createRedisDaemonCellRegistry({ db })
 const app = createApp({
   db,
   emailQueue,
@@ -119,7 +120,10 @@ const socketPath = resolveInstanceSocket()
 const abort = new AbortController()
 const maintenanceTimer = setInterval(() => {
   void daemonCellRegistry.maintain().catch((err) => {
-    logInfo('daemon-cell', `maintenance error: ${String(err)}`)
+    logWarn('daemon-cell', `maintenance error: ${String(err)}`)
+  })
+  void sweepStalePresence(db, daemonCellRegistry).catch((err) => {
+    logWarn('daemon-cell', `stale presence sweep error: ${String(err)}`)
   })
 }, DAEMON_CELL_MAINTAIN_MS)
 

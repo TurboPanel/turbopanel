@@ -224,6 +224,10 @@ Four versioned surfaces each have REST + WS namespaces (where applicable). Prefi
 
 ## Daemon Cell (`/ws/daemon/v1`)
 
+> **Cost warning:** Durable Objects and Redis are scarce, billable, and cost-sensitive resources. Keep the cell lean — it owns live connection state and projects meaningful changes to Postgres; never use DOs/Redis as UI polling or read APIs. Never fan one dashboard page into one DO/Redis request per server; use Postgres/Hyperdrive for cheap status reads. Avoid heartbeat write amplification and per-viewer cell invocations. Any new cell RPC must justify why Postgres, cache, or a normal API cannot serve the use case. TurboPanel is bootstrapped and must protect Cloudflare costs aggressively.
+
+> **Parity:** Workers (Durable Object) and self-hosted (Redis) must keep daemon-cell behavior identical. DO and Redis are implementation details only — the user-facing API and status semantics are the same on both runtimes.
+
 Server nodes are tracked by a **Daemon Cell** abstraction keyed by `serverId`. There is no in-process daemon state — connection presence, snapshots, outbox, and pending request records live in the cell backend.
 
 | Runtime | Backend | Storage |
@@ -233,9 +237,11 @@ Server nodes are tracked by a **Daemon Cell** abstraction keyed by `serverId`. T
 
 Postgres remains canonical for business data (`server`). The cell is the low-latency hot projection and coordination layer for **presence only** — no monitor tables, no monitor wire payloads, and no HTTP heartbeat ingestion path.
 
-**Presence model:** daemons send `{ type: "hello", at, agent }` once on connect, then `{ type: "heartbeat", at }` only when idle (no other WS traffic for 60 s). Clean disconnects mark offline immediately via attach/close; silent failures go stale read-time when `lastInboundAt` is older than 60 s (`fleet-presence.ts`). `DaemonCellSnapshot` holds `connected`, `connectedAt`, `lastInboundAt`, `lastSeenAt`, and optional `agent`.
+**Postgres status read model:** `server.daemon.status` jsonb holds the UI/API liveness read model. Default status reads are Postgres-only (no read-time `getSnapshots`): `GET /api/client/v1/servers`, `GET /api/client/v1/servers/status`, and `GET /api/client/v1/servers/:id/status`. `GET /api/client/v1/servers/:id/cell` is admin/debug-only and reads live cell snapshots (`withSnapshots: true`).
 
-**Sparse Postgres projection:** ordinary idle heartbeats do **not** write Postgres from inside the Durable Object. Deno/Workers outer layers call `onDaemonConnected` / `onDaemonDisconnected` / `onDaemonHeartbeat` (`control-plane-monitor.ts`) to update `server.daemon.projection` on online/offline transitions and agent identity from `hello`. `ServerFleetPresence` exposes `agent` for the client update API (with cell snapshot fallback on Workers native WS).
+**Presence model:** daemons send `{ type: "hello", at, agent }` once on connect, then `{ type: "heartbeat", at }` only when idle (no other WS traffic for 60 s). Clean disconnects mark offline immediately via attach/close; silent failures are detected by the offline sweep (DO `alarm()` / Redis `maintain()` at `DAEMON_OFFLINE_SWEEP_MS`), not at read time. `DaemonCellSnapshot` holds `connected`, `connectedAt`, `lastInboundAt`, `lastSeenAt`, and optional `agent`.
+
+**Sparse Postgres projection:** connect/disconnect/missed-heartbeat transitions and debounced heartbeats (≤ once/60 s for `lastSeenAt`) project to `server.daemon.status` via `onDaemonConnected` / `onDaemonDisconnected` / `onDaemonHeartbeat` (`control-plane-monitor.ts` → `postgres-projection.ts`). Agent identity from `hello` is stored on `server.daemon.projection`. `ServerFleetPresence` in `server-status.ts` exposes the read model for routes.
 
 **Cheap fleet index:** `listOnlineServerIds()` reads the Redis online set (Deno) or the sparse `server.daemon.projection.connected` field (Workers) — it does not fan out across all cells.
 
