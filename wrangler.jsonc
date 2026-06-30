@@ -28,11 +28,11 @@
     }
   ],
   "queues": {
-    "producers": [{ "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "turbopanel-commands" }],
+    "producers": [{ "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "dev-daemon-commands" }],
     "consumers": [
       {
-        "queue": "turbopanel-commands",
-        "dead_letter_queue": "turbopanel-commands-dlq",
+        "queue": "dev-daemon-commands",
+        "dead_letter_queue": "dev-daemon-commands-dlq",
         "max_retries": 3
       }
     ]
@@ -54,11 +54,11 @@
   "env": {
     "testing": {
       "queues": {
-        "producers": [{ "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "turbopanel-commands" }],
+        "producers": [{ "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "staging-daemon-commands" }],
         "consumers": [
           {
-            "queue": "turbopanel-commands",
-            "dead_letter_queue": "turbopanel-commands-dlq",
+            "queue": "staging-daemon-commands",
+            "dead_letter_queue": "staging-daemon-commands-dlq",
             "max_retries": 3
           }
         ]
@@ -96,11 +96,11 @@
     "live": {
       "name": "instance",
       "queues": {
-        "producers": [{ "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "turbopanel-commands" }],
+        "producers": [{ "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "daemon-commands" }],
         "consumers": [
           {
-            "queue": "turbopanel-commands",
-            "dead_letter_queue": "turbopanel-commands-dlq",
+            "queue": "daemon-commands",
+            "dead_letter_queue": "daemon-commands-dlq",
             "max_retries": 3
           }
         ]
