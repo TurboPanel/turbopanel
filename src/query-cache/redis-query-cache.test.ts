@@ -1,4 +1,4 @@
-import { assert, assertEquals } from 'jsr:@std/assert'
+import { assert, assertEquals, assertRejects } from 'jsr:@std/assert'
 import type { Db } from '../db.ts'
 import {
   createRedisCellClient,
@@ -54,7 +54,8 @@ Deno.test(
     const key = queryCacheKey(namespace, 'miss-hit')
     let loadCount = 0
 
-    const first = await cache.cached({
+    const first = await cache.getReadModel({
+      readModel: 'servers-list',
       key,
       ttlSeconds: 60,
       load: async () => {
@@ -65,7 +66,8 @@ Deno.test(
     assertEquals(first, { value: 1 })
     assertEquals(loadCount, 1)
 
-    const second = await cache.cached({
+    const second = await cache.getReadModel({
+      readModel: 'servers-list',
       key,
       ttlSeconds: 60,
       load: async () => {
@@ -84,7 +86,8 @@ Deno.test(
     const cache = createRedisQueryCache({ client, db })
     const key = queryCacheKey(namespace, 'ttl-clamp')
 
-    await cache.cached({
+    await cache.getReadModel({
+      readModel: 'servers-list',
       key,
       ttlSeconds: 9999,
       load: async () => ({ ok: true }),
@@ -105,7 +108,8 @@ Deno.test('cached falls back to loader when Redis get throws', async () => {
   } as unknown as RedisCellClient
 
   const cache = createRedisQueryCache({ client, db })
-  const result = await cache.cached({
+  const result = await cache.getReadModel({
+    readModel: 'servers-list',
     key: queryCacheKey('stub', 'redis-get-error'),
     ttlSeconds: 60,
     load: async () => {
@@ -118,6 +122,25 @@ Deno.test('cached falls back to loader when Redis get throws', async () => {
   assertEquals(loadCount, 1)
 })
 
+Deno.test('getReadModel rejects unapproved read models', async () => {
+  const db = null as unknown as Db
+  const client = {
+    get: () => Promise.resolve(null),
+    set: () => Promise.resolve(),
+  } as unknown as RedisCellClient
+
+  const cache = createRedisQueryCache({ client, db })
+  await assertRejects(
+    () => cache.getReadModel({
+      readModel: 'not-allowed',
+      key: queryCacheKey('stub', 'unapproved'),
+      load: async () => ({ ok: true }),
+    } as Parameters<typeof cache.getReadModel>[0]),
+    Error,
+    'Unapproved read model',
+  )
+})
+
 Deno.test(
   'cached falls back to loader when cached value is invalid JSON',
   withRedisQueryCache(async ({ client, namespace, db }) => {
@@ -126,7 +149,8 @@ Deno.test(
     await client.set(key, '{not-json')
 
     let loadCount = 0
-    const result = await cache.cached({
+    const result = await cache.getReadModel({
+      readModel: 'servers-list',
       key,
       ttlSeconds: 60,
       load: async () => {

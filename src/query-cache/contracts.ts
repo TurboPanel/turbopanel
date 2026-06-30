@@ -1,4 +1,5 @@
 import type { Db } from '../db.ts'
+import type { ApprovedReadModelId } from './approved-read-models.ts'
 
 /** Matches the Hyperdrive cached binding `max_age` (60 seconds in production). */
 export const MAX_QUERY_CACHE_TTL_SECONDS = 60
@@ -12,8 +13,18 @@ export function clampQueryCacheTtlSeconds(ttl?: number): number {
   )
 }
 
+export type ApprovedReadModelCacheOpts<T> = {
+  readModel: ApprovedReadModelId
+  key: string
+  ttlSeconds?: number
+  load: (db: Db) => Promise<T>
+}
+
 /**
- * QueryCache — read-through cache for expensive Postgres reads.
+ * QueryCache — read-through cache for reviewed, read-only Postgres read models.
+ *
+ * Only {@link ApprovedReadModelId} values from the allowlist may be cached.
+ * Use the named helpers in `read-models/` — do not pass arbitrary loaders.
  *
  * Runtime asymmetry:
  *   Workers → Hyperdrive-backed cache; `load` runs against the cached Hyperdrive
@@ -24,9 +35,5 @@ export function clampQueryCacheTtlSeconds(ttl?: number): number {
  * Loader results must be JSON-serializable.
  */
 export interface QueryCache {
-  cached<T>(opts: {
-    key: string
-    ttlSeconds?: number
-    load: (db: Db) => Promise<T>
-  }): Promise<T>
+  getReadModel<T>(opts: ApprovedReadModelCacheOpts<T>): Promise<T>
 }

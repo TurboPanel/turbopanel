@@ -18,8 +18,11 @@ import type { CommandQueue } from './lib/commands/queue.ts'
 import { isTransientError, processCommandEnvelope } from './lib/commands/consumer.ts'
 import { parseCommandEnvelope } from './lib/commands/envelope.ts'
 import type { EmailQueue } from './lib/email/types.ts'
-import { createHyperdriveQueryCache } from './query-cache/hyperdrive-query-cache.ts'
-import { createPassthroughQueryCache } from './query-cache/passthrough-query-cache.ts'
+import {
+  resolveWorkersDb,
+  resolveWorkersQueryCache,
+  warnIfCachedHyperdriveMissing,
+} from './workers-bindings.ts'
 
 export { DaemonCellObject } from './daemon/cell/do.ts'
 
@@ -86,24 +89,6 @@ function isWorkersDevSurface(env: CloudflareBindings): boolean {
   return flag === '1' || flag === 'true'
 }
 
-function resolveWorkersDb(env: CloudflareBindings): ReturnType<typeof createWorkersDb> | undefined {
-  if (env.HYPERDRIVE) {
-    return createWorkersDb(env.HYPERDRIVE)
-  }
-  const databaseUrl = env.TURBOPANEL_DATABASE_URL?.trim()
-  if (databaseUrl) {
-    return createWorkersDb({ connectionString: databaseUrl })
-  }
-  return undefined
-}
-
-function resolveWorkersCachedDb(env: CloudflareBindings): ReturnType<typeof createWorkersDb> | undefined {
-  if (env.HYPERDRIVE_CACHED) {
-    return createWorkersDb(env.HYPERDRIVE_CACHED)
-  }
-  return resolveWorkersDb(env)
-}
-
 function stringBindingEnv(env: CloudflareBindings): Record<string, string | undefined> {
   const out: Record<string, string | undefined> = {}
   for (const [key, value] of Object.entries(env)) {
@@ -120,17 +105,16 @@ export default {
     const postgresConnectionString = env.HYPERDRIVE?.connectionString
       ?? env.TURBOPANEL_DATABASE_URL?.trim()
       ?? undefined
+    warnIfCachedHyperdriveMissing(env)
     const db = resolveWorkersDb(env)
-    const cachedDb = resolveWorkersCachedDb(env)
+    const queryCache = resolveWorkersQueryCache(env, db)
     const requestApp = new Hono<AppEnv>()
     requestApp.use('*', async (c, next) => {
       if (db) {
         c.set('db', db)
       }
-      if (cachedDb) {
-        c.set('queryCache', createHyperdriveQueryCache(cachedDb))
-      } else if (db) {
-        c.set('queryCache', createPassthroughQueryCache(db))
+      if (queryCache) {
+        c.set('queryCache', queryCache)
       }
       if (cachedEmailQueue) c.set('emailQueue', cachedEmailQueue)
       if (cachedCommandQueue) c.set('commandQueue', cachedCommandQueue)

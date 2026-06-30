@@ -2,6 +2,7 @@
 import type { RedisCellClient } from '../daemon/cell/redis/client.ts'
 import type { Db } from '../db.ts'
 import { logWarn } from '../logger.ts'
+import { isApprovedReadModelId } from './approved-read-models.ts'
 import {
   type QueryCache,
   clampQueryCacheTtlSeconds,
@@ -22,15 +23,21 @@ export function createRedisQueryCache(opts: {
   const { client, db } = opts
 
   return {
-    async cached<T>({
+    async getReadModel<T>({
+      readModel,
       key,
       ttlSeconds,
       load,
     }: {
+      readModel: string
       key: string
       ttlSeconds?: number
       load: (db: Db) => Promise<T>
     }): Promise<T> {
+      if (!isApprovedReadModelId(readModel)) {
+        throw new Error(`Unapproved read model for query cache: ${readModel}`)
+      }
+
       try {
         const cached = await client.get(key)
         if (cached !== null) {

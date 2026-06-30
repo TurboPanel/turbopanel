@@ -132,6 +132,8 @@ The Workers DB client uses `prepare: false` on postgres.js (see **Database** abo
 - `LISTEN` / `NOTIFY`
 - Any other modification to per-session state unless Cloudflare documents it as supported
 
+**Cached read models:** approved read-only `SELECT` paths may use the `HYPERDRIVE_CACHED` binding (Workers) or Redis read-through (Deno). Authorization, sessions, and secrets must use the primary connection. See `src/query-cache/AGENTS.md`.
+
 ### Tooling
 
 - `pnpm install` — pulls `drizzle-orm`, `postgres`, `drizzle-kit`

@@ -1,41 +1,21 @@
-import type { Context } from 'hono'
-import { getDb, getQueryCache, type Db } from '../db.ts'
+import type { Db } from '../db.ts'
 import {
   DEFAULT_QUERY_CACHE_TTL_SECONDS,
+  type ApprovedReadModelCacheOpts,
   type QueryCache,
 } from './contracts.ts'
 import { queryCacheKey } from './keys.ts'
+import type { ApprovedReadModelId } from './approved-read-models.ts'
 
-export async function cachedQuery<T>(
-  c: Context,
-  namespace: string,
-  parts: string[],
-  load: (db: Db) => Promise<T>,
-  ttlSeconds = DEFAULT_QUERY_CACHE_TTL_SECONDS,
-): Promise<T> {
-  const db = getDb(c)
-  if (!db) {
-    throw new Error('Database unavailable')
-  }
-
-  const cache = getQueryCache(c)
-  if (!cache) {
-    return load(db)
-  }
-
-  return cache.cached({
-    key: queryCacheKey(namespace, ...parts),
-    ttlSeconds,
-    load,
-  })
-}
-
-/** Same as {@link cachedQuery} but accepts an explicit cache (for non-Hono callers). */
-export async function cachedQueryWithCache<T>(
+/**
+ * Internal entry point for approved read-model helpers in `read-models/`.
+ * Call sites must not import this — use the named helpers instead.
+ */
+export async function runApprovedCachedReadModel<T>(
   cache: QueryCache | undefined,
   db: Db,
-  namespace: string,
-  parts: string[],
+  readModel: ApprovedReadModelId,
+  keyParts: string[],
   load: (db: Db) => Promise<T>,
   ttlSeconds = DEFAULT_QUERY_CACHE_TTL_SECONDS,
 ): Promise<T> {
@@ -43,9 +23,11 @@ export async function cachedQueryWithCache<T>(
     return load(db)
   }
 
-  return cache.cached({
-    key: queryCacheKey(namespace, ...parts),
+  const opts: ApprovedReadModelCacheOpts<T> = {
+    readModel,
+    key: queryCacheKey(readModel, ...keyParts),
     ttlSeconds,
     load,
-  })
+  }
+  return cache.getReadModel(opts)
 }

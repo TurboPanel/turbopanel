@@ -25,6 +25,8 @@ import { buildServerDaemonState } from '../../daemon/authn/daemon-state.ts'
 import { attachDaemonStateToServer } from '../../daemon/authn/server-identity-db.ts'
 import { registerServerRoutes } from './routes.ts'
 import type { ServerStatusRecord } from './update-status.ts'
+import type { QueryCache } from '../../query-cache/contracts.ts'
+import type { ServersListDisplayPayload } from '../../query-cache/read-models/servers-list.ts'
 
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 
@@ -166,6 +168,7 @@ function createTrackingRegistry(options?: {
 async function createServerRoutesTestApp(
   db: ReturnType<typeof createDenoDb>,
   registry?: DaemonCellRegistry,
+  queryCache?: QueryCache,
 ) {
   const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
@@ -175,10 +178,43 @@ async function createServerRoutesTestApp(
     if (registry) {
       c.set('daemonCellRegistry', registry)
     }
+    if (queryCache) {
+      c.set('queryCache', queryCache)
+    }
     return next()
   })
   registerServerRoutes(app, { secrets, runtime: 'deno' })
   return { app, secrets }
+}
+
+function createRecordingQueryCache(
+  db: ReturnType<typeof createDenoDb>,
+): QueryCache & {
+  readModels: string[]
+  store: Map<string, ServersListDisplayPayload>
+} {
+  const readModels: string[] = []
+  const store = new Map<string, ServersListDisplayPayload>()
+
+  return {
+    readModels,
+    store,
+    async getReadModel<T>(opts: {
+      readModel: string
+      key: string
+      ttlSeconds?: number
+      load: (readDb: typeof db) => Promise<T>
+    }): Promise<T> {
+      readModels.push(opts.readModel)
+      const cached = store.get(opts.key)
+      if (cached !== undefined) {
+        return cached as T
+      }
+      const result = await opts.load(db)
+      store.set(opts.key, result as ServersListDisplayPayload)
+      return result
+    },
+  }
 }
 
 async function sessionCookie(
@@ -843,4 +879,75 @@ Deno.test('GET /servers/:id/cell returns data for an admin user', async () => {
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
+})
+
+Deno.test('GET /servers uses only the approved servers-list read model cache helper', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const registry = createTrackingRegistry({
+      getCellThrows: true,
+      getSnapshotsThrows: true,
+      listOnlineServerIdsThrows: true,
+    })
+    const recordingCache = createRecordingQueryCache(db)
+    const { app } = await createServerRoutesTestApp(db, registry, recordingCache)
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request('/servers', {
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 200)
+    assertEquals(recordingCache.readModels, ['servers-list'])
+  })
+})
+
+Deno.test('GET /servers does not return stale servers after organization grant revocation', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const registry = createTrackingRegistry({
+      getCellThrows: true,
+      getSnapshotsThrows: true,
+      listOnlineServerIdsThrows: true,
+    })
+    const recordingCache = createRecordingQueryCache(db)
+    const { app } = await createServerRoutesTestApp(db, registry, recordingCache)
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+    }
+
+    const first = await app.request('/servers', { headers })
+    assertEquals(first.status, 200)
+    const firstBody = await first.json()
+    assertEquals(firstBody.servers.length, 1)
+    assertEquals(firstBody.servers[0].id, serverId)
+    assertEquals(recordingCache.store.size, 1)
+
+    await db.delete(grant).where(and(
+      eq(grant.subjectId, userId),
+      eq(grant.entityId, organizationId),
+      eq(grant.entityType, 'organization'),
+    ))
+
+    const second = await app.request('/servers', { headers })
+    assertEquals(second.status, 200)
+    const secondBody = await second.json()
+    assertEquals(secondBody.servers, [])
+  })
 })

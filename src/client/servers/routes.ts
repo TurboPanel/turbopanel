@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -9,7 +9,6 @@ import {
   fetchDaemonServerCell,
 } from '../../daemon/cell/server-diagnostics.ts'
 import { resolveFleetPresence } from '../../daemon/cell/fleet-presence.ts'
-import type { ServerFleetPresence } from '../../daemon/cell/server-status.ts'
 import { readProjectionsForServers } from '../../daemon/cell/postgres-projection.ts'
 import {
   onDaemonUpdateQueued,
@@ -44,7 +43,7 @@ import {
 } from './update-status.ts'
 import { UPDATE_REQUEST_TTL_MS } from '../../lib/update/constants.ts'
 import { registerServerCommandRoutes } from './commands-routes.ts'
-import { cachedQuery } from '../../query-cache/cached-query.ts'
+import { cachedServersListReadModel } from '../../query-cache/read-models/servers-list.ts'
 
 const UPDATE_CHANNEL = 'trunk'
 const UPDATE_REQUEST_TTL_SECONDS = 300
@@ -184,65 +183,6 @@ async function repairProjectedUpdateIfStale(
   return { status: 'idle' }
 }
 
-type ServersListRow = {
-  id: string
-  displayName: string | null
-  organizationId: string
-  licenseId: string | null
-  options: typeof server.$inferSelect.options
-  createdAt: string
-}
-
-type ServersListCachePayload = {
-  visibleIds: string[]
-  rows: ServersListRow[]
-  presence: ServerFleetPresence[]
-  colocatedIds: string[]
-}
-
-async function loadServersListPostgres(
-  db: Db,
-  registry: ReturnType<typeof getDaemonCellRegistry>,
-  userId: string,
-  organizationId: string,
-): Promise<ServersListCachePayload> {
-  const visibleIds = await listVisible(db, {
-    kind: 'server',
-    userId,
-    organizationId,
-  })
-
-  if (visibleIds.length === 0) {
-    return { visibleIds: [], rows: [], presence: [], colocatedIds: [] }
-  }
-
-  const rows = await db
-    .select({
-      id: server.id,
-      displayName: server.displayName,
-      organizationId: server.organizationId,
-      licenseId: server.licenseId,
-      options: server.options,
-      createdAt: server.createdAt,
-    })
-    .from(server)
-    .where(inArray(server.id, visibleIds))
-    .orderBy(server.createdAt)
-
-  const serverIds = rows.map((row) => row.id)
-  const [presenceMap, colocatedIds] = await Promise.all([
-    resolveFleetPresence(db, registry, serverIds),
-    resolveColocatedServerIdSet(db, registry, serverIds),
-  ])
-
-  return {
-    visibleIds,
-    rows,
-    presence: [...presenceMap.values()],
-    colocatedIds: [...colocatedIds],
-  }
-}
-
 export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
   router.use('/servers', createSessionMiddleware(opts.secrets))
   router.use('/servers/*', createSessionMiddleware(opts.secrets))
@@ -258,34 +198,32 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
     if (orgResult instanceof Response) return orgResult
     const organizationId = orgResult
 
-    const registry = getDaemonCellRegistry(c)
-    let cached: ServersListCachePayload
+    const visibleIds = await listVisible(db, {
+      kind: 'server',
+      userId: session.userId,
+      organizationId,
+    })
+
+    if (visibleIds.length === 0) {
+      return c.json({ servers: [] })
+    }
+
+    let display
     try {
-      cached = await cachedQuery(
-        c,
-        'servers-list',
-        [session.userId, organizationId],
-        (readDb) =>
-          loadServersListPostgres(
-            readDb,
-            registry,
-            session.userId,
-            organizationId,
-          ),
-      )
+      display = await cachedServersListReadModel(c, {
+        userId: session.userId,
+        organizationId,
+        visibleIds,
+      })
     } catch {
       return c.json({ error: 'Database unavailable' }, 503)
     }
 
-    if (cached.visibleIds.length === 0) {
-      return c.json({ servers: [] })
-    }
-
-    const presence = new Map(cached.presence.map((live) => [live.serverId, live]))
-    const colocatedIds = new Set(cached.colocatedIds)
+    const presence = new Map(display.presence.map((live) => [live.serverId, live]))
+    const colocatedIds = new Set(display.colocatedIds)
 
     return c.json({
-      servers: cached.rows.map((row) => {
+      servers: display.rows.map((row) => {
         const live = presence.get(row.id)
         return {
           ...row,
