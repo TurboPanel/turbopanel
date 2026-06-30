@@ -38,6 +38,7 @@ const SERVER_STATUS_RECORD_KEYS: (keyof ServerStatusRecord)[] = [
   'statusChangedAt',
   'hostname',
   'remoteAddress',
+  'geo',
   'colocatedWithInstance',
 ]
 
@@ -683,6 +684,7 @@ Deno.test('GET /servers returns Postgres data without calling getSnapshots', asy
     assertEquals(body.servers.length, 1)
     assertEquals(body.servers[0].id, serverId)
     assertEquals(body.servers[0].connected, true)
+    assertEquals(body.servers[0].geo, null)
   })
 })
 

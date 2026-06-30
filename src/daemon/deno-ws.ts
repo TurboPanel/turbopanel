@@ -23,6 +23,7 @@ import {
   DAEMON_WS_PATH,
   DEVELOPER_WS_PATH,
 } from "../surfaces.ts";
+import { resolveSelfHostedGeo } from "../lib/geo/self-hosted-geo-provider.ts";
 import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
 
 /** Max idle block for outbox pump reads — keep low so new commands aren't stuck behind a long sleep. */
@@ -175,7 +176,15 @@ export function registerDaemonWebSocket(
             return;
           }
 
-          await onDaemonConnected(db, payload.sub, cell, connectedAt);
+          const geo = resolveSelfHostedGeo(remoteAddress);
+          await onDaemonConnected(
+            db,
+            payload.sub,
+            cell,
+            connectedAt,
+            undefined,
+            geo ?? undefined,
+          );
 
           daemonCellLog(
             "INFO",

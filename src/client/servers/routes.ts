@@ -245,6 +245,7 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
           lastInboundAt: live?.lastInboundAt ?? live?.lastHeartbeatAt ?? null,
           lastHeartbeatAt: live?.lastInboundAt ?? live?.lastHeartbeatAt ?? null,
           connectedAt: live?.connectedAt ?? null,
+          geo: live?.geo ?? null,
           licenseId: row.licenseId ?? null,
         }
       }),

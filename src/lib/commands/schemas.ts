@@ -11,6 +11,8 @@ function isString(value: unknown): value is string {
 
 export type PingCommandPayload = Record<string, never>
 
+export type RebootCommandPayload = Record<string, never>
+
 export type HostnameSetCommandPayload = {
   hostname: string
 }
@@ -18,6 +20,13 @@ export type HostnameSetCommandPayload = {
 export function parsePingPayload(value: unknown): PingCommandPayload {
   if (!isRecord(value)) {
     throw new Error('Invalid ping payload')
+  }
+  return {}
+}
+
+export function parseRebootPayload(value: unknown): RebootCommandPayload {
+  if (!isRecord(value)) {
+    throw new Error('Invalid reboot payload')
   }
   return {}
 }
@@ -54,6 +63,11 @@ export type PingCommandResult = {
 
 export type HostnameSetCommandResult = {
   observedHostname: string
+  summary?: string
+}
+
+export type RebootCommandResult = {
+  scheduled: boolean
   summary?: string
 }
 
@@ -101,26 +115,43 @@ export function parseHostnameSetResult(value: unknown): HostnameSetCommandResult
   return result
 }
 
+export function parseRebootResult(value: unknown): RebootCommandResult {
+  if (!isRecord(value)) {
+    return { scheduled: false }
+  }
+  const result: RebootCommandResult = {
+    scheduled: value.scheduled === true,
+  }
+  if (isString(value.summary)) {
+    result.summary = value.summary
+  }
+  return result
+}
+
 export function parseCommandPayload(
   type: CommandType,
   value: unknown,
-): PingCommandPayload | HostnameSetCommandPayload {
+): PingCommandPayload | HostnameSetCommandPayload | RebootCommandPayload {
   switch (type) {
     case 'daemon.ping':
       return parsePingPayload(value)
     case 'server.hostname.set':
       return parseHostnameSetPayload(value)
+    case 'server.reboot':
+      return parseRebootPayload(value)
   }
 }
 
 export function parseCommandResult(
   type: CommandType,
   value: unknown,
-): PingCommandResult | HostnameSetCommandResult {
+): PingCommandResult | HostnameSetCommandResult | RebootCommandResult {
   switch (type) {
     case 'daemon.ping':
       return parsePingResult(value)
     case 'server.hostname.set':
       return parseHostnameSetResult(value)
+    case 'server.reboot':
+      return parseRebootResult(value)
   }
 }

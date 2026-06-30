@@ -13,6 +13,7 @@ import {
   type UpdateProjection,
 } from '../../daemon/authn/daemon-state.ts'
 import type { Db } from '../../db.ts'
+import type { ServerGeo } from '../../lib/geo/server-geo.ts'
 import { server } from '../../lib/db/schema.ts'
 import { resolveColocatedServerIdSet } from './colocated.ts'
 import { UPDATE_PENDING_MS, UPDATE_REQUEST_TTL_MS } from '../../lib/update/constants.ts'
@@ -275,6 +276,7 @@ export type ServerStatusRecord = {
   statusChangedAt: string | null
   hostname: string | null
   remoteAddress: string | null
+  geo: ServerGeo | null
   colocatedWithInstance: boolean
 }
 
@@ -313,6 +315,7 @@ export function buildServerStatusRecord(
     statusChangedAt: resolved.statusChangedAt,
     hostname: presence.hostname,
     remoteAddress: presence.remoteAddress,
+    geo: presence.geo,
     colocatedWithInstance,
   }
 }

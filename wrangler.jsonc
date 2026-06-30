@@ -56,7 +56,9 @@
   "env": {
     "testing": {
       "queues": {
-        "producers": [{ "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "staging-daemon-commands" }],
+        "producers": [
+          { "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "staging-daemon-commands" }
+        ],
         "consumers": [
           {
             "queue": "staging-daemon-commands",
@@ -132,7 +134,11 @@
       "hyperdrive": [
         {
           "binding": "HYPERDRIVE",
-          "id": "91114c98e51f4f77967f0ee3e7f510e4"
+          "id": "1eaf503302aa4936895ca2cf9963037f"
+        },
+        {
+          "binding": "HYPERDRIVE_CACHED",
+          "id": "d9c42999730048e2842dccb61aa05d67"
         }
       ],
       "vars": {

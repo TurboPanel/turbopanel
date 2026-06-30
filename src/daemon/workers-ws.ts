@@ -6,12 +6,50 @@ import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
 import {
   resolveCellLocationHint,
 } from "./cell/location.ts";
+import { extractCloudflareGeo } from "../lib/geo/server-geo.ts";
 
 const CELL_SERVER_ID_HEADER = "X-Turbopanel-Cell-Server-Id";
+const CELL_GEO_HEADER = "X-Turbopanel-Cell-Geo";
+const REAL_IP_HEADER = "X-Real-IP";
+
+/** Internal headers stamped by the Workers isolate — never pass through from clients. */
+const INTERNAL_CELL_FORWARD_HEADERS = [
+  CELL_SERVER_ID_HEADER,
+  CELL_GEO_HEADER,
+  REAL_IP_HEADER,
+] as const;
 
 export type WorkersDaemonWebSocketOptions = {
   secrets?: DerivedSecretsConfig;
 };
+
+export function buildWorkersDaemonCellForwardHeaders(
+  inbound: Headers,
+  options: {
+    serverId: string;
+    cf?: unknown;
+    cfConnectingIp?: string | null;
+  },
+): Headers {
+  const headers = new Headers(inbound);
+  for (const name of INTERNAL_CELL_FORWARD_HEADERS) {
+    headers.delete(name);
+  }
+
+  headers.set(CELL_SERVER_ID_HEADER, options.serverId);
+
+  const geo = extractCloudflareGeo(options.cf);
+  if (geo) {
+    headers.set(CELL_GEO_HEADER, JSON.stringify(geo));
+  }
+
+  const connectingIp = options.cfConnectingIp?.trim();
+  if (connectingIp) {
+    headers.set(REAL_IP_HEADER, connectingIp);
+  }
+
+  return headers;
+}
 
 /**
  * Daemon WebSocket hub for Cloudflare Workers / wrangler dev.
@@ -61,8 +99,12 @@ export function registerWorkersDaemonWebSocket(
       })
       : env.DAEMON_CELL.getByName(logicalName);
 
-    const headers = new Headers(c.req.raw.headers);
-    headers.set(CELL_SERVER_ID_HEADER, serverId);
+    const headers = buildWorkersDaemonCellForwardHeaders(c.req.raw.headers, {
+      serverId,
+      cf: (c.req.raw as Request & { cf?: unknown }).cf,
+      cfConnectingIp: c.req.header("CF-Connecting-IP"),
+    });
+
     return stub.fetch(new Request(c.req.raw, { headers }));
   });
 }

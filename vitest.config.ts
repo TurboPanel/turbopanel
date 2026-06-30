@@ -18,6 +18,7 @@ export default defineWorkersConfig({
   },
   test: {
     include: [
+      'src/daemon/workers-ws.test.ts',
       'src/daemon/durable-object.test.ts',
       'src/developer/dev-sync-archive.test.ts',
       'src/lib/daemon-install-command.test.ts',

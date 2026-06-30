@@ -1,3 +1,5 @@
+import type { ServerGeo } from '../geo/server-geo.ts'
+
 /** OS families we may report from the daemon; extend the union as support is added. */
 export type ServerOsFamily = 'linux' | 'windows' | 'freebsd' | 'darwin'
 
@@ -43,6 +45,12 @@ export type ServerMetadata = {
   cellGeneration?: number
   /** Last snapshot version written by the cell, for optimistic concurrency checks. */
   cellSnapshotVersion?: number
+  /**
+   * IP geolocation captured from the connecting request (Cloudflare `request.cf`
+   * on Workers; stub/null on self-hosted). Refreshed only when the daemon's
+   * connecting IP changes. Stored in jsonb — no migration required.
+   */
+  geo?: ServerGeo
 }
 
 /**

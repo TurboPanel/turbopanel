@@ -1,6 +1,7 @@
 import { assert, assertEquals } from "jsr:@std/assert";
 import type { Db } from "../../db.ts";
 import type { ServerMetadata } from "../../lib/db/server-metadata.ts";
+import type { ServerGeo } from "../../lib/geo/server-geo.ts";
 import {
   buildDefaultDaemonStatus,
   parseServerDaemonState,
@@ -99,6 +100,139 @@ const testAgent = {
   buildId: "build-1",
   channel: "trunk",
 };
+
+const testGeo: ServerGeo = {
+  country: "US",
+  city: "San Francisco",
+  capturedAt: "2020-01-01T00:00:00.000Z",
+};
+
+const testGeoUpdated: ServerGeo = {
+  country: "NL",
+  city: "Amsterdam",
+  capturedAt: "2020-06-01T00:00:00.000Z",
+};
+
+Deno.test("projectServerDaemon online persists metadata.geo when remoteAddress is new", async () => {
+  const { db, updateCalls } = createMockDb({ key: baseKey });
+
+  await projectServerDaemon(db, serverId, {
+    kind: "online",
+    identity: {
+      hostname: "host-1",
+      machineId: "mid-1",
+      remoteAddress: "203.0.113.10",
+      geo: testGeo,
+    },
+    connectedAt: "2020-01-01T00:00:00.000Z",
+  });
+
+  assertEquals(updateCalls.length, 1);
+  assertEquals(updateCalls[0]?.metadata, {
+    hostname: "host-1",
+    machineId: "mid-1",
+    geo: testGeo,
+  });
+});
+
+Deno.test("projectServerDaemon repeated online skips write when only geo changed with same IP", async () => {
+  const connectedAt = "2020-01-01T00:00:00.000Z";
+  const recent = new Date().toISOString();
+  const { db, updateCalls } = createMockDb(
+    {
+      key: baseKey,
+      projection: {
+        hostname: "host-1",
+        machineId: "mid-1",
+        remoteAddress: "203.0.113.10",
+      },
+    },
+    {
+      connected: true,
+      daemonStatus: "online",
+      lastSeenAt: recent,
+      connectedAt,
+    },
+    { hostname: "host-1", machineId: "mid-1", geo: testGeo },
+  );
+
+  const wrote = await projectServerDaemon(db, serverId, {
+    kind: "online",
+    identity: {
+      hostname: "host-1",
+      machineId: "mid-1",
+      remoteAddress: "203.0.113.10",
+      geo: testGeoUpdated,
+    },
+    connectedAt: "2020-06-01T00:00:00.000Z",
+  });
+
+  assertEquals(wrote, false);
+  assertEquals(updateCalls.length, 0);
+});
+
+Deno.test("projectServerDaemon repeated online refreshes geo when remoteAddress changes", async () => {
+  const connectedAt = "2020-01-01T00:00:00.000Z";
+  const recent = new Date().toISOString();
+  const { db, updateCalls } = createMockDb(
+    {
+      key: baseKey,
+      projection: {
+        hostname: "host-1",
+        machineId: "mid-1",
+        remoteAddress: "203.0.113.10",
+      },
+    },
+    {
+      connected: true,
+      daemonStatus: "online",
+      lastSeenAt: recent,
+      connectedAt,
+    },
+    { hostname: "host-1", machineId: "mid-1", geo: testGeo },
+  );
+
+  const wrote = await projectServerDaemon(db, serverId, {
+    kind: "online",
+    identity: {
+      hostname: "host-1",
+      machineId: "mid-1",
+      remoteAddress: "198.51.100.20",
+      geo: testGeoUpdated,
+    },
+    connectedAt: "2020-06-01T00:00:00.000Z",
+  });
+
+  assertEquals(wrote, true);
+  assertEquals(updateCalls.length, 1);
+  assertEquals(updateCalls[0]?.metadata, {
+    hostname: "host-1",
+    machineId: "mid-1",
+    geo: testGeoUpdated,
+  });
+});
+
+Deno.test("projectServerDaemon identity trigger skips metadata.geo without remoteAddress change", async () => {
+  const { db, updateCalls } = createMockDb(
+    {
+      key: baseKey,
+      projection: {
+        hostname: "host-1",
+        machineId: "mid-1",
+        agent: testAgent,
+      },
+    },
+    {},
+    { hostname: "host-1", machineId: "mid-1" },
+  );
+
+  await projectServerDaemon(db, serverId, {
+    kind: "identity",
+    identity: { geo: testGeo },
+  });
+
+  assertEquals(updateCalls.length, 0);
+});
 
 Deno.test("projectServerDaemon online sets status in daemon jsonb", async () => {
   const { db, updateCalls } = createMockDb({ key: baseKey });

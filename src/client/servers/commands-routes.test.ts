@@ -345,6 +345,121 @@ Deno.test('POST /servers/:id/commands/ping returns 403 without org grant', async
   })
 })
 
+Deno.test('POST /servers/:id/commands/reboot queues command for authorized user', async () => {
+  await withCommandRouteFixtures({}, async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+    commandQueue,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/servers/${serverId}/commands/reboot`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 200)
+    const body = await res.json()
+    assertEquals(body.ok, true)
+    assertEquals(body.status, 'queued')
+    assertEquals(typeof body.commandId, 'string')
+
+    const rows = await db
+      .select()
+      .from(command)
+      .where(eq(command.id, body.commandId))
+    assertEquals(rows.length, 1)
+    assertEquals(rows[0]?.type, 'server.reboot')
+    assertEquals(rows[0]?.status, 'queued')
+    assertEquals(commandQueue!.envelopes.length, 1)
+    assertTrimmedCommandEnvelope(commandQueue!.envelopes[0]!, {
+      commandId: body.commandId,
+      serverId,
+      type: 'server.reboot',
+      attempt: 1,
+      queuedAt: rows[0]!.queuedAt ?? rows[0]!.createdAt,
+    })
+  })
+})
+
+Deno.test('POST /servers/:id/commands/reboot returns 403 without org grant', async () => {
+  await withCommandRouteFixtures({ withGrant: false }, async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+    commandQueue,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/servers/${serverId}/commands/reboot`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 403)
+    assertEquals(commandQueue!.envelopes.length, 0)
+  })
+})
+
+Deno.test('POST /servers/:id/commands/reboot returns 403 for cross-org server', async () => {
+  await withCommandRouteFixtures({}, async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    commandQueue,
+  }) => {
+    const [otherOrg] = await db
+      .insert(organization)
+      .values({ displayName: 'Other Org Reboot' })
+      .returning({ id: organization.id })
+
+    const now = new Date().toISOString()
+    const [otherServer] = await db
+      .insert(server)
+      .values({
+        createdAt: now,
+        updatedAt: now,
+        organizationId: otherOrg!.id,
+        displayName: 'Other Server Reboot',
+      })
+      .returning({ id: server.id })
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/servers/${otherServer!.id}/commands/reboot`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 403)
+    assertEquals(commandQueue!.envelopes.length, 0)
+
+    const rows = await db
+      .select()
+      .from(command)
+      .where(eq(command.serverId, otherServer!.id))
+    assertEquals(rows.length, 0)
+
+    await db.delete(server).where(eq(server.id, otherServer!.id))
+    await db.delete(organization).where(eq(organization.id, otherOrg!.id))
+  })
+})
+
 Deno.test('POST /servers/:id/hostname validates hostname and queues on success', async () => {
   await withCommandRouteFixtures({}, async ({
     db,
@@ -641,6 +756,15 @@ Deno.test('command routes return 503 when dispatch infrastructure is unavailable
       body: JSON.stringify({ hostname: 'web-01' }),
     })
     assertEquals(hostnameRes.status, 503)
+
+    const rebootRes = await app.request(`/servers/${serverId}/commands/reboot`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+    assertEquals(rebootRes.status, 503)
 
     const rows = await db.select().from(command).where(eq(command.serverId, serverId))
     assertEquals(rows.length, 0)

@@ -10,6 +10,8 @@ import { inArray } from "drizzle-orm";
 import type { Db } from "../../db.ts";
 import { parseServerDaemonState } from "../authn/daemon-state.ts";
 import type { ServerMetadata } from "../../lib/db/server-metadata.ts";
+import type { ServerGeo } from "../../lib/geo/server-geo.ts";
+import { parseServerGeo } from "../../lib/geo/server-geo.ts";
 import { server } from "../../lib/db/schema.ts";
 import type { DaemonCellRegistry, DaemonCellSnapshot } from "./contracts.ts";
 import { DAEMON_STALE_MS } from "./protocol.ts";
@@ -36,6 +38,7 @@ export type ServerFleetPresence = {
     builtAt?: string;
     channel?: string;
   };
+  geo: ServerGeo | null;
 };
 
 function normalizeRemoteAddress(
@@ -136,6 +139,7 @@ export async function resolveFleetPresence(
         projection?.lastProjectedAt ?? null,
       keyLastUsedAt: snapshot?.keyLastUsedAt ?? null,
       agent: projection?.agent ?? snapshot?.agent ?? undefined,
+      geo: parseServerGeo(metadata.geo),
     });
   }
 

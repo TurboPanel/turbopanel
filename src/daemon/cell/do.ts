@@ -4,6 +4,8 @@ import {
   parseSecretsEnv,
 } from "../../client/authn/secrets.ts";
 import { createWorkersDb, type Db } from "../../db.ts";
+import type { ServerGeo } from "../../lib/geo/server-geo.ts";
+import { parseServerGeo } from "../../lib/geo/server-geo.ts";
 import { TERMINAL_UPDATE_RETENTION_MS } from "../../lib/update/constants.ts";
 import { verifyDaemonJwt } from "../authn/daemon-jwt.ts";
 import {
@@ -46,6 +48,7 @@ const DELIVERY_LEASE_NAME = "delivery";
 const DAEMON_SOCKET_LEASE_NAME = "daemon-socket";
 const OUTBOX_PUMP_ALARM_MS = 2_000;
 const HEARTBEAT_COALESCE_MS = 60_000;
+const CELL_GEO_HEADER = "X-Turbopanel-Cell-Geo";
 
 type ProjectionDbFactory = () => Db | null;
 
@@ -320,7 +323,11 @@ export class DaemonCellObject {
     } as unknown as DaemonCell;
   }
 
-  async #projectConnected(serverId: string, connectedAt: string): Promise<void> {
+  async #projectConnected(
+    serverId: string,
+    connectedAt: string,
+    geo?: ServerGeo,
+  ): Promise<void> {
     const db = this.#newProjectionDb();
     if (!db) return;
     try {
@@ -329,6 +336,8 @@ export class DaemonCellObject {
         serverId,
         this.#projectionCell(serverId),
         connectedAt,
+        undefined,
+        geo,
       );
       if (this.#isDaemonDebug()) {
         console.debug(`daemon cell projection: connected (${serverId})`);
@@ -729,6 +738,7 @@ export class DaemonCellObject {
     const connectionId = crypto.randomUUID();
     const connectedAt = nowIso();
     const remoteAddress = request.headers.get("X-Real-IP") ?? "";
+    const geo = this.#parseConnectGeoHeader(request);
 
     const existingHolder = this.#existingDaemonSocketHolder();
 
@@ -756,11 +766,21 @@ export class DaemonCellObject {
 
     console.info(`daemon cell connected (${serverId}) conn=${connectionId}`);
 
-    this.#ctx.waitUntil(this.#projectConnected(serverId, connectedAt));
+    this.#ctx.waitUntil(this.#projectConnected(serverId, connectedAt, geo ?? undefined));
     void this.#pumpOutboxToDaemonSockets(serverId);
     await this.#scheduleNearestAlarm();
 
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  #parseConnectGeoHeader(request: Request): ServerGeo | null {
+    const raw = request.headers.get(CELL_GEO_HEADER)?.trim();
+    if (!raw) return null;
+    try {
+      return parseServerGeo(JSON.parse(raw));
+    } catch {
+      return null;
+    }
   }
 
   #shouldCoalesceLastSeenAt(serverId: string, atMs: number): boolean {

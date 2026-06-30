@@ -10,6 +10,8 @@ import {
   parseHostnameSetResult,
   parsePingPayload,
   parsePingResult,
+  parseRebootPayload,
+  parseRebootResult,
 } from './schemas.ts'
 import type { CommandType } from './types.ts'
 
@@ -20,6 +22,16 @@ Deno.test('parsePingPayload accepts empty object', () => {
 Deno.test('parsePingPayload rejects non-object values', () => {
   for (const value of [null, [], 'x']) {
     assertThrows(() => parsePingPayload(value), Error, 'Invalid ping payload')
+  }
+})
+
+Deno.test('parseRebootPayload accepts empty object', () => {
+  assertEquals(parseRebootPayload({}), {})
+})
+
+Deno.test('parseRebootPayload rejects non-object values', () => {
+  for (const value of [null, [], 'x']) {
+    assertThrows(() => parseRebootPayload(value), Error, 'Invalid reboot payload')
   }
 })
 
@@ -73,6 +85,15 @@ Deno.test('parsePingResult keeps only valid string hop fields', () => {
   assertEquals(parsePingResult({ daemonBuild: {} }), {})
 })
 
+Deno.test('parseRebootResult returns default for non-records and round-trips valid results', () => {
+  assertEquals(parseRebootResult(null), { scheduled: false })
+  assertEquals(parseRebootResult({ scheduled: true, summary: 'ok' }), {
+    scheduled: true,
+    summary: 'ok',
+  })
+  assertEquals(parseRebootResult({ scheduled: true }), { scheduled: true })
+})
+
 Deno.test('parseHostnameSetResult round-trips valid results', () => {
   assertEquals(
     parseHostnameSetResult({ observedHostname: 'web-01', summary: 'ok' }),
@@ -100,12 +121,17 @@ Deno.test('parseCommandPayload and parseCommandResult dispatch by type', () => {
     parseCommandPayload('server.hostname.set' as CommandType, { hostname: 'web-01' }),
     { hostname: 'web-01' },
   )
+  assertEquals(parseCommandPayload('server.reboot' as CommandType, {}), {})
   assertEquals(parseCommandResult('daemon.ping' as CommandType, { daemonHostname: 'x' }), {
     daemonHostname: 'x',
   })
   assertEquals(
     parseCommandResult('server.hostname.set' as CommandType, { observedHostname: 'web-01' }),
     { observedHostname: 'web-01' },
+  )
+  assertEquals(
+    parseCommandResult('server.reboot' as CommandType, { scheduled: true, summary: 'ok' }),
+    { scheduled: true, summary: 'ok' },
   )
 })
 

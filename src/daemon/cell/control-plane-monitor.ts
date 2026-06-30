@@ -7,6 +7,7 @@
  *   projection   = writing meaningful state to Postgres (postgres-projection.ts)
  */
 import type { Db } from "../../db.ts";
+import type { ServerGeo } from "../../lib/geo/server-geo.ts";
 import { getServerDaemonStateByServerId } from "../authn/server-identity-db.ts";
 import type { UpdateProjection } from "../authn/daemon-state.ts";
 import type { DaemonCell } from "./contracts.ts";
@@ -37,11 +38,15 @@ export async function onDaemonConnected(
   cell: DaemonCell,
   connectedAt?: string,
   agent?: ProjectionAgent,
+  geo?: ServerGeo,
 ): Promise<void> {
   const snapshot = await cell.getSnapshot();
   await projectServerDaemon(db, serverId, {
     kind: "online",
-    identity: identityFromSnapshot(snapshot),
+    identity: {
+      ...identityFromSnapshot(snapshot),
+      ...(geo ? { geo } : {}),
+    },
     connectedAt: connectedAt ?? snapshot.connectedAt,
   }, { cell, agent });
 }

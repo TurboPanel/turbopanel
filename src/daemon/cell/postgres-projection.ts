@@ -17,6 +17,8 @@ import {
 } from "../authn/daemon-state.ts";
 import { getServerDaemonStateByServerId } from "../authn/server-identity-db.ts";
 import { server } from "../../lib/db/schema.ts";
+import type { ServerMetadata } from "../../lib/db/server-metadata.ts";
+import type { ServerGeo } from "../../lib/geo/server-geo.ts";
 import { mergeServerMetadataIdentity } from "../../server-registry.ts";
 import type { DaemonCell } from "./contracts.ts";
 import type { DaemonCellSnapshot } from "./contracts.ts";
@@ -26,6 +28,7 @@ export type ProjectionIdentity = {
   machineId?: string;
   remoteAddress?: string;
   keyId?: string;
+  geo?: ServerGeo;
 };
 
 export type ProjectionAgent = {
@@ -155,6 +158,47 @@ export function mergeAgentPreserving(
   return incoming;
 }
 
+function remoteAddressChanged(
+  current: ServerDaemonProjection | undefined,
+  identity: ProjectionIdentity,
+): boolean {
+  const merged = mergeIdentity(current, identity);
+  const incomingRemote = merged.remoteAddress?.trim();
+  if (!incomingRemote) return false;
+
+  const currentRemote = current?.remoteAddress?.trim();
+  if (!currentRemote) return true;
+
+  return incomingRemote !== currentRemote;
+}
+
+/** Geo is refreshed only when the connecting IP changes — not on every reconnect. */
+function geoRefreshDue(
+  currentProjection: ServerDaemonProjection | undefined,
+  identity: ProjectionIdentity,
+): boolean {
+  return identity.geo !== undefined &&
+    remoteAddressChanged(currentProjection, identity);
+}
+
+function buildMetadataPatch(
+  existingMetadata: ServerMetadata | null | undefined,
+  projection: ServerDaemonProjection | undefined,
+  incomingGeo?: ServerGeo,
+): ServerMetadata | null {
+  const identityMerged = mergeServerMetadataIdentity(existingMetadata, {
+    hostname: projection?.hostname,
+    machineId: projection?.machineId,
+  });
+  const geoDue = incomingGeo !== undefined;
+  if (!identityMerged && !geoDue) return null;
+  const base = identityMerged ?? { ...(existingMetadata ?? {}) };
+  if (geoDue && incomingGeo) {
+    return { ...base, geo: incomingGeo };
+  }
+  return identityMerged;
+}
+
 function buildIdentityProjection(
   current: ServerDaemonProjection | undefined,
   identity: ProjectionIdentity,
@@ -214,6 +258,8 @@ export async function projectServerDaemon(
   let writeProjection = false;
   let nextStatus: ServerDaemonStatus = { ...existingStatus };
   let writeStatus = false;
+  let incomingGeo: ServerGeo | undefined;
+  let geoDue = false;
 
   switch (trigger.kind) {
     case "online": {
@@ -221,8 +267,11 @@ export async function projectServerDaemon(
       const isOfflineToOnline = !existingStatus.connected;
       const lastSeenDue = isOfflineToOnline ||
         heartbeatDebounceElapsed(existingStatus.lastSeenAt, nowMs);
-      touchMetadata = identityChanged(currentProjection, identity);
-      if (touchMetadata || !currentProjection) {
+      incomingGeo = trigger.identity.geo;
+      geoDue = geoRefreshDue(currentProjection, trigger.identity);
+      const identityDue = identityChanged(currentProjection, identity);
+      touchMetadata = identityDue || geoDue;
+      if (identityDue || !currentProjection) {
         nextProjection = buildIdentityProjection(currentProjection, identity);
         if (context.agent) {
           nextProjection = {
@@ -239,7 +288,7 @@ export async function projectServerDaemon(
         writeProjection = true;
       }
 
-      if (!isOfflineToOnline && !lastSeenDue && !writeProjection) {
+      if (!isOfflineToOnline && !lastSeenDue && !writeProjection && !geoDue) {
         return false;
       }
 
@@ -297,13 +346,18 @@ export async function projectServerDaemon(
       break;
     }
     case "identity": {
-      if (!identityChanged(currentProjection, trigger.identity)) {
+      incomingGeo = trigger.identity.geo;
+      geoDue = geoRefreshDue(currentProjection, trigger.identity);
+      const identityDue = identityChanged(currentProjection, trigger.identity);
+      if (!identityDue && !geoDue) {
         return false;
       }
       touchMetadata = true;
-      const identity = mergeIdentity(currentProjection, trigger.identity);
-      nextProjection = buildIdentityProjection(currentProjection, identity);
-      writeProjection = true;
+      if (identityDue) {
+        const identity = mergeIdentity(currentProjection, trigger.identity);
+        nextProjection = buildIdentityProjection(currentProjection, identity);
+        writeProjection = true;
+      }
       break;
     }
     case "agent": {
@@ -380,17 +434,18 @@ export async function projectServerDaemon(
     }
   }
 
-  if (!writeStatus && !writeProjection) {
+  if (!writeStatus && !writeProjection && !geoDue) {
     return false;
   }
 
   patch.daemon = buildMergedDaemonState(existing, nextProjection, nextStatus);
 
-  if (touchMetadata && nextProjection) {
-    const mergedMetadata = mergeServerMetadataIdentity(existing.metadata, {
-      hostname: nextProjection.hostname,
-      machineId: nextProjection.machineId,
-    });
+  if (touchMetadata) {
+    const mergedMetadata = buildMetadataPatch(
+      existing.metadata,
+      nextProjection,
+      geoDue ? incomingGeo : undefined,
+    );
     if (mergedMetadata) {
       patch.metadata = mergedMetadata;
     }

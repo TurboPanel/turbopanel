@@ -172,6 +172,57 @@ export function registerServerCommandRoutes(router: Hono, opts: AuthRouteOpts) {
     return c.json({ ok: true, commandId: record.id, status: 'queued' })
   })
 
+  router.post('/servers/:id/commands/reboot', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const id = c.req.param('id')
+    const denied = await assertCanManageOr403(c, 'server', id)
+    if (denied) return denied
+
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
+
+    if (!(await verifyServerInOrg(db, id, organizationId))) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
+    const commandQueue = assertDispatchInfrastructure(c)
+    if (commandQueue instanceof Response) return commandQueue
+
+    const expiresAt = new Date(Date.now() + 120_000).toISOString()
+    const record = await createCommandRecord(db, {
+      serverId: id,
+      actorEntityType: 'user',
+      actorEntityId: session.userId,
+      type: 'server.reboot',
+      payload: {},
+      expiresAt,
+    })
+
+    const envelope: CommandEnvelope = {
+      commandId: record.id,
+      serverId: id,
+      type: 'server.reboot',
+      attempt: 1,
+      queuedAt: record.queuedAt ?? record.createdAt,
+    }
+    const enqueueError = await enqueueCommandOrCompensate(
+      db,
+      commandQueue,
+      record,
+      envelope,
+      c,
+    )
+    if (enqueueError) return enqueueError
+
+    return c.json({ ok: true, commandId: record.id, status: 'queued' })
+  })
+
   router.post('/servers/:id/hostname', async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)

@@ -1,5 +1,6 @@
 import { assert, assertEquals } from "jsr:@std/assert";
 import type { Db } from "../../db.ts";
+import type { ServerGeo } from "../../lib/geo/server-geo.ts";
 import {
   buildDefaultDaemonStatus,
   parseServerDaemonState,
@@ -21,6 +22,12 @@ import {
 import { resolveFleetPresence } from "./fleet-presence.ts";
 
 const serverId = "srv-heartbeat-agent";
+
+const testGeo: ServerGeo = {
+  country: "US",
+  city: "San Francisco",
+  capturedAt: "2020-01-01T00:00:00.000Z",
+};
 
 const baseKey = {
   id: "key-1",
@@ -170,6 +177,29 @@ Deno.test("onDaemonHeartbeat projects agent.commit for update status via resolve
     }
     : null;
   assertEquals(current?.commit, agent.commit);
+});
+
+Deno.test("onDaemonConnected persists optional geo into metadata", async () => {
+  const { db, updateCalls } = createTrackingDb({ key: baseKey });
+
+  await onDaemonConnected(
+    db,
+    serverId,
+    createMockCell({
+      connectedAt: "2020-01-01T00:00:00.000Z",
+      remoteAddress: "203.0.113.10",
+    }) as never,
+    "2020-01-01T00:00:00.000Z",
+    undefined,
+    testGeo,
+  );
+
+  assertEquals(updateCalls.length, 1);
+  assertEquals(updateCalls[0]?.metadata, {
+    hostname: "host-1",
+    machineId: "mid-1",
+    geo: testGeo,
+  });
 });
 
 Deno.test("onDaemonConnected sets status in daemon jsonb", async () => {

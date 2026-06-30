@@ -6,6 +6,7 @@ import {
   parseSecretsEnv,
 } from "../client/authn/secrets.ts";
 import type { Db } from "../db.ts";
+import type { ServerGeo } from "../lib/geo/server-geo.ts";
 import { issueDaemonJwt } from "./authn/daemon-jwt.ts";
 import {
   buildDefaultDaemonStatus,
@@ -19,6 +20,7 @@ import {
 import { generateDeliveryId, generateRequestId, DAEMON_OFFLINE_SWEEP_MS } from "./cell/protocol.ts";
 
 const CELL_HEADER = "X-Turbopanel-Cell-Server-Id";
+const CELL_GEO_HEADER = "X-Turbopanel-Cell-Geo";
 
 function decodeJwtJti(token: string): string {
   const [, encodedPayload] = token.split(".");
@@ -64,13 +66,21 @@ async function openDaemonWebSocket(
   stub: DurableObjectStub,
   serverId: string,
   keyId = crypto.randomUUID(),
+  options: { geo?: ServerGeo; remoteAddress?: string } = {},
 ): Promise<{ ws: WebSocket; token: string; tokenId: string; keyId: string }> {
   const token = await issueTestDaemonJwt(serverId, keyId);
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    Upgrade: "websocket",
+  };
+  if (options.geo) {
+    headers[CELL_GEO_HEADER] = JSON.stringify(options.geo);
+  }
+  if (options.remoteAddress) {
+    headers["X-Real-IP"] = options.remoteAddress;
+  }
   const response = await stub.fetch("https://do.internal/ws/daemon/v1", {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Upgrade: "websocket",
-    },
+    headers,
   });
   expect(response.status).toBe(101);
   const ws = response.webSocket;
@@ -129,6 +139,7 @@ function mergeDaemonStatus(
 
 function createProjectionRecordingDb(
   statusOverrides: Partial<ServerDaemonStatus> = {},
+  initialMetadata: Record<string, unknown> = { hostname: "host-1" },
 ): {
   db: Db;
   updateCalls: Array<Record<string, unknown>>;
@@ -136,6 +147,7 @@ function createProjectionRecordingDb(
   setDaemonStatus: (patch: Partial<ServerDaemonStatus>) => void;
 } {
   const updateCalls: Array<Record<string, unknown>> = [];
+  let metadata = { ...initialMetadata };
   let daemon = mergeDaemonStatus({
     key: {
       id: "key-1",
@@ -153,7 +165,7 @@ function createProjectionRecordingDb(
         where: () => ({
           limit: () => Promise.resolve([{
             daemon,
-            metadata: { hostname: "host-1" },
+            metadata,
           }]),
         }),
       }),
@@ -163,6 +175,9 @@ function createProjectionRecordingDb(
         updateCalls.push(patch);
         if (patch.daemon) {
           daemon = patch.daemon as ServerDaemonState;
+        }
+        if (patch.metadata !== undefined) {
+          metadata = patch.metadata as Record<string, unknown>;
         }
         return {
           where: () => Promise.resolve(undefined),
@@ -216,6 +231,39 @@ describe("DaemonCellObject", () => {
       expect(status?.connectedAt).toEqual(expect.any(String));
       expect(status?.statusChangedAt).toEqual(expect.any(String));
       expect(status?.lastSeenAt).toEqual(expect.any(String));
+    });
+
+    ws.close(1000, "test done");
+  });
+
+  it("projects connect geo header into metadata.geo", async () => {
+    const serverId = "test-srv-proj-connect-geo";
+    const geo: ServerGeo = {
+      country: "US",
+      city: "San Francisco",
+      capturedAt: "2020-01-01T00:00:00.000Z",
+    };
+    const { db, updateCalls } = createProjectionRecordingDb({
+      connected: false,
+      daemonStatus: "offline",
+    });
+    setDaemonCellProjectionDbFactoryForTests(() => db);
+
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const { ws } = await openDaemonWebSocket(stub, serverId, crypto.randomUUID(), {
+      geo,
+      remoteAddress: "203.0.113.10",
+    });
+
+    await waitFor(() => {
+      const connectedPatch = updateCalls.find((patch) =>
+        statusFromPatch(patch)?.connected === true
+      );
+      expect(connectedPatch).toBeDefined();
+      expect(connectedPatch?.metadata).toEqual({
+        hostname: "host-1",
+        geo,
+      });
     });
 
     ws.close(1000, "test done");
@@ -329,6 +377,39 @@ describe("DaemonCellObject", () => {
       expect(status?.connectedAt).toEqual(expect.any(String));
       expect(status?.statusChangedAt).toEqual(expect.any(String));
       expect(status?.lastSeenAt).toEqual(expect.any(String));
+    });
+
+    ws.close(1000, "test done");
+  });
+
+  it("projects connect geo header into metadata.geo", async () => {
+    const serverId = "test-srv-proj-connect-geo";
+    const geo: ServerGeo = {
+      country: "US",
+      city: "San Francisco",
+      capturedAt: "2020-01-01T00:00:00.000Z",
+    };
+    const { db, updateCalls } = createProjectionRecordingDb({
+      connected: false,
+      daemonStatus: "offline",
+    });
+    setDaemonCellProjectionDbFactoryForTests(() => db);
+
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const { ws } = await openDaemonWebSocket(stub, serverId, crypto.randomUUID(), {
+      geo,
+      remoteAddress: "203.0.113.10",
+    });
+
+    await waitFor(() => {
+      const connectedPatch = updateCalls.find((patch) =>
+        statusFromPatch(patch)?.connected === true
+      );
+      expect(connectedPatch).toBeDefined();
+      expect(connectedPatch?.metadata).toEqual({
+        hostname: "host-1",
+        geo,
+      });
     });
 
     ws.close(1000, "test done");

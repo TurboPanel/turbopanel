@@ -8,10 +8,14 @@ import {
   generateRequestId,
   type DaemonOutboundEnvelope,
 } from '../daemon/cell/protocol.ts'
-import { getDaemonCellRegistry } from '../db.ts'
+import { resolveColocatedServerIdSet } from '../client/servers/colocated.ts'
+import { getDaemonCellRegistry, getDb } from '../db.ts'
 import { getDaemonRepoPath } from '../daemon/version.ts'
 import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
 import { buildDevSyncTarArgs } from './dev-sync-archive.ts'
+
+export const COLOCATED_DEV_SYNC_SKIPPED_REASON =
+  'The co-located development daemon is not updated by dev-sync — edit the local checkout directly'
 
 /** Base64 characters per chunk (~256 KiB of payload before encoding). */
 const CHUNK_CHARS = 256 * 1024
@@ -130,6 +134,10 @@ export function registerDevSyncRoutes(
     const registry = getDaemonCellRegistry(c)
     if (!registry) return c.json({ ok: false, error: 'Daemon cell registry unavailable' }, 503)
     const id = c.req.param('id')
+    const colocatedIds = await resolveColocatedServerIdSet(getDb(c), registry, [id])
+    if (colocatedIds.has(id)) {
+      return c.json({ ok: false, error: COLOCATED_DEV_SYNC_SKIPPED_REASON }, 422)
+    }
     try {
       await syncDevToDaemon(id, registry)
       return c.json({ ok: true, daemonId: id })
@@ -144,21 +152,36 @@ export function registerDevSyncRoutes(
     const registry = getDaemonCellRegistry(c)
     if (!registry) return c.json({ ok: false, error: 'Daemon cell registry unavailable' }, 503)
     const ids = await registry.listOnlineServerIds()
+    const colocatedIds = await resolveColocatedServerIdSet(getDb(c), registry, ids)
+    const skippedResults = ids
+      .filter((serverId) => colocatedIds.has(serverId))
+      .map((daemonId) => ({
+        daemonId,
+        ok: true as const,
+        skipped: true as const,
+        error: COLOCATED_DEV_SYNC_SKIPPED_REASON,
+      }))
     const results = await Promise.all(
-      ids.map(async (serverId) => {
-        try {
-          await syncDevToDaemon(serverId, registry)
-          return { daemonId: serverId, ok: true }
-        } catch (err) {
-          return {
-            daemonId: serverId,
-            ok: false,
-            error: err instanceof Error ? err.message : String(err),
+      ids
+        .filter((serverId) => !colocatedIds.has(serverId))
+        .map(async (serverId) => {
+          try {
+            await syncDevToDaemon(serverId, registry)
+            return { daemonId: serverId, ok: true as const }
+          } catch (err) {
+            return {
+              daemonId: serverId,
+              ok: false as const,
+              error: err instanceof Error ? err.message : String(err),
+            }
           }
-        }
-      }),
+        }),
     )
-    return c.json({ ok: results.every((r) => r.ok), results })
+    const allResults = [...skippedResults, ...results]
+    return c.json({
+      ok: allResults.every((r) => r.ok),
+      results: allResults,
+    })
   })
 
   return app
