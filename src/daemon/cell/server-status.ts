@@ -15,7 +15,11 @@ import { parseServerGeo } from "../../lib/geo/server-geo.ts";
 import { server } from "../../lib/db/schema.ts";
 import type { DaemonCellRegistry, DaemonCellSnapshot } from "./contracts.ts";
 import { DAEMON_STALE_MS } from "./protocol.ts";
-import { readProjectionsForServers } from "./postgres-projection.ts";
+import {
+  readProjectionsForServers,
+  type ServerDaemonProjectionRead,
+  type ServerFleetPresenceRow,
+} from "./postgres-projection.ts";
 
 export type ServerFleetPresence = {
   serverId: string;
@@ -62,6 +66,11 @@ function isSnapshotConnected(snapshot: DaemonCellSnapshot): boolean {
   return Date.now() - lastInboundMs < DAEMON_STALE_MS;
 }
 
+export type PreloadedFleetPresenceData = {
+  rows: ServerFleetPresenceRow[];
+  projections: Map<string, ServerDaemonProjectionRead>;
+};
+
 export type ResolveFleetPresenceOptions = {
   /**
    * Read live Durable Object / Redis snapshots and prefer them over the sparse
@@ -70,6 +79,8 @@ export type ResolveFleetPresenceOptions = {
    * coarse presence and agent data are served from the Postgres projection.
    */
   withSnapshots?: boolean;
+  /** Skip redundant SELECTs when the caller already loaded rows and projections. */
+  preloaded?: PreloadedFleetPresenceData;
 };
 
 /**
@@ -92,17 +103,22 @@ export async function resolveFleetPresence(
   if (serverIds.length === 0) return new Map();
 
   const withSnapshots = options.withSnapshots ?? false;
+  const preloaded = options.preloaded;
 
   const [rows, projections, snapshots] = await Promise.all([
-    db
-      .select({
-        id: server.id,
-        daemon: server.daemon,
-        metadata: server.metadata,
-      })
-      .from(server)
-      .where(inArray(server.id, serverIds)),
-    readProjectionsForServers(db, serverIds),
+    preloaded
+      ? Promise.resolve(preloaded.rows)
+      : db
+        .select({
+          id: server.id,
+          daemon: server.daemon,
+          metadata: server.metadata,
+        })
+        .from(server)
+        .where(inArray(server.id, serverIds)),
+    preloaded
+      ? Promise.resolve(preloaded.projections)
+      : readProjectionsForServers(db, serverIds),
     withSnapshots && registry
       ? registry.getSnapshots(serverIds)
       : Promise.resolve(new Map<string, DaemonCellSnapshot>()),

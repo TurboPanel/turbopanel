@@ -103,7 +103,7 @@ Path resolution lives in `src/server-paths.ts`.
 
 ## Database (Drizzle + Postgres.js)
 
-The instance uses **Drizzle ORM** over **postgres.js** with `prepare: false` (required for Hyperdrive and transaction-pooling). Connection factories live in `src/db.ts`; schema in `src/lib/db/schema.ts`; drizzle-kit config in `drizzle.config.ts`. **Read `src/lib/db/AGENTS.md` before touching schema or the database.** Schema changes are versioned in `migrations/`; `pnpm migrate` applies pending SQL during Workers deploy. Applied versions are recorded in `public.migration`.
+The instance uses **Drizzle ORM** over **postgres.js**. The Workers/Hyperdrive client uses `prepare: true` (see Workers Hyperdrive below); the Deno client uses `prepare: false` (direct Postgres, no Hyperdrive). Connection factories live in `src/db.ts`; schema in `src/lib/db/schema.ts`; drizzle-kit config in `drizzle.config.ts`. **Read `src/lib/db/AGENTS.md` before touching schema or the database.** Schema changes are versioned in `migrations/`; `pnpm migrate` applies pending SQL during Workers deploy. Applied versions are recorded in `public.migration`.
 
 | Runtime | Factory | When connected |
 |---|---|---|
@@ -123,7 +123,9 @@ Route handlers read the per-request client via `getDb(c)` (set by `createApp({ d
 
 **Local dev (`wrangler dev`):** do not commit `localConnectionString` in `wrangler.jsonc`. Tilt `sync-env.sh` writes `CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE` to `instance/.env` (derived from `dev/.env` `POSTGRES_*`, or override in `dev/.env`). Wrangler loads `.env` into `process.env` before applying Hyperdrive bindings — the Worker connects directly to local Postgres (no Hyperdrive pooling/caching in this mode). **`TURBOPANEL_DATABASE_URL`** (or **`DATABASE_URL`** for tooling) in the same file is for migrations/Drizzle/sync and may use different credentials than the Hyperdrive runtime user in production.
 
-The Workers DB client uses `prepare: false` on postgres.js (see **Database** above) because Hyperdrive sits in front of a connection pool and does not preserve per-session prepared-statement state.
+The Workers DB client uses `prepare: true` on postgres.js. Hyperdrive has supported named prepared statements since June 2024 and manages their lifecycle across its internal connection pool — per-session state is not a concern. Setting `prepare: true` is **required** for Hyperdrive to cache parameterized `SELECT` queries on the `HYPERDRIVE_CACHED` binding; with `prepare: false`, Hyperdrive sends every query as a simple (unprepared) query and marks all parameterized reads as uncacheable.
+
+Previously `prepare: false` was used because older Hyperdrive versions did not support prepared statements. That restriction no longer applies.
 
 **Unsupported PostgreSQL features** (do not rely on these on the Workers/Hyperdrive path):
 

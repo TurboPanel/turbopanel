@@ -523,6 +523,42 @@ export async function listEnrolledDaemonServerIds(db: Db): Promise<string[]> {
   return enrolled;
 }
 
+export type ServerFleetPresenceRow = {
+  id: string;
+  daemon: unknown;
+  metadata: unknown;
+};
+
+/** Single SELECT for fleet presence + colocated enrichment on a fixed server id set. */
+export async function loadServerRowsForFleetPresence(
+  db: Db,
+  serverIds: string[],
+): Promise<ServerFleetPresenceRow[]> {
+  if (serverIds.length === 0) return [];
+
+  return db
+    .select({
+      id: server.id,
+      daemon: server.daemon,
+      metadata: server.metadata,
+    })
+    .from(server)
+    .where(inArray(server.id, serverIds));
+}
+
+export function buildProjectionsFromDaemonRows(
+  rows: Array<{ id: string; daemon: unknown }>,
+): Map<string, ServerDaemonProjectionRead> {
+  const result = new Map<string, ServerDaemonProjectionRead>();
+  for (const row of rows) {
+    const read = toProjectionRead(row);
+    if (read) {
+      result.set(row.id, read);
+    }
+  }
+  return result;
+}
+
 function toProjectionRead(row: {
   id: string;
   daemon: unknown;
@@ -564,14 +600,7 @@ export async function readProjectionsForServers(
     .from(server)
     .where(inArray(server.id, serverIds));
 
-  const result = new Map<string, ServerDaemonProjectionRead>();
-  for (const row of rows) {
-    const read = toProjectionRead(row);
-    if (read) {
-      result.set(row.id, read);
-    }
-  }
-  return result;
+  return buildProjectionsFromDaemonRows(rows);
 }
 
 export async function listServerIdsWithUpdatingProjection(

@@ -13,9 +13,10 @@ export type HyperdriveBinding = {
   connectionString: string
 }
 
-/** Hyperdrive transaction pooling — one connection per isolate. */
-const PG_OPTS_WORKERS = { prepare: false as const, max: 1 }
+/** Hyperdrive — one connection per isolate. `prepare: true` enables protocol-level prepared statements, which Hyperdrive requires to cache parameterized `SELECT` queries on the `HYPERDRIVE_CACHED` binding. Hyperdrive manages prepared-statement lifecycle across its connection pool, so session-scoped state is not a concern here. */
+const PG_OPTS_WORKERS = { prepare: true as const, max: 1 }
 
+/** `prepare` is intentionally a separate decision for the Deno/self-hosted path (direct Postgres, no Hyperdrive). */
 /**
  * Self-hosted Deno: up to 10 concurrent connections.
  * No idle_timeout — let connections live for the process lifetime so postgres.js

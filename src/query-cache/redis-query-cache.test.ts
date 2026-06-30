@@ -53,6 +53,14 @@ Deno.test(
     const cache = createRedisQueryCache({ client, db })
     const key = queryCacheKey(namespace, 'miss-hit')
     let loadCount = 0
+    const listRows = [{
+      id: 'srv-1',
+      displayName: 'Test',
+      organizationId: 'org-1',
+      licenseId: null,
+      options: null,
+      createdAt: '2024-01-01T00:00:00.000Z',
+    }]
 
     const first = await cache.getReadModel({
       readModel: 'servers-list',
@@ -60,11 +68,17 @@ Deno.test(
       ttlSeconds: 60,
       load: async () => {
         loadCount += 1
-        return { value: loadCount }
+        return listRows
       },
     })
-    assertEquals(first, { value: 1 })
+    assertEquals(first, listRows)
     assertEquals(loadCount, 1)
+
+    const rawValue = await client.get(key)
+    assert(rawValue !== null)
+    const parsed = JSON.parse(rawValue!)
+    assert(Array.isArray(parsed))
+    assertEquals(parsed, listRows)
 
     const second = await cache.getReadModel({
       readModel: 'servers-list',
@@ -72,10 +86,10 @@ Deno.test(
       ttlSeconds: 60,
       load: async () => {
         loadCount += 1
-        return { value: loadCount }
+        return listRows
       },
     })
-    assertEquals(second, { value: 1 })
+    assertEquals(second, listRows)
     assertEquals(loadCount, 1)
   }),
 )

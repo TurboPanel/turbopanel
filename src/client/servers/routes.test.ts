@@ -26,7 +26,7 @@ import { attachDaemonStateToServer } from '../../daemon/authn/server-identity-db
 import { registerServerRoutes } from './routes.ts'
 import type { ServerStatusRecord } from './update-status.ts'
 import type { QueryCache } from '../../query-cache/contracts.ts'
-import type { ServersListDisplayPayload } from '../../query-cache/read-models/servers-list.ts'
+import type { ServersListRow } from '../../query-cache/read-models/servers-list.ts'
 
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 
@@ -187,31 +187,73 @@ async function createServerRoutesTestApp(
   return { app, secrets }
 }
 
-function createRecordingQueryCache(
+const SERVERS_LIST_SELECT_KEYS = new Set([
+  'id',
+  'displayName',
+  'organizationId',
+  'licenseId',
+  'options',
+  'createdAt',
+])
+
+/** Cached readDb: only the approved list-row SELECT; presence/colocated must use primary db. */
+function createListRowsOnlyReadDb(
   db: ReturnType<typeof createDenoDb>,
+): ReturnType<typeof createDenoDb> {
+  return new Proxy(db, {
+    get(target, prop, receiver) {
+      if (prop === 'select') {
+        return (fields: Record<string, unknown>) => {
+          const keys = Object.keys(fields)
+          const listRowsOnly = keys.every((key) => SERVERS_LIST_SELECT_KEYS.has(key))
+          if (!listRowsOnly) {
+            throw new Error(
+              'readDb must only serve the servers-list row SELECT, not presence/colocated queries',
+            )
+          }
+          return target.select(fields as Parameters<typeof target.select>[0])
+        }
+      }
+      const value = Reflect.get(target, prop, receiver)
+      if (typeof value === 'function') {
+        return value.bind(target)
+      }
+      return value
+    },
+  }) as ReturnType<typeof createDenoDb>
+}
+
+function createRecordingQueryCache(
+  readDb: ReturnType<typeof createDenoDb>,
 ): QueryCache & {
   readModels: string[]
-  store: Map<string, ServersListDisplayPayload>
+  store: Map<string, ServersListRow[]>
+  loadCallCount: number
 } {
   const readModels: string[] = []
-  const store = new Map<string, ServersListDisplayPayload>()
+  const store = new Map<string, ServersListRow[]>()
+  let loadCallCount = 0
 
   return {
     readModels,
     store,
+    get loadCallCount() {
+      return loadCallCount
+    },
     async getReadModel<T>(opts: {
       readModel: string
       key: string
       ttlSeconds?: number
-      load: (readDb: typeof db) => Promise<T>
+      load: (readDb: ReturnType<typeof createDenoDb>) => Promise<T>
     }): Promise<T> {
       readModels.push(opts.readModel)
       const cached = store.get(opts.key)
       if (cached !== undefined) {
         return cached as T
       }
-      const result = await opts.load(db)
-      store.set(opts.key, result as ServersListDisplayPayload)
+      loadCallCount += 1
+      const result = await opts.load(readDb)
+      store.set(opts.key, result as ServersListRow[])
       return result
     },
   }
@@ -894,7 +936,8 @@ Deno.test('GET /servers uses only the approved servers-list read model cache hel
       getSnapshotsThrows: true,
       listOnlineServerIdsThrows: true,
     })
-    const recordingCache = createRecordingQueryCache(db)
+    const readDb = createListRowsOnlyReadDb(db)
+    const recordingCache = createRecordingQueryCache(readDb)
     const { app } = await createServerRoutesTestApp(db, registry, recordingCache)
 
     const cookie = await sessionCookie(db, secrets, userId)
@@ -907,6 +950,201 @@ Deno.test('GET /servers uses only the approved servers-list read model cache hel
 
     assertEquals(res.status, 200)
     assertEquals(recordingCache.readModels, ['servers-list'])
+    assertEquals(recordingCache.loadCallCount, 1)
+  })
+})
+
+Deno.test('GET /servers — cached payload is list rows only (presence comes from primary db)', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const registry = createTrackingRegistry({
+      getCellThrows: true,
+      getSnapshotsThrows: true,
+      listOnlineServerIdsThrows: true,
+    })
+    await attachConnectedDaemonStatus(db, serverId)
+
+    const readDb = createListRowsOnlyReadDb(db)
+    const recordingCache = createRecordingQueryCache(readDb)
+    const { app } = await createServerRoutesTestApp(db, registry, recordingCache)
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request('/servers', {
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 200)
+    const body = await res.json()
+    assertEquals(body.servers.length, 1)
+    assertEquals(recordingCache.store.size, 1)
+    assertEquals(recordingCache.loadCallCount, 1)
+
+    const cachedRows = recordingCache.store.values().next().value!
+    assertEquals(cachedRows.length, 1)
+    assertEquals(cachedRows[0].id, serverId)
+    assertEquals('connected' in cachedRows[0], false)
+    assertEquals(body.servers[0].connected, true)
+  })
+})
+
+Deno.test('GET /servers — empty visibleIds short-circuits before cache', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping server route tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+  const registry = createTrackingRegistry()
+  const readDb = createListRowsOnlyReadDb(db)
+  const recordingCache = createRecordingQueryCache(readDb)
+  const { app, secrets } = await createServerRoutesTestApp(db, registry, recordingCache)
+
+  const email = `server-list-no-grant-${crypto.randomUUID()}@example.com`
+  const [insertedOrg] = await db
+    .insert(organization)
+    .values({ displayName: 'No Grant Org' })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg!.id
+
+  const [insertedUser] = await db
+    .insert(user)
+    .values({ email, isEmailVerified: true, role: 'user' })
+    .returning({ id: user.id })
+  const userId = insertedUser!.id
+
+  await db.insert(member).values({ organizationId, userId })
+
+  const now = new Date().toISOString()
+  const [insertedServer] = await db
+    .insert(server)
+    .values({
+      createdAt: now,
+      updatedAt: now,
+      organizationId,
+      displayName: 'Hidden Server',
+    })
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
+
+  try {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request('/servers', {
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 200)
+    const body = await res.json()
+    assertEquals(body.servers, [])
+    assertEquals(recordingCache.readModels.length, 0)
+  } finally {
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(member).where(and(
+      eq(member.userId, userId),
+      eq(member.organizationId, organizationId),
+    ))
+    await db.delete(user).where(eq(user.id, userId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+})
+
+Deno.test('GET /servers — differing visibleIds produce different cache keys', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const registry = createTrackingRegistry({
+      getCellThrows: true,
+      getSnapshotsThrows: true,
+      listOnlineServerIdsThrows: true,
+    })
+    const readDb = createListRowsOnlyReadDb(db)
+    const recordingCache = createRecordingQueryCache(readDb)
+    const { app } = await createServerRoutesTestApp(db, registry, recordingCache)
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+    }
+
+    const first = await app.request('/servers', { headers })
+    assertEquals(first.status, 200)
+    assertEquals(recordingCache.store.size, 1)
+    assertEquals(recordingCache.loadCallCount, 1)
+
+    const now = new Date().toISOString()
+    const [secondServer] = await db
+      .insert(server)
+      .values({
+        createdAt: now,
+        updatedAt: now,
+        organizationId,
+        displayName: 'Second Server',
+      })
+      .returning({ id: server.id })
+
+    const second = await app.request('/servers', { headers })
+    assertEquals(second.status, 200)
+    const secondBody = await second.json()
+    assertEquals(secondBody.servers.length, 2)
+    assertEquals(recordingCache.store.size, 2)
+    assertEquals(recordingCache.loadCallCount, 2)
+
+    await db.delete(server).where(eq(server.id, secondServer!.id))
+  })
+})
+
+Deno.test('GET /servers — presence reflects live data, not cached value', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const registry = createTrackingRegistry({
+      getCellThrows: true,
+      getSnapshotsThrows: true,
+      listOnlineServerIdsThrows: true,
+    })
+    const readDb = createListRowsOnlyReadDb(db)
+    const recordingCache = createRecordingQueryCache(readDb)
+    const { app } = await createServerRoutesTestApp(db, registry, recordingCache)
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+    }
+
+    const first = await app.request('/servers', { headers })
+    assertEquals(first.status, 200)
+    const firstBody = await first.json()
+    assertEquals(firstBody.servers[0].connected, false)
+    assertEquals(recordingCache.loadCallCount, 1)
+
+    await attachConnectedDaemonStatus(db, serverId)
+
+    const second = await app.request('/servers', { headers })
+    assertEquals(second.status, 200)
+    const secondBody = await second.json()
+    assertEquals(secondBody.servers[0].connected, true)
+    assertEquals(recordingCache.store.size, 1)
+    assertEquals(recordingCache.loadCallCount, 1)
   })
 })
 
@@ -923,7 +1161,8 @@ Deno.test('GET /servers does not return stale servers after organization grant r
       getSnapshotsThrows: true,
       listOnlineServerIdsThrows: true,
     })
-    const recordingCache = createRecordingQueryCache(db)
+    const readDb = createListRowsOnlyReadDb(db)
+    const recordingCache = createRecordingQueryCache(readDb)
     const { app } = await createServerRoutesTestApp(db, registry, recordingCache)
 
     const cookie = await sessionCookie(db, secrets, userId)
@@ -938,6 +1177,7 @@ Deno.test('GET /servers does not return stale servers after organization grant r
     assertEquals(firstBody.servers.length, 1)
     assertEquals(firstBody.servers[0].id, serverId)
     assertEquals(recordingCache.store.size, 1)
+    assertEquals(recordingCache.loadCallCount, 1)
 
     await db.delete(grant).where(and(
       eq(grant.subjectId, userId),
@@ -949,5 +1189,6 @@ Deno.test('GET /servers does not return stale servers after organization grant r
     assertEquals(second.status, 200)
     const secondBody = await second.json()
     assertEquals(secondBody.servers, [])
+    assertEquals(recordingCache.loadCallCount, 1)
   })
 })
