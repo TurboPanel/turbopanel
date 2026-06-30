@@ -1,0 +1,141 @@
+import { assert, assertEquals } from 'jsr:@std/assert'
+import type { Db } from '../db.ts'
+import {
+  createRedisCellClient,
+  type RedisCellClient,
+} from '../daemon/cell/redis/client.ts'
+import { createRedisQueryCache } from './redis-query-cache.ts'
+import { queryCacheKey } from './keys.ts'
+
+const DEFAULT_SOCKET = Deno.env.get('TURBOPANEL_REDIS_SOCKET') ??
+  '/run/turbopanel/redis.sock'
+
+async function redisAvailable(): Promise<boolean> {
+  try {
+    const stat = await Deno.stat(DEFAULT_SOCKET)
+    return stat.isSocket === true
+  } catch {
+    return false
+  }
+}
+
+function withRedisQueryCache(
+  fn: (ctx: {
+    client: RedisCellClient
+    namespace: string
+    db: Db
+  }) => Promise<void>,
+): () => Promise<void> {
+  return async () => {
+    if (!(await redisAvailable())) {
+      console.warn(
+        `Skipping Redis query cache test: socket not found at ${DEFAULT_SOCKET}`,
+      )
+      return
+    }
+
+    const client = createRedisCellClient()
+    const namespace = `test-${crypto.randomUUID()}`
+    const db = null as unknown as Db
+
+    try {
+      await fn({ client, namespace, db })
+    } finally {
+      await client.deleteByPattern(`tp:qcache:${namespace}:*`)
+      await client.close()
+    }
+  }
+}
+
+Deno.test(
+  'cached returns loader result on miss then serves from cache on hit',
+  withRedisQueryCache(async ({ client, namespace, db }) => {
+    const cache = createRedisQueryCache({ client, db })
+    const key = queryCacheKey(namespace, 'miss-hit')
+    let loadCount = 0
+
+    const first = await cache.cached({
+      key,
+      ttlSeconds: 60,
+      load: async () => {
+        loadCount += 1
+        return { value: loadCount }
+      },
+    })
+    assertEquals(first, { value: 1 })
+    assertEquals(loadCount, 1)
+
+    const second = await cache.cached({
+      key,
+      ttlSeconds: 60,
+      load: async () => {
+        loadCount += 1
+        return { value: loadCount }
+      },
+    })
+    assertEquals(second, { value: 1 })
+    assertEquals(loadCount, 1)
+  }),
+)
+
+Deno.test(
+  'cached clamps ttlSeconds to MAX_QUERY_CACHE_TTL_SECONDS',
+  withRedisQueryCache(async ({ client, namespace, db }) => {
+    const cache = createRedisQueryCache({ client, db })
+    const key = queryCacheKey(namespace, 'ttl-clamp')
+
+    await cache.cached({
+      key,
+      ttlSeconds: 9999,
+      load: async () => ({ ok: true }),
+    })
+
+    const pttl = await client.pttl(key)
+    assert(pttl > 0)
+    assert(pttl <= 60_000)
+  }),
+)
+
+Deno.test('cached falls back to loader when Redis get throws', async () => {
+  const db = null as unknown as Db
+  let loadCount = 0
+  const client = {
+    get: () => Promise.reject(new Error('redis read failure')),
+    set: () => Promise.resolve(),
+  } as unknown as RedisCellClient
+
+  const cache = createRedisQueryCache({ client, db })
+  const result = await cache.cached({
+    key: queryCacheKey('stub', 'redis-get-error'),
+    ttlSeconds: 60,
+    load: async () => {
+      loadCount += 1
+      return { fromLoader: true }
+    },
+  })
+
+  assertEquals(result, { fromLoader: true })
+  assertEquals(loadCount, 1)
+})
+
+Deno.test(
+  'cached falls back to loader when cached value is invalid JSON',
+  withRedisQueryCache(async ({ client, namespace, db }) => {
+    const cache = createRedisQueryCache({ client, db })
+    const key = queryCacheKey(namespace, 'bad-json')
+    await client.set(key, '{not-json')
+
+    let loadCount = 0
+    const result = await cache.cached({
+      key,
+      ttlSeconds: 60,
+      load: async () => {
+        loadCount += 1
+        return { recovered: true }
+      },
+    })
+
+    assertEquals(result, { recovered: true })
+    assertEquals(loadCount, 1)
+  }),
+)

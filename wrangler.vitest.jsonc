@@ -4,6 +4,17 @@
   "main": "src/workers-vitest.ts",
   "compatibility_date": "2026-06-01",
   "compatibility_flags": ["nodejs_compat"],
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "83edd62a2d7e4e6ba8b5d77b01ca3729"
+    },
+    {
+      // TODO: replace with real dev cached Hyperdrive config id
+      "binding": "HYPERDRIVE_CACHED",
+      "id": "0000000000000000000000000000dev0"
+    }
+  ],
   "alias": {
     "nodemailer": "./src/lib/email/smtp/nodemailer-shim.ts",
     "@turbopanel/email/smtp-sender": "./src/lib/email/smtp/smtp-sender-shim.ts"

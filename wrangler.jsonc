@@ -25,6 +25,11 @@
     {
       "binding": "HYPERDRIVE",
       "id": "83edd62a2d7e4e6ba8b5d77b01ca3729"
+    },
+    {
+      // TODO: replace with real dev cached Hyperdrive config id
+      "binding": "HYPERDRIVE_CACHED",
+      "id": "0000000000000000000000000000dev0"
     }
   ],
   "queues": {
@@ -81,6 +86,11 @@
         {
           "binding": "HYPERDRIVE",
           "id": "83edd62a2d7e4e6ba8b5d77b01ca3729"
+        },
+        {
+          // TODO: replace with real dev cached Hyperdrive config id
+          "binding": "HYPERDRIVE_CACHED",
+          "id": "0000000000000000000000000000dev0"
         }
       ],
       "routes": [

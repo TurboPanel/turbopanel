@@ -40,6 +40,7 @@ import {
 } from './lib/commands/noop-command-queue.ts'
 import type { CommandQueue } from './lib/commands/queue.ts'
 import type { Db } from './db.ts'
+import { createRedisQueryCache } from './query-cache/redis-query-cache.ts'
 import {
   hardenInstanceSocket,
   prepareInstanceSocket,
@@ -107,6 +108,7 @@ const sessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing
 const daemonJwtSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-jwt-signing')
 const challengeSigningSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-challenge-signing')
 const daemonCellRegistry = createRedisDaemonCellRegistry({ db })
+const queryCache = createRedisQueryCache({ client: daemonCellRegistry.client, db })
 
 let commandConsumer: { close(): Promise<void> } | null = null
 if (!isNoopCommandQueue(commandQueue)) {
@@ -142,6 +144,7 @@ const app = createApp({
   emailFrom: emailSettings.from,
   baseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? undefined,
   daemonCellRegistry,
+  queryCache,
 })
 const routes = app as unknown as Hono
 routes.use('*', (c, next) => {

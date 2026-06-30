@@ -8,6 +8,7 @@ import type { Db } from './db.ts'
 import type { SignupEnvOverride } from './client/authn/install-state.ts'
 import type { CommandQueue } from './lib/commands/queue.ts'
 import type { EmailQueue } from './lib/email/types.ts'
+import type { QueryCache } from './query-cache/contracts.ts'
 import { HEALTH_PATH } from './surfaces.ts'
 
 export type AppEnv = {
@@ -21,6 +22,7 @@ export type AppEnv = {
     /** Hyperdrive or TURBOPANEL_DATABASE_URL for database status routes (Workers). */
     postgresConnectionString?: string
     daemonCellRegistry?: DaemonCellRegistry
+    queryCache?: QueryCache
     /** Platform env bindings for settings resolution (Workers per-request; Deno process env). */
     platformEnv?: Record<string, string | undefined>
   }
@@ -38,6 +40,7 @@ export function createApp(
     corsOrigins,
     signupEnvOverride,
     daemonCellRegistry,
+    queryCache,
   }: {
     db?: Db
     emailQueue?: EmailQueue
@@ -49,6 +52,7 @@ export function createApp(
     corsOrigins?: string
     signupEnvOverride?: SignupEnvOverride
     daemonCellRegistry?: DaemonCellRegistry
+    queryCache?: QueryCache
   } = {},
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>()
@@ -62,6 +66,12 @@ export function createApp(
   if (daemonCellRegistry) {
     app.use('*', (c, next) => {
       c.set('daemonCellRegistry', daemonCellRegistry)
+      return next()
+    })
+  }
+  if (queryCache) {
+    app.use('*', (c, next) => {
+      c.set('queryCache', queryCache)
       return next()
     })
   }

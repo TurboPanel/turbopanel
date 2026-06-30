@@ -18,7 +18,11 @@ import {
 import { getServerDaemonStateByServerId } from "../authn/server-identity-db.ts";
 import { server } from "../../lib/db/schema.ts";
 import type { ServerMetadata } from "../../lib/db/server-metadata.ts";
-import type { ServerGeo } from "../../lib/geo/server-geo.ts";
+import {
+  geoEquals,
+  parseServerGeo,
+  type ServerGeo,
+} from "../../lib/geo/server-geo.ts";
 import { mergeServerMetadataIdentity } from "../../server-registry.ts";
 import type { DaemonCell } from "./contracts.ts";
 import type { DaemonCellSnapshot } from "./contracts.ts";
@@ -172,13 +176,28 @@ function remoteAddressChanged(
   return incomingRemote !== currentRemote;
 }
 
-/** Geo is refreshed only when the connecting IP changes — not on every reconnect. */
+/**
+ * Geo is refreshed when the connecting IP changes, when stored metadata.geo is
+ * missing/invalid, or on first backfill — not on every reconnect or capturedAt churn.
+ */
 function geoRefreshDue(
+  existingMetadata: ServerMetadata | null | undefined,
   currentProjection: ServerDaemonProjection | undefined,
   identity: ProjectionIdentity,
 ): boolean {
-  return identity.geo !== undefined &&
-    remoteAddressChanged(currentProjection, identity);
+  const incomingGeo = identity.geo;
+  if (incomingGeo === undefined) return false;
+
+  const storedGeo = parseServerGeo(existingMetadata?.geo);
+  if (storedGeo !== null && geoEquals(storedGeo, incomingGeo)) {
+    return false;
+  }
+
+  if (remoteAddressChanged(currentProjection, identity)) {
+    return true;
+  }
+
+  return storedGeo === null;
 }
 
 function buildMetadataPatch(
@@ -268,7 +287,7 @@ export async function projectServerDaemon(
       const lastSeenDue = isOfflineToOnline ||
         heartbeatDebounceElapsed(existingStatus.lastSeenAt, nowMs);
       incomingGeo = trigger.identity.geo;
-      geoDue = geoRefreshDue(currentProjection, trigger.identity);
+      geoDue = geoRefreshDue(existing.metadata, currentProjection, trigger.identity);
       const identityDue = identityChanged(currentProjection, identity);
       touchMetadata = identityDue || geoDue;
       if (identityDue || !currentProjection) {
@@ -347,7 +366,7 @@ export async function projectServerDaemon(
     }
     case "identity": {
       incomingGeo = trigger.identity.geo;
-      geoDue = geoRefreshDue(currentProjection, trigger.identity);
+      geoDue = geoRefreshDue(existing.metadata, currentProjection, trigger.identity);
       const identityDue = identityChanged(currentProjection, trigger.identity);
       if (!identityDue && !geoDue) {
         return false;

@@ -135,6 +135,56 @@ Deno.test("projectServerDaemon online persists metadata.geo when remoteAddress i
   });
 });
 
+Deno.test("projectServerDaemon repeated online backfills metadata.geo when same IP and geo was missing", async () => {
+  const connectedAt = "2020-01-01T00:00:00.000Z";
+  const recent = new Date().toISOString();
+  const cloudflareGeo: ServerGeo = {
+    country: "US",
+    city: "San Francisco",
+    region: "California",
+    asn: 13335,
+    asOrganization: "Cloudflare, Inc.",
+    datacenter: "SFO",
+    capturedAt: "2020-06-01T00:00:00.000Z",
+  };
+  const { db, updateCalls } = createMockDb(
+    {
+      key: baseKey,
+      projection: {
+        hostname: "host-1",
+        machineId: "mid-1",
+        remoteAddress: "203.0.113.10",
+      },
+    },
+    {
+      connected: true,
+      daemonStatus: "online",
+      lastSeenAt: recent,
+      connectedAt,
+    },
+    { hostname: "host-1", machineId: "mid-1" },
+  );
+
+  const wrote = await projectServerDaemon(db, serverId, {
+    kind: "online",
+    identity: {
+      hostname: "host-1",
+      machineId: "mid-1",
+      remoteAddress: "203.0.113.10",
+      geo: cloudflareGeo,
+    },
+    connectedAt: "2020-06-01T00:00:00.000Z",
+  });
+
+  assertEquals(wrote, true);
+  assertEquals(updateCalls.length, 1);
+  assertEquals(updateCalls[0]?.metadata, {
+    hostname: "host-1",
+    machineId: "mid-1",
+    geo: cloudflareGeo,
+  });
+});
+
 Deno.test("projectServerDaemon repeated online skips write when only geo changed with same IP", async () => {
   const connectedAt = "2020-01-01T00:00:00.000Z";
   const recent = new Date().toISOString();
@@ -212,13 +262,14 @@ Deno.test("projectServerDaemon repeated online refreshes geo when remoteAddress 
   });
 });
 
-Deno.test("projectServerDaemon identity trigger skips metadata.geo without remoteAddress change", async () => {
+Deno.test("projectServerDaemon identity trigger backfills metadata.geo when geo was missing", async () => {
   const { db, updateCalls } = createMockDb(
     {
       key: baseKey,
       projection: {
         hostname: "host-1",
         machineId: "mid-1",
+        remoteAddress: "203.0.113.10",
         agent: testAgent,
       },
     },
@@ -226,11 +277,47 @@ Deno.test("projectServerDaemon identity trigger skips metadata.geo without remot
     { hostname: "host-1", machineId: "mid-1" },
   );
 
-  await projectServerDaemon(db, serverId, {
+  const wrote = await projectServerDaemon(db, serverId, {
     kind: "identity",
-    identity: { geo: testGeo },
+    identity: {
+      remoteAddress: "203.0.113.10",
+      geo: testGeo,
+    },
   });
 
+  assertEquals(wrote, true);
+  assertEquals(updateCalls.length, 1);
+  assertEquals(updateCalls[0]?.metadata, {
+    hostname: "host-1",
+    machineId: "mid-1",
+    geo: testGeo,
+  });
+});
+
+Deno.test("projectServerDaemon identity trigger skips metadata.geo when stored geo exists and IP unchanged", async () => {
+  const { db, updateCalls } = createMockDb(
+    {
+      key: baseKey,
+      projection: {
+        hostname: "host-1",
+        machineId: "mid-1",
+        remoteAddress: "203.0.113.10",
+        agent: testAgent,
+      },
+    },
+    {},
+    { hostname: "host-1", machineId: "mid-1", geo: testGeo },
+  );
+
+  const wrote = await projectServerDaemon(db, serverId, {
+    kind: "identity",
+    identity: {
+      remoteAddress: "203.0.113.10",
+      geo: testGeoUpdated,
+    },
+  });
+
+  assertEquals(wrote, false);
   assertEquals(updateCalls.length, 0);
 });
 

@@ -18,6 +18,8 @@ import type { CommandQueue } from './lib/commands/queue.ts'
 import { isTransientError, processCommandEnvelope } from './lib/commands/consumer.ts'
 import { parseCommandEnvelope } from './lib/commands/envelope.ts'
 import type { EmailQueue } from './lib/email/types.ts'
+import { createHyperdriveQueryCache } from './query-cache/hyperdrive-query-cache.ts'
+import { createPassthroughQueryCache } from './query-cache/passthrough-query-cache.ts'
 
 export { DaemonCellObject } from './daemon/cell/do.ts'
 
@@ -95,6 +97,13 @@ function resolveWorkersDb(env: CloudflareBindings): ReturnType<typeof createWork
   return undefined
 }
 
+function resolveWorkersCachedDb(env: CloudflareBindings): ReturnType<typeof createWorkersDb> | undefined {
+  if (env.HYPERDRIVE_CACHED) {
+    return createWorkersDb(env.HYPERDRIVE_CACHED)
+  }
+  return resolveWorkersDb(env)
+}
+
 function stringBindingEnv(env: CloudflareBindings): Record<string, string | undefined> {
   const out: Record<string, string | undefined> = {}
   for (const [key, value] of Object.entries(env)) {
@@ -112,9 +121,17 @@ export default {
       ?? env.TURBOPANEL_DATABASE_URL?.trim()
       ?? undefined
     const db = resolveWorkersDb(env)
+    const cachedDb = resolveWorkersCachedDb(env)
     const requestApp = new Hono<AppEnv>()
     requestApp.use('*', async (c, next) => {
-      if (db) c.set('db', db)
+      if (db) {
+        c.set('db', db)
+      }
+      if (cachedDb) {
+        c.set('queryCache', createHyperdriveQueryCache(cachedDb))
+      } else if (db) {
+        c.set('queryCache', createPassthroughQueryCache(db))
+      }
       if (cachedEmailQueue) c.set('emailQueue', cachedEmailQueue)
       if (cachedCommandQueue) c.set('commandQueue', cachedCommandQueue)
       c.set('platformEnv', stringBindingEnv(env))

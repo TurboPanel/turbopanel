@@ -2,6 +2,7 @@ import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import type { Context } from 'hono'
 import postgres from 'postgres'
 import type { DaemonCellRegistry } from './daemon/cell/contracts.ts'
+import type { QueryCache } from './query-cache/contracts.ts'
 import { getDatabaseUrl, resolvePostgresConnection } from './db-url.ts'
 import * as schema from './lib/db/schema.ts'
 
@@ -77,4 +78,8 @@ export function getDb(c: Context): Db | undefined {
 
 export function getDaemonCellRegistry(c: Context): DaemonCellRegistry | undefined {
   return c.get('daemonCellRegistry')
+}
+
+export function getQueryCache(c: Context): QueryCache | undefined {
+  return c.get('queryCache')
 }

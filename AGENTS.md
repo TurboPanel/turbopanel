@@ -243,6 +243,8 @@ Postgres remains canonical for business data (`server`). The cell is the low-lat
 
 **Sparse Postgres projection:** connect/disconnect/missed-heartbeat transitions and debounced heartbeats (≤ once/60 s for `lastSeenAt`) project to `server.daemon.status` via `onDaemonConnected` / `onDaemonDisconnected` / `onDaemonHeartbeat` (`control-plane-monitor.ts` → `postgres-projection.ts`). Agent identity from `hello` is stored on `server.daemon.projection`. `ServerFleetPresence` in `server-status.ts` exposes the read model for routes.
 
+**Server geolocation (Workers-only today):** connecting-IP geo is persisted on `server.metadata.geo` (`ServerGeo` in `src/lib/geo/server-geo.ts`). **Cloudflare Workers** resolve geo from `request.cf` via `extractCloudflareGeo()` in `src/daemon/workers-ws.ts`. **Self-hosted Deno** calls `resolveSelfHostedGeo()` in `src/lib/geo/self-hosted-geo-provider.ts` on connect but always returns `null` — there is no bundled IP lookup on managed/self-hosted installs yet (co-located dev uses `__direct__` / Unix socket anyway). Projection (`geoRefreshDue` in `postgres-projection.ts`) writes geo when incoming geo exists and stored `metadata.geo` is missing/invalid, or when `remoteAddress` changes; `geoEquals` ignores `capturedAt` so timestamp-only churn does not rewrite Postgres.
+
 **Cheap fleet index:** `listOnlineServerIds()` reads the Redis online set (Deno) or the sparse `server.daemon.projection.connected` field (Workers) — it does not fan out across all cells.
 
 **WS upgrade flow:** JWT verified in the main isolate/process → cell `attachDaemonSocket` acquires the single-writer lease → outbox pump loop (`readOutboxBatch` → `ws.send` → `ackOutbox`) runs until close → `detachDaemonSocket` releases the lease.
