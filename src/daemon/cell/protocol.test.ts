@@ -146,6 +146,64 @@ Deno.test("wireMessageToInboundEnvelope maps inbound wire types", () => {
       error: "cert regen failed",
     },
   );
+
+  assertEquals(
+    wireMessageToInboundEnvelope({
+      type: "command-ack",
+      id: "r9",
+      at,
+      daemonReceivedAt: "2020-01-01T00:00:01.000Z",
+    }),
+    {
+      kind: "command-ack",
+      requestId: "r9",
+      at,
+      daemonReceivedAt: "2020-01-01T00:00:01.000Z",
+    },
+  );
+
+  assertEquals(
+    wireMessageToInboundEnvelope({
+      type: "command-outcome",
+      id: "r10",
+      at,
+      ok: true,
+      result: { pong: true },
+      daemonReceivedAt: "2020-01-01T00:00:01.000Z",
+      daemonRespondedAt: "2020-01-01T00:00:02.000Z",
+    }),
+    {
+      kind: "command-outcome",
+      requestId: "r10",
+      at,
+      ok: true,
+      result: { pong: true },
+      error: undefined,
+      daemonReceivedAt: "2020-01-01T00:00:01.000Z",
+      daemonRespondedAt: "2020-01-01T00:00:02.000Z",
+    },
+  );
+
+  assertEquals(
+    wireMessageToInboundEnvelope({
+      type: "command-outcome",
+      id: "r11",
+      at,
+      ok: false,
+      error: "timeout",
+      daemonRespondedAt: "2020-01-01T00:00:03.000Z",
+    }),
+    {
+      kind: "command-outcome",
+      requestId: "r11",
+      at,
+      ok: false,
+      result: undefined,
+      error: "timeout",
+      daemonReceivedAt: undefined,
+      daemonRespondedAt: "2020-01-01T00:00:03.000Z",
+    },
+  );
 });
 
 Deno.test("wireMessageToInboundEnvelope returns null for non-inbound types", () => {
@@ -280,6 +338,24 @@ Deno.test("outboundEnvelopeToWireMessage maps outbound kinds", () => {
       payload: { ok: true },
     }),
     { type: "echo", payload: { ok: true }, at: base.at },
+  );
+
+  assertEquals(
+    outboundEnvelopeToWireMessage({
+      ...base,
+      kind: "command-dispatch",
+      commandId: "cmd-1",
+      commandType: "ping",
+      payload: { target: "host" },
+    }),
+    {
+      type: "command-dispatch",
+      id: "req-1",
+      commandId: "cmd-1",
+      commandType: "ping",
+      payload: { target: "host" },
+      at: base.at,
+    },
   );
 });
 

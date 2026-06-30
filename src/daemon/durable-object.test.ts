@@ -309,6 +309,119 @@ describe("DaemonCellObject", () => {
     ws.close(1000, "test done");
   }, 10_000);
 
+  it("projects connect to Postgres after websocket attach", async () => {
+    const serverId = "test-srv-proj-connect";
+    const { db, updateCalls } = createProjectionRecordingDb({
+      connected: false,
+      daemonStatus: "offline",
+    });
+    setDaemonCellProjectionDbFactoryForTests(() => db);
+
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const { ws } = await openDaemonWebSocket(stub, serverId);
+
+    await waitFor(() => {
+      const connectedPatch = updateCalls.find((patch) =>
+        statusFromPatch(patch)?.connected === true
+      );
+      expect(connectedPatch).toBeDefined();
+      const status = statusFromPatch(connectedPatch);
+      expect(status?.connectedAt).toEqual(expect.any(String));
+      expect(status?.statusChangedAt).toEqual(expect.any(String));
+      expect(status?.lastSeenAt).toEqual(expect.any(String));
+    });
+
+    ws.close(1000, "test done");
+  });
+
+  it("projects disconnect to Postgres after websocket close", async () => {
+    const serverId = "test-srv-proj-disconnect";
+    const { db, updateCalls } = createProjectionRecordingDb({
+      connected: true,
+      daemonStatus: "online",
+      connectedAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+    setDaemonCellProjectionDbFactoryForTests(() => db);
+
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const { ws } = await openDaemonWebSocket(stub, serverId);
+
+    await waitFor(() => {
+      expect(updateCalls.some((patch) =>
+        statusFromPatch(patch)?.connected === true
+      )).toBe(true);
+    });
+
+    ws.close(1000, "test done");
+
+    await waitFor(() => {
+      const disconnectedPatch = updateCalls.find((patch) =>
+        statusFromPatch(patch)?.connected === false
+      );
+      expect(disconnectedPatch).toBeDefined();
+      expect(statusFromPatch(disconnectedPatch)?.disconnectedAt).toEqual(
+        expect.any(String),
+      );
+    });
+  });
+
+  it("debounces heartbeat projection writes to at most once per 60s", async () => {
+    const serverId = "test-srv-proj-heartbeat-debounce";
+    const staleAt = new Date(Date.now() - 61_000).toISOString();
+    const { db, updateCalls, setDaemonStatus } = createProjectionRecordingDb({
+      connected: true,
+      daemonStatus: "online",
+      connectedAt: staleAt,
+      lastSeenAt: staleAt,
+    });
+    setDaemonCellProjectionDbFactoryForTests(() => db);
+
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const { ws } = await openDaemonWebSocket(stub, serverId);
+
+    await waitFor(() => {
+      expect(updateCalls.length).toBeGreaterThan(0);
+    });
+
+    setDaemonStatus({
+      connected: true,
+      daemonStatus: "online",
+      lastSeenAt: staleAt,
+    });
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE cell_meta SET last_seen_at = ? WHERE server_id = ?",
+        staleAt,
+        serverId,
+      );
+    });
+
+    const countBeforeHeartbeat = updateCalls.length;
+
+    ws.send(JSON.stringify({
+      type: "heartbeat",
+      at: new Date().toISOString(),
+    }));
+
+    await waitFor(() => {
+      expect(updateCalls.length).toBeGreaterThan(countBeforeHeartbeat);
+    });
+
+    const countAfterFirstHeartbeat = updateCalls.length;
+
+    ws.send(JSON.stringify({
+      type: "heartbeat",
+      at: new Date(Date.now() + 1000).toISOString(),
+    }));
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(updateCalls.length).toBe(countAfterFirstHeartbeat);
+
+    ws.close(1000, "test done");
+  }, 10_000);
+
   it("accepts hibernation-safe WebSocket attach with valid JWT", async () => {
     const serverId = "test-srv-1";
     const keyId = crypto.randomUUID();
@@ -587,6 +700,42 @@ describe("DaemonCellObject", () => {
       expect(snapshot.lastSeenAt).toBeTruthy();
       expect(snapshot.agent?.commit).toBe("abc");
       expect(snapshot.agent?.buildId).toBe("1");
+    });
+
+    ws.close(1000, "test done");
+  });
+
+  it("heartbeat without agent updates last_seen_at on the cell snapshot", async () => {
+    const serverId = "test-srv-heartbeat-no-agent";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const { ws } = await openDaemonWebSocket(stub, serverId);
+
+    const connectedResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
+      method: "GET",
+    });
+    const connectedSnapshot = await connectedResponse.json() as {
+      lastSeenAt?: string;
+    };
+    expect(connectedSnapshot.lastSeenAt).toBeTruthy();
+    const connectedLastSeenMs = Date.parse(connectedSnapshot.lastSeenAt!);
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    ws.send(JSON.stringify({
+      type: "heartbeat",
+      at: new Date().toISOString(),
+    }));
+
+    await waitFor(async () => {
+      const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
+        method: "GET",
+      });
+      const snapshot = await snapshotResponse.json() as {
+        lastSeenAt?: string;
+      };
+      expect(snapshot.lastSeenAt).toBeTruthy();
+      const heartbeatLastSeenMs = Date.parse(snapshot.lastSeenAt!);
+      expect(heartbeatLastSeenMs).toBeGreaterThanOrEqual(connectedLastSeenMs);
     });
 
     ws.close(1000, "test done");
@@ -1065,6 +1214,241 @@ describe("DaemonCellObject", () => {
       });
       const snapshot = await snapshotResponse.json() as { connected: boolean };
       expect(snapshot.connected).toBe(true);
+    });
+
+    ws.close(1000, "test done");
+  });
+
+  it("hello after stale sweep restores runtime connected flag", async () => {
+    const serverId = "test-srv-alarm-stale-recover";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const { ws } = await openDaemonWebSocket(stub, serverId);
+
+    const staleLastSeen = new Date(
+      Date.now() - DAEMON_OFFLINE_SWEEP_MS - 1000,
+    ).toISOString();
+
+    await runInDurableObject(stub, async (instance: DaemonCellObject, state) => {
+      state.storage.sql.exec(
+        "UPDATE cell_meta SET last_seen_at = ? WHERE server_id = ?",
+        staleLastSeen,
+        serverId,
+      );
+      await instance.alarm();
+    });
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      const cursor = state.storage.sql.exec(
+        "SELECT connected FROM cell_meta WHERE server_id = ?",
+        serverId,
+      );
+      for (const row of cursor) {
+        expect(Number(row.connected)).toBe(0);
+      }
+    });
+
+    ws.send(JSON.stringify({
+      type: "hello",
+      at: new Date().toISOString(),
+      agent: { commit: "recovered", buildId: "1" },
+    }));
+
+    await waitFor(async () => {
+      const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
+        method: "GET",
+      });
+      const snapshot = await snapshotResponse.json() as { connected: boolean };
+      expect(snapshot.connected).toBe(true);
+    });
+
+    ws.close(1000, "test done");
+  });
+});
+
+describe("command-dispatch correlation", () => {
+  it("ack is non-terminal then outcome completes over RPC inbound", async () => {
+    const serverId = "test-srv-command-dispatch";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const requestId = generateRequestId();
+    const deliveryId = generateDeliveryId();
+    const ackAt = new Date().toISOString();
+    const outcomeAt = new Date(Date.now() + 1000).toISOString();
+
+    await cellRpc(stub, serverId, "/rpc/enqueue", {
+      method: "POST",
+      body: JSON.stringify({
+        outbound: {
+          kind: "command-dispatch",
+          deliveryId,
+          requestId,
+          at: ackAt,
+          commandId: "cmd-do-1",
+          commandType: "ping",
+          payload: { target: "host" },
+        },
+      }),
+    });
+
+    const ackResponse = await cellRpc(stub, serverId, "/rpc/inbound", {
+      method: "POST",
+      body: JSON.stringify({
+        inbound: {
+          kind: "command-ack",
+          requestId,
+          at: ackAt,
+          daemonReceivedAt: ackAt,
+        },
+      }),
+    });
+    const ackBody = await ackResponse.json() as {
+      record: {
+        status: string;
+        ackAt?: string;
+        finishedAt?: string;
+        daemonReceivedAt?: string;
+      } | null;
+    };
+    expect(ackBody.record?.status).toBe("acked");
+    expect(ackBody.record?.ackAt).toBe(ackAt);
+    expect(ackBody.record?.daemonReceivedAt).toBe(ackAt);
+    expect(ackBody.record?.finishedAt).toBeUndefined();
+
+    const midResponse = await cellRpc(
+      stub,
+      serverId,
+      `/rpc/request?requestId=${requestId}`,
+      { method: "GET" },
+    );
+    const midBody = await midResponse.json() as {
+      record: { status: string; daemonReceivedAt?: string } | null;
+    };
+    expect(midBody.record?.status).toBe("acked");
+    expect(midBody.record?.daemonReceivedAt).toBe(ackAt);
+
+    const daemonRespondedAt = new Date(Date.now() + 500).toISOString();
+    const outcomeResponse = await cellRpc(stub, serverId, "/rpc/inbound", {
+      method: "POST",
+      body: JSON.stringify({
+        inbound: {
+          kind: "command-outcome",
+          requestId,
+          at: outcomeAt,
+          ok: true,
+          result: { pong: true },
+          daemonReceivedAt: ackAt,
+          daemonRespondedAt,
+        },
+      }),
+    });
+    const outcomeBody = await outcomeResponse.json() as {
+      record: {
+        status: string;
+        result?: { pong: boolean };
+        finishedAt?: string;
+        daemonReceivedAt?: string;
+        daemonRespondedAt?: string;
+      } | null;
+    };
+    expect(outcomeBody.record?.status).toBe("done");
+    expect(outcomeBody.record?.result).toEqual({ pong: true });
+    expect(outcomeBody.record?.finishedAt).toBe(outcomeAt);
+    expect(outcomeBody.record?.daemonReceivedAt).toBe(ackAt);
+    expect(outcomeBody.record?.daemonRespondedAt).toBe(daemonRespondedAt);
+
+    const waitResponse = await cellRpc(stub, serverId, "/rpc/wait-request", {
+      method: "POST",
+      body: JSON.stringify({ requestId, timeoutMs: 100 }),
+    });
+    const waitBody = await waitResponse.json() as {
+      record: {
+        status: string;
+        daemonReceivedAt?: string;
+        daemonRespondedAt?: string;
+      } | null;
+    };
+    expect(waitBody.record?.status).toBe("done");
+    expect(waitBody.record?.daemonReceivedAt).toBe(ackAt);
+    expect(waitBody.record?.daemonRespondedAt).toBe(daemonRespondedAt);
+  });
+
+  it("delivers command-dispatch over websocket and completes on ack then outcome", async () => {
+    const serverId = "test-srv-command-dispatch-ws";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const { ws } = await openDaemonWebSocket(stub, serverId);
+
+    const requestId = generateRequestId();
+    const deliveryId = generateDeliveryId();
+    const at = new Date().toISOString();
+    const messagePromise = waitForWebSocketMessage(ws);
+
+    await cellRpc(stub, serverId, "/rpc/enqueue", {
+      method: "POST",
+      body: JSON.stringify({
+        outbound: {
+          kind: "command-dispatch",
+          deliveryId,
+          requestId,
+          at,
+          commandId: "cmd-ws-1",
+          commandType: "ping",
+          payload: { n: 1 },
+        },
+      }),
+    });
+
+    const raw = await messagePromise;
+    const msg = JSON.parse(raw) as {
+      type: string;
+      id?: string;
+      commandId?: string;
+      commandType?: string;
+      payload?: unknown;
+    };
+    expect(msg.type).toBe("command-dispatch");
+    expect(msg.id).toBe(requestId);
+    expect(msg.commandId).toBe("cmd-ws-1");
+    expect(msg.commandType).toBe("ping");
+    expect(msg.payload).toEqual({ n: 1 });
+
+    ws.send(JSON.stringify({
+      type: "command-ack",
+      id: requestId,
+      at,
+      daemonReceivedAt: at,
+    }));
+
+    await waitFor(async () => {
+      const ackResponse = await cellRpc(
+        stub,
+        serverId,
+        `/rpc/request?requestId=${requestId}`,
+        { method: "GET" },
+      );
+      const ackBody = await ackResponse.json() as {
+        record: { status: string } | null;
+      };
+      expect(ackBody.record?.status).toBe("acked");
+    });
+
+    const outcomeAt = new Date().toISOString();
+    ws.send(JSON.stringify({
+      type: "command-outcome",
+      id: requestId,
+      at: outcomeAt,
+      ok: true,
+      result: { pong: true },
+    }));
+
+    await waitFor(async () => {
+      const doneResponse = await cellRpc(stub, serverId, "/rpc/wait-request", {
+        method: "POST",
+        body: JSON.stringify({ requestId, timeoutMs: 100 }),
+      });
+      const doneBody = await doneResponse.json() as {
+        record: { status: string; result?: { pong: boolean } } | null;
+      };
+      expect(doneBody.record?.status).toBe("done");
+      expect(doneBody.record?.result).toEqual({ pong: true });
     });
 
     ws.close(1000, "test done");

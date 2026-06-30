@@ -148,7 +148,7 @@ type ServerLicenseBinding = {
   organizationId: string | null
 }
 
-async function getServerLicenseBinding(
+export async function getServerLicenseBinding(
   db: Db,
   serverId: string,
 ): Promise<ServerLicenseBinding | null> {

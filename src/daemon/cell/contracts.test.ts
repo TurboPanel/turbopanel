@@ -3,7 +3,6 @@ import type { DaemonCellSnapshot, PendingRequestStatus } from "./contracts.ts";
 import { mergeSnapshotPresence } from "./snapshot-merge.ts";
 
 const TERMINAL_STATUSES = new Set<PendingRequestStatus>([
-  "acked",
   "done",
   "failed",
   "expired",
@@ -62,10 +61,10 @@ Deno.test("mergeSnapshotPresence falls back when meta fields are absent", () => 
 });
 
 Deno.test("PendingRequestStatus terminal check mirrors Redis cell semantics", () => {
-  for (const status of ["acked", "done", "failed", "expired"] as const) {
+  for (const status of ["done", "failed", "expired"] as const) {
     assert(isTerminalStatus(status), `${status} should be terminal`);
   }
-  for (const status of ["queued", "sent"] as const) {
+  for (const status of ["queued", "sent", "acked"] as const) {
     assert(!isTerminalStatus(status), `${status} should not be terminal`);
   }
 });

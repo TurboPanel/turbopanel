@@ -261,6 +261,64 @@ Postgres remains canonical for business data (`server`). The cell is the low-lat
 
 - No `version` push / auto-update: the daemon never self-updates.
 
+## Command Pipeline
+
+Commands are canonical in Postgres (`command` table). Queues are transport only — Cloudflare Queues on Workers, RabbitMQ on Deno. The Daemon Cell is live delivery, presence, and request correlation only. Durable Objects must stay lean and cost-controlled. Never build general queues inside Durable Objects. Maintain Workers/Deno parity for every command feature. Production daemon commands must be typed handlers — never arbitrary shell strings.
+
+| Status | Meaning |
+|---|---|
+| `queued` | Record created, envelope enqueued |
+| `dispatching` | Consumer received, checking presence |
+| `sent` | Envelope enqueued into cell outbox |
+| `acked` | Daemon sent `command-ack` (non-terminal) |
+| `running` | Daemon executing (future use) |
+| `succeeded` | Terminal — `command-outcome ok:true` received |
+| `failed` | Terminal — offline, validation error, or `ok:false` |
+| `timed_out` | Terminal — no outcome within `expires_at` |
+| `cancelled` | Terminal — operator-cancelled |
+
+All lifecycle timestamps and status live in the `metadata` jsonb blob on the `command` row. `transitionCommand` merges patches atomically. `serializeCommandRecord` exposes a flat `CommandRecord` to callers. Organization is derived from the server — there is no `organization_id` column on `command`. Do not store large logs or streaming output in Postgres — `result` and `error` are bounded summaries only.
+
+### Queue transport
+
+- **Workers:** `TURBOPANEL_COMMAND_QUEUE` binding → queue `turbopanel-commands` → DLQ `turbopanel-commands-dlq` (max 3 retries). Declared in `wrangler.jsonc` under `queues.producers` and `queues.consumers`. Consumer handler: `queue(batch, env, ctx)` in `src/workers.ts`.
+- **Deno:** `TURBOPANEL_AMQP_URL` (same URL as email queue, different topology). Exchange `turbopanel.commands`, queue `turbopanel.commands.dispatch`, routing key `command.dispatch`, DLX `turbopanel.commands.dlx` → DLQ `turbopanel.commands.dispatch.dlq`. Consumer: `startCommandConsumer()` in `src/lib/commands/deno-consumer.ts`, started in-process from `src/deno.ts`. **TODO:** extract to a dedicated `turbopanel-command-consumer.service` systemd unit in a future pass (mirrors the mailer pattern).
+- Shared abstraction: `CommandQueue` interface in `src/lib/commands/queue.ts`; `getCommandQueue(c)` Hono accessor. Envelope schema in `src/lib/commands/envelope.ts` — small (ids + type + timestamps; no large payloads). The `CommandEnvelope` no longer carries `organizationId` — org is derived from the server at consume time.
+
+### Client endpoints
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `POST` | `/api/client/v1/servers/:id/commands/ping` | session + read | Create `daemon.ping` command, enqueue |
+| `POST` | `/api/client/v1/servers/:id/hostname` | session + manage | Validate hostname, create `server.hostname.set` command, enqueue |
+| `GET` | `/api/client/v1/servers/:id/commands/:commandId` | session + read | Poll status; ping includes latency breakdown |
+| `GET` | `/api/client/v1/servers/:id/commands` | session + read | List recent commands (optional) |
+
+Authz: ping/get require read (`assertCanReadOr403`); hostname requires manage (`assertCanManageOr403`). Daemon authz must not leak into these session-authenticated routes.
+
+### Consumer behavior
+
+`processCommandEnvelope` in `src/lib/commands/consumer.ts` is the single source that writes terminal `command` rows. The WS inbound path (`command-ack`, `command-outcome`) only updates the hot `PendingRequestRecord` in the cell. For MVP, both `daemon.ping` and `server.hostname.set` fail fast when the daemon is offline. For `server.hostname.set` success, the consumer calls `touchServerMetadata` to update `server.metadata.hostname` — the instance never updates hostname speculatively.
+
+Future webhook-triggered operations — deploy service, rebuild app, rotate tunnel token, update daemon, restart service, collect diagnostics, stream logs — reuse the same `command` table, `CommandQueue` abstraction, and typed-handler model on the daemon. No new queue infrastructure is needed.
+
+`src/lib/commands/` is pure TypeScript (no Deno/Workers-only imports) so it is importable from both runtimes and the in-process consumer:
+
+- `types.ts` — `CommandType`, `CommandStatus`, `TERMINAL_COMMAND_STATUSES`
+- `schemas.ts` — per-type payload/result validators (`parseCommandPayload`, `parseCommandResult`)
+- `envelope.ts` — `CommandEnvelope`, `encodeCommandEnvelope`, `parseCommandEnvelope`
+- `hostname.ts` — `isValidHostname`, `assertValidHostname` (RFC-1123 allowlist; canonical — daemon mirrors it)
+- `ids.ts` — `newCorrelationId()`, `nowIso()`
+- `queue.ts` — `CommandQueue` interface, `getCommandQueue`
+- `command-amqp-topology.ts` — Deno AMQP topology constants + `assertCommandAmqpTopology`
+- `deno-amqp-queue.ts` — Deno RabbitMQ producer
+- `workers-queue.ts` — Workers Cloudflare Queues producer
+- `noop-command-queue.ts` — fallback when broker/binding unavailable
+- `consumer.ts` — `processCommandEnvelope` (shared consumer logic)
+- `deno-consumer.ts` — `startCommandConsumer` (Deno in-process AMQP consumer)
+
+DB helpers: `src/lib/db/command-records.ts` — `createCommandRecord`, `getCommandRecord`, `listServerCommands`, `transitionCommand` — all return the flat `CommandRecord` (serialized from the `metadata` jsonb blob).
+
 ### Dev sync (push a daemon build without git)
 
 `src/developer/dev-sync.ts` tars the local `../daemon` checkout, base64-encodes it, and streams `dev-sync-begin` → `dev-sync-chunk*` → `dev-sync-end` over the daemon WS; the daemon unpacks, `deno cache`s, replies `dev-sync-result`, and restarts. Developer routes: `POST /api/developer/v1/daemon/:id/sync-dev` and `…/daemon/sync-dev` (all). Dev console: **Sync Dev Build** in the fleet section.

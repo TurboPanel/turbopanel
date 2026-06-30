@@ -39,7 +39,6 @@ import {
 } from "./lua.ts";
 
 const TERMINAL_STATUSES = new Set<PendingRequestStatus>([
-  "acked",
   "done",
   "failed",
   "expired",
@@ -101,6 +100,12 @@ function parseRequestRecord(
   if (fields.sentAt) record.sentAt = fields.sentAt;
   if (fields.ackAt) record.ackAt = fields.ackAt;
   if (fields.finishedAt) record.finishedAt = fields.finishedAt;
+  if (fields.daemonReceivedAt) {
+    record.daemonReceivedAt = fields.daemonReceivedAt;
+  }
+  if (fields.daemonRespondedAt) {
+    record.daemonRespondedAt = fields.daemonRespondedAt;
+  }
   if (fields.error) record.error = fields.error;
   if (fields.command) record.command = fields.command;
   if (fields.result) {
@@ -434,6 +439,28 @@ export class RedisDaemonCell implements DaemonCell {
     }
   }
 
+  async reclaimOrphanedSocketLeaseOnStartup(): Promise<void> {
+    const leaseK = leaseKey(this.#serverId);
+    const holder = await this.#client.get(leaseK);
+    if (!holder) return;
+
+    await this.#client.del(leaseK);
+    const meta = await this.#client.hgetall(metaKey(this.#serverId));
+    if (meta?.connectionId === holder && meta?.connected === "1") {
+      await this.#client.hset(metaKey(this.#serverId), { connected: "0" });
+      await this.#client.srem(onlineSetKey(), this.#serverId);
+      const closedAt = nowIso();
+      await this.#client.hset(connKey(this.#serverId, holder), {
+        closedAt,
+        reason: "instance-restart",
+      });
+      await this.#client.expire(
+        connKey(this.#serverId, holder),
+        86_400,
+      );
+    }
+  }
+
   async detachDaemonSocket(params: {
     connectionId: string;
     leaseToken: string;
@@ -684,13 +711,45 @@ export class RedisDaemonCell implements DaemonCell {
       inbound.requestId,
       fields,
     );
-    if (isTerminalStatus(existing.status)) return existing;
+    if (isTerminalStatus(existing.status)) {
+      if (inbound.kind === "command-ack" && !existing.ackAt) {
+        const updates: Record<string, string> = {
+          ackAt: inbound.at,
+          daemonReceivedAt: inbound.daemonReceivedAt,
+        };
+        await this.#client.hset(reqKey, updates);
+        const patched = parseRequestRecord(this.#serverId, inbound.requestId, {
+          ...fields,
+          ...updates,
+        });
+        this.#terminalResults.set(inbound.requestId, patched);
+        return patched;
+      }
+      return existing;
+    }
 
     let status: PendingRequestStatus;
     let result: unknown;
     let error: string | undefined;
 
     switch (inbound.kind) {
+      case "command-ack": {
+        if (existing.status === "acked") return existing;
+        const updates: Record<string, string> = {
+          status: "acked",
+          ackAt: inbound.at,
+          daemonReceivedAt: inbound.daemonReceivedAt,
+        };
+        await this.#client.hset(reqKey, updates);
+        await this.#client.hset(metaKey(this.#serverId), {
+          lastInboundAt: inbound.at,
+        });
+        return parseRequestRecord(
+          this.#serverId,
+          inbound.requestId,
+          { ...fields, ...updates },
+        );
+      }
       case "command-result":
         status = "done";
         result = {
@@ -711,8 +770,15 @@ export class RedisDaemonCell implements DaemonCell {
       case "dev-sync-result":
       case "tunnel-token-result":
       case "update-result":
+      case "command-outcome":
         status = inbound.ok ? "done" : "failed";
-        result = { ok: inbound.ok, error: inbound.error };
+        if (inbound.kind === "command-outcome") {
+          result = inbound.result !== undefined
+            ? inbound.result
+            : { ok: inbound.ok, error: inbound.error };
+        } else {
+          result = { ok: inbound.ok, error: inbound.error };
+        }
         if (!inbound.ok) error = inbound.error;
         break;
       default:
@@ -725,6 +791,17 @@ export class RedisDaemonCell implements DaemonCell {
     };
     if (result !== undefined) updates.result = JSON.stringify(result);
     if (error) updates.error = error;
+    if (inbound.kind === "command-outcome") {
+      if (inbound.daemonReceivedAt) {
+        updates.daemonReceivedAt = inbound.daemonReceivedAt;
+      }
+      if (inbound.daemonRespondedAt) {
+        updates.daemonRespondedAt = inbound.daemonRespondedAt;
+      }
+      if (!fields.ackAt) {
+        updates.ackAt = inbound.daemonReceivedAt ?? inbound.at;
+      }
+    }
 
     await this.#client.hset(reqKey, updates);
 

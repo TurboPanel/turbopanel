@@ -214,6 +214,38 @@ export const server = pgTable(
     }).onDelete('restrict'),
   ]
 )
+// Lifecycle/status fields live in metadata; nowIso() ISO-UTC strings sort lexicographically.
+export const command = pgTable(
+  'command',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    serverId: uuid('server_id').notNull(),
+    actorEntityType: text('actor_entity_type').notNull(),
+    actorEntityId: uuid('actor_entity_id').notNull(),
+    metadata: jsonb().notNull(),
+    payload: jsonb().notNull(),
+    result: jsonb(),
+  },
+  (table) => [
+    index('idx_command_server_id_created_at').using(
+      'btree',
+      table.serverId.asc(),
+      sql`(${table.metadata}->>'createdAt') desc`
+    ),
+    index('idx_command_status').using(
+      'btree',
+      sql`(${table.metadata}->>'status')`
+    ),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'command_server_id_server_id_fk',
+    }).onDelete('cascade'),
+  ]
+)
 export const network = pgTable(
   'network',
   {

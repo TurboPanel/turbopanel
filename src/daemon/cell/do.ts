@@ -35,7 +35,6 @@ import {
 } from "./protocol.ts";
 
 const TERMINAL_STATUSES = new Set<PendingRequestStatus>([
-  "acked",
   "done",
   "failed",
   "expired",
@@ -125,6 +124,12 @@ function parseRequestRow(
   if (row.sent_at) record.sentAt = String(row.sent_at);
   if (row.ack_at) record.ackAt = String(row.ack_at);
   if (row.finished_at) record.finishedAt = String(row.finished_at);
+  if (row.daemon_received_at) {
+    record.daemonReceivedAt = String(row.daemon_received_at);
+  }
+  if (row.daemon_responded_at) {
+    record.daemonRespondedAt = String(row.daemon_responded_at);
+  }
   if (row.error) record.error = String(row.error);
   if (row.command_text) record.command = String(row.command_text);
   if (row.result_json) {
@@ -155,6 +160,11 @@ export class DaemonCellObject {
   constructor(ctx: DurableObjectState, env: CloudflareBindings) {
     this.#ctx = ctx;
     this.#env = env;
+  }
+
+  #isDaemonDebug(): boolean {
+    return this.#env.TURBOPANEL_DAEMON_DEBUG === "1" ||
+      this.#env.TURBOPANEL_DAEMON_DEBUG === "true";
   }
 
   #isDaemonDebug(): boolean {
@@ -236,9 +246,25 @@ export class DaemonCellObject {
         expires_at TEXT,
         ack_at TEXT,
         finished_at TEXT,
-        sent_at TEXT
+        sent_at TEXT,
+        daemon_received_at TEXT,
+        daemon_responded_at TEXT
       )
     `);
+    try {
+      this.#ctx.storage.sql.exec(
+        "ALTER TABLE requests ADD COLUMN daemon_received_at TEXT",
+      );
+    } catch {
+      // Column already exists on upgraded DOs.
+    }
+    try {
+      this.#ctx.storage.sql.exec(
+        "ALTER TABLE requests ADD COLUMN daemon_responded_at TEXT",
+      );
+    } catch {
+      // Column already exists on upgraded DOs.
+    }
     this.#schemaReady = true;
   }
 
@@ -1461,13 +1487,59 @@ export class DaemonCellObject {
     if (!row) return null;
 
     const existing = parseRequestRow(serverId, row);
-    if (isTerminalStatus(existing.status)) return existing;
+    if (isTerminalStatus(existing.status)) {
+      if (inbound.kind === "command-ack" && !existing.ackAt) {
+        const ackAt = inbound.at;
+        this.#ctx.storage.sql.exec(
+          `UPDATE requests SET ack_at = ?, daemon_received_at = COALESCE(?, daemon_received_at),
+           updated_at = ? WHERE request_id = ?`,
+          ackAt,
+          inbound.daemonReceivedAt,
+          nowIso(),
+          inbound.requestId,
+        );
+        const ackCursor = this.#ctx.storage.sql.exec(
+          "SELECT * FROM requests WHERE request_id = ?",
+          inbound.requestId,
+        );
+        for (const ackRow of ackCursor) {
+          return parseRequestRow(serverId, ackRow);
+        }
+      }
+      return existing;
+    }
 
     let status: PendingRequestStatus;
     let result: unknown;
     let error: string | undefined;
 
     switch (inbound.kind) {
+      case "command-ack": {
+        if (existing.status === "acked") return existing;
+        const ackAt = inbound.at;
+        this.#ctx.storage.sql.exec(
+          `UPDATE requests SET status = 'acked', ack_at = ?, daemon_received_at = ?,
+           updated_at = ? WHERE request_id = ?`,
+          ackAt,
+          inbound.daemonReceivedAt,
+          nowIso(),
+          inbound.requestId,
+        );
+        this.#ctx.storage.sql.exec(
+          `UPDATE cell_meta SET last_seen_at = ?, updated_at = ? WHERE server_id = ?`,
+          ackAt,
+          nowIso(),
+          serverId,
+        );
+        const ackCursor = this.#ctx.storage.sql.exec(
+          "SELECT * FROM requests WHERE request_id = ?",
+          inbound.requestId,
+        );
+        for (const ackRow of ackCursor) {
+          return parseRequestRow(serverId, ackRow);
+        }
+        return existing;
+      }
       case "command-result":
         status = "done";
         result = {
@@ -1484,8 +1556,15 @@ export class DaemonCellObject {
       case "dev-sync-result":
       case "tunnel-token-result":
       case "update-result":
+      case "command-outcome":
         status = inbound.ok ? "done" : "failed";
-        result = { ok: inbound.ok, error: inbound.error };
+        if (inbound.kind === "command-outcome") {
+          result = inbound.result !== undefined
+            ? inbound.result
+            : { ok: inbound.ok, error: inbound.error };
+        } else {
+          result = { ok: inbound.ok, error: inbound.error };
+        }
         if (!inbound.ok) error = inbound.error;
         break;
       default:
@@ -1493,13 +1572,26 @@ export class DaemonCellObject {
     }
 
     const finishedAt = inbound.at;
+    const daemonReceivedAt = inbound.kind === "command-outcome"
+      ? inbound.daemonReceivedAt ?? null
+      : null;
+    const daemonRespondedAt = inbound.kind === "command-outcome"
+      ? inbound.daemonRespondedAt ?? null
+      : null;
+    const ackAt = inbound.kind === "command-outcome" && !row.ack_at
+      ? (inbound.daemonReceivedAt ?? inbound.at)
+      : null;
     this.#ctx.storage.sql.exec(
       `UPDATE requests SET status = ?, result_json = ?, error = ?,
-       finished_at = ?, updated_at = ? WHERE request_id = ?`,
+       finished_at = ?, daemon_received_at = COALESCE(?, daemon_received_at),
+       daemon_responded_at = ?, ack_at = COALESCE(ack_at, ?), updated_at = ? WHERE request_id = ?`,
       status,
       result !== undefined ? JSON.stringify(result) : null,
       error ?? null,
       finishedAt,
+      daemonReceivedAt,
+      daemonRespondedAt,
+      ackAt,
       nowIso(),
       inbound.requestId,
     );

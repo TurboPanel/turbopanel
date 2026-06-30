@@ -43,10 +43,22 @@ export type PendingRequestStatus =
   | "failed"
   | "expired";
 
+/** Known outbound request kinds enqueued on the cell outbox. */
+export type PendingRequestKind =
+  | "command"
+  | "command-dispatch"
+  | "addresses-request"
+  | "dev-sync"
+  | "tunnel-token"
+  | "public-urls-update"
+  | "update"
+  | "echo";
+
 export type PendingRequestRecord = {
   serverId: string;
   requestId: string;
-  requestKind: string;
+  /** Outbound envelope kind that created this pending request. */
+  requestKind: PendingRequestKind | string;
   status: PendingRequestStatus;
   createdAt: string;
   expiresAt: string;
@@ -54,8 +66,28 @@ export type PendingRequestRecord = {
   command?: string;
   ackAt?: string;
   finishedAt?: string;
+  /** Daemon-side receive time from `command-ack.daemonReceivedAt`. */
+  daemonReceivedAt?: string;
+  /** Daemon-side response time from `command-outcome.daemonRespondedAt`. */
+  daemonRespondedAt?: string;
   error?: string;
   result?: unknown;
+};
+
+/**
+ * Inbound correlation for typed command dispatch (`command-dispatch` outbound):
+ *
+ * - `command-ack` — non-terminal; transitions the pending row to `status: "acked"`,
+ *   sets `ackAt`, and persists `daemonReceivedAt`. The request row stays open for
+ *   a follow-up outcome.
+ * - `command-outcome` — terminal; transitions to `done` or `failed`, sets
+ *   `finishedAt`, stores typed `result` / `error` like other ack/result pairs,
+ *   and persists optional `daemonReceivedAt` / `daemonRespondedAt` from the wire.
+ */
+
+export type ExpiredUpdateRequest = {
+  requestId: string;
+  finishedAt: string;
 };
 
 export type ExpiredUpdateRequest = {
@@ -72,6 +104,20 @@ export type ClearUpdateStatusOptions = {
   updateTtlMs?: number;
 };
 
+/**
+ * DaemonCell — the live daemon connection owner.
+ *
+ * Vocabulary:
+ *   DaemonCell         = live connection owner (one per serverId)
+ *   DaemonCellRegistry = factory/registry for DaemonCell instances
+ *   Implementations:
+ *     Workers → DaemonCellObject (SQLite-backed Durable Object, do.ts)
+ *     Deno    → RedisDaemonCell (Redis-backed, redis/cell.ts)
+ *
+ * The DaemonCell is NOT a status read API. Status reads go through the
+ * server status read model (server-status.ts / fleet-presence.ts) backed by Postgres.
+ * Any new DaemonCell RPC must justify why it cannot be served from Postgres or the normal API.
+ */
 /**
  * DaemonCell — the live daemon connection owner.
  *

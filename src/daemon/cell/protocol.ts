@@ -110,6 +110,30 @@ export type DaemonMessage =
     ok: boolean;
     error?: string;
     at: string;
+  }
+  | {
+    type: "command-dispatch";
+    id: string;
+    commandId: string;
+    commandType: string;
+    payload: unknown;
+    at: string;
+  }
+  | {
+    type: "command-ack";
+    id: string;
+    at: string;
+    daemonReceivedAt: string;
+  }
+  | {
+    type: "command-outcome";
+    id: string;
+    ok: boolean;
+    result?: unknown;
+    error?: string;
+    at: string;
+    daemonReceivedAt?: string;
+    daemonRespondedAt?: string;
   };
 
 /** Read-time stale window when no inbound traffic is recorded on the cell. */
@@ -132,6 +156,8 @@ export const DAEMON_INBOUND_ALLOWED = new Set(
     "tunnel-token-result",
     "public-urls-update-result",
     "update-result",
+    "command-ack",
+    "command-outcome",
   ] as const,
 );
 
@@ -174,7 +200,13 @@ export type DaemonOutboundEnvelope =
     updateUrl?: string;
     updateSha256?: string;
   })
-  | (OutboundEnvelopeBase & { kind: "echo"; payload: unknown });
+  | (OutboundEnvelopeBase & { kind: "echo"; payload: unknown })
+  | (OutboundEnvelopeBase & {
+    kind: "command-dispatch";
+    commandId: string;
+    commandType: string;
+    payload: unknown;
+  });
 
 /** Cell-internal inbound envelope (normalized form, distinct from wire `DaemonMessage`). */
 export type DaemonInboundEnvelope =
@@ -219,6 +251,22 @@ export type DaemonInboundEnvelope =
     at: string;
     ok: boolean;
     error?: string;
+  }
+  | {
+    kind: "command-ack";
+    requestId: string;
+    at: string;
+    daemonReceivedAt: string;
+  }
+  | {
+    kind: "command-outcome";
+    requestId: string;
+    at: string;
+    ok: boolean;
+    result?: unknown;
+    error?: string;
+    daemonReceivedAt?: string;
+    daemonRespondedAt?: string;
   }
 
 export function parseDaemonMessage(raw: string): DaemonMessage | null {
@@ -283,6 +331,24 @@ export function wireMessageToInboundEnvelope(
         at: msg.at,
         ok: msg.ok,
         error: msg.error,
+      };
+    case "command-ack":
+      return {
+        kind: "command-ack",
+        requestId: msg.id,
+        at: msg.at,
+        daemonReceivedAt: msg.daemonReceivedAt,
+      };
+    case "command-outcome":
+      return {
+        kind: "command-outcome",
+        requestId: msg.id,
+        at: msg.at,
+        ok: msg.ok,
+        result: msg.result,
+        error: msg.error,
+        daemonReceivedAt: msg.daemonReceivedAt,
+        daemonRespondedAt: msg.daemonRespondedAt,
       };
     default:
       return null;
@@ -349,6 +415,15 @@ export function outboundEnvelopeToWireMessage(
       };
     case "echo":
       return { type: "echo", payload: env.payload, at: env.at };
+    case "command-dispatch":
+      return {
+        type: "command-dispatch",
+        id: env.requestId,
+        commandId: env.commandId,
+        commandType: env.commandType,
+        payload: env.payload,
+        at: env.at,
+      };
   }
 }
 

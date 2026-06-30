@@ -6,6 +6,7 @@ import { registerCorsMiddleware } from './cors.ts'
 import type { DaemonCellRegistry } from './daemon/cell/contracts.ts'
 import type { Db } from './db.ts'
 import type { SignupEnvOverride } from './client/authn/install-state.ts'
+import type { CommandQueue } from './lib/commands/queue.ts'
 import type { EmailQueue } from './lib/email/types.ts'
 import { HEALTH_PATH } from './surfaces.ts'
 
@@ -13,6 +14,7 @@ export type AppEnv = {
   Variables: {
     db?: Db
     emailQueue?: EmailQueue
+    commandQueue?: CommandQueue
     emailFrom?: string
     baseUrl?: string
     session?: SessionData
@@ -28,6 +30,7 @@ export function createApp(
   {
     db,
     emailQueue,
+    commandQueue,
     emailFrom,
     baseUrl,
     secrets,
@@ -38,6 +41,7 @@ export function createApp(
   }: {
     db?: Db
     emailQueue?: EmailQueue
+    commandQueue?: CommandQueue
     emailFrom?: string
     baseUrl?: string
     secrets?: DerivedSecretsConfig
@@ -64,6 +68,12 @@ export function createApp(
   if (emailQueue) {
     app.use('*', (c, next) => {
       c.set('emailQueue', emailQueue)
+      return next()
+    })
+  }
+  if (commandQueue) {
+    app.use('*', (c, next) => {
+      c.set('commandQueue', commandQueue)
       return next()
     })
   }

@@ -225,7 +225,8 @@ export const serverPaths: Record<string, unknown> = {
           },
         },
         '403': {
-          description: 'Forbidden',
+          description:
+            'Forbidden, or update blocked for the co-located development daemon',
           content: {
             'application/json': {
               schema: {
@@ -392,6 +393,93 @@ export const serverPaths: Record<string, unknown> = {
                   ok: { type: 'boolean', const: false },
                   error: { type: 'string' },
                 },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/servers/{id}/update/reset': {
+    post: {
+      tags: ['Servers'],
+      summary: 'Clear stale daemon update status after a manual node update',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Terminal update request history cleared',
+          content: {
+            'application/json': {
+              schema: {
+                allOf: [
+                  { $ref: '#/components/schemas/ServerUpdateStatusResponse' },
+                  {
+                    type: 'object',
+                    required: ['cleared'],
+                    properties: {
+                      cleared: { type: 'integer', minimum: 0 },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        '401': {
+          description: 'Unauthorized',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '409': {
+          description: 'Update in progress',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'error'],
+                properties: {
+                  ok: { type: 'boolean', const: false },
+                  error: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+        '503': {
+          description: 'Daemon cell registry unavailable',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },

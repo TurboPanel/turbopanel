@@ -43,6 +43,7 @@ import {
   type ServerUpdateCommit,
 } from './update-status.ts'
 import { UPDATE_REQUEST_TTL_MS } from '../../lib/update/constants.ts'
+import { registerServerCommandRoutes } from './commands-routes.ts'
 
 const UPDATE_CHANNEL = 'trunk'
 const UPDATE_REQUEST_TTL_SECONDS = 300
@@ -424,108 +425,16 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
     })
   })
 
-  router.get('/servers/status', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
-    const visibleIds = await listVisible(db, {
-      kind: 'server',
-      userId: session.userId,
-      organizationId,
-    })
-
-    // TODO: global rate limiting hooks here
-
-    evictExpiredBatchStatusEntries()
-    const coalesceKey = buildBatchStatusCoalesceKey(
-      session.userId,
-      organizationId,
-      visibleIds,
-    )
-    const now = Date.now()
-
-    let entry = batchStatusCoalesce.get(coalesceKey)
-    if (entry && entry.expiresAt > now) {
-      if (entry.result) {
-        return c.json(entry.result, 200, { 'Cache-Control': STATUS_CACHE_CONTROL })
-      }
-      if (entry.promise) {
-        const result = await entry.promise
-        return c.json(result, 200, { 'Cache-Control': STATUS_CACHE_CONTROL })
-      }
-    }
-
-    if (!batchStatusCoalesce.get(coalesceKey)?.promise) {
-      const registry = getDaemonCellRegistry(c)
-      const promise = loadServerStatusRecords(db, registry, visibleIds)
-        .then((servers) => ({ servers }))
-        .then((result) => {
-          const current = batchStatusCoalesce.get(coalesceKey)
-          if (current) {
-            current.result = result
-            current.promise = undefined
-            current.expiresAt = Date.now() + STATUS_CACHE_MAX_AGE_MS
-          }
-          return result
-        })
-        .catch((err) => {
-          const current = batchStatusCoalesce.get(coalesceKey)
-          if (current?.promise === promise) {
-            batchStatusCoalesce.delete(coalesceKey)
-          }
-          throw err
-        })
-
-      batchStatusCoalesce.set(coalesceKey, {
-        expiresAt: now + STATUS_CACHE_MAX_AGE_MS,
-        promise,
-      })
-    }
-
-    entry = batchStatusCoalesce.get(coalesceKey)!
-    const result = entry.result ?? await entry.promise!
-    return c.json(result, 200, { 'Cache-Control': STATUS_CACHE_CONTROL })
-  })
-
-  router.get('/servers/:id/status', async (c) => {
+  // DEBUG/DIAGNOSTIC ENDPOINT — hits the Durable Object directly via fetchDaemonServerCell.
+  // Must NOT be polled by normal UI. Only call on explicit user action (e.g. a manual Refresh button).
+  // TODO: restrict to admin or add rate limiting before exposing broadly.
+  router.get('/servers/:id/cell', async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
     const id = c.req.param('id')
     const denied = await assertCanReadOr403(c, 'server', id)
     if (denied) return denied
-
-    // TODO: global rate limiting hooks here
-
-    const registry = getDaemonCellRegistry(c)
-    const records = await loadServerStatusRecords(db, registry, [id])
-    if (records.length === 0) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    return c.json(records[0], 200, { 'Cache-Control': STATUS_CACHE_CONTROL })
-  })
-
-  router.get('/servers/:id/cell', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-    if (!isAdminRole(session.role)) {
-      return c.json({ error: 'Forbidden' }, 403)
-    }
-
-    const id = c.req.param('id')
-
-    // **ADMIN/DEBUG ONLY** — hits the Durable Object directly. Must never be polled by normal UI. Use `/servers/status` for status reads.
 
     const registry = getDaemonCellRegistry(c)
     const result = await fetchDaemonServerCell(db, registry, id)
@@ -721,4 +630,6 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
 
     return c.json({ ok: true, serverId: id })
   })
+
+  registerServerCommandRoutes(router, opts)
 }

@@ -1,0 +1,49 @@
+import { assertEquals, assertThrows } from 'jsr:@std/assert'
+import {
+  assertValidHostname,
+  HOSTNAME_MAX_LENGTH,
+  isValidHostname,
+} from './hostname.ts'
+
+Deno.test('isValidHostname accepts RFC-1123 names', () => {
+  assertEquals(isValidHostname('a'), true)
+  assertEquals(isValidHostname('web-01'), true)
+  assertEquals(isValidHostname('host.example.com'), true)
+  assertEquals(isValidHostname(`a${'b'.repeat(61)}c`), true)
+  const labels = Array.from({ length: 4 }, (_, i) => `label${i}`).join('.')
+  assertEquals(labels.length <= HOSTNAME_MAX_LENGTH, true)
+  assertEquals(isValidHostname(labels), true)
+})
+
+Deno.test('isValidHostname rejects unsafe values', () => {
+  const reject = [
+    'a b',
+    'Web01',
+    ';',
+    '|',
+    '&',
+    '$(reboot)',
+    '`id`',
+    '()',
+    '<>',
+    '"x"',
+    "'x'",
+    '*',
+    '?',
+    '{}',
+    '-a',
+    'a-',
+    '.a',
+    'a.',
+    '',
+    'a'.repeat(254),
+  ]
+  for (const value of reject) {
+    assertEquals(isValidHostname(value), false, `expected reject: ${JSON.stringify(value)}`)
+  }
+})
+
+Deno.test('assertValidHostname throws for unsafe values', () => {
+  assertThrows(() => assertValidHostname('a b'), Error, 'Invalid hostname')
+  assertValidHostname('web-01')
+})

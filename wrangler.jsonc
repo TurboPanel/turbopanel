@@ -27,6 +27,16 @@
       "id": "83edd62a2d7e4e6ba8b5d77b01ca3729"
     }
   ],
+  "queues": {
+    "producers": [{ "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "turbopanel-commands" }],
+    "consumers": [
+      {
+        "queue": "turbopanel-commands",
+        "dead_letter_queue": "turbopanel-commands-dlq",
+        "max_retries": 3
+      }
+    ]
+  },
   "durable_objects": {
     "bindings": [
       {
@@ -43,6 +53,16 @@
   ],
   "env": {
     "testing": {
+      "queues": {
+        "producers": [{ "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "turbopanel-commands" }],
+        "consumers": [
+          {
+            "queue": "turbopanel-commands",
+            "dead_letter_queue": "turbopanel-commands-dlq",
+            "max_retries": 3
+          }
+        ]
+      },
       "durable_objects": {
         "bindings": [
           {
@@ -68,13 +88,23 @@
         }
       ],
       "vars": {
-        "TURBOPANEL_PBKDF2_ITERATIONS": "100000",
+        "TURBOPANEL_BASE_URL": "https://testing.turbopanel.dev",
         "TURBOPANEL_UI_CORS_ORIGINS": "https://testing.turbopanel.io",
-        "TURBOPANEL_IS_SIGNUP_ENABLED": "0"
+        "TURBOPANEL_IS_SIGNUP_ENABLED": "1"
       }
     },
     "live": {
       "name": "instance",
+      "queues": {
+        "producers": [{ "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "turbopanel-commands" }],
+        "consumers": [
+          {
+            "queue": "turbopanel-commands",
+            "dead_letter_queue": "turbopanel-commands-dlq",
+            "max_retries": 3
+          }
+        ]
+      },
       "durable_objects": {
         "bindings": [
           {

@@ -25,6 +25,9 @@ import {
 } from "../surfaces.ts";
 import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
 
+/** Max idle block for outbox pump reads — keep low so new commands aren't stuck behind a long sleep. */
+const OUTBOX_PUMP_BLOCK_MS = 250;
+
 export type DaemonWebSocketOptions = {
   developerSurface?: boolean;
   db?: Db;
@@ -202,7 +205,7 @@ export function registerDaemonWebSocket(
                 const batch = await cell.readOutboxBatch({
                   consumer,
                   count: 50,
-                  blockMs: 15_000,
+                  blockMs: OUTBOX_PUMP_BLOCK_MS,
                 });
                 for (const envelope of batch) {
                   const wireMsg = outboundEnvelopeToWireMessage(envelope);

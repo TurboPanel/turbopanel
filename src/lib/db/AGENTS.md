@@ -1,6 +1,6 @@
 # Database
 
-Schema changes are versioned in **`migrations/`**. After editing `schema.ts`, run `pnpm drizzle-kit generate` to create SQL files. Apply pending migrations with `TURBOPANEL_DATABASE_URL=… pnpm migrate`; Workers deploy runs the same command. Applied migration versions are recorded in **`public.migration`** (configured in `drizzle.config.mjs`).
+Schema changes are versioned in **`migrations/`**. After editing `schema.ts`, run `pnpm drizzle-kit generate --name <summary>` to create SQL files (always pass `--name` — see below). Apply pending migrations with `TURBOPANEL_DATABASE_URL=… pnpm migrate`; Workers deploy runs the same command. Applied migration versions are recorded in **`public.migration`** (configured in `drizzle.config.mjs`).
 
 The co-located dev server has live data — treat every database change as production-adjacent.
 
@@ -12,7 +12,7 @@ The co-located dev server has live data — treat every database change as produ
 |---|---|---|---|
 | **Pull** (DB → code) | Live Postgres (Studio / SQL) | `./introspect.sh` | `introspect` |
 | **Push** (code → DB, Deno dev only) | `schema.ts` | `./sync.sh` | `push` |
-| **Generate migration** | `schema.ts` | `pnpm drizzle-kit generate` | `generate` |
+| **Generate migration** | `schema.ts` | `pnpm drizzle-kit generate --name <summary>` | `generate` |
 | **Apply migration** (Workers deploy + manual) | pending SQL in `migrations/` | `TURBOPANEL_DATABASE_URL=… pnpm migrate` | `migrate` |
 
 Pick one source of truth per change — do not edit both sides and blindly run both scripts.
@@ -44,9 +44,9 @@ Override connection for either script: `TURBOPANEL_DATABASE_URL=postgresql://…
 Use when schema changes should ship as versioned SQL (required for Workers deploy).
 
 1. Edit `src/lib/db/schema.ts`.
-2. Run `pnpm drizzle-kit generate` — writes SQL under `migrations/`.
-3. Commit the new migration files.
-4. Apply: `TURBOPANEL_DATABASE_URL=… pnpm migrate` (local or CI). Workers deploy runs `pnpm migrate` automatically.
+2. Run `pnpm drizzle-kit generate --name <short_snake_case_summary>` — writes SQL under `migrations/` (e.g. `0002_add_command_table.sql`). **Always pass `--name`**; bare `generate` picks random names like `tan_silver_centurion` that are useless in review.
+3. Commit the new migration files (developer only — after reviewing SQL).
+4. Apply: `TURBOPANEL_DATABASE_URL=… pnpm migrate` (local or CI; **developer only**). Workers deploy runs `pnpm migrate` automatically.
 
 Applied versions are tracked in **`public.migration`** (`drizzle.config.ts` sets `migrations: { table: 'migration', schema: 'public' }`).
 
@@ -59,9 +59,34 @@ Applied versions are tracked in **`public.migration`** (`drizzle.config.ts` sets
 
 ## Current policy (what not to run)
 
-- Use `pnpm drizzle-kit generate` + `pnpm migrate` for Workers-bound schema changes; `./sync.sh` (`push`) remains for Deno dev convenience only.
+- Use `pnpm drizzle-kit generate --name …` + `pnpm migrate` for Workers-bound schema changes; `./sync.sh` (`push`) remains for Deno dev convenience only.
 - **No ad-hoc push** — use `./sync.sh` only (after editing `schema.ts`), not raw `drizzle-kit push` in one-off commands.
 - **No production DDL** from agents without explicit approval.
+
+### Agent policy: generate yes, apply/commit no
+
+Agents **may** edit `schema.ts` and run **`pnpm drizzle-kit generate --name …`** when a task needs versioned SQL — but **must not apply migrations or commit them**. Apply and commit stay with the developer so they can review the SQL before it hits git or the local dev database.
+
+**Generate with a meaningful `--name`.** Drizzle assigns random tags when `--name` is omitted (e.g. `0001_tan_silver_centurion`). Always pass a short snake_case summary of the change:
+
+```bash
+pnpm drizzle-kit generate --name add_command_table
+pnpm drizzle-kit generate --name drop_member_role_columns
+pnpm drizzle-kit generate --name server_license_fk_restrict
+```
+
+Pick a name that answers “what is this migration doing?” — table/column added or dropped, constraint changed, index added. One logical change per migration when possible.
+
+Do **not** run (or offer to run):
+
+- `pnpm migrate` / `drizzle-kit migrate`
+- `./sync.sh` / `drizzle-kit push`
+- `./introspect.sh` / `drizzle-kit introspect`
+- `./scripts/bootstrap-dev-db.sh`
+- Raw DDL against Postgres (Studio, `psql`, etc.)
+- Bare `pnpm drizzle-kit generate` without `--name`
+
+After generating, tell the developer to **review** the new SQL under `migrations/`, then **apply locally** (`TURBOPANEL_DATABASE_URL=… pnpm migrate`) and **commit** when satisfied. Do **not** commit files under `migrations/` unless the developer explicitly asks.
 
 Destructive changes (drop column/table, type narrowing) can lose dev rows. `sync.sh` prompts via `--strict`; `--force` skips those guardrails.
 
@@ -76,7 +101,7 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `sync
 | **Resource tree** | `workspace`, `project`, `environment`, `service`, `hosting`, `network` |
 | **Authorization** | `grant` |
 | **Config** | `setting` (`value` is `jsonb`) |
-| **Runtime** | `server` |
+| **Runtime** | `server`, `command` |
 
 > The physical Postgres table is **`workspace`** (`project.workspace_id` → `workspace.id`). The Drizzle export is `workspace`.
 
@@ -224,11 +249,68 @@ Each physical server node gets a row in `server` (`id` uuidv7). On daemon connec
 
 **Status read model:** `server.daemon.status` is the Postgres-projected liveness read model. UI and API status reads go through `src/daemon/cell/server-status.ts` (formerly `fleet-presence.ts`). Do not read `server.daemon.status` directly from routes — use `resolveFleetPresence` / `loadServerStatusRecords`. The `/servers/status` and `/servers/:id/status` endpoints serve this jsonb read model; reads are Postgres-only and do not call the DO/Redis cell; both runtimes share the same response shape. There are **no** dedicated status columns — jsonb path queries only. See the instance `AGENTS.md` Daemon Cell section for cost/parity rules.
 
+**Status read model:** `server.daemon.status` is the Postgres-projected liveness read model. UI and API status reads go through `src/daemon/cell/server-status.ts` (formerly `fleet-presence.ts`). Do not read `server.daemon.status` directly from routes — use `resolveFleetPresence` / `loadServerStatusRecords`. The `/servers/status` and `/servers/:id/status` endpoints serve this jsonb read model; reads are Postgres-only and do not call the DO/Redis cell; both runtimes share the same response shape. There are **no** dedicated status columns — jsonb path queries only. See the instance `AGENTS.md` Daemon Cell section for cost/parity rules.
+
 **Cell-only liveness timestamps:** `lastInboundAt` and `keyLastUsedAt` live in the daemon cell snapshot only — not in Postgres. `lastInboundAt` advances on inbound WS activity (coalesced to at most once per 60 s) and on connect; `keyLastUsedAt` is set on each inbound message and `/auth/session`.
 
 The `key` field is always preserved on write (read-modify-write via `parseServerDaemonState` + merge).
 
 Re-enrollment with a valid license token replaces `server.daemon` atomically. No historical key rows are kept for MVP. To revoke daemon auth, set `server.daemon.key.revokedAt` (via `revokeDaemonKey` helper).
+
+### `command` table
+
+Canonical command/job history — source of truth for UI status and history. Do not read command history from the Daemon Cell — the cell holds only hot pending-request correlation state. The `command` table is the canonical record.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid (uuidv7) | Primary key |
+| `server_id` | uuid NOT NULL | FK → `server.id`, `ON DELETE CASCADE` (org derived from server) |
+| `actor_entity_type` | text NOT NULL | Open set — e.g. `'user'`; no FK, polymorphic |
+| `actor_entity_id` | uuid NOT NULL | ID of the acting entity; no FK |
+| `metadata` | jsonb NOT NULL | Lifecycle blob — see fields below |
+| `payload` | jsonb NOT NULL | Typed command input (small, bounded) |
+| `result` | jsonb nullable | Typed command output (small, bounded) |
+
+| Metadata key | Type | Notes |
+|---|---|---|
+| `name` | string | Command type (e.g. `daemon.ping`, `server.hostname.set`) |
+| `status` | string | See status values |
+| `error` | string \| null | Terminal error message |
+| `attempts` | number | Dispatch retry count (default 0) |
+| `createdAt` / `updatedAt` | ISO-UTC string | Row lifecycle; ISO-UTC sorts lexicographically so the jsonb expression index on `createdAt` orders chronologically |
+| `queuedAt` | ISO-UTC \| null | Set when status → `queued` |
+| `dispatchStartedAt` | ISO-UTC \| null | Set when status → `dispatching` |
+| `sentAt` | ISO-UTC \| null | Set when status → `sent` |
+| `ackedAt` | ISO-UTC \| null | Set when status → `acked` |
+| `startedAt` | ISO-UTC \| null | Set when status → `running` |
+| `finishedAt` | ISO-UTC \| null | Set when status → terminal |
+| `expiresAt` | ISO-UTC \| null | Optional command TTL |
+
+**JSONB usage:** `payload` stores typed command input; `result` stores typed command output. **Never store logs, streaming output, or large blobs in these columns.**
+
+**Status values:**
+
+| Status | Meaning |
+|---|---|
+| `queued` | Accepted by API; waiting for queue consumer |
+| `dispatching` | Consumer picked up the job |
+| `sent` | Enqueued to daemon cell outbox |
+| `acked` | Daemon acknowledged receipt |
+| `running` | Daemon executing |
+| `succeeded` | Completed successfully (terminal) |
+| `failed` | Completed with error (terminal) |
+| `timed_out` | Expired without completion (terminal) |
+| `cancelled` | Cancelled before completion (terminal) |
+
+**Indexes:**
+- `idx_command_server_id_created_at` — btree on `(server_id, (metadata->>'createdAt') DESC)` — backs `listServerCommands` ordering
+- `idx_command_status` — btree on `((metadata->>'status'))` — supports status-filtered queries
+
+Only FK is `server_id → server.id` (`ON DELETE CASCADE`). Organization is derived from the server — no `organization_id` column on `command`.
+
+**Lifecycle timestamps:** All lifecycle timestamps and status live in the `metadata` jsonb blob. `transitionCommand` merges patches atomically via `metadata || patch::jsonb`. `serializeCommandRecord` in `command-records.ts` flattens the blob into the stable `CommandRecord` type for callers.
+
+Server delete cascades to command rows (`ON DELETE CASCADE` on `server_id`).
 
 ## Layout
 

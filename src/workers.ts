@@ -12,6 +12,11 @@ import { resolveWorkersEmailQueue } from './lib/email/mailgun/workers-queue.ts'
 import {
   resolveEmailSettings,
 } from './lib/settings/email-settings.ts'
+import { createWorkersCommandQueue } from './lib/commands/workers-queue.ts'
+import { createNoopCommandQueue } from './lib/commands/noop-command-queue.ts'
+import type { CommandQueue } from './lib/commands/queue.ts'
+import { isTransientError, processCommandEnvelope } from './lib/commands/consumer.ts'
+import { parseCommandEnvelope } from './lib/commands/envelope.ts'
 import type { EmailQueue } from './lib/email/types.ts'
 
 export { DaemonCellObject } from './daemon/cell/do.ts'
@@ -22,6 +27,7 @@ let cachedSessionSecrets: DerivedSecretsConfig | null = null
 let cachedDaemonJwtSecrets: DerivedSecretsConfig | null = null
 let cachedChallengeSigningSecrets: DerivedSecretsConfig | null = null
 let cachedEmailQueue: EmailQueue | null = null
+let cachedCommandQueue: CommandQueue | null = null
 let cachedDaemonCellRegistryFactory:
   | ((env: CloudflareBindings, db?: ReturnType<typeof createWorkersDb>) =>
     ReturnType<typeof createDurableObjectDaemonCellRegistry>)
@@ -43,10 +49,14 @@ async function initWorkerApp(env: CloudflareBindings) {
   // its own concurrency, retries, and queueing at the platform level, so the instance
   // enqueues to Mailgun immediately via resolveWorkersEmailQueue -> WorkersMailgunQueue.
   cachedEmailQueue = await resolveWorkersEmailQueue(db, platformEnv)
+  cachedCommandQueue = env.TURBOPANEL_COMMAND_QUEUE
+    ? createWorkersCommandQueue(env.TURBOPANEL_COMMAND_QUEUE)
+    : createNoopCommandQueue()
   const emailSettings = await resolveEmailSettings(db, platformEnv)
   // DB is created per request — Workers forbid reusing I/O objects across fetch handlers.
   cachedApp = createApp({
     emailQueue: cachedEmailQueue,
+    commandQueue: cachedCommandQueue,
     secrets: cachedSessionSecrets,
     runtime: 'workers',
     corsOrigins: env.TURBOPANEL_UI_CORS_ORIGINS,
@@ -106,6 +116,7 @@ export default {
     requestApp.use('*', async (c, next) => {
       if (db) c.set('db', db)
       if (cachedEmailQueue) c.set('emailQueue', cachedEmailQueue)
+      if (cachedCommandQueue) c.set('commandQueue', cachedCommandQueue)
       c.set('platformEnv', stringBindingEnv(env))
       if (postgresConnectionString) {
         c.set('postgresConnectionString', postgresConnectionString)
@@ -119,5 +130,36 @@ export default {
     requestApp.route('/', cachedApp!)
 
     return requestApp.fetch(request, env, ctx)
+  },
+
+  async queue(batch: MessageBatch<unknown>, env: CloudflareBindings) {
+    if (!initPromise) initPromise = initWorkerApp(env)
+    await initPromise
+
+    const db = resolveWorkersDb(env)
+    if (!db || !cachedDaemonCellRegistryFactory) {
+      batch.retryAll()
+      return
+    }
+
+    const registry = cachedDaemonCellRegistryFactory(env, db)
+
+    try {
+      for (const msg of batch.messages) {
+        try {
+          const envelope = parseCommandEnvelope(msg.body)
+          await processCommandEnvelope(db, registry, envelope)
+          msg.ack()
+        } catch (error) {
+          if (isTransientError(error)) {
+            msg.retry()
+          } else {
+            msg.ack()
+          }
+        }
+      }
+    } catch {
+      batch.retryAll()
+    }
   },
 } satisfies ExportedHandler<CloudflareBindings>

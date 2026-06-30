@@ -29,6 +29,16 @@ import {
 import { resolveEmailSettings } from './lib/settings/email-settings.ts'
 import { createNoopQueue } from './lib/email/noop-queue.ts'
 import type { EmailQueue } from './lib/email/types.ts'
+import {
+  createDenoAmqpCommandQueue,
+  probeCommandAmqpBrokerReachable,
+} from './lib/commands/deno-amqp-queue.ts'
+import { startCommandConsumer } from './lib/commands/deno-consumer.ts'
+import {
+  createNoopCommandQueue,
+  isNoopCommandQueue,
+} from './lib/commands/noop-command-queue.ts'
+import type { CommandQueue } from './lib/commands/queue.ts'
 import type { Db } from './db.ts'
 import {
   hardenInstanceSocket,
@@ -57,7 +67,35 @@ async function resolveEmailQueue(_db: Db): Promise<EmailQueue> {
   return createNoopQueue()
 }
 
+async function resolveCommandQueue(): Promise<CommandQueue> {
+  const envUrl = Deno.env.get('TURBOPANEL_AMQP_URL')
+  if (envUrl !== undefined && envUrl.trim() === '') {
+    return createNoopCommandQueue()
+  }
+  if (envUrl !== undefined) {
+    return createDenoAmqpCommandQueue({ amqpUrl: envUrl.trim() })
+  }
+  if (await probeCommandAmqpBrokerReachable(DEFAULT_AMQP_URL)) {
+    return createDenoAmqpCommandQueue({ amqpUrl: DEFAULT_AMQP_URL })
+  }
+
+  logInfo('command-queue', 'AMQP broker unavailable; using noop command queue')
+  return createNoopCommandQueue()
+}
+
 const emailQueue = await resolveEmailQueue(db)
+const commandQueue = await resolveCommandQueue()
+
+function resolveCommandAmqpUrl(): string | null {
+  const envUrl = Deno.env.get('TURBOPANEL_AMQP_URL')
+  if (envUrl !== undefined && envUrl.trim() === '') {
+    return null
+  }
+  if (envUrl !== undefined) {
+    return envUrl.trim()
+  }
+  return DEFAULT_AMQP_URL
+}
 const runtimeEnv = Deno.env.toObject()
 const emailSettings = await resolveEmailSettings(db, runtimeEnv)
 const secretsConfig = parseSecretsEnv(
@@ -69,9 +107,34 @@ const sessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing
 const daemonJwtSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-jwt-signing')
 const challengeSigningSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-challenge-signing')
 const daemonCellRegistry = createRedisDaemonCellRegistry({ db })
+
+let commandConsumer: { close(): Promise<void> } | null = null
+if (!isNoopCommandQueue(commandQueue)) {
+  const amqpUrl = resolveCommandAmqpUrl()
+  if (amqpUrl) {
+    void startCommandConsumer({
+      db,
+      registry: daemonCellRegistry,
+      amqpUrl,
+    })
+      .then((consumer) => {
+        commandConsumer = consumer
+      })
+      .catch((err) => {
+        logWarn(
+          'command-consumer',
+          `AMQP broker unavailable; command consumer not started: ${String(err)}`,
+        )
+      })
+  }
+} else {
+  logWarn('command-consumer', 'AMQP broker unavailable; command consumer not started')
+}
+
 const app = createApp({
   db,
   emailQueue,
+  commandQueue,
   secrets: sessionSecrets,
   runtime: 'deno',
   corsOrigins: Deno.env.get('TURBOPANEL_UI_CORS_ORIGINS'),
@@ -131,6 +194,8 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   Deno.addSignalListener(signal, async () => {
     clearInterval(maintenanceTimer)
     await emailQueue.close?.()
+    await commandQueue.close?.()
+    await commandConsumer?.close()
     await daemonCellRegistry.close()
     abort.abort()
   })

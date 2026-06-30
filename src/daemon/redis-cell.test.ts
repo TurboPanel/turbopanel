@@ -323,6 +323,318 @@ Deno.test(
 );
 
 Deno.test(
+  "handleInbound retains update request row through pending window",
+  withRedisCell(async ({ cell, client, serverId }) => {
+    const requestId = generateRequestId();
+    const at = new Date().toISOString();
+    await cell.enqueue({
+      kind: "update",
+      deliveryId: generateDeliveryId(),
+      requestId,
+      at,
+      channel: "trunk",
+    });
+
+    await cell.handleInbound({
+      kind: "update-result",
+      requestId,
+      at,
+      ok: true,
+    });
+
+    const record = await cell.getRequest(requestId);
+    assertEquals(record?.status, "done");
+    assertEquals(
+      (await client.hgetall(requestKey(serverId, requestId)))?.status,
+      "done",
+    );
+
+    const listed = await cell.listRequests(10, { requestKind: "update" });
+    assertEquals(listed.length, 1);
+    assertEquals(listed[0]?.requestId, requestId);
+  }),
+);
+
+Deno.test(
+  "clearUpdateStatus removes terminal update request rows",
+  withRedisCell(async ({ cell, serverId }) => {
+    const requestId = generateRequestId();
+    const at = new Date().toISOString();
+    await cell.enqueue({
+      kind: "update",
+      deliveryId: generateDeliveryId(),
+      requestId,
+      at,
+      channel: "trunk",
+    });
+
+    await cell.handleInbound({
+      kind: "update-result",
+      requestId,
+      at,
+      ok: false,
+      error: "reconcile failed",
+    });
+
+    const cleared = await cell.clearUpdateStatus();
+    assertEquals(cleared.cleared, 1);
+    assertEquals(
+      await cell.listRequests(10, { requestKind: "update" }),
+      [],
+    );
+  }),
+);
+
+function createProjectionTrackingDb(serverId: string): {
+  db: Db;
+  getDaemon: () => ServerDaemonState;
+} {
+  let daemon: ServerDaemonState = {
+    key: {
+      id: "key-1",
+      algorithm: "Ed25519",
+      publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
+      fingerprint: "fp-1",
+      createdAt: "2020-01-01T00:00:00.000Z",
+    },
+    projection: {
+      update: {
+        status: "updating",
+        requestId: "pending",
+        channel: "trunk",
+        queuedAt: new Date(Date.now() - 400_000).toISOString(),
+      },
+    },
+    status: buildDefaultDaemonStatus(),
+  };
+
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([{ id: serverId, daemon }]),
+          then: (
+            resolve: (value: unknown) => void,
+            reject?: (reason: unknown) => void,
+          ) => {
+            const rows = daemon.projection?.update?.status === "updating"
+              ? [{ id: serverId }]
+              : [{ id: serverId, daemon }];
+            return Promise.resolve(rows).then(resolve, reject);
+          },
+        }),
+      }),
+    }),
+    update: () => ({
+      set: (patch: Record<string, unknown>) => {
+        if (patch.daemon) {
+          daemon = patch.daemon as ServerDaemonState;
+        }
+        return {
+          where: () => Promise.resolve(undefined),
+        };
+      },
+    }),
+  } as unknown as Db;
+
+  return { db, getDaemon: () => daemon };
+}
+
+Deno.test(
+  "maintain expires offline in-flight update and projects Postgres state",
+  withRedisCell(async ({ client, serverId }) => {
+    const { db, getDaemon } = createProjectionTrackingDb(serverId);
+    const registry = createRedisDaemonCellRegistry({ db });
+    const cell = registry.getCell(serverId) as RedisDaemonCell;
+
+    const requestId = generateRequestId();
+    const queuedAt = new Date(Date.now() - 400_000).toISOString();
+    await cell.enqueue({
+      kind: "update",
+      deliveryId: generateDeliveryId(),
+      requestId,
+      at: queuedAt,
+      channel: "trunk",
+    }, { ttlSeconds: 300 });
+
+    await client.hset(requestKey(serverId, requestId), {
+      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+      createdAt: queuedAt,
+    });
+    await client.srem(onlineSetKey(), serverId);
+
+    await registry.maintain();
+
+    assertEquals(await cell.getRequest(requestId), null);
+    assertEquals(
+      parseServerDaemonState(getDaemon())?.projection?.update?.status,
+      "expired",
+    );
+
+    await registry.close();
+  }),
+);
+
+Deno.test(
+  "clearUpdateStatus expires stale in-flight update when allowStale is set",
+  withRedisCell(async ({ cell, serverId }) => {
+    const requestId = generateRequestId();
+    const at = new Date().toISOString();
+    await cell.enqueue({
+      kind: "update",
+      deliveryId: generateDeliveryId(),
+      requestId,
+      at,
+      channel: "trunk",
+    });
+
+    const cleared = await cell.clearUpdateStatus({
+      allowStale: true,
+      currentCommit: "same-commit",
+      targetCommit: "same-commit",
+    });
+    assertEquals(cleared.cleared, 1);
+    assertEquals(
+      await cell.listRequests(10, { requestKind: "update" }),
+      [],
+    );
+  }),
+);
+
+Deno.test(
+  "command-dispatch ack is non-terminal then outcome completes correlation",
+  withRedisCell(async ({ cell, client, serverId }) => {
+    const requestId = generateRequestId();
+    const ackAt = new Date().toISOString();
+    const outcomeAt = new Date(Date.now() + 1000).toISOString();
+    await cell.enqueue({
+      kind: "command-dispatch",
+      deliveryId: generateDeliveryId(),
+      requestId,
+      at: ackAt,
+      commandId: "cmd-1",
+      commandType: "ping",
+      payload: { target: "host" },
+    });
+
+    const ackRecord = await cell.handleInbound({
+      kind: "command-ack",
+      requestId,
+      at: ackAt,
+      daemonReceivedAt: ackAt,
+    });
+    assertEquals(ackRecord?.status, "acked");
+    assertEquals(ackRecord?.ackAt, ackAt);
+    assertEquals(ackRecord?.daemonReceivedAt, ackAt);
+    assertEquals(ackRecord?.finishedAt, undefined);
+
+    const persistedAck = await cell.getRequest(requestId);
+    assertEquals(persistedAck?.status, "acked");
+    assertEquals(persistedAck?.daemonReceivedAt, ackAt);
+    assertEquals(
+      (await client.hgetall(requestKey(serverId, requestId)))?.daemonReceivedAt,
+      ackAt,
+    );
+
+    const daemonRespondedAt = new Date(Date.now() + 500).toISOString();
+    const outcomeRecord = await cell.handleInbound({
+      kind: "command-outcome",
+      requestId,
+      at: outcomeAt,
+      ok: true,
+      result: { pong: true },
+      daemonReceivedAt: ackAt,
+      daemonRespondedAt,
+    });
+    assertEquals(outcomeRecord?.status, "done");
+    assertEquals(outcomeRecord?.result, { pong: true });
+    assertEquals(outcomeRecord?.finishedAt, outcomeAt);
+    assertEquals(outcomeRecord?.daemonReceivedAt, ackAt);
+    assertEquals(outcomeRecord?.daemonRespondedAt, daemonRespondedAt);
+
+    const terminal = await cell.getRequest(requestId);
+    assertEquals(terminal?.status, "done");
+    assertEquals(terminal?.daemonReceivedAt, ackAt);
+    assertEquals(terminal?.daemonRespondedAt, daemonRespondedAt);
+  }),
+);
+
+Deno.test(
+  "createRequestAndWait resolves after command-dispatch ack then outcome",
+  withRedisCell(async ({ cell }) => {
+    const requestId = generateRequestId();
+    const at = new Date().toISOString();
+    const outbound = {
+      kind: "command-dispatch" as const,
+      deliveryId: generateDeliveryId(),
+      requestId,
+      at,
+      commandId: "cmd-2",
+      commandType: "echo",
+      payload: { message: "hi" },
+    };
+
+    const waitPromise = cell.createRequestAndWait(outbound, 5000);
+    await cell.enqueue(outbound);
+
+    await cell.handleInbound({
+      kind: "command-ack",
+      requestId,
+      at,
+      daemonReceivedAt: at,
+    });
+
+    const mid = await cell.getRequest(requestId);
+    assertEquals(mid?.status, "acked");
+
+    await cell.handleInbound({
+      kind: "command-outcome",
+      requestId,
+      at: new Date().toISOString(),
+      ok: true,
+      result: { echoed: "hi" },
+    });
+
+    const record = await waitPromise;
+    assertEquals(record.status, "done");
+    assertEquals(record.result, { echoed: "hi" });
+  }),
+);
+
+Deno.test(
+  "handleInbound retains update request row through pending window",
+  withRedisCell(async ({ cell, client, serverId }) => {
+    const requestId = generateRequestId();
+    const at = new Date().toISOString();
+    await cell.enqueue({
+      kind: "update",
+      deliveryId: generateDeliveryId(),
+      requestId,
+      at,
+      channel: "trunk",
+    });
+
+    await cell.handleInbound({
+      kind: "update-result",
+      requestId,
+      at,
+      ok: true,
+    });
+
+    const record = await cell.getRequest(requestId);
+    assertEquals(record?.status, "done");
+    assertEquals(
+      (await client.hgetall(requestKey(serverId, requestId)))?.status,
+      "done",
+    );
+
+    const listed = await cell.listRequests(10, { requestKind: "update" });
+    assertEquals(listed.length, 1);
+    assertEquals(listed[0]?.requestId, requestId);
+  }),
+);
+
+Deno.test(
   "timed-out request is not delivered after reconnect",
   withRedisCell(async ({ cell }) => {
     const requestId = generateRequestId();
@@ -419,6 +731,167 @@ Deno.test(
       connectionId: attached.connectionId,
       leaseToken: attached.lease.token,
     });
+  }),
+);
+
+Deno.test(
+  "reconcileStalePresence demotes when lastInboundAt exceeds offline sweep threshold",
+  withRedisCell(async ({ cell, client, registry, serverId }) => {
+    await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    });
+
+    const staleAt = new Date(Date.now() - DAEMON_OFFLINE_SWEEP_MS - 1000)
+      .toISOString();
+    await client.hset(metaKey(serverId), {
+      lastInboundAt: staleAt,
+      lastSeenAt: staleAt,
+    });
+    await client.del(leaseKey(serverId));
+
+    const demoted = await cell.reconcileStalePresence();
+    assert(demoted);
+
+    const online = await registry.listOnlineServerIds();
+    assert(!online.includes(serverId));
+  }),
+);
+
+function createSweepMockDb(initialDaemon: ServerDaemonState): {
+  db: Db;
+  updateCalls: Array<Record<string, unknown>>;
+} {
+  const updateCalls: Array<Record<string, unknown>> = [];
+  let daemon = initialDaemon;
+
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([{ daemon, metadata: null }]),
+        }),
+      }),
+    }),
+    update: () => ({
+      set: (patch: Record<string, unknown>) => {
+        updateCalls.push(patch);
+        if (patch.daemon) {
+          daemon = patch.daemon as ServerDaemonState;
+        }
+        return {
+          where: () => Promise.resolve(undefined),
+        };
+      },
+    }),
+  } as unknown as Db;
+
+  return { db, updateCalls };
+}
+
+Deno.test(
+  "attach and onDaemonConnected projects online status to postgres",
+  withRedisCell(async ({ cell, serverId }) => {
+    const connectedAt = new Date().toISOString();
+    await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    });
+
+    const { db, updateCalls } = createSweepMockDb({
+      key: {
+        id: "key-1",
+        algorithm: "Ed25519",
+        publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
+        fingerprint: "fp-1",
+        createdAt: "2020-01-01T00:00:00.000Z",
+      },
+      projection: { hostname: "host-1" },
+      status: {
+        ...buildDefaultDaemonStatus(),
+        connected: false,
+        daemonStatus: "offline",
+      },
+    });
+
+    await onDaemonConnected(db, serverId, cell, connectedAt);
+
+    assertEquals(updateCalls.length, 1);
+    const status = (updateCalls[0]?.daemon as ServerDaemonState)?.status;
+    assertEquals(status?.connected, true);
+    assertEquals(status?.connectedAt, connectedAt);
+  }),
+);
+
+Deno.test(
+  "onDaemonHeartbeat debounces postgres lastSeenAt to at most once per 60s",
+  withRedisCell(async ({ cell, serverId }) => {
+    const staleAt = new Date(Date.now() - 61_000).toISOString();
+    await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    });
+
+    const { db, updateCalls } = createSweepMockDb({
+      key: {
+        id: "key-1",
+        algorithm: "Ed25519",
+        publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
+        fingerprint: "fp-1",
+        createdAt: "2020-01-01T00:00:00.000Z",
+      },
+      projection: { hostname: "host-1" },
+      status: {
+        ...buildDefaultDaemonStatus(),
+        connected: true,
+        daemonStatus: "online",
+        lastSeenAt: staleAt,
+        connectedAt: staleAt,
+      },
+    });
+
+    await onDaemonHeartbeat(db, serverId, cell);
+    assertEquals(updateCalls.length, 1);
+
+    await onDaemonHeartbeat(db, serverId, cell);
+    assertEquals(updateCalls.length, 1);
+  }),
+);
+
+Deno.test(
+  "sweepStalePresence projects offline when reconcileStalePresence demotes",
+  withRedisCell(async ({ cell, client, registry, serverId }) => {
+    await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    });
+
+    const staleAt = new Date(Date.now() - DAEMON_OFFLINE_SWEEP_MS - 1000)
+      .toISOString();
+    await client.hset(metaKey(serverId), {
+      lastInboundAt: staleAt,
+      lastSeenAt: staleAt,
+    });
+    await client.del(leaseKey(serverId));
+
+    const { db, updateCalls } = createSweepMockDb({
+      key: {
+        id: "key-1",
+        algorithm: "Ed25519",
+        publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
+        fingerprint: "fp-1",
+        createdAt: "2020-01-01T00:00:00.000Z",
+      },
+      projection: { hostname: "host-1" },
+      status: {
+        ...buildDefaultDaemonStatus(),
+        connected: true,
+        daemonStatus: "online",
+        lastSeenAt: staleAt,
+      },
+    });
+
+    await sweepStalePresence(db, registry);
+
+    assertEquals(updateCalls.length, 1);
+    const status = (updateCalls[0]?.daemon as ServerDaemonState)?.status;
+    assertEquals(status?.connected, false);
   }),
 );
 
@@ -854,6 +1327,39 @@ Deno.test(
       null,
     );
     assertEquals(await cell.listRequests(), []);
+  }),
+);
+
+Deno.test(
+  "handleInbound retains update request row through pending window",
+  withRedisCell(async ({ cell, client, serverId }) => {
+    const requestId = generateRequestId();
+    const at = new Date().toISOString();
+    await cell.enqueue({
+      kind: "update",
+      deliveryId: generateDeliveryId(),
+      requestId,
+      at,
+      channel: "trunk",
+    });
+
+    await cell.handleInbound({
+      kind: "update-result",
+      requestId,
+      at,
+      ok: true,
+    });
+
+    const record = await cell.getRequest(requestId);
+    assertEquals(record?.status, "done");
+    assertEquals(
+      (await client.hgetall(requestKey(serverId, requestId)))?.status,
+      "done",
+    );
+
+    const listed = await cell.listRequests(10, { requestKind: "update" });
+    assertEquals(listed.length, 1);
+    assertEquals(listed[0]?.requestId, requestId);
   }),
 );
 
