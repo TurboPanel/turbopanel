@@ -167,11 +167,6 @@ export class DaemonCellObject {
       this.#env.TURBOPANEL_DAEMON_DEBUG === "true";
   }
 
-  #isDaemonDebug(): boolean {
-    return this.#env.TURBOPANEL_DAEMON_DEBUG === "1" ||
-      this.#env.TURBOPANEL_DAEMON_DEBUG === "true";
-  }
-
   async #getDaemonJwtSecrets(): Promise<DerivedSecretsConfig> {
     if (this.#daemonJwtSecrets) return this.#daemonJwtSecrets;
     if (!this.#daemonJwtSecretsPromise) {
