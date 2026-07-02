@@ -15,7 +15,9 @@
 #   TURBOPANEL_SOCKET_DIAL   Unix socket dial path for instance (Deno runtime)
 #   TURBOPANEL_INSTANCE_RUNTIME  "deno" | "workers" (default: deno)
 #   WRANGLER_DEV_PORT        wrangler dev port when runtime is workers (default: 18787)
-#   CADDY_PORT               Listen port (default: 8443)
+#   CADDY_PORT               HTTPS listen port (default: 8443)
+#   CADDY_HTTP_PORT          Dev-only plaintext HTTP listen port (default: 8880)
+#   TURBOPANEL_DEV_HTTP_CONTROL_PLANE  "1" to enable plaintext entrypoint; default off (403)
 #   CADDY_TLS_CERT           Server leaf cert (default: ./certs/self-signed.crt, signed by certs/ca.crt)
 #   CADDY_TLS_KEY            Server leaf key (default: ./certs/self-signed.key)
 {
@@ -114,5 +116,105 @@
 		root * {$TURBOPANEL_UI_ROOT:../ui/dist}
 		try_files {path} /index.html
 		file_server
+	}
+}
+
+# Dev-only plaintext HTTP mirror of :8443 (no TLS). Returns 403 unless TURBOPANEL_DEV_HTTP_CONTROL_PLANE=1.
+:{$CADDY_HTTP_PORT:8880} {
+	# Expo is often still binding when Caddy starts — show a spinner instead of a bare 502.
+	handle_errors 502 503 {
+		@expoUpstream vars expoUpstream true
+		handle @expoUpstream {
+			root * .
+			rewrite * /expo-loading.html
+			file_server {
+				status 200
+			}
+		}
+	}
+
+	# route preserves handler order — the dev guard must run before path-specific handles.
+	route {
+		@not_dev_http expression `"{$TURBOPANEL_DEV_HTTP_CONTROL_PLANE:0}" != "1"`
+		handle @not_dev_http {
+			respond 403
+		}
+
+		@api path /api/*
+		handle @api {
+			@workers_runtime expression `"{$TURBOPANEL_INSTANCE_RUNTIME:deno}" == "workers"`
+			handle @workers_runtime {
+				reverse_proxy 127.0.0.1:{$WRANGLER_DEV_PORT:18787} {
+					header_up X-Real-IP {remote_host}
+				}
+			}
+			handle {
+				reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/instance.sock} {
+					header_up X-Real-IP {remote_host}
+				}
+			}
+		}
+
+		@ws path /ws/*
+		handle @ws {
+			@workers_runtime expression `"{$TURBOPANEL_INSTANCE_RUNTIME:deno}" == "workers"`
+			handle @workers_runtime {
+				reverse_proxy 127.0.0.1:{$WRANGLER_DEV_PORT:18787} {
+					header_up X-Real-IP {remote_host}
+				}
+			}
+			handle {
+				reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/instance.sock} {
+					header_up X-Real-IP {remote_host}
+				}
+			}
+		}
+
+		@dev_daemon_downloads {
+			path /downloads/daemon/*
+			expression `"{$TURBOPANEL_UI_MODE:static}" == "dev"`
+		}
+		handle @dev_daemon_downloads {
+			header Cache-Control "no-store"
+			route {
+				root * {$TURBOPANEL_DAEMON_REPO:../daemon}/dist
+				uri strip_prefix /downloads/daemon
+				file_server {
+					browse
+				}
+			}
+		}
+
+		# Dev: daemon bootstrap script (same host as /downloads/daemon — not the install API).
+		@dev_daemon_run {
+			path /run.sh
+			expression `"{$TURBOPANEL_UI_MODE:static}" == "dev"`
+		}
+		handle @dev_daemon_run {
+			root * {$TURBOPANEL_DAEMON_REPO:../daemon}
+			rewrite /run.sh /scripts/run.sh
+			file_server
+		}
+
+		# Dev: proxy to Expo's web dev server (TURBOPANEL_UI_MODE=dev).
+		@ui_dev expression `"{$TURBOPANEL_UI_MODE:static}" == "dev"`
+		handle @ui_dev {
+			route {
+				vars expoUpstream true
+				reverse_proxy 127.0.0.1:{$EXPO_PORT:8081} {
+					# Forward the browser's host so Expo CORS same-origin checks match
+					# (Origin https://huey.lan:8443 vs Host 127.0.0.1:8081 rejects Metro).
+					header_up Host {http.request.host}
+					header_up X-Forwarded-Proto {http.request.scheme}
+				}
+			}
+		}
+
+		# Production: serve the exported Expo web app (pnpm export --platform web -> ui/dist).
+		handle {
+			root * {$TURBOPANEL_UI_ROOT:../ui/dist}
+			try_files {path} /index.html
+			file_server
+		}
 	}
 }

@@ -94,6 +94,8 @@ All TurboPanel runtime sockets live under **`/run/turbopanel/`** (on Linux, `/va
 | `TURBOPANEL_UI_ROOT` | `../ui/dist` | Directory of `expo export --platform web` output |
 | `TURBOPANEL_UI_SERVICE` | `turbopanel-ui` | Name of the Expo systemd unit on managed hosts (injected for orchestration; no instance API surface today) |
 | `CADDY_PORT` | `8443` | HTTPS listen port |
+| `CADDY_HTTP_PORT` | `8880` | Dev-only plaintext HTTP listener mirroring the HTTPS entrypoint |
+| `TURBOPANEL_DEV_HTTP_CONTROL_PLANE` | off | Must be `"1"` to serve plaintext traffic on `CADDY_HTTP_PORT`; injected automatically in co-located dev via `turbopanel_dev_user` |
 | `CADDY_TLS_CERT` | `./certs/self-signed.crt` | Server leaf certificate (signed by platform CA) |
 | `CADDY_TLS_KEY` | `./certs/self-signed.key` | Server leaf private key |
 | `TURBOPANEL_TLS_EXTRA_SANS` | — | Comma-separated DNS names for the server cert (e.g. `turbopanel.lan`) |
@@ -179,6 +181,10 @@ Caddy/cert installs are handled by the daemon's `caddy` and `instance-certs` Ans
 - Entrypoint: `https://<host>:8443` (Caddy, defined in `Caddyfile`) — binds all interfaces; use `localhost` or the machine's LAN IP.
 - Self-hosted TLS uses a **platform CA** (`certs/ca.crt` + `certs/ca.key`) that signs a **server leaf cert** (`certs/self-signed.crt` + `.key`) presented by Caddy (`auto_https off`, no Let's Encrypt). **`auto_https off` is mandatory and must never be removed.** Caddy must never auto-provision certs via ACME or on-demand TLS. All cert issuance goes through `scripts/generate-self-signed-cert.mjs` (self-hosted, platform CA) or an explicitly-configured publicly-trusted cert. The `instance-certs-apply.yml` playbook is the runtime cert-regen path triggered by the admin public-URL apply action. The CA is long-lived and can issue additional certificates later; daemons fetch it from `GET /api/daemon/v1/instance/ca`. Trust `certs/ca.crt` in browsers/OS to avoid warnings.
 - Override the resolved binary with `TURBOPANEL_CADDY` (and `TURBOPANEL_DENO` for Deno).
+
+#### Dev-only plaintext HTTP entrypoint (`:8880`)
+
+Co-located dev also exposes `http://<host>:8880` (`CADDY_HTTP_PORT`, default `8880`) — a plaintext mirror of every route on `:8443` with no TLS termination. It exists to bypass self-signed TLS friction when troubleshooting daemon WebSocket connections and to attach a daemon without any CA/cert setup. The block serves `/api/*`, `/ws/*` (including the `@workers_runtime` branch to `WRANGLER_DEV_PORT`), the Expo dev proxy, `/downloads/daemon/*`, `/run.sh`, and the production static-file fallback identically to the HTTPS entrypoint, regardless of `TURBOPANEL_INSTANCE_RUNTIME` (`deno` or `workers`), since both runtimes share this single Caddy proxy. Requests are rejected with **403** unless `TURBOPANEL_DEV_HTTP_CONTROL_PLANE=1`; Ansible sets that flag automatically only when `turbopanel_dev_user` is set (co-located dev hosts). It is never enabled on managed or production installs.
 
 ### Daemon TLS trust model (3 paths)
 

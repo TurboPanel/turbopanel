@@ -24,8 +24,10 @@ export function buildLicenseInstallCommand(opts: {
     instanceUrl,
     licenseId,
     licenseToken,
-    insecureTls = false,
+    insecureTls: insecureTlsOpt = false,
   } = opts
+  const insecureTls =
+    instanceUrl.startsWith('http://') ? false : insecureTlsOpt
   const licenseArg = encodeLicenseArg(licenseId, licenseToken)
   const includeHost = instanceUrl !== 'https://turbopanel.app'
   const scriptBase = instanceUrl.replace(/\/$/, '')

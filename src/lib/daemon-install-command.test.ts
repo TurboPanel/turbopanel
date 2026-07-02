@@ -36,6 +36,21 @@ describe('buildLicenseInstallCommand', () => {
     expect(encoded).not.toMatch(/[:+/=]/)
   })
 
+  it('uses plain curl without TLS flags for plaintext HTTP dev control plane', () => {
+    const command = buildLicenseInstallCommand({
+      runtime: 'deno',
+      instanceUrl: 'http://huey.lan:8880',
+      licenseId: 'license-id',
+      licenseToken: 'token',
+      insecureTls: true,
+    })
+
+    expect(command).toContain('curl -fsSL http://huey.lan:8880/run.sh')
+    expect(command).not.toContain('curl -fsSLk')
+    expect(command).not.toContain('--insecure-tls')
+    expect(command).toContain('--host http://huey.lan:8880')
+  })
+
   it('uses run.sh on self-hosted Deno installs', () => {
     const command = buildLicenseInstallCommand({
       runtime: 'deno',

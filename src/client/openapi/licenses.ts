@@ -31,7 +31,7 @@ export function buildLicenseSchemas(installCommandDescription: string) {
         installBaseUrl: {
           type: 'string',
           description:
-            'Development only: public https URL for install command --host and download paths.',
+            'Development only: public http(s) URL for install command --host and download paths.',
         },
       },
     },
