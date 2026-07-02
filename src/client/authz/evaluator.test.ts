@@ -4,8 +4,11 @@ import { createDenoDb } from '../../db.ts'
 import {
   grant,
   environment,
+  managed,
   member,
   organization,
+  project,
+  variable,
   workspace,
   team,
   user,
@@ -280,6 +283,126 @@ Deno.test('listVisible returns empty for user without grants', async () => {
 
     if (visible.length > 0) {
       throw new Error('user without grants should see no workspaces')
+    }
+  })
+})
+
+Deno.test('listVisible returns variable ids for org owner', async () => {
+  await withTestFixtures(async ({ db, userId, organizationId, workspaceId }) => {
+    const [insertedProject] = await db
+      .insert(project)
+      .values({ displayName: 'Evaluator Variables Project', workspaceId })
+      .returning({ id: project.id })
+
+    const projectId = insertedProject!.id
+
+    const [insertedEnvironment] = await db
+      .insert(environment)
+      .values({ displayName: 'Evaluator Variables Env', projectId })
+      .returning({ id: environment.id })
+
+    const environmentId = insertedEnvironment!.id
+
+    const [insertedVariable] = await db
+      .insert(variable)
+      .values({ environmentId, key: 'LIST_VISIBLE_VAR', value: 'visible' })
+      .returning({ id: variable.id })
+
+    const variableId = insertedVariable!.id
+
+    try {
+      await db.insert(grant).values({
+        entityType: 'organization',
+        entityId: organizationId,
+        subjectType: 'user',
+        subjectId: userId,
+        permission: 'organization:own',
+        allow: true,
+      })
+
+      const visible = await listVisible(db, {
+        kind: 'variable',
+        userId,
+        organizationId,
+      })
+
+      if (!visible.includes(variableId)) {
+        throw new Error('org owner listVisible should include variables in org')
+      }
+    } finally {
+      await db.delete(variable).where(eq(variable.environmentId, environmentId))
+      await db.delete(environment).where(eq(environment.projectId, projectId))
+      await db.delete(project).where(eq(project.id, projectId))
+    }
+  })
+})
+
+Deno.test('organization grant allows can() on managed and variable entities', async () => {
+  await withTestFixtures(async ({ db, userId, organizationId, workspaceId }) => {
+    const [insertedProject] = await db
+      .insert(project)
+      .values({ displayName: 'Evaluator Test Project', workspaceId })
+      .returning({ id: project.id })
+
+    const projectId = insertedProject!.id
+
+    const [insertedManaged] = await db
+      .insert(managed)
+      .values({ projectId })
+      .returning({ id: managed.id })
+
+    const managedId = insertedManaged!.id
+
+    const [insertedEnvironment] = await db
+      .insert(environment)
+      .values({ displayName: 'Evaluator Test Env', projectId })
+      .returning({ id: environment.id })
+
+    const environmentId = insertedEnvironment!.id
+
+    const [insertedVariable] = await db
+      .insert(variable)
+      .values({ environmentId, key: 'TEST_VAR', value: '1' })
+      .returning({ id: variable.id })
+
+    const variableId = insertedVariable!.id
+
+    try {
+      await db.insert(grant).values({
+        entityType: 'organization',
+        entityId: organizationId,
+        subjectType: 'user',
+        subjectId: userId,
+        permission: 'organization:manage',
+        allow: true,
+      })
+
+      const canManaged = await can(
+        db,
+        userId,
+        'organization:manage',
+        'managed',
+        managedId,
+      )
+      const canVariable = await can(
+        db,
+        userId,
+        'organization:manage',
+        'variable',
+        variableId,
+      )
+
+      if (!canManaged) {
+        throw new Error('organization:manage should allow access to managed entity')
+      }
+      if (!canVariable) {
+        throw new Error('organization:manage should allow access to variable entity')
+      }
+    } finally {
+      await db.delete(variable).where(eq(variable.environmentId, environmentId))
+      await db.delete(environment).where(eq(environment.projectId, projectId))
+      await db.delete(managed).where(eq(managed.projectId, projectId))
+      await db.delete(project).where(eq(project.id, projectId))
     }
   })
 })

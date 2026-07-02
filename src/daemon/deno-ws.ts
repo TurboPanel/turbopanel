@@ -2,6 +2,8 @@ import type { Hono } from "hono";
 import { upgradeWebSocket } from "hono/deno";
 import type { DaemonCellRegistry } from "./cell/contracts.ts";
 import {
+  DAEMON_CELL_PING,
+  DAEMON_CELL_PONG,
   DAEMON_INBOUND_ALLOWED,
   outboundEnvelopeToWireMessage,
   parseDaemonMessage,
@@ -80,8 +82,18 @@ export function registerDaemonWebSocket(
 
       const handleInboundMessage = async (
         raw: string,
-        _ws: WebSocket,
+        ws: WebSocket,
       ): Promise<void> => {
+        if (raw === DAEMON_CELL_PING) {
+          const cell = registry.getCell(payload.sub);
+          ws.send(DAEMON_CELL_PONG);
+          await cell.recordInbound({
+            connectionId,
+            at: new Date().toISOString(),
+          });
+          return;
+        }
+
         const message = parseDaemonMessage(raw);
         if (!message) {
           compatLogWarn("ws", "ignored non-JSON message from daemon");

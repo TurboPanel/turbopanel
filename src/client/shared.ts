@@ -38,6 +38,21 @@ export function parseDescription(body: Record<string, unknown>): string | null {
   return body.description
 }
 
+export function parseJsonbObject(
+  c: Context,
+  body: Record<string, unknown>,
+  field: string,
+): Record<string, unknown> | null | Response {
+  if (body[field] === undefined) {
+    return null
+  }
+  const value = body[field]
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  return value as Record<string, unknown>
+}
+
 /** PATCH payload: omit `displayName` when absent so partial updates do not clear it. */
 export function buildPatchUpdateFields(
   body: Record<string, unknown>,

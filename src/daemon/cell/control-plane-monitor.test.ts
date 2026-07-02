@@ -20,6 +20,10 @@ import {
   onDaemonUpdateReset,
 } from "./control-plane-monitor.ts";
 import { resolveFleetPresence } from "./fleet-presence.ts";
+import {
+  resetTrunkManifestCacheForTests,
+  seedTrunkManifestCacheForTests,
+} from "../../lib/update/manifest.ts";
 
 const serverId = "srv-heartbeat-agent";
 
@@ -57,9 +61,11 @@ function createTrackingDb(
 ): {
   db: Db;
   updateCalls: Array<Record<string, unknown>>;
+  getSelectCallCount: () => number;
   getDaemon: () => ServerDaemonState;
 } {
   const updateCalls: Array<Record<string, unknown>> = [];
+  let selectCalls = 0;
   let daemon = mergeDaemonStatus(initialDaemon, statusOverrides);
 
   const row = {
@@ -72,14 +78,18 @@ function createTrackingDb(
     select: () => ({
       from: () => ({
         where: () => ({
-          limit: () => Promise.resolve([{
-            daemon,
-            metadata: row.metadata,
-          }]),
+          limit: () => {
+            selectCalls += 1;
+            return Promise.resolve([{
+              daemon,
+              metadata: row.metadata,
+            }]);
+          },
           then: (
             resolve: (value: unknown) => void,
             reject?: (reason: unknown) => void,
           ) => {
+            selectCalls += 1;
             row.daemon = daemon;
             return Promise.resolve([row]).then(resolve, reject);
           },
@@ -103,7 +113,7 @@ function createTrackingDb(
     }),
   } as unknown as Db;
 
-  return { db, updateCalls, getDaemon: () => daemon };
+  return { db, updateCalls, getSelectCallCount: () => selectCalls, getDaemon: () => daemon };
 }
 
 function statusFromPatch(
@@ -155,7 +165,12 @@ Deno.test("onDaemonHeartbeat projects agent.commit for update status via resolve
     channel: "trunk" as const,
   };
 
-  await onDaemonHeartbeat(db, serverId, {} as never, agent);
+  await onDaemonHeartbeat(
+    db,
+    serverId,
+    createMockCell({ connected: true, agent }) as never,
+    agent,
+  );
 
   const merged = parseServerDaemonState(getDaemon());
   assertEquals(merged?.projection?.agent?.commit, agent.commit);
@@ -303,7 +318,8 @@ Deno.test("onDaemonHeartbeat within 60s skips DB write when agent unchanged", as
     buildId: "build-1",
     channel: "trunk" as const,
   };
-  const { db, updateCalls } = createTrackingDb(
+  const recentAt = new Date().toISOString();
+  const { db, updateCalls, getSelectCallCount } = createTrackingDb(
     {
       key: baseKey,
       projection: { agent },
@@ -311,13 +327,99 @@ Deno.test("onDaemonHeartbeat within 60s skips DB write when agent unchanged", as
     {
       connected: true,
       daemonStatus: "online",
-      lastSeenAt: new Date().toISOString(),
+      lastSeenAt: recentAt,
     },
   );
 
-  await onDaemonHeartbeat(db, serverId, {} as never, agent);
+  await onDaemonHeartbeat(
+    db,
+    serverId,
+    createMockCell({ connected: true, lastSeenAt: recentAt, agent }) as never,
+    agent,
+    new Date(Date.now() + 1000).toISOString(),
+  );
 
   assertEquals(updateCalls.length, 0);
+  assertEquals(getSelectCallCount(), 0);
+});
+
+Deno.test("onDaemonInbound repairs stale updating on steady-state hello when agent matches trunk", async () => {
+  resetTrunkManifestCacheForTests();
+  seedTrunkManifestCacheForTests({
+    commit: "target-commit",
+    buildId: "b2",
+    builtAt: "2020-01-01T00:00:00.000Z",
+    channel: "trunk",
+    manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+  });
+
+  const agent = {
+    commit: "target-commit",
+    buildId: "build-1",
+    channel: "trunk" as const,
+  };
+  const recentAt = new Date().toISOString();
+  const { db, updateCalls, getDaemon } = createTrackingDb(
+    {
+      key: baseKey,
+      projection: {
+        agent,
+        update: {
+          status: "updating",
+          requestId: "req-1",
+          channel: "trunk",
+          queuedAt: "2020-01-01T00:00:00.000Z",
+        },
+      },
+    },
+    {
+      connected: true,
+      daemonStatus: "online",
+      lastSeenAt: recentAt,
+    },
+  );
+
+  await onDaemonInbound(
+    db,
+    serverId,
+    createMockCell({ connected: true, lastSeenAt: recentAt, agent }) as never,
+    { at: new Date(Date.now() + 1000).toISOString(), agent },
+  );
+
+  const update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "done");
+  assertEquals(update?.requestId, "req-1");
+  assertEquals(updateCalls.length, 1);
+});
+
+Deno.test("onDaemonInbound within 60s skips heartbeat write when agent unchanged", async () => {
+  const agent = {
+    commit: "abc123",
+    buildId: "build-1",
+    channel: "trunk" as const,
+  };
+  const recentAt = new Date().toISOString();
+  const { db, updateCalls, getSelectCallCount } = createTrackingDb(
+    {
+      key: baseKey,
+      projection: { agent },
+    },
+    {
+      connected: true,
+      daemonStatus: "online",
+      lastSeenAt: recentAt,
+    },
+  );
+
+  await onDaemonInbound(
+    db,
+    serverId,
+    createMockCell({ connected: true, lastSeenAt: recentAt, agent }) as never,
+    { at: new Date(Date.now() + 1000).toISOString(), agent },
+  );
+
+  assertEquals(updateCalls.length, 0);
+  assertEquals(getSelectCallCount(), 1);
 });
 
 Deno.test("onDaemonHeartbeat after 60s writes lastSeenAt", async () => {
@@ -338,7 +440,12 @@ Deno.test("onDaemonHeartbeat after 60s writes lastSeenAt", async () => {
     },
   );
 
-  await onDaemonHeartbeat(db, serverId, {} as never, agent);
+  await onDaemonHeartbeat(
+    db,
+    serverId,
+    createMockCell({ connected: true, agent }) as never,
+    agent,
+  );
 
   assertEquals(updateCalls.length, 1);
   const status = statusFromPatch(updateCalls[0]);
@@ -360,7 +467,11 @@ Deno.test("onDaemonHeartbeat without agent after 60s writes lastSeenAt", async (
     },
   );
 
-  await onDaemonHeartbeat(db, serverId, {} as never);
+  await onDaemonHeartbeat(
+    db,
+    serverId,
+    createMockCell({ connected: true, lastSeenAt: stale }) as never,
+  );
 
   assertEquals(updateCalls.length, 1);
   const status = statusFromPatch(updateCalls[0]);

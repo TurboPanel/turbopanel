@@ -3,11 +3,12 @@ import {
   deriveSecretsConfig,
   parseSecretsEnv,
 } from "../../client/authn/secrets.ts";
-import { createWorkersDb, type Db } from "../../db.ts";
+import { createWorkersDb, endDbConnection, type Db } from "../../db.ts";
 import type { ServerGeo } from "../../lib/geo/server-geo.ts";
 import { parseServerGeo } from "../../lib/geo/server-geo.ts";
 import { TERMINAL_UPDATE_RETENTION_MS } from "../../lib/update/constants.ts";
 import { verifyDaemonJwt } from "../authn/daemon-jwt.ts";
+import { inboundHeartbeatProjectionDue } from "./postgres-projection.ts";
 import {
   onDaemonConnected,
   onDaemonDisconnected,
@@ -17,6 +18,7 @@ import {
 } from "./control-plane-monitor.ts";
 import type {
   ClearUpdateStatusOptions,
+  CellDiagnostics,
   DaemonCell,
   DaemonCellLease,
   DaemonCellSnapshot,
@@ -30,11 +32,28 @@ import type {
   OutboxDeliveryId,
 } from "./protocol.ts";
 import {
+  DAEMON_CELL_PING,
+  DAEMON_CELL_PONG,
   DAEMON_OFFLINE_SWEEP_MS,
   outboundEnvelopeToWireMessage,
   parseDaemonMessage,
   wireMessageToInboundEnvelope,
 } from "./protocol.ts";
+
+function createInitialCellDiagnostics(): CellDiagnostics {
+  return {
+    backend: "durable-object",
+    usesHibernationWebSocket: true,
+    constructorCalls: 0,
+    wsAccepted: 0,
+    wsClosed: 0,
+    alarmInvocations: 0,
+    heartbeatCount: 0,
+    commandDispatchCount: 0,
+    cleanupCount: 0,
+    fetchByRoute: {},
+  };
+}
 
 const TERMINAL_STATUSES = new Set<PendingRequestStatus>([
   "done",
@@ -47,6 +66,8 @@ const OUTBOX_INFLIGHT_LEASE_MS = 30_000;
 const DELIVERY_LEASE_NAME = "delivery";
 const DAEMON_SOCKET_LEASE_NAME = "daemon-socket";
 const OUTBOX_PUMP_ALARM_MS = 2_000;
+const OUTBOX_MAX_RETRIES = 10;
+const OUTBOX_RETRY_MAX_MS = 300_000;
 const HEARTBEAT_COALESCE_MS = 60_000;
 const CELL_GEO_HEADER = "X-Turbopanel-Cell-Geo";
 
@@ -63,6 +84,14 @@ export function setDaemonCellProjectionDbFactoryForTests(
 
 function nowIso(now = Date.now()): string {
   return new Date(now).toISOString();
+}
+
+function outboxRetryDelayMs(retryCount: number): number {
+  const exponent = Math.max(0, retryCount - 1);
+  return Math.min(
+    OUTBOX_PUMP_ALARM_MS * (2 ** exponent),
+    OUTBOX_RETRY_MAX_MS,
+  );
 }
 
 function isTerminalStatus(status: PendingRequestStatus): boolean {
@@ -153,16 +182,61 @@ function errorResponse(message: string, status = 400): Response {
   return jsonResponse({ error: message }, status);
 }
 
+/**
+ * ╔══════════════════════════════════════════════════════════════════╗
+ * ║  CLOUDFLARE DURABLE OBJECT — HIBERNATION COST RULES             ║
+ * ║  Violating these rules causes continuous GB-sec billing.        ║
+ * ╠══════════════════════════════════════════════════════════════════╣
+ * ║  1. NO setInterval / setTimeout — use ctx.storage.setAlarm()   ║
+ * ║  2. NO standard server.accept() — use ctx.acceptWebSocket()    ║
+ * ║  3. NO polling loops inside handlers                            ║
+ * ║  4. NO long-running awaits / pending promises in memory         ║
+ * ║  5. Finish every handler quickly and return                     ║
+ * ║  6. Close every outbound DB connection in a finally block       ║
+ * ║  7. One stable DO id per server (getByName(serverId))           ║
+ * ║  8. Workers (DO) and self-hosted (Redis) must stay in parity    ║
+ * ╚══════════════════════════════════════════════════════════════════╝
+ */
 export class DaemonCellObject {
   readonly #ctx: DurableObjectState;
   readonly #env: CloudflareBindings;
   #schemaReady = false;
   #daemonJwtSecrets: DerivedSecretsConfig | null = null;
   #daemonJwtSecretsPromise: Promise<DerivedSecretsConfig> | null = null;
+  readonly #diag: CellDiagnostics = createInitialCellDiagnostics();
 
   constructor(ctx: DurableObjectState, env: CloudflareBindings) {
     this.#ctx = ctx;
     this.#env = env;
+    this.#diag.constructorCalls += 1;
+    if (this.#isDaemonDebug()) {
+      console.debug("daemon cell diagnostics: constructor");
+    }
+    this.#ctx.setWebSocketAutoResponse(
+      new WebSocketRequestResponsePair(DAEMON_CELL_PING, DAEMON_CELL_PONG),
+    );
+  }
+
+  #bumpFetchRoute(route: string): void {
+    this.#diag.fetchByRoute[route] = (this.#diag.fetchByRoute[route] ?? 0) + 1;
+    if (this.#isDaemonDebug()) {
+      console.debug(`daemon cell diagnostics: fetchByRoute ${route}`);
+    }
+  }
+
+  #bumpDiag(
+    field:
+      | "wsAccepted"
+      | "wsClosed"
+      | "alarmInvocations"
+      | "heartbeatCount"
+      | "commandDispatchCount"
+      | "cleanupCount",
+  ): void {
+    this.#diag[field] += 1;
+    if (this.#isDaemonDebug()) {
+      console.debug(`daemon cell diagnostics: ${field}`);
+    }
   }
 
   #isDaemonDebug(): boolean {
@@ -263,6 +337,20 @@ export class DaemonCellObject {
     } catch {
       // Column already exists on upgraded DOs.
     }
+    try {
+      this.#ctx.storage.sql.exec(
+        "ALTER TABLE outbox ADD COLUMN retry_count INTEGER DEFAULT 0",
+      );
+    } catch {
+      // Column already exists on upgraded DOs.
+    }
+    try {
+      this.#ctx.storage.sql.exec(
+        "ALTER TABLE outbox ADD COLUMN retry_at TEXT",
+      );
+    } catch {
+      // Column already exists on upgraded DOs.
+    }
     this.#schemaReady = true;
   }
 
@@ -310,6 +398,63 @@ export class DaemonCellObject {
     return null;
   }
 
+  // COST RULE: Every Hyperdrive/postgres.js client opened here MUST be closed
+  // in the finally block. An open outbound connection prevents DO hibernation.
+  async #withProjectionDb(
+    label: string,
+    serverId: string,
+    fn: (db: Db) => Promise<void>,
+  ): Promise<void> {
+    const db = this.#newProjectionDb();
+    if (!db) return;
+    try {
+      await fn(db);
+    } catch (err) {
+      console.error(
+        `daemon cell ${label} projection failed (${serverId}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    } finally {
+      await endDbConnection(db);
+    }
+  }
+
+  #readCellMetaRow(serverId: string): Record<string, SqlStorageValue> | null {
+    const cursor = this.#ctx.storage.sql.exec(
+      "SELECT connected, last_seen_at, agent_json FROM cell_meta WHERE server_id = ?",
+      serverId,
+    );
+    for (const row of cursor) {
+      return row;
+    }
+    return null;
+  }
+
+  /** Gate Postgres work using SQLite state before opening Hyperdrive. */
+  #shouldProjectInbound(
+    serverId: string,
+    at: string,
+    agent?: DaemonAgentInfo,
+  ): boolean {
+    const meta = this.#readCellMetaRow(serverId);
+    const runtimeConnected = meta ? Number(meta.connected ?? 0) === 1 : false;
+    const cellLastSeenAt = meta?.last_seen_at
+      ? String(meta.last_seen_at)
+      : null;
+    const storedAgent = parseAgentJson(
+      meta?.agent_json ? String(meta.agent_json) : null,
+    );
+
+    return inboundHeartbeatProjectionDue({
+      runtimeConnected,
+      cellLastSeenAt,
+      inboundAt: at,
+      storedAgent,
+      incomingAgent: agent,
+    });
+  }
+
   /**
    * Minimal in-process `DaemonCell` facade backed by this cell's own storage so
    * the shared `control-plane-monitor` projection helpers can read/patch the
@@ -328,9 +473,7 @@ export class DaemonCellObject {
     connectedAt: string,
     geo?: ServerGeo,
   ): Promise<void> {
-    const db = this.#newProjectionDb();
-    if (!db) return;
-    try {
+    await this.#withProjectionDb("connect", serverId, async (db) => {
       await onDaemonConnected(
         db,
         serverId,
@@ -342,30 +485,16 @@ export class DaemonCellObject {
       if (this.#isDaemonDebug()) {
         console.debug(`daemon cell projection: connected (${serverId})`);
       }
-    } catch (err) {
-      console.error(
-        `daemon cell connect projection failed (${serverId}): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
+    });
   }
 
   async #projectDisconnected(serverId: string): Promise<void> {
-    const db = this.#newProjectionDb();
-    if (!db) return;
-    try {
+    await this.#withProjectionDb("disconnect", serverId, async (db) => {
       await onDaemonDisconnected(db, serverId, this.#projectionCell(serverId));
       if (this.#isDaemonDebug()) {
         console.debug(`daemon cell projection: disconnected (${serverId})`);
       }
-    } catch (err) {
-      console.error(
-        `daemon cell disconnect projection failed (${serverId}): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
+    });
   }
 
   async #projectUpdateResult(
@@ -375,9 +504,7 @@ export class DaemonCellObject {
     finishedAt: string,
     error?: string,
   ): Promise<void> {
-    const db = this.#newProjectionDb();
-    if (!db) return;
-    try {
+    await this.#withProjectionDb("update-result", serverId, async (db) => {
       await onDaemonUpdateResult(
         db,
         serverId,
@@ -389,13 +516,7 @@ export class DaemonCellObject {
       if (this.#isDaemonDebug()) {
         console.debug(`daemon cell projection: update-result (${serverId})`);
       }
-    } catch (err) {
-      console.error(
-        `daemon cell update-result projection failed (${serverId}): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
+    });
   }
 
   async #projectUpdateExpired(
@@ -404,9 +525,7 @@ export class DaemonCellObject {
     finishedAt: string,
     error?: string,
   ): Promise<void> {
-    const db = this.#newProjectionDb();
-    if (!db) return;
-    try {
+    await this.#withProjectionDb("update-expired", serverId, async (db) => {
       await onDaemonUpdateExpired(
         db,
         serverId,
@@ -417,42 +536,34 @@ export class DaemonCellObject {
       if (this.#isDaemonDebug()) {
         console.debug(`daemon cell projection: update-expired (${serverId})`);
       }
-    } catch (err) {
-      console.error(
-        `daemon cell update-expired projection failed (${serverId}): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
+    });
   }
 
+  // COST RULE: #projectInbound is only called when #shouldProjectInbound returns
+  // true (i.e., the HEARTBEAT_COALESCE_MS window has elapsed or agent changed).
+  // Idle heartbeats update only SQLite cell_meta via #recordInbound and never
+  // open a Hyperdrive connection. Every #withProjectionDb call closes the
+  // connection in its finally block — no outbound socket lingers.
   async #projectInbound(
     serverId: string,
     at?: string,
     agent?: DaemonAgentInfo,
   ): Promise<void> {
-    const db = this.#newProjectionDb();
-    if (!db) return;
-    try {
+    await this.#withProjectionDb("inbound", serverId, async (db) => {
       await onDaemonInbound(
         db,
         serverId,
         this.#projectionCell(serverId),
         { at, agent },
       );
-    } catch (err) {
-      console.error(
-        `daemon cell inbound projection failed (${serverId}): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
+    });
   }
 
   async fetch(request: Request): Promise<Response> {
     this.#ensureSchema();
 
     if (request.headers.get("Upgrade") === "websocket") {
+      this.#bumpFetchRoute("ws-upgrade");
       return await this.#handleWebSocketUpgrade(request);
     }
 
@@ -583,8 +694,9 @@ export class DaemonCellObject {
     const nowMs = Date.now();
     const candidates: number[] = [];
 
-    if (this.#hasDeliverableOutbox() && this.#ctx.getWebSockets().length > 0) {
-      candidates.push(nowMs + OUTBOX_PUMP_ALARM_MS);
+    const outboxPumpAt = this.#nextOutboxPumpAlarmMs(nowMs);
+    if (outboxPumpAt !== null) {
+      candidates.push(outboxPumpAt);
     }
 
     const cleanupAt = this.#nextCleanupAlarmMs(nowMs);
@@ -598,6 +710,46 @@ export class DaemonCellObject {
     }
 
     await this.#ctx.storage.setAlarm(Math.min(...candidates));
+  }
+
+  #nextOutboxPumpAlarmMs(nowMs: number): number | null {
+    if (this.#ctx.getWebSockets().length === 0) return null;
+
+    let next: number | null = null;
+    const bump = (candidateMs: number) => {
+      if (candidateMs <= nowMs) {
+        if (next === null || nowMs < next) next = nowMs;
+        return;
+      }
+      if (next === null || candidateMs < next) next = candidateMs;
+    };
+
+    if (this.#hasDeliverableOutbox(nowMs)) {
+      bump(nowMs);
+    }
+
+    const now = nowIso(nowMs);
+    const retryCursor = this.#ctx.storage.sql.exec(
+      `SELECT retry_at FROM outbox
+       WHERE status = 'queued' AND retry_at IS NOT NULL AND retry_at > ?`,
+      now,
+    );
+    for (const row of retryCursor) {
+      const retryMs = Date.parse(String(row.retry_at ?? ""));
+      if (!Number.isNaN(retryMs)) bump(retryMs);
+    }
+
+    const inflightCursor = this.#ctx.storage.sql.exec(
+      "SELECT sent_at FROM outbox WHERE status = 'inflight' AND sent_at IS NOT NULL",
+    );
+    for (const row of inflightCursor) {
+      const sentMs = Date.parse(String(row.sent_at ?? ""));
+      if (!Number.isNaN(sentMs)) {
+        bump(sentMs + OUTBOX_INFLIGHT_LEASE_MS);
+      }
+    }
+
+    return next;
   }
 
   #nextCleanupAlarmMs(nowMs: number): number | null {
@@ -649,12 +801,39 @@ export class DaemonCellObject {
     return next;
   }
 
-  #hasDeliverableOutbox(): boolean {
+  #hasDeliverableOutbox(nowMs = Date.now()): boolean {
+    const now = nowIso(nowMs);
     const cursor = this.#ctx.storage.sql.exec(
-      `SELECT seq FROM outbox WHERE status IN ('queued', 'inflight') LIMIT 1`,
+      `SELECT seq FROM outbox
+       WHERE status = 'queued' AND (retry_at IS NULL OR retry_at <= ?)
+       LIMIT 1`,
+      now,
     );
     for (const _ of cursor) return true;
     return false;
+  }
+
+  #refreshLivenessFromAutoResponseTimestamps(): void {
+    for (const ws of this.#ctx.getWebSockets()) {
+      const autoTs = this.#ctx.getWebSocketAutoResponseTimestamp(ws);
+      if (!autoTs) continue;
+
+      const attachment = ws.deserializeAttachment() as {
+        serverId: string;
+      } | null;
+      if (!attachment?.serverId) continue;
+
+      const autoAt = autoTs.toISOString();
+      this.#ctx.storage.sql.exec(
+        `UPDATE cell_meta SET last_seen_at = ?, updated_at = ?
+         WHERE server_id = ? AND connected = 1
+         AND (last_seen_at IS NULL OR last_seen_at < ?)`,
+        autoAt,
+        nowIso(),
+        attachment.serverId,
+        autoAt,
+      );
+    }
   }
 
   #requeueExpiredInflightOutbox(nowMs = Date.now()): void {
@@ -667,8 +846,35 @@ export class DaemonCellObject {
   }
 
   #requeueOutbox(deliveryId: string): void {
+    const nowMs = Date.now();
+    const cursor = this.#ctx.storage.sql.exec(
+      "SELECT retry_count FROM outbox WHERE delivery_id = ?",
+      deliveryId,
+    );
+    let retryCount = 0;
+    for (const row of cursor) {
+      retryCount = Number(row.retry_count ?? 0);
+    }
+
+    const nextRetryCount = retryCount + 1;
+    if (nextRetryCount >= OUTBOX_MAX_RETRIES) {
+      this.#ctx.storage.sql.exec(
+        `UPDATE outbox
+         SET status = 'dead', retry_count = ?, retry_at = NULL, sent_at = NULL
+         WHERE delivery_id = ?`,
+        nextRetryCount,
+        deliveryId,
+      );
+      return;
+    }
+
+    const retryAt = nowIso(nowMs + outboxRetryDelayMs(nextRetryCount));
     this.#ctx.storage.sql.exec(
-      `UPDATE outbox SET status = 'queued', sent_at = NULL WHERE delivery_id = ?`,
+      `UPDATE outbox
+       SET status = 'queued', retry_count = ?, retry_at = ?, sent_at = NULL
+       WHERE delivery_id = ?`,
+      nextRetryCount,
+      retryAt,
       deliveryId,
     );
   }
@@ -745,6 +951,7 @@ export class DaemonCellObject {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     this.#ctx.acceptWebSocket(server);
+    this.#bumpDiag("wsAccepted");
 
     if (existingHolder && existingHolder !== connectionId) {
       this.#forceDetachDaemonSocket(serverId, existingHolder);
@@ -900,6 +1107,19 @@ export class DaemonCellObject {
     } | null;
     if (!attachment) return;
 
+    const autoTs = this.#ctx.getWebSocketAutoResponseTimestamp(ws);
+    if (autoTs) {
+      const autoAt = autoTs.toISOString();
+      this.#ctx.storage.sql.exec(
+        `UPDATE cell_meta SET last_seen_at = ?, updated_at = ?
+         WHERE server_id = ? AND (last_seen_at IS NULL OR last_seen_at < ?)`,
+        autoAt,
+        nowIso(),
+        attachment.serverId,
+        autoAt,
+      );
+    }
+
     const raw = typeof message === "string"
       ? message
       : new TextDecoder().decode(message);
@@ -908,27 +1128,37 @@ export class DaemonCellObject {
     if (!parsed) return;
 
     if (parsed.type === "hello") {
-      this.#recordInbound(attachment.serverId, parsed.at, parsed.agent);
-      await this.#projectInbound(
+      this.#bumpDiag("heartbeatCount");
+      const at = parsed.at ?? nowIso();
+      const shouldProject = this.#shouldProjectInbound(
         attachment.serverId,
-        parsed.at ?? nowIso(),
+        at,
         parsed.agent,
       );
+      this.#recordInbound(attachment.serverId, at, parsed.agent);
+      if (shouldProject) {
+        await this.#projectInbound(attachment.serverId, at, parsed.agent);
+      }
       await this.#scheduleNearestAlarm();
       return;
     }
 
     if (parsed.type === "heartbeat") {
+      this.#bumpDiag("heartbeatCount");
+      const at = parsed.at ?? nowIso();
+      const shouldProject = this.#shouldProjectInbound(
+        attachment.serverId,
+        at,
+        parsed.agent,
+      );
       this.#recordInbound(
         attachment.serverId,
-        parsed.at,
+        at,
         parsed.agent,
       );
-      await this.#projectInbound(
-        attachment.serverId,
-        parsed.at ?? nowIso(),
-        parsed.agent,
-      );
+      if (shouldProject) {
+        await this.#projectInbound(attachment.serverId, at, parsed.agent);
+      }
       await this.#scheduleNearestAlarm();
       return;
     }
@@ -957,6 +1187,8 @@ export class DaemonCellObject {
     code: number,
     reason: string,
   ): Promise<void> {
+    this.#bumpDiag("wsClosed");
+    this.#bumpDiag("cleanupCount");
     const attachment = ws.deserializeAttachment() as {
       connectionId: string;
       serverId: string;
@@ -1005,11 +1237,15 @@ export class DaemonCellObject {
   }
 
   async alarm(): Promise<void> {
+    this.#bumpDiag("alarmInvocations");
     this.#ensureSchema();
     const nowMs = Date.now();
     const now = nowIso(nowMs);
     const serverId = this.#resolveServerId(new Request("https://do.internal/"));
 
+    this.#refreshLivenessFromAutoResponseTimestamps();
+
+    const expiringUpdates: Array<{ requestId: string }> = [];
     const expiringCursor = this.#ctx.storage.sql.exec(
       `SELECT request_id, request_kind, status FROM requests
        WHERE expires_at <= ?
@@ -1018,12 +1254,7 @@ export class DaemonCellObject {
       now,
     );
     for (const row of expiringCursor) {
-      if (!serverId) continue;
-      await this.#projectUpdateExpired(
-        serverId,
-        String(row.request_id ?? ""),
-        now,
-      );
+      expiringUpdates.push({ requestId: String(row.request_id ?? "") });
     }
 
     this.#ctx.storage.sql.exec(
@@ -1041,8 +1272,14 @@ export class DaemonCellObject {
       "DELETE FROM outbox WHERE expires_at <= ?",
       now,
     );
+    this.#ctx.storage.sql.exec(
+      "DELETE FROM outbox WHERE status = 'dead'",
+    );
 
+    // Only open a DB client when there are actual demotions or expiring updates.
+    // #withProjectionDb opens and closes the connection in a single call.
     const staleCutoff = nowIso(nowMs - DAEMON_OFFLINE_SWEEP_MS);
+    const staleDemotions: string[] = [];
     const staleCursor = this.#ctx.storage.sql.exec(
       `SELECT server_id FROM cell_meta
        WHERE connected = 1 AND last_seen_at IS NOT NULL AND last_seen_at <= ?`,
@@ -1055,9 +1292,21 @@ export class DaemonCellObject {
         now,
         staleServerId,
       );
+      staleDemotions.push(staleServerId);
       console.info(
         `daemon cell offline transition (${staleServerId}): alarm-stale`,
       );
+    }
+
+    if (serverId && expiringUpdates.length > 0) {
+      await this.#withProjectionDb("alarm-update-expired", serverId, async (db) => {
+        for (const { requestId } of expiringUpdates) {
+          await onDaemonUpdateExpired(db, serverId, requestId, now);
+        }
+      });
+    }
+
+    for (const staleServerId of staleDemotions) {
       await this.#projectDisconnected(staleServerId);
     }
 
@@ -1104,6 +1353,11 @@ export class DaemonCellObject {
   async #handleRpc(request: Request, url: URL): Promise<Response> {
     const path = url.pathname;
     const method = request.method;
+    this.#bumpFetchRoute(path);
+
+    if (path === "/rpc/diagnostics" && method === "GET") {
+      return jsonResponse(this.#diag);
+    }
 
     if (path === "/rpc/snapshot" && method === "GET") {
       const serverId = this.#resolveServerId(request);
@@ -1176,6 +1430,14 @@ export class DaemonCellObject {
             this.#requireServerId(request, body),
             String(body?.requestId ?? ""),
             Number(body?.timeoutMs ?? 0),
+          ),
+        });
+
+      case "/rpc/expire-request":
+        return jsonResponse({
+          record: await this.#expireRequest(
+            this.#requireServerId(request, body),
+            String(body?.requestId ?? ""),
           ),
         });
 
@@ -1360,6 +1622,9 @@ export class DaemonCellObject {
     outbound: DaemonOutboundEnvelope,
     opts?: { ttlSeconds?: number },
   ): Promise<PendingRequestRecord> {
+    if (outbound.kind === "command" || outbound.kind === "command-dispatch") {
+      this.#bumpDiag("commandDispatchCount");
+    }
     const now = Date.now();
     const createdAt = outbound.at ?? nowIso(now);
     const ttlSeconds = opts?.ttlSeconds ?? 300;
@@ -1686,28 +1951,70 @@ export class DaemonCellObject {
   async #waitForRequest(
     serverId: string,
     requestId: string,
-    timeoutMs: number,
+    _timeoutMs: number,
   ): Promise<PendingRequestRecord | null> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const record = await this.#getRequest(serverId, requestId);
-      if (record && isTerminalStatus(record.status)) {
-        if (record.requestKind !== "update") {
-          this.#reclaimTerminalRequest(requestId);
-        }
-        return record;
-      }
-      await scheduler.wait(250);
-    }
-    return null;
+    return await this.#getRequest(serverId, requestId);
   }
 
-  #reclaimTerminalRequest(requestId: string): void {
+  /**
+   * Fast, non-blocking expiry for caller-side wait timeouts. Marks the request
+   * expired, reclaims matching outbox rows, and mirrors Redis parity (update
+   * rows are retained for the terminal retention window; others are purged).
+   */
+  async #expireRequest(
+    serverId: string,
+    requestId: string,
+  ): Promise<PendingRequestRecord> {
+    const finishedAt = nowIso();
+    const existing = await this.#getRequest(serverId, requestId);
+
+    if (existing && isTerminalStatus(existing.status)) {
+      return existing;
+    }
+
+    if (!existing) {
+      return {
+        serverId,
+        requestId,
+        requestKind: "",
+        status: "expired",
+        createdAt: finishedAt,
+        expiresAt: finishedAt,
+        finishedAt,
+      };
+    }
+
+    const requestKind = existing.requestKind;
+    this.#ctx.storage.transactionSync(() => {
+      this.#ctx.storage.sql.exec(
+        `UPDATE requests SET status = 'expired', finished_at = ?, updated_at = ?
+         WHERE request_id = ?`,
+        finishedAt,
+        finishedAt,
+        requestId,
+      );
+      this.#reclaimTerminalOutbox(requestId);
+    });
+
+    const expiredRecord: PendingRequestRecord = {
+      ...existing,
+      status: "expired",
+      finishedAt,
+      expiresAt: finishedAt,
+    };
+
+    if (requestKind === "update") {
+      await this.#projectUpdateExpired(serverId, requestId, finishedAt);
+      await this.#scheduleNearestAlarm();
+      return expiredRecord;
+    }
+
     this.#ctx.storage.sql.exec(
-      `DELETE FROM requests
-       WHERE request_id = ? AND status IN ('acked', 'done', 'failed', 'expired')`,
+      "DELETE FROM requests WHERE request_id = ?",
       requestId,
     );
+    await this.#scheduleNearestAlarm();
+    return expiredRecord;
   }
 
   async #clearUpdateStatus(
@@ -1801,41 +2108,10 @@ export class DaemonCellObject {
     outbound: DaemonOutboundEnvelope,
     timeoutMs: number,
   ): Promise<PendingRequestRecord> {
-    await this.#enqueue(serverId, outbound);
-    const result = await this.#waitForRequest(
-      serverId,
-      outbound.requestId,
-      timeoutMs,
-    );
-    if (result) return result;
-
-    const expiredAt = nowIso();
-    this.#ctx.storage.sql.exec(
-      `UPDATE requests SET status = 'expired', finished_at = ?, updated_at = ?
-       WHERE request_id = ?`,
-      expiredAt,
-      expiredAt,
-      outbound.requestId,
-    );
-    this.#reclaimTerminalOutbox(outbound.requestId);
-    const expiredRecord: PendingRequestRecord = {
-      serverId,
-      requestId: outbound.requestId,
-      requestKind: outbound.kind,
-      status: "expired",
-      createdAt: outbound.at,
-      expiresAt: expiredAt,
-      finishedAt: expiredAt,
-    };
-    if (outbound.kind === "update") {
-      await this.#projectUpdateExpired(
-        serverId,
-        outbound.requestId,
-        expiredAt,
-      );
-    }
-    this.#reclaimTerminalRequest(outbound.requestId);
-    return expiredRecord;
+    const ttlSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+    const record = await this.#enqueue(serverId, outbound, { ttlSeconds });
+    await this.#scheduleNearestAlarm();
+    return record;
   }
 
   async #attachDaemonSocket(
@@ -1979,18 +2255,17 @@ export class DaemonCellObject {
     _serverId: string,
     params: { consumer: string; count: number; blockMs?: number },
   ): Promise<DaemonOutboundEnvelope[]> {
-    if (params.blockMs && params.blockMs > 0) {
-      await scheduler.wait(params.blockMs);
-    }
-
     this.#requeueExpiredInflightOutbox();
 
+    const now = nowIso();
     const envelopes: DaemonOutboundEnvelope[] = [];
     const claimedAt = nowIso();
     this.#ctx.storage.transactionSync(() => {
       const cursor = this.#ctx.storage.sql.exec(
         `SELECT seq, payload_json, delivery_id FROM outbox
-         WHERE status = 'queued' ORDER BY seq ASC LIMIT ?`,
+         WHERE status = 'queued' AND (retry_at IS NULL OR retry_at <= ?)
+         ORDER BY seq ASC LIMIT ?`,
+        now,
         params.count,
       );
       for (const row of cursor) {

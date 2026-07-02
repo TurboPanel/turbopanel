@@ -1,11 +1,13 @@
 import type { Db } from "../../db.ts";
 import type {
   ClearUpdateStatusOptions,
+  CellDiagnostics,
   DaemonCell,
   DaemonCellLease,
   DaemonCellRegistry,
   DaemonCellSnapshot,
   PendingRequestRecord,
+  PendingRequestStatus,
 } from "./contracts.ts";
 import { resolveCellLocationHint } from "./location.ts";
 import { listConnectedServerIdsFromProjection } from "./postgres-projection.ts";
@@ -21,6 +23,28 @@ import type {
 } from "./protocol.ts";
 
 const CELL_SERVER_ID_HEADER = "X-Turbopanel-Cell-Server-Id";
+
+const TERMINAL_REQUEST_STATUSES = new Set<PendingRequestStatus>([
+  "done",
+  "failed",
+  "expired",
+]);
+
+const POLL_BASE_MS = 250;
+const POLL_JITTER_MS = 100;
+
+function isTerminalRequestStatus(status: PendingRequestStatus): boolean {
+  return TERMINAL_REQUEST_STATUSES.has(status);
+}
+
+function jitteredSleep(): Promise<void> {
+  const delay = POLL_BASE_MS + Math.floor(Math.random() * POLL_JITTER_MS);
+  return new Promise((resolve) => setTimeout(resolve, delay));
+}
+
+function nowIso(now = Date.now()): string {
+  return new Date(now).toISOString();
+}
 
 function isOverloadedError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
@@ -243,7 +267,7 @@ class DurableObjectStubDaemonCell implements DaemonCell {
   async getRequest(requestId: string): Promise<PendingRequestRecord | null> {
     const result = await this.#rpc<{ record: PendingRequestRecord | null }>(
       `/rpc/request?requestId=${encodeURIComponent(requestId)}`,
-      { serverId: this.#serverId, method: "GET" },
+      { serverId: this.#serverId, method: "GET", idempotent: true },
     );
     return result.record;
   }
@@ -263,26 +287,48 @@ class DurableObjectStubDaemonCell implements DaemonCell {
     return result.records;
   }
 
+  /**
+   * Worker-side poll loop: each getRequest RPC is a fast DO handler so the
+   * object hibernates between polls.
+   */
   async waitForRequest(
     requestId: string,
     timeoutMs: number,
   ): Promise<PendingRequestRecord | null> {
-    const result = await this.#rpc<{ record: PendingRequestRecord | null }>(
-      "/rpc/wait-request",
-      { serverId: this.#serverId, body: { requestId, timeoutMs } },
-    );
-    return result.record;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const record = await this.getRequest(requestId);
+      if (record && isTerminalRequestStatus(record.status)) {
+        return record;
+      }
+      await jitteredSleep();
+    }
+    return null;
   }
 
+  /**
+   * Enqueue once, then poll getRequest until terminal or deadline. Each poll RPC
+   * is a fast handler; the DO hibernates between calls. When the adapter deadline
+   * elapses, a fast expire RPC persists expiry and reclaims outbox rows.
+   */
   async createRequestAndWait(
     outbound: DaemonOutboundEnvelope,
     timeoutMs: number,
   ): Promise<PendingRequestRecord> {
-    const result = await this.#rpc<{ record: PendingRequestRecord }>(
-      "/rpc/create-and-wait",
-      { serverId: this.#serverId, body: { outbound, timeoutMs } },
+    const ttlSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+    await this.enqueue(outbound, { ttlSeconds });
+    const result = await this.waitForRequest(outbound.requestId, timeoutMs);
+    if (result) return result;
+
+    const expired = await this.#rpc<{ record: PendingRequestRecord }>(
+      "/rpc/expire-request",
+      {
+        serverId: this.#serverId,
+        body: { requestId: outbound.requestId },
+        idempotent: true,
+      },
     );
-    return result.record;
+    return expired.record;
   }
 
   async claimDeliveryLease(
@@ -351,6 +397,14 @@ class DurableObjectStubDaemonCell implements DaemonCell {
       serverId: this.#serverId,
       body: {},
     }).then(() => undefined);
+  }
+
+  getDiagnostics(): Promise<CellDiagnostics> {
+    return this.#rpc<CellDiagnostics>("/rpc/diagnostics", {
+      serverId: this.#serverId,
+      method: "GET",
+      idempotent: true,
+    });
   }
 }
 

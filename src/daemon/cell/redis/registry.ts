@@ -60,6 +60,7 @@ export function createRedisDaemonCellRegistry(
       return new Map(snapshots);
     },
 
+    // Behavioral equivalent of DaemonCellObject.alarm() stale sweep on Workers DOs.
     async maintain(): Promise<void> {
       const serverIds = new Set<string>();
 

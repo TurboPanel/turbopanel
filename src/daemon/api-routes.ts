@@ -1,7 +1,12 @@
 import { Hono } from "hono";
 import type { Context, Next } from "hono";
 import { isInstanceInstalled } from "../client/authn/install-state.ts";
-import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
+import type { DerivedSecretsConfig, SecretsConfig } from "../client/authn/secrets.ts";
+import {
+  decryptSecretForDaemon,
+  isDaemonSealedEnvelope,
+  parseDaemonSecretEnvelope,
+} from "../client/authn/data-encryption.ts";
 import { getDaemonCellRegistry, getDb } from "../db.ts";
 import {
   createStatelessChallengeStore,
@@ -53,10 +58,11 @@ export function registerDaemonApiRoutes(
   options: {
     secrets?: DerivedSecretsConfig;
     challengeSigningSecrets?: DerivedSecretsConfig;
+    secretsConfig?: SecretsConfig;
   } = {},
 ) {
   const daemon = new Hono();
-  const { secrets, challengeSigningSecrets } = options;
+  const { secrets, challengeSigningSecrets, secretsConfig } = options;
   const enrollStore = challengeSigningSecrets
     ? createStatelessChallengeStore(
       challengeSigningSecrets,
@@ -372,6 +378,61 @@ export function registerDaemonApiRoutes(
 
   daemon.post("/commands/lease", requireDaemonJwt, (c) => {
     return c.json({ commands: [] }, 200);
+  });
+
+  const MAX_SECRETS_DECRYPT_BATCH = 100;
+
+  // Recipient-bound daemon envelopes only — JWT sub/kid must match envelope metadata.
+  daemon.post("/secrets/decrypt", requireDaemonJwt, async (c) => {
+    if (!secretsConfig) {
+      return c.json({ ok: false, error: "decryption unavailable" }, 503);
+    }
+
+    const daemonServerId = c.get("daemonServerId") as string;
+    const daemonKeyId = c.get("daemonKeyId") as string;
+
+    const body = await c.req
+      .json<{ ciphertexts?: unknown }>()
+      .catch(() => ({} as { ciphertexts?: unknown }));
+    if (!Array.isArray(body.ciphertexts)) {
+      return c.json({ ok: false, error: "ciphertexts must be an array" }, 400);
+    }
+    if (
+      body.ciphertexts.length === 0 ||
+      body.ciphertexts.length > MAX_SECRETS_DECRYPT_BATCH
+    ) {
+      return c.json(
+        { ok: false, error: `ciphertexts length must be 1-${MAX_SECRETS_DECRYPT_BATCH}` },
+        400,
+      );
+    }
+    if (!body.ciphertexts.every((entry) => typeof entry === "string")) {
+      return c.json({ ok: false, error: "ciphertexts must be strings" }, 400);
+    }
+
+    const recipient = { serverId: daemonServerId, keyId: daemonKeyId };
+
+    const plaintexts = await Promise.all(
+      body.ciphertexts.map(async (ciphertext) => {
+        try {
+          if (!isDaemonSealedEnvelope(ciphertext)) {
+            return null;
+          }
+          const parsed = parseDaemonSecretEnvelope(ciphertext);
+          if (!parsed) {
+            return null;
+          }
+          if (parsed.serverId !== daemonServerId || parsed.keyId !== daemonKeyId) {
+            return null;
+          }
+          return await decryptSecretForDaemon(secretsConfig, recipient, ciphertext);
+        } catch {
+          return null;
+        }
+      }),
+    );
+
+    return c.json({ plaintexts }, 200);
   });
 
   app.route(DAEMON_API_PREFIX, daemon);

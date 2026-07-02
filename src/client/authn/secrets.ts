@@ -104,6 +104,32 @@ export async function deriveKey(
   );
 }
 
+export async function deriveEncryptionKey(
+  rootSecret: string,
+  purpose: string,
+): Promise<CryptoKey> {
+  const keyMaterial = new TextEncoder().encode(rootSecret);
+  const hkdfKey = await crypto.subtle.importKey(
+    "raw",
+    keyMaterial,
+    "HKDF",
+    false,
+    ["deriveKey"],
+  );
+  return crypto.subtle.deriveKey(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: new TextEncoder().encode("turbopanel"),
+      info: new TextEncoder().encode(purpose),
+    },
+    hkdfKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  );
+}
+
 export async function deriveSecretsConfig(
   config: SecretsConfig,
   purpose: string,
@@ -124,5 +150,28 @@ export async function deriveSecretsConfig(
       version: entry.version,
       key: versionedKeys[i + 1],
     })),
+  };
+}
+
+export async function deriveEncryptionSecretsConfig(
+  config: SecretsConfig,
+  purpose: string,
+): Promise<DerivedSecretsConfig> {
+  if (config.versioned.length === 0) {
+    throw new Error(
+      "No signing secret available — configure TURBOPANEL_SECRET or TURBOPANEL_SECRETS",
+    );
   }
+
+  const versionedKeys = await Promise.all(
+    config.versioned.map((entry) => deriveEncryptionKey(entry.value, purpose)),
+  );
+
+  return {
+    current: { version: config.versioned[0].version, key: versionedKeys[0] },
+    fallbacks: config.versioned.slice(1).map((entry, i) => ({
+      version: entry.version,
+      key: versionedKeys[i + 1],
+    })),
+  };
 }

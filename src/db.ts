@@ -58,6 +58,16 @@ export function createToolingDb(): Db {
   return drizzle(client, { schema })
 }
 
+type PostgresJsClient = ReturnType<typeof postgres>
+
+/** Close a drizzle postgres.js pool (no-op for mock/test clients without `$client`). */
+export async function endDbConnection(db: Db): Promise<void> {
+  const client = (db as Db & { $client?: PostgresJsClient }).$client
+  if (client?.end) {
+    await client.end({ timeout: 5 })
+  }
+}
+
 /** Run tooling DB work and close the postgres.js pool so short-lived scripts can exit. */
 export async function withToolingDb<T>(fn: (db: Db) => Promise<T>): Promise<T> {
   const url = getDatabaseUrl()

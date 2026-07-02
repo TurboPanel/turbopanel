@@ -13,7 +13,9 @@
     "generate:secret": "node scripts/generate-secret.mjs",
     "generate": "drizzle-kit generate --config drizzle.config.mjs",
     "migrate": "drizzle-kit migrate --config drizzle.config.mjs",
-    "test:do": "vitest run --config vitest.config.ts"
+    "test:do": "vitest run --config vitest.config.ts",
+    "check:do-hibernation": "node scripts/check-durable-object-hibernation.mjs",
+    "check:do-hibernation:fixtures": "node scripts/check-durable-object-hibernation.mjs --fixtures"
   },
   "dependencies": {
     "amqplib": "^2.0.1",

@@ -1,11 +1,19 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
+import { encryptSecretForDaemon } from '../authn/data-encryption.ts'
+import type { SecretsConfig } from '../authn/secrets.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { getDb } from '../../db.ts'
-import { project, workspace } from '../../lib/db/schema.ts'
+import { getDb, type Db } from '../../db.ts'
+import { environment, managed, project, variable, workspace } from '../../lib/db/schema.ts'
+import {
+  getCatalogEntry,
+  isCreateProjectType,
+  listCatalog,
+  type CatalogEntry,
+} from './catalog/index.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -14,16 +22,74 @@ import {
   parseDisplayName,
   parseDescription,
   parseJsonBody,
+  parseJsonbObject,
   requireStringField,
 } from '../shared.ts'
+import { resolveEnvironmentDaemonRecipient } from '../variables/resolve-environment-daemon.ts'
 import {
   hierarchyDeleteHasChildrenResponse,
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
 
+type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0]
+
+async function scaffoldCatalogEnvironments(
+  tx: DbTx,
+  db: Db,
+  projectId: string,
+  organizationId: string,
+  entry: CatalogEntry,
+  secretsConfig: SecretsConfig,
+) {
+  for (let envIdx = 0; envIdx < entry.environments.length; envIdx++) {
+    const env = entry.environments[envIdx]
+    const [insertedEnv] = await tx
+      .insert(environment)
+      .values({
+        projectId,
+        displayName: env.displayName,
+        description: env.description ?? null,
+        options: env.compose ? { compose: env.compose } : null,
+      })
+      .returning({ id: environment.id })
+
+    if (!env.variables) continue
+
+    const recipient = await resolveEnvironmentDaemonRecipient(
+      db,
+      insertedEnv.id,
+      organizationId,
+    )
+    if (!recipient) {
+      throw new Error('no encryption-capable daemon for catalog environment')
+    }
+
+    for (const v of env.variables) {
+      let storedValue: string | null = v.value
+      if (v.isSecret) {
+        storedValue = await encryptSecretForDaemon(secretsConfig, recipient, v.value)
+      }
+      await tx.insert(variable).values({
+        environmentId: insertedEnv.id,
+        key: v.key,
+        value: storedValue,
+        isSecret: v.isSecret,
+      })
+    }
+  }
+}
+
 export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
   router.use('/projects', createSessionMiddleware(opts.secrets))
   router.use('/projects/:id', createSessionMiddleware(opts.secrets))
+  router.use('/project-catalog', createSessionMiddleware(opts.secrets))
+
+  router.get('/project-catalog', async (c) => {
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+    return c.json({ catalog: listCatalog() })
+  })
 
   router.get('/projects', async (c) => {
     const db = getDb(c)
@@ -59,6 +125,8 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
         displayName: project.displayName,
         description: project.description,
         workspaceId: project.workspaceId,
+        metadata: project.metadata,
+        options: project.options,
         createdAt: project.createdAt,
         updatedAt: project.updatedAt,
       })
@@ -92,6 +160,8 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
         displayName: project.displayName,
         description: project.description,
         workspaceId: project.workspaceId,
+        metadata: project.metadata,
+        options: project.options,
         createdAt: project.createdAt,
         updatedAt: project.updatedAt,
       })
@@ -149,15 +219,134 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Invalid request' }, 400)
     }
 
-    const id = await db.transaction(async (tx) => {
+    const rawType = body.type
+    let projectType: 'blank' | 'template' | 'managed'
+    if (
+      rawType === undefined ||
+      rawType === null ||
+      rawType === '' ||
+      rawType === 'blank'
+    ) {
+      projectType = 'blank'
+    } else if (typeof rawType !== 'string' || !isCreateProjectType(rawType)) {
+      return c.json({ error: 'Invalid request' }, 400)
+    } else {
+      projectType = rawType
+    }
+
+    let catalogEntry: CatalogEntry | undefined
+    if (projectType === 'template' || projectType === 'managed') {
+      const code = body.code
+      if (typeof code !== 'string' || !code) {
+        return c.json({ error: 'Invalid request' }, 400)
+      }
+      catalogEntry = getCatalogEntry(code)
+      if (!catalogEntry || catalogEntry.kind !== projectType) {
+        return c.json({ error: 'Unknown catalog code' }, 400)
+      }
+    }
+
+    const optionsResult = parseJsonbObject(c, body, 'options')
+    if (optionsResult instanceof Response) return optionsResult
+
+    const metadataResult = parseJsonbObject(c, body, 'metadata')
+    if (metadataResult instanceof Response) return metadataResult
+
+    const secretsConfig = c.get('secretsConfig')
+
+    try {
+      const id = await db.transaction(async (tx) => {
+      if (projectType === 'blank') {
+        const [inserted] = await tx
+          .insert(project)
+          .values({
+            displayName,
+            description,
+            workspaceId,
+            ...(metadataResult !== null ? { metadata: metadataResult } : {}),
+            ...(optionsResult !== null ? { options: optionsResult } : {}),
+          })
+          .returning({ id: project.id })
+        return inserted.id
+      }
+
+      const entry = catalogEntry!
+
+      if (!secretsConfig) {
+        throw new Error('encryption unavailable')
+      }
+
+      if (projectType === 'template') {
+        const [inserted] = await tx
+          .insert(project)
+          .values({
+            displayName,
+            description,
+            workspaceId,
+            ...(metadataResult !== null ? { metadata: metadataResult } : {}),
+            options: optionsResult ?? { compose: entry.compose },
+          })
+          .returning({ id: project.id })
+        await scaffoldCatalogEnvironments(
+          tx,
+          db,
+          inserted.id,
+          organizationId,
+          entry,
+          secretsConfig,
+        )
+        return inserted.id
+      }
+
       const [inserted] = await tx
         .insert(project)
-        .values({ displayName, description, workspaceId })
+        .values({
+          displayName,
+          description,
+          workspaceId,
+          metadata: metadataResult ?? { type: 'managed' },
+          options: optionsResult ?? { compose: entry.compose },
+        })
         .returning({ id: project.id })
-      return inserted.id
-    })
 
-    return c.json({ ok: true as const, id })
+      const [managedRow] = await tx
+        .insert(managed)
+        .values({
+          projectId: inserted.id,
+          metadata: { code: entry.code },
+          options: entry.options ?? null,
+        })
+        .returning({ id: managed.id })
+
+      await tx
+        .update(project)
+        .set({ metadata: { type: 'managed', managed_id: managedRow.id } })
+        .where(eq(project.id, inserted.id))
+
+      await scaffoldCatalogEnvironments(
+        tx,
+        db,
+        inserted.id,
+        organizationId,
+        entry,
+        secretsConfig,
+      )
+      return inserted.id
+      })
+
+      return c.json({ ok: true as const, id })
+    } catch (err) {
+    if (err instanceof Error && err.message === 'encryption unavailable') {
+      return c.json({ error: 'Encryption unavailable' }, 503)
+    }
+    if (err instanceof Error && err.message === 'no encryption-capable daemon for catalog environment') {
+      return c.json(
+        { error: 'No encryption-capable daemon assigned to this environment' },
+        422,
+      )
+    }
+    throw err
+    }
   })
 
   router.patch('/projects/:id', async (c) => {
@@ -183,11 +372,22 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    let patchFields: { displayName?: string | null; description?: string | null; updatedAt: string }
+    let patchFields: {
+      displayName?: string | null
+      description?: string | null
+      options?: Record<string, unknown> | null
+      updatedAt: string
+    }
     try {
       patchFields = buildPatchUpdateFields(body)
     } catch {
       return c.json({ error: 'Invalid request' }, 400)
+    }
+
+    const optionsResult = parseJsonbObject(c, body, 'options')
+    if (optionsResult instanceof Response) return optionsResult
+    if (optionsResult !== null) {
+      patchFields.options = optionsResult
     }
 
     await db

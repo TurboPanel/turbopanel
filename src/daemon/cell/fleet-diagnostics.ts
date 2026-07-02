@@ -1,6 +1,10 @@
 import type { Db } from "../../db.ts";
 import { server } from "../../lib/db/schema.ts";
-import type { DaemonCellRegistry, PendingRequestRecord } from "./contracts.ts";
+import type {
+  CellDiagnostics,
+  DaemonCellRegistry,
+  PendingRequestRecord,
+} from "./contracts.ts";
 import {
   type DaemonOutboundEnvelope,
   generateDeliveryId,
@@ -109,4 +113,35 @@ export async function broadcastEchoToFleet(
   );
 
   return sent;
+}
+
+export type FleetCellDiagnosticsEntry = {
+  serverId: string;
+  diagnostics: CellDiagnostics;
+};
+
+export async function collectFleetCellDiagnostics(
+  registry: DaemonCellRegistry,
+  serverIds: string[],
+  opts: { debugEnabled: boolean },
+): Promise<FleetCellDiagnosticsEntry[]> {
+  if (!opts.debugEnabled) return [];
+
+  const results = await Promise.all(
+    serverIds.map(async (serverId) => {
+      try {
+        const cell = registry.getCell(serverId);
+        const getDiagnostics = cell.getDiagnostics;
+        if (!getDiagnostics) return null;
+        const diagnostics = await getDiagnostics.call(cell);
+        return { serverId, diagnostics } as FleetCellDiagnosticsEntry;
+      } catch {
+        return null;
+      }
+    }),
+  );
+
+  return results.filter(
+    (entry): entry is FleetCellDiagnosticsEntry => entry !== null,
+  );
 }

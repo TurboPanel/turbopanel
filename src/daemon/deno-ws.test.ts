@@ -21,6 +21,7 @@ import type {
   DaemonInboundEnvelope,
   DaemonOutboundEnvelope,
 } from "./cell/protocol.ts";
+import { DAEMON_CELL_PING, DAEMON_CELL_PONG } from "./cell/protocol.ts";
 import { issueDaemonJwt } from "./authn/daemon-jwt.ts";
 import { registerDaemonWebSocket } from "./deno-ws.ts";
 import { DAEMON_WS_PATH } from "../surfaces.ts";
@@ -81,8 +82,10 @@ function createProjectionTrackingDb(
   db: Db;
   getDaemon: () => ServerDaemonState;
   getStatus: () => ServerDaemonStatus;
+  getUpdateCallCount: () => number;
 } {
   let daemon = mergeDaemonStatus(initialDaemon, statusOverrides);
+  let updateCalls = 0;
 
   const db = {
     select: () => ({
@@ -94,6 +97,7 @@ function createProjectionTrackingDb(
     }),
     update: () => ({
       set: (patch: Record<string, unknown>) => {
+        updateCalls += 1;
         if (patch.daemon) {
           daemon = patch.daemon as ServerDaemonState;
         }
@@ -108,6 +112,7 @@ function createProjectionTrackingDb(
     db,
     getDaemon: () => daemon,
     getStatus: () => daemon.status ?? buildDefaultDaemonStatus(),
+    getUpdateCallCount: () => updateCalls,
   };
 }
 
@@ -459,6 +464,71 @@ Deno.test("hello over WS calls cell.recordInbound", async () => {
   ws.close(1000, "done");
 });
 
+Deno.test("cell ping over WS sends pong, refreshes cell liveness, skips Postgres", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-cell-ping";
+  const recentAt = new Date().toISOString();
+  const { db, getUpdateCallCount } = createProjectionTrackingDb(serverId, {
+    key: baseDaemonKey,
+    projection: { hostname: "host-1" },
+  }, {
+    connected: true,
+    daemonStatus: "online",
+    lastSeenAt: recentAt,
+    connectedAt: recentAt,
+  });
+  const tracking = createTrackingDaemonCell(serverId);
+  tracking.cell.getSnapshot = async () => ({
+    serverId,
+    version: 1,
+    updatedAt: recentAt,
+    connected: true,
+    lastSeenAt: recentAt,
+    lastInboundAt: recentAt,
+  });
+  const app = new Hono();
+  registerTestDaemonWebSocket(app, secrets, {
+    db,
+    registry: createTrackingRegistry(tracking.cell),
+  });
+
+  const issued = await issueDaemonJwt(
+    { sub: serverId, kid: "key-test" },
+    secrets,
+  );
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${issued.token}`,
+      ...WS_UPGRADE_HEADERS,
+    },
+  });
+  if (response.status !== 101 || !response.webSocket) {
+    console.warn(
+      "Skipping cell ping WS test: response.webSocket unavailable",
+    );
+    return;
+  }
+
+  const ws = response.webSocket;
+  ws.accept();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const updatesBefore = getUpdateCallCount();
+  const recordInboundBefore = tracking.calls.recordInbound;
+
+  const pongPromise = waitForWsJson(ws);
+  ws.send(DAEMON_CELL_PING);
+  const pong = await pongPromise;
+  assertEquals(pong.type, "pong");
+  assertEquals(JSON.stringify(pong), DAEMON_CELL_PONG);
+
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assertEquals(tracking.calls.recordInbound, recordInboundBefore + 1);
+  assertEquals(getUpdateCallCount(), updatesBefore);
+  ws.close(1000, "done");
+});
+
 Deno.test("hello over WS with agent projects commit for update status", async () => {
   const secrets = await createDaemonJwtSecrets();
   const serverId = "srv-heartbeat-agent-ws";
@@ -568,6 +638,68 @@ Deno.test("heartbeat over WS without agent advances status.lastSeenAt in Postgre
   assert(status.lastSeenAt);
   assertEquals(status.lastSeenAt !== stale, true);
   assertEquals(status.connected, true);
+  ws.close(1000, "done");
+});
+
+Deno.test("coalesced heartbeat over WS performs no Postgres update", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-heartbeat-coalesce-ws";
+  const recentAt = new Date().toISOString();
+  const { db, getUpdateCallCount } = createProjectionTrackingDb(serverId, {
+    key: baseDaemonKey,
+    projection: { hostname: "host-1" },
+  }, {
+    connected: true,
+    daemonStatus: "online",
+    lastSeenAt: recentAt,
+    connectedAt: recentAt,
+  });
+  const tracking = createTrackingDaemonCell(serverId);
+  tracking.cell.getSnapshot = async () => ({
+    serverId,
+    version: 1,
+    updatedAt: recentAt,
+    connected: true,
+    lastSeenAt: recentAt,
+    lastInboundAt: recentAt,
+  });
+  const app = new Hono();
+  registerTestDaemonWebSocket(app, secrets, {
+    db,
+    registry: createTrackingRegistry(tracking.cell),
+  });
+
+  const issued = await issueDaemonJwt(
+    { sub: serverId, kid: "key-test" },
+    secrets,
+  );
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${issued.token}`,
+      ...WS_UPGRADE_HEADERS,
+    },
+  });
+  if (response.status !== 101 || !response.webSocket) {
+    console.warn(
+      "Skipping coalesced heartbeat WS test: response.webSocket unavailable",
+    );
+    return;
+  }
+
+  const ws = response.webSocket;
+  ws.accept();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const updatesBefore = getUpdateCallCount();
+
+  ws.send(JSON.stringify({
+    type: "heartbeat",
+    at: new Date(Date.now() + 1000).toISOString(),
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assertEquals(getUpdateCallCount(), updatesBefore);
   ws.close(1000, "done");
 });
 

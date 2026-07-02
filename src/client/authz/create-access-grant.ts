@@ -4,8 +4,10 @@ import {
   grant,
   environment,
   hosting,
+  managed,
   organization,
   project,
+  variable,
   workspace,
   server,
   service,
@@ -145,6 +147,22 @@ export async function verifyEntityExists(
         .limit(1)
       return rows.length > 0
     }
+    case 'managed': {
+      const rows = await db
+        .select({ id: managed.id })
+        .from(managed)
+        .where(eq(managed.id, entityId))
+        .limit(1)
+      return rows.length > 0
+    }
+    case 'variable': {
+      const rows = await db
+        .select({ id: variable.id })
+        .from(variable)
+        .where(eq(variable.id, entityId))
+        .limit(1)
+      return rows.length > 0
+    }
     default:
       return false
   }
@@ -270,6 +288,44 @@ export async function resolveEntityOrganizationId(
         .where(eq(server.id, entityId))
         .limit(1)
       return rows[0]?.organizationId ?? null
+    }
+    case 'managed': {
+      const rows = await db.execute<{ organization_id: string }>(sql`
+        SELECT w.organization_id
+        FROM managed m
+        JOIN project p ON p.id = m.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE m.id = ${entityId}::uuid
+        LIMIT 1
+      `)
+      return rows[0]?.organization_id ?? null
+    }
+    case 'variable': {
+      const rows = await db.execute<{ organization_id: string }>(sql`
+        SELECT CASE
+          WHEN v.organization_id IS NOT NULL THEN v.organization_id
+          WHEN v.workspace_id IS NOT NULL THEN w.organization_id
+          WHEN v.project_id IS NOT NULL THEN pw.organization_id
+          WHEN v.environment_id IS NOT NULL THEN ew.organization_id
+          WHEN v.service_id IS NOT NULL THEN sw.organization_id
+          WHEN v.server_id IS NOT NULL THEN sv.organization_id
+        END AS organization_id
+        FROM variable v
+        LEFT JOIN workspace w ON w.id = v.workspace_id
+        LEFT JOIN project p ON p.id = v.project_id
+        LEFT JOIN workspace pw ON pw.id = p.workspace_id
+        LEFT JOIN environment e ON e.id = v.environment_id
+        LEFT JOIN project ep ON ep.id = e.project_id
+        LEFT JOIN workspace ew ON ew.id = ep.workspace_id
+        LEFT JOIN service s ON s.id = v.service_id
+        LEFT JOIN environment se ON se.id = s.environment_id
+        LEFT JOIN project sp ON sp.id = se.project_id
+        LEFT JOIN workspace sw ON sw.id = sp.workspace_id
+        LEFT JOIN server sv ON sv.id = v.server_id
+        WHERE v.id = ${entityId}::uuid
+        LIMIT 1
+      `)
+      return rows[0]?.organization_id ?? null
     }
     default:
       return null

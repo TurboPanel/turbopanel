@@ -1,6 +1,10 @@
 import type { Hono } from 'hono'
 import { configurePbkdf2Iterations } from './client/authn/password.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from './client/authn/secrets.ts'
+import {
+  deriveEncryptionSecretsConfig,
+  deriveSecretsConfig,
+  parseSecretsEnv,
+} from './client/authn/secrets.ts'
 import { createApp } from './app.ts'
 import { createDenoDb } from './db.ts'
 import { logInfo, logWarn } from './logger.ts'
@@ -107,6 +111,7 @@ const secretsConfig = parseSecretsEnv(
 const sessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
 const daemonJwtSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-jwt-signing')
 const challengeSigningSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-challenge-signing')
+const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(secretsConfig, 'data-encryption')
 const daemonCellRegistry = createRedisDaemonCellRegistry({ db })
 const queryCache = createRedisQueryCache({ client: daemonCellRegistry.client, db })
 
@@ -145,6 +150,8 @@ const app = createApp({
   baseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? undefined,
   daemonCellRegistry,
   queryCache,
+  dataEncryptionSecrets,
+  secretsConfig,
 })
 const routes = app as unknown as Hono
 routes.use('*', (c, next) => {
@@ -162,6 +169,7 @@ if (developerSurface) {
 registerDaemonApiRoutes(routes, {
   secrets: daemonJwtSecrets,
   challengeSigningSecrets,
+  secretsConfig,
 })
 registerVersionRoute(routes)
 if (developerSurface) {
@@ -184,6 +192,9 @@ registerAdminRoutes(routes, {
 const socketPath = resolveInstanceSocket()
 
 const abort = new AbortController()
+// Deno process timer (not a Durable Object) — cost-safe. maintain() is the Redis
+// equivalent of the DO alarm() stale sweep; sweepStalePresence mirrors offline
+// demotion. Liveness uses Redis key TTLs (registry.maintain) rather than WS auto-response.
 const maintenanceTimer = setInterval(() => {
   void daemonCellRegistry.maintain().catch((err) => {
     logWarn('daemon-cell', `maintenance error: ${String(err)}`)

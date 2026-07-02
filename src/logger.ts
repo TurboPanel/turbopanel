@@ -7,7 +7,7 @@ function readEnv(name: string): string | undefined {
   return process.env[name]
 }
 
-const DAEMON_DEBUG_ENABLED =
+const LOG_DEBUG_ENABLED =
   readEnv('TURBOPANEL_DAEMON_DEBUG') === '1' ||
   readEnv('TURBOPANEL_DAEMON_DEBUG') === 'true' ||
   readEnv('TURBOPANEL_LOG_LEVEL') === 'debug'
@@ -63,8 +63,15 @@ export function logInfo(component: string, ...parts: unknown[]): void {
   log('INFO', component, ...parts)
 }
 
+export function isDaemonDebugEnabled(
+  env?: { TURBOPANEL_DAEMON_DEBUG?: string },
+): boolean {
+  const value = env?.TURBOPANEL_DAEMON_DEBUG ?? readEnv('TURBOPANEL_DAEMON_DEBUG')
+  return value === '1' || value === 'true'
+}
+
 export function logDebug(component: string, ...parts: unknown[]): void {
-  if (!DAEMON_DEBUG_ENABLED) return
+  if (!LOG_DEBUG_ENABLED) return
   log('DEBUG', component, ...parts)
 }
 
@@ -74,7 +81,7 @@ export function daemonCellLog(
   connectionId: string | undefined,
   message: string,
 ): void {
-  if (level === 'DEBUG' && !DAEMON_DEBUG_ENABLED) return
+  if (level === 'DEBUG' && !isDaemonDebugEnabled()) return
   const conn = connectionId ?? 'unknown'
   log(
     level,

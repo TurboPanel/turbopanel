@@ -24,6 +24,7 @@ export default defineWorkersConfig({
       'src/lib/daemon-install-command.test.ts',
       'src/lib/settings/email-settings.test.ts',
       'src/client/authn/install-state.test.ts',
+      'src/client/authn/data-encryption.test.ts',
       'mailer/rate-limiter.test.ts',
     ],
     poolOptions: {

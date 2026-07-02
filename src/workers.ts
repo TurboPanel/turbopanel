@@ -1,7 +1,11 @@
 import { Hono } from 'hono'
 import type { DerivedSecretsConfig } from './client/authn/secrets.ts'
 import { configurePbkdf2Iterations } from './client/authn/password.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from './client/authn/secrets.ts'
+import {
+  deriveEncryptionSecretsConfig,
+  deriveSecretsConfig,
+  parseSecretsEnv,
+} from './client/authn/secrets.ts'
 import { createApp, type AppEnv } from './app'
 import { createDurableObjectDaemonCellRegistry } from './daemon/cell/do-registry.ts'
 import { registerAdminRoutes } from './admin/routes.ts'
@@ -31,6 +35,8 @@ let cachedApp: ReturnType<typeof createApp> | null = null
 let cachedSessionSecrets: DerivedSecretsConfig | null = null
 let cachedDaemonJwtSecrets: DerivedSecretsConfig | null = null
 let cachedChallengeSigningSecrets: DerivedSecretsConfig | null = null
+let cachedDataEncryptionSecrets: DerivedSecretsConfig | null = null
+let cachedSecretsConfig: ReturnType<typeof parseSecretsEnv> | null = null
 let cachedEmailQueue: EmailQueue | null = null
 let cachedCommandQueue: CommandQueue | null = null
 let cachedDaemonCellRegistryFactory:
@@ -45,9 +51,11 @@ async function initWorkerApp(env: CloudflareBindings) {
     env.TURBOPANEL_SECRETS,
     'workers',
   )
+  cachedSecretsConfig = secretsConfig
   cachedSessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   cachedDaemonJwtSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-jwt-signing')
   cachedChallengeSigningSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-challenge-signing')
+  cachedDataEncryptionSecrets = await deriveEncryptionSecretsConfig(secretsConfig, 'data-encryption')
   const platformEnv = stringBindingEnv(env)
   const db = resolveWorkersDb(env)
   // Workers Mailgun path sends directly (no AMQP/RabbitMQ). Cloudflare Workers provides
@@ -67,10 +75,13 @@ async function initWorkerApp(env: CloudflareBindings) {
     corsOrigins: env.TURBOPANEL_UI_CORS_ORIGINS,
     signupEnvOverride: env.TURBOPANEL_IS_SIGNUP_ENABLED,
     emailFrom: emailSettings.from,
+    dataEncryptionSecrets: cachedDataEncryptionSecrets ?? undefined,
+    secretsConfig: cachedSecretsConfig ?? undefined,
   })
   registerDaemonApiRoutes(cachedApp, {
     secrets: cachedDaemonJwtSecrets ?? undefined,
     challengeSigningSecrets: cachedChallengeSigningSecrets ?? undefined,
+    secretsConfig: cachedSecretsConfig ?? undefined,
   })
   registerWorkersDaemonWebSocket(cachedApp, {
     secrets: cachedDaemonJwtSecrets ?? undefined,

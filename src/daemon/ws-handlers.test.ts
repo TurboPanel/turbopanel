@@ -213,3 +213,94 @@ Deno.test(
     );
   }),
 );
+
+function stripCommentsAndStrings(source: string): string {
+  let out = "";
+  let i = 0;
+  const len = source.length;
+
+  while (i < len) {
+    const ch = source[i];
+    const next = source[i + 1];
+
+    if (ch === "/" && next === "/") {
+      i += 2;
+      while (i < len && source[i] !== "\n") i += 1;
+      continue;
+    }
+
+    if (ch === "/" && next === "*") {
+      i += 2;
+      while (i < len - 1 && !(source[i] === "*" && source[i + 1] === "/")) {
+        i += 1;
+      }
+      i += 2;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      const quote = ch;
+      i += 1;
+      while (i < len) {
+        if (source[i] === "\\") {
+          i += 2;
+          continue;
+        }
+        if (source[i] === quote) {
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      out += " ";
+      continue;
+    }
+
+    if (ch === "`") {
+      i += 1;
+      while (i < len) {
+        if (source[i] === "\\") {
+          i += 2;
+          continue;
+        }
+        if (source[i] === "`") {
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      out += " ";
+      continue;
+    }
+
+    out += ch;
+    i += 1;
+  }
+
+  return out;
+}
+
+Deno.test("do.ts source stays hibernation-safe (no timers or server.accept)", async () => {
+  const doPath = new URL("./cell/do.ts", import.meta.url);
+  const source = await Deno.readTextFile(doPath);
+  const stripped = stripCommentsAndStrings(source);
+
+  assertEquals(/\bsetInterval\b/.test(stripped), false);
+  assertEquals(/\bsetTimeout\b/.test(stripped), false);
+  assertEquals(/\bscheduler\.wait\b/.test(stripped), false);
+  assertEquals(/\bserver\.accept\s*\(/.test(stripped), false);
+  assertEquals(/\bacceptWebSocket\b/.test(stripped), true);
+});
+
+Deno.test("do-registry and workers-ws use stable getByName DO ids", async () => {
+  const registryPath = new URL("./cell/do-registry.ts", import.meta.url);
+  const workersWsPath = new URL("./workers-ws.ts", import.meta.url);
+
+  for (const filePath of [registryPath, workersWsPath]) {
+    const source = await Deno.readTextFile(filePath);
+    const stripped = stripCommentsAndStrings(source);
+    assertEquals(/\bgetByName\s*\(/.test(stripped), true);
+    assertEquals(/\bnewUniqueId\s*\(/.test(stripped), false);
+    assertEquals(/\bidFromName\s*\(/.test(stripped), false);
+  }
+});

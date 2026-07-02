@@ -8,6 +8,20 @@ import type {
 
 export type DaemonCellBackend = "durable-object" | "redis";
 
+/** In-memory cell counters — zero I/O, no storage writes. */
+export type CellDiagnostics = {
+  backend: DaemonCellBackend;
+  usesHibernationWebSocket: boolean;
+  constructorCalls: number;
+  wsAccepted: number;
+  wsClosed: number;
+  alarmInvocations: number;
+  heartbeatCount: number;
+  commandDispatchCount: number;
+  cleanupCount: number;
+  fetchByRoute: Record<string, number>;
+};
+
 export type DaemonCellLease = {
   holder: string;
   token: string;
@@ -90,11 +104,6 @@ export type ExpiredUpdateRequest = {
   finishedAt: string;
 };
 
-export type ExpiredUpdateRequest = {
-  requestId: string;
-  finishedAt: string;
-};
-
 export type ClearUpdateStatusOptions = {
   /** When true, expire or clear non-terminal updates that are stale. */
   allowStale?: boolean;
@@ -117,20 +126,11 @@ export type ClearUpdateStatusOptions = {
  * The DaemonCell is NOT a status read API. Status reads go through the
  * server status read model (server-status.ts / fleet-presence.ts) backed by Postgres.
  * Any new DaemonCell RPC must justify why it cannot be served from Postgres or the normal API.
- */
-/**
- * DaemonCell — the live daemon connection owner.
  *
- * Vocabulary:
- *   DaemonCell         = live connection owner (one per serverId)
- *   DaemonCellRegistry = factory/registry for DaemonCell instances
- *   Implementations:
- *     Workers → DaemonCellObject (SQLite-backed Durable Object, do.ts)
- *     Deno    → RedisDaemonCell (Redis-backed, redis/cell.ts)
- *
- * The DaemonCell is NOT a status read API. Status reads go through the
- * server status read model (server-status.ts / fleet-presence.ts) backed by Postgres.
- * Any new DaemonCell RPC must justify why it cannot be served from Postgres or the normal API.
+ * {@link waitForRequest} and {@link createRequestAndWait} use a non-blocking backend
+ * contract: implementations enqueue/persist and return quickly; the caller-side adapter
+ * (worker isolate for Durable Objects, Deno process for Redis) performs polling until
+ * terminal status or deadline.
  */
 export interface DaemonCell {
   attachDaemonSocket(meta: {
@@ -206,6 +206,9 @@ export interface DaemonCell {
   /** Drop terminal update request rows so org update status can be cleared manually. */
   clearUpdateStatus(opts?: ClearUpdateStatusOptions): Promise<{ cleared: number }>;
   purge(): Promise<void>;
+
+  /** Optional — real backends expose in-memory counters; test mocks may omit. */
+  getDiagnostics?(): Promise<CellDiagnostics>;
 }
 
 export interface DaemonCellRegistry {

@@ -161,6 +161,10 @@ export const DAEMON_INBOUND_ALLOWED = new Set(
   ] as const,
 );
 
+/** Auto-response ping/pong pair — handled by the runtime without waking the DO. */
+export const DAEMON_CELL_PING = '{"type":"ping"}';
+export const DAEMON_CELL_PONG = '{"type":"pong"}';
+
 /** Per-outbox-entry identity for queue send/ack/resend semantics. */
 export type OutboxDeliveryId = string;
 

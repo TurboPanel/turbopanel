@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import type { SessionData } from './client/authn/session-store.ts'
-import type { DerivedSecretsConfig } from './client/authn/secrets.ts'
+import type { DerivedSecretsConfig, SecretsConfig } from './client/authn/secrets.ts'
 import { registerClientRoutes } from './client/routes.ts'
 import { registerCorsMiddleware } from './cors.ts'
 import type { DaemonCellRegistry } from './daemon/cell/contracts.ts'
@@ -25,6 +25,10 @@ export type AppEnv = {
     queryCache?: QueryCache
     /** Platform env bindings for settings resolution (Workers per-request; Deno process env). */
     platformEnv?: Record<string, string | undefined>
+    /** AES-GCM data encryption keys (client routes encrypt only). */
+    dataEncryptionSecrets?: DerivedSecretsConfig
+    /** Root secret config for per-daemon recipient sealing. */
+    secretsConfig?: SecretsConfig
   }
 }
 
@@ -41,6 +45,8 @@ export function createApp(
     signupEnvOverride,
     daemonCellRegistry,
     queryCache,
+    dataEncryptionSecrets,
+    secretsConfig,
   }: {
     db?: Db
     emailQueue?: EmailQueue
@@ -53,6 +59,8 @@ export function createApp(
     signupEnvOverride?: SignupEnvOverride
     daemonCellRegistry?: DaemonCellRegistry
     queryCache?: QueryCache
+    dataEncryptionSecrets?: DerivedSecretsConfig
+    secretsConfig?: SecretsConfig
   } = {},
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>()
@@ -91,6 +99,18 @@ export function createApp(
     app.use('*', (c, next) => {
       if (emailFrom) c.set('emailFrom', emailFrom)
       if (baseUrl) c.set('baseUrl', baseUrl)
+      return next()
+    })
+  }
+  if (dataEncryptionSecrets) {
+    app.use('*', (c, next) => {
+      c.set('dataEncryptionSecrets', dataEncryptionSecrets)
+      return next()
+    })
+  }
+  if (secretsConfig) {
+    app.use('*', (c, next) => {
+      c.set('secretsConfig', secretsConfig)
       return next()
     })
   }

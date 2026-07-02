@@ -230,7 +230,9 @@ Four versioned surfaces each have REST + WS namespaces (where applicable). Prefi
 
 > **Cost warning:** Durable Objects and Redis are scarce, billable, and cost-sensitive resources. Keep the cell lean — it owns live connection state and projects meaningful changes to Postgres; never use DOs/Redis as UI polling or read APIs. Never fan one dashboard page into one DO/Redis request per server; use Postgres/Hyperdrive for cheap status reads. Avoid heartbeat write amplification and per-viewer cell invocations. Any new cell RPC must justify why Postgres, cache, or a normal API cannot serve the use case. TurboPanel is bootstrapped and must protect Cloudflare costs aggressively.
 
-> **Parity:** Workers (Durable Object) and self-hosted (Redis) must keep daemon-cell behavior identical. DO and Redis are implementation details only — the user-facing API and status semantics are the same on both runtimes.
+> **Durable Object hibernation (Workers):** DO GB‑sec billing explodes when the object stays awake. **Never** use `setInterval` / `setTimeout` / `scheduler.wait` inside the cell — schedule work with `ctx.storage.setAlarm()` only (stale-sweep, outbox pump, request expiry). **Never** use standard `server.accept()` — attach with `ctx.acceptWebSocket()` and the hibernation WebSocket API so idle sockets do not keep the DO hot. **Never** run polling loops, long-running `await`s, or unresolved promises inside DO handlers; finish each RPC quickly and return so the object can hibernate. **Always** close outbound Hyperdrive/postgres.js connections in a `finally` block — an open DB socket prevents hibernation. **One stable DO id per server** via `getByName(serverId)` — never `newUniqueId()` / `idFromName()` per attach. Heartbeat Postgres projection is throttled (≤ once/60 s for `lastSeenAt`; steady-state heartbeats skip DB entirely). Enforced in `src/daemon/cell/do.ts` (banner + `#withProjectionDb`) and `src/daemon/ws-handlers.test.ts` (source scan).
+
+> **Parity:** Cloudflare Workers (Durable Object) mode and self-hosted Deno/Redis mode must keep behavioral parity. DO and Redis are implementation details only — the user-facing API and status semantics are the same on both runtimes.
 
 Server nodes are tracked by a **Daemon Cell** abstraction keyed by `serverId`. There is no in-process daemon state — connection presence, snapshots, outbox, and pending request records live in the cell backend.
 
@@ -243,7 +245,7 @@ Postgres remains canonical for business data (`server`). The cell is the low-lat
 
 **Postgres status read model:** `server.daemon.status` jsonb holds the UI/API liveness read model. Default status reads are Postgres-only (no read-time `getSnapshots`): `GET /api/client/v1/servers`, `GET /api/client/v1/servers/status`, and `GET /api/client/v1/servers/:id/status`. `GET /api/client/v1/servers/:id/cell` is admin/debug-only and reads live cell snapshots (`withSnapshots: true`).
 
-**Presence model:** daemons send `{ type: "hello", at, agent }` once on connect, then `{ type: "heartbeat", at }` only when idle (no other WS traffic for 60 s). Clean disconnects mark offline immediately via attach/close; silent failures are detected by the offline sweep (DO `alarm()` / Redis `maintain()` at `DAEMON_OFFLINE_SWEEP_MS`), not at read time. `DaemonCellSnapshot` holds `connected`, `connectedAt`, `lastInboundAt`, `lastSeenAt`, and optional `agent`.
+**Presence model:** daemons send `{ type: "hello", at, agent }` once on connect. After ~60 s of inbound silence they send the wire cell ping (`DAEMON_CELL_PING`); app-level `{ type: "heartbeat", at }` follows only when the agent commit changed. Clean disconnects mark offline immediately via attach/close; silent failures are detected by the offline sweep (DO `alarm()` / Redis `maintain()` at `DAEMON_OFFLINE_SWEEP_MS`), not at read time. `DaemonCellSnapshot` holds `connected`, `connectedAt`, `lastInboundAt`, `lastSeenAt`, and optional `agent`.
 
 **Sparse Postgres projection:** connect/disconnect/missed-heartbeat transitions and debounced heartbeats (≤ once/60 s for `lastSeenAt`) project to `server.daemon.status` via `onDaemonConnected` / `onDaemonDisconnected` / `onDaemonHeartbeat` (`control-plane-monitor.ts` → `postgres-projection.ts`). Agent identity from `hello` is stored on `server.daemon.projection`. `ServerFleetPresence` in `server-status.ts` exposes the read model for routes.
 
@@ -251,25 +253,32 @@ Postgres remains canonical for business data (`server`). The cell is the low-lat
 
 **Cheap fleet index:** `listOnlineServerIds()` reads the Redis online set (Deno) or the sparse `server.daemon.projection.connected` field (Workers) — it does not fan out across all cells.
 
-**WS upgrade flow:** JWT verified in the main isolate/process → cell `attachDaemonSocket` acquires the single-writer lease → outbox pump loop (`readOutboxBatch` → `ws.send` → `ackOutbox`) runs until close → `detachDaemonSocket` releases the lease.
+**WS upgrade flow:** JWT verified in the main isolate/process → cell `attachDaemonSocket` acquires the single-writer lease → outbox delivery is alarm-scheduled (`#pumpOutboxToDaemonSockets`; not a perpetual in-DO loop) → `detachDaemonSocket` releases the lease on close.
 
 **Co-located daemon** (`__direct__`): stored in cell meta (`remoteAddress = '__direct__'`) so `tryAssignColocatedDaemonToInstalledOrganization` and tunnel routing still work.
 
 **Challenge stores:** enrollment and auth challenges are **stateless HMAC-signed tokens** (`src/daemon/cell/stateless-challenge.ts`). `issue()` returns a self-contained `challengeId = base64url(payload).base64url(HMAC)` signed with the `daemon-challenge-signing` derived key. `consume()` re-derives and verifies — no storage, no DO, no Redis key. Replay protection relies on the short TTL (60s) and the daemon's Ed25519 private key requirement.
 
-**`DAEMON_INBOUND_ALLOWED`** is defined in `src/daemon/cell/protocol.ts` (not `hub.ts`). App-level `ping`/`pong` messages were removed — liveness is hello-on-connect plus idle heartbeat when quiet.
+**`DAEMON_INBOUND_ALLOWED`** is defined in `src/daemon/cell/protocol.ts` (not `hub.ts`).
+
+**Auto-response liveness (cell ping):** the DO registers `setWebSocketAutoResponse(DAEMON_CELL_PING → DAEMON_CELL_PONG)` in its constructor (`protocol.ts` constants). The runtime answers `{type:"ping"}` with `{type:"pong"}` **without waking the DO** — this is the primary idle liveness path on Workers. The daemon's `IdlePresence` sends that wire ping after ~60 s of inbound silence; app-level `{type:"heartbeat"}` is reserved for agent-commit changes only (see daemon `AGENTS.md`). Redis parity relies on the same wire ping updating `lastSeenAt` in cell meta.
+
+**Enqueue-then-poll request contract:** correlated outbound work (dev-sync, tunnel-token, public-urls apply, command dispatch) uses `createRequestAndWait` / `waitForRequest` on `DaemonCell`. The backend **enqueues once and returns immediately** — it must not block inside the DO or Redis cell. The **caller-side adapter** polls `getRequest(requestId)` until the `PendingRequestRecord` reaches a terminal status or the deadline (`do-registry.ts` jittered sleep on Workers; `redis/cell.ts` `setTimeout` poll in the Deno process — cost-safe there because there is no DO billing). On Workers, `#waitForRequest` inside `do.ts` is intentionally single-shot (current row only); long waits happen in the worker isolate so the DO hibernates between RPCs. Command consumer (`src/lib/commands/consumer.ts`) follows the same pattern after outbox enqueue.
 
 **Purge:** `DELETE /api/client/v1/servers/:id` hard-deletes the Postgres row and calls `DaemonCell.purge()` to wipe all `tp:cell:{serverId}:*` keys (Redis) or DO SQLite state (Workers).
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
 | `POST /api/daemon/v1/commands/lease` | daemon JWT | Poll for pending commands (stub — returns `{ commands: [] }`) |
+| `POST /api/daemon/v1/secrets/decrypt` | daemon JWT | Batch-decrypt `tpsecret.v1` envelopes (`{ ciphertexts }` → `{ plaintexts }`; null per failed entry) |
 
 - No `version` push / auto-update: the daemon never self-updates.
 
 ## Command Pipeline
 
-Commands are canonical in Postgres (`command` table). Queues are transport only — Cloudflare Queues on Workers, RabbitMQ on Deno. The Daemon Cell is live delivery, presence, and request correlation only. Durable Objects must stay lean and cost-controlled. Never build general queues inside Durable Objects. Maintain Workers/Deno parity for every command feature. Production daemon commands must be typed handlers — never arbitrary shell strings.
+Commands are canonical in Postgres (`command` table). Queues are transport only — Cloudflare Queues on Workers, RabbitMQ on Deno. The Daemon Cell is live delivery, presence, and request correlation only.
+
+> **Cost / hibernation:** the command consumer enqueues a `command-dispatch` envelope into the cell outbox, then **polls** `waitForRequest` from the worker/Deno process — it never blocks inside the Durable Object. Do not add timers, polling loops, or long-lived promises inside `DaemonCellObject`; do not hold Hyperdrive connections open across handler returns. Never build general command queues inside Durable Objects — Cloudflare Queues / RabbitMQ own durable transport; the cell owns only the live WS outbox + pending-request row. Cloudflare Workers (Durable Object) mode and self-hosted Deno/Redis mode must keep behavioral parity for every command feature. Production daemon commands must be typed handlers — never arbitrary shell strings.
 
 | Status | Meaning |
 |---|---|
@@ -336,7 +345,7 @@ DB helpers: `src/lib/db/command-records.ts` — `createCommandRecord`, `getComma
 
 `POST /api/developer/v1/instance/tunnel-token` (`src/developer/tunnel-routes.ts`) sends a `tunnel-token` WS message to the co-located daemon, which writes `cloudflared/tunnels/instance.token` and (re)starts cloudflared. External remote daemons then reach this instance via the tunnel → Caddy → socket. Dev console: **Save Tunnel Token** in the fleet section (empty token tears it down).
 
-Correlated request/ack helpers (`awaitDaemonAck` / `recordDaemonAck`) back both dev-sync and tunnel-token.
+Correlated outbound work uses `createRequestAndWait` / `waitForRequest` (see **Enqueue-then-poll request contract** above) for dev-sync, tunnel-token, and public-urls apply.
 
 ### Public URL apply
 
@@ -420,7 +429,7 @@ Superadmin-only routes (`createRootOnlyMiddleware`, `resolveRootSession`) author
 
 #### Session secret configuration
 
-Both runtimes read the same root secret env vars; `deriveSecretsConfig()` HKDF-derives purpose-specific keys (e.g. `session-signing`) from the root material.
+Both runtimes read the same root secret env vars; `deriveSecretsConfig()` HKDF-derives purpose-specific HMAC keys (e.g. `session-signing`, `daemon-jwt-signing`, `daemon-challenge-signing`) from the root material. `deriveEncryptionSecretsConfig()` derives parallel AES-256-GCM keys (e.g. `data-encryption`) using the same HKDF salt/info pattern with `{ name: "AES-GCM", length: 256 }`.
 
 | Variable | Behaviour when missing |
 |---|---|
@@ -437,6 +446,12 @@ Both runtimes read the same root secret env vars; `deriveSecretsConfig()` HKDF-d
 At least one of `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` must be set in production. Workers always fail fast when both are missing. Deno co-located dev (`TURBOPANEL_UI_MODE` ≠ `static`) may use an ephemeral random key as a warning-only fallback.
 
 Add a `TURBOPANEL_SECRET` to `dev/.env` before running `pnpm dev` (Tilt syncs it to `instance/.dev.vars` — see `dev/.env.example`).
+
+#### Data encryption
+
+Shared symmetric encryption for multi-server secret storage, keyed off the same root secret via HKDF (`info: "data-encryption"` → AES-256-GCM). Envelope format: `tpsecret.v1.<keyVersion>.<ivB64u>.<ciphertextWithTagB64u>`. The embedded `keyVersion` enables direct lookup against `DerivedSecretsConfig.current` / `.fallbacks` during rotation — no trial decryption. Values not starting with `tpsecret.` are treated as legacy plaintext; callers re-encrypt on next write (lazy migration; no bulk re-encrypt of existing data).
+
+**Boundary:** client/UI code imports only `encryptSecret` (`src/client/authn/data-encryption.ts`); decryption is exposed solely through `POST /api/daemon/v1/secrets/decrypt` on the daemon surface (daemon JWT). The symmetric key never leaves the instance — remote daemons request decryption over their authenticated channel. Any valid daemon JWT may decrypt any envelope today (org scoping is a future hardening option).
 
 **CORS (Scalar / docs site):** when `TURBOPANEL_UI_CORS_ORIGINS` is set (comma-separated browser origins), `src/cors.ts` reflects matching `Origin` headers on API responses. Co-located dev injects `http://localhost:{WEBSITE_PORT}` and `http://127.0.0.1:{WEBSITE_PORT}` via `instance-launch` on the Deno instance unit (and Workers `.dev.vars` when `turbopanel_instance_runtime=workers`) so the docs site can fetch OpenAPI through Caddy cross-origin. Cloudflare Workers production/testing set matching website origins in `wrangler.jsonc` (`live`: `https://turbopanel.io`; `testing`: `https://testing.turbopanel.io`).
 
@@ -467,6 +482,18 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `POST` | `/api/client/v1/access` | Create an access grant; body accepts `{ subjectKind, subjectId, resourceId, effect, permissionKey }` where `permissionKey` is required and must be from the four-value catalog |
 | `DELETE` | `/api/client/v1/access/{id}` | Revoke a `grant` row; requires `organization:own` on the grant's target resource |
 | `GET` | `/api/client/v1/workspaces` | List workspaces visible via `listVisible` (org-level `organization:own` / `organization:manage` grants); full CRUD table in `src/lib/db/AGENTS.md` |
+| `GET` | `/api/client/v1/project-catalog` | Session required: UI-safe project catalog summaries (`code`, `kind`, `displayName`, `description`); static code-bundled list — no compose internals or secret default values |
+| `POST` | `/api/client/v1/projects` | Create project in a workspace; optional `type` (`blank` \| `template` \| `managed`, default blank) and `code` (required for template/managed from catalog); managed type inserts a `managed` row, sets `project.metadata.managed_id`, scaffolds environments/variables from catalog, seals secret defaults via `encryptSecret` |
+| `GET` | `/api/client/v1/projects` / `GET …/projects/:id` | Returns `metadata` (read-only) and `options` (`options.compose` holds base Docker Compose JSON) |
+| `PATCH` | `/api/client/v1/projects/:id` | Accepts patchable `options`; `metadata` is read-only (set by create flow) |
+| `GET` | `/api/client/v1/environments` / `GET …/environments/:id` | Returns `metadata` and `options` (`options.compose` holds per-environment overlay) |
+| `POST` | `/api/client/v1/environments` | Optional `options` on create |
+| `PATCH` | `/api/client/v1/environments/:id` | Optional `options` patch |
+| `GET` | `/api/client/v1/variables` | List variables (optional `?environmentId=`); org owner/manager |
+| `GET` | `/api/client/v1/variables/:id` | Get variable; sealed secret values are never returned (`value: null` when `isSecret`) |
+| `POST` | `/api/client/v1/variables` | Create variable under an environment; `isSecret=true` seals via `encryptSecret` (instance imports encrypt only — decryption is daemon-only via `POST /api/daemon/v1/secrets/decrypt`) |
+| `PATCH` | `/api/client/v1/variables/:id` | Update variable; re-seals on secret value update |
+| `DELETE` | `/api/client/v1/variables/:id` | Delete variable |
 | `GET` | `/api/client/v1/licenses` | List licenses (`organization:own`) |
 | `POST` | `/api/client/v1/licenses` | Create a license (`organization:own`) |
 | `DELETE` | `/api/client/v1/licenses/{id}` | Revoke a license (`organization:own`) |

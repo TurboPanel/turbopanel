@@ -235,10 +235,7 @@ export const command = pgTable(
       table.serverId.asc(),
       sql`(${table.metadata}->>'createdAt') desc`
     ),
-    index('idx_command_status').using(
-      'btree',
-      sql`(${table.metadata}->>'status')`
-    ),
+    index('idx_command_status').using('btree', sql`(${table.metadata}->>'status')`),
     foreignKey({
       columns: [table.serverId],
       foreignColumns: [server.id],
@@ -320,6 +317,8 @@ export const project = pgTable(
     workspaceId: uuid('workspace_id').notNull(),
     displayName: varchar('display_name', { length: 255 }),
     description: varchar('description', { length: 255 }),
+    metadata: jsonb(),
+    options: jsonb(),
   },
   (table) => [
     index('idx_project_workspace_id').using(
@@ -335,6 +334,35 @@ export const project = pgTable(
       'project_display_name_format_check',
       sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
     ),
+  ]
+)
+
+export const managed = pgTable(
+  'managed',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' }),
+    projectId: uuid('project_id').notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+  },
+  (table) => [
+    index('idx_managed_project_id').using(
+      'btree',
+      table.projectId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.projectId],
+      foreignColumns: [project.id],
+      name: 'managed_project_id_project_id_fk',
+    }).onDelete('cascade'),
+    unique('managed_project_id_unique').on(table.projectId),
   ]
 )
 export const environment = pgTable(
@@ -353,6 +381,8 @@ export const environment = pgTable(
     projectId: uuid('project_id').notNull(),
     displayName: varchar('display_name', { length: 255 }),
     description: varchar('description', { length: 255 }),
+    metadata: jsonb(),
+    options: jsonb(),
   },
   (table) => [
     index('idx_environment_project_id').using(
@@ -367,6 +397,97 @@ export const environment = pgTable(
     check(
       'environment_display_name_format_check',
       sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+    ),
+  ]
+)
+export const variable = pgTable(
+  'variable',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    organizationId: uuid('organization_id'),
+    workspaceId: uuid('workspace_id'),
+    projectId: uuid('project_id'),
+    environmentId: uuid('environment_id'),
+    serviceId: uuid('service_id'),
+    serverId: uuid('server_id'),
+    key: varchar({ length: 255 }).notNull(),
+    value: text().default('').notNull(),
+    isSecret: boolean('is_secret').default(false).notNull(),
+    description: varchar('description', { length: 255 }),
+  },
+  (table) => [
+    index('idx_variable_organization_id').using(
+      'btree',
+      table.organizationId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_variable_workspace_id').using(
+      'btree',
+      table.workspaceId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_variable_project_id').using(
+      'btree',
+      table.projectId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_variable_environment_id').using(
+      'btree',
+      table.environmentId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_variable_service_id').using(
+      'btree',
+      table.serviceId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_variable_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'variable_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.workspaceId],
+      foreignColumns: [workspace.id],
+      name: 'variable_workspace_id_workspace_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.projectId],
+      foreignColumns: [project.id],
+      name: 'variable_project_id_project_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.environmentId],
+      foreignColumns: [environment.id],
+      name: 'variable_environment_id_environment_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serviceId],
+      foreignColumns: [service.id],
+      name: 'variable_service_id_service_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'variable_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    check(
+      'variable_exactly_one_parent_check',
+      sql`((organization_id IS NOT NULL)::int +
+        (workspace_id IS NOT NULL)::int +
+        (project_id IS NOT NULL)::int +
+        (environment_id IS NOT NULL)::int +
+        (service_id IS NOT NULL)::int +
+        (server_id IS NOT NULL)::int) = 1`
+    ),
+    check(
+      'variable_key_format_check',
+      sql`(char_length(key) >= 1) AND (char_length(key) <= 255) AND (key ~ '^[A-Za-z_][A-Za-z0-9_]*$'::text)`
     ),
   ]
 )
@@ -671,9 +792,9 @@ export const twoFactor = pgTable(
     createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
-    isVerified: boolean('is_verified').default(true),
     userId: uuid('user_id').notNull(),
     secret: varchar({ length: 255 }).notNull(),
+    isVerified: boolean('is_verified').default(true),
     backupCodes: text('backup_codes').notNull(),
   },
   (table) => [

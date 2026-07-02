@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AppEnv } from "../app.ts";
 import { deriveSecretsConfig } from "../client/authn/secrets.ts";
+import { encryptSecretForDaemon } from "../client/authn/data-encryption.ts";
 import { createLicense } from "../client/authn/license.ts";
 import { getDatabaseUrl } from "../db-url.ts";
 import { createDenoDb } from "../db.ts";
@@ -60,6 +61,12 @@ async function createTestChallengeSecrets() {
   return await deriveSecretsConfig({
     versioned: [{ version: 1, value: "daemon_api_routes_test_challenge_secret" }],
   }, "daemon-challenge-signing");
+}
+
+function createTestSecretsConfig() {
+  return {
+    versioned: [{ version: 1, value: "daemon_api_routes_test_data_encryption_secret" }],
+  };
 }
 
 async function generateKeyMaterial(): Promise<KeyMaterial> {
@@ -135,7 +142,8 @@ async function createTestApp(
   });
   const secrets = await createTestSecrets();
   const challengeSigningSecrets = await createTestChallengeSecrets();
-  registerDaemonApiRoutes(app, { secrets, challengeSigningSecrets });
+  const secretsConfig = createTestSecretsConfig();
+  registerDaemonApiRoutes(app, { secrets, challengeSigningSecrets, secretsConfig });
   return app;
 }
 
@@ -239,7 +247,8 @@ async function createTestAppWithRegistry(
   });
   const secrets = await createTestSecrets();
   const challengeSigningSecrets = await createTestChallengeSecrets();
-  registerDaemonApiRoutes(app, { secrets, challengeSigningSecrets });
+  const secretsConfig = createTestSecretsConfig();
+  registerDaemonApiRoutes(app, { secrets, challengeSigningSecrets, secretsConfig });
   return app;
 }
 
@@ -1177,6 +1186,113 @@ Deno.test("POST /commands/lease returns 200 with valid JWT", async () => {
     assertEquals(body, { commands: [] });
   });
 });
+Deno.test("POST /secrets/decrypt returns 401 without JWT", async () => {
+  await withEnrollFixture(async ({ app }) => {
+    const response = await app.request("/api/daemon/v1/secrets/decrypt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ciphertexts: ["tpsecret.v1.1.x.y"] }),
+    });
+    assertEquals(response.status, 401);
+  });
+});
+
+Deno.test("POST /secrets/decrypt returns 400 on malformed body", async () => {
+  await withEnrollFixture(async ({ app, serverId, keyId }) => {
+    const daemonToken = await issueDaemonToken(serverId, keyId);
+
+    const missingArray = await app.request("/api/daemon/v1/secrets/decrypt", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${daemonToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({}),
+    });
+    assertEquals(missingArray.status, 400);
+
+    const emptyArray = await app.request("/api/daemon/v1/secrets/decrypt", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${daemonToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ ciphertexts: [] }),
+    });
+    assertEquals(emptyArray.status, 400);
+  });
+});
+
+Deno.test("POST /secrets/decrypt round-trips batch with mixed valid/invalid", async () => {
+  await withEnrollFixture(async ({ app, serverId, keyId }) => {
+    const secretsConfig = createTestSecretsConfig();
+    const sealed = await encryptSecretForDaemon(
+      secretsConfig,
+      { serverId, keyId },
+      "daemon-secret-value",
+    );
+    const daemonToken = await issueDaemonToken(serverId, keyId);
+
+    const response = await app.request("/api/daemon/v1/secrets/decrypt", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${daemonToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        ciphertexts: [sealed, "not-a-valid-envelope", sealed],
+      }),
+    });
+    assertEquals(response.status, 200);
+    const body = await response.json() as { plaintexts: (string | null)[] };
+    assertEquals(body.plaintexts.length, 3);
+    assertEquals(body.plaintexts[0], "daemon-secret-value");
+    assertEquals(body.plaintexts[1], null);
+    assertEquals(body.plaintexts[2], "daemon-secret-value");
+  });
+});
+
+Deno.test("POST /secrets/decrypt rejects envelopes sealed for another daemon", async () => {
+  await withEnrollFixture(async ({ app, serverId, keyId }) => {
+    const secretsConfig = createTestSecretsConfig();
+    const sealed = await encryptSecretForDaemon(
+      secretsConfig,
+      { serverId: "00000000-0000-4000-8000-000000000099", keyId: "other-key" },
+      "other-daemon-secret",
+    );
+    const daemonToken = await issueDaemonToken(serverId, keyId);
+
+    const response = await app.request("/api/daemon/v1/secrets/decrypt", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${daemonToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ ciphertexts: [sealed] }),
+    });
+    assertEquals(response.status, 200);
+    const body = await response.json() as { plaintexts: (string | null)[] };
+    assertEquals(body.plaintexts, [null]);
+  });
+});
+
+Deno.test("POST /secrets/decrypt rejects legacy global tpsecret envelopes", async () => {
+  await withEnrollFixture(async ({ app, serverId, keyId }) => {
+    const daemonToken = await issueDaemonToken(serverId, keyId);
+    const response = await app.request("/api/daemon/v1/secrets/decrypt", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${daemonToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ ciphertexts: ["tpsecret.v1.1.x.y"] }),
+    });
+    assertEquals(response.status, 200);
+    const body = await response.json() as { plaintexts: (string | null)[] };
+    assertEquals(body.plaintexts, [null]);
+  });
+});
+
 
 Deno.test("Enrolled daemon can auto-refresh JWT", async () => {
   await withEnrollFixture(

@@ -51,23 +51,29 @@ async function issueTestToken(serverId: string): Promise<string> {
 function createForwardCaptureEnv(): {
   env: CloudflareBindings;
   getForwardedRequest: () => Request | undefined;
+  getByNameArg: () => string | undefined;
 } {
   let forwardedRequest: Request | undefined;
+  let byNameArg: string | undefined;
 
   const env = {
     DAEMON_CELL: {
-      getByName: () => ({
-        fetch: (request: Request) => {
-          forwardedRequest = request;
-          return new Response("forwarded", { status: 200 });
-        },
-      }),
+      getByName: (name: string) => {
+        byNameArg = name;
+        return {
+          fetch: (request: Request) => {
+            forwardedRequest = request;
+            return new Response("forwarded", { status: 200 });
+          },
+        };
+      },
     },
   } as unknown as CloudflareBindings;
 
   return {
     env,
     getForwardedRequest: () => forwardedRequest,
+    getByNameArg: () => byNameArg,
   };
 }
 
@@ -128,7 +134,7 @@ describe("registerWorkersDaemonWebSocket forwarding", () => {
     const secrets = await createTestSecrets();
     const app = createWorkersWsApp(secrets);
     const token = await issueTestToken(serverId);
-    const { env, getForwardedRequest } = createForwardCaptureEnv();
+    const { env, getForwardedRequest, getByNameArg } = createForwardCaptureEnv();
 
     const forgedGeo = JSON.stringify({
       country: "ZZ",
@@ -152,5 +158,6 @@ describe("registerWorkersDaemonWebSocket forwarding", () => {
     expect(forwarded!.headers.get(CELL_SERVER_ID_HEADER)).toBe(serverId);
     expect(forwarded!.headers.get(CELL_GEO_HEADER)).toBeNull();
     expect(forwarded!.headers.get(REAL_IP_HEADER)).toBeNull();
+    expect(getByNameArg()).toBe(serverId);
   });
 });

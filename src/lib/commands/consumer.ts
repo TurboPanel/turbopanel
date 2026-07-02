@@ -3,7 +3,9 @@
  * The WS inbound path (`handleInbound` in `redis/cell.ts` and `do.ts`) only updates the
  * hot `PendingRequestRecord` in the cell. The consumer reads the terminal
  * `PendingRequestRecord` returned by `waitForRequest` and maps it to a
- * `transitionCommand` call. There is no per-server polling or cross-cell fan-out.
+ * `transitionCommand` call. Polling for terminal status runs in the caller
+ * isolate (worker stub or Deno process), not inside the Durable Object.
+ * There is no per-server polling or cross-cell fan-out.
  */
 import type { Db } from '../../db.ts'
 import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'

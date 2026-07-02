@@ -10,11 +10,15 @@ import {
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
 import {
+  environment,
   grant,
+  managed,
   member,
   organization,
+  project,
   team,
   user,
+  variable,
   workspace,
 } from '../../lib/db/schema.ts'
 import { registerAccessRoutes } from './routes.ts'
@@ -302,6 +306,81 @@ Deno.test('POST /access rejects organization permission on workspace entity', as
 
     if (res.status !== 404) {
       throw new Error(`expected 404 for grant on workspace entity, got ${res.status}`)
+    }
+  })
+})
+
+Deno.test('GET /access/check returns boolean for variable and managed resource ids', async () => {
+  await withTestFixtures(async ({
+    db,
+    app,
+    secrets,
+    actorId,
+    organizationId,
+    workspaceId,
+  }) => {
+    const [insertedProject] = await db
+      .insert(project)
+      .values({ displayName: 'Access Route Project', workspaceId })
+      .returning({ id: project.id })
+
+    const projectId = insertedProject!.id
+
+    const [insertedManaged] = await db
+      .insert(managed)
+      .values({ projectId })
+      .returning({ id: managed.id })
+
+    const managedId = insertedManaged!.id
+
+    const [insertedEnvironment] = await db
+      .insert(environment)
+      .values({ displayName: 'Access Route Env', projectId })
+      .returning({ id: environment.id })
+
+    const environmentId = insertedEnvironment!.id
+
+    const [insertedVariable] = await db
+      .insert(variable)
+      .values({ environmentId, key: 'ACCESS_ROUTE_VAR', value: '1' })
+      .returning({ id: variable.id })
+
+    const variableId = insertedVariable!.id
+
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      subjectType: 'user',
+      subjectId: actorId,
+      permission: 'organization:manage',
+      allow: true,
+    })
+
+    const cookie = await sessionCookie(db, secrets, actorId)
+
+    try {
+      for (const resourceId of [managedId, variableId]) {
+        const res = await app.request(
+          `/access/check?resourceId=${resourceId}&permissionKey=organization:manage`,
+          { headers: orgRequestHeaders(cookie, organizationId) },
+        )
+
+        if (res.status !== 200) {
+          throw new Error(
+            `expected 200 from access/check for ${resourceId}, got ${res.status}`,
+          )
+        }
+
+        const body = await res.json() as { allowed: boolean }
+        if (!body.allowed) {
+          throw new Error(`organization:manage should allow access/check for ${resourceId}`)
+        }
+      }
+    } finally {
+      await db.delete(variable).where(eq(variable.environmentId, environmentId))
+      await db.delete(environment).where(eq(environment.projectId, projectId))
+      await db.delete(managed).where(eq(managed.projectId, projectId))
+      await db.delete(project).where(eq(project.id, projectId))
     }
   })
 })

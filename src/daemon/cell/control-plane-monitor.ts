@@ -13,8 +13,10 @@ import type { UpdateProjection } from "../authn/daemon-state.ts";
 import type { DaemonCell } from "./contracts.ts";
 import {
   agentChanged,
+  heartbeatDebounceElapsed,
   identityFromSnapshot,
   projectServerDaemon,
+  steadyStateInboundSkipsDbRead,
   type ProjectionAgent,
 } from "./postgres-projection.ts";
 import { resolveTrunkManifest } from "../../lib/update/manifest.ts";
@@ -22,15 +24,6 @@ import { isStaleProjectedUpdating } from "../../client/servers/update-status.ts"
 import { UPDATE_REQUEST_TTL_MS } from "../../lib/update/constants.ts";
 import { RedisDaemonCell } from "./redis/cell.ts";
 import type { RedisDaemonCellRegistry } from "./redis/registry.ts";
-
-const HEARTBEAT_DEBOUNCE_MS = 60_000;
-
-function heartbeatDebounceElapsed(lastSeenAt: string | null): boolean {
-  if (!lastSeenAt) return true;
-  const lastSeenMs = Date.parse(lastSeenAt);
-  if (Number.isNaN(lastSeenMs)) return true;
-  return Date.now() - lastSeenMs >= HEARTBEAT_DEBOUNCE_MS;
-}
 
 export async function onDaemonConnected(
   db: Db,
@@ -62,12 +55,18 @@ export async function onDaemonInbound(
   cell: DaemonCell,
   opts: { at?: string; agent?: ProjectionAgent } = {},
 ): Promise<void> {
+  const snapshot = await cell.getSnapshot();
+
   if (opts.agent?.commit && opts.agent?.buildId) {
     await maybeRepairUpdateFromAgentHello(db, serverId, opts.agent);
   }
 
+  // Skip heartbeat-only Postgres reads when steady-state; repair above still runs.
+  if (steadyStateInboundSkipsDbRead(snapshot, opts)) {
+    return;
+  }
+
   const existing = await getServerDaemonStateByServerId(db, serverId);
-  const snapshot = await cell.getSnapshot();
   const projectedOffline = existing?.status?.connected === false;
   const runtimeOffline = !snapshot.connected;
 
@@ -83,7 +82,7 @@ export async function onDaemonInbound(
     return;
   }
 
-  await onDaemonHeartbeat(db, serverId, cell, opts.agent);
+  await onDaemonHeartbeat(db, serverId, cell, opts.agent, opts.at);
 }
 
 export async function onDaemonDisconnected(
@@ -223,13 +222,25 @@ export async function maybeRepairUpdateFromAgentHello(
 export async function onDaemonHeartbeat(
   db: Db,
   serverId: string,
-  _cell: DaemonCell,
+  cell: DaemonCell,
   agent?: ProjectionAgent,
+  inboundAt?: string,
 ): Promise<void> {
+  const snapshot = await cell.getSnapshot();
+  // Skip Postgres SELECT when the cell snapshot shows steady-state heartbeats.
+  if (steadyStateInboundSkipsDbRead(snapshot, { at: inboundAt, agent })) {
+    return;
+  }
+
   const existing = await getServerDaemonStateByServerId(db, serverId);
   if (!existing) return;
 
-  const lastSeenDue = heartbeatDebounceElapsed(existing.status?.lastSeenAt ?? null);
+  const lastSeenDue = inboundAt
+    ? heartbeatDebounceElapsed(
+      existing.status?.lastSeenAt ?? null,
+      Date.parse(inboundAt),
+    )
+    : heartbeatDebounceElapsed(existing.status?.lastSeenAt ?? null);
   const agentDue = agent?.commit && agent?.buildId &&
     agentChanged(existing.projection, agent);
 

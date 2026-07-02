@@ -92,7 +92,7 @@ export type ServerDaemonProjectionRead = Omit<
   lastSeenAt?: string | null;
 };
 
-const HEARTBEAT_DEBOUNCE_MS = 60_000;
+export const HEARTBEAT_DEBOUNCE_MS = 60_000;
 
 function nowTs(): string {
   return new Date().toISOString();
@@ -232,11 +232,64 @@ function buildIdentityProjection(
   };
 }
 
-function heartbeatDebounceElapsed(lastSeenAt: string | null, nowMs: number): boolean {
+export function heartbeatDebounceElapsed(
+  lastSeenAt: string | null,
+  nowMs: number = Date.now(),
+): boolean {
   if (!lastSeenAt) return true;
   const lastSeenMs = Date.parse(lastSeenAt);
   if (Number.isNaN(lastSeenMs)) return true;
   return nowMs - lastSeenMs >= HEARTBEAT_DEBOUNCE_MS;
+}
+
+/** True when an inbound hello/heartbeat should touch Postgres (mirrors cell coalesce). */
+export function inboundHeartbeatProjectionDue(params: {
+  runtimeConnected: boolean;
+  cellLastSeenAt?: string | null;
+  inboundAt: string;
+  storedAgent?: ProjectionAgent;
+  incomingAgent?: ProjectionAgent;
+}): boolean {
+  if (!params.runtimeConnected) return true;
+
+  if (
+    params.incomingAgent?.commit &&
+    params.incomingAgent?.buildId &&
+    agentChanged(
+      params.storedAgent
+        ? ({ agent: params.storedAgent } as ServerDaemonProjection)
+        : undefined,
+      params.incomingAgent,
+    )
+  ) {
+    return true;
+  }
+
+  if (params.cellLastSeenAt === params.inboundAt) {
+    return true;
+  }
+
+  const atMs = Date.parse(params.inboundAt);
+  const lastSeenMs = params.cellLastSeenAt
+    ? Date.parse(params.cellLastSeenAt)
+    : Number.NaN;
+  if (Number.isNaN(atMs) || Number.isNaN(lastSeenMs)) return true;
+  return atMs - lastSeenMs >= HEARTBEAT_DEBOUNCE_MS;
+}
+
+/** Skip Postgres reads/writes for steady-state heartbeats (cell already coalesced). */
+export function steadyStateInboundSkipsDbRead(
+  snapshot: DaemonCellSnapshot,
+  opts: { at?: string; agent?: ProjectionAgent },
+): boolean {
+  if (!snapshot.connected || !opts.at) return false;
+  return !inboundHeartbeatProjectionDue({
+    runtimeConnected: true,
+    cellLastSeenAt: snapshot.lastSeenAt ?? null,
+    inboundAt: opts.at,
+    storedAgent: snapshot.agent,
+    incomingAgent: opts.agent,
+  });
 }
 
 function buildMergedDaemonState(

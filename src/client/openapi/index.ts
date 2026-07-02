@@ -11,6 +11,7 @@ import { organizationPaths, organizationSchemas } from './organizations.ts'
 import { projectPaths, projectSchemas } from './projects.ts'
 import { serverPaths, serverSchemas } from './servers.ts'
 import { servicePaths, serviceSchemas } from './services.ts'
+import { variablePaths, variableSchemas } from './variables.ts'
 import { workspacePaths, workspaceSchemas } from './workspaces.ts'
 
 /** Hand-authored OpenAPI 3.1 spec for documented client/install/health routes. */
@@ -48,6 +49,7 @@ export function getClientOpenApiSpec(
       { name: 'Workspaces', description: 'Workspace CRUD' },
       { name: 'Projects', description: 'Project CRUD' },
       { name: 'Environments', description: 'Environment CRUD' },
+      { name: 'Variables', description: 'Environment variable and secret management' },
       { name: 'Services', description: 'Service CRUD' },
       { name: 'Hostings', description: 'Hosting CRUD' },
       { name: 'Servers', description: 'Server fleet and update management' },
@@ -59,7 +61,7 @@ export function getClientOpenApiSpec(
     ],
     'x-tagGroups': [
       { name: 'Authentication & Authorization', tags: ['Authentication', 'Authorization'] },
-      { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Services', 'Hostings'] },
+      { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Variables', 'Services', 'Hostings'] },
       { name: 'Infrastructure', tags: ['Servers', 'Networks', 'Licenses'] },
       { name: 'Platform', tags: ['Health', ...(includeInstall ? ['Install'] : [])] },
     ],
@@ -82,6 +84,7 @@ export function getClientOpenApiSpec(
         ...workspaceSchemas,
         ...environmentSchemas,
         ...projectSchemas,
+        ...variableSchemas,
         ...serviceSchemas,
         ...hostingSchemas,
         ...(includeInstall ? installOpenApiSchemas : {}),
@@ -97,6 +100,7 @@ export function getClientOpenApiSpec(
       ...workspacePaths,
       ...environmentPaths,
       ...projectPaths,
+      ...variablePaths,
       ...servicePaths,
       ...hostingPaths,
       ...(includeInstall ? installOpenApiPaths : {}),

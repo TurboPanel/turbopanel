@@ -60,6 +60,7 @@ export type ResourceCrudConfig = {
   listSchema: string
   rowSchema: string
   createSchema: string
+  patchSchema?: string
   createBodyRequired?: boolean
   parentQuery?: { name: string; description: string }
   tag?: string
@@ -168,7 +169,9 @@ export function buildResourceCrudPaths(config: ResourceCrudConfig): Record<strin
           required: true,
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/UpdateEntityRequest' },
+              schema: {
+                $ref: `#/components/schemas/${config.patchSchema ?? 'UpdateEntityRequest'}`,
+              },
             },
           },
         },

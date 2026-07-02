@@ -1,5 +1,6 @@
 import type {
   ClearUpdateStatusOptions,
+  CellDiagnostics,
   DaemonCell,
   DaemonCellLease,
   DaemonCellSnapshot,
@@ -43,6 +44,21 @@ const TERMINAL_STATUSES = new Set<PendingRequestStatus>([
   "failed",
   "expired",
 ]);
+
+function createInitialCellDiagnostics(): CellDiagnostics {
+  return {
+    backend: "redis",
+    usesHibernationWebSocket: false,
+    constructorCalls: 0,
+    wsAccepted: 0,
+    wsClosed: 0,
+    alarmInvocations: 0,
+    heartbeatCount: 0,
+    commandDispatchCount: 0,
+    cleanupCount: 0,
+    fetchByRoute: {},
+  };
+}
 
 function nowIso(now = Date.now()): string {
   return new Date(now).toISOString();
@@ -221,11 +237,36 @@ export class RedisDaemonCell implements DaemonCell {
   readonly #reclaimedByConsumer = new Map<string, StreamEntry[]>();
   readonly #deliveryToStreamId = new Map<string, string>();
   readonly #terminalResults = new Map<string, PendingRequestRecord>();
+  readonly #diag: CellDiagnostics = createInitialCellDiagnostics();
 
   constructor(client: RedisCellClient, serverId: string, db?: Db) {
     this.#client = client;
     this.#serverId = serverId;
     this.#db = db;
+    this.#diag.constructorCalls += 1;
+    logDebug("daemon-cell", `diagnostics: constructor ${serverId}`);
+  }
+
+  #bumpMethodRoute(method: string): void {
+    this.#diag.fetchByRoute[method] = (this.#diag.fetchByRoute[method] ?? 0) + 1;
+    logDebug("daemon-cell", `diagnostics: fetchByRoute ${method}`);
+  }
+
+  #bumpDiag(
+    field:
+      | "wsAccepted"
+      | "wsClosed"
+      | "alarmInvocations"
+      | "heartbeatCount"
+      | "commandDispatchCount"
+      | "cleanupCount",
+  ): void {
+    this.#diag[field] += 1;
+    logDebug("daemon-cell", `diagnostics: ${field}`);
+  }
+
+  getDiagnostics(): Promise<CellDiagnostics> {
+    return Promise.resolve(this.#diag);
   }
 
   async #projectUpdateExpired(
@@ -333,6 +374,7 @@ export class RedisDaemonCell implements DaemonCell {
     remoteAddress?: string;
     connectedAt?: string;
   }): Promise<{ connectionId: string; lease: DaemonCellLease }> {
+    this.#bumpMethodRoute("attachDaemonSocket");
     await this.reconcileStalePresence();
 
     const connectionId = crypto.randomUUID();
@@ -407,6 +449,8 @@ export class RedisDaemonCell implements DaemonCell {
 
     logDebug("daemon-cell", `attach: ${this.#serverId} conn=${connectionId}`);
 
+    this.#bumpDiag("wsAccepted");
+
     return {
       connectionId,
       lease: {
@@ -467,6 +511,7 @@ export class RedisDaemonCell implements DaemonCell {
     reason?: string;
     closedAt?: string;
   }): Promise<void> {
+    this.#bumpMethodRoute("detachDaemonSocket");
     const released = await this.#client.eval(
       COMPARE_AND_DELETE,
       1,
@@ -497,14 +542,22 @@ export class RedisDaemonCell implements DaemonCell {
       "daemon-cell",
       `detach: ${this.#serverId} conn=${params.connectionId}`,
     );
+
+    this.#bumpDiag("wsClosed");
+    this.#bumpDiag("cleanupCount");
   }
 
+  // Volatile heartbeat state stays in Redis only. Postgres projection is driven
+  // by onDaemonInbound in deno-ws.ts, which short-circuits via
+  // steadyStateInboundSkipsDbRead for steady-state heartbeats.
   async recordInbound(params: {
     connectionId?: string;
     hostname?: string;
     at?: string;
     agent?: import("../protocol.ts").DaemonAgentInfo;
   }): Promise<void> {
+    this.#bumpMethodRoute("recordInbound");
+    this.#bumpDiag("heartbeatCount");
     const meta = await this.#client.hgetall(metaKey(this.#serverId));
     const connectionId = params.connectionId ?? meta?.connectionId;
     if (!connectionId) return;
@@ -600,6 +653,10 @@ export class RedisDaemonCell implements DaemonCell {
     outbound: DaemonOutboundEnvelope,
     opts?: { ttlSeconds?: number },
   ): Promise<PendingRequestRecord> {
+    this.#bumpMethodRoute("enqueue");
+    if (outbound.kind === "command" || outbound.kind === "command-dispatch") {
+      this.#bumpDiag("commandDispatchCount");
+    }
     const now = Date.now();
     const createdAt = outbound.at ?? nowIso(now);
     const ttlSeconds = opts?.ttlSeconds ?? 300;
@@ -864,6 +921,11 @@ export class RedisDaemonCell implements DaemonCell {
     return records;
   }
 
+  // PARITY NOTE: waitForRequest polls with setTimeout in the Deno process.
+  // This is cost-safe on self-hosted Deno (no DO billing). The Workers DO
+  // equivalent (#waitForRequest in do.ts) is non-blocking — it returns the
+  // current record immediately and callers poll from the worker side.
+  // Both backends expose the same PendingRequestRecord shape and expired semantics.
   async waitForRequest(
     requestId: string,
     timeoutMs: number,
@@ -1097,6 +1159,8 @@ export class RedisDaemonCell implements DaemonCell {
   }
 
   async prune(now = Date.now()): Promise<ExpiredUpdateRequest[]> {
+    this.#bumpMethodRoute("prune");
+    this.#bumpDiag("alarmInvocations");
     const indexKey = requestsKey(this.#serverId);
     const requestIds = await this.#client.zrangebyscore(
       indexKey,

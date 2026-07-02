@@ -12,13 +12,16 @@ import {
 } from '../daemon/cell/fleet-presence.ts'
 import {
   broadcastEchoToFleet,
+  collectFleetCellDiagnostics,
   collectFleetCommands,
   enqueueEchoToServer,
   listFleetServerIds,
 } from '../daemon/cell/fleet-diagnostics.ts'
 import {
+  fetchDaemonCellDiagnostics,
   fetchDaemonServerCell,
 } from '../daemon/cell/server-diagnostics.ts'
+import { isDaemonDebugEnabled } from '../logger.ts'
 import {
   generateDeliveryId,
   generateRequestId,
@@ -186,6 +189,44 @@ export function buildDeveloperRouter(
       return c.json({ error: result.error }, result.status)
     }
     return c.json(result)
+  })
+
+  developer.get('/daemon/:id/cell/diagnostics', async (c) => {
+    const registry = getDaemonCellRegistry(c)
+    const debugEnabled = isDaemonDebugEnabled(
+      c.env as { TURBOPANEL_DAEMON_DEBUG?: string },
+    )
+    const id = c.req.param('id')
+
+    const result = await fetchDaemonCellDiagnostics(registry, id, {
+      debugEnabled,
+    })
+    if (!result.ok) {
+      return c.json({ error: result.error }, result.status)
+    }
+    return c.json(result)
+  })
+
+  developer.get('/daemon/diagnostics', async (c) => {
+    const registry = getDaemonCellRegistry(c)
+    const db = getDb(c)
+    const debugEnabled = isDaemonDebugEnabled(
+      c.env as { TURBOPANEL_DAEMON_DEBUG?: string },
+    )
+    if (!debugEnabled) {
+      return c.json({ error: 'daemon debug disabled' }, 404)
+    }
+    if (!registry || !db) {
+      return c.json({ error: 'Daemon cell registry unavailable' }, 503)
+    }
+
+    const serverIds = await listFleetServerIds(db)
+    const diagnostics = await collectFleetCellDiagnostics(
+      registry,
+      serverIds,
+      { debugEnabled },
+    )
+    return c.json({ ok: true, diagnostics })
   })
 
   developer.get('/instance/addresses', (c) => {

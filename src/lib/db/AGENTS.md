@@ -98,7 +98,7 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `sync
 |---|---|
 | **Identity** | `user`, `account`, `session`, `verification`, `passkey`, `2fa` |
 | **Organizations** | `organization`, `member`, `team`, `teammate`, `invitation` (no `organization_id`; `team_id NOT NULL`), `license` |
-| **Resource tree** | `workspace`, `project`, `environment`, `service`, `hosting`, `network` |
+| **Resource tree** | `workspace`, `project`, `environment`, `service`, `hosting`, `network`, `managed`, `variable` |
 | **Authorization** | `grant` |
 | **Config** | `setting` (`value` is `jsonb`) |
 | **Runtime** | `server`, `command` |
@@ -111,19 +111,27 @@ Canonical order (org scope is derived via joins — not stored on child rows):
 
 ```
 organization → workspace → project → environment → service → hosting
+organization → workspace → project → managed (1:1)
+organization → workspace → project → environment → variable (1:N, env-scoped)
+organization → workspace → variable (1:N)
+organization → project → variable (1:N)
+organization → workspace → project → environment → service → variable (1:N)
 organization → server → network
+organization → server → variable (1:N, server-scoped; excluded from inheritance chain)
 ```
 
 | Entity | Parent FK | Notes |
 |---|---|---|
 | `workspace` | `organization_id` | Root of the resource tree |
-| `project` | `workspace_id` | Docker-compose equivalent; env-specific vars live on environments |
-| `environment` | `project_id` | Staging/production/etc. within a project |
+| `project` | `workspace_id` | Docker-compose equivalent; env-specific vars live on environments. **`metadata`**: `type` (`"managed"` \| `"template"` \| null), `managed_id`. **`options.compose`**: base Docker Compose JSON. |
+| `environment` | `project_id` | Staging/production/etc. within a project. **`metadata`**: environment-specific metadata (extensible JSONB). **`options.compose`**: per-environment Docker Compose overlay JSON merged onto the project base. |
 | `service` | `environment_id` | Deployable unit within an environment |
 | `hosting` | `service_id NOT NULL` | Org is always derived via the service chain |
 | `network` | `server_id NOT NULL` | Linked to a server; org derived via server. Cascade delete. |
+| `managed` | `project_id NOT NULL` (unique) | Linking table; project is source of truth for timestamps; `ON DELETE CASCADE`. **`metadata`**: kebab-case catalog `code`, etc. |
+| `variable` | exactly one of `organization_id`, `workspace_id`, `project_id`, `environment_id`, `service_id`, `server_id` (all nullable FKs; CHECK enforces one parent) | Config vars/secrets at any resource scope; `is_secret` flag; secret `value` is a sealed envelope; partial unique indexes on `(key, <parent_fk>)` per scope; `ON DELETE CASCADE`. Key must match `^[A-Za-z_][A-Za-z0-9_]*$`. **Inheritance order** (runtime resolution, excludes server-scoped): `service` → `environment` → `project` → `workspace` → `organization` (lower scope wins). **Server-scoped** variables are fetched separately and do not participate in the inheritance chain. |
 
-Authorization ancestry and `listVisible()` resolve organization through this chain in SQL (`evaluator.ts`, `create-access-grant.ts`).
+Authorization ancestry and `listVisible()` resolve organization through this chain in SQL (`evaluator.ts`, `create-access-grant.ts`). **`variable`** and **`managed`** are in `RESOURCE_KINDS`, `GRANT_ENTITY_TYPES`, and `ENTITY_TYPES` (`catalog.ts`); `resolveEntityById()` and `can()` resolve their org via parent joins (same paths as `create-access-grant.ts`). **`GET /access/check`** accepts any resolvable entity UUID (including `variable` and `managed`). **`GET /access/resource-id`** accepts only `organization` and `team` kinds (grant-management UI). Access grants still target org/team entities only.
 
 > Permissions are **static code constants** defined in `../../client/authz/catalog.ts` (`PERMISSIONS`, `ENTITY_TYPES`, `SUBJECT_TYPES`) — not DB rows. There are no `role`, `permission`, or `permit` tables. The Drizzle table export is **`grant`** (not `accessGrant`).
 
@@ -158,15 +166,21 @@ List and get enforce visibility via `listVisible` / org-level grant checks in SQ
 | `POST` | `/api/client/v1/workspaces` | org owner/manager on org |
 | `PATCH` | `/api/client/v1/workspaces/{id}` | org owner/manager |
 | `DELETE` | `/api/client/v1/workspaces/{id}` | org owner/manager |
-| `GET` | `/api/client/v1/environments` | org owner/manager (optional `?projectId=`) |
-| `GET` | `/api/client/v1/environments/{id}` | org owner/manager |
-| `POST` | `/api/client/v1/environments` | org owner/manager on parent project |
-| `PATCH` | `/api/client/v1/environments/{id}` | org owner/manager |
+| `GET` | `/api/client/v1/environments` | org owner/manager (optional `?projectId=`); returns `metadata` and `options` |
+| `GET` | `/api/client/v1/environments/{id}` | org owner/manager; returns `metadata` and `options` |
+| `POST` | `/api/client/v1/environments` | org owner/manager on parent project; optional `options` (plain object, e.g. `options.compose` overlay) |
+| `PATCH` | `/api/client/v1/environments/{id}` | org owner/manager; optional `options` patch |
 | `DELETE` | `/api/client/v1/environments/{id}` | org owner/manager |
-| `GET` | `/api/client/v1/projects` | org owner/manager (optional `?workspaceId=`) |
-| `GET` | `/api/client/v1/projects/{id}` | org owner/manager |
-| `POST` | `/api/client/v1/projects` | org owner/manager on parent workspace |
-| `PATCH` | `/api/client/v1/projects/{id}` | org owner/manager |
+| `GET` | `/api/client/v1/variables` | org owner/manager (optional `?environmentId=`) |
+| `GET` | `/api/client/v1/variables/{id}` | org owner/manager |
+| `POST` | `/api/client/v1/variables` | org owner/manager on parent environment; `isSecret=true` seals value via `encryptSecret`; sealed values are never returned |
+| `PATCH` | `/api/client/v1/variables/{id}` | org owner/manager; re-seals on secret value update |
+| `DELETE` | `/api/client/v1/variables/{id}` | org owner/manager |
+| `GET` | `/api/client/v1/projects` | org owner/manager (optional `?workspaceId=`); returns `metadata` and `options` |
+| `GET` | `/api/client/v1/projects/{id}` | org owner/manager; returns `metadata` and `options` |
+| `POST` | `/api/client/v1/projects` | org owner/manager on parent workspace; optional `type` (`blank` \| `template` \| `managed`, default blank) and `code` (required for template/managed — from code-bundled catalog); managed creation writes a `managed` row, sets `project.metadata.managed_id`, scaffolds environments/variables, and seals default secret variables via `encryptSecret` |
+| `GET` | `/api/client/v1/project-catalog` | org owner/manager (session required); UI-safe catalog summaries (`code`, `kind`, `displayName`, `description`) — no compose or secret defaults |
+| `PATCH` | `/api/client/v1/projects/{id}` | org owner/manager; returns `metadata` (read-only via PATCH) and accepts patchable `options` (e.g. `options.compose`) |
 | `DELETE` | `/api/client/v1/projects/{id}` | org owner/manager |
 | `GET` | `/api/client/v1/services` | org owner/manager (optional `?environmentId=`) |
 | `GET` | `/api/client/v1/services/{id}` | org owner/manager |

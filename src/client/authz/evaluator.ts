@@ -200,6 +200,119 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         SELECT 'organization'::text, s.organization_id, 1
         FROM server s WHERE s.id = ${entityId}::uuid
       `
+    case 'managed':
+      return sql`
+        SELECT 'managed'::text AS entity_type, m.id AS entity_id, 0 AS depth
+        FROM managed m WHERE m.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'project'::text, m.project_id, 1
+        FROM managed m WHERE m.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'workspace'::text, p.workspace_id, 2
+        FROM managed m
+        JOIN project p ON p.id = m.project_id
+        WHERE m.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'organization'::text, w.organization_id, 3
+        FROM managed m
+        JOIN project p ON p.id = m.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE m.id = ${entityId}::uuid
+      `
+    case 'variable':
+      return sql`
+        SELECT 'variable'::text AS entity_type, v.id AS entity_id, 0 AS depth
+        FROM variable v WHERE v.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'organization'::text, v.organization_id, 1
+        FROM variable v
+        WHERE v.id = ${entityId}::uuid AND v.organization_id IS NOT NULL
+        UNION ALL
+        SELECT 'workspace'::text, v.workspace_id, 1
+        FROM variable v
+        WHERE v.id = ${entityId}::uuid AND v.workspace_id IS NOT NULL
+        UNION ALL
+        SELECT 'organization'::text, w.organization_id, 2
+        FROM variable v
+        JOIN workspace w ON w.id = v.workspace_id
+        WHERE v.id = ${entityId}::uuid AND v.workspace_id IS NOT NULL
+        UNION ALL
+        SELECT 'project'::text, v.project_id, 1
+        FROM variable v
+        WHERE v.id = ${entityId}::uuid AND v.project_id IS NOT NULL
+        UNION ALL
+        SELECT 'workspace'::text, p.workspace_id, 2
+        FROM variable v
+        JOIN project p ON p.id = v.project_id
+        WHERE v.id = ${entityId}::uuid AND v.project_id IS NOT NULL
+        UNION ALL
+        SELECT 'organization'::text, w.organization_id, 3
+        FROM variable v
+        JOIN project p ON p.id = v.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE v.id = ${entityId}::uuid AND v.project_id IS NOT NULL
+        UNION ALL
+        SELECT 'environment'::text, v.environment_id, 1
+        FROM variable v
+        WHERE v.id = ${entityId}::uuid AND v.environment_id IS NOT NULL
+        UNION ALL
+        SELECT 'project'::text, e.project_id, 2
+        FROM variable v
+        JOIN environment e ON e.id = v.environment_id
+        WHERE v.id = ${entityId}::uuid AND v.environment_id IS NOT NULL
+        UNION ALL
+        SELECT 'workspace'::text, p.workspace_id, 3
+        FROM variable v
+        JOIN environment e ON e.id = v.environment_id
+        JOIN project p ON p.id = e.project_id
+        WHERE v.id = ${entityId}::uuid AND v.environment_id IS NOT NULL
+        UNION ALL
+        SELECT 'organization'::text, w.organization_id, 4
+        FROM variable v
+        JOIN environment e ON e.id = v.environment_id
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE v.id = ${entityId}::uuid AND v.environment_id IS NOT NULL
+        UNION ALL
+        SELECT 'service'::text, v.service_id, 1
+        FROM variable v
+        WHERE v.id = ${entityId}::uuid AND v.service_id IS NOT NULL
+        UNION ALL
+        SELECT 'environment'::text, s.environment_id, 2
+        FROM variable v
+        JOIN service s ON s.id = v.service_id
+        WHERE v.id = ${entityId}::uuid AND v.service_id IS NOT NULL
+        UNION ALL
+        SELECT 'project'::text, e.project_id, 3
+        FROM variable v
+        JOIN service s ON s.id = v.service_id
+        JOIN environment e ON e.id = s.environment_id
+        WHERE v.id = ${entityId}::uuid AND v.service_id IS NOT NULL
+        UNION ALL
+        SELECT 'workspace'::text, p.workspace_id, 4
+        FROM variable v
+        JOIN service s ON s.id = v.service_id
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project p ON p.id = e.project_id
+        WHERE v.id = ${entityId}::uuid AND v.service_id IS NOT NULL
+        UNION ALL
+        SELECT 'organization'::text, w.organization_id, 5
+        FROM variable v
+        JOIN service s ON s.id = v.service_id
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE v.id = ${entityId}::uuid AND v.service_id IS NOT NULL
+        UNION ALL
+        SELECT 'server'::text, v.server_id, 1
+        FROM variable v
+        WHERE v.id = ${entityId}::uuid AND v.server_id IS NOT NULL
+        UNION ALL
+        SELECT 'organization'::text, sv.organization_id, 2
+        FROM variable v
+        JOIN server sv ON sv.id = v.server_id
+        WHERE v.id = ${entityId}::uuid AND v.server_id IS NOT NULL
+      `
     default:
       throw new Error(`Unknown entity type for ancestry: ${entityType}`)
   }
@@ -235,6 +348,35 @@ function buildLeavesBody(kind: string, organizationId: string): SQL {
         WHERE w.organization_id = ${organizationId}::uuid`
     case 'server':
       return sql`SELECT id FROM server WHERE organization_id = ${organizationId}::uuid`
+    case 'variable':
+      return sql`SELECT v.id FROM variable v
+        WHERE v.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT v.id FROM variable v
+        JOIN workspace w ON w.id = v.workspace_id
+        WHERE w.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT v.id FROM variable v
+        JOIN project p ON p.id = v.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE w.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT v.id FROM variable v
+        JOIN environment e ON e.id = v.environment_id
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE w.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT v.id FROM variable v
+        JOIN service s ON s.id = v.service_id
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE w.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT v.id FROM variable v
+        JOIN server sv ON sv.id = v.server_id
+        WHERE sv.organization_id = ${organizationId}::uuid`
     default:
       throw new Error(`Unknown entity kind for visibility leaves: ${kind}`)
   }

@@ -42,6 +42,31 @@ export const authSchemas = {
       },
     },
   },
+  DaemonSecretsDecryptRequest: {
+    type: "object",
+    required: ["ciphertexts"],
+    properties: {
+      ciphertexts: {
+        type: "array",
+        items: { type: "string" },
+        description: "Sealed tpdaemon.v1 recipient-bound envelopes to decrypt (max 100)",
+      },
+    },
+  },
+  DaemonSecretsDecryptResponse: {
+    type: "object",
+    required: ["plaintexts"],
+    properties: {
+      plaintexts: {
+        type: "array",
+        items: {
+          oneOf: [{ type: "string" }, { type: "null" }],
+        },
+        description:
+          "Order-preserving plaintexts; null when an entry fails to decrypt",
+      },
+    },
+  },
 };
 
 export const authPaths: Record<string, unknown> = {
@@ -111,6 +136,37 @@ export const authPaths: Record<string, unknown> = {
             "application/json": {
               schema: {
                 $ref: "#/components/schemas/DaemonCommandsLeaseResponse",
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/api/daemon/v1/secrets/decrypt": {
+    post: {
+      tags: ["Daemon"],
+      summary: "Decrypt sealed secret envelopes (batch)",
+      description:
+        "Decrypts tpdaemon.v1 recipient-bound envelopes using per-daemon keys derived from the platform root secret. The daemon JWT sub/kid must match the envelope serverId/keyId. Returns null per index on failure without leaking error details.",
+      security: [{ bearerAuth: [] }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              $ref: "#/components/schemas/DaemonSecretsDecryptRequest",
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Batch decrypt result",
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/DaemonSecretsDecryptResponse",
               },
             },
           },
