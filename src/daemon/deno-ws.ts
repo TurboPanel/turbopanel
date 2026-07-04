@@ -31,6 +31,10 @@ import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
 /** Max idle block for outbox pump reads — keep low so new commands aren't stuck behind a long sleep. */
 const OUTBOX_PUMP_BLOCK_MS = 250;
 
+function isClosedConnectionError(err: unknown): boolean {
+  return /connection is closed/i.test(String(err));
+}
+
 export type DaemonWebSocketOptions = {
   developerSurface?: boolean;
   db?: Db;
@@ -240,9 +244,14 @@ export function registerDaemonWebSocket(
                   });
                 }
               } catch (err) {
-                if (!pumpAbort) {
-                  compatLogWarn("ws", `outbox pump error: ${String(err)}`);
+                if (pumpAbort) {
+                  break;
                 }
+                if (isClosedConnectionError(err)) {
+                  pumpAbort = true;
+                  break;
+                }
+                compatLogWarn("ws", `outbox pump error: ${String(err)}`);
               }
             }
           };
