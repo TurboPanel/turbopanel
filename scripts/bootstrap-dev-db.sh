@@ -13,6 +13,7 @@ db_connect_init bootstrap-dev-db
 db_connect_build_database_url bootstrap-dev-db
 
 export TURBOPANEL_DATABASE_URL
+export CI=1
 
 cd "$ROOT"
 echo "bootstrap-dev-db: applying migrations"
