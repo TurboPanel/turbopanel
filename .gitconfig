@@ -3,3 +3,7 @@
 	directory = /opt/turbopanel/platform/daemon
 	directory = /opt/turbopanel/platform/ui
 	directory = /opt/turbopanel/platform/website
+	directory = /home/tp/instance
+	directory = /home/tp/daemon
+	directory = /home/tp/ui
+	directory = /home/tp/website
