@@ -10,8 +10,8 @@ db_connect_init() {
   fi
   DRIZZLE_KIT="$ROOT/node_modules/drizzle-kit/bin.cjs"
   INSTANCE_UNIT="${TURBOPANEL_INSTANCE_SERVICE:-turbopanel-instance}"
-  NODE="${TURBOPANEL_NODE:-/opt/turbopanel/runtimes/node/current/bin/node}"
-  DENO="${TURBOPANEL_DENO:-/opt/turbopanel/runtimes/deno/current/deno}"
+  NODE="${TURBOPANEL_NODE:-/opt/turbopanel/lib/runtime/node/current/bin/node}"
+  DENO="${TURBOPANEL_DENO:-/opt/turbopanel/lib/runtime/deno/current/deno}"
 
   if [[ ! -f "$DRIZZLE_KIT" ]]; then
     echo "$caller: missing $DRIZZLE_KIT — run pnpm install in $ROOT" >&2

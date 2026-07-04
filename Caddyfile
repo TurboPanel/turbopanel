@@ -9,7 +9,7 @@
 # Env:
 #   TURBOPANEL_UI_MODE       "dev" | "static" (default: static)
 #   EXPO_PORT                Expo dev server port when UI_MODE=dev (default: 8081)
-#   TURBOPANEL_UI_ROOT       Static export directory when UI_MODE=static
+#   TURBOPANEL_UI_ROOT       Static export directory when UI_MODE=static (default: /opt/turbopanel/share/ui)
 #   TURBOPANEL_DAEMON_REPO      Daemon checkout root in dev (default: ../daemon); Caddy serves
 #                               /downloads/daemon from {repo}/dist when UI_MODE=dev
 #   TURBOPANEL_SOCKET_DIAL   Unix socket dial path for instance (Deno runtime)
@@ -113,7 +113,7 @@
 
 	# Production: serve the exported Expo web app (pnpm export --platform web -> ui/dist).
 	handle {
-		root * {$TURBOPANEL_UI_ROOT:../ui/dist}
+		root * {$TURBOPANEL_UI_ROOT:/opt/turbopanel/share/ui}
 		try_files {path} /index.html
 		file_server
 	}
@@ -212,7 +212,7 @@
 
 		# Production: serve the exported Expo web app (pnpm export --platform web -> ui/dist).
 		handle {
-			root * {$TURBOPANEL_UI_ROOT:../ui/dist}
+			root * {$TURBOPANEL_UI_ROOT:/opt/turbopanel/share/ui}
 			try_files {path} /index.html
 			file_server
 		}

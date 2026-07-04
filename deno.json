@@ -4,6 +4,7 @@
   "license": "AGPL-3.0-or-later",
   "exports": "./src/app.ts",
   "imports": {
+    "@std/assert": "jsr:@std/assert@1",
     "@std/encoding/base64": "jsr:@std/encoding@1/base64",
     "@std/encoding/base64url": "jsr:@std/encoding@1/base64url",
     "@std/encoding/hex": "jsr:@std/encoding@1/hex",
@@ -30,8 +31,9 @@
     "jsxImportSource": "hono/jsx"
   },
   "tasks": {
-    "compile": "deno compile --allow-env --allow-sys=networkInterfaces,hostname --allow-read=/run/turbopanel,/opt/turbopanel/platform/daemon,/opt/turbopanel/platform/instance,/opt/turbopanel/platform/instance/.local --allow-write=/run/turbopanel,/opt/turbopanel/platform/instance/.local --allow-net=127.0.0.1:4983,127.0.0.1:5672,127.0.0.1:1025,dl.trbp.nl:443 --allow-run=git,systemctl,tar,sudo,/usr/bin/sudo,/bin/sh,mkfifo,/usr/bin/mkfifo,pamtester,/usr/bin/pamtester,/opt/turbopanel/runtimes/node/current/bin/node -o dist/turbopanel-instance src/deno.ts",
+    "compile": "deno compile --allow-env --allow-sys=networkInterfaces,hostname --allow-read=/run/turbopanel,/etc/turbopanel,/var/lib/turbopanel,/opt/turbopanel/lib/runtime,/opt/turbopanel/share/ui,/opt/turbopanel/lib/daemon,/opt/turbopanel/lib/instance --allow-write=/run/turbopanel,/var/lib/turbopanel --allow-net=127.0.0.1:4983,127.0.0.1:5672,127.0.0.1:1025,dl.trbp.nl:443 --allow-run=git,systemctl,tar,sudo,/usr/bin/sudo,/bin/sh,mkfifo,/usr/bin/mkfifo,pamtester,/usr/bin/pamtester,/opt/turbopanel/lib/runtime/node/current/bin/node -o dist/turbopanel-instance src/deno.ts",
     "test:authz": "deno test --allow-env --allow-net --allow-read src/client/authz/",
-    "test:authn": "deno test --no-check --allow-env --allow-net --allow-read src/client/authn/workers-onboarding.test.ts"
+    "test:authn": "deno test --no-check --allow-env --allow-net --allow-read src/client/authn/workers-onboarding.test.ts",
+    "test:paths": "deno test --allow-read src/server-paths.deno.test.ts"
   }
 }

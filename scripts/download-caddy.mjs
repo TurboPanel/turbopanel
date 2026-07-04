@@ -2,9 +2,9 @@
 /**
  * Download Caddy into the shared runtimes directory and symlink "current".
  *
- * Mirrors the daemon caddy role layout:
- *   /opt/turbopanel/runtimes/caddy/<version>/caddy
- *   /opt/turbopanel/runtimes/caddy/current -> <version>
+ * Mirrors the daemon caddy role layout (managed-install default):
+ *   /opt/turbopanel/lib/runtime/caddy/<version>/caddy
+ *   /opt/turbopanel/lib/runtime/caddy/current -> <version>
  *
  * Idempotent: skips the download if the pinned binary already exists, and
  * always refreshes the "current" symlink to point at the pinned version.
@@ -15,7 +15,8 @@ import { mkdtempSync, rmSync, mkdirSync, existsSync, symlinkSync, unlinkSync, co
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-const TURBOPANEL_RUNTIMES_DIR = '/opt/turbopanel/runtimes'
+const TURBOPANEL_RUNTIMES_DIR =
+  (process.env.TURBOPANEL_RUNTIMES_DIR ?? '').trim() || '/opt/turbopanel/lib/runtime'
 const CADDY_VERSION = '2.10.2'
 const CADDY_RELEASE_TAG = 'v2.10.2'
 

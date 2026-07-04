@@ -46,7 +46,7 @@ Unit tests use non-production secrets from `src/test-fixtures/secrets.ts` (`TEST
 - **pnpm** — <https://pnpm.io/installation>
 - **Node.js** and **openssl** — required for cert generation (`scripts/*.mjs`); Node.js also used for Caddy download
 - Run `./console` from the `turbopanel-dev` checkout. The console installs Deno, clones the daemon, and drives the full dev stack via `scripts/bootstrap-orchestration.ts` + `scripts/install-daemon-systemd.sh` (shared orchestration under `/opt/turbopanel/runtimes/` — not `orchestration/runtime/venv`).
-- Managed/co-located installs: secret-bearing runtime env lives under **`/opt/turbopanel/platform/config/instance/`** (`runtime.env`, `runtime.dev-vars`) — **never** in the git checkout root. `scripts/generate-self-signed-cert.mjs` and daemon `public-urls-apply` read/write `runtime.env` there. Do not reintroduce checkout-root `.env` / `.dev.vars` generation.
+- Managed/co-located installs: secret-bearing runtime env lives in the instance config dir (`runtime.env`, `runtime.dev-vars`) — **never** in the git checkout root. Standalone scripts (`scripts/generate-self-signed-cert.mjs`, `scripts/workers-serve.sh`, `scripts/drizzle-studio-serve.sh`) default to the FHS location **`/etc/turbopanel/instance/runtime.env`** when `TURBOPANEL_INSTANCE_RUNTIME_ENV` is unset. The daemon's `instance-launch` Ansible role now resolves the config dir per install type: **managed installs → `/etc/turbopanel/instance/`**, co-located dev (`turbopanel_dev_user` set) → `/opt/turbopanel/platform/config/instance/`. The unit injects `TURBOPANEL_INSTANCE_RUNTIME_ENV` accordingly. `scripts/generate-self-signed-cert.mjs` and daemon `public-urls-apply` read/write `runtime.env` there. Do not reintroduce checkout-root `.env` / `.dev.vars` generation.
 - `pnpm install` — installs Hono and Wrangler into `node_modules/` for Workers bundling
 - Local **Tilt** Wrangler secrets still live in `dev/.env` → `sync-env.sh` → instance `.dev.vars`; that path is separate from managed Ansible installs above.
 - `pnpm dev` (wrangler) still runs the **Cloudflare Workers** path for full-stack testing — unchanged. **`wrangler.jsonc` `dev.ip` is `0.0.0.0`** so Docker Caddy (`host.docker.internal`) can reach the dev server; default localhost-only bind causes Caddy **502**s.
@@ -63,7 +63,7 @@ Installed and managed by the daemon via the `instance-launch` Ansible role:
 | `turbopanel-instance.service` | `instance:turbopanel` | Deno instance on the Unix socket |
 | `turbopanel-caddy.service` | `instance:turbopanel` | TLS + reverse proxy on `:8443` (`GOMAXPROCS=1`, `CPUQuota=100%`) |
 | `turbopanel-ui.service` | `instance:turbopanel` | Expo web dev server (`:8081`, dev only) |
-| `turbopanel-daemon.service` | `turbopanel:turbopanel` | runs Ansible; has sudo |
+| `turbopaneld.service` | `turbopanel:turbopanel` | runs Ansible; has sudo |
 
 - `systemd/turbopanel-instance.service` was removed — the canonical unit is templated by the `instance-launch` role in `../daemon`.
 - Logs: `journalctl -u turbopanel-instance -u turbopanel-caddy -u turbopanel-ui -f`
@@ -91,7 +91,7 @@ All TurboPanel runtime sockets live under **`/run/turbopanel/`** (on Linux, `/va
 | `TURBOPANEL_SOCKET_DIR` | `/run/turbopanel` | Directory when using the default filename |
 | `TURBOPANEL_SOCKET_DIAL` | `run/turbopanel/instance.sock` | Caddy `unix//` dial path (no leading slash) |
 | `TURBOPANEL_UI_MODE` | `static` | `dev` proxies to Expo; `static` serves exported UI |
-| `TURBOPANEL_UI_ROOT` | `../ui/dist` | Directory of `expo export --platform web` output |
+| `TURBOPANEL_UI_ROOT` | `/opt/turbopanel/share/ui` | Directory of `expo export --platform web` output (local manual dev typically sets `../ui/dist`) |
 | `TURBOPANEL_UI_SERVICE` | `turbopanel-ui` | Name of the Expo systemd unit on managed hosts (injected for orchestration; no instance API surface today) |
 | `CADDY_PORT` | `8443` | HTTPS listen port |
 | `CADDY_HTTP_PORT` | `8880` | Dev-only plaintext HTTP listener mirroring the HTTPS entrypoint |
@@ -101,7 +101,7 @@ All TurboPanel runtime sockets live under **`/run/turbopanel/`** (on Linux, `/va
 | `TURBOPANEL_TLS_EXTRA_SANS` | — | Comma-separated DNS names for the server cert (e.g. `turbopanel.lan`) |
 | `TURBOPANEL_PUBLIC_URLS` | — | Comma-separated list of URLs/hosts this control plane is reachable at (e.g. `https://panel.example.com,https://huey.lan:8443`). Persisted in the `setting` table by the admin API; read by `generate-self-signed-cert.mjs` to derive cert SANs. Also consulted by `resolvePublicBaseUrl` as the preferred install-command host. |
 
-Path resolution lives in `src/server-paths.ts`.
+Path resolution lives in `src/server-paths.ts`. It ships **FHS production defaults** — config `/etc/turbopanel`, state `/var/lib/turbopanel`, logs `/var/log/turbopanel`, runtime `/run/turbopanel`, static UI `/opt/turbopanel/share/ui` — and every path is env-overridable (`TURBOPANEL_CONFIG_DIR`, `TURBOPANEL_STATE_DIR`, `TURBOPANEL_LOG_DIR`, `TURBOPANEL_RUN_DIR`, `TURBOPANEL_UI_ROOT`, `TURBOPANEL_SOCKET(_DIR)`), so co-located dev keeps its checkout-relative behavior by injecting those vars via Ansible (`instance-launch`) or the documented manual commands — the module has no separate dev-mode branch. `resolveInstanceRuntimeConfigPaths` composes `<configDir>/instance/runtime.env` (+ `runtime.dev-vars`). Managed installs also run the daemon as **`turbopaneld.service`** from `/opt/turbopanel/bin/turbopaneld` (see `../daemon/AGENTS.md` → Filesystem layout & path model). The dev-vs-prod defaults and overrides are pinned by `src/server-paths.deno.test.ts` (`deno task test:paths`).
 
 ## Database (Drizzle + Postgres.js)
 
@@ -200,7 +200,7 @@ Note: `Deno.createHttpClient({ caCerts })` **adds** to the system roots (does no
 
 ### Production (static UI)
 
-When `TURBOPANEL_UI_MODE=static`, Caddy serves the exported web build from `ui/dist`, `isDeveloperSurfaceEnabled()` is disabled (see `src/dev-mode.ts`), and `turbopanel-ui.service` is stopped/disabled by the `instance-launch` role.
+When `TURBOPANEL_UI_MODE=static`, Caddy serves the exported web build from `TURBOPANEL_UI_ROOT` (default `/opt/turbopanel/share/ui`), `isDeveloperSurfaceEnabled()` is disabled (see `src/dev-mode.ts`), and `turbopanel-ui.service` is stopped/disabled by the `instance-launch` role.
 
 Build the static export locally or switch via the dev console **Switch to production build** (runs `ui-build` → `instance-build` → `instance-launch`). For a compiled instance binary, `deno task compile` in this repo produces `dist/turbopanel-instance` with all `--allow-*` flags baked in at compile time (mirrors the `turbopanel-instance.service` `ExecStart` permissions).
 
@@ -212,7 +212,7 @@ cd ../turbopanel
 TURBOPANEL_UI_ROOT=../ui/dist caddy run --config Caddyfile --adapter caddyfile
 ```
 
-Caddy serves files from `TURBOPANEL_UI_ROOT` (default `../ui/dist`) and falls back to `/index.html` for client-side routes (SPA), matching the Cloudflare Workers asset routing in `ui/wrangler.jsonc`.
+Caddy serves files from `TURBOPANEL_UI_ROOT` (default `/opt/turbopanel/share/ui`; the local manual dev example above sets `../ui/dist`) and falls back to `/index.html` for client-side routes (SPA), matching the Cloudflare Workers asset routing in `ui/wrangler.jsonc`.
 
 Set `CADDY_TLS_CERT` / `CADDY_TLS_KEY` only when overriding the default server leaf certificate paths.
 
@@ -355,7 +355,7 @@ Correlated outbound work uses `createRequestAndWait` / `waitForRequest` (see **E
 
 ### Public URL apply
 
-**Public URL apply**: `POST /api/admin/v1/instance/public-urls/apply` (Deno only) sends a `public-urls-update` WS message to the co-located daemon with the current URL list. The daemon writes `TURBOPANEL_PUBLIC_URLS` to `/opt/turbopanel/platform/config/instance/runtime.env` (not the checkout), re-runs the `instance-certs` Ansible role (regenerating the leaf cert with updated SANs, CA preserved), and reloads `turbopanel-caddy`. Replies with `public-urls-update-result { ok, error? }`. On Workers, the endpoint returns 422 (cert apply not applicable). Timeout: 60 s.
+**Public URL apply**: `POST /api/admin/v1/instance/public-urls/apply` (Deno only) sends a `public-urls-update` WS message to the co-located daemon with the current URL list. The daemon writes `TURBOPANEL_PUBLIC_URLS` to the instance config dir's `instance/runtime.env` (managed installs `/etc/turbopanel/instance/runtime.env`; co-located dev `/opt/turbopanel/platform/config/instance/runtime.env`) — never the checkout, re-runs the `instance-certs` Ansible role (regenerating the leaf cert with updated SANs, CA preserved), and reloads `turbopanel-caddy`. Replies with `public-urls-update-result { ok, error? }`. On Workers, the endpoint returns 422 (cert apply not applicable). Timeout: 60 s.
 
 ```mermaid
 sequenceDiagram
@@ -536,7 +536,7 @@ The **`mailer/`** consumer runs as **`turbopanel-mailer.service`** on managed ho
 
 | Variable | Runtime | Purpose |
 |---|---|---|
-| `TURBOPANEL_AMQP_URL` | Deno | RabbitMQ connection URL (managed installs: from `/opt/turbopanel/platform/config/rabbitmq/.rabbitmq_pass`; Tilt dev default `amqp://guest:guest@localhost:19828`) |
+| `TURBOPANEL_AMQP_URL` | Deno | RabbitMQ connection URL (managed installs: from `/etc/turbopanel/rabbitmq/.rabbitmq_pass`; co-located dev: `/opt/turbopanel/platform/config/rabbitmq/.rabbitmq_pass`; Tilt dev default `amqp://guest:guest@localhost:19828`) |
 | `TURBOPANEL_DATABASE_URL` | Deno mailer | Postgres for DB-backed SMTP settings (`setting` table); same URL as the instance |
 | `TURBOPANEL_REDIS_SOCKET` | Deno | Unix socket path used by the Daemon Cell Redis backend (`src/daemon/cell/redis/client.ts`); default `/run/turbopanel/redis.sock` |
 | `TURBOPANEL_BASE_URL` | Deno | Public base URL for verification links (falls back to request origin) |

@@ -28,12 +28,11 @@ describe('dev-sync archive selection', () => {
     )
   })
 
-  it('matches the run.sh source artifact allowlist', () => {
+  it('matches the dev checkout source allowlist', () => {
     expect([...DEV_SYNC_SOURCE_ALLOWLIST]).toEqual([
       'main.ts',
       'deno.json',
       'deno.lock',
-      'embedded-orchestration.ts',
       'src',
       'orchestration',
       'scripts',

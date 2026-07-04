@@ -6,8 +6,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 WRANGLER_PORT="${WRANGLER_DEV_PORT:-18787}"
-RUNTIME_ENV="${TURBOPANEL_INSTANCE_RUNTIME_ENV:-/opt/turbopanel/platform/config/instance/runtime.env}"
-RUNTIME_DEV_VARS="${TURBOPANEL_INSTANCE_RUNTIME_DEV_VARS:-/opt/turbopanel/platform/config/instance/runtime.dev-vars}"
+RUNTIME_ENV="${TURBOPANEL_INSTANCE_RUNTIME_ENV:-/etc/turbopanel/instance/runtime.env}"
+RUNTIME_DEV_VARS="${TURBOPANEL_INSTANCE_RUNTIME_DEV_VARS:-/etc/turbopanel/instance/runtime.dev-vars}"
 
 link_wrangler_env_file() {
   local src="$1"

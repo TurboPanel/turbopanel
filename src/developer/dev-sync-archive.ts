@@ -9,9 +9,8 @@
  * Explicit source allowlist for the dev-sync tarball.
  *
  * This mirrors the source artifact that `run.sh` / the `publish-daemon-trunk`
- * workflow ship (`main.ts deno.json deno.lock embedded-orchestration.ts src
- * orchestration scripts`) so an attached daemon receives exactly the same files
- * an official source install would — including the checked-in
+ * workflow ship (`main.ts deno.json deno.lock src orchestration scripts`) so an
+ * attached daemon receives the same source tree a dev checkout would — including
  * `orchestration/roles` tree (a subtree of `orchestration`).
  *
  * Building from an allowlist (rather than `.` minus a denylist) guarantees
@@ -21,7 +20,6 @@ export const DEV_SYNC_SOURCE_ALLOWLIST = [
   'main.ts',
   'deno.json',
   'deno.lock',
-  'embedded-orchestration.ts',
   'src',
   'orchestration',
   'scripts',

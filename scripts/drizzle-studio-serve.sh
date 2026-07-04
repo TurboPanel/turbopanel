@@ -26,7 +26,7 @@ load_database_url() {
   if [[ -n "${TURBOPANEL_DATABASE_URL:-}" ]]; then
     return 0
   fi
-  local runtime_env="${TURBOPANEL_INSTANCE_RUNTIME_ENV:-/opt/turbopanel/platform/config/instance/runtime.env}"
+  local runtime_env="${TURBOPANEL_INSTANCE_RUNTIME_ENV:-/etc/turbopanel/instance/runtime.env}"
   if [[ -f "$runtime_env" ]]; then
     local line
     line="$(grep -E '^TURBOPANEL_DATABASE_URL=' "$runtime_env" | tail -1 || true)"
