@@ -6,7 +6,7 @@ Minimal Hono app with dual runtimes: **Cloudflare Workers** (Wrangler) and **Den
 
 TurboPanel is named for speed; keep it fast on every path.
 
-- **Cache runtimes & deps.** Deno/Node/Caddy live under `/opt/turbopanel/runtimes/<tool>/current`; install only when the pinned version is missing. Don't re-download or re-`pnpm install` when nothing changed. Caddy follows the same `runtimes/caddy/<version>/caddy` + `current` layout (no `versions/` subdir); `scripts/download-caddy.mjs` and the `caddy` Ansible role are aligned.
+- **Cache runtimes & deps.** Deno/Node/Caddy live under `/opt/turbopanel/lib/runtime/<tool>/current`; install only when the pinned version is missing. Don't re-download or re-`pnpm install` when nothing changed. Caddy follows the same `lib/runtime/caddy/<version>/caddy` + `current` layout (no `versions/` subdir); `scripts/download-caddy.mjs` and the `caddy` Ansible role are aligned.
 - **Idempotent fast-paths.** Bootstrap/install steps must short-circuit when already satisfied (the Ansible roles do; mirror that in scripts).
 - **Avoid redundant work.** No polling loops or periodic git/`systemctl` forks unless essential (the version watcher and auto-update poll were removed for this reason).
 - **Parallelize** independent I/O (e.g. `Promise.all` for per-daemon fan-out, as in the admin routes).
@@ -18,13 +18,9 @@ The **daemon is the constant** installed on every TurboPanel-managed host and is
 
 ## Users, group & socket permissions
 
-- **`turbopanel`** (UID/GID **9999**): the **daemon user and git identity**; has passwordless sudo; owns the install tree and **all git operations** (`git pull`, Upgrade System fetch/reset). Not necessarily the human developer.
-- **Human developer** (whoever runs `./console`): added to the `turbopanel` group by the `dev-permissions` role and can edit source files via group ACL write. After any `git pull` or `pnpm install` (which run as `turbopanel`), the dev user can immediately edit the resulting files because the default ACL propagates `g:turbopanel:rwx` to new files.
-- **`turbopaneli`** (UID **9998**): runs the instance, Caddy, and the dev UI. Primary group is **`turbopaneli`** (GID **9998**); supplementary groups **`turbopanel`** (GID 9999) and **`turbopanelc`** (GID 9997). `turbopanel` grants shared checkout and socket-dir access; `turbopanelc` grants least-privilege access to `/run/turbopanel/redis.sock`. **No sudo**. It **reads** platform checkouts via group membership; it must not own source files (that blocks reclaiming ownership to `turbopanel`).
-- Co-located dev checkouts (`platform/daemon`, `platform/instance`, `platform/ui`) are **`2770 turbopanel:turbopanel`** with default ACL **`g:turbopanel:rwx`**. Per-service runtime state lives in **gitignored** checkout dirs: **`instance/.local`** (instance + Caddy), **`ui/.local`** + **`ui/.expo`** (Expo), plus matching **`.config`** trees. The **daemon** (`turbopanel`, UID 9999) uses **`/opt/turbopanel`** as `HOME`. The ownership normalizer skips checkout `.cache`/`.config`/`.local`/`.expo` so turbopaneli-owned runtime files are not reclaimed to `turbopanel`, and re-applies default ACLs on the source tree.
-- Git SSH uses `/opt/turbopanel/.ssh/github_ed25519` at mode **`0600`** only (SSH rejects `0640`); the ACL must not be applied to `.ssh/`. Upgrade runs `sudo -u turbopanel git`; never run git as `instance`.
-- Manual pulls: `sudo -u turbopanel git -C … pull` (or pull as the `turbopanel` login user directly). After any mistaken `turbopaneli`-user git, run `/usr/local/bin/turbopanel-normalize-dev-checkout <path>`. **Upgrade System** runs `turbopanel-normalize-dev-checkout <path> --prepare-reset` before `git reset` (clears turbopaneli-owned `.config`/`.local`/`.cache`/`.expo` that block reset), then normalizes source ownership and `--ensure-runtime-dirs` after reset.
-- `/run/turbopanel` is **`2770 turbopanel:turbopanel`** (group-writable + setgid) so the in-group `turbopaneli` user can bind the socket; new sockets stay in the `turbopanel` group. The instance hardens its socket to **`0660`** so the daemon (also group `turbopanel`) can connect.
+**Development (co-located):** a **single dev user** runs everything — no `turbopanel`, `turbopaneli`, or `turbopanelc` service accounts are created. Source repos live under `$HOME` (`~/daemon`, `~/instance`, `~/ui`, `~/website`) and are owned by the dev user. Mutable data (`/etc/turbopanel`, `/var/lib/turbopanel`, `/var/log/turbopanel`, `/run/turbopanel`) is dev-user-owned. Per-service runtime state may still live in gitignored checkout dirs (`instance/.local`, `ui/.local`, `ui/.expo`, `.config` trees). `/run/turbopanel` is owned by the dev user; the instance hardens its socket to **`0660`** owned by the dev user so the co-located daemon can connect.
+
+**Production:** dedicated service users — see `../daemon/AGENTS.md` (Filesystem layout) and the systemd table below for `turbopanel` / `turbopaneli` / `turbopanelc` ownership, ACLs, and `/run/turbopanel` **`2770 turbopanel:turbopanel`** (setgid).
 
 ## Documentation discipline
 
@@ -45,8 +41,8 @@ Unit tests use non-production secrets from `src/test-fixtures/secrets.ts` (`TEST
 - **Deno** — <https://docs.deno.com/runtime/getting_started/installation/>
 - **pnpm** — <https://pnpm.io/installation>
 - **Node.js** and **openssl** — required for cert generation (`scripts/*.mjs`); Node.js also used for Caddy download
-- Run `./console` from the `turbopanel-dev` checkout. The console installs Deno, clones the daemon, and drives the full dev stack via `scripts/bootstrap-orchestration.ts` + `scripts/install-daemon-systemd.sh` (shared orchestration under `/opt/turbopanel/runtimes/` — not `orchestration/runtime/venv`).
-- Managed/co-located installs: secret-bearing runtime env lives in the instance config dir (`runtime.env`, `runtime.dev-vars`) — **never** in the git checkout root. Standalone scripts (`scripts/generate-self-signed-cert.mjs`, `scripts/workers-serve.sh`, `scripts/drizzle-studio-serve.sh`) default to the FHS location **`/etc/turbopanel/instance/runtime.env`** when `TURBOPANEL_INSTANCE_RUNTIME_ENV` is unset. The daemon's `instance-launch` Ansible role now resolves the config dir per install type: **managed installs → `/etc/turbopanel/instance/`**, co-located dev (`turbopanel_dev_user` set) → `/opt/turbopanel/platform/config/instance/`. The unit injects `TURBOPANEL_INSTANCE_RUNTIME_ENV` accordingly. `scripts/generate-self-signed-cert.mjs` and daemon `public-urls-apply` read/write `runtime.env` there. Do not reintroduce checkout-root `.env` / `.dev.vars` generation.
+- Run `./console` from the `turbopanel-dev` checkout. The console installs Deno, clones the daemon, and drives the full dev stack via `scripts/bootstrap-orchestration.ts` + `scripts/install-daemon-systemd.sh` (shared orchestration under `/opt/turbopanel/lib/runtime/` — not `orchestration/runtime/venv`).
+- Managed/co-located installs: secret-bearing runtime env lives in the instance config dir (`runtime.env`, `runtime.dev-vars`) — **never** in the git checkout root. Standalone scripts (`scripts/generate-self-signed-cert.mjs`, `scripts/workers-serve.sh`, `scripts/drizzle-studio-serve.sh`) default to the FHS location **`/etc/turbopanel/instance/runtime.env`** when `TURBOPANEL_INSTANCE_RUNTIME_ENV` is unset. Both managed and co-located dev use **`/etc/turbopanel/instance/`** (dev-user-owned in development). The unit injects `TURBOPANEL_INSTANCE_RUNTIME_ENV` accordingly. `scripts/generate-self-signed-cert.mjs` and daemon `public-urls-apply` read/write `runtime.env` there. Do not reintroduce checkout-root `.env` / `.dev.vars` generation.
 - `pnpm install` — installs Hono and Wrangler into `node_modules/` for Workers bundling
 - Local **Tilt** Wrangler secrets still live in `dev/.env` → `sync-env.sh` → instance `.dev.vars`; that path is separate from managed Ansible installs above.
 - `pnpm dev` (wrangler) still runs the **Cloudflare Workers** path for full-stack testing — unchanged. **`wrangler.jsonc` `dev.ip` is `0.0.0.0`** so Docker Caddy (`host.docker.internal`) can reach the dev server; default localhost-only bind causes Caddy **502**s.
@@ -54,16 +50,16 @@ Unit tests use non-production secrets from `src/test-fixtures/secrets.ts` (`TEST
 - `pnpm cf-typegen` — regenerate `worker-configuration.d.ts`
 - The Ansible `instance-certs` / `caddy` / `node-runtime` roles supersede the standalone `pnpm cert:generate` / `pnpm caddy:install` scripts for managed hosts (the scripts remain for manual use).
 
-### Systemd (all dev services run as their users)
+### Systemd (dev services run as the dev user; production uses dedicated users)
 
 Installed and managed by the daemon via the `instance-launch` Ansible role:
 
-| Unit | User | Notes |
-|---|---|---|
-| `turbopanel-instance.service` | `instance:turbopanel` | Deno instance on the Unix socket |
-| `turbopanel-caddy.service` | `instance:turbopanel` | TLS + reverse proxy on `:8443` (`GOMAXPROCS=1`, `CPUQuota=100%`) |
-| `turbopanel-ui.service` | `instance:turbopanel` | Expo web dev server (`:8081`, dev only) |
-| `turbopaneld.service` | `turbopanel:turbopanel` | runs Ansible; has sudo |
+| Unit | User (dev) | User (production) | Notes |
+|---|---|---|---|
+| `turbopanel-instance.service` | current dev user | `turbopaneli:turbopanel` | Deno instance on the Unix socket |
+| `turbopanel-caddy.service` | current dev user | `turbopaneli:turbopanel` | TLS + reverse proxy on `:8443` (`GOMAXPROCS=1`, `CPUQuota=100%`) |
+| `turbopanel-ui.service` | current dev user | `turbopaneli:turbopanel` | Expo web dev server (`:8081`, dev only) |
+| `turbopaneld.service` | current dev user | `turbopanel:turbopanel` | runs Ansible; has sudo (production only) |
 
 - `systemd/turbopanel-instance.service` was removed — the canonical unit is templated by the `instance-launch` role in `../daemon`.
 - Logs: `journalctl -u turbopanel-instance -u turbopanel-caddy -u turbopanel-ui -f`
@@ -75,11 +71,11 @@ In Deno mode (development and production), the Hono instance listens on a **Unix
 
 ### Directory layout
 
-All TurboPanel runtime sockets live under **`/run/turbopanel/`** (on Linux, `/var/run` symlinks to `/run`). The directory is **`2770 turbopanel:turbopanel`** (setgid) so the `instance` user (in group `turbopanel`) can bind:
+All TurboPanel runtime sockets live under **`/run/turbopanel/`** (on Linux, `/var/run` symlinks to `/run`). In **development** the directory is owned by the dev user. In **production** it is **`2770 turbopanel:turbopanel`** (setgid) so the `turbopaneli` user (in group `turbopanel`) can bind:
 
 | Socket file | Service |
 |---|---|
-| `/run/turbopanel/instance.sock` | Hono instance (bound by `instance`, mode `0660`, group `turbopanel`) |
+| `/run/turbopanel/instance.sock` | Hono instance (dev: mode `0660`, dev user; prod: mode `0660`, group `turbopanel`) |
 | `/run/turbopanel/postgres/.s.PGSQL.5432` | PostgreSQL 18 (Docker bind-mount) |
 | `/run/turbopanel/<name>.sock` | Reserved for future services |
 
@@ -101,7 +97,7 @@ All TurboPanel runtime sockets live under **`/run/turbopanel/`** (on Linux, `/va
 | `TURBOPANEL_TLS_EXTRA_SANS` | — | Comma-separated DNS names for the server cert (e.g. `turbopanel.lan`) |
 | `TURBOPANEL_PUBLIC_URLS` | — | Comma-separated list of URLs/hosts this control plane is reachable at (e.g. `https://panel.example.com,https://huey.lan:8443`). Persisted in the `setting` table by the admin API; read by `generate-self-signed-cert.mjs` to derive cert SANs. Also consulted by `resolvePublicBaseUrl` as the preferred install-command host. |
 
-Path resolution lives in `src/server-paths.ts`. It ships **FHS production defaults** — config `/etc/turbopanel`, state `/var/lib/turbopanel`, logs `/var/log/turbopanel`, runtime `/run/turbopanel`, static UI `/opt/turbopanel/share/ui` — and every path is env-overridable (`TURBOPANEL_CONFIG_DIR`, `TURBOPANEL_STATE_DIR`, `TURBOPANEL_LOG_DIR`, `TURBOPANEL_RUN_DIR`, `TURBOPANEL_UI_ROOT`, `TURBOPANEL_SOCKET(_DIR)`), so co-located dev keeps its checkout-relative behavior by injecting those vars via Ansible (`instance-launch`) or the documented manual commands — the module has no separate dev-mode branch. `resolveInstanceRuntimeConfigPaths` composes `<configDir>/instance/runtime.env` (+ `runtime.dev-vars`). Managed installs also run the daemon as **`turbopaneld.service`** from `/opt/turbopanel/bin/turbopaneld` (see `../daemon/AGENTS.md` → Filesystem layout & path model). The dev-vs-prod defaults and overrides are pinned by `src/server-paths.deno.test.ts` (`deno task test:paths`).
+Path resolution lives in `src/server-paths.ts`. It ships **FHS defaults** — config `/etc/turbopanel`, state `/var/lib/turbopanel`, logs `/var/log/turbopanel`, runtime `/run/turbopanel`, static UI `/opt/turbopanel/share/ui` — and every path is env-overridable (`TURBOPANEL_CONFIG_DIR`, `TURBOPANEL_STATE_DIR`, `TURBOPANEL_LOG_DIR`, `TURBOPANEL_RUN_DIR`, `TURBOPANEL_UI_ROOT`, `TURBOPANEL_SOCKET(_DIR)`). Co-located dev uses the same FHS mutable paths by default, all **dev-user-owned**; source repos live under `$HOME` (`~/daemon`, `~/instance`, `~/ui`, `~/website`). The module has no separate dev-mode branch — Ansible (`instance-launch`) and manual commands may override individual paths via env when needed. `resolveInstanceRuntimeConfigPaths` composes `<configDir>/instance/runtime.env` (+ `runtime.dev-vars`). Managed production installs also run the daemon as **`turbopaneld.service`** from `/opt/turbopanel/bin/turbopaneld` (see `../daemon/AGENTS.md` → Filesystem layout & path model). Defaults and overrides are pinned by `src/server-paths.deno.test.ts` (`deno task test:paths`).
 
 ## Database (Drizzle + Postgres.js)
 
@@ -155,7 +151,7 @@ reverse_proxy unix//run/turbopanel/instance.sock
 
 ### Development
 
-The daemon's `runtime-sockets` role (and `scripts/ensure-socket-dir.mjs` for manual runs) ensures `/run/turbopanel` exists as `2770 turbopanel:turbopanel`, using passwordless `sudo` when needed. After bind, the instance hardens the socket file to `0660` (owner+group only) so the daemon can connect.
+The daemon's `runtime-sockets` role (and `scripts/ensure-socket-dir.mjs` for manual runs) ensures `/run/turbopanel` exists and is owned by the dev user in development (**`2770 turbopanel:turbopanel`** in production), using passwordless `sudo` when needed. After bind, the instance hardens the socket file to `0660` (owner+group only) so the daemon can connect.
 
 The instance Deno process runs with scoped permissions (see the `instance-launch` unit template): `--allow-env --allow-sys=networkInterfaces --allow-read=/run/turbopanel,<daemon dir>,<instance dir> --allow-write=/run/turbopanel --allow-run=git,systemctl,tar` (`tar` is needed for the dev-sync tarball). TCP dev Postgres adds `--allow-net=127.0.0.1:5432`.
 
@@ -176,7 +172,7 @@ In **dev** mode, the Expo upstream proxy must forward `Host {http.request.host}`
 
 ### Development
 
-Caddy/cert installs are handled by the daemon's `caddy` and `instance-certs` Ansible roles; `turbopanel-caddy.service` runs Caddy as `instance`.
+Caddy/cert installs are handled by the daemon's `caddy` and `instance-certs` Ansible roles; `turbopanel-caddy.service` runs as the **dev user** in development (`turbopaneli` in production).
 
 - Entrypoint: `https://<host>:8443` (Caddy, defined in `Caddyfile`) — binds all interfaces; use `localhost` or the machine's LAN IP.
 - Self-hosted TLS uses a **platform CA** (`certs/ca.crt` + `certs/ca.key`) that signs a **server leaf cert** (`certs/self-signed.crt` + `.key`) presented by Caddy (`auto_https off`, no Let's Encrypt). **`auto_https off` is mandatory and must never be removed.** Caddy must never auto-provision certs via ACME or on-demand TLS. All cert issuance goes through `scripts/generate-self-signed-cert.mjs` (self-hosted, platform CA) or an explicitly-configured publicly-trusted cert. The `instance-certs-apply.yml` playbook is the runtime cert-regen path triggered by the admin public-URL apply action. The CA is long-lived and can issue additional certificates later; daemons fetch it from `GET /api/daemon/v1/instance/ca`. Trust `certs/ca.crt` in browsers/OS to avoid warnings.
@@ -355,7 +351,7 @@ Correlated outbound work uses `createRequestAndWait` / `waitForRequest` (see **E
 
 ### Public URL apply
 
-**Public URL apply**: `POST /api/admin/v1/instance/public-urls/apply` (Deno only) sends a `public-urls-update` WS message to the co-located daemon with the current URL list. The daemon writes `TURBOPANEL_PUBLIC_URLS` to the instance config dir's `instance/runtime.env` (managed installs `/etc/turbopanel/instance/runtime.env`; co-located dev `/opt/turbopanel/platform/config/instance/runtime.env`) — never the checkout, re-runs the `instance-certs` Ansible role (regenerating the leaf cert with updated SANs, CA preserved), and reloads `turbopanel-caddy`. Replies with `public-urls-update-result { ok, error? }`. On Workers, the endpoint returns 422 (cert apply not applicable). Timeout: 60 s.
+**Public URL apply**: `POST /api/admin/v1/instance/public-urls/apply` (Deno only) sends a `public-urls-update` WS message to the co-located daemon with the current URL list. The daemon writes `TURBOPANEL_PUBLIC_URLS` to **`/etc/turbopanel/instance/runtime.env`** — never the checkout, re-runs the `instance-certs` Ansible role (regenerating the leaf cert with updated SANs, CA preserved), and reloads `turbopanel-caddy`. Replies with `public-urls-update-result { ok, error? }`. On Workers, the endpoint returns 422 (cert apply not applicable). Timeout: 60 s.
 
 ```mermaid
 sequenceDiagram
@@ -425,7 +421,7 @@ Sessions are **opaque DB-backed tokens** with a signed cookie:
 
 #### Host PAM install gate (Deno only, install wizard)
 
-On the **Deno runtime**, initial setup is gated by host PAM — **`root`** or any user in the **`sudo` / `wheel` / `admin`** groups. Host auth **never** receives a session or cookie. The instance process runs as **`turbopaneli`**; it runs **`pamtester login "$username" authenticate`** via **`sudo -n`** and a shell pipe (see `src/client/authn/credentials.ts`). **`pamtester`** must be installed on managed hosts (the daemon `daemon-prereqs` role). Sudoers: **`turbopaneli`** gets `NOPASSWD: /usr/bin/pamtester login * authenticate` in `instance-launch` `upgrade-sudoers.yml`. The instance systemd unit must grant **`--allow-run=/bin/sh,sudo,/usr/bin/sudo`**.
+On the **Deno runtime**, initial setup is gated by host PAM — **`root`** or any user in the **`sudo` / `wheel` / `admin`** groups. Host auth **never** receives a session or cookie. In **production** the instance process runs as **`turbopaneli`**; in **development** it runs as the dev user. It runs **`pamtester login "$username" authenticate`** via **`sudo -n`** and a shell pipe (see `src/client/authn/credentials.ts`). **`pamtester`** must be installed on managed hosts (the daemon `daemon-prereqs` role). Sudoers: **`turbopaneli`** gets `NOPASSWD: /usr/bin/pamtester login * authenticate` in `instance-launch` `upgrade-sudoers.yml` (production). The instance systemd unit must grant **`--allow-run=/bin/sh,sudo,/usr/bin/sudo`**.
 
 **Dev mode bypass (`TURBOPANEL_DEV_HOST_AUTH=group-only`):** When this env var is set, `verifyInstallHostCredentials` skips `verifyPamLogin` entirely. The password field must still be non-empty (the UI requires it), but it is not verified against PAM. Group membership (`sudo`/`wheel`/`admin`) is still checked via `id -nG`. This var is injected automatically by `dev/scripts/instance-serve.sh` in Tilt dev — it is never set on managed production hosts. `pamtester` is only required on managed hosts (installed by the daemon `daemon-prereqs` role).
 
@@ -536,7 +532,7 @@ The **`mailer/`** consumer runs as **`turbopanel-mailer.service`** on managed ho
 
 | Variable | Runtime | Purpose |
 |---|---|---|
-| `TURBOPANEL_AMQP_URL` | Deno | RabbitMQ connection URL (managed installs: from `/etc/turbopanel/rabbitmq/.rabbitmq_pass`; co-located dev: `/opt/turbopanel/platform/config/rabbitmq/.rabbitmq_pass`; Tilt dev default `amqp://guest:guest@localhost:19828`) |
+| `TURBOPANEL_AMQP_URL` | Deno | RabbitMQ connection URL (from `/etc/turbopanel/rabbitmq/.rabbitmq_pass`; Tilt dev default `amqp://guest:guest@localhost:19828`) |
 | `TURBOPANEL_DATABASE_URL` | Deno mailer | Postgres for DB-backed SMTP settings (`setting` table); same URL as the instance |
 | `TURBOPANEL_REDIS_SOCKET` | Deno | Unix socket path used by the Daemon Cell Redis backend (`src/daemon/cell/redis/client.ts`); default `/run/turbopanel/redis.sock` |
 | `TURBOPANEL_BASE_URL` | Deno | Public base URL for verification links (falls back to request origin) |

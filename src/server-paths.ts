@@ -1,5 +1,3 @@
-import { compatLogWarn } from './log-compat.ts'
-
 /** Canonical runtime socket directory ( /var/run symlinks to /run on Linux ). */
 export const DEFAULT_SOCKET_DIR = '/run/turbopanel'
 
@@ -186,25 +184,16 @@ export async function prepareInstanceSocket(socketPath: string): Promise<void> {
   }
 }
 
-/** Restrict the bound socket to owner+group read/write (0660). */
+/**
+ * Restrict the bound socket to owner+group read/write (0660).
+ *
+ * Co-located dev runs the instance stack as the dev user; managed installs use
+ * turbopaneli with supplementary group turbopanel. `/run/turbopanel` is 2770
+ * with setgid so both sides can bind and connect.
+ */
 export async function hardenInstanceSocket(
   socketPath: string,
   mode: number = INSTANCE_SOCKET_MODE,
 ): Promise<void> {
   await Deno.chmod(socketPath, mode)
-
-  const devUser = Deno.env.get('TURBOPANEL_DEV_USER')?.trim()
-  if (!devUser) return
-
-  const setfacl = await new Deno.Command('setfacl', {
-    args: ['-m', `u:${devUser}:rw`, socketPath],
-    stdout: 'null',
-    stderr: 'null',
-  }).output()
-  if (!setfacl.success) {
-    compatLogWarn(
-      'instance',
-      `Could not grant ${devUser} access to ${socketPath} via setfacl`,
-    )
-  }
 }

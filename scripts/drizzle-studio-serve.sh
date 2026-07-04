@@ -22,21 +22,6 @@ if [[ "$UI_MODE" == static ]]; then
   exit 0
 fi
 
-load_database_url() {
-  if [[ -n "${TURBOPANEL_DATABASE_URL:-}" ]]; then
-    return 0
-  fi
-  local runtime_env="${TURBOPANEL_INSTANCE_RUNTIME_ENV:-/etc/turbopanel/instance/runtime.env}"
-  if [[ -f "$runtime_env" ]]; then
-    local line
-    line="$(grep -E '^TURBOPANEL_DATABASE_URL=' "$runtime_env" | tail -1 || true)"
-    if [[ -n "$line" ]]; then
-      export TURBOPANEL_DATABASE_URL="${line#TURBOPANEL_DATABASE_URL=}"
-    fi
-  fi
-}
-
-load_database_url
 db_connect_build_database_url drizzle-studio-serve
 
 "$NODE" "$ROOT/scripts/write-drizzle-studio-config.mjs" "$TURBOPANEL_DATABASE_URL" "$CONFIG"

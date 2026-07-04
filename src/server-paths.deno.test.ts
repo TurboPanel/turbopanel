@@ -17,18 +17,14 @@ import {
 } from './server-paths.ts'
 
 // The instance path module ships FHS production defaults and stays fully
-// env-overridable so co-located dev (which injects checkout-relative paths via
-// Ansible / the documented manual commands) keeps its historical behavior.
-// These tests pin both the production defaults and the dev overrides.
+// env-overridable. Co-located dev injects the same FHS tree via instance-launch
+// (config under /etc/turbopanel, state/logs under /var/lib|log/turbopanel, UI
+// root at /opt/turbopanel/share/ui) while source checkouts live in $HOME.
 
-// Simulated co-located dev environment (checkout-relative paths, matching what
-// the daemon's instance-launch role injects on a dev host).
+// Simulated co-located dev environment — matches what instance-launch injects.
 const DEV_ENV = {
-  TURBOPANEL_CONFIG_DIR: '/opt/turbopanel/platform/config',
-  TURBOPANEL_STATE_DIR: '/opt/turbopanel/platform/instance/.local/state',
-  TURBOPANEL_LOG_DIR: '/opt/turbopanel/platform/instance/logs',
-  TURBOPANEL_RUN_DIR: '/run/turbopanel',
-  TURBOPANEL_UI_ROOT: '/opt/turbopanel/platform/ui/dist',
+  TURBOPANEL_CONFIG_DIR: '/etc/turbopanel',
+  TURBOPANEL_DAEMON_STATE_DIR: '/var/lib/turbopanel',
 } as const
 
 Deno.test('production defaults resolve the FHS tree with an empty env', () => {
@@ -58,32 +54,20 @@ Deno.test('production runtime config paths compose under /etc/turbopanel', () =>
   )
 })
 
-Deno.test('dev overrides redirect every path to the co-located checkout', () => {
-  assertEquals(
-    resolveInstanceConfigDir(DEV_ENV),
-    '/opt/turbopanel/platform/config',
-  )
-  assertEquals(
-    resolveStateDir(DEV_ENV),
-    '/opt/turbopanel/platform/instance/.local/state',
-  )
-  assertEquals(
-    resolveLogDir(DEV_ENV),
-    '/opt/turbopanel/platform/instance/logs',
-  )
+Deno.test('co-located dev resolves the same FHS tree from injected config', () => {
+  assertEquals(resolveInstanceConfigDir(DEV_ENV), '/etc/turbopanel')
+  assertEquals(resolveStateDir(DEV_ENV), '/var/lib/turbopanel')
+  assertEquals(resolveLogDir(DEV_ENV), '/var/log/turbopanel')
   assertEquals(resolveRunDir(DEV_ENV), '/run/turbopanel')
-  assertEquals(resolveUiRoot(DEV_ENV), '/opt/turbopanel/platform/ui/dist')
+  assertEquals(resolveUiRoot(DEV_ENV), '/opt/turbopanel/share/ui')
 })
 
-Deno.test('dev overrides move runtime config env files under the dev config dir', () => {
+Deno.test('co-located dev runtime config lives under /etc/turbopanel', () => {
   const paths = resolveInstanceRuntimeConfigPaths(DEV_ENV)
-  assertEquals(
-    paths.runtimeEnvPath,
-    '/opt/turbopanel/platform/config/instance/runtime.env',
-  )
+  assertEquals(paths.runtimeEnvPath, '/etc/turbopanel/instance/runtime.env')
   assertEquals(
     paths.runtimeDevVarsPath,
-    '/opt/turbopanel/platform/config/instance/runtime.dev-vars',
+    '/etc/turbopanel/instance/runtime.dev-vars',
   )
 })
 

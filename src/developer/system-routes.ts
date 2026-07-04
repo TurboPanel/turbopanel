@@ -38,22 +38,34 @@ export type UpgradeStatus = {
 
 const TRUNK_BRANCH = Deno.env.get('TURBOPANEL_TRUNK_BRANCH')?.trim() || 'trunk'
 const INSTANCE_SERVICE = Deno.env.get('TURBOPANEL_INSTANCE_SERVICE')?.trim()
-const TURBOPANEL_USER = Deno.env.get('TURBOPANEL_USER')?.trim() || 'turbopanel'
-const NORMALIZE_CHECKOUT = '/usr/local/bin/turbopanel-normalize-dev-checkout'
+const DEV_USER = Deno.env.get('TURBOPANEL_DEV_USER')?.trim() ?? ''
+/** Managed production installs run git as the dedicated turbopanel service user. */
+const PRODUCTION_GIT_USER = Deno.env.get('TURBOPANEL_USER')?.trim() || 'turbopanel'
 
 let upgrading = false
 
-/** Run git as turbopanel (9999) so the deploy key stays mode 0600 and checkouts stay editable. */
+function usesDirectGit(): boolean {
+  return DEV_USER.length > 0
+}
+
+/** Run git as the dev user directly, or via sudo -u on managed production hosts. */
 async function git(
   repoRoot: string,
   args: string[],
 ): Promise<{ success: boolean; stdout: string; stderr: string }> {
   try {
-    const command = new Deno.Command('sudo', {
-      args: ['-u', TURBOPANEL_USER, 'git', '-C', repoRoot, ...args],
-      stdout: 'piped',
-      stderr: 'piped',
-    })
+    const gitArgs = ['-C', repoRoot, ...args]
+    const command = usesDirectGit()
+      ? new Deno.Command('git', {
+        args: gitArgs,
+        stdout: 'piped',
+        stderr: 'piped',
+      })
+      : new Deno.Command('sudo', {
+        args: ['-u', PRODUCTION_GIT_USER, 'git', ...gitArgs],
+        stdout: 'piped',
+        stderr: 'piped',
+      })
     const out = await command.output()
     const decoder = new TextDecoder()
     return {
@@ -65,38 +77,6 @@ async function git(
     const message = err instanceof Error ? err.message : String(err)
     return { success: false, stdout: '', stderr: message }
   }
-}
-
-/** After git reset, re-home any instance-owned source files back to turbopanel (9999). */
-async function runCheckoutHelper(
-  repoRoot: string,
-  mode?: '--prepare-reset' | '--ensure-runtime-dirs',
-): Promise<{ ok: true } | { ok: false; error: string }> {
-  const args = mode
-    ? [NORMALIZE_CHECKOUT, repoRoot, mode]
-    : [NORMALIZE_CHECKOUT, repoRoot]
-  try {
-    const out = await new Deno.Command('sudo', {
-      args,
-      stdout: 'piped',
-      stderr: 'piped',
-    }).output()
-    if (out.success) return { ok: true }
-    return {
-      ok: false,
-      error: new TextDecoder().decode(out.stderr).trim() ||
-        (mode ? `${mode} failed` : 'normalize checkout failed'),
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    return { ok: false, error: message }
-  }
-}
-
-async function normalizeCheckout(
-  repoRoot: string,
-): Promise<{ ok: true } | { ok: false; error: string }> {
-  return await runCheckoutHelper(repoRoot)
 }
 
 const RUNTIME_DIR_PREFIXES = ['.config/', '.local/', '.cache/'] as const
@@ -154,14 +134,6 @@ async function syncRepoToTrunk(
   repoRoot: string,
   label: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const prepared = await runCheckoutHelper(repoRoot, '--prepare-reset')
-  if (!prepared.ok) {
-    return {
-      ok: false,
-      error: `${label} checkout prepare failed: ${prepared.error}`,
-    }
-  }
-
   const fetched = await git(repoRoot, ['fetch', 'origin', TRUNK_BRANCH])
   if (!fetched.success) {
     return {
@@ -175,22 +147,6 @@ async function syncRepoToTrunk(
     return {
       ok: false,
       error: `${label} git reset failed: ${reset.stderr}`,
-    }
-  }
-
-  const normalized = await normalizeCheckout(repoRoot)
-  if (!normalized.ok) {
-    return {
-      ok: false,
-      error: `${label} checkout permission fix failed: ${normalized.error}`,
-    }
-  }
-
-  const runtime = await runCheckoutHelper(repoRoot, '--ensure-runtime-dirs')
-  if (!runtime.ok) {
-    return {
-      ok: false,
-      error: `${label} runtime dir setup failed: ${runtime.error}`,
     }
   }
 

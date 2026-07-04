@@ -18,7 +18,6 @@ import {
 import { createLicense } from './license.ts'
 import { hashPassword } from './password.ts'
 import { SUPERADMIN_ROLE } from './session-store.ts'
-import { isDeveloperSurfaceEnabled } from '../../dev-mode.ts'
 import { compatLogInfo, compatLogWarn } from '../../log-compat.ts'
 import {
   isEmailActiveForRuntime,
@@ -113,11 +112,8 @@ export async function insertOwnerGrants(
     })
 }
 
-/** Ultimate co-located dev fallback: the daemon checkout's state dir. */
-const DAEMON_CHECKOUT_STATE_DIR = '/opt/turbopanel/platform/daemon/state'
-
-/** Production-shaped FHS state dir for persistent daemon identity. */
-const PROD_DAEMON_STATE_DIR = '/var/lib/turbopanel'
+/** Production FHS state dir for persistent daemon identity (dev and managed). */
+const DEFAULT_DAEMON_STATE_DIR = '/var/lib/turbopanel'
 
 function stripTrailingSlash(path: string): string {
   return path.replace(/\/+$/, '')
@@ -128,12 +124,8 @@ function stripTrailingSlash(path: string): string {
  * (`license.id` / `license.token`).
  *
  * Mirrors the daemon's `resolveServerIdentityDir` precedence: honor
- * `TURBOPANEL_DAEMON_STATE_DIR` (the var the `instance-launch` template
- * injects), then the generic `TURBOPANEL_STATE_DIR`. When neither is set the
- * production default is the FHS state dir (`/var/lib/turbopanel`); the
- * co-located dev checkout path is used only in development, keyed off the same
- * dev/prod signal as the developer surface (`TURBOPANEL_UI_MODE`) rather than
- * probing directory existence — so fresh FHS installs read/write consistently.
+ * `TURBOPANEL_DAEMON_STATE_DIR` (injected by `instance-launch`), then
+ * `TURBOPANEL_STATE_DIR`, else the FHS default (`/var/lib/turbopanel`).
  */
 function resolveColocatedLicenseCredentialsDir(): string {
   if (typeof Deno !== 'undefined') {
@@ -142,12 +134,8 @@ function resolveColocatedLicenseCredentialsDir(): string {
 
     const stateOverride = Deno.env.get('TURBOPANEL_STATE_DIR')?.trim()
     if (stateOverride) return stripTrailingSlash(stateOverride)
-
-    return isDeveloperSurfaceEnabled()
-      ? DAEMON_CHECKOUT_STATE_DIR
-      : PROD_DAEMON_STATE_DIR
   }
-  return DAEMON_CHECKOUT_STATE_DIR
+  return DEFAULT_DAEMON_STATE_DIR
 }
 
 /** True once an org has a name and at least one superadmin account exists. */
@@ -420,12 +408,6 @@ async function readColocatedDiskLicenseId(): Promise<string | null> {
   if (typeof Deno === 'undefined') return null
 
   const candidates = [resolveColocatedLicenseCredentialsDir()]
-  const instanceStateOverride = Deno.env.get('TURBOPANEL_DAEMON_STATE_DIR')?.trim()
-  if (instanceStateOverride) {
-    const normalized = stripTrailingSlash(instanceStateOverride)
-    candidates.push(normalized, `${normalized}/state`)
-  }
-  candidates.push(PROD_DAEMON_STATE_DIR, DAEMON_CHECKOUT_STATE_DIR)
 
   for (const dir of new Set(candidates)) {
     try {

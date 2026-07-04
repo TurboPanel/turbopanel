@@ -6,8 +6,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 WRANGLER_PORT="${WRANGLER_DEV_PORT:-18787}"
-RUNTIME_ENV="${TURBOPANEL_INSTANCE_RUNTIME_ENV:-/etc/turbopanel/instance/runtime.env}"
-RUNTIME_DEV_VARS="${TURBOPANEL_INSTANCE_RUNTIME_DEV_VARS:-/etc/turbopanel/instance/runtime.dev-vars}"
+# shellcheck source=scripts/runtime-env-paths.sh
+source "$ROOT/scripts/runtime-env-paths.sh"
+RUNTIME_ENV="$(runtime_env_path)"
+RUNTIME_DEV_VARS="$(runtime_dev_vars_path)"
 
 link_wrangler_env_file() {
   local src="$1"
@@ -17,7 +19,8 @@ link_wrangler_env_file() {
 }
 
 # Wrangler dev reads checkout-root `.env` and `.dev.vars`; managed secrets live
-# under platform config (runtime.env / runtime.dev-vars).
+# under the FHS config dir (runtime.env / runtime.dev-vars), resolved via
+# runtime-env-paths.sh from injected vars.
 link_wrangler_env_file "$RUNTIME_ENV" "$ROOT/.env"
 link_wrangler_env_file "$RUNTIME_DEV_VARS" "$ROOT/.dev.vars"
 

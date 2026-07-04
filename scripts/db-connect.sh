@@ -10,7 +10,7 @@ db_connect_init() {
   fi
   DRIZZLE_KIT="$ROOT/node_modules/drizzle-kit/bin.cjs"
   INSTANCE_UNIT="${TURBOPANEL_INSTANCE_SERVICE:-turbopanel-instance}"
-  NODE="${TURBOPANEL_NODE:-/opt/turbopanel/lib/runtime/node/current/bin/node}"
+  NODE="${TURBOPANEL_NODE:-/usr/local/bin/node}"
   DENO="${TURBOPANEL_DENO:-/opt/turbopanel/lib/runtime/deno/current/deno}"
 
   if [[ ! -f "$DRIZZLE_KIT" ]]; then
@@ -19,7 +19,13 @@ db_connect_init() {
   fi
 
   if [[ ! -x "$NODE" ]]; then
+    NODE="/opt/turbopanel/lib/runtime/node/current/bin/node"
+  fi
+  if [[ ! -x "$NODE" ]]; then
     NODE="$(command -v node || true)"
+  fi
+  if [[ ! -x "$DENO" ]]; then
+    DENO="$(command -v deno || true)"
   fi
   if [[ -z "$NODE" ]]; then
     echo "$caller: node not found (set TURBOPANEL_NODE)" >&2
@@ -46,8 +52,34 @@ db_connect_load_pg_env_from_unit() {
   return 1
 }
 
+db_connect_load_from_runtime_env() {
+  local caller="${1:-db-connect}"
+  if [[ -n "${TURBOPANEL_DATABASE_URL:-}" ]]; then
+    return 0
+  fi
+  # shellcheck source=scripts/runtime-env-paths.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/runtime-env-paths.sh"
+  local runtime_env
+  runtime_env="$(runtime_env_path)"
+  if [[ ! -f "$runtime_env" ]]; then
+    return 1
+  fi
+  local line
+  line="$(grep -E '^TURBOPANEL_DATABASE_URL=' "$runtime_env" | tail -1 || true)"
+  if [[ -n "$line" ]]; then
+    export TURBOPANEL_DATABASE_URL="${line#TURBOPANEL_DATABASE_URL=}"
+    return 0
+  fi
+  return 1
+}
+
 db_connect_build_database_url() {
   local caller="${1:-db-connect}"
+  if [[ -n "${TURBOPANEL_DATABASE_URL:-}" ]]; then
+    export TURBOPANEL_DATABASE_URL
+    return 0
+  fi
+  db_connect_load_from_runtime_env "$caller" || true
   if [[ -n "${TURBOPANEL_DATABASE_URL:-}" ]]; then
     export TURBOPANEL_DATABASE_URL
     return 0

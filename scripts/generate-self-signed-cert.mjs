@@ -14,14 +14,13 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSy
 import { networkInterfaces } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { resolveRuntimeEnvPath } from './runtime-env-paths.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, '..')
 
 function loadEnvFile() {
-  const envPath =
-    process.env.TURBOPANEL_INSTANCE_RUNTIME_ENV?.trim() ||
-    '/etc/turbopanel/instance/runtime.env'
+  const envPath = resolveRuntimeEnvPath()
   if (!existsSync(envPath)) return
 
   for (const line of readFileSync(envPath, 'utf-8').split('\n')) {
@@ -227,7 +226,7 @@ function removeTempServerFiles() {
   }
 }
 
-/** Caddy reads keys as turbopaneli:turbopanel — group must be able to read. */
+/** Caddy reads keys as the instance-stack user — group must be able to read. */
 function normalizeTlsKeyPermissions() {
   for (const file of [caKeyPath, keyPath]) {
     if (existsSync(file)) chmodSync(file, 0o640)
