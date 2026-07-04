@@ -6,7 +6,7 @@ Minimal Hono app with dual runtimes: **Cloudflare Workers** (Wrangler) and **Den
 
 TurboPanel is named for speed; keep it fast on every path.
 
-- **Cache runtimes & deps.** Deno/Node/Caddy live under `/opt/turbopanel/lib/runtime/<tool>/current`; install only when the pinned version is missing. Don't re-download or re-`pnpm install` when nothing changed. Caddy follows the same `lib/runtime/caddy/<version>/caddy` + `current` layout (no `versions/` subdir); `scripts/download-caddy.mjs` and the `caddy` Ansible role are aligned.
+- **Cache runtimes & deps.** Deno/Node/Caddy live under `/opt/turbopanel/vendor/<tool>/current`; install only when the pinned version is missing. Don't re-download or re-`pnpm install` when nothing changed. Caddy follows the same `vendor/caddy/<version>/caddy` + `current` layout (no `versions/` subdir); `scripts/download-caddy.mjs` and the `caddy` Ansible role are aligned.
 - **Idempotent fast-paths.** Bootstrap/install steps must short-circuit when already satisfied (the Ansible roles do; mirror that in scripts).
 - **Avoid redundant work.** No polling loops or periodic git/`systemctl` forks unless essential (the version watcher and auto-update poll were removed for this reason).
 - **Parallelize** independent I/O (e.g. `Promise.all` for per-daemon fan-out, as in the admin routes).
@@ -41,7 +41,7 @@ Unit tests use non-production secrets from `src/test-fixtures/secrets.ts` (`TEST
 - **Deno** — <https://docs.deno.com/runtime/getting_started/installation/>
 - **pnpm** — <https://pnpm.io/installation>
 - **Node.js** and **openssl** — required for cert generation (`scripts/*.mjs`); Node.js also used for Caddy download
-- Run `./console` from the `turbopanel-dev` checkout. The console installs Deno, clones the daemon, and drives the full dev stack via `scripts/bootstrap-orchestration.ts` + `scripts/install-daemon-systemd.sh` (shared orchestration under `/opt/turbopanel/lib/runtime/` — not `orchestration/runtime/venv`).
+- Run `./console` from the `turbopanel-dev` checkout. The console installs Deno, clones the daemon, and drives the full dev stack via `scripts/bootstrap-orchestration.ts` + `scripts/install-daemon-systemd.sh` (shared orchestration under `/opt/turbopanel/vendor/` — not `orchestration/runtime/venv`).
 - Managed/co-located installs: secret-bearing runtime env lives in the instance config dir (`runtime.env`, `runtime.dev-vars`) — **never** in the git checkout root. Standalone scripts (`scripts/generate-self-signed-cert.mjs`, `scripts/workers-serve.sh`, `scripts/drizzle-studio-serve.sh`) default to the FHS location **`/etc/turbopanel/instance/runtime.env`** when `TURBOPANEL_INSTANCE_RUNTIME_ENV` is unset. Both managed and co-located dev use **`/etc/turbopanel/instance/`** (dev-user-owned in development). The unit injects `TURBOPANEL_INSTANCE_RUNTIME_ENV` accordingly. `scripts/generate-self-signed-cert.mjs` and daemon `public-urls-apply` read/write `runtime.env` there. Do not reintroduce checkout-root `.env` / `.dev.vars` generation.
 - `pnpm install` — installs Hono and Wrangler into `node_modules/` for Workers bundling
 - Local **Tilt** Wrangler secrets still live in `dev/.env` → `sync-env.sh` → instance `.dev.vars`; that path is separate from managed Ansible installs above.

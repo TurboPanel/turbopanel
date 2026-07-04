@@ -1,7 +1,6 @@
 import { join } from '@std/path'
 import { isDeveloperSurfaceEnabled } from './dev-mode.ts'
-
-const MANAGED_NODE = '/opt/turbopanel/lib/runtime/node/current/bin/node'
+import { resolveManagedNodeBin } from './runtime-paths.ts'
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -36,7 +35,8 @@ export async function resolveNodePath(): Promise<string> {
   const fromEnv = Deno.env.get('TURBOPANEL_NODE')?.trim()
   if (fromEnv) return fromEnv
 
-  if (await pathExists(MANAGED_NODE)) return MANAGED_NODE
+  const managedNode = resolveManagedNodeBin()
+  if (await pathExists(managedNode)) return managedNode
 
   if (isDeveloperSurfaceEnabled()) {
     const fromPath = await nodeFromPath()

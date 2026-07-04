@@ -4,23 +4,22 @@
 # Sets: TURBOPANEL_DATABASE_URL (from env or turbopanel-instance unit), NODE, DRIZZLE_KIT, DENO, ROOT
 db_connect_init() {
   local caller="${1:-db-connect}"
+  # shellcheck source=scripts/runtime-paths.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/runtime-paths.sh"
   # Caller (introspect.sh / sync.sh) lives at repo root; workers-serve.sh sets ROOT first.
   if [[ -z "${ROOT:-}" ]]; then
     ROOT="$(cd "$(dirname "${BASH_SOURCE[1]}")" && pwd)"
   fi
   DRIZZLE_KIT="$ROOT/node_modules/drizzle-kit/bin.cjs"
   INSTANCE_UNIT="${TURBOPANEL_INSTANCE_SERVICE:-turbopanel-instance}"
-  NODE="${TURBOPANEL_NODE:-/opt/turbopanel/lib/runtime/node/current/bin/node}"
-  DENO="${TURBOPANEL_DENO:-/opt/turbopanel/lib/runtime/deno/current/deno}"
+  NODE="${TURBOPANEL_NODE}"
+  DENO="${TURBOPANEL_DENO}"
 
   if [[ ! -f "$DRIZZLE_KIT" ]]; then
     echo "$caller: missing $DRIZZLE_KIT — run pnpm install in $ROOT" >&2
     return 1
   fi
 
-  if [[ ! -x "$NODE" ]]; then
-    NODE="/opt/turbopanel/lib/runtime/node/current/bin/node"
-  fi
   if [[ ! -x "$NODE" ]]; then
     NODE="$(command -v node || true)"
   fi
