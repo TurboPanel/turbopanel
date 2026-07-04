@@ -120,8 +120,8 @@ async function withTeamSubjectGrantFixtures(
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: targetOrganizationId,
-    subjectType: 'team',
-    subjectId: teamId,
+    actorType: 'team',
+    actorId: teamId,
     permission: 'organization:manage',
     allow: true,
   })

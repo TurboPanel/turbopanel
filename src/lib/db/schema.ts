@@ -4,6 +4,7 @@ import { sql } from 'drizzle-orm'
 import {
   pgTable,
   index,
+  uniqueIndex,
   foreignKey,
   uuid,
   timestamp,
@@ -214,7 +215,7 @@ export const server = pgTable(
     }).onDelete('restrict'),
   ]
 )
-// Lifecycle/status fields live in metadata; nowIso() ISO-UTC strings sort lexicographically.
+// Lifecycle timestamps live in metadata; nowIso() ISO-UTC strings sort lexicographically.
 export const command = pgTable(
   'command',
   {
@@ -225,6 +226,9 @@ export const command = pgTable(
     serverId: uuid('server_id').notNull(),
     actorEntityType: text('actor_entity_type').notNull(),
     actorEntityId: uuid('actor_entity_id').notNull(),
+    name: text().notNull(),
+    status: text().notNull().default('queued'),
+    attempts: integer().default(0).notNull(),
     metadata: jsonb().notNull(),
     payload: jsonb().notNull(),
     result: jsonb(),
@@ -235,7 +239,7 @@ export const command = pgTable(
       table.serverId.asc(),
       sql`(${table.metadata}->>'createdAt') desc`
     ),
-    index('idx_command_status').using('btree', sql`(${table.metadata}->>'status')`),
+    index('idx_command_status').using('btree', table.status.asc()),
     foreignKey({
       columns: [table.serverId],
       foreignColumns: [server.id],
@@ -418,10 +422,12 @@ export const variable = pgTable(
     projectId: uuid('project_id'),
     environmentId: uuid('environment_id'),
     serviceId: uuid('service_id'),
+    hostingId: uuid('hosting_id'),
     serverId: uuid('server_id'),
     key: varchar({ length: 255 }).notNull(),
     value: text().default('').notNull(),
     isSecret: boolean('is_secret').default(false).notNull(),
+    prefix: varchar({ length: 255 }),
     description: varchar('description', { length: 255 }),
   },
   (table) => [
@@ -444,6 +450,10 @@ export const variable = pgTable(
     index('idx_variable_service_id').using(
       'btree',
       table.serviceId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_variable_hosting_id').using(
+      'btree',
+      table.hostingId.asc().nullsLast().op('uuid_ops')
     ),
     index('idx_variable_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
     foreignKey({
@@ -472,10 +482,36 @@ export const variable = pgTable(
       name: 'variable_service_id_service_id_fk',
     }).onDelete('cascade'),
     foreignKey({
+      columns: [table.hostingId],
+      foreignColumns: [hosting.id],
+      name: 'variable_hosting_id_hosting_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
       columns: [table.serverId],
       foreignColumns: [server.id],
       name: 'variable_server_id_server_id_fk',
     }).onDelete('cascade'),
+    uniqueIndex('uniq_var_org')
+      .on(table.key, table.organizationId)
+      .where(sql`${table.organizationId} IS NOT NULL`),
+    uniqueIndex('uniq_var_workspace')
+      .on(table.key, table.workspaceId)
+      .where(sql`${table.workspaceId} IS NOT NULL`),
+    uniqueIndex('uniq_var_project')
+      .on(table.key, table.projectId)
+      .where(sql`${table.projectId} IS NOT NULL`),
+    uniqueIndex('uniq_var_environment')
+      .on(table.key, table.environmentId)
+      .where(sql`${table.environmentId} IS NOT NULL`),
+    uniqueIndex('uniq_var_service')
+      .on(table.key, table.serviceId)
+      .where(sql`${table.serviceId} IS NOT NULL`),
+    uniqueIndex('uniq_var_hosting')
+      .on(table.key, table.hostingId)
+      .where(sql`${table.hostingId} IS NOT NULL`),
+    uniqueIndex('uniq_var_server')
+      .on(table.key, table.serverId)
+      .where(sql`${table.serverId} IS NOT NULL`),
     check(
       'variable_exactly_one_parent_check',
       sql`((organization_id IS NOT NULL)::int +
@@ -483,6 +519,7 @@ export const variable = pgTable(
         (project_id IS NOT NULL)::int +
         (environment_id IS NOT NULL)::int +
         (service_id IS NOT NULL)::int +
+        (hosting_id IS NOT NULL)::int +
         (server_id IS NOT NULL)::int) = 1`
     ),
     check(
@@ -567,10 +604,10 @@ export const grant = pgTable(
     createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
+    actorType: text('actor_type').notNull(),
+    actorId: uuid('actor_id').notNull(),
     entityType: text('entity_type').notNull(),
     entityId: uuid('entity_id').notNull(),
-    subjectType: text('subject_type').notNull(),
-    subjectId: uuid('subject_id').notNull(),
     permission: text().notNull(),
     allow: boolean().notNull().default(true),
   },
@@ -578,12 +615,12 @@ export const grant = pgTable(
     unique('grant_unique').on(
       table.entityType,
       table.entityId,
-      table.subjectType,
-      table.subjectId,
+      table.actorType,
+      table.actorId,
       table.permission
     ),
     index('idx_grant_entity').on(table.entityType, table.entityId),
-    index('idx_grant_subject').on(table.subjectType, table.subjectId),
+    index('idx_grant_actor').on(table.actorType, table.actorId),
   ]
 )
 export const session = pgTable(

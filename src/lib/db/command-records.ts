@@ -7,10 +7,7 @@ import { command } from './schema.ts'
 type CommandDbRow = typeof command.$inferSelect
 
 type CommandMetadata = {
-  name?: string
-  status?: CommandStatus
   error?: string | null
-  attempts?: number
   createdAt?: string
   updatedAt?: string
   queuedAt?: string | null
@@ -101,12 +98,12 @@ export function serializeCommandRecord(row: CommandDbRow): CommandRecord {
     serverId: row.serverId,
     actorEntityType: row.actorEntityType,
     actorEntityId: row.actorEntityId,
-    type: meta.name ?? '',
-    status: meta.status ?? 'queued',
+    type: row.name,
+    status: (row.status ?? 'queued') as CommandStatus,
     payload: row.payload,
     result: row.result ?? null,
     error: meta.error ?? null,
-    attempts: meta.attempts ?? 0,
+    attempts: row.attempts ?? 0,
     createdAt: meta.createdAt ?? '',
     updatedAt: meta.updatedAt ?? '',
     queuedAt: meta.queuedAt ?? null,
@@ -125,9 +122,6 @@ export async function createCommandRecord(
 ): Promise<CommandRecord> {
   const now = nowIso()
   const metadata: CommandMetadata = {
-    name: params.type,
-    status: 'queued',
-    attempts: 0,
     createdAt: now,
     updatedAt: now,
     queuedAt: now,
@@ -140,6 +134,9 @@ export async function createCommandRecord(
       serverId: params.serverId,
       actorEntityType: params.actorEntityType,
       actorEntityId: params.actorEntityId,
+      name: params.type,
+      status: 'queued',
+      attempts: 0,
       payload: params.payload,
       metadata,
     })
@@ -188,15 +185,11 @@ export async function transitionCommand(
 ): Promise<CommandRecord | null> {
   const now = nowIso()
   const metadataPatch: Record<string, unknown> = {
-    status: patch.status,
     updatedAt: now,
   }
 
   if (patch.error !== undefined) {
     metadataPatch.error = patch.error
-  }
-  if (patch.attempts !== undefined) {
-    metadataPatch.attempts = patch.attempts
   }
 
   for (const field of LIFECYCLE_TIMESTAMP_FIELDS) {
@@ -214,6 +207,8 @@ export async function transitionCommand(
   const rows = await db
     .update(command)
     .set({
+      status: patch.status,
+      ...(patch.attempts !== undefined ? { attempts: patch.attempts } : {}),
       ...(patch.result !== undefined ? { result: patch.result } : {}),
       metadata: sql`${command.metadata} || ${JSON.stringify(metadataPatch)}::jsonb`,
     })

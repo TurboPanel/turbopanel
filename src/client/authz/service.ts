@@ -41,8 +41,8 @@ async function hasOrganizationGrant(
     .from(grant)
     .where(
       and(
-        eq(grant.subjectType, 'user'),
-        eq(grant.subjectId, userId),
+        eq(grant.actorType, 'user'),
+        eq(grant.actorId, userId),
         eq(grant.entityType, 'organization'),
         eq(grant.entityId, organizationId),
         eq(grant.permission, permission),
@@ -64,8 +64,8 @@ async function hasTeamGrant(
     .from(grant)
     .where(
       and(
-        eq(grant.subjectType, 'user'),
-        eq(grant.subjectId, userId),
+        eq(grant.actorType, 'user'),
+        eq(grant.actorId, userId),
         eq(grant.entityType, 'team'),
         eq(grant.entityId, teamId),
         eq(grant.permission, permission),
@@ -150,7 +150,7 @@ export async function assertNotLastOrgOwner(
   subjectId: string,
 ): Promise<void> {
   const rows = await db
-    .select({ subjectId: grant.subjectId })
+    .select({ actorId: grant.actorId })
     .from(grant)
     .where(
       and(
@@ -161,7 +161,7 @@ export async function assertNotLastOrgOwner(
       ),
     )
 
-  if (rows.length === 1 && rows[0]?.subjectId === subjectId) {
+  if (rows.length === 1 && rows[0]?.actorId === subjectId) {
     throw new Error('Cannot remove the last owner of an organization')
   }
 }
@@ -172,7 +172,7 @@ export async function assertNotLastTeamOwner(
   subjectId: string,
 ): Promise<void> {
   const rows = await db
-    .select({ subjectId: grant.subjectId })
+    .select({ actorId: grant.actorId })
     .from(grant)
     .where(
       and(
@@ -183,7 +183,7 @@ export async function assertNotLastTeamOwner(
       ),
     )
 
-  if (rows.length === 1 && rows[0]?.subjectId === subjectId) {
+  if (rows.length === 1 && rows[0]?.actorId === subjectId) {
     throw new Error('Cannot remove the last owner of a team')
   }
 }

@@ -10,6 +10,7 @@ import { resolveColocatedServerId } from '../authn/install-state.ts'
 import { resolveColocatedServerIdSet } from '../servers/colocated.ts'
 import {
   environment,
+  hosting,
   project,
   server,
   service,
@@ -24,6 +25,7 @@ export type VariableParentRefs = {
   projectId?: string | null
   environmentId?: string | null
   serviceId?: string | null
+  hostingId?: string | null
   serverId?: string | null
 }
 
@@ -145,6 +147,41 @@ export async function resolveVariableDaemonRecipient(
 ): Promise<DaemonSecretRecipient | null> {
   if (parent.serverId) {
     return loadActiveRecipient(db, parent.serverId, organizationId)
+  }
+
+  if (parent.hostingId) {
+    const hostingRows = await db
+      .select({
+        envMetadata: environment.metadata,
+        projectMetadata: project.metadata,
+      })
+      .from(hosting)
+      .innerJoin(service, eq(service.id, hosting.serviceId))
+      .innerJoin(environment, eq(environment.id, service.environmentId))
+      .innerJoin(project, eq(project.id, environment.projectId))
+      .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+      .where(and(
+        eq(hosting.id, parent.hostingId),
+        eq(workspace.organizationId, organizationId),
+      ))
+      .limit(1)
+
+    const row = hostingRows[0]
+    if (!row) return null
+
+    const envServerId = parseMetadataServerId(row.envMetadata)
+    if (envServerId) {
+      const recipient = await loadActiveRecipient(db, envServerId, organizationId)
+      if (recipient) return recipient
+    }
+
+    const projectServerId = parseMetadataServerId(row.projectMetadata)
+    if (projectServerId) {
+      const recipient = await loadActiveRecipient(db, projectServerId, organizationId)
+      if (recipient) return recipient
+    }
+
+    return resolveOrgColocatedFallback(db, organizationId, registry)
   }
 
   if (parent.serviceId) {

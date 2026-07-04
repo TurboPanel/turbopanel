@@ -152,8 +152,8 @@ Deno.test('DELETE /access/:id rejects revoking the sole organization owner', asy
       .values({
         entityType: 'organization',
         entityId: organizationId,
-        subjectType: 'user',
-        subjectId: actorId,
+        actorType: 'user',
+        actorId: actorId,
         permission: 'organization:own',
         allow: true,
       })
@@ -176,8 +176,8 @@ Deno.test('DELETE /access/:id allows revoking a non-final organization owner', a
     await db.insert(grant).values({
       entityType: 'organization',
       entityId: organizationId,
-      subjectType: 'user',
-      subjectId: actorId,
+      actorType: 'user',
+      actorId: actorId,
       permission: 'organization:own',
       allow: true,
     })
@@ -187,8 +187,8 @@ Deno.test('DELETE /access/:id allows revoking a non-final organization owner', a
       .values({
         entityType: 'organization',
         entityId: organizationId,
-        subjectType: 'user',
-        subjectId: targetId,
+        actorType: 'user',
+        actorId: targetId,
         permission: 'organization:own',
         allow: true,
       })
@@ -211,8 +211,8 @@ Deno.test('DELETE /access/:id rejects revoking the sole team owner', async () =>
     await db.insert(grant).values({
       entityType: 'organization',
       entityId: organizationId,
-      subjectType: 'user',
-      subjectId: actorId,
+      actorType: 'user',
+      actorId: actorId,
       permission: 'organization:own',
       allow: true,
     })
@@ -222,8 +222,8 @@ Deno.test('DELETE /access/:id rejects revoking the sole team owner', async () =>
       .values({
         entityType: 'team',
         entityId: teamId,
-        subjectType: 'user',
-        subjectId: targetId,
+        actorType: 'user',
+        actorId: targetId,
         permission: 'team:own',
         allow: true,
       })
@@ -246,8 +246,8 @@ Deno.test('GET /access/check honors team-scoped grants without org grants', asyn
     await db.insert(grant).values({
       entityType: 'team',
       entityId: teamId,
-      subjectType: 'user',
-      subjectId: targetId,
+      actorType: 'user',
+      actorId: targetId,
       permission: 'team:manage',
       allow: true,
     })
@@ -282,8 +282,8 @@ Deno.test('POST /access rejects organization permission on workspace entity', as
     await db.insert(grant).values({
       entityType: 'organization',
       entityId: organizationId,
-      subjectType: 'user',
-      subjectId: actorId,
+      actorType: 'user',
+      actorId: actorId,
       permission: 'organization:own',
       allow: true,
     })
@@ -297,7 +297,7 @@ Deno.test('POST /access rejects organization permission on workspace entity', as
       },
       body: JSON.stringify({
         subjectKind: 'user',
-        subjectId: targetId,
+        actorId: targetId,
         resourceId: workspaceId,
         effect: 'allow',
         permissionKey: 'organization:own',
@@ -350,8 +350,8 @@ Deno.test('GET /access/check returns boolean for variable and managed resource i
     await db.insert(grant).values({
       entityType: 'organization',
       entityId: organizationId,
-      subjectType: 'user',
-      subjectId: actorId,
+      actorType: 'user',
+      actorId: actorId,
       permission: 'organization:manage',
       allow: true,
     })

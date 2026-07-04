@@ -74,7 +74,7 @@ async function withTestFixtures(
       teamId,
     })
   } finally {
-    await db.delete(grant).where(eq(grant.subjectId, userId))
+    await db.delete(grant).where(eq(grant.actorId, userId))
     await db.delete(teammate).where(eq(teammate.userId, userId))
     await db.delete(member).where(and(
       eq(member.userId, userId),
@@ -92,8 +92,8 @@ Deno.test('org owner can manage org', async () => {
     await db.insert(grant).values({
       entityType: 'organization',
       entityId: organizationId,
-      subjectType: 'user',
-      subjectId: userId,
+      actorType: 'user',
+      actorId: userId,
       permission: 'organization:own',
       allow: true,
     })
@@ -111,8 +111,8 @@ Deno.test('org manager can invite and manage org members', async () => {
     await db.insert(grant).values({
       entityType: 'organization',
       entityId: organizationId,
-      subjectType: 'user',
-      subjectId: userId,
+      actorType: 'user',
+      actorId: userId,
       permission: 'organization:manage',
       allow: true,
     })
@@ -132,8 +132,8 @@ Deno.test('team owner can manage team', async () => {
     await db.insert(grant).values({
       entityType: 'team',
       entityId: teamId,
-      subjectType: 'user',
-      subjectId: userId,
+      actorType: 'user',
+      actorId: userId,
       permission: 'team:own',
       allow: true,
     })
@@ -151,8 +151,8 @@ Deno.test('team manager can invite and manage team members', async () => {
     await db.insert(grant).values({
       entityType: 'team',
       entityId: teamId,
-      subjectType: 'user',
-      subjectId: userId,
+      actorType: 'user',
+      actorId: userId,
       permission: 'team:manage',
       allow: true,
     })
@@ -172,8 +172,8 @@ Deno.test('org manager can manage any team in their org', async () => {
     await db.insert(grant).values({
       entityType: 'organization',
       entityId: organizationId,
-      subjectType: 'user',
-      subjectId: userId,
+      actorType: 'user',
+      actorId: userId,
       permission: 'organization:manage',
       allow: true,
     })
@@ -205,11 +205,11 @@ Deno.test('invitation grant materialization creates grant rows and enables canOw
     )
 
     const rows = await db
-      .select({ permission: grant.permission, entityId: grant.entityId, subjectId: grant.subjectId })
+      .select({ permission: grant.permission, entityId: grant.entityId, actorId: grant.actorId })
       .from(grant)
       .where(
         and(
-          eq(grant.subjectId, userId),
+          eq(grant.actorId, userId),
           eq(grant.entityId, organizationId),
           eq(grant.permission, 'organization:own'),
         ),
@@ -231,8 +231,8 @@ Deno.test('assertNotLastOrgOwner throws when removing the sole owner', async () 
     await db.insert(grant).values({
       entityType: 'organization',
       entityId: organizationId,
-      subjectType: 'user',
-      subjectId: userId,
+      actorType: 'user',
+      actorId: userId,
       permission: 'organization:own',
       allow: true,
     })
@@ -260,15 +260,15 @@ Deno.test('assertNotLastOrgOwner throws when removing the sole owner', async () 
       await db.insert(grant).values({
         entityType: 'organization',
         entityId: organizationId,
-        subjectType: 'user',
-        subjectId: secondUserId,
+        actorType: 'user',
+        actorId: secondUserId,
         permission: 'organization:own',
         allow: true,
       })
 
       await assertNotLastOrgOwner(db, organizationId, userId)
     } finally {
-      await db.delete(grant).where(eq(grant.subjectId, secondUserId))
+      await db.delete(grant).where(eq(grant.actorId, secondUserId))
       await db.delete(user).where(eq(user.id, secondUserId))
     }
   })
@@ -279,8 +279,8 @@ Deno.test('assertNotLastTeamOwner throws when removing the sole owner', async ()
     await db.insert(grant).values({
       entityType: 'team',
       entityId: teamId,
-      subjectType: 'user',
-      subjectId: userId,
+      actorType: 'user',
+      actorId: userId,
       permission: 'team:own',
       allow: true,
     })
@@ -308,15 +308,15 @@ Deno.test('assertNotLastTeamOwner throws when removing the sole owner', async ()
       await db.insert(grant).values({
         entityType: 'team',
         entityId: teamId,
-        subjectType: 'user',
-        subjectId: secondUserId,
+        actorType: 'user',
+        actorId: secondUserId,
         permission: 'team:own',
         allow: true,
       })
 
       await assertNotLastTeamOwner(db, teamId, userId)
     } finally {
-      await db.delete(grant).where(eq(grant.subjectId, secondUserId))
+      await db.delete(grant).where(eq(grant.actorId, secondUserId))
       await db.delete(user).where(eq(user.id, secondUserId))
     }
   })
@@ -377,8 +377,8 @@ Deno.test('org manager is not treated as team owner without direct team:own gran
     await db.insert(grant).values({
       entityType: 'organization',
       entityId: organizationId,
-      subjectType: 'user',
-      subjectId: userId,
+      actorType: 'user',
+      actorId: userId,
       permission: 'organization:manage',
       allow: true,
     })

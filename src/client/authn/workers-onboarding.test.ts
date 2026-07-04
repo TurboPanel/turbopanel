@@ -110,7 +110,7 @@ async function cleanupOrg(db: ReturnType<typeof createDenoDb>, userId: string) {
     .map((row) => row.organizationId)
     .filter((id): id is string => id != null)
 
-  await db.delete(grant).where(eq(grant.subjectId, userId))
+  await db.delete(grant).where(eq(grant.actorId, userId))
   await db.delete(teammate).where(eq(teammate.userId, userId))
   await db.delete(member).where(eq(member.userId, userId))
 

@@ -73,7 +73,7 @@ async function withTestFixtures(
       teamId,
     })
   } finally {
-    await db.delete(grant).where(eq(grant.subjectId, userId))
+    await db.delete(grant).where(eq(grant.actorId, userId))
     await db.delete(member).where(and(
       eq(member.userId, userId),
       eq(member.organizationId, organizationId),
@@ -114,8 +114,8 @@ Deno.test('createAccessGrant rejects invalid permission and entity combinations'
     const invalidOrgOnWorkspace = await createAccessGrant(db, {
       entityType: 'workspace',
       entityId: workspaceId,
-      subjectType: 'user',
-      subjectId: userId,
+      actorType: 'user',
+      actorId: userId,
       permissionKey: 'organization:own',
     })
     if (invalidOrgOnWorkspace.ok || invalidOrgOnWorkspace.status !== 400) {
@@ -125,8 +125,8 @@ Deno.test('createAccessGrant rejects invalid permission and entity combinations'
     const invalidTeamOnOrg = await createAccessGrant(db, {
       entityType: 'organization',
       entityId: organizationId,
-      subjectType: 'user',
-      subjectId: userId,
+      actorType: 'user',
+      actorId: userId,
       permissionKey: 'team:own',
     })
     if (invalidTeamOnOrg.ok || invalidTeamOnOrg.status !== 400) {
@@ -136,8 +136,8 @@ Deno.test('createAccessGrant rejects invalid permission and entity combinations'
     const validOrg = await createAccessGrant(db, {
       entityType: 'organization',
       entityId: organizationId,
-      subjectType: 'user',
-      subjectId: userId,
+      actorType: 'user',
+      actorId: userId,
       permissionKey: 'organization:manage',
     })
     if (!validOrg.ok) {
@@ -147,8 +147,8 @@ Deno.test('createAccessGrant rejects invalid permission and entity combinations'
     const validTeam = await createAccessGrant(db, {
       entityType: 'team',
       entityId: teamId,
-      subjectType: 'user',
-      subjectId: userId,
+      actorType: 'user',
+      actorId: userId,
       permissionKey: 'team:manage',
     })
     if (!validTeam.ok) {

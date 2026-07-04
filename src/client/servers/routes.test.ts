@@ -306,8 +306,8 @@ async function withServerDeleteFixtures(
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
-    subjectType: 'user',
-    subjectId: userId,
+    actorType: 'user',
+    actorId: userId,
     permission: 'organization:manage',
     allow: true,
   })
@@ -337,7 +337,7 @@ async function withServerDeleteFixtures(
   } finally {
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(grant).where(and(
-      eq(grant.subjectId, userId),
+      eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
     ))
     await db.delete(member).where(and(
@@ -473,8 +473,8 @@ Deno.test('DELETE /servers/:id returns 503 when daemon cell registry is unavaila
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
-    subjectType: 'user',
-    subjectId: userId,
+    actorType: 'user',
+    actorId: userId,
     permission: 'organization:manage',
     allow: true,
   })
@@ -513,7 +513,7 @@ Deno.test('DELETE /servers/:id returns 503 when daemon cell registry is unavaila
   } finally {
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(grant).where(and(
-      eq(grant.subjectId, userId),
+      eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
     ))
     await db.delete(member).where(and(
@@ -553,8 +553,8 @@ Deno.test('DELETE /servers/:id returns 500 when purge fails after row delete', a
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
-    subjectType: 'user',
-    subjectId: userId,
+    actorType: 'user',
+    actorId: userId,
     permission: 'organization:manage',
     allow: true,
   })
@@ -595,7 +595,7 @@ Deno.test('DELETE /servers/:id returns 500 when purge fails after row delete', a
   } finally {
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(grant).where(and(
-      eq(grant.subjectId, userId),
+      eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
     ))
     await db.delete(member).where(and(
@@ -634,8 +634,8 @@ Deno.test('GET /servers/updates does not call listRequests on the cell', async (
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
-    subjectType: 'user',
-    subjectId: userId,
+    actorType: 'user',
+    actorId: userId,
     permission: 'organization:manage',
     allow: true,
   })
@@ -687,7 +687,7 @@ Deno.test('GET /servers/updates does not call listRequests on the cell', async (
   } finally {
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(grant).where(and(
-      eq(grant.subjectId, userId),
+      eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
     ))
     await db.delete(member).where(and(
@@ -1180,7 +1180,7 @@ Deno.test('GET /servers does not return stale servers after organization grant r
     assertEquals(recordingCache.loadCallCount, 1)
 
     await db.delete(grant).where(and(
-      eq(grant.subjectId, userId),
+      eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
       eq(grant.entityType, 'organization'),
     ))

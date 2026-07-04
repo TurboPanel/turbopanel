@@ -15,8 +15,8 @@ type AtomicGrantRow = {
   id: string
   entityType: string
   entityId: string
-  subjectType: string
-  subjectId: string
+  actorType: string
+  actorId: string
   permission: string
   allow: boolean
 }
@@ -25,8 +25,8 @@ type AtomicGrantRow = {
 export function mapGrantRows(rows: AtomicGrantRow[]): AccessRecord[] {
   return rows.map((row) => ({
     id: row.id,
-    subjectKind: row.subjectType as AccessRecord['subjectKind'],
-    subjectId: row.subjectId,
+    subjectKind: row.actorType as AccessRecord['subjectKind'],
+    subjectId: row.actorId,
     resourceId: row.entityId,
     effect: row.allow ? 'allow' : 'deny',
     permissionKey: row.permission,

@@ -57,19 +57,19 @@ export async function getSubjects(db: Db, userId: string): Promise<Subject[]> {
   return subjects
 }
 
-/** Build the `subjectset` CTE body, either from a pre-fetched set or inline. */
-function buildSubjectsetBody(userId: string, subjects?: Subject[]): SQL {
+/** Build the `actorset` CTE body, either from a pre-fetched set or inline. */
+function buildActorsetBody(userId: string, subjects?: Subject[]): SQL {
   if (subjects && subjects.length > 0) {
     const rows = subjects.map(
       (s) => sql`(${s.subjectKind}::text, ${s.subjectId}::uuid)`,
     )
     const separator = sql.raw(', ')
     const values = sql.join(rows, separator)
-    return sql`SELECT * FROM (VALUES ${values}) AS s(subject_type, subject_id)`
+    return sql`SELECT * FROM (VALUES ${values}) AS s(actor_type, actor_id)`
   }
 
   return sql`
-    SELECT 'user'::text AS subject_type, ${userId}::uuid AS subject_id
+    SELECT 'user'::text AS actor_type, ${userId}::uuid AS actor_id
     UNION
     SELECT 'team'::text, team_id FROM teammate WHERE user_id = ${userId}::uuid
     UNION
@@ -304,6 +304,45 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         JOIN workspace w ON w.id = p.workspace_id
         WHERE v.id = ${entityId}::uuid AND v.service_id IS NOT NULL
         UNION ALL
+        SELECT 'hosting'::text, v.hosting_id, 1
+        FROM variable v
+        WHERE v.id = ${entityId}::uuid AND v.hosting_id IS NOT NULL
+        UNION ALL
+        SELECT 'service'::text, h.service_id, 2
+        FROM variable v
+        JOIN hosting h ON h.id = v.hosting_id
+        WHERE v.id = ${entityId}::uuid AND v.hosting_id IS NOT NULL
+        UNION ALL
+        SELECT 'environment'::text, s.environment_id, 3
+        FROM variable v
+        JOIN hosting h ON h.id = v.hosting_id
+        JOIN service s ON s.id = h.service_id
+        WHERE v.id = ${entityId}::uuid AND v.hosting_id IS NOT NULL
+        UNION ALL
+        SELECT 'project'::text, e.project_id, 4
+        FROM variable v
+        JOIN hosting h ON h.id = v.hosting_id
+        JOIN service s ON s.id = h.service_id
+        JOIN environment e ON e.id = s.environment_id
+        WHERE v.id = ${entityId}::uuid AND v.hosting_id IS NOT NULL
+        UNION ALL
+        SELECT 'workspace'::text, p.workspace_id, 5
+        FROM variable v
+        JOIN hosting h ON h.id = v.hosting_id
+        JOIN service s ON s.id = h.service_id
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project p ON p.id = e.project_id
+        WHERE v.id = ${entityId}::uuid AND v.hosting_id IS NOT NULL
+        UNION ALL
+        SELECT 'organization'::text, w.organization_id, 6
+        FROM variable v
+        JOIN hosting h ON h.id = v.hosting_id
+        JOIN service s ON s.id = h.service_id
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE v.id = ${entityId}::uuid AND v.hosting_id IS NOT NULL
+        UNION ALL
         SELECT 'server'::text, v.server_id, 1
         FROM variable v
         WHERE v.id = ${entityId}::uuid AND v.server_id IS NOT NULL
@@ -375,6 +414,14 @@ function buildLeavesBody(kind: string, organizationId: string): SQL {
         WHERE w.organization_id = ${organizationId}::uuid
         UNION ALL
         SELECT v.id FROM variable v
+        JOIN hosting h ON h.id = v.hosting_id
+        JOIN service s ON s.id = h.service_id
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE w.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT v.id FROM variable v
         JOIN server sv ON sv.id = v.server_id
         WHERE sv.organization_id = ${organizationId}::uuid`
     default:
@@ -397,7 +444,7 @@ export async function can(
   entityId: string,
   opts?: CanOptions,
 ): Promise<boolean> {
-  const subjectsetBody = buildSubjectsetBody(userId, opts?.subjects)
+  const actorsetBody = buildActorsetBody(userId, opts?.subjects)
   const ancestryBody = buildAncestryBody(entityType, entityId)
 
   const isTeamScopedCheck =
@@ -412,8 +459,8 @@ export async function can(
 
   const rows = (await db.execute(sql`
     WITH
-    subjectset(subject_type, subject_id) AS (
-      ${subjectsetBody}
+    actorset(actor_type, actor_id) AS (
+      ${actorsetBody}
     ),
     ancestry(entity_type, entity_id, depth) AS (
       ${ancestryBody}
@@ -424,8 +471,8 @@ export async function can(
     org_hits AS (
       SELECT ag.allow
       FROM ${grant} ag
-      JOIN subjectset ss
-        ON ss.subject_type = ag.subject_type AND ss.subject_id = ag.subject_id
+      JOIN actorset ss
+        ON ss.actor_type = ag.actor_type AND ss.actor_id = ag.actor_id
       WHERE ag.entity_type = 'organization'
         AND ag.entity_id = (SELECT entity_id FROM org_id)
         AND ag.permission IN ('organization:own', 'organization:manage')
@@ -435,8 +482,8 @@ export async function can(
     team_hits AS (
       SELECT ag.allow
       FROM ${grant} ag
-      JOIN subjectset ss
-        ON ss.subject_type = ag.subject_type AND ss.subject_id = ag.subject_id
+      JOIN actorset ss
+        ON ss.actor_type = ag.actor_type AND ss.actor_id = ag.actor_id
       WHERE ${isTeamScopedCheck ? sql`ag.entity_type = 'team'` : sql`false`}
         AND ${isTeamScopedCheck ? sql`ag.entity_id = ${entityId}::uuid` : sql`false`}
         AND ${teamPermissionFilter}
@@ -482,13 +529,13 @@ export async function listVisible(
   db: Db,
   { kind, userId, organizationId }: ListVisibleInput,
 ): Promise<string[]> {
-  const subjectsetBody = buildSubjectsetBody(userId)
+  const actorsetBody = buildActorsetBody(userId)
   const leavesBody = buildLeavesBody(kind, organizationId)
 
   const rows = (await db.execute(sql`
     WITH
-    subjectset(subject_type, subject_id) AS (
-      ${subjectsetBody}
+    actorset(actor_type, actor_id) AS (
+      ${actorsetBody}
     ),
     is_superadmin AS (
       SELECT EXISTS(
@@ -499,8 +546,8 @@ export async function listVisible(
       SELECT EXISTS(
         SELECT 1
         FROM ${grant} ag
-        JOIN subjectset ss
-          ON ss.subject_type = ag.subject_type AND ss.subject_id = ag.subject_id
+        JOIN actorset ss
+          ON ss.actor_type = ag.actor_type AND ss.actor_id = ag.actor_id
         WHERE ag.entity_type = 'organization'
           AND ag.entity_id = ${organizationId}::uuid
           AND ag.permission IN ('organization:own', 'organization:manage')

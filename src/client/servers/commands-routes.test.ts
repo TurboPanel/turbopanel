@@ -233,8 +233,8 @@ async function withCommandRouteFixtures(
     await db.insert(grant).values({
       entityType: 'organization',
       entityId: organizationId,
-      subjectType: 'user',
-      subjectId: userId,
+      actorType: 'user',
+      actorId: userId,
       permission: 'organization:manage',
       allow: true,
     })
@@ -266,7 +266,7 @@ async function withCommandRouteFixtures(
     await db.delete(command).where(eq(command.serverId, serverId))
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(grant).where(and(
-      eq(grant.subjectId, userId),
+      eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
     ))
     await db.delete(member).where(and(

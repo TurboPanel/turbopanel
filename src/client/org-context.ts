@@ -114,8 +114,8 @@ export async function listAccessibleOrganizations(
 
   const rows = (await db.execute(sql`
     WITH
-    subjectset(subject_type, subject_id) AS (
-      SELECT 'user'::text AS subject_type, ${userId}::uuid AS subject_id
+    actorset(actor_type, actor_id) AS (
+      SELECT 'user'::text AS actor_type, ${userId}::uuid AS actor_id
       UNION
       SELECT 'team'::text, team_id FROM teammate WHERE user_id = ${userId}::uuid
       UNION
@@ -124,8 +124,8 @@ export async function listAccessibleOrganizations(
     grant_orgs AS (
       SELECT DISTINCT ag.entity_id AS organization_id
       FROM ${grant} ag
-      JOIN subjectset ss
-        ON ss.subject_type = ag.subject_type AND ss.subject_id = ag.subject_id
+      JOIN actorset ss
+        ON ss.actor_type = ag.actor_type AND ss.actor_id = ag.actor_id
       WHERE ag.entity_type = 'organization'
         AND ag.permission IN ('organization:own', 'organization:manage')
         AND ag.allow = true

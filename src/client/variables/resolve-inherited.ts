@@ -2,6 +2,7 @@ import { and, eq, isNotNull } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import {
   environment,
+  hosting,
   project,
   service,
   variable,
@@ -21,6 +22,14 @@ type VariableRow = {
   isSecret: boolean
 }
 
+type VariableParentColumn =
+  | 'organizationId'
+  | 'workspaceId'
+  | 'projectId'
+  | 'environmentId'
+  | 'serviceId'
+  | 'hostingId'
+
 function mergeVariables(
   target: ResolvedVariableMap,
   rows: VariableRow[],
@@ -32,7 +41,7 @@ function mergeVariables(
 
 async function loadVariablesForParent(
   db: Db,
-  column: 'organizationId' | 'workspaceId' | 'projectId' | 'environmentId' | 'serviceId',
+  column: VariableParentColumn,
   id: string,
 ): Promise<VariableRow[]> {
   const columnRef = variable[column]
@@ -44,6 +53,22 @@ async function loadVariablesForParent(
     })
     .from(variable)
     .where(and(eq(columnRef, id), isNotNull(columnRef)))
+}
+
+async function mergeOrganizationChain(
+  db: Db,
+  chain: {
+    organizationId: string
+    workspaceId: string
+    projectId: string
+    environmentId: string
+  },
+  merged: ResolvedVariableMap,
+): Promise<void> {
+  mergeVariables(merged, await loadVariablesForParent(db, 'organizationId', chain.organizationId))
+  mergeVariables(merged, await loadVariablesForParent(db, 'workspaceId', chain.workspaceId))
+  mergeVariables(merged, await loadVariablesForParent(db, 'projectId', chain.projectId))
+  mergeVariables(merged, await loadVariablesForParent(db, 'environmentId', chain.environmentId))
 }
 
 /**
@@ -75,22 +100,44 @@ export async function resolveInheritedVariablesForService(
   }
 
   const merged: ResolvedVariableMap = new Map()
+  await mergeOrganizationChain(db, chain, merged)
+  mergeVariables(merged, await loadVariablesForParent(db, 'serviceId', serviceId))
+  return merged
+}
 
-  const orgRows = await loadVariablesForParent(db, 'organizationId', chain.organizationId)
-  mergeVariables(merged, orgRows)
+/**
+ * Resolve inherited variables for a hosting by walking the chain:
+ * organization → workspace → project → environment → service → hosting.
+ */
+export async function resolveInheritedVariablesForHosting(
+  db: Db,
+  hostingId: string,
+): Promise<ResolvedVariableMap> {
+  const chainRows = await db
+    .select({
+      organizationId: workspace.organizationId,
+      workspaceId: project.workspaceId,
+      projectId: environment.projectId,
+      environmentId: service.environmentId,
+      serviceId: hosting.serviceId,
+    })
+    .from(hosting)
+    .innerJoin(service, eq(service.id, hosting.serviceId))
+    .innerJoin(environment, eq(environment.id, service.environmentId))
+    .innerJoin(project, eq(project.id, environment.projectId))
+    .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+    .where(eq(hosting.id, hostingId))
+    .limit(1)
 
-  const workspaceRows = await loadVariablesForParent(db, 'workspaceId', chain.workspaceId)
-  mergeVariables(merged, workspaceRows)
+  const chain = chainRows[0]
+  if (!chain) {
+    return new Map()
+  }
 
-  const projectRows = await loadVariablesForParent(db, 'projectId', chain.projectId)
-  mergeVariables(merged, projectRows)
-
-  const environmentRows = await loadVariablesForParent(db, 'environmentId', chain.environmentId)
-  mergeVariables(merged, environmentRows)
-
-  const serviceRows = await loadVariablesForParent(db, 'serviceId', serviceId)
-  mergeVariables(merged, serviceRows)
-
+  const merged: ResolvedVariableMap = new Map()
+  await mergeOrganizationChain(db, chain, merged)
+  mergeVariables(merged, await loadVariablesForParent(db, 'serviceId', chain.serviceId))
+  mergeVariables(merged, await loadVariablesForParent(db, 'hostingId', hostingId))
   return merged
 }
 

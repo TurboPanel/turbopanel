@@ -65,7 +65,7 @@ async function withTestFixtures(
       workspaceId,
     })
   } finally {
-    await db.delete(grant).where(eq(grant.subjectId, userId))
+    await db.delete(grant).where(eq(grant.actorId, userId))
     await db.delete(member).where(and(
       eq(member.userId, userId),
       eq(member.organizationId, organizationId),
@@ -86,7 +86,7 @@ Deno.test('default invited member gets organization:manage grant', async () => {
       .from(grant)
       .where(
         and(
-          eq(grant.subjectId, userId),
+          eq(grant.actorId, userId),
           eq(grant.entityType, 'organization'),
           eq(grant.entityId, organizationId),
         ),
@@ -125,7 +125,7 @@ Deno.test('invitation grant materialization is idempotent', async () => {
       .from(grant)
       .where(
         and(
-          eq(grant.subjectId, userId),
+          eq(grant.actorId, userId),
           eq(grant.entityType, 'organization'),
           eq(grant.entityId, organizationId),
         ),

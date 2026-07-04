@@ -325,8 +325,8 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
         id: grant.id,
         entityType: grant.entityType,
         entityId: grant.entityId,
-        subjectType: grant.subjectType,
-        subjectId: grant.subjectId,
+        actorType: grant.actorType,
+        actorId: grant.actorId,
         permission: grant.permission,
         allow: grant.allow,
       })
@@ -408,8 +408,8 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
     const result = await createAccessGrant(db, {
       entityType: entity.entityType,
       entityId: entity.entityId,
-      subjectType: subjectKind,
-      subjectId,
+      actorType: subjectKind,
+      actorId,
       allow: mapEffectToAllowed(effect),
       permissionKey,
     })
@@ -438,7 +438,7 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
         entityType: grant.entityType,
         entityId: grant.entityId,
         permission: grant.permission,
-        subjectId: grant.subjectId,
+        actorId: grant.actorId,
         allow: grant.allow,
       })
       .from(grant)
@@ -459,12 +459,12 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
           accessRow.entityType === 'organization' &&
           accessRow.permission === 'organization:own'
         ) {
-          await assertNotLastOrgOwner(db, accessRow.entityId, accessRow.subjectId)
+          await assertNotLastOrgOwner(db, accessRow.entityId, accessRow.actorId)
         } else if (
           accessRow.entityType === 'team' &&
           accessRow.permission === 'team:own'
         ) {
-          await assertNotLastTeamOwner(db, accessRow.entityId, accessRow.subjectId)
+          await assertNotLastTeamOwner(db, accessRow.entityId, accessRow.actorId)
         }
       } catch (err) {
         if (err instanceof Error) {

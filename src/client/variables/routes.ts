@@ -20,6 +20,7 @@ import {
 } from './resolve-environment-daemon.ts'
 import {
   resolveInheritedVariablesForEnvironment,
+  resolveInheritedVariablesForHosting,
   resolveInheritedVariablesForService,
   type ResolvedVariableMap,
 } from './resolve-inherited.ts'
@@ -32,6 +33,7 @@ const PARTIAL_UNIQUE_INDEX_NAMES = [
   'uniq_var_project',
   'uniq_var_environment',
   'uniq_var_service',
+  'uniq_var_hosting',
   'uniq_var_server',
 ] as const
 
@@ -41,6 +43,7 @@ const PARENT_BODY_FIELDS = [
   { bodyKey: 'projectId', column: 'projectId', entityKind: 'project' },
   { bodyKey: 'environmentId', column: 'environmentId', entityKind: 'environment' },
   { bodyKey: 'serviceId', column: 'serviceId', entityKind: 'service' },
+  { bodyKey: 'hostingId', column: 'hostingId', entityKind: 'hosting' },
   { bodyKey: 'serverId', column: 'serverId', entityKind: 'server' },
 ] as const
 
@@ -59,10 +62,12 @@ const VARIABLE_SELECT_FIELDS = {
   projectId: variable.projectId,
   environmentId: variable.environmentId,
   serviceId: variable.serviceId,
+  hostingId: variable.hostingId,
   serverId: variable.serverId,
   key: variable.key,
   value: variable.value,
   isSecret: variable.isSecret,
+  prefix: variable.prefix,
   description: variable.description,
   createdAt: variable.createdAt,
   updatedAt: variable.updatedAt,
@@ -75,10 +80,12 @@ type VariableRow = {
   projectId: string | null
   environmentId: string | null
   serviceId: string | null
+  hostingId: string | null
   serverId: string | null
   key: string
   value: string
   isSecret: boolean
+  prefix: string | null
   description: string | null
   createdAt: string
   updatedAt: string
@@ -103,10 +110,12 @@ function serializeVariable(row: VariableRow) {
     projectId: row.projectId,
     environmentId: row.environmentId,
     serviceId: row.serviceId,
+    hostingId: row.hostingId,
     serverId: row.serverId,
     key: row.key,
     isSecret: row.isSecret,
     value: row.isSecret ? null : row.value,
+    prefix: row.isSecret ? row.prefix : null,
     description: row.description,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -173,6 +182,7 @@ function parentRefsFromRow(row: VariableParentRefs & { id?: string }): VariableP
     projectId: row.projectId,
     environmentId: row.environmentId,
     serviceId: row.serviceId,
+    hostingId: row.hostingId,
     serverId: row.serverId,
   }
 }
@@ -183,6 +193,7 @@ function buildInsertValues(
     key: string
     value: string
     isSecret: boolean
+    prefix: string | null
     description: string | null
   },
 ) {
@@ -192,10 +203,12 @@ function buildInsertValues(
     projectId: null,
     environmentId: null,
     serviceId: null,
+    hostingId: null,
     serverId: null,
     key: fields.key,
     value: fields.value,
     isSecret: fields.isSecret,
+    prefix: fields.prefix,
     description: fields.description,
     [parent.column]: parent.id,
   }
@@ -282,13 +295,29 @@ export function registerVariableRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const serviceId = c.req.query('serviceId')
     const environmentId = c.req.query('environmentId')
+    const hostingId = c.req.query('hostingId')
 
-    const specified = [serviceId, environmentId].filter((value) => value !== undefined && value !== '')
+    const specified = [serviceId, environmentId, hostingId].filter(
+      (value) => value !== undefined && value !== '',
+    )
     if (specified.length !== 1) {
       return c.json(
-        { error: 'Exactly one of serviceId or environmentId must be specified' },
+        { error: 'Exactly one of serviceId, environmentId, or hostingId must be specified' },
         400,
       )
+    }
+
+    if (hostingId) {
+      const entityOrgId = await resolveEntityOrganizationId(db, 'hosting', hostingId)
+      if (!entityOrgId || entityOrgId !== organizationId) {
+        return c.json({ error: 'Not found' }, 404)
+      }
+
+      const denied = await assertCanReadOr403(c, 'hosting', hostingId)
+      if (denied) return denied
+
+      const resolved = await resolveInheritedVariablesForHosting(db, hostingId)
+      return c.json({ variables: serializeResolvedVariables(resolved) })
     }
 
     if (serviceId) {
@@ -429,6 +458,9 @@ export function registerVariableRoutes(router: Hono, opts: AuthRouteOpts) {
     const parsedDescription = parseOptionalDescription(c, body.description)
     if (parsedDescription instanceof Response) return parsedDescription
 
+    const parsedPrefix = parseOptionalDescription(c, body.prefix)
+    if (parsedPrefix instanceof Response) return parsedPrefix
+
     const plaintextValue = parsedValue === 'absent' ? '' : parsedValue
 
     let storedValue: string
@@ -442,6 +474,7 @@ export function registerVariableRoutes(router: Hono, opts: AuthRouteOpts) {
     }
 
     const description = parsedDescription === 'absent' ? null : parsedDescription
+    const prefix = parsedPrefix === 'absent' ? null : parsedPrefix
 
     try {
       const id = await db.transaction(async (tx) => {
@@ -451,6 +484,7 @@ export function registerVariableRoutes(router: Hono, opts: AuthRouteOpts) {
             key,
             value: storedValue,
             isSecret,
+            prefix: isSecret ? prefix : null,
             description,
           }))
           .returning({ id: variable.id })
@@ -503,6 +537,7 @@ export function registerVariableRoutes(router: Hono, opts: AuthRouteOpts) {
         projectId: variable.projectId,
         environmentId: variable.environmentId,
         serviceId: variable.serviceId,
+        hostingId: variable.hostingId,
         serverId: variable.serverId,
         isSecret: variable.isSecret,
         value: variable.value,
@@ -520,6 +555,7 @@ export function registerVariableRoutes(router: Hono, opts: AuthRouteOpts) {
       key?: string
       value?: string
       isSecret?: boolean
+      prefix?: string | null
       description?: string | null
       updatedAt: string
     } = { updatedAt: new Date().toISOString() }
@@ -536,6 +572,12 @@ export function registerVariableRoutes(router: Hono, opts: AuthRouteOpts) {
       updateFields.description = description === 'absent' ? null : description
     }
 
+    if (body.prefix !== undefined) {
+      const prefix = parseOptionalDescription(c, body.prefix)
+      if (prefix instanceof Response) return prefix
+      updateFields.prefix = prefix === 'absent' ? null : prefix
+    }
+
     if (body.isSecret !== undefined && typeof body.isSecret !== 'boolean') {
       return c.json({ error: 'Invalid request' }, 400)
     }
@@ -547,6 +589,9 @@ export function registerVariableRoutes(router: Hono, opts: AuthRouteOpts) {
 
     if (isSecretToggled) {
       updateFields.isSecret = nextIsSecret
+      if (!nextIsSecret) {
+        updateFields.prefix = null
+      }
     }
 
     const valueProvided = body.value !== undefined

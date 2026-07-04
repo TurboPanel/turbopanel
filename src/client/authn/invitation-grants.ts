@@ -154,8 +154,8 @@ export async function materializeInvitationGrants(
       .values({
         entityType: grantSpec.entityType,
         entityId: grantSpec.entityId,
-        subjectType: 'user',
-        subjectId: userId,
+        actorType: 'user',
+        actorId: userId,
         permission: grantSpec.permissionKey,
         allow,
       })
@@ -163,8 +163,8 @@ export async function materializeInvitationGrants(
         target: [
           grant.entityType,
           grant.entityId,
-          grant.subjectType,
-          grant.subjectId,
+          grant.actorType,
+          grant.actorId,
           grant.permission,
         ],
       })

@@ -74,7 +74,7 @@ async function withTestFixtures(
       teamId,
     })
   } finally {
-    await db.delete(grant).where(eq(grant.subjectId, userId))
+    await db.delete(grant).where(eq(grant.actorId, userId))
     await db.delete(member).where(and(
       eq(member.userId, userId),
       eq(member.organizationId, organizationId),
@@ -91,8 +91,8 @@ Deno.test('organization:own grant allows full org access', async () => {
     await db.insert(grant).values({
       entityType: 'organization',
       entityId: organizationId,
-      subjectType: 'user',
-      subjectId: userId,
+      actorType: 'user',
+      actorId: userId,
       permission: 'organization:own',
       allow: true,
     })
@@ -110,8 +110,8 @@ Deno.test('organization:manage grant allows full org access', async () => {
     await db.insert(grant).values({
       entityType: 'organization',
       entityId: organizationId,
-      subjectType: 'user',
-      subjectId: userId,
+      actorType: 'user',
+      actorId: userId,
       permission: 'organization:manage',
       allow: true,
     })
@@ -199,8 +199,8 @@ Deno.test('listVisible returns all leaves for org owner', async () => {
     await db.insert(grant).values({
       entityType: 'organization',
       entityId: organizationId,
-      subjectType: 'user',
-      subjectId: userId,
+      actorType: 'user',
+      actorId: userId,
       permission: 'organization:own',
       allow: true,
     })
@@ -222,8 +222,8 @@ Deno.test('team:own grant allows team ownership check via can()', async () => {
     await db.insert(grant).values({
       entityType: 'team',
       entityId: teamId,
-      subjectType: 'user',
-      subjectId: userId,
+      actorType: 'user',
+      actorId: userId,
       permission: 'team:own',
       allow: true,
     })
@@ -241,8 +241,8 @@ Deno.test('team:manage grant allows team management but not ownership via can()'
     await db.insert(grant).values({
       entityType: 'team',
       entityId: teamId,
-      subjectType: 'user',
-      subjectId: userId,
+      actorType: 'user',
+      actorId: userId,
       permission: 'team:manage',
       allow: true,
     })
@@ -260,8 +260,8 @@ Deno.test('team grant without org grant is denied for org-scoped workspace check
     await db.insert(grant).values({
       entityType: 'team',
       entityId: teamId,
-      subjectType: 'user',
-      subjectId: userId,
+      actorType: 'user',
+      actorId: userId,
       permission: 'team:manage',
       allow: true,
     })
@@ -314,8 +314,8 @@ Deno.test('listVisible returns variable ids for org owner', async () => {
       await db.insert(grant).values({
         entityType: 'organization',
         entityId: organizationId,
-        subjectType: 'user',
-        subjectId: userId,
+        actorType: 'user',
+        actorId: userId,
         permission: 'organization:own',
         allow: true,
       })
@@ -371,8 +371,8 @@ Deno.test('organization grant allows can() on managed and variable entities', as
       await db.insert(grant).values({
         entityType: 'organization',
         entityId: organizationId,
-        subjectType: 'user',
-        subjectId: userId,
+        actorType: 'user',
+        actorId: userId,
         permission: 'organization:manage',
         allow: true,
       })

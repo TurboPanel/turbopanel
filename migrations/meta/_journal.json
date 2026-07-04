@@ -5,29 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1782559852012,
+      "when": 1783208645349,
       "tag": "0000_init",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1782787760501,
-      "tag": "0001_command",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1782867092214,
-      "tag": "0002_add_managed_variable_and_resource_jsonb",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1782921591887,
-      "tag": "0003_variable_multi_parent",
       "breakpoints": true
     }
   ]

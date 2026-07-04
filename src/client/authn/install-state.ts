@@ -96,8 +96,8 @@ export async function insertOwnerGrants(
     .values({
       entityType: 'organization',
       entityId: organizationId,
-      subjectType: 'user',
-      subjectId: userId,
+      actorType: 'user',
+      actorId: userId,
       permission: 'organization:own',
       allow: true,
     })
@@ -105,8 +105,8 @@ export async function insertOwnerGrants(
       target: [
         grant.entityType,
         grant.entityId,
-        grant.subjectType,
-        grant.subjectId,
+        grant.actorType,
+        grant.actorId,
         grant.permission,
       ],
     })
@@ -693,8 +693,8 @@ export async function createOrganizationForUser(
       .values({
         entityType: 'team',
         entityId: teamId,
-        subjectType: 'user',
-        subjectId: userId,
+        actorType: 'user',
+        actorId: userId,
         permission: 'team:own',
         allow: true,
       })
@@ -702,8 +702,8 @@ export async function createOrganizationForUser(
         target: [
           grant.entityType,
           grant.entityId,
-          grant.subjectType,
-          grant.subjectId,
+          grant.actorType,
+          grant.actorId,
           grant.permission,
         ],
       })
@@ -806,8 +806,8 @@ export async function completeInstanceInstall(
       .values({
         entityType: 'team',
         entityId: teamId,
-        subjectType: 'user',
-        subjectId: userId,
+        actorType: 'user',
+        actorId: userId,
         permission: 'team:own',
         allow: true,
       })
@@ -815,8 +815,8 @@ export async function completeInstanceInstall(
         target: [
           grant.entityType,
           grant.entityId,
-          grant.subjectType,
-          grant.subjectId,
+          grant.actorType,
+          grant.actorId,
           grant.permission,
         ],
       })

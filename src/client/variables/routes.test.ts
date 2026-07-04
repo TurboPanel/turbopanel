@@ -111,8 +111,8 @@ async function withVariableFixtures(
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
-    subjectType: 'user',
-    subjectId: userId,
+    actorType: 'user',
+    actorId: userId,
     permission: 'organization:own',
     allow: true,
   })
@@ -191,7 +191,7 @@ async function withVariableFixtures(
     await db.delete(project).where(eq(project.id, projectId))
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(grant).where(and(
-      eq(grant.subjectId, userId),
+      eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
     ))
     await db.delete(member).where(and(

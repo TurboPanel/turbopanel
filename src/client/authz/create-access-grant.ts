@@ -24,8 +24,8 @@ const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export type CreateAccessGrantInput = {
-  subjectType: 'user' | 'team' | 'organization'
-  subjectId: string
+  actorType: 'user' | 'team' | 'organization'
+  actorId: string
   entityType: string
   entityId: string
   allowed?: boolean
@@ -308,6 +308,7 @@ export async function resolveEntityOrganizationId(
           WHEN v.project_id IS NOT NULL THEN pw.organization_id
           WHEN v.environment_id IS NOT NULL THEN ew.organization_id
           WHEN v.service_id IS NOT NULL THEN sw.organization_id
+          WHEN v.hosting_id IS NOT NULL THEN hw.organization_id
           WHEN v.server_id IS NOT NULL THEN sv.organization_id
         END AS organization_id
         FROM variable v
@@ -321,6 +322,11 @@ export async function resolveEntityOrganizationId(
         LEFT JOIN environment se ON se.id = s.environment_id
         LEFT JOIN project sp ON sp.id = se.project_id
         LEFT JOIN workspace sw ON sw.id = sp.workspace_id
+        LEFT JOIN hosting h ON h.id = v.hosting_id
+        LEFT JOIN service hs ON hs.id = h.service_id
+        LEFT JOIN environment he ON he.id = hs.environment_id
+        LEFT JOIN project hp ON hp.id = he.project_id
+        LEFT JOIN workspace hw ON hw.id = hp.workspace_id
         LEFT JOIN server sv ON sv.id = v.server_id
         WHERE v.id = ${entityId}::uuid
         LIMIT 1
@@ -332,17 +338,17 @@ export async function resolveEntityOrganizationId(
   }
 }
 
-async function resolveSubject(
+async function resolveActor(
   db: Db,
-  subjectType: CreateAccessGrantInput['subjectType'],
-  subjectId: string,
+  actorType: CreateAccessGrantInput['actorType'],
+  actorId: string,
   entityOrganizationId: string,
 ): Promise<{ ok: true } | { ok: false; status: 400 | 404; error: string }> {
-  if (subjectType === 'user') {
+  if (actorType === 'user') {
     const rows = await db
       .select({ id: user.id })
       .from(user)
-      .where(eq(user.id, subjectId))
+      .where(eq(user.id, actorId))
       .limit(1)
     if (rows.length === 0) {
       return { ok: false, status: 404, error: 'User not found' }
@@ -350,11 +356,11 @@ async function resolveSubject(
     return { ok: true }
   }
 
-  if (subjectType === 'team') {
+  if (actorType === 'team') {
     const rows = await db
       .select({ id: team.id, organizationId: team.organizationId })
       .from(team)
-      .where(eq(team.id, subjectId))
+      .where(eq(team.id, actorId))
       .limit(1)
     const row = rows[0]
     if (!row) {
@@ -373,16 +379,16 @@ async function resolveSubject(
   const rows = await db
     .select({ id: organization.id })
     .from(organization)
-    .where(eq(organization.id, subjectId))
+    .where(eq(organization.id, actorId))
     .limit(1)
   if (rows.length === 0) {
     return { ok: false, status: 404, error: 'Organization not found' }
   }
-  if (subjectId !== entityOrganizationId) {
+  if (actorId !== entityOrganizationId) {
     return {
       ok: false,
       status: 400,
-      error: 'Organization subject must match the entity organization',
+      error: 'Organization actor must match the entity organization',
     }
   }
   return { ok: true }
@@ -403,14 +409,14 @@ export async function createAccessGrant(
   const grantEntityType = input.entityType
 
   if (
-    input.subjectType !== 'user' &&
-    input.subjectType !== 'team' &&
-    input.subjectType !== 'organization'
+    input.actorType !== 'user' &&
+    input.actorType !== 'team' &&
+    input.actorType !== 'organization'
   ) {
     return { ok: false, status: 400, error: 'Invalid request' }
   }
 
-  if (!isUuid(input.entityId) || !isUuid(input.subjectId)) {
+  if (!isUuid(input.entityId) || !isUuid(input.actorId)) {
     return { ok: false, status: 400, error: 'Invalid request' }
   }
 
@@ -442,14 +448,14 @@ export async function createAccessGrant(
 
   const entityOrganizationId = entityResult.organizationId
 
-  const subjectResult = await resolveSubject(
+  const actorResult = await resolveActor(
     db,
-    input.subjectType,
-    input.subjectId,
+    input.actorType,
+    input.actorId,
     entityOrganizationId,
   )
-  if (!subjectResult.ok) {
-    return subjectResult
+  if (!actorResult.ok) {
+    return actorResult
   }
 
   const allow = input.allow ?? input.allowed ?? true
@@ -459,8 +465,8 @@ export async function createAccessGrant(
     .values({
       entityType: grantEntityType,
       entityId: input.entityId,
-      subjectType: input.subjectType,
-      subjectId: input.subjectId,
+      actorType: input.actorType,
+      actorId: input.actorId,
       permission,
       allow,
     })
@@ -468,8 +474,8 @@ export async function createAccessGrant(
       target: [
         grant.entityType,
         grant.entityId,
-        grant.subjectType,
-        grant.subjectId,
+        grant.actorType,
+        grant.actorId,
         grant.permission,
       ],
     })
@@ -487,8 +493,8 @@ export async function createAccessGrant(
       and(
         eq(grant.entityType, grantEntityType),
         eq(grant.entityId, input.entityId),
-        eq(grant.subjectType, input.subjectType),
-        eq(grant.subjectId, input.subjectId),
+        eq(grant.actorType, input.actorType),
+        eq(grant.actorId, input.actorId),
         eq(grant.permission, permission),
       ),
     )
