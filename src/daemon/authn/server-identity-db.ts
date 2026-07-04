@@ -74,13 +74,18 @@ export async function attachDaemonStateToServer(
   const now = nowTs();
   const daemonState = buildServerDaemonState(params);
 
-  await db
+  const updated = await db
     .update(server)
     .set({
       daemon: daemonState,
       updatedAt: now,
     })
-    .where(eq(server.id, serverId));
+    .where(eq(server.id, serverId))
+    .returning({ id: server.id });
+
+  if (updated.length === 0) {
+    throw new Error(`server row missing for enroll attach: ${serverId}`);
+  }
 
   return { keyId: daemonState.key.id };
 }

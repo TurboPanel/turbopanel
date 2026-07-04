@@ -280,10 +280,16 @@ export function registerDaemonApiRoutes(
       return c.json({ ok: false, error: "Fingerprint already exists" }, 409);
     }
 
-    const result = await attachDaemonStateToServer(db, serverId, {
-      publicJwk,
-      fingerprint,
-    });
+    let result: { keyId: string };
+    try {
+      result = await attachDaemonStateToServer(db, serverId, {
+        publicJwk,
+        fingerprint,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ ok: false, error: message }, 500);
+    }
 
     return c.json({ serverId, keyId: result.keyId }, 200);
   });

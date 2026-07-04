@@ -127,6 +127,26 @@ function stripTrailingSlash(path: string): string {
  * `TURBOPANEL_DAEMON_STATE_DIR` (injected by `instance-launch`), then
  * `TURBOPANEL_STATE_DIR`, else the FHS default (`/var/lib/turbopanel`).
  */
+const COLOCATED_DAEMON_IDENTITY_FILES = [
+  'server.id',
+  'server-key.json',
+  'server-key-id',
+] as const
+
+/** Drop stale on-disk daemon identity so a fresh install always re-enrolls. */
+export async function clearColocatedDaemonIdentityFiles(): Promise<void> {
+  if (typeof Deno === 'undefined') return
+
+  const stateDir = resolveColocatedLicenseCredentialsDir()
+  for (const file of COLOCATED_DAEMON_IDENTITY_FILES) {
+    try {
+      await Deno.remove(`${stateDir}/${file}`)
+    } catch {
+      // Missing files are fine.
+    }
+  }
+}
+
 function resolveColocatedLicenseCredentialsDir(): string {
   if (typeof Deno !== 'undefined') {
     const daemonStateOverride = Deno.env.get('TURBOPANEL_DAEMON_STATE_DIR')?.trim()
@@ -352,8 +372,20 @@ async function findColocatedServerIdFromRegistry(
  */
 export async function resolveColocatedServerId(
   db: Db,
-  _registry?: DaemonCellRegistry,
+  registry?: DaemonCellRegistry,
 ): Promise<string | null> {
+  if (registry) {
+    const fromRegistry = await findColocatedServerIdFromRegistry(db, registry)
+    if (fromRegistry) {
+      const rows = await db
+        .select({ id: server.id })
+        .from(server)
+        .where(eq(server.id, fromRegistry))
+        .limit(1)
+      if (rows[0]?.id) return rows[0].id
+    }
+  }
+
   const machineId = await readLocalMachineId()
   if (machineId) {
     const byMachine = await db
@@ -796,6 +828,8 @@ export async function completeInstanceInstall(
 
     return { organizationId, userId, licenseId, licenseToken }
   })
+
+  await clearColocatedDaemonIdentityFiles()
 
   await persistColocatedLicenseCredentials(
     result.licenseId,

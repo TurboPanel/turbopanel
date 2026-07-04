@@ -27,6 +27,7 @@ import {
 } from "../surfaces.ts";
 import { resolveSelfHostedGeo } from "../lib/geo/self-hosted-geo-provider.ts";
 import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
+import { getServerDaemonStateByServerId } from "./authn/server-identity-db.ts";
 
 /** Max idle block for outbox pump reads — keep low so new commands aren't stuck behind a long sleep. */
 const OUTBOX_PUMP_BLOCK_MS = 250;
@@ -34,6 +35,35 @@ const OUTBOX_PUMP_BLOCK_MS = 250;
 function isClosedConnectionError(err: unknown): boolean {
   return /connection is closed/i.test(String(err));
 }
+
+function detachDaemonSocketSafe(
+  cell: ReturnType<DaemonCellRegistry["getCell"]>,
+  params: {
+    connectionId: string;
+    leaseToken: string;
+    reason: string;
+    closedAt: string;
+  },
+  db: Db,
+  serverId: string,
+  connectionId: string | undefined,
+): void {
+  void cell.detachDaemonSocket(params).then(async () => {
+    await onDaemonDisconnected(db, serverId, cell);
+    daemonCellLog(
+      "INFO",
+      serverId,
+      connectionId,
+      "daemon disconnected",
+    );
+  }).catch((err) => {
+    if (isClosedConnectionError(err)) {
+      return;
+    }
+    compatLogWarn("ws", `detachDaemonSocket failed: ${String(err)}`);
+  });
+}
+
 
 export type DaemonWebSocketOptions = {
   developerSurface?: boolean;
@@ -192,6 +222,19 @@ export function registerDaemonWebSocket(
             return;
           }
 
+          if (identityAddress === "__direct__") {
+            const daemonRow = await getServerDaemonStateByServerId(db, payload.sub);
+            if (!daemonRow) {
+              compatLogWarn(
+                "ws",
+                `colocated daemon ${payload.sub} has no postgres row; forcing re-enroll`,
+              );
+              pumpAbort = true;
+              ws.close(4401, "server row missing");
+              return;
+            }
+          }
+
           const geo = resolveSelfHostedGeo(remoteAddress);
           await onDaemonConnected(
             db,
@@ -276,40 +319,36 @@ export function registerDaemonWebSocket(
           pumpAbort = true;
           if (connectionId && leaseToken) {
             const cell = registry.getCell(payload.sub);
-            void cell.detachDaemonSocket({
-              connectionId,
-              leaseToken,
-              reason: "closed",
-              closedAt: new Date().toISOString(),
-            }).then(async () => {
-              await onDaemonDisconnected(db, payload.sub, cell);
-              daemonCellLog(
-                "INFO",
-                payload.sub,
+            detachDaemonSocketSafe(
+              cell,
+              {
                 connectionId,
-                "daemon disconnected",
-              );
-            });
+                leaseToken,
+                reason: "closed",
+                closedAt: new Date().toISOString(),
+              },
+              db,
+              payload.sub,
+              connectionId,
+            );
           }
         },
         onError() {
           pumpAbort = true;
           if (connectionId && leaseToken) {
             const cell = registry.getCell(payload.sub);
-            void cell.detachDaemonSocket({
-              connectionId,
-              leaseToken,
-              reason: "error",
-              closedAt: new Date().toISOString(),
-            }).then(async () => {
-              await onDaemonDisconnected(db, payload.sub, cell);
-              daemonCellLog(
-                "INFO",
-                payload.sub,
+            detachDaemonSocketSafe(
+              cell,
+              {
                 connectionId,
-                "daemon disconnected",
-              );
-            });
+                leaseToken,
+                reason: "error",
+                closedAt: new Date().toISOString(),
+              },
+              db,
+              payload.sub,
+              connectionId,
+            );
           }
         },
       };
