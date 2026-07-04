@@ -10,7 +10,7 @@ db_connect_init() {
   fi
   DRIZZLE_KIT="$ROOT/node_modules/drizzle-kit/bin.cjs"
   INSTANCE_UNIT="${TURBOPANEL_INSTANCE_SERVICE:-turbopanel-instance}"
-  NODE="${TURBOPANEL_NODE:-/usr/local/bin/node}"
+  NODE="${TURBOPANEL_NODE:-/opt/turbopanel/lib/runtime/node/current/bin/node}"
   DENO="${TURBOPANEL_DENO:-/opt/turbopanel/lib/runtime/deno/current/deno}"
 
   if [[ ! -f "$DRIZZLE_KIT" ]]; then
