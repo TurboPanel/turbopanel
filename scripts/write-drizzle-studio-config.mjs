@@ -4,14 +4,32 @@
  * Usage: node scripts/write-drizzle-studio-config.mjs <databaseUrl> [outputPath]
  */
 import { mkdir, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { drizzleDbCredentials } from './resolve-postgres-url.mjs'
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const localDir = path.join(root, '.local')
+const defaultOutputPath = path.join(localDir, 'drizzle-studio.config.mjs')
+
+/** Resolve and confine CLI output paths to the repo `.local/` directory. */
+function resolveSafeOutputPath(rawPath) {
+  const resolved = path.resolve(rawPath ?? defaultOutputPath)
+  const localPrefix = `${localDir}${path.sep}`
+  if (resolved !== localDir && !resolved.startsWith(localPrefix)) {
+    throw new Error('output path must stay within .local/')
+  }
+  return resolved
+}
+
 const databaseUrl = process.argv[2]
-const outputPath = process.argv[3] ??
-  join(root, '.local', 'drizzle-studio.config.mjs')
+let outputPath
+try {
+  outputPath = resolveSafeOutputPath(process.argv[3])
+} catch {
+  console.error('output path must stay within .local/')
+  process.exit(1)
+}
 
 if (!databaseUrl) {
   console.error('usage: write-drizzle-studio-config.mjs <databaseUrl> [outputPath]')
@@ -44,5 +62,5 @@ export default defineConfig({
 })
 `
 
-await mkdir(dirname(outputPath), { recursive: true })
+await mkdir(path.dirname(outputPath), { recursive: true })
 await writeFile(outputPath, configContent)
