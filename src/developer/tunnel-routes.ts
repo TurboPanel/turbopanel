@@ -1,5 +1,5 @@
 import type { Hono } from 'hono'
-import { createRootOnlyMiddleware } from '../client/authn/middleware.ts'
+import { createDeveloperAccessMiddleware } from '../client/authn/middleware.ts'
 import { resolveColocatedServerId } from '../client/authn/install-state.ts'
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import {
@@ -22,7 +22,7 @@ export function registerTunnelRoutes(
   opts: { secrets: DerivedSecretsConfig; authRequired?: boolean },
 ): Hono {
   if (opts.authRequired !== false) {
-    app.use(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, createRootOnlyMiddleware(opts.secrets))
+    app.use(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, createDeveloperAccessMiddleware(opts.secrets))
   }
 
   app.post(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, async (c) => {

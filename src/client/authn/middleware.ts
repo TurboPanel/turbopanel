@@ -10,6 +10,7 @@ import {
   verifySignedCookie,
 } from './crypto.ts'
 import type { DerivedSecretsConfig } from './secrets.ts'
+import { verifyLocalConsoleAuthorization } from '../../developer/local-console-auth.ts'
 import {
   getSession,
   isAdminRole,
@@ -114,6 +115,32 @@ export function createRootOnlyMiddleware(
 
     c.set('session', resolved.data)
     await next()
+  }
+}
+
+/**
+ * Developer-surface auth: superadmin session cookie, or HMAC local-console auth
+ * on co-located dev hosts (terminal console over the Unix socket only).
+ */
+export function createDeveloperAccessMiddleware(
+  secrets: DerivedSecretsConfig,
+): MiddlewareHandler<AppEnv> {
+  return async (c, next) => {
+    const resolved = await resolveSession(c, secrets, getDb(c))
+    if (resolved && isSuperadmin(resolved.data)) {
+      c.set('session', resolved.data)
+      return next()
+    }
+
+    if (await verifyLocalConsoleAuthorization(c)) {
+      return next()
+    }
+
+    if (!resolved) {
+      return c.json({ ok: false, error: 'Unauthorized' }, 401)
+    }
+
+    return c.json({ ok: false, error: 'Forbidden' }, 403)
   }
 }
 

@@ -1,5 +1,5 @@
 import type { Hono } from 'hono'
-import { createRootOnlyMiddleware } from '../client/authn/middleware.ts'
+import { createDeveloperAccessMiddleware } from '../client/authn/middleware.ts'
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import type { DaemonCellRegistry } from '../daemon/cell/contracts.ts'
 import {
@@ -96,8 +96,8 @@ export function registerUpdateRoutes(
   opts: { secrets: DerivedSecretsConfig; authRequired?: boolean },
 ): Hono {
   if (opts.authRequired !== false) {
-    app.use(`${DEVELOPER_API_PREFIX}/daemon/update`, createRootOnlyMiddleware(opts.secrets))
-    app.use(`${DEVELOPER_API_PREFIX}/daemon/:id/update`, createRootOnlyMiddleware(opts.secrets))
+    app.use(`${DEVELOPER_API_PREFIX}/daemon/update`, createDeveloperAccessMiddleware(opts.secrets))
+    app.use(`${DEVELOPER_API_PREFIX}/daemon/:id/update`, createDeveloperAccessMiddleware(opts.secrets))
   }
 
   app.post(`${DEVELOPER_API_PREFIX}/daemon/:id/update`, async (c) => {

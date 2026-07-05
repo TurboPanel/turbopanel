@@ -1,6 +1,6 @@
 import type { Hono } from 'hono'
 import { join } from '@std/path'
-import { createRootOnlyMiddleware } from '../client/authn/middleware.ts'
+import { createDeveloperAccessMiddleware } from '../client/authn/middleware.ts'
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import { encodeBase64 } from '@std/encoding/base64'
 import type { DaemonCellRegistry } from '../daemon/cell/contracts.ts'
@@ -155,7 +155,7 @@ async function syncDevToDaemonWithRegistry(
 
 /**
  * Package the instance host's current daemon build and stream it to one
- * connected daemon over the WebSocket, then wait for it to unpack + restart.
+ * connected daemon over the WebSocket, then wait for unpack + systemd restart.
  */
 export async function syncDevToDaemon(
   daemonId: string,
@@ -173,8 +173,8 @@ export function registerDevSyncRoutes(
   opts: { secrets: DerivedSecretsConfig; authRequired?: boolean },
 ): Hono {
   if (opts.authRequired !== false) {
-    app.use(`${DEVELOPER_API_PREFIX}/daemon/sync-dev`, createRootOnlyMiddleware(opts.secrets))
-    app.use(`${DEVELOPER_API_PREFIX}/daemon/:id/sync-dev`, createRootOnlyMiddleware(opts.secrets))
+    app.use(`${DEVELOPER_API_PREFIX}/daemon/sync-dev`, createDeveloperAccessMiddleware(opts.secrets))
+    app.use(`${DEVELOPER_API_PREFIX}/daemon/:id/sync-dev`, createDeveloperAccessMiddleware(opts.secrets))
   }
 
   app.post(`${DEVELOPER_API_PREFIX}/daemon/:id/sync-dev`, async (c) => {

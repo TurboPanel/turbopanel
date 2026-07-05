@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { eq } from 'drizzle-orm'
-import { createRootOnlyMiddleware } from '../client/authn/middleware.ts'
+import { createDeveloperAccessMiddleware } from '../client/authn/middleware.ts'
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import type { Db } from '../db.ts'
 import { getDb, getDaemonCellRegistry } from '../db.ts'
@@ -63,7 +63,7 @@ export function buildDeveloperRouter(
 ): Hono {
   const developer = new Hono()
   if (opts.authRequired !== false) {
-    developer.use('*', createRootOnlyMiddleware(opts.secrets))
+    developer.use('*', createDeveloperAccessMiddleware(opts.secrets))
   }
 
   developer.get('/daemon/connections', async (c) => {

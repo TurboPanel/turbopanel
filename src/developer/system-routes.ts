@@ -1,5 +1,5 @@
 import type { Hono } from 'hono'
-import { createRootOnlyMiddleware } from '../client/authn/middleware.ts'
+import { createDeveloperAccessMiddleware } from '../client/authn/middleware.ts'
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import { getDaemonRepoPath, getInstanceCommit } from '../daemon/version.ts'
 import type { Db } from '../db.ts'
@@ -158,7 +158,7 @@ export function registerSystemRoutes(
   opts: { secrets: DerivedSecretsConfig; db?: Db; authRequired?: boolean },
 ): Hono {
   if (opts.authRequired !== false) {
-    app.use(`${DEVELOPER_API_PREFIX}/system/*`, createRootOnlyMiddleware(opts.secrets))
+    app.use(`${DEVELOPER_API_PREFIX}/system/*`, createDeveloperAccessMiddleware(opts.secrets))
   }
 
   app.get(`${DEVELOPER_API_PREFIX}/system/upgrade-status`, async (c) => {

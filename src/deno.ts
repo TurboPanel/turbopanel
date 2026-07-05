@@ -164,7 +164,7 @@ registerInstallRoutes(routes, {
   signupEnvOverride: Deno.env.get('TURBOPANEL_IS_SIGNUP_ENABLED'),
 })
 if (developerSurface) {
-  registerDeveloperRoutes(routes, { secrets: sessionSecrets, db, authRequired: false })
+  registerDeveloperRoutes(routes, { secrets: sessionSecrets, db })
 }
 registerDaemonApiRoutes(routes, {
   secrets: daemonJwtSecrets,
@@ -173,10 +173,10 @@ registerDaemonApiRoutes(routes, {
 })
 registerVersionRoute(routes)
 if (developerSurface) {
-  registerSystemRoutes(routes, { secrets: sessionSecrets, db, authRequired: false })
-  registerDevSyncRoutes(routes, { secrets: sessionSecrets, authRequired: false })
-  registerTunnelRoutes(routes, { secrets: sessionSecrets, authRequired: false })
-  registerUpdateRoutes(routes, { secrets: sessionSecrets, authRequired: false })
+  registerSystemRoutes(routes, { secrets: sessionSecrets, db })
+  registerDevSyncRoutes(routes, { secrets: sessionSecrets })
+  registerTunnelRoutes(routes, { secrets: sessionSecrets })
+  registerUpdateRoutes(routes, { secrets: sessionSecrets })
 }
 registerDaemonWebSocket(routes, {
   developerSurface,
