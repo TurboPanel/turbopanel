@@ -208,8 +208,8 @@ export async function transitionCommand(
     .update(command)
     .set({
       status: patch.status,
-      ...(patch.attempts !== undefined ? { attempts: patch.attempts } : {}),
-      ...(patch.result !== undefined ? { result: patch.result } : {}),
+      ...(patch.attempts === undefined ? {} : { attempts: patch.attempts }),
+      ...(patch.result === undefined ? {} : { result: patch.result }),
       metadata: sql`${command.metadata} || ${JSON.stringify(metadataPatch)}::jsonb`,
     })
     .where(eq(command.id, commandId))

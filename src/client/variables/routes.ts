@@ -6,7 +6,7 @@ import { encryptSecretForDaemon } from '../authn/data-encryption.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { getDb } from '../../db.ts'
+import { getDb, type Db } from '../../db.ts'
 import { variable } from '../../lib/db/schema.ts'
 import {
   assertCanCreateOr403,
@@ -148,6 +148,28 @@ function serializeResolvedVariables(map: ResolvedVariableMap) {
     }
   }
   return variables
+}
+
+type ResolvedEntityKind = 'hosting' | 'service' | 'environment'
+
+async function respondWithResolvedVariables(
+  c: Context,
+  db: Db,
+  organizationId: string,
+  kind: ResolvedEntityKind,
+  entityId: string,
+  resolve: (db: Db, id: string) => Promise<ResolvedVariableMap>,
+) {
+  const entityOrgId = await resolveEntityOrganizationId(db, kind, entityId)
+  if (!entityOrgId || entityOrgId !== organizationId) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+
+  const denied = await assertCanReadOr403(c, kind, entityId)
+  if (denied) return denied
+
+  const resolved = await resolve(db, entityId)
+  return c.json({ variables: serializeResolvedVariables(resolved) })
 }
 
 function parseVariableParent(
@@ -303,41 +325,35 @@ export function registerVariableRoutes(router: Hono, opts: AuthRouteOpts) {
     }
 
     if (hostingId) {
-      const entityOrgId = await resolveEntityOrganizationId(db, 'hosting', hostingId)
-      if (!entityOrgId || entityOrgId !== organizationId) {
-        return c.json({ error: 'Not found' }, 404)
-      }
-
-      const denied = await assertCanReadOr403(c, 'hosting', hostingId)
-      if (denied) return denied
-
-      const resolved = await resolveInheritedVariablesForHosting(db, hostingId)
-      return c.json({ variables: serializeResolvedVariables(resolved) })
+      return respondWithResolvedVariables(
+        c,
+        db,
+        organizationId,
+        'hosting',
+        hostingId,
+        resolveInheritedVariablesForHosting,
+      )
     }
 
     if (serviceId) {
-      const entityOrgId = await resolveEntityOrganizationId(db, 'service', serviceId)
-      if (!entityOrgId || entityOrgId !== organizationId) {
-        return c.json({ error: 'Not found' }, 404)
-      }
-
-      const denied = await assertCanReadOr403(c, 'service', serviceId)
-      if (denied) return denied
-
-      const resolved = await resolveInheritedVariablesForService(db, serviceId)
-      return c.json({ variables: serializeResolvedVariables(resolved) })
+      return respondWithResolvedVariables(
+        c,
+        db,
+        organizationId,
+        'service',
+        serviceId,
+        resolveInheritedVariablesForService,
+      )
     }
 
-    const entityOrgId = await resolveEntityOrganizationId(db, 'environment', environmentId!)
-    if (!entityOrgId || entityOrgId !== organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanReadOr403(c, 'environment', environmentId!)
-    if (denied) return denied
-
-    const resolved = await resolveInheritedVariablesForEnvironment(db, environmentId!)
-    return c.json({ variables: serializeResolvedVariables(resolved) })
+    return respondWithResolvedVariables(
+      c,
+      db,
+      organizationId,
+      'environment',
+      environmentId!,
+      resolveInheritedVariablesForEnvironment,
+    )
   })
 
   router.get('/variables', async (c) => {

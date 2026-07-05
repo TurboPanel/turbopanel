@@ -143,7 +143,11 @@ export function resolveInstanceRuntimeConfigPaths(
 }
 
 function stripTrailingSlash(value: string): string {
-  return value.replace(/\/+$/, '') || '/'
+  let end = value.length
+  while (end > 0 && (value.codePointAt(end - 1) ?? 0) === 47) {
+    end--
+  }
+  return end === 0 ? '/' : value.slice(0, end)
 }
 
 /**

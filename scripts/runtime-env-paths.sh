@@ -2,6 +2,7 @@
 # Prefer injected vars; compose from TURBOPANEL_CONFIG_DIR when only that is set.
 runtime_env_config_dir() {
   printf '%s' "${TURBOPANEL_CONFIG_DIR:-/etc/turbopanel}"
+  return 0
 }
 
 runtime_env_path() {
@@ -10,6 +11,7 @@ runtime_env_path() {
     return 0
   fi
   printf '%s/instance/runtime.env' "$(runtime_env_config_dir)"
+  return 0
 }
 
 runtime_dev_vars_path() {

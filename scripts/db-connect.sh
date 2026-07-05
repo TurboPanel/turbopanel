@@ -52,7 +52,6 @@ db_connect_load_pg_env_from_unit() {
 }
 
 db_connect_load_from_runtime_env() {
-  local caller="${1:-db-connect}"
   if [[ -n "${TURBOPANEL_DATABASE_URL:-}" ]]; then
     return 0
   fi

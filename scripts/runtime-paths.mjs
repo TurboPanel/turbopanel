@@ -11,5 +11,9 @@ export function resolveRuntimesDir(env = process.env) {
   const override = (env.TURBOPANEL_RUNTIMES_DIR ?? '').trim() ||
     (env.TURBOPANEL_RUNTIME_DIR ?? '').trim()
   const dir = override || DEFAULT_RUNTIMES_DIR
-  return dir.replace(/\/+$/, '') || '/'
+  let end = dir.length
+  while (end > 0 && (dir.codePointAt(end - 1) ?? 0) === 47) {
+    end--
+  }
+  return end === 0 ? '/' : dir.slice(0, end)
 }
