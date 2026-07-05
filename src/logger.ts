@@ -1,5 +1,7 @@
 const encoder = new TextEncoder()
 
+type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR'
+
 function readEnv(name: string): string | undefined {
   if (typeof Deno !== 'undefined') {
     return Deno.env.get(name) ?? undefined
@@ -13,11 +15,11 @@ const LOG_DEBUG_ENABLED =
   readEnv('TURBOPANEL_LOG_LEVEL') === 'debug'
 
 function formatParts(parts: unknown[]): string {
-  return parts.map((part) => String(part)).join(' ')
+  return parts.map(String).join(' ')
 }
 
 function splitMessageLines(message: string): string[] {
-  const normalized = message.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  const normalized = message.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
   const lines = normalized.split('\n')
   if (lines.length > 0 && lines.at(-1) === '') {
     lines.pop()
@@ -26,7 +28,7 @@ function splitMessageLines(message: string): string[] {
 }
 
 function formatStructuredLine(
-  level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR',
+  level: LogLevel,
   component: string,
   message: string,
 ): string {
@@ -47,7 +49,7 @@ function writeLogLine(
 }
 
 export function log(
-  level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR',
+  level: LogLevel,
   component: string,
   ...parts: unknown[]
 ): void {
@@ -76,7 +78,7 @@ export function logDebug(component: string, ...parts: unknown[]): void {
 }
 
 export function daemonCellLog(
-  level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR',
+  level: LogLevel,
   serverId: string,
   connectionId: string | undefined,
   message: string,
@@ -88,6 +90,47 @@ export function daemonCellLog(
     'daemon-cell',
     `[daemon-cell serverId=${serverId} conn=${conn}] ${message}`,
   )
+}
+
+function serializeTraceValue(value: unknown): string {
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
+function formatTraceEvent(
+  event: string,
+  fields: Record<string, unknown>,
+): string {
+  const parts: string[] = [`event=${event}`]
+  for (const key of Object.keys(fields).sort((a, b) => a.localeCompare(b))) {
+    const value = fields[key]
+    if (value === undefined || value === null) continue
+    parts.push(`${key}=${serializeTraceValue(value)}`)
+  }
+  return parts.join(' ')
+}
+
+export function componentTrace(
+  component: string,
+  event: string,
+  fields: Record<string, unknown>,
+): void {
+  if (!isDaemonDebugEnabled()) return
+  log('DEBUG', component, formatTraceEvent(event, fields))
+}
+
+export function cellTrace(
+  event: string,
+  fields: Record<string, unknown>,
+): void {
+  componentTrace('daemon-cell', event, fields)
+}
+
+export function commandConsumerTrace(
+  event: string,
+  fields: Record<string, unknown>,
+): void {
+  componentTrace('command-consumer', event, fields)
 }
 
 export function logWarn(component: string, ...parts: unknown[]): void {

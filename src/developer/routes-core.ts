@@ -21,7 +21,7 @@ import {
   fetchDaemonCellDiagnostics,
   fetchDaemonServerCell,
 } from '../daemon/cell/server-diagnostics.ts'
-import { isDaemonDebugEnabled } from '../logger.ts'
+import { isDaemonDebugEnabled, cellTrace } from '../logger.ts'
 import {
   generateDeliveryId,
   generateRequestId,
@@ -55,6 +55,49 @@ function extractAddresses(record: { status: string; result?: unknown }): ServerA
   const result = record.result as { addresses?: ServerAddresses } | undefined
   if (!result?.addresses) throw new Error('missing addresses in daemon response')
   return result.addresses
+}
+
+type ParsedDisplayName =
+  | { ok: true; value: string | null }
+  | { ok: false; error: string }
+
+function parseDisplayNameInput(displayName: unknown): ParsedDisplayName {
+  if (displayName === null) return { ok: true, value: null }
+  if (typeof displayName !== 'string') {
+    return { ok: false, error: 'displayName must be a string or null' }
+  }
+  const trimmed = displayName.trim()
+  if (trimmed.length > 255) {
+    return { ok: false, error: 'displayName must be at most 255 characters' }
+  }
+  return { ok: true, value: trimmed }
+}
+
+type ParsedOrganizationId =
+  | { ok: true; value: string | null }
+  | { ok: false; error: string; status: number }
+
+async function parseOrganizationIdInput(
+  db: Db,
+  organizationId: unknown,
+): Promise<ParsedOrganizationId> {
+  if (organizationId === null) return { ok: true, value: null }
+  if (typeof organizationId === 'string') {
+    const trimmed = organizationId.trim()
+    if (!UUID_RE.test(trimmed)) {
+      return { ok: false, error: 'organizationId must be a valid UUID', status: 400 }
+    }
+    const org = await db
+      .select({ id: organization.id })
+      .from(organization)
+      .where(eq(organization.id, trimmed))
+      .limit(1)
+    if (org.length === 0) {
+      return { ok: false, error: 'Organization not found', status: 404 }
+    }
+    return { ok: true, value: trimmed }
+  }
+  return { ok: false, error: 'organizationId must be a string or null', status: 400 }
 }
 
 /** Build the developer router without mounting — extend before {@link mountDeveloperRouter}. */
@@ -242,28 +285,87 @@ export function buildDeveloperRouter(
     const servers = await Promise.all(
       online.map(async (presence) => {
         const serverId = presence.serverId
+        const requestId = generateRequestId()
+        cellTrace('request-start', {
+          requestId,
+          serverId,
+          kind: 'addresses-request',
+        })
         const envelope: DaemonOutboundEnvelope = {
           kind: 'addresses-request',
           deliveryId: generateDeliveryId(),
-          requestId: generateRequestId(),
+          requestId,
           at: nowTs(),
         }
+        cellTrace('request-enqueued', {
+          requestId,
+          serverId,
+          kind: 'addresses-request',
+          deliveryId: envelope.deliveryId,
+        })
         try {
           const record = await registry.getCell(serverId).createRequestAndWait(
             envelope,
             ADDRESSES_TIMEOUT_MS,
           )
+          if (record.status === 'failed') {
+            const error = record.error ?? 'failed to fetch addresses'
+            cellTrace('request-result', {
+              requestId,
+              serverId,
+              kind: 'addresses-request',
+              pendingStatus: record.status,
+              resultStatus: 'failed',
+              error,
+            })
+            return {
+              daemonId: serverId,
+              hostname: presence.hostname,
+              error,
+            }
+          }
+          if (record.status === 'expired') {
+            const error = 'timeout waiting for addresses'
+            cellTrace('request-result', {
+              requestId,
+              serverId,
+              kind: 'addresses-request',
+              pendingStatus: record.status,
+              resultStatus: 'timeout',
+              error,
+            })
+            return {
+              daemonId: serverId,
+              hostname: presence.hostname,
+              error,
+            }
+          }
           const addresses = extractAddresses(record)
+          cellTrace('request-result', {
+            requestId,
+            serverId,
+            kind: 'addresses-request',
+            pendingStatus: record.status,
+            resultStatus: 'done',
+          })
           return {
             daemonId: serverId,
             hostname: presence.hostname,
             addresses,
           }
         } catch (err) {
+          const error = err instanceof Error ? err.message : String(err)
+          cellTrace('request-result', {
+            requestId,
+            serverId,
+            kind: 'addresses-request',
+            resultStatus: 'error',
+            error,
+          })
           return {
             daemonId: serverId,
             hostname: presence.hostname,
-            error: err instanceof Error ? err.message : String(err),
+            error,
           }
         }
       }),
@@ -281,18 +383,61 @@ export function buildDeveloperRouter(
     if (!live?.connected) {
       return c.json({ error: 'daemon not connected' }, 404)
     }
+    const requestId = generateRequestId()
+    cellTrace('request-start', {
+      requestId,
+      serverId: id,
+      kind: 'addresses-request',
+    })
     try {
       const envelope: DaemonOutboundEnvelope = {
         kind: 'addresses-request',
         deliveryId: generateDeliveryId(),
-        requestId: generateRequestId(),
+        requestId,
         at: nowTs(),
       }
+      cellTrace('request-enqueued', {
+        requestId,
+        serverId: id,
+        kind: 'addresses-request',
+        deliveryId: envelope.deliveryId,
+      })
       const record = await registry.getCell(id).createRequestAndWait(
         envelope,
         ADDRESSES_TIMEOUT_MS,
       )
+      if (record.status === 'failed') {
+        const error = record.error ?? 'failed to fetch addresses'
+        cellTrace('request-result', {
+          requestId,
+          serverId: id,
+          kind: 'addresses-request',
+          pendingStatus: record.status,
+          resultStatus: 'failed',
+          error,
+        })
+        return c.json({ error }, 500)
+      }
+      if (record.status === 'expired') {
+        const error = 'timeout waiting for addresses'
+        cellTrace('request-result', {
+          requestId,
+          serverId: id,
+          kind: 'addresses-request',
+          pendingStatus: record.status,
+          resultStatus: 'timeout',
+          error,
+        })
+        return c.json({ error }, 500)
+      }
       const addresses = extractAddresses(record)
+      cellTrace('request-result', {
+        requestId,
+        serverId: id,
+        kind: 'addresses-request',
+        pendingStatus: record.status,
+        resultStatus: 'done',
+      })
       return c.json({
         ok: true,
         daemonId: id,
@@ -301,6 +446,13 @@ export function buildDeveloperRouter(
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
+      cellTrace('request-result', {
+        requestId,
+        serverId: id,
+        kind: 'addresses-request',
+        resultStatus: 'error',
+        error: message,
+      })
       const status = message === 'daemon not connected' ? 404 : 500
       return c.json({ error: message }, status)
     }
@@ -345,15 +497,10 @@ export function buildDeveloperRouter(
     } | null
 
     let displayName: string | null = null
-    if (body && body.displayName != null) {
-      if (typeof body.displayName !== 'string') {
-        return c.json({ error: 'displayName must be a string or null' }, 400)
-      }
-      const trimmed = body.displayName.trim()
-      if (trimmed.length > 255) {
-        return c.json({ error: 'displayName must be at most 255 characters' }, 400)
-      }
-      displayName = trimmed
+    if (body?.displayName != null) {
+      const parsed = parseDisplayNameInput(body.displayName)
+      if (!parsed.ok) return c.json({ error: parsed.error }, 400)
+      displayName = parsed.value
     }
 
     const options = body?.options ?? null
@@ -382,43 +529,17 @@ export function buildDeveloperRouter(
       options?: Record<string, unknown> | null
     } = {}
     if (body && 'displayName' in body) {
-      if (body.displayName != null) {
-        if (typeof body.displayName !== 'string') {
-          return c.json({ error: 'displayName must be a string or null' }, 400)
-        }
-        const trimmed = body.displayName.trim()
-        if (trimmed.length > 255) {
-          return c.json({ error: 'displayName must be at most 255 characters' }, 400)
-        }
-        patch.displayName = trimmed
-      } else {
-        patch.displayName = null
-      }
+      const parsed = parseDisplayNameInput(body.displayName)
+      if (!parsed.ok) return c.json({ error: parsed.error }, 400)
+      patch.displayName = parsed.value
     }
     if (body && 'options' in body) {
       patch.options = body.options ?? null
     }
     if (body && 'organizationId' in body) {
-      const organizationId = body.organizationId
-      if (organizationId == null) {
-        patch.organizationId = null
-      } else if (typeof organizationId !== 'string') {
-        return c.json({ error: 'organizationId must be a string or null' }, 400)
-      } else {
-        const trimmed = organizationId.trim()
-        if (!UUID_RE.test(trimmed)) {
-          return c.json({ error: 'organizationId must be a valid UUID' }, 400)
-        }
-        const org = await db
-          .select({ id: organization.id })
-          .from(organization)
-          .where(eq(organization.id, trimmed))
-          .limit(1)
-        if (org.length === 0) {
-          return c.json({ error: 'Organization not found' }, 404)
-        }
-        patch.organizationId = trimmed
-      }
+      const parsed = await parseOrganizationIdInput(db, body.organizationId)
+      if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status)
+      patch.organizationId = parsed.value
     }
 
     const updated = await db

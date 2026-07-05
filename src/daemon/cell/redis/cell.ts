@@ -15,7 +15,7 @@ import type {
 } from "../protocol.ts";
 import { DAEMON_OFFLINE_SWEEP_MS, DAEMON_STALE_MS } from "../protocol.ts";
 import { TERMINAL_UPDATE_RETENTION_MS } from "../../../lib/update/constants.ts";
-import { logDebug, logInfo } from "../../../logger.ts";
+import { cellTrace, logDebug, logInfo } from "../../../logger.ts";
 import { onDaemonUpdateExpired } from "../control-plane-monitor.ts";
 import type { Db } from "../../../db.ts";
 import { mergeSnapshotPresence } from "../snapshot-merge.ts";
@@ -448,6 +448,11 @@ export class RedisDaemonCell implements DaemonCell {
     });
 
     logDebug("daemon-cell", `attach: ${this.#serverId} conn=${connectionId}`);
+    cellTrace("attach", {
+      serverId: this.#serverId,
+      conn: connectionId,
+      remoteAddress: meta.remoteAddress,
+    });
 
     this.#bumpDiag("wsAccepted");
 
@@ -459,28 +464,6 @@ export class RedisDaemonCell implements DaemonCell {
         expiresAt,
       },
     };
-  }
-
-  async reclaimOrphanedSocketLeaseOnStartup(): Promise<void> {
-    const leaseK = leaseKey(this.#serverId);
-    const holder = await this.#client.get(leaseK);
-    if (!holder) return;
-
-    await this.#client.del(leaseK);
-    const meta = await this.#client.hgetall(metaKey(this.#serverId));
-    if (meta?.connectionId === holder && meta?.connected === "1") {
-      await this.#client.hset(metaKey(this.#serverId), { connected: "0" });
-      await this.#client.srem(onlineSetKey(), this.#serverId);
-      const closedAt = nowIso();
-      await this.#client.hset(connKey(this.#serverId, holder), {
-        closedAt,
-        reason: "instance-restart",
-      });
-      await this.#client.expire(
-        connKey(this.#serverId, holder),
-        86_400,
-      );
-    }
   }
 
   async reclaimOrphanedSocketLeaseOnStartup(): Promise<void> {
@@ -542,6 +525,11 @@ export class RedisDaemonCell implements DaemonCell {
       "daemon-cell",
       `detach: ${this.#serverId} conn=${params.connectionId}`,
     );
+    cellTrace("detach", {
+      serverId: this.#serverId,
+      conn: params.connectionId,
+      reason: params.reason,
+    });
 
     this.#bumpDiag("wsClosed");
     this.#bumpDiag("cleanupCount");
@@ -571,6 +559,7 @@ export class RedisDaemonCell implements DaemonCell {
     const atMs = Date.parse(at);
     const bumpInbound = shouldCoalesceLastSeenAt(meta?.lastInboundAt, atMs);
 
+    let agentChanged = false;
     const fields: Record<string, string> = {
       keyLastUsedAt: at,
     };
@@ -583,7 +572,7 @@ export class RedisDaemonCell implements DaemonCell {
 
     if (params.agent?.commit && params.agent?.buildId) {
       const storedAgent = parseStoredAgent(meta?.agent);
-      const agentChanged = !agentIdentityEqual(params.agent, storedAgent);
+      agentChanged = !agentIdentityEqual(params.agent, storedAgent);
       if (agentChanged) fields.agent = JSON.stringify(params.agent);
       await this.putSnapshot({
         agent: params.agent,
@@ -595,6 +584,13 @@ export class RedisDaemonCell implements DaemonCell {
 
     await this.#client.hset(metaKey(this.#serverId), fields);
     await this.#client.sadd(onlineSetKey(), this.#serverId);
+
+    cellTrace("record-inbound", {
+      serverId: this.#serverId,
+      conn: connectionId,
+      coalesced: bumpInbound,
+      agentChanged,
+    });
   }
 
   async getSnapshot(): Promise<DaemonCellSnapshot> {
@@ -646,6 +642,11 @@ export class RedisDaemonCell implements DaemonCell {
       metaFields.keyLastUsedAt = patch.keyLastUsedAt;
     }
     await this.#client.hset(metaKey(this.#serverId), metaFields);
+    cellTrace("snapshot-put", {
+      serverId: this.#serverId,
+      version: updated.version,
+      keys: Object.keys(patch).join(","),
+    });
     return updated;
   }
 
@@ -688,6 +689,13 @@ export class RedisDaemonCell implements DaemonCell {
       });
       this.#deliveryToStreamId.set(outbound.deliveryId, streamId);
 
+      cellTrace("enqueue", {
+        serverId: this.#serverId,
+        requestId: outbound.requestId,
+        deliveryId: outbound.deliveryId,
+        kind: outbound.kind,
+      });
+
       return parseRequestRecord(
         this.#serverId,
         outbound.requestId,
@@ -725,6 +733,13 @@ export class RedisDaemonCell implements DaemonCell {
     await this.#client.zadd(indexKey, now, outbound.requestId);
     this.#deliveryToStreamId.set(outbound.deliveryId, streamId);
 
+    cellTrace("enqueue", {
+      serverId: this.#serverId,
+      requestId: outbound.requestId,
+      deliveryId: outbound.deliveryId,
+      kind: outbound.kind,
+    });
+
     return parseRequestRecord(this.#serverId, outbound.requestId, recordFields);
   }
 
@@ -750,63 +765,84 @@ export class RedisDaemonCell implements DaemonCell {
         status: "sent",
         sentAt: sentAt ?? nowIso(),
       });
+      cellTrace("mark-sent", {
+        serverId: this.#serverId,
+        requestId,
+        deliveryId,
+      });
       return;
     }
   }
 
-  async handleInbound(
+  async #applyLateTerminalAck(
     inbound: DaemonInboundEnvelope,
+    existing: PendingRequestRecord,
+    fields: Record<string, string>,
+    reqKey: string,
   ): Promise<PendingRequestRecord | null> {
-    const reqKey = requestKey(this.#serverId, inbound.requestId);
-    const fields = await this.#client.hgetall(reqKey);
-    if (!fields) {
-      return null;
-    }
+    if (inbound.kind !== "command-ack" || existing.ackAt) return null;
+    const updates: Record<string, string> = {
+      ackAt: inbound.at,
+      daemonReceivedAt: inbound.daemonReceivedAt,
+    };
+    await this.#client.hset(reqKey, updates);
+    const patched = parseRequestRecord(this.#serverId, inbound.requestId, {
+      ...fields,
+      ...updates,
+    });
+    cellTrace("handle-inbound", {
+      serverId: this.#serverId,
+      requestId: inbound.requestId,
+      kind: inbound.kind,
+      statusFrom: existing.status,
+      statusTo: "late-ack",
+    });
+    this.#terminalResults.set(inbound.requestId, patched);
+    return patched;
+  }
 
-    const existing = parseRequestRecord(
+  async #applyCommandAckInbound(
+    inbound: Extract<DaemonInboundEnvelope, { kind: "command-ack" }>,
+    existing: PendingRequestRecord,
+    fields: Record<string, string>,
+    reqKey: string,
+  ): Promise<PendingRequestRecord> {
+    if (existing.status === "acked") return existing;
+    const updates: Record<string, string> = {
+      status: "acked",
+      ackAt: inbound.at,
+      daemonReceivedAt: inbound.daemonReceivedAt,
+    };
+    await this.#client.hset(reqKey, updates);
+    await this.#client.hset(metaKey(this.#serverId), {
+      lastInboundAt: inbound.at,
+    });
+    cellTrace("handle-inbound", {
+      serverId: this.#serverId,
+      requestId: inbound.requestId,
+      kind: inbound.kind,
+      statusFrom: existing.status,
+      statusTo: "acked",
+    });
+    return parseRequestRecord(
       this.#serverId,
       inbound.requestId,
-      fields,
+      { ...fields, ...updates },
     );
-    if (isTerminalStatus(existing.status)) {
-      if (inbound.kind === "command-ack" && !existing.ackAt) {
-        const updates: Record<string, string> = {
-          ackAt: inbound.at,
-          daemonReceivedAt: inbound.daemonReceivedAt,
-        };
-        await this.#client.hset(reqKey, updates);
-        const patched = parseRequestRecord(this.#serverId, inbound.requestId, {
-          ...fields,
-          ...updates,
-        });
-        this.#terminalResults.set(inbound.requestId, patched);
-        return patched;
-      }
-      return existing;
-    }
+  }
 
+  #resolveInboundCompletion(
+    inbound: DaemonInboundEnvelope,
+  ): {
+    status: PendingRequestStatus;
+    result?: unknown;
+    error?: string;
+  } | null {
     let status: PendingRequestStatus;
     let result: unknown;
     let error: string | undefined;
 
     switch (inbound.kind) {
-      case "command-ack": {
-        if (existing.status === "acked") return existing;
-        const updates: Record<string, string> = {
-          status: "acked",
-          ackAt: inbound.at,
-          daemonReceivedAt: inbound.daemonReceivedAt,
-        };
-        await this.#client.hset(reqKey, updates);
-        await this.#client.hset(metaKey(this.#serverId), {
-          lastInboundAt: inbound.at,
-        });
-        return parseRequestRecord(
-          this.#serverId,
-          inbound.requestId,
-          { ...fields, ...updates },
-        );
-      }
       case "command-result":
         status = "done";
         result = {
@@ -818,10 +854,6 @@ export class RedisDaemonCell implements DaemonCell {
       case "addresses-result":
         status = "done";
         result = { addresses: inbound.addresses };
-        await this.putSnapshot({
-          addresses: inbound.addresses,
-          lastInboundAt: inbound.at,
-        });
         break;
       case "public-urls-update-result":
       case "dev-sync-result":
@@ -830,18 +862,33 @@ export class RedisDaemonCell implements DaemonCell {
       case "command-outcome":
         status = inbound.ok ? "done" : "failed";
         if (inbound.kind === "command-outcome") {
-          result = inbound.result !== undefined
-            ? inbound.result
-            : { ok: inbound.ok, error: inbound.error };
+          result = inbound.result === undefined
+            ? { ok: inbound.ok, error: inbound.error }
+            : inbound.result;
         } else {
           result = { ok: inbound.ok, error: inbound.error };
         }
         if (!inbound.ok) error = inbound.error;
         break;
       default:
-        return existing;
+        return null;
     }
 
+    return { status, result, error };
+  }
+
+  async #applyInboundCompletion(
+    inbound: DaemonInboundEnvelope,
+    existing: PendingRequestRecord,
+    fields: Record<string, string>,
+    reqKey: string,
+    completion: {
+      status: PendingRequestStatus;
+      result?: unknown;
+      error?: string;
+    },
+  ): Promise<PendingRequestRecord> {
+    const { status, result, error } = completion;
     const updates: Record<string, string> = {
       status,
       finishedAt: inbound.at,
@@ -862,11 +909,24 @@ export class RedisDaemonCell implements DaemonCell {
 
     await this.#client.hset(reqKey, updates);
 
-    if (inbound.kind !== "addresses-result") {
+    if (inbound.kind === "addresses-result") {
+      await this.putSnapshot({
+        addresses: inbound.addresses,
+        lastInboundAt: inbound.at,
+      });
+    } else {
       await this.#client.hset(metaKey(this.#serverId), {
         lastInboundAt: inbound.at,
       });
     }
+
+    cellTrace("handle-inbound", {
+      serverId: this.#serverId,
+      requestId: inbound.requestId,
+      kind: inbound.kind,
+      statusFrom: existing.status,
+      statusTo: status,
+    });
 
     const terminalRecord = parseRequestRecord(
       this.#serverId,
@@ -882,6 +942,45 @@ export class RedisDaemonCell implements DaemonCell {
     }
 
     return terminalRecord;
+  }
+
+  async handleInbound(
+    inbound: DaemonInboundEnvelope,
+  ): Promise<PendingRequestRecord | null> {
+    const reqKey = requestKey(this.#serverId, inbound.requestId);
+    const fields = await this.#client.hgetall(reqKey);
+    if (!fields) {
+      return null;
+    }
+
+    const existing = parseRequestRecord(
+      this.#serverId,
+      inbound.requestId,
+      fields,
+    );
+    if (isTerminalStatus(existing.status)) {
+      return (await this.#applyLateTerminalAck(
+        inbound,
+        existing,
+        fields,
+        reqKey,
+      )) ?? existing;
+    }
+
+    if (inbound.kind === "command-ack") {
+      return this.#applyCommandAckInbound(inbound, existing, fields, reqKey);
+    }
+
+    const completion = this.#resolveInboundCompletion(inbound);
+    if (!completion) return existing;
+
+    return this.#applyInboundCompletion(
+      inbound,
+      existing,
+      fields,
+      reqKey,
+      completion,
+    );
   }
 
   async getRequest(requestId: string): Promise<PendingRequestRecord | null> {
@@ -984,6 +1083,11 @@ export class RedisDaemonCell implements DaemonCell {
   ): Promise<DaemonCellLease | null> {
     const key = leaseKey(this.#serverId);
     const acquired = await this.#client.setnx(key, holder, ttlMs);
+    cellTrace("lease-claim", {
+      serverId: this.#serverId,
+      holder,
+      ok: acquired,
+    });
     if (!acquired) return null;
     return {
       holder,
@@ -1006,7 +1110,13 @@ export class RedisDaemonCell implements DaemonCell {
       holder,
       ttlMs,
     );
-    if (renewed !== "OK" && renewed !== 1) return null;
+    const ok = renewed === "OK" || renewed === 1;
+    cellTrace("lease-renew", {
+      serverId: this.#serverId,
+      holder,
+      ok,
+    });
+    if (!ok) return null;
     return {
       holder,
       token: holder,
@@ -1015,12 +1125,17 @@ export class RedisDaemonCell implements DaemonCell {
   }
 
   async releaseDeliveryLease(holder: string, token: string): Promise<void> {
-    await this.#client.eval(
+    const released = await this.#client.eval(
       COMPARE_AND_DELETE,
       1,
       leaseKey(this.#serverId),
       token,
     );
+    cellTrace("lease-release", {
+      serverId: this.#serverId,
+      holder,
+      ok: isLeaseOpSuccess(released),
+    });
   }
 
   async readOutboxBatch(params: {
@@ -1066,6 +1181,12 @@ export class RedisDaemonCell implements DaemonCell {
       envelopes.push(...this.#entriesToEnvelopes(fresh));
     }
 
+    cellTrace("outbox-read", {
+      serverId: this.#serverId,
+      consumer: params.consumer,
+      count: envelopes.length,
+    });
+
     return envelopes;
   }
 
@@ -1089,6 +1210,10 @@ export class RedisDaemonCell implements DaemonCell {
         this.#deliveryToStreamId.delete(deliveryId);
       }
     }
+    cellTrace("outbox-ack", {
+      serverId: this.#serverId,
+      count: streamIds.length,
+    });
   }
 
   async clearUpdateStatus(
@@ -1104,7 +1229,7 @@ export class RedisDaemonCell implements DaemonCell {
     for (const requestId of requestIds) {
       const reqKey = requestKey(this.#serverId, requestId);
       const fields = await this.#client.hgetall(reqKey);
-      if (!fields || fields.requestKind !== "update") continue;
+      if (fields?.requestKind !== "update") continue;
       const status = fields.status as PendingRequestStatus;
       if (!isTerminalStatus(status)) {
         if (isStaleInFlightUpdate(fields, opts)) {

@@ -8,6 +8,7 @@ import {
   type DaemonOutboundEnvelope,
 } from '../daemon/cell/protocol.ts'
 import { getDb, getDaemonCellRegistry } from '../db.ts'
+import { cellTrace } from '../logger.ts'
 import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
 
 const TUNNEL_TOKEN_TIMEOUT_MS = 30_000
@@ -53,6 +54,11 @@ export function registerTunnelRoutes(
     }
 
     const requestId = generateRequestId()
+    cellTrace('request-start', {
+      requestId,
+      serverId,
+      kind: 'tunnel-token',
+    })
     const envelope: DaemonOutboundEnvelope = {
       kind: 'tunnel-token',
       deliveryId: generateDeliveryId(),
@@ -60,6 +66,12 @@ export function registerTunnelRoutes(
       at: new Date().toISOString(),
       token: body.token,
     }
+    cellTrace('request-enqueued', {
+      requestId,
+      serverId,
+      kind: 'tunnel-token',
+      deliveryId: envelope.deliveryId,
+    })
 
     try {
       const record = await registry.getCell(serverId).createRequestAndWait(
@@ -67,14 +79,44 @@ export function registerTunnelRoutes(
         TUNNEL_TOKEN_TIMEOUT_MS,
       )
       if (record.status === 'done') {
+        cellTrace('request-result', {
+          requestId,
+          serverId,
+          kind: 'tunnel-token',
+          pendingStatus: record.status,
+          resultStatus: 'done',
+        })
         return c.json({ ok: true })
       }
       if (record.status === 'failed') {
+        cellTrace('request-result', {
+          requestId,
+          serverId,
+          kind: 'tunnel-token',
+          pendingStatus: record.status,
+          resultStatus: 'failed',
+          error: record.error ?? 'daemon reported failure',
+        })
         return c.json({ ok: false, error: record.error ?? 'daemon reported failure' }, 500)
       }
+      cellTrace('request-result', {
+        requestId,
+        serverId,
+        kind: 'tunnel-token',
+        pendingStatus: record.status,
+        resultStatus: 'timeout',
+        error: 'timeout waiting for daemon acknowledgement',
+      })
       return c.json({ ok: false, error: 'timeout waiting for daemon acknowledgement' }, 500)
     } catch (err) {
       const errMessage = err instanceof Error ? err.message : String(err)
+      cellTrace('request-result', {
+        requestId,
+        serverId,
+        kind: 'tunnel-token',
+        resultStatus: 'error',
+        error: errMessage,
+      })
       return c.json({ ok: false, error: errMessage }, 500)
     }
   })

@@ -86,6 +86,26 @@ function nowIso(now = Date.now()): string {
   return new Date(now).toISOString();
 }
 
+function readFirstSqlRow<T extends Record<string, SqlStorageValue>>(
+  cursor: Iterable<T>,
+): T | null {
+  const iterator = cursor[Symbol.iterator]();
+  const first = iterator.next();
+  return first.done ? null : first.value;
+}
+
+function sqlCursorHasRow(cursor: Iterable<unknown>): boolean {
+  const iterator = cursor[Symbol.iterator]();
+  return !iterator.next().done;
+}
+
+function readSqlChanges(
+  cursor: Iterable<Record<string, SqlStorageValue>>,
+): number {
+  const row = readFirstSqlRow(cursor);
+  return row ? Number(row.c ?? 0) : 0;
+}
+
 function outboxRetryDelayMs(retryCount: number): number {
   const exponent = Math.max(0, retryCount - 1);
   return Math.min(
@@ -242,6 +262,29 @@ export class DaemonCellObject {
   #isDaemonDebug(): boolean {
     return this.#env.TURBOPANEL_DAEMON_DEBUG === "1" ||
       this.#env.TURBOPANEL_DAEMON_DEBUG === "true";
+  }
+
+  #trace(
+    event: string,
+    detail: Record<string, unknown>,
+    level: "debug" | "info" = "debug",
+  ): void {
+    if (!this.#isDaemonDebug()) return;
+    const parts: string[] = [`daemon-cell event=${event}`];
+    for (const key of Object.keys(detail).sort((a, b) => a.localeCompare(b))) {
+      const value = detail[key];
+      if (value === undefined || value === null) continue;
+      const serialized = typeof value === "object"
+        ? JSON.stringify(value)
+        : String(value);
+      parts.push(`${key}=${serialized}`);
+    }
+    const line = parts.join(" ");
+    if (level === "info") {
+      console.info(line);
+    } else {
+      console.debug(line);
+    }
   }
 
   async #getDaemonJwtSecrets(): Promise<DerivedSecretsConfig> {
@@ -421,14 +464,10 @@ export class DaemonCellObject {
   }
 
   #readCellMetaRow(serverId: string): Record<string, SqlStorageValue> | null {
-    const cursor = this.#ctx.storage.sql.exec(
+    return readFirstSqlRow(this.#ctx.storage.sql.exec(
       "SELECT connected, last_seen_at, agent_json FROM cell_meta WHERE server_id = ?",
       serverId,
-    );
-    for (const row of cursor) {
-      return row;
-    }
-    return null;
+    ));
   }
 
   /** Gate Postgres work using SQLite state before opening Hyperdrive. */
@@ -803,14 +842,12 @@ export class DaemonCellObject {
 
   #hasDeliverableOutbox(nowMs = Date.now()): boolean {
     const now = nowIso(nowMs);
-    const cursor = this.#ctx.storage.sql.exec(
+    return sqlCursorHasRow(this.#ctx.storage.sql.exec(
       `SELECT seq FROM outbox
        WHERE status = 'queued' AND (retry_at IS NULL OR retry_at <= ?)
        LIMIT 1`,
       now,
-    );
-    for (const _ of cursor) return true;
-    return false;
+    ));
   }
 
   #refreshLivenessFromAutoResponseTimestamps(): void {
@@ -901,11 +938,18 @@ export class DaemonCellObject {
         connectionId: string;
         serverId: string;
       } | null;
-      if (!attachment || attachment.serverId !== serverId) continue;
+      if (attachment?.serverId !== serverId) continue;
 
       for (const envelope of batch) {
         try {
           const wireMsg = outboundEnvelopeToWireMessage(envelope);
+          this.#trace("outbox-send", {
+            serverId,
+            conn: attachment.connectionId,
+            deliveryId: envelope.deliveryId,
+            requestId: envelope.requestId,
+            kind: envelope.kind,
+          });
           ws.send(JSON.stringify(wireMsg));
           await this.#markSent(
             serverId,
@@ -971,7 +1015,15 @@ export class DaemonCellObject {
       connectedAt,
     });
 
-    console.info(`daemon cell connected (${serverId}) conn=${connectionId}`);
+    this.#trace("attach", {
+      serverId,
+      conn: connectionId,
+      remoteAddress,
+    });
+
+    console.info(
+      `daemon-cell event=attach serverId=${serverId} conn=${connectionId} remoteAddress=${remoteAddress}`,
+    );
 
     this.#ctx.waitUntil(this.#projectConnected(serverId, connectedAt, geo ?? undefined));
     void this.#pumpOutboxToDaemonSockets(serverId);
@@ -991,31 +1043,27 @@ export class DaemonCellObject {
   }
 
   #shouldCoalesceLastSeenAt(serverId: string, atMs: number): boolean {
-    const cursor = this.#ctx.storage.sql.exec(
+    const row = readFirstSqlRow(this.#ctx.storage.sql.exec(
       "SELECT last_seen_at FROM cell_meta WHERE server_id = ?",
       serverId,
-    );
-    for (const row of cursor) {
-      const lastSeenAt = row.last_seen_at ? String(row.last_seen_at) : null;
-      if (!lastSeenAt) return true;
-      const lastSeenMs = Date.parse(lastSeenAt);
-      if (Number.isNaN(lastSeenMs)) return true;
-      return atMs - lastSeenMs >= HEARTBEAT_COALESCE_MS;
-    }
-    return true;
+    ));
+    if (!row) return true;
+    const lastSeenAt = row.last_seen_at ? String(row.last_seen_at) : null;
+    if (!lastSeenAt) return true;
+    const lastSeenMs = Date.parse(lastSeenAt);
+    if (Number.isNaN(lastSeenMs)) return true;
+    return atMs - lastSeenMs >= HEARTBEAT_COALESCE_MS;
   }
 
   #readStoredAgent(serverId: string): DaemonAgentInfo | undefined {
-    const cursor = this.#ctx.storage.sql.exec(
+    const row = readFirstSqlRow(this.#ctx.storage.sql.exec(
       "SELECT agent_json FROM cell_meta WHERE server_id = ?",
       serverId,
+    ));
+    if (!row) return undefined;
+    return parseAgentJson(
+      row.agent_json ? String(row.agent_json) : null,
     );
-    for (const row of cursor) {
-      return parseAgentJson(
-        row.agent_json ? String(row.agent_json) : null,
-      );
-    }
-    return undefined;
   }
 
   #restoreRuntimeConnected(serverId: string): void {
@@ -1032,6 +1080,7 @@ export class DaemonCellObject {
     serverId: string,
     at: string,
     agent?: DaemonAgentInfo,
+    connectionId?: string,
   ): void {
     this.#restoreRuntimeConnected(serverId);
 
@@ -1040,12 +1089,16 @@ export class DaemonCellObject {
       this.#shouldCoalesceLastSeenAt(serverId, atMs);
     const now = nowIso();
 
+    let agentChanged = false;
+    if (agent) {
+      agentChanged = !agentIdentityEqual(agent, this.#readStoredAgent(serverId));
+    }
+
     if (coalesce && this.#isDaemonDebug()) {
       console.debug(`daemon cell inbound (${serverId}) last_seen_at bumped`);
     }
 
     if (agent) {
-      const agentChanged = !agentIdentityEqual(agent, this.#readStoredAgent(serverId));
       if (coalesce) {
         this.#ctx.storage.sql.exec(
           `UPDATE cell_meta SET last_seen_at = ?, key_last_used_at = ?, agent_json = ?, updated_at = ?
@@ -1072,6 +1125,14 @@ export class DaemonCellObject {
           serverId,
         );
       }
+      if (connectionId) {
+        this.#trace("record-inbound", {
+          serverId,
+          conn: connectionId,
+          coalesced: coalesce,
+          agentChanged,
+        });
+      }
       return;
     }
 
@@ -1092,6 +1153,78 @@ export class DaemonCellObject {
         serverId,
       );
     }
+
+    if (connectionId) {
+      this.#trace("record-inbound", {
+        serverId,
+        conn: connectionId,
+        coalesced: coalesce,
+        agentChanged,
+      });
+    }
+  }
+
+  #applyWebSocketAutoResponseLiveness(
+    ws: WebSocket,
+    serverId: string,
+    connectionId: string,
+  ): void {
+    const autoTs = this.#ctx.getWebSocketAutoResponseTimestamp(ws);
+    if (!autoTs) return;
+
+    const autoAt = autoTs.toISOString();
+    const row = readFirstSqlRow(this.#ctx.storage.sql.exec(
+      "SELECT last_seen_at FROM cell_meta WHERE server_id = ?",
+      serverId,
+    ));
+    const lastSeen = row?.last_seen_at ? String(row.last_seen_at) : null;
+    const shouldTracePong = !lastSeen || lastSeen < autoAt;
+
+    this.#ctx.storage.sql.exec(
+      `UPDATE cell_meta SET last_seen_at = ?, updated_at = ?
+       WHERE server_id = ? AND (last_seen_at IS NULL OR last_seen_at < ?)`,
+      autoAt,
+      nowIso(),
+      serverId,
+      autoAt,
+    );
+    if (shouldTracePong) {
+      this.#trace("pong", { serverId, conn: connectionId });
+    }
+  }
+
+  async #handlePresenceMessage(
+    attachment: {
+      connectionId: string;
+      serverId: string;
+    },
+    parsed: {
+      type: "hello" | "heartbeat";
+      at?: string;
+      agent?: DaemonAgentInfo;
+    },
+  ): Promise<void> {
+    this.#bumpDiag("heartbeatCount");
+    const at = parsed.at ?? nowIso();
+    const shouldProject = this.#shouldProjectInbound(
+      attachment.serverId,
+      at,
+      parsed.agent,
+    );
+    this.#recordInbound(
+      attachment.serverId,
+      at,
+      parsed.agent,
+      attachment.connectionId,
+    );
+    const shouldProjectInbound = parsed.type === "hello"
+      ? shouldProject ||
+        Boolean(parsed.agent?.commit && parsed.agent?.buildId)
+      : shouldProject;
+    if (shouldProjectInbound) {
+      await this.#projectInbound(attachment.serverId, at, parsed.agent);
+    }
+    await this.#scheduleNearestAlarm();
   }
 
   async webSocketMessage(
@@ -1107,18 +1240,11 @@ export class DaemonCellObject {
     } | null;
     if (!attachment) return;
 
-    const autoTs = this.#ctx.getWebSocketAutoResponseTimestamp(ws);
-    if (autoTs) {
-      const autoAt = autoTs.toISOString();
-      this.#ctx.storage.sql.exec(
-        `UPDATE cell_meta SET last_seen_at = ?, updated_at = ?
-         WHERE server_id = ? AND (last_seen_at IS NULL OR last_seen_at < ?)`,
-        autoAt,
-        nowIso(),
-        attachment.serverId,
-        autoAt,
-      );
-    }
+    this.#applyWebSocketAutoResponseLiveness(
+      ws,
+      attachment.serverId,
+      attachment.connectionId,
+    );
 
     const raw = typeof message === "string"
       ? message
@@ -1127,46 +1253,18 @@ export class DaemonCellObject {
     const parsed = parseDaemonMessage(raw);
     if (!parsed) return;
 
-    if (parsed.type === "hello") {
-      this.#bumpDiag("heartbeatCount");
-      const at = parsed.at ?? nowIso();
-      const shouldProject = this.#shouldProjectInbound(
-        attachment.serverId,
-        at,
-        parsed.agent,
-      );
-      this.#recordInbound(attachment.serverId, at, parsed.agent);
-      const hasAgentIdentity = Boolean(
-        parsed.agent?.commit && parsed.agent?.buildId,
-      );
-      if (shouldProject || hasAgentIdentity) {
-        await this.#projectInbound(attachment.serverId, at, parsed.agent);
-      }
-      await this.#scheduleNearestAlarm();
+    this.#trace("inbound", {
+      serverId: attachment.serverId,
+      conn: attachment.connectionId,
+      type: parsed.type,
+    });
+
+    if (parsed.type === "hello" || parsed.type === "heartbeat") {
+      await this.#handlePresenceMessage(attachment, parsed);
       return;
     }
 
-    if (parsed.type === "heartbeat") {
-      this.#bumpDiag("heartbeatCount");
-      const at = parsed.at ?? nowIso();
-      const shouldProject = this.#shouldProjectInbound(
-        attachment.serverId,
-        at,
-        parsed.agent,
-      );
-      this.#recordInbound(
-        attachment.serverId,
-        at,
-        parsed.agent,
-      );
-      if (shouldProject) {
-        await this.#projectInbound(attachment.serverId, at, parsed.agent);
-      }
-      await this.#scheduleNearestAlarm();
-      return;
-    }
-
-    this.#recordInbound(attachment.serverId, parsed.at);
+    this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId);
     await this.#handleInboundMessage(attachment.serverId, parsed);
     await this.#scheduleNearestAlarm();
   }
@@ -1231,9 +1329,15 @@ export class DaemonCellObject {
     });
 
     if (isCurrentConnection) {
+      this.#trace("detach", {
+        serverId: attachment.serverId,
+        conn: attachment.connectionId,
+        reason,
+        code,
+      });
       await this.#projectDisconnected(attachment.serverId);
       console.info(
-        `daemon cell disconnected (${attachment.serverId}) conn=${attachment.connectionId} code=${code}`,
+        `daemon-cell event=detach serverId=${attachment.serverId} conn=${attachment.connectionId} code=${code} reason=${reason}`,
       );
       await this.#scheduleNearestAlarm();
     }
@@ -1297,7 +1401,7 @@ export class DaemonCellObject {
       );
       staleDemotions.push(staleServerId);
       console.info(
-        `daemon cell offline transition (${staleServerId}): alarm-stale`,
+        `daemon-cell event=alarm-stale serverId=${staleServerId}`,
       );
     }
 
@@ -1484,6 +1588,7 @@ export class DaemonCellObject {
           this.#requireServerId(request, body),
           String((body?.params as { at?: string })?.at ?? nowIso()),
           (body?.params as { agent?: DaemonAgentInfo })?.agent,
+          (body?.params as { connectionId?: string })?.connectionId,
         );
         return jsonResponse({ ok: true });
 
@@ -1577,11 +1682,11 @@ export class DaemonCellObject {
     // snapshot returns a synthetic disconnected snapshot without recreating the
     // row. Row creation belongs only on mutation paths (attach, patch, enqueue,
     // and other writes that go through `#ensureServerId`).
-    const metaCursor = this.#ctx.storage.sql.exec(
+    const row = readFirstSqlRow(this.#ctx.storage.sql.exec(
       "SELECT * FROM cell_meta WHERE server_id = ?",
       serverId,
-    );
-    for (const row of metaCursor) {
+    ));
+    if (row) {
       return snapshotFromMetaRow(serverId, row);
     }
 
@@ -1617,6 +1722,10 @@ export class DaemonCellObject {
     sql += " WHERE server_id = ?";
     fields.push(serverId);
     this.#ctx.storage.sql.exec(sql, ...fields);
+    this.#trace("snapshot-put", {
+      serverId,
+      keys: Object.keys(patch).join(","),
+    });
     return await this.#getSnapshot(serverId);
   }
 
@@ -1633,19 +1742,17 @@ export class DaemonCellObject {
     const ttlSeconds = opts?.ttlSeconds ?? 300;
     const expiresAt = nowIso(now + ttlSeconds * 1000);
 
-    const existingCursor = this.#ctx.storage.sql.exec(
+    const existingRow = readFirstSqlRow(this.#ctx.storage.sql.exec(
       "SELECT * FROM requests WHERE request_id = ?",
       outbound.requestId,
-    );
-    for (const row of existingCursor) {
-      const dupCursor = this.#ctx.storage.sql.exec(
+    ));
+    if (existingRow) {
+      const exists = sqlCursorHasRow(this.#ctx.storage.sql.exec(
         "SELECT seq FROM outbox WHERE delivery_id = ?",
         outbound.deliveryId,
-      );
-      let exists = false;
-      for (const _ of dupCursor) exists = true;
+      ));
       if (exists) {
-        return parseRequestRow(serverId, row);
+        return parseRequestRow(serverId, existingRow);
       }
 
       this.#ctx.storage.transactionSync(() => {
@@ -1668,7 +1775,13 @@ export class DaemonCellObject {
       });
       void this.#pumpOutboxToDaemonSockets(serverId);
       void this.#scheduleOutboxRetryIfNeeded();
-      return parseRequestRow(serverId, row);
+      this.#trace("enqueue", {
+        serverId,
+        requestId: outbound.requestId,
+        deliveryId: outbound.deliveryId,
+        kind: outbound.kind,
+      });
+      return parseRequestRow(serverId, existingRow);
     }
 
     this.#ctx.storage.transactionSync(() => {
@@ -1696,18 +1809,30 @@ export class DaemonCellObject {
       );
     });
 
-    const cursor = this.#ctx.storage.sql.exec(
+    const insertedRow = readFirstSqlRow(this.#ctx.storage.sql.exec(
       "SELECT * FROM requests WHERE request_id = ?",
       outbound.requestId,
-    );
-    for (const row of cursor) {
+    ));
+    if (insertedRow) {
       void this.#pumpOutboxToDaemonSockets(serverId);
       void this.#scheduleOutboxRetryIfNeeded();
-      return parseRequestRow(serverId, row);
+      this.#trace("enqueue", {
+        serverId,
+        requestId: outbound.requestId,
+        deliveryId: outbound.deliveryId,
+        kind: outbound.kind,
+      });
+      return parseRequestRow(serverId, insertedRow);
     }
 
     void this.#pumpOutboxToDaemonSockets(serverId);
     void this.#scheduleOutboxRetryIfNeeded();
+    this.#trace("enqueue", {
+      serverId,
+      requestId: outbound.requestId,
+      deliveryId: outbound.deliveryId,
+      kind: outbound.kind,
+    });
     return {
       serverId,
       requestId: outbound.requestId,
@@ -1719,32 +1844,35 @@ export class DaemonCellObject {
   }
 
   async #markSent(
-    _serverId: string,
+    serverId: string,
     deliveryId: string,
     _connectionId: string,
     sentAt?: string,
   ): Promise<void> {
     const at = sentAt ?? nowIso();
+    let requestId: string | undefined;
     this.#ctx.storage.transactionSync(() => {
       this.#ctx.storage.sql.exec(
         `UPDATE outbox SET status = 'sent', sent_at = ? WHERE delivery_id = ?`,
         at,
         deliveryId,
       );
-      const cursor = this.#ctx.storage.sql.exec(
+      const row = readFirstSqlRow(this.#ctx.storage.sql.exec(
         "SELECT request_id FROM outbox WHERE delivery_id = ?",
         deliveryId,
-      );
-      for (const row of cursor) {
+      ));
+      if (row) {
+        requestId = String(row.request_id);
         this.#ctx.storage.sql.exec(
           `UPDATE requests SET status = 'sent', sent_at = ?, updated_at = ?
            WHERE request_id = ?`,
           at,
           at,
-          String(row.request_id),
+          requestId,
         );
       }
     });
+    this.#trace("mark-sent", { serverId, requestId, deliveryId });
   }
 
   async #handleInboundMessage(
@@ -1757,72 +1885,90 @@ export class DaemonCellObject {
     await this.#handleInbound(serverId, inbound);
   }
 
-  async #handleInbound(
+  #readRequestRow(
+    serverId: string,
+    requestId: string,
+  ): PendingRequestRecord | null {
+    const row = readFirstSqlRow(this.#ctx.storage.sql.exec(
+      "SELECT * FROM requests WHERE request_id = ?",
+      requestId,
+    ));
+    return row ? parseRequestRow(serverId, row) : null;
+  }
+
+  #applyLateTerminalAck(
     serverId: string,
     inbound: DaemonInboundEnvelope,
-  ): Promise<PendingRequestRecord | null> {
-    const cursor = this.#ctx.storage.sql.exec(
-      "SELECT * FROM requests WHERE request_id = ?",
+    existing: PendingRequestRecord,
+  ): PendingRequestRecord | null {
+    if (inbound.kind !== "command-ack" || existing.ackAt) return null;
+    const ackAt = inbound.at;
+    this.#ctx.storage.sql.exec(
+      `UPDATE requests SET ack_at = ?, daemon_received_at = COALESCE(?, daemon_received_at),
+       updated_at = ? WHERE request_id = ?`,
+      ackAt,
+      inbound.daemonReceivedAt,
+      nowIso(),
       inbound.requestId,
     );
-    let row: Record<string, SqlStorageValue> | null = null;
-    for (const r of cursor) row = r;
-    if (!row) return null;
+    this.#trace("handle-inbound", {
+      serverId,
+      requestId: inbound.requestId,
+      kind: inbound.kind,
+      statusFrom: existing.status,
+      statusTo: "late-ack",
+    });
+    return this.#readRequestRow(serverId, inbound.requestId);
+  }
 
-    const existing = parseRequestRow(serverId, row);
-    if (isTerminalStatus(existing.status)) {
-      if (inbound.kind === "command-ack" && !existing.ackAt) {
-        const ackAt = inbound.at;
-        this.#ctx.storage.sql.exec(
-          `UPDATE requests SET ack_at = ?, daemon_received_at = COALESCE(?, daemon_received_at),
-           updated_at = ? WHERE request_id = ?`,
-          ackAt,
-          inbound.daemonReceivedAt,
-          nowIso(),
-          inbound.requestId,
-        );
-        const ackCursor = this.#ctx.storage.sql.exec(
-          "SELECT * FROM requests WHERE request_id = ?",
-          inbound.requestId,
-        );
-        for (const ackRow of ackCursor) {
-          return parseRequestRow(serverId, ackRow);
-        }
-      }
-      return existing;
-    }
+  async #applyCommandAckInbound(
+    serverId: string,
+    inbound: Extract<DaemonInboundEnvelope, { kind: "command-ack" }>,
+    existing: PendingRequestRecord,
+  ): Promise<PendingRequestRecord> {
+    if (existing.status === "acked") return existing;
+    const ackAt = inbound.at;
+    this.#ctx.storage.sql.exec(
+      `UPDATE requests SET status = 'acked', ack_at = ?, daemon_received_at = ?,
+       updated_at = ? WHERE request_id = ?`,
+      ackAt,
+      inbound.daemonReceivedAt,
+      nowIso(),
+      inbound.requestId,
+    );
+    this.#ctx.storage.sql.exec(
+      `UPDATE cell_meta SET last_seen_at = ?, updated_at = ? WHERE server_id = ?`,
+      ackAt,
+      nowIso(),
+      serverId,
+    );
+    this.#trace("handle-inbound", {
+      serverId,
+      requestId: inbound.requestId,
+      kind: inbound.kind,
+      statusFrom: existing.status,
+      statusTo: "acked",
+    });
+    return this.#readRequestRow(serverId, inbound.requestId) ?? existing;
+  }
 
+  #resolveInboundCompletion(
+    inbound: DaemonInboundEnvelope,
+    row: Record<string, SqlStorageValue>,
+  ): {
+    status: PendingRequestStatus;
+    result?: unknown;
+    error?: string;
+    finishedAt: string;
+    daemonReceivedAt: string | null;
+    daemonRespondedAt: string | null;
+    ackAt: string | null;
+  } | null {
     let status: PendingRequestStatus;
     let result: unknown;
     let error: string | undefined;
 
     switch (inbound.kind) {
-      case "command-ack": {
-        if (existing.status === "acked") return existing;
-        const ackAt = inbound.at;
-        this.#ctx.storage.sql.exec(
-          `UPDATE requests SET status = 'acked', ack_at = ?, daemon_received_at = ?,
-           updated_at = ? WHERE request_id = ?`,
-          ackAt,
-          inbound.daemonReceivedAt,
-          nowIso(),
-          inbound.requestId,
-        );
-        this.#ctx.storage.sql.exec(
-          `UPDATE cell_meta SET last_seen_at = ?, updated_at = ? WHERE server_id = ?`,
-          ackAt,
-          nowIso(),
-          serverId,
-        );
-        const ackCursor = this.#ctx.storage.sql.exec(
-          "SELECT * FROM requests WHERE request_id = ?",
-          inbound.requestId,
-        );
-        for (const ackRow of ackCursor) {
-          return parseRequestRow(serverId, ackRow);
-        }
-        return existing;
-      }
       case "command-result":
         status = "done";
         result = {
@@ -1842,16 +1988,16 @@ export class DaemonCellObject {
       case "command-outcome":
         status = inbound.ok ? "done" : "failed";
         if (inbound.kind === "command-outcome") {
-          result = inbound.result !== undefined
-            ? inbound.result
-            : { ok: inbound.ok, error: inbound.error };
+          result = inbound.result === undefined
+            ? { ok: inbound.ok, error: inbound.error }
+            : inbound.result;
         } else {
           result = { ok: inbound.ok, error: inbound.error };
         }
         if (!inbound.ok) error = inbound.error;
         break;
       default:
-        return existing;
+        return null;
     }
 
     const finishedAt = inbound.at;
@@ -1864,12 +2010,40 @@ export class DaemonCellObject {
     const ackAt = inbound.kind === "command-outcome" && !row.ack_at
       ? (inbound.daemonReceivedAt ?? inbound.at)
       : null;
+
+    return {
+      status,
+      result,
+      error,
+      finishedAt,
+      daemonReceivedAt,
+      daemonRespondedAt,
+      ackAt,
+    };
+  }
+
+  async #applyInboundCompletion(
+    serverId: string,
+    inbound: DaemonInboundEnvelope,
+    existing: PendingRequestRecord,
+    completion: {
+      status: PendingRequestStatus;
+      result?: unknown;
+      error?: string;
+      finishedAt: string;
+      daemonReceivedAt: string | null;
+      daemonRespondedAt: string | null;
+      ackAt: string | null;
+    },
+  ): Promise<PendingRequestRecord> {
+    const { status, result, error, finishedAt, daemonReceivedAt, daemonRespondedAt, ackAt } =
+      completion;
     this.#ctx.storage.sql.exec(
       `UPDATE requests SET status = ?, result_json = ?, error = ?,
        finished_at = ?, daemon_received_at = COALESCE(?, daemon_received_at),
        daemon_responded_at = ?, ack_at = COALESCE(ack_at, ?), updated_at = ? WHERE request_id = ?`,
       status,
-      result !== undefined ? JSON.stringify(result) : null,
+      result === undefined ? null : JSON.stringify(result),
       error ?? null,
       finishedAt,
       daemonReceivedAt,
@@ -1879,28 +2053,54 @@ export class DaemonCellObject {
       inbound.requestId,
     );
 
-    const updatedCursor = this.#ctx.storage.sql.exec(
+    this.#trace("handle-inbound", {
+      serverId,
+      requestId: inbound.requestId,
+      kind: inbound.kind,
+      statusFrom: existing.status,
+      statusTo: status,
+    });
+
+    const record = this.#readRequestRow(serverId, inbound.requestId) ?? existing;
+    if (isTerminalStatus(record.status)) {
+      this.#reclaimTerminalOutbox(inbound.requestId);
+      await this.#scheduleNearestAlarm();
+    }
+    if (inbound.kind === "update-result") {
+      await this.#projectUpdateResult(
+        serverId,
+        inbound.requestId,
+        inbound.ok,
+        inbound.at,
+        inbound.error,
+      );
+    }
+    return record;
+  }
+
+  async #handleInbound(
+    serverId: string,
+    inbound: DaemonInboundEnvelope,
+  ): Promise<PendingRequestRecord | null> {
+    const row = readFirstSqlRow(this.#ctx.storage.sql.exec(
       "SELECT * FROM requests WHERE request_id = ?",
       inbound.requestId,
-    );
-    for (const updated of updatedCursor) {
-      const record = parseRequestRow(serverId, updated);
-      if (isTerminalStatus(record.status)) {
-        this.#reclaimTerminalOutbox(inbound.requestId);
-        await this.#scheduleNearestAlarm();
-      }
-      if (inbound.kind === "update-result") {
-        await this.#projectUpdateResult(
-          serverId,
-          inbound.requestId,
-          inbound.ok,
-          inbound.at,
-          inbound.error,
-        );
-      }
-      return record;
+    ));
+    if (!row) return null;
+
+    const existing = parseRequestRow(serverId, row);
+    if (isTerminalStatus(existing.status)) {
+      return this.#applyLateTerminalAck(serverId, inbound, existing) ?? existing;
     }
-    return existing;
+
+    if (inbound.kind === "command-ack") {
+      return this.#applyCommandAckInbound(serverId, inbound, existing);
+    }
+
+    const completion = this.#resolveInboundCompletion(inbound, row);
+    if (!completion) return existing;
+
+    return this.#applyInboundCompletion(serverId, inbound, existing, completion);
   }
 
   #reclaimTerminalOutbox(requestId: string): void {
@@ -1915,14 +2115,7 @@ export class DaemonCellObject {
     requestId: string,
   ): Promise<PendingRequestRecord | null> {
     if (!serverId || !requestId) return null;
-    const cursor = this.#ctx.storage.sql.exec(
-      "SELECT * FROM requests WHERE request_id = ?",
-      requestId,
-    );
-    for (const row of cursor) {
-      return parseRequestRow(serverId, row);
-    }
-    return null;
+    return this.#readRequestRow(serverId, requestId);
   }
 
   async #listRequests(
@@ -2183,11 +2376,13 @@ export class DaemonCellObject {
   ): Promise<DaemonCellLease | null> {
     this.#ensureServerId(serverId);
     const expiresAt = new Date(Date.now() + ttlMs).toISOString();
-    const existing = this.#ctx.storage.sql.exec(
+    if (sqlCursorHasRow(this.#ctx.storage.sql.exec(
       "SELECT holder FROM leases WHERE lease_name = ?",
       DELIVERY_LEASE_NAME,
-    );
-    for (const _ of existing) return null;
+    ))) {
+      this.#trace("lease-claim", { serverId, holder, ok: false });
+      return null;
+    }
 
     this.#ctx.storage.sql.exec(
       `INSERT INTO leases (lease_name, holder, token, expires_at)
@@ -2197,6 +2392,7 @@ export class DaemonCellObject {
       holder,
       expiresAt,
     );
+    this.#trace("lease-claim", { serverId, holder, ok: true });
     return { holder, token: holder, expiresAt };
   }
 
@@ -2212,6 +2408,7 @@ export class DaemonCellObject {
       holder,
       ttlMs,
     );
+    this.#trace("lease-renew", { serverId: _serverId, holder, ok: renewed });
     if (!renewed) return null;
     return {
       holder,
@@ -2235,16 +2432,12 @@ export class DaemonCellObject {
       leaseName,
       token,
     );
-    const changesCursor = this.#ctx.storage.sql.exec("SELECT changes() AS c");
-    for (const row of changesCursor) {
-      return Number(row.c) > 0;
-    }
-    return false;
+    return readSqlChanges(this.#ctx.storage.sql.exec("SELECT changes() AS c")) > 0;
   }
 
   async #releaseDeliveryLease(
-    _serverId: string,
-    _holder: string,
+    serverId: string,
+    holder: string,
     token: string,
   ): Promise<void> {
     this.#ctx.storage.sql.exec(
@@ -2252,6 +2445,8 @@ export class DaemonCellObject {
       DELIVERY_LEASE_NAME,
       token,
     );
+    const ok = readSqlChanges(this.#ctx.storage.sql.exec("SELECT changes() AS c")) > 0;
+    this.#trace("lease-release", { serverId, holder, ok });
   }
 
   async #readOutboxBatch(
@@ -2286,11 +2481,16 @@ export class DaemonCellObject {
         );
       }
     });
+    this.#trace("outbox-read", {
+      serverId: _serverId,
+      consumer: params.consumer,
+      count: envelopes.length,
+    });
     return envelopes;
   }
 
   async #ackOutbox(
-    _serverId: string,
+    serverId: string,
     deliveryIds: OutboxDeliveryId[],
   ): Promise<void> {
     for (const deliveryId of deliveryIds) {
@@ -2299,6 +2499,7 @@ export class DaemonCellObject {
         deliveryId,
       );
     }
+    this.#trace("outbox-ack", { serverId, count: deliveryIds.length });
     await this.#scheduleNearestAlarm();
   }
 }

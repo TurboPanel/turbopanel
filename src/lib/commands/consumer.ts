@@ -15,6 +15,7 @@ import {
   getServerLicenseBinding,
   touchServerMetadata,
 } from '../../server-registry.ts'
+import { commandConsumerTrace } from '../../logger.ts'
 import { compatLogWarn } from '../../log-compat.ts'
 import { getCommandRecord, transitionCommand } from '../db/command-records.ts'
 import type { CommandEnvelope } from './envelope.ts'
@@ -125,6 +126,12 @@ export async function processCommandEnvelope(
     return
   }
 
+  commandConsumerTrace('dispatch-start', {
+    commandId: record.id,
+    commandType: record.type,
+    serverId: envelope.serverId,
+  })
+
   await transitionCommand(db, record.id, {
     status: 'dispatching',
     dispatchStartedAt: nowIso(),
@@ -147,6 +154,12 @@ export async function processCommandEnvelope(
   const presenceMap = await resolveFleetPresence(db, registry, [envelope.serverId])
   const presence = presenceMap.get(envelope.serverId)
   if (!presence?.connected) {
+    commandConsumerTrace('dispatch-failed', {
+      commandId: record.id,
+      commandType: record.type,
+      serverId: envelope.serverId,
+      reason: 'offline',
+    })
     await transitionCommand(db, record.id, {
       status: 'failed',
       error: 'Daemon not connected',
@@ -167,11 +180,29 @@ export async function processCommandEnvelope(
   const timeoutMs = commandTimeoutMs(record.type)
   const cell = registry.getCell(envelope.serverId)
   await cell.enqueue(outbound)
+  commandConsumerTrace('dispatch-enqueued', {
+    commandId: record.id,
+    commandType: record.type,
+    serverId: envelope.serverId,
+    requestId: record.id,
+    deliveryId: outbound.deliveryId,
+  })
   await transitionCommand(db, record.id, { status: 'sent' })
+  commandConsumerTrace('dispatch-sent', {
+    commandId: record.id,
+    commandType: record.type,
+    serverId: envelope.serverId,
+  })
 
   const pending = await cell.waitForRequest(record.id, timeoutMs)
   if (!pending) {
     await transitionCommand(db, record.id, { status: 'timed_out' })
+    commandConsumerTrace('dispatch-result', {
+      commandId: record.id,
+      commandType: record.type,
+      serverId: envelope.serverId,
+      resultStatus: 'timed_out',
+    })
     return
   }
 
@@ -183,6 +214,13 @@ export async function processCommandEnvelope(
         ackedAt: pending.ackAt ?? pending.finishedAt,
         startedAt: pending.ackAt ?? pending.finishedAt,
         finishedAt: pending.finishedAt,
+      })
+      commandConsumerTrace('dispatch-result', {
+        commandId: record.id,
+        commandType: record.type,
+        serverId: envelope.serverId,
+        pendingStatus: pending.status,
+        resultStatus: 'succeeded',
       })
 
       if (record.type === 'server.hostname.set') {
@@ -196,20 +234,45 @@ export async function processCommandEnvelope(
       break
     }
     case 'failed': {
+      const error = pending.error ?? 'Command failed'
       await transitionCommand(db, record.id, {
         status: 'failed',
-        error: pending.error ?? 'Command failed',
+        error,
+      })
+      commandConsumerTrace('dispatch-result', {
+        commandId: record.id,
+        commandType: record.type,
+        serverId: envelope.serverId,
+        pendingStatus: pending.status,
+        resultStatus: 'failed',
+        error,
       })
       break
     }
     case 'expired': {
       await transitionCommand(db, record.id, { status: 'timed_out' })
+      commandConsumerTrace('dispatch-result', {
+        commandId: record.id,
+        commandType: record.type,
+        serverId: envelope.serverId,
+        pendingStatus: pending.status,
+        resultStatus: 'timed_out',
+      })
       break
     }
     default: {
+      const error = `Unexpected pending request status: ${pending.status}`
       await transitionCommand(db, record.id, {
         status: 'failed',
-        error: `Unexpected pending request status: ${pending.status}`,
+        error,
+      })
+      commandConsumerTrace('dispatch-result', {
+        commandId: record.id,
+        commandType: record.type,
+        serverId: envelope.serverId,
+        pendingStatus: pending.status,
+        resultStatus: 'failed',
+        error,
       })
       break
     }

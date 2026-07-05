@@ -12,6 +12,7 @@ import {
 import { resolveColocatedServerIdSet } from '../client/servers/colocated.ts'
 import { getDaemonCellRegistry, getDb } from '../db.ts'
 import { getDaemonRepoPath } from '../daemon/version.ts'
+import { cellTrace } from '../logger.ts'
 import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
 import { buildDevSyncTarArgs } from './dev-sync-archive.ts'
 
@@ -108,6 +109,14 @@ async function syncDevToDaemonWithRegistry(
   const requestId = generateRequestId()
   const totalChunks = Math.max(1, Math.ceil(base64.length / CHUNK_CHARS))
 
+  cellTrace('request-start', {
+    requestId,
+    serverId,
+    kind: 'dev-sync',
+    totalChunks,
+    totalBytes: tarball.byteLength,
+  })
+
   const begin: DaemonOutboundEnvelope = {
     kind: 'dev-sync',
     deliveryId: generateDeliveryId(),
@@ -118,6 +127,13 @@ async function syncDevToDaemonWithRegistry(
     totalBytes: tarball.byteLength,
   }
   await cell.enqueue(begin)
+  cellTrace('request-enqueued', {
+    requestId,
+    serverId,
+    kind: 'dev-sync',
+    phase: 'begin',
+    totalChunks,
+  })
 
   for (let i = 0; i < totalChunks; i++) {
     const chunk: DaemonOutboundEnvelope = {
@@ -140,17 +156,55 @@ async function syncDevToDaemonWithRegistry(
     phase: 'end',
   }
   await cell.enqueue(end)
+  cellTrace('request-enqueued', {
+    requestId,
+    serverId,
+    kind: 'dev-sync',
+    phase: 'end',
+    totalChunks,
+  })
 
   const record = await cell.waitForRequest(requestId, DEV_SYNC_TIMEOUT_MS)
   if (!record || record.status === 'expired') {
+    cellTrace('request-result', {
+      requestId,
+      serverId,
+      kind: 'dev-sync',
+      pendingStatus: record?.status,
+      resultStatus: 'timeout',
+      error: 'timeout waiting for daemon acknowledgement',
+    })
     throw new Error('timeout waiting for daemon acknowledgement')
   }
   if (record.status === 'failed') {
+    cellTrace('request-result', {
+      requestId,
+      serverId,
+      kind: 'dev-sync',
+      pendingStatus: record.status,
+      resultStatus: 'failed',
+      error: record.error ?? 'daemon reported failure',
+    })
     throw new Error(record.error ?? 'daemon reported failure')
   }
   if (record.status !== 'done') {
+    cellTrace('request-result', {
+      requestId,
+      serverId,
+      kind: 'dev-sync',
+      pendingStatus: record.status,
+      resultStatus: 'failed',
+      error: `unexpected dev-sync status: ${record.status}`,
+    })
     throw new Error(`unexpected dev-sync status: ${record.status}`)
   }
+  cellTrace('request-result', {
+    requestId,
+    serverId,
+    kind: 'dev-sync',
+    pendingStatus: record.status,
+    resultStatus: 'done',
+  })
 }
 
 /**

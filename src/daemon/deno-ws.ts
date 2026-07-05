@@ -13,7 +13,7 @@ import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
 import { tryAssignColocatedDaemonToInstalledOrganization } from "../client/authn/install-state.ts";
 import type { Db } from "../db.ts";
 import { compatLogError, compatLogWarn } from "../log-compat.ts";
-import { daemonCellLog } from "../logger.ts";
+import { cellTrace, daemonCellLog } from "../logger.ts";
 import {
   onDaemonConnected,
   onDaemonDisconnected,
@@ -36,6 +36,71 @@ function isClosedConnectionError(err: unknown): boolean {
   return /connection is closed/i.test(String(err));
 }
 
+function assignColocatedDaemonOnConnect(
+  db: Db,
+  registry: DaemonCellRegistry,
+): void {
+  void tryAssignColocatedDaemonToInstalledOrganization(db, registry).catch(
+    (err) => {
+      compatLogError(
+        "ws",
+        "failed to assign colocated server:",
+        String(err),
+      );
+    },
+  );
+}
+
+function startDaemonOutboxPump(params: {
+  cell: ReturnType<DaemonCellRegistry["getCell"]>;
+  serverId: string;
+  connectionId: string;
+  consumer: string;
+  ws: WebSocket;
+  abortRef: { abort: boolean };
+}): void {
+  const { cell, serverId, connectionId, consumer, ws, abortRef } = params;
+
+  void (async () => {
+    while (!abortRef.abort) {
+      try {
+        const batch = await cell.readOutboxBatch({
+          consumer,
+          count: 50,
+          blockMs: OUTBOX_PUMP_BLOCK_MS,
+        });
+        for (const envelope of batch) {
+          const wireMsg = outboundEnvelopeToWireMessage(envelope);
+          await cell.markSent(envelope.deliveryId, connectionId);
+          cellTrace("outbox-send", {
+            serverId,
+            conn: connectionId,
+            deliveryId: envelope.deliveryId,
+            requestId: envelope.requestId,
+            kind: envelope.kind,
+          });
+          ws.send(JSON.stringify(wireMsg));
+          await cell.ackOutbox([envelope.deliveryId], consumer);
+        }
+        if (batch.length > 0) {
+          await cell.putSnapshot({
+            lastOutboundAt: new Date().toISOString(),
+          });
+        }
+      } catch (err) {
+        if (abortRef.abort) {
+          break;
+        }
+        if (isClosedConnectionError(err)) {
+          abortRef.abort = true;
+          break;
+        }
+        compatLogWarn("ws", `outbox pump error: ${String(err)}`);
+      }
+    }
+  })();
+}
+
 function detachDaemonSocketSafe(
   cell: ReturnType<DaemonCellRegistry["getCell"]>,
   params: {
@@ -49,6 +114,11 @@ function detachDaemonSocketSafe(
   connectionId: string | undefined,
 ): void {
   void cell.detachDaemonSocket(params).then(async () => {
+    cellTrace("detach", {
+      serverId,
+      conn: connectionId,
+      reason: params.reason,
+    });
     await onDaemonDisconnected(db, serverId, cell);
     daemonCellLog(
       "INFO",
@@ -110,7 +180,7 @@ export function registerDaemonWebSocket(
 
       let connectionId: string | undefined;
       let leaseToken: string | undefined;
-      let pumpAbort = false;
+      const pumpControl = { abort: false };
       let attachReady = false;
       const pendingMessages: string[] = [];
 
@@ -120,7 +190,15 @@ export function registerDaemonWebSocket(
       ): Promise<void> => {
         if (raw === DAEMON_CELL_PING) {
           const cell = registry.getCell(payload.sub);
+          cellTrace("ping", {
+            serverId: payload.sub,
+            conn: connectionId,
+          });
           ws.send(DAEMON_CELL_PONG);
+          cellTrace("pong", {
+            serverId: payload.sub,
+            conn: connectionId,
+          });
           await cell.recordInbound({
             connectionId,
             at: new Date().toISOString(),
@@ -134,14 +212,18 @@ export function registerDaemonWebSocket(
           return;
         }
 
-        daemonCellLog(
-          "DEBUG",
-          payload.sub,
-          connectionId,
-          `from ${connectionId ?? "unknown"}: ${message.type}`,
-        );
+        cellTrace("inbound", {
+          serverId: payload.sub,
+          conn: connectionId,
+          type: message.type,
+        });
 
         if (!DAEMON_INBOUND_ALLOWED.has(message.type)) {
+          cellTrace("inbound-disallowed", {
+            serverId: payload.sub,
+            conn: connectionId,
+            type: message.type,
+          });
           compatLogWarn(
             "ws",
             `ignored disallowed message type ${message.type} from ${
@@ -229,7 +311,7 @@ export function registerDaemonWebSocket(
                 "ws",
                 `colocated daemon ${payload.sub} has no postgres row; forcing re-enroll`,
               );
-              pumpAbort = true;
+              pumpControl.abort = true;
               ws.close(4401, "server row missing");
               return;
             }
@@ -245,6 +327,12 @@ export function registerDaemonWebSocket(
             geo ?? undefined,
           );
 
+          cellTrace("attach", {
+            serverId: payload.sub,
+            conn: connectionId,
+            remoteAddress: identityAddress,
+          });
+
           daemonCellLog(
             "INFO",
             payload.sub,
@@ -255,50 +343,19 @@ export function registerDaemonWebSocket(
           );
 
           if (identityAddress === "__direct__") {
-            void tryAssignColocatedDaemonToInstalledOrganization(db, registry)
-              .catch((err) => {
-                compatLogError(
-                  "ws",
-                  "failed to assign colocated server:",
-                  String(err),
-                );
-              });
+            assignColocatedDaemonOnConnect(db, registry);
           }
 
           const consumer = `ws:${connectionId}`;
 
-          const outboxPump = async () => {
-            while (!pumpAbort) {
-              try {
-                const batch = await cell.readOutboxBatch({
-                  consumer,
-                  count: 50,
-                  blockMs: OUTBOX_PUMP_BLOCK_MS,
-                });
-                for (const envelope of batch) {
-                  const wireMsg = outboundEnvelopeToWireMessage(envelope);
-                  await cell.markSent(envelope.deliveryId, connectionId!);
-                  ws.send(JSON.stringify(wireMsg));
-                  await cell.ackOutbox([envelope.deliveryId], consumer);
-                }
-                if (batch.length > 0) {
-                  await cell.putSnapshot({
-                    lastOutboundAt: new Date().toISOString(),
-                  });
-                }
-              } catch (err) {
-                if (pumpAbort) {
-                  break;
-                }
-                if (isClosedConnectionError(err)) {
-                  pumpAbort = true;
-                  break;
-                }
-                compatLogWarn("ws", `outbox pump error: ${String(err)}`);
-              }
-            }
-          };
-          void outboxPump();
+          startDaemonOutboxPump({
+            cell,
+            serverId: payload.sub,
+            connectionId,
+            consumer,
+            ws,
+            abortRef: pumpControl,
+          });
 
           attachReady = true;
           for (const raw of pendingMessages.splice(0)) {
@@ -316,7 +373,7 @@ export function registerDaemonWebSocket(
           await handleInboundMessage(raw, ws);
         },
         onClose() {
-          pumpAbort = true;
+          pumpControl.abort = true;
           if (connectionId && leaseToken) {
             const cell = registry.getCell(payload.sub);
             detachDaemonSocketSafe(
@@ -334,7 +391,7 @@ export function registerDaemonWebSocket(
           }
         },
         onError() {
-          pumpAbort = true;
+          pumpControl.abort = true;
           if (connectionId && leaseToken) {
             const cell = registry.getCell(payload.sub);
             detachDaemonSocketSafe(

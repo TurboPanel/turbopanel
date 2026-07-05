@@ -20,7 +20,9 @@ import {
   generateRequestId,
   type DaemonOutboundEnvelope,
 } from '../daemon/cell/protocol.ts'
-import { getDaemonCellRegistry, getDb } from '../db.ts'
+import type { DaemonCellRegistry } from '../daemon/cell/contracts.ts'
+import { getDaemonCellRegistry, getDb, type Db } from '../db.ts'
+import { cellTrace } from '../logger.ts'
 import type { ServerAddresses } from '../server-addresses.ts'
 import { emptyServerAddresses } from '../server-addresses.ts'
 import { buildAdminScalarHtml } from '../scalar-html.ts'
@@ -65,6 +67,116 @@ function extractAddresses(record: { status: string; result?: unknown }): ServerA
   const result = record.result as { addresses?: ServerAddresses } | undefined
   if (!result?.addresses) throw new Error('missing addresses in daemon response')
   return result.addresses
+}
+
+type PublicUrlsApplyUrlsResult =
+  | { ok: true; urls: string[] }
+  | { ok: false; status: 400 | 422; body: unknown }
+
+async function resolvePublicUrlsForApply(
+  db: Db,
+  body: unknown,
+): Promise<PublicUrlsApplyUrlsResult> {
+  if (body && typeof body === 'object' && 'urls' in body) {
+    const urlsBody = body as { urls: unknown }
+    if (
+      !Array.isArray(urlsBody.urls) ||
+      !urlsBody.urls.every((u: unknown) => typeof u === 'string')
+    ) {
+      return {
+        ok: false,
+        status: 400,
+        body: { ok: false, error: 'expected { urls?: string[] }' },
+      }
+    }
+    const parsed = parsePublicUrlEntries(urlsBody.urls)
+    if (!parsed.ok) {
+      return { ok: false, status: 422, body: parsed }
+    }
+    await setPublicUrls(db, parsed.urls)
+    return { ok: true, urls: parsed.urls }
+  }
+  return { ok: true, urls: await getPublicUrls(db) }
+}
+
+type PublicUrlsApplyWaitResult =
+  | { kind: 'done' }
+  | { kind: 'failed'; error: string }
+  | { kind: 'timeout' }
+  | { kind: 'error'; error: string }
+
+async function waitForPublicUrlsApply(
+  registry: DaemonCellRegistry,
+  serverId: string,
+  urls: string[],
+): Promise<PublicUrlsApplyWaitResult> {
+  const requestId = generateRequestId()
+  cellTrace('request-start', {
+    requestId,
+    serverId,
+    kind: 'public-urls-update',
+  })
+  const envelope: DaemonOutboundEnvelope = {
+    kind: 'public-urls-update',
+    deliveryId: generateDeliveryId(),
+    requestId,
+    at: nowTs(),
+    urls,
+  }
+  cellTrace('request-enqueued', {
+    requestId,
+    serverId,
+    kind: 'public-urls-update',
+    deliveryId: envelope.deliveryId,
+  })
+
+  try {
+    const record = await registry.getCell(serverId).createRequestAndWait(
+      envelope,
+      PUBLIC_URLS_APPLY_TIMEOUT_MS,
+    )
+    if (record.status === 'done') {
+      cellTrace('request-result', {
+        requestId,
+        serverId,
+        kind: 'public-urls-update',
+        pendingStatus: record.status,
+        resultStatus: 'done',
+      })
+      return { kind: 'done' }
+    }
+    if (record.status === 'failed') {
+      const error = record.error ?? 'daemon reported failure'
+      cellTrace('request-result', {
+        requestId,
+        serverId,
+        kind: 'public-urls-update',
+        pendingStatus: record.status,
+        resultStatus: 'failed',
+        error,
+      })
+      return { kind: 'failed', error }
+    }
+    cellTrace('request-result', {
+      requestId,
+      serverId,
+      kind: 'public-urls-update',
+      pendingStatus: record.status,
+      resultStatus: 'timeout',
+      error: 'timeout waiting for daemon',
+    })
+    return { kind: 'timeout' }
+  } catch (err) {
+    const errMessage = err instanceof Error ? err.message : String(err)
+    cellTrace('request-result', {
+      requestId,
+      serverId,
+      kind: 'public-urls-update',
+      resultStatus: 'error',
+      error: errMessage,
+    })
+    return { kind: 'error', error: errMessage }
+  }
 }
 
 /**
@@ -273,20 +385,9 @@ export function registerAdminRoutes(app: Hono, opts: {
     if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
 
     const body = await c.req.json().catch(() => null)
-    let urls: string[]
-
-    if (body && typeof body === 'object' && 'urls' in body) {
-      if (!Array.isArray(body.urls) || !body.urls.every((u: unknown) => typeof u === 'string')) {
-        return c.json({ ok: false, error: 'expected { urls?: string[] }' }, 400)
-      }
-      const parsed = parsePublicUrlEntries(body.urls)
-      if (!parsed.ok) {
-        return c.json(parsed, 422)
-      }
-      await setPublicUrls(db, parsed.urls)
-      urls = parsed.urls
-    } else {
-      urls = await getPublicUrls(db)
+    const urlsResult = await resolvePublicUrlsForApply(db, body)
+    if (!urlsResult.ok) {
+      return c.json(urlsResult.body, urlsResult.status)
     }
 
     const registry = getDaemonCellRegistry(c)
@@ -307,35 +408,19 @@ export function registerAdminRoutes(app: Hono, opts: {
       return c.json({ ok: false, error: 'co-located daemon disconnected' }, 503)
     }
 
-    const envelope: DaemonOutboundEnvelope = {
-      kind: 'public-urls-update',
-      deliveryId: generateDeliveryId(),
-      requestId: generateRequestId(),
-      at: nowTs(),
-      urls,
-    }
-
-    try {
-      const record = await registry.getCell(serverId).createRequestAndWait(
-        envelope,
-        PUBLIC_URLS_APPLY_TIMEOUT_MS,
-      )
-      if (record.status === 'done') {
+    const result = await waitForPublicUrlsApply(registry, serverId, urlsResult.urls)
+    switch (result.kind) {
+      case 'done':
         return c.json({ ok: true, applied: true })
-      }
-      if (record.status === 'failed') {
+      case 'failed':
+        return c.json({ ok: false, applied: false, error: result.error }, 500)
+      case 'timeout':
         return c.json(
-          { ok: false, applied: false, error: record.error ?? 'daemon reported failure' },
+          { ok: false, applied: false, error: 'timeout waiting for daemon' },
           500,
         )
-      }
-      return c.json(
-        { ok: false, applied: false, error: 'timeout waiting for daemon' },
-        500,
-      )
-    } catch (err) {
-      const errMessage = err instanceof Error ? err.message : String(err)
-      return c.json({ ok: false, applied: false, error: errMessage }, 500)
+      case 'error':
+        return c.json({ ok: false, applied: false, error: result.error }, 500)
     }
   })
 
@@ -347,28 +432,87 @@ export function registerAdminRoutes(app: Hono, opts: {
     const servers = await Promise.all(
       online.map(async (presence) => {
         const serverId = presence.serverId
+        const requestId = generateRequestId()
+        cellTrace('request-start', {
+          requestId,
+          serverId,
+          kind: 'addresses-request',
+        })
         const envelope: DaemonOutboundEnvelope = {
           kind: 'addresses-request',
           deliveryId: generateDeliveryId(),
-          requestId: generateRequestId(),
+          requestId,
           at: nowTs(),
         }
+        cellTrace('request-enqueued', {
+          requestId,
+          serverId,
+          kind: 'addresses-request',
+          deliveryId: envelope.deliveryId,
+        })
         try {
           const record = await registry.getCell(serverId).createRequestAndWait(
             envelope,
             ADDRESSES_TIMEOUT_MS,
           )
+          if (record.status === 'failed') {
+            const error = record.error ?? 'failed to fetch addresses'
+            cellTrace('request-result', {
+              requestId,
+              serverId,
+              kind: 'addresses-request',
+              pendingStatus: record.status,
+              resultStatus: 'failed',
+              error,
+            })
+            return {
+              daemonId: serverId,
+              hostname: presence.hostname,
+              error,
+            }
+          }
+          if (record.status === 'expired') {
+            const error = 'timeout waiting for addresses'
+            cellTrace('request-result', {
+              requestId,
+              serverId,
+              kind: 'addresses-request',
+              pendingStatus: record.status,
+              resultStatus: 'timeout',
+              error,
+            })
+            return {
+              daemonId: serverId,
+              hostname: presence.hostname,
+              error,
+            }
+          }
           const addresses = extractAddresses(record)
+          cellTrace('request-result', {
+            requestId,
+            serverId,
+            kind: 'addresses-request',
+            pendingStatus: record.status,
+            resultStatus: 'done',
+          })
           return {
             daemonId: serverId,
             hostname: presence.hostname,
             addresses,
           }
         } catch (err) {
+          const error = err instanceof Error ? err.message : String(err)
+          cellTrace('request-result', {
+            requestId,
+            serverId,
+            kind: 'addresses-request',
+            resultStatus: 'error',
+            error,
+          })
           return {
             daemonId: serverId,
             hostname: presence.hostname,
-            error: err instanceof Error ? err.message : String(err),
+            error,
           }
         }
       }),
@@ -386,18 +530,61 @@ export function registerAdminRoutes(app: Hono, opts: {
     if (!live?.connected) {
       return c.json({ error: 'daemon not connected' }, 404)
     }
+    const requestId = generateRequestId()
+    cellTrace('request-start', {
+      requestId,
+      serverId: id,
+      kind: 'addresses-request',
+    })
     try {
       const envelope: DaemonOutboundEnvelope = {
         kind: 'addresses-request',
         deliveryId: generateDeliveryId(),
-        requestId: generateRequestId(),
+        requestId,
         at: nowTs(),
       }
+      cellTrace('request-enqueued', {
+        requestId,
+        serverId: id,
+        kind: 'addresses-request',
+        deliveryId: envelope.deliveryId,
+      })
       const record = await registry.getCell(id).createRequestAndWait(
         envelope,
         ADDRESSES_TIMEOUT_MS,
       )
+      if (record.status === 'failed') {
+        const error = record.error ?? 'failed to fetch addresses'
+        cellTrace('request-result', {
+          requestId,
+          serverId: id,
+          kind: 'addresses-request',
+          pendingStatus: record.status,
+          resultStatus: 'failed',
+          error,
+        })
+        return c.json({ error }, 500)
+      }
+      if (record.status === 'expired') {
+        const error = 'timeout waiting for addresses'
+        cellTrace('request-result', {
+          requestId,
+          serverId: id,
+          kind: 'addresses-request',
+          pendingStatus: record.status,
+          resultStatus: 'timeout',
+          error,
+        })
+        return c.json({ error }, 500)
+      }
       const addresses = extractAddresses(record)
+      cellTrace('request-result', {
+        requestId,
+        serverId: id,
+        kind: 'addresses-request',
+        pendingStatus: record.status,
+        resultStatus: 'done',
+      })
       return c.json({
         ok: true,
         daemonId: id,
@@ -406,6 +593,13 @@ export function registerAdminRoutes(app: Hono, opts: {
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
+      cellTrace('request-result', {
+        requestId,
+        serverId: id,
+        kind: 'addresses-request',
+        resultStatus: 'error',
+        error: message,
+      })
       const status = message === 'daemon not connected' ? 404 : 500
       return c.json({ error: message }, status)
     }
