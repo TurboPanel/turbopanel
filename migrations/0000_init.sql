@@ -251,7 +251,6 @@ CREATE TABLE "variable" (
 	"key" varchar(255) NOT NULL,
 	"value" text DEFAULT '' NOT NULL,
 	"is_secret" boolean DEFAULT false NOT NULL,
-	"prefix" varchar(255),
 	"description" varchar(255),
 	CONSTRAINT "variable_exactly_one_parent_check" CHECK (((organization_id IS NOT NULL)::int +
         (workspace_id IS NOT NULL)::int +

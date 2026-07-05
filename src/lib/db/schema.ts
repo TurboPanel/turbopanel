@@ -427,7 +427,6 @@ export const variable = pgTable(
     key: varchar({ length: 255 }).notNull(),
     value: text().default('').notNull(),
     isSecret: boolean('is_secret').default(false).notNull(),
-    prefix: varchar({ length: 255 }),
     description: varchar('description', { length: 255 }),
   },
   (table) => [

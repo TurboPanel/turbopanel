@@ -1,5 +1,5 @@
 {
-  "id": "5fea6433-9f34-431d-8b42-84bdfd12a462",
+  "id": "aa200cb5-2225-45b6-98c2-9a4eef64376f",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -2181,12 +2181,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
-        },
-        "prefix": {
-          "name": "prefix",
-          "type": "varchar(255)",
-          "primaryKey": false,
-          "notNull": false
         },
         "description": {
           "name": "description",

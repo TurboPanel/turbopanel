@@ -67,7 +67,6 @@ const VARIABLE_SELECT_FIELDS = {
   key: variable.key,
   value: variable.value,
   isSecret: variable.isSecret,
-  prefix: variable.prefix,
   description: variable.description,
   createdAt: variable.createdAt,
   updatedAt: variable.updatedAt,
@@ -85,7 +84,6 @@ type VariableRow = {
   key: string
   value: string
   isSecret: boolean
-  prefix: string | null
   description: string | null
   createdAt: string
   updatedAt: string
@@ -115,7 +113,6 @@ function serializeVariable(row: VariableRow) {
     key: row.key,
     isSecret: row.isSecret,
     value: row.isSecret ? null : row.value,
-    prefix: row.isSecret ? row.prefix : null,
     description: row.description,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -193,7 +190,6 @@ function buildInsertValues(
     key: string
     value: string
     isSecret: boolean
-    prefix: string | null
     description: string | null
   },
 ) {
@@ -208,7 +204,6 @@ function buildInsertValues(
     key: fields.key,
     value: fields.value,
     isSecret: fields.isSecret,
-    prefix: fields.prefix,
     description: fields.description,
     [parent.column]: parent.id,
   }
@@ -458,9 +453,6 @@ export function registerVariableRoutes(router: Hono, opts: AuthRouteOpts) {
     const parsedDescription = parseOptionalDescription(c, body.description)
     if (parsedDescription instanceof Response) return parsedDescription
 
-    const parsedPrefix = parseOptionalDescription(c, body.prefix)
-    if (parsedPrefix instanceof Response) return parsedPrefix
-
     const plaintextValue = parsedValue === 'absent' ? '' : parsedValue
 
     let storedValue: string
@@ -474,7 +466,6 @@ export function registerVariableRoutes(router: Hono, opts: AuthRouteOpts) {
     }
 
     const description = parsedDescription === 'absent' ? null : parsedDescription
-    const prefix = parsedPrefix === 'absent' ? null : parsedPrefix
 
     try {
       const id = await db.transaction(async (tx) => {
@@ -484,7 +475,6 @@ export function registerVariableRoutes(router: Hono, opts: AuthRouteOpts) {
             key,
             value: storedValue,
             isSecret,
-            prefix: isSecret ? prefix : null,
             description,
           }))
           .returning({ id: variable.id })
@@ -555,7 +545,6 @@ export function registerVariableRoutes(router: Hono, opts: AuthRouteOpts) {
       key?: string
       value?: string
       isSecret?: boolean
-      prefix?: string | null
       description?: string | null
       updatedAt: string
     } = { updatedAt: new Date().toISOString() }
@@ -572,12 +561,6 @@ export function registerVariableRoutes(router: Hono, opts: AuthRouteOpts) {
       updateFields.description = description === 'absent' ? null : description
     }
 
-    if (body.prefix !== undefined) {
-      const prefix = parseOptionalDescription(c, body.prefix)
-      if (prefix instanceof Response) return prefix
-      updateFields.prefix = prefix === 'absent' ? null : prefix
-    }
-
     if (body.isSecret !== undefined && typeof body.isSecret !== 'boolean') {
       return c.json({ error: 'Invalid request' }, 400)
     }
@@ -589,9 +572,6 @@ export function registerVariableRoutes(router: Hono, opts: AuthRouteOpts) {
 
     if (isSecretToggled) {
       updateFields.isSecret = nextIsSecret
-      if (!nextIsSecret) {
-        updateFields.prefix = null
-      }
     }
 
     const valueProvided = body.value !== undefined
