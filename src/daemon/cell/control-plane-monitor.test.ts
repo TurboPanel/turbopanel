@@ -343,6 +343,36 @@ Deno.test("onDaemonHeartbeat within 60s skips DB write when agent unchanged", as
   assertEquals(getSelectCallCount(), 0);
 });
 
+Deno.test("onDaemonInbound projects new agent before steady-state skip", async () => {
+  const agent = {
+    commit: "abc123",
+    buildId: "build-1",
+    channel: "trunk" as const,
+  };
+  const recentAt = new Date().toISOString();
+  const { db, updateCalls, getDaemon } = createTrackingDb(
+    {
+      key: baseKey,
+      projection: { hostname: "host-1" },
+    },
+    {
+      connected: true,
+      daemonStatus: "online",
+      lastSeenAt: recentAt,
+    },
+  );
+
+  await onDaemonInbound(
+    db,
+    serverId,
+    createMockCell({ connected: true, lastSeenAt: recentAt, agent }) as never,
+    { at: new Date(Date.now() + 1000).toISOString(), agent },
+  );
+
+  assertEquals(updateCalls.length, 1);
+  assertEquals(getDaemon()?.projection?.agent?.commit, "abc123");
+});
+
 Deno.test("onDaemonInbound repairs stale updating on steady-state hello when agent matches trunk", async () => {
   resetTrunkManifestCacheForTests();
   seedTrunkManifestCacheForTests({

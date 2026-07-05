@@ -181,8 +181,8 @@ export async function resolveServerUpdateStatus(params: {
     ? undefined
     : 'Could not resolve trunk channel manifest'
 
-  const commitDrift = target
-    ? params.current?.commit !== target.commit
+  const commitDrift = target && params.current?.commit
+    ? params.current.commit !== target.commit
     : false
   const updateBlocked = params.colocatedWithInstance === true
   const updateAvailable = updateBlocked ? false : commitDrift

@@ -55,11 +55,19 @@ export async function onDaemonInbound(
   cell: DaemonCell,
   opts: { at?: string; agent?: ProjectionAgent } = {},
 ): Promise<void> {
-  const snapshot = await cell.getSnapshot();
-
   if (opts.agent?.commit && opts.agent?.buildId) {
     await maybeRepairUpdateFromAgentHello(db, serverId, opts.agent);
+
+    const existingForAgent = await getServerDaemonStateByServerId(db, serverId);
+    if (agentChanged(existingForAgent?.projection, opts.agent)) {
+      await projectServerDaemon(db, serverId, {
+        kind: "agent",
+        agent: opts.agent,
+      }, { cell });
+    }
   }
+
+  const snapshot = await cell.getSnapshot();
 
   // Skip heartbeat-only Postgres reads when steady-state; repair above still runs.
   if (steadyStateInboundSkipsDbRead(snapshot, opts)) {

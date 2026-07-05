@@ -1136,7 +1136,10 @@ export class DaemonCellObject {
         parsed.agent,
       );
       this.#recordInbound(attachment.serverId, at, parsed.agent);
-      if (shouldProject) {
+      const hasAgentIdentity = Boolean(
+        parsed.agent?.commit && parsed.agent?.buildId,
+      );
+      if (shouldProject || hasAgentIdentity) {
         await this.#projectInbound(attachment.serverId, at, parsed.agent);
       }
       await this.#scheduleNearestAlarm();

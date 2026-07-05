@@ -196,6 +196,24 @@ Deno.test("resolveServerUpdateStatus blocks remote updates for co-located daemon
   );
 });
 
+Deno.test("resolveServerUpdateStatus does not offer update when running commit is unknown", async () => {
+  const resolved = await resolveServerUpdateStatus({
+    serverId: "srv-1",
+    current: null,
+    targetManifest: {
+      commit: "bbb",
+      buildId: "b2",
+      builtAt: "2020-01-01T00:00:00.000Z",
+      channel: "trunk",
+      manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+    },
+    listUpdateRequests: async () => [],
+  });
+
+  assertEquals(resolved.targetStatus, "ok");
+  assertEquals(resolved.updateAvailable, false);
+});
+
 Deno.test("resolveServerUpdateStatus computes updateAvailable only with known target", async () => {
   const current = { commit: "aaa", buildId: "b1" };
   const resolved = await resolveServerUpdateStatus({
