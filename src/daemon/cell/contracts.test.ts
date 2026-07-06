@@ -20,7 +20,7 @@ Deno.test("mergeSnapshotPresence prefers meta-layer presence fields", () => {
     connected: false,
     connectedAt: "2020-01-01T00:00:00.000Z",
     lastHeartbeatAt: "2020-01-01T00:00:00.000Z",
-    hostname: "stored-host",
+    remoteAddress: "203.0.113.1",
   };
   const meta: DaemonCellSnapshot = {
     serverId: "srv-1",
@@ -29,13 +29,13 @@ Deno.test("mergeSnapshotPresence prefers meta-layer presence fields", () => {
     connected: true,
     connectedAt: "2020-01-02T00:00:00.000Z",
     lastHeartbeatAt: "2020-01-02T00:00:00.000Z",
-    hostname: "live-host",
+    remoteAddress: "203.0.113.2",
   };
 
   const merged = mergeSnapshotPresence(stored, meta);
   assertEquals(merged.connected, true);
   assertEquals(merged.connectedAt, "2020-01-02T00:00:00.000Z");
-  assertEquals(merged.hostname, "live-host");
+  assertEquals(merged.remoteAddress, "203.0.113.2");
   assertEquals(merged.updatedAt, "2020-01-02T00:00:00.000Z");
 });
 

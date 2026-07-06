@@ -19,12 +19,14 @@ import {
   cellKeyPattern,
   connKey,
   LEASE_TTL_MS,
+  deliveryLeaseKey,
   leaseKey,
   metaKey,
   onlineSetKey,
   outboxKey,
   requestKey,
   snapshotKey,
+  HEARTBEAT_COALESCE_MS,
 } from "./cell/redis/keys.ts";
 import { generateDeliveryId, generateRequestId, DAEMON_OFFLINE_SWEEP_MS } from "./cell/protocol.ts";
 
@@ -78,6 +80,58 @@ function withRedisCell(
   };
 }
 
+function withDebugRedisCell(
+  fn: (ctx: {
+    client: RedisCellClient;
+    registry: RedisDaemonCellRegistry;
+    cell: RedisDaemonCell;
+    serverId: string;
+  }) => Promise<void>,
+): () => Promise<void> {
+  return async () => {
+    if (!(await redisAvailable())) {
+      console.warn(
+        `Skipping Redis cell test: socket not found at ${DEFAULT_SOCKET}`,
+      );
+      return;
+    }
+
+    const prev = Deno.env.get("TURBOPANEL_DAEMON_DEBUG");
+    Deno.env.set("TURBOPANEL_DAEMON_DEBUG", "1");
+    try {
+      const client = createRedisCellClient();
+      const registry = createRedisDaemonCellRegistry();
+      const serverId = `test-${crypto.randomUUID()}`;
+      const cell = new RedisDaemonCell(client, serverId);
+
+      try {
+        await fn({ client, registry, cell, serverId });
+      } finally {
+        await cleanupServerCell(client, serverId);
+        await registry.close();
+      }
+    } finally {
+      if (prev === undefined) {
+        Deno.env.delete("TURBOPANEL_DAEMON_DEBUG");
+      } else {
+        Deno.env.set("TURBOPANEL_DAEMON_DEBUG", prev);
+      }
+    }
+  };
+}
+
+function assertNoMisattributedStorage(
+  storageByCallSite: Record<string, { reads: number; writes: number }>,
+): void {
+  assertEquals(storageByCallSite["unknown"], undefined);
+  for (const [callSite, counts] of Object.entries(storageByCallSite)) {
+    assert(
+      counts.reads + counts.writes > 0,
+      `expected non-zero storage ops for ${callSite}`,
+    );
+  }
+}
+
 Deno.test(
   "getDiagnostics returns redis counters after attach, inbound, enqueue, detach",
   withRedisCell(async ({ cell }) => {
@@ -102,7 +156,6 @@ Deno.test(
 
     await cell.detachDaemonSocket({
       connectionId: attached.connectionId,
-      leaseToken: attached.lease.token,
     });
 
     const diag = await cell.getDiagnostics();
@@ -115,17 +168,116 @@ Deno.test(
     assert(diag.wsClosed >= 1);
     assert(diag.cleanupCount >= 1);
     assertEquals(typeof diag.fetchByRoute.attachDaemonSocket, "number");
+    assertEquals(typeof diag.storageReads, "number");
+    assertEquals(typeof diag.storageWrites, "number");
+    assertEquals(typeof diag.storageByCallSite, "object");
   }),
 );
 
 Deno.test(
-  "attachDaemonSocket acquires lease and returns connectionId and leaseToken",
+  "getDiagnostics populates storage counters when TURBOPANEL_DAEMON_DEBUG is enabled",
+  withDebugRedisCell(async ({ cell }) => {
+    const attached = await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    });
+
+    await cell.recordInbound({
+      connectionId: attached.connectionId,
+      at: new Date().toISOString(),
+    });
+
+    await cell.enqueue({
+      kind: "command-dispatch",
+      deliveryId: generateDeliveryId(),
+      requestId: generateRequestId(),
+      at: new Date().toISOString(),
+      commandId: "diag-redis-debug",
+      commandType: "ping",
+      payload: {},
+    });
+
+    const diag = await cell.getDiagnostics();
+    assert(diag.storageReads > 0);
+    assert(diag.storageWrites > 0);
+    assert(Object.keys(diag.storageByCallSite).length > 0);
+    assertNoMisattributedStorage(diag.storageByCallSite);
+  }),
+);
+
+Deno.test(
+  "storageByCallSite attributes Redis ops to the logical method without cross-attribution",
+  withDebugRedisCell(async ({ cell }) => {
+    await cell.reconcileStalePresence();
+    let diag = await cell.getDiagnostics();
+    assert(diag.storageByCallSite["reconcileStalePresence"]);
+    assertNoMisattributedStorage(diag.storageByCallSite);
+
+    await cell.getSnapshot();
+    diag = await cell.getDiagnostics();
+    assert(diag.storageByCallSite["getSnapshot"]);
+    assertNoMisattributedStorage(diag.storageByCallSite);
+
+    const attached = await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    });
+    const deliveryId = generateDeliveryId();
+    const requestId = generateRequestId();
+    const at = new Date().toISOString();
+
+    await cell.enqueue({
+      kind: "command",
+      deliveryId,
+      requestId,
+      at,
+      command: "attrib-test",
+    });
+
+    await cell.markSent(deliveryId, attached.connectionId, at);
+    await cell.handleInbound({
+      kind: "command-result",
+      requestId,
+      at,
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+    });
+
+    const consumer = `ws:${attached.connectionId}`;
+    await cell.readOutboxBatch({ consumer, count: 10 });
+    await cell.ackOutbox([deliveryId], consumer);
+
+    await Promise.all([
+      cell.getSnapshot(),
+      cell.listRequests(),
+    ]);
+
+    diag = await cell.getDiagnostics();
+    assert(diag.storageByCallSite["attachDaemonSocket"]);
+    assert(diag.storageByCallSite["enqueue"]);
+    assert(diag.storageByCallSite["markSent"]);
+    assert(diag.storageByCallSite["handleInbound"]);
+    assert(diag.storageByCallSite["readOutboxBatch"]);
+    assert(diag.storageByCallSite["ackOutbox"]);
+    assert(diag.storageByCallSite["listRequests"]);
+    assertNoMisattributedStorage(diag.storageByCallSite);
+
+    await cell.clearUpdateStatus();
+    await cell.purge();
+
+    diag = await cell.getDiagnostics();
+    assert(diag.storageByCallSite["clearUpdateStatus"]);
+    assert(diag.storageByCallSite["purge"]);
+    assertNoMisattributedStorage(diag.storageByCallSite);
+  }),
+);
+
+Deno.test(
+  "attachDaemonSocket acquires lease and returns connectionId and lease holder",
   withRedisCell(async ({ cell }) => {
     const attached = await cell.attachDaemonSocket({
       keyId: crypto.randomUUID(),
     });
     assertEquals(typeof attached.connectionId, "string");
-    assertEquals(attached.lease.token, attached.connectionId);
     assertEquals(attached.lease.holder, attached.connectionId);
   }),
 );
@@ -148,14 +300,13 @@ Deno.test(
 );
 
 Deno.test(
-  "detachDaemonSocket with correct leaseToken releases lease",
+  "detachDaemonSocket with correct connectionId releases lease",
   withRedisCell(async ({ cell }) => {
     const first = await cell.attachDaemonSocket({
       keyId: crypto.randomUUID(),
     });
     await cell.detachDaemonSocket({
       connectionId: first.connectionId,
-      leaseToken: first.lease.token,
     });
     const second = await cell.attachDaemonSocket({
       keyId: crypto.randomUUID(),
@@ -165,14 +316,13 @@ Deno.test(
 );
 
 Deno.test(
-  "detachDaemonSocket with wrong leaseToken is a no-op",
+  "detachDaemonSocket with wrong connectionId is a no-op",
   withRedisCell(async ({ cell, client, serverId }) => {
     const attached = await cell.attachDaemonSocket({
       keyId: crypto.randomUUID(),
     });
     await cell.detachDaemonSocket({
-      connectionId: attached.connectionId,
-      leaseToken: "wrong-token",
+      connectionId: "wrong-connection-id",
     });
     const leaseHolder = await client.get(leaseKey(serverId));
     assertEquals(leaseHolder, attached.connectionId);
@@ -299,7 +449,6 @@ Deno.test(
 
     await cell.detachDaemonSocket({
       connectionId: firstAttach.connectionId,
-      leaseToken: firstAttach.lease.token,
     });
 
     // Production attach uses minIdleMs=60_000 for XAUTOCLAIM; wait for idle threshold.
@@ -314,11 +463,13 @@ Deno.test(
       consumer: consumer2,
       count: 10,
     });
-    const commands = reclaimed
-      .filter((entry) => entry.kind === "command")
-      .map((entry) => entry.command);
-    assert(commands.includes("one"));
-    assert(commands.includes("two"));
+    const commands = new Set(
+      reclaimed
+        .filter((entry) => entry.kind === "command")
+        .map((entry) => entry.command),
+    );
+    assert(commands.has("one"));
+    assert(commands.has("two"));
   }),
 );
 
@@ -448,21 +599,19 @@ function createProjectionTrackingDb(serverId: string): {
     status: buildDefaultDaemonStatus(),
   };
 
+  const selectLimit = () => Promise.resolve([{ id: serverId, daemon }]);
+
+  const selectWhere = () => {
+    const rows = daemon.projection?.update?.status === "updating"
+      ? [{ id: serverId }]
+      : [{ id: serverId, daemon }];
+    return Object.assign(Promise.resolve(rows), { limit: selectLimit });
+  };
+
   const db = {
     select: () => ({
       from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve([{ id: serverId, daemon }]),
-          then: (
-            resolve: (value: unknown) => void,
-            reject?: (reason: unknown) => void,
-          ) => {
-            const rows = daemon.projection?.update?.status === "updating"
-              ? [{ id: serverId }]
-              : [{ id: serverId, daemon }];
-            return Promise.resolve(rows).then(resolve, reject);
-          },
-        }),
+        where: selectWhere,
       }),
     }),
     update: () => ({
@@ -478,6 +627,37 @@ function createProjectionTrackingDb(serverId: string): {
   } as unknown as Db;
 
   return { db, getDaemon: () => daemon };
+}
+
+function createSweepMockDb(initialDaemon: ServerDaemonState): {
+  db: Db;
+  updateCalls: Array<Record<string, unknown>>;
+} {
+  const updateCalls: Array<Record<string, unknown>> = [];
+  let daemon = initialDaemon;
+
+  const selectLimit = () => Promise.resolve([{ daemon, metadata: null }]);
+
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: () => ({ limit: selectLimit }),
+      }),
+    }),
+    update: () => ({
+      set: (patch: Record<string, unknown>) => {
+        updateCalls.push(patch);
+        if (patch.daemon) {
+          daemon = patch.daemon as ServerDaemonState;
+        }
+        return {
+          where: () => Promise.resolve(undefined),
+        };
+      },
+    }),
+  } as unknown as Db;
+
+  return { db, updateCalls };
 }
 
 Deno.test(
@@ -746,7 +926,6 @@ Deno.test(
 
     await cell.detachDaemonSocket({
       connectionId: attached.connectionId,
-      leaseToken: attached.lease.token,
     });
     online = await registry.listOnlineServerIds();
     assert(!online.includes(serverId));
@@ -769,7 +948,6 @@ Deno.test(
 
     await cell.detachDaemonSocket({
       connectionId: attached.connectionId,
-      leaseToken: attached.lease.token,
     });
   }),
 );
@@ -796,37 +974,6 @@ Deno.test(
     assert(!online.includes(serverId));
   }),
 );
-
-function createSweepMockDb(initialDaemon: ServerDaemonState): {
-  db: Db;
-  updateCalls: Array<Record<string, unknown>>;
-} {
-  const updateCalls: Array<Record<string, unknown>> = [];
-  let daemon = initialDaemon;
-
-  const db = {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve([{ daemon, metadata: null }]),
-        }),
-      }),
-    }),
-    update: () => ({
-      set: (patch: Record<string, unknown>) => {
-        updateCalls.push(patch);
-        if (patch.daemon) {
-          daemon = patch.daemon as ServerDaemonState;
-        }
-        return {
-          where: () => Promise.resolve(undefined),
-        };
-      },
-    }),
-  } as unknown as Db;
-
-  return { db, updateCalls };
-}
 
 Deno.test(
   "attach and onDaemonConnected projects online status to postgres",
@@ -1119,7 +1266,7 @@ Deno.test(
     assert(online.includes(serverId));
 
     assertEquals(updateCalls.length, 2);
-    const status = (updateCalls[updateCalls.length - 1]?.daemon as ServerDaemonState)
+    const status = (updateCalls.at(-1)?.daemon as ServerDaemonState)
       ?.status;
     assertEquals(status?.connected, true);
     assertEquals(status?.daemonStatus, "online");
@@ -1169,6 +1316,33 @@ Deno.test(
 
     const meta = await client.hgetall(metaKey(serverId));
     assertEquals(meta?.lastSeenAt, firstAt);
+  }),
+);
+
+Deno.test(
+  "delivery lease operations do not affect attached daemon socket lease",
+  withRedisCell(async ({ cell, client, serverId }) => {
+    const attached = await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    });
+    const socketLeaseHolder = await client.get(leaseKey(serverId));
+    assertEquals(socketLeaseHolder, attached.connectionId);
+
+    const deliveryHolder = "delivery-consumer-1";
+    const claimed = await cell.claimDeliveryLease(deliveryHolder, LEASE_TTL_MS);
+    assert(claimed);
+    assertEquals(claimed?.holder, deliveryHolder);
+
+    assertEquals(await client.get(leaseKey(serverId)), attached.connectionId);
+    assertEquals(await client.get(deliveryLeaseKey(serverId)), deliveryHolder);
+
+    const renewed = await cell.renewDeliveryLease(deliveryHolder, LEASE_TTL_MS);
+    assert(renewed);
+    assertEquals(await client.get(leaseKey(serverId)), attached.connectionId);
+
+    await cell.releaseDeliveryLease(deliveryHolder);
+    assertEquals(await client.get(deliveryLeaseKey(serverId)), null);
+    assertEquals(await client.get(leaseKey(serverId)), attached.connectionId);
   }),
 );
 
@@ -1224,6 +1398,43 @@ Deno.test(
     });
 
     assertEquals(updateCalls.length, 0);
+  }),
+);
+
+Deno.test(
+  "coalesced pure-ping recordInbound skips Redis storage within coalesce window",
+  withDebugRedisCell(async ({ cell }) => {
+    const attached = await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    });
+
+    const diagAfterFirstResp = await cell.getDiagnostics();
+    const writesAfterAttach = diagAfterFirstResp.storageByCallSite["recordInbound"]?.writes ?? 0;
+    const readsAfterAttach = diagAfterFirstResp.storageByCallSite["recordInbound"]?.reads ?? 0;
+
+    await cell.recordInbound({
+      connectionId: attached.connectionId,
+      at: new Date().toISOString(),
+    });
+
+    const diagAfterSecond = await cell.getDiagnostics();
+    const writesAfterSecond = diagAfterSecond.storageByCallSite["recordInbound"]?.writes ?? 0;
+    const readsAfterSecond = diagAfterSecond.storageByCallSite["recordInbound"]?.reads ?? 0;
+
+    expect(writesAfterSecond).toBe(writesAfterAttach);
+    expect(readsAfterSecond).toBe(readsAfterAttach);
+
+    await cell.recordInbound({
+      connectionId: attached.connectionId,
+      at: new Date(Date.now() + HEARTBEAT_COALESCE_MS + 1000).toISOString(),
+    });
+
+    const diagAfterWindow = await cell.getDiagnostics();
+    const writesAfterWindow = diagAfterWindow.storageByCallSite["recordInbound"]?.writes ?? 0;
+    const readsAfterWindow = diagAfterWindow.storageByCallSite["recordInbound"]?.reads ?? 0;
+
+    expect(writesAfterWindow).toBeGreaterThan(writesAfterAttach);
+    expect(readsAfterWindow).toBeGreaterThan(readsAfterAttach);
   }),
 );
 
@@ -1329,7 +1540,6 @@ Deno.test(
     });
     await cell.detachDaemonSocket({
       connectionId: first.connectionId,
-      leaseToken: first.lease.token,
     });
 
     const second = await cell.attachDaemonSocket({

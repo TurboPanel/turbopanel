@@ -28,7 +28,24 @@ declare namespace Deno {
   function chmod(path: string, mode: number): Promise<void>
   function remove(path: string): Promise<void>
   function mkdir(path: string, options?: { recursive?: boolean }): Promise<void>
-  function readTextFile(path: string): Promise<string>
+  interface FileInfo {
+    isFile: boolean
+    isDirectory: boolean
+    isSymlink: boolean
+    isSocket?: boolean
+  }
+
+  function stat(path: string | URL): Promise<FileInfo>
+  function test(
+    name: string,
+    fn: () => void | Promise<void>,
+  ): void
+  function test(
+    name: string,
+    options: { ignore?: boolean; only?: boolean },
+    fn: () => void | Promise<void>,
+  ): void
+  function readTextFile(path: string | URL): Promise<string>
   function writeTextFile(
     path: string,
     data: string,
@@ -83,4 +100,38 @@ declare module '@std/path' {
 
 declare module '@std/encoding/base64' {
   export function encodeBase64(data: ArrayBuffer | Uint8Array): string
+}
+
+declare module 'jsr:@std/assert' {
+  export function assert(condition: unknown, msg?: string): asserts condition
+  export function assertEquals<T>(
+    actual: T,
+    expected: T,
+    msg?: string,
+  ): void
+  export function assertExists<T>(
+    value: T | null | undefined,
+    msg?: string,
+  ): asserts value is T
+  export function assertNotEquals<T>(
+    actual: T,
+    expected: T,
+    msg?: string,
+  ): void
+  export function assertRejects(
+    fn: () => Promise<unknown> | unknown,
+    ErrorClass?: new (...args: unknown[]) => Error,
+    msgIncludes?: string,
+    msg?: string,
+  ): Promise<void>
+  export function assertThrows(
+    fn: () => unknown,
+    ErrorClass?: new (...args: unknown[]) => Error,
+    msgIncludes?: string,
+    msg?: string,
+  ): void
+}
+
+declare module '@std/assert' {
+  export * from 'jsr:@std/assert'
 }

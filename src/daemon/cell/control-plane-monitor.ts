@@ -32,12 +32,14 @@ export async function onDaemonConnected(
   connectedAt?: string,
   agent?: ProjectionAgent,
   geo?: ServerGeo,
+  keyId?: string,
 ): Promise<void> {
   const snapshot = await cell.getSnapshot();
   await projectServerDaemon(db, serverId, {
     kind: "online",
     identity: {
       ...identityFromSnapshot(snapshot),
+      ...(keyId ? { keyId } : {}),
       ...(geo ? { geo } : {}),
     },
     connectedAt: connectedAt ?? snapshot.connectedAt,
@@ -213,7 +215,7 @@ export async function maybeRepairUpdateFromAgentHello(
 
   const existing = await getServerDaemonStateByServerId(db, serverId);
   const update = existing?.projection?.update;
-  if (!update || update.status !== "updating") return;
+  if (update?.status !== "updating") return;
 
   const manifestCommit = targetCommit ??
     (await resolveTrunkManifest())?.commit;

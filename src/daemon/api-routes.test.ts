@@ -1,9 +1,13 @@
 import { assert, assertEquals, assertExists } from "jsr:@std/assert";
-import { encodeBase64Url } from "@std/encoding/base64url";
+import {
+  decodeBase64Url,
+  encodeBase64Url,
+} from "@std/encoding/base64url";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AppEnv } from "../app.ts";
 import { deriveSecretsConfig } from "../client/authn/secrets.ts";
+import { deriveDaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
 import { encryptSecretForDaemon } from "../client/authn/data-encryption.ts";
 import { createLicense } from "../client/authn/license.ts";
 import { getDatabaseUrl } from "../db-url.ts";
@@ -52,9 +56,9 @@ type EnrollFixture = {
 };
 
 async function createTestSecrets() {
-  return await deriveSecretsConfig({
+  return await deriveDaemonJwtKeyring({
     versioned: [{ version: 1, value: "daemon_api_routes_test_secret_value" }],
-  }, "daemon-jwt-signing");
+  });
 }
 
 async function createTestChallengeSecrets() {
@@ -363,6 +367,73 @@ async function withEnrollFixture(
     await db.delete(organization).where(eq(organization.id, organizationId));
   }
 }
+
+Deno.test("GET /jwks.json returns public OKP keys only", async () => {
+  const app = new Hono<AppEnv>();
+  const keyring = await createTestSecrets();
+  const challengeSigningSecrets = await createTestChallengeSecrets();
+  const secretsConfig = createTestSecretsConfig();
+  registerDaemonApiRoutes(app, {
+    secrets: keyring,
+    challengeSigningSecrets,
+    secretsConfig,
+  });
+
+  const response = await app.request("/api/daemon/v1/jwks.json");
+  assertEquals(response.status, 200);
+  assertEquals(response.headers.get("Cache-Control"), "public, max-age=300");
+
+  const bodyText = await response.text();
+  assertEquals(bodyText.includes("daemon_api_routes_test_secret_value"), false);
+  assertEquals(bodyText.includes("daemon_api_routes_test_challenge_secret"), false);
+  assertEquals(bodyText.includes("daemon_api_routes_test_data_encryption_secret"), false);
+
+  const body = JSON.parse(bodyText) as { keys: JsonWebKey[] };
+  assert(body.keys.length > 0);
+  for (const key of body.keys) {
+    assertEquals(key.kty, "OKP");
+    assertEquals(key.crv, "Ed25519");
+    assertEquals(key.alg, "EdDSA");
+    assertEquals(key.use, "sig");
+    assertEquals(typeof key.kid, "string");
+    assertEquals(typeof key.x, "string");
+    assertEquals("d" in key, false);
+  }
+
+  const issued = await issueDaemonJwt(
+    { sub: crypto.randomUUID(), kid: crypto.randomUUID() },
+    keyring,
+  );
+  const [encodedHeader, encodedPayload, encodedSig] = issued.token.split(".");
+  const header = JSON.parse(
+    new TextDecoder().decode(decodeBase64Url(encodedHeader)),
+  ) as { kid?: string };
+  assertEquals(typeof header.kid, "string");
+
+  const jwksEntry = body.keys.find((entry) => entry.kid === header.kid);
+  assertExists(jwksEntry);
+
+  const verifyKey = await crypto.subtle.importKey(
+    "jwk",
+    {
+      kty: jwksEntry.kty,
+      crv: jwksEntry.crv,
+      x: jwksEntry.x,
+    },
+    { name: "Ed25519" },
+    false,
+    ["verify"],
+  );
+
+  const signingInput = `${encodedHeader}.${encodedPayload}`;
+  const verified = await crypto.subtle.verify(
+    { name: "Ed25519" },
+    verifyKey,
+    decodeBase64Url(encodedSig),
+    encoder.encode(signingInput),
+  );
+  assertEquals(verified, true);
+});
 
 Deno.test("POST /enroll rejects invalid license", async () => {
   await withEnrollFixture(async ({ app, licenseId, machineId, hostname }) => {

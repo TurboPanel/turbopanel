@@ -49,9 +49,49 @@ function mergeDaemonStatus(
     ...daemon,
     status: {
       ...buildDefaultDaemonStatus(),
-      ...(daemon.status ?? {}),
+      ...(daemon.status),
       ...statusOverrides,
     },
+  };
+}
+
+type TrackingDbRow = {
+  id: string;
+  daemon: ServerDaemonState;
+  metadata: Record<string, unknown>;
+};
+
+function createTrackingDbUpdateHandler(
+  updateCalls: Array<Record<string, unknown>>,
+  row: TrackingDbRow,
+  setDaemon: (daemon: ServerDaemonState) => void,
+) {
+  return (patch: Record<string, unknown>) => {
+    updateCalls.push(patch);
+    if (patch.daemon) {
+      const nextDaemon = patch.daemon as ServerDaemonState;
+      setDaemon(nextDaemon);
+      row.daemon = nextDaemon;
+    }
+    if (patch.metadata !== undefined) {
+      row.metadata = patch.metadata as Record<string, unknown>;
+    }
+    return {
+      where: () => Promise.resolve(undefined),
+    };
+  };
+}
+
+function createTrackingDbSelectHandler(
+  row: TrackingDbRow,
+  getDaemon: () => ServerDaemonState,
+  onSelect: () => void,
+) {
+  return () => {
+    onSelect();
+    row.daemon = getDaemon();
+    const rows = Promise.resolve([row]);
+    return Object.assign(rows, { limit: () => rows });
   };
 }
 
@@ -68,48 +108,24 @@ function createTrackingDb(
   let selectCalls = 0;
   let daemon = mergeDaemonStatus(initialDaemon, statusOverrides);
 
-  const row = {
+  const row: TrackingDbRow = {
     id: serverId,
     daemon,
-    metadata: { hostname: "host-1" } as Record<string, unknown>,
+    metadata: { hostname: "host-1" },
   };
 
   const db = {
     select: () => ({
       from: () => ({
-        where: () => ({
-          limit: () => {
-            selectCalls += 1;
-            return Promise.resolve([{
-              daemon,
-              metadata: row.metadata,
-            }]);
-          },
-          then: (
-            resolve: (value: unknown) => void,
-            reject?: (reason: unknown) => void,
-          ) => {
-            selectCalls += 1;
-            row.daemon = daemon;
-            return Promise.resolve([row]).then(resolve, reject);
-          },
+        where: createTrackingDbSelectHandler(row, () => daemon, () => {
+          selectCalls += 1;
         }),
       }),
     }),
     update: () => ({
-      set: (patch: Record<string, unknown>) => {
-        updateCalls.push(patch);
-        if (patch.daemon) {
-          daemon = patch.daemon as ServerDaemonState;
-          row.daemon = daemon;
-        }
-        if (patch.metadata !== undefined) {
-          row.metadata = patch.metadata as Record<string, unknown>;
-        }
-        return {
-          where: () => Promise.resolve(undefined),
-        };
-      },
+      set: createTrackingDbUpdateHandler(updateCalls, row, (nextDaemon) => {
+        daemon = nextDaemon;
+      }),
     }),
   } as unknown as Db;
 
@@ -449,7 +465,7 @@ Deno.test("onDaemonInbound within 60s skips heartbeat write when agent unchanged
   );
 
   assertEquals(updateCalls.length, 0);
-  assertEquals(getSelectCallCount(), 1);
+  assertEquals(getSelectCallCount(), 2);
 });
 
 Deno.test("onDaemonHeartbeat after 60s writes lastSeenAt", async () => {
@@ -535,10 +551,13 @@ Deno.test("onDaemonInbound restores online projection after stale sweep", async 
     { at, agent: { commit: "recovered", buildId: "2", channel: "trunk" } },
   );
 
-  assertEquals(updateCalls.length, 1);
-  const status = statusFromPatch(updateCalls[0]);
-  assertEquals(status?.connected, true);
-  assertEquals(status?.daemonStatus, "online");
+  assertEquals(updateCalls.length, 2);
+  const onlinePatch = updateCalls.find((patch) =>
+    statusFromPatch(patch)?.connected === true
+  );
+  assert(onlinePatch);
+  assertEquals(statusFromPatch(onlinePatch)?.connected, true);
+  assertEquals(statusFromPatch(onlinePatch)?.daemonStatus, "online");
 });
 
 Deno.test("onDaemonUpdateQueued writes projection.update as updating", async () => {

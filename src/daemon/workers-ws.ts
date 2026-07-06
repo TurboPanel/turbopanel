@@ -1,5 +1,5 @@
 import type { Hono } from "hono";
-import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
+import type { DaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
 import { getDb } from "../db.ts";
 import { DAEMON_WS_PATH } from "../surfaces.ts";
 import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
@@ -20,7 +20,7 @@ const INTERNAL_CELL_FORWARD_HEADERS = [
 ] as const;
 
 export type WorkersDaemonWebSocketOptions = {
-  secrets?: DerivedSecretsConfig;
+  secrets?: DaemonJwtKeyring;
 };
 
 export function buildWorkersDaemonCellForwardHeaders(

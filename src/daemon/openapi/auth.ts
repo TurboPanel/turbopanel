@@ -67,6 +67,27 @@ export const authSchemas = {
       },
     },
   },
+  DaemonJwksResponse: {
+    type: "object",
+    required: ["keys"],
+    properties: {
+      keys: {
+        type: "array",
+        items: {
+          type: "object",
+          required: ["kty", "crv", "x", "kid", "use", "alg"],
+          properties: {
+            kty: { type: "string", enum: ["OKP"] },
+            crv: { type: "string", enum: ["Ed25519"] },
+            x: { type: "string", description: "Ed25519 public key (base64url)" },
+            kid: { type: "string", description: "Signing key id (SHA-256 fingerprint of public JWK)" },
+            use: { type: "string", enum: ["sig"] },
+            alg: { type: "string", enum: ["EdDSA"] },
+          },
+        },
+      },
+    },
+  },
 };
 
 export const authPaths: Record<string, unknown> = {
@@ -111,7 +132,7 @@ export const authPaths: Record<string, unknown> = {
       tags: ["Authentication"],
       summary: "Exchange a signed challenge for a 15-minute daemon JWT",
       description:
-        "Exchange a signed challenge for a 15-minute stateless daemon JWT. Public key verified against server.daemon.key.publicJwk. Updates daemon cell snapshot timestamps (keyLastUsedAt, lastSeenAt). No daemon session row stored.",
+        "Exchange a signed challenge for a 15-minute stateless daemon JWT signed with EdDSA. Public key verified against server.daemon.key.publicJwk. Updates daemon cell snapshot timestamps (keyLastUsedAt, lastSeenAt). No daemon session row stored.",
       responses: {
         "200": {
           description: "Session token issued",
@@ -120,6 +141,33 @@ export const authPaths: Record<string, unknown> = {
               schema: { $ref: "#/components/schemas/DaemonSessionResponse" },
             },
           },
+        },
+      },
+    },
+  },
+  "/api/daemon/v1/jwks.json": {
+    get: {
+      tags: ["Authentication"],
+      summary: "Daemon JWT signing keys (JWKS)",
+      description:
+        "Returns public Ed25519 signing keys for verifying daemon JWTs (EdDSA). No private key material is exposed.",
+      responses: {
+        "200": {
+          description: "JWKS document",
+          headers: {
+            "Cache-Control": {
+              schema: { type: "string" },
+              description: "public, max-age=300",
+            },
+          },
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/DaemonJwksResponse" },
+            },
+          },
+        },
+        "503": {
+          description: "JWKS unavailable",
         },
       },
     },

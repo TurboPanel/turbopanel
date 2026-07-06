@@ -232,11 +232,35 @@ Four versioned surfaces each have REST + WS namespaces (where applicable). Prefi
 
 > **Cost warning:** Durable Objects and Redis are scarce, billable, and cost-sensitive resources. Keep the cell lean — it owns live connection state and projects meaningful changes to Postgres; never use DOs/Redis as UI polling or read APIs. Never fan one dashboard page into one DO/Redis request per server; use Postgres/Hyperdrive for cheap status reads. Avoid heartbeat write amplification and per-viewer cell invocations. Any new cell RPC must justify why Postgres, cache, or a normal API cannot serve the use case. TurboPanel is bootstrapped and must protect Cloudflare costs aggressively.
 
-> **Durable Object hibernation (Workers):** DO GB‑sec billing explodes when the object stays awake. **Never** use `setInterval` / `setTimeout` / `scheduler.wait` inside the cell — schedule work with `ctx.storage.setAlarm()` only (stale-sweep, outbox pump, request expiry). **Never** use standard `server.accept()` — attach with `ctx.acceptWebSocket()` and the hibernation WebSocket API so idle sockets do not keep the DO hot. **Never** run polling loops, long-running `await`s, or unresolved promises inside DO handlers; finish each RPC quickly and return so the object can hibernate. **Always** close outbound Hyperdrive/postgres.js connections in a `finally` block — an open DB socket prevents hibernation. **One stable DO id per server** via `getByName(serverId)` — never `newUniqueId()` / `idFromName()` per attach. Heartbeat Postgres projection is throttled (≤ once/60 s for `lastSeenAt`; steady-state heartbeats skip DB entirely). Enforced in `src/daemon/cell/do.ts` (banner + `#withProjectionDb`) and `src/daemon/ws-handlers.test.ts` (source scan).
+> **Durable Object hibernation (Workers):** DO GB‑sec billing explodes when the object stays awake. **Never** use `setInterval` / `setTimeout` / `scheduler.wait` inside the cell — schedule work with `ctx.storage.setAlarm()` only for genuine pending work (outbox pump, request/outbox expiry, terminal retention); skip `setAlarm` when the target is unchanged. **Never** use standard `server.accept()` — attach with `ctx.acceptWebSocket()` and the hibernation WebSocket API so idle sockets do not keep the DO hot. **Never** run polling loops, long-running `await`s, or unresolved promises inside DO handlers; finish each RPC quickly and return so the object can hibernate. **Always** close outbound Hyperdrive/postgres.js connections in a `finally` block — an open DB socket prevents hibernation. **One stable DO id per server** via `getByName(serverId)` — never `newUniqueId()` / `idFromName()` per attach. Heartbeat Postgres projection is throttled (≤ once/60 s for `lastSeenAt`; steady-state heartbeats skip DB entirely). Enforced in `src/daemon/cell/do.ts` (banner + `#withProjectionDb`) and `src/daemon/ws-handlers.test.ts` (source scan).
+
+#### Durable Object billing model (SQLite-backed)
+
+TurboPanel daemon cells use SQLite-backed Durable Objects — do not add legacy KV-backed Durable Object storage pricing.
+
+**Compute (Workers Paid):** Requests 1M/mo included then $0.15/M — billing includes HTTP requests, RPC sessions, WebSocket messages, alarm invocations; WebSocket connection establishment counts as a request; **incoming** WS messages billed 20:1 (100 incoming = 5 billable); outgoing WS messages and protocol pings not charged. Duration 400,000 GB-s/mo included then $12.50/M GB-s, billed at 128 MB/DO; a DO incurs duration while executing JS or idle-but-not-hibernatable; standard `accept()` sockets bill for the full connection lifetime, so use the Hibernation API for idle daemon sockets; `state.setWebSocketAutoResponse()` auto-responses add no wall-clock time.
+
+**Compute (Workers Free):** 100,000 requests/day; 13,000 GB-s/day.
+
+**SQLite storage (Workers Paid):** Rows read first 25B/mo then $0.001/M; rows written first 50M/mo then $1.00/M; SQL stored data 5 GB-month then $0.20/GB-month. KV-style `get()/put()/delete()/list()` are hidden SQLite tables billed as rows read/written; **each `setAlarm()` = 1 row written**; **deletes count as rows written**; stored data billable until removed.
+
+**SQLite storage (Workers Free):** 5M rows read/day; 100,000 rows written/day; 5 GB total.
+
+#### Anti-regression rules (daemon cell)
+
+- SQLite-backed DOs only; no legacy KV pricing/guidance.
+- Never use DO storage as a polling scratchpad.
+- No recurring heartbeat writes unless product correctness requires it; prefer WS lifecycle events + hibernation.
+- Never call `storage.list()` (or table scans) in hot paths without documenting why.
+- Don't repeatedly read cell metadata for every ping/message; cache stable cell state in memory after init.
+- Treat `setAlarm()` as a row write (only call when the target changes).
+- Document every new storage key/table/column; any new storage op must state its billing impact.
+- Any WS code must preserve hibernation eligibility unless documented.
+- JWKS must never expose raw platform secrets; daemon-verifiable JWTs use public verification material (asymmetric).
 
 > **Parity:** Cloudflare Workers (Durable Object) mode and self-hosted Deno/Redis mode must keep behavioral parity. DO and Redis are implementation details only — the user-facing API and status semantics are the same on both runtimes.
 
-Server nodes are tracked by a **Daemon Cell** abstraction keyed by `serverId`. There is no in-process daemon state — connection presence, snapshots, outbox, and pending request records live in the cell backend.
+Server nodes are tracked by a **Daemon Cell** abstraction keyed by `serverId`. There is no authoritative daemon state in the main instance process or UI read path — presence, outbox, and pending request records live in the cell backend (Redis or DO SQLite), and UI/API status reads come from Postgres. The cell implementation intentionally caches stable runtime state in memory after initialization (`#serverId`, `#runtimeConnected`, live WebSocket attachments on Workers; Redis meta HASH for the same fields on Deno) and persists only the documented SQLite/Redis columns below. Do **not** reintroduce `connection_id` or `connected` as persisted cell columns — they belong in memory, WS attachments, and (on Redis) the meta HASH only.
 
 | Runtime | Backend | Storage |
 |---|---|---|
@@ -247,7 +271,7 @@ Postgres remains canonical for business data (`server`). The cell is the low-lat
 
 **Postgres status read model:** `server.daemon.status` jsonb holds the UI/API liveness read model. Default status reads are Postgres-only (no read-time `getSnapshots`): `GET /api/client/v1/servers`, `GET /api/client/v1/servers/status`, and `GET /api/client/v1/servers/:id/status`. `GET /api/client/v1/servers/:id/cell` is admin/debug-only and reads live cell snapshots (`withSnapshots: true`).
 
-**Presence model:** daemons send `{ type: "hello", at, agent }` once on connect. After ~60 s of inbound silence they send the wire cell ping (`DAEMON_CELL_PING`); app-level `{ type: "heartbeat", at }` follows only when the agent commit changed. Clean disconnects mark offline immediately via attach/close; silent failures are detected by the offline sweep (DO `alarm()` / Redis `maintain()` at `DAEMON_OFFLINE_SWEEP_MS`), not at read time. `DaemonCellSnapshot` holds `connected`, `connectedAt`, `lastInboundAt`, `lastSeenAt`, and optional `agent`.
+**Presence model:** daemons send `{ type: "hello", at, agent }` once on connect. After ~60 s of inbound silence they send the wire cell ping (`DAEMON_CELL_PING`); app-level `{ type: "heartbeat", at }` follows only when the agent commit changed. Clean disconnects mark offline immediately via attach/close. On **Workers**, offline detection is **disconnect-first** via `webSocketClose`/`webSocketError` → `#cleanupWebSocket`; there is **no periodic stale-sweep alarm**. A silent half-open socket self-heals on reconnect (lease force-detach) or command dispatch (outbox requeue → consumer timeout). `#collectStaleDemotions` (`DAEMON_OFFLINE_SWEEP_MS`) is an opportunistic backstop that runs only when `alarm()` already fired for real work. On **Redis (Deno)**, timer-driven `maintain()` + `sweepStalePresence` (`DAEMON_CELL_MAINTAIN_MS`, demote at `DAEMON_OFFLINE_SWEEP_MS`) remains the offline path — cost-safe because there is no DO billing. `DaemonCellSnapshot` holds `connected`, `connectedAt`, `lastInboundAt`, `lastSeenAt`, and optional `agent`.
 
 **Sparse Postgres projection:** connect/disconnect/missed-heartbeat transitions and debounced heartbeats (≤ once/60 s for `lastSeenAt`) project to `server.daemon.status` via `onDaemonConnected` / `onDaemonDisconnected` / `onDaemonHeartbeat` (`control-plane-monitor.ts` → `postgres-projection.ts`). Agent identity from `hello` is stored on `server.daemon.projection`. `ServerFleetPresence` in `server-status.ts` exposes the read model for routes.
 
@@ -257,7 +281,32 @@ Postgres remains canonical for business data (`server`). The cell is the low-lat
 
 **WS upgrade flow:** JWT verified in the main isolate/process → cell `attachDaemonSocket` acquires the single-writer lease → outbox delivery is alarm-scheduled (`#pumpOutboxToDaemonSockets`; not a perpetual in-DO loop) → `detachDaemonSocket` releases the lease on close.
 
-**Co-located daemon** (`__direct__`): stored in cell meta (`remoteAddress = '__direct__'`) so `tryAssignColocatedDaemonToInstalledOrganization` and tunnel routing still work.
+**DO storage schema (Workers):** SQLite tables in `DaemonCellObject` (`#ensureSchema` in `src/daemon/cell/do.ts`). The legacy `cell_meta` table was renamed to `cell` with a one-time idempotent row migration + drop in `#ensureSchema`.
+
+| Table | Columns |
+|---|---|
+| `cell` | `server_id` (PK), `remote_address`, `connected_at`, `last_seen_at`, `key_last_used_at`, `agent_json`, `updated_at` |
+| `leases` | `lease_name` (PK), `holder`, `expires_at` |
+| `outbox` | `seq`, `request_id`, `delivery_id`, `kind`, `payload_json`, `status`, `created_at`, `expires_at`, `sent_at`, `acked_at`, `retry_count`, `retry_at` |
+| `requests` | `request_id` (PK), `request_kind`, `command_text`, `status`, `result_json`, `error`, `created_at`, `updated_at`, `expires_at`, `ack_at`, `finished_at`, `sent_at`, `daemon_received_at`, `daemon_responded_at` |
+
+| Removed from cell storage | New home |
+|---|---|
+| `session_id` | not persisted — JWT is stateless (`jti` only) |
+| `key_id` | JWT `kid` / JWKS path; passed via attach meta to the Postgres projection |
+| `hostname`, `machine_id` | Postgres `server.metadata` (via `touchServerMetadata`) |
+| `connection_id` | in-memory + WS attachment (`serializeAttachment`) / `leases.holder` |
+| `connected` (persisted int) | in-memory `#runtimeConnected` + `getWebSockets()`; `last_seen_at` retained solely as offline-sweep input |
+
+The DO caches `#serverId` (and live-socket presence) once in the constructor via `#initializeFromStorage()`. `webSocketMessage` performs a single consolidated `cell` read per message.
+
+**Lease model:** the daemon-socket single-writer lease is keyed by `connectionId` (stored in `leases` as `DAEMON_SOCKET_LEASE_NAME` with `holder` = connectionId). `DaemonCellLease` is `{ holder, expiresAt }` (no duplicate `token`). The **delivery** lease (`claimDeliveryLease` / `renewDeliveryLease` / `releaseDeliveryLease`) is distinct and owns outbox in-flight delivery. Safety-critical single-daemon guarantee: `IdlePresence` + `ensure-single-daemon.sh` flock (see daemon `AGENTS.md`). Redis keeps `connectionId` / `connected` in the `tp:cell:{serverId}:meta` HASH because Redis has no per-connection isolate memory (needed by the Lua sweep + orphan reclaim).
+
+**Requests vs outbox:** `outbox` = instance→daemon durable delivery queue keyed by `deliveryId` (retryable frames via `retry_count` / `retry_at`, deleted on ack, ephemeral once delivered). `requests` = correlation/response-tracking rows keyed by `requestId` (`PendingRequestRecord` lifecycle queued→sent→acked→done/failed/expired; terminal rows retained `TERMINAL_UPDATE_RETENTION_MS`). Daemon replies (`handleInbound`) mutate the request row = completed responses; the WS send is ephemeral in-memory delivery. See `src/daemon/cell/contracts.ts`.
+
+**Alarm / hibernation (Workers, disconnect-first):** `#scheduleNearestAlarm` arms an alarm only for genuine pending work (deliverable/retry/inflight outbox, request/outbox expiry, terminal retention) and skips `setAlarm` when the target is unchanged (`#scheduledAlarmMs` cache). No periodic stale-sweep alarm.
+
+**Co-located daemon** (`__direct__`): stored in the `cell` table (`remote_address = '__direct__'`) so `tryAssignColocatedDaemonToInstalledOrganization` and tunnel routing still work.
 
 **Challenge stores:** enrollment and auth challenges are **stateless HMAC-signed tokens** (`src/daemon/cell/stateless-challenge.ts`). `issue()` returns a self-contained `challengeId = base64url(payload).base64url(HMAC)` signed with the `daemon-challenge-signing` derived key. `consume()` re-derives and verifies — no storage, no DO, no Redis key. Replay protection relies on the short TTL (60s) and the daemon's Ed25519 private key requirement.
 
@@ -265,7 +314,7 @@ Postgres remains canonical for business data (`server`). The cell is the low-lat
 
 **Auto-response liveness (cell ping):** the DO registers `setWebSocketAutoResponse(DAEMON_CELL_PING → DAEMON_CELL_PONG)` in its constructor (`protocol.ts` constants). The runtime answers `{type:"ping"}` with `{type:"pong"}` **without waking the DO** — this is the primary idle liveness path on Workers. The daemon's `IdlePresence` sends that wire ping after ~60 s of inbound silence; app-level `{type:"heartbeat"}` is reserved for agent-commit changes only (see daemon `AGENTS.md`). Redis parity relies on the same wire ping updating `lastSeenAt` in cell meta.
 
-**Verbose cell tracing (`TURBOPANEL_DAEMON_DEBUG`):** setting `TURBOPANEL_DAEMON_DEBUG=1`/`true` (checked via `isDaemonDebugEnabled()` in `src/logger.ts`, and `#isDaemonDebug()` in `src/daemon/cell/do.ts`) enables verbose, structured tracing of the daemon cell, its storage backend, and the daemon WS message flow. The flag applies on process restart — there is no live toggle. Traced events include WS attach/detach, inbound/outbound daemon messages, `DAEMON_CELL_PING`/pong liveness, `enqueue`/`markSent`/`handleInbound` (with pending-request status transitions), delivery lease acquire/renew/release, outbox `readOutboxBatch`/`ackOutbox`, `putSnapshot`, the command pipeline's `command-dispatch → sent → ack/outcome` lifecycle (`src/lib/commands/consumer.ts`), and the correlated `createRequestAndWait`/`waitForRequest` round-trips for dev-sync, tunnel-token, public-urls apply, and addresses requests. Greppable log tokens: `cellTrace()` (in `src/logger.ts`) emits `daemon-cell event=<name> …` lines shared by both the Redis backend (`src/daemon/cell/redis/cell.ts`) and Deno WS (`src/daemon/deno-ws.ts`); the Durable Object emits equivalent `daemon-cell event=…` lines via its private `#trace()` in `src/daemon/cell/do.ts` so wrangler-captured stdout stays filterable alongside Deno logs. The correlated `createRequestAndWait`/`waitForRequest` call sites in `src/developer/dev-sync.ts`, `src/developer/tunnel-routes.ts`, `src/admin/routes.ts`, and `src/developer/routes-core.ts` also log via `cellTrace()` under the `daemon-cell` component (`request-start`, `request-enqueued`, `request-result`). Filter `command-consumer` for the command pipeline only — `src/lib/commands/consumer.ts` uses `commandConsumerTrace()` and emits `command-consumer event=<name> …` lines (`dispatch-start`, `dispatch-enqueued`, `dispatch-sent`, `dispatch-result`, `dispatch-failed`). Tracing is logging-only on both backends, and the DO path remains hibernation-safe (no timers, no held-open connections) per the hibernation-warning rules above.
+**Verbose cell tracing (`TURBOPANEL_DAEMON_DEBUG`):** setting `TURBOPANEL_DAEMON_DEBUG=1`/`true` (checked via `isDaemonDebugEnabled()` in `src/logger.ts`, and `#isDaemonDebug()` in `src/daemon/cell/do.ts`) enables verbose, structured tracing of the daemon cell, its storage backend, and the daemon WS message flow. The flag applies on process restart — there is no live toggle. Traced events include WS attach/detach, inbound/outbound daemon messages, `DAEMON_CELL_PING`/pong liveness, `enqueue`/`markSent`/`handleInbound` (with pending-request status transitions), delivery lease acquire/renew/release, outbox `readOutboxBatch`/`ackOutbox`, `putSnapshot`, the command pipeline's `command-dispatch → sent → ack/outcome` lifecycle (`src/lib/commands/consumer.ts`), and the correlated `createRequestAndWait`/`waitForRequest` round-trips for dev-sync, tunnel-token, public-urls apply, and addresses requests. Greppable log tokens: `cellTrace()` (in `src/logger.ts`) emits `daemon-cell event=<name> …` lines shared by both the Redis backend (`src/daemon/cell/redis/cell.ts`) and Deno WS (`src/daemon/deno-ws.ts`); the Durable Object emits equivalent `daemon-cell event=…` lines via its private `#trace()` in `src/daemon/cell/do.ts` so wrangler-captured stdout stays filterable alongside Deno logs. The correlated `createRequestAndWait`/`waitForRequest` call sites in `src/developer/dev-sync.ts`, `src/developer/tunnel-routes.ts`, `src/admin/routes.ts`, and `src/developer/routes-core.ts` also log via `cellTrace()` under the `daemon-cell` component (`request-start`, `request-enqueued`, `request-result`). Filter `command-consumer` for the command pipeline only — `src/lib/commands/consumer.ts` uses `commandConsumerTrace()` and emits `command-consumer event=<name> …` lines (`dispatch-start`, `dispatch-enqueued`, `dispatch-sent`, `dispatch-result`, `dispatch-failed`). Debug mode also emits per-call-site DO storage-op counters (`storageReads`, `storageWrites`, `storageByCallSite`) on `CellDiagnostics`, surfaced via `getDiagnostics()` / `GET /rpc/diagnostics`, incremented by the `#sql(callSite,…)` / `#setAlarm` / `#deleteAlarm` wrappers (thin pass-through when debug is off). Redis exposes equivalent counters via `#bumpMethodRoute` / `#bumpDiag`. These counters are the billing-audit baseline. Tracing is logging-only on both backends, and the DO path remains hibernation-safe (no timers, no held-open connections) per the hibernation-warning rules above.
 
 **Enqueue-then-poll request contract:** correlated outbound work (dev-sync, tunnel-token, public-urls apply, command dispatch) uses `createRequestAndWait` / `waitForRequest` on `DaemonCell`. The backend **enqueues once and returns immediately** — it must not block inside the DO or Redis cell. The **caller-side adapter** polls `getRequest(requestId)` until the `PendingRequestRecord` reaches a terminal status or the deadline (`do-registry.ts` jittered sleep on Workers; `redis/cell.ts` `setTimeout` poll in the Deno process — cost-safe there because there is no DO billing). On Workers, `#waitForRequest` inside `do.ts` is intentionally single-shot (current row only); long waits happen in the worker isolate so the DO hibernates between RPCs. Command consumer (`src/lib/commands/consumer.ts`) follows the same pattern after outbox enqueue.
 
@@ -273,6 +322,7 @@ Postgres remains canonical for business data (`server`). The cell is the low-lat
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
+| `GET /api/daemon/v1/jwks.json` | public | Ed25519 public JWKS for daemon JWT verification (`Cache-Control: public, max-age=300`) |
 | `POST /api/daemon/v1/commands/lease` | daemon JWT | Poll for pending commands (stub — returns `{ commands: [] }`) |
 | `POST /api/daemon/v1/secrets/decrypt` | daemon JWT | Batch-decrypt `tpsecret.v1` envelopes (`{ ciphertexts }` → `{ plaintexts }`; null per failed entry) |
 
@@ -385,14 +435,14 @@ Credential-account passwords use **PBKDF2-HMAC-SHA256** via `crypto.subtle` (`sr
 **Daemon key authentication:** daemon auth now starts with HTTP-first enrollment/session issuance, then uses a short-lived stateless daemon JWT for protected daemon REST and daemon WebSocket upgrade authentication.
 - **Enrollment challenge + proof**: daemon requests `POST /api/daemon/v1/auth/challenge` (no credentials), signs `buildEnrollmentPayload()` (`turbopanel-daemon-enroll-v1` canonical format), then calls `POST /api/daemon/v1/enroll` with `{ licenseId, licenseToken, publicJwk, challengeId, signature, ... }`. The instance verifies license + proof-of-possession, resolves/creates `server`, and stores the daemon public key on the server row.
 - **Auth challenge + session token**: enrolled daemon requests `POST /api/daemon/v1/auth/challenge` with `{ serverId, keyId }`, signs `buildAuthPayload()` (`turbopanel-daemon-auth-v1` canonical format), then calls `POST /api/daemon/v1/auth/session` to receive a **15-minute stateless JWT**.
-- **JWT enforcement**: protected daemon REST routes use `requireDaemonJwt` middleware (`Authorization: Bearer <token>`), except `GET /readiness`, `GET /instance/ca`, `GET /openapi.json`, `GET /reference`, `POST /auth/challenge`, `POST /enroll`, and `POST /auth/session`. JWT verification checks signature, expiry, and claims only — no session row lookup.
+- **JWT enforcement**: protected daemon REST routes use `requireDaemonJwt` middleware (`Authorization: Bearer <token>`) only on `/commands/lease` and `/secrets/decrypt`; exempt routes include `GET /readiness`, `GET /instance/ca`, `GET /jwks.json`, `GET /openapi.json`, `GET /reference`, `POST /auth/challenge`, `POST /enroll`, and `POST /auth/session`. JWT verification checks signature, expiry, and claims only — no session row lookup.
 - **Canonical payload helper status**: `buildCanonicalPayload` is deprecated and aliases `buildAuthPayload` for compatibility (legacy `fingerprint` inputs are mapped to auth `keyId`).
 - Remote WSS connections require a valid daemon JWT at upgrade time; unauthenticated server row creation from `hostname`/`machineId` alone is disallowed.
 - Co-located socket daemons use the same auth model; there is no unauthenticated bypass.
 - `DAEMON_INBOUND_ALLOWED` in `src/daemon/cell/protocol.ts` is a static set of accepted post-auth message types — not an authz system.
 - Daemon identity is stored on the `server` row as typed jsonb `server.daemon` (`key` only). Hot-path timestamps live in `server.daemon_key_last_used_at` and `server.last_seen_at`. No `serverkey` or `daemonsession` tables.
 - Re-enrollment or recovery with a valid license replaces `server.daemon` entirely; old daemon keys are not kept for MVP.
-- JWT payload: `sub` (serverId), `kid` (`server.daemon.key.id`), `jti` (random uuid, logging only), `iss`, `aud`, `typ`, `iat`, `exp`. No `sid`.
+- JWT payload: `sub` (serverId), `kid` (`server.daemon.key.id`), `jti` (random uuid, logging only), `iss`, `aud`, `typ`, `iat`, `exp`. No `sid`. Daemon JWTs are **EdDSA (Ed25519)** signed; header carries `alg: "EdDSA"`, `typ: "JWT"`, and a string `kid` (SHA-256 fingerprint of the public JWK). Verification selects the public key by `kid`.
 - Revoking daemon auth: set `server.daemon.key.revokedAt`. Existing JWTs remain valid until their 15-minute expiry. New JWT issuance fails.
 
 ```mermaid
@@ -433,7 +483,13 @@ Superadmin-only routes (`createRootOnlyMiddleware`, `resolveRootSession`) author
 
 #### Session secret configuration
 
-Both runtimes read the same root secret env vars; `deriveSecretsConfig()` HKDF-derives purpose-specific HMAC keys (e.g. `session-signing`, `daemon-jwt-signing`, `daemon-challenge-signing`) from the root material. `deriveEncryptionSecretsConfig()` derives parallel AES-256-GCM keys (e.g. `data-encryption`) using the same HKDF salt/info pattern with `{ name: "AES-GCM", length: 256 }`.
+Both runtimes read the same root secret env vars. **`TURBOPANEL_SECRET`** = single-key mode (normalized to `v1` when `TURBOPANEL_SECRETS` is unset). **`TURBOPANEL_SECRETS`** = plural keyring (`2:secret,1:secret`; highest version is current signing key). **First key signs / all keys verify.** Every key yields a stable `kid`; JWT headers include the active `kid`.
+
+`deriveSecretsConfig()` HKDF-derives HMAC keys for `session-signing` and `daemon-challenge-signing`. `deriveEncryptionSecretsConfig()` derives AES-256-GCM keys for `data-encryption`. The **daemon-facing JWT** uses `deriveDaemonJwtKeyring()` (`src/daemon/authn/daemon-jwt-keyring.ts`: Ed25519, HKDF salt `turbopanel`, info `daemon-jwt-eddsa`) — the legacy HMAC `daemon-jwt-signing` purpose is no longer used for daemon JWTs.
+
+**JWKS** (`GET /api/daemon/v1/jwks.json`) publishes all currently-valid **public** Ed25519 verification keys only — never `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` or any HMAC key material. Old keys stay in JWKS during rotation and are removed once old tokens expire (≤15 min).
+
+**Rotation:** add a new active key at the highest version, deploy, old tokens verify during their ≤15-min window, then drop the old key from the keyring/JWKS.
 
 | Variable | Behaviour when missing |
 |---|---|
@@ -609,7 +665,7 @@ Hand-authored API docs are split by surface and served from the client and daemo
 | `GET /api/daemon/v1/openapi.json` | Daemon | `bearerAuth` (daemon JWT) |
 | `GET /api/daemon/v1/reference` | Daemon | Scalar embed with Bearer auth |
 
-`servers[0].url` in each spec is the request origin (`new URL(c.req.url).origin`). Client spec documents health, client/auth/install, and resource routes. Daemon spec documents readiness, platform CA, the co-located daemon checkout version endpoint (`GET /api/daemon/v1/version`), and the `/ws/daemon/v1` WebSocket upgrade — daemon JWT credentials are sent in the HTTP `Authorization` header before upgrade.
+`servers[0].url` in each spec is the request origin (`new URL(c.req.url).origin`). Client spec documents health, client/auth/install, and resource routes. Daemon spec documents readiness, platform CA, JWKS (`GET /api/daemon/v1/jwks.json`; `DaemonJwksResponse` in `src/daemon/openapi/auth.ts`), the co-located daemon checkout version endpoint (`GET /api/daemon/v1/version`), and the `/ws/daemon/v1` WebSocket upgrade — daemon JWT credentials are sent in the HTTP `Authorization` header before upgrade.
 
 The marketing site (`../website`) loads the client spec via its `/api/config` proxy for `/docs/api`; the instance also exposes Scalar directly for local/dev use.
 
@@ -654,7 +710,8 @@ sequenceDiagram
 - `src/daemon/cell/postgres-projection.ts` — write-through helpers for canonical Postgres fields
 - `src/daemon/cell/snapshot-merge.ts` — `mergeSnapshotPresence`
 - `src/daemon/authn/license.ts` — daemon hello license verification (`verifyDaemonLicense`)
-- `src/daemon/authn/daemon-jwt.ts` — daemon JWT issue/verify (HMAC-SHA256, 15-minute lifetime)
+- `src/daemon/authn/daemon-jwt.ts` — daemon JWT issue/verify (EdDSA/Ed25519, 15-minute lifetime)
+- `src/daemon/authn/daemon-jwt-keyring.ts` — deterministic Ed25519 keyring derived from `TURBOPANEL_SECRET(S)`; `deriveDaemonJwtKeyring`, `buildJwksDocument`
 - `src/daemon/authn/daemon-state.ts` — `ServerDaemonState` / `ServerDaemonKey` types and parsers for `server.daemon` jsonb
 - `src/daemon/authn/server-identity-db.ts` — DB helpers for `server.daemon` (`getServerDaemonStateByServerId`, `attachDaemonStateToServer`, `touchDaemonKeyLastUsed`, `revokeDaemonKey`, `clearServerDaemonState`)
 - `src/daemon/authn/server-key.ts` — `buildCanonicalPayload`, `computePublicKeyFingerprint`, `verifyDaemonSignature`

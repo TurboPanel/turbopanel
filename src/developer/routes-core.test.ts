@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { Hono } from "hono";
 import type { AppEnv } from "../app.ts";
+import type { Db } from "../db.ts";
 import type { CellDiagnostics, DaemonCell, DaemonCellRegistry } from "../daemon/cell/contracts.ts";
 import {
   deriveSecretsConfig,
@@ -25,6 +26,9 @@ function createDiagnosticsCell(serverId: string): DaemonCell {
     commandDispatchCount: 0,
     cleanupCount: 0,
     fetchByRoute: {},
+    storageReads: 0,
+    storageWrites: 0,
+    storageByCallSite: {},
   };
 
   const noopAsync = async () => {};
@@ -94,12 +98,18 @@ function createRegistry(serverId: string): DaemonCellRegistry {
   };
 }
 
-function createMockDb() {
+function createMockDb(): Db {
   return {
     select: () => ({
       from: () => Promise.resolve([]),
     }),
-  };
+  } as unknown as Db;
+}
+
+function testEnv(
+  partial: Partial<CloudflareBindings> & Record<string, string | undefined>,
+): CloudflareBindings {
+  return partial as unknown as CloudflareBindings;
 }
 
 async function createTestApp(env: CloudflareBindings) {
@@ -113,7 +123,7 @@ async function createTestApp(env: CloudflareBindings) {
   });
   const app = new Hono<{ Variables: AppEnv["Variables"]; Bindings: CloudflareBindings }>();
   app.use("*", async (c, next) => {
-    c.set("db", createMockDb() as AppEnv["Variables"]["db"]);
+    c.set("db", createMockDb());
     c.set("daemonCellRegistry", createRegistry("test-srv-diagnostics-gate"));
     await next();
   });
@@ -135,14 +145,14 @@ describe("isDaemonDebugEnabled", () => {
 
 describe("developer diagnostics routes", () => {
   it("returns 404 for fleet diagnostics when only TURBOPANEL_LOG_LEVEL=debug is set", async () => {
-    const app = await createTestApp({
+    const app = await createTestApp(testEnv({
       TURBOPANEL_LOG_LEVEL: "debug",
-    } as CloudflareBindings);
+    }));
 
     const response = await app.request(
       `${DEVELOPER_API_PREFIX}/daemon/diagnostics`,
       {},
-      { TURBOPANEL_LOG_LEVEL: "debug" } as CloudflareBindings,
+      testEnv({ TURBOPANEL_LOG_LEVEL: "debug" }),
     );
 
     expect(response.status).toBe(404);
@@ -151,14 +161,14 @@ describe("developer diagnostics routes", () => {
   });
 
   it("enables fleet diagnostics when TURBOPANEL_DAEMON_DEBUG=1", async () => {
-    const app = await createTestApp({
+    const app = await createTestApp(testEnv({
       TURBOPANEL_DAEMON_DEBUG: "1",
-    } as CloudflareBindings);
+    }));
 
     const response = await app.request(
       `${DEVELOPER_API_PREFIX}/daemon/diagnostics`,
       {},
-      { TURBOPANEL_DAEMON_DEBUG: "1" } as CloudflareBindings,
+      testEnv({ TURBOPANEL_DAEMON_DEBUG: "1" }),
     );
 
     expect(response.status).toBe(200);
@@ -168,15 +178,15 @@ describe("developer diagnostics routes", () => {
   });
 
   it("returns 404 for per-server diagnostics when only log level debug is set", async () => {
-    const app = await createTestApp({
+    const app = await createTestApp(testEnv({
       TURBOPANEL_LOG_LEVEL: "debug",
-    } as CloudflareBindings);
+    }));
     const serverId = "test-srv-diagnostics-gate";
 
     const response = await app.request(
       `${DEVELOPER_API_PREFIX}/daemon/${serverId}/cell/diagnostics`,
       {},
-      { TURBOPANEL_LOG_LEVEL: "debug" } as CloudflareBindings,
+      testEnv({ TURBOPANEL_LOG_LEVEL: "debug" }),
     );
 
     expect(response.status).toBe(404);
@@ -185,15 +195,15 @@ describe("developer diagnostics routes", () => {
   });
 
   it("enables per-server diagnostics when TURBOPANEL_DAEMON_DEBUG=1", async () => {
-    const app = await createTestApp({
+    const app = await createTestApp(testEnv({
       TURBOPANEL_DAEMON_DEBUG: "1",
-    } as CloudflareBindings);
+    }));
     const serverId = "test-srv-diagnostics-gate";
 
     const response = await app.request(
       `${DEVELOPER_API_PREFIX}/daemon/${serverId}/cell/diagnostics`,
       {},
-      { TURBOPANEL_DAEMON_DEBUG: "1" } as CloudflareBindings,
+      testEnv({ TURBOPANEL_DAEMON_DEBUG: "1" }),
     );
 
     expect(response.status).toBe(200);

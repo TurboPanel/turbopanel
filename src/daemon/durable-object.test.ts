@@ -2,9 +2,9 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  deriveSecretsConfig,
   parseSecretsEnv,
 } from "../client/authn/secrets.ts";
+import { deriveDaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
 import type { Db } from "../db.ts";
 import type { ServerGeo } from "../lib/geo/server-geo.ts";
 import { issueDaemonJwt } from "./authn/daemon-jwt.ts";
@@ -21,6 +21,10 @@ import { createDurableObjectDaemonCellRegistry } from "./cell/do-registry.ts";
 import { generateDeliveryId, generateRequestId, DAEMON_OFFLINE_SWEEP_MS, DAEMON_CELL_PING, DAEMON_CELL_PONG } from "./cell/protocol.ts";
 
 const HEARTBEAT_COALESCE_MS = 60_000;
+
+const DEFAULT_PROJECTION_TEST_METADATA: Record<string, unknown> = {
+  hostname: "host-1",
+};
 
 const CELL_HEADER = "X-Turbopanel-Cell-Server-Id";
 const CELL_GEO_HEADER = "X-Turbopanel-Cell-Geo";
@@ -40,9 +44,8 @@ async function issueTestDaemonJwt(
 ): Promise<string> {
   const secret = env.TURBOPANEL_SECRET ??
     "aa_daemon_cell_vitest_secret_value_aaaa_b";
-  const secrets = await deriveSecretsConfig(
+  const secrets = await deriveDaemonJwtKeyring(
     parseSecretsEnv(secret, undefined, "workers"),
-    "daemon-jwt-signing",
   );
   const issued = await issueDaemonJwt(
     { sub: serverId, kid: keyId },
@@ -134,7 +137,7 @@ function mergeDaemonStatus(
     ...daemon,
     status: {
       ...buildDefaultDaemonStatus(),
-      ...(daemon.status ?? {}),
+      ...(daemon.status),
       ...statusOverrides,
     },
   };
@@ -142,7 +145,7 @@ function mergeDaemonStatus(
 
 function createProjectionRecordingDb(
   statusOverrides: Partial<ServerDaemonStatus> = {},
-  initialMetadata: Record<string, unknown> = { hostname: "host-1" },
+  initialMetadata?: Record<string, unknown>,
 ): {
   db: Db;
   updateCalls: Array<Record<string, unknown>>;
@@ -154,7 +157,7 @@ function createProjectionRecordingDb(
   const updateCalls: Array<Record<string, unknown>> = [];
   let selectCalls = 0;
   let endCalls = 0;
-  let metadata = { ...initialMetadata };
+  let metadata = { ...(initialMetadata ?? DEFAULT_PROJECTION_TEST_METADATA) };
   let daemon = mergeDaemonStatus({
     key: {
       id: "key-1",
@@ -166,18 +169,18 @@ function createProjectionRecordingDb(
     projection: { hostname: "host-1" },
   }, statusOverrides);
 
+  const selectLimit = () => {
+    selectCalls += 1;
+    return Promise.resolve([{
+      daemon,
+      metadata,
+    }]);
+  };
+
   const db = {
     select: () => ({
       from: () => ({
-        where: () => ({
-          limit: () => {
-            selectCalls += 1;
-            return Promise.resolve([{
-              daemon,
-              metadata,
-            }]);
-          },
-        }),
+        where: () => ({ limit: selectLimit }),
       }),
     }),
     update: () => ({
@@ -257,6 +260,9 @@ describe("DaemonCellObject diagnostics", () => {
       heartbeatCount: number;
       commandDispatchCount: number;
       fetchByRoute: Record<string, number>;
+      storageReads: number;
+      storageWrites: number;
+      storageByCallSite: Record<string, { reads: number; writes: number }>;
     };
 
     expect(diag.usesHibernationWebSocket).toBe(true);
@@ -265,8 +271,58 @@ describe("DaemonCellObject diagnostics", () => {
     expect(diag.heartbeatCount).toBeGreaterThanOrEqual(1);
     expect(diag.commandDispatchCount).toBeGreaterThanOrEqual(1);
     expect(Object.keys(diag.fetchByRoute).length).toBeGreaterThan(0);
+    expect(typeof diag.storageReads).toBe("number");
+    expect(typeof diag.storageWrites).toBe("number");
+    expect(typeof diag.storageByCallSite).toBe("object");
 
     ws.close(1000, "test done");
+  });
+
+  it("populates storage counters when TURBOPANEL_DAEMON_DEBUG is enabled", async () => {
+    const prev = env.TURBOPANEL_DAEMON_DEBUG;
+    env.TURBOPANEL_DAEMON_DEBUG = "1";
+    try {
+      const serverId = "test-srv-diagnostics-debug";
+      const stub = env.DAEMON_CELL.getByName(serverId);
+      const { ws } = await openDaemonWebSocket(stub, serverId);
+
+      ws.send(JSON.stringify({
+        type: "heartbeat",
+        at: new Date().toISOString(),
+      }));
+
+      await cellRpc(stub, serverId, "/rpc/enqueue", {
+        method: "POST",
+        body: JSON.stringify({
+          outbound: {
+            kind: "command-dispatch",
+            deliveryId: generateDeliveryId(),
+            requestId: generateRequestId(),
+            at: new Date().toISOString(),
+            commandId: "diag-debug-cmd",
+            commandType: "ping",
+            payload: {},
+          },
+        }),
+      });
+
+      const diagResponse = await cellRpc(stub, serverId, "/rpc/diagnostics", {
+        method: "GET",
+      });
+      const diag = await diagResponse.json() as {
+        storageReads: number;
+        storageWrites: number;
+        storageByCallSite: Record<string, { reads: number; writes: number }>;
+      };
+
+      expect(diag.storageReads).toBeGreaterThan(0);
+      expect(diag.storageWrites).toBeGreaterThan(0);
+      expect(Object.keys(diag.storageByCallSite).length).toBeGreaterThan(0);
+
+      ws.close(1000, "test done");
+    } finally {
+      env.TURBOPANEL_DAEMON_DEBUG = prev;
+    }
   });
 
   it("enqueue RPC returns quickly without blocking in the DO", async () => {
@@ -297,7 +353,7 @@ describe("DaemonCellObject diagnostics", () => {
     expect(elapsed).toBeLessThan(2000);
   });
 
-  it("idle cell alarm is stale-sweep not perpetual 2s pump; coalesced heartbeat skips DB", async () => {
+  it("idle cell has no alarm; coalesced heartbeat skips DB", async () => {
     const serverId = "test-srv-diag-idle-alarm";
     const recentAt = new Date().toISOString();
     const {
@@ -323,18 +379,12 @@ describe("DaemonCellObject diagnostics", () => {
 
     await runInDurableObject(stub, async (_instance, state) => {
       state.storage.sql.exec(
-        "UPDATE cell_meta SET last_seen_at = ? WHERE server_id = ?",
+        "UPDATE cell SET last_seen_at = ? WHERE server_id = ?",
         recentAt,
         serverId,
       );
       const alarm = await state.storage.getAlarm();
-      const lastSeenMs = Date.parse(recentAt);
-      const expectedSweepAt = lastSeenMs + DAEMON_OFFLINE_SWEEP_MS;
-      expect(alarm).not.toBeNull();
-      expect(alarm!).toBeGreaterThanOrEqual(expectedSweepAt - 1000);
-      expect(alarm!).toBeLessThanOrEqual(expectedSweepAt + 1000);
-      // Regression: must not schedule a ~60s heartbeat-coalesce wake loop.
-      expect(alarm!).toBeGreaterThan(Date.now() + HEARTBEAT_COALESCE_MS + 30_000);
+      expect(alarm).toBeNull();
     });
 
     ws.send(JSON.stringify({
@@ -349,7 +399,7 @@ describe("DaemonCellObject diagnostics", () => {
     ws.close(1000, "test done");
   }, 10_000);
 
-  it("idle connected cell does not schedule 60s heartbeat-coalesce alarm", async () => {
+  it("idle connected cell does not schedule recurring sweep alarm", async () => {
     const serverId = "test-srv-no-coalesce-alarm-loop";
     const recentAt = new Date().toISOString();
     const stub = env.DAEMON_CELL.getByName(serverId);
@@ -357,24 +407,118 @@ describe("DaemonCellObject diagnostics", () => {
 
     await runInDurableObject(stub, async (instance: DaemonCellObject, state) => {
       state.storage.sql.exec(
-        "UPDATE cell_meta SET last_seen_at = ? WHERE server_id = ?",
+        "UPDATE cell SET last_seen_at = ? WHERE server_id = ?",
         recentAt,
         serverId,
       );
       await instance.alarm();
 
       const alarm = await state.storage.getAlarm();
-      const lastSeenMs = Date.parse(recentAt);
-      const expectedSweepAt = lastSeenMs + DAEMON_OFFLINE_SWEEP_MS;
-      expect(alarm).not.toBeNull();
-      expect(alarm!).toBeGreaterThanOrEqual(expectedSweepAt - 1000);
-      expect(alarm!).toBeLessThanOrEqual(expectedSweepAt + 1000);
-
-      const coalesceWakeAt = lastSeenMs + HEARTBEAT_COALESCE_MS;
-      expect(Math.abs(alarm! - coalesceWakeAt)).toBeGreaterThan(30_000);
+      expect(alarm).toBeNull();
     });
 
     ws.close(1000, "test done");
+  }, 10_000);
+
+  it("idle connected cell does not re-arm sweep alarm across repeated alarm() calls", async () => {
+    const serverId = "test-srv-idle-no-sweep-rearm";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const { ws } = await openDaemonWebSocket(stub, serverId);
+
+    await runInDurableObject(stub, async (instance: DaemonCellObject, state) => {
+      await instance.alarm();
+      expect(await state.storage.getAlarm()).toBeNull();
+      await instance.alarm();
+      expect(await state.storage.getAlarm()).toBeNull();
+      await instance.alarm();
+      expect(await state.storage.getAlarm()).toBeNull();
+    });
+
+    ws.close(1000, "test done");
+  }, 10_000);
+
+  it("setAlarm skips write when alarm target is unchanged", async () => {
+    const prev = env.TURBOPANEL_DAEMON_DEBUG;
+    env.TURBOPANEL_DAEMON_DEBUG = "1";
+    try {
+      const serverId = "test-srv-alarm-noop-reschedule";
+      const stub = env.DAEMON_CELL.getByName(serverId);
+      const { ws } = await openDaemonWebSocket(stub, serverId);
+
+      const diagBeforeResp = await cellRpc(stub, serverId, "/rpc/diagnostics", {
+        method: "GET",
+      });
+      const diagBefore = await diagBeforeResp.json() as {
+        storageByCallSite: Record<string, { writes: number }>;
+      };
+      const writesBefore = diagBefore.storageByCallSite["schedule-alarm"]?.writes ?? 0;
+
+      await runInDurableObject(stub, async (instance: DaemonCellObject) => {
+        await instance.alarm();
+        await instance.alarm();
+      });
+
+      const diagAfterResp = await cellRpc(stub, serverId, "/rpc/diagnostics", {
+        method: "GET",
+      });
+      const diagAfter = await diagAfterResp.json() as {
+        storageByCallSite: Record<string, { writes: number }>;
+      };
+      const writesAfter = diagAfter.storageByCallSite["schedule-alarm"]?.writes ?? 0;
+
+      expect(writesAfter - writesBefore).toBeLessThanOrEqual(1);
+
+      ws.close(1000, "test done");
+    } finally {
+      env.TURBOPANEL_DAEMON_DEBUG = prev;
+    }
+  }, 10_000);
+
+  it("presence heartbeat uses at most one cell read per message", async () => {
+    const prev = env.TURBOPANEL_DAEMON_DEBUG;
+    env.TURBOPANEL_DAEMON_DEBUG = "1";
+    try {
+      const serverId = "test-srv-single-cell-read";
+      const stub = env.DAEMON_CELL.getByName(serverId);
+      const { ws } = await openDaemonWebSocket(stub, serverId);
+
+      const diagBeforeResp = await cellRpc(stub, serverId, "/rpc/diagnostics", {
+        method: "GET",
+      });
+      const diagBefore = await diagBeforeResp.json() as {
+        storageByCallSite: Record<string, { reads: number }>;
+      };
+
+      ws.send(JSON.stringify({
+        type: "heartbeat",
+        at: new Date().toISOString(),
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      const diagAfterResp = await cellRpc(stub, serverId, "/rpc/diagnostics", {
+        method: "GET",
+      });
+      const diagAfter = await diagAfterResp.json() as {
+        storageByCallSite: Record<string, { reads: number }>;
+      };
+
+      const cellSites = [
+        "ws-message",
+        "record-inbound",
+        "presence-should-project",
+        "ws-message-liveness",
+      ];
+      let readDelta = 0;
+      for (const site of cellSites) {
+        readDelta += (diagAfter.storageByCallSite[site]?.reads ?? 0) -
+          (diagBefore.storageByCallSite[site]?.reads ?? 0);
+      }
+      expect(readDelta).toBeLessThanOrEqual(1);
+
+      ws.close(1000, "test done");
+    } finally {
+      env.TURBOPANEL_DAEMON_DEBUG = prev;
+    }
   }, 10_000);
 });
 
@@ -502,7 +646,7 @@ describe("DaemonCellObject", () => {
 
     await runInDurableObject(stub, async (_instance, state) => {
       state.storage.sql.exec(
-        "UPDATE cell_meta SET last_seen_at = ? WHERE server_id = ?",
+        "UPDATE cell SET last_seen_at = ? WHERE server_id = ?",
         staleAt,
         serverId,
       );
@@ -572,7 +716,7 @@ describe("DaemonCellObject", () => {
 
     await runInDurableObject(stub, async (_instance, state) => {
       state.storage.sql.exec(
-        "UPDATE cell_meta SET last_seen_at = ? WHERE server_id = ?",
+        "UPDATE cell SET last_seen_at = ? WHERE server_id = ?",
         recentAt,
         serverId,
       );
@@ -727,7 +871,7 @@ describe("DaemonCellObject", () => {
 
     await runInDurableObject(stub, async (_instance, state) => {
       state.storage.sql.exec(
-        "UPDATE cell_meta SET last_seen_at = ? WHERE server_id = ?",
+        "UPDATE cell SET last_seen_at = ? WHERE server_id = ?",
         staleAt,
         serverId,
       );
@@ -797,7 +941,7 @@ describe("DaemonCellObject", () => {
 
     await runInDurableObject(stub, async (_instance, state) => {
       state.storage.sql.exec(
-        "UPDATE cell_meta SET last_seen_at = ? WHERE server_id = ?",
+        "UPDATE cell SET last_seen_at = ? WHERE server_id = ?",
         recentAt,
         serverId,
       );
@@ -861,7 +1005,7 @@ describe("DaemonCellObject", () => {
 
     await runInDurableObject(stub, async (_instance, state) => {
       state.storage.sql.exec(
-        "UPDATE cell_meta SET last_seen_at = ? WHERE server_id = ?",
+        "UPDATE cell SET last_seen_at = ? WHERE server_id = ?",
         recentAt,
         serverId,
       );
@@ -914,7 +1058,7 @@ describe("DaemonCellObject", () => {
 
     await runInDurableObject(stub, async (_instance, state) => {
       state.storage.sql.exec(
-        "UPDATE cell_meta SET last_seen_at = ? WHERE server_id = ?",
+        "UPDATE cell SET last_seen_at = ? WHERE server_id = ?",
         staleAt,
         serverId,
       );
@@ -963,7 +1107,7 @@ describe("DaemonCellObject", () => {
 
     await runInDurableObject(stub, async (instance: DaemonCellObject, state) => {
       state.storage.sql.exec(
-        "UPDATE cell_meta SET last_seen_at = ?, connected = 1 WHERE server_id = ?",
+        "UPDATE cell SET last_seen_at = ? WHERE server_id = ?",
         recentAt,
         serverId,
       );
@@ -1010,7 +1154,7 @@ describe("DaemonCellObject", () => {
 
     await runInDurableObject(stub, async (instance: DaemonCellObject, state) => {
       state.storage.sql.exec(
-        "UPDATE cell_meta SET last_seen_at = ? WHERE server_id = ?",
+        "UPDATE cell SET last_seen_at = ? WHERE server_id = ?",
         staleLastSeen,
         serverId,
       );
@@ -1030,17 +1174,15 @@ describe("DaemonCellObject", () => {
     const keyId = crypto.randomUUID();
     const stub = env.DAEMON_CELL.getByName(serverId);
 
-    const { ws, tokenId } = await openDaemonWebSocket(stub, serverId, keyId);
+    const { ws } = await openDaemonWebSocket(stub, serverId, keyId);
 
     const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
       method: "GET",
     });
     const snapshot = await snapshotResponse.json() as {
       connected: boolean;
-      sessionId?: string;
     };
     expect(snapshot.connected).toBe(true);
-    expect(snapshot.sessionId).toBe(tokenId);
 
     ws.close(1000, "test done");
   });
@@ -1109,7 +1251,7 @@ describe("DaemonCellObject", () => {
         "SELECT seq FROM outbox WHERE request_id = ?",
         requestId,
       );
-      for (const _ of cursor) {
+      if ([...cursor].length > 0) {
         throw new Error("expected terminal outbox row to be deleted");
       }
     });
@@ -1131,10 +1273,8 @@ describe("DaemonCellObject", () => {
       });
       const snapshot = await snapshotResponse.json() as {
         connected: boolean;
-        sessionId?: string;
       };
       expect(snapshot.connected).toBe(true);
-      expect(snapshot.sessionId).toBe(second.tokenId);
 
       const requestId = generateRequestId();
       const deliveryId = generateDeliveryId();
@@ -1455,7 +1595,7 @@ describe("DaemonCellObject", () => {
     });
   });
 
-  it("idle websocket attach schedules stale-sweep alarm", async () => {
+  it("idle websocket attach schedules no alarm", async () => {
     const serverId = "test-srv-idle-alarm";
     const stub = env.DAEMON_CELL.getByName(serverId);
     const { ws } = await openDaemonWebSocket(stub, serverId);
@@ -1465,7 +1605,7 @@ describe("DaemonCellObject", () => {
       async (_instance, state) => {
         const scheduled = await state.storage.getAlarm();
         const cursor = state.storage.sql.exec(
-          "SELECT last_seen_at FROM cell_meta WHERE server_id = ?",
+          "SELECT last_seen_at FROM cell WHERE server_id = ?",
           serverId,
         );
         let seenAt: string | null = null;
@@ -1475,11 +1615,8 @@ describe("DaemonCellObject", () => {
         return { alarm: scheduled, lastSeenAt: seenAt };
       },
     );
-    expect(alarm).not.toBeNull();
+    expect(alarm).toBeNull();
     expect(lastSeenAt).toBeTruthy();
-    const expectedSweepAt = Date.parse(lastSeenAt!) + DAEMON_OFFLINE_SWEEP_MS;
-    expect(alarm).toBeGreaterThanOrEqual(expectedSweepAt - 1000);
-    expect(alarm).toBeLessThanOrEqual(expectedSweepAt + 1000);
 
     ws.close(1000, "test done");
   });
@@ -1510,7 +1647,7 @@ describe("DaemonCellObject", () => {
     expect(alarm!).toBeGreaterThan(Date.now() + 60_000);
   });
 
-  it("outbox drain retains stale-sweep alarm while socket stays attached", async () => {
+  it("outbox drain retains terminal-retention cleanup alarm", async () => {
     const serverId = "test-srv-outbox-drain-alarm";
     const stub = env.DAEMON_CELL.getByName(serverId);
     const { ws } = await openDaemonWebSocket(stub, serverId);
@@ -1575,10 +1712,8 @@ describe("DaemonCellObject", () => {
       });
       const snapshot = await snapshotResponse.json() as {
         connected: boolean;
-        sessionId?: string;
       };
       expect(snapshot.connected).toBe(true);
-      expect(snapshot.sessionId).toBe(second.tokenId);
 
       second.ws.close(1000, "test done");
     },
@@ -1657,18 +1792,18 @@ describe("DaemonCellObject", () => {
             "SELECT seq FROM outbox WHERE delivery_id = ?",
             deliveryId,
           );
-          for (const _ of outboxCursor) {
+          if ([...outboxCursor].length > 0) {
             throw new Error("expected acked outbox row to be deleted");
           }
           const requestCursor = state.storage.sql.exec(
             "SELECT status FROM requests WHERE request_id = ?",
             requestId,
           );
-          for (const row of requestCursor) {
-            expect(String(row.status ?? "")).toBe("done");
-            return;
+          const [requestRow] = [...requestCursor];
+          if (!requestRow) {
+            throw new Error("expected terminal request row to exist");
           }
-          throw new Error("expected terminal request row to exist");
+          expect(String(requestRow.status ?? "")).toBe("done");
         });
       });
 
@@ -1677,7 +1812,7 @@ describe("DaemonCellObject", () => {
     15_000,
   );
 
-  it("snapshot read does not recreate cell_meta for a missing server", async () => {
+  it("snapshot read does not recreate cell for a missing server", async () => {
     const serverId = "test-srv-readonly-missing";
     const stub = env.DAEMON_CELL.getByName(serverId);
 
@@ -1688,14 +1823,14 @@ describe("DaemonCellObject", () => {
     expect(snapshot.connected).toBe(false);
 
     await runInDurableObject(stub, async (_instance, state) => {
-      const cursor = state.storage.sql.exec("SELECT server_id FROM cell_meta");
-      for (const _ of cursor) {
-        throw new Error("expected snapshot read to not create cell_meta");
+      const cursor = state.storage.sql.exec("SELECT server_id FROM cell");
+      if ([...cursor].length > 0) {
+        throw new Error("expected snapshot read to not create cell");
       }
     });
   });
 
-  it("snapshot read after purge does not recreate cell_meta", async () => {
+  it("snapshot read after purge does not recreate cell", async () => {
     const serverId = "test-srv-readonly-purge";
     const stub = env.DAEMON_CELL.getByName(serverId);
     const { ws } = await openDaemonWebSocket(stub, serverId);
@@ -1714,10 +1849,77 @@ describe("DaemonCellObject", () => {
     expect(snapshot.connected).toBe(false);
 
     await runInDurableObject(stub, async (_instance, state) => {
-      const cursor = state.storage.sql.exec("SELECT server_id FROM cell_meta");
-      for (const _ of cursor) {
-        throw new Error("expected snapshot read to not recreate cell_meta");
+      const cursor = state.storage.sql.exec("SELECT server_id FROM cell");
+      if ([...cursor].length > 0) {
+        throw new Error("expected snapshot read to not recreate cell");
       }
+    });
+  });
+
+  it("cell_meta migration is idempotent when cell row already exists", async () => {
+    const serverId = "test-srv-cell-meta-migration";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const updatedAt = new Date().toISOString();
+
+    await runInDurableObject(stub, async (instance: DaemonCellObject, state) => {
+      await instance.purge();
+      state.storage.sql.exec(`
+        CREATE TABLE cell (
+          server_id TEXT PRIMARY KEY,
+          remote_address TEXT,
+          connected_at TEXT,
+          last_seen_at TEXT,
+          key_last_used_at TEXT,
+          agent_json TEXT,
+          updated_at TEXT
+        )
+      `);
+      state.storage.sql.exec(
+        "INSERT INTO cell (server_id, remote_address, updated_at) VALUES (?, ?, ?)",
+        serverId,
+        "203.0.113.1",
+        updatedAt,
+      );
+      state.storage.sql.exec(`
+        CREATE TABLE cell_meta (
+          server_id TEXT PRIMARY KEY,
+          remote_address TEXT,
+          connected_at TEXT,
+          last_seen_at TEXT,
+          key_last_used_at TEXT,
+          agent_json TEXT,
+          updated_at TEXT
+        )
+      `);
+      state.storage.sql.exec(
+        "INSERT INTO cell_meta (server_id, remote_address, updated_at) VALUES (?, ?, ?)",
+        serverId,
+        "198.51.100.1",
+        updatedAt,
+      );
+    });
+
+    const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
+      method: "GET",
+    });
+    expect(snapshotResponse.status).toBe(200);
+    const snapshot = await snapshotResponse.json() as {
+      remoteAddress?: string;
+    };
+    expect(snapshot.remoteAddress).toBe("203.0.113.1");
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      const metaTableNames = [
+        ...state.storage.sql.exec(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='cell_meta'",
+        ),
+      ].map((row) => String(row.name ?? ""));
+      expect(metaTableNames).toEqual([]);
+
+      const cellServerIds = [
+        ...state.storage.sql.exec("SELECT server_id FROM cell"),
+      ].map((row) => String(row.server_id ?? ""));
+      expect(cellServerIds).toEqual([serverId]);
     });
   });
 
@@ -1754,23 +1956,19 @@ describe("DaemonCellObject", () => {
 
     await runInDurableObject(stub, async (instance: DaemonCellObject, state) => {
       state.storage.sql.exec(
-        "UPDATE cell_meta SET last_seen_at = ? WHERE server_id = ?",
+        "UPDATE cell SET last_seen_at = ? WHERE server_id = ?",
         staleLastSeen,
         serverId,
       );
       await instance.alarm();
     });
 
-    await runInDurableObject(stub, async (_instance, state) => {
-      const cursor = state.storage.sql.exec(
-        "SELECT connected FROM cell_meta WHERE server_id = ?",
-        serverId,
-      );
-      let connected: number | null = null;
-      for (const row of cursor) {
-        connected = Number(row.connected);
-      }
-      expect(connected).toBe(0);
+    await waitFor(async () => {
+      const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
+        method: "GET",
+      });
+      const snapshot = await snapshotResponse.json() as { connected: boolean };
+      expect(snapshot.connected).toBe(false);
     });
 
     await waitFor(() => {
@@ -1783,6 +1981,51 @@ describe("DaemonCellObject", () => {
     ws.close(1000, "test done");
   });
 
+  it(
+    "stale sweep marks snapshot disconnected then heartbeat restores connected",
+    async () => {
+      const serverId = "test-srv-alarm-stale-snapshot";
+      const stub = env.DAEMON_CELL.getByName(serverId);
+      const { ws } = await openDaemonWebSocket(stub, serverId);
+
+      const staleLastSeen = new Date(
+        Date.now() - DAEMON_OFFLINE_SWEEP_MS - 1000,
+      ).toISOString();
+
+      await runInDurableObject(stub, async (instance: DaemonCellObject, state) => {
+        state.storage.sql.exec(
+          "UPDATE cell SET last_seen_at = ? WHERE server_id = ?",
+          staleLastSeen,
+          serverId,
+        );
+        await instance.alarm();
+      });
+
+      await waitFor(async () => {
+        const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
+          method: "GET",
+        });
+        const snapshot = await snapshotResponse.json() as { connected: boolean };
+        expect(snapshot.connected).toBe(false);
+      });
+
+      ws.send(JSON.stringify({
+        type: "heartbeat",
+        at: new Date().toISOString(),
+      }));
+
+      await waitFor(async () => {
+        const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
+          method: "GET",
+        });
+        const snapshot = await snapshotResponse.json() as { connected: boolean };
+        expect(snapshot.connected).toBe(true);
+      });
+
+      ws.close(1000, "test done");
+    },
+  );
+
   it("hello after stale sweep restores runtime connected flag", async () => {
     const serverId = "test-srv-alarm-stale-recover";
     const stub = env.DAEMON_CELL.getByName(serverId);
@@ -1794,66 +2037,19 @@ describe("DaemonCellObject", () => {
 
     await runInDurableObject(stub, async (instance: DaemonCellObject, state) => {
       state.storage.sql.exec(
-        "UPDATE cell_meta SET last_seen_at = ? WHERE server_id = ?",
+        "UPDATE cell SET last_seen_at = ? WHERE server_id = ?",
         staleLastSeen,
         serverId,
       );
       await instance.alarm();
     });
-
-    await runInDurableObject(stub, async (_instance, state) => {
-      const cursor = state.storage.sql.exec(
-        "SELECT connected FROM cell_meta WHERE server_id = ?",
-        serverId,
-      );
-      for (const row of cursor) {
-        expect(Number(row.connected)).toBe(0);
-      }
-    });
-
-    ws.send(JSON.stringify({
-      type: "hello",
-      at: new Date().toISOString(),
-      agent: { commit: "recovered", buildId: "1" },
-    }));
 
     await waitFor(async () => {
       const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
         method: "GET",
       });
       const snapshot = await snapshotResponse.json() as { connected: boolean };
-      expect(snapshot.connected).toBe(true);
-    });
-
-    ws.close(1000, "test done");
-  });
-
-  it("hello after stale sweep restores runtime connected flag", async () => {
-    const serverId = "test-srv-alarm-stale-recover";
-    const stub = env.DAEMON_CELL.getByName(serverId);
-    const { ws } = await openDaemonWebSocket(stub, serverId);
-
-    const staleLastSeen = new Date(
-      Date.now() - DAEMON_OFFLINE_SWEEP_MS - 1000,
-    ).toISOString();
-
-    await runInDurableObject(stub, async (instance: DaemonCellObject, state) => {
-      state.storage.sql.exec(
-        "UPDATE cell_meta SET last_seen_at = ? WHERE server_id = ?",
-        staleLastSeen,
-        serverId,
-      );
-      await instance.alarm();
-    });
-
-    await runInDurableObject(stub, async (_instance, state) => {
-      const cursor = state.storage.sql.exec(
-        "SELECT connected FROM cell_meta WHERE server_id = ?",
-        serverId,
-      );
-      for (const row of cursor) {
-        expect(Number(row.connected)).toBe(0);
-      }
+      expect(snapshot.connected).toBe(false);
     });
 
     ws.send(JSON.stringify({
@@ -1901,7 +2097,7 @@ describe("createRequestAndWait expiry parity", () => {
         "SELECT seq FROM outbox WHERE request_id = ?",
         requestId,
       );
-      for (const _ of cursor) {
+      if ([...cursor].length > 0) {
         throw new Error("expected outbox row to be deleted after expire");
       }
     });
@@ -2217,14 +2413,14 @@ describe("command-dispatch correlation", () => {
              LIMIT 1`,
             new Date().toISOString(),
           );
-          for (const _ of cursor) {
+          if ([...cursor].length > 0) {
             throw new Error("expected outbox to be drained");
           }
           return await state.storage.getAlarm();
         },
       );
       expect(alarm).not.toBeNull();
-      // Outbox pump uses OUTBOX_PUMP_ALARM_MS (~2s); stale-sweep is much farther out.
+      // Request expiry / terminal-retention cleanup — not a stale-sweep re-arm.
       expect(alarm!).toBeGreaterThan(Date.now() + 10_000);
     });
 
@@ -2324,7 +2520,7 @@ describe("command-dispatch correlation", () => {
 
     await runInDurableObject(stub, async (_instance, state) => {
       state.storage.sql.exec(
-        "UPDATE cell_meta SET last_seen_at = ? WHERE server_id = ?",
+        "UPDATE cell SET last_seen_at = ? WHERE server_id = ?",
         staleLastSeen,
         serverId,
       );
@@ -2340,13 +2536,11 @@ describe("command-dispatch correlation", () => {
         stub,
         async (_instance, state) => {
           const cursor = state.storage.sql.exec(
-            "SELECT last_seen_at FROM cell_meta WHERE server_id = ?",
+            "SELECT last_seen_at FROM cell WHERE server_id = ?",
             serverId,
           );
-          for (const row of cursor) {
-            return String(row.last_seen_at ?? "");
-          }
-          return "";
+          const [row] = [...cursor];
+          return String(row?.last_seen_at ?? "");
         },
       );
       expect(lastSeenAt).not.toBe(staleLastSeen);
@@ -2357,6 +2551,132 @@ describe("command-dispatch correlation", () => {
 
     ws.close(1000, "test done");
   }, 10_000);
+
+  it("heartbeat skips projection when auto-response liveness is recent but stored last_seen_at is stale", async () => {
+    const prev = env.TURBOPANEL_DAEMON_DEBUG;
+    env.TURBOPANEL_DAEMON_DEBUG = "1";
+    try {
+      const serverId = "test-srv-auto-response-projection-throttle";
+      const staleLastSeen = new Date(Date.now() - 120_000).toISOString();
+      const { db, updateCalls } = createProjectionRecordingDb({
+        connected: true,
+        daemonStatus: "online",
+        connectedAt: staleLastSeen,
+        lastSeenAt: staleLastSeen,
+      });
+
+      let factoryCalls = 0;
+      setDaemonCellProjectionDbFactoryForTests(() => {
+        factoryCalls += 1;
+        return db;
+      });
+
+      const stub = env.DAEMON_CELL.getByName(serverId);
+      const { ws } = await openDaemonWebSocket(stub, serverId);
+
+      await waitFor(() => {
+        expect(updateCalls.length).toBeGreaterThan(0);
+      });
+
+      ws.send(DAEMON_CELL_PING);
+      await waitForWebSocketMessage(ws, 2000);
+
+      const factoryBeforeHeartbeat = factoryCalls;
+
+      await runInDurableObject(stub, async (_instance, state) => {
+        state.storage.sql.exec(
+          "UPDATE cell SET last_seen_at = ? WHERE server_id = ?",
+          staleLastSeen,
+          serverId,
+        );
+      });
+
+      const diagBeforeResp = await cellRpc(stub, serverId, "/rpc/diagnostics", {
+        method: "GET",
+      });
+      const diagBefore = await diagBeforeResp.json() as {
+        storageByCallSite: Record<string, { reads: number }>;
+      };
+
+      ws.send(JSON.stringify({
+        type: "heartbeat",
+        at: new Date().toISOString(),
+      }));
+
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      expect(factoryCalls).toBe(factoryBeforeHeartbeat);
+
+      const diagAfterResp = await cellRpc(stub, serverId, "/rpc/diagnostics", {
+        method: "GET",
+      });
+      const diagAfter = await diagAfterResp.json() as {
+        storageByCallSite: Record<string, { reads: number }>;
+      };
+
+      const cellSites = [
+        "ws-message",
+        "record-inbound",
+        "presence-should-project",
+        "ws-message-liveness",
+      ];
+      let readDelta = 0;
+      for (const site of cellSites) {
+        readDelta += (diagAfter.storageByCallSite[site]?.reads ?? 0) -
+          (diagBefore.storageByCallSite[site]?.reads ?? 0);
+      }
+      expect(readDelta).toBeLessThanOrEqual(1);
+
+      ws.close(1000, "test done");
+    } finally {
+      env.TURBOPANEL_DAEMON_DEBUG = prev;
+    }
+  }, 10_000);
+
+  it("RPC detach clears runtime connected flag in snapshot", async () => {
+    const serverId = "test-srv-rpc-detach-connected";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+
+    const attachResponse = await cellRpc(stub, serverId, "/rpc/attach", {
+      method: "POST",
+      body: JSON.stringify({
+        meta: {
+          keyId: "key-1",
+          remoteAddress: "127.0.0.1",
+          connectedAt: new Date().toISOString(),
+        },
+      }),
+    });
+    expect(attachResponse.status).toBe(200);
+    const attachBody = await attachResponse.json() as {
+      connectionId: string;
+    };
+
+    const connectedSnapshot = await cellRpc(stub, serverId, "/rpc/snapshot", {
+      method: "GET",
+    });
+    const connected = await connectedSnapshot.json() as { connected: boolean };
+    expect(connected.connected).toBe(true);
+
+    const detachResponse = await cellRpc(stub, serverId, "/rpc/detach", {
+      method: "POST",
+      body: JSON.stringify({
+        params: {
+          connectionId: attachBody.connectionId,
+          reason: "test detach",
+        },
+      }),
+    });
+    expect(detachResponse.status).toBe(200);
+
+    const disconnectedSnapshot = await cellRpc(stub, serverId, "/rpc/snapshot", {
+      method: "GET",
+    });
+    const disconnected = await disconnectedSnapshot.json() as {
+      connected: boolean;
+    };
+    expect(disconnected.connected).toBe(false);
+  });
 });
 
 function wsSendCommandResult(ws: WebSocket, requestId: string): void {

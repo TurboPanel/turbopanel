@@ -1,4 +1,4 @@
-import type { DerivedSecretsConfig } from "../../client/authn/secrets.ts";
+import type { DaemonJwtKeyring } from "./daemon-jwt-keyring.ts";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -36,7 +36,7 @@ function base64urlDecode(input: string): Uint8Array {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.charCodeAt(i);
+    bytes[i] = binary.codePointAt(i)!;
   }
   return bytes;
 }
@@ -50,20 +50,9 @@ function parseJson<T>(encoded: string): T | null {
   }
 }
 
-function resolveKeyForVersion(
-  secrets: DerivedSecretsConfig,
-  version: number,
-): CryptoKey | null {
-  if (secrets.current.version === version) {
-    return secrets.current.key;
-  }
-  const fallback = secrets.fallbacks.find((entry) => entry.version === version);
-  return fallback?.key ?? null;
-}
-
 export async function issueDaemonJwt(
   payload: Pick<DaemonJwtPayload, "sub" | "kid">,
-  secrets: DerivedSecretsConfig,
+  keyring: DaemonJwtKeyring,
   nowMs = Date.now(),
 ): Promise<{ token: string; expiresAt: string }> {
   const iat = Math.floor(nowMs / 1000);
@@ -78,9 +67,9 @@ export async function issueDaemonJwt(
     exp,
   };
   const header = {
-    alg: "HS256",
+    alg: "EdDSA",
     typ: "JWT",
-    ver: secrets.current.version,
+    kid: keyring.active.kid,
   };
   const encodedHeader = base64urlEncode(
     textEncoder.encode(JSON.stringify(header)),
@@ -90,8 +79,8 @@ export async function issueDaemonJwt(
   );
   const signingInput = `${encodedHeader}.${encodedPayload}`;
   const signature = await crypto.subtle.sign(
-    "HMAC",
-    secrets.current.key,
+    { name: "Ed25519" },
+    keyring.active.privateKey,
     textEncoder.encode(signingInput),
   );
   const encodedSig = base64urlEncode(new Uint8Array(signature));
@@ -104,23 +93,25 @@ export async function issueDaemonJwt(
 
 export async function verifyDaemonJwt(
   token: string,
-  secrets: DerivedSecretsConfig,
+  keyring: DaemonJwtKeyring,
 ): Promise<DaemonJwtPayload | null> {
   try {
     const parts = token.split(".");
     if (parts.length !== 3) return null;
 
     const [encodedHeader, encodedPayload, encodedSig] = parts;
-    const header = parseJson<{ ver?: number }>(encodedHeader);
-    if (!header || !Number.isInteger(header.ver)) return null;
+    const header = parseJson<{ alg?: string; kid?: string }>(encodedHeader);
+    if (header?.alg !== "EdDSA" || typeof header?.kid !== "string") {
+      return null;
+    }
 
-    const key = resolveKeyForVersion(secrets, header.ver);
+    const key = keyring.verifiers.get(header.kid);
     if (!key) return null;
 
     const signingInput = `${encodedHeader}.${encodedPayload}`;
     const signatureBytes = base64urlDecode(encodedSig);
     const verified = await crypto.subtle.verify(
-      "HMAC",
+      { name: "Ed25519" },
       key,
       signatureBytes,
       textEncoder.encode(signingInput),

@@ -1,10 +1,12 @@
 import { Hono } from 'hono'
-import type { DerivedSecretsConfig } from './client/authn/secrets.ts'
 import { configurePbkdf2Iterations } from './client/authn/password.ts'
+import type { DaemonJwtKeyring } from './daemon/authn/daemon-jwt-keyring.ts'
+import { deriveDaemonJwtKeyring } from './daemon/authn/daemon-jwt-keyring.ts'
 import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
   parseSecretsEnv,
+  type DerivedSecretsConfig,
 } from './client/authn/secrets.ts'
 import { createApp, type AppEnv } from './app'
 import { createDurableObjectDaemonCellRegistry } from './daemon/cell/do-registry.ts'
@@ -32,8 +34,8 @@ export { DaemonCellObject } from './daemon/cell/do.ts'
 
 let initPromise: Promise<void> | null = null
 let cachedApp: ReturnType<typeof createApp> | null = null
-let cachedSessionSecrets: DerivedSecretsConfig | null = null
-let cachedDaemonJwtSecrets: DerivedSecretsConfig | null = null
+let cachedSessionSecrets: Awaited<ReturnType<typeof deriveSecretsConfig>> | null = null
+let cachedDaemonJwtKeyring: DaemonJwtKeyring | null = null
 let cachedChallengeSigningSecrets: DerivedSecretsConfig | null = null
 let cachedDataEncryptionSecrets: DerivedSecretsConfig | null = null
 let cachedSecretsConfig: ReturnType<typeof parseSecretsEnv> | null = null
@@ -53,7 +55,7 @@ async function initWorkerApp(env: CloudflareBindings) {
   )
   cachedSecretsConfig = secretsConfig
   cachedSessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
-  cachedDaemonJwtSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-jwt-signing')
+  cachedDaemonJwtKeyring = await deriveDaemonJwtKeyring(secretsConfig)
   cachedChallengeSigningSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-challenge-signing')
   cachedDataEncryptionSecrets = await deriveEncryptionSecretsConfig(secretsConfig, 'data-encryption')
   const platformEnv = stringBindingEnv(env)
@@ -79,12 +81,12 @@ async function initWorkerApp(env: CloudflareBindings) {
     secretsConfig: cachedSecretsConfig ?? undefined,
   })
   registerDaemonApiRoutes(cachedApp, {
-    secrets: cachedDaemonJwtSecrets ?? undefined,
+    secrets: cachedDaemonJwtKeyring ?? undefined,
     challengeSigningSecrets: cachedChallengeSigningSecrets ?? undefined,
     secretsConfig: cachedSecretsConfig ?? undefined,
   })
   registerWorkersDaemonWebSocket(cachedApp, {
-    secrets: cachedDaemonJwtSecrets ?? undefined,
+    secrets: cachedDaemonJwtKeyring ?? undefined,
   })
   registerAdminRoutes(cachedApp, {
     secrets: cachedSessionSecrets!,
@@ -110,7 +112,7 @@ function stringBindingEnv(env: CloudflareBindings): Record<string, string | unde
 
 export default {
   async fetch(request: Request, env: CloudflareBindings, ctx: ExecutionContext) {
-    if (!initPromise) initPromise = initWorkerApp(env)
+    initPromise ??= initWorkerApp(env)
     await initPromise
 
     const postgresConnectionString = env.HYPERDRIVE?.connectionString
@@ -145,7 +147,7 @@ export default {
   },
 
   async queue(batch: MessageBatch<unknown>, env: CloudflareBindings) {
-    if (!initPromise) initPromise = initWorkerApp(env)
+    initPromise ??= initWorkerApp(env)
     await initPromise
 
     const db = resolveWorkersDb(env)

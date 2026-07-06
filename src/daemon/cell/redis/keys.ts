@@ -32,6 +32,10 @@ export function leaseKey(serverId: string): string {
   return `tp:cell:${serverId}:lease:daemon-socket`;
 }
 
+export function deliveryLeaseKey(serverId: string): string {
+  return `tp:cell:${serverId}:lease:delivery`;
+}
+
 export function connKey(serverId: string, connectionId: string): string {
   return `tp:cell:${serverId}:conn:${connectionId}`;
 }

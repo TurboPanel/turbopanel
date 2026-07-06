@@ -1,6 +1,9 @@
 import type { Hono } from 'hono'
 import { configurePbkdf2Iterations } from './client/authn/password.ts'
 import {
+  deriveDaemonJwtKeyring,
+} from './daemon/authn/daemon-jwt-keyring.ts'
+import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
   parseSecretsEnv,
@@ -57,7 +60,7 @@ const db = createDenoDb()
 
 async function resolveEmailQueue(_db: Db): Promise<EmailQueue> {
   const envUrl = Deno.env.get('TURBOPANEL_AMQP_URL')
-  if (envUrl !== undefined && envUrl.trim() === '') {
+  if (envUrl?.trim() === '') {
     logInfo('email', 'TURBOPANEL_AMQP_URL is empty; using noop queue')
     return createNoopQueue()
   }
@@ -74,7 +77,7 @@ async function resolveEmailQueue(_db: Db): Promise<EmailQueue> {
 
 async function resolveCommandQueue(): Promise<CommandQueue> {
   const envUrl = Deno.env.get('TURBOPANEL_AMQP_URL')
-  if (envUrl !== undefined && envUrl.trim() === '') {
+  if (envUrl?.trim() === '') {
     return createNoopCommandQueue()
   }
   if (envUrl !== undefined) {
@@ -93,7 +96,7 @@ const commandQueue = await resolveCommandQueue()
 
 function resolveCommandAmqpUrl(): string | null {
   const envUrl = Deno.env.get('TURBOPANEL_AMQP_URL')
-  if (envUrl !== undefined && envUrl.trim() === '') {
+  if (envUrl?.trim() === '') {
     return null
   }
   if (envUrl !== undefined) {
@@ -109,33 +112,31 @@ const secretsConfig = parseSecretsEnv(
   'deno',
 )
 const sessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
-const daemonJwtSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-jwt-signing')
+const daemonJwtKeyring = await deriveDaemonJwtKeyring(secretsConfig)
 const challengeSigningSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-challenge-signing')
 const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(secretsConfig, 'data-encryption')
 const daemonCellRegistry = createRedisDaemonCellRegistry({ db })
 const queryCache = createRedisQueryCache({ client: daemonCellRegistry.client, db })
 
 let commandConsumer: { close(): Promise<void> } | null = null
-if (!isNoopCommandQueue(commandQueue)) {
+if (isNoopCommandQueue(commandQueue)) {
+  logWarn('command-consumer', 'AMQP broker unavailable; command consumer not started')
+} else {
   const amqpUrl = resolveCommandAmqpUrl()
   if (amqpUrl) {
-    void startCommandConsumer({
-      db,
-      registry: daemonCellRegistry,
-      amqpUrl,
-    })
-      .then((consumer) => {
-        commandConsumer = consumer
+    try {
+      commandConsumer = await startCommandConsumer({
+        db,
+        registry: daemonCellRegistry,
+        amqpUrl,
       })
-      .catch((err) => {
-        logWarn(
-          'command-consumer',
-          `AMQP broker unavailable; command consumer not started: ${String(err)}`,
-        )
-      })
+    } catch (err) {
+      logWarn(
+        'command-consumer',
+        `AMQP broker unavailable; command consumer not started: ${String(err)}`,
+      )
+    }
   }
-} else {
-  logWarn('command-consumer', 'AMQP broker unavailable; command consumer not started')
 }
 
 const app = createApp({
@@ -167,7 +168,7 @@ if (developerSurface) {
   registerDeveloperRoutes(routes, { secrets: sessionSecrets, db })
 }
 registerDaemonApiRoutes(routes, {
-  secrets: daemonJwtSecrets,
+  secrets: daemonJwtKeyring,
   challengeSigningSecrets,
   secretsConfig,
 })
@@ -181,7 +182,7 @@ if (developerSurface) {
 registerDaemonWebSocket(routes, {
   developerSurface,
   db,
-  secrets: daemonJwtSecrets,
+  secrets: daemonJwtKeyring,
   daemonCellRegistry,
 })
 registerAdminRoutes(routes, {
@@ -192,9 +193,10 @@ registerAdminRoutes(routes, {
 const socketPath = resolveInstanceSocket()
 
 const abort = new AbortController()
-// Deno process timer (not a Durable Object) — cost-safe. maintain() is the Redis
-// equivalent of the DO alarm() stale sweep; sweepStalePresence mirrors offline
-// demotion. Liveness uses Redis key TTLs (registry.maintain) rather than WS auto-response.
+// Deno process timer (not a Durable Object) — cost-safe. Both backends demote
+// stale presence at DAEMON_OFFLINE_SWEEP_MS; Redis uses this timer-driven
+// maintain() + sweepStalePresence loop. Workers is disconnect-first (no periodic
+// DO stale-sweep alarm) — see DaemonCellObject alarm-path comments in do.ts.
 const maintenanceTimer = setInterval(() => {
   void daemonCellRegistry.maintain().catch((err) => {
     logWarn('daemon-cell', `maintenance error: ${String(err)}`)
@@ -219,9 +221,11 @@ await prepareInstanceSocket(socketPath)
 
 await daemonCellRegistry.reclaimOrphanedSocketLeasesOnStartup()
 
-void ensureColocatedLicenseCredentialsOnDisk(db).catch((err) => {
+try {
+  await ensureColocatedLicenseCredentialsOnDisk(db)
+} catch (err) {
   logInfo('install', `license credential recovery skipped: ${String(err)}`)
-})
+}
 
 Deno.serve({
   path: socketPath,

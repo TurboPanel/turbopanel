@@ -9,7 +9,7 @@ import {
   parseDaemonMessage,
   wireMessageToInboundEnvelope,
 } from "./cell/protocol.ts";
-import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
+import type { DaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
 import { tryAssignColocatedDaemonToInstalledOrganization } from "../client/authn/install-state.ts";
 import type { Db } from "../db.ts";
 import { compatLogError, compatLogWarn } from "../log-compat.ts";
@@ -105,7 +105,6 @@ function detachDaemonSocketSafe(
   cell: ReturnType<DaemonCellRegistry["getCell"]>,
   params: {
     connectionId: string;
-    leaseToken: string;
     reason: string;
     closedAt: string;
   },
@@ -138,7 +137,7 @@ function detachDaemonSocketSafe(
 export type DaemonWebSocketOptions = {
   developerSurface?: boolean;
   db?: Db;
-  secrets?: DerivedSecretsConfig;
+  secrets?: DaemonJwtKeyring;
   daemonCellRegistry?: DaemonCellRegistry;
 };
 
@@ -179,7 +178,7 @@ export function registerDaemonWebSocket(
       const connectedAt = new Date().toISOString();
 
       let connectionId: string | undefined;
-      let leaseToken: string | undefined;
+      let leaseHolder: string | undefined;
       const pumpControl = { abort: false };
       let attachReady = false;
       const pendingMessages: string[] = [];
@@ -240,7 +239,6 @@ export function registerDaemonWebSocket(
             connectionId,
             at: message.at,
             agent: message.agent,
-            hostname: message.hostname,
           });
           await onDaemonInbound(db, payload.sub, cell, {
             at: message.at,
@@ -286,13 +284,11 @@ export function registerDaemonWebSocket(
           try {
             const attached = await cell.attachDaemonSocket({
               keyId: payload.kid,
-              sessionId: payload.jti,
-              hostname: undefined,
               remoteAddress: identityAddress,
               connectedAt,
             });
             connectionId = attached.connectionId;
-            leaseToken = attached.lease.token;
+            leaseHolder = attached.lease.holder;
           } catch (err) {
             daemonCellLog(
               "WARN",
@@ -325,6 +321,7 @@ export function registerDaemonWebSocket(
             connectedAt,
             undefined,
             geo ?? undefined,
+            payload.kid,
           );
 
           cellTrace("attach", {
@@ -374,13 +371,12 @@ export function registerDaemonWebSocket(
         },
         onClose() {
           pumpControl.abort = true;
-          if (connectionId && leaseToken) {
+          if (connectionId && leaseHolder) {
             const cell = registry.getCell(payload.sub);
             detachDaemonSocketSafe(
               cell,
               {
                 connectionId,
-                leaseToken,
                 reason: "closed",
                 closedAt: new Date().toISOString(),
               },
@@ -392,13 +388,12 @@ export function registerDaemonWebSocket(
         },
         onError() {
           pumpControl.abort = true;
-          if (connectionId && leaseToken) {
+          if (connectionId && leaseHolder) {
             const cell = registry.getCell(payload.sub);
             detachDaemonSocketSafe(
               cell,
               {
                 connectionId,
-                leaseToken,
                 reason: "error",
                 closedAt: new Date().toISOString(),
               },

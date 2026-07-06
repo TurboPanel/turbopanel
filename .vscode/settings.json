@@ -1,0 +1,7 @@
+{
+  "sonarlint.connectedMode.project": {
+    "connectionId": "turbopanel",
+    "projectKey": "turbopanel_turbopanel"
+  },
+  "sonarlint.analysisExcludesStandalone": "**/migrations/**"
+}

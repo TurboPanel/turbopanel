@@ -4,10 +4,6 @@ import type { DaemonCellSnapshot } from "./contracts.ts";
 const PRESENCE_FIELDS = [
   "connected",
   "remoteAddress",
-  "hostname",
-  "machineId",
-  "sessionId",
-  "keyId",
   "connectedAt",
   "lastSeenAt",
 ] as const satisfies ReadonlyArray<keyof DaemonCellSnapshot>;

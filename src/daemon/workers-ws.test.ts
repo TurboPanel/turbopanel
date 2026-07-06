@@ -1,10 +1,8 @@
 /// <reference types="@cloudflare/vitest-pool-workers" />
 import { describe, expect, it } from "vitest";
 import { Hono } from "hono";
-import {
-  deriveSecretsConfig,
-  parseSecretsEnv,
-} from "../client/authn/secrets.ts";
+import { deriveDaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
+import { parseSecretsEnv } from "../client/authn/secrets.ts";
 import type { Db } from "../db.ts";
 import type { AppEnv } from "../app.ts";
 import { issueDaemonJwt } from "./authn/daemon-jwt.ts";
@@ -21,21 +19,19 @@ const REAL_IP_HEADER = "X-Real-IP";
 const TEST_SECRET = "aa_workers_ws_forward_test_secret_value_b";
 
 async function createTestSecrets() {
-  return deriveSecretsConfig(
+  return deriveDaemonJwtKeyring(
     parseSecretsEnv(TEST_SECRET, undefined, "workers"),
-    "daemon-jwt-signing",
   );
 }
 
+const mockLimit = () => Promise.resolve([]);
+const mockWhere = () => ({ limit: mockLimit });
+const mockFrom = () => ({ where: mockWhere });
+const mockSelect = () => ({ from: mockFrom });
+
 function createMockDb(): Db {
   return {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve([]),
-        }),
-      }),
-    }),
+    select: mockSelect,
   } as unknown as Db;
 }
 

@@ -20,11 +20,14 @@ export type CellDiagnostics = {
   commandDispatchCount: number;
   cleanupCount: number;
   fetchByRoute: Record<string, number>;
+  storageReads: number;
+  storageWrites: number;
+  storageByCallSite: Record<string, { reads: number; writes: number }>;
 };
 
+/** Single-writer lease keyed by connectionId; holder is the connection identity. */
 export type DaemonCellLease = {
   holder: string;
-  token: string;
   expiresAt: string;
 };
 
@@ -32,11 +35,11 @@ export type DaemonCellSnapshot = {
   serverId: string;
   version: number;
   updatedAt: string;
+  /** Postgres-canonical; no longer populated by cell storage. */
   hostname?: string;
+  /** Postgres-canonical; no longer populated by cell storage. */
   machineId?: string;
   remoteAddress?: string;
-  sessionId?: string;
-  keyId?: string;
   connected: boolean;
   connectedAt?: string;
   lastInboundAt?: string;
@@ -58,21 +61,13 @@ export type PendingRequestStatus =
   | "expired";
 
 /** Known outbound request kinds enqueued on the cell outbox. */
-export type PendingRequestKind =
-  | "command"
-  | "command-dispatch"
-  | "addresses-request"
-  | "dev-sync"
-  | "tunnel-token"
-  | "public-urls-update"
-  | "update"
-  | "echo";
+export type PendingRequestKind = DaemonOutboundEnvelope["kind"];
 
 export type PendingRequestRecord = {
   serverId: string;
   requestId: string;
   /** Outbound envelope kind that created this pending request. */
-  requestKind: PendingRequestKind | string;
+  requestKind: string;
   status: PendingRequestStatus;
   createdAt: string;
   expiresAt: string;
@@ -123,6 +118,18 @@ export type ClearUpdateStatusOptions = {
  *     Workers → DaemonCellObject (SQLite-backed Durable Object, do.ts)
  *     Deno    → RedisDaemonCell (Redis-backed, redis/cell.ts)
  *
+ * Requests vs outbox (both instance→daemon):
+ *   outbox   = durable delivery queue keyed by deliveryId — retryable frames
+ *              (retry_count/retry_at on DO; stream + PEL/xautoclaim on Redis);
+ *              deleted on ack; ephemeral once delivered.
+ *   requests = correlation/response-tracking rows keyed by requestId
+ *              (PendingRequestRecord) — pending-command lifecycle
+ *              queued→sent→acked→done/failed/expired; terminal update rows
+ *              retained TERMINAL_UPDATE_RETENTION_MS then pruned; daemon replies
+ *              (handleInbound) mutate the request row = completed responses.
+ *   The WS send (#pumpOutboxToDaemonSockets / startDaemonOutboxPump) is ephemeral
+ *   in-memory delivery; durability lives in the outbox row until acked.
+ *
  * The DaemonCell is NOT a status read API. Status reads go through the
  * server status read model (server-status.ts / fleet-presence.ts) backed by Postgres.
  * Any new DaemonCell RPC must justify why it cannot be served from Postgres or the normal API.
@@ -135,16 +142,12 @@ export type ClearUpdateStatusOptions = {
 export interface DaemonCell {
   attachDaemonSocket(meta: {
     keyId: string;
-    sessionId?: string;
-    hostname?: string;
-    machineId?: string;
     remoteAddress?: string;
     connectedAt?: string;
   }): Promise<{ connectionId: string; lease: DaemonCellLease }>;
 
   detachDaemonSocket(params: {
     connectionId: string;
-    leaseToken: string;
     reason?: string;
     closedAt?: string;
   }): Promise<void>;
@@ -191,10 +194,9 @@ export interface DaemonCell {
   ): Promise<DaemonCellLease | null>;
   renewDeliveryLease(
     holder: string,
-    token: string,
     ttlMs: number,
   ): Promise<DaemonCellLease | null>;
-  releaseDeliveryLease(holder: string, token: string): Promise<void>;
+  releaseDeliveryLease(holder: string): Promise<void>;
   readOutboxBatch(params: {
     consumer: string;
     count: number;

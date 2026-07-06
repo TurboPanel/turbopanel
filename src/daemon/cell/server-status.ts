@@ -89,8 +89,10 @@ export type ResolveFleetPresenceOptions = {
  * By default this path is Postgres-only: coarse presence and agent data come
  * from the sparse Postgres projection (`server.daemon.status` and
  * `server.daemon.projection`). It never calls `listOnlineServerIds` or
- * `getSnapshots`. Silent-failure offline correctness relies on the offline
- * sweep (DO `alarm()` / Redis `maintain()`), not read-time registry reads.
+ * `getSnapshots`. On Workers, silent-failure offline correctness is
+ * disconnect-first (`webSocketClose` / `webSocketError`); Redis (Deno) uses a
+ * timer-driven sweep via `maintain()` at `DAEMON_OFFLINE_SWEEP_MS`. Neither
+ * path reads live cell state at request time by default.
  * Pass `{ withSnapshots: true }` for explicit diagnostics/admin callers that
  * read live cell snapshots for every server up front.
  */
@@ -131,9 +133,9 @@ export async function resolveFleetPresence(
     const state = parseServerDaemonState(row.daemon);
     const rawRemote = projection?.remoteAddress ?? null;
     const snapshot = snapshots.get(row.id);
-    const connected = snapshot !== undefined
-      ? isSnapshotConnected(snapshot)
-      : (projection?.connected ?? state?.status?.connected ?? false);
+    const connected = snapshot === undefined
+      ? (projection?.connected ?? state?.status?.connected ?? false)
+      : isSnapshotConnected(snapshot);
 
     const lastInboundAt = snapshot
       ? resolveLastInboundAt(snapshot)
@@ -183,8 +185,8 @@ export function fleetPresenceToConnection(presence: ServerFleetPresence) {
     keyId: presence.keyId,
     authenticated: presence.connected,
     remoteAddress: presence.remoteAddress,
-    lastInboundAt: presence.lastInboundAt ?? presence.lastHeartbeatAt
-      ? Date.parse(presence.lastInboundAt ?? presence.lastHeartbeatAt ?? "")
+    lastInboundAt: presence.lastInboundAt
+      ? Date.parse(presence.lastInboundAt)
       : 0,
     connected: presence.connected,
   };

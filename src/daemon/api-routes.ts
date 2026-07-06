@@ -2,6 +2,8 @@ import { Hono } from "hono";
 import type { Context, Next } from "hono";
 import { isInstanceInstalled } from "../client/authn/install-state.ts";
 import type { DerivedSecretsConfig, SecretsConfig } from "../client/authn/secrets.ts";
+import type { DaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
+import { buildJwksDocument } from "./authn/daemon-jwt-keyring.ts";
 import {
   decryptSecretForDaemon,
   isDaemonSealedEnvelope,
@@ -56,7 +58,7 @@ function challengeExpiresAt(at: string, ttlMs: number): string {
 export function registerDaemonApiRoutes(
   app: Hono,
   options: {
-    secrets?: DerivedSecretsConfig;
+    secrets?: DaemonJwtKeyring;
     challengeSigningSecrets?: DerivedSecretsConfig;
     secretsConfig?: SecretsConfig;
   } = {},
@@ -142,6 +144,15 @@ export function registerDaemonApiRoutes(
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: message }, 500);
     }
+  });
+
+  daemon.get("/jwks.json", (c) => {
+    if (!secrets) {
+      return c.json({ ok: false, error: "jwks unavailable" }, 503);
+    }
+    return c.json(buildJwksDocument(secrets), 200, {
+      "Cache-Control": "public, max-age=300",
+    });
   });
 
   daemon.get("/openapi.json", (c) => {

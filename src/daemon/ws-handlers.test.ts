@@ -101,7 +101,7 @@ Deno.test(
 );
 
 Deno.test(
-  "cell-backed recordInbound updates lastInboundAt and hostname",
+  "cell-backed recordInbound updates lastInboundAt",
   withRedisCell(async ({ cell, client, serverId }) => {
     const attached = await cell.attachDaemonSocket({
       keyId: crypto.randomUUID(),
@@ -110,13 +110,11 @@ Deno.test(
 
     await cell.recordInbound({
       connectionId: attached.connectionId,
-      hostname: "test-host",
       at,
     });
 
     const snapshot = await cell.getSnapshot();
     assertEquals(snapshot.lastInboundAt, at);
-    assertEquals(snapshot.hostname, "test-host");
 
     const leaseHolder = await client.get(leaseKey(serverId));
     assertEquals(leaseHolder, attached.connectionId);
@@ -184,7 +182,6 @@ Deno.test(
 
     await cell.detachDaemonSocket({
       connectionId: attached.connectionId,
-      leaseToken: attached.lease.token,
       reason: "closed",
     });
 
@@ -208,67 +205,67 @@ Deno.test(
         cell.attachDaemonSocket({
           keyId: crypto.randomUUID(),
         }),
-      Error,
+      Error as new (...args: unknown[]) => Error,
       "daemon socket lease held",
     );
   }),
 );
 
+function skipLineComment(source: string, index: number): number {
+  let i = index + 2;
+  while (i < source.length && source[i] !== "\n") i += 1;
+  return i;
+}
+
+function skipBlockComment(source: string, index: number): number {
+  let i = index + 2;
+  while (i < source.length - 1 && !(source[i] === "*" && source[i + 1] === "/")) {
+    i += 1;
+  }
+  return i + 2;
+}
+
+function skipQuotedString(source: string, index: number, quote: string): number {
+  let i = index + 1;
+  while (i < source.length) {
+    if (source[i] === "\\") {
+      i += 2;
+      continue;
+    }
+    if (source[i] === quote) {
+      return i + 1;
+    }
+    i += 1;
+  }
+  return i;
+}
+
 function stripCommentsAndStrings(source: string): string {
   let out = "";
   let i = 0;
-  const len = source.length;
 
-  while (i < len) {
+  while (i < source.length) {
     const ch = source[i];
     const next = source[i + 1];
 
     if (ch === "/" && next === "/") {
-      i += 2;
-      while (i < len && source[i] !== "\n") i += 1;
+      i = skipLineComment(source, i);
       continue;
     }
 
     if (ch === "/" && next === "*") {
-      i += 2;
-      while (i < len - 1 && !(source[i] === "*" && source[i + 1] === "/")) {
-        i += 1;
-      }
-      i += 2;
+      i = skipBlockComment(source, i);
       continue;
     }
 
     if (ch === "'" || ch === '"') {
-      const quote = ch;
-      i += 1;
-      while (i < len) {
-        if (source[i] === "\\") {
-          i += 2;
-          continue;
-        }
-        if (source[i] === quote) {
-          i += 1;
-          break;
-        }
-        i += 1;
-      }
+      i = skipQuotedString(source, i, ch);
       out += " ";
       continue;
     }
 
     if (ch === "`") {
-      i += 1;
-      while (i < len) {
-        if (source[i] === "\\") {
-          i += 2;
-          continue;
-        }
-        if (source[i] === "`") {
-          i += 1;
-          break;
-        }
-        i += 1;
-      }
+      i = skipQuotedString(source, i, "`");
       out += " ";
       continue;
     }

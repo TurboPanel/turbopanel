@@ -24,8 +24,7 @@ import {
   type ServerGeo,
 } from "../../lib/geo/server-geo.ts";
 import { mergeServerMetadataIdentity } from "../../server-registry.ts";
-import type { DaemonCell } from "./contracts.ts";
-import type { DaemonCellSnapshot } from "./contracts.ts";
+import type { DaemonCell, DaemonCellSnapshot } from "./contracts.ts";
 
 export type ProjectionIdentity = {
   hostname?: string;
@@ -148,9 +147,8 @@ export function mergeAgentPreserving(
   if (!incoming) return current?.agent;
   const existing = current?.agent;
   if (
-    existing &&
-    existing.commit === incoming.commit &&
-    existing.buildId === incoming.buildId
+    existing?.commit === incoming.commit &&
+    existing?.buildId === incoming.buildId
   ) {
     return {
       commit: incoming.commit,
@@ -211,7 +209,7 @@ function buildMetadataPatch(
   });
   const geoDue = incomingGeo !== undefined;
   if (!identityMerged && !geoDue) return null;
-  const base = identityMerged ?? { ...(existingMetadata ?? {}) };
+  const base = identityMerged ?? { ...existingMetadata };
   if (geoDue && incomingGeo) {
     return { ...base, geo: incomingGeo };
   }
@@ -304,6 +302,316 @@ function buildMergedDaemonState(
   };
 }
 
+type ProjectionTriggerContext = {
+  existing: ServerDaemonState;
+  currentProjection: ServerDaemonProjection | undefined;
+  existingStatus: ServerDaemonStatus;
+  now: string;
+  nowMs: number;
+  agentHint?: ProjectionAgent;
+};
+
+/** Result of applying a single trigger kind; `null` means "no projection needed". */
+type ProjectionOutcome = {
+  touchMetadata: boolean;
+  nextProjection: ServerDaemonProjection | undefined;
+  writeProjection: boolean;
+  nextStatus: ServerDaemonStatus;
+  writeStatus: boolean;
+  incomingGeo?: ServerGeo;
+  geoDue: boolean;
+} | null;
+
+function applyOnlineTrigger(
+  trigger: Extract<ProjectionTrigger, { kind: "online" }>,
+  ctx: ProjectionTriggerContext,
+): ProjectionOutcome {
+  const { currentProjection, existingStatus, now, nowMs, existing, agentHint } = ctx;
+  const identity = mergeIdentity(currentProjection, trigger.identity);
+  const isOfflineToOnline = !existingStatus.connected;
+  const lastSeenDue = isOfflineToOnline ||
+    heartbeatDebounceElapsed(existingStatus.lastSeenAt, nowMs);
+  const incomingGeo = trigger.identity.geo;
+  const geoDue = geoRefreshDue(existing.metadata, currentProjection, trigger.identity);
+  const identityDue = identityChanged(currentProjection, identity);
+  const touchMetadata = identityDue || geoDue;
+
+  let nextProjection = currentProjection;
+  let writeProjection = false;
+  if (identityDue || !currentProjection) {
+    nextProjection = buildIdentityProjection(currentProjection, identity);
+    if (agentHint) {
+      nextProjection = {
+        ...nextProjection,
+        agent: mergeAgentPreserving(currentProjection, agentHint),
+      };
+    }
+    writeProjection = true;
+  } else if (agentHint && agentChanged(currentProjection, agentHint)) {
+    nextProjection = {
+      ...currentProjection,
+      agent: mergeAgentPreserving(currentProjection, agentHint),
+    };
+    writeProjection = true;
+  }
+
+  if (!isOfflineToOnline && !lastSeenDue && !writeProjection && !geoDue) {
+    return null;
+  }
+
+  let nextStatus: ServerDaemonStatus = { ...existingStatus };
+  let writeStatus = false;
+  if (isOfflineToOnline) {
+    nextStatus = {
+      ...nextStatus,
+      connected: true,
+      daemonStatus: "online",
+      connectedAt: trigger.connectedAt ?? now,
+      statusChangedAt: now,
+    };
+    writeStatus = true;
+  }
+
+  if (lastSeenDue) {
+    nextStatus = { ...nextStatus, lastSeenAt: now };
+    writeStatus = true;
+  }
+
+  return { touchMetadata, nextProjection, writeProjection, nextStatus, writeStatus, incomingGeo, geoDue };
+}
+
+function applyOfflineTrigger(ctx: ProjectionTriggerContext): ProjectionOutcome {
+  const { currentProjection, existingStatus, now } = ctx;
+  const nextStatus: ServerDaemonStatus = {
+    ...existingStatus,
+    connected: false,
+    daemonStatus: "offline",
+    disconnectedAt: now,
+    statusChangedAt: now,
+  };
+  return {
+    touchMetadata: false,
+    nextProjection: currentProjection,
+    writeProjection: false,
+    nextStatus,
+    writeStatus: true,
+    geoDue: false,
+  };
+}
+
+function applyHeartbeatTrigger(
+  trigger: Extract<ProjectionTrigger, { kind: "heartbeat" }>,
+  ctx: ProjectionTriggerContext,
+): ProjectionOutcome {
+  const { currentProjection, existingStatus, now, nowMs, agentHint } = ctx;
+  const agent = trigger.agent ?? agentHint;
+  const lastSeenDue = heartbeatDebounceElapsed(existingStatus.lastSeenAt, nowMs);
+  const agentDue = Boolean(
+    agent?.commit && agent?.buildId && agentChanged(currentProjection, agent),
+  );
+
+  if (!lastSeenDue && !agentDue) {
+    return null;
+  }
+
+  let nextStatus: ServerDaemonStatus = { ...existingStatus };
+  let writeStatus = false;
+  if (lastSeenDue) {
+    nextStatus = { ...nextStatus, lastSeenAt: now };
+    writeStatus = true;
+  }
+
+  let nextProjection = currentProjection;
+  let writeProjection = false;
+  if (agentDue && agent) {
+    nextProjection = {
+      ...currentProjection,
+      agent: mergeAgentPreserving(currentProjection, agent),
+    };
+    writeProjection = true;
+  }
+
+  return { touchMetadata: false, nextProjection, writeProjection, nextStatus, writeStatus, geoDue: false };
+}
+
+function applyIdentityTrigger(
+  trigger: Extract<ProjectionTrigger, { kind: "identity" }>,
+  ctx: ProjectionTriggerContext,
+): ProjectionOutcome {
+  const { currentProjection, existingStatus, existing } = ctx;
+  const incomingGeo = trigger.identity.geo;
+  const geoDue = geoRefreshDue(existing.metadata, currentProjection, trigger.identity);
+  const identityDue = identityChanged(currentProjection, trigger.identity);
+  if (!identityDue && !geoDue) {
+    return null;
+  }
+
+  let nextProjection = currentProjection;
+  let writeProjection = false;
+  if (identityDue) {
+    const identity = mergeIdentity(currentProjection, trigger.identity);
+    nextProjection = buildIdentityProjection(currentProjection, identity);
+    writeProjection = true;
+  }
+
+  return {
+    touchMetadata: true,
+    nextProjection,
+    writeProjection,
+    nextStatus: { ...existingStatus },
+    writeStatus: false,
+    incomingGeo,
+    geoDue,
+  };
+}
+
+function applyAgentTrigger(
+  trigger: Extract<ProjectionTrigger, { kind: "agent" }>,
+  ctx: ProjectionTriggerContext,
+): ProjectionOutcome {
+  const { currentProjection, existingStatus } = ctx;
+  if (!agentChanged(currentProjection, trigger.agent)) {
+    return null;
+  }
+  return {
+    touchMetadata: false,
+    nextProjection: {
+      ...currentProjection,
+      agent: mergeAgentPreserving(currentProjection, trigger.agent),
+    },
+    writeProjection: true,
+    nextStatus: { ...existingStatus },
+    writeStatus: false,
+    geoDue: false,
+  };
+}
+
+function applyUpdateQueuedTrigger(
+  trigger: Extract<ProjectionTrigger, { kind: "update-queued" }>,
+  ctx: ProjectionTriggerContext,
+): ProjectionOutcome {
+  const { currentProjection, existingStatus } = ctx;
+  return {
+    touchMetadata: false,
+    nextProjection: {
+      ...currentProjection,
+      update: {
+        status: "updating",
+        requestId: trigger.requestId,
+        channel: trigger.channel,
+        queuedAt: trigger.queuedAt,
+      },
+    },
+    writeProjection: true,
+    nextStatus: { ...existingStatus },
+    writeStatus: false,
+    geoDue: false,
+  };
+}
+
+function applyUpdateResultTrigger(
+  trigger: Extract<ProjectionTrigger, { kind: "update-result" }>,
+  ctx: ProjectionTriggerContext,
+): ProjectionOutcome {
+  const { currentProjection, existingStatus } = ctx;
+  return {
+    touchMetadata: false,
+    nextProjection: {
+      ...currentProjection,
+      update: {
+        status: trigger.ok ? "done" : "failed",
+        requestId: trigger.requestId,
+        finishedAt: trigger.finishedAt,
+        ...(trigger.error ? { error: trigger.error } : {}),
+      },
+    },
+    writeProjection: true,
+    nextStatus: { ...existingStatus },
+    writeStatus: false,
+    geoDue: false,
+  };
+}
+
+function applyUpdateExpiredTrigger(
+  trigger: Extract<ProjectionTrigger, { kind: "update-expired" }>,
+  ctx: ProjectionTriggerContext,
+): ProjectionOutcome {
+  const { currentProjection, existingStatus } = ctx;
+  const currentUpdate = currentProjection?.update;
+  if (currentUpdate?.status !== "updating") {
+    return null;
+  }
+  if (
+    currentUpdate.requestId &&
+    trigger.requestId &&
+    currentUpdate.requestId !== trigger.requestId
+  ) {
+    return null;
+  }
+
+  return {
+    touchMetadata: false,
+    nextProjection: {
+      ...currentProjection,
+      update: {
+        status: "expired",
+        requestId: trigger.requestId ?? currentUpdate.requestId,
+        channel: currentUpdate.channel,
+        queuedAt: currentUpdate.queuedAt,
+        finishedAt: trigger.finishedAt,
+        error: trigger.error ??
+          "Update timed out waiting for daemon acknowledgement",
+      },
+    },
+    writeProjection: true,
+    nextStatus: { ...existingStatus },
+    writeStatus: false,
+    geoDue: false,
+  };
+}
+
+function applyUpdateResetTrigger(ctx: ProjectionTriggerContext): ProjectionOutcome {
+  const { currentProjection, existingStatus } = ctx;
+  return {
+    touchMetadata: false,
+    nextProjection: {
+      ...currentProjection,
+      update: { status: "idle" },
+    },
+    writeProjection: true,
+    nextStatus: { ...existingStatus },
+    writeStatus: false,
+    geoDue: false,
+  };
+}
+
+function applyProjectionTrigger(
+  trigger: ProjectionTrigger,
+  ctx: ProjectionTriggerContext,
+): ProjectionOutcome {
+  switch (trigger.kind) {
+    case "online":
+      return applyOnlineTrigger(trigger, ctx);
+    case "offline":
+    case "disconnected":
+      return applyOfflineTrigger(ctx);
+    case "heartbeat":
+      return applyHeartbeatTrigger(trigger, ctx);
+    case "identity":
+      return applyIdentityTrigger(trigger, ctx);
+    case "agent":
+      return applyAgentTrigger(trigger, ctx);
+    case "update-queued":
+      return applyUpdateQueuedTrigger(trigger, ctx);
+    case "update-result":
+      return applyUpdateResultTrigger(trigger, ctx);
+    case "update-expired":
+      return applyUpdateExpiredTrigger(trigger, ctx);
+    case "update-reset":
+      return applyUpdateResetTrigger(ctx);
+  }
+}
+
 /**
  * Sparse projection into `server.daemon` — never clobbers `server.daemon.key`.
  * Liveness timestamps and connection status live in `server.daemon.status` jsonb.
@@ -320,197 +628,28 @@ export async function projectServerDaemon(
   const existing = await getServerDaemonStateByServerId(db, serverId);
   if (!existing) return false;
 
-  const currentProjection = existing.projection;
-  const existingStatus = existing.status ?? buildDefaultDaemonStatus();
   const now = nowTs();
-  const nowMs = Date.parse(now);
-  const patch: Record<string, unknown> = { updatedAt: now };
-  let touchMetadata = false;
-  let nextProjection: ServerDaemonProjection | undefined = currentProjection;
-  let writeProjection = false;
-  let nextStatus: ServerDaemonStatus = { ...existingStatus };
-  let writeStatus = false;
-  let incomingGeo: ServerGeo | undefined;
-  let geoDue = false;
+  const outcome = applyProjectionTrigger(trigger, {
+    existing,
+    currentProjection: existing.projection,
+    existingStatus: existing.status ?? buildDefaultDaemonStatus(),
+    now,
+    nowMs: Date.parse(now),
+    agentHint: context.agent,
+  });
 
-  switch (trigger.kind) {
-    case "online": {
-      const identity = mergeIdentity(currentProjection, trigger.identity);
-      const isOfflineToOnline = !existingStatus.connected;
-      const lastSeenDue = isOfflineToOnline ||
-        heartbeatDebounceElapsed(existingStatus.lastSeenAt, nowMs);
-      incomingGeo = trigger.identity.geo;
-      geoDue = geoRefreshDue(existing.metadata, currentProjection, trigger.identity);
-      const identityDue = identityChanged(currentProjection, identity);
-      touchMetadata = identityDue || geoDue;
-      if (identityDue || !currentProjection) {
-        nextProjection = buildIdentityProjection(currentProjection, identity);
-        if (context.agent) {
-          nextProjection = {
-            ...nextProjection,
-            agent: mergeAgentPreserving(currentProjection, context.agent),
-          };
-        }
-        writeProjection = true;
-      } else if (context.agent && agentChanged(currentProjection, context.agent)) {
-        nextProjection = {
-          ...currentProjection,
-          agent: mergeAgentPreserving(currentProjection, context.agent),
-        };
-        writeProjection = true;
-      }
-
-      if (!isOfflineToOnline && !lastSeenDue && !writeProjection && !geoDue) {
-        return false;
-      }
-
-      if (isOfflineToOnline) {
-        nextStatus = {
-          ...nextStatus,
-          connected: true,
-          daemonStatus: "online",
-          connectedAt: trigger.connectedAt ?? now,
-          statusChangedAt: now,
-        };
-        writeStatus = true;
-      }
-
-      if (lastSeenDue) {
-        nextStatus = { ...nextStatus, lastSeenAt: now };
-        writeStatus = true;
-      }
-      break;
-    }
-    case "offline":
-    case "disconnected": {
-      nextStatus = {
-        ...nextStatus,
-        connected: false,
-        daemonStatus: "offline",
-        disconnectedAt: now,
-        statusChangedAt: now,
-      };
-      writeStatus = true;
-      break;
-    }
-    case "heartbeat": {
-      const agent = trigger.agent ?? context.agent;
-      const lastSeenDue = heartbeatDebounceElapsed(existingStatus.lastSeenAt, nowMs);
-      const agentDue = agent?.commit && agent?.buildId &&
-        agentChanged(currentProjection, agent);
-
-      if (!lastSeenDue && !agentDue) {
-        return false;
-      }
-
-      if (lastSeenDue) {
-        nextStatus = { ...nextStatus, lastSeenAt: now };
-        writeStatus = true;
-      }
-
-      if (agentDue && agent) {
-        nextProjection = {
-          ...(currentProjection ?? {}),
-          agent: mergeAgentPreserving(currentProjection, agent),
-        };
-        writeProjection = true;
-      }
-      break;
-    }
-    case "identity": {
-      incomingGeo = trigger.identity.geo;
-      geoDue = geoRefreshDue(existing.metadata, currentProjection, trigger.identity);
-      const identityDue = identityChanged(currentProjection, trigger.identity);
-      if (!identityDue && !geoDue) {
-        return false;
-      }
-      touchMetadata = true;
-      if (identityDue) {
-        const identity = mergeIdentity(currentProjection, trigger.identity);
-        nextProjection = buildIdentityProjection(currentProjection, identity);
-        writeProjection = true;
-      }
-      break;
-    }
-    case "agent": {
-      if (!agentChanged(currentProjection, trigger.agent)) {
-        return false;
-      }
-      nextProjection = {
-        ...(currentProjection ?? {}),
-        agent: mergeAgentPreserving(currentProjection, trigger.agent),
-      };
-      writeProjection = true;
-      break;
-    }
-    case "update-queued": {
-      nextProjection = {
-        ...(currentProjection ?? {}),
-        update: {
-          status: "updating",
-          requestId: trigger.requestId,
-          channel: trigger.channel,
-          queuedAt: trigger.queuedAt,
-        },
-      };
-      writeProjection = true;
-      break;
-    }
-    case "update-result": {
-      nextProjection = {
-        ...(currentProjection ?? {}),
-        update: {
-          status: trigger.ok ? "done" : "failed",
-          requestId: trigger.requestId,
-          finishedAt: trigger.finishedAt,
-          ...(trigger.error ? { error: trigger.error } : {}),
-        },
-      };
-      writeProjection = true;
-      break;
-    }
-    case "update-expired": {
-      const currentUpdate = currentProjection?.update;
-      if (currentUpdate?.status !== "updating") {
-        return false;
-      }
-      if (
-        currentUpdate.requestId &&
-        trigger.requestId &&
-        currentUpdate.requestId !== trigger.requestId
-      ) {
-        return false;
-      }
-      nextProjection = {
-        ...(currentProjection ?? {}),
-        update: {
-          status: "expired",
-          requestId: trigger.requestId ?? currentUpdate.requestId,
-          channel: currentUpdate.channel,
-          queuedAt: currentUpdate.queuedAt,
-          finishedAt: trigger.finishedAt,
-          error: trigger.error ??
-            "Update timed out waiting for daemon acknowledgement",
-        },
-      };
-      writeProjection = true;
-      break;
-    }
-    case "update-reset": {
-      nextProjection = {
-        ...(currentProjection ?? {}),
-        update: { status: "idle" },
-      };
-      writeProjection = true;
-      break;
-    }
-  }
+  if (!outcome) return false;
+  const { touchMetadata, nextProjection, writeProjection, nextStatus, writeStatus, incomingGeo, geoDue } =
+    outcome;
 
   if (!writeStatus && !writeProjection && !geoDue) {
     return false;
   }
 
-  patch.daemon = buildMergedDaemonState(existing, nextProjection, nextStatus);
+  const patch: Record<string, unknown> = {
+    updatedAt: now,
+    daemon: buildMergedDaemonState(existing, nextProjection, nextStatus),
+  };
 
   if (touchMetadata) {
     const mergedMetadata = buildMetadataPatch(
@@ -535,7 +674,6 @@ export function identityFromSnapshot(
     hostname: snapshot.hostname,
     machineId: snapshot.machineId,
     remoteAddress: snapshot.remoteAddress,
-    keyId: snapshot.keyId,
   };
 }
 

@@ -124,7 +124,7 @@ class DurableObjectStubDaemonCell implements DaemonCell {
         [CELL_SERVER_ID_HEADER]: opts.serverId,
       };
       const init: RequestInit = {
-        method: opts.method ?? (opts.body != null ? "POST" : "GET"),
+        method: opts.method ?? (opts.body == null ? "GET" : "POST"),
         headers,
       };
       if (opts.body != null) {
@@ -155,10 +155,8 @@ class DurableObjectStubDaemonCell implements DaemonCell {
     }
   }
 
-  attachDaemonSocket(meta: {
+  async attachDaemonSocket(meta: {
     keyId: string;
-    hostname?: string;
-    machineId?: string;
     remoteAddress?: string;
     connectedAt?: string;
   }): Promise<{ connectionId: string; lease: DaemonCellLease }> {
@@ -175,6 +173,9 @@ class DurableObjectStubDaemonCell implements DaemonCell {
           this.#serverId,
           this,
           meta.connectedAt,
+          undefined,
+          undefined,
+          meta.keyId,
         );
       }
       return result;
@@ -183,7 +184,6 @@ class DurableObjectStubDaemonCell implements DaemonCell {
 
   detachDaemonSocket(params: {
     connectionId: string;
-    leaseToken: string;
     reason?: string;
     closedAt?: string;
   }): Promise<void> {
@@ -344,20 +344,19 @@ class DurableObjectStubDaemonCell implements DaemonCell {
 
   async renewDeliveryLease(
     holder: string,
-    token: string,
     ttlMs: number,
   ): Promise<DaemonCellLease | null> {
     const result = await this.#rpc<{ lease: DaemonCellLease | null }>(
       "/rpc/lease/renew",
-      { serverId: this.#serverId, body: { holder, token, ttlMs } },
+      { serverId: this.#serverId, body: { holder, ttlMs } },
     );
     return result.lease;
   }
 
-  releaseDeliveryLease(holder: string, token: string): Promise<void> {
+  releaseDeliveryLease(holder: string): Promise<void> {
     return this.#rpc("/rpc/lease/release", {
       serverId: this.#serverId,
-      body: { holder, token },
+      body: { holder },
     }).then(() => undefined);
   }
 

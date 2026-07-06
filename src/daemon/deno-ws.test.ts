@@ -1,7 +1,9 @@
 import { assert, assertEquals } from "jsr:@std/assert";
 import { Hono } from "hono";
 import {
-  deriveSecretsConfig,
+  deriveDaemonJwtKeyring,
+} from "./authn/daemon-jwt-keyring.ts";
+import {
   parseSecretsEnv,
 } from "../client/authn/secrets.ts";
 import type { Db } from "../db.ts";
@@ -32,18 +34,19 @@ import {
 
 async function createDaemonJwtSecrets() {
   const parsed = parseSecretsEnv(generateSecret(), undefined, "deno");
-  return deriveSecretsConfig(parsed, "daemon-jwt-signing");
+  return deriveDaemonJwtKeyring(parsed);
+}
+
+function createSelectChain<T>(getRows: () => T[]) {
+  const limit = () => Promise.resolve(getRows());
+  const where = () => ({ limit });
+  const from = () => ({ where });
+  return { from };
 }
 
 function createMockDb(): Db {
   return {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve([]),
-        }),
-      }),
-    }),
+    select: () => createSelectChain(() => []),
     update: () => ({
       set: () => ({
         where: () => Promise.resolve(undefined),
@@ -68,7 +71,7 @@ function mergeDaemonStatus(
     ...daemon,
     status: {
       ...buildDefaultDaemonStatus(),
-      ...(daemon.status ?? {}),
+      ...(daemon.status),
       ...statusOverrides,
     },
   };
@@ -88,13 +91,7 @@ function createProjectionTrackingDb(
   let updateCalls = 0;
 
   const db = {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve([{ daemon }]),
-        }),
-      }),
-    }),
+    select: () => createSelectChain(() => [{ daemon }]),
     update: () => ({
       set: (patch: Record<string, unknown>) => {
         updateCalls += 1;
@@ -146,7 +143,6 @@ function createTrackingDaemonCell(serverId: string) {
         connectionId: "track-conn",
         lease: {
           holder: "track-conn",
-          token: "track-conn",
           expiresAt: new Date(Date.now() + 45_000).toISOString(),
         },
       };
