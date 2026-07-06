@@ -26,7 +26,7 @@ export const accessSchemas = {
       },
     },
     description:
-      'One intended access grant stored on invitation.grants. Materialized into grant rows on invitation accept. Legacy payloads may use resourceKind/itemId aliases for entityType/entityId.',
+      'One intended access grant stored on invitation.grants. Materialized into grant rows on invitation accept.',
   },
   InvitationAcceptResponse: {
     type: 'object',

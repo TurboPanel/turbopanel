@@ -5,7 +5,7 @@ import {
 } from './daemon-install-command.ts'
 
 function extractLicenseArg(command: string): string {
-  const match = command.match(/--license ([^\s]+)/)
+  const match = /--license ([^\s]+)/.exec(command)
   if (!match) throw new Error('no --license in command')
   return match[1]
 }
@@ -17,7 +17,6 @@ describe('buildLicenseInstallCommand', () => {
       instanceUrl: 'https://huey.turbopanel.dev:8443',
       licenseId: 'license-id',
       licenseToken: 'token',
-      devRunScript: true,
       insecureTls: true,
     })
 
@@ -133,7 +132,7 @@ describe('buildLicenseInstallCommand', () => {
     const value = extractLicenseArg(command)
     expect(value).not.toMatch(/[:+/=]/)
 
-    const standard = value.replace(/-/g, '+').replace(/_/g, '/')
+    const standard = value.replaceAll('-', '+').replaceAll('_', '/')
     const padLen = (4 - (standard.length % 4)) % 4
     const padded = standard + '='.repeat(padLen)
     expect(atob(padded)).toBe(`${licenseId}:${licenseToken}`)

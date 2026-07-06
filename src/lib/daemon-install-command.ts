@@ -4,8 +4,8 @@ export function encodeLicenseArg(
 ): string {
   const combined = `${licenseId}:${licenseToken}`
   return btoa(combined)
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
+    .replaceAll('+', '-')
+    .replaceAll('/', '_')
     .replace(/=+$/, '')
 }
 
@@ -14,8 +14,6 @@ export function buildLicenseInstallCommand(opts: {
   instanceUrl: string
   licenseId: string
   licenseToken: string
-  /** @deprecated Deno installs always use run.sh from the instance host. */
-  devRunScript?: boolean
   /** Dev/self-signed installs: curl -k and pass --insecure-tls to run.sh. */
   insecureTls?: boolean
 }): string {

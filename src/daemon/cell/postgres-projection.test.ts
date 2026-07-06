@@ -27,8 +27,36 @@ function mergeDaemonStatus(
     ...daemon,
     status: {
       ...buildDefaultDaemonStatus(),
-      ...(daemon.status ?? {}),
+      ...daemon.status,
       ...statusOverrides,
+    },
+  };
+}
+
+function mockProjectionSelectRow(row: {
+  daemon: ServerDaemonState;
+  metadata: ServerMetadata | null;
+}) {
+  return {
+    from: () => ({
+      where: () => ({
+        limit: () => Promise.resolve([row]),
+      }),
+    }),
+  };
+}
+
+function mockProjectionUpdateChain(
+  updateCalls: Array<Record<string, unknown>>,
+  applyPatch: (patch: Record<string, unknown>) => void,
+) {
+  return {
+    set: (patch: Record<string, unknown>) => {
+      updateCalls.push(patch);
+      applyPatch(patch);
+      return {
+        where: () => Promise.resolve(undefined),
+      };
     },
   };
 }
@@ -48,28 +76,18 @@ function createMockDb(
   let daemon = mergeDaemonStatus(initialDaemon, statusOverrides);
   let metadata = initialMetadata;
 
+  const applyPatch = (patch: Record<string, unknown>) => {
+    if (patch.daemon) {
+      daemon = patch.daemon as ServerDaemonState;
+    }
+    if (patch.metadata !== undefined) {
+      metadata = patch.metadata as ServerMetadata | null;
+    }
+  };
+
   const db = {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve([{ daemon, metadata }]),
-        }),
-      }),
-    }),
-    update: () => ({
-      set: (patch: Record<string, unknown>) => {
-        updateCalls.push(patch);
-        if (patch.daemon) {
-          daemon = patch.daemon as ServerDaemonState;
-        }
-        if (patch.metadata !== undefined) {
-          metadata = patch.metadata as ServerMetadata | null;
-        }
-        return {
-          where: () => Promise.resolve(undefined),
-        };
-      },
-    }),
+    select: () => mockProjectionSelectRow({ daemon, metadata }),
+    update: () => mockProjectionUpdateChain(updateCalls, applyPatch),
   } as unknown as Db;
 
   return {
@@ -734,14 +752,19 @@ Deno.test("mergeAgentPreserving backfills optional fields for unchanged build", 
   );
 });
 
-Deno.test("readProjectionsForServers reads legacy connected projection as online", async () => {
-  const legacyDaemon = {
+Deno.test("readProjectionsForServers reads status.connected as online", async () => {
+  const connectedDaemon = {
     key: baseKey,
     projection: {
       hostname: "legacy-host",
+    },
+    status: {
       connected: true,
+      daemonStatus: "online",
       connectedAt: "2020-06-01T12:00:00.000Z",
-      lastProjectedAt: "2020-06-01T12:05:00.000Z",
+      lastSeenAt: "2020-06-01T12:05:00.000Z",
+      disconnectedAt: null,
+      statusChangedAt: "2020-06-01T12:00:00.000Z",
     },
   };
 
@@ -750,7 +773,7 @@ Deno.test("readProjectionsForServers reads legacy connected projection as online
       from: () => ({
         where: () => Promise.resolve([{
           id: serverId,
-          daemon: legacyDaemon,
+          daemon: connectedDaemon,
         }]),
       }),
     }),
@@ -823,19 +846,23 @@ Deno.test("projectServerDaemon update-expired writes projection.update as expire
   assertEquals(update?.finishedAt, "2020-01-01T00:05:00.000Z");
 });
 
-Deno.test("listConnectedServerIdsFromProjection includes legacy projection.connected rows", async () => {
-  const legacyDaemon: ServerDaemonState = {
+Deno.test("listConnectedServerIdsFromProjection includes status.connected rows", async () => {
+  const connectedDaemon: ServerDaemonState = {
     key: baseKey,
-    projection: {
+    status: {
       connected: true,
-      lastProjectedAt: "2020-01-01T00:00:00.000Z",
+      daemonStatus: "online",
+      lastSeenAt: "2020-01-01T00:00:00.000Z",
+      connectedAt: "2020-01-01T00:00:00.000Z",
+      disconnectedAt: null,
+      statusChangedAt: "2020-01-01T00:00:00.000Z",
     },
   };
   const db = {
     select: () => ({
       from: () => ({
         where: () => Promise.resolve([
-          { id: serverId, daemon: legacyDaemon },
+          { id: serverId, daemon: connectedDaemon },
         ]),
       }),
     }),

@@ -153,28 +153,4 @@ export const installOpenApiPaths: Record<string, unknown> = {
       },
     },
   },
-  '/api/install/v1/daemon-install.sh': {
-    get: {
-      tags: ['Install'],
-      summary: 'Daemon install script',
-      description:
-        'Returns a POSIX sh shim that validates privilege, accepts the same ' +
-        'base64url-encoded `--license` value as `run.sh`, and delegates to ' +
-        '`run.sh` on the instance host (or the CDN when `--host` is omitted). ' +
-        'Shell arguments (not HTTP query params): `--license <base64url>` ' +
-        '(required), optional `--host <instance-url>`, and optional ' +
-        '`--insecure-tls`. The script self-escalates with sudo when needed. ' +
-        'Deno self-hosted only.',
-      responses: {
-        '200': {
-          description: 'Install script',
-          content: {
-            'text/plain': {
-              schema: { type: 'string' },
-            },
-          },
-        },
-      },
-    },
-  },
 }

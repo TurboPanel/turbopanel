@@ -90,18 +90,19 @@ describe('getClientPublicStatus (Workers)', () => {
   })
 
   it('defaults signup to enabled on Workers when env is unset', async () => {
-    await expect(getClientPublicStatus(undefined, 'workers', undefined)).resolves.toEqual({
+    await expect(getClientPublicStatus(undefined, 'workers')).resolves.toEqual({
       ok: true,
       isSignupEnabled: true,
       isSignupEmailVerificationEnabled: false,
     })
   })
 
-  it('enables email verification for legacy Mailgun env-only Workers setups', async () => {
+  it('enables email verification when Workers mailgun provider is configured', async () => {
     await expect(
       getClientPublicStatus(undefined, 'workers', '1', {
-        TURBOPANEL_MAILGUN_API_KEY: 'key-abc',
-        TURBOPANEL_MAILGUN_DOMAIN: 'mg.example.com',
+        TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailgun',
+        TURBOPANEL_SYSTEM_EMAIL__MAILGUN_API_KEY: 'key-abc',
+        TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN: 'mg.example.com',
       }),
     ).resolves.toEqual({
       ok: true,

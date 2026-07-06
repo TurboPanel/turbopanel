@@ -685,7 +685,6 @@ export async function listConnectedServerIdsFromProjection(
     .from(server)
     .where(sql`(
       ${server.daemon}->'status'->>'connected' = 'true'
-      OR ${server.daemon}->'projection'->>'connected' = 'true'
     )`);
 
   const connected: string[] = [];

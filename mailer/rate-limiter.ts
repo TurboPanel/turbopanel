@@ -10,11 +10,6 @@ function readRateFromEnv(): number {
     const n = parsePositiveInt(hierarchical, 0)
     if (n > 0) return n
   }
-  const legacy = Deno.env.get('TURBOPANEL_MAILER_RATE_LIMIT_PER_MINUTE')
-  if (legacy !== undefined && legacy !== '') {
-    const n = parsePositiveInt(legacy, 0)
-    if (n > 0) return n
-  }
   return 60
 }
 

@@ -225,21 +225,30 @@ Deno.test(
     const at = new Date().toISOString();
 
     await cell.enqueue({
-      kind: "command",
+      kind: "command-dispatch",
       deliveryId,
       requestId,
       at,
-      command: "attrib-test",
+      commandId: "cmd-attrib",
+      commandType: "daemon.ping",
+      payload: {},
     });
 
     await cell.markSent(deliveryId, attached.connectionId, at);
     await cell.handleInbound({
-      kind: "command-result",
+      kind: "command-ack",
       requestId,
       at,
-      exitCode: 0,
-      stdout: "",
-      stderr: "",
+      daemonReceivedAt: at,
+    });
+    await cell.handleInbound({
+      kind: "command-outcome",
+      requestId,
+      at,
+      ok: true,
+      result: { pong: true },
+      daemonReceivedAt: at,
+      daemonRespondedAt: at,
     });
 
     const consumer = `ws:${attached.connectionId}`;
@@ -341,18 +350,22 @@ Deno.test(
     const secondId = generateRequestId();
 
     await cell.enqueue({
-      kind: "command",
+      kind: "command-dispatch",
       deliveryId: generateDeliveryId(),
       requestId: firstId,
       at,
-      command: "first",
+      commandId: "cmd-first",
+      commandType: "daemon.ping",
+      payload: {},
     });
     await cell.enqueue({
-      kind: "command",
+      kind: "command-dispatch",
       deliveryId: generateDeliveryId(),
       requestId: secondId,
       at,
-      command: "second",
+      commandId: "cmd-second",
+      commandType: "daemon.ping",
+      payload: {},
     });
 
     const batch = await cell.readOutboxBatch({ consumer, count: 10 });
@@ -373,11 +386,13 @@ Deno.test(
     const requestId = generateRequestId();
 
     await cell.enqueue({
-      kind: "command",
+      kind: "command-dispatch",
       deliveryId,
       requestId,
       at: new Date().toISOString(),
-      command: "echo",
+      commandId: "cmd-echo",
+      commandType: "daemon.ping",
+      payload: {},
     });
 
     assertEquals(await client.xlen(outboxKey(serverId)), 1);
@@ -402,11 +417,13 @@ Deno.test(
     const requestId = generateRequestId();
     const at = new Date().toISOString();
     const envelope = {
-      kind: "command" as const,
+      kind: "command-dispatch" as const,
       deliveryId,
       requestId,
       at,
-      command: "once",
+      commandId: "cmd-once",
+      commandType: "daemon.ping",
+      payload: {},
     };
 
     const first = await cell.enqueue(envelope);
@@ -427,18 +444,22 @@ Deno.test(
     const consumer1 = `ws:${firstAttach.connectionId}`;
 
     await cell.enqueue({
-      kind: "command",
+      kind: "command-dispatch",
       deliveryId: generateDeliveryId(),
       requestId: generateRequestId(),
       at: new Date().toISOString(),
-      command: "one",
+      commandId: "cmd-one",
+      commandType: "daemon.ping",
+      payload: { n: 1 },
     });
     await cell.enqueue({
-      kind: "command",
+      kind: "command-dispatch",
       deliveryId: generateDeliveryId(),
       requestId: generateRequestId(),
       at: new Date().toISOString(),
-      command: "two",
+      commandId: "cmd-two",
+      commandType: "daemon.ping",
+      payload: { n: 2 },
     });
 
     const firstRead = await cell.readOutboxBatch({
@@ -463,13 +484,12 @@ Deno.test(
       consumer: consumer2,
       count: 10,
     });
-    const commands = new Set(
+    const requestIds = new Set(
       reclaimed
-        .filter((entry) => entry.kind === "command")
-        .map((entry) => entry.command),
+        .filter((entry) => entry.kind === "command-dispatch")
+        .map((entry) => entry.requestId),
     );
-    assert(commands.has("one"));
-    assert(commands.has("two"));
+    assertEquals(requestIds.size, 2);
   }),
 );
 
@@ -479,11 +499,13 @@ Deno.test(
     const requestId = generateRequestId();
     await cell.enqueue(
       {
-        kind: "command",
+        kind: "command-dispatch",
         deliveryId: generateDeliveryId(),
         requestId,
         at: new Date().toISOString(),
-        command: "expire-me",
+        commandId: "cmd-expire",
+        commandType: "daemon.ping",
+        payload: {},
       },
       { ttlSeconds: 1 },
     );
@@ -499,11 +521,13 @@ Deno.test(
     const requestId = generateRequestId();
     const record = await cell.createRequestAndWait(
       {
-        kind: "command",
+        kind: "command-dispatch",
         deliveryId: generateDeliveryId(),
         requestId,
         at: new Date().toISOString(),
-        command: "noop",
+        commandId: "cmd-noop",
+        commandType: "daemon.ping",
+        payload: {},
       },
       300,
     );
@@ -860,11 +884,13 @@ Deno.test(
     const requestId = generateRequestId();
     const deliveryId = generateDeliveryId();
     const outbound = {
-      kind: "command" as const,
+      kind: "command-dispatch" as const,
       deliveryId,
       requestId,
       at: new Date().toISOString(),
-      command: "stale-command",
+      commandId: "cmd-stale",
+      commandType: "daemon.ping",
+      payload: {},
     };
 
     const expired = await cell.createRequestAndWait(outbound, 300);
@@ -886,32 +912,41 @@ Deno.test(
 );
 
 Deno.test(
-  "createRequestAndWait resolves done when inbound result arrives",
+  "createRequestAndWait resolves done when command-dispatch ack then outcome arrive",
   withRedisCell(async ({ cell }) => {
     const requestId = generateRequestId();
     const at = new Date().toISOString();
     const outbound = {
-      kind: "command" as const,
+      kind: "command-dispatch" as const,
       deliveryId: generateDeliveryId(),
       requestId,
       at,
-      command: "echo hi",
+      commandId: "cmd-wait",
+      commandType: "daemon.ping",
+      payload: {},
     };
 
     const waitPromise = cell.createRequestAndWait(outbound, 5000);
     await cell.enqueue(outbound);
     await cell.handleInbound({
-      kind: "command-result",
+      kind: "command-ack",
       requestId,
       at,
-      exitCode: 0,
-      stdout: "hi",
-      stderr: "",
+      daemonReceivedAt: at,
+    });
+    await cell.handleInbound({
+      kind: "command-outcome",
+      requestId,
+      at,
+      ok: true,
+      result: { pong: true },
+      daemonReceivedAt: at,
+      daemonRespondedAt: at,
     });
 
     const record = await waitPromise;
     assertEquals(record.status, "done");
-    assertEquals(record.result, { exitCode: 0, stdout: "hi", stderr: "" });
+    assertEquals(record.result, { pong: true });
   }),
 );
 
@@ -1599,20 +1634,29 @@ Deno.test(
     const requestId = generateRequestId();
     const at = new Date().toISOString();
     await cell.enqueue({
-      kind: "command",
+      kind: "command-dispatch",
       deliveryId: generateDeliveryId(),
       requestId,
       at,
-      command: "done",
+      commandId: "cmd-done",
+      commandType: "daemon.ping",
+      payload: {},
     });
 
     await cell.handleInbound({
-      kind: "command-result",
+      kind: "command-ack",
       requestId,
       at,
-      exitCode: 0,
-      stdout: "",
-      stderr: "",
+      daemonReceivedAt: at,
+    });
+    await cell.handleInbound({
+      kind: "command-outcome",
+      requestId,
+      at,
+      ok: true,
+      result: { pong: true },
+      daemonReceivedAt: at,
+      daemonRespondedAt: at,
     });
 
     const record = await cell.getRequest(requestId);

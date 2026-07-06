@@ -28,8 +28,6 @@ export type CreateAccessGrantInput = {
   actorId: string
   entityType: string
   entityId: string
-  allowed?: boolean
-  /** Alias for {@link allowed} — preferred name matching the `grant.allow` column. */
   allow?: boolean
   permissionKey: string
 }
@@ -458,7 +456,7 @@ export async function createAccessGrant(
     return actorResult
   }
 
-  const allow = input.allow ?? input.allowed ?? true
+  const allow = input.allow ?? true
 
   const inserted = await db
     .insert(grant)

@@ -11,7 +11,9 @@ import {
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-Deno.test("parseDaemonMessage round-trips valid JSON", () => {
+const TEST_PUBLIC_IPV4 = '203.0.113.1' // RFC 5737 TEST-NET-3
+
+Deno.test('parseDaemonMessage round-trips valid JSON', () => {
   const msg: DaemonMessage = {
     type: "heartbeat",
     at: "2020-01-01T00:00:00.000Z",
@@ -35,7 +37,7 @@ Deno.test("wireMessageToInboundEnvelope maps inbound wire types", () => {
       addresses: {
         privateIpv4: [],
         privateIpv6: [],
-        publicIpv4: ["1.2.3.4"],
+        publicIpv4: [TEST_PUBLIC_IPV4],
         publicIpv6: [],
       },
     }),
@@ -46,28 +48,9 @@ Deno.test("wireMessageToInboundEnvelope maps inbound wire types", () => {
       addresses: {
         privateIpv4: [],
         privateIpv6: [],
-        publicIpv4: ["1.2.3.4"],
+        publicIpv4: [TEST_PUBLIC_IPV4],
         publicIpv6: [],
       },
-    },
-  );
-
-  assertEquals(
-    wireMessageToInboundEnvelope({
-      type: "command-result",
-      id: "r3",
-      at,
-      exitCode: 0,
-      stdout: "ok",
-      stderr: "",
-    }),
-    {
-      kind: "command-result",
-      requestId: "r3",
-      at,
-      exitCode: 0,
-      stdout: "ok",
-      stderr: "",
     },
   );
 
@@ -209,9 +192,11 @@ Deno.test("wireMessageToInboundEnvelope maps inbound wire types", () => {
 Deno.test("wireMessageToInboundEnvelope returns null for non-inbound types", () => {
   assertEquals(
     wireMessageToInboundEnvelope({
-      type: "command",
+      type: "command-dispatch",
       id: "r7",
-      command: "echo hi",
+      commandId: "cmd-1",
+      commandType: "daemon.ping",
+      payload: {},
       at: "2020-01-01T00:00:00.000Z",
     }),
     null,
@@ -224,15 +209,6 @@ Deno.test("outboundEnvelopeToWireMessage maps outbound kinds", () => {
     requestId: "req-1",
     at: "2020-01-01T00:00:00.000Z",
   };
-
-  assertEquals(
-    outboundEnvelopeToWireMessage({
-      ...base,
-      kind: "command",
-      command: "uptime",
-    }),
-    { type: "command", id: "req-1", command: "uptime", at: base.at },
-  );
 
   assertEquals(
     outboundEnvelopeToWireMessage({ ...base, kind: "addresses-request" }),

@@ -6,7 +6,7 @@ function decodeBase64Url(input: string): Uint8Array {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.charCodeAt(i);
+    bytes[i] = binary.codePointAt(i) ?? 0;
   }
   return bytes;
 }
@@ -53,30 +53,6 @@ export function buildAuthPayload(params: {
     params.machineId,
     params.hostname,
   ].join("\n");
-}
-
-/**
- * @deprecated Use `buildAuthPayload()` for daemon auth payloads.
- */
-export function buildCanonicalPayload(params: {
-  challengeId: string;
-  nonce: string;
-  serverId?: string;
-  keyId?: string;
-  machineId?: string;
-  hostname?: string;
-  fingerprint?: string;
-}): string {
-  // Legacy callers may still pass `fingerprint` from the pre-split helper.
-  // Keep that path working by mapping it to auth `keyId`.
-  return buildAuthPayload({
-    challengeId: params.challengeId,
-    nonce: params.nonce,
-    serverId: params.serverId ?? "",
-    keyId: params.keyId ?? params.fingerprint ?? "",
-    machineId: params.machineId ?? "",
-    hostname: params.hostname ?? "",
-  });
 }
 
 export async function computePublicKeyFingerprint(

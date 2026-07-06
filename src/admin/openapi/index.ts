@@ -403,22 +403,6 @@ export function getAdminOpenApiSpec(
           },
         },
       },
-      ...(opts?.devSurface
-        ? {
-          [`${ADMIN_API_PREFIX}/daemon/command`]: {
-            post: {
-              tags: ['Daemon Fleet'],
-              summary: 'Run a shell command on all connected daemons (dev superadmin only)',
-              security: [...cookieSecurity],
-              responses: {
-                '200': { description: 'Command dispatched' },
-                '401': { description: 'Unauthorized' },
-                '403': { description: 'Forbidden — requires superadmin role' },
-              },
-            },
-          },
-        }
-        : {}),
       [`${ADMIN_API_PREFIX}/instance/addresses`]: {
         get: {
           tags: ['Instance'],

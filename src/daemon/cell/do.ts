@@ -430,27 +430,6 @@ export class DaemonCellObject {
         updated_at TEXT
       )
     `);
-    if (sqlCursorHasRow(this.#sql(
-      "ensure-schema",
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='cell_meta'",
-    ))) {
-      this.#sql("ensure-schema", `
-        INSERT OR IGNORE INTO cell (
-          server_id, remote_address, connected_at, last_seen_at,
-          key_last_used_at, agent_json, updated_at
-        )
-        SELECT
-          server_id, remote_address, connected_at, last_seen_at,
-          key_last_used_at, agent_json, updated_at
-        FROM cell_meta
-      `);
-      if (sqlCursorHasRow(this.#sql(
-        "ensure-schema",
-        "SELECT server_id FROM cell LIMIT 1",
-      ))) {
-        this.#sql("ensure-schema", "DROP TABLE cell_meta");
-      }
-    }
     this.#sql("ensure-schema", `
       CREATE TABLE IF NOT EXISTS leases (
         lease_name TEXT PRIMARY KEY,
@@ -469,7 +448,9 @@ export class DaemonCellObject {
         created_at TEXT,
         expires_at TEXT,
         sent_at TEXT,
-        acked_at TEXT
+        acked_at TEXT,
+        retry_count INTEGER DEFAULT 0,
+        retry_at TEXT
       )
     `);
     this.#sql("ensure-schema", `
@@ -490,34 +471,6 @@ export class DaemonCellObject {
         daemon_responded_at TEXT
       )
     `);
-    try {
-      this.#sql("ensure-schema", 
-        "ALTER TABLE requests ADD COLUMN daemon_received_at TEXT",
-      );
-    } catch {
-      // Column already exists on upgraded DOs.
-    }
-    try {
-      this.#sql("ensure-schema", 
-        "ALTER TABLE requests ADD COLUMN daemon_responded_at TEXT",
-      );
-    } catch {
-      // Column already exists on upgraded DOs.
-    }
-    try {
-      this.#sql("ensure-schema", 
-        "ALTER TABLE outbox ADD COLUMN retry_count INTEGER DEFAULT 0",
-      );
-    } catch {
-      // Column already exists on upgraded DOs.
-    }
-    try {
-      this.#sql("ensure-schema", 
-        "ALTER TABLE outbox ADD COLUMN retry_at TEXT",
-      );
-    } catch {
-      // Column already exists on upgraded DOs.
-    }
     this.#schemaReady = true;
   }
 
@@ -2163,14 +2116,6 @@ export class DaemonCellObject {
     let error: string | undefined;
 
     switch (inbound.kind) {
-      case "command-result":
-        status = "done";
-        result = {
-          exitCode: inbound.exitCode,
-          stdout: inbound.stdout,
-          stderr: inbound.stderr,
-        };
-        break;
       case "addresses-result":
         status = "done";
         result = { addresses: inbound.addresses };

@@ -21,13 +21,6 @@ export const serverSchemas = {
         description:
           'Last inbound WebSocket activity recorded in the daemon cell snapshot. Servers with no activity for 60s are treated as offline. Null when the daemon has never connected.',
       },
-      lastHeartbeatAt: {
-        type: ['string', 'null'],
-        format: 'date-time',
-        deprecated: true,
-        description:
-          'Deprecated alias for lastInboundAt.',
-      },
       connectedAt: {
         type: ['string', 'null'],
         format: 'date-time',

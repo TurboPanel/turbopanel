@@ -31,8 +31,6 @@ export type ServerFleetPresence = {
   keyId: string | null;
   connectedAt: string | null;
   lastProjectedAt: string | null;
-  /** @deprecated use {@link ServerFleetPresence.lastInboundAt} */
-  lastHeartbeatAt: string | null;
   lastInboundAt: string | null;
   lastSeenAt: string | null;
   keyLastUsedAt: string | null;
@@ -152,7 +150,6 @@ export async function resolveFleetPresence(
       connectedAt: snapshot?.connectedAt ?? projection?.connectedAt ?? null,
       lastProjectedAt: projection?.lastProjectedAt ?? null,
       lastInboundAt,
-      lastHeartbeatAt: lastInboundAt,
       lastSeenAt: snapshot?.lastSeenAt ?? projection?.lastSeenAt ??
         projection?.lastProjectedAt ?? null,
       keyLastUsedAt: snapshot?.keyLastUsedAt ?? null,

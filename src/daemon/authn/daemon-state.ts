@@ -157,46 +157,6 @@ function parseServerDaemonProjection(
   return parsed;
 }
 
-function hasLegacyProjectionLiveness(
-  projection: Record<string, unknown>,
-): boolean {
-  return typeof projection.connected === "boolean" ||
-    isNonEmptyString(projection.lastProjectedAt) ||
-    isNonEmptyString(projection.connectedAt);
-}
-
-/** Map pre-status jsonb rows that stored liveness under projection.* */
-function synthesizeStatusFromLegacyProjection(
-  raw: unknown,
-): ServerDaemonStatus | null {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return null;
-  }
-  const projection = raw as Record<string, unknown>;
-  if (!hasLegacyProjectionLiveness(projection)) {
-    return null;
-  }
-
-  const connected = typeof projection.connected === "boolean"
-    ? projection.connected
-    : false;
-  const lastSeenAt = isNonEmptyString(projection.lastProjectedAt)
-    ? projection.lastProjectedAt
-    : null;
-  const connectedAt = isNonEmptyString(projection.connectedAt)
-    ? projection.connectedAt
-    : null;
-
-  return {
-    connected,
-    daemonStatus: connected ? "online" : "offline",
-    lastSeenAt,
-    connectedAt,
-    disconnectedAt: null,
-    statusChangedAt: null,
-  };
-}
-
 function parseServerDaemonStatus(raw: unknown): ServerDaemonStatus | null {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     return null;
@@ -276,7 +236,7 @@ export function parseServerDaemonState(raw: unknown): ServerDaemonState | null {
     : undefined;
   const parsedStatus = state.status != null
     ? parseServerDaemonStatus(state.status)
-    : synthesizeStatusFromLegacyProjection(state.projection) ?? undefined;
+    : undefined;
 
   return {
     key: parsedKey,

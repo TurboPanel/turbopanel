@@ -148,20 +148,23 @@ Deno.test(
     const at = new Date().toISOString();
 
     await cell.enqueue({
-      kind: "command",
+      kind: "command-dispatch",
       deliveryId,
       requestId,
       at,
-      command: "echo lifecycle",
+      commandId: "cmd-lifecycle",
+      commandType: "daemon.ping",
+      payload: {},
     });
 
     const batch = await cell.readOutboxBatch({ consumer, count: 10 });
     assertEquals(batch.length, 1);
 
     const wire = outboundEnvelopeToWireMessage(batch[0]!);
-    assertEquals(wire.type, "command");
-    if (wire.type === "command") {
-      assertEquals(wire.command, "echo lifecycle");
+    assertEquals(wire.type, "command-dispatch");
+    if (wire.type === "command-dispatch") {
+      assertEquals(wire.commandId, "cmd-lifecycle");
+      assertEquals(wire.commandType, "daemon.ping");
       assertEquals(wire.id, requestId);
     }
 

@@ -47,21 +47,6 @@ export const EMAIL_SETTINGS_SCHEMA: Record<EmailSettingShortKey, string | undefi
   QUEUE_PREFETCH: '1',
 }
 
-export const EMAIL_ENV_ALIASES: Record<EmailSettingShortKey, readonly string[]> = {
-  PROVIDER: [],
-  FROM: ['TURBOPANEL_SYSTEM_EMAIL_FROM', 'SMTP_FROM'],
-  MAILGUN_API_KEY: ['TURBOPANEL_MAILGUN_API_KEY'],
-  MAILGUN_DOMAIN: ['TURBOPANEL_MAILGUN_DOMAIN'],
-  MAILGUN_REGION: [],
-  SMTP_HOST: ['SMTP_HOST'],
-  SMTP_PORT: ['SMTP_PORT'],
-  SMTP_USER: ['SMTP_USER'],
-  SMTP_PASS: ['SMTP_PASS'],
-  RATE_LIMIT_PER_MINUTE: ['TURBOPANEL_MAILER_RATE_LIMIT_PER_MINUTE'],
-  RATE_LIMIT_BURST: [],
-  QUEUE_PREFETCH: [],
-}
-
 export const EMAIL_SECRET_KEYS: ReadonlySet<EmailSettingShortKey> = new Set([
   'MAILGUN_API_KEY',
   'SMTP_PASS',
@@ -103,12 +88,9 @@ export function isEmailActive(settings: ResolvedEmailSettings): boolean {
 /** Apply runtime-specific provider normalization before activation checks. */
 export function normalizeEmailSettingsForRuntime(
   settings: ResolvedEmailSettings,
-  runtime: 'deno' | 'workers',
+  _runtime: 'deno' | 'workers',
 ): ResolvedEmailSettings {
-  if (runtime !== 'workers') return settings
-  const provider = resolveWorkersEmailProvider(settings)
-  if (provider === settings.provider) return settings
-  return { ...settings, provider }
+  return settings
 }
 
 /** Settings-based signup verification gate (Workers legacy Mailgun env included). */
@@ -137,19 +119,6 @@ function parseProvider(value: string): EmailProvider {
   if (value === 'mailgun') return 'mailgun'
   if (value === 'mailpit') return 'mailpit'
   return 'smtp'
-}
-
-function hasConfiguredMailgunCredentials(resolved: ResolvedEmailSettings): boolean {
-  const apiKey = resolved.mailgunApiKey?.trim() ?? ''
-  const domain = resolved.mailgunDomain?.trim() ?? ''
-  return apiKey !== '' && domain !== ''
-}
-
-/** Workers: legacy Mailgun env vars imply Mailgun when provider was never explicitly set. */
-export function resolveWorkersEmailProvider(resolved: ResolvedEmailSettings): EmailProvider {
-  if (resolved.provider === 'mailgun') return 'mailgun'
-  if (resolved.keys.PROVIDER.source !== 'default') return resolved.provider
-  return hasConfiguredMailgunCredentials(resolved) ? 'mailgun' : resolved.provider
 }
 
 function buildSmtpConfig(host: string, portRaw: string, user: string, pass?: string): SmtpConfig | undefined {
@@ -215,6 +184,19 @@ type EmailSettingMutation = {
   value: string | null
 }
 
+function isAllowedEmailSettingValue(
+  shortKey: EmailSettingShortKey,
+  trimmed: string,
+): boolean {
+  if (shortKey === 'PROVIDER') {
+    return trimmed === 'smtp' || trimmed === 'mailgun' || trimmed === 'mailpit'
+  }
+  if (shortKey === 'MAILGUN_REGION') {
+    return trimmed === 'us' || trimmed === 'eu'
+  }
+  return true
+}
+
 function collectEmailSettingMutations(
   resolver: SettingsResolver,
   updates: Record<string, string | null>,
@@ -235,13 +217,7 @@ function collectEmailSettingMutations(
 
     const trimmed = rawValue.trim()
     if (trimmed === '') continue
-
-    if (shortKey === 'PROVIDER' && trimmed !== 'smtp' && trimmed !== 'mailgun' && trimmed !== 'mailpit') {
-      continue
-    }
-    if (shortKey === 'MAILGUN_REGION' && trimmed !== 'us' && trimmed !== 'eu') {
-      continue
-    }
+    if (!isAllowedEmailSettingValue(shortKey, trimmed)) continue
 
     mutations.push({ shortKey, value: trimmed })
   }
@@ -315,7 +291,6 @@ async function createEmailSettingsResolver(
     keys: EMAIL_SETTINGS_SCHEMA,
     env,
     dbValues,
-    envAliases: EMAIL_ENV_ALIASES,
   })
 }
 

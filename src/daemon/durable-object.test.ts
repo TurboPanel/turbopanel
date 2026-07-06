@@ -1187,78 +1187,6 @@ describe("DaemonCellObject", () => {
     ws.close(1000, "test done");
   });
 
-  it("delivers enqueued commands over websocket and completes on inbound result", async () => {
-    const serverId = "test-srv-outbox";
-    const stub = env.DAEMON_CELL.getByName(serverId);
-    const { ws } = await openDaemonWebSocket(stub, serverId);
-
-    const requestId = generateRequestId();
-    const deliveryId = generateDeliveryId();
-    const at = new Date().toISOString();
-
-    const messagePromise = waitForWebSocketMessage(ws);
-
-    const enqueueResponse = await cellRpc(stub, serverId, "/rpc/enqueue", {
-      method: "POST",
-      body: JSON.stringify({
-        outbound: {
-          kind: "command",
-          deliveryId,
-          requestId,
-          at,
-          command: "echo test",
-        },
-        opts: { ttlSeconds: 300 },
-      }),
-    });
-    expect(enqueueResponse.status).toBe(200);
-
-    const raw = await messagePromise;
-    const msg = JSON.parse(raw) as {
-      type: string;
-      command?: string;
-      id?: string;
-    };
-    expect(msg.type).toBe("command");
-    expect(msg.command).toBe("echo test");
-    expect(msg.id).toBe(requestId);
-
-    ws.send(JSON.stringify({
-      type: "command-result",
-      id: requestId,
-      exitCode: 0,
-      stdout: "test",
-      stderr: "",
-      at: new Date().toISOString(),
-    }));
-
-    await waitFor(async () => {
-      const doneResponse = await cellRpc(
-        stub,
-        serverId,
-        `/rpc/request?requestId=${requestId}`,
-        { method: "GET" },
-      );
-      const doneBody = await doneResponse.json() as {
-        record: { status: string; result?: { stdout: string } } | null;
-      };
-      expect(doneBody.record?.status).toBe("done");
-      expect(doneBody.record?.result?.stdout).toBe("test");
-    });
-
-    await runInDurableObject(stub, async (_instance, state) => {
-      const cursor = state.storage.sql.exec(
-        "SELECT seq FROM outbox WHERE request_id = ?",
-        requestId,
-      );
-      if ([...cursor].length > 0) {
-        throw new Error("expected terminal outbox row to be deleted");
-      }
-    });
-
-    ws.close(1000, "test done");
-  });
-
   it(
     "evicts an existing websocket when a second attach succeeds for the same server",
     async () => {
@@ -1289,19 +1217,21 @@ describe("DaemonCellObject", () => {
         method: "POST",
         body: JSON.stringify({
           outbound: {
-            kind: "command",
+            kind: "command-dispatch",
             deliveryId,
             requestId,
             at,
-            command: "after-evict",
+            commandId: "cmd-evict",
+            commandType: "daemon.ping",
+            payload: {},
           },
         }),
       });
 
       const raw = await secondMessagePromise;
-      const msg = JSON.parse(raw) as { type: string; command?: string };
-      expect(msg.type).toBe("command");
-      expect(msg.command).toBe("after-evict");
+      const msg = JSON.parse(raw) as { type: string; commandType?: string };
+      expect(msg.type).toBe("command-dispatch");
+      expect(msg.commandType).toBe("daemon.ping");
       expect(firstReceived).toBe(false);
 
       await waitFor(() => {
@@ -1326,11 +1256,13 @@ describe("DaemonCellObject", () => {
       method: "POST",
       body: JSON.stringify({
         outbound: {
-          kind: "command",
+          kind: "command-dispatch",
           deliveryId,
           requestId,
           at,
-          command: "echo test",
+          commandId: "cmd-persist",
+          commandType: "daemon.ping",
+          payload: {},
         },
         opts: { ttlSeconds: 300 },
       }),
@@ -1348,24 +1280,39 @@ describe("DaemonCellObject", () => {
     };
     expect(queuedBody.record.status).toBe("queued");
 
-    const inboundResponse = await cellRpc(stub, serverId, "/rpc/inbound", {
+    const ackAt = new Date().toISOString();
+    const ackResponse = await cellRpc(stub, serverId, "/rpc/inbound", {
       method: "POST",
       body: JSON.stringify({
         inbound: {
-          kind: "command-result",
+          kind: "command-ack",
           requestId,
-          at,
-          exitCode: 0,
-          stdout: "test",
-          stderr: "",
+          at: ackAt,
+          daemonReceivedAt: ackAt,
         },
       }),
     });
-    const inboundBody = await inboundResponse.json() as {
-      record: { status: string; result?: { stdout: string } };
+    expect(ackResponse.status).toBe(200);
+
+    const outcomeResponse = await cellRpc(stub, serverId, "/rpc/inbound", {
+      method: "POST",
+      body: JSON.stringify({
+        inbound: {
+          kind: "command-outcome",
+          requestId,
+          at: ackAt,
+          ok: true,
+          result: { pong: true },
+          daemonReceivedAt: ackAt,
+          daemonRespondedAt: ackAt,
+        },
+      }),
+    });
+    const inboundBody = await outcomeResponse.json() as {
+      record: { status: string; result?: { pong: boolean } };
     };
     expect(inboundBody.record.status).toBe("done");
-    expect(inboundBody.record.result?.stdout).toBe("test");
+    expect(inboundBody.record.result?.pong).toBe(true);
 
     const refetchedStub = env.DAEMON_CELL.getByName(serverId);
     const persistedResponse = await cellRpc(
@@ -1375,10 +1322,10 @@ describe("DaemonCellObject", () => {
       { method: "GET" },
     );
     const persistedBody = await persistedResponse.json() as {
-      record: { status: string; result?: { stdout: string } } | null;
+      record: { status: string; result?: { pong: boolean } } | null;
     };
     expect(persistedBody.record?.status).toBe("done");
-    expect(persistedBody.record?.result?.stdout).toBe("test");
+    expect(persistedBody.record?.result?.pong).toBe(true);
   });
 
   it("alarm expires old request rows", async () => {
@@ -1390,11 +1337,13 @@ describe("DaemonCellObject", () => {
       method: "POST",
       body: JSON.stringify({
         outbound: {
-          kind: "command",
+          kind: "command-dispatch",
           deliveryId: generateDeliveryId(),
           requestId,
           at: new Date().toISOString(),
-          command: "short-lived",
+          commandId: "cmd-short-lived",
+          commandType: "daemon.ping",
+          payload: {},
         },
         opts: { ttlSeconds: 1 },
       }),
@@ -1629,11 +1578,13 @@ describe("DaemonCellObject", () => {
       method: "POST",
       body: JSON.stringify({
         outbound: {
-          kind: "command",
+          kind: "command-dispatch",
           deliveryId: generateDeliveryId(),
           requestId: generateRequestId(),
           at: new Date().toISOString(),
-          command: "queued-without-socket",
+          commandId: "cmd-queued",
+          commandType: "daemon.ping",
+          payload: {},
         },
       }),
     });
@@ -1661,25 +1612,20 @@ describe("DaemonCellObject", () => {
       method: "POST",
       body: JSON.stringify({
         outbound: {
-          kind: "command",
+          kind: "command-dispatch",
           deliveryId,
           requestId,
           at,
-          command: "drain-alarm",
+          commandId: "cmd-drain",
+          commandType: "daemon.ping",
+          payload: {},
         },
       }),
     });
 
     await messagePromise;
 
-    ws.send(JSON.stringify({
-      type: "command-result",
-      id: requestId,
-      exitCode: 0,
-      stdout: "ok",
-      stderr: "",
-      at: new Date().toISOString(),
-    }));
+    wsSendCommandOutcome(ws, requestId);
 
     await waitFor(async () => {
       const alarm = await runInDurableObject(
@@ -1739,11 +1685,13 @@ describe("DaemonCellObject", () => {
         method: "POST",
         body: JSON.stringify({
           outbound: {
-            kind: "command",
+            kind: "command-dispatch",
             deliveryId,
             requestId,
             at,
-            command: "retry-after-reconnect",
+            commandId: "cmd-retry",
+            commandType: "daemon.ping",
+            payload: {},
           },
         }),
       });
@@ -1776,15 +1724,15 @@ describe("DaemonCellObject", () => {
       const raw = await waitForWebSocketMessage(second.ws);
       const msg = JSON.parse(raw) as {
         type: string;
-        command?: string;
+        commandType?: string;
         id?: string;
       };
-      expect(msg.type).toBe("command");
-      expect(msg.command).toBe("retry-after-reconnect");
+      expect(msg.type).toBe("command-dispatch");
+      expect(msg.commandType).toBe("daemon.ping");
       expect(msg.id).toBe(requestId);
       expect(firstReceived).toBe(false);
 
-      wsSendCommandResult(second.ws, requestId);
+      wsSendCommandOutcome(second.ws, requestId);
 
       await waitFor(async () => {
         await runInDurableObject(stub, async (_instance, state) => {
@@ -1853,73 +1801,6 @@ describe("DaemonCellObject", () => {
       if ([...cursor].length > 0) {
         throw new Error("expected snapshot read to not recreate cell");
       }
-    });
-  });
-
-  it("cell_meta migration is idempotent when cell row already exists", async () => {
-    const serverId = "test-srv-cell-meta-migration";
-    const stub = env.DAEMON_CELL.getByName(serverId);
-    const updatedAt = new Date().toISOString();
-
-    await runInDurableObject(stub, async (instance: DaemonCellObject, state) => {
-      await instance.purge();
-      state.storage.sql.exec(`
-        CREATE TABLE cell (
-          server_id TEXT PRIMARY KEY,
-          remote_address TEXT,
-          connected_at TEXT,
-          last_seen_at TEXT,
-          key_last_used_at TEXT,
-          agent_json TEXT,
-          updated_at TEXT
-        )
-      `);
-      state.storage.sql.exec(
-        "INSERT INTO cell (server_id, remote_address, updated_at) VALUES (?, ?, ?)",
-        serverId,
-        "203.0.113.1",
-        updatedAt,
-      );
-      state.storage.sql.exec(`
-        CREATE TABLE cell_meta (
-          server_id TEXT PRIMARY KEY,
-          remote_address TEXT,
-          connected_at TEXT,
-          last_seen_at TEXT,
-          key_last_used_at TEXT,
-          agent_json TEXT,
-          updated_at TEXT
-        )
-      `);
-      state.storage.sql.exec(
-        "INSERT INTO cell_meta (server_id, remote_address, updated_at) VALUES (?, ?, ?)",
-        serverId,
-        "198.51.100.1",
-        updatedAt,
-      );
-    });
-
-    const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
-      method: "GET",
-    });
-    expect(snapshotResponse.status).toBe(200);
-    const snapshot = await snapshotResponse.json() as {
-      remoteAddress?: string;
-    };
-    expect(snapshot.remoteAddress).toBe("203.0.113.1");
-
-    await runInDurableObject(stub, async (_instance, state) => {
-      const metaTableNames = [
-        ...state.storage.sql.exec(
-          "SELECT name FROM sqlite_master WHERE type='table' AND name='cell_meta'",
-        ),
-      ].map((row) => String(row.name ?? ""));
-      expect(metaTableNames).toEqual([]);
-
-      const cellServerIds = [
-        ...state.storage.sql.exec("SELECT server_id FROM cell"),
-      ].map((row) => String(row.server_id ?? ""));
-      expect(cellServerIds).toEqual([serverId]);
     });
   });
 
@@ -2080,11 +1961,13 @@ describe("createRequestAndWait expiry parity", () => {
     const requestId = generateRequestId();
     const deliveryId = generateDeliveryId();
     const outbound = {
-      kind: "command" as const,
+      kind: "command-dispatch" as const,
       deliveryId,
       requestId,
       at: new Date().toISOString(),
-      command: "stale-command",
+      commandId: "cmd-stale",
+      commandType: "daemon.ping",
+      payload: {},
     };
 
     const expired = await cell.createRequestAndWait(outbound, 300);
@@ -2134,11 +2017,13 @@ describe("createRequestAndWait expiry parity", () => {
       method: "POST",
       body: JSON.stringify({
         outbound: {
-          kind: "command",
+          kind: "command-dispatch",
           deliveryId: generateDeliveryId(),
           requestId,
           at: new Date().toISOString(),
-          command: "expire-me",
+          commandId: "cmd-expire",
+          commandType: "daemon.ping",
+          payload: {},
         },
         opts: { ttlSeconds: 300 },
       }),
@@ -2392,11 +2277,13 @@ describe("command-dispatch correlation", () => {
       method: "POST",
       body: JSON.stringify({
         outbound: {
-          kind: "command",
+          kind: "command-dispatch",
           deliveryId,
           requestId,
           at,
-          command: "drain-pump-alarm",
+          commandId: "cmd-drain-pump",
+          commandType: "daemon.ping",
+          payload: {},
         },
       }),
     });
@@ -2439,11 +2326,13 @@ describe("command-dispatch correlation", () => {
       method: "POST",
       body: JSON.stringify({
         outbound: {
-          kind: "command",
+          kind: "command-dispatch",
           deliveryId,
           requestId,
           at,
-          command: "poison-row",
+          commandId: "cmd-poison",
+          commandType: "daemon.ping",
+          payload: {},
         },
       }),
     });
@@ -2679,13 +2568,21 @@ describe("command-dispatch correlation", () => {
   });
 });
 
-function wsSendCommandResult(ws: WebSocket, requestId: string): void {
+function wsSendCommandOutcome(ws: WebSocket, requestId: string): void {
+  const at = new Date().toISOString();
   ws.send(JSON.stringify({
-    type: "command-result",
+    type: "command-ack",
     id: requestId,
-    exitCode: 0,
-    stdout: "ok",
-    stderr: "",
-    at: new Date().toISOString(),
+    at,
+    daemonReceivedAt: at,
+  }));
+  ws.send(JSON.stringify({
+    type: "command-outcome",
+    id: requestId,
+    at,
+    ok: true,
+    result: { pong: true },
+    daemonReceivedAt: at,
+    daemonRespondedAt: at,
   }));
 }

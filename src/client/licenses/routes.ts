@@ -26,6 +26,48 @@ async function assertBillingOrOrgMember(
   return assertCanOr403(c, 'organization:own', 'organization', organizationId)
 }
 
+type LicenseCreateFields = {
+  displayName?: string
+  installBaseUrl?: string
+}
+
+function parseLicenseCreateFields(
+  rawBody: string,
+): LicenseCreateFields | 'invalid' {
+  if (!rawBody.trim()) {
+    return {}
+  }
+
+  let body: unknown
+  try {
+    body = JSON.parse(rawBody)
+  } catch {
+    return 'invalid'
+  }
+
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return 'invalid'
+  }
+
+  const record = body as Record<string, unknown>
+  const fields: LicenseCreateFields = {}
+
+  if (record.displayName !== undefined) {
+    if (typeof record.displayName !== 'string') {
+      return 'invalid'
+    }
+    fields.displayName = record.displayName
+  }
+  if (record.installBaseUrl !== undefined) {
+    if (typeof record.installBaseUrl !== 'string') {
+      return 'invalid'
+    }
+    fields.installBaseUrl = record.installBaseUrl
+  }
+
+  return fields
+}
+
 export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
   router.use('/licenses', createSessionMiddleware(opts.secrets))
   router.use('/licenses/:id', createSessionMiddleware(opts.secrets))
@@ -69,35 +111,12 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
     const session = c.get('session')
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    let displayName: string | undefined
-    let installBaseUrl: string | undefined
     const rawBody = await c.req.text().catch(() => '')
-    if (rawBody.trim()) {
-      let body: unknown
-      try {
-        body = JSON.parse(rawBody)
-      } catch {
-        return c.json({ error: 'Invalid request' }, 400)
-      }
-
-      if (body !== null && typeof body === 'object' && !Array.isArray(body)) {
-        const record = body as Record<string, unknown>
-        if (record.displayName !== undefined) {
-          if (typeof record.displayName !== 'string') {
-            return c.json({ error: 'Invalid request' }, 400)
-          }
-          displayName = record.displayName
-        }
-        if (record.installBaseUrl !== undefined) {
-          if (typeof record.installBaseUrl !== 'string') {
-            return c.json({ error: 'Invalid request' }, 400)
-          }
-          installBaseUrl = record.installBaseUrl
-        }
-      } else {
-        return c.json({ error: 'Invalid request' }, 400)
-      }
+    const parsedFields = parseLicenseCreateFields(rawBody)
+    if (parsedFields === 'invalid') {
+      return c.json({ error: 'Invalid request' }, 400)
     }
+    const { displayName, installBaseUrl } = parsedFields
 
     const orgResult = await getOrgId(c, session.userId)
     if (orgResult instanceof Response) return orgResult
@@ -112,7 +131,7 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
     // Workers, so don't gate it behind the Deno-only devSurface — that left
     // Workers dev unable to use the override at all.
     const parsedInstallBaseUrl = parseInstallBaseUrl(installBaseUrl)
-    if (installBaseUrl !== undefined && installBaseUrl.trim() && !parsedInstallBaseUrl) {
+    if (installBaseUrl?.trim() && !parsedInstallBaseUrl) {
       return c.json({ error: 'installBaseUrl must be a valid http(s) URL' }, 400)
     }
 
@@ -125,14 +144,13 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
     })
 
     const instanceUrl = parsedInstallBaseUrl ?? await resolvePublicBaseUrl(c, opts)
-    const devRunScript = devSurface || parsedInstallBaseUrl != null
+    const insecureTls = devSurface || parsedInstallBaseUrl != null
     const installCommand = buildLicenseInstallCommand({
       runtime: opts.runtime,
       instanceUrl,
       licenseId,
       licenseToken,
-      devRunScript,
-      insecureTls: devRunScript,
+      insecureTls,
     })
 
     compatLogInfo('auth', 'license created; licenseToken is shown once and not stored in plaintext')

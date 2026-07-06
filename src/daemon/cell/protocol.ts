@@ -42,15 +42,6 @@ export type DaemonMessage =
   | { type: "heartbeat"; at: string; agent?: DaemonAgentInfo }
   | { type: "echo"; payload: unknown; at: string }
   | { type: "version"; commit: string; branch: string; at: string }
-  | { type: "command"; id: string; command: string; at: string }
-  | {
-    type: "command-result";
-    id: string;
-    exitCode: number;
-    stdout: string;
-    stderr: string;
-    at: string;
-  }
   | { type: "addresses-request"; id: string; at: string }
   | {
     type: "addresses-result";
@@ -142,15 +133,12 @@ export const DAEMON_STALE_MS = 60_000;
 export const DAEMON_OFFLINE_SWEEP_MS = 150_000;
 /** Redis cell registry maintenance interval (prune); not used for liveness. */
 export const DAEMON_CELL_MAINTAIN_MS = 60_000;
-/** @deprecated use {@link DAEMON_CELL_MAINTAIN_MS} */
-export const DAEMON_PING_MS = DAEMON_CELL_MAINTAIN_MS;
 
 /** Message types accepted from daemons after authentication succeeds. */
 export const DAEMON_INBOUND_ALLOWED = new Set(
   [
     "hello",
     "heartbeat",
-    "command-result",
     "addresses-result",
     "dev-sync-result",
     "tunnel-token-result",
@@ -166,10 +154,10 @@ export const DAEMON_CELL_PING = '{"type":"ping"}';
 export const DAEMON_CELL_PONG = '{"type":"pong"}';
 
 /** Per-outbox-entry identity for queue send/ack/resend semantics. */
-export type OutboxDeliveryId = string;
+export type OutboxDeliveryId = string; // NOSONAR typescript:S6564 — semantic alias for delivery queue keys
 
 /** Correlation/idempotency key shared by all frames in a multi-message request. */
-export type OutboundRequestId = string;
+export type OutboundRequestId = string; // NOSONAR typescript:S6564 — semantic alias for request correlation
 
 type OutboundEnvelopeBase = {
   /** Unique outbox entry key; distinct for every queued delivery. */
@@ -181,7 +169,6 @@ type OutboundEnvelopeBase = {
 
 /** Cell-internal outbound envelope (normalized form, distinct from wire `DaemonMessage`). */
 export type DaemonOutboundEnvelope =
-  | (OutboundEnvelopeBase & { kind: "command"; command: string })
   | (OutboundEnvelopeBase & { kind: "addresses-request" })
   | (OutboundEnvelopeBase & {
     kind: "dev-sync";
@@ -219,14 +206,6 @@ export type DaemonInboundEnvelope =
     requestId: string;
     at: string;
     addresses: ServerAddresses;
-  }
-  | {
-    kind: "command-result";
-    requestId: string;
-    at: string;
-    exitCode: number;
-    stdout: string;
-    stderr: string;
   }
   | {
     kind: "dev-sync-result";
@@ -295,15 +274,6 @@ export function wireMessageToInboundEnvelope(
         at: msg.at,
         addresses: msg.addresses,
       };
-    case "command-result":
-      return {
-        kind: "command-result",
-        requestId: msg.id,
-        at: msg.at,
-        exitCode: msg.exitCode,
-        stdout: msg.stdout,
-        stderr: msg.stderr,
-      };
     case "dev-sync-result":
       return {
         kind: "dev-sync-result",
@@ -363,13 +333,6 @@ export function outboundEnvelopeToWireMessage(
   env: DaemonOutboundEnvelope,
 ): DaemonMessage {
   switch (env.kind) {
-    case "command":
-      return {
-        type: "command",
-        id: env.requestId,
-        command: env.command,
-        at: env.at,
-      };
     case "addresses-request":
       return { type: "addresses-request", id: env.requestId, at: env.at };
     case "dev-sync":

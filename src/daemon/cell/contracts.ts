@@ -44,7 +44,6 @@ export type DaemonCellSnapshot = {
   connectedAt?: string;
   lastInboundAt?: string;
   lastOutboundAt?: string;
-  lastHeartbeatAt?: string;
   lastSeenAt?: string;
   keyLastUsedAt?: string;
   addresses?: ServerAddresses;

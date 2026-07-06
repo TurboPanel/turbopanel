@@ -50,6 +50,37 @@ function parseGrantTarget(
   return { permissionKey }
 }
 
+function parseInvitationGrantEntry(
+  entry: unknown,
+): InvitationGrantSpec | null | 'invalid' {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+    return 'invalid'
+  }
+  const record = entry as Record<string, unknown>
+  const entityType =
+    typeof record.entityType === 'string' ? record.entityType : null
+  const entityId =
+    typeof record.entityId === 'string' ? record.entityId : null
+
+  if (!entityType || !entityId) {
+    return 'invalid'
+  }
+
+  const target = parseGrantTarget(record)
+  if (!target) return 'invalid'
+
+  if (record.allowed !== undefined && typeof record.allowed !== 'boolean') {
+    return 'invalid'
+  }
+
+  return {
+    entityType,
+    entityId,
+    permissionKey: target.permissionKey,
+    ...(typeof record.allowed === 'boolean' ? { allowed: record.allowed } : {}),
+  }
+}
+
 export function parseInvitationGrants(
   raw: unknown,
 ): InvitationGrantSpec[] | null {
@@ -58,57 +89,9 @@ export function parseInvitationGrants(
 
   const grants: InvitationGrantSpec[] = []
   for (const entry of raw) {
-    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
-      return null
-    }
-    const record = entry as Record<string, unknown>
-    const entityType =
-      typeof record.entityType === 'string'
-        ? record.entityType
-        : typeof record.resourceKind === 'string'
-          ? record.resourceKind
-          : null
-    const entityId =
-      typeof record.entityId === 'string'
-        ? record.entityId
-        : typeof record.itemId === 'string'
-          ? record.itemId
-          : null
-
-    if (!entityType || !entityId) {
-      return null
-    }
-
-    const target = parseGrantTarget(record)
-    if (!target) return null
-
-    const allowed = record.allowed
-    const effect = record.effect
-    if (allowed !== undefined && typeof allowed !== 'boolean') {
-      return null
-    }
-    if (
-      effect !== undefined &&
-      effect !== 'allow' &&
-      effect !== 'deny'
-    ) {
-      return null
-    }
-
-    const resolvedAllowed =
-      typeof allowed === 'boolean'
-        ? allowed
-        : effect === 'deny'
-          ? false
-          : undefined
-
-    const grantSpec: InvitationGrantSpec = {
-      entityType,
-      entityId,
-      permissionKey: target.permissionKey,
-      ...(resolvedAllowed !== undefined ? { allowed: resolvedAllowed } : {}),
-    }
-    grants.push(grantSpec)
+    const parsed = parseInvitationGrantEntry(entry)
+    if (parsed === 'invalid') return null
+    if (parsed) grants.push(parsed)
   }
 
   return grants.length > 0 ? grants : null

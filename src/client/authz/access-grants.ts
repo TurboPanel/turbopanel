@@ -34,7 +34,7 @@ export function mapGrantRows(rows: AtomicGrantRow[]): AccessRecord[] {
 }
 
 /** Delete a single access grant row by id. */
-export async function revokeLegacyAccessGrant(db: Db, accessId: string): Promise<boolean> {
+export async function revokeAccessGrant(db: Db, accessId: string): Promise<boolean> {
   const deleted = await db
     .delete(grant)
     .where(eq(grant.id, accessId))

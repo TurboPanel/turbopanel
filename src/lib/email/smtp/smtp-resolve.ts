@@ -11,21 +11,21 @@ export type SmtpConfig = {
 export type SmtpRuntimeEnv = Record<string, string | undefined>
 
 export function smtpEnvOverrideActive(env: SmtpRuntimeEnv): boolean {
-  const host = env.SMTP_HOST?.trim() ?? env.TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST?.trim() ?? ''
-  const port = env.SMTP_PORT?.trim() ?? env.TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT?.trim() ?? ''
+  const host = env.TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST?.trim() ?? ''
+  const port = env.TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT?.trim() ?? ''
   return host !== '' && port !== ''
 }
 
 export function smtpConfigFromRuntimeEnv(env: SmtpRuntimeEnv): SmtpConfig | undefined {
-  const host = env.SMTP_HOST?.trim() ?? env.TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST?.trim() ?? ''
-  const portRaw = env.SMTP_PORT?.trim() ?? env.TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT?.trim() ?? ''
+  const host = env.TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST?.trim() ?? ''
+  const portRaw = env.TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT?.trim() ?? ''
   if (host === '' || portRaw === '') return undefined
 
   const port = Number.parseInt(portRaw, 10)
   if (Number.isNaN(port)) return undefined
 
-  const user = env.SMTP_USER?.trim() ?? env.TURBOPANEL_SYSTEM_EMAIL__SMTP_USER?.trim() ?? ''
-  const pass = env.SMTP_PASS ?? env.TURBOPANEL_SYSTEM_EMAIL__SMTP_PASS
+  const user = env.TURBOPANEL_SYSTEM_EMAIL__SMTP_USER?.trim() ?? ''
+  const pass = env.TURBOPANEL_SYSTEM_EMAIL__SMTP_PASS
   return {
     host,
     port,

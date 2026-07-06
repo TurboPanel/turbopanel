@@ -37,7 +37,6 @@ import {
 import {
   colocatedServerUpdateBlockedReason,
   isStaleProjectedUpdating,
-  loadServerStatusRecords,
   resolveServerUpdateStatus,
   type ServerUpdateCommit,
 } from './update-status.ts'
@@ -50,36 +49,6 @@ const UPDATE_REQUEST_TTL_SECONDS = 300
 
 const STATUS_CACHE_CONTROL = 'private, max-age=5'
 const STATUS_CACHE_MAX_AGE_MS = 5_000
-
-type BatchStatusPayload = {
-  servers: Awaited<ReturnType<typeof loadServerStatusRecords>>
-}
-
-type BatchStatusCoalesceEntry = {
-  expiresAt: number
-  promise?: Promise<BatchStatusPayload>
-  result?: BatchStatusPayload
-}
-
-const batchStatusCoalesce = new Map<string, BatchStatusCoalesceEntry>()
-
-function buildBatchStatusCoalesceKey(
-  userId: string,
-  organizationId: string,
-  visibleIds: string[],
-): string {
-  const sortedIds = [...visibleIds].sort()
-  return `${userId}:${organizationId}:${sortedIds.join(',')}`
-}
-
-function evictExpiredBatchStatusEntries(now = Date.now()): void {
-  for (const [key, entry] of batchStatusCoalesce) {
-    if (entry.promise) continue
-    if (entry.expiresAt <= now) {
-      batchStatusCoalesce.delete(key)
-    }
-  }
-}
 
 type QueuedUpdateResult = {
   ok: true
@@ -154,7 +123,7 @@ async function repairProjectedUpdateIfStale(
   current: ServerUpdateCommit | null,
   targetCommit?: string,
 ): Promise<UpdateProjection | null | undefined> {
-  if (!projectedUpdate || projectedUpdate.status !== 'updating') {
+  if (projectedUpdate?.status !== 'updating') {
     return projectedUpdate
   }
 
@@ -231,8 +200,7 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
           hostname: live?.hostname ?? null,
           remoteAddress: live?.remoteAddress ?? null,
           colocatedWithInstance: colocatedIds.has(row.id),
-          lastInboundAt: live?.lastInboundAt ?? live?.lastHeartbeatAt ?? null,
-          lastHeartbeatAt: live?.lastInboundAt ?? live?.lastHeartbeatAt ?? null,
+          lastInboundAt: live?.lastInboundAt ?? null,
           connectedAt: live?.connectedAt ?? null,
           geo: live?.geo ?? null,
           licenseId: row.licenseId ?? null,
@@ -417,7 +385,7 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
 
   // DEBUG/DIAGNOSTIC ENDPOINT — hits the Durable Object directly via fetchDaemonServerCell.
   // Must NOT be polled by normal UI. Only call on explicit user action (e.g. a manual Refresh button).
-  // TODO: restrict to admin or add rate limiting before exposing broadly.
+  // Future: restrict to admin or add rate limiting before exposing broadly.
   router.get('/servers/:id/cell', async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)

@@ -20,10 +20,9 @@ Deno.test("extractCloudflareGeo maps cf.colo to datacenter", () => {
   });
 });
 
-Deno.test("parseServerGeo accepts legacy colo field as datacenter", () => {
+Deno.test("parseServerGeo ignores legacy colo field", () => {
   assertEquals(parseServerGeo({ country: "US", colo: "AMS" }), {
     country: "US",
-    datacenter: "AMS",
   });
 });
 

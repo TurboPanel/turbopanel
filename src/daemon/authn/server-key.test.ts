@@ -2,7 +2,6 @@ import { assertEquals } from "jsr:@std/assert";
 import { encodeBase64Url } from "@std/encoding/base64url";
 import {
   buildAuthPayload,
-  buildCanonicalPayload,
   buildEnrollmentPayload,
   computePublicKeyFingerprint,
   verifyDaemonSignature,
@@ -33,36 +32,6 @@ async function signPayload(
   );
   return encodeBase64Url(new Uint8Array(signature));
 }
-
-Deno.test("buildCanonicalPayload aliases auth payload format", () => {
-  const payload = buildCanonicalPayload({
-    challengeId: "challenge-123",
-    nonce: "nonce-456",
-    serverId: "server-789",
-    keyId: "key-321",
-    machineId: "machine-abc",
-    hostname: "host.local",
-  });
-  assertEquals(
-    payload,
-    "turbopanel-daemon-auth-v1\nchallenge-123\nnonce-456\nserver-789\nkey-321\nmachine-abc\nhost.local",
-  );
-});
-
-Deno.test("buildCanonicalPayload maps legacy fingerprint to auth keyId", () => {
-  const payload = buildCanonicalPayload({
-    challengeId: "challenge-123",
-    nonce: "nonce-456",
-    serverId: "server-789",
-    machineId: "machine-abc",
-    hostname: "host.local",
-    fingerprint: "fingerprint-xyz",
-  });
-  assertEquals(
-    payload,
-    "turbopanel-daemon-auth-v1\nchallenge-123\nnonce-456\nserver-789\nfingerprint-xyz\nmachine-abc\nhost.local",
-  );
-});
 
 Deno.test("buildEnrollmentPayload renders exact enrollment canonical payload", () => {
   const payload = buildEnrollmentPayload({
@@ -105,10 +74,11 @@ Deno.test("computePublicKeyFingerprint is deterministic", async () => {
 Deno.test("verifyDaemonSignature accepts valid signature", async () => {
   const keyPair = await generateEd25519KeyPair();
   const publicJwk = await exportPublicJwk(keyPair.publicKey);
-  const payload = buildCanonicalPayload({
+  const payload = buildAuthPayload({
     challengeId: "challenge-1",
     nonce: "nonce-1",
     serverId: "server-1",
+    keyId: "key-1",
     machineId: "machine-1",
     hostname: "host-1",
   });
@@ -120,10 +90,11 @@ Deno.test("verifyDaemonSignature accepts valid signature", async () => {
 Deno.test("verifyDaemonSignature rejects tampered payload", async () => {
   const keyPair = await generateEd25519KeyPair();
   const publicJwk = await exportPublicJwk(keyPair.publicKey);
-  const payload = buildCanonicalPayload({
+  const payload = buildAuthPayload({
     challengeId: "challenge-2",
     nonce: "nonce-2",
     serverId: "server-2",
+    keyId: "key-2",
     machineId: "machine-2",
     hostname: "host-2",
   });
@@ -137,10 +108,11 @@ Deno.test("verifyDaemonSignature rejects signature from different keypair", asyn
   const signer = await generateEd25519KeyPair();
   const verifier = await generateEd25519KeyPair();
   const verifierPublicJwk = await exportPublicJwk(verifier.publicKey);
-  const payload = buildCanonicalPayload({
+  const payload = buildAuthPayload({
     challengeId: "challenge-3",
     nonce: "nonce-3",
     serverId: "server-3",
+    keyId: "key-3",
     machineId: "machine-3",
     hostname: "host-3",
   });

@@ -32,6 +32,27 @@ The **daemon is the constant** installed on every TurboPanel-managed host and is
 - Do not record secrets, tokens, or machine-specific credentials.
 - Remove or correct notes that prove wrong.
 
+### TypeScript style (SonarQube)
+
+- Prefer **`String#replaceAll()`** over **`String#replace()` with a global regex** when replacing every occurrence of a substring (`typescript:S7781`).
+- Use **`String.raw`** for string literals that contain backslashes so escapes stay readable and correct (`typescript:S7780`).
+- Prefer **optional chaining** (`obj?.prop`) over `!obj || obj.prop` (`typescript:S6582`).
+- Use **`new TypeError()`** for type/shape assertions in tests (`typescript:S7786`).
+- Avoid **nested ternaries** — use `if`/`switch` or helpers (`typescript:S3358`).
+- Extract helpers when **cognitive complexity** exceeds 15 (`typescript:S3776`).
+- Sort strings with **`.sort((a, b) => a.localeCompare(b))`** (`typescript:S2871`).
+- Mark React component props **`Readonly<{…}>`** (`typescript:S6759`).
+- Omit optional parameters instead of passing redundant **`undefined`** (`typescript:S4623`).
+- Prefer **`String#codePointAt()`** over **`charCodeAt()`** when decoding byte strings (`typescript:S7758`).
+- Use **`RegExp.exec()`** instead of `String.match()` for single-match extraction (`typescript:S6594`).
+- Do not leave **`TODO`** in code — use `Future:` in a normal comment (`typescript:S1135`).
+- Use **RFC 5737 TEST-NET** addresses (e.g. `203.0.113.x`) in tests, not arbitrary public IPs (`typescript:S1313`).
+- Add **`// NOSONAR rule-key — reason`** when a semantic type alias or path check is intentional (`typescript:S6564`, `typescript:S5443`).
+
+### Ansible style (SonarQube)
+
+- Prefer **`mode: "0640"`** / **`0750"`** with explicit **`owner`** / **`group`** over world-readable modes (`ansible:S2612`).
+
 `README.md` is for humans getting started; `AGENTS.md` is for agents maintaining the system.
 
 Unit tests use non-production secrets from `src/test-fixtures/secrets.ts` (`TEST_ONLY_TURBOPANEL_SECRET`). Vitest Workers config uses the same naming convention in `wrangler.vitest.jsonc`. The secret scanner allowlists only exact fixture lines in `.secretscan-allowlist` — do not add broad exclusions.
@@ -281,7 +302,7 @@ Postgres remains canonical for business data (`server`). The cell is the low-lat
 
 **WS upgrade flow:** JWT verified in the main isolate/process → cell `attachDaemonSocket` acquires the single-writer lease → outbox delivery is alarm-scheduled (`#pumpOutboxToDaemonSockets`; not a perpetual in-DO loop) → `detachDaemonSocket` releases the lease on close.
 
-**DO storage schema (Workers):** SQLite tables in `DaemonCellObject` (`#ensureSchema` in `src/daemon/cell/do.ts`). The legacy `cell_meta` table was renamed to `cell` with a one-time idempotent row migration + drop in `#ensureSchema`.
+**DO storage schema (Workers):** SQLite tables in `DaemonCellObject` (`#ensureSchema` in `src/daemon/cell/do.ts`).
 
 | Table | Columns |
 |---|---|
@@ -436,7 +457,6 @@ Credential-account passwords use **PBKDF2-HMAC-SHA256** via `crypto.subtle` (`sr
 - **Enrollment challenge + proof**: daemon requests `POST /api/daemon/v1/auth/challenge` (no credentials), signs `buildEnrollmentPayload()` (`turbopanel-daemon-enroll-v1` canonical format), then calls `POST /api/daemon/v1/enroll` with `{ licenseId, licenseToken, publicJwk, challengeId, signature, ... }`. The instance verifies license + proof-of-possession, resolves/creates `server`, and stores the daemon public key on the server row.
 - **Auth challenge + session token**: enrolled daemon requests `POST /api/daemon/v1/auth/challenge` with `{ serverId, keyId }`, signs `buildAuthPayload()` (`turbopanel-daemon-auth-v1` canonical format), then calls `POST /api/daemon/v1/auth/session` to receive a **15-minute stateless JWT**.
 - **JWT enforcement**: protected daemon REST routes use `requireDaemonJwt` middleware (`Authorization: Bearer <token>`) only on `/commands/lease` and `/secrets/decrypt`; exempt routes include `GET /readiness`, `GET /instance/ca`, `GET /jwks.json`, `GET /openapi.json`, `GET /reference`, `POST /auth/challenge`, `POST /enroll`, and `POST /auth/session`. JWT verification checks signature, expiry, and claims only — no session row lookup.
-- **Canonical payload helper status**: `buildCanonicalPayload` is deprecated and aliases `buildAuthPayload` for compatibility (legacy `fingerprint` inputs are mapped to auth `keyId`).
 - Remote WSS connections require a valid daemon JWT at upgrade time; unauthenticated server row creation from `hostname`/`machineId` alone is disallowed.
 - Co-located socket daemons use the same auth model; there is no unauthenticated bypass.
 - `DAEMON_INBOUND_ALLOWED` in `src/daemon/cell/protocol.ts` is a static set of accepted post-auth message types — not an authz system.
@@ -594,12 +614,10 @@ The **`mailer/`** consumer runs as **`turbopanel-mailer.service`** on managed ho
 | `TURBOPANEL_DATABASE_URL` | Deno mailer | Postgres for DB-backed SMTP settings (`setting` table); same URL as the instance |
 | `TURBOPANEL_REDIS_SOCKET` | Deno | Unix socket path used by the Daemon Cell Redis backend (`src/daemon/cell/redis/client.ts`); default `/run/turbopanel/redis.sock` |
 | `TURBOPANEL_BASE_URL` | Deno | Public base URL for verification links (falls back to request origin) |
-| `TURBOPANEL_MAILGUN_API_KEY` | Workers | Mailgun API key |
-| `TURBOPANEL_MAILGUN_DOMAIN` | Workers | Mailgun sending domain |
 | `TURBOPANEL_SYSTEM_EMAIL__PROVIDER` | Deno instance (dev) / Deno mailer (dev) | Injected by Ansible in dev: `smtp` on the instance unit (SMTP → Mailpit port 1025); `mailpit` on the mailer unit (Mailpit HTTP API, no SMTP install needed) |
+| `TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST` / `TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT` | Deno instance (dev) | Ansible injects Mailpit SMTP host/port into **`turbopanel-instance.service`** so the instance can resolve `from`/SMTP settings when enqueueing to RabbitMQ — the instance does not send over SMTP |
+| `TURBOPANEL_SYSTEM_EMAIL__RATE_LIMIT_PER_MINUTE` | Deno mailer | Token-bucket rate limit (default 60) |
 | `MAILPIT_API_URL` | Deno mailer (dev) | Mailpit HTTP API base URL (e.g. `http://127.0.0.1:8025`); used by the `mailpit` provider sender in `mailer/mailpit-sender.ts`; falls back to `http://127.0.0.1:${MAILPIT_WEB_PORT ?? 8025}` |
-| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | Deno instance (legacy aliases) / Deno mailer (prod) | Legacy aliases (not primary keys). **Dev instance path:** Ansible injects `TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST=127.0.0.1` and `TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT=1025` into **`turbopanel-instance.service`** so the instance can resolve `from`/SMTP settings when enqueueing to RabbitMQ — the instance does not send over SMTP. **Dev mailer path:** the mailer unit uses `TURBOPANEL_SYSTEM_EMAIL__PROVIDER=mailpit` and `MAILPIT_API_URL` (port 8025), not these SMTP vars. In production the mailer reads SMTP settings from DB/env via the same legacy `SMTP_*` aliases. |
-| `TURBOPANEL_MAILER_RATE_LIMIT_PER_MINUTE` | Deno mailer | Token-bucket rate limit (default 60) |
 | `MAILPIT_SMTP_PORT` | Deno mailer | Mailpit SMTP port used as fallback when no SMTP config (default 1025) |
 
 ### Settings-driven configuration (`TURBOPANEL_SYSTEM_EMAIL__*`)
@@ -612,20 +630,20 @@ TURBOPANEL_SYSTEM_EMAIL__<SHORT_KEY>
 
 Examples: `TURBOPANEL_SYSTEM_EMAIL__PROVIDER`, `TURBOPANEL_SYSTEM_EMAIL__FROM`, `TURBOPANEL_SYSTEM_EMAIL__RATE_LIMIT_PER_MINUTE`.
 
-**Env-wins semantics**: when an env var for a key (primary full key or documented legacy alias) is present and non-empty, it takes precedence over any DB value and the default. DB values are only used when no overriding env var is set. The admin UI reflects this (env-overridden secrets are hidden; DB secrets are masked).
+**Env-wins semantics**: when a `TURBOPANEL_SYSTEM_EMAIL__*` env var is present and non-empty, it takes precedence over any DB value and the default. DB values are only used when no overriding env var is set. The admin UI reflects this (env-overridden secrets are hidden; DB secrets are masked).
 
 **DB storage (self-hosted):** email settings are persisted as a single `setting` row with `key = 'SYSTEM_EMAIL'` and `value` as a JSON object (e.g. `{ "PROVIDER": "smtp", "FROM": "noreply@turbopanel.local" }`). Short keys match `EMAIL_SETTING_SHORT_KEYS` in `src/lib/settings/email-settings.ts`. When env vars (`TURBOPANEL_SYSTEM_EMAIL__*`) override all keys, the `SYSTEM_EMAIL` row may remain absent — env always wins and the resolver never reads per-key `setting` rows for email.
 
 Short keys and new rate/queue keys (added to `src/lib/settings/email-settings.ts`):
 
-| Short key | Default | Legacy alias (env) | Notes |
+| Short key | Default | Env key | Notes |
 |---|----|----|----|
-| `PROVIDER` | `smtp` | — | `smtp`, `mailgun`, or `mailpit` (dev only — Mailpit HTTP API sender) |
-| `FROM` | `noreply@turbopanel.local` | `TURBOPANEL_SYSTEM_EMAIL_FROM`, `SMTP_FROM` | |
-| `MAILGUN_API_KEY` | — | `TURBOPANEL_MAILGUN_API_KEY` | secret |
-| `MAILGUN_DOMAIN` | — | `TURBOPANEL_MAILGUN_DOMAIN` | |
-| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | — | `SMTP_*` | |
-| `RATE_LIMIT_PER_MINUTE` | `60` | `TURBOPANEL_MAILER_RATE_LIMIT_PER_MINUTE` | used by the Deno mailer |
+| `PROVIDER` | `smtp` | `TURBOPANEL_SYSTEM_EMAIL__PROVIDER` | `smtp`, `mailgun`, or `mailpit` (dev only — Mailpit HTTP API sender) |
+| `FROM` | `noreply@turbopanel.local` | `TURBOPANEL_SYSTEM_EMAIL__FROM` | |
+| `MAILGUN_API_KEY` | — | `TURBOPANEL_SYSTEM_EMAIL__MAILGUN_API_KEY` | secret |
+| `MAILGUN_DOMAIN` | — | `TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN` | |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | — | `TURBOPANEL_SYSTEM_EMAIL__SMTP_*` | |
+| `RATE_LIMIT_PER_MINUTE` | `60` | `TURBOPANEL_SYSTEM_EMAIL__RATE_LIMIT_PER_MINUTE` | used by the Deno mailer |
 | `RATE_LIMIT_BURST` | same as rate | — | max bucket size; see mailer throttling |
 | `QUEUE_PREFETCH` | `1` | — | RabbitMQ `channel.prefetch` for the mailer consumer |
 
@@ -701,7 +719,7 @@ sequenceDiagram
 - `src/client/authz/` — four-value permission catalog, `can`/`listVisible`, grant management
 - `src/daemon/api-routes.ts` / `src/daemon/deno-ws.ts` / `src/daemon/workers-ws.ts` — daemon REST + WS (cell-backed)
 - `src/daemon/cell/contracts.ts` — `DaemonCell` interface, `DaemonCellRegistry`, DTOs
-- `src/daemon/cell/protocol.ts` — `DaemonMessage`, envelope codecs, `DAEMON_INBOUND_ALLOWED`, `DAEMON_STALE_MS`, `DAEMON_PING_MS`
+- `src/daemon/cell/protocol.ts` — `DaemonMessage`, envelope codecs, `DAEMON_INBOUND_ALLOWED`, `DAEMON_STALE_MS`
 - `src/daemon/cell/do.ts` — `DaemonCellObject` (SQLite-backed Durable Object, Workers)
 - `src/daemon/cell/do-registry.ts` — `createDurableObjectDaemonCellRegistry`
 - `src/daemon/cell/redis/` — `RedisDaemonCell`, `RedisCellClient`, `createRedisDaemonCellRegistry` (Deno only)
@@ -714,7 +732,7 @@ sequenceDiagram
 - `src/daemon/authn/daemon-jwt-keyring.ts` — deterministic Ed25519 keyring derived from `TURBOPANEL_SECRET(S)`; `deriveDaemonJwtKeyring`, `buildJwksDocument`
 - `src/daemon/authn/daemon-state.ts` — `ServerDaemonState` / `ServerDaemonKey` types and parsers for `server.daemon` jsonb
 - `src/daemon/authn/server-identity-db.ts` — DB helpers for `server.daemon` (`getServerDaemonStateByServerId`, `attachDaemonStateToServer`, `touchDaemonKeyLastUsed`, `revokeDaemonKey`, `clearServerDaemonState`)
-- `src/daemon/authn/server-key.ts` — `buildCanonicalPayload`, `computePublicKeyFingerprint`, `verifyDaemonSignature`
+- `src/daemon/authn/server-key.ts` — `buildAuthPayload`, `computePublicKeyFingerprint`, `verifyDaemonSignature`
 - `src/daemon/authz/` — daemon-side authorization placeholder
 - `src/lib/db/schema.ts` — Drizzle table definitions (`server`, etc.; see `src/lib/db/AGENTS.md`); connection factories stay in `src/db.ts`
 - `src/lib/install/routes.ts` — self-hosted install wizard (`/api/install/v1/*`; Deno-only registration)

@@ -1,6 +1,5 @@
 import {
   resolveEmailSettings,
-  resolveWorkersEmailProvider,
 } from '../../settings/email-settings.ts'
 import type { Db } from '../../../db.ts'
 import { resolveMailpitApiBaseUrl, sendMailpitJob } from '../mailpit/send.ts'
@@ -71,7 +70,7 @@ export async function resolveWorkersEmailQueue(
   env: Record<string, string | undefined>,
 ): Promise<EmailQueue> {
   const resolved = await resolveEmailSettings(db, env)
-  const workersProvider = resolveWorkersEmailProvider(resolved)
+  const workersProvider = resolved.provider
   if (workersProvider === 'mailpit') {
     return createWorkersMailpitQueue({
       apiBaseUrl: resolveMailpitApiBaseUrl(env),

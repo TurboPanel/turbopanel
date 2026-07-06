@@ -86,7 +86,7 @@ function copyDatacenter(
   source: Record<string, unknown>,
   target: ServerGeo,
 ): boolean {
-  const value = source.datacenter ?? source.colo
+  const value = source.datacenter
   if (!isNonEmptyString(value)) return false
   target.datacenter = value.trim()
   return true
@@ -123,7 +123,11 @@ function narrowGeoRecord(
 export function extractCloudflareGeo(cf: unknown): ServerGeo | null {
   if (!isGeoRecord(cf)) return null
 
-  const geo = narrowGeoRecord(cf)
+  const withDatacenter = isNonEmptyString(cf.colo)
+    ? { ...cf, datacenter: cf.colo }
+    : cf
+
+  const geo = narrowGeoRecord(withDatacenter)
   if (!geo) return null
 
   geo.capturedAt = new Date().toISOString()

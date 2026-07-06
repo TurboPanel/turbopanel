@@ -19,7 +19,7 @@ Deno.test("mergeSnapshotPresence prefers meta-layer presence fields", () => {
     updatedAt: "2020-01-01T00:00:00.000Z",
     connected: false,
     connectedAt: "2020-01-01T00:00:00.000Z",
-    lastHeartbeatAt: "2020-01-01T00:00:00.000Z",
+    lastInboundAt: "2020-01-01T00:00:00.000Z",
     remoteAddress: "203.0.113.1",
   };
   const meta: DaemonCellSnapshot = {
@@ -28,7 +28,7 @@ Deno.test("mergeSnapshotPresence prefers meta-layer presence fields", () => {
     updatedAt: "2020-01-02T00:00:00.000Z",
     connected: true,
     connectedAt: "2020-01-02T00:00:00.000Z",
-    lastHeartbeatAt: "2020-01-02T00:00:00.000Z",
+    lastInboundAt: "2020-01-02T00:00:00.000Z",
     remoteAddress: "203.0.113.2",
   };
 
@@ -46,7 +46,7 @@ Deno.test("mergeSnapshotPresence falls back when meta fields are absent", () => 
     updatedAt: "2020-01-01T00:00:00.000Z",
     connected: true,
     connectedAt: "2020-01-01T00:00:00.000Z",
-    lastHeartbeatAt: "2020-01-01T00:00:00.000Z",
+    lastInboundAt: "2020-01-01T00:00:00.000Z",
   };
   const meta: DaemonCellSnapshot = {
     serverId: "srv-1",

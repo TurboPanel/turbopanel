@@ -162,65 +162,6 @@ export function buildDeveloperRouter(
     return c.json({ commands })
   })
 
-  developer.post('/daemon/command', async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
-    const body = await c.req.json().catch(() => null)
-    const command = typeof body?.command === 'string' ? body.command.trim() : ''
-    if (!command) return c.json({ error: 'expected { command: string }' }, 400)
-
-    const ids = await registry.listOnlineServerIds()
-    const commandIds = (
-      await Promise.all(
-        ids.map(async (serverId) => {
-          const requestId = generateRequestId()
-          const envelope: DaemonOutboundEnvelope = {
-            kind: 'command',
-            deliveryId: generateDeliveryId(),
-            requestId,
-            at: nowTs(),
-            command,
-          }
-          try {
-            await registry.getCell(serverId).createRequestAndWait(
-              envelope,
-              COMMAND_TIMEOUT_MS,
-            )
-            return requestId
-          } catch {
-            return null
-          }
-        }),
-      )
-    ).filter((id): id is string => id !== null)
-    return c.json({ ok: true, sent: commandIds.length, commandIds })
-  })
-
-  developer.post('/daemon/:id/command', async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    const db = getDb(c)
-    if (!registry || !db) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
-    const id = c.req.param('id')
-    const body = await c.req.json().catch(() => null)
-    const command = typeof body?.command === 'string' ? body.command.trim() : ''
-    if (!command) return c.json({ error: 'expected { command: string }' }, 400)
-
-    if (!await isServerConnected(db, registry, id)) {
-      return c.json({ error: 'daemon not connected' }, 404)
-    }
-
-    const requestId = generateRequestId()
-    const envelope: DaemonOutboundEnvelope = {
-      kind: 'command',
-      deliveryId: generateDeliveryId(),
-      requestId,
-      at: nowTs(),
-      command,
-    }
-    await registry.getCell(id).createRequestAndWait(envelope, COMMAND_TIMEOUT_MS)
-    return c.json({ ok: true, commandId: requestId })
-  })
-
   developer.get('/daemon/:id/cell', async (c) => {
     const registry = getDaemonCellRegistry(c)
     const db = getDb(c)

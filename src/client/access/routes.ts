@@ -44,6 +44,40 @@ function isUuid(value: string): boolean {
   return UUID_RE.test(value)
 }
 
+function ownerRemovalConflictMessage(err: unknown): string | null {
+  if (!(err instanceof Error)) return null
+  if (err.message === 'Cannot remove the last owner of an organization') {
+    return err.message
+  }
+  if (err.message === 'Cannot remove the last owner of a team') {
+    return err.message
+  }
+  return null
+}
+
+async function assertRevocableAllowGrant(
+  db: Db,
+  accessRow: {
+    entityType: string
+    entityId: string
+    permission: string
+    actorId: string
+    allow: boolean
+  },
+): Promise<void> {
+  if (!accessRow.allow) return
+  if (
+    accessRow.entityType === 'organization' &&
+    accessRow.permission === 'organization:own'
+  ) {
+    await assertNotLastOrgOwner(db, accessRow.entityId, accessRow.actorId)
+    return
+  }
+  if (accessRow.entityType === 'team' && accessRow.permission === 'team:own') {
+    await assertNotLastTeamOwner(db, accessRow.entityId, accessRow.actorId)
+  }
+}
+
 async function assertCanManageAccessOr403(
   c: Context,
   db: Db,
@@ -260,7 +294,7 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
     const organizationId = orgResult
 
     const entity = await resolveEntityByKindAndItemId(db, kind, itemId)
-    if (!entity || entity.organizationId !== organizationId) {
+    if (entity?.organizationId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 
@@ -455,25 +489,11 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
 
     if (accessRow.allow) {
       try {
-        if (
-          accessRow.entityType === 'organization' &&
-          accessRow.permission === 'organization:own'
-        ) {
-          await assertNotLastOrgOwner(db, accessRow.entityId, accessRow.actorId)
-        } else if (
-          accessRow.entityType === 'team' &&
-          accessRow.permission === 'team:own'
-        ) {
-          await assertNotLastTeamOwner(db, accessRow.entityId, accessRow.actorId)
-        }
+        await assertRevocableAllowGrant(db, accessRow)
       } catch (err) {
-        if (err instanceof Error) {
-          if (err.message === 'Cannot remove the last owner of an organization') {
-            return c.json({ error: err.message }, 409)
-          }
-          if (err.message === 'Cannot remove the last owner of a team') {
-            return c.json({ error: err.message }, 409)
-          }
+        const conflict = ownerRemovalConflictMessage(err)
+        if (conflict) {
+          return c.json({ error: conflict }, 409)
         }
         throw err
       }

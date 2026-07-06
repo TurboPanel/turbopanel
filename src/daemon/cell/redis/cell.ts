@@ -157,7 +157,6 @@ function snapshotFromMeta(
     connectedAt: meta.connectedAt || undefined,
     lastInboundAt: meta.lastInboundAt || undefined,
     lastOutboundAt: meta.lastOutboundAt || undefined,
-    lastHeartbeatAt: meta.lastHeartbeatAt || undefined,
     lastSeenAt: meta.lastSeenAt || undefined,
     keyLastUsedAt: meta.keyLastUsedAt || undefined,
   };
@@ -983,14 +982,6 @@ export class RedisDaemonCell implements DaemonCell {
     let error: string | undefined;
 
     switch (inbound.kind) {
-      case "command-result":
-        status = "done";
-        result = {
-          exitCode: inbound.exitCode,
-          stdout: inbound.stdout,
-          stderr: inbound.stderr,
-        };
-        break;
       case "addresses-result":
         status = "done";
         result = { addresses: inbound.addresses };
