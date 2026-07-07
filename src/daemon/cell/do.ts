@@ -613,13 +613,25 @@ export class DaemonCellObject {
       meta?.agent_json ? String(meta.agent_json) : null,
     );
 
-    return inboundHeartbeatProjectionDue({
+    const due = inboundHeartbeatProjectionDue({
       runtimeConnected,
       cellLastSeenAt,
       inboundAt: at,
       storedAgent,
       incomingAgent: agent,
     });
+    // #region agent log — debug session 2e6859, hypothesis H10 (auto-response
+    // ping timestamp bumps cell.last_seen_at via #applyWebSocketAutoResponseLiveness,
+    // so effectiveLastSeenAt is always "fresh" by the time the heartbeat message
+    // is processed, making inboundHeartbeatProjectionDue perpetually false and the
+    // heartbeat's Postgres/lastSeenAt projection never fires). Remove after verification.
+    console.info(
+      `[debug:2e6859:H10] shouldProjectInbound serverId=${serverId} at=${at} rawCellLastSeenAt=${
+        meta?.last_seen_at ? String(meta.last_seen_at) : null
+      } effectiveLastSeenAt=${cellLastSeenAt} due=${due}`,
+    );
+    // #endregion
+    return due;
   }
 
   /**
