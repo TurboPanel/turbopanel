@@ -128,7 +128,19 @@ async function sweepOnce(env: CloudflareBindings, db: Db): Promise<void> {
       });
       return;
     }
-    if (isStale(candidate, liveness, nowMs)) {
+    const stale = isStale(candidate, liveness, nowMs);
+    // #region agent log — debug session 2e6859, hypothesis H6/H9 (sticky
+    // false-offline). Remove after verification.
+    sweepTrace("debug-2e6859-liveness-check", {
+      serverId: candidate.id,
+      connectedAt: candidate.connectedAt,
+      livenessConnected: liveness?.connected ?? null,
+      lastPingAtMs: liveness?.lastPingAtMs ?? null,
+      lastPingAgeMs: liveness?.lastPingAtMs != null ? nowMs - liveness.lastPingAtMs : null,
+      stale,
+    });
+    // #endregion
+    if (stale) {
       staleIds.push(candidate.id);
     }
   });

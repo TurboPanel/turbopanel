@@ -303,7 +303,33 @@ export class DaemonCellObject {
   #getLivenessSnapshot(serverId: string): DaemonCellLiveness {
     let connected = false;
     let lastPingAtMs: number | null = null;
-    for (const ws of this.#ctx.getWebSockets()) {
+    const allSockets = this.#ctx.getWebSockets();
+    // #region agent log — debug session 2e6859, hypothesis H6/H9 (sticky
+    // false-offline: attachment mismatch or auto-response timestamp not
+    // surviving hibernation). Remove after verification.
+    console.info(
+      `[debug:2e6859:H6] getLivenessSnapshot serverId=${serverId} totalSockets=${
+        allSockets.length
+      } sockets=${
+        JSON.stringify(
+          allSockets.map((ws) => {
+            const attachment = ws.deserializeAttachment() as {
+              serverId?: string;
+            } | null;
+            const autoTs = this.#ctx.getWebSocketAutoResponseTimestamp(ws);
+            return {
+              attachedServerId: attachment?.serverId ?? null,
+              matches: attachment?.serverId === serverId,
+              autoResponseTs: autoTs ? autoTs.getTime() : null,
+              autoResponseAgeMs: autoTs ? Date.now() - autoTs.getTime() : null,
+              readyState: ws.readyState,
+            };
+          }),
+        )
+      }`,
+    );
+    // #endregion
+    for (const ws of allSockets) {
       const attachment = ws.deserializeAttachment() as {
         serverId?: string;
       } | null;
