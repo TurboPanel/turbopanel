@@ -12,8 +12,8 @@ import { getAccessManagementPermission } from '../authz/access-management.ts'
 import {
   mapEffectToAllowed,
   mapGrantRows,
-  revokeLegacyAccessGrant,
-} from '../authz/access-api-compat.ts'
+  revokeAccessGrant,
+} from '../authz/access-grants.ts'
 import { createAccessGrant, isAccessGrantEntityType } from '../authz/create-access-grant.ts'
 import {
   resolveEntityById,
@@ -499,7 +499,7 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
       }
     }
 
-    const revoked = await revokeLegacyAccessGrant(db, accessId)
+    const revoked = await revokeAccessGrant(db, accessId)
     if (!revoked) {
       return c.json({ error: 'Not found' }, 404)
     }
