@@ -697,6 +697,37 @@ export async function listConnectedServerIdsFromProjection(
   return connected;
 }
 
+export type ConnectedServerForSweep = {
+  id: string;
+  connectedAt: string | null;
+};
+
+/**
+ * Candidates for the offline sweep cron (`cell/offline-sweep.ts`): every
+ * server Postgres currently believes is connected, plus `connectedAt` so a
+ * freshly-attached socket (no auto-response ping yet) can be given grace
+ * instead of being flagged stale on its very first sweep tick.
+ */
+export async function listConnectedServersForSweep(
+  db: Db,
+): Promise<ConnectedServerForSweep[]> {
+  const rows = await db
+    .select({ id: server.id, daemon: server.daemon })
+    .from(server)
+    .where(sql`(
+      ${server.daemon}->'status'->>'connected' = 'true'
+    )`);
+
+  const candidates: ConnectedServerForSweep[] = [];
+  for (const row of rows) {
+    const state = parseServerDaemonState(row.daemon);
+    if (state?.status?.connected) {
+      candidates.push({ id: row.id, connectedAt: state.status.connectedAt });
+    }
+  }
+  return candidates;
+}
+
 /** All servers with an enrolled daemon key — used to scope Workers maintenance drains. */
 export async function listEnrolledDaemonServerIds(db: Db): Promise<string[]> {
   const rows = await db

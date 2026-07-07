@@ -52,6 +52,9 @@
       }
     ]
   },
+  // Offline sweep (see src/daemon/cell/offline-sweep.ts) — 1 minute is Cloudflare's
+  // finest cron granularity, matching the 60s daemon idle-ping cadence.
+  "triggers": { "crons": ["* * * * *"] },
   "migrations": [
     {
       "tag": "v1-daemon-cell",
@@ -82,6 +85,7 @@
           }
         ]
       },
+      "triggers": { "crons": ["* * * * *"] },
       "hyperdrive": [
         {
           "binding": "HYPERDRIVE",
@@ -131,6 +135,7 @@
           }
         ]
       },
+      "triggers": { "crons": ["* * * * *"] },
       "routes": [
         {
           "pattern": "turbopanel.app/api/*",

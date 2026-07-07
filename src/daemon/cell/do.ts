@@ -20,6 +20,7 @@ import type {
   CellDiagnostics,
   DaemonCell,
   DaemonCellLease,
+  DaemonCellLiveness,
   DaemonCellSnapshot,
   PendingRequestRecord,
   PendingRequestStatus,
@@ -292,6 +293,28 @@ export class DaemonCellObject {
       } | null;
       return attachment?.serverId === serverId;
     });
+  }
+
+  /**
+   * Read-only liveness probe for the offline sweep cron (`cell/offline-sweep.ts`).
+   * Only inspects in-memory WebSocket state — no SQLite reads or writes — so
+   * a healthy server costs the sweep nothing beyond this one request.
+   */
+  #getLivenessSnapshot(serverId: string): DaemonCellLiveness {
+    let connected = false;
+    let lastPingAtMs: number | null = null;
+    for (const ws of this.#ctx.getWebSockets()) {
+      const attachment = ws.deserializeAttachment() as {
+        serverId?: string;
+      } | null;
+      if (attachment?.serverId !== serverId) continue;
+      connected = true;
+      const autoTs = this.#ctx.getWebSocketAutoResponseTimestamp(ws);
+      if (autoTs) {
+        lastPingAtMs = Math.max(lastPingAtMs ?? 0, autoTs.getTime());
+      }
+    }
+    return { connected, lastPingAtMs };
   }
 
   #bumpFetchRoute(route: string): void {
@@ -1609,20 +1632,40 @@ export class DaemonCellObject {
     this.#runtimeConnected = false;
   }
 
+  /** Read-only GET routes that don't need the shared body-parsing/switch below. */
+  async #handleReadOnlyRpc(
+    path: string,
+    method: string,
+    request: Request,
+  ): Promise<Response | null> {
+    if (method !== "GET") return null;
+
+    if (path === "/rpc/diagnostics") {
+      return jsonResponse(this.#diag);
+    }
+
+    if (path === "/rpc/snapshot") {
+      const serverId = this.#resolveServerId(request);
+      if (!serverId) return errorResponse("server id unknown", 404);
+      return jsonResponse(await this.#getSnapshot(serverId));
+    }
+
+    if (path === "/rpc/liveness") {
+      const serverId = this.#resolveServerId(request);
+      if (!serverId) return errorResponse("server id unknown", 404);
+      return jsonResponse(this.#getLivenessSnapshot(serverId));
+    }
+
+    return null;
+  }
+
   async #handleRpc(request: Request, url: URL): Promise<Response> {
     const path = url.pathname;
     const method = request.method;
     this.#bumpFetchRoute(path);
 
-    if (path === "/rpc/diagnostics" && method === "GET") {
-      return jsonResponse(this.#diag);
-    }
-
-    if (path === "/rpc/snapshot" && method === "GET") {
-      const serverId = this.#resolveServerId(request);
-      if (!serverId) return errorResponse("server id unknown", 404);
-      return jsonResponse(await this.#getSnapshot(serverId));
-    }
+    const readOnly = await this.#handleReadOnlyRpc(path, method, request);
+    if (readOnly) return readOnly;
 
     const body = method === "GET"
       ? null

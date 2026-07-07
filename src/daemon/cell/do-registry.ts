@@ -4,6 +4,7 @@ import type {
   CellDiagnostics,
   DaemonCell,
   DaemonCellLease,
+  DaemonCellLiveness,
   DaemonCellRegistry,
   DaemonCellSnapshot,
   PendingRequestRecord,
@@ -400,6 +401,14 @@ class DurableObjectStubDaemonCell implements DaemonCell {
 
   getDiagnostics(): Promise<CellDiagnostics> {
     return this.#rpc<CellDiagnostics>("/rpc/diagnostics", {
+      serverId: this.#serverId,
+      method: "GET",
+      idempotent: true,
+    });
+  }
+
+  checkLiveness(): Promise<DaemonCellLiveness> {
+    return this.#rpc<DaemonCellLiveness>("/rpc/liveness", {
       serverId: this.#serverId,
       method: "GET",
       idempotent: true,

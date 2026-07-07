@@ -98,6 +98,18 @@ export type ExpiredUpdateRequest = {
   finishedAt: string;
 };
 
+/**
+ * Read-only liveness probe (see `cell/offline-sweep.ts`). Reads only the
+ * runtime-tracked WebSocket auto-response timestamp — the same free value
+ * the ping/pong auto-response keeps warm — and never touches SQLite, so a
+ * healthy server costs the sweep nothing beyond the request itself.
+ */
+export type DaemonCellLiveness = {
+  connected: boolean;
+  /** Epoch ms of the most recent auto-responded ping, or null if none seen yet this wake. */
+  lastPingAtMs: number | null;
+};
+
 export type ClearUpdateStatusOptions = {
   /** When true, expire or clear non-terminal updates that are stale. */
   allowStale?: boolean;
@@ -210,6 +222,14 @@ export interface DaemonCell {
 
   /** Optional — real backends expose in-memory counters; test mocks may omit. */
   getDiagnostics?(): Promise<CellDiagnostics>;
+
+  /**
+   * Optional — Workers-only read-only liveness probe used by the offline
+   * sweep cron (`cell/offline-sweep.ts`). Redis/Deno does not need this: it
+   * already runs its own timer-driven `sweepStalePresence` (see AGENTS.md
+   * Daemon Cell → Presence model).
+   */
+  checkLiveness?(): Promise<DaemonCellLiveness>;
 }
 
 export interface DaemonCellRegistry {

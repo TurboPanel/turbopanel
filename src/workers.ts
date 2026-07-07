@@ -10,6 +10,7 @@ import {
 } from './client/authn/secrets.ts'
 import { createApp, type AppEnv } from './app'
 import { createDurableObjectDaemonCellRegistry } from './daemon/cell/do-registry.ts'
+import { runOfflineSweep } from './daemon/cell/offline-sweep.ts'
 import { registerAdminRoutes } from './admin/routes.ts'
 import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
 import { createWorkersDb } from './db'
@@ -144,6 +145,16 @@ export default {
     requestApp.route('/', cachedApp!)
 
     return requestApp.fetch(request, env, ctx)
+  },
+
+  async scheduled(
+    controller: ScheduledController,
+    env: CloudflareBindings,
+    ctx: ExecutionContext,
+  ) {
+    initPromise ??= initWorkerApp(env)
+    await initPromise
+    ctx.waitUntil(runOfflineSweep(env))
   },
 
   async queue(batch: MessageBatch<unknown>, env: CloudflareBindings) {

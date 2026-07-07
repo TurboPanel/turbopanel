@@ -393,7 +393,7 @@ describe("DaemonCellObject diagnostics", () => {
     }));
 
     await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(updateCalls.length).toBe(updatesAfterConnect);
+    expect(updateCalls).toHaveLength(updatesAfterConnect);
     expect(getEndCallCount()).toBe(endAfterConnect);
 
     ws.close(1000, "test done");
@@ -671,7 +671,7 @@ describe("DaemonCellObject", () => {
     }));
 
     await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(updateCalls.length).toBe(countAfterFirstHeartbeat);
+    expect(updateCalls).toHaveLength(countAfterFirstHeartbeat);
 
     ws.close(1000, "test done");
   }, 10_000);
@@ -729,232 +729,7 @@ describe("DaemonCellObject", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(factoryCalls).toBe(factoryAfterConnect);
-    expect(updateCalls.length).toBe(updatesAfterConnect);
-    expect(getSelectCallCount()).toBe(selectsAfterConnect);
-    expect(getEndCallCount()).toBe(endAfterConnect);
-
-    ws.close(1000, "test done");
-  }, 10_000);
-
-  it("closes projection postgres client after each write", async () => {
-    const serverId = "test-srv-proj-db-dispose";
-    const { db, updateCalls, getEndCallCount } = createProjectionRecordingDb({
-      connected: false,
-      daemonStatus: "offline",
-    });
-    setDaemonCellProjectionDbFactoryForTests(() => db);
-
-    const stub = env.DAEMON_CELL.getByName(serverId);
-    const { ws } = await openDaemonWebSocket(stub, serverId);
-
-    await waitFor(() => {
-      expect(updateCalls.length).toBeGreaterThan(0);
-      expect(getEndCallCount()).toBeGreaterThan(0);
-    });
-
-    ws.close(1000, "test done");
-  });
-
-  it("projects connect to Postgres after websocket attach", async () => {
-    const serverId = "test-srv-proj-connect";
-    const { db, updateCalls } = createProjectionRecordingDb({
-      connected: false,
-      daemonStatus: "offline",
-    });
-    setDaemonCellProjectionDbFactoryForTests(() => db);
-
-    const stub = env.DAEMON_CELL.getByName(serverId);
-    const { ws } = await openDaemonWebSocket(stub, serverId);
-
-    await waitFor(() => {
-      const connectedPatch = updateCalls.find((patch) =>
-        statusFromPatch(patch)?.connected === true
-      );
-      expect(connectedPatch).toBeDefined();
-      const status = statusFromPatch(connectedPatch);
-      expect(status?.connectedAt).toEqual(expect.any(String));
-      expect(status?.statusChangedAt).toEqual(expect.any(String));
-      expect(status?.lastSeenAt).toEqual(expect.any(String));
-    });
-
-    ws.close(1000, "test done");
-  });
-
-  it("projects connect geo header into metadata.geo", async () => {
-    const serverId = "test-srv-proj-connect-geo";
-    const geo: ServerGeo = {
-      country: "US",
-      city: "San Francisco",
-      capturedAt: "2020-01-01T00:00:00.000Z",
-    };
-    const { db, updateCalls } = createProjectionRecordingDb({
-      connected: false,
-      daemonStatus: "offline",
-    });
-    setDaemonCellProjectionDbFactoryForTests(() => db);
-
-    const stub = env.DAEMON_CELL.getByName(serverId);
-    const { ws } = await openDaemonWebSocket(stub, serverId, crypto.randomUUID(), {
-      geo,
-      remoteAddress: "203.0.113.10",
-    });
-
-    await waitFor(() => {
-      const connectedPatch = updateCalls.find((patch) =>
-        statusFromPatch(patch)?.connected === true
-      );
-      expect(connectedPatch).toBeDefined();
-      expect(connectedPatch?.metadata).toEqual({
-        hostname: "host-1",
-        geo,
-      });
-    });
-
-    ws.close(1000, "test done");
-  });
-
-  it("projects disconnect to Postgres after websocket close", async () => {
-    const serverId = "test-srv-proj-disconnect";
-    const { db, updateCalls } = createProjectionRecordingDb({
-      connected: true,
-      daemonStatus: "online",
-      connectedAt: new Date().toISOString(),
-      lastSeenAt: new Date().toISOString(),
-    });
-    setDaemonCellProjectionDbFactoryForTests(() => db);
-
-    const stub = env.DAEMON_CELL.getByName(serverId);
-    const { ws } = await openDaemonWebSocket(stub, serverId);
-
-    await waitFor(() => {
-      expect(updateCalls.some((patch) =>
-        statusFromPatch(patch)?.connected === true
-      )).toBe(true);
-    });
-
-    ws.close(1000, "test done");
-
-    await waitFor(() => {
-      const disconnectedPatch = updateCalls.find((patch) =>
-        statusFromPatch(patch)?.connected === false
-      );
-      expect(disconnectedPatch).toBeDefined();
-      expect(statusFromPatch(disconnectedPatch)?.disconnectedAt).toEqual(
-        expect.any(String),
-      );
-    });
-  });
-
-  it("debounces heartbeat projection writes to at most once per 60s", async () => {
-    const serverId = "test-srv-proj-heartbeat-debounce";
-    const staleAt = new Date(Date.now() - 61_000).toISOString();
-    const { db, updateCalls, setDaemonStatus } = createProjectionRecordingDb({
-      connected: true,
-      daemonStatus: "online",
-      connectedAt: staleAt,
-      lastSeenAt: staleAt,
-    });
-    setDaemonCellProjectionDbFactoryForTests(() => db);
-
-    const stub = env.DAEMON_CELL.getByName(serverId);
-    const { ws } = await openDaemonWebSocket(stub, serverId);
-
-    await waitFor(() => {
-      expect(updateCalls.length).toBeGreaterThan(0);
-    });
-
-    setDaemonStatus({
-      connected: true,
-      daemonStatus: "online",
-      lastSeenAt: staleAt,
-    });
-
-    await runInDurableObject(stub, async (_instance, state) => {
-      state.storage.sql.exec(
-        "UPDATE cell SET last_seen_at = ? WHERE server_id = ?",
-        staleAt,
-        serverId,
-      );
-    });
-
-    const countBeforeHeartbeat = updateCalls.length;
-
-    ws.send(JSON.stringify({
-      type: "heartbeat",
-      at: new Date().toISOString(),
-    }));
-
-    await waitFor(() => {
-      expect(updateCalls.length).toBeGreaterThan(countBeforeHeartbeat);
-    });
-
-    const countAfterFirstHeartbeat = updateCalls.length;
-
-    ws.send(JSON.stringify({
-      type: "heartbeat",
-      at: new Date(Date.now() + 1000).toISOString(),
-    }));
-
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(updateCalls.length).toBe(countAfterFirstHeartbeat);
-
-    ws.close(1000, "test done");
-  }, 10_000);
-
-  it("steady-state heartbeat performs no DB write or connection open", async () => {
-    const serverId = "test-srv-proj-heartbeat-idle";
-    const recentAt = new Date().toISOString();
-    const {
-      db,
-      updateCalls,
-      getSelectCallCount,
-      getEndCallCount,
-      setDaemonStatus,
-    } = createProjectionRecordingDb({
-      connected: false,
-      daemonStatus: "offline",
-    });
-
-    let factoryCalls = 0;
-    setDaemonCellProjectionDbFactoryForTests(() => {
-      factoryCalls += 1;
-      return db;
-    });
-
-    const stub = env.DAEMON_CELL.getByName(serverId);
-    const { ws } = await openDaemonWebSocket(stub, serverId);
-
-    await waitFor(() => {
-      expect(updateCalls.length).toBeGreaterThan(0);
-    });
-
-    const factoryAfterConnect = factoryCalls;
-    const updatesAfterConnect = updateCalls.length;
-    const endAfterConnect = getEndCallCount();
-    const selectsAfterConnect = getSelectCallCount();
-
-    setDaemonStatus({
-      connected: true,
-      daemonStatus: "online",
-      lastSeenAt: recentAt,
-    });
-
-    await runInDurableObject(stub, async (_instance, state) => {
-      state.storage.sql.exec(
-        "UPDATE cell SET last_seen_at = ? WHERE server_id = ?",
-        recentAt,
-        serverId,
-      );
-    });
-
-    ws.send(JSON.stringify({
-      type: "heartbeat",
-      at: new Date(Date.now() + 1000).toISOString(),
-    }));
-
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(factoryCalls).toBe(factoryAfterConnect);
-    expect(updateCalls.length).toBe(updatesAfterConnect);
+    expect(updateCalls).toHaveLength(updatesAfterConnect);
     expect(getSelectCallCount()).toBe(selectsAfterConnect);
     expect(getEndCallCount()).toBe(endAfterConnect);
 
@@ -1394,42 +1169,6 @@ describe("DaemonCellObject", () => {
       expect(snapshot.lastSeenAt).toBeTruthy();
       expect(snapshot.agent?.commit).toBe("abc");
       expect(snapshot.agent?.buildId).toBe("1");
-    });
-
-    ws.close(1000, "test done");
-  });
-
-  it("heartbeat without agent updates last_seen_at on the cell snapshot", async () => {
-    const serverId = "test-srv-heartbeat-no-agent";
-    const stub = env.DAEMON_CELL.getByName(serverId);
-    const { ws } = await openDaemonWebSocket(stub, serverId);
-
-    const connectedResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
-      method: "GET",
-    });
-    const connectedSnapshot = await connectedResponse.json() as {
-      lastSeenAt?: string;
-    };
-    expect(connectedSnapshot.lastSeenAt).toBeTruthy();
-    const connectedLastSeenMs = Date.parse(connectedSnapshot.lastSeenAt!);
-
-    await new Promise((resolve) => setTimeout(resolve, 25));
-
-    ws.send(JSON.stringify({
-      type: "heartbeat",
-      at: new Date().toISOString(),
-    }));
-
-    await waitFor(async () => {
-      const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
-        method: "GET",
-      });
-      const snapshot = await snapshotResponse.json() as {
-        lastSeenAt?: string;
-      };
-      expect(snapshot.lastSeenAt).toBeTruthy();
-      const heartbeatLastSeenMs = Date.parse(snapshot.lastSeenAt!);
-      expect(heartbeatLastSeenMs).toBeGreaterThanOrEqual(connectedLastSeenMs);
     });
 
     ws.close(1000, "test done");
@@ -2565,6 +2304,46 @@ describe("command-dispatch correlation", () => {
       connected: boolean;
     };
     expect(disconnected.connected).toBe(false);
+  });
+
+  it("/rpc/liveness reports connected with a fresh ping timestamp (offline sweep probe)", async () => {
+    const serverId = "test-srv-rpc-liveness-connected";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const { ws } = await openDaemonWebSocket(stub, serverId);
+
+    const before = Date.now();
+    ws.send(DAEMON_CELL_PING);
+    await waitForWebSocketMessage(ws, 2000);
+
+    const response = await cellRpc(stub, serverId, "/rpc/liveness", {
+      method: "GET",
+    });
+    expect(response.status).toBe(200);
+    const liveness = await response.json() as {
+      connected: boolean;
+      lastPingAtMs: number | null;
+    };
+    expect(liveness.connected).toBe(true);
+    expect(liveness.lastPingAtMs).not.toBeNull();
+    expect(liveness.lastPingAtMs).toBeGreaterThanOrEqual(before);
+
+    ws.close(1000, "test done");
+  });
+
+  it("/rpc/liveness reports not connected for a server with no attached socket", async () => {
+    const serverId = "test-srv-rpc-liveness-unattached";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+
+    const response = await cellRpc(stub, serverId, "/rpc/liveness", {
+      method: "GET",
+    });
+    expect(response.status).toBe(200);
+    const liveness = await response.json() as {
+      connected: boolean;
+      lastPingAtMs: number | null;
+    };
+    expect(liveness.connected).toBe(false);
+    expect(liveness.lastPingAtMs).toBeNull();
   });
 });
 
