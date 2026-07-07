@@ -162,6 +162,9 @@ function snapshotFromMetaRow(
     connectedAt: row.connected_at ? String(row.connected_at) : undefined,
     lastInboundAt: row.last_seen_at ? String(row.last_seen_at) : undefined,
     lastSeenAt: row.last_seen_at ? String(row.last_seen_at) : undefined,
+    lastProjectedAt: row.last_projected_at
+      ? String(row.last_projected_at)
+      : undefined,
     keyLastUsedAt: row.key_last_used_at ? String(row.key_last_used_at) : undefined,
     agent: parseAgentJson(row.agent_json ? String(row.agent_json) : null),
   };
@@ -474,11 +477,20 @@ export class DaemonCellObject {
         remote_address TEXT,
         connected_at TEXT,
         last_seen_at TEXT,
+        last_projected_at TEXT,
         key_last_used_at TEXT,
         agent_json TEXT,
         updated_at TEXT
       )
     `);
+    // Migration for cells created before last_projected_at existed (debug
+    // session 2e6859 H10). SQLite has no ADD COLUMN IF NOT EXISTS; tolerate
+    // the duplicate-column error on rows that already have it.
+    try {
+      this.#sql("ensure-schema", `ALTER TABLE cell ADD COLUMN last_projected_at TEXT`);
+    } catch {
+      // Column already exists — safe to ignore.
+    }
     this.#sql("ensure-schema", `
       CREATE TABLE IF NOT EXISTS leases (
         lease_name TEXT PRIMARY KEY,
@@ -592,7 +604,7 @@ export class DaemonCellObject {
 
   #readCellRow(serverId: string): Record<string, SqlStorageValue> | null {
     return readFirstSqlRow(this.#sql("presence-should-project",
-      "SELECT last_seen_at, agent_json FROM cell WHERE server_id = ?",
+      "SELECT last_seen_at, last_projected_at, agent_json FROM cell WHERE server_id = ?",
       serverId,
     ));
   }
@@ -603,12 +615,16 @@ export class DaemonCellObject {
     at: string,
     agent?: DaemonAgentInfo,
     cellRow?: Record<string, SqlStorageValue> | null,
-    effectiveLastSeenAt?: string | null,
   ): boolean {
     const meta = cellRow ?? this.#readCellRow(serverId);
     const runtimeConnected = this.#runtimeConnected;
-    const cellLastSeenAt = effectiveLastSeenAt ??
-      (meta?.last_seen_at ? String(meta.last_seen_at) : null);
+    // Deliberately NOT the ping/pong-inflated effective last-seen value: that
+    // signal is bumped by WebSocket auto-responses on every ~60s cell ping,
+    // which would make this debounce perpetually look "already fresh" and
+    // never actually project to Postgres (debug session 2e6859 H10).
+    const cellLastSeenAt = meta?.last_projected_at
+      ? String(meta.last_projected_at)
+      : null;
     const storedAgent = parseAgentJson(
       meta?.agent_json ? String(meta.agent_json) : null,
     );
@@ -620,15 +636,15 @@ export class DaemonCellObject {
       storedAgent,
       incomingAgent: agent,
     });
-    // #region agent log — debug session 2e6859, hypothesis H10 (auto-response
-    // ping timestamp bumps cell.last_seen_at via #applyWebSocketAutoResponseLiveness,
-    // so effectiveLastSeenAt is always "fresh" by the time the heartbeat message
-    // is processed, making inboundHeartbeatProjectionDue perpetually false and the
-    // heartbeat's Postgres/lastSeenAt projection never fires). Remove after verification.
+    // #region agent log — debug session 2e6859, hypothesis H10 (post-fix
+    // verification: gate now uses last_projected_at instead of the ping-
+    // inflated effective last-seen value, so `due` should flip true roughly
+    // every ~60s instead of being stuck at false forever). Remove after
+    // verification.
     console.info(
-      `[debug:2e6859:H10] shouldProjectInbound serverId=${serverId} at=${at} rawCellLastSeenAt=${
-        meta?.last_seen_at ? String(meta.last_seen_at) : null
-      } effectiveLastSeenAt=${cellLastSeenAt} due=${due}`,
+      `[debug:2e6859:H10] shouldProjectInbound serverId=${serverId} at=${at} rawLastProjectedAt=${
+        meta?.last_projected_at ? String(meta.last_projected_at) : null
+      } due=${due}`,
     );
     // #endregion
     return due;
@@ -738,6 +754,14 @@ export class DaemonCellObject {
         { at, agent },
       );
     });
+    // Record that Postgres was actually touched for this inbound message,
+    // independent of last_seen_at (which ping/pong auto-responses also bump
+    // and therefore can't be used to gate this debounce — see #shouldProjectInbound).
+    this.#sql("presence-should-project",
+      "UPDATE cell SET last_projected_at = ? WHERE server_id = ?",
+      at ?? nowIso(),
+      serverId,
+    );
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -1369,7 +1393,6 @@ export class DaemonCellObject {
       at,
       parsed.agent,
       cellRow,
-      effectiveLastSeen,
     );
     this.#recordInbound(
       attachment.serverId,
@@ -1417,7 +1440,7 @@ export class DaemonCellObject {
     if (!attachment) return;
 
     const cellRow = readFirstSqlRow(this.#sql("ws-message",
-      "SELECT last_seen_at, agent_json FROM cell WHERE server_id = ?",
+      "SELECT last_seen_at, last_projected_at, agent_json FROM cell WHERE server_id = ?",
       attachment.serverId,
     ));
     const autoTs = this.#ctx.getWebSocketAutoResponseTimestamp(ws);

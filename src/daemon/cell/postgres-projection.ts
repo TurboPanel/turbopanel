@@ -281,9 +281,13 @@ export function steadyStateInboundSkipsDbRead(
   opts: { at?: string; agent?: ProjectionAgent },
 ): boolean {
   if (!snapshot.connected || !opts.at) return false;
+  // Prefer lastProjectedAt (set only when we actually touched Postgres) over
+  // lastSeenAt, which WebSocket ping/pong auto-responses also bump on cell
+  // backends that support hibernation liveness (see debug session 2e6859 H10).
+  // Falls back to lastSeenAt for cell backends that never populate it.
   return !inboundHeartbeatProjectionDue({
     runtimeConnected: true,
-    cellLastSeenAt: snapshot.lastSeenAt ?? null,
+    cellLastSeenAt: snapshot.lastProjectedAt ?? snapshot.lastSeenAt ?? null,
     inboundAt: opts.at,
     storedAgent: snapshot.agent,
     incomingAgent: opts.agent,
