@@ -69,10 +69,11 @@ async function cfFetch(path, init = {}) {
 function parseWranglerListOutput(text) {
   const configs = []
   for (const line of text.split('\n')) {
-    const match = /^\s*([0-9a-f]{32})\s+\|\s+(.+?)\s*$/.exec(line)
-    if (match) {
-      configs.push({ id: match[1], name: match[2].trim() })
-    }
+    const parts = line.trim().split('|')
+    if (parts.length < 2) continue
+    const id = parts[0].trim()
+    if (!/^[0-9a-f]{32}$/.test(id)) continue
+    configs.push({ id, name: parts[1].trim() })
   }
   return configs
 }
@@ -184,7 +185,9 @@ async function main() {
   console.log(createdId)
 }
 
-main().catch((err) => {
+try {
+  await main()
+} catch (err) {
   console.error(String(err.message ?? err))
   process.exit(1)
-})
+}
