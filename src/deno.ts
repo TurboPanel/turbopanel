@@ -21,6 +21,12 @@ import { registerAdminRoutes } from './admin/routes.ts'
 import { registerInstallRoutes } from './lib/install/routes.ts'
 import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
 import { registerDaemonWebSocket } from './daemon/deno-ws.ts'
+import {
+  createRedisRateLimiter,
+  resolveDaemonConnectRateLimit,
+  resolveDaemonRestRateLimit,
+  resolveDaemonWsInboundLimits,
+} from './daemon/rate-limit/redis-rate-limiter.ts'
 import { registerVersionRoute } from './daemon/version.ts'
 import { registerSystemRoutes } from './developer/system-routes.ts'
 import { registerDevSyncRoutes } from './developer/dev-sync.ts'
@@ -117,6 +123,19 @@ const challengeSigningSecrets = await deriveSecretsConfig(secretsConfig, 'daemon
 const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(secretsConfig, 'data-encryption')
 const daemonCellRegistry = createRedisDaemonCellRegistry({ db })
 const queryCache = createRedisQueryCache({ client: daemonCellRegistry.client, db })
+const connectRate = resolveDaemonConnectRateLimit()
+const restRate = resolveDaemonRestRateLimit()
+const inboundLimits = resolveDaemonWsInboundLimits()
+const daemonConnectLimiter = createRedisRateLimiter({
+  client: daemonCellRegistry.client,
+  limit: connectRate.limit,
+  periodSeconds: connectRate.periodSeconds,
+})
+const daemonRestLimiter = createRedisRateLimiter({
+  client: daemonCellRegistry.client,
+  limit: restRate.limit,
+  periodSeconds: restRate.periodSeconds,
+})
 
 let commandConsumer: { close(): Promise<void> } | null = null
 if (isNoopCommandQueue(commandQueue)) {
@@ -171,6 +190,7 @@ registerDaemonApiRoutes(routes, {
   secrets: daemonJwtKeyring,
   challengeSigningSecrets,
   secretsConfig,
+  restLimiter: daemonRestLimiter,
 })
 registerVersionRoute(routes)
 if (developerSurface) {
@@ -184,6 +204,9 @@ registerDaemonWebSocket(routes, {
   db,
   secrets: daemonJwtKeyring,
   daemonCellRegistry,
+  connectLimiter: daemonConnectLimiter,
+  inboundMessageLimit: inboundLimits.limit,
+  inboundMessageWindowMs: inboundLimits.windowMs,
 })
 registerAdminRoutes(routes, {
   secrets: sessionSecrets,

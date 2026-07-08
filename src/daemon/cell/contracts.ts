@@ -45,13 +45,6 @@ export type DaemonCellSnapshot = {
   lastInboundAt?: string;
   lastOutboundAt?: string;
   lastSeenAt?: string;
-  /**
-   * Last time an inbound hello/heartbeat was actually projected to Postgres.
-   * Distinct from `lastSeenAt`, which is also bumped by WebSocket ping/pong
-   * auto-responses and therefore unsuitable for gating the projection-due
-   * debounce (see debug session 2e6859 H10).
-   */
-  lastProjectedAt?: string;
   keyLastUsedAt?: string;
   addresses?: ServerAddresses;
   metadata?: ServerMetadata;

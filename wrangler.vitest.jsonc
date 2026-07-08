@@ -10,7 +10,9 @@
       "id": "83edd62a2d7e4e6ba8b5d77b01ca3729"
     },
     {
-      // TODO: replace with real dev cached Hyperdrive config id
+      // Future: vitest does not hit a real Hyperdrive cache — placeholder for the
+      // binding only; resolveWorkersQueryCache relies on passthrough. Do not point
+      // at primary HYPERDRIVE.
       "binding": "HYPERDRIVE_CACHED",
       "id": "0000000000000000000000000000dev0"
     }

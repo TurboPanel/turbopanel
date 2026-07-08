@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals, assertThrows } from 'jsr:@std/assert'
 import { stub } from 'jsr:@std/testing@1/mock'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -196,32 +196,117 @@ const SERVERS_LIST_SELECT_KEYS = new Set([
   'createdAt',
 ])
 
+function assertServersListSelectFields(fields: Record<string, unknown>): void {
+  const keys = Object.keys(fields)
+  const exactColumnSet = keys.length === SERVERS_LIST_SELECT_KEYS.size
+    && keys.every((key) => SERVERS_LIST_SELECT_KEYS.has(key))
+  if (!exactColumnSet) {
+    throw new Error(
+      'readDb must only serve the documented servers-list row SELECT column set',
+    )
+  }
+}
+
 /** Cached readDb: only the approved list-row SELECT; presence/colocated must use primary db. */
 function createListRowsOnlyReadDb(
   db: ReturnType<typeof createDenoDb>,
-): ReturnType<typeof createDenoDb> {
-  return new Proxy(db, {
-    get(target, prop, receiver) {
+): ReturnType<typeof createDenoDb> & { selectCallCount: number } {
+  let selectCallCount = 0
+  const rejectCachedAccess = (prop: string | symbol): never => {
+    throw new Error(
+      `readDb must not access ${String(prop)}; only the list-rows SELECT is allowed`,
+    )
+  }
+  const proxy = new Proxy(db, {
+    get(_target, prop) {
+      if (prop === 'selectCallCount') {
+        return selectCallCount
+      }
       if (prop === 'select') {
         return (fields: Record<string, unknown>) => {
-          const keys = Object.keys(fields)
-          const listRowsOnly = keys.every((key) => SERVERS_LIST_SELECT_KEYS.has(key))
-          if (!listRowsOnly) {
-            throw new Error(
-              'readDb must only serve the servers-list row SELECT, not presence/colocated queries',
-            )
-          }
-          return target.select(fields as Parameters<typeof target.select>[0])
+          selectCallCount += 1
+          assertServersListSelectFields(fields)
+          return db.select(fields as Parameters<typeof db.select>[0])
         }
       }
-      const value = Reflect.get(target, prop, receiver)
-      if (typeof value === 'function') {
-        return value.bind(target)
-      }
-      return value
+      return rejectCachedAccess(prop)
     },
-  }) as ReturnType<typeof createDenoDb>
+  }) as ReturnType<typeof createDenoDb> & { selectCallCount: number }
+  return proxy
 }
+
+function createStubDbForCachedReadTests(): ReturnType<typeof createDenoDb> {
+  return {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          orderBy: () => Promise.resolve([]),
+        }),
+      }),
+    }),
+    update: () => {
+      throw new Error('underlying update must not run')
+    },
+  } as unknown as ReturnType<typeof createDenoDb>
+}
+
+Deno.test('createListRowsOnlyReadDb default-denies non-select database access', () => {
+  const db = createStubDbForCachedReadTests()
+  const readDb = createListRowsOnlyReadDb(db)
+
+  for (const method of [
+    'update',
+    'delete',
+    'transaction',
+    'query',
+    'selectDistinct',
+    'execute',
+    'insert',
+    '$client',
+    'session',
+  ] as const) {
+    assertThrows(
+      () => readDb[method],
+      Error,
+      'readDb must not access',
+    )
+  }
+})
+
+Deno.test('createListRowsOnlyReadDb rejects partial servers-list select columns', async () => {
+  const db = createStubDbForCachedReadTests()
+  const readDb = createListRowsOnlyReadDb(db)
+
+  assertThrows(
+    () => readDb.select({ id: server.id }),
+    Error,
+    'documented servers-list row SELECT column set',
+  )
+  assertThrows(
+    () => readDb.select({
+      id: server.id,
+      displayName: server.displayName,
+      organizationId: server.organizationId,
+      licenseId: server.licenseId,
+      options: server.options,
+      createdAt: server.createdAt,
+      daemon: server.daemon,
+    }),
+    Error,
+    'documented servers-list row SELECT column set',
+  )
+
+  const allowedReadDb = createListRowsOnlyReadDb(createStubDbForCachedReadTests())
+  await allowedReadDb.select({
+    id: server.id,
+    displayName: server.displayName,
+    organizationId: server.organizationId,
+    licenseId: server.licenseId,
+    options: server.options,
+    createdAt: server.createdAt,
+  })
+  assertEquals(allowedReadDb.selectCallCount, 1)
+})
 
 function createRecordingQueryCache(
   readDb: ReturnType<typeof createDenoDb>,
@@ -951,6 +1036,7 @@ Deno.test('GET /servers uses only the approved servers-list read model cache hel
     assertEquals(res.status, 200)
     assertEquals(recordingCache.readModels, ['servers-list'])
     assertEquals(recordingCache.loadCallCount, 1)
+    assertEquals(readDb.selectCallCount, 1)
   })
 })
 
@@ -986,6 +1072,8 @@ Deno.test('GET /servers — cached payload is list rows only (presence comes fro
     assertEquals(body.servers.length, 1)
     assertEquals(recordingCache.store.size, 1)
     assertEquals(recordingCache.loadCallCount, 1)
+    assertEquals(recordingCache.readModels, ['servers-list'])
+    assertEquals(readDb.selectCallCount, 1)
 
     const cachedRows = recordingCache.store.values().next().value!
     assertEquals(cachedRows.length, 1)

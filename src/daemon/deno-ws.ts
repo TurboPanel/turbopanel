@@ -28,6 +28,9 @@ import {
 import { resolveSelfHostedGeo } from "../lib/geo/self-hosted-geo-provider.ts";
 import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
 import { getServerDaemonStateByServerId } from "./authn/server-identity-db.ts";
+import type { RateLimiter } from "./rate-limit/contracts.ts";
+import { createInboundWindowGate } from "./rate-limit/inbound-window.ts";
+import { daemonConnectRateLimitKey } from "./rate-limit/keys.ts";
 
 /** Max idle block for outbox pump reads — keep low so new commands aren't stuck behind a long sleep. */
 const OUTBOX_PUMP_BLOCK_MS = 250;
@@ -139,13 +142,23 @@ export type DaemonWebSocketOptions = {
   db?: Db;
   secrets?: DaemonJwtKeyring;
   daemonCellRegistry?: DaemonCellRegistry;
+  connectLimiter?: RateLimiter;
+  inboundMessageLimit?: number;
+  inboundMessageWindowMs?: number;
 };
 
 export function registerDaemonWebSocket(
   app: Hono,
   options: DaemonWebSocketOptions,
 ): void {
+  const inboundMessageLimit = options.inboundMessageLimit ?? 120;
+  const inboundMessageWindowMs = options.inboundMessageWindowMs ?? 60_000;
+
   app.get(DAEMON_WS_PATH, async (c, next) => {
+    if (c.req.header("Upgrade")?.toLowerCase() !== "websocket") {
+      return c.text("Expected WebSocket", 426);
+    }
+
     const authHeader = c.req.header("authorization")?.trim() ?? "";
     const token = authHeader.startsWith("Bearer ")
       ? authHeader.slice("Bearer ".length).trim()
@@ -156,6 +169,15 @@ export function registerDaemonWebSocket(
     const payload = await verifyDaemonJwt(token, options.secrets);
     if (!payload) {
       return c.json({ ok: false, error: "unauthorized" }, 401);
+    }
+
+    if (options.connectLimiter) {
+      const { success } = await options.connectLimiter.limit({
+        key: daemonConnectRateLimitKey(payload.sub),
+      });
+      if (!success) {
+        return c.text("Too Many Requests", 429);
+      }
     }
 
     const db = options.db;
@@ -182,6 +204,10 @@ export function registerDaemonWebSocket(
       const pumpControl = { abort: false };
       let attachReady = false;
       const pendingMessages: string[] = [];
+      const inboundGate = createInboundWindowGate(
+        inboundMessageLimit,
+        inboundMessageWindowMs,
+      );
 
       const handleInboundMessage = async (
         raw: string,
@@ -363,7 +389,24 @@ export function registerDaemonWebSocket(
           const raw = typeof event.data === "string"
             ? event.data
             : String(event.data);
+          const gateKey = connectionId ?? identityAddress;
+          if (!inboundGate.allow(gateKey)) {
+            cellTrace("inbound-rate-limited", {
+              serverId: payload.sub,
+              conn: connectionId,
+            });
+            pendingMessages.length = 0;
+            pumpControl.abort = true;
+            ws.close(1008, "rate_limited");
+            return;
+          }
           if (!attachReady) {
+            if (pendingMessages.length >= inboundMessageLimit) {
+              pendingMessages.length = 0;
+              pumpControl.abort = true;
+              ws.close(1008, "rate_limited");
+              return;
+            }
             pendingMessages.push(raw);
             return;
           }
@@ -371,6 +414,11 @@ export function registerDaemonWebSocket(
         },
         onClose() {
           pumpControl.abort = true;
+          if (connectionId) {
+            inboundGate.release(connectionId);
+          } else {
+            inboundGate.release(identityAddress);
+          }
           if (connectionId && leaseHolder) {
             const cell = registry.getCell(payload.sub);
             detachDaemonSocketSafe(
@@ -388,6 +436,11 @@ export function registerDaemonWebSocket(
         },
         onError() {
           pumpControl.abort = true;
+          if (connectionId) {
+            inboundGate.release(connectionId);
+          } else {
+            inboundGate.release(identityAddress);
+          }
           if (connectionId && leaseHolder) {
             const cell = registry.getCell(payload.sub);
             detachDaemonSocketSafe(

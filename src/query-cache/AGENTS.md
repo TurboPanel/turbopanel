@@ -6,7 +6,7 @@ Read-through cache for **reviewed, read-only** Postgres read models. Permission 
 
 - Only loaders registered in `approved-read-models.ts` and implemented under `read-models/` may call the cached database.
 - Loaders must use **read-only `SELECT` statements** only: no transactions, mutations, `INSERT`/`UPDATE`/`DELETE`, or cache-bypass predicates.
-- Do not use PostgreSQL **stable** or **volatile** functions (`now()`, `random()`, etc.) in cached SQL — they make Hyperdrive results uncacheable or stale.
+- Do not use PostgreSQL **stable** or **volatile** functions (`now()`, `random()`, `nextval()`, `clock_timestamp()`, etc.) in cached SQL — they make Hyperdrive results uncacheable or stale.
 - Loader return values must be **JSON-serializable** (Redis stores stringified payloads).
 - TTLs are clamped to `MAX_QUERY_CACHE_TTL_SECONDS` (60s). Do not raise without review.
 
@@ -16,11 +16,19 @@ Read-through cache for **reviewed, read-only** Postgres read models. Permission 
 | --- | --- | --- |
 | Cloudflare Workers | Hyperdrive on `HYPERDRIVE_CACHED` | `createHyperdriveQueryCache(cachedDb)` — SQL-level cache via binding `max_age` |
 | Workers (no `HYPERDRIVE_CACHED`) | Passthrough on primary `db` | `createPassthroughQueryCache(db)` — no Hyperdrive caching |
-| Deno (self-hosted) | Redis read-through | `createRedisQueryCache` — honors `ttlSeconds` per key |
+| Deno (self-hosted) | Redis read-through | `createRedisQueryCache` — honors `ttlSeconds` per key; active unconditionally including production `static` mode |
 
-Workers must **not** fall back to the primary Hyperdrive binding as the cached connection. `resolveWorkersCachedDb()` returns a database only when `HYPERDRIVE_CACHED` is present.
+Workers must **not** fall back to the primary Hyperdrive binding as the cached connection. `resolveWorkersCachedDb()` returns a database only when `HYPERDRIVE_CACHED` is present; otherwise `resolveWorkersQueryCache` uses passthrough (no Hyperdrive caching).
 
-On Workers, Hyperdrive caching for approved read models relies on **`prepare: true`** on the postgres.js client (`createWorkersDb` in `src/db.ts`). With `prepare: false`, Hyperdrive treats parameterized `SELECT`s as uncacheable. See **Workers Hyperdrive** in `../../AGENTS.md` (instance repo root).
+On Workers, Hyperdrive caching for approved read models relies on **`prepare: true`** on the postgres.js client (`PG_OPTS_WORKERS` in `src/db.ts`). With `prepare: false`, Hyperdrive treats parameterized `SELECT`s as uncacheable. See **Workers Hyperdrive** in `../../AGENTS.md` (instance repo root). A source-scan regression test in `src/db.test.ts` pins `prepare: true` so it cannot silently regress.
+
+### Hyperdrive binding ids
+
+| Env | `HYPERDRIVE_CACHED` | Notes |
+| --- | --- | --- |
+| `live` | real id (`d9c4…5d67`, `prod-cached`) | Caching enabled against prod Postgres |
+| `testing` | real id (dedicated `testing-cached` config) | Must point at the testing Postgres origin with caching enabled — **not** the placeholder (`0000…dev0`) and **not** the primary `HYPERDRIVE` id. Create or resolve via `CLOUDFLARE_API_TOKEN=… ./scripts/ensure-testing-hyperdrive-cached.sh --write-wrangler` when missing. |
+| top-level / `wrangler dev` / vitest | placeholder (`0000…dev0`) | Local dev/tests use passthrough when the binding is absent or placeholder. |
 
 ## Cache backends (no read-model logic)
 
@@ -29,7 +37,7 @@ Both backends are thin wrappers — they do not decide what SQL runs or what get
 | Module | Role | Code change for split? |
 | --- | --- | --- |
 | `hyperdrive-query-cache.ts` | Calls `load(cachedDb)` for approved read models; Hyperdrive caches SQL at the connection level | **No** — only the list-rows `SELECT` reaches `cachedDb` because `runApprovedCachedReadModel` passes a narrow `load` closure from the read model |
-| `redis-query-cache.ts` | Generic Redis read-through: `JSON.parse` / `JSON.stringify` around whatever `load(db)` returns | **No** — caching only list rows happens automatically once the read model passes a list-rows-only `load` to `runApprovedCachedReadModel` |
+| `redis-query-cache.ts` | Generic Redis read-through: `JSON.parse` / `JSON.stringify` around whatever `load(db)` returns; falls back to `load(db)` on Redis get/set/parse errors | **No** — caching only list rows happens automatically once the read model passes a list-rows-only `load` to `runApprovedCachedReadModel` |
 
 ## Adding a new cached read model
 
@@ -42,6 +50,8 @@ Both backends are thin wrappers — they do not decide what SQL runs or what get
 
 ## Approved read models
 
+**Audit outcome:** every loader under `read-models/` was reviewed. The allowlist is complete and minimal — only `servers-list` qualifies today as an auth-agnostic, non-volatile read model. No other server read is both auth-agnostic and stable enough to cache; no loader leaks uncacheable or auth-sensitive statements onto the cached connection.
+
 | Id | Helper | Cached payload | Allowed SQL on cached connection |
 | --- | --- | --- | --- |
 | `servers-list` | `cachedServersListReadModel` | `ServersListRow[]` (list rows only) | **Only** statement #1 — list-rows `SELECT` on `server` — see `read-models/servers-list.ts` |
@@ -50,9 +60,22 @@ For `servers-list`, daemon/metadata presence projections (`resolveFleetPresence`
 
 The cached payload is a plain array of row objects (no `Map`/`Set`) and remains JSON-serializable for Redis.
 
+### Enforcement guards
+
+Route tests (`src/client/servers/routes.test.ts`) use `createListRowsOnlyReadDb`, which:
+
+- default-denies every database property except `select` (and the test-only `selectCallCount` accessor);
+- allowlists the documented list-row column set on `select` by **exact** key membership and count;
+- counts `select` invocations so tests pin **exactly one** cached statement per request;
+- asserts `recordingCache.readModels` is `['servers-list']` only.
+
+### Cost note (Durable Objects)
+
+Caching the list-rows `SELECT` reduces **primary Hyperdrive/Postgres** read load only. Server status reads are already Postgres-only (no per-request Durable Object fan-out), so this path does **not** touch the daemon cell DO and does not add DO GB‑sec pressure.
+
 ## Redis / Hyperdrive parity
 
-Redis (`createRedisQueryCache` in `redis-query-cache.ts`) must mirror Hyperdrive semantics for the same read models: same allowlist, same key shape (`queryCacheKey(readModel, …)`), same cached payload type per read model.
+Redis (`createRedisQueryCache` in `redis-query-cache.ts`, wired unconditionally from `src/deno.ts` so it is active in production `static` mode) must mirror Hyperdrive semantics for the same read models: same allowlist, same key shape (`queryCacheKey(readModel, …)`), same cached payload type per read model, per-key TTL clamped to `MAX_QUERY_CACHE_TTL_SECONDS`, and fallback to `load(db)` on Redis read/write/parse errors.
 
 Because the split lives in the runtime-agnostic read-model code (`read-models/servers-list.ts`), both backends cache **the same payload** (`ServersListRow[]` for `servers-list`). Presence and colocated resolution always run on the primary `db` per request on **both** runtimes — neither backend ever sees those queries.
 

@@ -54,7 +54,11 @@ function createInitialCellDiagnostics(): CellDiagnostics {
     fetchByRoute: {},
     storageReads: 0,
     storageWrites: 0,
-    storageByCallSite: {},
+    // Null prototype so a callSite of "constructor" is not Object.prototype.constructor.
+    storageByCallSite: Object.create(null) as Record<
+      string,
+      { reads: number; writes: number }
+    >,
   };
 }
 
@@ -71,8 +75,11 @@ const DAEMON_SOCKET_LEASE_NAME = "daemon-socket";
 const OUTBOX_PUMP_ALARM_MS = 2_000;
 const OUTBOX_MAX_RETRIES = 10;
 const OUTBOX_RETRY_MAX_MS = 300_000;
-const HEARTBEAT_COALESCE_MS = 60_000;
 const CELL_GEO_HEADER = "X-Turbopanel-Cell-Geo";
+/** Schema stamp in `_cell_schema.version` — bump when `#ensureSchema` DDL changes.
+ * DO SQLite rejects `PRAGMA user_version` (`SQLITE_AUTH`); `#readSchemaVersion`
+ * tries that pragma first and falls back to this table on failure. */
+export const CELL_SCHEMA_VERSION = 1;
 
 type ProjectionDbFactory = () => Db | null;
 
@@ -162,9 +169,6 @@ function snapshotFromMetaRow(
     connectedAt: row.connected_at ? String(row.connected_at) : undefined,
     lastInboundAt: row.last_seen_at ? String(row.last_seen_at) : undefined,
     lastSeenAt: row.last_seen_at ? String(row.last_seen_at) : undefined,
-    lastProjectedAt: row.last_projected_at
-      ? String(row.last_projected_at)
-      : undefined,
     keyLastUsedAt: row.key_last_used_at ? String(row.key_last_used_at) : undefined,
     agent: parseAgentJson(row.agent_json ? String(row.agent_json) : null),
   };
@@ -211,6 +215,16 @@ function errorResponse(message: string, status = 400): Response {
   return jsonResponse({ error: message }, status);
 }
 
+function parsePositiveIntEnv(
+  raw: string | undefined,
+  fallback: number,
+): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
 /**
  * ╔══════════════════════════════════════════════════════════════════╗
  * ║  CLOUDFLARE DURABLE OBJECT — HIBERNATION COST RULES             ║
@@ -237,8 +251,14 @@ export class DaemonCellObject {
   #serverId: string | null = null;
   readonly #sweptOffline = new Set<string>();
   #runtimeConnected = false;
+  #lastProjectedAtMs: number | null = null;
+  #lastKnownAgent: DaemonAgentInfo | undefined;
   #scheduledAlarmMs: number | null = null;
   #scheduledAlarmMsLoaded = false;
+  /** Per-connection inbound message counters (in-memory; no timers). */
+  #inboundRate = new Map<string, { windowStartMs: number; count: number }>();
+  readonly #inboundLimit: number;
+  readonly #inboundWindowMs: number;
   readonly #sql: (
     callSite: string,
     query: string,
@@ -249,15 +269,22 @@ export class DaemonCellObject {
     this.#ctx = ctx;
     this.#env = env;
     this.#debugStorage = this.#isDaemonDebug();
+    this.#inboundLimit = parsePositiveIntEnv(
+      env.TURBOPANEL_DAEMON_WS_INBOUND_LIMIT,
+      120,
+    );
+    this.#inboundWindowMs = parsePositiveIntEnv(
+      env.TURBOPANEL_DAEMON_WS_INBOUND_WINDOW_MS,
+      60_000,
+    );
     const exec = ctx.storage.sql.exec.bind(ctx.storage.sql);
-    if (this.#debugStorage) {
-      this.#sql = (callSite, query, ...args) => {
-        this.#countStorage(callSite, query);
-        return exec(query, ...args);
-      };
-    } else {
-      this.#sql = (_callSite, query, ...args) => exec(query, ...args);
-    }
+    // Always route through `#countStorage` — it no-ops unless debug is on.
+    // Re-check live env so vitest can toggle `TURBOPANEL_DAEMON_DEBUG` after
+    // construct (DO bindings share the same env object as the test harness).
+    this.#sql = (callSite, query, ...args) => {
+      this.#countStorage(callSite, query);
+      return exec(query, ...args);
+    };
     this.#diag.constructorCalls += 1;
     if (this.#isDaemonDebug()) {
       console.debug("daemon cell diagnostics: constructor");
@@ -268,18 +295,32 @@ export class DaemonCellObject {
     this.#initializeFromStorage();
   }
 
-  /** Sync constructor bootstrap — schema, cached server id, live-socket presence. */
+  /**
+   * Sync constructor bootstrap — schema + live-socket presence only.
+   *
+   * Prefer the restored hibernation WebSocket attachment for `#serverId` so a
+   * `checkLiveness` wake with a live socket pays no business-row SQLite reads
+   * for the id. Socket-less wakes (sweep probe against a cell with no restored
+   * attachment) deliberately skip the `cell` table — `#resolveServerId` takes
+   * the request header/body, and only snapshot/alarm paths that lack a header
+   * fall back to a `server_id`-only SELECT. Trade-off: on a wake with a live
+   * socket, `#lastKnownAgent` starts `undefined`; `#getSnapshot` still returns
+   * the persisted agent (it reads `agent_json` via `SELECT *`), and
+   * `#shouldProjectInbound` will at most treat the first agent-carrying
+   * message after a wake as changed → one extra, correct projection. Rare
+   * (heartbeats are agent-gated) and never a SQLite write.
+   */
   #initializeFromStorage(): void {
     this.#ensureSchema();
-    const row = readFirstSqlRow(this.#sql(
-      "constructor",
-      "SELECT server_id, remote_address, agent_json FROM cell LIMIT 1",
-    ));
-    if (row) {
-      this.#serverId = String(row.server_id ?? "");
-    }
-    if (this.#serverId && this.#hasLiveSocket(this.#serverId)) {
+    for (const ws of this.#ctx.getWebSockets()) {
+      const attachment = ws.deserializeAttachment() as {
+        serverId?: string;
+      } | null;
+      const id = attachment?.serverId?.trim();
+      if (!id) continue;
+      this.#serverId = id;
       this.#runtimeConnected = true;
+      return;
     }
   }
 
@@ -307,31 +348,6 @@ export class DaemonCellObject {
     let connected = false;
     let lastPingAtMs: number | null = null;
     const allSockets = this.#ctx.getWebSockets();
-    // #region agent log — debug session 2e6859, hypothesis H6/H9 (sticky
-    // false-offline: attachment mismatch or auto-response timestamp not
-    // surviving hibernation). Remove after verification.
-    console.info(
-      `[debug:2e6859:H6] getLivenessSnapshot serverId=${serverId} totalSockets=${
-        allSockets.length
-      } sockets=${
-        JSON.stringify(
-          allSockets.map((ws) => {
-            const attachment = ws.deserializeAttachment() as {
-              serverId?: string;
-            } | null;
-            const autoTs = this.#ctx.getWebSocketAutoResponseTimestamp(ws);
-            return {
-              attachedServerId: attachment?.serverId ?? null,
-              matches: attachment?.serverId === serverId,
-              autoResponseTs: autoTs ? autoTs.getTime() : null,
-              autoResponseAgeMs: autoTs ? Date.now() - autoTs.getTime() : null,
-              readyState: ws.readyState,
-            };
-          }),
-        )
-      }`,
-    );
-    // #endregion
     for (const ws of allSockets) {
       const attachment = ws.deserializeAttachment() as {
         serverId?: string;
@@ -371,6 +387,11 @@ export class DaemonCellObject {
   #isDaemonDebug(): boolean {
     return this.#env.TURBOPANEL_DAEMON_DEBUG === "1" ||
       this.#env.TURBOPANEL_DAEMON_DEBUG === "true";
+  }
+
+  /** Prefer live env so vitest can toggle `TURBOPANEL_DAEMON_DEBUG` after construct. */
+  #storageDebugEnabled(): boolean {
+    return this.#debugStorage || this.#isDaemonDebug();
   }
 
   #trace(
@@ -438,17 +459,17 @@ export class DaemonCellObject {
   }
 
   async #setAlarm(callSite: string, timeMs: number): Promise<void> {
-    if (this.#debugStorage) this.#bumpStorageCount(callSite, "write");
+    if (this.#storageDebugEnabled()) this.#bumpStorageCount(callSite, "write");
     await this.#ctx.storage.setAlarm(timeMs);
   }
 
   async #deleteAlarm(callSite: string): Promise<void> {
-    if (this.#debugStorage) this.#bumpStorageCount(callSite, "write");
+    if (this.#storageDebugEnabled()) this.#bumpStorageCount(callSite, "write");
     await this.#ctx.storage.deleteAlarm();
   }
 
   async #deleteAll(callSite: string): Promise<void> {
-    if (this.#debugStorage) this.#bumpStorageCount(callSite, "write");
+    if (this.#storageDebugEnabled()) this.#bumpStorageCount(callSite, "write");
     await this.#ctx.storage.deleteAll();
   }
 
@@ -469,28 +490,70 @@ export class DaemonCellObject {
     return await this.#daemonJwtKeyringPromise;
   }
 
+  /**
+   * Read the schema stamp without DDL. Prefer `PRAGMA user_version` when the
+   * runtime allows it; DO SQLite rejects that pragma (`SQLITE_AUTH`), so the
+   * steady-state path is a single `SELECT` from `_cell_schema`. Returns `null`
+   * when the stamp table/row is missing (first boot or wipe).
+   */
+  #readSchemaVersion(): number | null {
+    try {
+      const pragmaRow = readFirstSqlRow(this.#sql(
+        "ensure-schema",
+        "PRAGMA user_version",
+      ));
+      if (pragmaRow) {
+        const raw = pragmaRow.user_version ?? Object.values(pragmaRow)[0];
+        const version = Number(raw ?? 0);
+        if (version > 0) return version;
+      }
+    } catch {
+      // DO SQLite: SQLITE_AUTH — fall through to `_cell_schema`.
+    }
+
+    try {
+      const versionRow = readFirstSqlRow(this.#sql(
+        "ensure-schema",
+        "SELECT version FROM _cell_schema WHERE id = 1",
+      ));
+      if (!versionRow) return null;
+      return Number(versionRow.version ?? 0);
+    } catch {
+      // Missing `_cell_schema` table on a brand-new cell.
+      return null;
+    }
+  }
+
   #ensureSchema(): void {
     if (this.#schemaReady) return;
+    // Already-initialized cells: one cheap version read, no DDL probes.
+    const existingVersion = this.#readSchemaVersion();
+    if (
+      existingVersion !== null && existingVersion >= CELL_SCHEMA_VERSION
+    ) {
+      this.#schemaReady = true;
+      return;
+    }
+
+    // Missing table / missing or stale stamp — create + stamp once.
+    this.#sql(
+      "ensure-schema",
+      `CREATE TABLE IF NOT EXISTS _cell_schema (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        version INTEGER NOT NULL
+      )`,
+    );
     this.#sql("ensure-schema", `
       CREATE TABLE IF NOT EXISTS cell (
         server_id TEXT PRIMARY KEY,
         remote_address TEXT,
         connected_at TEXT,
         last_seen_at TEXT,
-        last_projected_at TEXT,
         key_last_used_at TEXT,
         agent_json TEXT,
         updated_at TEXT
       )
     `);
-    // Migration for cells created before last_projected_at existed (debug
-    // session 2e6859 H10). SQLite has no ADD COLUMN IF NOT EXISTS; tolerate
-    // the duplicate-column error on rows that already have it.
-    try {
-      this.#sql("ensure-schema", `ALTER TABLE cell ADD COLUMN last_projected_at TEXT`);
-    } catch {
-      // Column already exists — safe to ignore.
-    }
     this.#sql("ensure-schema", `
       CREATE TABLE IF NOT EXISTS leases (
         lease_name TEXT PRIMARY KEY,
@@ -532,19 +595,39 @@ export class DaemonCellObject {
         daemon_responded_at TEXT
       )
     `);
+    this.#sql(
+      "ensure-schema",
+      `INSERT INTO _cell_schema (id, version) VALUES (1, ?)
+       ON CONFLICT(id) DO UPDATE SET version = excluded.version`,
+      CELL_SCHEMA_VERSION,
+    );
     this.#schemaReady = true;
   }
 
   #resolveServerId(request: Request): string | null {
     if (this.#serverId) return this.#serverId;
     const header = request.headers.get("X-Turbopanel-Cell-Server-Id")?.trim();
-    if (header) return header;
-    const cursor = this.#sql("resolve-server-id",
-      "SELECT server_id FROM cell LIMIT 1",
-    );
-    for (const row of cursor) {
-      const id = row.server_id;
-      if (id) return String(id);
+    if (header) {
+      this.#serverId = header;
+      return header;
+    }
+    // Header-less callers only (alarm / debug). Selects `server_id` alone —
+    // never `agent_json` — so liveness cannot inherit this cost.
+    try {
+      const cursor = this.#sql(
+        "resolve-server-id",
+        "SELECT server_id FROM cell LIMIT 1",
+      );
+      for (const row of cursor) {
+        const id = row.server_id;
+        if (id) {
+          const serverId = String(id);
+          this.#serverId = serverId;
+          return serverId;
+        }
+      }
+    } catch {
+      // Schema may not exist yet on a brand-new cell.
     }
     return null;
   }
@@ -602,52 +685,22 @@ export class DaemonCellObject {
     }
   }
 
-  #readCellRow(serverId: string): Record<string, SqlStorageValue> | null {
-    return readFirstSqlRow(this.#sql("presence-should-project",
-      "SELECT last_seen_at, last_projected_at, agent_json FROM cell WHERE server_id = ?",
-      serverId,
-    ));
-  }
-
-  /** Gate Postgres work using SQLite state before opening Hyperdrive. */
+  /** Gate Postgres work using in-memory projection state before opening Hyperdrive. */
   #shouldProjectInbound(
-    serverId: string,
     at: string,
     agent?: DaemonAgentInfo,
-    cellRow?: Record<string, SqlStorageValue> | null,
   ): boolean {
-    const meta = cellRow ?? this.#readCellRow(serverId);
-    const runtimeConnected = this.#runtimeConnected;
-    // Deliberately NOT the ping/pong-inflated effective last-seen value: that
-    // signal is bumped by WebSocket auto-responses on every ~60s cell ping,
-    // which would make this debounce perpetually look "already fresh" and
-    // never actually project to Postgres (debug session 2e6859 H10).
-    const cellLastSeenAt = meta?.last_projected_at
-      ? String(meta.last_projected_at)
+    const cellLastSeenAt = this.#lastProjectedAtMs !== null
+      ? new Date(this.#lastProjectedAtMs).toISOString()
       : null;
-    const storedAgent = parseAgentJson(
-      meta?.agent_json ? String(meta.agent_json) : null,
-    );
 
-    const due = inboundHeartbeatProjectionDue({
-      runtimeConnected,
+    return inboundHeartbeatProjectionDue({
+      runtimeConnected: this.#runtimeConnected,
       cellLastSeenAt,
       inboundAt: at,
-      storedAgent,
+      storedAgent: this.#lastKnownAgent,
       incomingAgent: agent,
     });
-    // #region agent log — debug session 2e6859, hypothesis H10 (post-fix
-    // verification: gate now uses last_projected_at instead of the ping-
-    // inflated effective last-seen value, so `due` should flip true roughly
-    // every ~60s instead of being stuck at false forever). Remove after
-    // verification.
-    console.info(
-      `[debug:2e6859:H10] shouldProjectInbound serverId=${serverId} at=${at} rawLastProjectedAt=${
-        meta?.last_projected_at ? String(meta.last_projected_at) : null
-      } due=${due}`,
-    );
-    // #endregion
-    return due;
   }
 
   /**
@@ -738,9 +791,9 @@ export class DaemonCellObject {
 
   // COST RULE: #projectInbound is only called when #shouldProjectInbound returns
   // true (i.e., the HEARTBEAT_COALESCE_MS window has elapsed or agent changed).
-  // Idle heartbeats update only SQLite cell via #recordInbound and never
-  // open a Hyperdrive connection. Every #withProjectionDb call closes the
-  // connection in its finally block — no outbound socket lingers.
+  // Steady-state idle traffic performs no SQLite cell writes and never opens a
+  // Hyperdrive connection. Every #withProjectionDb call closes the connection in
+  // its finally block — no outbound socket lingers.
   async #projectInbound(
     serverId: string,
     at?: string,
@@ -754,14 +807,11 @@ export class DaemonCellObject {
         { at, agent },
       );
     });
-    // Record that Postgres was actually touched for this inbound message,
-    // independent of last_seen_at (which ping/pong auto-responses also bump
-    // and therefore can't be used to gate this debounce — see #shouldProjectInbound).
-    this.#sql("presence-should-project",
-      "UPDATE cell SET last_projected_at = ? WHERE server_id = ?",
-      at ?? nowIso(),
-      serverId,
-    );
+    const atMs = at ? Date.parse(at) : Date.now();
+    this.#lastProjectedAtMs = Number.isNaN(atMs) ? Date.now() : atMs;
+    if (agent) {
+      this.#lastKnownAgent = agent;
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -833,6 +883,10 @@ export class DaemonCellObject {
     this.#serverId = serverId;
     this.#sweptOffline.delete(serverId);
     this.#runtimeConnected = true;
+    const connectedAtMs = Date.parse(connectedAt);
+    this.#lastProjectedAtMs = Number.isNaN(connectedAtMs)
+      ? Date.now()
+      : connectedAtMs;
 
     this.#ctx.storage.transactionSync(() => {
       this.#ensureServerId(serverId);
@@ -1016,28 +1070,6 @@ export class DaemonCellObject {
     ));
   }
 
-  #refreshLivenessFromAutoResponseTimestamps(): void {
-    for (const ws of this.#ctx.getWebSockets()) {
-      const autoTs = this.#ctx.getWebSocketAutoResponseTimestamp(ws);
-      if (!autoTs) continue;
-
-      const attachment = ws.deserializeAttachment() as {
-        serverId: string;
-      } | null;
-      if (!attachment?.serverId) continue;
-
-      const autoAt = autoTs.toISOString();
-      this.#sql("alarm",
-        `UPDATE cell SET last_seen_at = ?, updated_at = ?
-         WHERE server_id = ? AND (last_seen_at IS NULL OR last_seen_at < ?)`,
-        autoAt,
-        nowIso(),
-        attachment.serverId,
-        autoAt,
-      );
-    }
-  }
-
   #requeueExpiredInflightOutbox(nowMs = Date.now()): void {
     const cutoff = nowIso(nowMs - OUTBOX_INFLIGHT_LEASE_MS);
     this.#sql("outbox-requeue", 
@@ -1207,169 +1239,35 @@ export class DaemonCellObject {
     }
   }
 
-  #shouldCoalesceLastSeenAt(
-    serverId: string,
-    atMs: number,
-    lastSeenAt?: string | null,
-  ): boolean {
-    if (lastSeenAt !== undefined) {
-      if (!lastSeenAt) return true;
-      const lastSeenMs = Date.parse(lastSeenAt);
-      if (Number.isNaN(lastSeenMs)) return true;
-      return atMs - lastSeenMs >= HEARTBEAT_COALESCE_MS;
-    }
-    const row = readFirstSqlRow(this.#sql("record-inbound",
-      "SELECT last_seen_at FROM cell WHERE server_id = ?",
-      serverId,
-    ));
-    if (!row) return true;
-    const stored = row.last_seen_at ? String(row.last_seen_at) : null;
-    if (!stored) return true;
-    const lastSeenMs = Date.parse(stored);
-    if (Number.isNaN(lastSeenMs)) return true;
-    return atMs - lastSeenMs >= HEARTBEAT_COALESCE_MS;
-  }
-
-  #readStoredAgent(
-    serverId: string,
-    cellRow?: Record<string, SqlStorageValue> | null,
-  ): DaemonAgentInfo | undefined {
-    if (cellRow) {
-      return parseAgentJson(
-        cellRow.agent_json ? String(cellRow.agent_json) : null,
-      );
-    }
-    const row = readFirstSqlRow(this.#sql("record-inbound",
-      "SELECT agent_json FROM cell WHERE server_id = ?",
-      serverId,
-    ));
-    if (!row) return undefined;
-    return parseAgentJson(
-      row.agent_json ? String(row.agent_json) : null,
-    );
-  }
-
   #recordInbound(
     serverId: string,
     at: string,
     agent?: DaemonAgentInfo,
     connectionId?: string,
-    cellRow?: Record<string, SqlStorageValue> | null,
-    effectiveLastSeen?: string | null,
   ): void {
     this.#sweptOffline.delete(serverId);
     if (this.#hasLiveSocket(serverId)) {
       this.#runtimeConnected = true;
     }
-
-    const atMs = Date.parse(at);
-    const lastSeenForCoalesce = effectiveLastSeen ??
-      (cellRow?.last_seen_at ? String(cellRow.last_seen_at) : undefined);
-    const coalesce = Number.isNaN(atMs) ||
-      this.#shouldCoalesceLastSeenAt(serverId, atMs, lastSeenForCoalesce);
-    const now = nowIso();
-
-    let agentChanged = false;
     if (agent) {
-      agentChanged = !agentIdentityEqual(
-        agent,
-        this.#readStoredAgent(serverId, cellRow),
-      );
-    }
-
-    if (coalesce && this.#isDaemonDebug()) {
-      console.debug(`daemon cell inbound (${serverId}) last_seen_at bumped`);
-    }
-
-    if (agent) {
-      if (coalesce) {
-        this.#sql("record-inbound",
-          `UPDATE cell SET last_seen_at = ?, key_last_used_at = ?, agent_json = ?, updated_at = ?
-           WHERE server_id = ?`,
-          at,
-          at,
-          JSON.stringify(agent),
-          now,
-          serverId,
-        );
-      } else if (agentChanged) {
-        this.#sql("record-inbound",
-          `UPDATE cell SET key_last_used_at = ?, agent_json = ?, updated_at = ? WHERE server_id = ?`,
-          at,
-          JSON.stringify(agent),
-          now,
-          serverId,
-        );
-      } else {
-        this.#sql("record-inbound",
-          "UPDATE cell SET key_last_used_at = ?, updated_at = ? WHERE server_id = ?",
-          at,
-          now,
-          serverId,
-        );
-      }
-      if (connectionId) {
+      const agentChangedFlag = !agentIdentityEqual(agent, this.#lastKnownAgent);
+      this.#lastKnownAgent = agent;
+      if (connectionId && this.#isDaemonDebug()) {
         this.#trace("record-inbound", {
           serverId,
           conn: connectionId,
-          coalesced: coalesce,
-          agentChanged,
+          agentChanged: agentChangedFlag,
         });
       }
       return;
     }
 
-    if (coalesce) {
-      this.#sql("record-inbound",
-        `UPDATE cell SET last_seen_at = ?, key_last_used_at = ?, updated_at = ?
-         WHERE server_id = ?`,
-        at,
-        at,
-        now,
-        serverId,
-      );
-    } else {
-      this.#sql("record-inbound",
-        "UPDATE cell SET key_last_used_at = ?, updated_at = ? WHERE server_id = ?",
-        at,
-        now,
-        serverId,
-      );
-    }
-
-    if (connectionId) {
+    if (connectionId && this.#isDaemonDebug()) {
       this.#trace("record-inbound", {
         serverId,
         conn: connectionId,
-        coalesced: coalesce,
-        agentChanged,
+        agentChanged: false,
       });
-    }
-  }
-
-  #applyWebSocketAutoResponseLiveness(
-    ws: WebSocket,
-    serverId: string,
-    connectionId: string,
-    cellRow: Record<string, SqlStorageValue> | null,
-    autoTs: Date | null,
-  ): void {
-    if (!autoTs) return;
-
-    const autoAt = autoTs.toISOString();
-    const lastSeen = cellRow?.last_seen_at ? String(cellRow.last_seen_at) : null;
-    const shouldTracePong = !lastSeen || lastSeen < autoAt;
-
-    this.#sql("ws-message-liveness",
-      `UPDATE cell SET last_seen_at = ?, updated_at = ?
-       WHERE server_id = ? AND (last_seen_at IS NULL OR last_seen_at < ?)`,
-      autoAt,
-      nowIso(),
-      serverId,
-      autoAt,
-    );
-    if (shouldTracePong) {
-      this.#trace("pong", { serverId, conn: connectionId });
     }
   }
 
@@ -1383,24 +1281,18 @@ export class DaemonCellObject {
       at?: string;
       agent?: DaemonAgentInfo;
     },
-    cellRow: Record<string, SqlStorageValue> | null,
-    effectiveLastSeen: string | null,
   ): Promise<void> {
     this.#bumpDiag("heartbeatCount");
     const at = parsed.at ?? nowIso();
     const shouldProject = this.#shouldProjectInbound(
-      attachment.serverId,
       at,
       parsed.agent,
-      cellRow,
     );
     this.#recordInbound(
       attachment.serverId,
       at,
       parsed.agent,
       attachment.connectionId,
-      cellRow,
-      effectiveLastSeen,
     );
     const shouldProjectInbound = parsed.type === "hello"
       ? shouldProject ||
@@ -1409,23 +1301,6 @@ export class DaemonCellObject {
     if (shouldProjectInbound) {
       await this.#projectInbound(attachment.serverId, at, parsed.agent);
     }
-  }
-
-  #effectiveLastSeenFromRow(
-    cellRow: Record<string, SqlStorageValue> | null,
-    autoTs: Date | null,
-  ): string | null {
-    const storedLastSeen = cellRow?.last_seen_at
-      ? String(cellRow.last_seen_at)
-      : null;
-    const storedMs = storedLastSeen ? Date.parse(storedLastSeen) : 0;
-    const autoMs = autoTs ? autoTs.getTime() : 0;
-    const effectiveMs = Math.max(
-      Number.isNaN(storedMs) ? 0 : storedMs,
-      Number.isNaN(autoMs) ? 0 : autoMs,
-    );
-    if (effectiveMs <= 0) return storedLastSeen;
-    return new Date(effectiveMs).toISOString();
   }
 
   async webSocketMessage(
@@ -1439,20 +1314,9 @@ export class DaemonCellObject {
     } | null;
     if (!attachment) return;
 
-    const cellRow = readFirstSqlRow(this.#sql("ws-message",
-      "SELECT last_seen_at, last_projected_at, agent_json FROM cell WHERE server_id = ?",
-      attachment.serverId,
-    ));
-    const autoTs = this.#ctx.getWebSocketAutoResponseTimestamp(ws);
-    const effectiveLastSeen = this.#effectiveLastSeenFromRow(cellRow, autoTs);
-
-    this.#applyWebSocketAutoResponseLiveness(
-      ws,
-      attachment.serverId,
-      attachment.connectionId,
-      cellRow,
-      autoTs,
-    );
+    if (!this.#allowInboundMessage(attachment.connectionId, ws)) {
+      return;
+    }
 
     const raw = typeof message === "string"
       ? message
@@ -1468,12 +1332,7 @@ export class DaemonCellObject {
     });
 
     if (parsed.type === "hello" || parsed.type === "heartbeat") {
-      await this.#handlePresenceMessage(
-        attachment,
-        parsed,
-        cellRow,
-        effectiveLastSeen,
-      );
+      await this.#handlePresenceMessage(attachment, parsed);
       return;
     }
 
@@ -1482,11 +1341,30 @@ export class DaemonCellObject {
       parsed.at,
       undefined,
       attachment.connectionId,
-      cellRow,
-      effectiveLastSeen,
     );
     await this.#handleInboundMessage(attachment.serverId, parsed);
     await this.#scheduleNearestAlarm();
+  }
+
+  /**
+   * In-memory per-connection flood cap. Window rollover uses `Date.now()` —
+   * no timers, so hibernation eligibility is preserved. Auto-response pings
+   * never reach `webSocketMessage`, so this only bounds hello/heartbeat/replies.
+   */
+  #allowInboundMessage(connectionId: string, ws: WebSocket): boolean {
+    const now = Date.now();
+    const existing = this.#inboundRate.get(connectionId);
+    if (!existing || now - existing.windowStartMs >= this.#inboundWindowMs) {
+      this.#inboundRate.set(connectionId, { windowStartMs: now, count: 1 });
+      return true;
+    }
+    existing.count += 1;
+    if (existing.count > this.#inboundLimit) {
+      this.#inboundRate.delete(connectionId);
+      ws.close(1008, "rate_limited");
+      return false;
+    }
+    return true;
   }
 
   async webSocketClose(
@@ -1515,6 +1393,8 @@ export class DaemonCellObject {
       serverId: string;
     } | null;
     if (!attachment) return;
+
+    this.#inboundRate.delete(attachment.connectionId);
 
     const closedAt = nowIso();
 
@@ -1604,28 +1484,26 @@ export class DaemonCellObject {
    * Redis (Deno) keeps a timer-driven sweep via `maintain()` instead.
    */
   #collectStaleDemotions(nowMs: number): string[] {
-    const staleCutoff = nowIso(nowMs - DAEMON_OFFLINE_SWEEP_MS);
+    const staleCutoffMs = nowMs - DAEMON_OFFLINE_SWEEP_MS;
     const staleDemotions: string[] = [];
     const liveSockets = this.#ctx.getWebSockets();
     if (liveSockets.length === 0) return staleDemotions;
-
-    const cellRow = readFirstSqlRow(this.#sql("alarm",
-      "SELECT server_id, last_seen_at FROM cell LIMIT 1",
-    ));
-    if (!cellRow?.last_seen_at) return staleDemotions;
-
-    const lastSeenAt = String(cellRow.last_seen_at);
-    if (lastSeenAt > staleCutoff) return staleDemotions;
 
     for (const ws of liveSockets) {
       const attachment = ws.deserializeAttachment() as {
         serverId?: string;
       } | null;
       const staleServerId = attachment?.serverId ??
-        (cellRow.server_id ? String(cellRow.server_id) : null);
+        this.#serverId;
       if (!staleServerId || this.#sweptOffline.has(staleServerId)) {
         continue;
       }
+
+      const autoTs = this.#ctx.getWebSocketAutoResponseTimestamp(ws);
+      if (!autoTs) continue;
+
+      if (autoTs.getTime() > staleCutoffMs) continue;
+
       this.#sweptOffline.add(staleServerId);
       this.#runtimeConnected = false;
       staleDemotions.push(staleServerId);
@@ -1643,8 +1521,6 @@ export class DaemonCellObject {
     const nowMs = Date.now();
     const now = nowIso(nowMs);
     const serverId = this.#resolveServerId(new Request("https://do.internal/"));
-
-    this.#refreshLivenessFromAutoResponseTimestamps();
 
     const expiringUpdates = this.#runAlarmCleanup(nowMs, now);
     const staleDemotions = this.#collectStaleDemotions(nowMs);
@@ -1938,11 +1814,15 @@ export class DaemonCellObject {
       serverId,
     ));
     if (row) {
-      return snapshotFromMetaRow(
+      const snapshot = snapshotFromMetaRow(
         serverId,
         row,
         this.#runtimeConnected,
       );
+      if (this.#lastKnownAgent) {
+        return { ...snapshot, agent: this.#lastKnownAgent };
+      }
+      return snapshot;
     }
 
     return {
@@ -2186,12 +2066,6 @@ export class DaemonCellObject {
       inbound.daemonReceivedAt,
       nowIso(),
       inbound.requestId,
-    );
-    this.#sql("handle-inbound",
-      `UPDATE cell SET last_seen_at = ?, updated_at = ? WHERE server_id = ?`,
-      ackAt,
-      nowIso(),
-      serverId,
     );
     this.#trace("handle-inbound", {
       serverId,

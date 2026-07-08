@@ -1,7 +1,9 @@
 import { assert, assertEquals } from 'jsr:@std/assert'
 import {
   resolveWorkersCachedDb,
+  resolveWorkersDaemonRateLimiters,
   resolveWorkersQueryCache,
+  isPlaceholderHyperdriveCachedId,
   setWorkersDbFactoryForTests,
 } from './workers-bindings.ts'
 import type { Db } from './db.ts'
@@ -95,4 +97,61 @@ Deno.test('resolveWorkersQueryCache uses cached Hyperdrive db when HYPERDRIVE_CA
   } finally {
     setWorkersDbFactoryForTests(null)
   }
+})
+
+Deno.test('resolveWorkersDaemonRateLimiters returns noop adapters when bindings absent', async () => {
+  const env = {} as CloudflareBindings
+  const { connect, rest } = resolveWorkersDaemonRateLimiters(env)
+  assertEquals(await connect.limit({ key: 'k' }), { success: true })
+  assertEquals(await rest.limit({ key: 'k' }), { success: true })
+})
+
+Deno.test('resolveWorkersDaemonRateLimiters wraps present RateLimit bindings', async () => {
+  const connectKeys: string[] = []
+  const restKeys: string[] = []
+  const env = {
+    DAEMON_CONNECT_RATE_LIMITER: {
+      limit: (options: { key: string }) => {
+        connectKeys.push(options.key)
+        return Promise.resolve({ success: true })
+      },
+    },
+    DAEMON_REST_RATE_LIMITER: {
+      limit: (options: { key: string }) => {
+        restKeys.push(options.key)
+        return Promise.resolve({ success: false })
+      },
+    },
+  } as unknown as CloudflareBindings
+
+  const { connect, rest } = resolveWorkersDaemonRateLimiters(env)
+  assertEquals(await connect.limit({ key: 'connect-a' }), { success: true })
+  assertEquals(await rest.limit({ key: 'rest-b' }), { success: false })
+  assertEquals(connectKeys, ['connect-a'])
+  assertEquals(restKeys, ['rest-b'])
+})
+
+Deno.test('isPlaceholderHyperdriveCachedId matches only the dev placeholder', () => {
+  assertEquals(
+    isPlaceholderHyperdriveCachedId('0000000000000000000000000000dev0'),
+    true,
+  )
+  assertEquals(
+    isPlaceholderHyperdriveCachedId('d9c42999730048e2842dccb61aa05d67'),
+    false,
+  )
+  assertEquals(isPlaceholderHyperdriveCachedId(undefined), false)
+})
+
+Deno.test('wrangler exercised envs must not use HYPERDRIVE_CACHED placeholder', async () => {
+  const { assertExercisedHyperdriveCachedBindings, readHyperdriveCachedIdsFromWranglerJsonc } =
+    await import('./wrangler-hyperdrive-bindings.ts')
+  const wranglerText = await Deno.readTextFile(
+    new URL('../wrangler.jsonc', import.meta.url),
+  )
+  const ids = readHyperdriveCachedIdsFromWranglerJsonc(wranglerText)
+  assertExercisedHyperdriveCachedBindings({
+    testing: ids.testing,
+    live: ids.live,
+  })
 })

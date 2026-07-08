@@ -116,6 +116,21 @@ async function updateServerDaemonState(
   return true;
 }
 
+/** Records daemon key use in Postgres — never wakes the daemon cell. */
+export async function touchDaemonKeyLastUsed(
+  db: Db,
+  serverId: string,
+  at = nowTs(),
+): Promise<void> {
+  await updateServerDaemonState(db, serverId, (state) => ({
+    ...state,
+    key: {
+      ...state.key,
+      lastUsedAt: at,
+    },
+  }));
+}
+
 export async function revokeDaemonKey(db: Db, serverId: string): Promise<void> {
   const now = nowTs();
   await updateServerDaemonState(db, serverId, (state) => ({

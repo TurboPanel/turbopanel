@@ -8,16 +8,18 @@
  *
  * Design ("Option B"):
  *   1. One cheap Postgres read for servers Postgres currently believes are
- *      connected (`listConnectedServersForSweep`).
- *   2. Fan out a *read-only* liveness RPC to each server's own Durable
+ *      connected (`listConnectedServersForSweep`), plus recently-offline rows
+ *      for self-heal (`listRecentlyOfflineServersForSweep`).
+ *   2. Fan out a *read-only* liveness RPC to each candidate's Durable
  *      Object (`DaemonCell.checkLiveness`). It only inspects the free,
  *      runtime-tracked WebSocket auto-response timestamp — the same value
  *      the daemon's idle ping (`DAEMON_CELL_PING`) keeps warm — and never
  *      touches SQLite. A healthy server costs one Workers subrequest and
  *      nothing else.
- *   3. Only servers that are actually stale get a Postgres write (reusing
- *      the existing `onDaemonDisconnected` projection) and a notification.
- *      Healthy servers cost zero writes.
+ *   3. Stale connected servers get a Postgres write (reusing
+ *      `onDaemonDisconnected`) and a notification. Live+warm servers that
+ *      Postgres still marks offline get re-projected online via
+ *      `onDaemonConnected` (self-heal).
  *
  * This intentionally does NOT reintroduce a per-DO recurring alarm — every
  * `setAlarm()` reschedule is a billed SQLite row write (see do.ts "Alarm /
@@ -32,10 +34,15 @@
 import { endDbConnection, type Db } from "../../db.ts";
 import { resolveWorkersDb } from "../../workers-bindings.ts";
 import { createDurableObjectDaemonCellRegistry } from "./do-registry.ts";
-import { onDaemonDisconnected } from "./control-plane-monitor.ts";
+import {
+  onDaemonConnected,
+  onDaemonDisconnected,
+} from "./control-plane-monitor.ts";
 import {
   type ConnectedServerForSweep,
   listConnectedServersForSweep,
+  listRecentlyOfflineServersForSweep,
+  rotateSweepBatch,
 } from "./postgres-projection.ts";
 import type { DaemonCellLiveness } from "./contracts.ts";
 
@@ -43,7 +50,13 @@ import type { DaemonCellLiveness } from "./contracts.ts";
 export const OFFLINE_SWEEP_STALE_MS = 90_000;
 
 /** Stay comfortably under the Workers-paid subrequest ceiling (1000/invocation). */
-const MAX_SWEEP_FANOUT = 900;
+export const MAX_SWEEP_FANOUT = 900;
+
+/** Connected stale-check budget — remainder reserved for self-heal. */
+export const CONNECTED_SWEEP_BUDGET = 700;
+
+/** Recently-offline self-heal budget — not starved by connected rows. */
+export const SELF_HEAL_SWEEP_BUDGET = MAX_SWEEP_FANOUT - CONNECTED_SWEEP_BUDGET;
 
 /** Bound in-flight liveness RPCs per tick instead of bursting the whole batch at once. */
 const FANOUT_CONCURRENCY = 25;
@@ -85,37 +98,132 @@ async function withBoundedConcurrency<T>(
   );
 }
 
-function isStale(
-  candidate: ConnectedServerForSweep,
+type SweepCandidate = {
+  id: string;
+  postgresConnected: boolean;
+  connectedAt: string | null;
+};
+
+/**
+ * Grace bookkeeping for connected sockets whose auto-response timestamp is
+ * still null — bounded in-memory state only (never DO SQLite).
+ */
+const firstNullObservedAtMs = new Map<string, number>();
+
+/** Test helper — clears null-grace bookkeeping between cases. */
+export function resetOfflineSweepNullGraceForTests(): void {
+  firstNullObservedAtMs.clear();
+}
+
+/** Records or clears the first-null observation timestamp for a server. */
+export function updateNullGraceBookkeeping(
+  serverId: string,
   liveness: DaemonCellLiveness | null,
   nowMs: number,
+): void {
+  if (!liveness?.connected) {
+    firstNullObservedAtMs.delete(serverId);
+    return;
+  }
+  if (liveness.lastPingAtMs !== null) {
+    firstNullObservedAtMs.delete(serverId);
+    return;
+  }
+  if (!firstNullObservedAtMs.has(serverId)) {
+    firstNullObservedAtMs.set(serverId, nowMs);
+  }
+}
+
+function pruneNullGraceBookkeeping(activeServerIds: ReadonlySet<string>): void {
+  for (const serverId of firstNullObservedAtMs.keys()) {
+    if (!activeServerIds.has(serverId)) {
+      firstNullObservedAtMs.delete(serverId);
+    }
+  }
+}
+
+export function isStale(
+  serverId: string,
+  liveness: DaemonCellLiveness | null,
+  nowMs: number,
+  _connectedAt: string | null,
 ): boolean {
   if (!liveness?.connected) return true;
   if (liveness.lastPingAtMs !== null) {
     return nowMs - liveness.lastPingAtMs > OFFLINE_SWEEP_STALE_MS;
   }
-  // No auto-response ping observed yet this wake — fall back to connectedAt so a
-  // freshly-attached socket gets grace instead of failing on its first sweep tick.
-  const connectedAtMs = candidate.connectedAt
-    ? Date.parse(candidate.connectedAt)
-    : Number.NaN;
-  if (Number.isNaN(connectedAtMs)) return false;
-  return nowMs - connectedAtMs > OFFLINE_SWEEP_STALE_MS;
+  const firstNullAt = firstNullObservedAtMs.get(serverId);
+  if (firstNullAt === undefined) return false;
+  return nowMs - firstNullAt > OFFLINE_SWEEP_STALE_MS;
+}
+
+function isLiveAndWarm(
+  liveness: DaemonCellLiveness | null,
+  nowMs: number,
+): boolean {
+  if (!liveness?.connected) return false;
+  if (liveness.lastPingAtMs === null) return false;
+  return nowMs - liveness.lastPingAtMs <= OFFLINE_SWEEP_STALE_MS;
+}
+
+function mergeSweepCandidates(
+  connected: ConnectedServerForSweep[],
+  recentlyOffline: Array<{ id: string; connectedAt: string | null }>,
+): SweepCandidate[] {
+  const byId = new Map<string, SweepCandidate>();
+  for (const candidate of connected) {
+    byId.set(candidate.id, {
+      id: candidate.id,
+      postgresConnected: true,
+      connectedAt: candidate.connectedAt,
+    });
+  }
+  for (const candidate of recentlyOffline) {
+    if (byId.has(candidate.id)) continue;
+    byId.set(candidate.id, {
+      id: candidate.id,
+      postgresConnected: false,
+      connectedAt: candidate.connectedAt,
+    });
+  }
+  return [...byId.values()];
 }
 
 async function sweepOnce(env: CloudflareBindings, db: Db): Promise<void> {
-  const candidates = await listConnectedServersForSweep(db);
+  const nowMs = Date.now();
+  const connected = await listConnectedServersForSweep(db);
+  const recentlyOffline = await listRecentlyOfflineServersForSweep(db);
+  const connectedBatch = rotateSweepBatch(
+    connected,
+    CONNECTED_SWEEP_BUDGET,
+    nowMs,
+  );
+  const selfHealBatch = rotateSweepBatch(
+    recentlyOffline,
+    SELF_HEAL_SWEEP_BUDGET,
+    nowMs,
+  );
+  const candidates = mergeSweepCandidates(connectedBatch, selfHealBatch);
   if (candidates.length === 0) return;
 
-  const truncated = candidates.length > MAX_SWEEP_FANOUT;
-  const batch = truncated ? candidates.slice(0, MAX_SWEEP_FANOUT) : candidates;
+  const totalCandidates = connected.length + recentlyOffline.length;
+  const truncated = totalCandidates > candidates.length;
   if (truncated) {
-    sweepTrace("truncated", { total: candidates.length, checked: batch.length });
+    sweepTrace("truncated", {
+      total: totalCandidates,
+      checked: candidates.length,
+      connectedTotal: connected.length,
+      connectedChecked: connectedBatch.length,
+      selfHealTotal: recentlyOffline.length,
+      selfHealChecked: selfHealBatch.length,
+    });
   }
 
+  const batch = candidates;
+
   const registry = createDurableObjectDaemonCellRegistry(env, db);
-  const nowMs = Date.now();
   const staleIds: string[] = [];
+  const healIds: string[] = [];
 
   await withBoundedConcurrency(batch, FANOUT_CONCURRENCY, async (candidate) => {
     let liveness: DaemonCellLiveness | null = null;
@@ -128,33 +236,49 @@ async function sweepOnce(env: CloudflareBindings, db: Db): Promise<void> {
       });
       return;
     }
-    const stale = isStale(candidate, liveness, nowMs);
-    // #region agent log — debug session 2e6859, hypothesis H6/H9 (sticky
-    // false-offline). Remove after verification.
-    sweepTrace("debug-2e6859-liveness-check", {
-      serverId: candidate.id,
-      connectedAt: candidate.connectedAt,
-      livenessConnected: liveness?.connected ?? null,
-      lastPingAtMs: liveness?.lastPingAtMs ?? null,
-      lastPingAgeMs: liveness?.lastPingAtMs != null ? nowMs - liveness.lastPingAtMs : null,
-      stale,
-    });
-    // #endregion
-    if (stale) {
-      staleIds.push(candidate.id);
+
+    updateNullGraceBookkeeping(candidate.id, liveness, nowMs);
+
+    if (candidate.postgresConnected) {
+      if (isStale(candidate.id, liveness, nowMs, candidate.connectedAt)) {
+        staleIds.push(candidate.id);
+      }
+      return;
+    }
+
+    if (isLiveAndWarm(liveness, nowMs)) {
+      healIds.push(candidate.id);
     }
   });
 
-  if (staleIds.length === 0) return;
+  if (staleIds.length > 0) {
+    sweepTrace("stale-detected", { count: staleIds.length });
 
-  sweepTrace("stale-detected", { count: staleIds.length });
+    await withBoundedConcurrency(staleIds, FANOUT_CONCURRENCY, async (serverId) => {
+      try {
+        await onDaemonDisconnected(db, serverId);
+        notifyServerWentOffline(serverId);
+      } catch (err) {
+        sweepTrace("mark-offline-failed", {
+          serverId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    });
+  }
 
-  await withBoundedConcurrency(staleIds, FANOUT_CONCURRENCY, async (serverId) => {
+  pruneNullGraceBookkeeping(new Set(batch.map((candidate) => candidate.id)));
+
+  if (healIds.length === 0) return;
+
+  sweepTrace("self-heal-detected", { count: healIds.length });
+
+  await withBoundedConcurrency(healIds, FANOUT_CONCURRENCY, async (serverId) => {
     try {
-      await onDaemonDisconnected(db, serverId);
-      notifyServerWentOffline(serverId);
+      const cell = registry.getCell(serverId);
+      await onDaemonConnected(db, serverId, cell);
     } catch (err) {
-      sweepTrace("mark-offline-failed", {
+      sweepTrace("self-heal-failed", {
         serverId,
         error: err instanceof Error ? err.message : String(err),
       });

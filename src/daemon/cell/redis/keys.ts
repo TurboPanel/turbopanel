@@ -47,3 +47,8 @@ export function onlineSetKey(): string {
 export function cellKeyPattern(serverId: string): string {
   return `tp:cell:${serverId}:*`;
 }
+
+/** Redis storage key for a shared daemon rate-limit id (e.g. `daemon:connect:<serverId>`). */
+export function rateLimitKey(key: string): string {
+  return `tp:ratelimit:${key}`;
+}

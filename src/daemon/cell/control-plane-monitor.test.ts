@@ -328,6 +328,35 @@ Deno.test("onDaemonDisconnected sets offline status in daemon jsonb without last
   assertEquals(status?.lastSeenAt, "2020-01-01T00:00:00.000Z");
 });
 
+Deno.test("onDaemonConnected self-heals Postgres offline when cell is live", async () => {
+  const recentAt = new Date().toISOString();
+  const { db, updateCalls } = createTrackingDb(
+    { key: baseKey, projection: { hostname: "host-1" } },
+    {
+      connected: false,
+      daemonStatus: "offline",
+      lastSeenAt: recentAt,
+      disconnectedAt: recentAt,
+      statusChangedAt: recentAt,
+    },
+  );
+
+  await onDaemonConnected(
+    db,
+    serverId,
+    createMockCell({
+      connected: true,
+      connectedAt: recentAt,
+      lastSeenAt: recentAt,
+    }) as never,
+    recentAt,
+  );
+
+  assertEquals(updateCalls.length, 1);
+  const status = statusFromPatch(updateCalls[0]);
+  assertEquals(status?.connected, true);
+});
+
 Deno.test("onDaemonHeartbeat within 60s skips DB write when agent unchanged", async () => {
   const agent = {
     commit: "abc123",
@@ -436,6 +465,35 @@ Deno.test("onDaemonInbound repairs stale updating on steady-state hello when age
   assertEquals(update?.status, "done");
   assertEquals(update?.requestId, "req-1");
   assertEquals(updateCalls.length, 1);
+});
+
+Deno.test("onDaemonConnected self-heals Postgres offline when cell is live", async () => {
+  const recentAt = new Date().toISOString();
+  const { db, updateCalls } = createTrackingDb(
+    { key: baseKey, projection: { hostname: "host-1" } },
+    {
+      connected: false,
+      daemonStatus: "offline",
+      lastSeenAt: recentAt,
+      disconnectedAt: recentAt,
+      statusChangedAt: recentAt,
+    },
+  );
+
+  await onDaemonConnected(
+    db,
+    serverId,
+    createMockCell({
+      connected: true,
+      connectedAt: recentAt,
+      lastSeenAt: recentAt,
+    }) as never,
+    recentAt,
+  );
+
+  assertEquals(updateCalls.length, 1);
+  const status = statusFromPatch(updateCalls[0]);
+  assertEquals(status?.connected, true);
 });
 
 Deno.test("onDaemonInbound within 60s skips heartbeat write when agent unchanged", async () => {

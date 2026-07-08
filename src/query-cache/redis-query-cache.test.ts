@@ -136,6 +136,36 @@ Deno.test('cached falls back to loader when Redis get throws', async () => {
   assertEquals(loadCount, 1)
 })
 
+Deno.test('cached returns loader result when Redis set throws', async () => {
+  const db = null as unknown as Db
+  let loadCount = 0
+  let setKey: string | undefined
+  const expectedKey = queryCacheKey('servers-list', 'redis-set-error')
+  const client = {
+    get: () => Promise.resolve(null),
+    set: (key: string) => {
+      setKey = key
+      return Promise.reject(new Error('redis write failure'))
+    },
+  } as unknown as RedisCellClient
+
+  const cache = createRedisQueryCache({ client, db })
+  const result = await cache.getReadModel({
+    readModel: 'servers-list',
+    key: expectedKey,
+    ttlSeconds: 60,
+    load: async () => {
+      loadCount += 1
+      return { fromLoader: true }
+    },
+  })
+
+  assertEquals(result, { fromLoader: true })
+  assertEquals(loadCount, 1)
+  assertEquals(setKey, expectedKey)
+  assertEquals(setKey, queryCacheKey('servers-list', 'redis-set-error'))
+})
+
 Deno.test('getReadModel rejects unapproved read models', async () => {
   const db = null as unknown as Db
   const client = {

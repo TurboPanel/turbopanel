@@ -1139,9 +1139,15 @@ Deno.test("POST /auth/session returns a 15-minute JWT", async () => {
       assertEquals("sid" in jwtPayload, false);
 
       await new Promise((resolve) => setTimeout(resolve, 50));
-      assertEquals(tracking.putSnapshotPatches.length, 1);
-      assertExists(tracking.putSnapshotPatches[0]?.keyLastUsedAt);
-      assertExists(tracking.putSnapshotPatches[0]?.lastSeenAt);
+      assertEquals(tracking.putSnapshotPatches.length, 0);
+
+      const [row] = await db
+        .select({ daemon: server.daemon })
+        .from(server)
+        .where(eq(server.id, serverId))
+        .limit(1);
+      const daemonState = parseServerDaemonState(row?.daemon);
+      assertExists(daemonState?.key.lastUsedAt);
     },
   );
 });
@@ -1256,6 +1262,107 @@ Deno.test("POST /commands/lease returns 200 with valid JWT", async () => {
     const body = await response.json() as { commands: unknown[] };
     assertEquals(body, { commands: [] });
   });
+});
+
+Deno.test("POST /auth/challenge returns 429 when restLimiter denies", async () => {
+  const app = new Hono<AppEnv>();
+  const secrets = await createTestSecrets();
+  const challengeSigningSecrets = await createTestChallengeSecrets();
+  const secretsConfig = createTestSecretsConfig();
+  registerDaemonApiRoutes(app, {
+    secrets,
+    challengeSigningSecrets,
+    secretsConfig,
+    restLimiter: {
+      limit: async () => ({ success: false }),
+    },
+  });
+
+  const response = await app.request("/api/daemon/v1/auth/challenge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ serverId: "srv-rate-limit", keyId: "key-rate-limit" }),
+  });
+  assertEquals(response.status, 429);
+  const body = await response.json() as { ok: boolean; error: string };
+  assertEquals(body, { ok: false, error: "rate_limited" });
+});
+
+Deno.test("POST /auth/challenge enrollment path returns 429 when restLimiter denies", async () => {
+  const app = new Hono<AppEnv>();
+  const secrets = await createTestSecrets();
+  const challengeSigningSecrets = await createTestChallengeSecrets();
+  const secretsConfig = createTestSecretsConfig();
+  registerDaemonApiRoutes(app, {
+    secrets,
+    challengeSigningSecrets,
+    secretsConfig,
+    restLimiter: {
+      limit: async () => ({ success: false }),
+    },
+  });
+
+  const response = await app.request("/api/daemon/v1/auth/challenge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  assertEquals(response.status, 429);
+  const body = await response.json() as { ok: boolean; error: string };
+  assertEquals(body, { ok: false, error: "rate_limited" });
+});
+
+Deno.test("POST /commands/lease returns 429 when restLimiter denies with valid JWT", async () => {
+  const app = new Hono<AppEnv>();
+  const secrets = await createTestSecrets();
+  const challengeSigningSecrets = await createTestChallengeSecrets();
+  const secretsConfig = createTestSecretsConfig();
+  registerDaemonApiRoutes(app, {
+    secrets,
+    challengeSigningSecrets,
+    secretsConfig,
+    restLimiter: {
+      limit: async () => ({ success: false }),
+    },
+  });
+
+  const daemonToken = await issueDaemonToken("srv-lease-rl", "key-lease-rl");
+  const response = await app.request("/api/daemon/v1/commands/lease", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${daemonToken}` },
+  });
+  assertEquals(response.status, 429);
+  const body = await response.json() as { ok: boolean; error: string };
+  assertEquals(body, { ok: false, error: "rate_limited" });
+});
+
+Deno.test("POST /commands/lease proceeds when restLimiter allows", async () => {
+  const app = new Hono<AppEnv>();
+  const secrets = await createTestSecrets();
+  const challengeSigningSecrets = await createTestChallengeSecrets();
+  const secretsConfig = createTestSecretsConfig();
+  let seenKey: string | undefined;
+  registerDaemonApiRoutes(app, {
+    secrets,
+    challengeSigningSecrets,
+    secretsConfig,
+    restLimiter: {
+      limit: async ({ key }) => {
+        seenKey = key;
+        return { success: true };
+      },
+    },
+  });
+
+  const daemonToken = await issueDaemonToken("srv-lease-ok", "key-lease-ok");
+  const response = await app.request("/api/daemon/v1/commands/lease", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${daemonToken}` },
+  });
+  assertEquals(response.status, 200);
+  assertEquals(seenKey, "daemon:rest:commands-lease:srv-lease-ok");
+  const body = await response.json() as { commands: unknown[] };
+  assertEquals(body, { commands: [] });
 });
 Deno.test("POST /secrets/decrypt returns 401 without JWT", async () => {
   await withEnrollFixture(async ({ app }) => {

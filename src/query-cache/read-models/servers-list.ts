@@ -36,20 +36,25 @@ export type ServersListDisplayPayload = {
  * Approved cached read model: servers tab list display/projection data.
  *
  * **Cached connection (`readDb` / `HYPERDRIVE_CACHED` / Redis):** only statement #1
- * — the list-rows `SELECT` — runs here.
+ * — the list-rows `SELECT` — runs here via `loadCachedListRows`. Do not move
+ * presence, colocated, or authorization queries onto `readDb`.
  *
  * **Primary connection (`db` / `HYPERDRIVE`):** statement #2 — one shared
  * `loadServerRowsForFleetPresence` SELECT — feeds both `resolveFleetPresence` and
- * org-scoped `resolveColocatedServerIdSet` via preloaded rows/projections.
+ * org-scoped `resolveColocatedServerIdSet` via preloaded rows/projections
+ * (`resolveServersListEnrichment` / `buildProjectionsFromDaemonRows`).
  *
- * SQL executed (read-only SELECT only; no transactions, mutations, or volatile
- * PostgreSQL functions):
+ * SQL executed (read-only SELECT only; no transactions, mutations, or stable/
+ * volatile PostgreSQL functions such as `now()`, `random()`, `nextval()`,
+ * `clock_timestamp()`):
  *   1. `SELECT id, display_name, organization_id, license_id, options, created_at
  *      FROM server WHERE id IN (:visibleIds) ORDER BY created_at`
  *   2. `SELECT id, daemon, metadata FROM server WHERE id IN (:serverIds)`
  *      (shared preload for presence + org-scoped colocated enrichment)
  *
- * The cached SELECT (#1) contains no volatile PostgreSQL functions.
+ * Cached SELECT (#1) reads no auth/session/secret columns — only the listed
+ * display/projection fields — and contains none of the stable/volatile
+ * functions above.
  */
 async function loadCachedListRows(
   readDb: Db,

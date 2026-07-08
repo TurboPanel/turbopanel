@@ -132,7 +132,7 @@ export const authPaths: Record<string, unknown> = {
       tags: ["Authentication"],
       summary: "Exchange a signed challenge for a 15-minute daemon JWT",
       description:
-        "Exchange a signed challenge for a 15-minute stateless daemon JWT signed with EdDSA. Public key verified against server.daemon.key.publicJwk. Updates daemon cell snapshot timestamps (keyLastUsedAt, lastSeenAt). No daemon session row stored.",
+        "Exchange a signed challenge for a 15-minute stateless daemon JWT signed with EdDSA. Public key verified against server.daemon.key.publicJwk. Records key use in Postgres (`server.daemon.key.lastUsedAt`) only — does not wake or write the daemon cell. No daemon session row stored.",
       responses: {
         "200": {
           description: "Session token issued",

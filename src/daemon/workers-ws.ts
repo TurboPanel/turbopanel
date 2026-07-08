@@ -7,6 +7,8 @@ import {
   resolveCellLocationHint,
 } from "./cell/location.ts";
 import { extractCloudflareGeo } from "../lib/geo/server-geo.ts";
+import type { RateLimiter } from "./rate-limit/contracts.ts";
+import { daemonConnectRateLimitKey } from "./rate-limit/keys.ts";
 
 const CELL_SERVER_ID_HEADER = "X-Turbopanel-Cell-Server-Id";
 const CELL_GEO_HEADER = "X-Turbopanel-Cell-Geo";
@@ -21,6 +23,8 @@ const INTERNAL_CELL_FORWARD_HEADERS = [
 
 export type WorkersDaemonWebSocketOptions = {
   secrets?: DaemonJwtKeyring;
+  /** Cloudflare Rate Limit binding adapter — gates reconnect storms before the DO wakes. */
+  connectLimiter?: RateLimiter;
 };
 
 export function buildWorkersDaemonCellForwardHeaders(
@@ -83,12 +87,21 @@ export function registerWorkersDaemonWebSocket(
       return new Response("Unauthorized", { status: 401 });
     }
 
+    const serverId = payload.sub;
+    if (options.connectLimiter) {
+      const { success } = await options.connectLimiter.limit({
+        key: daemonConnectRateLimitKey(serverId),
+      });
+      if (!success) {
+        return new Response("Too Many Requests", { status: 429 });
+      }
+    }
+
     const db = getDb(c);
     if (db === undefined) {
       return new Response("Database unavailable", { status: 503 });
     }
 
-    const serverId = payload.sub;
     const locationHint = await resolveCellLocationHint(db, serverId);
     const logicalName = serverId;
 

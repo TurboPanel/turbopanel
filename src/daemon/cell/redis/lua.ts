@@ -67,3 +67,42 @@ if connectionId ~= "" then
 end
 return 1
 `;
+
+/**
+ * Atomic token-bucket rate limit (mailer-style refill).
+ *
+ * KEYS[1] bucket hash (`tokens`, `ts`)
+ * ARGV[1] capacity, ARGV[2] msPerToken, ARGV[3] nowMs, ARGV[4] ttlMs
+ * Returns 1 if a token was consumed, 0 if denied.
+ */
+export const RATE_LIMIT_TOKEN_BUCKET = `
+local capacity = tonumber(ARGV[1])
+local msPerToken = tonumber(ARGV[2])
+local nowMs = tonumber(ARGV[3])
+local ttlMs = tonumber(ARGV[4])
+
+local vals = redis.call("HMGET", KEYS[1], "tokens", "ts")
+local tokens = tonumber(vals[1])
+local ts = tonumber(vals[2])
+
+if tokens == nil or ts == nil then
+  tokens = capacity
+  ts = nowMs
+else
+  local elapsed = nowMs - ts
+  if elapsed > 0 then
+    tokens = math.min(capacity, tokens + (elapsed / msPerToken))
+    ts = nowMs
+  end
+end
+
+local allowed = 0
+if tokens >= 1 then
+  tokens = tokens - 1
+  allowed = 1
+end
+
+redis.call("HSET", KEYS[1], "tokens", tostring(tokens), "ts", tostring(ts))
+redis.call("PEXPIRE", KEYS[1], ttlMs)
+return allowed
+`;

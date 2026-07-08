@@ -265,7 +265,7 @@ Each physical server node gets a row in `server` (`id` uuidv7). On daemon connec
 
 **Status read model:** `server.daemon.status` is the Postgres-projected liveness read model. UI and API status reads go through `src/daemon/cell/server-status.ts` (formerly `fleet-presence.ts`). Do not read `server.daemon.status` directly from routes — use `resolveFleetPresence` / `loadServerStatusRecords`. The `/servers/status` and `/servers/:id/status` endpoints serve this jsonb read model; reads are Postgres-only and do not call the DO/Redis cell; both runtimes share the same response shape. There are **no** dedicated status columns — jsonb path queries only. See the instance `AGENTS.md` Daemon Cell section for cost/parity rules.
 
-**Cell-only liveness timestamps:** `lastInboundAt` and `keyLastUsedAt` live in the daemon cell snapshot only — not in Postgres. `lastInboundAt` advances on inbound WS activity (coalesced to at most once per 60 s) and on connect; `keyLastUsedAt` is set on each inbound message and `/auth/session`.
+**Key use tracking:** `server.daemon.key.lastUsedAt` is updated on JWT session issuance via `touchDaemonKeyLastUsed()` (Postgres only — no cell wake). `lastInboundAt` remains cell-only (Redis/DO snapshot), coalesced on connect and inbound WS activity.
 
 The `key` field is always preserved on write (read-modify-write via `parseServerDaemonState` + merge).
 

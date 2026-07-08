@@ -9,7 +9,7 @@ import {
   isDaemonSealedEnvelope,
   parseDaemonSecretEnvelope,
 } from "../client/authn/data-encryption.ts";
-import { getDaemonCellRegistry, getDb } from "../db.ts";
+import { getDb } from "../db.ts";
 import {
   createStatelessChallengeStore,
   DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
@@ -26,6 +26,7 @@ import {
   getServerDaemonStateByFingerprint,
   getServerDaemonStateByServerId,
   isDaemonKeyActive,
+  touchDaemonKeyLastUsed,
 } from "./authn/server-identity-db.ts";
 import {
   buildAuthPayload,
@@ -33,6 +34,14 @@ import {
   computePublicKeyFingerprint,
   verifyDaemonSignature,
 } from "./authn/server-key.ts";
+import type { RateLimiter } from "./rate-limit/contracts.ts";
+import { createNoopRateLimiter } from "./rate-limit/contracts.ts";
+import {
+  daemonEnrollChallengeRateLimitKey,
+  daemonRestRateLimitKey,
+  type DaemonRestRateLimitRoute,
+} from "./rate-limit/keys.ts";
+
 function normalizeRequiredString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -61,10 +70,12 @@ export function registerDaemonApiRoutes(
     secrets?: DaemonJwtKeyring;
     challengeSigningSecrets?: DerivedSecretsConfig;
     secretsConfig?: SecretsConfig;
+    restLimiter?: RateLimiter;
   } = {},
 ) {
   const daemon = new Hono();
   const { secrets, challengeSigningSecrets, secretsConfig } = options;
+  const restLimiter = options.restLimiter ?? createNoopRateLimiter();
   const enrollStore = challengeSigningSecrets
     ? createStatelessChallengeStore(
       challengeSigningSecrets,
@@ -77,6 +88,17 @@ export function registerDaemonApiRoutes(
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
     )
     : null;
+
+  async function enforceDaemonRestLimit(
+    c: Context,
+    key: string,
+  ): Promise<Response | null> {
+    const { success } = await restLimiter.limit({ key });
+    if (!success) {
+      return c.json({ ok: false, error: "rate_limited" }, 429);
+    }
+    return null;
+  }
 
   const requireDaemonJwt = async (c: Context, next: Next) => {
     if (!secrets) {
@@ -170,14 +192,21 @@ export function registerDaemonApiRoutes(
       keyId?: string;
     }>().catch(() => ({}));
     if (body.keyId || body.serverId) {
-      const db = getDb(c);
-      if (db === undefined) {
-        return c.json({ ok: false, error: "Database unavailable" }, 503);
-      }
       const serverId = body.serverId?.trim();
       const keyId = body.keyId?.trim();
       if (!serverId || !keyId) {
         return c.json({ ok: false, error: "Missing serverId or keyId" }, 400);
+      }
+
+      const limited = await enforceDaemonRestLimit(
+        c,
+        daemonRestRateLimitKey(serverId, "auth-challenge"),
+      );
+      if (limited) return limited;
+
+      const db = getDb(c);
+      if (db === undefined) {
+        return c.json({ ok: false, error: "Database unavailable" }, 503);
       }
 
       const daemonState = await getServerDaemonStateByServerId(db, serverId);
@@ -202,6 +231,12 @@ export function registerDaemonApiRoutes(
         expiresAt: challengeExpiresAt(challenge.at, authStore.ttlMs),
       }, 200);
     }
+
+    const enrollChallengeLimited = await enforceDaemonRestLimit(
+      c,
+      daemonEnrollChallengeRateLimitKey(),
+    );
+    if (enrollChallengeLimited) return enrollChallengeLimited;
 
     if (!enrollStore) {
       return c.json({ ok: false, error: "Challenge unavailable" }, 503);
@@ -244,6 +279,12 @@ export function registerDaemonApiRoutes(
         400,
       );
     }
+
+    const enrollLimited = await enforceDaemonRestLimit(
+      c,
+      daemonRestRateLimitKey(licenseId, "enroll"),
+    );
+    if (enrollLimited) return enrollLimited;
 
     if (!enrollStore) {
       return c.json({ ok: false, error: "Challenge unavailable" }, 503);
@@ -331,6 +372,12 @@ export function registerDaemonApiRoutes(
       );
     }
 
+    const sessionLimited = await enforceDaemonRestLimit(
+      c,
+      daemonRestRateLimitKey(serverId, "auth-session"),
+    );
+    if (sessionLimited) return sessionLimited;
+
     const daemonState = await getServerDaemonStateByServerId(db, serverId);
     if (!daemonState) {
       return c.json({ ok: false, error: "Server key not found" }, 404);
@@ -371,16 +418,7 @@ export function registerDaemonApiRoutes(
       return c.json({ ok: false, error: "Invalid signature" }, 403);
     }
 
-    const now = new Date().toISOString();
-    const registry = getDaemonCellRegistry(c);
-    if (registry) {
-      void registry.getCell(serverId).putSnapshot({
-        keyLastUsedAt: now,
-        lastSeenAt: now,
-      }).catch((err) => {
-        console.warn("failed to touch daemon cell timestamps", err);
-      });
-    }
+    await touchDaemonKeyLastUsed(db, serverId);
     await touchServerMetadata(db, serverId, { machineId, hostname });
 
     const issued = await issueDaemonJwt(
@@ -393,64 +431,85 @@ export function registerDaemonApiRoutes(
     }, 200);
   });
 
-  daemon.post("/commands/lease", requireDaemonJwt, (c) => {
-    return c.json({ commands: [] }, 200);
-  });
+  const enforceJwtRestLimit = (route: DaemonRestRateLimitRoute) =>
+    async (c: Context, next: Next) => {
+      const daemonServerId = c.get("daemonServerId") as string;
+      const limited = await enforceDaemonRestLimit(
+        c,
+        daemonRestRateLimitKey(daemonServerId, route),
+      );
+      if (limited) return limited;
+      return next();
+    };
+
+  daemon.post(
+    "/commands/lease",
+    requireDaemonJwt,
+    enforceJwtRestLimit("commands-lease"),
+    (c) => {
+      return c.json({ commands: [] }, 200);
+    },
+  );
 
   const MAX_SECRETS_DECRYPT_BATCH = 100;
 
   // Recipient-bound daemon envelopes only — JWT sub/kid must match envelope metadata.
-  daemon.post("/secrets/decrypt", requireDaemonJwt, async (c) => {
-    if (!secretsConfig) {
-      return c.json({ ok: false, error: "decryption unavailable" }, 503);
-    }
+  daemon.post(
+    "/secrets/decrypt",
+    requireDaemonJwt,
+    enforceJwtRestLimit("secrets-decrypt"),
+    async (c) => {
+      if (!secretsConfig) {
+        return c.json({ ok: false, error: "decryption unavailable" }, 503);
+      }
 
-    const daemonServerId = c.get("daemonServerId") as string;
-    const daemonKeyId = c.get("daemonKeyId") as string;
+      const daemonServerId = c.get("daemonServerId") as string;
+      const daemonKeyId = c.get("daemonKeyId") as string;
 
-    const body = await c.req
-      .json<{ ciphertexts?: unknown }>()
-      .catch(() => ({} as { ciphertexts?: unknown }));
-    if (!Array.isArray(body.ciphertexts)) {
-      return c.json({ ok: false, error: "ciphertexts must be an array" }, 400);
-    }
-    if (
-      body.ciphertexts.length === 0 ||
-      body.ciphertexts.length > MAX_SECRETS_DECRYPT_BATCH
-    ) {
-      return c.json(
-        { ok: false, error: `ciphertexts length must be 1-${MAX_SECRETS_DECRYPT_BATCH}` },
-        400,
+      const body = await c.req
+        .json<{ ciphertexts?: unknown }>()
+        .catch(() => ({} as { ciphertexts?: unknown }));
+      if (!Array.isArray(body.ciphertexts)) {
+        return c.json({ ok: false, error: "ciphertexts must be an array" }, 400);
+      }
+      if (
+        body.ciphertexts.length === 0 ||
+        body.ciphertexts.length > MAX_SECRETS_DECRYPT_BATCH
+      ) {
+        return c.json(
+          { ok: false, error: `ciphertexts length must be 1-${MAX_SECRETS_DECRYPT_BATCH}` },
+          400,
+        );
+      }
+      if (!body.ciphertexts.every((entry) => typeof entry === "string")) {
+        return c.json({ ok: false, error: "ciphertexts must be strings" }, 400);
+      }
+
+      const recipient = { serverId: daemonServerId, keyId: daemonKeyId };
+
+      const plaintexts = await Promise.all(
+        body.ciphertexts.map(async (ciphertext) => {
+          try {
+            if (!isDaemonSealedEnvelope(ciphertext)) {
+              return null;
+            }
+            const parsed = parseDaemonSecretEnvelope(ciphertext);
+            if (!parsed) {
+              return null;
+            }
+            if (parsed.serverId !== daemonServerId || parsed.keyId !== daemonKeyId) {
+              return null;
+            }
+            return await decryptSecretForDaemon(secretsConfig, recipient, ciphertext);
+          } catch {
+            return null;
+          }
+        }),
       );
-    }
-    if (!body.ciphertexts.every((entry) => typeof entry === "string")) {
-      return c.json({ ok: false, error: "ciphertexts must be strings" }, 400);
-    }
 
-    const recipient = { serverId: daemonServerId, keyId: daemonKeyId };
-
-    const plaintexts = await Promise.all(
-      body.ciphertexts.map(async (ciphertext) => {
-        try {
-          if (!isDaemonSealedEnvelope(ciphertext)) {
-            return null;
-          }
-          const parsed = parseDaemonSecretEnvelope(ciphertext);
-          if (!parsed) {
-            return null;
-          }
-          if (parsed.serverId !== daemonServerId || parsed.keyId !== daemonKeyId) {
-            return null;
-          }
-          return await decryptSecretForDaemon(secretsConfig, recipient, ciphertext);
-        } catch {
-          return null;
-        }
-      }),
-    );
-
-    return c.json({ plaintexts }, 200);
-  });
+      return c.json({ plaintexts }, 200);
+    },
+  );
 
   app.route(DAEMON_API_PREFIX, daemon);
   return app;

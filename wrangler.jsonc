@@ -27,7 +27,9 @@
       "id": "83edd62a2d7e4e6ba8b5d77b01ca3729"
     },
     {
-      // TODO: replace with real dev cached Hyperdrive config id
+      // Future: local wrangler dev does not exercise a real Hyperdrive cache —
+      // this placeholder keeps the binding present; resolveWorkersQueryCache
+      // uses passthrough when caching is unavailable. Do not point at primary HYPERDRIVE.
       "binding": "HYPERDRIVE_CACHED",
       "id": "0000000000000000000000000000dev0"
     }
@@ -52,6 +54,19 @@
       }
     ]
   },
+  // Daemon WS-upgrade / REST rate limits — distinct namespace_ids per env (account-global counters).
+  "ratelimits": [
+    {
+      "name": "DAEMON_CONNECT_RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 6, "period": 60 }
+    },
+    {
+      "name": "DAEMON_REST_RATE_LIMITER",
+      "namespace_id": "1002",
+      "simple": { "limit": 30, "period": 60 }
+    }
+  ],
   // Offline sweep (see src/daemon/cell/offline-sweep.ts) — 1 minute is Cloudflare's
   // finest cron granularity, matching the 60s daemon idle-ping cadence.
   "triggers": { "crons": ["* * * * *"] },
@@ -85,6 +100,18 @@
           }
         ]
       },
+      "ratelimits": [
+        {
+          "name": "DAEMON_CONNECT_RATE_LIMITER",
+          "namespace_id": "2001",
+          "simple": { "limit": 6, "period": 60 }
+        },
+        {
+          "name": "DAEMON_REST_RATE_LIMITER",
+          "namespace_id": "2002",
+          "simple": { "limit": 30, "period": 60 }
+        }
+      ],
       "triggers": { "crons": ["* * * * *"] },
       "hyperdrive": [
         {
@@ -92,7 +119,8 @@
           "id": "83edd62a2d7e4e6ba8b5d77b01ca3729"
         },
         {
-          // TODO: replace with real dev cached Hyperdrive config id
+          // Create via scripts/ensure-testing-hyperdrive-cached.sh — must be a dedicated
+          // cached config for the testing Postgres origin (not the primary HYPERDRIVE id).
           "binding": "HYPERDRIVE_CACHED",
           "id": "0000000000000000000000000000dev0"
         }
@@ -135,6 +163,18 @@
           }
         ]
       },
+      "ratelimits": [
+        {
+          "name": "DAEMON_CONNECT_RATE_LIMITER",
+          "namespace_id": "3001",
+          "simple": { "limit": 6, "period": 60 }
+        },
+        {
+          "name": "DAEMON_REST_RATE_LIMITER",
+          "namespace_id": "3002",
+          "simple": { "limit": 30, "period": 60 }
+        }
+      ],
       "triggers": { "crons": ["* * * * *"] },
       "routes": [
         {

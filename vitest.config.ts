@@ -37,6 +37,9 @@ export default defineWorkersConfig({
         miniflare: {
           bindings: {
             TURBOPANEL_SECRET: 'aa_daemon_cell_vitest_secret_value_aaaa_b',
+            // Construct-time DO binding — runtime `env.TURBOPANEL_DAEMON_DEBUG = …`
+            // in tests does not update the Durable Object's env snapshot.
+            TURBOPANEL_DAEMON_DEBUG: '1',
           },
         },
       },

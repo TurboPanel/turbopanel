@@ -11,9 +11,13 @@ import {
 import {
   agentChanged,
   listConnectedServerIdsFromProjection,
+  listRecentlyOfflineServersForSweep,
   mergeAgentPreserving,
   projectServerDaemon,
   readProjectionsForServers,
+  RECENT_OFFLINE_SWEEP_MS,
+  rotateSweepBatch,
+  steadyStateInboundSkipsDbRead,
 } from "./postgres-projection.ts";
 import { onDaemonDisconnected } from "./control-plane-monitor.ts";
 
@@ -870,4 +874,116 @@ Deno.test("listConnectedServerIdsFromProjection includes status.connected rows",
 
   const ids = await listConnectedServerIdsFromProjection(db);
   assertEquals(ids, [serverId]);
+});
+
+Deno.test("steadyStateInboundSkipsDbRead gates on lastSeenAt only", () => {
+  const recentAt = new Date().toISOString();
+  const agent = {
+    commit: "abc123",
+    buildId: "build-1",
+    channel: "trunk" as const,
+  };
+  const snapshot = {
+    serverId,
+    version: 0,
+    updatedAt: recentAt,
+    connected: true,
+    lastSeenAt: recentAt,
+    agent,
+  };
+
+  assertEquals(
+    steadyStateInboundSkipsDbRead(snapshot, {
+      at: new Date(Date.now() + 1000).toISOString(),
+      agent,
+    }),
+    true,
+  );
+});
+
+function offlineDaemonState(
+  id: string,
+  disconnectedAt: string,
+): { id: string; daemon: ServerDaemonState } {
+  return {
+    id,
+    daemon: {
+      key: baseKey,
+      status: {
+        connected: false,
+        daemonStatus: "offline",
+        lastSeenAt: disconnectedAt,
+        connectedAt: "2020-01-01T00:00:00.000Z",
+        disconnectedAt,
+        statusChangedAt: disconnectedAt,
+      },
+    },
+  };
+}
+
+Deno.test("listRecentlyOfflineServersForSweep returns recent offline rows only", async () => {
+  const nowMs = Date.parse("2020-06-01T12:00:00.000Z");
+  const recentAt = new Date(nowMs - 60_000).toISOString();
+  const staleAt = new Date(nowMs - RECENT_OFFLINE_SWEEP_MS - 60_000).toISOString();
+  const rows = [
+    offlineDaemonState("srv-recent-1", recentAt),
+    offlineDaemonState("srv-recent-2", recentAt),
+    offlineDaemonState("srv-stale", staleAt),
+    ...Array.from({ length: 20 }, (_, index) =>
+      offlineDaemonState(`srv-old-${index}`, staleAt)
+    ),
+  ];
+
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: (_predicate: unknown) => ({
+          orderBy: (..._order: unknown[]) => Promise.resolve(
+            rows.filter((row) => {
+              const status = row.daemon.status;
+              const recentTimestamp = status?.disconnectedAt ??
+                status?.statusChangedAt;
+              if (!recentTimestamp) return false;
+              return Date.parse(recentTimestamp) >=
+                nowMs - RECENT_OFFLINE_SWEEP_MS;
+            }).sort((a, b) => {
+              const aAt = a.daemon.status?.disconnectedAt ?? "";
+              const bAt = b.daemon.status?.disconnectedAt ?? "";
+              const byTime = bAt.localeCompare(aAt);
+              if (byTime !== 0) return byTime;
+              return a.id.localeCompare(b.id);
+            }),
+          ),
+        }),
+      }),
+    }),
+  } as unknown as Db;
+
+  const candidates = await listRecentlyOfflineServersForSweep(db, { nowMs });
+
+  assertEquals(candidates.length, 2);
+  assert(candidates.every((row) => row.id.startsWith("srv-recent-")));
+});
+
+Deno.test("rotateSweepBatch selects candidates beyond the first budget on later ticks", () => {
+  const items = Array.from({ length: 1_000 }, (_, index) => ({
+    id: `srv-${String(index).padStart(4, "0")}`,
+    connectedAt: null,
+  }));
+
+  const firstTick = rotateSweepBatch(items, 900, 0);
+  const laterTick = rotateSweepBatch(items, 900, 60_000);
+
+  assertEquals(firstTick.length, 900);
+  assertEquals(laterTick.length, 900);
+  assertEquals(firstTick[0]?.id, "srv-0000");
+  assertEquals(laterTick[0]?.id, "srv-0900");
+  assertEquals(
+    firstTick.some((candidate) => candidate.id === "srv-0999"),
+    false,
+  );
+  assertEquals(
+    laterTick.some((candidate) => candidate.id === "srv-0999"),
+    true,
+  );
 });

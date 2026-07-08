@@ -281,13 +281,9 @@ export function steadyStateInboundSkipsDbRead(
   opts: { at?: string; agent?: ProjectionAgent },
 ): boolean {
   if (!snapshot.connected || !opts.at) return false;
-  // Prefer lastProjectedAt (set only when we actually touched Postgres) over
-  // lastSeenAt, which WebSocket ping/pong auto-responses also bump on cell
-  // backends that support hibernation liveness (see debug session 2e6859 H10).
-  // Falls back to lastSeenAt for cell backends that never populate it.
   return !inboundHeartbeatProjectionDue({
     runtimeConnected: true,
-    cellLastSeenAt: snapshot.lastProjectedAt ?? snapshot.lastSeenAt ?? null,
+    cellLastSeenAt: snapshot.lastSeenAt ?? null,
     inboundAt: opts.at,
     storedAgent: snapshot.agent,
     incomingAgent: opts.agent,
@@ -720,7 +716,8 @@ export async function listConnectedServersForSweep(
     .from(server)
     .where(sql`(
       ${server.daemon}->'status'->>'connected' = 'true'
-    )`);
+    )`)
+    .orderBy(server.id);
 
   const candidates: ConnectedServerForSweep[] = [];
   for (const row of rows) {
@@ -730,6 +727,79 @@ export async function listConnectedServersForSweep(
     }
   }
   return candidates;
+}
+
+export type RecentlyOfflineServerForSweep = {
+  id: string;
+  connectedAt: string | null;
+};
+
+/** Grace window for sweep self-heal — 2× offline-sweep stale grace (90s). */
+export const RECENT_OFFLINE_SWEEP_MS = 180_000;
+
+/**
+ * Candidates for offline-sweep self-heal: servers Postgres recently marked
+ * offline (bounded by {@link RECENT_OFFLINE_SWEEP_MS}) so a live+warm cell
+ * can re-project online via `onDaemonConnected`.
+ */
+export async function listRecentlyOfflineServersForSweep(
+  db: Db,
+  opts: { nowMs?: number } = {},
+): Promise<RecentlyOfflineServerForSweep[]> {
+  const nowMs = opts.nowMs ?? Date.now();
+  const cutoffIso = new Date(nowMs - RECENT_OFFLINE_SWEEP_MS).toISOString();
+
+  const rows = await db
+    .select({ id: server.id, daemon: server.daemon })
+    .from(server)
+    .where(sql`(
+      ${server.daemon}->'status'->>'connected' = 'false'
+      AND COALESCE(
+        ${server.daemon}->'status'->>'disconnectedAt',
+        ${server.daemon}->'status'->>'statusChangedAt'
+      ) >= ${cutoffIso}
+    )`)
+    .orderBy(
+      sql`COALESCE(
+        ${server.daemon}->'status'->>'disconnectedAt',
+        ${server.daemon}->'status'->>'statusChangedAt'
+      ) DESC`,
+      server.id,
+    );
+
+  const candidates: RecentlyOfflineServerForSweep[] = [];
+  for (const row of rows) {
+    const state = parseServerDaemonState(row.daemon);
+    const status = state?.status;
+    if (!status || status.connected) continue;
+
+    candidates.push({
+      id: row.id,
+      connectedAt: status.connectedAt ?? null,
+    });
+  }
+  return candidates;
+}
+
+/**
+ * Deterministic sweep pagination — order by stable `id`, rotate start per cron
+ * tick so servers beyond the first budget are checked on later sweeps.
+ */
+export function rotateSweepBatch<T extends { id: string }>(
+  items: readonly T[],
+  budget: number,
+  tickMs: number,
+): T[] {
+  if (items.length === 0 || budget <= 0) return [];
+  const sorted = [...items].sort((a, b) => a.id.localeCompare(b.id));
+  const tick = Math.floor(tickMs / 60_000);
+  const start = (tick * budget) % sorted.length;
+  const count = Math.min(budget, sorted.length);
+  const batch: T[] = [];
+  for (let i = 0; i < count; i++) {
+    batch.push(sorted[(start + i) % sorted.length]);
+  }
+  return batch;
 }
 
 /** All servers with an enrolled daemon key — used to scope Workers maintenance drains. */

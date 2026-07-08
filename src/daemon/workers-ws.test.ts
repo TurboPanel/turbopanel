@@ -83,6 +83,19 @@ function createWorkersWsApp(secrets: Awaited<ReturnType<typeof createTestSecrets
   return app;
 }
 
+function createWorkersWsAppWithLimiter(
+  secrets: Awaited<ReturnType<typeof createTestSecrets>>,
+  connectLimiter: { limit: (args: { key: string }) => Promise<{ success: boolean }> },
+) {
+  const app = new Hono<{ Variables: AppEnv["Variables"]; Bindings: CloudflareBindings }>();
+  app.use("*", async (c, next) => {
+    c.set("db", createMockDb());
+    await next();
+  });
+  registerWorkersDaemonWebSocket(app, { secrets, connectLimiter });
+  return app;
+}
+
 describe("buildWorkersDaemonCellForwardHeaders", () => {
   it("applies trusted Cloudflare geo and CF-Connecting-IP instead of client values", () => {
     const serverId = "test-srv-ws-forward-trusted";
@@ -154,6 +167,54 @@ describe("registerWorkersDaemonWebSocket forwarding", () => {
     expect(forwarded!.headers.get(CELL_SERVER_ID_HEADER)).toBe(serverId);
     expect(forwarded!.headers.get(CELL_GEO_HEADER)).toBeNull();
     expect(forwarded!.headers.get(REAL_IP_HEADER)).toBeNull();
+    expect(getByNameArg()).toBe(serverId);
+  });
+
+  it("returns 429 and never wakes the cell when connectLimiter denies", async () => {
+    const serverId = "test-srv-ws-rate-limited";
+    const secrets = await createTestSecrets();
+    const app = createWorkersWsAppWithLimiter(secrets, {
+      limit: async () => ({ success: false }),
+    });
+    const token = await issueTestToken(serverId);
+    const { env, getForwardedRequest, getByNameArg } = createForwardCaptureEnv();
+
+    const response = await app.fetch(
+      new Request(`https://instance.test${DAEMON_WS_PATH}`, {
+        headers: {
+          Upgrade: "websocket",
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(429);
+    expect(getForwardedRequest()).toBeUndefined();
+    expect(getByNameArg()).toBeUndefined();
+  });
+
+  it("forwards to the cell when connectLimiter allows", async () => {
+    const serverId = "test-srv-ws-rate-allowed";
+    const secrets = await createTestSecrets();
+    const app = createWorkersWsAppWithLimiter(secrets, {
+      limit: async () => ({ success: true }),
+    });
+    const token = await issueTestToken(serverId);
+    const { env, getForwardedRequest, getByNameArg } = createForwardCaptureEnv();
+
+    const response = await app.fetch(
+      new Request(`https://instance.test${DAEMON_WS_PATH}`, {
+        headers: {
+          Upgrade: "websocket",
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    expect(getForwardedRequest()).toBeDefined();
     expect(getByNameArg()).toBe(serverId);
   });
 });

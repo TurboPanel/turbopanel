@@ -26,9 +26,11 @@ import { isTransientError, processCommandEnvelope } from './lib/commands/consume
 import { parseCommandEnvelope } from './lib/commands/envelope.ts'
 import type { EmailQueue } from './lib/email/types.ts'
 import {
+  resolveWorkersDaemonRateLimiters,
   resolveWorkersDb,
   resolveWorkersQueryCache,
   warnIfCachedHyperdriveMissing,
+  warnIfDaemonRateLimitersMissing,
 } from './workers-bindings.ts'
 
 export { DaemonCellObject } from './daemon/cell/do.ts'
@@ -81,13 +83,17 @@ async function initWorkerApp(env: CloudflareBindings) {
     dataEncryptionSecrets: cachedDataEncryptionSecrets ?? undefined,
     secretsConfig: cachedSecretsConfig ?? undefined,
   })
+  warnIfDaemonRateLimitersMissing(env)
+  const rateLimiters = resolveWorkersDaemonRateLimiters(env)
   registerDaemonApiRoutes(cachedApp, {
     secrets: cachedDaemonJwtKeyring ?? undefined,
     challengeSigningSecrets: cachedChallengeSigningSecrets ?? undefined,
     secretsConfig: cachedSecretsConfig ?? undefined,
+    restLimiter: rateLimiters.rest,
   })
   registerWorkersDaemonWebSocket(cachedApp, {
     secrets: cachedDaemonJwtKeyring ?? undefined,
+    connectLimiter: rateLimiters.connect,
   })
   registerAdminRoutes(cachedApp, {
     secrets: cachedSessionSecrets!,

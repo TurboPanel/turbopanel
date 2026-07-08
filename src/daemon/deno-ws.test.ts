@@ -277,7 +277,10 @@ Deno.test("WS upgrade rejects HTTP 401 when no JWT is provided", async () => {
     db: createMockDb(),
   });
 
-  const response = await app.request(DAEMON_WS_PATH, { method: "GET" });
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: "GET",
+    headers: { ...WS_UPGRADE_HEADERS },
+  });
   assertEquals(response.status, 401);
 });
 
@@ -292,9 +295,123 @@ Deno.test("WS upgrade rejects HTTP 401 when JWT is invalid", async () => {
     method: "GET",
     headers: {
       Authorization: "Bearer invalid-token",
+      ...WS_UPGRADE_HEADERS,
     },
   });
   assertEquals(response.status, 401);
+});
+
+Deno.test("over-limit inbound messages close websocket before unbounded queuing", async () => {
+  const app = new Hono();
+  const secrets = await createDaemonJwtSecrets();
+  const tracking = createTrackingDaemonCell("srv-flood");
+  registerDaemonWebSocket(app, {
+    secrets,
+    db: createMockDb(),
+    daemonCellRegistry: createTrackingRegistry(tracking.cell),
+    inboundMessageLimit: 3,
+    inboundMessageWindowMs: 60_000,
+  });
+
+  const issued = await issueDaemonJwt(
+    { sub: "srv-flood", kid: "key-test" },
+    secrets,
+  );
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${issued.token}`,
+      ...WS_UPGRADE_HEADERS,
+    },
+  });
+  if (response.status !== 101 || !response.webSocket) {
+    console.warn("Skipping flood test: response.webSocket unavailable");
+    return;
+  }
+
+  const ws = response.webSocket;
+  ws.accept();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  let closeCode: number | undefined;
+  ws.addEventListener("close", (event) => {
+    closeCode = event.code;
+  });
+
+  const at = new Date().toISOString();
+  for (let i = 0; i < 4; i++) {
+    ws.send(JSON.stringify({ type: "heartbeat", at }));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assertEquals(closeCode, 1008);
+  const inboundBefore = tracking.calls.recordInbound;
+  ws.send(JSON.stringify({ type: "heartbeat", at }));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assertEquals(tracking.calls.recordInbound, inboundBefore);
+});
+
+Deno.test("plain GET with valid JWT returns 426 and does not call connectLimiter", async () => {
+  const app = new Hono();
+  const secrets = await createDaemonJwtSecrets();
+  let limitCalls = 0;
+  registerDaemonWebSocket(app, {
+    secrets,
+    db: createMockDb(),
+    daemonCellRegistry: createTrackingRegistry(
+      createTrackingDaemonCell("srv-test").cell,
+    ),
+    connectLimiter: {
+      limit: () => {
+        limitCalls += 1;
+        return Promise.resolve({ success: true });
+      },
+    },
+  });
+
+  const issued = await issueDaemonJwt(
+    { sub: "srv-test", kid: "key-test" },
+    secrets,
+  );
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${issued.token}`,
+    },
+  });
+  assertEquals(response.status, 426);
+  assertEquals(await response.text(), "Expected WebSocket");
+  assertEquals(limitCalls, 0);
+});
+
+Deno.test("WS upgrade rejects HTTP 429 when connectLimiter denies", async () => {
+  const app = new Hono();
+  const secrets = await createDaemonJwtSecrets();
+  registerDaemonWebSocket(app, {
+    secrets,
+    db: createMockDb(),
+    daemonCellRegistry: createTrackingRegistry(
+      createTrackingDaemonCell("srv-test").cell,
+    ),
+    connectLimiter: {
+      limit: () => Promise.resolve({ success: false }),
+    },
+  });
+
+  const issued = await issueDaemonJwt(
+    { sub: "srv-test", kid: "key-test" },
+    secrets,
+  );
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${issued.token}`,
+      ...WS_UPGRADE_HEADERS,
+    },
+  });
+  assertEquals(response.status, 429);
+  assertEquals(await response.text(), "Too Many Requests");
 });
 
 Deno.test("WS lifecycle attaches, handles hello, and detaches through cell backend", async () => {

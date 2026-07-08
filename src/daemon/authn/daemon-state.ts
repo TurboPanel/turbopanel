@@ -5,6 +5,8 @@ export type ServerDaemonKey = {
   fingerprint: string;
   createdAt: string;
   revokedAt?: string | null;
+  /** Updated on JWT session issuance — canonical Postgres key-use tracking. */
+  lastUsedAt?: string | null;
 };
 
 export type UpdateProjection = {
@@ -201,7 +203,7 @@ function parseServerDaemonKey(raw: unknown): ServerDaemonKey | null {
   ) {
     return null;
   }
-  return {
+  const parsed: ServerDaemonKey = {
     id: key.id,
     algorithm: "Ed25519",
     publicJwk: key.publicJwk,
@@ -209,6 +211,10 @@ function parseServerDaemonKey(raw: unknown): ServerDaemonKey | null {
     createdAt: key.createdAt,
     revokedAt: key.revokedAt ?? null,
   };
+  if (isOptionalTimestamp(key.lastUsedAt)) {
+    parsed.lastUsedAt = key.lastUsedAt ?? null;
+  }
+  return parsed;
 }
 
 export function buildDefaultDaemonStatus(): ServerDaemonStatus {
