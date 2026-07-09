@@ -10,11 +10,18 @@ export const serverSchemas = {
       },
       id: {
         type: 'string',
-        description: 'Distro id from os-release ID= (e.g. debian).',
+        description: 'Distro id from os-release ID= (e.g. debian, raspbian).',
+      },
+      variant: {
+        type: 'string',
+        enum: ['raspberry-pi-os'],
+        description:
+          'Set when the host is Raspberry Pi OS (including 64-bit images that still report ID=debian).',
       },
       version: {
         type: 'string',
-        description: 'VERSION_ID (e.g. 13 or 13.1).',
+        description:
+          'Point release when available (e.g. 13.5 from DEBIAN_VERSION_FULL), else VERSION_ID.',
       },
       versionCodename: {
         type: 'string',
@@ -72,7 +79,12 @@ export const serverSchemas = {
       osDisplay: {
         type: ['string', 'null'],
         description:
-          'Formatted OS label for UI, e.g. "Debian 13 (Trixie)". Null when os is unknown.',
+          'Formatted OS label for UI, e.g. "Debian 13.5 (Trixie)". Null when os is unknown.',
+      },
+      osLogo: {
+        type: ['string', 'null'],
+        enum: ['debian', 'raspberry-pi-os', null],
+        description: 'Logo key for the UI OS column.',
       },
       colocatedWithInstance: {
         type: 'boolean',

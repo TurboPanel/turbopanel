@@ -850,10 +850,11 @@ Deno.test('GET /servers returns Postgres data without calling getSnapshots', asy
     assertEquals(body.servers[0].geo, null)
     assertEquals(body.servers[0].os, null)
     assertEquals(body.servers[0].osDisplay, null)
+    assertEquals(body.servers[0].osLogo, null)
   })
 })
 
-Deno.test('GET /servers includes os and osDisplay from metadata without caching them', async () => {
+Deno.test('GET /servers includes os, osDisplay, and osLogo from metadata without caching them', async () => {
   await withServerDeleteFixtures(async ({
     db,
     secrets,
@@ -914,6 +915,7 @@ Deno.test('GET /servers includes os and osDisplay from metadata without caching 
       prettyName: 'Debian GNU/Linux 13 (trixie)',
     })
     assertEquals(body.servers[0].osDisplay, 'Debian 13 (Trixie)')
+    assertEquals(body.servers[0].osLogo, 'debian')
     assertEquals(recordingCache.readModels, ['servers-list'])
     const cachedRows = recordingCache.store.values().next().value as
       | ServersListRow[]

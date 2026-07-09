@@ -3,12 +3,22 @@ import type { ServerGeo } from '../geo/server-geo.ts'
 /** OS families we may report from the daemon; extend the union as support is added. */
 export type ServerOsFamily = 'linux' | 'windows' | 'freebsd' | 'darwin'
 
+/**
+ * Distro variant beyond raw `ID=` — Raspberry Pi OS 64-bit still reports
+ * `ID=debian` but the daemon sets this when `/etc/rpi-issue` is present.
+ */
+export type ServerOsVariant = 'raspberry-pi-os'
+
 /** Best-effort OS block; fields may be filled in over time. */
 export type ServerOsMetadata = {
   family?: ServerOsFamily
-  /** Distro id from os-release `ID=` (e.g. `"debian"`). */
+  /** Distro id from os-release `ID=` (e.g. `"debian"`, `"raspbian"`). */
   id?: string
-  /** e.g. `VERSION_ID` `"13"` / `"13.1"` */
+  /**
+   * Product variant when `ID` alone is misleading (e.g. Raspberry Pi OS 64-bit).
+   */
+  variant?: ServerOsVariant
+  /** Prefer dotted point-release (`"13.5"`) over bare major (`"13"`). */
   version?: string
   /** e.g. `VERSION_CODENAME` `"trixie"` */
   versionCodename?: string
@@ -84,6 +94,8 @@ const OS_FAMILIES = new Set<ServerOsFamily>([
   'darwin',
 ])
 
+const OS_VARIANTS = new Set<ServerOsVariant>(['raspberry-pi-os'])
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -109,6 +121,10 @@ export function parseServerOsMetadata(
   if (family) os.family = family
   const id = optionalTrimmedString(value.id)
   if (id) os.id = id
+  const variantRaw = optionalTrimmedString(value.variant)?.toLowerCase()
+  if (variantRaw && OS_VARIANTS.has(variantRaw as ServerOsVariant)) {
+    os.variant = variantRaw as ServerOsVariant
+  }
   const version = optionalTrimmedString(value.version)
   if (version) os.version = version
   const versionCodename = optionalTrimmedString(value.versionCodename)
@@ -134,11 +150,21 @@ function titleCasePhrase(value: string): string {
     .join(' ')
 }
 
+function isRaspberryPiOs(os: ServerOsMetadata): boolean {
+  if (os.variant === 'raspberry-pi-os') return true
+  const id = os.id?.toLowerCase()
+  return id === 'raspbian' || id === 'raspberrypi' || id === 'raspios'
+}
+
 /**
- * Product label for display: prefer short distro id (`debian` → `Debian`),
- * else first token of `NAME` / `prettyName` that is not a generic "GNU/Linux".
+ * Product label for display.
+ * Raspberry Pi OS / Raspbian → "Raspberry Pi OS"; debian → "Debian"; etc.
  */
 function resolveOsProductName(os: ServerOsMetadata): string | undefined {
+  if (isRaspberryPiOs(os)) return 'Raspberry Pi OS'
+  const id = os.id?.toLowerCase()
+  if (id === 'debian') return 'Debian'
+  if (id === 'ubuntu') return 'Ubuntu'
   if (os.id) return titleCasePhrase(os.id)
   const fromName = os.prettyName?.trim()
   if (fromName) {
@@ -151,9 +177,19 @@ function resolveOsProductName(os: ServerOsMetadata): string | undefined {
   return undefined
 }
 
+/** Logo key for UI (`debian` | `raspberry-pi-os` | null). */
+export function resolveServerOsLogoKey(
+  os: ServerOsMetadata | null | undefined,
+): 'debian' | 'raspberry-pi-os' | null {
+  if (!os) return null
+  if (isRaspberryPiOs(os)) return 'raspberry-pi-os'
+  if (os.id?.toLowerCase() === 'debian') return 'debian'
+  return null
+}
+
 /**
- * UI/API display string, e.g. `"Debian 13 (Trixie)"`.
- * Falls back through available fields when version/codename are missing.
+ * UI/API display string, e.g. `"Debian 13.5 (Trixie)"` or
+ * `"Raspberry Pi OS 12.11 (Bookworm)"`.
  */
 export function formatServerOsDisplay(
   os: ServerOsMetadata | null | undefined,
@@ -183,6 +219,7 @@ export function serverOsMetadataEquals(
   return (
     a.family === b.family &&
     a.id === b.id &&
+    a.variant === b.variant &&
     a.version === b.version &&
     a.versionCodename === b.versionCodename &&
     a.prettyName === b.prettyName &&

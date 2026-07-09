@@ -26,7 +26,10 @@ import {
 } from '../../daemon/cell/protocol.ts'
 import { clearServerDaemonState } from '../../daemon/authn/server-identity-db.ts'
 import { server } from '../../lib/db/schema.ts'
-import { formatServerOsDisplay } from '../../lib/db/server-metadata.ts'
+import {
+  formatServerOsDisplay,
+  resolveServerOsLogoKey,
+} from '../../lib/db/server-metadata.ts'
 import { resolveTrunkManifest } from '../../lib/update/manifest.ts'
 import {
   hierarchyDeleteHasChildrenResponse,
@@ -207,6 +210,7 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
           geo: live?.geo ?? null,
           os,
           osDisplay: formatServerOsDisplay(os),
+          osLogo: resolveServerOsLogoKey(os),
           licenseId: row.licenseId ?? null,
         }
       }),
