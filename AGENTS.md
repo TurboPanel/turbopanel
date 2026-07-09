@@ -544,7 +544,7 @@ Add a `TURBOPANEL_SECRET` to `dev/.env` before running `pnpm dev` (Tilt syncs it
 
 #### Data encryption
 
-Shared symmetric encryption for multi-server secret storage, keyed off the same root secret via HKDF (`info: "data-encryption"` → AES-256-GCM). Envelope format: `tpsecret.v1.<keyVersion>.<ivB64u>.<ciphertextWithTagB64u>`. The embedded `keyVersion` enables direct lookup against `DerivedSecretsConfig.current` / `.fallbacks` during rotation — no trial decryption. Values not starting with `tpsecret.` are treated as legacy plaintext; callers re-encrypt on next write (lazy migration; no bulk re-encrypt of existing data).
+Shared symmetric encryption for multi-server secret storage, keyed off the same root secret via HKDF (`info: "data-encryption"` → AES-256-GCM). Envelope format: `tpsecret.v1.<keyVersion>.<ivB64u>.<ciphertextWithTagB64u>`. The embedded `keyVersion` enables direct lookup against `DerivedSecretsConfig.current` / `.fallbacks` during rotation — no trial decryption. All persisted secret values must be sealed envelopes; decryption rejects any value that is not a valid `tpsecret` or `tpdaemon` envelope.
 
 **Boundary:** client/UI code imports only `encryptSecret` (`src/client/authn/data-encryption.ts`); decryption is exposed solely through `POST /api/daemon/v1/secrets/decrypt` on the daemon surface (daemon JWT). The symmetric key never leaves the instance — remote daemons request decryption over their authenticated channel. Any valid daemon JWT may decrypt any envelope today (org scoping is a future hardening option).
 

@@ -29,9 +29,10 @@ interface CloudflareBindings {
   TURBOPANEL_DATABASE_URL?: string
   TURBOPANEL_UI_CORS_ORIGINS?: string
   TURBOPANEL_IS_SIGNUP_ENABLED?: string | number
-  TURBOPANEL_MAILGUN_API_KEY?: string
-  TURBOPANEL_MAILGUN_DOMAIN?: string
-  TURBOPANEL_SYSTEM_EMAIL_FROM?: string
+  TURBOPANEL_SYSTEM_EMAIL__PROVIDER?: string
+  TURBOPANEL_SYSTEM_EMAIL__MAILGUN_API_KEY?: string
+  TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN?: string
+  TURBOPANEL_SYSTEM_EMAIL__FROM?: string
   TURBOPANEL_BASE_URL?: string
   TURBOPANEL_PBKDF2_ITERATIONS?: string
   /** When `1` or `true`, expose dev-only admin OpenAPI/Scalar routes (`wrangler dev` only). */

@@ -1454,7 +1454,7 @@ Deno.test("POST /secrets/decrypt rejects envelopes sealed for another daemon", a
   });
 });
 
-Deno.test("POST /secrets/decrypt rejects legacy global tpsecret envelopes", async () => {
+Deno.test("POST /secrets/decrypt rejects global tpsecret envelopes (daemon-scoped only)", async () => {
   await withEnrollFixture(async ({ app, serverId, keyId }) => {
     const daemonToken = await issueDaemonToken(serverId, keyId);
     const response = await app.request("/api/daemon/v1/secrets/decrypt", {

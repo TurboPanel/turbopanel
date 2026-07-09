@@ -3,7 +3,7 @@
  *
  * Envelope format: `tpsecret.v1.<keyVersion>.<ivB64u>.<ciphertextWithTagB64u>`
  * - `keyVersion` embeds the secret version for direct key lookup (rotation fallbacks, no trial decrypt).
- * - Values not starting with `tpsecret.` are legacy plaintext; callers re-encrypt on next write.
+ * - All stored secret values must use this sealed envelope; non-envelope input is rejected at decrypt time.
  *
  * Daemon-recipient envelopes (`tpdaemon.v1.<serverId>.<keyId>.<keyVersion>.<iv>.<ciphertext>`)
  * derive per-recipient AES-GCM keys via HKDF info `daemon-secret-encryption:<serverId>:<keyId>`.

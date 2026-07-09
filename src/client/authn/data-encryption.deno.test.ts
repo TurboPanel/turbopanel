@@ -91,8 +91,8 @@ Deno.test("decryptSecret supports rotation fallbacks", async () => {
   assertEquals(await decryptSecret(rotated, envelope), "rotated-value");
 
   const v1Only = await createV1OnlySecrets();
-  const v1Envelope = await encryptSecret(v1Only, "legacy-value");
-  assertEquals(await decryptSecret(rotated, v1Envelope), "legacy-value");
+  const v1Envelope = await encryptSecret(v1Only, "v1-key-version-value");
+  assertEquals(await decryptSecret(rotated, v1Envelope), "v1-key-version-value");
 });
 
 Deno.test("decryptSecret rejects unknown key version", async () => {

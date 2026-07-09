@@ -35,8 +35,9 @@ class FailingEmailQueue implements EmailQueue {
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 
 const MAILGUN_PLATFORM_ENV = {
-  TURBOPANEL_MAILGUN_API_KEY: 'key-test',
-  TURBOPANEL_MAILGUN_DOMAIN: 'mg.example.com',
+  TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailgun',
+  TURBOPANEL_SYSTEM_EMAIL__MAILGUN_API_KEY: 'key-test',
+  TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN: 'mg.example.com',
 } as const
 
 const MAILPIT_PLATFORM_ENV = {

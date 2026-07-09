@@ -93,7 +93,7 @@ export function normalizeEmailSettingsForRuntime(
   return settings
 }
 
-/** Settings-based signup verification gate (Workers legacy Mailgun env included). */
+/** Settings-based signup verification gate. */
 export function isEmailActiveForRuntime(
   settings: ResolvedEmailSettings,
   runtime: 'deno' | 'workers',

@@ -65,21 +65,4 @@ describe('RateLimiter', () => {
     for (let i = 0; i < 15; i++) expect(rl.tryAcquire()).toBe(true)
     expect(rl.tryAcquire()).toBe(false)
   })
-
-  it('falls back to legacy TURBOPANEL_MAILER_RATE_LIMIT_PER_MINUTE when no hierarchical key', () => {
-    setEnv({ TURBOPANEL_MAILER_RATE_LIMIT_PER_MINUTE: '5' })
-    const rl = new RateLimiter()
-    for (let i = 0; i < 5; i++) expect(rl.tryAcquire()).toBe(true)
-    expect(rl.tryAcquire()).toBe(false)
-  })
-
-  it('hierarchical takes precedence over legacy', () => {
-    setEnv({
-      TURBOPANEL_SYSTEM_EMAIL__RATE_LIMIT_PER_MINUTE: '3',
-      TURBOPANEL_MAILER_RATE_LIMIT_PER_MINUTE: '99',
-    })
-    const rl = new RateLimiter()
-    for (let i = 0; i < 3; i++) expect(rl.tryAcquire()).toBe(true)
-    expect(rl.tryAcquire()).toBe(false)
-  })
 })

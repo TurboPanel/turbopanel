@@ -85,8 +85,8 @@ describe('encryptSecret / decryptSecret', () => {
     expect(await decryptSecret(rotated, envelope)).toBe('rotated-value')
 
     const v1Only = await createV1OnlySecrets()
-    const v1Envelope = await encryptSecret(v1Only, 'legacy-value')
-    expect(await decryptSecret(rotated, v1Envelope)).toBe('legacy-value')
+    const v1Envelope = await encryptSecret(v1Only, 'v1-key-version-value')
+    expect(await decryptSecret(rotated, v1Envelope)).toBe('v1-key-version-value')
   })
 
   it('rejects unknown key version without trial decryption', async () => {
