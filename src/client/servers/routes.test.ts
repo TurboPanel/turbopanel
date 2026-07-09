@@ -848,6 +848,77 @@ Deno.test('GET /servers returns Postgres data without calling getSnapshots', asy
     assertEquals(body.servers[0].id, serverId)
     assertEquals(body.servers[0].connected, true)
     assertEquals(body.servers[0].geo, null)
+    assertEquals(body.servers[0].os, null)
+    assertEquals(body.servers[0].osDisplay, null)
+  })
+})
+
+Deno.test('GET /servers includes os and osDisplay from metadata without caching them', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const existing = await db
+      .select({ metadata: server.metadata })
+      .from(server)
+      .where(eq(server.id, serverId))
+      .limit(1)
+    await db
+      .update(server)
+      .set({
+        metadata: {
+          ...(existing[0]?.metadata ?? {}),
+          hostname: 'os-host',
+          os: {
+            family: 'linux',
+            id: 'debian',
+            version: '13',
+            versionCodename: 'trixie',
+            prettyName: 'Debian GNU/Linux 13 (trixie)',
+          },
+        },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(server.id, serverId))
+
+    const registry = createTrackingRegistry({
+      getCellThrows: true,
+      getSnapshotsThrows: true,
+      listOnlineServerIdsThrows: true,
+    })
+    await attachConnectedDaemonStatus(db, serverId)
+
+    const readDb = createListRowsOnlyReadDb(db)
+    const recordingCache = createRecordingQueryCache(readDb)
+    const { app } = await createServerRoutesTestApp(db, registry, recordingCache)
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request('/servers', {
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 200)
+    const body = await res.json()
+    assertEquals(body.servers.length, 1)
+    assertEquals(body.servers[0].os, {
+      family: 'linux',
+      id: 'debian',
+      version: '13',
+      versionCodename: 'trixie',
+      prettyName: 'Debian GNU/Linux 13 (trixie)',
+    })
+    assertEquals(body.servers[0].osDisplay, 'Debian 13 (Trixie)')
+    assertEquals(recordingCache.readModels, ['servers-list'])
+    const cachedRows = recordingCache.store.values().next().value as
+      | ServersListRow[]
+      | undefined
+    assertEquals(cachedRows?.[0] && 'os' in cachedRows[0], false)
   })
 })
 

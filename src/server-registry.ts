@@ -1,7 +1,12 @@
 import { eq, sql } from 'drizzle-orm'
 import type { Db } from './db.ts'
 import { verifyDaemonLicense } from './daemon/authn/license.ts'
-import type { ServerMetadata } from './lib/db/server-metadata.ts'
+import {
+  parseServerOsMetadata,
+  serverOsMetadataEquals,
+  type ServerMetadata,
+  type ServerOsMetadata,
+} from './lib/db/server-metadata.ts'
 import { server } from './lib/db/schema.ts'
 
 const UUID_RE =
@@ -13,6 +18,7 @@ export type ServerHelloIdentity = {
   hostname?: string
   licenseId?: string
   licenseToken?: string
+  os?: ServerOsMetadata
 }
 
 function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
@@ -21,17 +27,40 @@ function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
   const hostname = identity.hostname?.trim()
   if (machineId) patch.machineId = machineId
   if (hostname) patch.hostname = hostname
+  const os = parseServerOsMetadata(identity.os)
+  if (os) patch.os = os
   return patch
 }
 
-/** Pure merge of hostname/machineId into `server.metadata` — no DB I/O. */
+/**
+ * Pure merge of hostname/machineId/os into `server.metadata` — no DB I/O.
+ * Returns null when nothing would change (idempotent skip for callers).
+ */
 export function mergeServerMetadataIdentity(
   current: ServerMetadata | null | undefined,
-  identity: Pick<ServerHelloIdentity, 'hostname' | 'machineId'>,
+  identity: Pick<ServerHelloIdentity, 'hostname' | 'machineId' | 'os'>,
 ): ServerMetadata | null {
   const patch = metadataPatch(identity)
   if (Object.keys(patch).length === 0) return null
-  return { ...(current ?? {}), ...patch }
+
+  const base = current ?? {}
+  const next: ServerMetadata = { ...base }
+
+  let changed = false
+  if (patch.machineId !== undefined && patch.machineId !== base.machineId) {
+    next.machineId = patch.machineId
+    changed = true
+  }
+  if (patch.hostname !== undefined && patch.hostname !== base.hostname) {
+    next.hostname = patch.hostname
+    changed = true
+  }
+  if (patch.os !== undefined && !serverOsMetadataEquals(patch.os, base.os)) {
+    next.os = patch.os
+    changed = true
+  }
+
+  return changed ? next : null
 }
 
 function defaultDisplayName(_identity: ServerHelloIdentity): string | null {

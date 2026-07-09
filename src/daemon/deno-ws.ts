@@ -26,6 +26,7 @@ import {
   DEVELOPER_WS_PATH,
 } from "../surfaces.ts";
 import { resolveSelfHostedGeo } from "../lib/geo/self-hosted-geo-provider.ts";
+import { touchServerMetadata } from "../server-registry.ts";
 import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
 import { getServerDaemonStateByServerId } from "./authn/server-identity-db.ts";
 import type { RateLimiter } from "./rate-limit/contracts.ts";
@@ -261,6 +262,11 @@ export function registerDaemonWebSocket(
         const cell = registry.getCell(payload.sub);
 
         if (message.type === "hello") {
+          await touchServerMetadata(db, payload.sub, {
+            hostname: message.hostname,
+            machineId: message.machineId,
+            os: message.os,
+          });
           await cell.recordInbound({
             connectionId,
             at: message.at,

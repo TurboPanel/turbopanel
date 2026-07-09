@@ -1,4 +1,32 @@
 export const serverSchemas = {
+  ServerOsMetadata: {
+    type: 'object',
+    description:
+      'Host OS reported by the daemon from /etc/os-release (plus Deno build arch/family).',
+    properties: {
+      family: {
+        type: 'string',
+        enum: ['linux', 'windows', 'freebsd', 'darwin'],
+      },
+      id: {
+        type: 'string',
+        description: 'Distro id from os-release ID= (e.g. debian).',
+      },
+      version: {
+        type: 'string',
+        description: 'VERSION_ID (e.g. 13 or 13.1).',
+      },
+      versionCodename: {
+        type: 'string',
+        description: 'VERSION_CODENAME (e.g. trixie).',
+      },
+      prettyName: {
+        type: 'string',
+        description: 'Raw PRETTY_NAME from os-release.',
+      },
+      arch: { type: 'string', description: 'CPU arch (e.g. aarch64, x86_64).' },
+    },
+  },
   ServerRow: {
     type: 'object',
     properties: {
@@ -26,6 +54,25 @@ export const serverSchemas = {
         format: 'date-time',
         description:
           'Time the current daemon WebSocket connection was established (resets on reconnect). Null when offline.',
+      },
+      geo: {
+        type: ['object', 'null'],
+        additionalProperties: true,
+        description:
+          'Connecting-IP geolocation from server.metadata.geo when available.',
+      },
+      os: {
+        oneOf: [
+          { $ref: '#/components/schemas/ServerOsMetadata' },
+          { type: 'null' },
+        ],
+        description:
+          'Host OS from server.metadata.os (daemon hello). Null until the daemon has reported it.',
+      },
+      osDisplay: {
+        type: ['string', 'null'],
+        description:
+          'Formatted OS label for UI, e.g. "Debian 13 (Trixie)". Null when os is unknown.',
       },
       colocatedWithInstance: {
         type: 'boolean',

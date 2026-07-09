@@ -1,4 +1,5 @@
 import type { ServerAddresses } from "../../server-addresses.ts";
+import type { ServerOsMetadata } from "../../lib/db/server-metadata.ts";
 
 export type DaemonAgentInfo = {
   commit: string;
@@ -38,6 +39,8 @@ export type DaemonMessage =
     agent: DaemonAgentInfo;
     hostname?: string;
     machineId?: string;
+    /** Host OS from `/etc/os-release` (+ Deno build); persisted to `server.metadata.os`. */
+    os?: ServerOsMetadata;
   }
   | { type: "heartbeat"; at: string; agent?: DaemonAgentInfo }
   | { type: "echo"; payload: unknown; at: string }

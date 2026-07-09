@@ -5,7 +5,9 @@ import { parseSecretsEnv } from "../../client/authn/secrets.ts";
 import { createWorkersDb, endDbConnection, type Db } from "../../db.ts";
 import type { ServerGeo } from "../../lib/geo/server-geo.ts";
 import { parseServerGeo } from "../../lib/geo/server-geo.ts";
+import type { ServerOsMetadata } from "../../lib/db/server-metadata.ts";
 import { TERMINAL_UPDATE_RETENTION_MS } from "../../lib/update/constants.ts";
+import { touchServerMetadata } from "../../server-registry.ts";
 import { verifyDaemonJwt } from "../authn/daemon-jwt.ts";
 import { inboundHeartbeatProjectionDue } from "./postgres-projection.ts";
 import {
@@ -798,8 +800,24 @@ export class DaemonCellObject {
     serverId: string,
     at?: string,
     agent?: DaemonAgentInfo,
+    hostIdentity?: {
+      hostname?: string;
+      machineId?: string;
+      os?: ServerOsMetadata;
+    },
   ): Promise<void> {
     await this.#withProjectionDb("inbound", serverId, async (db) => {
+      if (
+        hostIdentity?.hostname ||
+        hostIdentity?.machineId ||
+        hostIdentity?.os
+      ) {
+        await touchServerMetadata(db, serverId, {
+          hostname: hostIdentity.hostname,
+          machineId: hostIdentity.machineId,
+          os: hostIdentity.os,
+        });
+      }
       await onDaemonInbound(
         db,
         serverId,
@@ -1280,6 +1298,9 @@ export class DaemonCellObject {
       type: "hello" | "heartbeat";
       at?: string;
       agent?: DaemonAgentInfo;
+      hostname?: string;
+      machineId?: string;
+      os?: ServerOsMetadata;
     },
   ): Promise<void> {
     this.#bumpDiag("heartbeatCount");
@@ -1294,12 +1315,30 @@ export class DaemonCellObject {
       parsed.agent,
       attachment.connectionId,
     );
+    const hostIdentity = parsed.type === "hello"
+      ? {
+        hostname: parsed.hostname,
+        machineId: parsed.machineId,
+        os: parsed.os,
+      }
+      : undefined;
+    const hasHostIdentity = Boolean(
+      hostIdentity?.hostname ||
+        hostIdentity?.machineId ||
+        hostIdentity?.os,
+    );
     const shouldProjectInbound = parsed.type === "hello"
       ? shouldProject ||
-        Boolean(parsed.agent?.commit && parsed.agent?.buildId)
+        Boolean(parsed.agent?.commit && parsed.agent?.buildId) ||
+        hasHostIdentity
       : shouldProject;
     if (shouldProjectInbound) {
-      await this.#projectInbound(attachment.serverId, at, parsed.agent);
+      await this.#projectInbound(
+        attachment.serverId,
+        at,
+        parsed.agent,
+        hostIdentity,
+      );
     }
   }
 

@@ -26,6 +26,7 @@ import {
 } from '../../daemon/cell/protocol.ts'
 import { clearServerDaemonState } from '../../daemon/authn/server-identity-db.ts'
 import { server } from '../../lib/db/schema.ts'
+import { formatServerOsDisplay } from '../../lib/db/server-metadata.ts'
 import { resolveTrunkManifest } from '../../lib/update/manifest.ts'
 import {
   hierarchyDeleteHasChildrenResponse,
@@ -194,6 +195,7 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
     return c.json({
       servers: display.rows.map((row) => {
         const live = presence.get(row.id)
+        const os = live?.os ?? null
         return {
           ...row,
           connected: live?.connected ?? false,
@@ -203,6 +205,8 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
           lastInboundAt: live?.lastInboundAt ?? null,
           connectedAt: live?.connectedAt ?? null,
           geo: live?.geo ?? null,
+          os,
+          osDisplay: formatServerOsDisplay(os),
           licenseId: row.licenseId ?? null,
         }
       }),
