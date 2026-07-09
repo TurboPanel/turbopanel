@@ -14,7 +14,7 @@
     "drizzle-orm/pg-core": "npm:drizzle-orm@^0.43.1/pg-core",
     "hono": "jsr:@hono/hono@^4.12.23",
     "postgres": "npm:postgres@^3.4.7",
-    "amqplib": "npm:amqplib@^0.10.4",
+    "amqplib": "npm:amqplib@^2.0.1",
     "nodemailer": "npm:nodemailer@^6.10.1",
     "@turbopanel/email/smtp-sender": "./src/lib/email/smtp/smtp-sender.ts",
     "ioredis": "npm:ioredis@^5.11.1"
@@ -31,7 +31,7 @@
     "jsxImportSource": "hono/jsx"
   },
   "tasks": {
-    "compile": "deno compile --allow-env --allow-sys=networkInterfaces,hostname --allow-read=/run/turbopanel,/etc/turbopanel,/var/lib/turbopanel,/opt/turbopanel/vendor,/opt/turbopanel/share/ui,/opt/turbopanel/lib/daemon,/opt/turbopanel/lib/instance --allow-write=/run/turbopanel,/var/lib/turbopanel --allow-net=127.0.0.1:4983,127.0.0.1:5672,127.0.0.1:1025,dl.trbp.nl:443,unix:/run/turbopanel/instance.sock --allow-run=git,systemctl,tar,sudo,/usr/bin/sudo,/bin/sh,mkfifo,/usr/bin/mkfifo,pamtester,/usr/bin/pamtester,/opt/turbopanel/vendor/node/current/bin/node -o dist/turbopanel-instance src/deno.ts",
+    "compile": "deno compile --allow-env --allow-sys=networkInterfaces,hostname --allow-read=/run/turbopanel,/etc/turbopanel,/var/lib/turbopanel,/opt/turbopanel/vendor,/opt/turbopanel/share/ui,/opt/turbopanel/lib/daemon,/opt/turbopanel/lib/instance --allow-write=/run/turbopanel,/var/lib/turbopanel --allow-net=127.0.0.1:4983,127.0.0.1:5672,127.0.0.1:1025,dl.trbp.nl:443,unix:/run/turbopanel/instance.sock,unix:/var/run/turbopanel/postgres/.s.PGSQL.5432,unix:/run/turbopanel/redis.sock --allow-run=git,systemctl,tar,sudo,/usr/bin/sudo,/bin/sh,mkfifo,/usr/bin/mkfifo,pamtester,/usr/bin/pamtester,/opt/turbopanel/vendor/node/current/bin/node -o dist/turbopanel-instance src/deno.ts",
     "test:authz": "deno test --allow-env --allow-net --allow-read src/client/authz/",
     "test:authn": "deno test --no-check --allow-env --allow-net --allow-read src/client/authn/workers-onboarding.test.ts",
     "test:paths": "deno test --allow-read src/server-paths.deno.test.ts"

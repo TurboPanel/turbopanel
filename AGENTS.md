@@ -174,7 +174,7 @@ reverse_proxy unix//run/turbopanel/instance.sock
 
 The daemon's `runtime-sockets` role (and `scripts/ensure-socket-dir.mjs` for manual runs) ensures `/run/turbopanel` exists and is owned by the dev user in development (**`2770 turbopanel:turbopanel`** in production), using passwordless `sudo` when needed. After bind, the instance hardens the socket file to `0660` (owner+group only) so the daemon can connect.
 
-The instance Deno process runs with scoped permissions (see the `instance-launch` unit template): `--allow-env --allow-sys=networkInterfaces --allow-read=/run/turbopanel,<daemon dir>,<instance dir> --allow-write=/run/turbopanel --allow-run=git,systemctl,tar` (`tar` is needed for the dev-sync tarball). TCP dev Postgres adds `--allow-net=127.0.0.1:5432`.
+The instance Deno process runs with scoped permissions (see the `instance-launch` unit template): `--allow-env --allow-sys=networkInterfaces --allow-read=/run/turbopanel,<daemon dir>,<instance dir> --allow-write=/run/turbopanel --allow-run=git,systemctl,tar` (`tar` is needed for the dev-sync tarball). TCP listeners and Unix-domain connects (Postgres `.s.PGSQL.5432`, Redis `redis.sock`, instance listen sock) go on `--allow-net` — Deno 2.9+ treats Unix-socket connect as net, not read. TCP dev Postgres adds `--allow-net=127.0.0.1:5432`.
 
 ### Production
 
