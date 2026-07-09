@@ -12,6 +12,7 @@ dist/
 
 # deps
 node_modules/
+.pnpm-store/
 .wrangler
 
 # env and secret-bearing dotenv variants (runtime env lives under platform config)
