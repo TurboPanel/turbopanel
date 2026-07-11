@@ -103,9 +103,12 @@
 		route {
 			vars expoUpstream true
 			reverse_proxy 127.0.0.1:{$EXPO_PORT:8081} {
-				# Forward the browser's host so Expo CORS same-origin checks match
-				# (Origin https://huey.lan:8443 vs Host 127.0.0.1:8081 rejects Metro).
-				header_up Host {http.request.host}
+				# Forward host:port (not hostname alone). Expo CorsMiddleware compares
+				# Origin's URL.host (includes :8880/:8443) to req.headers.host —
+				# {http.request.host} strips the port so LAN origins fail with
+				# "Unauthorized request from http://tpdev.lan:8880" and HTML 500s
+				# that surface in the browser as Unexpected token '<'.
+				header_up Host {http.request.hostport}
 				header_up X-Forwarded-Proto {http.request.scheme}
 			}
 		}
@@ -202,9 +205,12 @@
 			route {
 				vars expoUpstream true
 				reverse_proxy 127.0.0.1:{$EXPO_PORT:8081} {
-					# Forward the browser's host so Expo CORS same-origin checks match
-					# (Origin https://huey.lan:8443 vs Host 127.0.0.1:8081 rejects Metro).
-					header_up Host {http.request.host}
+					# Forward host:port (not hostname alone). Expo CorsMiddleware compares
+					# Origin's URL.host (includes :8880/:8443) to req.headers.host —
+					# {http.request.host} strips the port so LAN origins fail with
+					# "Unauthorized request from http://tpdev.lan:8880" and HTML 500s
+					# that surface in the browser as Unexpected token '<'.
+					header_up Host {http.request.hostport}
 					header_up X-Forwarded-Proto {http.request.scheme}
 				}
 			}

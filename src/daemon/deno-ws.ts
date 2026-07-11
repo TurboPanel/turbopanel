@@ -216,19 +216,111 @@ export function registerDaemonWebSocket(
       ): Promise<void> => {
         if (raw === DAEMON_CELL_PING) {
           const cell = registry.getCell(payload.sub);
+          const pingAt = new Date().toISOString();
           cellTrace("ping", {
             serverId: payload.sub,
             conn: connectionId,
           });
+          // #region agent log
+          try {
+            Deno.writeTextFileSync(
+              "/var/lib/turbopanel/debug-f40664.log",
+              `${JSON.stringify({
+                sessionId: "f40664",
+                runId: "post-fix",
+                hypothesisId: "B",
+                location: "deno-ws.ts:handleInboundMessage:ping",
+                message: "instance received cell ping",
+                data: {
+                  serverId: payload.sub,
+                  connectionId: connectionId ?? null,
+                  remoteAddress: identityAddress,
+                  wsReadyState: ws.readyState,
+                },
+                timestamp: Date.now(),
+              })}\n`,
+              { append: true },
+            );
+          } catch { /* ignore debug I/O */ }
+          // #endregion
           ws.send(DAEMON_CELL_PONG);
           cellTrace("pong", {
             serverId: payload.sub,
             conn: connectionId,
           });
+          // Snapshot before recordInbound: after a false Redis demotion the cell
+          // may still show connected=0 so onDaemonInbound can re-project Postgres
+          // online. recordInbound alone self-heals Redis and would make a later
+          // onDaemonInbound hit steadyStateInboundSkipsDbRead while Postgres stays
+          // offline (UI shows Offline despite a live socket).
+          const snapshotBefore = await cell.getSnapshot();
           await cell.recordInbound({
             connectionId,
-            at: new Date().toISOString(),
+            at: pingAt,
           });
+          if (!snapshotBefore.connected) {
+            await onDaemonConnected(
+              db,
+              payload.sub,
+              cell,
+              snapshotBefore.connectedAt ?? pingAt,
+            );
+            // #region agent log
+            try {
+              Deno.writeTextFileSync(
+                "/var/lib/turbopanel/debug-f40664.log",
+                `${JSON.stringify({
+                  sessionId: "f40664",
+                  runId: "post-fix",
+                  hypothesisId: "D",
+                  location: "deno-ws.ts:handleInboundMessage:ping",
+                  message: "ping healed Postgres after Redis-offline snapshot",
+                  data: {
+                    serverId: payload.sub,
+                    connectionId: connectionId ?? null,
+                  },
+                  timestamp: Date.now(),
+                })}\n`,
+                { append: true },
+              );
+            } catch { /* ignore debug I/O */ }
+            // #endregion
+          } else {
+            // Redis already connected — still repair Postgres-only false offline
+            // (stuck after a prior demotion that self-healed Redis only).
+            const daemonRow = await getServerDaemonStateByServerId(
+              db,
+              payload.sub,
+            );
+            if (daemonRow?.status?.connected === false) {
+              await onDaemonConnected(
+                db,
+                payload.sub,
+                cell,
+                snapshotBefore.connectedAt ?? pingAt,
+              );
+              // #region agent log
+              try {
+                Deno.writeTextFileSync(
+                  "/var/lib/turbopanel/debug-f40664.log",
+                  `${JSON.stringify({
+                    sessionId: "f40664",
+                    runId: "post-fix",
+                    hypothesisId: "D",
+                    location: "deno-ws.ts:handleInboundMessage:ping",
+                    message: "ping healed Postgres-only offline projection",
+                    data: {
+                      serverId: payload.sub,
+                      connectionId: connectionId ?? null,
+                    },
+                    timestamp: Date.now(),
+                  })}\n`,
+                  { append: true },
+                );
+              } catch { /* ignore debug I/O */ }
+              // #endregion
+            }
+          }
           return;
         }
 
@@ -419,6 +511,28 @@ export function registerDaemonWebSocket(
           await handleInboundMessage(raw, ws);
         },
         onClose() {
+          // #region agent log
+          try {
+            Deno.writeTextFileSync(
+              "/var/lib/turbopanel/debug-f40664.log",
+              `${JSON.stringify({
+                sessionId: "f40664",
+                runId: "post-fix",
+                hypothesisId: "E",
+                location: "deno-ws.ts:onClose",
+                message: "instance websocket onClose",
+                data: {
+                  serverId: payload.sub,
+                  connectionId: connectionId ?? null,
+                  remoteAddress: identityAddress,
+                  pumpAborted: pumpControl.abort,
+                },
+                timestamp: Date.now(),
+              })}\n`,
+              { append: true },
+            );
+          } catch { /* ignore debug I/O */ }
+          // #endregion
           pumpControl.abort = true;
           if (connectionId) {
             inboundGate.release(connectionId);

@@ -23,7 +23,8 @@
     "hono": "4.12.23",
     "ioredis": "^5.11.1",
     "nodemailer": "^6.10.1",
-    "postgres": "^3.4.7"
+    "postgres": "^3.4.7",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.8.38",

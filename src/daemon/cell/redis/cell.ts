@@ -248,6 +248,19 @@ function parseDeliveryMap(raw: string | undefined): Record<string, string> {
   }
 }
 
+/**
+ * Allow ~10s of setInterval skew so a nominal 60s ping cadence still refreshes
+ * Redis every minute. Without this, pings that arrive a few ms early are
+ * coalesced, Redis `lastInboundAt` only advances every ~120s, and a single
+ * missed ping then trips `DAEMON_OFFLINE_SWEEP_MS` (150s) while the socket is
+ * still alive — Deno/Redis only; Workers DO liveness does not use this path.
+ */
+const COALESCE_TIMER_SKEW_MS = 10_000;
+
+function presenceCoalesceFloorMs(): number {
+  return HEARTBEAT_COALESCE_MS - COALESCE_TIMER_SKEW_MS;
+}
+
 function shouldCoalesceLastSeenAt(
   lastSeenAt: string | undefined,
   atMs: number,
@@ -255,7 +268,7 @@ function shouldCoalesceLastSeenAt(
   if (!lastSeenAt) return true;
   const lastSeenMs = Date.parse(lastSeenAt);
   if (Number.isNaN(lastSeenMs) || Number.isNaN(atMs)) return true;
-  return atMs - lastSeenMs >= HEARTBEAT_COALESCE_MS;
+  return atMs - lastSeenMs >= presenceCoalesceFloorMs();
 }
 
 function parseStoredAgent(raw: string | undefined): import("../protocol.ts").DaemonAgentInfo | undefined {
@@ -425,6 +438,10 @@ export class RedisDaemonCell implements DaemonCell {
     this.#bumpMethodRoute("reconcileStalePresence");
     const redis = this.#redis("reconcileStalePresence");
     const staleBeforeIso = new Date(now - DAEMON_OFFLINE_SWEEP_MS).toISOString();
+    // #region agent log
+    const preMeta = await redis.hgetall(metaKey(this.#serverId));
+    const preLease = await redis.get(leaseKey(this.#serverId));
+    // #endregion
     const result = await redis.eval(
       RECONCILE_STALE_SOCKET_PRESENCE,
       3,
@@ -442,6 +459,38 @@ export class RedisDaemonCell implements DaemonCell {
       : result === 1;
     if (demoted) {
       this.#connectedHint = false;
+      // #region agent log
+      try {
+        Deno.writeTextFileSync(
+          "/var/lib/turbopanel/debug-f40664.log",
+          `${JSON.stringify({
+            sessionId: "f40664",
+            runId: "post-fix",
+            hypothesisId: "C",
+            location: "redis/cell.ts:reconcileStalePresence",
+            message: "stale presence demoted",
+            data: {
+              serverId: this.#serverId,
+              staleBeforeIso,
+              leaseHeld: Boolean(preLease),
+              leaseMatchesConn: preLease === preMeta?.connectionId,
+              connected: preMeta?.connected ?? null,
+              lastInboundAt: preMeta?.lastInboundAt ?? null,
+              lastSeenAt: preMeta?.lastSeenAt ?? null,
+              connectedAt: preMeta?.connectedAt ?? null,
+              connectionId: preMeta?.connectionId ?? null,
+              remoteAddress: preMeta?.remoteAddress ?? null,
+              nowIso: nowIso(now),
+              ageMs: preMeta?.lastInboundAt
+                ? now - Date.parse(preMeta.lastInboundAt)
+                : null,
+            },
+            timestamp: Date.now(),
+          })}\n`,
+          { append: true },
+        );
+      } catch { /* ignore debug I/O */ }
+      // #endregion
       logInfo("daemon-cell", `stale presence demoted: ${this.#serverId}`);
     }
     return demoted;
@@ -660,13 +709,37 @@ export class RedisDaemonCell implements DaemonCell {
       !hasAgent &&
       this.#connectedHint &&
       !Number.isNaN(atMs) &&
-      atMs - this.#lastInboundMs < HEARTBEAT_COALESCE_MS
+      atMs - this.#lastInboundMs < presenceCoalesceFloorMs()
     ) {
       cellTrace("record-inbound", {
         serverId: this.#serverId,
         conn: params.connectionId,
         coalesced: true,
       });
+      // #region agent log
+      try {
+        Deno.writeTextFileSync(
+          "/var/lib/turbopanel/debug-f40664.log",
+          `${JSON.stringify({
+            sessionId: "f40664",
+            runId: "post-fix",
+            hypothesisId: "B",
+            location: "redis/cell.ts:recordInbound",
+            message: "recordInbound early-coalesced (no Redis lastSeen write)",
+            data: {
+              serverId: this.#serverId,
+              connectionId: params.connectionId ?? null,
+              at,
+              sinceLastInboundMs: atMs - this.#lastInboundMs,
+              coalesceFloorMs: presenceCoalesceFloorMs(),
+              demotionRiskMs: DAEMON_OFFLINE_SWEEP_MS - (atMs - this.#lastInboundMs),
+            },
+            timestamp: Date.now(),
+          })}\n`,
+          { append: true },
+        );
+      } catch { /* ignore debug I/O */ }
+      // #endregion
       return;
     }
 
@@ -712,6 +785,31 @@ export class RedisDaemonCell implements DaemonCell {
       this.#lastInboundMs = atMs;
     }
     this.#connectedHint = true;
+
+    // #region agent log
+    if (bumpInbound) {
+      try {
+        Deno.writeTextFileSync(
+          "/var/lib/turbopanel/debug-f40664.log",
+          `${JSON.stringify({
+            sessionId: "f40664",
+            runId: "post-fix",
+            hypothesisId: "B",
+            location: "redis/cell.ts:recordInbound",
+            message: "recordInbound wrote Redis lastInboundAt",
+            data: {
+              serverId: this.#serverId,
+              connectionId,
+              at,
+              coalesceFloorMs: presenceCoalesceFloorMs(),
+            },
+            timestamp: Date.now(),
+          })}\n`,
+          { append: true },
+        );
+      } catch { /* ignore debug I/O */ }
+    }
+    // #endregion
 
     cellTrace("record-inbound", {
       serverId: this.#serverId,

@@ -12,7 +12,8 @@ export const projectSchemas = {
       options: {
         type: 'object',
         nullable: true,
-        description: 'Project options; options.compose holds the base Docker Compose JSON',
+        description:
+          'Project options; options.compose is a ComposeDocument (versioned YAML presentation + compose data)',
       },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
@@ -35,13 +36,14 @@ export const projectSchemas = {
       displayName: { type: 'string' },
       description: { type: 'string' },
       workspaceId: { type: 'string' },
-      type: { type: 'string', enum: ['blank', 'template', 'managed'] },
+      type: { type: 'string', enum: ['docker-compose', 'template', 'managed'] },
       code: { type: 'string', description: 'Catalog code when type is template or managed' },
       metadata: { type: 'object', nullable: true },
       options: {
         type: 'object',
         nullable: true,
-        description: 'Project options; options.compose holds the base Docker Compose JSON',
+        description:
+          'Project options; options.compose is a ComposeDocument (versioned JSON with presentation) or legacy bare compose JSON',
       },
     },
   },
@@ -53,7 +55,8 @@ export const projectSchemas = {
       options: {
         type: 'object',
         nullable: true,
-        description: 'Project options; options.compose holds the base Docker Compose JSON',
+        description:
+          'Project options; options.compose is a ComposeDocument (versioned JSON with presentation) or legacy bare compose JSON',
       },
     },
   },

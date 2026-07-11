@@ -543,6 +543,8 @@ export const service = pgTable(
     environmentId: uuid('environment_id').notNull(),
     displayName: varchar('display_name', { length: 255 }),
     description: varchar('description', { length: 255 }),
+    metadata: jsonb(),
+    options: jsonb(),
   },
   (table) => [
     index('idx_service_environment_id').using(
@@ -576,6 +578,8 @@ export const hosting = pgTable(
     serviceId: uuid('service_id').notNull(),
     displayName: varchar('display_name', { length: 255 }),
     description: varchar('description', { length: 255 }),
+    metadata: jsonb(),
+    options: jsonb(),
   },
   (table) => [
     index('idx_hosting_service_id').using(

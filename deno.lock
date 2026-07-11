@@ -1941,7 +1941,8 @@
       "npm:drizzle-orm@~0.43.1",
       "npm:ioredis@^5.11.1",
       "npm:nodemailer@^6.10.1",
-      "npm:postgres@^3.4.7"
+      "npm:postgres@^3.4.7",
+      "npm:yaml@^2.8.0"
     ],
     "packageJson": {
       "dependencies": [
@@ -1955,7 +1956,8 @@
         "npm:nodemailer@^6.10.1",
         "npm:postgres@^3.4.7",
         "npm:vitest@~3.0.5",
-        "npm:wrangler@^4.109.0"
+        "npm:wrangler@^4.109.0",
+        "npm:yaml@^2.9.0"
       ]
     }
   }

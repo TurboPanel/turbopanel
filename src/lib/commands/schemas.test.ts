@@ -122,6 +122,22 @@ Deno.test('parseCommandPayload and parseCommandResult dispatch by type', () => {
     { hostname: 'web-01' },
   )
   assertEquals(parseCommandPayload('server.reboot' as CommandType, {}), {})
+  assertEquals(
+    parseCommandPayload('environment.deploy' as CommandType, {
+      environmentId: 'env-1',
+      projectId: 'proj-1',
+      projectName: 'tp-demo',
+      composeYaml: 'services: {}\n',
+      hostings: [],
+    }),
+    {
+      environmentId: 'env-1',
+      projectId: 'proj-1',
+      projectName: 'tp-demo',
+      composeYaml: 'services: {}\n',
+      hostings: [],
+    },
+  )
   assertEquals(parseCommandResult('daemon.ping' as CommandType, { daemonHostname: 'x' }), {
     daemonHostname: 'x',
   })
@@ -132,6 +148,13 @@ Deno.test('parseCommandPayload and parseCommandResult dispatch by type', () => {
   assertEquals(
     parseCommandResult('server.reboot' as CommandType, { scheduled: true, summary: 'ok' }),
     { scheduled: true, summary: 'ok' },
+  )
+  assertEquals(
+    parseCommandResult('environment.deploy' as CommandType, {
+      projectName: 'tp-demo',
+      summary: 'up',
+    }),
+    { projectName: 'tp-demo', summary: 'up' },
   )
 })
 

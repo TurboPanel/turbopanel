@@ -189,7 +189,7 @@ Caddy terminates TLS and routes traffic from a single HTTPS entrypoint:
 
 `reverse_proxy` to the Unix socket sets `X-Real-IP {remote_host}` on `/api/*` and `/ws/*`. The instance uses that header to deduplicate daemon WebSocket reconnects (without it, every reconnect looked like a new fleet member behind the proxy).
 
-In **dev** mode, the Expo upstream proxy must forward `Host {http.request.host}` (not `127.0.0.1:8081`). Expo's CORS middleware compares `Origin` to `Host`; LAN hostnames like `huey.lan:8443` are rejected when `Host` is overwritten to the loopback upstream.
+In **dev** mode, the Expo upstream proxy must forward `Host {http.request.hostport}` (not `127.0.0.1:8081`, and not `{http.request.host}` alone). Expo's CORS middleware compares `Origin`'s URL `.host` (which includes the port, e.g. `tpdev.lan:8880`) to `req.headers.host`; `{http.request.host}` strips the port so LAN origins get HTML 500s that show up as `Unexpected token '<'` in the browser.
 
 ### Development
 
@@ -349,7 +349,7 @@ The DO caches `#serverId` (and live-socket presence) once in the constructor via
 
 **`DAEMON_INBOUND_ALLOWED`** is defined in `src/daemon/cell/protocol.ts` (not `hub.ts`).
 
-**Auto-response liveness (cell ping):** the DO registers `setWebSocketAutoResponse(DAEMON_CELL_PING → DAEMON_CELL_PONG)` in its constructor (`protocol.ts` constants). The runtime answers `{type:"ping"}` with `{type:"pong"}` **without waking the DO** — this is the primary idle liveness path on Workers. The daemon's `IdlePresence` sends that wire ping after ~60 s of inbound silence; app-level `{type:"heartbeat"}` is reserved for agent-commit changes only (see daemon `AGENTS.md`). Redis parity relies on the same wire ping updating `lastSeenAt` in cell meta.
+**Auto-response liveness (cell ping):** the DO registers `setWebSocketAutoResponse(DAEMON_CELL_PING → DAEMON_CELL_PONG)` in its constructor (`protocol.ts` constants). The runtime answers `{type:"ping"}` with `{type:"pong"}` **without waking the DO** — this is the primary idle liveness path on Workers. The daemon's `IdlePresence` sends that wire ping after ~60 s of inbound silence; app-level `{type:"heartbeat"}` is reserved for agent-commit changes only (see daemon `AGENTS.md`). Redis parity relies on the same wire ping updating `lastSeenAt` in cell meta. **Deno/Redis coalesce skew:** `recordInbound` coalesces Redis `lastInboundAt` writes with a 10s timer-skew floor (`HEARTBEAT_COALESCE_MS - 10_000`) so a nominal 60s ping cadence still refreshes meta every minute — without the skew, early `setInterval` ticks were coalesced and a single missed ping could trip `DAEMON_OFFLINE_SWEEP_MS` (150s) while the socket was still alive. The Deno WS ping path also re-projects Postgres online when Redis or Postgres still shows offline after a false demotion (Workers DO path unchanged — auto-response never wakes the object for pings).
 
 **Verbose cell tracing (`TURBOPANEL_DAEMON_DEBUG`):** setting `TURBOPANEL_DAEMON_DEBUG=1`/`true` (checked via `isDaemonDebugEnabled()` in `src/logger.ts`, and `#isDaemonDebug()` in `src/daemon/cell/do.ts`) enables verbose, structured tracing of the daemon cell, its storage backend, and the daemon WS message flow. The flag applies on process restart — there is no live toggle. Traced events include WS attach/detach, inbound/outbound daemon messages, `DAEMON_CELL_PING`/pong liveness, `enqueue`/`markSent`/`handleInbound` (with pending-request status transitions), delivery lease acquire/renew/release, outbox `readOutboxBatch`/`ackOutbox`, `putSnapshot`, the command pipeline's `command-dispatch → sent → ack/outcome` lifecycle (`src/lib/commands/consumer.ts`), and the correlated `createRequestAndWait`/`waitForRequest` round-trips for dev-sync, tunnel-token, public-urls apply, and addresses requests. Greppable log tokens: `cellTrace()` (in `src/logger.ts`) emits `daemon-cell event=<name> …` lines shared by both the Redis backend (`src/daemon/cell/redis/cell.ts`) and Deno WS (`src/daemon/deno-ws.ts`); the Durable Object emits equivalent `daemon-cell event=…` lines via its private `#trace()` in `src/daemon/cell/do.ts` so wrangler-captured stdout stays filterable alongside Deno logs. The correlated `createRequestAndWait`/`waitForRequest` call sites in `src/developer/dev-sync.ts`, `src/developer/tunnel-routes.ts`, `src/admin/routes.ts`, and `src/developer/routes-core.ts` also log via `cellTrace()` under the `daemon-cell` component (`request-start`, `request-enqueued`, `request-result`). Filter `command-consumer` for the command pipeline only — `src/lib/commands/consumer.ts` uses `commandConsumerTrace()` and emits `command-consumer event=<name> …` lines (`dispatch-start`, `dispatch-enqueued`, `dispatch-sent`, `dispatch-result`, `dispatch-failed`). Debug mode also emits per-call-site DO storage-op counters (`storageReads`, `storageWrites`, `storageByCallSite`) on `CellDiagnostics`, surfaced via `getDiagnostics()` / `GET /rpc/diagnostics`, incremented by the `#sql(callSite,…)` / `#setAlarm` / `#deleteAlarm` wrappers (thin pass-through when debug is off). Redis exposes equivalent counters via `#bumpMethodRoute` / `#bumpDiag`. These counters are the billing-audit baseline. Tracing is logging-only on both backends, and the DO path remains hibernation-safe (no timers, no held-open connections) per the hibernation-warning rules above.
 
@@ -398,6 +398,7 @@ All lifecycle timestamps and status live in the `metadata` jsonb blob on the `co
 | `POST` | `/api/client/v1/servers/:id/commands/ping` | session + read | Create `daemon.ping` command, enqueue |
 | `POST` | `/api/client/v1/servers/:id/hostname` | session + manage | Validate hostname, create `server.hostname.set` command, enqueue |
 | `POST` | `/api/client/v1/servers/:id/commands/reboot` | session + manage | Create `server.reboot` command, enqueue |
+| `POST` | `/api/client/v1/environments/:id/deploy` | session + manage | Merge project+env ComposeDocuments → runtime YAML; create `environment.deploy` on target `serverId`; persists `environment.metadata.serverId`. Poll via existing command GET (Postgres only). |
 | `GET` | `/api/client/v1/servers/:id/commands/:commandId` | session + read | Poll status; ping includes latency breakdown |
 | `GET` | `/api/client/v1/servers/:id/commands` | session + read | List recent commands (optional) |
 
@@ -405,9 +406,15 @@ Authz: ping/get require read (`assertCanReadOr403`); hostname and reboot require
 
 ### Consumer behavior
 
-`processCommandEnvelope` in `src/lib/commands/consumer.ts` is the single source that writes terminal `command` rows. The WS inbound path (`command-ack`, `command-outcome`) only updates the hot `PendingRequestRecord` in the cell. For MVP, `daemon.ping`, `server.hostname.set`, and `server.reboot` fail fast when the daemon is offline. For `server.hostname.set` success, the consumer calls `touchServerMetadata` to update `server.metadata.hostname` — the instance never updates hostname speculatively.
+`processCommandEnvelope` in `src/lib/commands/consumer.ts` is the single source that writes terminal `command` rows. The WS inbound path (`command-ack`, `command-outcome`) only updates the hot `PendingRequestRecord` in the cell. For MVP, `daemon.ping`, `server.hostname.set`, `server.reboot`, and `environment.deploy` fail fast when the daemon is offline. For `server.hostname.set` success, the consumer calls `touchServerMetadata` to update `server.metadata.hostname` — the instance never updates hostname speculatively.
 
 `server.reboot` requires `organization:manage`, carries an empty payload, uses a 120s consumer timeout, has no `touchServerMetadata` side-effect, and is executed daemon-side via `sudo systemctl reboot` (handler implemented in a separate phase).
+
+`environment.deploy` uses a 600s consumer timeout. Compose merge + Traefik label injection + Docker/Caddy bootstrap run on the daemon (`daemon/src/instance/commands/deploy-environment.ts`). **Cost:** one cell outbox enqueue; UI polls Postgres command rows only — never Durable Object reads for deploy status. Hosting-edge Caddy (`:80`/`:443`, LE off) is distinct from control-plane Caddy (`:8443`). Future: multi-server compose placement, WireGuard, swarm-style replicas — seams only.
+
+### Compose documents (`src/lib/compose/`)
+
+`project.options.compose` / `environment.options.compose` store a **ComposeDocument** (`version: 1`, `data`, `presentation`) so YAML comments, blank lines, and section order survive editor round-trips. Deploy uses `composeDocumentToRuntimeYaml` (presentation stripped). Legacy bare compose objects are normalized via `normalizeCompose`. Overlay merge: `mergeComposeOverlay`.
 
 Future webhook-triggered operations — deploy service, rebuild app, rotate tunnel token, update daemon, restart service, collect diagnostics, stream logs — reuse the same `command` table, `CommandQueue` abstraction, and typed-handler model on the daemon. No new queue infrastructure is needed.
 
@@ -702,7 +709,7 @@ Hand-authored API docs are split by surface and served from the client and daemo
 
 `servers[0].url` in each spec is the request origin (`new URL(c.req.url).origin`). Client spec documents health, client/auth/install, and resource routes. Daemon spec documents readiness, platform CA, JWKS (`GET /api/daemon/v1/jwks.json`; `DaemonJwksResponse` in `src/daemon/openapi/auth.ts`), the co-located daemon checkout version endpoint (`GET /api/daemon/v1/version`), and the `/ws/daemon/v1` WebSocket upgrade — daemon JWT credentials are sent in the HTTP `Authorization` header before upgrade.
 
-The marketing site (`../website`) loads the client spec via its `/api/config` proxy for `/docs/api`; the instance also exposes Scalar directly for local/dev use.
+The marketing site (`../website`) loads client + daemon specs on `/docs/api` as **separate Scalar documents** (cookie auth on Client, Bearer on Daemon — never both schemes in one shared auth config). The instance also exposes Scalar directly for local/dev use.
 
 ```mermaid
 sequenceDiagram

@@ -14,6 +14,7 @@ import {
   parseDisplayName,
   parseDescription,
   parseJsonBody,
+  parseJsonbObject,
 } from '../shared.ts'
 import {
   hierarchyDeleteHasChildrenResponse,
@@ -58,6 +59,8 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
         displayName: hosting.displayName,
         description: hosting.description,
         serviceId: hosting.serviceId,
+        metadata: hosting.metadata,
+        options: hosting.options,
         createdAt: hosting.createdAt,
         updatedAt: hosting.updatedAt,
       })
@@ -91,6 +94,8 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
         displayName: hosting.displayName,
         description: hosting.description,
         serviceId: hosting.serviceId,
+        metadata: hosting.metadata,
+        options: hosting.options,
         createdAt: hosting.createdAt,
         updatedAt: hosting.updatedAt,
       })
@@ -146,6 +151,11 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Invalid request' }, 400)
     }
 
+    const metadataResult = parseJsonbObject(c, body, 'metadata')
+    if (metadataResult instanceof Response) return metadataResult
+    const optionsResult = parseJsonbObject(c, body, 'options')
+    if (optionsResult instanceof Response) return optionsResult
+
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(hosting)
@@ -153,6 +163,8 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
           displayName,
           description,
           serviceId,
+          ...(metadataResult !== null ? { metadata: metadataResult } : {}),
+          ...(optionsResult !== null ? { options: optionsResult } : {}),
         })
         .returning({ id: hosting.id })
       return inserted.id
@@ -184,12 +196,26 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    let patchFields: { displayName?: string | null; description?: string | null; updatedAt: string }
+    let patchFields: {
+      displayName?: string | null
+      description?: string | null
+      metadata?: Record<string, unknown> | null
+      options?: Record<string, unknown> | null
+      updatedAt: string
+    }
     try {
       patchFields = buildPatchUpdateFields(body)
     } catch {
       return c.json({ error: 'Invalid request' }, 400)
     }
+
+    const metadataResult = parseJsonbObject(c, body, 'metadata')
+    if (metadataResult instanceof Response) return metadataResult
+    if (metadataResult !== null) patchFields.metadata = metadataResult
+
+    const optionsResult = parseJsonbObject(c, body, 'options')
+    if (optionsResult instanceof Response) return optionsResult
+    if (optionsResult !== null) patchFields.options = optionsResult
 
     await db
       .update(hosting)

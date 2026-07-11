@@ -14,6 +14,7 @@ import {
   parseDisplayName,
   parseDescription,
   parseJsonBody,
+  parseJsonbObject,
   requireStringField,
 } from '../shared.ts'
 import {
@@ -59,6 +60,8 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
         displayName: service.displayName,
         description: service.description,
         environmentId: service.environmentId,
+        metadata: service.metadata,
+        options: service.options,
         createdAt: service.createdAt,
         updatedAt: service.updatedAt,
       })
@@ -92,6 +95,8 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
         displayName: service.displayName,
         description: service.description,
         environmentId: service.environmentId,
+        metadata: service.metadata,
+        options: service.options,
         createdAt: service.createdAt,
         updatedAt: service.updatedAt,
       })
@@ -144,10 +149,21 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Invalid request' }, 400)
     }
 
+    const metadataResult = parseJsonbObject(c, body, 'metadata')
+    if (metadataResult instanceof Response) return metadataResult
+    const optionsResult = parseJsonbObject(c, body, 'options')
+    if (optionsResult instanceof Response) return optionsResult
+
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(service)
-        .values({ displayName, description, environmentId })
+        .values({
+          displayName,
+          description,
+          environmentId,
+          ...(metadataResult !== null ? { metadata: metadataResult } : {}),
+          ...(optionsResult !== null ? { options: optionsResult } : {}),
+        })
         .returning({ id: service.id })
       return inserted.id
     })
@@ -178,12 +194,26 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    let patchFields: { displayName?: string | null; description?: string | null; updatedAt: string }
+    let patchFields: {
+      displayName?: string | null
+      description?: string | null
+      metadata?: Record<string, unknown> | null
+      options?: Record<string, unknown> | null
+      updatedAt: string
+    }
     try {
       patchFields = buildPatchUpdateFields(body)
     } catch {
       return c.json({ error: 'Invalid request' }, 400)
     }
+
+    const metadataResult = parseJsonbObject(c, body, 'metadata')
+    if (metadataResult instanceof Response) return metadataResult
+    if (metadataResult !== null) patchFields.metadata = metadataResult
+
+    const optionsResult = parseJsonbObject(c, body, 'options')
+    if (optionsResult instanceof Response) return optionsResult
+    if (optionsResult !== null) patchFields.options = optionsResult
 
     await db
       .update(service)

@@ -7,6 +7,7 @@ import {
 import { getClientPublicStatus } from './authn/install-state.ts'
 import { getDb } from '../db.ts'
 import { registerAccessRoutes } from './access/routes.ts'
+import { registerEnvironmentDeployRoutes } from './environments/deploy-routes.ts'
 import { registerEnvironmentRoutes } from './environments/routes.ts'
 import { registerVariableRoutes } from './variables/routes.ts'
 import { registerHostingRoutes } from './hostings/routes.ts'
@@ -54,6 +55,7 @@ export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
   registerAccessRoutes(client, opts)
   registerWorkspaceRoutes(client, opts)
   registerEnvironmentRoutes(client, opts)
+  registerEnvironmentDeployRoutes(client, opts)
   registerVariableRoutes(client, opts)
   registerProjectRoutes(client, opts)
   registerServiceRoutes(client, opts)

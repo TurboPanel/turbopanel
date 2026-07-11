@@ -27,6 +27,7 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'daemon.ping': 30_000,
   'server.hostname.set': 120_000,
   'server.reboot': 120_000,
+  'environment.deploy': 600_000,
 }
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 60_000
@@ -35,7 +36,8 @@ function commandTimeoutMs(type: string): number {
   if (
     type === 'daemon.ping' ||
     type === 'server.hostname.set' ||
-    type === 'server.reboot'
+    type === 'server.reboot' ||
+    type === 'environment.deploy'
   ) {
     return COMMAND_TIMEOUT_MS[type]
   }

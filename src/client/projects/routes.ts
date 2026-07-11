@@ -14,6 +14,7 @@ import {
   listCatalog,
   type CatalogEntry,
 } from './catalog/index.ts'
+import { emptyComposeDocument } from '../../lib/compose/index.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -220,14 +221,17 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
     }
 
     const rawType = body.type
-    let projectType: 'blank' | 'template' | 'managed'
+    let projectType: 'docker-compose' | 'template' | 'managed'
     if (
       rawType === undefined ||
       rawType === null ||
       rawType === '' ||
-      rawType === 'blank'
+      rawType === 'docker-compose'
     ) {
-      projectType = 'blank'
+      projectType = 'docker-compose'
+    } else if (rawType === 'blank') {
+      // Removed type — treat legacy clients as docker-compose
+      projectType = 'docker-compose'
     } else if (typeof rawType !== 'string' || !isCreateProjectType(rawType)) {
       return c.json({ error: 'Invalid request' }, 400)
     } else {
@@ -256,17 +260,27 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
 
     try {
       const id = await db.transaction(async (tx) => {
-      if (projectType === 'blank') {
+      if (projectType === 'docker-compose') {
+        const compose =
+          optionsResult && 'compose' in optionsResult
+            ? optionsResult.compose
+            : emptyComposeDocument()
         const [inserted] = await tx
           .insert(project)
           .values({
             displayName,
             description,
             workspaceId,
-            ...(metadataResult !== null ? { metadata: metadataResult } : {}),
-            ...(optionsResult !== null ? { options: optionsResult } : {}),
+            metadata: metadataResult ?? { type: 'docker-compose' },
+            options: optionsResult ?? { compose },
           })
           .returning({ id: project.id })
+        await tx.insert(environment).values({
+          projectId: inserted.id,
+          displayName: 'production',
+          description: 'Default environment',
+          options: { compose: emptyComposeDocument() },
+        })
         return inserted.id
       }
 
@@ -283,7 +297,7 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
             displayName,
             description,
             workspaceId,
-            ...(metadataResult !== null ? { metadata: metadataResult } : {}),
+            metadata: metadataResult ?? { type: 'template' },
             options: optionsResult ?? { compose: entry.compose },
           })
           .returning({ id: project.id })

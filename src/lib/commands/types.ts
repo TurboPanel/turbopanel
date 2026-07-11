@@ -1,4 +1,9 @@
-export const COMMAND_TYPES = ['daemon.ping', 'server.hostname.set', 'server.reboot'] as const
+export const COMMAND_TYPES = [
+  'daemon.ping',
+  'server.hostname.set',
+  'server.reboot',
+  'environment.deploy',
+] as const
 
 export type CommandType = (typeof COMMAND_TYPES)[number]
 

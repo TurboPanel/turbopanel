@@ -128,10 +128,103 @@ export function parseRebootResult(value: unknown): RebootCommandResult {
   return result
 }
 
+export type EnvironmentDeployCommandPayload = {
+  environmentId: string
+  projectId: string
+  projectName: string
+  /** Runtime docker-compose YAML (presentation stripped). */
+  composeYaml: string
+  /** Public hosting routes to wire through Traefik + edge Caddy. */
+  hostings: EnvironmentDeployHosting[]
+}
+
+export type EnvironmentDeployHosting = {
+  hostingId: string
+  serviceId: string
+  composeServiceName: string
+  hostnames: string[]
+  pathPrefix?: string
+  /** Container port Traefik should target (default 80). */
+  targetPort?: number
+}
+
+export type EnvironmentDeployCommandResult = {
+  projectName: string
+  summary?: string
+  services?: string[]
+}
+
+export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeployCommandPayload {
+  if (!isRecord(value)) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  const environmentId = value.environmentId
+  const projectId = value.projectId
+  const projectName = value.projectName
+  const composeYaml = value.composeYaml
+  if (
+    !isString(environmentId) ||
+    !isString(projectId) ||
+    !isString(projectName) ||
+    !isString(composeYaml) ||
+    composeYaml.length === 0
+  ) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  const hostingsRaw = value.hostings
+  if (!Array.isArray(hostingsRaw)) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  const hostings: EnvironmentDeployHosting[] = []
+  for (const entry of hostingsRaw) {
+    if (!isRecord(entry)) throw new Error('Invalid environment.deploy payload')
+    if (
+      !isString(entry.hostingId) ||
+      !isString(entry.serviceId) ||
+      !isString(entry.composeServiceName)
+    ) {
+      throw new Error('Invalid environment.deploy payload')
+    }
+    if (!Array.isArray(entry.hostnames) || !entry.hostnames.every(isString)) {
+      throw new Error('Invalid environment.deploy payload')
+    }
+    const hosting: EnvironmentDeployHosting = {
+      hostingId: entry.hostingId,
+      serviceId: entry.serviceId,
+      composeServiceName: entry.composeServiceName,
+      hostnames: entry.hostnames as string[],
+    }
+    if (isString(entry.pathPrefix)) hosting.pathPrefix = entry.pathPrefix
+    if (typeof entry.targetPort === 'number' && Number.isFinite(entry.targetPort)) {
+      hosting.targetPort = entry.targetPort
+    }
+    hostings.push(hosting)
+  }
+  return { environmentId, projectId, projectName, composeYaml, hostings }
+}
+
+export function parseEnvironmentDeployResult(value: unknown): EnvironmentDeployCommandResult {
+  if (!isRecord(value)) {
+    return { projectName: '' }
+  }
+  const result: EnvironmentDeployCommandResult = {
+    projectName: isString(value.projectName) ? value.projectName : '',
+  }
+  if (isString(value.summary)) result.summary = value.summary
+  if (Array.isArray(value.services) && value.services.every(isString)) {
+    result.services = value.services as string[]
+  }
+  return result
+}
+
 export function parseCommandPayload(
   type: CommandType,
   value: unknown,
-): PingCommandPayload | HostnameSetCommandPayload | RebootCommandPayload {
+):
+  | PingCommandPayload
+  | HostnameSetCommandPayload
+  | RebootCommandPayload
+  | EnvironmentDeployCommandPayload {
   switch (type) {
     case 'daemon.ping':
       return parsePingPayload(value)
@@ -139,13 +232,19 @@ export function parseCommandPayload(
       return parseHostnameSetPayload(value)
     case 'server.reboot':
       return parseRebootPayload(value)
+    case 'environment.deploy':
+      return parseEnvironmentDeployPayload(value)
   }
 }
 
 export function parseCommandResult(
   type: CommandType,
   value: unknown,
-): PingCommandResult | HostnameSetCommandResult | RebootCommandResult {
+):
+  | PingCommandResult
+  | HostnameSetCommandResult
+  | RebootCommandResult
+  | EnvironmentDeployCommandResult {
   switch (type) {
     case 'daemon.ping':
       return parsePingResult(value)
@@ -153,5 +252,7 @@ export function parseCommandResult(
       return parseHostnameSetResult(value)
     case 'server.reboot':
       return parseRebootResult(value)
+    case 'environment.deploy':
+      return parseEnvironmentDeployResult(value)
   }
 }

@@ -123,10 +123,10 @@ organization → server → variable (1:N, server-scoped; excluded from inherita
 | Entity | Parent FK | Notes |
 |---|---|---|
 | `workspace` | `organization_id` | Root of the resource tree |
-| `project` | `workspace_id` | Docker-compose equivalent; env-specific vars live on environments. **`metadata`**: `type` (`"managed"` \| `"template"` \| null), `managed_id`. **`options.compose`**: base Docker Compose JSON. |
-| `environment` | `project_id` | Staging/production/etc. within a project. **`metadata`**: environment-specific metadata (extensible JSONB). **`options.compose`**: per-environment Docker Compose overlay JSON merged onto the project base. |
-| `service` | `environment_id` | Deployable unit within an environment |
-| `hosting` | `service_id NOT NULL` | Org is always derived via the service chain |
+| `project` | `workspace_id` | Docker Compose / catalog project. **`metadata`**: `type` (`"docker-compose"` \| `"managed"` \| `"template"`), `managed_id` (managed only). **`options.compose`**: base **ComposeDocument** (versioned JSON with presentation for YAML comments/order) or legacy bare compose object — see `src/lib/compose/`. |
+| `environment` | `project_id` | Staging/production/etc. within a project. **`metadata`**: may include `serverId` after deploy. **`options.compose`**: per-environment ComposeDocument overlay merged onto the project base at deploy. |
+| `service` | `environment_id` | Deployable unit within an environment. **`metadata`**: e.g. `composeServiceName`. **`options`**: reserved (future per-service placement). |
+| `hosting` | `service_id NOT NULL` | Public routing for a service (Traefik + edge Caddy). **`options`**: `{ hostnames[], pathPrefix?, targetPort? }`. **`metadata`**: deploy status fields. Org derived via service chain. |
 | `network` | `server_id NOT NULL` | Linked to a server; org derived via server. Cascade delete. |
 | `managed` | `project_id NOT NULL` (unique) | Linking table; project is source of truth for timestamps; `ON DELETE CASCADE`. **`metadata`**: kebab-case catalog `code`, etc. |
 | `variable` | exactly one of `organization_id`, `workspace_id`, `project_id`, `environment_id`, `service_id`, `server_id` (all nullable FKs; CHECK enforces one parent) | Config vars/secrets at any resource scope; `is_secret` flag; secret `value` is a sealed envelope; partial unique indexes on `(key, <parent_fk>)` per scope; `ON DELETE CASCADE`. Key must match `^[A-Za-z_][A-Za-z0-9_]*$`. **Inheritance order** (runtime resolution, excludes server-scoped): `service` → `environment` → `project` → `workspace` → `organization` (lower scope wins). **Server-scoped** variables are fetched separately and do not participate in the inheritance chain. |
@@ -178,7 +178,8 @@ List and get enforce visibility via `listVisible` / org-level grant checks in SQ
 | `DELETE` | `/api/client/v1/variables/{id}` | org owner/manager |
 | `GET` | `/api/client/v1/projects` | org owner/manager (optional `?workspaceId=`); returns `metadata` and `options` |
 | `GET` | `/api/client/v1/projects/{id}` | org owner/manager; returns `metadata` and `options` |
-| `POST` | `/api/client/v1/projects` | org owner/manager on parent workspace; optional `type` (`blank` \| `template` \| `managed`, default blank) and `code` (required for template/managed — from code-bundled catalog); managed creation writes a `managed` row, sets `project.metadata.managed_id`, scaffolds environments/variables, and seals default secret variables via `encryptSecret` |
+| `POST` | `/api/client/v1/projects` | org owner/manager on parent workspace; optional `type` (`docker-compose` \| `template` \| `managed`, default `docker-compose`) and `code` (required for template/managed — from code-bundled catalog); docker-compose seeds empty ComposeDocument + a `production` environment; managed creation writes a `managed` row, sets `project.metadata.managed_id`, scaffolds environments/variables, and seals default secret variables via `encryptSecret` |
+| `POST` | `/api/client/v1/environments/{id}/deploy` | org manager; body `{ serverId }`; merges project+env compose to runtime YAML, creates `environment.deploy` command, persists `environment.metadata.serverId`; poll status via `GET /servers/:serverId/commands/:commandId` (Postgres only — no DO reads) |
 | `GET` | `/api/client/v1/project-catalog` | org owner/manager (session required); UI-safe catalog summaries (`code`, `kind`, `displayName`, `description`) — no compose or secret defaults |
 | `PATCH` | `/api/client/v1/projects/{id}` | org owner/manager; returns `metadata` (read-only via PATCH) and accepts patchable `options` (e.g. `options.compose`) |
 | `DELETE` | `/api/client/v1/projects/{id}` | org owner/manager |

@@ -1,4 +1,4 @@
-export const CREATE_PROJECT_TYPES = ['blank', 'template', 'managed'] as const
+export const CREATE_PROJECT_TYPES = ['docker-compose', 'template', 'managed'] as const
 export type CreateProjectType = (typeof CREATE_PROJECT_TYPES)[number]
 
 export type CatalogVariable = {
