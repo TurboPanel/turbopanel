@@ -10,7 +10,23 @@ export function buildLicenseSchemas(installCommandDescription: string) {
         revocable: {
           type: 'boolean',
           description:
-            'When false, this license is for the co-located control plane daemon and cannot be revoked.',
+            'When false, this license is for the co-located control plane daemon and cannot be invalidated.',
+        },
+        boundServer: {
+          oneOf: [
+            {
+              type: 'object',
+              required: ['id', 'displayName', 'connected'],
+              properties: {
+                id: { type: 'string', format: 'uuid' },
+                displayName: { type: ['string', 'null'] },
+                connected: { type: 'boolean' },
+              },
+            },
+            { type: 'null' },
+          ],
+          description:
+            'Bound server when exactly one server in the org references this license.',
         },
       },
     },
@@ -50,7 +66,7 @@ export function buildLicenseSchemas(installCommandDescription: string) {
         },
       },
     },
-    RevokeOkResponse: {
+    InvalidateOkResponse: {
       type: 'object',
       required: ['ok'],
       properties: {
@@ -165,7 +181,9 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
     '/api/client/v1/licenses/{id}': {
       delete: {
         tags: ['Licenses'],
-        summary: 'Revoke a license',
+        summary: 'Invalidate a license',
+        description:
+          'Soft-invalidates the license (sets revoked_at) and revokes daemon keys on bound servers so they cannot reconnect.',
         security: [{ cookieAuth: [] }],
         parameters: [
           {
@@ -177,10 +195,10 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
         ],
         responses: {
           '200': {
-            description: 'License revoked',
+            description: 'License invalidated',
             content: {
               'application/json': {
-                schema: { $ref: '#/components/schemas/RevokeOkResponse' },
+                schema: { $ref: '#/components/schemas/InvalidateOkResponse' },
               },
             },
           },
@@ -197,7 +215,7 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
             },
           },
           '403': {
-            description: 'Co-located control plane license cannot be revoked',
+            description: 'Co-located control plane license cannot be invalidated',
             content: {
               'application/json': {
                 schema: {
@@ -209,7 +227,7 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
             },
           },
           '404': {
-            description: 'License not found or already revoked',
+            description: 'License not found or already invalidated',
             content: {
               'application/json': {
                 schema: {

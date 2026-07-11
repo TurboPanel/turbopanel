@@ -31,10 +31,17 @@ import {
   resolveServerOsLogoKey,
 } from '../../lib/db/server-metadata.ts'
 import { resolveTrunkManifest } from '../../lib/update/manifest.ts'
+import { revokeLicense } from '../authn/license.ts'
+import { compatLogWarn } from '../../log-compat.ts'
 import {
   hierarchyDeleteHasChildrenResponse,
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
+import {
+  colocatedServerDeleteBlockedReason,
+  listServerDeleteBlockers,
+  serverDeleteBlockersResponse,
+} from './delete-guards.ts'
 import {
   resolveColocatedServerIdSet,
 } from './colocated.ts'
@@ -556,7 +563,7 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
     const organizationId = orgResult
 
     const [row] = await db
-      .select({ id: server.id })
+      .select({ id: server.id, licenseId: server.licenseId })
       .from(server)
       .where(and(eq(server.id, id), eq(server.organizationId, organizationId)))
       .limit(1)
@@ -572,6 +579,18 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Daemon cell registry unavailable' }, 503)
     }
 
+    const colocatedIds = await resolveColocatedServerIdSet(db, registry, [id])
+    if (colocatedIds.has(id)) {
+      return c.json({ error: colocatedServerDeleteBlockedReason() }, 403)
+    }
+
+    const blockers = await listServerDeleteBlockers(db, id, organizationId)
+    if (blockers.length > 0) {
+      return serverDeleteBlockersResponse(c, blockers)
+    }
+
+    const licenseId = row.licenseId
+
     const result = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(server).where(eq(server.id, id))
     })
@@ -581,16 +600,31 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
 
     await clearServerDaemonState(db, id)
 
+    let purgeError: string | null = null
     try {
       await registry.getCell(id).purge()
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       console.error(`Failed to purge daemon cell for server ${id}: ${message}`)
+      purgeError = message
+    }
+
+    if (opts.runtime === 'deno' && licenseId) {
+      const invalidated = await revokeLicense(db, licenseId, organizationId)
+      if (!invalidated) {
+        compatLogWarn(
+          'servers',
+          `server ${id} deleted but license ${licenseId} was not invalidated (missing, wrong org, or already revoked)`,
+        )
+      }
+    }
+
+    if (purgeError) {
       return c.json({
         ok: false,
         serverId: id,
         deleted: true,
-        error: `Server deleted but daemon cell purge failed: ${message}`,
+        error: `Server deleted but daemon cell purge failed: ${purgeError}`,
       }, 500)
     }
 

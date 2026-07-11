@@ -210,6 +210,28 @@ export const serverSchemas = {
       },
     },
   },
+  ServerDeleteBlockersConflict: {
+    type: 'object',
+    required: ['error', 'code', 'blockers'],
+    properties: {
+      error: {
+        type: 'string',
+        const: 'Cannot delete this server while dependent resources still exist',
+      },
+      code: { type: 'string', const: 'server_has_blockers' },
+      blockers: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['kind', 'count'],
+          properties: {
+            kind: { type: 'string', enum: ['network'] },
+            count: { type: 'integer', minimum: 1 },
+          },
+        },
+      },
+    },
+  },
 }
 
 export const serverPaths: Record<string, unknown> = {
@@ -598,10 +620,15 @@ export const serverPaths: Record<string, unknown> = {
           },
         },
         '409': {
-          description: 'Child resources block deletion',
+          description: 'Dependent resources block deletion',
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/HierarchyDeleteConflict' },
+              schema: {
+                oneOf: [
+                  { $ref: '#/components/schemas/ServerDeleteBlockersConflict' },
+                  { $ref: '#/components/schemas/HierarchyDeleteConflict' },
+                ],
+              },
             },
           },
         },

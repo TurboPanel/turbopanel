@@ -1,4 +1,4 @@
-import { assertEquals, assertThrows } from 'jsr:@std/assert'
+import { assertEquals, assertExists, assertThrows } from 'jsr:@std/assert'
 import { stub } from 'jsr:@std/testing@1/mock'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -14,13 +14,21 @@ import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
 import {
   grant,
+  license,
   member,
+  network,
   organization,
   server,
   user,
 } from '../../lib/db/schema.ts'
 import * as hierarchyDelete from '../hierarchy-delete.ts'
-import { ORG_ID_HEADER } from '../org-context.ts'
+import * as colocated from './colocated.ts'
+import {
+  colocatedServerDeleteBlockedReason,
+  SERVER_HAS_BLOCKERS_CODE,
+  SERVER_HAS_BLOCKERS_ERROR,
+} from './delete-guards.ts'
+import { createLicense } from '../authn/license.ts'
 import { buildServerDaemonState } from '../../daemon/authn/daemon-state.ts'
 import { attachDaemonStateToServer } from '../../daemon/authn/server-identity-db.ts'
 import { registerServerRoutes } from './routes.ts'
@@ -490,6 +498,124 @@ Deno.test('DELETE /servers/:id returns 404 for a missing server', async () => {
   })
 })
 
+Deno.test('DELETE /servers/:id returns 403 for the co-located control plane server', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+    registry,
+  }) => {
+    const colocatedStub = stub(
+      colocated,
+      'resolveColocatedServerIdSet',
+      () => Promise.resolve(new Set([serverId])),
+    )
+
+    try {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}`, {
+        method: 'DELETE',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+        },
+      })
+
+      assertEquals(res.status, 403)
+      const body = await res.json()
+      assertEquals(body.error, colocatedServerDeleteBlockedReason())
+      assertEquals(registry.purgedIds.length, 0)
+    } finally {
+      colocatedStub.restore()
+    }
+  })
+})
+
+Deno.test('DELETE /servers/:id returns 409 when networks block deletion', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+    registry,
+  }) => {
+    const now = new Date().toISOString()
+    const [insertedNetwork] = await db
+      .insert(network)
+      .values({
+        createdAt: now,
+        updatedAt: now,
+        serverId,
+      })
+      .returning({ id: network.id })
+
+    try {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}`, {
+        method: 'DELETE',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+        },
+      })
+
+      assertEquals(res.status, 409)
+      const body = await res.json()
+      assertEquals(body.error, SERVER_HAS_BLOCKERS_ERROR)
+      assertEquals(body.code, SERVER_HAS_BLOCKERS_CODE)
+      assertEquals(body.blockers, [{ kind: 'network', count: 1 }])
+      assertEquals(registry.purgedIds.length, 0)
+    } finally {
+      if (insertedNetwork) {
+        await db.delete(network).where(eq(network.id, insertedNetwork.id))
+      }
+    }
+  })
+})
+
+Deno.test('DELETE /servers/:id invalidates the bound license on Deno', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+    registry,
+  }) => {
+    const { licenseId } = await createLicense(db, { organizationId })
+    await db
+      .update(server)
+      .set({ licenseId, updatedAt: new Date().toISOString() })
+      .where(eq(server.id, serverId))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/servers/${serverId}`, {
+      method: 'DELETE',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 200)
+
+    const [licenseRow] = await db
+      .select({ revokedAt: license.revokedAt })
+      .from(license)
+      .where(eq(license.id, licenseId))
+      .limit(1)
+    assertExists(licenseRow?.revokedAt)
+
+    await db.delete(license).where(eq(license.id, licenseId))
+  })
+})
+
 Deno.test('DELETE /servers/:id returns 409 when child resources block deletion', async () => {
   await withServerDeleteFixtures(async ({
     db,
@@ -645,11 +771,13 @@ Deno.test('DELETE /servers/:id returns 500 when purge fails after row delete', a
   })
 
   const now = new Date().toISOString()
+  const { licenseId } = await createLicense(db, { organizationId })
   await db.insert(server).values({
     id: serverId,
     createdAt: now,
     updatedAt: now,
     organizationId,
+    licenseId,
     displayName: 'Purge Fail',
   })
 
@@ -671,6 +799,13 @@ Deno.test('DELETE /servers/:id returns 500 when purge fails after row delete', a
     assertEquals(typeof body.error, 'string')
     assertEquals(body.error.includes('purge failed'), true)
 
+    const [licenseRow] = await db
+      .select({ revokedAt: license.revokedAt })
+      .from(license)
+      .where(eq(license.id, licenseId))
+      .limit(1)
+    assertExists(licenseRow?.revokedAt)
+
     const remaining = await db
       .select({ id: server.id })
       .from(server)
@@ -678,6 +813,7 @@ Deno.test('DELETE /servers/:id returns 500 when purge fails after row delete', a
     assertEquals(remaining.length, 0)
     assertEquals(registry.purgedIds.length, 0)
   } finally {
+    await db.delete(license).where(eq(license.id, licenseId))
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(grant).where(and(
       eq(grant.actorId, userId),

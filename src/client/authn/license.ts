@@ -1,6 +1,7 @@
-import { and, eq, isNull } from 'drizzle-orm'
+import { and, eq, inArray, isNull } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
-import { license } from '../../lib/db/schema.ts'
+import { revokeDaemonKey } from '../../daemon/authn/server-identity-db.ts'
+import { license, server } from '../../lib/db/schema.ts'
 import { generatePassword } from '../../generate-secret.ts'
 import { hashPassword, verifyPassword } from './password.ts'
 
@@ -73,6 +74,78 @@ export async function revokeLicense(
     .returning({ id: license.id })
 
   return updated.length > 0
+}
+
+export async function disconnectServersBoundToLicense(
+  db: Db,
+  licenseId: string,
+  organizationId: string,
+): Promise<void> {
+  const rows = await db
+    .select({ id: server.id })
+    .from(server)
+    .where(and(
+      eq(server.licenseId, licenseId),
+      eq(server.organizationId, organizationId),
+    ))
+
+  for (const row of rows) {
+    await revokeDaemonKey(db, row.id)
+  }
+}
+
+/** Soft-invalidates a license and revokes daemon keys on bound servers. */
+export async function invalidateLicense(
+  db: Db,
+  licenseId: string,
+  organizationId: string,
+): Promise<boolean> {
+  const revoked = await revokeLicense(db, licenseId, organizationId)
+  if (!revoked) return false
+  await disconnectServersBoundToLicense(db, licenseId, organizationId)
+  return true
+}
+
+export type LicenseBoundServer = {
+  id: string
+  displayName: string | null
+}
+
+export async function listServersBoundToLicenses(
+  db: Db,
+  organizationId: string,
+  licenseIds: string[],
+): Promise<Map<string, LicenseBoundServer>> {
+  const bound = new Map<string, LicenseBoundServer>()
+  if (licenseIds.length === 0) return bound
+
+  const rows = await db
+    .select({
+      licenseId: server.licenseId,
+      id: server.id,
+      displayName: server.displayName,
+    })
+    .from(server)
+    .where(and(
+      eq(server.organizationId, organizationId),
+      inArray(server.licenseId, licenseIds),
+    ))
+
+  const byLicense = new Map<string, LicenseBoundServer[]>()
+  for (const row of rows) {
+    if (!row.licenseId) continue
+    const list = byLicense.get(row.licenseId) ?? []
+    list.push({ id: row.id, displayName: row.displayName })
+    byLicense.set(row.licenseId, list)
+  }
+
+  for (const [licenseId, servers] of byLicense) {
+    if (servers.length === 1) {
+      bound.set(licenseId, servers[0]!)
+    }
+  }
+
+  return bound
 }
 
 export async function listLicenses(

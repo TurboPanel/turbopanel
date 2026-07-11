@@ -1,6 +1,8 @@
+import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { Context, Next } from "hono";
 import { isInstanceInstalled } from "../client/authn/install-state.ts";
+import { lookupActiveLicense } from "../client/authn/license.ts";
 import type { DerivedSecretsConfig, SecretsConfig } from "../client/authn/secrets.ts";
 import type { DaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
 import { buildJwksDocument } from "./authn/daemon-jwt-keyring.ts";
@@ -10,6 +12,7 @@ import {
   parseDaemonSecretEnvelope,
 } from "../client/authn/data-encryption.ts";
 import { getDb } from "../db.ts";
+import { server } from "../lib/db/schema.ts";
 import {
   createStatelessChallengeStore,
   DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
@@ -387,6 +390,18 @@ export function registerDaemonApiRoutes(
     }
     if (!isDaemonKeyActive(daemonState.key)) {
       return c.json({ ok: false, error: "Server key is inactive" }, 400);
+    }
+
+    const [licenseRow] = await db
+      .select({ licenseId: server.licenseId })
+      .from(server)
+      .where(eq(server.id, serverId))
+      .limit(1);
+    if (licenseRow?.licenseId) {
+      const activeLicense = await lookupActiveLicense(db, licenseRow.licenseId);
+      if (!activeLicense) {
+        return c.json({ ok: false, error: "License is inactive" }, 400);
+      }
     }
 
     if (!authStore) {

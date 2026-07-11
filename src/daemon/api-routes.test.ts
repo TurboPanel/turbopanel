@@ -9,7 +9,7 @@ import type { AppEnv } from "../app.ts";
 import { deriveSecretsConfig } from "../client/authn/secrets.ts";
 import { deriveDaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
 import { encryptSecretForDaemon } from "../client/authn/data-encryption.ts";
-import { createLicense } from "../client/authn/license.ts";
+import { createLicense, invalidateLicense, revokeLicense } from "../client/authn/license.ts";
 import { getDatabaseUrl } from "../db-url.ts";
 import { createDenoDb } from "../db.ts";
 import { organization, server } from "../lib/db/schema.ts";
@@ -1148,6 +1148,67 @@ Deno.test("POST /auth/session returns a 15-minute JWT", async () => {
         .limit(1);
       const daemonState = parseServerDaemonState(row?.daemon);
       assertExists(daemonState?.key.lastUsedAt);
+    },
+  );
+});
+
+Deno.test("invalidateLicense revokes daemon keys on bound servers", async () => {
+  await withEnrollFixture(async ({ db, organizationId, licenseId, serverId }) => {
+    const invalidated = await invalidateLicense(db, licenseId, organizationId);
+    assertEquals(invalidated, true);
+
+    const [row] = await db
+      .select({ daemon: server.daemon })
+      .from(server)
+      .where(eq(server.id, serverId))
+      .limit(1);
+    const daemonState = parseServerDaemonState(row?.daemon);
+    assertExists(daemonState?.key.revokedAt);
+  });
+});
+
+Deno.test("POST /auth/session rejects inactive license", async () => {
+  await withEnrollFixture(
+    async ({
+      db,
+      app,
+      organizationId,
+      licenseId,
+      serverId,
+      keyId,
+      key,
+      machineId,
+      hostname,
+    }) => {
+      await revokeLicense(db, licenseId, organizationId);
+
+      const challenge = await issueAuthChallenge(app, serverId, keyId);
+      const payload = buildAuthPayload({
+        challengeId: challenge.challengeId,
+        nonce: challenge.nonce,
+        serverId,
+        keyId,
+        machineId,
+        hostname,
+      });
+      const signature = await signPayload(key.privateKey, payload);
+      const response = await app.request("/api/daemon/v1/auth/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          serverId,
+          keyId,
+          challengeId: challenge.challengeId,
+          signature,
+          machineId,
+          hostname,
+          at: new Date().toISOString(),
+        }),
+      });
+
+      assertEquals(response.status, 400);
+      const body = await response.json() as { error: string };
+      assertEquals(body.error, "License is inactive");
     },
   );
 });

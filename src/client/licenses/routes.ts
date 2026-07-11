@@ -6,7 +6,9 @@ import {
   isProtectedColocatedLicenseId,
   resolveProtectedColocatedLicenseIds,
 } from '../authn/install-state.ts'
-import { createLicense, listLicenses, revokeLicense } from '../authn/license.ts'
+import { createLicense, invalidateLicense, listLicenses, listServersBoundToLicenses } from '../authn/license.ts'
+import { assertLicenseInvalidationAllowed } from '../authn/license-lifecycle.ts'
+import { loadServerStatusRecords } from '../servers/update-status.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403 } from '../authz/index.ts'
 import { compatLogInfo } from '../../log-compat.ts'
@@ -93,14 +95,34 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
       registry,
       organizationId,
     )
+    const licenseIds = licenses.map((entry) => entry.id)
+    const boundServers = await listServersBoundToLicenses(db, organizationId, licenseIds)
+    const boundServerIds = [...boundServers.values()].map((entry) => entry.id)
+    const statusRecords = boundServerIds.length > 0 && registry
+      ? await loadServerStatusRecords(db, registry, boundServerIds)
+      : []
+    const statusByServerId = new Map(
+      statusRecords.map((record) => [record.serverId, record]),
+    )
 
     return c.json({
-      licenses: licenses.map(({ id, displayName, createdAt }) => ({
-        id,
-        displayName,
-        createdAt,
-        revocable: !protectedIds.has(id),
-      })),
+      licenses: licenses.map(({ id, displayName, createdAt }) => {
+        const bound = boundServers.get(id)
+        const status = bound ? statusByServerId.get(bound.id) : undefined
+        return {
+          id,
+          displayName,
+          createdAt,
+          revocable: !protectedIds.has(id),
+          boundServer: bound
+            ? {
+              id: bound.id,
+              displayName: bound.displayName,
+              connected: status?.connected ?? false,
+            }
+            : null,
+        }
+      }),
     })
   })
 
@@ -178,8 +200,11 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: colocatedLicenseRevokeError() }, 403)
     }
 
-    const revoked = await revokeLicense(db, id, organizationId)
-    if (!revoked) {
+    const billingDenied = await assertLicenseInvalidationAllowed(opts.runtime, id)
+    if (billingDenied) return billingDenied
+
+    const invalidated = await invalidateLicense(db, id, organizationId)
+    if (!invalidated) {
       return c.json({ error: 'Not found' }, 404)
     }
 

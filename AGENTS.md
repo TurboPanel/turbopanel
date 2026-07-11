@@ -355,7 +355,9 @@ The DO caches `#serverId` (and live-socket presence) once in the constructor via
 
 **Enqueue-then-poll request contract:** correlated outbound work (dev-sync, tunnel-token, public-urls apply, command dispatch) uses `createRequestAndWait` / `waitForRequest` on `DaemonCell`. The backend **enqueues once and returns immediately** — it must not block inside the DO or Redis cell. The **caller-side adapter** polls `getRequest(requestId)` until the `PendingRequestRecord` reaches a terminal status or the deadline (`do-registry.ts` jittered sleep on Workers; `redis/cell.ts` `setTimeout` poll in the Deno process — cost-safe there because there is no DO billing). On Workers, `#waitForRequest` inside `do.ts` is intentionally single-shot (current row only); long waits happen in the worker isolate so the DO hibernates between RPCs. Command consumer (`src/lib/commands/consumer.ts`) follows the same pattern after outbox enqueue.
 
-**Purge:** `DELETE /api/client/v1/servers/:id` hard-deletes the Postgres row and calls `DaemonCell.purge()` to wipe all `tp:cell:{serverId}:*` keys (Redis) or DO SQLite state (Workers).
+**Purge:** `DELETE /api/client/v1/servers/:id` hard-deletes the Postgres row and calls `DaemonCell.purge()` to wipe all `tp:cell:{serverId}:*` keys (Redis) or DO SQLite state (Workers). Blocked for the co-located control-plane server (403). Preflight blockers today: `network` rows referencing the server (409 `server_has_blockers` via `src/client/servers/delete-guards.ts`); future service placement checks extend the same helper. **Self-hosted (Deno):** after the server row is deleted, invalidates that server's `license_id` when set (even if cell purge fails); co-located server delete remains blocked separately so the control-plane license is never removed this way. **Workers:** keeps the license active for reuse (billing hook reserved in `src/client/authn/license-lifecycle.ts`).
+
+**License invalidate (not delete):** `DELETE /api/client/v1/licenses/:id` sets `license.revoked_at`, revokes daemon keys on bound servers, and rejects `POST /api/daemon/v1/auth/session` when the server's `license_id` is inactive. Co-located control-plane license remains non-invalidateable. Server rows stay until separately deleted.
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
@@ -600,7 +602,7 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `DELETE` | `/api/client/v1/variables/:id` | Delete variable |
 | `GET` | `/api/client/v1/licenses` | List licenses (`organization:own`) |
 | `POST` | `/api/client/v1/licenses` | Create a license (`organization:own`) |
-| `DELETE` | `/api/client/v1/licenses/{id}` | Revoke a license (`organization:own`) |
+| `DELETE` | `/api/client/v1/licenses/{id}` | Invalidate a license (`organization:own`; soft `revoked_at`, disconnects bound servers) |
 
 **Install mode (Deno self-hosted):** `isInstanceInstalled()` is false on a fresh DB. The UI `/install` page first verifies host PAM (`POST /api/install/v1/bootstrap`, client-side gate only), then collects superadmin email/password. Org/team names are fixed defaults. `completeInstanceInstall` inserts exactly one `organization:own` grant on the org and one `team:own` grant on the default team for the superadmin user. After install, sign-in uses superadmin email/password only. The co-located daemon's `server.organization_id` is assigned to **Default Organization** on install (`assignColocatedDaemonToOrganization` in `install-state.ts`, resolving the server row from the live hub or by `metadata.machineId` / hostname) and again when the Unix-socket daemon sends `hello` if still unassigned.
 
