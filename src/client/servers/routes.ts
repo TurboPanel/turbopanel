@@ -1,5 +1,5 @@
 import { and, eq } from 'drizzle-orm'
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { can, listVisible } from '../authz/index.ts'
@@ -53,6 +53,7 @@ import {
 } from './update-status.ts'
 import { UPDATE_REQUEST_TTL_MS } from '../../lib/update/constants.ts'
 import { registerServerCommandRoutes } from './commands-routes.ts'
+import { registerServerMetricsRoutes } from './metrics-routes.ts'
 import { cachedServersListReadModel } from '../../query-cache/read-models/servers-list.ts'
 
 const UPDATE_CHANNEL = 'trunk'
@@ -161,6 +162,58 @@ async function repairProjectedUpdateIfStale(
   }
 
   return { status: 'idle' }
+}
+
+async function assertServerDeletable(
+  c: Context,
+  db: Db,
+  registry: DaemonCellRegistry,
+  serverId: string,
+  organizationId: string,
+): Promise<Response | null> {
+  const colocatedIds = await resolveColocatedServerIdSet(db, registry, [serverId])
+  if (colocatedIds.has(serverId)) {
+    return c.json({ error: colocatedServerDeleteBlockedReason() }, 403)
+  }
+
+  const blockers = await listServerDeleteBlockers(db, serverId, organizationId)
+  if (blockers.length > 0) {
+    return serverDeleteBlockersResponse(c, blockers)
+  }
+
+  return null
+}
+
+async function purgeServerDaemonCell(
+  registry: DaemonCellRegistry,
+  serverId: string,
+): Promise<string | null> {
+  try {
+    await registry.getCell(serverId).purge()
+    return null
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error(`Failed to purge daemon cell for server ${serverId}: ${message}`)
+    return message
+  }
+}
+
+async function revokeBoundLicenseOnDenoDelete(
+  opts: AuthRouteOpts,
+  db: Db,
+  serverId: string,
+  licenseId: string | null,
+  organizationId: string,
+): Promise<void> {
+  if (opts.runtime !== 'deno' || !licenseId) return
+
+  const invalidated = await revokeLicense(db, licenseId, organizationId)
+  if (!invalidated) {
+    compatLogWarn(
+      'servers',
+      `server ${serverId} deleted but license ${licenseId} was not invalidated (missing, wrong org, or already revoked)`,
+    )
+  }
 }
 
 export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
@@ -579,17 +632,8 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Daemon cell registry unavailable' }, 503)
     }
 
-    const colocatedIds = await resolveColocatedServerIdSet(db, registry, [id])
-    if (colocatedIds.has(id)) {
-      return c.json({ error: colocatedServerDeleteBlockedReason() }, 403)
-    }
-
-    const blockers = await listServerDeleteBlockers(db, id, organizationId)
-    if (blockers.length > 0) {
-      return serverDeleteBlockersResponse(c, blockers)
-    }
-
-    const licenseId = row.licenseId
+    const blocked = await assertServerDeletable(c, db, registry, id, organizationId)
+    if (blocked) return blocked
 
     const result = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(server).where(eq(server.id, id))
@@ -600,24 +644,8 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
 
     await clearServerDaemonState(db, id)
 
-    let purgeError: string | null = null
-    try {
-      await registry.getCell(id).purge()
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      console.error(`Failed to purge daemon cell for server ${id}: ${message}`)
-      purgeError = message
-    }
-
-    if (opts.runtime === 'deno' && licenseId) {
-      const invalidated = await revokeLicense(db, licenseId, organizationId)
-      if (!invalidated) {
-        compatLogWarn(
-          'servers',
-          `server ${id} deleted but license ${licenseId} was not invalidated (missing, wrong org, or already revoked)`,
-        )
-      }
-    }
+    const purgeError = await purgeServerDaemonCell(registry, id)
+    await revokeBoundLicenseOnDenoDelete(opts, db, id, row.licenseId, organizationId)
 
     if (purgeError) {
       return c.json({
@@ -632,4 +660,5 @@ export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
   })
 
   registerServerCommandRoutes(router, opts)
+  registerServerMetricsRoutes(router, opts)
 }

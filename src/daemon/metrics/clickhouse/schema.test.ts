@@ -1,0 +1,64 @@
+import { assertEquals, assertThrows } from "jsr:@std/assert";
+import { it } from "@std/testing/bdd";
+import { AE_DATASET_NAME } from "../analytics-engine/field-map.ts";
+import {
+  buildSchemaStatements,
+  DEFAULT_RAW_RETENTION_DAYS,
+  HOST_METRICS_TABLE,
+  LEGACY_HOST_METRICS_MV_1D,
+  LEGACY_HOST_METRICS_MV_5M,
+  LEGACY_HOST_METRICS_RAW_TABLE,
+} from "./schema.ts";
+
+it("HOST_METRICS_TABLE matches the Analytics Engine dataset name", () => {
+  assertEquals(HOST_METRICS_TABLE, AE_DATASET_NAME);
+});
+
+it("buildSchemaStatements creates only the shared AE-named metrics table", () => {
+  const statements = buildSchemaStatements({
+    retentionDays: DEFAULT_RAW_RETENTION_DAYS,
+  });
+  assertEquals(statements.length, 1);
+  const ddl = statements[0]!;
+  assertEquals(
+    ddl.includes(`CREATE TABLE IF NOT EXISTS ${HOST_METRICS_TABLE}`),
+    true,
+  );
+  assertEquals(ddl.includes(LEGACY_HOST_METRICS_RAW_TABLE), false);
+  assertEquals(ddl.includes(LEGACY_HOST_METRICS_MV_5M), false);
+  assertEquals(ddl.includes(LEGACY_HOST_METRICS_MV_1D), false);
+});
+
+it("buildSchemaStatements embeds configured retentionDays in TTL", () => {
+  const statements = buildSchemaStatements({ retentionDays: 42 });
+  const ddl = statements[0]!;
+  assertEquals(ddl.includes("TTL timestamp + INTERVAL 42 DAY DELETE"), true);
+});
+
+it("buildSchemaStatements uses positional Float64 metric columns (AE parity)", () => {
+  const statements = buildSchemaStatements({
+    retentionDays: DEFAULT_RAW_RETENTION_DAYS,
+  });
+  const ddl = statements[0]!;
+  assertEquals(ddl.includes("double1 Float64"), true);
+  assertEquals(ddl.includes("double5 Float64"), true);
+  assertEquals(ddl.includes("double13 Float64"), true);
+  assertEquals(ddl.includes("double20 Float64"), true);
+  assertEquals(ddl.includes("Nullable"), false);
+  assertEquals(ddl.includes("index1 UUID"), true);
+  assertEquals(ddl.includes("timestamp DateTime64(3, 'UTC')"), true);
+  assertEquals(ddl.includes("blob1 LowCardinality(String)"), true);
+  assertEquals(ddl.includes("ORDER BY (index1, timestamp)"), true);
+  assertEquals(ddl.includes("server_id"), false);
+  assertEquals(ddl.includes("received_at"), false);
+  assertEquals(ddl.includes("interval_seconds"), false);
+  assertEquals(ddl.includes("cpu_usage_percent"), false);
+});
+
+it("buildSchemaStatements rejects non-positive retentionDays", () => {
+  assertThrows(
+    () => buildSchemaStatements({ retentionDays: 0 }),
+    TypeError,
+    "retentionDays",
+  );
+});

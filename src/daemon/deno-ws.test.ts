@@ -1,5 +1,6 @@
 import { assert, assertEquals } from "jsr:@std/assert";
 import { Hono } from "hono";
+import { it } from "@std/testing/bdd";
 import {
   deriveDaemonJwtKeyring,
 } from "./authn/daemon-jwt-keyring.ts";
@@ -31,6 +32,12 @@ import {
   resetTrunkManifestCacheForTests,
   seedTrunkManifestCacheForTests,
 } from "../lib/update/manifest.ts";
+import { METRICS_SCHEMA_VERSION } from "./metrics/contract.ts";
+import type {
+  AuthenticatedHostMetricsSample,
+  ServerMetricsStore,
+} from "./metrics/types.ts";
+import { MAX_METRICS_PAYLOAD_BYTES } from "./metrics/validation.ts";
 
 async function createDaemonJwtSecrets() {
   const parsed = parseSecretsEnv(generateSecret(), undefined, "deno");
@@ -249,7 +256,7 @@ const WS_UPGRADE_HEADERS = {
   "Sec-WebSocket-Key": "dGVzdC1rZXk=",
 } as const;
 
-Deno.test("WS upgrade accepts HTTP 101 with valid JWT", async () => {
+it("WS upgrade accepts HTTP 101 with valid JWT", async () => {
   const app = new Hono();
   const secrets = await createDaemonJwtSecrets();
   registerTestDaemonWebSocket(app, secrets, {
@@ -270,7 +277,7 @@ Deno.test("WS upgrade accepts HTTP 101 with valid JWT", async () => {
   assertEquals(response.status, 101);
 });
 
-Deno.test("WS upgrade rejects HTTP 401 when no JWT is provided", async () => {
+it("WS upgrade rejects HTTP 401 when no JWT is provided", async () => {
   const app = new Hono();
   const secrets = await createDaemonJwtSecrets();
   registerTestDaemonWebSocket(app, secrets, {
@@ -284,7 +291,7 @@ Deno.test("WS upgrade rejects HTTP 401 when no JWT is provided", async () => {
   assertEquals(response.status, 401);
 });
 
-Deno.test("WS upgrade rejects HTTP 401 when JWT is invalid", async () => {
+it("WS upgrade rejects HTTP 401 when JWT is invalid", async () => {
   const app = new Hono();
   const secrets = await createDaemonJwtSecrets();
   registerTestDaemonWebSocket(app, secrets, {
@@ -301,7 +308,7 @@ Deno.test("WS upgrade rejects HTTP 401 when JWT is invalid", async () => {
   assertEquals(response.status, 401);
 });
 
-Deno.test("over-limit inbound messages close websocket before unbounded queuing", async () => {
+it("over-limit inbound messages close websocket before unbounded queuing", async () => {
   const app = new Hono();
   const secrets = await createDaemonJwtSecrets();
   const tracking = createTrackingDaemonCell("srv-flood");
@@ -352,7 +359,7 @@ Deno.test("over-limit inbound messages close websocket before unbounded queuing"
   assertEquals(tracking.calls.recordInbound, inboundBefore);
 });
 
-Deno.test("plain GET with valid JWT returns 426 and does not call connectLimiter", async () => {
+it("plain GET with valid JWT returns 426 and does not call connectLimiter", async () => {
   const app = new Hono();
   const secrets = await createDaemonJwtSecrets();
   let limitCalls = 0;
@@ -385,7 +392,7 @@ Deno.test("plain GET with valid JWT returns 426 and does not call connectLimiter
   assertEquals(limitCalls, 0);
 });
 
-Deno.test("WS upgrade rejects HTTP 429 when connectLimiter denies", async () => {
+it("WS upgrade rejects HTTP 429 when connectLimiter denies", async () => {
   const app = new Hono();
   const secrets = await createDaemonJwtSecrets();
   registerDaemonWebSocket(app, {
@@ -414,7 +421,7 @@ Deno.test("WS upgrade rejects HTTP 429 when connectLimiter denies", async () => 
   assertEquals(await response.text(), "Too Many Requests");
 });
 
-Deno.test("WS lifecycle attaches, handles hello, and detaches through cell backend", async () => {
+it("WS lifecycle attaches, handles hello, and detaches through cell backend", async () => {
   const app = new Hono();
   const secrets = await createDaemonJwtSecrets();
   const serverId = "srv-lifecycle";
@@ -465,7 +472,7 @@ Deno.test("WS lifecycle attaches, handles hello, and detaches through cell backe
   assertEquals(tracking.getSnapshot().connected, false);
 });
 
-Deno.test("WS upgrade accepts HTTP 101 with valid JWT after daemon key is revoked", async () => {
+it("WS upgrade accepts HTTP 101 with valid JWT after daemon key is revoked", async () => {
   const app = new Hono();
   const secrets = await createDaemonJwtSecrets();
   registerTestDaemonWebSocket(app, secrets, {
@@ -486,7 +493,7 @@ Deno.test("WS upgrade accepts HTTP 101 with valid JWT after daemon key is revoke
   assertEquals(response.status, 101);
 });
 
-Deno.test("WS upgrade accepts HTTP 101 with valid JWT after daemon key is replaced", async () => {
+it("WS upgrade accepts HTTP 101 with valid JWT after daemon key is replaced", async () => {
   const app = new Hono();
   const secrets = await createDaemonJwtSecrets();
   registerTestDaemonWebSocket(app, secrets, {
@@ -555,7 +562,7 @@ function waitForWsJson(
   });
 }
 
-Deno.test("hello over WS calls cell.recordInbound", async () => {
+it("hello over WS calls cell.recordInbound", async () => {
   const secrets = await createDaemonJwtSecrets();
   const opened = await openTestWebSocket("srv-hello", secrets);
   if (!opened) {
@@ -577,7 +584,7 @@ Deno.test("hello over WS calls cell.recordInbound", async () => {
   ws.close(1000, "done");
 });
 
-Deno.test("cell ping over WS sends pong, refreshes cell liveness, skips Postgres", async () => {
+it("cell ping over WS sends pong, refreshes cell liveness, skips Postgres", async () => {
   const secrets = await createDaemonJwtSecrets();
   const serverId = "srv-cell-ping";
   const recentAt = new Date().toISOString();
@@ -642,7 +649,7 @@ Deno.test("cell ping over WS sends pong, refreshes cell liveness, skips Postgres
   ws.close(1000, "done");
 });
 
-Deno.test("hello over WS with agent projects commit for update status", async () => {
+it("hello over WS with agent projects commit for update status", async () => {
   const secrets = await createDaemonJwtSecrets();
   const serverId = "srv-heartbeat-agent-ws";
   const { db, getDaemon } = createProjectionTrackingDb(serverId, {
@@ -699,7 +706,7 @@ Deno.test("hello over WS with agent projects commit for update status", async ()
   ws.close(1000, "done");
 });
 
-Deno.test("heartbeat over WS without agent advances status.lastSeenAt in Postgres", async () => {
+it("heartbeat over WS without agent advances status.lastSeenAt in Postgres", async () => {
   const secrets = await createDaemonJwtSecrets();
   const serverId = "srv-heartbeat-no-agent-ws";
   const stale = new Date(Date.now() - 61_000).toISOString();
@@ -754,7 +761,7 @@ Deno.test("heartbeat over WS without agent advances status.lastSeenAt in Postgre
   ws.close(1000, "done");
 });
 
-Deno.test("coalesced heartbeat over WS performs no Postgres update", async () => {
+it("coalesced heartbeat over WS performs no Postgres update", async () => {
   const secrets = await createDaemonJwtSecrets();
   const serverId = "srv-heartbeat-coalesce-ws";
   const recentAt = new Date().toISOString();
@@ -816,7 +823,7 @@ Deno.test("coalesced heartbeat over WS performs no Postgres update", async () =>
   ws.close(1000, "done");
 });
 
-Deno.test("WS close projects disconnected to Postgres", async () => {
+it("WS close projects disconnected to Postgres", async () => {
   const secrets = await createDaemonJwtSecrets();
   const serverId = "srv-disconnect-projection";
   const { db, getStatus } = createProjectionTrackingDb(serverId, {
@@ -863,7 +870,7 @@ Deno.test("WS close projects disconnected to Postgres", async () => {
   assertEquals(getStatus().connected, false);
 });
 
-Deno.test("update-result over WS projects update summary to Postgres", async () => {
+it("update-result over WS projects update summary to Postgres", async () => {
   const secrets = await createDaemonJwtSecrets();
   const serverId = "srv-update-result-ws";
   const { db, getDaemon } = createProjectionTrackingDb(serverId, {
@@ -936,7 +943,7 @@ Deno.test("update-result over WS projects update summary to Postgres", async () 
   ws.close(1000, "done");
 });
 
-Deno.test("hello over WS clears stale updating when agent matches trunk", async () => {
+it("hello over WS clears stale updating when agent matches trunk", async () => {
   resetTrunkManifestCacheForTests();
   seedTrunkManifestCacheForTests({
     commit: "target-commit",
@@ -1025,5 +1032,230 @@ Deno.test("hello over WS clears stale updating when agent matches trunk", async 
   assertEquals(update?.status, "done");
   assertEquals(update?.requestId, "req-update-1");
   resetTrunkManifestCacheForTests();
+  ws.close(1000, "done");
+});
+
+function nullMetricsMetrics(): AuthenticatedHostMetricsSample["metrics"] {
+  return {
+    cpuUsagePercent: null,
+    cpuUserPercent: null,
+    cpuSystemPercent: null,
+    cpuIowaitPercent: null,
+    load1: null,
+    load5: null,
+    load15: null,
+    memoryUsedPercent: null,
+    memoryUsedBytes: null,
+    memoryAvailableBytes: null,
+    swapUsedPercent: null,
+    diskUsedPercent: null,
+    diskReadBytesPerSecond: null,
+    diskWriteBytesPerSecond: null,
+    diskReadOpsPerSecond: null,
+    diskWriteOpsPerSecond: null,
+    networkReceiveBytesPerSecond: null,
+    networkTransmitBytesPerSecond: null,
+    processCount: null,
+    uptimeSeconds: null,
+  };
+}
+
+function createFakeMetricsStore(): {
+  store: ServerMetricsStore;
+  writes: AuthenticatedHostMetricsSample[];
+} {
+  const writes: AuthenticatedHostMetricsSample[] = [];
+  const store: ServerMetricsStore = {
+    writeHostSample(sample) {
+      writes.push(sample);
+    },
+    queryHostSeries: async (input) => ({
+      kind: "disabled",
+      available: false,
+      serverId: input.serverId,
+      metrics: input.metrics,
+      points: [],
+      resolutionSeconds: null,
+      gapCount: 0,
+      sampleCount: 0,
+    }),
+    queryHostSummary: async (input) => ({
+      kind: "disabled",
+      available: false,
+      serverId: input.serverId,
+      sampleCount: 0,
+      latestAt: null,
+    }),
+  };
+  return { store, writes };
+}
+
+function validMetricsWire(overrides: Record<string, unknown> = {}) {
+  return {
+    type: "metrics",
+    version: METRICS_SCHEMA_VERSION,
+    at: new Date().toISOString(),
+    intervalSeconds: 60,
+    sequence: 1,
+    metrics: { ...nullMetricsMetrics(), cpuUsagePercent: 11 },
+    dimensions: {
+      schemaVersion: METRICS_SCHEMA_VERSION,
+      daemonVersion: "1.0.0",
+      operatingSystem: "linux",
+      architecture: "arm64",
+      kernelRelease: "6.12.0",
+    },
+    ...overrides,
+  };
+}
+
+it("metrics frame writes once with authenticated serverId", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-metrics-auth";
+  const tracking = createTrackingDaemonCell(serverId);
+  const fake = createFakeMetricsStore();
+  const { db, getUpdateCallCount } = createProjectionTrackingDb(serverId, {
+    key: baseDaemonKey,
+    projection: { hostname: "host-1" },
+  }, {
+    connected: true,
+    daemonStatus: "online",
+    lastInboundAt: new Date().toISOString(),
+  });
+
+  const app = new Hono();
+  registerDaemonWebSocket(app, {
+    secrets,
+    db,
+    daemonCellRegistry: createTrackingRegistry(tracking.cell),
+    metricsStore: fake.store,
+  });
+
+  const issued = await issueDaemonJwt(
+    { sub: serverId, kid: "key-test" },
+    secrets,
+  );
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${issued.token}`,
+      ...WS_UPGRADE_HEADERS,
+    },
+  });
+  if (response.status !== 101 || !response.webSocket) {
+    console.warn("Skipping metrics WS test: response.webSocket unavailable");
+    return;
+  }
+
+  const ws = response.webSocket;
+  ws.accept();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const updatesBefore = getUpdateCallCount();
+  ws.send(JSON.stringify(validMetricsWire({
+    serverId: "client-spoofed-id",
+  })));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assertEquals(fake.writes.length, 1);
+  assertEquals(fake.writes[0]?.serverId, serverId);
+  assertEquals(tracking.calls.recordInbound, 0);
+  assertEquals(tracking.calls.handleInbound, 0);
+  assertEquals(getUpdateCallCount(), updatesBefore);
+  assertEquals(ws.readyState === WebSocket.OPEN || ws.readyState === 1, true);
+  ws.close(1000, "done");
+});
+
+it("malformed metrics keeps socket open and skips store write", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-metrics-bad";
+  const tracking = createTrackingDaemonCell(serverId);
+  const fake = createFakeMetricsStore();
+
+  const app = new Hono();
+  registerDaemonWebSocket(app, {
+    secrets,
+    db: createMockDb(),
+    daemonCellRegistry: createTrackingRegistry(tracking.cell),
+    metricsStore: fake.store,
+  });
+
+  const issued = await issueDaemonJwt(
+    { sub: serverId, kid: "key-test" },
+    secrets,
+  );
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${issued.token}`,
+      ...WS_UPGRADE_HEADERS,
+    },
+  });
+  if (response.status !== 101 || !response.webSocket) {
+    console.warn(
+      "Skipping malformed metrics WS test: response.webSocket unavailable",
+    );
+    return;
+  }
+
+  const ws = response.webSocket;
+  ws.accept();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  ws.send(JSON.stringify(validMetricsWire({ version: 99 })));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assertEquals(fake.writes.length, 0);
+  assertEquals(tracking.calls.recordInbound, 0);
+  assertEquals(tracking.calls.handleInbound, 0);
+  assertEquals(ws.readyState === WebSocket.OPEN || ws.readyState === 1, true);
+  ws.close(1000, "done");
+});
+
+it("oversized metrics keeps socket open and skips store write", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-metrics-oversized";
+  const tracking = createTrackingDaemonCell(serverId);
+  const fake = createFakeMetricsStore();
+
+  const app = new Hono();
+  registerDaemonWebSocket(app, {
+    secrets,
+    db: createMockDb(),
+    daemonCellRegistry: createTrackingRegistry(tracking.cell),
+    metricsStore: fake.store,
+  });
+
+  const issued = await issueDaemonJwt(
+    { sub: serverId, kid: "key-test" },
+    secrets,
+  );
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${issued.token}`,
+      ...WS_UPGRADE_HEADERS,
+    },
+  });
+  if (response.status !== 101 || !response.webSocket) {
+    console.warn(
+      "Skipping oversized metrics WS test: response.webSocket unavailable",
+    );
+    return;
+  }
+
+  const ws = response.webSocket;
+  ws.accept();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  ws.send(JSON.stringify(validMetricsWire({
+    padding: "x".repeat(MAX_METRICS_PAYLOAD_BYTES),
+  })));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assertEquals(fake.writes.length, 0);
+  assertEquals(tracking.calls.recordInbound, 0);
+  assertEquals(tracking.calls.handleInbound, 0);
+  assertEquals(ws.readyState === WebSocket.OPEN || ws.readyState === 1, true);
   ws.close(1000, "done");
 });

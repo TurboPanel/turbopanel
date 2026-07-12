@@ -34,11 +34,11 @@ export const COLOCATED_SERVER_DISPLAY_NAME = 'this server'
 export const IS_SIGNUP_ENABLED_CONFIG_KEY = 'IS_SIGNUP_ENABLED'
 
 /** Wrangler / platform env bindings may arrive as strings, numbers, or booleans. */
-export type SignupEnvOverride = string | number | boolean | null | undefined
+export type SignupEnvOverride = string | number | boolean | null
 
 /** Normalize signup env bindings to a trimmed string flag, or `undefined` when unset. */
 export function normalizeSignupEnvOverride(
-  value: SignupEnvOverride,
+  value: SignupEnvOverride | undefined,
 ): string | undefined {
   if (value === undefined || value === null) return undefined
   if (typeof value === 'boolean') return value ? '1' : '0'
@@ -60,7 +60,7 @@ export function normalizeSignupEnvOverride(
  */
 export function resolveIsSignupEnabled(
   dbValue: string | null | undefined,
-  envOverride: SignupEnvOverride,
+  envOverride?: SignupEnvOverride,
   options?: { runtime?: 'deno' | 'workers' },
 ): boolean {
   const normalizedEnv = normalizeSignupEnvOverride(envOverride)
@@ -197,8 +197,12 @@ export async function isSignupEnabled(
       .limit(1)
 
     const raw = rows[0]?.value
-    const dbValue =
-      typeof raw === 'string' ? raw : raw != null ? String(raw) : null
+    let dbValue: string | null = null
+    if (typeof raw === 'string') {
+      dbValue = raw
+    } else if (raw != null) {
+      dbValue = String(raw)
+    }
     return resolveIsSignupEnabled(dbValue, envOverride, { runtime })
   } catch (err) {
     if (isMissingRelationError(err)) {
@@ -374,62 +378,83 @@ export async function resolveColocatedServerId(
   db: Db,
   registry?: DaemonCellRegistry,
 ): Promise<string | null> {
-  if (registry) {
-    const fromRegistry = await findColocatedServerIdFromRegistry(db, registry)
-    if (fromRegistry) {
-      const rows = await db
-        .select({ id: server.id })
-        .from(server)
-        .where(eq(server.id, fromRegistry))
-        .limit(1)
-      if (rows[0]?.id) return rows[0].id
-    }
-  }
+  return (
+    (await resolveColocatedServerIdFromRegistry(db, registry)) ??
+    (await resolveColocatedServerIdByMachineId(db)) ??
+    (await resolveColocatedServerIdByHostname(db)) ??
+    (await resolveColocatedServerIdFromSingleUnassigned(db))
+  )
+}
 
+async function resolveColocatedServerIdFromRegistry(
+  db: Db,
+  registry?: DaemonCellRegistry,
+): Promise<string | null> {
+  if (!registry) return null
+  const fromRegistry = await findColocatedServerIdFromRegistry(db, registry)
+  if (!fromRegistry) return null
+  const rows = await db
+    .select({ id: server.id })
+    .from(server)
+    .where(eq(server.id, fromRegistry))
+    .limit(1)
+  return rows[0]?.id ?? null
+}
+
+async function resolveColocatedServerIdByMachineId(
+  db: Db,
+): Promise<string | null> {
   const machineId = await readLocalMachineId()
-  if (machineId) {
-    const byMachine = await db
-      .select({ id: server.id })
-      .from(server)
-      .where(and(
-        isNull(server.organizationId),
-        sql`${server.metadata}->>'machineId' = ${machineId}`,
-      ))
-      .limit(1)
-    if (byMachine[0]?.id) return byMachine[0].id
-  }
+  if (!machineId) return null
+  const byMachine = await db
+    .select({ id: server.id })
+    .from(server)
+    .where(and(
+      isNull(server.organizationId),
+      sql`${server.metadata}->>'machineId' = ${machineId}`,
+    ))
+    .limit(1)
+  return byMachine[0]?.id ?? null
+}
 
-  let hostname: string | null = null
-  if (typeof Deno !== 'undefined') {
-    try {
-      hostname = Deno.hostname()
-    } catch {
-      // hostname unavailable without --allow-sys=hostname
-    }
+function readLocalHostname(): string | null {
+  if (typeof Deno === 'undefined') return null
+  try {
+    return Deno.hostname()
+  } catch {
+    // hostname unavailable without --allow-sys=hostname
+    return null
   }
-  if (hostname) {
-    const byHostname = await db
-      .select({ id: server.id })
-      .from(server)
-      .where(and(
-        isNull(server.organizationId),
-        sql`${server.metadata}->>'hostname' = ${hostname}`,
-      ))
-      .limit(1)
-    if (byHostname[0]?.id) return byHostname[0].id
-  }
+}
 
+async function resolveColocatedServerIdByHostname(
+  db: Db,
+): Promise<string | null> {
+  const hostname = readLocalHostname()
+  if (!hostname) return null
+  const byHostname = await db
+    .select({ id: server.id })
+    .from(server)
+    .where(and(
+      isNull(server.organizationId),
+      sql`${server.metadata}->>'hostname' = ${hostname}`,
+    ))
+    .limit(1)
+  return byHostname[0]?.id ?? null
+}
+
+async function resolveColocatedServerIdFromSingleUnassigned(
+  db: Db,
+): Promise<string | null> {
   // Self-hosted Deno co-located dev: a single unassigned row is this host.
-  if (typeof Deno !== 'undefined') {
-    const unassigned = await db
-      .select({ id: server.id })
-      .from(server)
-      .where(isNull(server.organizationId))
-    if (unassigned.length === 1 && unassigned[0]?.id) {
-      return unassigned[0].id
-    }
+  if (typeof Deno === 'undefined') return null
+  const unassigned = await db
+    .select({ id: server.id })
+    .from(server)
+    .where(isNull(server.organizationId))
+  if (unassigned.length === 1 && unassigned[0]?.id) {
+    return unassigned[0].id
   }
-
   return null
 }
 
@@ -730,7 +755,6 @@ export async function completeInstanceInstall(
   const trimmedTeamName = DEFAULT_TEAM_NAME
   const trimmedEmail = input.superadminEmail.trim().toLowerCase()
   const hashedPassword = await hashPassword(input.superadminPassword)
-  const now = nowTs()
 
   const existingUser = await db
     .select({ id: user.id })

@@ -277,9 +277,12 @@ TurboPanel daemon cells use SQLite-backed Durable Objects — do not add legacy 
 - Treat `setAlarm()` as a row write (only call when the target changes).
 - Document every new storage key/table/column; any new storage op must state its billing impact.
 - Any WS code must preserve hibernation eligibility unless documented.
+- **Every DO DB op must be time-bounded.** Wrap Hyperdrive/postgres.js work in `runWithDbTimeout` (`src/db.ts`, hard `DB_OP_TIMEOUT_MS` = 8 s client-side deadline) and always close the pool in `finally`. Never `await` an unbounded DB round-trip inside the DO or hand one to `ctx.waitUntil` — a stalled connect/query holds the object non-hibernatable and bills wall time for the **entire WebSocket lifetime** (root cause of a 71-min / ~547 GB-s single-socket incident: `#projectConnected` → `#withProjectionDb` hung with 0 CPU). The `do.ts` source-scan guard (`ws-handlers.test.ts`) asserts `runWithDbTimeout` + `endDbConnection` stay present. `createWorkersDb` also sets `connect_timeout` + `statement_timeout` as defence-in-depth; the DO projection factory passes the tightest values.
 - JWKS must never expose raw platform secrets; daemon-verifiable JWTs use public verification material (asymmetric).
 
 > **Parity:** Cloudflare Workers (Durable Object) mode and self-hosted Deno/Redis mode must keep behavioral parity. DO and Redis are implementation details only — the user-facing API and status semantics are the same on both runtimes.
+
+**WebSocket watchdog (Workers cost cap):** the DO cannot self-terminate a socket that stays awake via some unforeseen path, so the once-a-minute offline-sweep cron's read-only `checkLiveness` (`/rpc/liveness`) also force-closes unhealthy daemon sockets before reporting presence — `#reapUnhealthySockets` + the pure policy in `src/daemon/cell/socket-health.ts` (`evaluateSocketHealth`). Two triggers: **half-open** (auto-response/cell-ping older than `HALF_OPEN_CLOSE_MS` = 150 s, safely above the 60 s ping cadence) and an absolute **max age** (`MAX_WS_CONNECTION_AGE_MS` = 2 h) as a catastrophic backstop. Attach stores `connectedAtMs` in the serialized attachment for the age check. Closing is in-memory only (no SQLite, hibernation-safe); the normal `webSocketClose` path then runs lease cleanup + Postgres demotion, and the daemon reconnects (full-jitter backoff + connect rate limit). This adds **no** per-DO periodic alarm — it reuses the existing cron so there is no recurring row-write cost. Greppable: `daemon-cell event=watchdog-close serverId=… reason=half_open|max_age`.
 
 **Daemon rate limiting (Workers + Deno):** two Wrangler `ratelimits` bindings gate reconnect storms and expensive daemon REST before the cell does work. Counters are account-global for a shared `namespace_id`, so each env uses distinct ids:
 
@@ -313,11 +316,105 @@ Postgres remains canonical for business data (`server`). The cell is the low-lat
 
 **Host OS (`server.metadata.os`):** daemons send an `os` block on WS `hello` (from `/etc/os-release`, plus point-release / Raspberry Pi detection). Deno WS and the Workers DO hello path call `touchServerMetadata` to merge it into `server.metadata.os` (idempotent). `resolveFleetPresence` surfaces `os` on the primary-DB enrichment path (not in the cached `servers-list` rows). `GET /api/client/v1/servers` returns `os`, `osDisplay` from `formatServerOsDisplay()` (e.g. `"Debian 13.5 (Trixie)"` / `"Raspberry Pi OS 12.11 (Bookworm)"`), and `osLogo` (`debian` | `raspberry-pi-os` | null) from `resolveServerOsLogoKey()`.
 
+#### Server metrics (Workers Analytics Engine)
+
+Host metrics from daemon WS `{ type: "metrics" }` frames are validated in the DO (`validateHostMetricsSample`) then written fire-and-forget via `ServerMetricsStore.writeHostSample` — **no** SQLite, **no** `setAlarm`, **no** await/retry. Metrics is **disposable / statistical / may be sampled** — queries must account for `_sample_interval`. Wiring: `SERVER_METRICS` binding → `AnalyticsEngineServerMetricsStore` (`src/daemon/metrics/analytics-engine/`). Deno uses ClickHouse (`ClickHouseServerMetricsStore`). Store selection: `resolveServerMetricsStore` (always on — no enable/disable gate; incomplete backend config uses a temporary no-op store until converge wires ClickHouse/AE).
+
+| Binding / config | Value |
+|---|---|
+| Wrangler binding | `SERVER_METRICS` (`analytics_engine_datasets`) |
+| Dataset name | `turbopanel_server_metrics` (reused across top-level / `testing` / `live` — AE datasets are account-scoped and auto-created; docs do not require unique names per env) |
+| Write API | `writeDataPoint({ indexes, doubles, blobs })` — sync, non-blocking (do not `await`) |
+| SQL API | `POST https://api.cloudflare.com/client/v4/accounts/{account_id}/analytics_engine/sql` with `Authorization: Bearer <token>` and raw SQL body; response is the standard Cloudflare v4 envelope — rows under `result.data` (never top-level `data`) |
+| Query filters | Host reads always filter `blob1 = "host"` and `blob2` to supported schema version(s) from the field map / wire contract |
+| Max range | Default `AE_DEFAULT_MAX_RANGE_SECONDS` = 90 days (documented AE retention); override via `AnalyticsEngineSqlConfig.maxRangeSeconds` / `TURBOPANEL_SERVER_METRICS_AE_MAX_RANGE_SECONDS` |
+| Env (vars) | `CLOUDFLARE_ACCOUNT_ID`; optional `TURBOPANEL_SERVER_METRICS_AE_MAX_RANGE_SECONDS` |
+| Env (secret) | `TURBOPANEL_ANALYTICS_ENGINE_API_TOKEN` (Account Analytics Read) |
+
+**20-metric storage contract** (`HOST_METRIC_KEYS` in `src/daemon/metrics/contract.ts` — order is the external storage/API contract; human docs: **`../website/docs/architecture/server-metrics.mdx`**):
+
+| `doubleN` | Metric key |
+|---|---|
+| `double1` | `cpuUsagePercent` |
+| `double2` | `cpuUserPercent` |
+| `double3` | `cpuSystemPercent` |
+| `double4` | `cpuIowaitPercent` |
+| `double5` | `load1` |
+| `double6` | `load5` |
+| `double7` | `load15` |
+| `double8` | `memoryUsedPercent` |
+| `double9` | `memoryUsedBytes` |
+| `double10` | `memoryAvailableBytes` |
+| `double11` | `swapUsedPercent` |
+| `double12` | `diskUsedPercent` |
+| `double13` | `diskReadBytesPerSecond` |
+| `double14` | `diskWriteBytesPerSecond` |
+| `double15` | `diskReadOpsPerSecond` |
+| `double16` | `diskWriteOpsPerSecond` |
+| `double17` | `networkReceiveBytesPerSecond` |
+| `double18` | `networkTransmitBytesPerSecond` |
+| `double19` | `processCount` |
+| `double20` | `uptimeSeconds` |
+
+**Positional field map** (`src/daemon/metrics/analytics-engine/field-map.ts` — sole source of double/blob positions):
+
+| Slot | Content |
+|---|---|
+| `indexes[0]` / `index1` | Authenticated `serverId` UUID only — never org/account/hostname/composite/metric/timestamp |
+| `double1..double20` | `HOST_METRIC_KEYS` order (`cpuUsagePercent` … `uptimeSeconds`) |
+| `blob1` | event type `"host"` |
+| `blob2` | schema version (string) |
+| `blob3`..`blob6` | daemonVersion, operatingSystem, architecture, kernelRelease |
+| `blob7`..`blob20` | reserved empty strings until schema v2 |
+
+**Missing metrics:** AE doubles have no null. Missing values are stored as `AE_MISSING_METRIC_SENTINEL` (`-1e308`) — never coerced to `0`. All host metrics are ≥ 0, so the sentinel cannot collide. Query aggregates exclude it via `if(doubleN = AE_MISSING_METRIC_SENTINEL, 0, …)` around the documented `_sample_interval`-weighted average (`SUM(_sample_interval * doubleN) / SUM(_sample_interval)`). Local vitest does not bind AE (unsupported in the local runner); unit tests use fakes only.
+
+#### Server metrics (ClickHouse — self-hosted Deno)
+
+Deno path: `ClickHouseServerMetricsStore` (`src/daemon/metrics/clickhouse/`) over a narrow HTTP client (`X-ClickHouse-User` / `X-ClickHouse-Key`). ClickHouse now runs in a **Docker container** (official `clickhouse/clickhouse-server` image) — ports (`127.0.0.1:8123`) and env-injection are unchanged. Ansible install + env injection: **`../daemon/AGENTS.md`** (ClickHouse). Schema DDL is idempotent (`ensureSchema` once per process).
+
+**Positional storage (AE parity):** ClickHouse stores the exact positional AE layout — `timestamp`, `index1` (serverId), `double1..double20`, `blob1..blob20` — with **no** custom snake_case mapping. Physical column names come solely from `src/daemon/metrics/analytics-engine/field-map.ts` (`doubleColumnForMetric(key)` derives `doubleN` from `HOST_METRIC_KEYS` order; `blobColumn(i)` derives `blobN`; `AE_INDEX_SERVER_ID_COLUMN` / `AE_TIMESTAMP_COLUMN`). The operational-only columns (`received_at`, `sequence`, `interval_seconds`, `schema_version`, typed dimension columns) are **not** persisted. Missing metrics use the same `AE_MISSING_METRIC_SENTINEL` (`-1e308`) as Analytics Engine — never `null` or coerced `0`. Query aggregates exclude the sentinel with the same `if(doubleN = sentinel, …)` semantics as AE (unit-weight rows in ClickHouse vs `_sample_interval`-weighted rows in AE). `expectedSampleCount` is derived from `bucket_seconds / 60` (via `defaultExpectedSamplesPerBucket`).
+
+| Env | Purpose |
+|---|---|
+| `TURBOPANEL_CLICKHOUSE_URL` | HTTP base (e.g. `http://127.0.0.1:8123`) |
+| `TURBOPANEL_CLICKHOUSE_DATABASE` | App DB (`turbopanel_metrics`) |
+| `TURBOPANEL_CLICKHOUSE_USER` | App user (`turbopanel_app`) |
+| `TURBOPANEL_CLICKHOUSE_PASSWORD` | Generated secret (runtime.dev-vars) |
+| `TURBOPANEL_SERVER_METRICS_RETENTION_DAYS` | Table TTL days (default **90**) |
+
+| Table | Role | Default TTL |
+|---|---|---|
+| `turbopanel_server_metrics` | MergeTree raw samples (`ORDER BY (index1, timestamp)`) — same physical name as the AE dataset | `retentionDays` (90) |
+
+**Query-time bucketing:** there are no rollup tables or materialized views — resolution is chosen at query time (mirrors the AE SQL API). Legacy `host_metrics_raw` / rollup objects are dropped during admin-owned converge migrations, not at instance runtime.
+
+**Late arrivals / duplicates:** accept all inserts into MergeTree (no `ReplacingMergeTree` / `FINAL`). Metrics is **disposable / statistical / may be sampled** — queries must account for `_sample_interval` (AE) or per-row unit weight (ClickHouse); intentional simplification.
+
+**Fail clearly vs unconfigured:** a full ClickHouse config throws on connection/query failures (reads return **503** `metrics_backend_unavailable`). Incomplete-config (pre-converge) uses a temporary no-op store. This differs from the AE store's `available: false` soft path when SQL credentials are missing. Writes stay fire-and-forget at the WS boundary (`deno-ws.ts` catches rejected promises).
+
+#### Server metrics — query API & caching
+
+Endpoints (`src/client/servers/metrics-routes.ts`):
+
+| Method | Path | Auth |
+|---|---|---|
+| `GET` | `/api/client/v1/servers/:id/metrics/series` | session + `assertCanReadOr403('server', id)` |
+| `GET` | `/api/client/v1/servers/:id/metrics/summary` | session + `assertCanReadOr403('server', id)` |
+
+Never authorize by bare UUID possession — session middleware + resource read grant required.
+
+**Resolution ladder** (`src/daemon/metrics/query/resolution.ts`): range ≤6 h → 60 s; ≤24 h → 300 s; ≤30 d → 3600 s; else 86400 s (ClickHouse maps 60 → 300). **`MAX_METRICS_POINTS` = 1500**; range ≤**90 days**. One combined backend query per `(server, range)` — no per-metric or per-chart queries. Backend-neutral payload includes `gapCount`, `sampleCount`, and `expectedSampleCount` so the UI distinguishes zero values from missing samples.
+
+**Chart cache** (`src/daemon/metrics/query/cache.ts`): key = `tp:metrics:chart:` + kind + authorized `serverId` + bucket-rounded range + sorted metrics + resolution + backend + `v{schemaVersion}`. TTL: **live 45 s** / **historical 300 s**. Workers: Cloudflare Cache API; Deno: bounded in-process `Map` (256 entries). Authorization is never globally cached — cache keys always include the authorized server id. Separate from the approved-read-models query cache — see `src/query-cache/AGENTS.md`.
+
+UI charts: **`../ui/AGENTS.md`** (Server metrics). Human docs + AE cost model: **`../website/docs/architecture/server-metrics.mdx`**.
+
 **Cheap fleet index:** `listOnlineServerIds()` reads the Redis online set (Deno) or the sparse `server.daemon.projection.connected` field (Workers) — it does not fan out across all cells.
 
 **WS upgrade flow:** JWT verified in the main isolate/process → cell `attachDaemonSocket` acquires the single-writer lease → outbox delivery is alarm-scheduled (`#pumpOutboxToDaemonSockets`; not a perpetual in-DO loop) → `detachDaemonSocket` releases the lease on close.
 
-**DO storage schema (Workers):** SQLite tables in `DaemonCellObject` (`#ensureSchema` in `src/daemon/cell/do.ts`). One-time DDL is gated by `_cell_schema.version` (`CELL_SCHEMA_VERSION`) — Durable Object SQLite rejects `PRAGMA user_version` (`SQLITE_AUTH`), so a singleton version row is the cheap gate. On wake, the already-initialized path performs **only a version read** (try `PRAGMA user_version`, else `SELECT version FROM _cell_schema WHERE id = 1`); DDL for `_cell_schema` plus the four business tables runs only when the stamp table/row is missing or stale — no per-table `sqlite_master` probing and no always-throwing `ALTER`. The constructor hydrates `#serverId` / `#runtimeConnected` from the restored hibernation WebSocket attachment only — it does **not** eagerly `SELECT` from `cell`. Socket-less wakes (`checkLiveness` / `/rpc/liveness`) take `serverId` from `X-Turbopanel-Cell-Server-Id` (or RPC body) and touch zero business rows; a `server_id`-only fallback exists for header-less snapshot/alarm callers. After `#schemaReady` is set in-memory, warm wakes short-circuit with zero SQLite; a cold isolate against an already-stamped cell pays at most the version read.
+**DO storage schema (Workers):** SQLite tables in `DaemonCellObject` (`#ensureSchema` in `src/daemon/cell/do.ts`). One-time DDL is gated by `_cell_schema.version` (`CELL_SCHEMA_VERSION`) — Durable Object SQLite rejects `PRAGMA user_version` (`SQLITE_AUTH`), so a singleton version row is the cheap gate. `#ensureSchema` is **lazy**: the constructor restores hibernation WebSocket attachments only (no schema/version read); schema runs only on paths that touch SQLite (WS upgrade, storage RPCs, non-metrics `webSocketMessage`, close/error cleanup, `alarm`). Host `metrics` frames, `/rpc/diagnostics`, and `/rpc/liveness` must return with **zero** DO SQLite reads/writes and no alarm changes — including on a cold wake — so hibernation stays free of schema churn. When `#ensureSchema` does run on an already-initialized cell it performs **only a version read** (try `PRAGMA user_version`, else `SELECT version FROM _cell_schema WHERE id = 1`); DDL for `_cell_schema` plus the four business tables runs only when the stamp table/row is missing or stale — no per-table `sqlite_master` probing and no always-throwing `ALTER`. Socket-less wakes (`checkLiveness` / `/rpc/liveness`) take `serverId` from `X-Turbopanel-Cell-Server-Id` (or RPC body) and touch zero business rows; a `server_id`-only fallback exists for header-less snapshot/alarm callers. After `#schemaReady` is set in-memory, warm storage paths short-circuit with zero SQLite; a cold isolate that hits a storage path against an already-stamped cell pays at most the version read.
 
 | Table | Columns |
 |---|---|

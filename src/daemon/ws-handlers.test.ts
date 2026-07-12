@@ -1,5 +1,6 @@
 import { assert, assertEquals, assertRejects } from "jsr:@std/assert";
 import { RedisDaemonCell } from "./cell/redis/cell.ts";
+import { it } from "@std/testing/bdd";
 import {
   createRedisCellClient,
   type RedisCellClient,
@@ -83,7 +84,7 @@ function withRedisCell(
   };
 }
 
-Deno.test(
+it(
   "cell-backed attach updates connected presence in snapshot",
   withRedisCell(async ({ cell, serverId }) => {
     const keyId = crypto.randomUUID();
@@ -100,7 +101,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+it(
   "cell-backed recordInbound updates lastInboundAt",
   withRedisCell(async ({ cell, client, serverId }) => {
     const attached = await cell.attachDaemonSocket({
@@ -121,7 +122,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+it(
   "cell-backed inbound updates lastInboundAt via putSnapshot path",
   withRedisCell(async ({ cell }) => {
     await cell.attachDaemonSocket({
@@ -136,7 +137,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+it(
   "cell-backed outbox pump delivers queued command envelopes",
   withRedisCell(async ({ cell }) => {
     const attached = await cell.attachDaemonSocket({
@@ -173,7 +174,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+it(
   "cell-backed disconnect cleanup clears connected presence",
   withRedisCell(async ({ cell, registry, serverId }) => {
     const attached = await cell.attachDaemonSocket({
@@ -196,7 +197,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+it(
   "cell-backed second attach is rejected while lease is held",
   withRedisCell(async ({ cell }) => {
     await cell.attachDaemonSocket({
@@ -280,7 +281,7 @@ function stripCommentsAndStrings(source: string): string {
   return out;
 }
 
-Deno.test("do.ts source stays hibernation-safe (no timers or server.accept)", async () => {
+it("do.ts source stays hibernation-safe (no timers or server.accept)", async () => {
   const doPath = new URL("./cell/do.ts", import.meta.url);
   const source = await Deno.readTextFile(doPath);
   const stripped = stripCommentsAndStrings(source);
@@ -292,7 +293,19 @@ Deno.test("do.ts source stays hibernation-safe (no timers or server.accept)", as
   assertEquals(/\bacceptWebSocket\b/.test(stripped), true);
 });
 
-Deno.test("do-registry and workers-ws use stable getByName DO ids", async () => {
+it("do.ts projection DB ops stay time-bounded (no unbounded await that blocks hibernation)", async () => {
+  const doPath = new URL("./cell/do.ts", import.meta.url);
+  const source = await Deno.readTextFile(doPath);
+  const stripped = stripCommentsAndStrings(source);
+
+  // The projection helper MUST wrap the caller's fn in the hard client-side
+  // deadline — a stalled Hyperdrive round-trip must never hold the DO awake.
+  assertEquals(/\brunWithDbTimeout\s*\(/.test(stripped), true);
+  // And it must still force-close the pool afterwards.
+  assertEquals(/\bendDbConnection\s*\(/.test(stripped), true);
+});
+
+it("do-registry and workers-ws use stable getByName DO ids", async () => {
   const registryPath = new URL("./cell/do-registry.ts", import.meta.url);
   const workersWsPath = new URL("./workers-ws.ts", import.meta.url);
 

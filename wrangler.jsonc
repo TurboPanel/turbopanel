@@ -24,14 +24,11 @@
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",
-      "id": "83edd62a2d7e4e6ba8b5d77b01ca3729"
+      "id": "0000000000000000000000000000dev0"
     },
     {
-      // Future: local wrangler dev does not exercise a real Hyperdrive cache —
-      // this placeholder keeps the binding present; resolveWorkersQueryCache
-      // uses passthrough when caching is unavailable. Do not point at primary HYPERDRIVE.
       "binding": "HYPERDRIVE_CACHED",
-      "id": "0000000000000000000000000000dev0"
+      "id": "0000000000000000000000000000dev1"
     }
   ],
   "queues": {
@@ -70,6 +67,21 @@
   // Offline sweep (see src/daemon/cell/offline-sweep.ts) — 1 minute is Cloudflare's
   // finest cron granularity, matching the 60s daemon idle-ping cadence.
   "triggers": { "crons": ["* * * * *"] },
+  // Host metrics (Workers Analytics Engine). Dataset name is reused across
+  // envs — AE datasets are account-scoped and auto-created on first write;
+  // docs do not require globally unique names. Rows are keyed by index1=serverId.
+  // SQL API reads need secrets: TURBOPANEL_ANALYTICS_ENGINE_API_TOKEN
+  // (Account Analytics Read) plus CLOUDFLARE_ACCOUNT_ID (vars below / .dev.vars).
+  // Optional: TURBOPANEL_SERVER_METRICS_AE_MAX_RANGE_SECONDS (default = 90-day AE retention).
+  "analytics_engine_datasets": [
+    {
+      "binding": "SERVER_METRICS",
+      "dataset": "turbopanel_server_metrics"
+    }
+  ],
+  "vars": {
+    "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c"
+  },
   "migrations": [
     {
       "tag": "v1-daemon-cell",
@@ -113,6 +125,12 @@
         }
       ],
       "triggers": { "crons": ["* * * * *"] },
+      "analytics_engine_datasets": [
+        {
+          "binding": "SERVER_METRICS",
+          "dataset": "turbopanel_server_metrics"
+        }
+      ],
       "hyperdrive": [
         {
           "binding": "HYPERDRIVE",
@@ -138,7 +156,8 @@
       "vars": {
         "TURBOPANEL_BASE_URL": "https://testing.turbopanel.dev",
         "TURBOPANEL_UI_CORS_ORIGINS": "https://testing.turbopanel.io",
-        "TURBOPANEL_IS_SIGNUP_ENABLED": "1"
+        "TURBOPANEL_IS_SIGNUP_ENABLED": "1",
+        "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c"
       }
     },
     "live": {
@@ -176,6 +195,12 @@
         }
       ],
       "triggers": { "crons": ["* * * * *"] },
+      "analytics_engine_datasets": [
+        {
+          "binding": "SERVER_METRICS",
+          "dataset": "turbopanel_server_metrics"
+        }
+      ],
       "routes": [
         {
           "pattern": "turbopanel.app/api/*",
@@ -199,7 +224,8 @@
       "vars": {
         "TURBOPANEL_BASE_URL": "https://turbopanel.app",
         "TURBOPANEL_IS_SIGNUP_ENABLED": "0",
-        "TURBOPANEL_UI_CORS_ORIGINS": "https://turbopanel.io"
+        "TURBOPANEL_UI_CORS_ORIGINS": "https://turbopanel.io",
+        "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c"
       }
     }
   }

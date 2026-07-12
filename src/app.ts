@@ -4,6 +4,7 @@ import type { DerivedSecretsConfig, SecretsConfig } from './client/authn/secrets
 import { registerClientRoutes } from './client/routes.ts'
 import { registerCorsMiddleware } from './cors.ts'
 import type { DaemonCellRegistry } from './daemon/cell/contracts.ts'
+import type { ServerMetricsStore } from './daemon/metrics/types.ts'
 import type { Db } from './db.ts'
 import type { SignupEnvOverride } from './client/authn/install-state.ts'
 import type { CommandQueue } from './lib/commands/queue.ts'
@@ -23,6 +24,11 @@ export type AppEnv = {
     postgresConnectionString?: string
     daemonCellRegistry?: DaemonCellRegistry
     queryCache?: QueryCache
+    /**
+     * Host server-metrics store (query path). Server metrics are on by default;
+     * this stays unset when no storage backend is configured for the runtime.
+     */
+    serverMetricsStore?: ServerMetricsStore
     /** Platform env bindings for settings resolution (Workers per-request; Deno process env). */
     platformEnv?: Record<string, string | undefined>
     /** AES-GCM data encryption keys (client routes encrypt only). */
@@ -45,6 +51,7 @@ export function createApp(
     signupEnvOverride,
     daemonCellRegistry,
     queryCache,
+    serverMetricsStore,
     dataEncryptionSecrets,
     secretsConfig,
   }: {
@@ -56,9 +63,10 @@ export function createApp(
     secrets?: DerivedSecretsConfig
     runtime?: 'deno' | 'workers'
     corsOrigins?: string
-    signupEnvOverride?: SignupEnvOverride
+    signupEnvOverride: SignupEnvOverride | undefined
     daemonCellRegistry?: DaemonCellRegistry
     queryCache?: QueryCache
+    serverMetricsStore?: ServerMetricsStore
     dataEncryptionSecrets?: DerivedSecretsConfig
     secretsConfig?: SecretsConfig
   } = {},
@@ -80,6 +88,12 @@ export function createApp(
   if (queryCache) {
     app.use('*', (c, next) => {
       c.set('queryCache', queryCache)
+      return next()
+    })
+  }
+  if (serverMetricsStore) {
+    app.use('*', (c, next) => {
+      c.set('serverMetricsStore', serverMetricsStore)
       return next()
     })
   }

@@ -3,5 +3,10 @@
     "connectionId": "turbopanel",
     "projectKey": "turbopanel_turbopanel"
   },
-  "sonarlint.analysisExcludesStandalone": "**/migrations/**"
+  "sonarlint.analysisExcludesStandalone": "**/migrations/**",
+  "sonarlint.rules": {
+    "typescript:S2187": {
+      "level": "off"
+    }
+  }
 }

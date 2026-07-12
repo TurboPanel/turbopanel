@@ -4,6 +4,8 @@ Schema changes are versioned in **`migrations/`**. After editing `schema.ts`, ru
 
 The co-located dev server has live data — treat every database change as production-adjacent.
 
+**Server metrics is never stored in Postgres.** Host metrics live in Analytics Engine (Workers) or ClickHouse (Deno) only — see instance `AGENTS.md` (Server metrics). Do not add metrics tables or columns here; there are no per-minute Postgres projection writes for metrics.
+
 ## Schema sync directions
 
 > **Fresh database:** co-located dev converge runs `./scripts/bootstrap-dev-db.sh` via Ansible (`pnpm migrate`). Manual bootstrap: `./scripts/bootstrap-dev-db.sh` from the instance repo root.

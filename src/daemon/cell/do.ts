@@ -2,7 +2,14 @@
 import type { DaemonJwtKeyring } from "../authn/daemon-jwt-keyring.ts";
 import { deriveDaemonJwtKeyring } from "../authn/daemon-jwt-keyring.ts";
 import { parseSecretsEnv } from "../../client/authn/secrets.ts";
-import { createWorkersDb, endDbConnection, type Db } from "../../db.ts";
+import {
+  createWorkersDb,
+  DB_OP_TIMEOUT_MS,
+  endDbConnection,
+  runWithDbTimeout,
+  type Db,
+} from "../../db.ts";
+import { evaluateSocketHealth } from "./socket-health.ts";
 import type { ServerGeo } from "../../lib/geo/server-geo.ts";
 import { parseServerGeo } from "../../lib/geo/server-geo.ts";
 import type { ServerOsMetadata } from "../../lib/db/server-metadata.ts";
@@ -41,6 +48,18 @@ import {
   parseDaemonMessage,
   wireMessageToInboundEnvelope,
 } from "./protocol.ts";
+import {
+  resolveAnalyticsEngineSqlConfig,
+  resolveServerMetricsStore,
+  type AnalyticsEngineDatasetLike,
+  type ResolveServerMetricsStoreInput,
+} from "../metrics/store-selection.ts";
+import type { ServerMetricsStore } from "../metrics/types.ts";
+import {
+  rateLimitedMetricsLog,
+  metricsPayloadByteLength,
+  validateHostMetricsSample,
+} from "../metrics/validation.ts";
 
 function createInitialCellDiagnostics(): CellDiagnostics {
   return {
@@ -92,6 +111,19 @@ export function setDaemonCellProjectionDbFactoryForTests(
   factory: ProjectionDbFactory | null,
 ): void {
   projectionDbFactoryForTests = factory;
+}
+
+type MetricsStoreFactory = (
+  input: ResolveServerMetricsStoreInput,
+) => ServerMetricsStore;
+
+let metricsStoreFactory: MetricsStoreFactory = resolveServerMetricsStore;
+
+/** Test-only seam: override host metrics store resolution inside the DO. */
+export function setServerMetricsStoreFactoryForTests(
+  factory: MetricsStoreFactory | null,
+): void {
+  metricsStoreFactory = factory ?? resolveServerMetricsStore;
 }
 
 function nowIso(now = Date.now()): string {
@@ -258,9 +290,10 @@ export class DaemonCellObject {
   #scheduledAlarmMs: number | null = null;
   #scheduledAlarmMsLoaded = false;
   /** Per-connection inbound message counters (in-memory; no timers). */
-  #inboundRate = new Map<string, { windowStartMs: number; count: number }>();
+  readonly #inboundRate = new Map<string, { windowStartMs: number; count: number }>();
   readonly #inboundLimit: number;
   readonly #inboundWindowMs: number;
+  #metricsStore: ServerMetricsStore | null = null;
   readonly #sql: (
     callSite: string,
     query: string,
@@ -298,7 +331,13 @@ export class DaemonCellObject {
   }
 
   /**
-   * Sync constructor bootstrap — schema + live-socket presence only.
+   * Sync constructor bootstrap — restore hibernation WebSocket attachments only.
+   *
+   * Deliberately skips `#ensureSchema()` so a cold wake that only handles
+   * metrics (or liveness/diagnostics) never pays SQLite schema reads/writes.
+   * Callers that touch cell SQLite (`fetch` upgrade/storage RPCs, non-metrics
+   * `webSocketMessage`, close/error cleanup, `alarm`) invoke `#ensureSchema()`
+   * lazily before those paths.
    *
    * Prefer the restored hibernation WebSocket attachment for `#serverId` so a
    * `checkLiveness` wake with a live socket pays no business-row SQLite reads
@@ -313,7 +352,6 @@ export class DaemonCellObject {
    * (heartbeats are agent-gated) and never a SQLite write.
    */
   #initializeFromStorage(): void {
-    this.#ensureSchema();
     for (const ws of this.#ctx.getWebSockets()) {
       const attachment = ws.deserializeAttachment() as {
         serverId?: string;
@@ -362,6 +400,44 @@ export class DaemonCellObject {
       }
     }
     return { connected, lastPingAtMs };
+  }
+
+  /**
+   * Watchdog: force-close daemon sockets that are dead/half-open or have exceeded
+   * the hard max lifetime, driven by the once-a-minute offline-sweep cron via
+   * `/rpc/liveness`. In-memory only (getWebSockets + auto-response timestamp +
+   * ws.close) — no SQLite, so the liveness probe stays cold-wake cheap. The
+   * subsequent `webSocketClose` event runs the normal lease cleanup + Postgres
+   * demotion. This bounds worst-case single-socket billing without a per-DO
+   * periodic alarm (which would itself be a recurring SQLite row-write cost).
+   */
+  #reapUnhealthySockets(serverId: string, nowMs: number): void {
+    for (const ws of this.#ctx.getWebSockets()) {
+      const attachment = ws.deserializeAttachment() as {
+        serverId?: string;
+        connectedAtMs?: number;
+      } | null;
+      if (attachment?.serverId !== serverId) continue;
+
+      const autoTs = this.#ctx.getWebSocketAutoResponseTimestamp(ws);
+      const decision = evaluateSocketHealth({
+        nowMs,
+        connectedAtMs: typeof attachment.connectedAtMs === "number"
+          ? attachment.connectedAtMs
+          : null,
+        lastPingAtMs: autoTs ? autoTs.getTime() : null,
+      });
+      if (!decision.reap) continue;
+
+      console.info(
+        `daemon-cell event=watchdog-close serverId=${serverId} reason=${decision.reason}`,
+      );
+      try {
+        ws.close(4001, `watchdog:${decision.reason}`);
+      } catch {
+        // Socket may already be closing.
+      }
+    }
   }
 
   #bumpFetchRoute(route: string): void {
@@ -655,18 +731,26 @@ export class DaemonCellObject {
     if (projectionDbFactoryForTests) {
       return projectionDbFactoryForTests();
     }
+    // Tight connect/statement bounds so a stalled Hyperdrive round-trip cannot
+    // hold this projection open (defence-in-depth alongside runWithDbTimeout).
+    const timeouts = { connectTimeoutSeconds: 10, statementTimeoutMs: DB_OP_TIMEOUT_MS };
     if (this.#env.HYPERDRIVE) {
-      return createWorkersDb(this.#env.HYPERDRIVE);
+      return createWorkersDb(this.#env.HYPERDRIVE, timeouts);
     }
     const url = this.#env.TURBOPANEL_DATABASE_URL?.trim();
     if (url) {
-      return createWorkersDb({ connectionString: url });
+      return createWorkersDb({ connectionString: url }, timeouts);
     }
     return null;
   }
 
-  // COST RULE: Every Hyperdrive/postgres.js client opened here MUST be closed
-  // in the finally block. An open outbound connection prevents DO hibernation.
+  // COST RULE: Every Hyperdrive/postgres.js client opened here MUST be closed in
+  // the finally block, and the operation MUST be time-bounded. An open outbound
+  // connection — or an unsettled promise awaiting one (e.g. via ctx.waitUntil on
+  // attach) — prevents DO hibernation and bills the object for the entire
+  // WebSocket lifetime. `runWithDbTimeout` is the hard client-side deadline that
+  // guarantees this returns even if a Hyperdrive round-trip wedges; see the
+  // 71-minute / 547 GB-s incident.
   async #withProjectionDb(
     label: string,
     serverId: string,
@@ -675,7 +759,7 @@ export class DaemonCellObject {
     const db = this.#newProjectionDb();
     if (!db) return;
     try {
-      await fn(db);
+      await runWithDbTimeout(db, fn);
     } catch (err) {
       console.error(
         `daemon cell ${label} projection failed (${serverId}): ${
@@ -683,7 +767,8 @@ export class DaemonCellObject {
         }`,
       );
     } finally {
-      await endDbConnection(db);
+      // Force-close even if the op timed out; endDbConnection has its own 5s cap.
+      await endDbConnection(db).catch(() => {});
     }
   }
 
@@ -833,9 +918,8 @@ export class DaemonCellObject {
   }
 
   async fetch(request: Request): Promise<Response> {
-    this.#ensureSchema();
-
     if (request.headers.get("Upgrade") === "websocket") {
+      this.#ensureSchema();
       this.#bumpFetchRoute("ws-upgrade");
       return await this.#handleWebSocketUpgrade(request);
     }
@@ -1220,7 +1304,8 @@ export class DaemonCellObject {
       }
     }
 
-    server.serializeAttachment({ connectionId, serverId });
+    const connectedAtMs = Date.parse(connectedAt) || Date.now();
+    server.serializeAttachment({ connectionId, serverId, connectedAtMs });
 
     this.#applyDaemonSocketAttach(serverId, connectionId, {
       keyId,
@@ -1346,7 +1431,6 @@ export class DaemonCellObject {
     ws: WebSocket,
     message: string | ArrayBuffer,
   ): Promise<void> {
-    this.#ensureSchema();
     const attachment = ws.deserializeAttachment() as {
       connectionId: string;
       serverId: string;
@@ -1357,6 +1441,7 @@ export class DaemonCellObject {
       return;
     }
 
+    const payloadBytes = metricsPayloadByteLength(message);
     const raw = typeof message === "string"
       ? message
       : new TextDecoder().decode(message);
@@ -1369,6 +1454,59 @@ export class DaemonCellObject {
       conn: attachment.connectionId,
       type: parsed.type,
     });
+
+    // Metrics must return before any SQLite/schema/alarm path so a
+    // hibernation cold-wake that only delivers host samples stays free of
+    // DO storage and alarm churn.
+    if (parsed.type === "metrics") {
+      const result = validateHostMetricsSample(parsed, {
+        serverId: attachment.serverId,
+        receivedAt: nowIso(),
+        payloadBytes,
+      });
+      if (!result.ok) {
+        rateLimitedMetricsLog(
+          attachment.serverId,
+          result.reason,
+          (reason) => {
+            this.#trace("metrics-invalid", {
+              serverId: attachment.serverId,
+              reason,
+            });
+            console.warn(
+              `metrics ignored invalid sample from ${attachment.serverId}: ${reason}`,
+            );
+          },
+        );
+        return;
+      }
+      const logWriteFailed = (err: unknown) => {
+        rateLimitedMetricsLog(
+          attachment.serverId,
+          "write_failed",
+          () => {
+            this.#trace("metrics-write-failed", {
+              serverId: attachment.serverId,
+              error: String(err),
+            });
+            console.warn(
+              `metrics write failed for ${attachment.serverId}: ${String(err)}`,
+            );
+          },
+        );
+      };
+      try {
+        const writeResult = this.#getMetricsStore().writeHostSample(
+          result.sample,
+        );
+        void Promise.resolve(writeResult).catch(logWriteFailed);
+      } catch (err) {
+        logWriteFailed(err);
+      }
+      return;
+    }
+
+    this.#ensureSchema();
 
     if (parsed.type === "hello" || parsed.type === "heartbeat") {
       await this.#handlePresenceMessage(attachment, parsed);
@@ -1383,6 +1521,19 @@ export class DaemonCellObject {
     );
     await this.#handleInboundMessage(attachment.serverId, parsed);
     await this.#scheduleNearestAlarm();
+  }
+
+  #getMetricsStore(): ServerMetricsStore {
+    if (!this.#metricsStore) {
+      this.#metricsStore = metricsStoreFactory({
+        runtime: "workers",
+        analyticsEngine:
+          (this.#env as { SERVER_METRICS?: AnalyticsEngineDatasetLike })
+            .SERVER_METRICS,
+        analyticsEngineSql: resolveAnalyticsEngineSqlConfig(this.#env),
+      });
+    }
+    return this.#metricsStore;
   }
 
   /**
@@ -1616,20 +1767,25 @@ export class DaemonCellObject {
   ): Promise<Response | null> {
     if (method !== "GET") return null;
 
+    // In-memory only — never touch SQLite/schema (cold-wake safe).
     if (path === "/rpc/diagnostics") {
       return jsonResponse(this.#diag);
-    }
-
-    if (path === "/rpc/snapshot") {
-      const serverId = this.#resolveServerId(request);
-      if (!serverId) return errorResponse("server id unknown", 404);
-      return jsonResponse(await this.#getSnapshot(serverId));
     }
 
     if (path === "/rpc/liveness") {
       const serverId = this.#resolveServerId(request);
       if (!serverId) return errorResponse("server id unknown", 404);
+      // Reuse the cron's liveness visit to reap dead/half-open or over-age
+      // sockets (in-memory only; no SQLite) before reporting presence.
+      this.#reapUnhealthySockets(serverId, Date.now());
       return jsonResponse(this.#getLivenessSnapshot(serverId));
+    }
+
+    if (path === "/rpc/snapshot") {
+      this.#ensureSchema();
+      const serverId = this.#resolveServerId(request);
+      if (!serverId) return errorResponse("server id unknown", 404);
+      return jsonResponse(await this.#getSnapshot(serverId));
     }
 
     return null;
@@ -1642,6 +1798,8 @@ export class DaemonCellObject {
 
     const readOnly = await this.#handleReadOnlyRpc(path, method, request);
     if (readOnly) return readOnly;
+
+    this.#ensureSchema();
 
     const body = method === "GET"
       ? null

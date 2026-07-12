@@ -135,3 +135,12 @@ declare module 'jsr:@std/assert' {
 declare module '@std/assert' {
   export * from 'jsr:@std/assert'
 }
+
+declare module '@std/testing/bdd' {
+  export function it(name: string, fn: () => void | Promise<void>): void
+  export function it(
+    name: string,
+    options: { ignore?: boolean; only?: boolean },
+    fn: () => void | Promise<void>,
+  ): void
+}

@@ -26,6 +26,12 @@ import { isTransientError, processCommandEnvelope } from './lib/commands/consume
 import { parseCommandEnvelope } from './lib/commands/envelope.ts'
 import type { EmailQueue } from './lib/email/types.ts'
 import {
+  resolveAnalyticsEngineSqlConfig,
+  resolveServerMetricsStore,
+  type AnalyticsEngineDatasetLike,
+} from './daemon/metrics/store-selection.ts'
+import type { ServerMetricsStore } from './daemon/metrics/types.ts'
+import {
   resolveWorkersDaemonRateLimiters,
   resolveWorkersDb,
   resolveWorkersQueryCache,
@@ -44,6 +50,7 @@ let cachedDataEncryptionSecrets: DerivedSecretsConfig | null = null
 let cachedSecretsConfig: ReturnType<typeof parseSecretsEnv> | null = null
 let cachedEmailQueue: EmailQueue | null = null
 let cachedCommandQueue: CommandQueue | null = null
+let cachedServerMetricsStore: ServerMetricsStore | null = null
 let cachedDaemonCellRegistryFactory:
   | ((env: CloudflareBindings, db?: ReturnType<typeof createWorkersDb>) =>
     ReturnType<typeof createDurableObjectDaemonCellRegistry>)
@@ -71,6 +78,12 @@ async function initWorkerApp(env: CloudflareBindings) {
     ? createWorkersCommandQueue(env.TURBOPANEL_COMMAND_QUEUE)
     : createNoopCommandQueue()
   const emailSettings = await resolveEmailSettings(db, platformEnv)
+  cachedServerMetricsStore = resolveServerMetricsStore({
+    runtime: 'workers',
+    analyticsEngine: (env as { SERVER_METRICS?: AnalyticsEngineDatasetLike })
+      .SERVER_METRICS,
+    analyticsEngineSql: resolveAnalyticsEngineSqlConfig(env),
+  })
   // DB is created per request — Workers forbid reusing I/O objects across fetch handlers.
   cachedApp = createApp({
     emailQueue: cachedEmailQueue,
@@ -80,6 +93,7 @@ async function initWorkerApp(env: CloudflareBindings) {
     corsOrigins: env.TURBOPANEL_UI_CORS_ORIGINS,
     signupEnvOverride: env.TURBOPANEL_IS_SIGNUP_ENABLED,
     emailFrom: emailSettings.from,
+    serverMetricsStore: cachedServerMetricsStore,
     dataEncryptionSecrets: cachedDataEncryptionSecrets ?? undefined,
     secretsConfig: cachedSecretsConfig ?? undefined,
   })
@@ -145,6 +159,9 @@ export default {
       if (cachedDaemonCellRegistryFactory) {
         const registry = cachedDaemonCellRegistryFactory(env, db)
         c.set('daemonCellRegistry', registry)
+      }
+      if (cachedServerMetricsStore) {
+        c.set('serverMetricsStore', cachedServerMetricsStore)
       }
       await next()
     })

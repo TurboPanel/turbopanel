@@ -2,6 +2,8 @@
 
 Read-through cache for **reviewed, read-only** Postgres read models. Permission checks, session lookups, and secret-bearing reads must stay on the normal (`getDb`) connection — never the cached path.
 
+**Not metrics:** the server metrics chart cache (`src/daemon/metrics/query/cache.ts`) is a **separate** system (AE/ClickHouse query results, not Postgres). Do not add metrics read models to `approved-read-models.ts`. See instance `AGENTS.md` (Server metrics — query API & caching).
+
 ## Rules
 
 - Only loaders registered in `approved-read-models.ts` and implemented under `read-models/` may call the cached database.

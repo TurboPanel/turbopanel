@@ -1,19 +1,26 @@
 import { assert, assertEquals, assertNotEquals } from "jsr:@std/assert";
+import { it } from "@std/testing/bdd";
 import {
   type DaemonMessage,
+  DAEMON_INBOUND_ALLOWED,
   generateDeliveryId,
   generateRequestId,
   outboundEnvelopeToWireMessage,
   parseDaemonMessage,
   wireMessageToInboundEnvelope,
 } from "./protocol.ts";
+import {
+  buildHostMetricsSample,
+  METRICS_SCHEMA_VERSION,
+} from "../metrics/contract.ts";
+
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const TEST_PUBLIC_IPV4 = '203.0.113.1' // RFC 5737 TEST-NET-3
 
-Deno.test('parseDaemonMessage round-trips valid JSON', () => {
+it('parseDaemonMessage round-trips valid JSON', () => {
   const msg: DaemonMessage = {
     type: "heartbeat",
     at: "2020-01-01T00:00:00.000Z",
@@ -22,11 +29,11 @@ Deno.test('parseDaemonMessage round-trips valid JSON', () => {
   assertEquals(parsed, msg);
 });
 
-Deno.test("parseDaemonMessage returns null for invalid JSON", () => {
+it("parseDaemonMessage returns null for invalid JSON", () => {
   assertEquals(parseDaemonMessage("not-json"), null);
 });
 
-Deno.test("wireMessageToInboundEnvelope maps inbound wire types", () => {
+it("wireMessageToInboundEnvelope maps inbound wire types", () => {
   const at = "2020-01-01T00:00:00.000Z";
 
   assertEquals(
@@ -189,7 +196,7 @@ Deno.test("wireMessageToInboundEnvelope maps inbound wire types", () => {
   );
 });
 
-Deno.test("wireMessageToInboundEnvelope returns null for non-inbound types", () => {
+it("wireMessageToInboundEnvelope returns null for non-inbound types", () => {
   assertEquals(
     wireMessageToInboundEnvelope({
       type: "command-dispatch",
@@ -203,7 +210,29 @@ Deno.test("wireMessageToInboundEnvelope returns null for non-inbound types", () 
   );
 });
 
-Deno.test("outboundEnvelopeToWireMessage maps outbound kinds", () => {
+it("metrics message is accepted without a cell envelope", () => {
+  const msg: DaemonMessage = buildHostMetricsSample({
+    at: "2020-01-01T00:00:00.000Z",
+    intervalSeconds: 60,
+    sequence: 1,
+    metrics: { cpuUsagePercent: 10 },
+    dimensions: {
+      schemaVersion: METRICS_SCHEMA_VERSION,
+      daemonVersion: "test",
+      operatingSystem: "linux",
+      architecture: "aarch64",
+      kernelRelease: "6.12.0",
+    },
+  });
+
+  const parsed = parseDaemonMessage(JSON.stringify(msg));
+  assertEquals(parsed, msg);
+  assert(DAEMON_INBOUND_ALLOWED.has("metrics"));
+  assertEquals(wireMessageToInboundEnvelope(msg), null);
+});
+
+
+it("outboundEnvelopeToWireMessage maps outbound kinds", () => {
   const base = {
     deliveryId: crypto.randomUUID(),
     requestId: "req-1",
@@ -335,19 +364,19 @@ Deno.test("outboundEnvelopeToWireMessage maps outbound kinds", () => {
   );
 });
 
-Deno.test("generateRequestId and generateDeliveryId are UUIDs", () => {
+it("generateRequestId and generateDeliveryId are UUIDs", () => {
   const requestId = generateRequestId();
   const deliveryId = generateDeliveryId();
   assert(UUID_RE.test(requestId));
   assert(UUID_RE.test(deliveryId));
 });
 
-Deno.test("generateRequestId and generateDeliveryId are unique across calls", () => {
+it("generateRequestId and generateDeliveryId are unique across calls", () => {
   assertNotEquals(generateRequestId(), generateRequestId());
   assertNotEquals(generateDeliveryId(), generateDeliveryId());
 });
 
-Deno.test("deliveryId and requestId are independent UUIDs", () => {
+it("deliveryId and requestId are independent UUIDs", () => {
   const requestId = generateRequestId();
   const deliveryId = generateDeliveryId();
   assertNotEquals(requestId, deliveryId);

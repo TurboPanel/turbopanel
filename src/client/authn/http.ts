@@ -29,7 +29,7 @@ import { compatLogError, compatLogInfo, compatLogWarn } from '../../log-compat.t
 import { getDb } from '../../db.ts'
 import type { Db } from '../../db.ts'
 import { account, user } from '../../lib/db/schema.ts'
-import { getEmailQueue } from '../../lib/email/types.ts'
+import { type EmailQueue, getEmailQueue } from '../../lib/email/types.ts'
 import { isNoopEmailQueue } from '../../lib/email/noop-queue.ts'
 import {
   isEmailActiveForRuntime,
@@ -41,7 +41,7 @@ export type AuthRouteOpts = {
   secrets?: DerivedSecretsConfig
   runtime: 'deno' | 'workers'
   /** `TURBOPANEL_IS_SIGNUP_ENABLED` — env override for Workers and self-hosted. */
-  signupEnvOverride?: SignupEnvOverride
+  signupEnvOverride: SignupEnvOverride | undefined
   emailFrom?: string
   baseUrl?: string
 }
@@ -177,6 +177,217 @@ export async function buildSessionResponse(
   return base
 }
 
+type ParsedSignupBody =
+  | { ok: true; email: string; password: string }
+  | { ok: false; error: string }
+
+function parseSignupBody(body: unknown): ParsedSignupBody {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'Invalid request' }
+  }
+
+  const { email, password } = body as { email?: unknown; password?: unknown }
+
+  if (
+    typeof email !== 'string' ||
+    !email ||
+    typeof password !== 'string' ||
+    !password
+  ) {
+    return { ok: false, error: 'Invalid request' }
+  }
+
+  const emailError = validateSuperadminEmail(email)
+  if (emailError) {
+    return { ok: false, error: emailError }
+  }
+
+  const passwordError = validateSuperadminPassword(password)
+  if (passwordError) {
+    return { ok: false, error: passwordError }
+  }
+
+  return { ok: true, email, password }
+}
+
+type CreateSignupUserResult =
+  | { ok: true; userId: string }
+  | { ok: false; conflict: boolean }
+
+async function createSignupUser(
+  db: Db,
+  trimmedEmail: string,
+  hashedPassword: string,
+  emailVerificationEnabled: boolean,
+): Promise<CreateSignupUserResult> {
+  let createdUserId: string | undefined
+  try {
+    await db.transaction(async (tx) => {
+      const insertedUser = await tx
+        .insert(user)
+        .values({
+          email: trimmedEmail,
+          isEmailVerified: !emailVerificationEnabled,
+          role: 'user',
+        })
+        .returning({ id: user.id })
+
+      const userId = insertedUser[0]?.id
+      if (!userId) {
+        throw new Error('User creation failed')
+      }
+      createdUserId = userId
+
+      await tx.insert(account).values({
+        userId,
+        providerId: 'credential',
+        providerUserId: userId,
+        password: hashedPassword,
+      })
+    })
+  } catch (err) {
+    if (isUserEmailUniqueViolation(err)) {
+      return { ok: false, conflict: true }
+    }
+    compatLogError('auth', `sign-up failed: ${err}`)
+    return { ok: false, conflict: false }
+  }
+
+  if (!createdUserId) {
+    return { ok: false, conflict: false }
+  }
+  return { ok: true, userId: createdUserId }
+}
+
+async function provisionWorkersOrganization(
+  db: Db,
+  opts: AuthRouteOpts,
+  userId: string,
+): Promise<void> {
+  if (opts.runtime !== 'workers') return
+  try {
+    await createOrganizationForUser(db, userId)
+  } catch (err) {
+    compatLogWarn('auth', `Workers sign-up org creation failed: ${err}`)
+  }
+}
+
+async function enqueueSignupVerification(
+  c: Context,
+  opts: AuthRouteOpts,
+  db: Db,
+  queue: EmailQueue,
+  trimmedEmail: string,
+  userId: string,
+): Promise<Response | null> {
+  const verificationToken = await createEmailVerificationToken(db, trimmedEmail)
+  const baseOrigin = await resolveVerificationBaseUrlAsync(c, opts)
+  const verificationUrl =
+    `${baseOrigin}/verify-email?token=${encodeURIComponent(verificationToken)}`
+  const emailFrom =
+    c.get('emailFrom') ?? opts.emailFrom ?? 'noreply@turbopanel.local'
+
+  try {
+    await queue.enqueue({
+      type: 'signup-verification',
+      to: trimmedEmail,
+      from: emailFrom,
+      verificationUrl,
+    })
+    await provisionWorkersOrganization(db, opts, userId)
+    if (isVerificationDevLoggingEnabled(opts)) {
+      compatLogInfo('dev', `verification email queued for ${trimmedEmail}`)
+      compatLogInfo('dev', `verify URL: ${verificationUrl}`)
+    }
+    return null
+  } catch (err) {
+    compatLogWarn('email', `verification email enqueue failed: ${err}`)
+    if (opts.runtime === 'workers') {
+      await db.delete(account).where(eq(account.userId, userId))
+      await db.delete(user).where(eq(user.id, userId))
+      return c.json(
+        {
+          ok: false,
+          error: 'Could not send verification email. Please try again later.',
+        },
+        503,
+      )
+    }
+    return null
+  }
+}
+
+type SignupGate =
+  | { ok: true; emailVerificationEnabled: boolean }
+  | { ok: false; response: Response }
+
+async function resolveSignupGate(
+  c: Context,
+  opts: AuthRouteOpts,
+  db: Db,
+): Promise<SignupGate> {
+  if (opts.runtime === 'deno' && !(await isInstanceInstalled(db))) {
+    return {
+      ok: false,
+      response: c.json({ ok: false, error: 'Complete initial setup first' }, 403),
+    }
+  }
+
+  if (!(await isSignupEnabled(db, opts.signupEnvOverride, opts.runtime))) {
+    return {
+      ok: false,
+      response: c.json({ ok: false, error: 'Sign-up is not enabled' }, 403),
+    }
+  }
+
+  const platformEnv = c.get('platformEnv') as
+    | Record<string, string | undefined>
+    | undefined
+  const env =
+    platformEnv ??
+    (opts.runtime === 'deno' && typeof Deno !== 'undefined'
+      ? Deno.env.toObject()
+      : {})
+  const emailSettings = await resolveEmailSettings(db, env)
+  const emailVerificationEnabled = isEmailActiveForRuntime(
+    emailSettings,
+    opts.runtime,
+  )
+  return { ok: true, emailVerificationEnabled }
+}
+
+async function deliverSignupVerification(
+  c: Context,
+  opts: AuthRouteOpts,
+  db: Db,
+  queue: EmailQueue | undefined,
+  trimmedEmail: string,
+  userId: string,
+): Promise<Response | null> {
+  if (!queue) {
+    compatLogWarn(
+      'email',
+      `verification email not sent for ${trimmedEmail}: email queue unavailable`,
+    )
+    return null
+  }
+
+  // Token generation must not roll back the already-committed user creation.
+  try {
+    return await enqueueSignupVerification(
+      c,
+      opts,
+      db,
+      queue,
+      trimmedEmail,
+      userId,
+    )
+  } catch (err) {
+    compatLogError('auth', `verification token generation failed: ${err}`)
+    return null
+  }
+}
+
 export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
   const auth = new Hono()
 
@@ -301,27 +512,11 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Database unavailable' }, 503)
     }
 
-    if (opts.runtime === 'deno' && !(await isInstanceInstalled(db))) {
-      return c.json({ ok: false, error: 'Complete initial setup first' }, 403)
+    const gate = await resolveSignupGate(c, opts, db)
+    if (!gate.ok) {
+      return gate.response
     }
-
-    if (!(await isSignupEnabled(db, opts.signupEnvOverride, opts.runtime))) {
-      return c.json({ ok: false, error: 'Sign-up is not enabled' }, 403)
-    }
-
-    const platformEnv = c.get('platformEnv') as
-      | Record<string, string | undefined>
-      | undefined
-    const env =
-      platformEnv ??
-      (opts.runtime === 'deno' && typeof Deno !== 'undefined'
-        ? Deno.env.toObject()
-        : {})
-    const emailSettings = await resolveEmailSettings(db, env)
-    const emailVerificationEnabled = isEmailActiveForRuntime(
-      emailSettings,
-      opts.runtime,
-    )
+    const { emailVerificationEnabled } = gate
 
     let body: unknown
     try {
@@ -330,35 +525,12 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Invalid request' }, 400)
     }
 
-    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
+    const parsed = parseSignupBody(body)
+    if (!parsed.ok) {
+      return c.json({ ok: false, error: parsed.error }, 400)
     }
 
-    const { email, password } = body as {
-      email?: unknown
-      password?: unknown
-    }
-
-    if (
-      typeof email !== 'string' ||
-      !email ||
-      typeof password !== 'string' ||
-      !password
-    ) {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    const emailError = validateSuperadminEmail(email)
-    if (emailError) {
-      return c.json({ ok: false, error: emailError }, 400)
-    }
-
-    const passwordError = validateSuperadminPassword(password)
-    if (passwordError) {
-      return c.json({ ok: false, error: passwordError }, 400)
-    }
-
-    const trimmedEmail = email.trim().toLowerCase()
+    const trimmedEmail = parsed.email.trim().toLowerCase()
 
     const existingUser = await db
       .select({ id: user.id })
@@ -381,101 +553,35 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       )
     }
 
-    const hashedPassword = await hashPassword(password)
-    let createdUserId: string | undefined
-
-    try {
-      await db.transaction(async (tx) => {
-        const insertedUser = await tx
-          .insert(user)
-          .values({
-            email: trimmedEmail,
-            isEmailVerified: !emailVerificationEnabled,
-            role: 'user',
-          })
-          .returning({ id: user.id })
-
-        const userId = insertedUser[0]?.id
-        if (!userId) {
-          throw new Error('User creation failed')
-        }
-        createdUserId = userId
-
-        await tx.insert(account).values({
-          userId,
-          providerId: 'credential',
-          providerUserId: userId,
-          password: hashedPassword,
-        })
-      })
-    } catch (err) {
-      if (isUserEmailUniqueViolation(err)) {
+    const hashedPassword = await hashPassword(parsed.password)
+    const created = await createSignupUser(
+      db,
+      trimmedEmail,
+      hashedPassword,
+      emailVerificationEnabled,
+    )
+    if (!created.ok) {
+      if (created.conflict) {
         return c.json({ ok: false, error: 'Email is already registered' }, 409)
       }
-      compatLogError('auth', `sign-up failed: ${err}`)
       return c.json({ ok: false, error: 'Sign-up failed' }, 500)
     }
 
-    const provisionWorkersOrganization = async () => {
-      if (opts.runtime === 'workers' && createdUserId) {
-        try {
-          await createOrganizationForUser(db, createdUserId)
-        } catch (err) {
-          compatLogWarn('auth', `Workers sign-up org creation failed: ${err}`)
-        }
-      }
-    }
-
     if (!emailVerificationEnabled) {
-      await provisionWorkersOrganization()
+      await provisionWorkersOrganization(db, opts, created.userId)
       return c.json({ ok: true }, 201)
     }
 
-    // Token generation must not roll back the already-committed user creation.
-    try {
-      const verificationToken = await createEmailVerificationToken(db, trimmedEmail)
-      const baseOrigin = await resolveVerificationBaseUrlAsync(c, opts)
-      const verificationUrl =
-        `${baseOrigin}/verify-email?token=${encodeURIComponent(verificationToken)}`
-
-      const queue = signupQueue
-      const emailFrom =
-        c.get('emailFrom') ?? opts.emailFrom ?? 'noreply@turbopanel.local'
-      if (queue) {
-        try {
-          await queue.enqueue({
-            type: 'signup-verification',
-            to: trimmedEmail,
-            from: emailFrom,
-            verificationUrl,
-          })
-          await provisionWorkersOrganization()
-          if (isVerificationDevLoggingEnabled(opts)) {
-            compatLogInfo('dev', `verification email queued for ${trimmedEmail}`)
-            compatLogInfo('dev', `verify URL: ${verificationUrl}`)
-          }
-        } catch (err) {
-          compatLogWarn('email', `verification email enqueue failed: ${err}`)
-          if (opts.runtime === 'workers' && createdUserId) {
-            await db.delete(account).where(eq(account.userId, createdUserId))
-            await db.delete(user).where(eq(user.id, createdUserId))
-            return c.json(
-              {
-                ok: false,
-                error: 'Could not send verification email. Please try again later.',
-              },
-              503,
-            )
-          }
-        }
-      } else {
-        compatLogWarn(
-          'email',
-          `verification email not sent for ${trimmedEmail}: email queue unavailable`,
-        )
-      }
-    } catch (err) {
-      compatLogError('auth', `verification token generation failed: ${err}`)
+    const verificationResponse = await deliverSignupVerification(
+      c,
+      opts,
+      db,
+      signupQueue,
+      trimmedEmail,
+      created.userId,
+    )
+    if (verificationResponse) {
+      return verificationResponse
     }
 
     return c.json({ ok: true }, 201)

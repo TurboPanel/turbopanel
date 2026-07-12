@@ -22,6 +22,10 @@ import { registerInstallRoutes } from './lib/install/routes.ts'
 import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
 import { registerDaemonWebSocket } from './daemon/deno-ws.ts'
 import {
+  parseMetricsRetentionDays,
+  resolveServerMetricsStore,
+} from './daemon/metrics/store-selection.ts'
+import {
   createRedisRateLimiter,
   resolveDaemonConnectRateLimit,
   resolveDaemonRestRateLimit,
@@ -123,6 +127,18 @@ const challengeSigningSecrets = await deriveSecretsConfig(secretsConfig, 'daemon
 const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(secretsConfig, 'data-encryption')
 const daemonCellRegistry = createRedisDaemonCellRegistry({ db })
 const queryCache = createRedisQueryCache({ client: daemonCellRegistry.client, db })
+const serverMetricsStore = resolveServerMetricsStore({
+  runtime: 'deno',
+  clickhouse: {
+    url: Deno.env.get('TURBOPANEL_CLICKHOUSE_URL'),
+    database: Deno.env.get('TURBOPANEL_CLICKHOUSE_DATABASE'),
+    user: Deno.env.get('TURBOPANEL_CLICKHOUSE_USER'),
+    password: Deno.env.get('TURBOPANEL_CLICKHOUSE_PASSWORD'),
+    retentionDays: parseMetricsRetentionDays(
+      Deno.env.get('TURBOPANEL_SERVER_METRICS_RETENTION_DAYS'),
+    ),
+  },
+})
 const connectRate = resolveDaemonConnectRateLimit()
 const restRate = resolveDaemonRestRateLimit()
 const inboundLimits = resolveDaemonWsInboundLimits()
@@ -170,6 +186,7 @@ const app = createApp({
   baseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? undefined,
   daemonCellRegistry,
   queryCache,
+  serverMetricsStore,
   dataEncryptionSecrets,
   secretsConfig,
 })
@@ -204,6 +221,7 @@ registerDaemonWebSocket(routes, {
   db,
   secrets: daemonJwtKeyring,
   daemonCellRegistry,
+  metricsStore: serverMetricsStore,
   connectLimiter: daemonConnectLimiter,
   inboundMessageLimit: inboundLimits.limit,
   inboundMessageWindowMs: inboundLimits.windowMs,
