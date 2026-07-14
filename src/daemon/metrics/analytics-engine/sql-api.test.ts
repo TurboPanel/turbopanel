@@ -57,6 +57,10 @@ it("weightedAvgExpression excludes AE_MISSING_METRIC_SENTINEL via AE-safe litera
   // broke production chart queries (`metrics_backend_unavailable`).
   assertEquals(expr.includes(String(AE_MISSING_METRIC_SENTINEL)), false);
   assertEquals(expr.includes("NULLIF"), false);
+  // AE IF() requires matching branch types (Integer 0 vs Double → HTTP 422).
+  assertEquals(expr.includes("0.0"), true);
+  assertEquals(expr.includes(", 0,"), false);
+  assertEquals(expr.includes("_sample_interval * 1.0"), true);
   assertEquals(expr.includes("_sample_interval"), true);
   assertEquals(expr.includes("double1"), true);
 });

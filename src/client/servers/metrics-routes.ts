@@ -172,6 +172,23 @@ export function registerServerMetricsRoutes(
       console.error(
         `metrics queryHostSeries failed backend=${backend} serverId=${serverId}: ${message}`,
       )
+      // #region agent log
+      console.error(
+        JSON.stringify({
+          sessionId: '5e4747',
+          runId: 'post-fix',
+          hypothesisId: 'H1-if-type-mismatch',
+          location: 'metrics-routes.ts:queryHostSeries',
+          message: 'metrics series query failed',
+          data: {
+            backend,
+            errSnippet: message.slice(0, 400),
+            hasIntegerZeroBranch: message.includes('Integer and Double'),
+          },
+          timestamp: Date.now(),
+        }),
+      )
+      // #endregion
       return c.json(
         metricsBackendUnavailableResponse(backend),
         503,
@@ -184,6 +201,25 @@ export function registerServerMetricsRoutes(
       to: queryRange.toIso,
       result,
     })
+
+    // #region agent log
+    console.error(
+      JSON.stringify({
+        sessionId: '5e4747',
+        runId: 'post-fix',
+        hypothesisId: 'H1-if-type-mismatch',
+        location: 'metrics-routes.ts:queryHostSeries',
+        message: 'metrics series query ok',
+        data: {
+          backend,
+          available: payload.available,
+          sampleCount: payload.sampleCount,
+          pointCount: payload.points.length,
+        },
+        timestamp: Date.now(),
+      }),
+    )
+    // #endregion
 
     const ttlSeconds = resolveChartCacheTtlSeconds({
       toMs: queryRange.toMs,

@@ -208,16 +208,17 @@ export function aeMissingMetricSentinelSql(): string {
  * Weighted average excluding missing-metric sentinel rows.
  * Documented AE sampling pattern:
  *   SUM(_sample_interval * doubleN) / SUM(_sample_interval)
- * with `if(... = sentinel, 0, ...)` so missing never averages as zero.
+ * with `if(... = sentinel, 0.0, ...)` so missing never averages as zero.
  *
  * Uses only documented AE SQL (`if`, `SUM`, `pow`) — not `NULLIF` / `-1e308`
- * literals, which break the Analytics Engine SQL API.
+ * literals. AE requires IF() branches to share a type, so use `0.0` and
+ * `_sample_interval * 1.0` (Double) — bare `0` (Integer) vs Double is a 422.
  */
 export function weightedAvgExpression(doubleCol: string): string {
   const sentinel = aeMissingMetricSentinelSql();
   return (
-    `SUM(if(${doubleCol} = ${sentinel}, 0, _sample_interval * ${doubleCol}))` +
-    ` / SUM(if(${doubleCol} = ${sentinel}, 0, _sample_interval))`
+    `SUM(if(${doubleCol} = ${sentinel}, 0.0, _sample_interval * ${doubleCol}))` +
+    ` / SUM(if(${doubleCol} = ${sentinel}, 0.0, _sample_interval * 1.0))`
   );
 }
 
