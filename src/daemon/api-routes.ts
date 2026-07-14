@@ -3,7 +3,10 @@ import { Hono } from "hono";
 import type { Context, Next } from "hono";
 import { isInstanceInstalled } from "../client/authn/install-state.ts";
 import { lookupActiveLicense } from "../client/authn/license.ts";
-import type { DerivedSecretsConfig, SecretsConfig } from "../client/authn/secrets.ts";
+import type {
+  DerivedSecretsConfig,
+  SecretsConfig,
+} from "../client/authn/secrets.ts";
 import type { DaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
 import { buildJwksDocument } from "./authn/daemon-jwt-keyring.ts";
 import {
@@ -11,8 +14,13 @@ import {
   isDaemonSealedEnvelope,
   parseDaemonSecretEnvelope,
 } from "../client/authn/data-encryption.ts";
-import { getDb } from "../db.ts";
+import { getDb, getServerMetricsStore } from "../db.ts";
 import { server } from "../lib/db/schema.ts";
+import {
+  metricsPayloadByteLength,
+  rateLimitedMetricsLog,
+  validateHostMetricsSample,
+} from "./metrics/validation.ts";
 import {
   createStatelessChallengeStore,
   DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
@@ -446,8 +454,8 @@ export function registerDaemonApiRoutes(
     }, 200);
   });
 
-  const enforceJwtRestLimit = (route: DaemonRestRateLimitRoute) =>
-    async (c: Context, next: Next) => {
+  const enforceJwtRestLimit =
+    (route: DaemonRestRateLimitRoute) => async (c: Context, next: Next) => {
       const daemonServerId = c.get("daemonServerId") as string;
       const limited = await enforceDaemonRestLimit(
         c,
@@ -463,6 +471,62 @@ export function registerDaemonApiRoutes(
     enforceJwtRestLimit("commands-lease"),
     (c) => {
       return c.json({ commands: [] }, 200);
+    },
+  );
+
+  // Must never call env.DAEMON_CELL.getByName or touch the Durable Object —
+  // metrics writes go straight to the Analytics Engine / ClickHouse store.
+  daemon.post(
+    "/metrics",
+    requireDaemonJwt,
+    enforceJwtRestLimit("metrics"),
+    async (c) => {
+      const serverId = c.get("daemonServerId") as string;
+      const raw = await c.req.text().catch(() => "");
+      const payloadBytes = metricsPayloadByteLength(raw);
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        rateLimitedMetricsLog(serverId, "invalid metrics payload", (reason) => {
+          console.warn(
+            `metrics ignored invalid sample from ${serverId}: ${reason}`,
+          );
+        });
+        return c.json({ ok: false, error: "invalid metrics payload" }, 400);
+      }
+
+      const result = validateHostMetricsSample(parsed, {
+        serverId,
+        receivedAt: new Date().toISOString(),
+        payloadBytes,
+      });
+      if (!result.ok) {
+        rateLimitedMetricsLog(serverId, result.reason, (reason) => {
+          console.warn(
+            `metrics ignored invalid sample from ${serverId}: ${reason}`,
+          );
+        });
+        return c.json({ ok: false, error: result.reason }, 400);
+      }
+
+      const store = getServerMetricsStore(c);
+      const logWriteFailed = (err: unknown) => {
+        rateLimitedMetricsLog(serverId, "write_failed", () => {
+          console.warn(
+            `metrics write failed for ${serverId}: ${String(err)}`,
+          );
+        });
+      };
+      try {
+        const writeResult = store?.writeHostSample(result.sample);
+        void Promise.resolve(writeResult).catch(logWriteFailed);
+      } catch (err) {
+        logWriteFailed(err);
+      }
+
+      return c.json({ ok: true }, 202);
     },
   );
 
@@ -485,14 +549,20 @@ export function registerDaemonApiRoutes(
         .json<{ ciphertexts?: unknown }>()
         .catch(() => ({} as { ciphertexts?: unknown }));
       if (!Array.isArray(body.ciphertexts)) {
-        return c.json({ ok: false, error: "ciphertexts must be an array" }, 400);
+        return c.json(
+          { ok: false, error: "ciphertexts must be an array" },
+          400,
+        );
       }
       if (
         body.ciphertexts.length === 0 ||
         body.ciphertexts.length > MAX_SECRETS_DECRYPT_BATCH
       ) {
         return c.json(
-          { ok: false, error: `ciphertexts length must be 1-${MAX_SECRETS_DECRYPT_BATCH}` },
+          {
+            ok: false,
+            error: `ciphertexts length must be 1-${MAX_SECRETS_DECRYPT_BATCH}`,
+          },
           400,
         );
       }
@@ -512,10 +582,16 @@ export function registerDaemonApiRoutes(
             if (!parsed) {
               return null;
             }
-            if (parsed.serverId !== daemonServerId || parsed.keyId !== daemonKeyId) {
+            if (
+              parsed.serverId !== daemonServerId || parsed.keyId !== daemonKeyId
+            ) {
               return null;
             }
-            return await decryptSecretForDaemon(secretsConfig, recipient, ciphertext);
+            return await decryptSecretForDaemon(
+              secretsConfig,
+              recipient,
+              ciphertext,
+            );
           } catch {
             return null;
           }

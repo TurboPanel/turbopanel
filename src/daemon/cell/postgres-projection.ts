@@ -732,6 +732,12 @@ export async function listConnectedServersForSweep(
 export type RecentlyOfflineServerForSweep = {
   id: string;
   connectedAt: string | null;
+  /**
+   * Offline transition timestamp — `disconnectedAt` when set, else
+   * `statusChangedAt`. Used by the AE-direct self-heal path to reject stale
+   * pre-disconnect metrics samples.
+   */
+  offlineAt: string;
 };
 
 /** Grace window for sweep self-heal — 2× offline-sweep stale grace (90s). */
@@ -740,7 +746,8 @@ export const RECENT_OFFLINE_SWEEP_MS = 180_000;
 /**
  * Candidates for offline-sweep self-heal: servers Postgres recently marked
  * offline (bounded by {@link RECENT_OFFLINE_SWEEP_MS}) so a live+warm cell
- * can re-project online via `onDaemonConnected`.
+ * can re-project online via AE-direct `onDaemonConnectedFromEvidence` or
+ * probed `onDaemonConnected` after `checkLiveness`.
  */
 export async function listRecentlyOfflineServersForSweep(
   db: Db,
@@ -773,9 +780,13 @@ export async function listRecentlyOfflineServersForSweep(
     const status = state?.status;
     if (!status || status.connected) continue;
 
+    const offlineAt = status.disconnectedAt ?? status.statusChangedAt;
+    if (!offlineAt) continue;
+
     candidates.push({
       id: row.id,
       connectedAt: status.connectedAt ?? null,
+      offlineAt,
     });
   }
   return candidates;

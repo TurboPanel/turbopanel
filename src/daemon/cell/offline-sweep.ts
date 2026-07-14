@@ -18,8 +18,19 @@
  *      nothing else.
  *   3. Stale connected servers get a Postgres write (reusing
  *      `onDaemonDisconnected`) and a notification. Live+warm servers that
- *      Postgres still marks offline get re-projected online via
- *      `onDaemonConnected` (self-heal).
+ *      Postgres still marks offline get re-projected online (self-heal):
+ *      AE-active candidates via Postgres-only `onDaemonConnectedFromEvidence`
+ *      (no DO wake) only when the AE latest sample is newer than the offline
+ *      transition; otherwise probed candidates via `onDaemonConnected` after
+ *      `checkLiveness` already woke the cell.
+ *
+ * Cost model (AE short-circuit): **one fleet-wide Analytics Engine SQL read
+ * per tick replaces N per-minute DO wakes**. Connected servers present in
+ * the recent-host-sample set are provably alive — skip `checkLiveness`
+ * entirely (zero subrequests). Suspects (absent from AE) keep the existing
+ * check → demote path. AE-active recently-offline self-heal is also wake-free
+ * (Postgres-only projection). When AE config is missing or the query throws,
+ * fall back to today's check-all behavior so offline detection is never lost.
  *
  * This intentionally does NOT reintroduce a per-DO recurring alarm — every
  * `setAlarm()` reschedule is a billed SQLite row write (see do.ts "Alarm /
@@ -31,20 +42,31 @@
  * granularity) plus `OFFLINE_SWEEP_STALE_MS` grace — worst case is close to
  * but a good deal cheaper than re-arming a DO alarm per server.
  */
-import { endDbConnection, type Db } from "../../db.ts";
+import { type Db, endDbConnection } from "../../db.ts";
 import { resolveWorkersDb } from "../../workers-bindings.ts";
 import { createDurableObjectDaemonCellRegistry } from "./do-registry.ts";
 import {
   onDaemonConnected,
+  onDaemonConnectedFromEvidence,
   onDaemonDisconnected,
 } from "./control-plane-monitor.ts";
 import {
   type ConnectedServerForSweep,
   listConnectedServersForSweep,
   listRecentlyOfflineServersForSweep,
+  type RecentlyOfflineServerForSweep,
   rotateSweepBatch,
 } from "./postgres-projection.ts";
-import type { DaemonCellLiveness } from "./contracts.ts";
+import type {
+  DaemonCell,
+  DaemonCellLiveness,
+  DaemonCellRegistry,
+} from "./contracts.ts";
+import { resolveAnalyticsEngineSqlConfig } from "../metrics/store-selection.ts";
+import {
+  AE_LIVENESS_WINDOW_SECONDS,
+  queryRecentlyActiveServerIds,
+} from "../metrics/analytics-engine/sql-api.ts";
 
 /** Grace beyond the daemon's ~60s idle-ping cadence before declaring a server stale. */
 export const OFFLINE_SWEEP_STALE_MS = 90_000;
@@ -66,7 +88,11 @@ function sweepTrace(event: string, detail: Record<string, unknown> = {}): void {
   for (const key of Object.keys(detail).sort((a, b) => a.localeCompare(b))) {
     const value = detail[key];
     if (value === undefined || value === null) continue;
-    parts.push(`${key}=${typeof value === "object" ? JSON.stringify(value) : String(value)}`);
+    parts.push(
+      `${key}=${
+        typeof value === "object" ? JSON.stringify(value) : String(value)
+      }`,
+    );
   }
   console.info(parts.join(" "));
 }
@@ -168,7 +194,7 @@ function isLiveAndWarm(
 
 function mergeSweepCandidates(
   connected: ConnectedServerForSweep[],
-  recentlyOffline: Array<{ id: string; connectedAt: string | null }>,
+  recentlyOffline: RecentlyOfflineServerForSweep[],
 ): SweepCandidate[] {
   const byId = new Map<string, SweepCandidate>();
   for (const candidate of connected) {
@@ -189,10 +215,217 @@ function mergeSweepCandidates(
   return [...byId.values()];
 }
 
-async function sweepOnce(env: CloudflareBindings, db: Db): Promise<void> {
-  const nowMs = Date.now();
-  const connected = await listConnectedServersForSweep(db);
-  const recentlyOffline = await listRecentlyOfflineServersForSweep(db);
+/**
+ * AE-direct self-heal is only safe when the latest host sample is strictly
+ * newer than the offline transition. A sample written shortly before a clean
+ * `webSocketClose` stays inside the 180s AE window and must not undo a correct
+ * offline projection without `checkLiveness`.
+ */
+export function canDirectHealFromAeEvidence(
+  offlineAt: string,
+  latestSampleAtMs: number | undefined,
+): boolean {
+  if (latestSampleAtMs === undefined) return false;
+  const offlineAtMs = Date.parse(offlineAt);
+  if (!Number.isFinite(offlineAtMs)) return false;
+  return latestSampleAtMs > offlineAtMs;
+}
+
+/**
+ * Resolve the AE recently-active serverId → latestAtMs map for this cron tick.
+ * Returns `null` when AE is unavailable or the query fails — callers must
+ * fall back to check-all so offline detection is never lost.
+ */
+async function resolveRecentlyActiveServerIds(
+  env: CloudflareBindings,
+): Promise<Map<string, number> | null> {
+  const config = resolveAnalyticsEngineSqlConfig(env);
+  if (!config) {
+    sweepTrace("ae-unavailable");
+    return null;
+  }
+  try {
+    return await queryRecentlyActiveServerIds(config, {
+      sinceSeconds: AE_LIVENESS_WINDOW_SECONDS,
+    });
+  } catch (err) {
+    sweepTrace("ae-query-failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
+export type SweepOnceDeps = {
+  registry?: DaemonCellRegistry;
+  /** serverId → latest AE host-sample epoch ms; null = AE unavailable. */
+  resolveActiveServerIds?: () => Promise<Map<string, number> | null>;
+  listConnected?: (db: Db) => Promise<ConnectedServerForSweep[]>;
+  listRecentlyOffline?: (
+    db: Db,
+  ) => Promise<RecentlyOfflineServerForSweep[]>;
+  onConnected?: (
+    db: Db,
+    serverId: string,
+    cell: DaemonCell,
+  ) => Promise<unknown>;
+  /** Postgres-only AE-direct self-heal — must not touch a DaemonCell. */
+  onConnectedFromEvidence?: (
+    db: Db,
+    serverId: string,
+    connectedAt?: string | null,
+  ) => Promise<unknown>;
+  onDisconnected?: (db: Db, serverId: string) => Promise<unknown>;
+};
+
+async function probeCandidates(
+  batch: SweepCandidate[],
+  registry: DaemonCellRegistry,
+  nowMs: number,
+): Promise<{ staleIds: string[]; healIds: string[] }> {
+  const staleIds: string[] = [];
+  const healIds: string[] = [];
+
+  await withBoundedConcurrency(batch, FANOUT_CONCURRENCY, async (candidate) => {
+    let liveness: DaemonCellLiveness | null = null;
+    try {
+      // Half-open reaping still runs inside `/rpc/liveness` (`#reapUnhealthySockets`)
+      // for the suspects we still wake; the absolute max-age backstop moves
+      // daemon-side in a later phase.
+      liveness = (await registry.getCell(candidate.id).checkLiveness?.()) ??
+        null;
+    } catch (err) {
+      sweepTrace("liveness-check-failed", {
+        serverId: candidate.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+
+    updateNullGraceBookkeeping(candidate.id, liveness, nowMs);
+
+    if (candidate.postgresConnected) {
+      if (isStale(candidate.id, liveness, nowMs, candidate.connectedAt)) {
+        staleIds.push(candidate.id);
+      }
+      return;
+    }
+
+    if (isLiveAndWarm(liveness, nowMs)) {
+      healIds.push(candidate.id);
+    }
+  });
+
+  return { staleIds, healIds };
+}
+
+async function demoteStale(
+  db: Db,
+  staleIds: string[],
+  onDisconnected: (db: Db, serverId: string) => Promise<unknown>,
+): Promise<void> {
+  if (staleIds.length === 0) return;
+
+  sweepTrace("stale-detected", { count: staleIds.length });
+
+  await withBoundedConcurrency(
+    staleIds,
+    FANOUT_CONCURRENCY,
+    async (serverId) => {
+      try {
+        await onDisconnected(db, serverId);
+        notifyServerWentOffline(serverId);
+      } catch (err) {
+        sweepTrace("mark-offline-failed", {
+          serverId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+  );
+}
+
+async function healServers(
+  db: Db,
+  healIds: string[],
+  registry: DaemonCellRegistry,
+  onConnected: (
+    db: Db,
+    serverId: string,
+    cell: DaemonCell,
+  ) => Promise<unknown>,
+): Promise<void> {
+  if (healIds.length === 0) return;
+
+  sweepTrace("self-heal-detected", { count: healIds.length });
+
+  await withBoundedConcurrency(
+    healIds,
+    FANOUT_CONCURRENCY,
+    async (serverId) => {
+      try {
+        const cell = registry.getCell(serverId);
+        await onConnected(db, serverId, cell);
+      } catch (err) {
+        sweepTrace("self-heal-failed", {
+          serverId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+  );
+}
+
+/** AE-direct self-heal: Postgres-only — never resolves a cell or getSnapshot. */
+async function healServersFromEvidence(
+  db: Db,
+  candidates: Array<{ id: string; connectedAt: string | null }>,
+  onConnectedFromEvidence: (
+    db: Db,
+    serverId: string,
+    connectedAt?: string | null,
+  ) => Promise<unknown>,
+): Promise<void> {
+  if (candidates.length === 0) return;
+
+  sweepTrace("self-heal-direct", { count: candidates.length });
+
+  await withBoundedConcurrency(
+    candidates,
+    FANOUT_CONCURRENCY,
+    async (candidate) => {
+      try {
+        await onConnectedFromEvidence(db, candidate.id, candidate.connectedAt);
+      } catch (err) {
+        sweepTrace("self-heal-failed", {
+          serverId: candidate.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+  );
+}
+
+type SweepResolvedDeps = Required<
+  Pick<
+    SweepOnceDeps,
+    | "registry"
+    | "listConnected"
+    | "listRecentlyOffline"
+    | "onConnected"
+    | "onConnectedFromEvidence"
+    | "onDisconnected"
+  >
+>;
+
+/** Fallback path: today's check-all behavior (AE unavailable / query failed). */
+async function sweepOnceFallback(
+  db: Db,
+  deps: SweepResolvedDeps,
+  nowMs: number,
+): Promise<void> {
+  const connected = await deps.listConnected(db);
+  const recentlyOffline = await deps.listRecentlyOffline(db);
   const connectedBatch = rotateSweepBatch(
     connected,
     CONNECTED_SWEEP_BUDGET,
@@ -219,71 +452,118 @@ async function sweepOnce(env: CloudflareBindings, db: Db): Promise<void> {
     });
   }
 
-  const batch = candidates;
+  const { staleIds, healIds } = await probeCandidates(
+    candidates,
+    deps.registry,
+    nowMs,
+  );
 
-  const registry = createDurableObjectDaemonCellRegistry(env, db);
-  const staleIds: string[] = [];
-  const healIds: string[] = [];
+  await demoteStale(db, staleIds, deps.onDisconnected);
+  pruneNullGraceBookkeeping(new Set(candidates.map((c) => c.id)));
+  await healServers(db, healIds, deps.registry, deps.onConnected);
+}
 
-  await withBoundedConcurrency(batch, FANOUT_CONCURRENCY, async (candidate) => {
-    let liveness: DaemonCellLiveness | null = null;
-    try {
-      liveness = (await registry.getCell(candidate.id).checkLiveness?.()) ?? null;
-    } catch (err) {
-      sweepTrace("liveness-check-failed", {
-        serverId: candidate.id,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return;
-    }
+/** AE-active path: skip DO wakes for hosts with a recent metrics sample. */
+async function sweepOnceWithAe(
+  db: Db,
+  activeById: Map<string, number>,
+  deps: SweepResolvedDeps,
+  nowMs: number,
+): Promise<void> {
+  const connected = await deps.listConnected(db);
+  const recentlyOffline = await deps.listRecentlyOffline(db);
 
-    updateNullGraceBookkeeping(candidate.id, liveness, nowMs);
+  const suspects = connected.filter((c) => !activeById.has(c.id));
+  const suspectBatch = rotateSweepBatch(
+    suspects,
+    CONNECTED_SWEEP_BUDGET,
+    nowMs,
+  );
 
-    if (candidate.postgresConnected) {
-      if (isStale(candidate.id, liveness, nowMs, candidate.connectedAt)) {
-        staleIds.push(candidate.id);
-      }
-      return;
-    }
+  // Cap all self-heal work (AE-direct + probe) by SELF_HEAL_SWEEP_BUDGET
+  // before partitioning — otherwise a large AE-active recently-offline set
+  // bypasses the budget. AE-direct heals are Postgres-only (no DO wake);
+  // probed heals still go through healServers after checkLiveness.
+  const selfHealRotated = rotateSweepBatch(
+    recentlyOffline,
+    SELF_HEAL_SWEEP_BUDGET,
+    nowMs,
+  );
+  // Only direct-heal when AE evidence is strictly newer than the offline
+  // transition — a pre-disconnect sample inside the AE window is not enough.
+  const directHeal = selfHealRotated.filter((c) =>
+    canDirectHealFromAeEvidence(c.offlineAt, activeById.get(c.id))
+  );
+  const directHealIds = new Set(directHeal.map((c) => c.id));
+  const selfHealBatch = selfHealRotated.filter((c) => !directHealIds.has(c.id));
 
-    if (isLiveAndWarm(liveness, nowMs)) {
-      healIds.push(candidate.id);
-    }
+  sweepTrace("ae-liveness", {
+    connected: connected.length,
+    aeActive: activeById.size,
+    suspectsProbed: suspectBatch.length,
+    selfHealDirect: directHeal.length,
   });
 
-  if (staleIds.length > 0) {
-    sweepTrace("stale-detected", { count: staleIds.length });
+  const probeBatch = mergeSweepCandidates(suspectBatch, selfHealBatch);
+  const { staleIds, healIds } = probeBatch.length > 0
+    ? await probeCandidates(probeBatch, deps.registry, nowMs)
+    : { staleIds: [] as string[], healIds: [] as string[] };
 
-    await withBoundedConcurrency(staleIds, FANOUT_CONCURRENCY, async (serverId) => {
-      try {
-        await onDaemonDisconnected(db, serverId);
-        notifyServerWentOffline(serverId);
-      } catch (err) {
-        sweepTrace("mark-offline-failed", {
-          serverId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
+  await demoteStale(db, staleIds, deps.onDisconnected);
+  pruneNullGraceBookkeeping(new Set(probeBatch.map((c) => c.id)));
+
+  // AE-direct heal stays separate from probed heals — must not call
+  // registry.getCell() / getSnapshot().
+  await healServersFromEvidence(
+    db,
+    directHeal,
+    deps.onConnectedFromEvidence,
+  );
+  await healServers(db, healIds, deps.registry, deps.onConnected);
+}
+
+export async function sweepOnce(
+  env: CloudflareBindings,
+  db: Db,
+  deps: SweepOnceDeps = {},
+): Promise<void> {
+  const nowMs = Date.now();
+  const registry = deps.registry ??
+    createDurableObjectDaemonCellRegistry(env, db);
+  const resolveActiveServerIds = deps.resolveActiveServerIds ??
+    (() => resolveRecentlyActiveServerIds(env));
+  const listConnected = deps.listConnected ?? listConnectedServersForSweep;
+  const listRecentlyOffline = deps.listRecentlyOffline ??
+    listRecentlyOfflineServersForSweep;
+  const onConnected = deps.onConnected ?? onDaemonConnected;
+  const onConnectedFromEvidence = deps.onConnectedFromEvidence ??
+    onDaemonConnectedFromEvidence;
+  const onDisconnected = deps.onDisconnected ?? onDaemonDisconnected;
+
+  const resolvedDeps: SweepResolvedDeps = {
+    registry,
+    listConnected,
+    listRecentlyOffline,
+    onConnected,
+    onConnectedFromEvidence,
+    onDisconnected,
+  };
+
+  let activeById: Map<string, number> | null;
+  try {
+    activeById = await resolveActiveServerIds();
+  } catch (err) {
+    sweepTrace("ae-resolve-failed", {
+      error: err instanceof Error ? err.message : String(err),
     });
+    activeById = null;
+  }
+  if (activeById === null) {
+    await sweepOnceFallback(db, resolvedDeps, nowMs);
+    return;
   }
 
-  pruneNullGraceBookkeeping(new Set(batch.map((candidate) => candidate.id)));
-
-  if (healIds.length === 0) return;
-
-  sweepTrace("self-heal-detected", { count: healIds.length });
-
-  await withBoundedConcurrency(healIds, FANOUT_CONCURRENCY, async (serverId) => {
-    try {
-      const cell = registry.getCell(serverId);
-      await onDaemonConnected(db, serverId, cell);
-    } catch (err) {
-      sweepTrace("self-heal-failed", {
-        serverId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  });
+  await sweepOnceWithAe(db, activeById, resolvedDeps, nowMs);
 }
 
 /** Cron Trigger entry point (`workers.ts` `scheduled()`). */

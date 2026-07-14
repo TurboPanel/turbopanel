@@ -12,15 +12,18 @@ import {
 } from "./field-map.ts";
 import {
   AE_DEFAULT_MAX_RANGE_SECONDS,
+  AE_LIVENESS_WINDOW_SECONDS,
+  aeMissingMetricSentinelSql,
   buildHostSeriesSql,
   buildHostSummarySql,
+  buildRecentlyActiveServerIdsSql,
+  clickhouseAvgExpression,
   hostEventDiscriminatorPredicates,
   parseCloudflareV4SqlResponse,
   queryHostSeriesViaSqlApi,
   queryHostSummaryViaSqlApi,
+  queryRecentlyActiveServerIds,
   quoteSqlString,
-  aeMissingMetricSentinelSql,
-  clickhouseAvgExpression,
   weightedAvgExpression,
 } from "./sql-api.ts";
 
@@ -74,11 +77,15 @@ it("hostEventDiscriminatorPredicates derive event type + schema version", () => 
   assertEquals(predicates.length, 2);
   assertEquals(
     predicates[0],
-    `${blobColumn(AE_BLOB_EVENT_TYPE_INDEX)} = ${quoteSqlString(AE_HOST_EVENT_TYPE)}`,
+    `${blobColumn(AE_BLOB_EVENT_TYPE_INDEX)} = ${
+      quoteSqlString(AE_HOST_EVENT_TYPE)
+    }`,
   );
   assertEquals(
     predicates[1],
-    `${blobColumn(AE_BLOB_SCHEMA_VERSION_INDEX)} = ${quoteSqlString(String(METRICS_SCHEMA_VERSION))}`,
+    `${blobColumn(AE_BLOB_SCHEMA_VERSION_INDEX)} = ${
+      quoteSqlString(String(METRICS_SCHEMA_VERSION))
+    }`,
   );
 });
 
@@ -230,6 +237,50 @@ it("buildHostSummarySql: quoted serverId + sample_count/latest_at", () => {
   for (const predicate of hostEventDiscriminatorPredicates()) {
     assertEquals(sql.includes(`AND ${predicate}`), true);
   }
+});
+
+it("AE_LIVENESS_WINDOW_SECONDS is three missed 60s samples", () => {
+  assertEquals(AE_LIVENESS_WINDOW_SECONDS, 180);
+});
+
+it("buildRecentlyActiveServerIdsSql: fleet-wide host discriminators, no doubles", () => {
+  const predicates = hostEventDiscriminatorPredicates();
+  const sql = buildRecentlyActiveServerIdsSql({
+    sinceSeconds: AE_LIVENESS_WINDOW_SECONDS,
+    nowMs: 1_704_067_200_000,
+  });
+  for (const predicate of predicates) {
+    assertEquals(sql.includes(predicate), true);
+  }
+  assertEquals(sql.includes("index1 AS server_id"), true);
+  assertEquals(sql.includes("max(timestamp) AS latest_at"), true);
+  assertEquals(sql.includes("GROUP BY"), true);
+  assertEquals(sql.includes("toDateTime("), true);
+  assertEquals(sql.includes("double"), false);
+  assertEquals(sql.includes("FORMAT JSON"), false);
+});
+
+it("queryRecentlyActiveServerIds: maps enveloped rows to serverId → latestAtMs", async () => {
+  const idA = "11111111-2222-4333-8444-555555555555";
+  const idB = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const byId = await queryRecentlyActiveServerIds(
+    {
+      accountId: "acct123",
+      apiToken: "token-xyz",
+      fetch: async () =>
+        new Response(
+          envelopedSqlResponse([
+            { server_id: idA, latest_at: "2026-01-01T00:58:00Z" },
+            { server_id: idB, latest_at: "2026-01-01T00:59:00Z" },
+          ]),
+          { status: 200 },
+        ),
+    },
+    { sinceSeconds: AE_LIVENESS_WINDOW_SECONDS },
+  );
+  assertEquals(byId.size, 2);
+  assertEquals(byId.get(idA), Date.parse("2026-01-01T00:58:00Z"));
+  assertEquals(byId.get(idB), Date.parse("2026-01-01T00:59:00Z"));
 });
 
 it("parseCloudflareV4SqlResponse: reads result.data from v4 envelope", () => {

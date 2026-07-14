@@ -47,6 +47,25 @@ export async function onDaemonConnected(
 }
 
 /**
+ * Postgres-only online projection for AE-direct offline-sweep self-heal.
+ * Marks the server online without a `DaemonCell` or `getSnapshot()` — so
+ * Workers never wake the Durable Object. Existing projection identity is
+ * preserved (empty identity merge); pass `connectedAt` when known from the
+ * prior Postgres status to keep "Connected Since" stable across false demotions.
+ */
+export async function onDaemonConnectedFromEvidence(
+  db: Db,
+  serverId: string,
+  connectedAt?: string | null,
+): Promise<void> {
+  await projectServerDaemon(db, serverId, {
+    kind: "online",
+    identity: {},
+    ...(connectedAt ? { connectedAt } : {}),
+  });
+}
+
+/**
  * Project inbound hello/heartbeat traffic. When the sparse Postgres status is
  * offline or the cell runtime flag was cleared by a stale sweep, treat inbound
  * as an online transition instead of a heartbeat-only touch.

@@ -963,6 +963,8 @@ Deno.test("listRecentlyOfflineServersForSweep returns recent offline rows only",
 
   assertEquals(candidates.length, 2);
   assert(candidates.every((row) => row.id.startsWith("srv-recent-")));
+  assertEquals(candidates[0]?.offlineAt, recentAt);
+  assertEquals(candidates[1]?.offlineAt, recentAt);
 });
 
 Deno.test("rotateSweepBatch selects candidates beyond the first budget on later ticks", () => {

@@ -11,6 +11,7 @@ import type { DaemonCellRegistry } from "./contracts.ts";
 import { DAEMON_OFFLINE_SWEEP_MS } from "./protocol.ts";
 import {
   onDaemonConnected,
+  onDaemonConnectedFromEvidence,
   onDaemonDisconnected,
   onDaemonHeartbeat,
   onDaemonInbound,
@@ -355,6 +356,32 @@ Deno.test("onDaemonConnected self-heals Postgres offline when cell is live", asy
   assertEquals(updateCalls.length, 1);
   const status = statusFromPatch(updateCalls[0]);
   assertEquals(status?.connected, true);
+});
+
+Deno.test("onDaemonConnectedFromEvidence marks online without a cell", async () => {
+  const recentAt = new Date().toISOString();
+  const connectedAt = "2020-01-01T00:00:00.000Z";
+  const { db, updateCalls } = createTrackingDb(
+    { key: baseKey, projection: { hostname: "host-1", machineId: "mid-1" } },
+    {
+      connected: false,
+      daemonStatus: "offline",
+      lastSeenAt: recentAt,
+      connectedAt,
+      disconnectedAt: recentAt,
+      statusChangedAt: recentAt,
+    },
+  );
+
+  await onDaemonConnectedFromEvidence(db, serverId, connectedAt);
+
+  assertEquals(updateCalls.length, 1);
+  const status = statusFromPatch(updateCalls[0]);
+  assertEquals(status?.connected, true);
+  assertEquals(status?.connectedAt, connectedAt);
+  const daemon = parseServerDaemonState(updateCalls[0]?.daemon);
+  assertEquals(daemon?.projection?.hostname, "host-1");
+  assertEquals(daemon?.projection?.machineId, "mid-1");
 });
 
 Deno.test("onDaemonHeartbeat within 60s skips DB write when agent unchanged", async () => {

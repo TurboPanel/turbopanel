@@ -17,8 +17,8 @@
 
 import {
   HOST_METRIC_KEYS,
-  METRICS_SCHEMA_VERSION,
   type HostMetricKey,
+  METRICS_SCHEMA_VERSION,
 } from "../contract.ts";
 import type {
   HostSeriesPoint,
@@ -27,9 +27,7 @@ import type {
   HostSummaryQuery,
   HostSummaryResult,
 } from "../types.ts";
-import {
-  finalizeHostSeriesResult,
-} from "../query/series-response.ts";
+import { finalizeHostSeriesResult } from "../query/series-response.ts";
 import {
   AE_BLOB_EVENT_TYPE_INDEX,
   AE_BLOB_SCHEMA_VERSION_INDEX,
@@ -53,6 +51,14 @@ export const AE_DEFAULT_MAX_RANGE_SECONDS = 90 * 24 * 60 * 60;
 
 /** Default bucket when `resolutionSeconds` is omitted (5 minutes). */
 export const AE_DEFAULT_BUCKET_SECONDS = 300;
+
+/**
+ * Fleet liveness window for the offline-sweep cron: three missed ~60s host
+ * samples. Kept tight so genuinely-dead servers become "suspect" (and get a
+ * `checkLiveness` DO wake) quickly; a slightly-stale-but-alive server just
+ * costs one extra wake (safe).
+ */
+export const AE_LIVENESS_WINDOW_SECONDS = 180;
 
 /**
  * Schema versions this read path understands (positional semantics must match).
@@ -399,6 +405,79 @@ export function buildHostSummarySql(
 }
 
 /**
+ * Fleet-wide AE SQL: serverIds that emitted a host sample within `sinceSeconds`.
+ *
+ * No per-server filter — one query covers the whole fleet. AE SQL's default
+ * row cap (~10000) means overflow servers are simply treated as "suspect" by
+ * the offline sweep (probed via `checkLiveness` as today) — correctness is
+ * preserved.
+ */
+export function buildRecentlyActiveServerIdsSql(opts: {
+  sinceSeconds: number;
+  nowMs?: number;
+  dataset?: string;
+}): string {
+  const sinceSeconds = assertPositiveInt("sinceSeconds", opts.sinceSeconds);
+  const dataset = assertSafeDatasetName(opts.dataset ?? AE_DATASET_NAME);
+  const fromUnix = Math.floor((opts.nowMs ?? Date.now()) / 1000) - sinceSeconds;
+  const discriminators = hostEventDiscriminatorPredicates();
+
+  return [
+    "SELECT",
+    `  ${AE_INDEX_SERVER_ID_COLUMN} AS server_id,`,
+    `  max(${AE_TIMESTAMP_COLUMN}) AS latest_at`,
+    `FROM ${dataset}`,
+    `WHERE ${discriminators[0]}`,
+    `  AND ${discriminators[1]}`,
+    `  AND ${AE_TIMESTAMP_COLUMN} >= toDateTime(${fromUnix})`,
+    `GROUP BY server_id`,
+  ].join("\n");
+}
+
+/**
+ * Parse AE `latest_at` (ISO or space-separated DateTime) to epoch ms.
+ * Returns null when the value is missing or unparseable.
+ */
+export function parseAeLatestAtMs(raw: unknown): number | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    // AE may return unix seconds or milliseconds.
+    return raw > 1e12 ? raw : raw * 1000;
+  }
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  let ms = Date.parse(raw);
+  if (Number.isFinite(ms)) return ms;
+  // ClickHouse / AE DateTime often renders as "YYYY-MM-DD HH:MM:SS".
+  ms = Date.parse(raw.replaceAll(" ", "T") + "Z");
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Query AE for serverIds with a recent host sample. Returns a Map of
+ * serverId → latest sample timestamp (epoch ms). Empty / unparseable rows
+ * are skipped. Callers treat a thrown error as "AE unavailable".
+ */
+export async function queryRecentlyActiveServerIds(
+  config: AnalyticsEngineSqlConfig,
+  opts: { sinceSeconds: number },
+): Promise<Map<string, number>> {
+  const sql = buildRecentlyActiveServerIdsSql({
+    sinceSeconds: opts.sinceSeconds,
+    dataset: config.dataset,
+  });
+  const result = await executeSql(config, sql);
+  const byId = new Map<string, number>();
+  for (const row of result.data) {
+    const id = String(row.server_id ?? "").trim();
+    if (id.length === 0) continue;
+    const latestAtMs = parseAeLatestAtMs(row.latest_at);
+    if (latestAtMs === null) continue;
+    byId.set(id, latestAtMs);
+  }
+  return byId;
+}
+
+/**
  * Validate and unwrap a Cloudflare Analytics Engine SQL response.
  *
  * Preferred shape: client/v4 envelope `{ success, result: { data } }`.
@@ -442,17 +521,18 @@ export function parseCloudflareV4SqlResponse(
         return "";
       })
       .filter((msg): msg is string => Boolean(msg));
-    const resultError =
-      envelope.result &&
+    const resultError = envelope.result &&
         typeof envelope.result === "object" &&
         !Array.isArray(envelope.result) &&
         typeof envelope.result.error === "string"
-        ? envelope.result.error.trim()
-        : "";
+      ? envelope.result.error.trim()
+      : "";
     if (resultError) messages.push(resultError);
     const detail = messages.length > 0
       ? messages.join("; ")
-      : `opaque body keys=${Object.keys(envelope).sort((a, b) => a.localeCompare(b)).join(",")}`;
+      : `opaque body keys=${
+        Object.keys(envelope).sort((a, b) => a.localeCompare(b)).join(",")
+      }`;
     throw new Error(`AE SQL API error: ${detail}`);
   }
   const result = envelope.result;
@@ -497,8 +577,9 @@ async function executeSql(
       "TURBOPANEL_ANALYTICS_ENGINE_API_TOKEN is required for AE SQL",
     );
   }
-  const url =
-    `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/analytics_engine/sql`;
+  const url = `https://api.cloudflare.com/client/v4/accounts/${
+    encodeURIComponent(accountId)
+  }/analytics_engine/sql`;
   const fetchFn = config.fetch ?? fetch;
   const response = await fetchFn(url, {
     method: "POST",
@@ -596,7 +677,8 @@ export async function queryHostSeriesViaSqlApi(
   input: HostSeriesQuery,
 ): Promise<HostSeriesResult> {
   const dataset = config.dataset ?? AE_DATASET_NAME;
-  const maxRangeSeconds = config.maxRangeSeconds ?? AE_DEFAULT_MAX_RANGE_SECONDS;
+  const maxRangeSeconds = config.maxRangeSeconds ??
+    AE_DEFAULT_MAX_RANGE_SECONDS;
   const { sql, metrics, bucketSeconds } = buildHostSeriesSql(input, {
     dataset,
     maxRangeSeconds,
@@ -624,7 +706,8 @@ export async function queryHostSummaryViaSqlApi(
   input: HostSummaryQuery,
 ): Promise<HostSummaryResult> {
   const dataset = config.dataset ?? AE_DATASET_NAME;
-  const maxRangeSeconds = config.maxRangeSeconds ?? AE_DEFAULT_MAX_RANGE_SECONDS;
+  const maxRangeSeconds = config.maxRangeSeconds ??
+    AE_DEFAULT_MAX_RANGE_SECONDS;
   const sql = buildHostSummarySql(input, { dataset, maxRangeSeconds });
   const json = await executeSql(config, sql);
   const row = json.data[0];

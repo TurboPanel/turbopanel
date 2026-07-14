@@ -1,20 +1,33 @@
 import { assert, assertEquals, assertExists } from "jsr:@std/assert";
-import {
-  decodeBase64Url,
-  encodeBase64Url,
-} from "@std/encoding/base64url";
+import { decodeBase64Url, encodeBase64Url } from "@std/encoding/base64url";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AppEnv } from "../app.ts";
 import { deriveSecretsConfig } from "../client/authn/secrets.ts";
 import { deriveDaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
 import { encryptSecretForDaemon } from "../client/authn/data-encryption.ts";
-import { createLicense, invalidateLicense, revokeLicense } from "../client/authn/license.ts";
+import {
+  createLicense,
+  invalidateLicense,
+  revokeLicense,
+} from "../client/authn/license.ts";
 import { getDatabaseUrl } from "../db-url.ts";
 import { createDenoDb } from "../db.ts";
 import { organization, server } from "../lib/db/schema.ts";
 import { registerDaemonApiRoutes } from "./api-routes.ts";
-import type { DaemonCell, DaemonCellRegistry, DaemonCellSnapshot } from "./cell/contracts.ts";
+import type {
+  DaemonCell,
+  DaemonCellRegistry,
+  DaemonCellSnapshot,
+} from "./cell/contracts.ts";
+import {
+  HOST_METRIC_KEYS,
+  METRICS_SCHEMA_VERSION,
+} from "./metrics/contract.ts";
+import type {
+  AuthenticatedHostMetricsSample,
+  ServerMetricsStore,
+} from "./metrics/types.ts";
 import {
   consumeChallenge,
   createStatelessChallengeStore,
@@ -63,13 +76,19 @@ async function createTestSecrets() {
 
 async function createTestChallengeSecrets() {
   return await deriveSecretsConfig({
-    versioned: [{ version: 1, value: "daemon_api_routes_test_challenge_secret" }],
+    versioned: [{
+      version: 1,
+      value: "daemon_api_routes_test_challenge_secret",
+    }],
   }, "daemon-challenge-signing");
 }
 
 function createTestSecretsConfig() {
   return {
-    versioned: [{ version: 1, value: "daemon_api_routes_test_data_encryption_secret" }],
+    versioned: [{
+      version: 1,
+      value: "daemon_api_routes_test_data_encryption_secret",
+    }],
   };
 }
 
@@ -147,7 +166,11 @@ async function createTestApp(
   const secrets = await createTestSecrets();
   const challengeSigningSecrets = await createTestChallengeSecrets();
   const secretsConfig = createTestSecretsConfig();
-  registerDaemonApiRoutes(app, { secrets, challengeSigningSecrets, secretsConfig });
+  registerDaemonApiRoutes(app, {
+    secrets,
+    challengeSigningSecrets,
+    secretsConfig,
+  });
   return app;
 }
 
@@ -252,7 +275,11 @@ async function createTestAppWithRegistry(
   const secrets = await createTestSecrets();
   const challengeSigningSecrets = await createTestChallengeSecrets();
   const secretsConfig = createTestSecretsConfig();
-  registerDaemonApiRoutes(app, { secrets, challengeSigningSecrets, secretsConfig });
+  registerDaemonApiRoutes(app, {
+    secrets,
+    challengeSigningSecrets,
+    secretsConfig,
+  });
   return app;
 }
 
@@ -385,8 +412,14 @@ Deno.test("GET /jwks.json returns public OKP keys only", async () => {
 
   const bodyText = await response.text();
   assertEquals(bodyText.includes("daemon_api_routes_test_secret_value"), false);
-  assertEquals(bodyText.includes("daemon_api_routes_test_challenge_secret"), false);
-  assertEquals(bodyText.includes("daemon_api_routes_test_data_encryption_secret"), false);
+  assertEquals(
+    bodyText.includes("daemon_api_routes_test_challenge_secret"),
+    false,
+  );
+  assertEquals(
+    bodyText.includes("daemon_api_routes_test_data_encryption_secret"),
+    false,
+  );
 
   const body = JSON.parse(bodyText) as { keys: JsonWebKey[] };
   assert(body.keys.length > 0);
@@ -993,8 +1026,6 @@ Deno.test("POST /enroll rejects re-enrollment from a different organization with
   });
 });
 
-
-
 Deno.test("POST /auth/challenge rejects unknown keyId", async () => {
   await withEnrollFixture(async ({ app, keyId }) => {
     const response = await app.request("/api/daemon/v1/auth/challenge", {
@@ -1153,18 +1184,24 @@ Deno.test("POST /auth/session returns a 15-minute JWT", async () => {
 });
 
 Deno.test("invalidateLicense revokes daemon keys on bound servers", async () => {
-  await withEnrollFixture(async ({ db, organizationId, licenseId, serverId }) => {
-    const invalidated = await invalidateLicense(db, licenseId, organizationId);
-    assertEquals(invalidated, true);
+  await withEnrollFixture(
+    async ({ db, organizationId, licenseId, serverId }) => {
+      const invalidated = await invalidateLicense(
+        db,
+        licenseId,
+        organizationId,
+      );
+      assertEquals(invalidated, true);
 
-    const [row] = await db
-      .select({ daemon: server.daemon })
-      .from(server)
-      .where(eq(server.id, serverId))
-      .limit(1);
-    const daemonState = parseServerDaemonState(row?.daemon);
-    assertExists(daemonState?.key.revokedAt);
-  });
+      const [row] = await db
+        .select({ daemon: server.daemon })
+        .from(server)
+        .where(eq(server.id, serverId))
+        .limit(1);
+      const daemonState = parseServerDaemonState(row?.daemon);
+      assertExists(daemonState?.key.revokedAt);
+    },
+  );
 });
 
 Deno.test("POST /auth/session rejects inactive license", async () => {
@@ -1222,7 +1259,6 @@ Deno.test("Protected route rejects missing JWT", async () => {
   });
 });
 
-
 Deno.test("Protected route rejects invalid JWT", async () => {
   await withEnrollFixture(async ({ app }) => {
     const response = await app.request("/api/daemon/v1/commands/lease", {
@@ -1234,7 +1270,6 @@ Deno.test("Protected route rejects invalid JWT", async () => {
     assertEquals(response.status, 401);
   });
 });
-
 
 Deno.test("stateless challenge issue and consume round-trip", async () => {
   const secrets = await createTestChallengeSecrets();
@@ -1298,9 +1333,6 @@ Deno.test("stateless challenge allows replay within TTL", async () => {
   assertEquals(second?.nonce, issued.nonce);
 });
 
-
-
-
 Deno.test("POST /commands/lease returns 401 without JWT", async () => {
   await withEnrollFixture(async ({ app }) => {
     const response = await app.request("/api/daemon/v1/commands/lease", {
@@ -1342,7 +1374,10 @@ Deno.test("POST /auth/challenge returns 429 when restLimiter denies", async () =
   const response = await app.request("/api/daemon/v1/auth/challenge", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ serverId: "srv-rate-limit", keyId: "key-rate-limit" }),
+    body: JSON.stringify({
+      serverId: "srv-rate-limit",
+      keyId: "key-rate-limit",
+    }),
   });
   assertEquals(response.status, 429);
   const body = await response.json() as { ok: boolean; error: string };
@@ -1532,7 +1567,6 @@ Deno.test("POST /secrets/decrypt rejects global tpsecret envelopes (daemon-scope
   });
 });
 
-
 Deno.test("Enrolled daemon can auto-refresh JWT", async () => {
   await withEnrollFixture(
     async ({ app, serverId, keyId, key, machineId, hostname }) => {
@@ -1594,8 +1628,170 @@ Deno.test("Enrolled daemon can auto-refresh JWT", async () => {
   );
 });
 
+function buildValidMetricsFrame(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const metrics: Record<string, number> = {};
+  for (const key of HOST_METRIC_KEYS) {
+    metrics[key] = 1;
+  }
+  return {
+    type: "metrics",
+    version: METRICS_SCHEMA_VERSION,
+    at: new Date().toISOString(),
+    intervalSeconds: 60,
+    sequence: 1,
+    metrics,
+    dimensions: {
+      schemaVersion: METRICS_SCHEMA_VERSION,
+      daemonVersion: "1.0.0",
+      operatingSystem: "linux",
+      architecture: "arm64",
+      kernelRelease: "6.12.0",
+    },
+    ...overrides,
+  };
+}
 
+async function createMetricsTestApp(options: {
+  restLimiter?: {
+    limit: (input: { key: string }) => Promise<{ success: boolean }>;
+  };
+} = {}): Promise<{
+  app: Hono<AppEnv>;
+  writes: AuthenticatedHostMetricsSample[];
+}> {
+  const writes: AuthenticatedHostMetricsSample[] = [];
+  const fakeStore: ServerMetricsStore = {
+    writeHostSample(sample) {
+      writes.push(sample);
+    },
+    queryHostSeries(input) {
+      return Promise.resolve({
+        kind: "disabled",
+        available: false,
+        serverId: input.serverId,
+        metrics: input.metrics,
+        points: [],
+        resolutionSeconds: null,
+        gapCount: 0,
+        sampleCount: 0,
+      });
+    },
+    queryHostSummary(input) {
+      return Promise.resolve({
+        kind: "disabled",
+        available: false,
+        serverId: input.serverId,
+        sampleCount: 0,
+        latestAt: null,
+      });
+    },
+  };
 
+  const app = new Hono<AppEnv>();
+  app.use("*", (c, next) => {
+    c.set("serverMetricsStore", fakeStore);
+    return next();
+  });
+  const secrets = await createTestSecrets();
+  const challengeSigningSecrets = await createTestChallengeSecrets();
+  const secretsConfig = createTestSecretsConfig();
+  registerDaemonApiRoutes(app, {
+    secrets,
+    challengeSigningSecrets,
+    secretsConfig,
+    restLimiter: options.restLimiter,
+  });
+  return { app, writes };
+}
 
+Deno.test("POST /metrics accepts valid frame and writes sample", async () => {
+  const { app, writes } = await createMetricsTestApp();
+  const serverId = "srv-metrics-ok";
+  const daemonToken = await issueDaemonToken(serverId, "key-metrics-ok");
+  const response = await app.request("/api/daemon/v1/metrics", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${daemonToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(buildValidMetricsFrame()),
+  });
+  assertEquals(response.status, 202);
+  assertEquals(await response.json(), { ok: true });
+  assertEquals(writes.length, 1);
+  assertEquals(writes[0]?.serverId, serverId);
+});
 
+Deno.test("POST /metrics rejects invalid frame without writing", async () => {
+  const { app, writes } = await createMetricsTestApp();
+  const daemonToken = await issueDaemonToken(
+    "srv-metrics-bad",
+    "key-metrics-bad",
+  );
+  const response = await app.request("/api/daemon/v1/metrics", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${daemonToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(buildValidMetricsFrame({ version: 99 })),
+  });
+  assertEquals(response.status, 400);
+  const body = await response.json() as { ok: boolean; error: string };
+  assertEquals(body.ok, false);
+  assertExists(body.error);
+  assertEquals(writes.length, 0);
+});
 
+Deno.test("POST /metrics returns 401 without JWT", async () => {
+  const { app, writes } = await createMetricsTestApp();
+  const response = await app.request("/api/daemon/v1/metrics", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(buildValidMetricsFrame()),
+  });
+  assertEquals(response.status, 401);
+  assertEquals(writes.length, 0);
+});
+
+Deno.test("POST /metrics returns 429 when restLimiter denies with valid JWT", async () => {
+  const { app, writes } = await createMetricsTestApp({
+    restLimiter: {
+      limit: async () => ({ success: false }),
+    },
+  });
+  const daemonToken = await issueDaemonToken(
+    "srv-metrics-rl",
+    "key-metrics-rl",
+  );
+  const response = await app.request("/api/daemon/v1/metrics", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${daemonToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(buildValidMetricsFrame()),
+  });
+  assertEquals(response.status, 429);
+  assertEquals(await response.json(), { ok: false, error: "rate_limited" });
+  assertEquals(writes.length, 0);
+});
+
+Deno.test("POST /metrics ignores body-supplied serverId", async () => {
+  const { app, writes } = await createMetricsTestApp();
+  const serverId = "srv-metrics-auth";
+  const daemonToken = await issueDaemonToken(serverId, "key-metrics-auth");
+  const response = await app.request("/api/daemon/v1/metrics", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${daemonToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(buildValidMetricsFrame({ serverId: "attacker" })),
+  });
+  assertEquals(response.status, 202);
+  assertEquals(writes.length, 1);
+  assertEquals(writes[0]?.serverId, serverId);
+});

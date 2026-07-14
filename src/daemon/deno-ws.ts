@@ -31,8 +31,8 @@ import { touchServerMetadata } from "../server-registry.ts";
 import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
 import type { ServerMetricsStore } from "./metrics/types.ts";
 import {
-  rateLimitedMetricsLog,
   metricsPayloadByteLength,
+  rateLimitedMetricsLog,
   validateHostMetricsSample,
 } from "./metrics/validation.ts";
 import { getServerDaemonStateByServerId } from "./authn/server-identity-db.ts";
@@ -190,6 +190,8 @@ async function handleDaemonCellPing(params: {
 }
 
 /** Validate and fire-and-forget-persist a host metrics frame. */
+// Deprecated transition fallback: superseded by POST /api/daemon/v1/metrics;
+// removable once all daemons emit host metrics over HTTP.
 function handleMetricsMessage(params: {
   message: DaemonMessage;
   serverId: string;
