@@ -55,34 +55,21 @@ export function isComposeDocument(value: unknown): value is ComposeDocument {
 }
 
 /**
- * Normalize legacy bare compose objects (`{ services: … }`) or ComposeDocuments.
- * Missing / null / empty → emptyComposeDocument().
+ * Normalize a valid ComposeDocument, or an intentionally empty value (`null` /
+ * `undefined`). Does not lift bare compose objects into the current format.
  */
 export function normalizeCompose(value: unknown): ComposeDocument {
   if (value == null) return emptyComposeDocument()
-  if (isComposeDocument(value)) {
-    return {
-      version: 1,
-      data: { ...value.data },
-      presentation: {
-        keyOrder: [...value.presentation.keyOrder],
-        comments: { ...value.presentation.comments },
-        ...(value.presentation.blankLines
-          ? { blankLines: { ...value.presentation.blankLines } }
-          : {}),
-      },
-    }
+  if (!isComposeDocument(value)) return emptyComposeDocument()
+  return {
+    version: 1,
+    data: { ...value.data },
+    presentation: {
+      keyOrder: [...value.presentation.keyOrder],
+      comments: { ...value.presentation.comments },
+      ...(value.presentation.blankLines
+        ? { blankLines: { ...value.presentation.blankLines } }
+        : {}),
+    },
   }
-  if (typeof value === 'object' && !Array.isArray(value)) {
-    const data = value as Record<string, unknown>
-    return {
-      version: 1,
-      data: { ...data },
-      presentation: {
-        keyOrder: Object.keys(data),
-        comments: {},
-      },
-    }
-  }
-  return emptyComposeDocument()
 }

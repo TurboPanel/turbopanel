@@ -43,12 +43,33 @@ Deno.test('composeDocumentToRuntimeYaml drops presentation-only concerns but kee
   assertEquals(runtime.includes('front:'), true)
 })
 
-Deno.test('normalizeCompose lifts legacy bare compose objects', () => {
-  const legacy = { services: { api: { image: 'node:22' } } }
-  const doc = normalizeCompose(legacy)
-  assertEquals(doc.version, 1)
-  assertEquals((doc.data.services as Record<string, unknown>).api, { image: 'node:22' })
-  assertEquals(doc.presentation.keyOrder, ['services'])
+Deno.test('normalizeCompose does not lift bare compose objects', () => {
+  const bare = { services: { api: { image: 'node:22' } } }
+  const doc = normalizeCompose(bare)
+  assertEquals(doc, emptyComposeDocument())
+})
+
+Deno.test('validateComposeDocument rejects bare compose objects', () => {
+  const bare = { services: { api: { image: 'node:22' } } }
+  const result = validateComposeDocument(bare)
+  assertEquals(result.ok, false)
+})
+
+Deno.test('validateComposeDocument accepts ComposeDocument and null', () => {
+  const empty = emptyComposeDocument()
+  assertEquals(validateComposeDocument(empty).ok, true)
+  assertEquals(validateComposeDocument(null).ok, true)
+  const accepted = validateComposeDocument({
+    version: 1,
+    data: { services: { api: { image: 'node:22' } } },
+    presentation: { keyOrder: ['services'], comments: {} },
+  })
+  assertEquals(accepted.ok, true)
+  if (accepted.ok) {
+    assertEquals((accepted.document.data.services as Record<string, unknown>).api, {
+      image: 'node:22',
+    })
+  }
 })
 
 Deno.test('emptyComposeDocument validates', () => {

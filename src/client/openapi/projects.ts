@@ -43,7 +43,7 @@ export const projectSchemas = {
         type: 'object',
         nullable: true,
         description:
-          'Project options; options.compose is a ComposeDocument (versioned JSON with presentation) or legacy bare compose JSON',
+          'Project options; options.compose must be a ComposeDocument (version 1 with data and presentation)',
       },
     },
   },
@@ -56,7 +56,7 @@ export const projectSchemas = {
         type: 'object',
         nullable: true,
         description:
-          'Project options; options.compose is a ComposeDocument (versioned JSON with presentation) or legacy bare compose JSON',
+          'Project options; options.compose must be a ComposeDocument (version 1 with data and presentation)',
       },
     },
   },

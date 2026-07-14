@@ -6,6 +6,7 @@ import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db.ts'
 import { environment, project } from '../../lib/db/schema.ts'
+import { applyValidatedComposeOption } from '../../lib/compose/index.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -151,6 +152,10 @@ export function registerEnvironmentRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const optionsResult = parseJsonbObject(c, body, 'options')
     if (optionsResult instanceof Response) return optionsResult
+    const composeOption = applyValidatedComposeOption(optionsResult)
+    if (!composeOption.ok) {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
 
     const metadataResult = parseJsonbObject(c, body, 'metadata')
     if (metadataResult instanceof Response) return metadataResult
@@ -217,6 +222,10 @@ export function registerEnvironmentRoutes(router: Hono, opts: AuthRouteOpts) {
     const optionsResult = parseJsonbObject(c, body, 'options')
     if (optionsResult instanceof Response) return optionsResult
     if (optionsResult !== null) {
+      const composeOption = applyValidatedComposeOption(optionsResult)
+      if (!composeOption.ok) {
+        return c.json({ error: 'Invalid request' }, 400)
+      }
       patchFields.options = optionsResult
     }
 

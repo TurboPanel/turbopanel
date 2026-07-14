@@ -14,7 +14,10 @@ import {
   listCatalog,
   type CatalogEntry,
 } from './catalog/index.ts'
-import { emptyComposeDocument } from '../../lib/compose/index.ts'
+import {
+  applyValidatedComposeOption,
+  emptyComposeDocument,
+} from '../../lib/compose/index.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -229,9 +232,6 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
       rawType === 'docker-compose'
     ) {
       projectType = 'docker-compose'
-    } else if (rawType === 'blank') {
-      // Removed type — treat legacy clients as docker-compose
-      projectType = 'docker-compose'
     } else if (typeof rawType !== 'string' || !isCreateProjectType(rawType)) {
       return c.json({ error: 'Invalid request' }, 400)
     } else {
@@ -252,6 +252,10 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const optionsResult = parseJsonbObject(c, body, 'options')
     if (optionsResult instanceof Response) return optionsResult
+    const composeOption = applyValidatedComposeOption(optionsResult)
+    if (!composeOption.ok) {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
 
     const metadataResult = parseJsonbObject(c, body, 'metadata')
     if (metadataResult instanceof Response) return metadataResult
@@ -401,6 +405,10 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
     const optionsResult = parseJsonbObject(c, body, 'options')
     if (optionsResult instanceof Response) return optionsResult
     if (optionsResult !== null) {
+      const composeOption = applyValidatedComposeOption(optionsResult)
+      if (!composeOption.ok) {
+        return c.json({ error: 'Invalid request' }, 400)
+      }
       patchFields.options = optionsResult
     }
 

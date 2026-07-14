@@ -5,9 +5,9 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import {
+  assertComposeDocument,
   composeDocumentToRuntimeYaml,
   mergeComposeOverlay,
-  normalizeCompose,
 } from '../../lib/compose/index.ts'
 import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
 import { isNoopCommandQueue } from '../../lib/commands/noop-command-queue.ts'
@@ -162,8 +162,14 @@ export function registerEnvironmentDeployRoutes(router: Hono, opts: AuthRouteOpt
       .limit(1)
     if (!projectRow) return c.json({ error: 'Not found' }, 404)
 
-    const baseCompose = normalizeCompose(extractComposeFromOptions(projectRow.options))
-    const overlayCompose = normalizeCompose(extractComposeFromOptions(envRow.options))
+    let baseCompose
+    let overlayCompose
+    try {
+      baseCompose = assertComposeDocument(extractComposeFromOptions(projectRow.options))
+      overlayCompose = assertComposeDocument(extractComposeFromOptions(envRow.options))
+    } catch {
+      return c.json({ error: 'Invalid compose document' }, 400)
+    }
     const merged = mergeComposeOverlay(baseCompose, overlayCompose)
     const composeYaml = composeDocumentToRuntimeYaml(merged)
 

@@ -14,6 +14,7 @@ export {
 } from './convert.ts'
 export { mergeComposeOverlay } from './merge.ts'
 export {
+  applyValidatedComposeOption,
   assertComposeDocument,
   validateComposeDocument,
   type ComposeValidationIssue,

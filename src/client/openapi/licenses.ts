@@ -2,7 +2,7 @@ export function buildLicenseSchemas(installCommandDescription: string) {
   return {
     LicenseRecord: {
       type: 'object',
-      required: ['id', 'displayName', 'createdAt'],
+      required: ['id', 'displayName', 'createdAt', 'revocable', 'boundServer'],
       properties: {
         id: { type: 'string' },
         displayName: { type: ['string', 'null'] },
@@ -26,7 +26,7 @@ export function buildLicenseSchemas(installCommandDescription: string) {
             { type: 'null' },
           ],
           description:
-            'Bound server when exactly one server in the org references this license.',
+            'Bound server when exactly one server in the org references this license; null when unbound or ambiguously bound.',
         },
       },
     },

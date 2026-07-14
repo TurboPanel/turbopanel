@@ -387,7 +387,7 @@ Deno path: `ClickHouseServerMetricsStore` (`src/daemon/metrics/clickhouse/`) ove
 |---|---|---|
 | `turbopanel_server_metrics` | MergeTree raw samples (`ORDER BY (index1, timestamp)`) — same physical name as the AE dataset | `retentionDays` (90) |
 
-**Query-time bucketing:** there are no rollup tables or materialized views — resolution is chosen at query time (mirrors the AE SQL API). Legacy `host_metrics_raw` / rollup objects are dropped during admin-owned converge migrations, not at instance runtime.
+**Query-time bucketing:** there are no rollup tables or materialized views — resolution is chosen at query time (mirrors the AE SQL API).
 
 **Late arrivals / duplicates:** accept all inserts into MergeTree (no `ReplacingMergeTree` / `FINAL`). Metrics is **disposable / statistical / may be sampled** — queries must account for `_sample_interval` (AE) or per-row unit weight (ClickHouse); intentional simplification.
 
@@ -513,7 +513,7 @@ Authz: ping/get require read (`assertCanReadOr403`); hostname and reboot require
 
 ### Compose documents (`src/lib/compose/`)
 
-`project.options.compose` / `environment.options.compose` store a **ComposeDocument** (`version: 1`, `data`, `presentation`) so YAML comments, blank lines, and section order survive editor round-trips. Deploy uses `composeDocumentToRuntimeYaml` (presentation stripped). Legacy bare compose objects are normalized via `normalizeCompose`. Overlay merge: `mergeComposeOverlay`.
+`project.options.compose` / `environment.options.compose` store a **ComposeDocument** (`version: 1`, `data`, `presentation`) so YAML comments, blank lines, and section order survive editor round-trips. APIs and deploy reject anything that is not a ComposeDocument (or an intentionally empty value). Deploy uses `composeDocumentToRuntimeYaml` (presentation stripped). Overlay merge: `mergeComposeOverlay`.
 
 Future webhook-triggered operations — deploy service, rebuild app, rotate tunnel token, update daemon, restart service, collect diagnostics, stream logs — reuse the same `command` table, `CommandQueue` abstraction, and typed-handler model on the daemon. No new queue infrastructure is needed.
 
@@ -686,7 +686,7 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `DELETE` | `/api/client/v1/access/{id}` | Revoke a `grant` row; requires `organization:own` on the grant's target resource |
 | `GET` | `/api/client/v1/workspaces` | List workspaces visible via `listVisible` (org-level `organization:own` / `organization:manage` grants); full CRUD table in `src/lib/db/AGENTS.md` |
 | `GET` | `/api/client/v1/project-catalog` | Session required: UI-safe project catalog summaries (`code`, `kind`, `displayName`, `description`); static code-bundled list — no compose internals or secret default values |
-| `POST` | `/api/client/v1/projects` | Create project in a workspace; optional `type` (`blank` \| `template` \| `managed`, default blank) and `code` (required for template/managed from catalog); managed type inserts a `managed` row, sets `project.metadata.managed_id`, scaffolds environments/variables from catalog, seals secret defaults via `encryptSecret` |
+| `POST` | `/api/client/v1/projects` | Create project in a workspace; optional `type` (`docker-compose` \| `template` \| `managed`, default `docker-compose`) and `code` (required for template/managed from catalog); unknown types rejected; managed type inserts a `managed` row, sets `project.metadata.managed_id`, scaffolds environments/variables from catalog, seals secret defaults via `encryptSecret` |
 | `GET` | `/api/client/v1/projects` / `GET …/projects/:id` | Returns `metadata` (read-only) and `options` (`options.compose` holds base Docker Compose JSON) |
 | `PATCH` | `/api/client/v1/projects/:id` | Accepts patchable `options`; `metadata` is read-only (set by create flow) |
 | `GET` | `/api/client/v1/environments` / `GET …/environments/:id` | Returns `metadata` and `options` (`options.compose` holds per-environment overlay) |

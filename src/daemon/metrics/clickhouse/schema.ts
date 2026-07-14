@@ -8,9 +8,6 @@
  *
  * Query-time bucketing mirrors the AE SQL API (`sql-api.ts`) — there are no
  * separate rollup tables or materialized views.
- *
- * Destructive legacy migrations (dropping retired raw/rollup objects) run during
- * Ansible converge with the ClickHouse admin user — not at instance runtime.
  */
 
 import { HOST_METRIC_KEYS, type HostMetricKey } from "../contract.ts";
@@ -27,18 +24,6 @@ import {
 
 /** Shared physical metrics table name (same as Analytics Engine dataset). */
 export const HOST_METRICS_TABLE = AE_DATASET_NAME;
-
-/** Legacy raw-table server id column — pre-AE positional layout. */
-export const LEGACY_HOST_METRICS_SERVER_ID_COLUMN = "server_id";
-
-/** Retired table names removed during admin-owned converge migrations. */
-export const LEGACY_HOST_METRICS_RAW_TABLE = "host_metrics_raw";
-export const LEGACY_HOST_METRICS_ROLLUP_5M_TABLE = "host_metrics_rollup_5m";
-export const LEGACY_HOST_METRICS_ROLLUP_1H_TABLE = "host_metrics_rollup_1h";
-export const LEGACY_HOST_METRICS_ROLLUP_1D_TABLE = "host_metrics_rollup_1d";
-export const LEGACY_HOST_METRICS_MV_5M = "host_metrics_mv_5m";
-export const LEGACY_HOST_METRICS_MV_1H = "host_metrics_mv_1h";
-export const LEGACY_HOST_METRICS_MV_1D = "host_metrics_mv_1d";
 
 /** Default raw-table TTL days (override via buildSchemaStatements config). */
 export const DEFAULT_RAW_RETENTION_DAYS = 90;
@@ -85,11 +70,6 @@ function buildMetricsTableDdl(retentionDays: number): string {
     `ORDER BY (${AE_INDEX_SERVER_ID_COLUMN}, ${AE_TIMESTAMP_COLUMN})`,
     `TTL ${AE_TIMESTAMP_COLUMN} + INTERVAL ${retentionDays} DAY DELETE`,
   ].join("\n");
-}
-
-/** Detect whether a column name belongs to the retired snake_case layout. */
-export function isLegacyHostMetricsColumnName(name: string): boolean {
-  return name === LEGACY_HOST_METRICS_SERVER_ID_COLUMN;
 }
 
 /** Ordered idempotent DDL for the shared AE-named metrics table. */

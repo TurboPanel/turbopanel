@@ -125,7 +125,7 @@ organization → server → variable (1:N, server-scoped; excluded from inherita
 | Entity | Parent FK | Notes |
 |---|---|---|
 | `workspace` | `organization_id` | Root of the resource tree |
-| `project` | `workspace_id` | Docker Compose / catalog project. **`metadata`**: `type` (`"docker-compose"` \| `"managed"` \| `"template"`), `managed_id` (managed only). **`options.compose`**: base **ComposeDocument** (versioned JSON with presentation for YAML comments/order) or legacy bare compose object — see `src/lib/compose/`. |
+| `project` | `workspace_id` | Docker Compose / catalog project. **`metadata`**: `type` (`"docker-compose"` \| `"managed"` \| `"template"`), `managed_id` (managed only). **`options.compose`**: base **ComposeDocument** (versioned JSON with presentation for YAML comments/order) — see `src/lib/compose/`. |
 | `environment` | `project_id` | Staging/production/etc. within a project. **`metadata`**: may include `serverId` after deploy. **`options.compose`**: per-environment ComposeDocument overlay merged onto the project base at deploy. |
 | `service` | `environment_id` | Deployable unit within an environment. **`metadata`**: e.g. `composeServiceName`. **`options`**: reserved (future per-service placement). |
 | `hosting` | `service_id NOT NULL` | Public routing for a service (Traefik + edge Caddy). **`options`**: `{ hostnames[], pathPrefix?, targetPort? }`. **`metadata`**: deploy status fields. Org derived via service chain. |
@@ -367,7 +367,7 @@ Self-hosted instance boot and all database tooling require **`TURBOPANEL_DATABAS
 ## Sanity check
 
 ```bash
-docker exec turbopaneldb psql -U turbopanel -d turbopanel -c '\dt'
+docker exec turbopanel-database psql -U turbopanel -d turbopanel -c '\dt'
 ```
 
 Restart the instance only when **application code** changed — schema sync alone does not require a restart.

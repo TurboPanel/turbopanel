@@ -5,9 +5,6 @@ import {
   buildSchemaStatements,
   DEFAULT_RAW_RETENTION_DAYS,
   HOST_METRICS_TABLE,
-  LEGACY_HOST_METRICS_MV_1D,
-  LEGACY_HOST_METRICS_MV_5M,
-  LEGACY_HOST_METRICS_RAW_TABLE,
 } from "./schema.ts";
 
 it("HOST_METRICS_TABLE matches the Analytics Engine dataset name", () => {
@@ -24,9 +21,10 @@ it("buildSchemaStatements creates only the shared AE-named metrics table", () =>
     ddl.includes(`CREATE TABLE IF NOT EXISTS ${HOST_METRICS_TABLE}`),
     true,
   );
-  assertEquals(ddl.includes(LEGACY_HOST_METRICS_RAW_TABLE), false);
-  assertEquals(ddl.includes(LEGACY_HOST_METRICS_MV_5M), false);
-  assertEquals(ddl.includes(LEGACY_HOST_METRICS_MV_1D), false);
+  assertEquals(HOST_METRICS_TABLE, "turbopanel_server_metrics");
+  assertEquals(ddl.includes("host_metrics_raw"), false);
+  assertEquals(ddl.includes("host_metrics_rollup"), false);
+  assertEquals(ddl.includes("host_metrics_mv"), false);
 });
 
 it("buildSchemaStatements embeds configured retentionDays in TTL", () => {

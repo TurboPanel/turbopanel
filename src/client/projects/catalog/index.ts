@@ -1,3 +1,5 @@
+import type { ComposeDocument } from '../../../lib/compose/index.ts'
+
 export const CREATE_PROJECT_TYPES = ['docker-compose', 'template', 'managed'] as const
 export type CreateProjectType = (typeof CREATE_PROJECT_TYPES)[number]
 
@@ -10,7 +12,7 @@ export type CatalogVariable = {
 export type CatalogEnvironment = {
   displayName: string
   description?: string
-  compose?: Record<string, unknown>
+  compose?: ComposeDocument
   variables?: CatalogVariable[]
 }
 
@@ -19,7 +21,7 @@ export type CatalogEntry = {
   kind: 'managed' | 'template'
   displayName: string
   description: string
-  compose: Record<string, unknown>
+  compose: ComposeDocument
   options?: Record<string, unknown>
   environments: CatalogEnvironment[]
 }
@@ -31,18 +33,29 @@ export type CatalogSummary = {
   description: string
 }
 
+function composeDocument(data: Record<string, unknown>): ComposeDocument {
+  return {
+    version: 1,
+    data,
+    presentation: {
+      keyOrder: Object.keys(data),
+      comments: {},
+    },
+  }
+}
+
 const CATALOG: CatalogEntry[] = [
   {
     code: 'wordpress-mysql',
     kind: 'managed',
     displayName: 'WordPress with MySQL',
     description: 'Managed WordPress site with MySQL database',
-    compose: {
+    compose: composeDocument({
       services: {
         wordpress: { image: 'wordpress:latest', depends_on: ['db'] },
         db: { image: 'mysql:8' },
       },
-    },
+    }),
     options: { stack: 'wordpress-mysql' },
     environments: [
       {
@@ -60,11 +73,11 @@ const CATALOG: CatalogEntry[] = [
     kind: 'template',
     displayName: 'Static Site',
     description: 'Basic static web server template',
-    compose: {
+    compose: composeDocument({
       services: {
         web: { image: 'nginx:alpine' },
       },
-    },
+    }),
     environments: [
       {
         displayName: 'production',
