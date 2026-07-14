@@ -105,6 +105,7 @@ it("buildHostSeriesSql: allowlisted doubles + weighted avg only", () => {
   assertEquals(sql.includes(aeMissingMetricSentinelSql()), true);
   assertEquals(sql.includes(String(AE_MISSING_METRIC_SENTINEL)), false);
   assertEquals(sql.includes("NULLIF"), false);
+  assertEquals(sql.includes("FORMAT JSON"), false);
 });
 
 it("buildHostSeriesSql: filters host event type and schema version", () => {
@@ -245,15 +246,26 @@ it("parseCloudflareV4SqlResponse: reads result.data from v4 envelope", () => {
   assertEquals(parsed.rows, 1);
 });
 
-it("parseCloudflareV4SqlResponse: flat { data } body is rejected", () => {
+it("parseCloudflareV4SqlResponse: accepts ClickHouse-style flat { data } body", () => {
+  const parsed = parseCloudflareV4SqlResponse({
+    data: [{ bucket: 1, sample_count: 2, cpuUsagePercent: 9 }],
+    rows: 1,
+  });
+  assertEquals(parsed.data.length, 1);
+  assertEquals(parsed.data[0]!.cpuUsagePercent, 9);
+  assertEquals(parsed.rows, 1);
+});
+
+it("parseCloudflareV4SqlResponse: success:false surfaces result.error when errors empty", () => {
   assertThrows(
     () =>
       parseCloudflareV4SqlResponse({
-        data: [{ bucket: 1 }],
-        rows: 1,
+        success: false,
+        errors: [],
+        result: { error: "table turbopanel_server_metrics does not exist" },
       }),
     Error,
-    "success:false",
+    "table turbopanel_server_metrics does not exist",
   );
 });
 
@@ -359,39 +371,38 @@ it("queryHostSeriesViaSqlApi: computes gapCount for missing buckets", async () =
   assertEquals(result.gapCount, 10);
 });
 
-it("queryHostSeriesViaSqlApi: flat (non-envelope) response is rejected", async () => {
-  // Flat bodies lack success:true — treated as API failure, not silent empty.
-  await assertRejects(
-    () =>
-      queryHostSeriesViaSqlApi(
-        {
-          accountId: "acct123",
-          apiToken: "token-xyz",
-          fetch: async () =>
-            new Response(
-              JSON.stringify({
-                data: [
-                  {
-                    bucket: 1_704_067_200,
-                    sample_count: 2,
-                    cpuUsagePercent: 10.5,
-                  },
-                ],
-                rows: 1,
-              }),
-              { status: 200 },
-            ),
-        },
-        {
-          serverId: SERVER_ID,
-          metrics: ["cpuUsagePercent"],
-          from: "2026-01-01T00:00:00.000Z",
-          to: "2026-01-01T01:00:00.000Z",
-        },
-      ),
-    Error,
-    "success:false",
+it("queryHostSeriesViaSqlApi: flat ClickHouse-style response is accepted", async () => {
+  const result = await queryHostSeriesViaSqlApi(
+    {
+      accountId: "acct123",
+      apiToken: "token-xyz",
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            data: [
+              {
+                bucket: 1_704_067_200,
+                sample_count: 2,
+                cpuUsagePercent: 10.5,
+              },
+            ],
+            rows: 1,
+          }),
+          { status: 200 },
+        ),
+    },
+    {
+      serverId: SERVER_ID,
+      metrics: ["cpuUsagePercent"],
+      from: "2026-01-01T00:00:00.000Z",
+      to: "2026-01-01T01:00:00.000Z",
+      resolutionSeconds: 300,
+    },
   );
+  assertEquals(result.available, true);
+  assertEquals(result.points.length, 1);
+  assertEquals(result.points[0]!.values.cpuUsagePercent, 10.5);
+  assertEquals(result.sampleCount, 2);
 });
 
 it("queryHostSeriesViaSqlApi: maxRangeSeconds override is enforced", () => {

@@ -86,7 +86,7 @@ export type AnalyticsEngineSqlResult = {
 type CloudflareV4Error = {
   code?: number;
   message?: string;
-};
+} | string;
 
 type CloudflareV4SqlEnvelope = {
   success: boolean;
@@ -289,7 +289,6 @@ export function buildHostSeriesSql(
     `  AND ${AE_TIMESTAMP_COLUMN} <= toDateTime(${toUnix})`,
     `GROUP BY bucket`,
     `ORDER BY bucket ASC`,
-    `FORMAT JSON`,
   ].join("\n");
 
   return { sql, metrics, bucketSeconds };
@@ -396,13 +395,15 @@ export function buildHostSummarySql(
     `  AND ${discriminators[1]}`,
     `  AND ${AE_TIMESTAMP_COLUMN} >= toDateTime(${fromUnix})`,
     `  AND ${AE_TIMESTAMP_COLUMN} <= toDateTime(${toUnix})`,
-    `FORMAT JSON`,
   ].join("\n");
 }
 
 /**
- * Validate and unwrap a Cloudflare client/v4 Analytics Engine SQL response.
- * Rows live under `result.data` — never the top-level `data` field.
+ * Validate and unwrap a Cloudflare Analytics Engine SQL response.
+ *
+ * Preferred shape: client/v4 envelope `{ success, result: { data } }`.
+ * Also accepts ClickHouse-style `{ data, meta?, rows? }` (what `FORMAT JSON`
+ * returns) so we do not discard a successful result as opaque `success:false`.
  */
 export function parseCloudflareV4SqlResponse(
   body: unknown,
@@ -410,16 +411,49 @@ export function parseCloudflareV4SqlResponse(
   if (body === null || typeof body !== "object" || Array.isArray(body)) {
     throw new TypeError("AE SQL response is not a JSON object");
   }
-  const envelope = body as CloudflareV4SqlEnvelope;
+  const envelope = body as CloudflareV4SqlEnvelope & {
+    data?: Array<Record<string, unknown>>;
+    meta?: Array<{ name: string; type: string }>;
+    rows?: number;
+  };
+
+  // ClickHouse FORMAT JSON / bare SQL result — no v4 `success` field.
+  if (
+    envelope.success === undefined &&
+    Array.isArray(envelope.data)
+  ) {
+    return {
+      meta: envelope.meta,
+      data: envelope.data,
+      rows: typeof envelope.rows === "number" ? envelope.rows : undefined,
+    };
+  }
+
   if (envelope.success !== true) {
     const messages = (envelope.errors ?? [])
-      .map((err) => err?.message?.trim())
+      .map((err) => {
+        if (typeof err === "string") return err.trim();
+        if (err && typeof err === "object") {
+          const msg = err.message?.trim();
+          if (msg) return msg;
+          const code = err.code;
+          if (code != null) return `code=${code}`;
+        }
+        return "";
+      })
       .filter((msg): msg is string => Boolean(msg));
-    throw new Error(
-      messages.length > 0
-        ? `AE SQL API error: ${messages.join("; ")}`
-        : "AE SQL API returned success:false",
-    );
+    const resultError =
+      envelope.result &&
+        typeof envelope.result === "object" &&
+        !Array.isArray(envelope.result) &&
+        typeof envelope.result.error === "string"
+        ? envelope.result.error.trim()
+        : "";
+    if (resultError) messages.push(resultError);
+    const detail = messages.length > 0
+      ? messages.join("; ")
+      : `opaque body keys=${Object.keys(envelope).sort((a, b) => a.localeCompare(b)).join(",")}`;
+    throw new Error(`AE SQL API error: ${detail}`);
   }
   const result = envelope.result;
   if (result == null) {
@@ -480,7 +514,39 @@ async function executeSql(
       `AE SQL HTTP ${response.status}: ${body.slice(0, 500)}`,
     );
   }
-  return parseCloudflareV4SqlResponse(await response.json());
+  const raw: unknown = await response.json();
+  try {
+    return parseCloudflareV4SqlResponse(raw);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // #region agent log
+    const keys = raw && typeof raw === "object" && !Array.isArray(raw)
+      ? Object.keys(raw as object).sort((a, b) => a.localeCompare(b))
+      : [];
+    const success = raw && typeof raw === "object" && !Array.isArray(raw)
+      ? (raw as { success?: unknown }).success
+      : undefined;
+    console.error(
+      JSON.stringify({
+        sessionId: "5e4747",
+        runId: "post-fix-2",
+        hypothesisId: "H8-format-json-envelope",
+        location: "sql-api.ts:executeSql",
+        message: "AE SQL parse failed",
+        data: {
+          success,
+          keys,
+          errSnippet: message.slice(0, 400),
+          sqlHasFormatJson: sql.includes("FORMAT JSON"),
+          sqlMetricAliasCount: (sql.match(/ AS [a-zA-Z]/g) ?? []).length,
+          bodySnippet: JSON.stringify(raw).slice(0, 600),
+        },
+        timestamp: Date.now(),
+      }),
+    );
+    // #endregion
+    throw err;
+  }
 }
 
 function parseSeriesRows(
