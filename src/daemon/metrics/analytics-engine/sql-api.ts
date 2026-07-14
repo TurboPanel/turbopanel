@@ -514,39 +514,7 @@ async function executeSql(
       `AE SQL HTTP ${response.status}: ${body.slice(0, 500)}`,
     );
   }
-  const raw: unknown = await response.json();
-  try {
-    return parseCloudflareV4SqlResponse(raw);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    // #region agent log
-    const keys = raw && typeof raw === "object" && !Array.isArray(raw)
-      ? Object.keys(raw as object).sort((a, b) => a.localeCompare(b))
-      : [];
-    const success = raw && typeof raw === "object" && !Array.isArray(raw)
-      ? (raw as { success?: unknown }).success
-      : undefined;
-    console.error(
-      JSON.stringify({
-        sessionId: "5e4747",
-        runId: "post-fix-2",
-        hypothesisId: "H8-format-json-envelope",
-        location: "sql-api.ts:executeSql",
-        message: "AE SQL parse failed",
-        data: {
-          success,
-          keys,
-          errSnippet: message.slice(0, 400),
-          sqlHasFormatJson: sql.includes("FORMAT JSON"),
-          sqlMetricAliasCount: (sql.match(/ AS [a-zA-Z]/g) ?? []).length,
-          bodySnippet: JSON.stringify(raw).slice(0, 600),
-        },
-        timestamp: Date.now(),
-      }),
-    );
-    // #endregion
-    throw err;
-  }
+  return parseCloudflareV4SqlResponse(await response.json());
 }
 
 function parseSeriesRows(
