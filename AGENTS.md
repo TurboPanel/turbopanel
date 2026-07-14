@@ -367,7 +367,7 @@ Host metrics from daemon WS `{ type: "metrics" }` frames are validated in the DO
 | `blob3`..`blob6` | daemonVersion, operatingSystem, architecture, kernelRelease |
 | `blob7`..`blob20` | reserved empty strings until schema v2 |
 
-**Missing metrics:** AE doubles have no null. Missing values are stored as `AE_MISSING_METRIC_SENTINEL` (`-1e308`) — never coerced to `0`. All host metrics are ≥ 0, so the sentinel cannot collide. Query aggregates exclude it via `if(doubleN = AE_MISSING_METRIC_SENTINEL, 0, …)` around the documented `_sample_interval`-weighted average (`SUM(_sample_interval * doubleN) / SUM(_sample_interval)`). Local vitest does not bind AE (unsupported in the local runner); unit tests use fakes only.
+**Missing metrics:** AE doubles have no null. Missing values are stored as `AE_MISSING_METRIC_SENTINEL` (`-1e308`) — never coerced to `0`. All host metrics are ≥ 0, so the sentinel cannot collide. Query aggregates exclude it via `if(doubleN = sentinel, 0, …)` around the documented `_sample_interval`-weighted average (`SUM(_sample_interval * doubleN) / SUM(_sample_interval)`). On the **AE SQL** path, compare against `-pow(10, 308)` (`aeMissingMetricSentinelSql()`) — AE docs do not list scientific-notation literals or `NULLIF`, and embedding `-1e308` / `NULLIF` fails chart queries with 503. Local vitest does not bind AE (unsupported in the local runner); unit tests use fakes only.
 
 #### Server metrics (ClickHouse — self-hosted Deno)
 

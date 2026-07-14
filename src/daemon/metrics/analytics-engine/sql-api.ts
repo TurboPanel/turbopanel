@@ -194,16 +194,30 @@ export function hostEventDiscriminatorPredicates(): string[] {
 }
 
 /**
+ * AE SQL literal matching write-path `AE_MISSING_METRIC_SENTINEL` (`-1e308`).
+ *
+ * AE SQL docs only list plain decimal literals (e.g. `-4.2`) — not scientific
+ * notation — so embedding `-1e308` fails parse. `pow` is a documented math
+ * function; `-pow(10, 308)` equals IEEE `-1e308` for sentinel comparisons.
+ */
+export function aeMissingMetricSentinelSql(): string {
+  return "-pow(10, 308)";
+}
+
+/**
  * Weighted average excluding missing-metric sentinel rows.
  * Documented AE sampling pattern:
  *   SUM(_sample_interval * doubleN) / SUM(_sample_interval)
  * with `if(... = sentinel, 0, ...)` so missing never averages as zero.
+ *
+ * Uses only documented AE SQL (`if`, `SUM`, `pow`) — not `NULLIF` / `-1e308`
+ * literals, which break the Analytics Engine SQL API.
  */
 export function weightedAvgExpression(doubleCol: string): string {
-  const sentinel = String(AE_MISSING_METRIC_SENTINEL);
+  const sentinel = aeMissingMetricSentinelSql();
   return (
     `SUM(if(${doubleCol} = ${sentinel}, 0, _sample_interval * ${doubleCol}))` +
-    ` / NULLIF(SUM(if(${doubleCol} = ${sentinel}, 0, _sample_interval)), 0)`
+    ` / SUM(if(${doubleCol} = ${sentinel}, 0, _sample_interval))`
   );
 }
 

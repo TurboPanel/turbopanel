@@ -80,9 +80,9 @@ it("buildHostMetricsRow stores AE_MISSING_METRIC_SENTINEL for null metrics", () 
 it("AE and ClickHouse query builders exclude the missing-metric sentinel", () => {
   const aeExpr = weightedAvgExpression("double1");
   const chExpr = clickhouseAvgExpression("double1");
-  const sentinel = String(AE_MISSING_METRIC_SENTINEL);
-  assertEquals(aeExpr.includes(sentinel), true);
-  assertEquals(chExpr.includes(sentinel), true);
+  // ClickHouse accepts `-1e308`; AE SQL needs `-pow(10, 308)` (see sql-api.ts).
+  assertEquals(aeExpr.includes("-pow(10, 308)"), true);
+  assertEquals(chExpr.includes(String(AE_MISSING_METRIC_SENTINEL)), true);
   assertEquals(aeExpr.includes("double1"), true);
   assertEquals(chExpr.includes("double1"), true);
 });

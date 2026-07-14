@@ -167,7 +167,11 @@ export function registerServerMetricsRoutes(
         to: queryRange.toIso,
         resolutionSeconds,
       })
-    } catch {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(
+        `metrics queryHostSeries failed backend=${backend} serverId=${serverId}: ${message}`,
+      )
       return c.json(
         metricsBackendUnavailableResponse(backend),
         503,
@@ -240,7 +244,11 @@ export function registerServerMetricsRoutes(
         from: queryRange.fromIso,
         to: queryRange.toIso,
       })
-    } catch {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(
+        `metrics queryHostSummary failed backend=${backend} serverId=${serverId}: ${message}`,
+      )
       return c.json(
         metricsBackendUnavailableResponse(backend),
         503,

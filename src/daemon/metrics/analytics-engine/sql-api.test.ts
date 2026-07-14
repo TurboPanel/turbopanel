@@ -19,6 +19,7 @@ import {
   queryHostSeriesViaSqlApi,
   queryHostSummaryViaSqlApi,
   quoteSqlString,
+  aeMissingMetricSentinelSql,
   clickhouseAvgExpression,
   weightedAvgExpression,
 } from "./sql-api.ts";
@@ -49,9 +50,13 @@ it("quoteSqlString doubles single quotes", () => {
   assertEquals(quoteSqlString(SERVER_ID), `'${SERVER_ID}'`);
 });
 
-it("weightedAvgExpression excludes AE_MISSING_METRIC_SENTINEL", () => {
+it("weightedAvgExpression excludes AE_MISSING_METRIC_SENTINEL via AE-safe literal", () => {
   const expr = weightedAvgExpression("double1");
-  assertEquals(expr.includes(String(AE_MISSING_METRIC_SENTINEL)), true);
+  assertEquals(expr.includes(aeMissingMetricSentinelSql()), true);
+  // Scientific notation / NULLIF are not documented AE SQL — embedding them
+  // broke production chart queries (`metrics_backend_unavailable`).
+  assertEquals(expr.includes(String(AE_MISSING_METRIC_SENTINEL)), false);
+  assertEquals(expr.includes("NULLIF"), false);
   assertEquals(expr.includes("_sample_interval"), true);
   assertEquals(expr.includes("double1"), true);
 });
@@ -93,7 +98,9 @@ it("buildHostSeriesSql: allowlisted doubles + weighted avg only", () => {
   assertEquals(sql.includes(AE_DATASET_NAME), true);
   // No ad-hoc double columns outside the field map.
   assertEquals(sql.includes("double3"), false);
-  assertEquals(sql.includes(String(AE_MISSING_METRIC_SENTINEL)), true);
+  assertEquals(sql.includes(aeMissingMetricSentinelSql()), true);
+  assertEquals(sql.includes(String(AE_MISSING_METRIC_SENTINEL)), false);
+  assertEquals(sql.includes("NULLIF"), false);
 });
 
 it("buildHostSeriesSql: filters host event type and schema version", () => {
