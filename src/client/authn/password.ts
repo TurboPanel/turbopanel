@@ -1,4 +1,14 @@
+import { compatLogWarn } from '../../log-compat.ts'
+
 export const DEFAULT_PBKDF2_ITERATIONS = 600_000
+
+/**
+ * Hard floor for PBKDF2 iterations used when hashing **new** passwords and
+ * license tokens. `TURBOPANEL_PBKDF2_ITERATIONS` may only raise the work factor
+ * above this minimum — lower, invalid, or missing values are ignored (with a
+ * warning) so a misconfiguration can never weaken freshly generated hashes.
+ */
+export const MIN_PBKDF2_ITERATIONS = DEFAULT_PBKDF2_ITERATIONS
 
 const SALT_BYTES = 16
 const KEY_BYTES = 32
@@ -9,13 +19,42 @@ let hashIterations = DEFAULT_PBKDF2_ITERATIONS
 export function configurePbkdf2Iterations(raw?: string | null): void {
   const trimmed = raw?.trim()
   if (!trimmed) {
-    hashIterations = DEFAULT_PBKDF2_ITERATIONS
+    hashIterations = MIN_PBKDF2_ITERATIONS
     return
   }
   const parsed = Number.parseInt(trimmed, 10)
-  hashIterations = Number.isFinite(parsed) && parsed >= 1
-    ? parsed
-    : DEFAULT_PBKDF2_ITERATIONS
+  if (!Number.isFinite(parsed) || parsed < MIN_PBKDF2_ITERATIONS) {
+    compatLogWarn(
+      'auth',
+      `TURBOPANEL_PBKDF2_ITERATIONS="${trimmed}" is below the minimum ${MIN_PBKDF2_ITERATIONS} — using the minimum instead`,
+    )
+    hashIterations = MIN_PBKDF2_ITERATIONS
+    return
+  }
+  hashIterations = parsed
+}
+
+/** The iteration count applied to newly hashed passwords/license tokens. */
+export function currentPbkdf2Iterations(): number {
+  return hashIterations
+}
+
+/**
+ * Rehash-on-login planning: returns true when a stored hash uses fewer
+ * iterations than the current policy, so callers may transparently re-hash the
+ * password on a successful sign-in. A malformed hash returns false (verify
+ * fails independently).
+ */
+export function passwordNeedsRehash(encoded: string): boolean {
+  const parts = encoded.split('$')
+  if (parts.length !== 5 || parts[1] !== 'pbkdf2-sha256') {
+    return false
+  }
+  const iterations = Number.parseInt(parts[2], 10)
+  if (!Number.isFinite(iterations) || iterations < 1) {
+    return false
+  }
+  return iterations < hashIterations
 }
 
 function base64urlEncode(bytes: Uint8Array): string {

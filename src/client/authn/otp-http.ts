@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm'
 import { getCookie } from 'hono/cookie'
-import { Hono, type Context } from 'hono'
+import type { Hono, Context } from 'hono'
 import {
   buildSignedCookie,
   resolveRequestTls,

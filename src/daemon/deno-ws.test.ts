@@ -5,6 +5,7 @@ import {
   deriveDaemonJwtKeyring,
 } from "./authn/daemon-jwt-keyring.ts";
 import {
+  deriveSecretsConfig,
   parseSecretsEnv,
 } from "../client/authn/secrets.ts";
 import type { Db } from "../db.ts";
@@ -27,7 +28,11 @@ import type {
 import { DAEMON_CELL_PING, DAEMON_CELL_PONG } from "./cell/protocol.ts";
 import { issueDaemonJwt } from "./authn/daemon-jwt.ts";
 import { registerDaemonWebSocket } from "./deno-ws.ts";
-import { DAEMON_WS_PATH } from "../surfaces.ts";
+import {
+  CLIENT_WS_PATH,
+  DAEMON_WS_PATH,
+  DEVELOPER_WS_PATH,
+} from "../surfaces.ts";
 import {
   resetTrunkManifestCacheForTests,
   seedTrunkManifestCacheForTests,
@@ -306,6 +311,110 @@ it("WS upgrade rejects HTTP 401 when JWT is invalid", async () => {
     },
   });
   assertEquals(response.status, 401);
+});
+
+async function createSessionSecrets() {
+  return deriveSecretsConfig(
+    parseSecretsEnv(generateSecret(), undefined, "deno"),
+    "session-signing",
+  );
+}
+
+it("client WS upgrade rejects HTTP 401 without a session", async () => {
+  const app = new Hono();
+  const secrets = await createDaemonJwtSecrets();
+  const sessionSecrets = await createSessionSecrets();
+  registerDaemonWebSocket(app, {
+    secrets,
+    sessionSecrets,
+    db: createMockDb(),
+    daemonCellRegistry: createTrackingRegistry(
+      createTrackingDaemonCell("srv-stub").cell,
+    ),
+  });
+
+  const response = await app.request(CLIENT_WS_PATH, {
+    method: "GET",
+    headers: { ...WS_UPGRADE_HEADERS },
+  });
+  assertEquals(response.status, 401);
+});
+
+it("client WS upgrade rejects HTTP 401 when no session keyring is configured", async () => {
+  const app = new Hono();
+  const secrets = await createDaemonJwtSecrets();
+  registerDaemonWebSocket(app, {
+    secrets,
+    db: createMockDb(),
+    daemonCellRegistry: createTrackingRegistry(
+      createTrackingDaemonCell("srv-stub").cell,
+    ),
+  });
+
+  const response = await app.request(CLIENT_WS_PATH, {
+    method: "GET",
+    headers: { ...WS_UPGRADE_HEADERS },
+  });
+  assertEquals(response.status, 401);
+});
+
+it("developer WS upgrade rejects HTTP 401 without developer access", async () => {
+  const app = new Hono();
+  const secrets = await createDaemonJwtSecrets();
+  const sessionSecrets = await createSessionSecrets();
+  registerDaemonWebSocket(app, {
+    developerSurface: true,
+    secrets,
+    sessionSecrets,
+    db: createMockDb(),
+    daemonCellRegistry: createTrackingRegistry(
+      createTrackingDaemonCell("srv-stub").cell,
+    ),
+  });
+
+  const response = await app.request(DEVELOPER_WS_PATH, {
+    method: "GET",
+    headers: { ...WS_UPGRADE_HEADERS },
+  });
+  assertEquals(response.status, 401);
+});
+
+it("developer WS is not registered when the developer surface is disabled", async () => {
+  const app = new Hono();
+  const secrets = await createDaemonJwtSecrets();
+  const sessionSecrets = await createSessionSecrets();
+  registerDaemonWebSocket(app, {
+    developerSurface: false,
+    secrets,
+    sessionSecrets,
+    db: createMockDb(),
+    daemonCellRegistry: createTrackingRegistry(
+      createTrackingDaemonCell("srv-stub").cell,
+    ),
+  });
+
+  const response = await app.request(DEVELOPER_WS_PATH, {
+    method: "GET",
+    headers: { ...WS_UPGRADE_HEADERS },
+  });
+  assertEquals(response.status, 404);
+});
+
+it("stub WS returns 426 for a non-upgrade GET", async () => {
+  const app = new Hono();
+  const secrets = await createDaemonJwtSecrets();
+  const sessionSecrets = await createSessionSecrets();
+  registerDaemonWebSocket(app, {
+    secrets,
+    sessionSecrets,
+    db: createMockDb(),
+    daemonCellRegistry: createTrackingRegistry(
+      createTrackingDaemonCell("srv-stub").cell,
+    ),
+  });
+
+  const response = await app.request(CLIENT_WS_PATH, { method: "GET" });
+  assertEquals(response.status, 426);
 });
 
 it("over-limit inbound messages close websocket before unbounded queuing", async () => {

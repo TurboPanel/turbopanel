@@ -1,6 +1,6 @@
 import { and, eq, gt } from 'drizzle-orm'
 import type { Context } from 'hono'
-import { Hono } from 'hono'
+import type { Hono } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import {
   InvitationGrantValidationError,

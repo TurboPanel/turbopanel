@@ -220,6 +220,7 @@ registerDaemonWebSocket(routes, {
   developerSurface,
   db,
   secrets: daemonJwtKeyring,
+  sessionSecrets,
   daemonCellRegistry,
   metricsStore: serverMetricsStore,
   connectLimiter: daemonConnectLimiter,

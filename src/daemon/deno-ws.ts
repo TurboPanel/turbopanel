@@ -1,4 +1,4 @@
-import type { Hono } from "hono";
+import type { Context, Hono } from "hono";
 import { upgradeWebSocket } from "hono/deno";
 import type { DaemonCellRegistry } from "./cell/contracts.ts";
 import {
@@ -12,6 +12,7 @@ import {
 } from "./cell/protocol.ts";
 import type { DaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
 import { tryAssignColocatedDaemonToInstalledOrganization } from "../client/authn/install-state.ts";
+import { getDb } from "../db.ts";
 import type { Db } from "../db.ts";
 import { compatLogError, compatLogWarn } from "../log-compat.ts";
 import { cellTrace, daemonCellLog } from "../logger.ts";
@@ -39,6 +40,10 @@ import { getServerDaemonStateByServerId } from "./authn/server-identity-db.ts";
 import type { RateLimiter } from "./rate-limit/contracts.ts";
 import { createInboundWindowGate } from "./rate-limit/inbound-window.ts";
 import { daemonConnectRateLimitKey } from "./rate-limit/keys.ts";
+import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
+import { resolveSession } from "../client/authn/middleware.ts";
+import { isSuperadminRole } from "../client/authn/session-store.ts";
+import { verifyLocalConsoleAuthorization } from "../developer/local-console-auth.ts";
 
 /** Max idle block for outbox pump reads — keep low so new commands aren't stuck behind a long sleep. */
 const OUTBOX_PUMP_BLOCK_MS = 250;
@@ -233,6 +238,8 @@ export type DaemonWebSocketOptions = {
   developerSurface?: boolean;
   db?: Db;
   secrets?: DaemonJwtKeyring;
+  /** Session keyring used to authorize the placeholder client/developer WS. */
+  sessionSecrets?: DerivedSecretsConfig;
   daemonCellRegistry?: DaemonCellRegistry;
   metricsStore?: ServerMetricsStore;
   connectLimiter?: RateLimiter;
@@ -566,27 +573,92 @@ export function registerDaemonWebSocket(
   });
 
   if (options.developerSurface) {
-    registerStubWebSocket(app, DEVELOPER_WS_PATH, "developer");
+    registerStubWebSocket(app, DEVELOPER_WS_PATH, "developer", (c) =>
+      authorizeDeveloperUpgrade(c, options.sessionSecrets));
   }
-  registerStubWebSocket(app, CLIENT_WS_PATH, "client");
+  registerStubWebSocket(app, CLIENT_WS_PATH, "client", (c) =>
+    authorizeClientUpgrade(c, options.sessionSecrets));
+}
+
+/**
+ * Authorize a placeholder-WS upgrade. Returns an error `Response` to reject the
+ * upgrade, or `null` when the caller may proceed. Mirrors the access checks of
+ * the matching REST surface.
+ */
+type StubUpgradeGuard = (c: Context) => Promise<Response | null>;
+
+/** Client WS requires a valid end-user session cookie (same as client REST). */
+async function authorizeClientUpgrade(
+  c: Context,
+  sessionSecrets: DerivedSecretsConfig | undefined,
+): Promise<Response | null> {
+  if (!sessionSecrets) {
+    return c.json({ ok: false, error: "unauthorized" }, 401);
+  }
+  const resolved = await resolveSession(c, sessionSecrets, getDb(c));
+  return resolved ? null : c.json({ ok: false, error: "unauthorized" }, 401);
+}
+
+/**
+ * Developer WS requires developer access: a superadmin session cookie, or HMAC
+ * local-console auth (same as the developer REST surface).
+ */
+async function authorizeDeveloperUpgrade(
+  c: Context,
+  sessionSecrets: DerivedSecretsConfig | undefined,
+): Promise<Response | null> {
+  if (sessionSecrets) {
+    const resolved = await resolveSession(c, sessionSecrets, getDb(c));
+    if (resolved && isSuperadminRole(resolved.data.role)) {
+      return null;
+    }
+    if (await verifyLocalConsoleAuthorization(c)) {
+      return null;
+    }
+    return resolved
+      ? c.json({ ok: false, error: "forbidden" }, 403)
+      : c.json({ ok: false, error: "unauthorized" }, 401);
+  }
+  if (await verifyLocalConsoleAuthorization(c)) {
+    return null;
+  }
+  return c.json({ ok: false, error: "unauthorized" }, 401);
 }
 
 /**
  * Placeholder WebSocket surface for the admin/client UIs. Today the UIs poll
- * REST; these endpoints reserve the namespace for future live streaming. They
- * accept the upgrade, greet the peer, and otherwise idle.
+ * REST; these endpoints reserve the namespace for future live streaming.
+ *
+ * They are **not** open idle sockets: the upgrade is rejected unless the caller
+ * passes the same access check as the matching REST surface, and — because
+ * there is no live streaming yet — an authorized peer is greeted once and then
+ * immediately closed so placeholder sockets cannot accumulate idle connections.
  */
-function registerStubWebSocket(app: Hono, path: string, surface: string): void {
-  app.get(
-    path,
-    upgradeWebSocket(() => ({
+function registerStubWebSocket(
+  app: Hono,
+  path: string,
+  surface: string,
+  authorize: StubUpgradeGuard,
+): void {
+  app.get(path, async (c, next) => {
+    if (c.req.header("Upgrade")?.toLowerCase() !== "websocket") {
+      return c.text("Expected WebSocket", 426);
+    }
+    const denied = await authorize(c);
+    if (denied) {
+      return denied;
+    }
+    return upgradeWebSocket(() => ({
       onOpen(_event, ws) {
         ws.send(JSON.stringify({
           type: "hello",
           surface,
           at: new Date().toISOString(),
         }));
+        // No live streaming yet — greet then close so authorized peers cannot
+        // hold the placeholder socket open indefinitely.
+        ws.close(1000, "not_implemented");
       },
-    })),
-  );
+    }))(c, next);
+  });
 }

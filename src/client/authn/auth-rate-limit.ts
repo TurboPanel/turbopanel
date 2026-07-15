@@ -42,7 +42,12 @@ export type AuthRateLimiterOptions = {
 
 const DEFAULT_POLICY: AuthRateLimitPolicy = { limit: 10, windowMs: 60_000 }
 
-const DEFAULT_POLICIES: Partial<Record<AuthRateLimitPurpose, AuthRateLimitPolicy>> = {
+/**
+ * Per-purpose defaults applied to the process-wide shared limiter. Not baked
+ * into {@link createAuthRateLimiter} so callers (and tests) that pass an
+ * explicit `defaultPolicy`/`policies` get exactly what they configure.
+ */
+const SHARED_POLICIES: Partial<Record<AuthRateLimitPurpose, AuthRateLimitPolicy>> = {
   'sign-in': { limit: 10, windowMs: 60_000 },
   'sign-up': { limit: 5, windowMs: 60_000 },
   'send-otp': { limit: 5, windowMs: 60_000 },
@@ -85,7 +90,7 @@ export function createAuthRateLimiter(
   options: AuthRateLimiterOptions = {},
 ): AuthRateLimiter {
   const defaultPolicy = options.defaultPolicy ?? DEFAULT_POLICY
-  const policies = { ...DEFAULT_POLICIES, ...options.policies }
+  const policies = { ...options.policies }
   const now = options.now ?? Date.now
   const windows = new Map<string, WindowEntry>()
 
@@ -126,7 +131,7 @@ let sharedLimiter: AuthRateLimiter | undefined
 
 /** Process-wide singleton shared by all auth route registrations. */
 export function getSharedAuthRateLimiter(): AuthRateLimiter {
-  sharedLimiter ??= createAuthRateLimiter()
+  sharedLimiter ??= createAuthRateLimiter({ policies: SHARED_POLICIES })
   return sharedLimiter
 }
 
