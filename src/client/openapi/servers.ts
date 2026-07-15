@@ -225,7 +225,7 @@ export const serverSchemas = {
           type: 'object',
           required: ['kind', 'count'],
           properties: {
-            kind: { type: 'string', enum: ['network'] },
+            kind: { type: 'string', enum: ['network', 'container'] },
             count: { type: 'integer', minimum: 1 },
           },
         },

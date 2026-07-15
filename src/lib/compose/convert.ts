@@ -1,4 +1,13 @@
-import { Document, parseDocument, type Node, type Pair, type YAMLMap } from 'yaml'
+import {
+  Document,
+  isMap,
+  isSeq,
+  parseDocument,
+  type Node,
+  type Pair,
+  type YAMLMap,
+  type YAMLSeq,
+} from 'yaml'
 import {
   emptyComposeDocument,
   normalizeCompose,
@@ -8,9 +17,13 @@ import {
 } from './types.ts'
 
 function isYamlMap(node: Node | null | undefined): node is YAMLMap {
-  return !!node && typeof node === 'object' && 'items' in node && Array.isArray(
-    (node as YAMLMap).items,
-  )
+  // YAMLMap and YAMLSeq both expose `items` — use yaml's type guard so sequences
+  // are not misclassified as maps (which drops sequence-item comments).
+  return isMap(node)
+}
+
+function isYamlSequence(node: Node | null | undefined): node is YAMLSeq {
+  return isSeq(node)
 }
 
 function commentText(node: Node | null | undefined, which: 'commentBefore' | 'comment'): string | undefined {
@@ -46,11 +59,6 @@ function presentationPath(path: string): string {
   return path || '$'
 }
 
-function isYamlSequence(node: Node): node is Node & { items: unknown[] } {
-  return !isYamlMap(node) && 'items' in node &&
-    Array.isArray((node as { items: unknown[] }).items)
-}
-
 function collectNodeFormatting(
   node: Node,
   path: string,
@@ -59,7 +67,9 @@ function collectNodeFormatting(
   const before = commentText(node, 'commentBefore')
   const inline = commentText(node, 'comment')
   if (before || inline) {
-    collector.comments[presentationPath(path)] = {
+    const commentPath = presentationPath(path)
+    collector.comments[commentPath] = {
+      ...collector.comments[commentPath],
       ...(before ? { before } : {}),
       ...(inline ? { inline } : {}),
     }
@@ -69,6 +79,10 @@ function collectNodeFormatting(
   if (blanks !== undefined) {
     collector.blankLines[presentationPath(path)] = blanks
   }
+}
+
+function keyBlankPath(path: string): string {
+  return `${path}#key`
 }
 
 function collectKeyFormatting(
@@ -81,14 +95,14 @@ function collectKeyFormatting(
   if (before || inline) {
     collector.comments[path] = {
       ...collector.comments[path],
-      ...(before ? { before } : {}),
-      ...(inline ? { inline } : {}),
+      ...(before ? { keyBefore: before } : {}),
+      ...(inline ? { keyInline: inline } : {}),
     }
   }
 
   const blanks = blankLineCount(keyNode)
   if (blanks !== undefined) {
-    collector.blankLines[path] = blanks
+    collector.blankLines[keyBlankPath(path)] = blanks
   }
 }
 
@@ -197,13 +211,13 @@ function applyKeyFormatting(
   if (!keyNode || typeof keyNode !== 'object') return
 
   const comment = presentation.comments[path]
-  if (comment?.before) {
-    ;(keyNode as { commentBefore?: string }).commentBefore = comment.before
+  if (comment?.keyBefore) {
+    ;(keyNode as { commentBefore?: string }).commentBefore = comment.keyBefore
   }
-  if (comment?.inline) {
-    ;(keyNode as { comment?: string }).comment = comment.inline
+  if (comment?.keyInline) {
+    ;(keyNode as { comment?: string }).comment = comment.keyInline
   }
-  const blanks = presentation.blankLines?.[path]
+  const blanks = presentation.blankLines?.[keyBlankPath(path)]
   if (blanks && blanks > 0) {
     ;(keyNode as { spaceBefore?: boolean }).spaceBefore = true
   }
@@ -295,15 +309,29 @@ export function yamlToComposeDocument(source: string): ComposeDocument {
   }
 }
 
+function composeDataToYaml(
+  data: Record<string, unknown>,
+  presentation?: ComposePresentation,
+): string {
+  // Blank drafts should look blank in the editor — not `{}` / `services: {}`.
+  if (Object.keys(data).length === 0) {
+    return '\n'
+  }
+
+  const yamlDoc = new Document(data)
+  if (presentation) {
+    applyPresentation(yamlDoc, presentation)
+  }
+  const out = yamlDoc.toString({ lineWidth: 0 })
+  return out.endsWith('\n') ? out : `${out}\n`
+}
+
 /**
  * Editor round-trip: restore presentation (key order, comments, blank lines).
  */
 export function composeDocumentToYaml(doc: ComposeDocument): string {
   const normalized = normalizeCompose(doc)
-  const yamlDoc = new Document(normalized.data)
-  applyPresentation(yamlDoc, normalized.presentation)
-  const out = yamlDoc.toString({ lineWidth: 0 })
-  return out.endsWith('\n') ? out : `${out}\n`
+  return composeDataToYaml(normalized.data, normalized.presentation)
 }
 
 /**
@@ -311,7 +339,5 @@ export function composeDocumentToYaml(doc: ComposeDocument): string {
  */
 export function composeDocumentToRuntimeYaml(doc: ComposeDocument): string {
   const normalized = normalizeCompose(doc)
-  const yamlDoc = new Document(normalized.data)
-  const out = yamlDoc.toString({ lineWidth: 0 })
-  return out.endsWith('\n') ? out : `${out}\n`
+  return composeDataToYaml(normalized.data)
 }

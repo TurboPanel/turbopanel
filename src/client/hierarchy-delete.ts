@@ -1,7 +1,10 @@
 import type { Context } from 'hono'
 import type { Db } from '../db.ts'
 
+/** foreign_key_violation — typical for ON DELETE NO ACTION */
 const POSTGRES_FK_VIOLATION = '23503'
+/** restrict_violation — raised immediately by ON DELETE RESTRICT */
+const POSTGRES_RESTRICT_VIOLATION = '23001'
 
 export const HIERARCHY_DELETE_HAS_CHILDREN_ERROR =
   'Cannot delete while child resources exist'
@@ -17,7 +20,8 @@ function getPostgresErrorCode(error: unknown): string | undefined {
 }
 
 export function isForeignKeyViolation(error: unknown): boolean {
-  return getPostgresErrorCode(error) === POSTGRES_FK_VIOLATION
+  const code = getPostgresErrorCode(error)
+  return code === POSTGRES_FK_VIOLATION || code === POSTGRES_RESTRICT_VIOLATION
 }
 
 export async function runHierarchyDelete(

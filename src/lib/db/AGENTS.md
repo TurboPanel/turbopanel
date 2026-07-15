@@ -100,7 +100,7 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `sync
 |---|---|
 | **Identity** | `user`, `account`, `session`, `verification`, `passkey`, `2fa` |
 | **Organizations** | `organization`, `member`, `team`, `teammate`, `invitation` (no `organization_id`; `team_id NOT NULL`), `license` |
-| **Resource tree** | `workspace`, `project`, `environment`, `service`, `hosting`, `network`, `managed`, `variable` |
+| **Resource tree** | `workspace`, `project`, `environment`, `service`, `hosting`, `container`, `network`, `managed`, `variable` |
 | **Authorization** | `grant` |
 | **Config** | `setting` (`value` is `jsonb`) |
 | **Runtime** | `server`, `command` |
@@ -113,12 +113,14 @@ Canonical order (org scope is derived via joins — not stored on child rows):
 
 ```
 organization → workspace → project → environment → service → hosting
+organization → workspace → project → environment → service → container (1:N)
 organization → workspace → project → managed (1:1)
 organization → workspace → project → environment → variable (1:N, env-scoped)
 organization → workspace → variable (1:N)
 organization → project → variable (1:N)
 organization → workspace → project → environment → service → variable (1:N)
 organization → server → network
+organization → server → container
 organization → server → variable (1:N, server-scoped; excluded from inheritance chain)
 ```
 
@@ -129,6 +131,7 @@ organization → server → variable (1:N, server-scoped; excluded from inherita
 | `environment` | `project_id` | Staging/production/etc. within a project. **`metadata`**: may include `serverId` after deploy. **`options.compose`**: per-environment ComposeDocument overlay merged onto the project base at deploy. |
 | `service` | `environment_id` | Deployable unit within an environment. **`metadata`**: e.g. `composeServiceName`. **`options`**: reserved (future per-service placement). |
 | `hosting` | `service_id NOT NULL` | Public routing for a service (Traefik + edge Caddy). **`options`**: `{ hostnames[], pathPrefix?, targetPort? }`. **`metadata`**: deploy status fields. Org derived via service chain. |
+| `container` | `service_id NOT NULL` + `server_id NOT NULL` | Pins a deployed Docker container to a service and records which server hosts it. **`metadata`** holds the pinned container id + status (no dedicated columns). Both FKs `ON DELETE RESTRICT` (deleting a service or server with existing containers is blocked, mirroring `hosting`/`network`). |
 | `network` | `server_id NOT NULL` | Linked to a server; org derived via server. Cascade delete. |
 | `managed` | `project_id NOT NULL` (unique) | Linking table; project is source of truth for timestamps; `ON DELETE CASCADE`. **`metadata`**: kebab-case catalog `code`, etc. |
 | `variable` | exactly one of `organization_id`, `workspace_id`, `project_id`, `environment_id`, `service_id`, `server_id` (all nullable FKs; CHECK enforces one parent) | Config vars/secrets at any resource scope; `is_secret` flag; secret `value` is a sealed envelope; partial unique indexes on `(key, <parent_fk>)` per scope; `ON DELETE CASCADE`. Key must match `^[A-Za-z_][A-Za-z0-9_]*$`. **Inheritance order** (runtime resolution, excludes server-scoped): `service` → `environment` → `project` → `workspace` → `organization` (lower scope wins). **Server-scoped** variables are fetched separately and do not participate in the inheritance chain. |

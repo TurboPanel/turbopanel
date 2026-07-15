@@ -20,3 +20,9 @@ export {
   type ComposeValidationIssue,
   type ComposeValidationResult,
 } from './validate.ts'
+export {
+  isPlacementServerId,
+  readComposePlacementServerId,
+  TURBOPANEL_EXTENSION_KEY,
+  type ComposeTurbopanelExtension,
+} from './placement.ts'

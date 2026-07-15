@@ -2,6 +2,7 @@ import { and, eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import {
   grant,
+  container,
   environment,
   hosting,
   managed,
@@ -134,6 +135,14 @@ export async function verifyEntityExists(
         .select({ id: hosting.id })
         .from(hosting)
         .where(eq(hosting.id, entityId))
+        .limit(1)
+      return rows.length > 0
+    }
+    case 'container': {
+      const rows = await db
+        .select({ id: container.id })
+        .from(container)
+        .where(eq(container.id, entityId))
         .limit(1)
       return rows.length > 0
     }
@@ -275,6 +284,19 @@ export async function resolveEntityOrganizationId(
         JOIN project p ON p.id = e.project_id
         JOIN workspace w ON w.id = p.workspace_id
         WHERE h.id = ${entityId}::uuid
+        LIMIT 1
+      `)
+      return rows[0]?.organization_id ?? null
+    }
+    case 'container': {
+      const rows = await db.execute<{ organization_id: string }>(sql`
+        SELECT w.organization_id AS organization_id
+        FROM container c
+        JOIN service s ON s.id = c.service_id
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE c.id = ${entityId}::uuid
         LIMIT 1
       `)
       return rows[0]?.organization_id ?? null

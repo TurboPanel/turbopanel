@@ -3,6 +3,7 @@ import { sharedSchemas } from './shared.ts'
 import { accessPaths, accessSchemas } from './access.ts'
 import { authPaths, buildAuthSchemas } from './auth.ts'
 import { environmentPaths, environmentSchemas } from './environments.ts'
+import { containerPaths, containerSchemas } from './containers.ts'
 import { hostingPaths, hostingSchemas } from './hostings.ts'
 import { installOpenApiPaths, installOpenApiSchemas } from './install.ts'
 import { networkPaths, networkSchemas } from './networks.ts'
@@ -52,6 +53,7 @@ export function getClientOpenApiSpec(
       { name: 'Variables', description: 'Environment variable and secret management' },
       { name: 'Services', description: 'Service CRUD' },
       { name: 'Hostings', description: 'Hosting CRUD' },
+      { name: 'Containers', description: 'Container CRUD' },
       { name: 'Servers', description: 'Server fleet and update management' },
       { name: 'Networks', description: 'Server network management' },
       { name: 'Licenses', description: 'License lifecycle' },
@@ -61,7 +63,7 @@ export function getClientOpenApiSpec(
     ],
     'x-tagGroups': [
       { name: 'Authentication & Authorization', tags: ['Authentication', 'Authorization'] },
-      { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Variables', 'Services', 'Hostings'] },
+      { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Variables', 'Services', 'Hostings', 'Containers'] },
       { name: 'Infrastructure', tags: ['Servers', 'Networks', 'Licenses'] },
       { name: 'Platform', tags: ['Health', ...(includeInstall ? ['Install'] : [])] },
     ],
@@ -87,6 +89,7 @@ export function getClientOpenApiSpec(
         ...variableSchemas,
         ...serviceSchemas,
         ...hostingSchemas,
+        ...containerSchemas,
         ...(includeInstall ? installOpenApiSchemas : {}),
       },
     },
@@ -103,7 +106,9 @@ export function getClientOpenApiSpec(
       ...variablePaths,
       ...servicePaths,
       ...hostingPaths,
+      ...containerPaths,
       ...(includeInstall ? installOpenApiPaths : {}),
     },
+
   }
 }

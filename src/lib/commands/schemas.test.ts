@@ -164,6 +164,40 @@ test('parseCommandPayload and parseCommandResult dispatch by type', () => {
     }),
     { projectName: 'tp-demo', summary: 'up' },
   )
+  assertEquals(
+    parseCommandResult('environment.deploy' as CommandType, {
+      projectName: 'tp-demo',
+      summary: 'scaled to zero',
+      containers: [],
+    }),
+    { projectName: 'tp-demo', summary: 'scaled to zero', containers: [] },
+  )
+  assertEquals(
+    parseCommandResult('environment.deploy' as CommandType, {
+      projectName: 'tp-demo',
+      containers: [
+        {
+          composeServiceName: 'web',
+          containerId: 'abc',
+          containerName: 'proj-web-1',
+          status: 'running',
+          serviceId: '00000000-0000-4000-8000-000000000099',
+        },
+      ],
+    }),
+    {
+      projectName: 'tp-demo',
+      containers: [
+        {
+          composeServiceName: 'web',
+          containerId: 'abc',
+          containerName: 'proj-web-1',
+          status: 'running',
+          serviceId: '00000000-0000-4000-8000-000000000099',
+        },
+      ],
+    },
+  )
 })
 
 test('encodeCommandEnvelope round-trips through parseCommandEnvelope', () => {

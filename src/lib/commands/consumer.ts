@@ -18,9 +18,15 @@ import {
 import { commandConsumerTrace } from '../../logger.ts'
 import { compatLogWarn } from '../../log-compat.ts'
 import { getCommandRecord, transitionCommand } from '../db/command-records.ts'
+import { reconcileEnvironmentContainers } from '../db/container-records.ts'
 import type { CommandEnvelope } from './envelope.ts'
 import { nowIso } from './ids.ts'
-import { parseHostnameSetResult, parsePingResult } from './schemas.ts'
+import {
+  parseEnvironmentDeployPayload,
+  parseEnvironmentDeployResult,
+  parseHostnameSetResult,
+  parsePingResult,
+} from './schemas.ts'
 import { TERMINAL_COMMAND_STATUSES, type CommandType } from './types.ts'
 
 const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
@@ -231,6 +237,35 @@ export async function processCommandEnvelope(
           await touchServerMetadata(db, envelope.serverId, {
             hostname: observedHostname,
           })
+        }
+      }
+
+      if (record.type === 'environment.deploy') {
+        try {
+          const { environmentId } = parseEnvironmentDeployPayload(record.payload)
+          const deployResult = parseEnvironmentDeployResult(pending.result)
+          // Only reconcile when the daemon included an authoritative containers
+          // report (including `[]`). Omitting the field means collection failed.
+          if (deployResult.containers !== undefined) {
+            await reconcileEnvironmentContainers(db, {
+              serverId: envelope.serverId,
+              environmentId,
+              containers: deployResult.containers,
+            })
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          commandConsumerTrace('dispatch-result', {
+            commandId: record.id,
+            commandType: record.type,
+            serverId: envelope.serverId,
+            resultStatus: 'succeeded',
+            containerReconcileError: message,
+          })
+          compatLogWarn(
+            'command-consumer',
+            `container reconcile failed for command ${record.id}: ${message}`,
+          )
         }
       }
       break

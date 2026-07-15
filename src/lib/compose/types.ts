@@ -1,8 +1,17 @@
 /** Versioned Docker Compose document stored in project/environment `options.compose`. */
 
 export type ComposeComment = {
+  /** commentBefore on the value node (e.g. `#` lines before nested map children). */
   before?: string
+  /** Trailing `#` on the value scalar (e.g. `image: nginx:alpine # line comment`). */
   inline?: string
+  /**
+   * commentBefore on the mapping key. Kept separate from {@link before} so key and
+   * value comments at the same path never overwrite each other on round-trip.
+   */
+  keyBefore?: string
+  /** Trailing `#` on the mapping key. */
+  keyInline?: string
 }
 
 export type ComposePresentation = {
@@ -25,9 +34,9 @@ export type ComposeDocument = {
 export function emptyComposeDocument(): ComposeDocument {
   return {
     version: 1,
-    data: { services: {} },
+    data: {},
     presentation: {
-      keyOrder: ['services'],
+      keyOrder: [],
       comments: {},
     },
   }

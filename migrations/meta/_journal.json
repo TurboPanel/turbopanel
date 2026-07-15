@@ -15,6 +15,13 @@
       "when": 1783638000000,
       "tag": "0001_hosting_service_options_metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784148301235,
+      "tag": "0002_add_container_table",
+      "breakpoints": true
     }
   ]
 }

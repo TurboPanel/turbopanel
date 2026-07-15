@@ -11,6 +11,7 @@ import { registerAccessRoutes } from './access/routes.ts'
 import { registerEnvironmentDeployRoutes } from './environments/deploy-routes.ts'
 import { registerEnvironmentRoutes } from './environments/routes.ts'
 import { registerVariableRoutes } from './variables/routes.ts'
+import { registerContainerRoutes } from './containers/routes.ts'
 import { registerHostingRoutes } from './hostings/routes.ts'
 import { registerLicenseRoutes } from './licenses/routes.ts'
 import { registerNetworkRoutes } from './networks/routes.ts'
@@ -61,6 +62,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
   registerProjectRoutes(client, opts)
   registerServiceRoutes(client, opts)
   registerHostingRoutes(client, opts)
+  registerContainerRoutes(client, opts)
   registerTeamRoutes(client, opts)
 
   client.get('/openapi.json', (c) => {

@@ -6,6 +6,8 @@ import {
   emptyComposeDocument,
   mergeComposeOverlay,
   normalizeCompose,
+  readComposePlacementServerId,
+  TURBOPANEL_EXTENSION_KEY,
   validateComposeDocument,
   yamlToComposeDocument,
 } from './index.ts'
@@ -38,11 +40,73 @@ test('yamlToComposeDocument preserves top-level key order and comments', () => {
   assertEquals(doc.presentation.keyOrder.includes('services'), true)
   assertEquals(doc.presentation.keyOrder.includes('networks'), true)
   assertEquals(Object.keys(doc.presentation.comments).length > 0, true)
+  assertEquals(doc.presentation.comments.services?.keyBefore?.includes('Web frontend'), true)
 
   const roundTrip = composeDocumentToYaml(doc)
-  assertEquals(roundTrip.includes('# Web frontend') || roundTrip.includes('primary'), true)
+  assertEquals(roundTrip.includes('# Web frontend'), true)
+  assertEquals(roundTrip.includes('primary'), true)
   // services section appears before networks
   assertEquals(roundTrip.indexOf('services:') < roundTrip.indexOf('networks:'), true)
+})
+
+test('yaml round-trip keeps nested map comments before a service key', () => {
+  const source = `services:
+  # comment
+  nginx:
+    image: nginx:alpine
+`
+  const roundTrip = composeDocumentToYaml(yamlToComposeDocument(source))
+  assertEquals(roundTrip.includes('# comment'), true)
+  assertEquals(roundTrip.indexOf('# comment') > roundTrip.indexOf('services:'), true)
+  assertEquals(roundTrip.indexOf('# comment') < roundTrip.indexOf('nginx:'), true)
+  // Must not duplicate the nested comment above the top-level key.
+  assertEquals(roundTrip.trimStart().startsWith('services:'), true)
+})
+
+test('yaml round-trip keeps trailing scalar comments', () => {
+  const source = `services:
+  nginx:
+    image: nginx:alpine # line comment
+`
+  const roundTrip = composeDocumentToYaml(yamlToComposeDocument(source))
+  assertEquals(roundTrip.includes('# line comment'), true)
+  assertEquals(roundTrip.includes('image: nginx:alpine # line comment'), true)
+})
+
+test('yaml round-trip keeps sequence-item trailing comments', () => {
+  const source = `services:
+  uptime-kuma:
+    image: louislam/uptime-kuma:2
+    ports:
+      - "3001:3001"  # This maps the container port
+    volumes:
+      - /path/to/data:/app/data  # Configuring persistent storage
+    environment:
+      - TZ=UTC  # Set the timezone
+`
+  const doc = yamlToComposeDocument(source)
+  assertEquals(
+    doc.presentation.comments['services.uptime-kuma.ports[0]']?.inline?.includes(
+      'This maps the container port',
+    ),
+    true,
+  )
+  assertEquals(
+    doc.presentation.comments['services.uptime-kuma.volumes[0]']?.inline?.includes(
+      'Configuring persistent storage',
+    ),
+    true,
+  )
+  assertEquals(
+    doc.presentation.comments['services.uptime-kuma.environment[0]']?.inline?.includes(
+      'Set the timezone',
+    ),
+    true,
+  )
+  const roundTrip = composeDocumentToYaml(doc)
+  assertEquals(roundTrip.includes('# This maps the container port'), true)
+  assertEquals(roundTrip.includes('# Configuring persistent storage'), true)
+  assertEquals(roundTrip.includes('# Set the timezone'), true)
 })
 
 test('composeDocumentToRuntimeYaml drops presentation-only concerns but keeps data', () => {
@@ -81,10 +145,28 @@ test('validateComposeDocument accepts ComposeDocument and null', () => {
   }
 })
 
-test('emptyComposeDocument validates', () => {
+test('emptyComposeDocument validates as a blank draft', () => {
   const empty = emptyComposeDocument()
+  assertEquals(empty.data, {})
+  assertEquals(empty.presentation.keyOrder, [])
   const result = validateComposeDocument(empty)
   assertEquals(result.ok, true)
+  assertEquals(composeDocumentToYaml(empty), '\n')
+  assertEquals(composeDocumentToRuntimeYaml(empty), '\n')
+})
+
+test('validateComposeDocument accepts blank data without services', () => {
+  const result = validateComposeDocument({
+    version: 1,
+    data: {},
+    presentation: { keyOrder: [], comments: {} },
+  })
+  assertEquals(result.ok, true)
+})
+
+test('yamlToComposeDocument treats blank source as empty draft', () => {
+  assertEquals(yamlToComposeDocument(''), emptyComposeDocument())
+  assertEquals(yamlToComposeDocument('\n'), emptyComposeDocument())
 })
 
 test('mergeComposeOverlay deep-merges services', () => {
@@ -123,4 +205,108 @@ test('empty overlay inherits base', () => {
   base.data = { services: { web: { image: 'nginx' } } }
   const merged = mergeComposeOverlay(base, emptyComposeDocument())
   assertEquals((merged.data.services as Record<string, unknown>).web, { image: 'nginx' })
+})
+
+const PLACEMENT_UUID = '01989d42-9adb-7e65-bc2e-f38792c53691'
+
+function documentWithPlacement(serverId: unknown): ReturnType<typeof emptyComposeDocument> {
+  return {
+    version: 1,
+    data: {
+      services: {},
+      [TURBOPANEL_EXTENSION_KEY]: {
+        placement: { server_id: serverId },
+      },
+    },
+    presentation: { keyOrder: ['services', TURBOPANEL_EXTENSION_KEY], comments: {} },
+  }
+}
+
+test('readComposePlacementServerId returns valid server_id', () => {
+  const doc = documentWithPlacement(PLACEMENT_UUID)
+  assertEquals(readComposePlacementServerId(doc), PLACEMENT_UUID)
+})
+
+test('readComposePlacementServerId returns null when absent', () => {
+  assertEquals(readComposePlacementServerId(emptyComposeDocument()), null)
+})
+
+test('readComposePlacementServerId returns null for malformed shapes', () => {
+  assertEquals(
+    readComposePlacementServerId({
+      version: 1,
+      data: { services: {}, [TURBOPANEL_EXTENSION_KEY]: 'nope' },
+      presentation: { keyOrder: ['services'], comments: {} },
+    }),
+    null,
+  )
+  assertEquals(
+    readComposePlacementServerId({
+      version: 1,
+      data: {
+        services: {},
+        [TURBOPANEL_EXTENSION_KEY]: { placement: [] },
+      },
+      presentation: { keyOrder: ['services'], comments: {} },
+    }),
+    null,
+  )
+  assertEquals(readComposePlacementServerId(documentWithPlacement(123)), null)
+  assertEquals(readComposePlacementServerId(documentWithPlacement('')), null)
+  assertEquals(readComposePlacementServerId(documentWithPlacement('   ')), null)
+})
+
+test('validateComposeDocument rejects non-UUID server_id', () => {
+  const result = validateComposeDocument(documentWithPlacement('not-a-uuid'))
+  assertEquals(result.ok, false)
+  if (!result.ok) {
+    assertEquals(
+      result.issues.some((i) => i.path === 'x-turbopanel.placement.server_id'),
+      true,
+    )
+  }
+})
+
+test('validateComposeDocument rejects non-string server_id', () => {
+  const result = validateComposeDocument(documentWithPlacement(123))
+  assertEquals(result.ok, false)
+  if (!result.ok) {
+    assertEquals(
+      result.issues.some((i) => i.path === 'x-turbopanel.placement.server_id'),
+      true,
+    )
+  }
+})
+
+test('validateComposeDocument accepts valid placement', () => {
+  const result = validateComposeDocument(documentWithPlacement(PLACEMENT_UUID))
+  assertEquals(result.ok, true)
+})
+
+test('validateComposeDocument remains backward compatible without x-turbopanel', () => {
+  const result = validateComposeDocument({
+    version: 1,
+    data: { services: { api: { image: 'node:22' } } },
+    presentation: { keyOrder: ['services'], comments: {} },
+  })
+  assertEquals(result.ok, true)
+})
+
+test('x-turbopanel survives YAML convert round-trip', () => {
+  const doc = documentWithPlacement(PLACEMENT_UUID)
+  const runtime = composeDocumentToRuntimeYaml(doc)
+  assertEquals(runtime.includes('x-turbopanel:'), true)
+  assertEquals(runtime.includes(PLACEMENT_UUID), true)
+
+  const editor = composeDocumentToYaml(doc)
+  assertEquals(editor.includes('x-turbopanel:'), true)
+  assertEquals(editor.includes(PLACEMENT_UUID), true)
+
+  const fromYaml = yamlToComposeDocument(`
+services: {}
+x-turbopanel:
+  placement:
+    server_id: ${PLACEMENT_UUID}
+`)
+  assertEquals(readComposePlacementServerId(fromYaml), PLACEMENT_UUID)
 })

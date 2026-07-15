@@ -9,6 +9,7 @@ import {
   assertComposeDocument,
   composeDocumentToRuntimeYaml,
   mergeComposeOverlay,
+  readComposePlacementServerId,
 } from '../../lib/compose/index.ts'
 import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
 import { isNoopCommandQueue } from '../../lib/commands/noop-command-queue.ts'
@@ -29,7 +30,6 @@ import {
   assertCanManageOr403,
   getOrgId,
   parseJsonBody,
-  requireStringField,
 } from '../shared.ts'
 
 type DeployHostingPayload = {
@@ -166,6 +166,7 @@ type LoadedDeployCompose = {
   envRow: { id: string; projectId: string; options: unknown; metadata: unknown }
   projectRow: { id: string; displayName: string | null; options: unknown }
   composeYaml: string
+  placementServerId: string | null
 }
 
 async function loadDeployComposeYaml(
@@ -197,12 +198,14 @@ async function loadDeployComposeYaml(
 
   try {
     const baseCompose = assertComposeDocument(extractComposeFromOptions(projectRow.options))
+    const placementServerId = readComposePlacementServerId(baseCompose)
     const overlayCompose = assertComposeDocument(extractComposeFromOptions(envRow.options))
     const merged = mergeComposeOverlay(baseCompose, overlayCompose)
     return {
       envRow,
       projectRow,
       composeYaml: composeDocumentToRuntimeYaml(merged),
+      placementServerId,
     }
   } catch {
     return Response.json({ error: 'Invalid compose document' }, { status: 400 })
@@ -213,7 +216,7 @@ async function authorizeDeployRequest(
   c: Context<AppEnv>,
   db: Db,
   environmentId: string,
-): Promise<{ userId: string; serverId: string } | Response> {
+): Promise<{ userId: string; organizationId: string; requestedServerId: string | null } | Response> {
   const denied = await assertCanManageOr403(c, 'environment', environmentId)
   if (denied) return denied
 
@@ -231,14 +234,47 @@ async function authorizeDeployRequest(
   const body = await parseJsonBody(c)
   if (body instanceof Response) return body
 
-  const serverId = requireStringField(c, body, 'serverId')
-  if (serverId instanceof Response) return serverId
+  let requestedServerId: string | null = null
+  if ('serverId' in body) {
+    const value = body.serverId
+    if (typeof value !== 'string' || !value) {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+    requestedServerId = value
+  }
 
-  if (!(await verifyServerInOrg(db, serverId, orgResult))) {
+  return {
+    userId: session.userId,
+    organizationId: orgResult,
+    requestedServerId,
+  }
+}
+
+async function resolveDeployTargetServer(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  requestedServerId: string | null,
+  placementServerId: string | null,
+): Promise<{ serverId: string } | Response> {
+  let serverId: string
+
+  if (placementServerId) {
+    if (requestedServerId && requestedServerId !== placementServerId) {
+      return c.json({ error: 'server_placement_mismatch' }, 400)
+    }
+    serverId = placementServerId
+  } else if (requestedServerId) {
+    serverId = requestedServerId
+  } else {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
+  if (!(await verifyServerInOrg(db, serverId, organizationId))) {
     return c.json({ error: 'Not found' }, 404)
   }
 
-  return { userId: session.userId, serverId }
+  return { serverId }
 }
 
 async function enqueueDeployCommand(
@@ -322,12 +358,21 @@ export function registerEnvironmentDeployRoutes(
     const loaded = await loadDeployComposeYaml(db, environmentId)
     if (loaded instanceof Response) return loaded
 
+    const target = await resolveDeployTargetServer(
+      c,
+      db,
+      auth.organizationId,
+      auth.requestedServerId,
+      loaded.placementServerId,
+    )
+    if (target instanceof Response) return target
+
     const hostingPayload = await buildHostingPayload(db, environmentId)
     const prevMeta = isPlainObject(loaded.envRow.metadata) ? loaded.envRow.metadata : {}
     await db
       .update(environment)
       .set({
-        metadata: { ...prevMeta, serverId: auth.serverId },
+        metadata: { ...prevMeta, serverId: target.serverId },
         updatedAt: new Date().toISOString(),
       })
       .where(eq(environment.id, environmentId))
@@ -335,7 +380,7 @@ export function registerEnvironmentDeployRoutes(
     const projectName = `tp-${projectComposeName(loaded.projectRow.displayName, loaded.projectRow.id)}-${environmentId.slice(0, 8)}`
 
     return enqueueDeployCommand(db, commandQueue, {
-      serverId: auth.serverId,
+      serverId: target.serverId,
       userId: auth.userId,
       environmentId,
       projectId: loaded.projectRow.id,

@@ -1,3 +1,4 @@
+import { isPlacementServerId, TURBOPANEL_EXTENSION_KEY } from './placement.ts'
 import {
   emptyComposeDocument,
   isComposeDocument,
@@ -17,7 +18,9 @@ export type ComposeValidationResult =
 /**
  * Structural validation for stored / editor compose documents.
  * Validates shape before normalization can hide invalid input.
- * Empty `services: {}` is allowed (draft project).
+ * A blank document (`data: {}`) is allowed for draft projects; `services` is
+ * optional until the author adds it. When present, `services` must be a mapping
+ * (including the legacy empty form `services: {}`).
  * Intentionally empty values (`null` / `undefined`) become emptyComposeDocument().
  */
 export function validateComposeDocument(value: unknown): ComposeValidationResult {
@@ -38,20 +41,61 @@ export function validateComposeDocument(value: unknown): ComposeValidationResult
   const document = normalizeCompose(value)
   const issues: ComposeValidationIssue[] = []
 
-  if (!('services' in document.data)) {
-    issues.push({ path: 'services', message: 'Compose document must include a services mapping' })
-  } else if (
-    typeof document.data.services !== 'object' ||
-    document.data.services === null ||
-    Array.isArray(document.data.services)
+  if (
+    'services' in document.data &&
+    (typeof document.data.services !== 'object' ||
+      document.data.services === null ||
+      Array.isArray(document.data.services))
   ) {
     issues.push({ path: 'services', message: 'services must be a mapping' })
   }
+
+  validateTurbopanelExtension(document.data, issues)
 
   if (issues.length > 0) {
     return { ok: false, issues }
   }
   return { ok: true, document }
+}
+
+function isPlainMapping(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function validateTurbopanelExtension(
+  data: Record<string, unknown>,
+  issues: ComposeValidationIssue[],
+): void {
+  if (!(TURBOPANEL_EXTENSION_KEY in data)) {
+    return
+  }
+
+  const extension = data[TURBOPANEL_EXTENSION_KEY]
+  if (!isPlainMapping(extension)) {
+    issues.push({ path: 'x-turbopanel', message: 'x-turbopanel must be a mapping' })
+    return
+  }
+
+  if (!('placement' in extension)) {
+    return
+  }
+
+  const placement = extension.placement
+  if (!isPlainMapping(placement)) {
+    issues.push({ path: 'x-turbopanel.placement', message: 'placement must be a mapping' })
+    return
+  }
+
+  if (!('server_id' in placement)) {
+    return
+  }
+
+  if (!isPlacementServerId(placement.server_id)) {
+    issues.push({
+      path: 'x-turbopanel.placement.server_id',
+      message: 'server_id must be a UUID string',
+    })
+  }
 }
 
 export function assertComposeDocument(value: unknown): ComposeDocument {

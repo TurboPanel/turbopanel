@@ -597,6 +597,45 @@ export const hosting = pgTable(
     ),
   ]
 )
+export const container = pgTable(
+  'container',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    serviceId: uuid('service_id').notNull(),
+    serverId: uuid('server_id').notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+  },
+  (table) => [
+    index('idx_container_service_id').using(
+      'btree',
+      table.serviceId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_container_server_id').using(
+      'btree',
+      table.serverId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.serviceId],
+      foreignColumns: [service.id],
+      name: 'container_service_id_service_id_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'container_server_id_server_id_fk',
+    }).onDelete('restrict'),
+  ]
+)
 export const grant = pgTable(
   'grant',
   {

@@ -192,6 +192,40 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         JOIN workspace w ON w.id = p.workspace_id
         WHERE h.id = ${entityId}::uuid
       `
+    case 'container':
+      return sql`
+        SELECT 'container'::text AS entity_type, c.id AS entity_id, 0 AS depth
+        FROM container c WHERE c.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'service'::text, c.service_id, 1
+        FROM container c WHERE c.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'environment'::text, s.environment_id, 2
+        FROM container c
+        JOIN service s ON s.id = c.service_id
+        WHERE c.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'project'::text, e.project_id, 3
+        FROM container c
+        JOIN service s ON s.id = c.service_id
+        JOIN environment e ON e.id = s.environment_id
+        WHERE c.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'workspace'::text, p.workspace_id, 4
+        FROM container c
+        JOIN service s ON s.id = c.service_id
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project p ON p.id = e.project_id
+        WHERE c.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'organization'::text, w.organization_id, 5
+        FROM container c
+        JOIN service s ON s.id = c.service_id
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE c.id = ${entityId}::uuid
+      `
     case 'server':
       return sql`
         SELECT 'server'::text AS entity_type, s.id AS entity_id, 0 AS depth
@@ -381,6 +415,13 @@ function buildLeavesBody(kind: string, organizationId: string): SQL {
     case 'hosting':
       return sql`SELECT h.id FROM hosting h
         JOIN service s ON s.id = h.service_id
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE w.organization_id = ${organizationId}::uuid`
+    case 'container':
+      return sql`SELECT c.id FROM container c
+        JOIN service s ON s.id = c.service_id
         JOIN environment e ON e.id = s.environment_id
         JOIN project p ON p.id = e.project_id
         JOIN workspace w ON w.id = p.workspace_id

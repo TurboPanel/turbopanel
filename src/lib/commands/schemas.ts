@@ -152,11 +152,23 @@ export type EnvironmentDeployHosting = {
   targetPort?: number
 }
 
+export type EnvironmentDeployContainer = {
+  /** Present when the compose service appears in `payload.hostings`. */
+  serviceId?: string
+  composeServiceName: string
+  containerId: string
+  containerName: string
+  status: string
+}
+
 export type EnvironmentDeployCommandResult = {
   projectName: string
   summary?: string
   services?: string[]
+  containers?: EnvironmentDeployContainer[]
 }
+
+const MAX_ENVIRONMENT_DEPLOY_CONTAINERS = 100
 
 export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeployCommandPayload {
   if (!isRecord(value)) {
@@ -217,6 +229,32 @@ export function parseEnvironmentDeployResult(value: unknown): EnvironmentDeployC
   if (isString(value.summary)) result.summary = value.summary
   if (Array.isArray(value.services) && value.services.every(isString)) {
     result.services = value.services as string[]
+  }
+  if (Array.isArray(value.containers)) {
+    const containers: EnvironmentDeployContainer[] = []
+    for (const entry of value.containers) {
+      if (!isRecord(entry)) continue
+      if (
+        !isString(entry.composeServiceName) ||
+        !isString(entry.containerId) ||
+        !isString(entry.containerName) ||
+        !isString(entry.status)
+      ) {
+        continue
+      }
+      const container: EnvironmentDeployContainer = {
+        composeServiceName: entry.composeServiceName,
+        containerId: entry.containerId,
+        containerName: entry.containerName,
+        status: entry.status,
+      }
+      if (isString(entry.serviceId)) container.serviceId = entry.serviceId
+      containers.push(container)
+      if (containers.length >= MAX_ENVIRONMENT_DEPLOY_CONTAINERS) break
+    }
+    // Preserve an explicitly empty array so callers can distinguish
+    // "authoritative empty report" from "containers field omitted".
+    result.containers = containers
   }
   return result
 }

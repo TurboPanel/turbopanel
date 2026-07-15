@@ -24,6 +24,7 @@ export const RESOURCE_KINDS = [
   'hosting',
   'variable',
   'managed',
+  'container',
 ] as const
 
 /** Entity kinds that may appear on access_grant rows (resource tree + team). */
@@ -35,6 +36,7 @@ export const GRANT_ENTITY_TYPES = [
 export const ENTITY_TYPES = [
   'organization', 'team', 'workspace', 'environment',
   'project', 'service', 'hosting', 'server', 'variable', 'managed',
+  'container',
 ] as const
 export type EntityType = (typeof ENTITY_TYPES)[number]
 
