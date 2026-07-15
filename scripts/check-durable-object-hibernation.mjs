@@ -38,6 +38,40 @@ const STABLE_ID_FILES = [
   "src/daemon/workers-ws.ts",
 ];
 
+function skipLineComment(source, start) {
+  let i = start + 2;
+  while (i < source.length && source[i] !== "\n") {
+    i += 1;
+  }
+  return i;
+}
+
+function skipBlockComment(source, start) {
+  let i = start + 2;
+  const len = source.length;
+  while (i < len - 1 && !(source[i] === "*" && source[i + 1] === "/")) {
+    i += 1;
+  }
+  return i + 2;
+}
+
+/** Skip a ', ", or ` literal, honoring backslash escapes. */
+function skipQuotedLiteral(source, start, quote) {
+  let i = start + 1;
+  const len = source.length;
+  while (i < len) {
+    if (source[i] === "\\") {
+      i += 2;
+      continue;
+    }
+    if (source[i] === quote) {
+      return i + 1;
+    }
+    i += 1;
+  }
+  return i;
+}
+
 /** Strip // and block comments, then single/double/template string literals. */
 function stripCommentsAndStrings(source) {
   let out = "";
@@ -49,51 +83,17 @@ function stripCommentsAndStrings(source) {
     const next = source[i + 1];
 
     if (ch === "/" && next === "/") {
-      i += 2;
-      while (i < len && source[i] !== "\n") i += 1;
+      i = skipLineComment(source, i);
       continue;
     }
 
     if (ch === "/" && next === "*") {
-      i += 2;
-      while (i < len - 1 && !(source[i] === "*" && source[i + 1] === "/")) {
-        i += 1;
-      }
-      i += 2;
+      i = skipBlockComment(source, i);
       continue;
     }
 
-    if (ch === "'" || ch === '"') {
-      const quote = ch;
-      i += 1;
-      while (i < len) {
-        if (source[i] === "\\") {
-          i += 2;
-          continue;
-        }
-        if (source[i] === quote) {
-          i += 1;
-          break;
-        }
-        i += 1;
-      }
-      out += " ";
-      continue;
-    }
-
-    if (ch === "`") {
-      i += 1;
-      while (i < len) {
-        if (source[i] === "\\") {
-          i += 2;
-          continue;
-        }
-        if (source[i] === "`") {
-          i += 1;
-          break;
-        }
-        i += 1;
-      }
+    if (ch === "'" || ch === '"' || ch === "`") {
+      i = skipQuotedLiteral(source, i, ch);
       out += " ";
       continue;
     }
@@ -203,6 +203,50 @@ function checkStableDoName(rel, stripped) {
   return hits;
 }
 
+function resolveExtraFile(root, file) {
+  if (path.isAbsolute(file)) {
+    return file;
+  }
+  return path.join(root, file);
+}
+
+function pushForbiddenHits(violations, rel, hits) {
+  for (const hit of hits) {
+    violations.push(`${rel}:${hit.line} forbidden ${hit.label}`);
+  }
+}
+
+function scanCellFile(root, absPath, violations) {
+  const rel = path.relative(root, absPath).split(path.sep).join("/");
+  const source = fs.readFileSync(absPath, "utf8");
+  const stripped = stripCommentsAndStrings(source);
+  const doHosted = DO_HOSTED.has(rel);
+
+  const rules = doHosted ? DO_FORBIDDEN : ALL_CELL_FORBIDDEN;
+  pushForbiddenHits(violations, rel, findViolations(source, rules));
+
+  if (!doHosted) {
+    pushForbiddenHits(violations, rel, findSetTimeoutViolations(rel, stripped));
+  }
+
+  if (doHosted && !/\bacceptWebSocket\b/.test(stripped)) {
+    violations.push(`${rel}:1 missing acceptWebSocket`);
+  }
+}
+
+function scanStableIdFile(root, absPath, violations) {
+  const rel = path.relative(root, absPath).split(path.sep).join("/");
+  if (!fs.existsSync(absPath)) {
+    violations.push(`${rel}:0 file not found`);
+    return;
+  }
+  const source = fs.readFileSync(absPath, "utf8");
+  const stripped = stripCommentsAndStrings(source);
+  for (const hit of checkStableDoName(rel, stripped)) {
+    violations.push(`${rel}:${hit.line} ${hit.label}`);
+  }
+}
+
 export function checkDurableObjectHibernation(options = {}) {
   const root = options.root ?? ROOT;
   const cellDir = options.cellDir ?? path.join(root, "src/daemon/cell");
@@ -214,41 +258,15 @@ export function checkDurableObjectHibernation(options = {}) {
 
   const filesToScan = [
     ...collectTsFiles(cellDir),
-    ...extraFiles.map((file) => path.isAbsolute(file) ? file : path.join(root, file)),
+    ...extraFiles.map((file) => resolveExtraFile(root, file)),
   ];
 
   for (const absPath of filesToScan) {
-    const rel = path.relative(root, absPath).split(path.sep).join("/");
-    const source = fs.readFileSync(absPath, "utf8");
-    const stripped = stripCommentsAndStrings(source);
-
-    const rules = DO_HOSTED.has(rel) ? DO_FORBIDDEN : ALL_CELL_FORBIDDEN;
-    for (const hit of findViolations(source, rules)) {
-      violations.push(`${rel}:${hit.line} forbidden ${hit.label}`);
-    }
-
-    if (!DO_HOSTED.has(rel)) {
-      for (const hit of findSetTimeoutViolations(rel, stripped)) {
-        violations.push(`${rel}:${hit.line} forbidden ${hit.label}`);
-      }
-    }
-
-    if (DO_HOSTED.has(rel) && !/\bacceptWebSocket\b/.test(stripped)) {
-      violations.push(`${rel}:1 missing acceptWebSocket`);
-    }
+    scanCellFile(root, absPath, violations);
   }
 
   for (const absPath of stableIdFiles) {
-    const rel = path.relative(root, absPath).split(path.sep).join("/");
-    if (!fs.existsSync(absPath)) {
-      violations.push(`${rel}:0 file not found`);
-      continue;
-    }
-    const source = fs.readFileSync(absPath, "utf8");
-    const stripped = stripCommentsAndStrings(source);
-    for (const hit of checkStableDoName(rel, stripped)) {
-      violations.push(`${rel}:${hit.line} ${hit.label}`);
-    }
+    scanStableIdFile(root, absPath, violations);
   }
 
   return violations;

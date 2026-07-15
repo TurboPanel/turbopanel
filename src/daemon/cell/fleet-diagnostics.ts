@@ -66,7 +66,7 @@ export async function collectFleetCommands(
     serverIds.map(async (serverId) => {
       const records = await registry.getCell(serverId).listRequests(
         perServerLimit,
-        { requestKind: "command" },
+        { requestKind: "command-dispatch" },
       );
       allCommands.push(...records.map(requestToCommandResult));
     }),

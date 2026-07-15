@@ -1,5 +1,6 @@
 import { and, eq } from 'drizzle-orm'
 import { Hono, type Context } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { can, listVisible } from '../authz/index.ts'
@@ -216,9 +217,14 @@ async function revokeBoundLicenseOnDenoDelete(
   }
 }
 
-export function registerServerRoutes(router: Hono, opts: AuthRouteOpts) {
-  router.use('/servers', createSessionMiddleware(opts.secrets))
-  router.use('/servers/*', createSessionMiddleware(opts.secrets))
+export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for server routes')
+  }
+  const secrets = opts.secrets
+
+  router.use('/servers', createSessionMiddleware(secrets))
+  router.use('/servers/*', createSessionMiddleware(secrets))
 
   router.get('/servers', async (c) => {
     const db = getDb(c)

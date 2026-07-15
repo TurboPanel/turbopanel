@@ -74,10 +74,10 @@ const tarball = path.join(tmp, assetName)
 
 try {
   console.log(`download-caddy: downloading ${url}`)
-  execFileSync('curl', ['-fsSL', '-o', tarball, url], { stdio: ['ignore', 'inherit', 'inherit'] })
+  execFileSync('/usr/bin/curl', ['-fsSL', '-o', tarball, url], { stdio: ['ignore', 'inherit', 'inherit'] })
 
   console.log('download-caddy: extracting caddy binary')
-  execFileSync('tar', ['-xzf', tarball, '-C', tmp, 'caddy'], { stdio: ['ignore', 'inherit', 'inherit'] })
+  execFileSync('/usr/bin/tar', ['-xzf', tarball, '-C', tmp, 'caddy'], { stdio: ['ignore', 'inherit', 'inherit'] })
 
   const extracted = path.join(tmp, 'caddy')
   if (!existsSync(extracted)) {

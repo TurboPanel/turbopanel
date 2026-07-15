@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import type { AppEnv } from '../app.ts'
 import {
   registerAuthnRoutes,
   registerAuthRoutes,
@@ -28,8 +29,8 @@ import { CLIENT_API_PREFIX } from '../surfaces.ts'
  * signed-in user (e.g. servers assigned to their organization).
  * Mounted under {@link CLIENT_API_PREFIX} (`/api/client/v1`).
  */
-export function registerClientRoutes(app: Hono, opts: AuthRouteOpts) {
-  const client = new Hono()
+export function registerClientRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
+  const client = new Hono<AppEnv>()
 
   registerAuthRoutes(client, opts)
   registerAuthnRoutes(client, opts)

@@ -76,8 +76,10 @@ export function getPermissionCatalog(): Array<{
   key: PermissionKey
   displayName: string
 }> {
-  return [...PERMISSIONS].toSorted().map((key) => ({
-    key,
-    displayName: PERMISSION_DISPLAY_NAMES[key],
-  }))
+  return [...PERMISSIONS]
+    .toSorted((a, b) => a.localeCompare(b))
+    .map((key) => ({
+      key,
+      displayName: PERMISSION_DISPLAY_NAMES[key],
+    }))
 }

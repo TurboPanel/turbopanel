@@ -1,4 +1,5 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
+import { it } from "@std/testing/bdd";
 import type { PendingRequestRecord } from "../../daemon/cell/contracts.ts";
 import { resolveServerUpdateStatus } from "./update-status.ts";
 
@@ -15,7 +16,7 @@ function request(
   };
 }
 
-Deno.test("resolveServerUpdateStatus marks manifest resolution failure as unknown target", async () => {
+it("resolveServerUpdateStatus marks manifest resolution failure as unknown target", async () => {
   const resolved = await resolveServerUpdateStatus({
     serverId: "srv-1",
     current: { commit: "aaa", buildId: "b1" },
@@ -29,7 +30,7 @@ Deno.test("resolveServerUpdateStatus marks manifest resolution failure as unknow
   }
 });
 
-Deno.test("resolveServerUpdateStatus returns updating for in-flight update request", async () => {
+it("resolveServerUpdateStatus returns updating for in-flight update request", async () => {
   const resolved = await resolveServerUpdateStatus({
     serverId: "srv-1",
     current: { commit: "aaa", buildId: "b1" },
@@ -39,7 +40,7 @@ Deno.test("resolveServerUpdateStatus returns updating for in-flight update reque
   assertEquals(resolved.status, "updating");
 });
 
-Deno.test("resolveServerUpdateStatus returns updating after successful ack until commit matches", async () => {
+it("resolveServerUpdateStatus returns updating after successful ack until commit matches", async () => {
   const finishedAt = new Date().toISOString();
   const current = { commit: "aaa", buildId: "b1" };
   const resolved = await resolveServerUpdateStatus({
@@ -60,7 +61,7 @@ Deno.test("resolveServerUpdateStatus returns updating after successful ack until
   assertEquals(resolved.status, "updating");
 });
 
-Deno.test("resolveServerUpdateStatus uses shared target manifest without refetching", async () => {
+it("resolveServerUpdateStatus uses shared target manifest without refetching", async () => {
   const resolved = await resolveServerUpdateStatus({
     serverId: "srv-1",
     current: { commit: "aaa", buildId: "b1" },
@@ -79,7 +80,7 @@ Deno.test("resolveServerUpdateStatus uses shared target manifest without refetch
   assertEquals(resolved.updateAvailable, true);
 });
 
-Deno.test("resolveServerUpdateStatus returns idle after pending window expires", async () => {
+it("resolveServerUpdateStatus returns idle after pending window expires", async () => {
   const finishedAt = new Date(Date.now() - 121_000).toISOString();
   const resolved = await resolveServerUpdateStatus({
     serverId: "srv-1",
@@ -100,7 +101,7 @@ Deno.test("resolveServerUpdateStatus returns idle after pending window expires",
   assertEquals(resolved.updateAvailable, true);
 });
 
-Deno.test("resolveServerUpdateStatus surfaces last error but stays idle when update still available", async () => {
+it("resolveServerUpdateStatus surfaces last error but stays idle when update still available", async () => {
   const resolved = await resolveServerUpdateStatus({
     serverId: "srv-1",
     current: { commit: "51e32ad", buildId: "b1" },
@@ -121,7 +122,7 @@ Deno.test("resolveServerUpdateStatus surfaces last error but stays idle when upd
   assertEquals(resolved.lastUpdateError, "reconcile failed");
 });
 
-Deno.test("resolveServerUpdateStatus returns error for failed update when already on trunk", async () => {
+it("resolveServerUpdateStatus returns error for failed update when already on trunk", async () => {
   const commit = "51e32ad";
   const resolved = await resolveServerUpdateStatus({
     serverId: "srv-1",
@@ -143,7 +144,7 @@ Deno.test("resolveServerUpdateStatus returns error for failed update when alread
   assertEquals(resolved.lastUpdateError, "checksum mismatch");
 });
 
-Deno.test("resolveServerUpdateStatus ignores stale failed request when daemon matches trunk", async () => {
+it("resolveServerUpdateStatus ignores stale failed request when daemon matches trunk", async () => {
   const commit = "51e32ad";
   const resolved = await resolveServerUpdateStatus({
     serverId: "srv-1",
@@ -173,7 +174,7 @@ Deno.test("resolveServerUpdateStatus ignores stale failed request when daemon ma
   assertEquals(resolved.updateAvailable, false);
 });
 
-Deno.test("resolveServerUpdateStatus blocks remote updates for co-located daemons", async () => {
+it("resolveServerUpdateStatus blocks remote updates for co-located daemons", async () => {
   const resolved = await resolveServerUpdateStatus({
     serverId: "srv-1",
     current: { commit: "aaa", buildId: "b1" },
@@ -196,7 +197,7 @@ Deno.test("resolveServerUpdateStatus blocks remote updates for co-located daemon
   );
 });
 
-Deno.test("resolveServerUpdateStatus does not offer update when running commit is unknown", async () => {
+it("resolveServerUpdateStatus does not offer update when running commit is unknown", async () => {
   const resolved = await resolveServerUpdateStatus({
     serverId: "srv-1",
     current: null,
@@ -214,7 +215,7 @@ Deno.test("resolveServerUpdateStatus does not offer update when running commit i
   assertEquals(resolved.updateAvailable, false);
 });
 
-Deno.test("resolveServerUpdateStatus computes updateAvailable only with known target", async () => {
+it("resolveServerUpdateStatus computes updateAvailable only with known target", async () => {
   const current = { commit: "aaa", buildId: "b1" };
   const resolved = await resolveServerUpdateStatus({
     serverId: "srv-1",
@@ -229,7 +230,7 @@ Deno.test("resolveServerUpdateStatus computes updateAvailable only with known ta
   }
 });
 
-Deno.test("resolveServerUpdateStatus returns updating from projected update summary", async () => {
+it("resolveServerUpdateStatus returns updating from projected update summary", async () => {
   const resolved = await resolveServerUpdateStatus({
     serverId: "srv-1",
     current: { commit: "aaa", buildId: "b1" },
@@ -239,7 +240,7 @@ Deno.test("resolveServerUpdateStatus returns updating from projected update summ
   assertEquals(resolved.status, "updating");
 });
 
-Deno.test("resolveServerUpdateStatus returns updating from projected done with commit drift", async () => {
+it("resolveServerUpdateStatus returns updating from projected done with commit drift", async () => {
   const finishedAt = new Date().toISOString();
   const resolved = await resolveServerUpdateStatus({
     serverId: "srv-1",
@@ -257,7 +258,7 @@ Deno.test("resolveServerUpdateStatus returns updating from projected done with c
   assertEquals(resolved.status, "updating");
 });
 
-Deno.test("resolveServerUpdateStatus surfaces last error from projected failed update", async () => {
+it("resolveServerUpdateStatus surfaces last error from projected failed update", async () => {
   const resolved = await resolveServerUpdateStatus({
     serverId: "srv-1",
     current: { commit: "51e32ad", buildId: "b1" },
@@ -275,7 +276,7 @@ Deno.test("resolveServerUpdateStatus surfaces last error from projected failed u
   assertEquals(resolved.lastUpdateError, "reconcile failed");
 });
 
-Deno.test("resolveServerUpdateStatus returns idle from projected idle summary", async () => {
+it("resolveServerUpdateStatus returns idle from projected idle summary", async () => {
   const resolved = await resolveServerUpdateStatus({
     serverId: "srv-1",
     current: { commit: "aaa", buildId: "b1" },
@@ -285,7 +286,7 @@ Deno.test("resolveServerUpdateStatus returns idle from projected idle summary", 
   assertEquals(resolved.status, "idle");
 });
 
-Deno.test("resolveServerUpdateStatus ignores stale projected updating when daemon matches trunk", async () => {
+it("resolveServerUpdateStatus ignores stale projected updating when daemon matches trunk", async () => {
   const commit = "51e32ad";
   const resolved = await resolveServerUpdateStatus({
     serverId: "srv-1",

@@ -1,4 +1,5 @@
 import { assertEquals } from "@std/assert";
+import { it } from "@std/testing/bdd";
 import type {
   DaemonCell,
   DaemonCellLiveness,
@@ -25,7 +26,7 @@ function connectedWithWarmPing(nowMs: number): DaemonCellLiveness {
   return { connected: true, lastPingAtMs: nowMs - 30_000 };
 }
 
-Deno.test("offline sweep first null auto-response observation is not stale", () => {
+it("offline sweep first null auto-response observation is not stale", () => {
   resetOfflineSweepNullGraceForTests();
   const nowMs = 1_700_000_000_000;
   const liveness = connectedWithNullPing();
@@ -36,7 +37,7 @@ Deno.test("offline sweep first null auto-response observation is not stale", () 
   assertEquals(isStale(serverId, liveness, nowMs, connectedAt), false);
 });
 
-Deno.test("offline sweep repeated null past grace is stale", () => {
+it("offline sweep repeated null past grace is stale", () => {
   resetOfflineSweepNullGraceForTests();
   const firstTickMs = 1_700_000_000_000;
   const liveness = connectedWithNullPing();
@@ -50,7 +51,7 @@ Deno.test("offline sweep repeated null past grace is stale", () => {
   assertEquals(isStale(serverId, liveness, laterMs, connectedAt), true);
 });
 
-Deno.test("offline sweep warm live ping is not stale within grace", () => {
+it("offline sweep warm live ping is not stale within grace", () => {
   resetOfflineSweepNullGraceForTests();
   const nowMs = 1_700_000_000_000;
   const liveness = connectedWithWarmPing(nowMs);
@@ -60,7 +61,7 @@ Deno.test("offline sweep warm live ping is not stale within grace", () => {
   assertEquals(isStale(serverId, liveness, nowMs, null), false);
 });
 
-Deno.test("offline sweep warm live ping clears null grace bookkeeping", () => {
+it("offline sweep warm live ping clears null grace bookkeeping", () => {
   resetOfflineSweepNullGraceForTests();
   const firstTickMs = 1_700_000_000_000;
   const nullLiveness = connectedWithNullPing();
@@ -79,7 +80,7 @@ Deno.test("offline sweep warm live ping clears null grace bookkeeping", () => {
   assertEquals(isStale(serverId, warmLiveness, warmMs, connectedAt), false);
 });
 
-Deno.test("offline sweep disconnected liveness is stale immediately", () => {
+it("offline sweep disconnected liveness is stale immediately", () => {
   resetOfflineSweepNullGraceForTests();
   const nowMs = 1_700_000_000_000;
 
@@ -95,7 +96,7 @@ Deno.test("offline sweep disconnected liveness is stale immediately", () => {
   );
 });
 
-Deno.test("offline sweep old connectedAt with null ping is not stale on first observation", () => {
+it("offline sweep old connectedAt with null ping is not stale on first observation", () => {
   resetOfflineSweepNullGraceForTests();
   const nowMs = 1_700_000_000_000;
   const liveness = connectedWithNullPing();
@@ -106,7 +107,7 @@ Deno.test("offline sweep old connectedAt with null ping is not stale on first ob
   assertEquals(isStale(serverId, liveness, nowMs, oldConnectedAt), false);
 });
 
-Deno.test("offline sweep old connectedAt becomes stale after null grace persists", () => {
+it("offline sweep old connectedAt becomes stale after null grace persists", () => {
   resetOfflineSweepNullGraceForTests();
   const firstTickMs = 1_700_000_000_000;
   const liveness = connectedWithNullPing();
@@ -185,7 +186,7 @@ function inertDb(): Db {
   return {} as Db;
 }
 
-Deno.test("sweepOnce: AE-active connected server skips checkLiveness", async () => {
+it("sweepOnce: AE-active connected server skips checkLiveness", async () => {
   resetOfflineSweepNullGraceForTests();
   const cell = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
   const cells = new Map([[ID_A, cell]]);
@@ -209,7 +210,7 @@ Deno.test("sweepOnce: AE-active connected server skips checkLiveness", async () 
   assertEquals(disconnected, []);
 });
 
-Deno.test("sweepOnce: connected absent from AE set is probed and demoted", async () => {
+it("sweepOnce: connected absent from AE set is probed and demoted", async () => {
   resetOfflineSweepNullGraceForTests();
   const cell = createFakeCell({ connected: false, lastPingAtMs: null });
   const cells = new Map([[ID_A, cell]]);
@@ -232,7 +233,7 @@ Deno.test("sweepOnce: connected absent from AE set is probed and demoted", async
   assertEquals(disconnected, [ID_A]);
 });
 
-Deno.test("sweepOnce: AE unavailable (null) falls back to check-all", async () => {
+it("sweepOnce: AE unavailable (null) falls back to check-all", async () => {
   resetOfflineSweepNullGraceForTests();
   const cellA = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
   const cellB = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
@@ -258,7 +259,7 @@ Deno.test("sweepOnce: AE unavailable (null) falls back to check-all", async () =
   assertEquals(cellB.checkLivenessCalls, 1);
 });
 
-Deno.test("sweepOnce: AE resolve throws falls back to check-all", async () => {
+it("sweepOnce: AE resolve throws falls back to check-all", async () => {
   resetOfflineSweepNullGraceForTests();
   const cellA = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
   const cellB = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
@@ -284,7 +285,7 @@ Deno.test("sweepOnce: AE resolve throws falls back to check-all", async () => {
   assertEquals(cellB.checkLivenessCalls, 1);
 });
 
-Deno.test("sweepOnce: AE-active self-heal is capped by SELF_HEAL_SWEEP_BUDGET", async () => {
+it("sweepOnce: AE-active self-heal is capped by SELF_HEAL_SWEEP_BUDGET", async () => {
   resetOfflineSweepNullGraceForTests();
   const overBudget = SELF_HEAL_SWEEP_BUDGET + 50;
   const sampleAtMs = Date.now();
@@ -333,7 +334,7 @@ Deno.test("sweepOnce: AE-active self-heal is capped by SELF_HEAL_SWEEP_BUDGET", 
   }
 });
 
-Deno.test("sweepOnce: AE-direct self-heal never calls registry.getCell or getSnapshot", async () => {
+it("sweepOnce: AE-direct self-heal never calls registry.getCell or getSnapshot", async () => {
   resetOfflineSweepNullGraceForTests();
   const connectedAt = "2020-01-01T00:00:00.000Z";
   const offlineAt = "2020-01-01T00:00:00.000Z";
@@ -380,7 +381,7 @@ Deno.test("sweepOnce: AE-direct self-heal never calls registry.getCell or getSna
   assertEquals(healed, [{ id: ID_A, connectedAt }]);
 });
 
-Deno.test("sweepOnce: probed self-heal still uses onConnected after checkLiveness", async () => {
+it("sweepOnce: probed self-heal still uses onConnected after checkLiveness", async () => {
   resetOfflineSweepNullGraceForTests();
   const cell = createFakeCell({
     connected: true,
@@ -418,7 +419,7 @@ Deno.test("sweepOnce: probed self-heal still uses onConnected after checkLivenes
   assertEquals(directHealed, []);
 });
 
-Deno.test(
+it(
   "sweepOnce: clean disconnect after metrics sample does not AE-direct heal",
   async () => {
     resetOfflineSweepNullGraceForTests();

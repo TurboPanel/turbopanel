@@ -1,6 +1,7 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Context } from 'hono'
 import { Hono } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { encryptSecretForDaemon } from '../authn/data-encryption.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -25,7 +26,7 @@ import {
   type ResolvedVariableMap,
 } from './resolve-inherited.ts'
 
-const VARIABLE_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+const VARIABLE_KEY_RE = /^[A-Za-z_]\w*$/
 
 const PARTIAL_UNIQUE_INDEX_NAMES = [
   'uniq_var_org',
@@ -119,7 +120,7 @@ function serializeVariable(row: VariableRow) {
   }
 }
 
-function parseVariableKey(c: Context, key: unknown): string | Response {
+function parseVariableKey(c: Context<AppEnv>, key: unknown): string | Response {
   if (typeof key !== 'string' || !key || !VARIABLE_KEY_RE.test(key)) {
     return c.json({ error: 'Invalid request' }, 400)
   }
@@ -127,7 +128,7 @@ function parseVariableKey(c: Context, key: unknown): string | Response {
 }
 
 function parseIsSecret(
-  c: Context,
+  c: Context<AppEnv>,
   body: Record<string, unknown>,
 ): boolean | Response {
   if (body.isSecret === undefined || body.isSecret === null) {
@@ -153,7 +154,7 @@ function serializeResolvedVariables(map: ResolvedVariableMap) {
 type ResolvedEntityKind = 'hosting' | 'service' | 'environment'
 
 async function respondWithResolvedVariables(
-  c: Context,
+  c: Context<AppEnv>,
   db: Db,
   organizationId: string,
   kind: ResolvedEntityKind,
@@ -173,7 +174,7 @@ async function respondWithResolvedVariables(
 }
 
 function parseVariableParent(
-  c: Context,
+  c: Context<AppEnv>,
   body: Record<string, unknown>,
 ): ParsedVariableParent | Response {
   const specified = PARENT_BODY_FIELDS.filter(({ bodyKey }) => {
@@ -238,7 +239,7 @@ function hasImmutableParentChange(body: Record<string, unknown>): boolean {
 }
 
 async function sealVariableValue(
-  c: Context,
+  c: Context<AppEnv>,
   parent: VariableParentRefs,
   organizationId: string,
   value: string,
@@ -268,10 +269,10 @@ async function sealVariableValue(
 }
 
 function parseOptionalStringValue(
-  c: Context,
+  c: Context<AppEnv>,
   value: unknown,
-): string | null | Response | 'absent' {
-  if (value === undefined) return 'absent'
+): string | null | Response | undefined {
+  if (value === undefined) return undefined
   if (value === null) return null
   if (typeof value !== 'string') {
     return c.json({ error: 'Invalid request' }, 400)
@@ -280,10 +281,10 @@ function parseOptionalStringValue(
 }
 
 function parseOptionalDescription(
-  c: Context,
+  c: Context<AppEnv>,
   value: unknown,
-): string | null | Response | 'absent' {
-  if (value === undefined) return 'absent'
+): string | null | Response | undefined {
+  if (value === undefined) return undefined
   if (value === null) return null
   if (typeof value !== 'string') {
     return c.json({ error: 'Invalid request' }, 400)
@@ -294,10 +295,228 @@ function parseOptionalDescription(
   return value
 }
 
-export function registerVariableRoutes(router: Hono, opts: AuthRouteOpts) {
-  router.use('/variables', createSessionMiddleware(opts.secrets))
-  router.use('/variables/resolved', createSessionMiddleware(opts.secrets))
-  router.use('/variables/:id', createSessionMiddleware(opts.secrets))
+type ExistingVariableForPatch = VariableParentRefs & {
+  isSecret: boolean
+  value: string
+}
+
+type VariablePatchFields = {
+  key?: string
+  value?: string
+  isSecret?: boolean
+  description?: string | null
+  updatedAt: string
+}
+
+function applyOptionalKeyPatch(
+  c: Context<AppEnv>,
+  body: Record<string, unknown>,
+  updateFields: VariablePatchFields,
+): Response | undefined {
+  if (body.key === undefined) return
+  const key = parseVariableKey(c, body.key)
+  if (key instanceof Response) return key
+  updateFields.key = key
+}
+
+function applyOptionalDescriptionPatch(
+  c: Context<AppEnv>,
+  body: Record<string, unknown>,
+  updateFields: VariablePatchFields,
+): Response | undefined {
+  if (body.description === undefined) return
+  const description = parseOptionalDescription(c, body.description)
+  if (description instanceof Response) return description
+  updateFields.description = description ?? null
+}
+
+function resolvePatchIsSecret(
+  c: Context<AppEnv>,
+  body: Record<string, unknown>,
+  existingIsSecret: boolean,
+): { nextIsSecret: boolean; toggled: boolean } | Response {
+  if (body.isSecret !== undefined && typeof body.isSecret !== 'boolean') {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  const toggled = body.isSecret !== undefined
+  return {
+    toggled,
+    nextIsSecret: toggled ? body.isSecret === true : existingIsSecret,
+  }
+}
+
+async function sealOrPlainValue(
+  c: Context<AppEnv>,
+  parentRefs: VariableParentRefs,
+  organizationId: string,
+  plaintext: string,
+  asSecret: boolean,
+): Promise<string | Response> {
+  if (!asSecret) return plaintext
+  return sealVariableValue(c, parentRefs, organizationId, plaintext)
+}
+
+async function applyValueAndSecretPatch(
+  c: Context<AppEnv>,
+  body: Record<string, unknown>,
+  existing: ExistingVariableForPatch,
+  organizationId: string,
+  nextIsSecret: boolean,
+  updateFields: VariablePatchFields,
+): Promise<Response | undefined> {
+  const valueProvided = body.value !== undefined
+  const switchingToSecret = nextIsSecret && !existing.isSecret
+  const switchingFromSecret = !nextIsSecret && existing.isSecret
+  const parentRefs = parentRefsFromRow(existing)
+
+  if (valueProvided) {
+    if (body.value !== null && typeof body.value !== 'string') {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+    const plaintextValue = body.value ?? ''
+    const stored = await sealOrPlainValue(
+      c,
+      parentRefs,
+      organizationId,
+      plaintextValue,
+      nextIsSecret,
+    )
+    if (stored instanceof Response) return stored
+    updateFields.value = stored
+    return
+  }
+
+  if (switchingToSecret) {
+    const sealed = await sealVariableValue(
+      c,
+      parentRefs,
+      organizationId,
+      existing.value,
+    )
+    if (sealed instanceof Response) return sealed
+    updateFields.value = sealed
+    return
+  }
+
+  if (switchingFromSecret) {
+    return c.json(
+      { error: 'value is required when converting a secret variable to non-secret' },
+      400,
+    )
+  }
+}
+
+async function buildVariablePatchFields(
+  c: Context<AppEnv>,
+  body: Record<string, unknown>,
+  existing: ExistingVariableForPatch,
+  organizationId: string,
+): Promise<VariablePatchFields | Response> {
+  const updateFields: VariablePatchFields = {
+    updatedAt: new Date().toISOString(),
+  }
+
+  const keyError = applyOptionalKeyPatch(c, body, updateFields)
+  if (keyError) return keyError
+
+  const descriptionError = applyOptionalDescriptionPatch(c, body, updateFields)
+  if (descriptionError) return descriptionError
+
+  const secretResult = resolvePatchIsSecret(c, body, existing.isSecret)
+  if (secretResult instanceof Response) return secretResult
+
+  if (secretResult.toggled) {
+    updateFields.isSecret = secretResult.nextIsSecret
+  }
+
+  const valueError = await applyValueAndSecretPatch(
+    c,
+    body,
+    existing,
+    organizationId,
+    secretResult.nextIsSecret,
+    updateFields,
+  )
+  if (valueError) return valueError
+
+  if (Object.keys(updateFields).length === 1) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
+  return updateFields
+}
+
+type VariableCreateFields = {
+  parent: ParsedVariableParent
+  key: string
+  isSecret: boolean
+  value: string
+  description: string | null
+}
+
+async function parseVariableCreateFields(
+  c: Context<AppEnv>,
+  body: Record<string, unknown>,
+  organizationId: string,
+): Promise<VariableCreateFields | Response> {
+  const parent = parseVariableParent(c, body)
+  if (parent instanceof Response) return parent
+
+  const db = getDb(c)
+  if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+  const parentOrgId = await resolveEntityOrganizationId(db, parent.entityKind, parent.id)
+  if (!parentOrgId || parentOrgId !== organizationId) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+
+  const denied = await assertCanCreateOr403(c, parent.entityKind, parent.id)
+  if (denied) return denied
+
+  const key = parseVariableKey(c, body.key)
+  if (key instanceof Response) return key
+
+  const isSecret = parseIsSecret(c, body)
+  if (isSecret instanceof Response) return isSecret
+
+  const parsedValue = parseOptionalStringValue(c, body.value)
+  if (parsedValue instanceof Response) return parsedValue
+  if (parsedValue === null) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
+  const parsedDescription = parseOptionalDescription(c, body.description)
+  if (parsedDescription instanceof Response) return parsedDescription
+
+  const plaintextValue = parsedValue ?? ''
+  const parentRefs: VariableParentRefs = { [parent.column]: parent.id }
+  const storedValue = await sealOrPlainValue(
+    c,
+    parentRefs,
+    organizationId,
+    plaintextValue,
+    isSecret,
+  )
+  if (storedValue instanceof Response) return storedValue
+
+  return {
+    parent,
+    key,
+    isSecret,
+    value: storedValue,
+    description: parsedDescription ?? null,
+  }
+}
+
+export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for variable routes')
+  }
+  const secrets = opts.secrets
+
+  router.use('/variables', createSessionMiddleware(secrets))
+  router.use('/variables/resolved', createSessionMiddleware(secrets))
+  router.use('/variables/:id', createSessionMiddleware(secrets))
 
   router.get('/variables/resolved', async (c) => {
     const db = getDb(c)
@@ -443,55 +662,18 @@ export function registerVariableRoutes(router: Hono, opts: AuthRouteOpts) {
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const parent = parseVariableParent(c, body)
-    if (parent instanceof Response) return parent
-
-    const parentOrgId = await resolveEntityOrganizationId(db, parent.entityKind, parent.id)
-    if (!parentOrgId || parentOrgId !== organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanCreateOr403(c, parent.entityKind, parent.id)
-    if (denied) return denied
-
-    const key = parseVariableKey(c, body.key)
-    if (key instanceof Response) return key
-
-    const isSecret = parseIsSecret(c, body)
-    if (isSecret instanceof Response) return isSecret
-
-    const parsedValue = parseOptionalStringValue(c, body.value)
-    if (parsedValue instanceof Response) return parsedValue
-    if (parsedValue === null) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-
-    const parsedDescription = parseOptionalDescription(c, body.description)
-    if (parsedDescription instanceof Response) return parsedDescription
-
-    const plaintextValue = parsedValue === 'absent' ? '' : parsedValue
-
-    let storedValue: string
-    if (isSecret) {
-      const parentRefs: VariableParentRefs = { [parent.column]: parent.id }
-      const sealed = await sealVariableValue(c, parentRefs, organizationId, plaintextValue)
-      if (sealed instanceof Response) return sealed
-      storedValue = sealed
-    } else {
-      storedValue = plaintextValue
-    }
-
-    const description = parsedDescription === 'absent' ? null : parsedDescription
+    const fields = await parseVariableCreateFields(c, body, organizationId)
+    if (fields instanceof Response) return fields
 
     try {
       const id = await db.transaction(async (tx) => {
         const [inserted] = await tx
           .insert(variable)
-          .values(buildInsertValues(parent, {
-            key,
-            value: storedValue,
-            isSecret,
-            description,
+          .values(buildInsertValues(fields.parent, {
+            key: fields.key,
+            value: fields.value,
+            isSecret: fields.isSecret,
+            description: fields.description,
           }))
           .returning({ id: variable.id })
         return inserted.id
@@ -557,81 +739,13 @@ export function registerVariableRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const updateFields: {
-      key?: string
-      value?: string
-      isSecret?: boolean
-      description?: string | null
-      updatedAt: string
-    } = { updatedAt: new Date().toISOString() }
-
-    if (body.key !== undefined) {
-      const key = parseVariableKey(c, body.key)
-      if (key instanceof Response) return key
-      updateFields.key = key
-    }
-
-    if (body.description !== undefined) {
-      const description = parseOptionalDescription(c, body.description)
-      if (description instanceof Response) return description
-      updateFields.description = description === 'absent' ? null : description
-    }
-
-    if (body.isSecret !== undefined && typeof body.isSecret !== 'boolean') {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-
-    const isSecretToggled = body.isSecret !== undefined
-    const nextIsSecret = isSecretToggled
-      ? body.isSecret === true
-      : existing.isSecret
-
-    if (isSecretToggled) {
-      updateFields.isSecret = nextIsSecret
-    }
-
-    const valueProvided = body.value !== undefined
-    const switchingToSecret = nextIsSecret && !existing.isSecret
-    const switchingFromSecret = !nextIsSecret && existing.isSecret
-    const parentRefs = parentRefsFromRow(existing)
-
-    if (valueProvided) {
-      if (body.value !== null && typeof body.value !== 'string') {
-        return c.json({ error: 'Invalid request' }, 400)
-      }
-      const plaintextValue = body.value === null ? '' : body.value
-
-      if (nextIsSecret) {
-        const sealed = await sealVariableValue(
-          c,
-          parentRefs,
-          organizationId,
-          plaintextValue,
-        )
-        if (sealed instanceof Response) return sealed
-        updateFields.value = sealed
-      } else {
-        updateFields.value = plaintextValue
-      }
-    } else if (switchingToSecret) {
-      const sealed = await sealVariableValue(
-        c,
-        parentRefs,
-        organizationId,
-        existing.value,
-      )
-      if (sealed instanceof Response) return sealed
-      updateFields.value = sealed
-    } else if (switchingFromSecret) {
-      return c.json(
-        { error: 'value is required when converting a secret variable to non-secret' },
-        400,
-      )
-    }
-
-    if (Object.keys(updateFields).length === 1) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
+    const updateFields = await buildVariablePatchFields(
+      c,
+      body,
+      existing,
+      organizationId,
+    )
+    if (updateFields instanceof Response) return updateFields
 
     try {
       await db

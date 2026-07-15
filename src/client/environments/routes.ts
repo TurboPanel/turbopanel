@@ -1,11 +1,12 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db.ts'
-import { environment, project } from '../../lib/db/schema.ts'
+import { environment } from '../../lib/db/schema.ts'
 import { applyValidatedComposeOption } from '../../lib/compose/index.ts'
 import {
   assertCanCreateOr403,
@@ -23,9 +24,14 @@ import {
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
 
-export function registerEnvironmentRoutes(router: Hono, opts: AuthRouteOpts) {
-  router.use('/environments', createSessionMiddleware(opts.secrets))
-  router.use('/environments/:id', createSessionMiddleware(opts.secrets))
+export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for environment routes')
+  }
+  const secrets = opts.secrets
+
+  router.use('/environments', createSessionMiddleware(secrets))
+  router.use('/environments/:id', createSessionMiddleware(secrets))
 
   router.get('/environments', async (c) => {
     const db = getDb(c)

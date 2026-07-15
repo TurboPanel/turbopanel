@@ -1,3 +1,4 @@
+// NOSONAR typescript:S2187 — Deno.test() cases below; Sonar does not recognize Deno's test API
 /**
  * Route authz for server commands.
  *
@@ -33,6 +34,7 @@ import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
 import type { CommandQueue } from '../../lib/commands/queue.ts'
 import {
   createCommandRecord,
+  getCommandRecord,
   transitionCommand,
 } from '../../lib/db/command-records.ts'
 
@@ -122,7 +124,7 @@ function createMockCell(serverId: string): DaemonCell {
     releaseDeliveryLease: noopAsync,
     readOutboxBatch: async () => [],
     ackOutbox: noopAsync,
-    prune: async () => false,
+    prune: async () => [],
     clearUpdateStatus: async () => ({ cleared: 0 }),
     purge: noopAsync,
   }
@@ -169,7 +171,7 @@ async function createCommandsRoutesTestApp(
     }
     return next()
   })
-  registerServerRoutes(app, { secrets, runtime: 'deno' })
+  registerServerRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
   return { app, secrets }
 }
 
@@ -298,25 +300,25 @@ Deno.test('POST /servers/:id/commands/ping queues command for authorized user', 
     })
 
     assertEquals(res.status, 200)
-    const body = await res.json()
+    const body = await res.json() as {
+      ok: boolean
+      status: string
+      commandId: string
+    }
     assertEquals(body.ok, true)
     assertEquals(body.status, 'queued')
     assertEquals(typeof body.commandId, 'string')
 
-    const rows = await db
-      .select()
-      .from(command)
-      .where(eq(command.id, body.commandId))
-    assertEquals(rows.length, 1)
-    assertEquals(rows[0]?.type, 'daemon.ping')
-    assertEquals(rows[0]?.status, 'queued')
+    const record = await getCommandRecord(db, body.commandId)
+    assertEquals(record?.type, 'daemon.ping')
+    assertEquals(record?.status, 'queued')
     assertEquals(commandQueue!.envelopes.length, 1)
     assertTrimmedCommandEnvelope(commandQueue!.envelopes[0]!, {
       commandId: body.commandId,
       serverId,
       type: 'daemon.ping',
       attempt: 1,
-      queuedAt: rows[0]!.queuedAt ?? rows[0]!.createdAt,
+      queuedAt: record!.queuedAt ?? record!.createdAt,
     })
   })
 })
@@ -365,25 +367,25 @@ Deno.test('POST /servers/:id/commands/reboot queues command for authorized user'
     })
 
     assertEquals(res.status, 200)
-    const body = await res.json()
+    const body = await res.json() as {
+      ok: boolean
+      status: string
+      commandId: string
+    }
     assertEquals(body.ok, true)
     assertEquals(body.status, 'queued')
     assertEquals(typeof body.commandId, 'string')
 
-    const rows = await db
-      .select()
-      .from(command)
-      .where(eq(command.id, body.commandId))
-    assertEquals(rows.length, 1)
-    assertEquals(rows[0]?.type, 'server.reboot')
-    assertEquals(rows[0]?.status, 'queued')
+    const record = await getCommandRecord(db, body.commandId)
+    assertEquals(record?.type, 'server.reboot')
+    assertEquals(record?.status, 'queued')
     assertEquals(commandQueue!.envelopes.length, 1)
     assertTrimmedCommandEnvelope(commandQueue!.envelopes[0]!, {
       commandId: body.commandId,
       serverId,
       type: 'server.reboot',
       attempt: 1,
-      queuedAt: rows[0]!.queuedAt ?? rows[0]!.createdAt,
+      queuedAt: record!.queuedAt ?? record!.createdAt,
     })
   })
 })
@@ -493,7 +495,7 @@ Deno.test('POST /servers/:id/hostname validates hostname and queues on success',
       body: JSON.stringify({ hostname: 'a;rm -rf /' }),
     })
     assertEquals(unsafeRes.status, 400)
-    const unsafeBody = await unsafeRes.json()
+    const unsafeBody = await unsafeRes.json() as { error: string }
     assertEquals(unsafeBody.error, 'Invalid hostname')
 
     const emptyRes = await app.request(`/servers/${serverId}/hostname`, {
@@ -509,14 +511,15 @@ Deno.test('POST /servers/:id/hostname validates hostname and queues on success',
 
     const rows = await db.select().from(command).where(eq(command.serverId, serverId))
     assertEquals(rows.length, 1)
-    assertEquals(rows[0]?.type, 'server.hostname.set')
+    const record = await getCommandRecord(db, rows[0]!.id)
+    assertEquals(record?.type, 'server.hostname.set')
     assertEquals(commandQueue!.envelopes.length, 1)
     assertTrimmedCommandEnvelope(commandQueue!.envelopes[0]!, {
       commandId: rows[0]!.id,
       serverId,
       type: 'server.hostname.set',
       attempt: 1,
-      queuedAt: rows[0]!.queuedAt ?? rows[0]!.createdAt,
+      queuedAt: record!.queuedAt ?? record!.createdAt,
     })
   })
 })
@@ -649,7 +652,17 @@ Deno.test('GET /servers/:id/commands/:commandId returns latency for terminal pin
     })
 
     assertEquals(res.status, 200)
-    const body = await res.json()
+    const body = await res.json() as {
+      id: string
+      latency: {
+        apiToConsumerMs: number
+        consumerToCellMs: number
+        cellToDaemonMs: number
+        daemonProcessingMs: number
+        daemonToRecordedMs: number
+        totalRoundTripMs: number
+      }
+    }
     assertEquals(body.id, record.id)
     assertEquals(body.latency.apiToConsumerMs, 10)
     assertEquals(body.latency.consumerToCellMs, 20)

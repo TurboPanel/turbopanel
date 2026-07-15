@@ -36,14 +36,15 @@ function pickLatestUpdateRequest(
   requests: PendingRequestRecord[],
 ): PendingRequestRecord | undefined {
   if (requests.length === 0) return undefined
-  return requests.reduce((latest, candidate) => {
+  const [first, ...rest] = requests
+  return rest.reduce((latest, candidate) => {
     const latestMs = Date.parse(latest.createdAt)
     const candidateMs = Date.parse(candidate.createdAt)
     if (Number.isNaN(latestMs) || Number.isNaN(candidateMs)) {
       return candidate
     }
     return candidateMs > latestMs ? candidate : latest
-  })
+  }, first!)
 }
 
 function projectedUpdateToRequest(
@@ -99,7 +100,7 @@ export function isStaleProjectedUpdating(params: {
   updateTtlMs?: number
 }): boolean {
   const update = params.projectedUpdate
-  if (!update || update.status !== 'updating') return false
+  if (update?.status !== 'updating') return false
 
   if (
     params.targetCommit &&
@@ -140,6 +141,127 @@ export type ServerUpdateGetResponse = {
   canResetUpdateStatus?: boolean
 }
 
+type ResolvedUpdateTarget = {
+  target: ServerUpdateGetResponse['target']
+  targetStatus: ServerUpdateGetResponse['targetStatus']
+  targetError: string | undefined
+  updateBlocked: boolean
+  updateAvailable: boolean
+}
+
+function resolveUpdateTarget(params: {
+  current: ServerUpdateCommit | null
+  colocatedWithInstance?: boolean
+  manifest: TrunkManifestTarget | null
+}): ResolvedUpdateTarget {
+  const target = params.manifest
+    ? {
+      commit: params.manifest.commit,
+      buildId: params.manifest.buildId,
+      builtAt: params.manifest.builtAt,
+      manifestUrl: params.manifest.manifestUrl,
+    }
+    : null
+
+  const targetStatus = target ? 'ok' as const : 'unknown' as const
+  const targetError = target
+    ? undefined
+    : 'Could not resolve trunk channel manifest'
+
+  const commitDrift = target && params.current?.commit
+    ? params.current.commit !== target.commit
+    : false
+  const updateBlocked = params.colocatedWithInstance === true
+  const updateAvailable = updateBlocked ? false : commitDrift
+
+  return { target, targetStatus, targetError, updateBlocked, updateAvailable }
+}
+
+async function loadUpdateRequests(params: {
+  serverId: string
+  listUpdateRequests?: () => Promise<PendingRequestRecord[]>
+  projectedUpdate?: UpdateProjection | null
+}): Promise<PendingRequestRecord[]> {
+  if (params.projectedUpdate !== undefined && params.projectedUpdate !== null) {
+    const synthesized = projectedUpdateToRequest(
+      params.serverId,
+      params.projectedUpdate,
+    )
+    return synthesized ? [synthesized] : []
+  }
+  return await (params.listUpdateRequests ?? (async () => []))()
+}
+
+function statusFromFailedOrExpired(
+  latest: PendingRequestRecord,
+  updateAvailable: boolean,
+): {
+  status: ServerUpdateGetResponse['status']
+  lastUpdateError: string
+} {
+  const lastUpdateError = latest.error ??
+    (latest.status === 'expired'
+      ? 'Update timed out waiting for daemon acknowledgement'
+      : 'Update failed')
+  // Only block the badge with "Update error" once the daemon already matches
+  // trunk (e.g. operator fixed the node manually). When still behind trunk,
+  // keep status idle so the UI shows "Update available" and a retry works.
+  return {
+    lastUpdateError,
+    status: updateAvailable ? 'idle' : 'error',
+  }
+}
+
+function isDoneStillPending(
+  latest: PendingRequestRecord,
+  target: NonNullable<ServerUpdateGetResponse['target']>,
+  currentCommit: string | undefined,
+): boolean {
+  if (currentCommit === target.commit) return false
+  const finishedAt = latest.finishedAt
+    ? Date.parse(latest.finishedAt)
+    : Number.NaN
+  return !Number.isNaN(finishedAt) &&
+    Date.now() - finishedAt < UPDATE_PENDING_MS
+}
+
+function deriveUpdateLifecycle(params: {
+  latest: PendingRequestRecord | undefined
+  target: ServerUpdateGetResponse['target']
+  currentCommit: string | undefined
+  updateAvailable: boolean
+}): {
+  status: ServerUpdateGetResponse['status']
+  lastUpdateError: string | undefined
+} {
+  let status: ServerUpdateGetResponse['status'] = 'idle'
+  let lastUpdateError: string | undefined
+  const { latest, target, currentCommit, updateAvailable } = params
+
+  if (!latest) {
+    return { status, lastUpdateError }
+  }
+
+  if (!isTerminalRequestStatus(latest.status)) {
+    status = 'updating'
+  } else if (latest.status === 'failed' || latest.status === 'expired') {
+    const failed = statusFromFailedOrExpired(latest, updateAvailable)
+    status = failed.status
+    lastUpdateError = failed.lastUpdateError
+  } else if (latest.status === 'done' && target &&
+    isDoneStillPending(latest, target, currentCommit)
+  ) {
+    status = 'updating'
+  }
+
+  // Terminal evidence wins over a stale projected in-flight update.
+  if (target && currentCommit === target.commit && status === 'updating') {
+    status = 'idle'
+  }
+
+  return { status, lastUpdateError }
+}
+
 export async function resolveServerUpdateStatus(params: {
   serverId: string
   current: ServerUpdateCommit | null
@@ -167,39 +289,20 @@ export async function resolveServerUpdateStatus(params: {
   const manifest = params.targetManifest !== undefined
     ? params.targetManifest
     : await resolveTrunkManifest()
-  const target = manifest
-    ? {
-      commit: manifest.commit,
-      buildId: manifest.buildId,
-      builtAt: manifest.builtAt,
-      manifestUrl: manifest.manifestUrl,
-    }
-    : null
 
-  const targetStatus = target ? 'ok' as const : 'unknown' as const
-  const targetError = target
-    ? undefined
-    : 'Could not resolve trunk channel manifest'
+  const {
+    target,
+    targetStatus,
+    targetError,
+    updateBlocked,
+    updateAvailable,
+  } = resolveUpdateTarget({
+    current: params.current,
+    colocatedWithInstance: params.colocatedWithInstance,
+    manifest,
+  })
 
-  const commitDrift = target && params.current?.commit
-    ? params.current.commit !== target.commit
-    : false
-  const updateBlocked = params.colocatedWithInstance === true
-  const updateAvailable = updateBlocked ? false : commitDrift
-
-  let status: ServerUpdateGetResponse['status'] = 'idle'
-  let lastUpdateError: string | undefined
-
-  let requests: PendingRequestRecord[]
-  if (params.projectedUpdate !== undefined && params.projectedUpdate !== null) {
-    const synthesized = projectedUpdateToRequest(
-      params.serverId,
-      params.projectedUpdate,
-    )
-    requests = synthesized ? [synthesized] : []
-  } else {
-    requests = await (params.listUpdateRequests ?? (async () => []))()
-  }
+  const requests = await loadUpdateRequests(params)
   const latest = pickLatestUpdateRequest(requests)
   const queuedAt = params.projectedUpdate?.queuedAt ?? latest?.createdAt
   const staleUpdating = isStaleProjectedUpdating({
@@ -209,40 +312,12 @@ export async function resolveServerUpdateStatus(params: {
     updateTtlMs: UPDATE_REQUEST_TTL_MS,
   })
 
-  if (latest) {
-    if (!isTerminalRequestStatus(latest.status)) {
-      status = 'updating'
-    } else if (latest.status === 'failed' || latest.status === 'expired') {
-      lastUpdateError = latest.error ??
-        (latest.status === 'expired'
-          ? 'Update timed out waiting for daemon acknowledgement'
-          : 'Update failed')
-      // Only block the badge with "Update error" once the daemon already matches
-      // trunk (e.g. operator fixed the node manually). When still behind trunk,
-      // keep status idle so the UI shows "Update available" and a retry works.
-      if (!updateAvailable) {
-        status = 'error'
-      }
-    } else if (
-      latest.status === 'done' &&
-      target &&
-      params.current?.commit !== target.commit
-    ) {
-      const finishedAt = latest.finishedAt ? Date.parse(latest.finishedAt) : NaN
-      if (!Number.isNaN(finishedAt) && Date.now() - finishedAt < UPDATE_PENDING_MS) {
-        status = 'updating'
-      }
-    }
-  }
-
-  // Terminal evidence wins over a stale projected in-flight update.
-  if (
-    target &&
-    params.current?.commit === target.commit &&
-    status === 'updating'
-  ) {
-    status = 'idle'
-  }
+  const { status, lastUpdateError } = deriveUpdateLifecycle({
+    latest,
+    target,
+    currentCommit: params.current?.commit,
+    updateAvailable,
+  })
 
   const canResetUpdateStatus = staleUpdating ||
     (status === 'error' && !!lastUpdateError) ||

@@ -451,11 +451,13 @@ export async function can(
     entityType === 'team' &&
     (permissionKey === 'team:own' || permissionKey === 'team:manage')
 
-  const teamPermissionFilter = isTeamScopedCheck
-    ? permissionKey === 'team:own'
-      ? sql`ag.permission = 'team:own'`
-      : sql`ag.permission IN ('team:own', 'team:manage')`
-    : sql`false`
+  let teamPermissionFilter = sql`false`
+  if (isTeamScopedCheck) {
+    teamPermissionFilter =
+      permissionKey === 'team:own'
+        ? sql`ag.permission = 'team:own'`
+        : sql`ag.permission IN ('team:own', 'team:manage')`
+  }
 
   const rows = (await db.execute(sql`
     WITH

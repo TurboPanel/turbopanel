@@ -1,4 +1,5 @@
 import { and, eq } from 'drizzle-orm'
+import { it } from '@std/testing/bdd'
 import { Hono } from 'hono'
 import type { AppEnv } from '../app.ts'
 import { getDatabaseUrl } from '../db-url.ts'
@@ -37,7 +38,11 @@ async function createOrgTestApp(db: ReturnType<typeof createDenoDb>) {
     c.set('db', db)
     return next()
   })
-  registerOrganizationRoutes(app, { secrets, runtime: 'deno' })
+  registerOrganizationRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
   app.get('/resolve-org', async (c) => {
     const userId = c.req.query('userId')
     if (!userId) {
@@ -149,7 +154,7 @@ async function withTeamSubjectGrantFixtures(
   }
 }
 
-Deno.test('team-scoped subject grant exposes target org via listAccessibleOrganizations', async () => {
+it('team-scoped subject grant exposes target org via listAccessibleOrganizations', async () => {
   await withTeamSubjectGrantFixtures(async ({
     db,
     userId,
@@ -168,7 +173,7 @@ Deno.test('team-scoped subject grant exposes target org via listAccessibleOrgani
   })
 })
 
-Deno.test('team-scoped subject grant allows resolveOrgId for target organization', async () => {
+it('team-scoped subject grant allows resolveOrgId for target organization', async () => {
   await withTeamSubjectGrantFixtures(async ({
     db,
     app,
@@ -201,7 +206,7 @@ Deno.test('team-scoped subject grant allows resolveOrgId for target organization
   })
 })
 
-Deno.test('GET /organizations includes org granted via team-scoped subject', async () => {
+it('GET /organizations includes org granted via team-scoped subject', async () => {
   await withTeamSubjectGrantFixtures(async ({
     app,
     secrets,

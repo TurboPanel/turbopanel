@@ -130,9 +130,8 @@ export function createApp(
   }
   app.get('/', (c) => c.text('TurboPanel'))
   app.get(HEALTH_PATH, (c) => c.json({ ok: true }))
-  const routes = app as unknown as Hono
   if (secrets) {
-    registerClientRoutes(routes, {
+    registerClientRoutes(app, {
       secrets,
       runtime: runtime ?? 'workers',
       signupEnvOverride,

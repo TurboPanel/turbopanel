@@ -1,5 +1,7 @@
 import { and, eq, inArray } from 'drizzle-orm'
+import type { Context } from 'hono'
 import { Hono } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { encryptSecretForDaemon } from '../authn/data-encryption.ts'
 import type { SecretsConfig } from '../authn/secrets.ts'
@@ -13,6 +15,7 @@ import {
   isCreateProjectType,
   listCatalog,
   type CatalogEntry,
+  type CreateProjectType,
 } from './catalog/index.ts'
 import {
   applyValidatedComposeOption,
@@ -45,8 +48,7 @@ async function scaffoldCatalogEnvironments(
   entry: CatalogEntry,
   secretsConfig: SecretsConfig,
 ) {
-  for (let envIdx = 0; envIdx < entry.environments.length; envIdx++) {
-    const env = entry.environments[envIdx]
+  for (const env of entry.environments) {
     const [insertedEnv] = await tx
       .insert(environment)
       .values({
@@ -83,10 +85,278 @@ async function scaffoldCatalogEnvironments(
   }
 }
 
-export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
-  router.use('/projects', createSessionMiddleware(opts.secrets))
-  router.use('/projects/:id', createSessionMiddleware(opts.secrets))
-  router.use('/project-catalog', createSessionMiddleware(opts.secrets))
+function resolveCreateProjectType(
+  body: Record<string, unknown>,
+): CreateProjectType | 'invalid' {
+  const rawType = body.type
+  if (
+    rawType === undefined ||
+    rawType === null ||
+    rawType === '' ||
+    rawType === 'docker-compose'
+  ) {
+    return 'docker-compose'
+  }
+  if (typeof rawType !== 'string' || !isCreateProjectType(rawType)) {
+    return 'invalid'
+  }
+  return rawType
+}
+
+function resolveCatalogEntryForCreate(
+  projectType: CreateProjectType,
+  body: Record<string, unknown>,
+): CatalogEntry | 'missing_code' | 'unknown_code' | undefined {
+  if (projectType !== 'template' && projectType !== 'managed') {
+    return undefined
+  }
+  const code = body.code
+  if (typeof code !== 'string' || !code) {
+    return 'missing_code'
+  }
+  const catalogEntry = getCatalogEntry(code)
+  if (catalogEntry?.kind !== projectType) {
+    return 'unknown_code'
+  }
+  return catalogEntry
+}
+
+function mapCreateProjectError(err: unknown): {
+  error: string
+  status: 503 | 422
+} | null {
+  if (!(err instanceof Error)) return null
+  if (err.message === 'encryption unavailable') {
+    return { error: 'Encryption unavailable', status: 503 }
+  }
+  if (err.message === 'no encryption-capable daemon for catalog environment') {
+    return {
+      error: 'No encryption-capable daemon assigned to this environment',
+      status: 422,
+    }
+  }
+  return null
+}
+
+async function runCreateProjectTransaction(
+  db: Db,
+  input: {
+    projectType: CreateProjectType
+    displayName: string | null
+    description: string | null
+    workspaceId: string
+    organizationId: string
+    metadata: Record<string, unknown> | null
+    options: Record<string, unknown> | null
+    catalogEntry: CatalogEntry | undefined
+    secretsConfig: SecretsConfig | undefined
+  },
+): Promise<string> {
+  return db.transaction(async (tx) => {
+    if (input.projectType === 'docker-compose') {
+      return insertDockerComposeProject(tx, {
+        displayName: input.displayName,
+        description: input.description,
+        workspaceId: input.workspaceId,
+        metadata: input.metadata,
+        options: input.options,
+      })
+    }
+
+    if (!input.secretsConfig) {
+      throw new Error('encryption unavailable')
+    }
+    if (!input.catalogEntry) {
+      throw new TypeError('catalog entry required for template/managed projects')
+    }
+
+    return insertCatalogProject(tx, db, {
+      projectType: input.projectType,
+      displayName: input.displayName,
+      description: input.description,
+      workspaceId: input.workspaceId,
+      organizationId: input.organizationId,
+      metadata: input.metadata,
+      options: input.options,
+      entry: input.catalogEntry,
+      secretsConfig: input.secretsConfig,
+    })
+  })
+}
+
+type CreateProjectInput = {
+  displayName: string | null
+  description: string | null
+  workspaceId: string
+  organizationId: string
+  projectType: CreateProjectType
+  catalogEntry: CatalogEntry | undefined
+  options: Record<string, unknown> | null
+  metadata: Record<string, unknown> | null
+}
+
+async function parseCreateProjectInput(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+): Promise<CreateProjectInput | Response> {
+  const body = await parseJsonBody(c)
+  if (body instanceof Response) return body
+
+  const workspaceId = requireStringField(c, body, 'workspaceId')
+  if (workspaceId instanceof Response) return workspaceId
+
+  const workspaceRows = await db
+    .select({ id: workspace.id })
+    .from(workspace)
+    .where(and(eq(workspace.id, workspaceId), eq(workspace.organizationId, organizationId)))
+    .limit(1)
+
+  if (!workspaceRows[0]) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+
+  const denied = await assertCanCreateOr403(c, 'workspace', workspaceId)
+  if (denied) return denied
+
+  let displayName: string | null
+  let description: string | null
+  try {
+    displayName = parseDisplayName(body)
+    description = parseDescription(body)
+  } catch {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
+  const projectType = resolveCreateProjectType(body)
+  if (projectType === 'invalid') {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
+  const catalogEntry = resolveCatalogEntryForCreate(projectType, body)
+  if (catalogEntry === 'missing_code') {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  if (catalogEntry === 'unknown_code') {
+    return c.json({ error: 'Unknown catalog code' }, 400)
+  }
+
+  const optionsResult = parseJsonbObject(c, body, 'options')
+  if (optionsResult instanceof Response) return optionsResult
+  if (!applyValidatedComposeOption(optionsResult).ok) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
+  const metadataResult = parseJsonbObject(c, body, 'metadata')
+  if (metadataResult instanceof Response) return metadataResult
+
+  return {
+    displayName,
+    description,
+    workspaceId,
+    organizationId,
+    projectType,
+    catalogEntry,
+    options: optionsResult,
+    metadata: metadataResult,
+  }
+}
+
+async function insertDockerComposeProject(
+  tx: DbTx,
+  fields: {
+    displayName: string | null
+    description: string | null
+    workspaceId: string
+    metadata: Record<string, unknown> | null
+    options: Record<string, unknown> | null
+  },
+): Promise<string> {
+  const compose =
+    fields.options && 'compose' in fields.options
+      ? fields.options.compose
+      : emptyComposeDocument()
+  const [inserted] = await tx
+    .insert(project)
+    .values({
+      displayName: fields.displayName,
+      description: fields.description,
+      workspaceId: fields.workspaceId,
+      metadata: fields.metadata ?? { type: 'docker-compose' },
+      options: fields.options ?? { compose },
+    })
+    .returning({ id: project.id })
+  await tx.insert(environment).values({
+    projectId: inserted.id,
+    displayName: 'production',
+    description: 'Default environment',
+    options: { compose: emptyComposeDocument() },
+  })
+  return inserted.id
+}
+
+async function insertCatalogProject(
+  tx: DbTx,
+  db: Db,
+  fields: {
+    projectType: 'template' | 'managed'
+    displayName: string | null
+    description: string | null
+    workspaceId: string
+    organizationId: string
+    metadata: Record<string, unknown> | null
+    options: Record<string, unknown> | null
+    entry: CatalogEntry
+    secretsConfig: SecretsConfig
+  },
+): Promise<string> {
+  const [inserted] = await tx
+    .insert(project)
+    .values({
+      displayName: fields.displayName,
+      description: fields.description,
+      workspaceId: fields.workspaceId,
+      metadata: fields.metadata ?? { type: fields.projectType },
+      options: fields.options ?? { compose: fields.entry.compose },
+    })
+    .returning({ id: project.id })
+
+  if (fields.projectType === 'managed') {
+    const [managedRow] = await tx
+      .insert(managed)
+      .values({
+        projectId: inserted.id,
+        metadata: { code: fields.entry.code },
+        options: fields.entry.options ?? null,
+      })
+      .returning({ id: managed.id })
+
+    await tx
+      .update(project)
+      .set({ metadata: { type: 'managed', managed_id: managedRow.id } })
+      .where(eq(project.id, inserted.id))
+  }
+
+  await scaffoldCatalogEnvironments(
+    tx,
+    db,
+    inserted.id,
+    fields.organizationId,
+    fields.entry,
+    fields.secretsConfig,
+  )
+  return inserted.id
+}
+
+export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for project routes')
+  }
+  const secrets = opts.secrets
+
+  router.use('/projects', createSessionMiddleware(secrets))
+  router.use('/projects/:id', createSessionMiddleware(secrets))
+  router.use('/project-catalog', createSessionMiddleware(secrets))
 
   router.get('/project-catalog', async (c) => {
     const session = c.get('session')
@@ -193,177 +463,20 @@ export function registerProjectRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const orgResult = await getOrgId(c, session.userId)
     if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
 
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
-
-    const workspaceId = requireStringField(c, body, 'workspaceId')
-    if (workspaceId instanceof Response) return workspaceId
-
-    const workspaceRows = await db
-      .select({ id: workspace.id })
-      .from(workspace)
-      .where(and(eq(workspace.id, workspaceId), eq(workspace.organizationId, organizationId)))
-      .limit(1)
-
-    if (!workspaceRows[0]) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanCreateOr403(c, 'workspace', workspaceId)
-    if (denied) return denied
-
-    let displayName: string | null
-    let description: string | null
-    try {
-      displayName = parseDisplayName(body)
-      description = parseDescription(body)
-    } catch {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-
-    const rawType = body.type
-    let projectType: 'docker-compose' | 'template' | 'managed'
-    if (
-      rawType === undefined ||
-      rawType === null ||
-      rawType === '' ||
-      rawType === 'docker-compose'
-    ) {
-      projectType = 'docker-compose'
-    } else if (typeof rawType !== 'string' || !isCreateProjectType(rawType)) {
-      return c.json({ error: 'Invalid request' }, 400)
-    } else {
-      projectType = rawType
-    }
-
-    let catalogEntry: CatalogEntry | undefined
-    if (projectType === 'template' || projectType === 'managed') {
-      const code = body.code
-      if (typeof code !== 'string' || !code) {
-        return c.json({ error: 'Invalid request' }, 400)
-      }
-      catalogEntry = getCatalogEntry(code)
-      if (!catalogEntry || catalogEntry.kind !== projectType) {
-        return c.json({ error: 'Unknown catalog code' }, 400)
-      }
-    }
-
-    const optionsResult = parseJsonbObject(c, body, 'options')
-    if (optionsResult instanceof Response) return optionsResult
-    const composeOption = applyValidatedComposeOption(optionsResult)
-    if (!composeOption.ok) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-
-    const metadataResult = parseJsonbObject(c, body, 'metadata')
-    if (metadataResult instanceof Response) return metadataResult
-
-    const secretsConfig = c.get('secretsConfig')
+    const input = await parseCreateProjectInput(c, db, orgResult)
+    if (input instanceof Response) return input
 
     try {
-      const id = await db.transaction(async (tx) => {
-      if (projectType === 'docker-compose') {
-        const compose =
-          optionsResult && 'compose' in optionsResult
-            ? optionsResult.compose
-            : emptyComposeDocument()
-        const [inserted] = await tx
-          .insert(project)
-          .values({
-            displayName,
-            description,
-            workspaceId,
-            metadata: metadataResult ?? { type: 'docker-compose' },
-            options: optionsResult ?? { compose },
-          })
-          .returning({ id: project.id })
-        await tx.insert(environment).values({
-          projectId: inserted.id,
-          displayName: 'production',
-          description: 'Default environment',
-          options: { compose: emptyComposeDocument() },
-        })
-        return inserted.id
-      }
-
-      const entry = catalogEntry!
-
-      if (!secretsConfig) {
-        throw new Error('encryption unavailable')
-      }
-
-      if (projectType === 'template') {
-        const [inserted] = await tx
-          .insert(project)
-          .values({
-            displayName,
-            description,
-            workspaceId,
-            metadata: metadataResult ?? { type: 'template' },
-            options: optionsResult ?? { compose: entry.compose },
-          })
-          .returning({ id: project.id })
-        await scaffoldCatalogEnvironments(
-          tx,
-          db,
-          inserted.id,
-          organizationId,
-          entry,
-          secretsConfig,
-        )
-        return inserted.id
-      }
-
-      const [inserted] = await tx
-        .insert(project)
-        .values({
-          displayName,
-          description,
-          workspaceId,
-          metadata: metadataResult ?? { type: 'managed' },
-          options: optionsResult ?? { compose: entry.compose },
-        })
-        .returning({ id: project.id })
-
-      const [managedRow] = await tx
-        .insert(managed)
-        .values({
-          projectId: inserted.id,
-          metadata: { code: entry.code },
-          options: entry.options ?? null,
-        })
-        .returning({ id: managed.id })
-
-      await tx
-        .update(project)
-        .set({ metadata: { type: 'managed', managed_id: managedRow.id } })
-        .where(eq(project.id, inserted.id))
-
-      await scaffoldCatalogEnvironments(
-        tx,
-        db,
-        inserted.id,
-        organizationId,
-        entry,
-        secretsConfig,
-      )
-      return inserted.id
+      const id = await runCreateProjectTransaction(db, {
+        ...input,
+        secretsConfig: c.get('secretsConfig'),
       })
-
       return c.json({ ok: true as const, id })
     } catch (err) {
-    if (err instanceof Error && err.message === 'encryption unavailable') {
-      return c.json({ error: 'Encryption unavailable' }, 503)
-    }
-    if (err instanceof Error && err.message === 'no encryption-capable daemon for catalog environment') {
-      return c.json(
-        { error: 'No encryption-capable daemon assigned to this environment' },
-        422,
-      )
-    }
-    throw err
+      const mapped = mapCreateProjectError(err)
+      if (mapped) return c.json({ error: mapped.error }, mapped.status)
+      throw err
     }
   })
 

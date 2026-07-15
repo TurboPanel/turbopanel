@@ -1,6 +1,7 @@
 import { and, eq } from 'drizzle-orm'
 import type { Context } from 'hono'
 import { Hono } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
@@ -23,7 +24,7 @@ import {
   server,
   service,
 } from '../../lib/db/schema.ts'
-import { getDaemonCellRegistry, getDb } from '../../db.ts'
+import { getDaemonCellRegistry, getDb, type Db } from '../../db.ts'
 import {
   assertCanManageOr403,
   getOrgId,
@@ -31,7 +32,16 @@ import {
   requireStringField,
 } from '../shared.ts'
 
-function assertDispatchInfrastructure(c: Context): CommandQueue | Response {
+type DeployHostingPayload = {
+  hostingId: string
+  serviceId: string
+  composeServiceName: string
+  hostnames: string[]
+  pathPrefix?: string
+  targetPort?: number
+}
+
+function assertDispatchInfrastructure(c: Context<AppEnv>): CommandQueue | Response {
   const registry = getDaemonCellRegistry(c)
   if (!registry) {
     return c.json({ error: 'Daemon cell registry unavailable' }, 503)
@@ -46,7 +56,7 @@ function assertDispatchInfrastructure(c: Context): CommandQueue | Response {
 }
 
 async function verifyServerInOrg(
-  db: NonNullable<ReturnType<typeof getDb>>,
+  db: Db,
   serverId: string,
   organizationId: string,
 ): Promise<boolean> {
@@ -99,11 +109,195 @@ function projectComposeName(displayName: string | null, projectId: string): stri
   return trimmed.length > 0 ? trimmed : `project-${projectId.slice(0, 8)}`
 }
 
+async function buildHostingPayload(
+  db: Db,
+  environmentId: string,
+): Promise<DeployHostingPayload[]> {
+  const serviceRows = await db
+    .select({
+      id: service.id,
+      displayName: service.displayName,
+      metadata: service.metadata,
+    })
+    .from(service)
+    .where(eq(service.environmentId, environmentId))
+
+  const hostingPayload: DeployHostingPayload[] = []
+
+  for (const svc of serviceRows) {
+    const composeServiceName = readComposeServiceName(
+      svc.metadata,
+      svc.displayName ?? svc.id,
+    )
+    const hostingRows = await db
+      .select({
+        id: hosting.id,
+        options: hosting.options,
+      })
+      .from(hosting)
+      .where(eq(hosting.serviceId, svc.id))
+
+    for (const h of hostingRows) {
+      const hostnames = readHostnames(h.options)
+      if (hostnames.length === 0) continue
+      hostingPayload.push({
+        hostingId: h.id,
+        serviceId: svc.id,
+        composeServiceName,
+        hostnames,
+        pathPrefix: readPathPrefix(h.options),
+        targetPort: readTargetPort(h.options),
+      })
+    }
+  }
+
+  return hostingPayload
+}
+
+type LoadedDeployCompose = {
+  envRow: { id: string; projectId: string; options: unknown; metadata: unknown }
+  projectRow: { id: string; displayName: string | null; options: unknown }
+  composeYaml: string
+}
+
+async function loadDeployComposeYaml(
+  db: Db,
+  environmentId: string,
+): Promise<LoadedDeployCompose | Response> {
+  const [envRow] = await db
+    .select({
+      id: environment.id,
+      projectId: environment.projectId,
+      options: environment.options,
+      metadata: environment.metadata,
+    })
+    .from(environment)
+    .where(eq(environment.id, environmentId))
+    .limit(1)
+  if (!envRow) return Response.json({ error: 'Not found' }, { status: 404 })
+
+  const [projectRow] = await db
+    .select({
+      id: project.id,
+      displayName: project.displayName,
+      options: project.options,
+    })
+    .from(project)
+    .where(eq(project.id, envRow.projectId))
+    .limit(1)
+  if (!projectRow) return Response.json({ error: 'Not found' }, { status: 404 })
+
+  try {
+    const baseCompose = assertComposeDocument(extractComposeFromOptions(projectRow.options))
+    const overlayCompose = assertComposeDocument(extractComposeFromOptions(envRow.options))
+    const merged = mergeComposeOverlay(baseCompose, overlayCompose)
+    return {
+      envRow,
+      projectRow,
+      composeYaml: composeDocumentToRuntimeYaml(merged),
+    }
+  } catch {
+    return Response.json({ error: 'Invalid compose document' }, { status: 400 })
+  }
+}
+
+async function authorizeDeployRequest(
+  c: Context<AppEnv>,
+  db: Db,
+  environmentId: string,
+): Promise<{ userId: string; serverId: string } | Response> {
+  const denied = await assertCanManageOr403(c, 'environment', environmentId)
+  if (denied) return denied
+
+  const session = c.get('session')
+  if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+  const orgResult = await getOrgId(c, session.userId)
+  if (orgResult instanceof Response) return orgResult
+
+  const entityOrgId = await resolveEntityOrganizationId(db, 'environment', environmentId)
+  if (!entityOrgId || entityOrgId !== orgResult) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+
+  const body = await parseJsonBody(c)
+  if (body instanceof Response) return body
+
+  const serverId = requireStringField(c, body, 'serverId')
+  if (serverId instanceof Response) return serverId
+
+  if (!(await verifyServerInOrg(db, serverId, orgResult))) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+
+  return { userId: session.userId, serverId }
+}
+
+async function enqueueDeployCommand(
+  db: Db,
+  commandQueue: CommandQueue,
+  params: {
+    serverId: string
+    userId: string
+    environmentId: string
+    projectId: string
+    projectName: string
+    composeYaml: string
+    hostings: DeployHostingPayload[]
+  },
+): Promise<Response> {
+  const expiresAt = new Date(Date.now() + 600_000).toISOString()
+  const record = await createCommandRecord(db, {
+    serverId: params.serverId,
+    actorEntityType: 'user',
+    actorEntityId: params.userId,
+    type: 'environment.deploy',
+    payload: {
+      environmentId: params.environmentId,
+      projectId: params.projectId,
+      projectName: params.projectName,
+      composeYaml: params.composeYaml,
+      hostings: params.hostings,
+    },
+    expiresAt,
+  })
+
+  const envelope: CommandEnvelope = {
+    commandId: record.id,
+    serverId: params.serverId,
+    type: 'environment.deploy',
+    attempt: 1,
+    queuedAt: record.queuedAt ?? record.createdAt,
+  }
+
+  try {
+    await commandQueue.enqueue(envelope)
+  } catch {
+    await transitionCommand(db, record.id, {
+      status: 'failed',
+      error: 'Command queue unavailable',
+    })
+    return Response.json({ error: 'Command queue unavailable' }, { status: 503 })
+  }
+
+  return Response.json({
+    ok: true as const,
+    commandId: record.id,
+    status: 'queued' as const,
+  })
+}
+
 /**
  * Register `POST /environments/:id/deploy` — single-server compose deploy.
  * Status is polled via existing `GET /servers/:serverId/commands/:commandId`.
  */
-export function registerEnvironmentDeployRoutes(router: Hono, opts: AuthRouteOpts) {
+export function registerEnvironmentDeployRoutes(
+  router: Hono<AppEnv>,
+  opts: AuthRouteOpts,
+) {
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for environment deploy routes')
+  }
   router.use('/environments/:id/deploy', createSessionMiddleware(opts.secrets))
 
   router.post('/environments/:id/deploy', async (c) => {
@@ -111,158 +305,35 @@ export function registerEnvironmentDeployRoutes(router: Hono, opts: AuthRouteOpt
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
     const environmentId = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'environment', environmentId)
-    if (denied) return denied
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
-    const entityOrgId = await resolveEntityOrganizationId(db, 'environment', environmentId)
-    if (!entityOrgId || entityOrgId !== organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
-
-    const serverId = requireStringField(c, body, 'serverId')
-    if (serverId instanceof Response) return serverId
-
-    if (!(await verifyServerInOrg(db, serverId, organizationId))) {
-      return c.json({ error: 'Not found' }, 404)
-    }
+    const auth = await authorizeDeployRequest(c, db, environmentId)
+    if (auth instanceof Response) return auth
 
     const commandQueue = assertDispatchInfrastructure(c)
     if (commandQueue instanceof Response) return commandQueue
 
-    const [envRow] = await db
-      .select({
-        id: environment.id,
-        projectId: environment.projectId,
-        options: environment.options,
-        metadata: environment.metadata,
-      })
-      .from(environment)
-      .where(eq(environment.id, environmentId))
-      .limit(1)
-    if (!envRow) return c.json({ error: 'Not found' }, 404)
+    const loaded = await loadDeployComposeYaml(db, environmentId)
+    if (loaded instanceof Response) return loaded
 
-    const [projectRow] = await db
-      .select({
-        id: project.id,
-        displayName: project.displayName,
-        options: project.options,
-      })
-      .from(project)
-      .where(eq(project.id, envRow.projectId))
-      .limit(1)
-    if (!projectRow) return c.json({ error: 'Not found' }, 404)
-
-    let baseCompose
-    let overlayCompose
-    try {
-      baseCompose = assertComposeDocument(extractComposeFromOptions(projectRow.options))
-      overlayCompose = assertComposeDocument(extractComposeFromOptions(envRow.options))
-    } catch {
-      return c.json({ error: 'Invalid compose document' }, 400)
-    }
-    const merged = mergeComposeOverlay(baseCompose, overlayCompose)
-    const composeYaml = composeDocumentToRuntimeYaml(merged)
-
-    const serviceRows = await db
-      .select({
-        id: service.id,
-        displayName: service.displayName,
-        metadata: service.metadata,
-      })
-      .from(service)
-      .where(eq(service.environmentId, environmentId))
-
-    const hostingPayload: Array<{
-      hostingId: string
-      serviceId: string
-      composeServiceName: string
-      hostnames: string[]
-      pathPrefix?: string
-      targetPort?: number
-    }> = []
-
-    for (const svc of serviceRows) {
-      const composeServiceName = readComposeServiceName(
-        svc.metadata,
-        svc.displayName ?? svc.id,
-      )
-      const hostingRows = await db
-        .select({
-          id: hosting.id,
-          options: hosting.options,
-        })
-        .from(hosting)
-        .where(eq(hosting.serviceId, svc.id))
-      for (const h of hostingRows) {
-        const hostnames = readHostnames(h.options)
-        if (hostnames.length === 0) continue
-        hostingPayload.push({
-          hostingId: h.id,
-          serviceId: svc.id,
-          composeServiceName,
-          hostnames,
-          pathPrefix: readPathPrefix(h.options),
-          targetPort: readTargetPort(h.options),
-        })
-      }
-    }
-
-    const prevMeta = isPlainObject(envRow.metadata) ? envRow.metadata : {}
+    const hostingPayload = await buildHostingPayload(db, environmentId)
+    const prevMeta = isPlainObject(loaded.envRow.metadata) ? loaded.envRow.metadata : {}
     await db
       .update(environment)
       .set({
-        metadata: { ...prevMeta, serverId },
+        metadata: { ...prevMeta, serverId: auth.serverId },
         updatedAt: new Date().toISOString(),
       })
       .where(eq(environment.id, environmentId))
 
-    const expiresAt = new Date(Date.now() + 600_000).toISOString()
-    const projectName = `tp-${projectComposeName(projectRow.displayName, projectRow.id)}-${environmentId.slice(0, 8)}`
-    const payload = {
+    const projectName = `tp-${projectComposeName(loaded.projectRow.displayName, loaded.projectRow.id)}-${environmentId.slice(0, 8)}`
+
+    return enqueueDeployCommand(db, commandQueue, {
+      serverId: auth.serverId,
+      userId: auth.userId,
       environmentId,
-      projectId: projectRow.id,
+      projectId: loaded.projectRow.id,
       projectName,
-      composeYaml,
+      composeYaml: loaded.composeYaml,
       hostings: hostingPayload,
-    }
-
-    const record = await createCommandRecord(db, {
-      serverId,
-      actorEntityType: 'user',
-      actorEntityId: session.userId,
-      type: 'environment.deploy',
-      payload,
-      expiresAt,
     })
-
-    const envelope: CommandEnvelope = {
-      commandId: record.id,
-      serverId,
-      type: 'environment.deploy',
-      attempt: 1,
-      queuedAt: record.queuedAt ?? record.createdAt,
-    }
-
-    try {
-      await commandQueue.enqueue(envelope)
-    } catch {
-      await transitionCommand(db, record.id, {
-        status: 'failed',
-        error: 'Command queue unavailable',
-      })
-      return c.json({ error: 'Command queue unavailable' }, 503)
-    }
-
-    return c.json({ ok: true as const, commandId: record.id, status: 'queued' as const })
   })
 }

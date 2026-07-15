@@ -1,3 +1,4 @@
+// NOSONAR typescript:S2187 — Deno.test() cases below; Sonar does not recognize Deno's test API
 import { eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -33,6 +34,8 @@ class FailingEmailQueue implements EmailQueue {
 }
 
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+
+const dbUrl = getDatabaseUrl()
 
 const MAILGUN_PLATFORM_ENV = {
   TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailgun',

@@ -801,7 +801,7 @@ export class RedisDaemonCell implements DaemonCell {
   ): Promise<PendingRequestRecord> {
     this.#bumpMethodRoute("enqueue");
     const redis = this.#redis("enqueue");
-    if (outbound.kind === "command" || outbound.kind === "command-dispatch") {
+    if (outbound.kind === "command-dispatch") {
       this.#bumpDiag("commandDispatchCount");
     }
     const now = Date.now();
@@ -868,8 +868,8 @@ export class RedisDaemonCell implements DaemonCell {
       expiresAt,
       deliveries: JSON.stringify(deliveries),
     };
-    if (outbound.kind === "command") {
-      recordFields.command = outbound.command;
+    if (outbound.kind === "command-dispatch") {
+      recordFields.command = outbound.commandType;
     }
 
     await redis.hset(reqKey, recordFields);

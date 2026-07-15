@@ -1,4 +1,5 @@
 import { and, eq } from 'drizzle-orm'
+import { it } from '@std/testing/bdd'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'
 import { grant, member, organization, workspace, team, teammate, user } from '../../lib/db/schema.ts'
@@ -87,7 +88,7 @@ async function withTestFixtures(
   }
 }
 
-Deno.test('org owner can manage org', async () => {
+it('org owner can manage org', async () => {
   await withTestFixtures(async ({ db, userId, organizationId }) => {
     await db.insert(grant).values({
       entityType: 'organization',
@@ -106,7 +107,7 @@ Deno.test('org owner can manage org', async () => {
   })
 })
 
-Deno.test('org manager can invite and manage org members', async () => {
+it('org manager can invite and manage org members', async () => {
   await withTestFixtures(async ({ db, userId, organizationId }) => {
     await db.insert(grant).values({
       entityType: 'organization',
@@ -127,7 +128,7 @@ Deno.test('org manager can invite and manage org members', async () => {
   })
 })
 
-Deno.test('team owner can manage team', async () => {
+it('team owner can manage team', async () => {
   await withTestFixtures(async ({ db, userId, teamId }) => {
     await db.insert(grant).values({
       entityType: 'team',
@@ -146,7 +147,7 @@ Deno.test('team owner can manage team', async () => {
   })
 })
 
-Deno.test('team manager can invite and manage team members', async () => {
+it('team manager can invite and manage team members', async () => {
   await withTestFixtures(async ({ db, userId, teamId }) => {
     await db.insert(grant).values({
       entityType: 'team',
@@ -167,7 +168,7 @@ Deno.test('team manager can invite and manage team members', async () => {
   })
 })
 
-Deno.test('org manager can manage any team in their org', async () => {
+it('org manager can manage any team in their org', async () => {
   await withTestFixtures(async ({ db, userId, organizationId, teamId }) => {
     await db.insert(grant).values({
       entityType: 'organization',
@@ -190,7 +191,7 @@ Deno.test('org manager can manage any team in their org', async () => {
   })
 })
 
-Deno.test('invitation grant materialization creates grant rows and enables canOwnOrganization', async () => {
+it('invitation grant materialization creates grant rows and enables canOwnOrganization', async () => {
   await withTestFixtures(async ({ db, userId, organizationId }) => {
     await materializeInvitationGrants(
       db,
@@ -199,7 +200,7 @@ Deno.test('invitation grant materialization creates grant rows and enables canOw
         entityType: 'organization',
         entityId: organizationId,
         permissionKey: 'organization:own',
-        allow: true,
+        allowed: true,
       }],
       organizationId,
     )
@@ -226,7 +227,7 @@ Deno.test('invitation grant materialization creates grant rows and enables canOw
   })
 })
 
-Deno.test('assertNotLastOrgOwner throws when removing the sole owner', async () => {
+it('assertNotLastOrgOwner throws when removing the sole owner', async () => {
   await withTestFixtures(async ({ db, userId, organizationId }) => {
     await db.insert(grant).values({
       entityType: 'organization',
@@ -274,7 +275,7 @@ Deno.test('assertNotLastOrgOwner throws when removing the sole owner', async () 
   })
 })
 
-Deno.test('assertNotLastTeamOwner throws when removing the sole owner', async () => {
+it('assertNotLastTeamOwner throws when removing the sole owner', async () => {
   await withTestFixtures(async ({ db, userId, teamId }) => {
     await db.insert(grant).values({
       entityType: 'team',
@@ -322,7 +323,7 @@ Deno.test('assertNotLastTeamOwner throws when removing the sole owner', async ()
   })
 })
 
-Deno.test('superadmin bypass (regression after admin bypass addition)', async () => {
+it('superadmin bypass (regression after admin bypass addition)', async () => {
   await withTestFixtures(async ({ db, organizationId, workspaceId }) => {
     const superadminEmail = `service-superadmin-${crypto.randomUUID()}@example.com`
 
@@ -345,7 +346,7 @@ Deno.test('superadmin bypass (regression after admin bypass addition)', async ()
   })
 })
 
-Deno.test('admin bypass for service-level ownership helpers', async () => {
+it('admin bypass for service-level ownership helpers', async () => {
   await withTestFixtures(async ({ db, organizationId, teamId }) => {
     const adminEmail = `service-admin-${crypto.randomUUID()}@example.com`
 
@@ -372,7 +373,7 @@ Deno.test('admin bypass for service-level ownership helpers', async () => {
   })
 })
 
-Deno.test('org manager is not treated as team owner without direct team:own grant', async () => {
+it('org manager is not treated as team owner without direct team:own grant', async () => {
   await withTestFixtures(async ({ db, userId, organizationId, teamId }) => {
     await db.insert(grant).values({
       entityType: 'organization',

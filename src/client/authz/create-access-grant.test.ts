@@ -1,3 +1,4 @@
+// NOSONAR typescript:S2187 — Deno.test() cases below; Sonar does not recognize Deno's test API
 import { and, eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'

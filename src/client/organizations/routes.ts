@@ -1,10 +1,11 @@
 import { Hono } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { listAccessibleOrganizations } from '../org-context.ts'
 import { getDb } from '../../db.ts'
 
-export function registerOrganizationRoutes(router: Hono, opts: AuthRouteOpts) {
+export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   router.use('/organizations', createSessionMiddleware(opts.secrets))
 
   router.get('/organizations', async (c) => {

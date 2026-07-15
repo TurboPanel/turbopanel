@@ -2104,7 +2104,7 @@ export class DaemonCellObject {
     outbound: DaemonOutboundEnvelope,
     opts?: { ttlSeconds?: number },
   ): Promise<PendingRequestRecord> {
-    if (outbound.kind === "command" || outbound.kind === "command-dispatch") {
+    if (outbound.kind === "command-dispatch") {
       this.#bumpDiag("commandDispatchCount");
     }
     const now = Date.now();
@@ -2170,7 +2170,7 @@ export class DaemonCellObject {
         ) VALUES (?, ?, ?, 'queued', ?, ?, ?)`,
         outbound.requestId,
         outbound.kind,
-        outbound.kind === "command" ? outbound.command : null,
+        outbound.kind === "command-dispatch" ? outbound.commandType : null,
         createdAt,
         createdAt,
         expiresAt,
