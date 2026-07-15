@@ -1,4 +1,4 @@
-/** Introspected from live dev DB (`./introspect.sh`). Review style before commit. */
+/** Introspected from live dev DB (`dev/scripts/introspect.sh`). Review style before commit. */
 
 import { sql } from 'drizzle-orm'
 import {
@@ -109,6 +109,55 @@ export const license = pgTable(
       foreignColumns: [organization.id],
       name: 'license_organization_id_organization_id_fk',
     }).onDelete('cascade'),
+  ]
+)
+/**
+ * Organization TLS certificate library (upload / Let's Encrypt / self-signed).
+ * Private keys are sealed `tpsecret` envelopes — never returned on client GET.
+ * Hosting pins via `hosting.tls_id`; deploy auto-matches by SAN when unset.
+ */
+export const tls = pgTable(
+  'tls',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    organizationId: uuid('organization_id').notNull(),
+    displayName: varchar('display_name', { length: 255 }),
+    /** `upload` | `lets_encrypt` | `self_signed` */
+    source: text().notNull(),
+    /** Leaf + intermediate chain PEM; null while LE `pending`. */
+    certificatePem: text('certificate_pem'),
+    /** Sealed `tpsecret` private key PEM; null while LE `pending` before keygen. */
+    privateKeyPem: text('private_key_pem'),
+    metadata: jsonb().notNull(),
+    options: jsonb(),
+  },
+  (table) => [
+    index('idx_tls_organization_id').using(
+      'btree',
+      table.organizationId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'tls_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    check(
+      'tls_source_check',
+      sql`source IN ('upload', 'lets_encrypt', 'self_signed')`
+    ),
+    check(
+      'tls_display_name_format_check',
+      sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+    ),
   ]
 )
 export const passkey = pgTable(
@@ -576,6 +625,8 @@ export const hosting = pgTable(
       .defaultNow()
       .notNull(),
     serviceId: uuid('service_id').notNull(),
+    /** Optional pin into the org TLS library; null = auto-match by SAN. */
+    tlsId: uuid('tls_id'),
     displayName: varchar('display_name', { length: 255 }),
     description: varchar('description', { length: 255 }),
     metadata: jsonb(),
@@ -586,11 +637,17 @@ export const hosting = pgTable(
       'btree',
       table.serviceId.asc().nullsLast().op('uuid_ops')
     ),
+    index('idx_hosting_tls_id').using('btree', table.tlsId.asc().nullsLast().op('uuid_ops')),
     foreignKey({
       columns: [table.serviceId],
       foreignColumns: [service.id],
       name: 'hosting_service_id_service_id_fk',
     }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.tlsId],
+      foreignColumns: [tls.id],
+      name: 'hosting_tls_id_tls_id_fk',
+    }).onDelete('set null'),
     check(
       'hosting_display_name_format_check',
       sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`

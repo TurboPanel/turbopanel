@@ -9,6 +9,10 @@ export const hostingSchemas = {
       displayName: { type: ['string', 'null'] },
       description: { type: ['string', 'null'] },
       serviceId: { type: 'string' },
+      tlsId: {
+        type: ['string', 'null'],
+        description: 'Pinned org TLS certificate id; null = auto-match by SAN',
+      },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
     },
@@ -30,6 +34,7 @@ export const hostingSchemas = {
       displayName: { type: 'string' },
       description: { type: 'string' },
       serviceId: { type: 'string' },
+      tlsId: { type: ['string', 'null'] },
     },
   },
 }

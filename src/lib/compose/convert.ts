@@ -139,6 +139,15 @@ function walkMapPresentation(
   }
 }
 
+function documentCommentText(
+  doc: Document | Document.Parsed,
+  which: 'commentBefore' | 'comment',
+): string | undefined {
+  const raw = (doc as { commentBefore?: string | null; comment?: string | null })[which]
+  if (typeof raw !== 'string' || raw.length === 0) return undefined
+  return raw
+}
+
 function collectPresentation(doc: Document.Parsed): ComposePresentation {
   const keyOrder: string[] = []
   const comments: Record<string, ComposeComment> = {}
@@ -154,10 +163,15 @@ function collectPresentation(doc: Document.Parsed): ComposePresentation {
 
   walkPresentation(root, '', { comments, blankLines })
 
+  const documentCommentBefore = documentCommentText(doc, 'commentBefore')
+  const documentComment = documentCommentText(doc, 'comment')
+
   return {
     keyOrder,
     comments,
     ...(Object.keys(blankLines).length > 0 ? { blankLines } : {}),
+    ...(documentCommentBefore ? { documentCommentBefore } : {}),
+    ...(documentComment ? { documentComment } : {}),
   }
 }
 
@@ -261,6 +275,13 @@ function applyMapPresentation(
 }
 
 function applyPresentation(doc: Document, presentation: ComposePresentation): void {
+  if (presentation.documentCommentBefore) {
+    doc.commentBefore = presentation.documentCommentBefore
+  }
+  if (presentation.documentComment) {
+    doc.comment = presentation.documentComment
+  }
+
   const root = doc.contents
   if (!isYamlMap(root)) return
 
@@ -305,6 +326,12 @@ export function yamlToComposeDocument(source: string): ComposeDocument {
         : Object.keys(data),
       comments: presentation.comments,
       ...(presentation.blankLines ? { blankLines: presentation.blankLines } : {}),
+      ...(presentation.documentCommentBefore
+        ? { documentCommentBefore: presentation.documentCommentBefore }
+        : {}),
+      ...(presentation.documentComment
+        ? { documentComment: presentation.documentComment }
+        : {}),
     },
   }
 }

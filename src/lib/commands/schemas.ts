@@ -132,6 +132,14 @@ export function parseRebootResult(value: unknown): RebootCommandResult {
   return result
 }
 
+export type EnvironmentDeployTlsMaterial = {
+  tlsId: string
+  /** Public leaf + intermediate chain PEM. */
+  certificatePem: string
+  /** Daemon-recipient sealed private key (`tpdaemon.v1…`). */
+  privateKeyEnvelope: string
+}
+
 export type EnvironmentDeployCommandPayload = {
   environmentId: string
   projectId: string
@@ -140,6 +148,8 @@ export type EnvironmentDeployCommandPayload = {
   composeYaml: string
   /** Public hosting routes to wire through Traefik + edge Caddy. */
   hostings: EnvironmentDeployHosting[]
+  /** Unique TLS material referenced by `hostings[].tlsId` (deduped). */
+  tlsMaterial?: EnvironmentDeployTlsMaterial[]
 }
 
 export type EnvironmentDeployHosting = {
@@ -150,6 +160,8 @@ export type EnvironmentDeployHosting = {
   pathPrefix?: string
   /** Container port Traefik should target (default 80). */
   targetPort?: number
+  /** Resolved org TLS id (pin or auto); null/omit = Caddy `tls internal`. */
+  tlsId?: string | null
 }
 
 export type EnvironmentDeployContainer = {
@@ -214,9 +226,42 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
     if (typeof entry.targetPort === 'number' && Number.isFinite(entry.targetPort)) {
       hosting.targetPort = entry.targetPort
     }
+    if (entry.tlsId === null) {
+      hosting.tlsId = null
+    } else if (isString(entry.tlsId)) {
+      hosting.tlsId = entry.tlsId
+    }
     hostings.push(hosting)
   }
-  return { environmentId, projectId, projectName, composeYaml, hostings }
+
+  let tlsMaterial: EnvironmentDeployTlsMaterial[] | undefined
+  if (Array.isArray(value.tlsMaterial)) {
+    tlsMaterial = []
+    for (const entry of value.tlsMaterial) {
+      if (!isRecord(entry)) throw new Error('Invalid environment.deploy payload')
+      if (
+        !isString(entry.tlsId) ||
+        !isString(entry.certificatePem) ||
+        !isString(entry.privateKeyEnvelope)
+      ) {
+        throw new Error('Invalid environment.deploy payload')
+      }
+      tlsMaterial.push({
+        tlsId: entry.tlsId,
+        certificatePem: entry.certificatePem,
+        privateKeyEnvelope: entry.privateKeyEnvelope,
+      })
+    }
+  }
+
+  return {
+    environmentId,
+    projectId,
+    projectName,
+    composeYaml,
+    hostings,
+    ...(tlsMaterial !== undefined ? { tlsMaterial } : {}),
+  }
 }
 
 export function parseEnvironmentDeployResult(value: unknown): EnvironmentDeployCommandResult {

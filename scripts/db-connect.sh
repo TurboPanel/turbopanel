@@ -6,7 +6,8 @@ db_connect_init() {
   local caller="${1:-db-connect}"
   # shellcheck source=scripts/runtime-paths.sh
   source "$(dirname "${BASH_SOURCE[0]}")/runtime-paths.sh"
-  # Caller (introspect.sh / sync.sh) lives at repo root; workers-serve.sh sets ROOT first.
+  # Callers set ROOT to the instance checkout (dev/scripts/introspect.sh / sync.sh,
+  # bootstrap-dev-db.sh, drizzle-studio-serve.sh).
   if [[ -z "${ROOT:-}" ]]; then
     ROOT="$(cd "$(dirname "${BASH_SOURCE[1]}")" && pwd)"
   fi

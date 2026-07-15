@@ -234,6 +234,14 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         SELECT 'organization'::text, s.organization_id, 1
         FROM server s WHERE s.id = ${entityId}::uuid
       `
+    case 'tls':
+      return sql`
+        SELECT 'tls'::text AS entity_type, t.id AS entity_id, 0 AS depth
+        FROM tls t WHERE t.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'organization'::text, t.organization_id, 1
+        FROM tls t WHERE t.id = ${entityId}::uuid
+      `
     case 'managed':
       return sql`
         SELECT 'managed'::text AS entity_type, m.id AS entity_id, 0 AS depth
@@ -428,6 +436,8 @@ function buildLeavesBody(kind: string, organizationId: string): SQL {
         WHERE w.organization_id = ${organizationId}::uuid`
     case 'server':
       return sql`SELECT id FROM server WHERE organization_id = ${organizationId}::uuid`
+    case 'tls':
+      return sql`SELECT id FROM tls WHERE organization_id = ${organizationId}::uuid`
     case 'variable':
       return sql`SELECT v.id FROM variable v
         WHERE v.organization_id = ${organizationId}::uuid

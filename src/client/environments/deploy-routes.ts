@@ -3,8 +3,16 @@ import type { Context } from 'hono'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
+import {
+  decryptSecret,
+  encryptSecretForDaemon,
+} from '../authn/data-encryption.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
+import {
+  getServerDaemonStateByServerId,
+  isDaemonKeyActive,
+} from '../../daemon/authn/server-identity-db.ts'
 import {
   assertComposeDocument,
   composeDocumentToRuntimeYaml,
@@ -12,6 +20,10 @@ import {
   readComposePlacementServerId,
 } from '../../lib/compose/index.ts'
 import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
+import type {
+  EnvironmentDeployHosting,
+  EnvironmentDeployTlsMaterial,
+} from '../../lib/commands/schemas.ts'
 import { isNoopCommandQueue } from '../../lib/commands/noop-command-queue.ts'
 import { getCommandQueue, type CommandQueue } from '../../lib/commands/queue.ts'
 import {
@@ -24,7 +36,14 @@ import {
   project,
   server,
   service,
+  tls,
 } from '../../lib/db/schema.ts'
+import {
+  parseTlsMetadata,
+  parseTlsOptions,
+  resolveTlsForHosting,
+  type TlsCandidate,
+} from '../../lib/tls/index.ts'
 import { getDaemonCellRegistry, getDb, type Db } from '../../db.ts'
 import {
   assertCanManageOr403,
@@ -32,14 +51,7 @@ import {
   parseJsonBody,
 } from '../shared.ts'
 
-type DeployHostingPayload = {
-  hostingId: string
-  serviceId: string
-  composeServiceName: string
-  hostnames: string[]
-  pathPrefix?: string
-  targetPort?: number
-}
+type DeployHostingPayload = EnvironmentDeployHosting
 
 function assertDispatchInfrastructure(c: Context<AppEnv>): CommandQueue | Response {
   const registry = getDaemonCellRegistry(c)
@@ -117,10 +129,50 @@ function projectComposeName(displayName: string | null, projectId: string): stri
   return trimmed.length > 0 ? trimmed : `project-${projectId.slice(0, 8)}`
 }
 
+type BuildHostingResult =
+  | {
+    hostings: DeployHostingPayload[]
+    resolvedTlsIds: string[]
+  }
+  | { error: Response }
+
+async function loadOrgTlsCandidates(
+  db: Db,
+  organizationId: string,
+): Promise<Array<TlsCandidate & { certificatePem: string | null; privateKeyPem: string | null }>> {
+  const rows = await db
+    .select({
+      id: tls.id,
+      metadata: tls.metadata,
+      options: tls.options,
+      certificatePem: tls.certificatePem,
+      privateKeyPem: tls.privateKeyPem,
+    })
+    .from(tls)
+    .where(eq(tls.organizationId, organizationId))
+
+  const out: Array<
+    TlsCandidate & { certificatePem: string | null; privateKeyPem: string | null }
+  > = []
+  for (const row of rows) {
+    const metadata = parseTlsMetadata(row.metadata)
+    if (!metadata) continue
+    out.push({
+      id: row.id,
+      metadata,
+      options: parseTlsOptions(row.options),
+      certificatePem: row.certificatePem,
+      privateKeyPem: row.privateKeyPem,
+    })
+  }
+  return out
+}
+
 async function buildHostingPayload(
   db: Db,
   environmentId: string,
-): Promise<DeployHostingPayload[]> {
+  organizationId: string,
+): Promise<BuildHostingResult> {
   const serviceRows = await db
     .select({
       id: service.id,
@@ -130,7 +182,9 @@ async function buildHostingPayload(
     .from(service)
     .where(eq(service.environmentId, environmentId))
 
+  const candidates = await loadOrgTlsCandidates(db, organizationId)
   const hostingPayload: DeployHostingPayload[] = []
+  const resolvedTlsIds = new Set<string>()
 
   for (const svc of serviceRows) {
     const composeServiceName = readComposeServiceName(
@@ -141,6 +195,7 @@ async function buildHostingPayload(
       .select({
         id: hosting.id,
         options: hosting.options,
+        tlsId: hosting.tlsId,
       })
       .from(hosting)
       .where(eq(hosting.serviceId, svc.id))
@@ -148,6 +203,27 @@ async function buildHostingPayload(
     for (const h of hostingRows) {
       const hostnames = readHostnames(h.options)
       if (hostnames.length === 0) continue
+
+      const resolved = resolveTlsForHosting({
+        pinId: h.tlsId,
+        hostnames,
+        candidates,
+      })
+      if (!resolved.ok) {
+        let message = 'tls_pin_invalid'
+        if (resolved.error === 'pin_mismatch') message = 'tls_pin_mismatch'
+        if (resolved.error === 'pin_not_ready') message = 'tls_pin_not_ready'
+        if (resolved.error === 'pin_not_found') message = 'tls_pin_not_found'
+        return {
+          error: Response.json(
+            { error: message, hostingId: h.id },
+            { status: 400 },
+          ),
+        }
+      }
+
+      if (resolved.tlsId) resolvedTlsIds.add(resolved.tlsId)
+
       hostingPayload.push({
         hostingId: h.id,
         serviceId: svc.id,
@@ -155,11 +231,79 @@ async function buildHostingPayload(
         hostnames,
         pathPrefix: readPathPrefix(h.options),
         targetPort: readTargetPort(h.options),
+        tlsId: resolved.tlsId,
       })
     }
   }
 
-  return hostingPayload
+  return { hostings: hostingPayload, resolvedTlsIds: [...resolvedTlsIds] }
+}
+
+async function sealTlsMaterialForDaemon(
+  c: Context<AppEnv>,
+  db: Db,
+  serverId: string,
+  organizationId: string,
+  tlsIds: string[],
+): Promise<EnvironmentDeployTlsMaterial[] | Response> {
+  if (tlsIds.length === 0) return []
+
+  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  const secretsConfig = c.get('secretsConfig')
+  if (!dataEncryptionSecrets || !secretsConfig) {
+    return c.json({ error: 'Encryption unavailable — no encryption key configured' }, 503)
+  }
+
+  const daemonState = await getServerDaemonStateByServerId(db, serverId)
+  if (!daemonState || !isDaemonKeyActive(daemonState.key)) {
+    return c.json({ error: 'No encryption-capable daemon key on target server' }, 422)
+  }
+  const keyId = daemonState.key.id
+
+  const rows = await db
+    .select({
+      id: tls.id,
+      certificatePem: tls.certificatePem,
+      privateKeyPem: tls.privateKeyPem,
+      organizationId: tls.organizationId,
+    })
+    .from(tls)
+    .where(and(eq(tls.organizationId, organizationId)))
+
+  const byId = new Map(rows.map((row) => [row.id, row]))
+  const material: EnvironmentDeployTlsMaterial[] = []
+
+  for (const tlsId of tlsIds) {
+    const row = byId.get(tlsId)
+    if (!row?.certificatePem || !row.privateKeyPem) {
+      return c.json({ error: 'tls_material_missing', tlsId }, 400)
+    }
+    // Refuse plaintext / non-tpsecret rows — keys must be sealed at rest.
+    if (
+      !row.privateKeyPem.startsWith('tpsecret.') ||
+      row.privateKeyPem.includes('BEGIN')
+    ) {
+      return c.json({ error: 'tls_key_not_sealed', tlsId }, 500)
+    }
+    let plaintextKey: string
+    try {
+      plaintextKey = await decryptSecret(dataEncryptionSecrets, row.privateKeyPem)
+    } catch {
+      return c.json({ error: 'tls_decrypt_failed', tlsId }, 500)
+    }
+    const privateKeyEnvelope = await encryptSecretForDaemon(
+      secretsConfig,
+      { serverId, keyId },
+      plaintextKey,
+    )
+    material.push({
+      tlsId,
+      certificatePem: row.certificatePem,
+      privateKeyEnvelope,
+    })
+  }
+
+  return material
 }
 
 type LoadedDeployCompose = {
@@ -288,6 +432,7 @@ async function enqueueDeployCommand(
     projectName: string
     composeYaml: string
     hostings: DeployHostingPayload[]
+    tlsMaterial: EnvironmentDeployTlsMaterial[]
   },
 ): Promise<Response> {
   const expiresAt = new Date(Date.now() + 600_000).toISOString()
@@ -302,6 +447,9 @@ async function enqueueDeployCommand(
       projectName: params.projectName,
       composeYaml: params.composeYaml,
       hostings: params.hostings,
+      ...(params.tlsMaterial.length > 0
+        ? { tlsMaterial: params.tlsMaterial }
+        : {}),
     },
     expiresAt,
   })
@@ -367,7 +515,22 @@ export function registerEnvironmentDeployRoutes(
     )
     if (target instanceof Response) return target
 
-    const hostingPayload = await buildHostingPayload(db, environmentId)
+    const hostingBuilt = await buildHostingPayload(
+      db,
+      environmentId,
+      auth.organizationId,
+    )
+    if ('error' in hostingBuilt) return hostingBuilt.error
+
+    const tlsMaterial = await sealTlsMaterialForDaemon(
+      c,
+      db,
+      target.serverId,
+      auth.organizationId,
+      hostingBuilt.resolvedTlsIds,
+    )
+    if (tlsMaterial instanceof Response) return tlsMaterial
+
     const prevMeta = isPlainObject(loaded.envRow.metadata) ? loaded.envRow.metadata : {}
     await db
       .update(environment)
@@ -386,7 +549,8 @@ export function registerEnvironmentDeployRoutes(
       projectId: loaded.projectRow.id,
       projectName,
       composeYaml: loaded.composeYaml,
-      hostings: hostingPayload,
+      hostings: hostingBuilt.hostings,
+      tlsMaterial,
     })
   })
 }

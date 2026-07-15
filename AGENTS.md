@@ -152,7 +152,7 @@ Route handlers read the per-request client via `getDb(c)` (set by `createApp({ d
 | Variable | Purpose |
 |---|---|
 | `TURBOPANEL_DATABASE_URL` | Full postgres connection URL. **Deno mode:** required at boot — `createDenoDb()` throws immediately when missing or blank (self-hosted instance will not start). Passed directly to postgres.js (supports Unix socket URLs: `postgresql://user:pass@/db?host=/var/run/turbopanel/postgres`). **Workers runtime:** prefers the `HYPERDRIVE` binding; `src/workers.ts` falls back to this env var when Hyperdrive is unset (local `wrangler dev` without a binding). When the URL uses `?host=` for a Unix socket, ensure Deno has read access to that directory (`/run/turbopanel` covers the default Docker bind-mount path). |
-| `DATABASE_URL` | **Tooling only** (drizzle-kit, `pnpm migrate`, `./introspect.sh` / `./sync.sh` overrides). Accepted as a fallback when `TURBOPANEL_DATABASE_URL` is unset — common in CI and Cloudflare dashboard deploy workflows. Not read by the Deno instance or Workers runtime at request time. |
+| `DATABASE_URL` | **Tooling only** (drizzle-kit, `pnpm migrate`, `dev/scripts/introspect.sh` / `dev/scripts/sync.sh` overrides). Accepted as a fallback when `TURBOPANEL_DATABASE_URL` is unset — common in CI and Cloudflare dashboard deploy workflows. Not read by the Deno instance or Workers runtime at request time. |
 
 ### Workers Hyperdrive
 
@@ -176,7 +176,7 @@ Previously `prepare: false` was used because older Hyperdrive versions did not s
 ### Tooling
 
 - `pnpm install` — pulls `drizzle-orm`, `postgres`, `drizzle-kit`
-- After editing `schema.ts`, run `pnpm drizzle-kit generate` to create SQL in `migrations/`; apply locally with `TURBOPANEL_DATABASE_URL=… pnpm migrate` or `DATABASE_URL=… pnpm migrate`. Workers deploy runs `pnpm migrate` automatically (Node only — no Deno). Deno dev can still use `./sync.sh` (`push`) — see `src/lib/db/AGENTS.md`.
+- After editing `schema.ts`, run `pnpm drizzle-kit generate` to create SQL in `migrations/`; apply locally with `TURBOPANEL_DATABASE_URL=… pnpm migrate` or `DATABASE_URL=… pnpm migrate`. Workers deploy runs `pnpm migrate` automatically (Node only — no Deno). Deno dev can still use `dev/scripts/sync.sh` (`push`) — see `src/lib/db/AGENTS.md`.
 
 ### Caddy dial format
 
@@ -528,7 +528,9 @@ Authz: ping/get require read (`assertCanReadOr403`); hostname and reboot require
 
 `server.reboot` requires `organization:manage`, carries an empty payload, uses a 120s consumer timeout, has no `touchServerMetadata` side-effect, and is executed daemon-side via `sudo systemctl reboot` (handler implemented in a separate phase).
 
-`environment.deploy` uses a 600s consumer timeout. Compose merge + Traefik label injection + Docker/Caddy bootstrap run on the daemon (`daemon/src/instance/commands/deploy-environment.ts`). On success the daemon may also return best-effort per-container identity/status from `docker compose ps`; the consumer reconciles those into `container` rows (ids/status only). **Cost:** one cell outbox enqueue; UI polls Postgres command rows only — never Durable Object reads for deploy status. Hosting-edge Caddy (`:80`/`:443`, LE off) is distinct from control-plane Caddy (`:8443`). Future: multi-server compose placement, WireGuard, swarm-style replicas — seams only.
+`environment.deploy` uses a 600s consumer timeout. Compose merge + Traefik label injection + Docker/Caddy bootstrap run on the daemon (`daemon/src/instance/commands/deploy-environment.ts`). On success the daemon may also return best-effort per-container identity/status from `docker compose ps`; the consumer reconciles those into `container` rows (ids/status only). **Cost:** one cell outbox enqueue; UI polls Postgres command rows only — never Durable Object reads for deploy status. Hosting-edge Caddy (`:80`/`:443`) is distinct from control-plane Caddy (`:8443`).
+
+**Org TLS library (`tls` table):** organization-scoped certificates (`upload` / `lets_encrypt` / `self_signed`) in `src/lib/tls/`. Hosting may pin `hosting.tls_id` or leave null for **auto-match** (exact SAN > longest wildcard > `options.prefer` > newest `notAfter`); unmatched hostnames keep Caddy `tls internal`. Private keys are sealed `tpsecret` envelopes — never returned on client GET. Deploy decrypts → re-seals as `tpdaemon` for the target server → payload `tlsMaterial[]`; daemon decrypts via `POST /api/daemon/v1/secrets/decrypt` and writes `/etc/turbopanel/tls/<tlsId>/`. LE rows start `metadata.status: pending` (not selectable until ready). CRUD: `/api/client/v1/tls`. Future: multi-server compose placement, WireGuard, swarm-style replicas — seams only.
 
 ### Compose documents (`src/lib/compose/`)
 
@@ -719,6 +721,10 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `GET` | `/api/client/v1/licenses` | List licenses (`organization:own`) |
 | `POST` | `/api/client/v1/licenses` | Create a license (`organization:own`) |
 | `DELETE` | `/api/client/v1/licenses/{id}` | Invalidate a license (`organization:own`; soft `revoked_at`, disconnects bound servers) |
+| `GET` | `/api/client/v1/tls` | List org TLS certs (metadata + public PEM; private key never returned) |
+| `POST` | `/api/client/v1/tls` | Create cert (`upload` / `self_signed` / `lets_encrypt`); seals private key with `encryptSecret` (`tpsecret`) |
+| `PATCH` | `/api/client/v1/tls/:id` | Update display name / prefer / autoRenew |
+| `DELETE` | `/api/client/v1/tls/:id` | Delete cert; clears hosting pins (`ON DELETE SET NULL`) |
 
 **Install mode (Deno self-hosted):** `isInstanceInstalled()` is false on a fresh DB. The UI `/install` page first verifies host PAM (`POST /api/install/v1/bootstrap`, client-side gate only), then collects superadmin email/password. Org/team names are fixed defaults. `completeInstanceInstall` inserts exactly one `organization:own` grant on the org and one `team:own` grant on the default team for the superadmin user. After install, sign-in uses superadmin email/password only. The co-located daemon's `server.organization_id` is assigned to **Default Organization** on install (`assignColocatedDaemonToOrganization` in `install-state.ts`, resolving the server row from the live hub or by `metadata.machineId` / hostname) and again when the Unix-socket daemon sends `hello` if still unassigned.
 

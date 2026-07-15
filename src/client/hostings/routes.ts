@@ -5,7 +5,10 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db.ts'
-import { hosting } from '../../lib/db/schema.ts'
+import { hosting, tls } from '../../lib/db/schema.ts'
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -59,6 +62,7 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
         displayName: hosting.displayName,
         description: hosting.description,
         serviceId: hosting.serviceId,
+        tlsId: hosting.tlsId,
         metadata: hosting.metadata,
         options: hosting.options,
         createdAt: hosting.createdAt,
@@ -94,6 +98,7 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
         displayName: hosting.displayName,
         description: hosting.description,
         serviceId: hosting.serviceId,
+        tlsId: hosting.tlsId,
         metadata: hosting.metadata,
         options: hosting.options,
         createdAt: hosting.createdAt,
@@ -156,6 +161,21 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
     const optionsResult = parseJsonbObject(c, body, 'options')
     if (optionsResult instanceof Response) return optionsResult
 
+    let tlsId: string | null | undefined
+    if (body.tlsId !== undefined) {
+      if (body.tlsId === null) {
+        tlsId = null
+      } else if (typeof body.tlsId === 'string' && UUID_RE.test(body.tlsId)) {
+        const tlsOrgId = await resolveEntityOrganizationId(db, 'tls', body.tlsId)
+        if (!tlsOrgId || tlsOrgId !== organizationId) {
+          return c.json({ error: 'Not found' }, 404)
+        }
+        tlsId = body.tlsId
+      } else {
+        return c.json({ error: 'Invalid request' }, 400)
+      }
+    }
+
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(hosting)
@@ -163,6 +183,7 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
           displayName,
           description,
           serviceId,
+          ...(tlsId !== undefined ? { tlsId } : {}),
           ...(metadataResult !== null ? { metadata: metadataResult } : {}),
           ...(optionsResult !== null ? { options: optionsResult } : {}),
         })
@@ -201,6 +222,7 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
       description?: string | null
       metadata?: Record<string, unknown> | null
       options?: Record<string, unknown> | null
+      tlsId?: string | null
       updatedAt: string
     }
     try {
@@ -216,6 +238,24 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
     const optionsResult = parseJsonbObject(c, body, 'options')
     if (optionsResult instanceof Response) return optionsResult
     if (optionsResult !== null) patchFields.options = optionsResult
+
+    if (body.tlsId !== undefined) {
+      if (body.tlsId === null) {
+        patchFields.tlsId = null
+      } else if (typeof body.tlsId === 'string' && UUID_RE.test(body.tlsId)) {
+        const [tlsRow] = await db
+          .select({ id: tls.id, organizationId: tls.organizationId })
+          .from(tls)
+          .where(eq(tls.id, body.tlsId))
+          .limit(1)
+        if (!tlsRow || tlsRow.organizationId !== organizationId) {
+          return c.json({ error: 'Not found' }, 404)
+        }
+        patchFields.tlsId = body.tlsId
+      } else {
+        return c.json({ error: 'Invalid request' }, 400)
+      }
+    }
 
     await db
       .update(hosting)

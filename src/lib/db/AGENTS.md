@@ -12,34 +12,34 @@ The co-located dev server has live data — treat every database change as produ
 
 | Direction | You changed | Command | drizzle-kit |
 |---|---|---|---|
-| **Pull** (DB → code) | Live Postgres (Studio / SQL) | `./introspect.sh` | `introspect` |
-| **Push** (code → DB, Deno dev only) | `schema.ts` | `./sync.sh` | `push` |
+| **Pull** (DB → code) | Live Postgres (Studio / SQL) | `dev/scripts/introspect.sh` | `introspect` |
+| **Push** (code → DB, Deno dev only) | `schema.ts` | `dev/scripts/sync.sh` | `push` |
 | **Generate migration** | `schema.ts` | `pnpm drizzle-kit generate --name <summary>` | `generate` |
 | **Apply migration** (Workers deploy + manual) | pending SQL in `migrations/` | `TURBOPANEL_DATABASE_URL=… pnpm migrate` | `migrate` |
 
 Pick one source of truth per change — do not edit both sides and blindly run both scripts.
 
-### Pull: database → `schema.ts` (`./introspect.sh`)
+### Pull: database → `schema.ts` (`dev/scripts/introspect.sh`)
 
 Use when you designed in **Drizzle Studio** or applied DDL directly.
 
 1. Change tables in Studio (`/developer/database` → **Start API & open studio**).
-2. Run `./introspect.sh` from the `turbopanel` repo root.
+2. From the dev checkout, run `./scripts/introspect.sh` (resolves the instance repo via `TURBOPANEL_INSTANCE_REPO` / `$HOME/instance`).
 3. Review `schema.ts` (style, dropped tables).
 
-`introspect.sh`: loads `TURBOPANEL_DATABASE_URL` from env or `turbopanel-instance` → introspect → copy to `schema.ts` → delete ephemeral `drizzle/` output → `deno check`.
+`dev/scripts/introspect.sh`: loads `TURBOPANEL_DATABASE_URL` from env or `turbopanel-instance` → introspect → copy to `schema.ts` → delete ephemeral `drizzle/` output → `deno check`.
 
-### Push: `schema.ts` → database (`./sync.sh`)
+### Push: `schema.ts` → database (`dev/scripts/sync.sh`)
 
 Use when you edited **`schema.ts` first** and need the live dev DB to catch up without committing migration files (Deno dev convenience only).
 
 1. Edit `src/lib/db/schema.ts`.
-2. Run `./sync.sh` from the `turbopanel` repo root.
-3. Confirm drizzle-kit prompts (`--strict` by default). Use `./sync.sh --force` only when you accept possible **data loss** on dev.
+2. From the dev checkout, run `./scripts/sync.sh`.
+3. Confirm drizzle-kit prompts (`--strict` by default). Use `./scripts/sync.sh --force` only when you accept possible **data loss** on dev.
 
-`sync.sh`: `deno check` → `drizzle-kit push` (no SQL files committed). Flags: `--verbose`, `--force`.
+`dev/scripts/sync.sh`: `deno check` → `drizzle-kit push` (no SQL files committed). Flags: `--verbose`, `--force`.
 
-Override connection for either script: `TURBOPANEL_DATABASE_URL=postgresql://… ./introspect.sh` or `./sync.sh`.
+Override connection for either script: `TURBOPANEL_DATABASE_URL=postgresql://… ./scripts/introspect.sh` or `./scripts/sync.sh` (from dev).
 
 ### Generate + apply migrations (Workers path)
 
@@ -57,12 +57,12 @@ Applied versions are tracked in **`public.migration`** (`drizzle.config.ts` sets
 - **Test connection** — `GET /api/developer/v1/database/status`
 - **Reset dev instance** — `POST /api/developer/v1/system/reset-dev` (superadmin session only): `DROP SCHEMA public CASCADE`, `drizzle-kit migrate`, restart instance. UI: Database section → **Reset Dev Instance**.
 - **Studio** — `POST /api/developer/v1/database/studio` starts `drizzle-kit studio` on **127.0.0.1:4983** (HTTP API). Open **`https://local.drizzle.studio?host=localhost&port=4983`** (hosted UI). Safari/Brave may block localhost — see [Drizzle docs](https://orm.drizzle.team/docs/drizzle-kit-studio#safari-and-brave-support).
-- Studio applies DDL **directly** to the DB — follow with `./introspect.sh` to pull into code.
+- Studio applies DDL **directly** to the DB — follow with `dev/scripts/introspect.sh` to pull into code.
 
 ## Current policy (what not to run)
 
-- Use `pnpm drizzle-kit generate --name …` + `pnpm migrate` for Workers-bound schema changes; `./sync.sh` (`push`) remains for Deno dev convenience only.
-- **No ad-hoc push** — use `./sync.sh` only (after editing `schema.ts`), not raw `drizzle-kit push` in one-off commands.
+- Use `pnpm drizzle-kit generate --name …` + `pnpm migrate` for Workers-bound schema changes; `dev/scripts/sync.sh` (`push`) remains for Deno dev convenience only.
+- **No ad-hoc push** — use `dev/scripts/sync.sh` only (after editing `schema.ts`), not raw `drizzle-kit push` in one-off commands.
 - **No production DDL** from agents without explicit approval.
 
 ### Agent policy: generate yes, apply/commit no
@@ -82,15 +82,15 @@ Pick a name that answers “what is this migration doing?” — table/column ad
 Do **not** run (or offer to run):
 
 - `pnpm migrate` / `drizzle-kit migrate`
-- `./sync.sh` / `drizzle-kit push`
-- `./introspect.sh` / `drizzle-kit introspect`
+- `dev/scripts/sync.sh` / `drizzle-kit push`
+- `dev/scripts/introspect.sh` / `drizzle-kit introspect`
 - `./scripts/bootstrap-dev-db.sh`
 - Raw DDL against Postgres (Studio, `psql`, etc.)
 - Bare `pnpm drizzle-kit generate` without `--name`
 
 After generating, tell the developer to **review** the new SQL under `migrations/`, then **apply locally** (`TURBOPANEL_DATABASE_URL=… pnpm migrate`) and **commit** when satisfied. Do **not** commit files under `migrations/` unless the developer explicitly asks.
 
-Destructive changes (drop column/table, type narrowing) can lose dev rows. `sync.sh` prompts via `--strict`; `--force` skips those guardrails.
+Destructive changes (drop column/table, type narrowing) can lose dev rows. `dev/scripts/sync.sh` prompts via `--strict`; `--force` skips those guardrails.
 
 ## Schema (ported from old trunk `apps/api`)
 
@@ -99,7 +99,7 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `sync
 | Group | Tables |
 |---|---|
 | **Identity** | `user`, `account`, `session`, `verification`, `passkey`, `2fa` |
-| **Organizations** | `organization`, `member`, `team`, `teammate`, `invitation` (no `organization_id`; `team_id NOT NULL`), `license` |
+| **Organizations** | `organization`, `member`, `team`, `teammate`, `invitation` (no `organization_id`; `team_id NOT NULL`), `license`, `tls` |
 | **Resource tree** | `workspace`, `project`, `environment`, `service`, `hosting`, `container`, `network`, `managed`, `variable` |
 | **Authorization** | `grant` |
 | **Config** | `setting` (`value` is `jsonb`) |
@@ -130,7 +130,8 @@ organization → server → variable (1:N, server-scoped; excluded from inherita
 | `project` | `workspace_id` | Docker Compose / catalog project. **`metadata`**: `type` (`"docker-compose"` \| `"managed"` \| `"template"`), `managed_id` (managed only). **`options.compose`**: base **ComposeDocument** (versioned JSON with presentation for YAML comments/order) — see `src/lib/compose/`. |
 | `environment` | `project_id` | Staging/production/etc. within a project. **`metadata`**: may include `serverId` after deploy. **`options.compose`**: per-environment ComposeDocument overlay merged onto the project base at deploy. |
 | `service` | `environment_id` | Deployable unit within an environment. **`metadata`**: e.g. `composeServiceName`. **`options`**: reserved (future per-service placement). |
-| `hosting` | `service_id NOT NULL` | Public routing for a service (Traefik + edge Caddy). **`options`**: `{ hostnames[], pathPrefix?, targetPort? }`. **`metadata`**: deploy status fields. Org derived via service chain. |
+| `hosting` | `service_id NOT NULL` | Public routing for a service (Traefik + edge Caddy). Optional **`tls_id`** → `tls.id` (`ON DELETE SET NULL`) pins an org certificate; null = auto-match by SAN at deploy. **`options`**: `{ hostnames[], pathPrefix?, targetPort? }`. **`metadata`**: deploy status fields. Org derived via service chain. |
+| `tls` | `organization_id NOT NULL` | Org TLS certificate library (`upload` / `lets_encrypt` / `self_signed`). **`certificate_pem`**: public chain (nullable while LE pending). **`private_key_pem`**: sealed `tpsecret` only — never returned on client GET. **`metadata`**: `{ dnsNames, hasWildcard, notBefore, notAfter, fingerprintSha256, subject, issuer, status, acme? }`. **`options`**: `{ prefer?, autoRenew?, requestedHostnames? }`. `ON DELETE CASCADE` from org; hosting pins clear on cert delete. |
 | `container` | `service_id NOT NULL` + `server_id NOT NULL` | Pins a deployed Docker container to a service and records which server hosts it. **`metadata`** holds the pinned container id + status (no dedicated columns). Both FKs `ON DELETE RESTRICT` (deleting a service or server with existing containers is blocked, mirroring `hosting`/`network`). |
 | `network` | `server_id NOT NULL` | Linked to a server; org derived via server. Cascade delete. |
 | `managed` | `project_id NOT NULL` (unique) | Linking table; project is source of truth for timestamps; `ON DELETE CASCADE`. **`metadata`**: kebab-case catalog `code`, etc. |
@@ -336,15 +337,15 @@ Server delete cascades to command rows (`ON DELETE CASCADE` on `server_id`).
 
 | File | Purpose |
 |---|---|
-| `schema.ts` | Drizzle table definitions — sync with dev DB via `./introspect.sh` or `./sync.sh` |
+| `schema.ts` | Drizzle table definitions — sync with dev DB via `dev/scripts/introspect.sh` or `dev/scripts/sync.sh` |
 | `../../db.ts` | Connection factories (`createDenoDb`, `createToolingDb`, `createWorkersDb`) |
 | `../../drizzle.config.mjs` | drizzle-kit config (`TURBOPANEL_DATABASE_URL`; introspect, push, generate, migrate, studio) |
 | `../../scripts/bootstrap-dev-db.sh` | Dev DB bootstrap: `pnpm migrate` |
-| `../../introspect.sh` | Pull DB → `schema.ts` |
-| `../../sync.sh` | Push `schema.ts` → DB (Deno dev only; no migration files) |
+| `~/dev/scripts/introspect.sh` | Pull DB → `schema.ts` (lives in dev repo) |
+| `~/dev/scripts/sync.sh` | Push `schema.ts` → DB (Deno dev only; no migration files) |
 | `../../scripts/db-connect.sh` | Resolves `TURBOPANEL_DATABASE_URL` from env or `turbopanel-instance` for drizzle-kit scripts |
 | `../../migrations/` | Versioned SQL migration files (committed); applied by `pnpm migrate`; tracked in `public.migration` |
-| `../../drizzle/` | Ephemeral introspect scratch dir — `introspect.sh` deletes after adopt; never committed |
+| `../../drizzle/` | Ephemeral introspect scratch dir — `dev/scripts/introspect.sh` deletes after adopt; never committed |
 
 ### Authz engine
 

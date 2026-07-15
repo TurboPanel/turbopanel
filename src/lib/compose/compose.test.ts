@@ -63,6 +63,49 @@ test('yaml round-trip keeps nested map comments before a service key', () => {
   assertEquals(roundTrip.trimStart().startsWith('services:'), true)
 })
 
+test('yaml round-trip keeps leading document comments separated by a blank line', () => {
+  const source = `# test
+
+services:
+  nginx:
+    image: nginx # herpin and derpin 2
+`
+  const doc = yamlToComposeDocument(source)
+  assertEquals(doc.presentation.documentCommentBefore?.includes('test'), true)
+  assertEquals(doc.presentation.comments.services?.keyBefore, undefined)
+
+  const roundTrip = composeDocumentToYaml(doc)
+  assertEquals(roundTrip.startsWith('# test\n'), true)
+  assertEquals(roundTrip.includes('# test\n\nservices:'), true)
+  assertEquals(roundTrip.includes('image: nginx # herpin and derpin 2'), true)
+})
+
+test('yaml round-trip keeps leading comments glued to the first key', () => {
+  const source = `# test
+services:
+  nginx:
+    image: nginx
+`
+  const doc = yamlToComposeDocument(source)
+  assertEquals(doc.presentation.documentCommentBefore, undefined)
+  assertEquals(doc.presentation.comments.services?.keyBefore?.includes('test'), true)
+
+  const roundTrip = composeDocumentToYaml(doc)
+  assertEquals(roundTrip.includes('# test'), true)
+  assertEquals(roundTrip.indexOf('# test') < roundTrip.indexOf('services:'), true)
+})
+
+test('yaml round-trip keeps trailing document comments', () => {
+  const source = `services:
+  nginx:
+    image: nginx
+# trailing
+`
+  const doc = yamlToComposeDocument(source)
+  assertEquals(doc.presentation.documentComment?.includes('trailing'), true)
+  assertEquals(composeDocumentToYaml(doc).includes('# trailing'), true)
+})
+
 test('yaml round-trip keeps trailing scalar comments', () => {
   const source = `services:
   nginx:

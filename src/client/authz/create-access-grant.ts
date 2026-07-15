@@ -13,6 +13,7 @@ import {
   server,
   service,
   team,
+  tls,
   user,
 } from '../../lib/db/schema.ts'
 import {
@@ -151,6 +152,14 @@ export async function verifyEntityExists(
         .select({ id: server.id })
         .from(server)
         .where(eq(server.id, entityId))
+        .limit(1)
+      return rows.length > 0
+    }
+    case 'tls': {
+      const rows = await db
+        .select({ id: tls.id })
+        .from(tls)
+        .where(eq(tls.id, entityId))
         .limit(1)
       return rows.length > 0
     }
@@ -306,6 +315,14 @@ export async function resolveEntityOrganizationId(
         .select({ organizationId: server.organizationId })
         .from(server)
         .where(eq(server.id, entityId))
+        .limit(1)
+      return rows[0]?.organizationId ?? null
+    }
+    case 'tls': {
+      const rows = await db
+        .select({ organizationId: tls.organizationId })
+        .from(tls)
+        .where(eq(tls.id, entityId))
         .limit(1)
       return rows[0]?.organizationId ?? null
     }
