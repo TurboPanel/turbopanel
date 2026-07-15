@@ -93,7 +93,7 @@ export class ClickHouseServerMetricsStore implements ServerMetricsStore {
   readonly #onFlushError: (error: unknown) => void;
   #schemaReady = false;
   #schemaPromise: Promise<void> | null = null;
-  #pendingRows: Array<Record<string, unknown>> = [];
+  readonly #pendingRows: Array<Record<string, unknown>> = [];
   #flushTimer: ReturnType<typeof setTimeout> | null = null;
   #flushPromise: Promise<void> | null = null;
 

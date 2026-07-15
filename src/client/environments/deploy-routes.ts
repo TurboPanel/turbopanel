@@ -103,9 +103,17 @@ function extractComposeFromOptions(options: unknown): unknown {
   return options.compose ?? null
 }
 
+function trimEdgeDashes(value: string): string {
+  let start = 0
+  let end = value.length
+  while (start < end && value[start] === '-') start++
+  while (end > start && value[end - 1] === '-') end--
+  return value.slice(start, end)
+}
+
 function projectComposeName(displayName: string | null, projectId: string): string {
   const raw = (displayName ?? projectId).toLowerCase().replaceAll(/[^a-z0-9]+/g, '-')
-  const trimmed = raw.replaceAll(/^-+|-+$/g, '').slice(0, 40)
+  const trimmed = trimEdgeDashes(raw).slice(0, 40)
   return trimmed.length > 0 ? trimmed : `project-${projectId.slice(0, 8)}`
 }
 

@@ -5,7 +5,7 @@ import { setting } from '../lib/db/schema.ts'
 const PUBLIC_URLS_SETTING_KEY = 'TURBOPANEL_PUBLIC_URLS'
 
 function trimTrailingSlash(url: string): string {
-  return url.replace(/\/$/, '')
+  return url.endsWith('/') ? url.slice(0, -1) : url
 }
 
 function stripIpv6Brackets(host: string): string {
@@ -18,10 +18,36 @@ function isValidPublicHost(hostname: string): boolean {
 }
 
 function hasNonOriginUrlParts(url: URL): boolean {
-  if (url.pathname !== '/' && url.pathname !== '') return true
-  if (url.search) return true
-  if (url.hash) return true
-  return false
+  return (url.pathname !== '/' && url.pathname !== '') || Boolean(url.search) || Boolean(url.hash)
+}
+
+/** True when the URL is an http(s) origin with a valid public host and no extras. */
+function isHttpOrHttpsOriginUrl(url: URL): boolean {
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+  if (!isValidPublicHost(url.hostname)) return false
+  if (url.username || url.password) return false
+  return !hasNonOriginUrlParts(url)
+}
+
+/** Bracket IPv6 literals when formatting host[:port]. */
+function formatHostForUrl(host: string, port?: string): string {
+  const hostPart = host.includes(':') ? `[${host}]` : host
+  return port ? `${hostPart}:${port}` : hostPart
+}
+
+/**
+ * Parse a bare host / host:port entry (no scheme) into a URL, or null if invalid.
+ */
+function tryParseBareHostEntry(trimmed: string): URL | null {
+  if (/[/?#@]/.test(trimmed)) return null
+  try {
+    const url = new URL(`https://${trimmed}`)
+    if (!isValidPublicHost(url.hostname)) return null
+    if (url.pathname !== '/' && url.pathname !== '') return null
+    return url
+  } catch {
+    return null
+  }
 }
 
 /** Parse one URL or bare host into a normalized hostname, or null to skip. */
@@ -53,23 +79,15 @@ export function publicUrlEntryToInstallOrigin(
   try {
     if (trimmed.includes('://')) {
       const url = new URL(trimmed)
-      if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
-      if (!isValidPublicHost(url.hostname)) return null
-      if (url.username || url.password) return null
-      if (hasNonOriginUrlParts(url)) return null
+      if (!isHttpOrHttpsOriginUrl(url)) return null
       return trimTrailingSlash(url.origin)
     }
 
-    if (/[/?#@]/.test(trimmed)) return null
+    const url = tryParseBareHostEntry(trimmed)
+    if (!url) return null
 
-    const url = new URL(`https://${trimmed}`)
-    if (!isValidPublicHost(url.hostname)) return null
-    if (url.pathname !== '/' && url.pathname !== '') return null
-
-    const host = url.hostname
     const port = url.port || defaultHttpsPort
-    const hostPart = host.includes(':') ? `[${host}]` : host
-    return `https://${hostPart}:${port}`
+    return `https://${formatHostForUrl(url.hostname, port)}`
   } catch {
     return null
   }
@@ -82,32 +100,18 @@ function parseAndNormalizePublicUrlEntry(entry: string): string | null {
   if (trimmed.includes('://')) {
     try {
       const url = new URL(trimmed)
-      if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
-      if (!isValidPublicHost(url.hostname)) return null
-      if (url.username || url.password) return null
-      if (hasNonOriginUrlParts(url)) return null
+      if (!isHttpOrHttpsOriginUrl(url)) return null
       return url.origin
     } catch {
       return null
     }
   }
 
-  if (/[/?#@]/.test(trimmed)) return null
+  const url = tryParseBareHostEntry(trimmed)
+  if (!url) return null
 
-  try {
-    const url = new URL(`https://${trimmed}`)
-    if (!isValidPublicHost(url.hostname)) return null
-    if (url.pathname !== '/' && url.pathname !== '') return null
-
-    const host = stripIpv6Brackets(url.hostname)
-    const port = url.port
-    if (port) {
-      return host.includes(':') ? `[${host}]:${port}` : `${host}:${port}`
-    }
-    return host
-  } catch {
-    return null
-  }
+  const host = stripIpv6Brackets(url.hostname)
+  return url.port ? formatHostForUrl(host, url.port) : host
 }
 
 export type ParsePublicUrlEntriesResult =

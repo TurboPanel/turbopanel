@@ -111,6 +111,52 @@ export function registerDaemonApiRoutes(
     return null;
   }
 
+  /** Auth-challenge path when the daemon already has serverId + keyId. */
+  async function issueServerKeyAuthChallenge(
+    c: Context,
+    serverIdRaw: string | undefined,
+    keyIdRaw: string | undefined,
+  ): Promise<Response> {
+    const serverId = serverIdRaw?.trim();
+    const keyId = keyIdRaw?.trim();
+    if (!serverId || !keyId) {
+      return c.json({ ok: false, error: "Missing serverId or keyId" }, 400);
+    }
+
+    const limited = await enforceDaemonRestLimit(
+      c,
+      daemonRestRateLimitKey(serverId, "auth-challenge"),
+    );
+    if (limited) return limited;
+
+    const db = getDb(c);
+    if (db === undefined) {
+      return c.json({ ok: false, error: "Database unavailable" }, 503);
+    }
+
+    const daemonState = await getServerDaemonStateByServerId(db, serverId);
+    if (!daemonState) {
+      return c.json({ ok: false, error: "Server key not found" }, 404);
+    }
+    if (daemonState.key.id !== keyId) {
+      return c.json({ ok: false, error: "Server key mismatch" }, 400);
+    }
+    if (!isDaemonKeyActive(daemonState.key)) {
+      return c.json({ ok: false, error: "Server key is inactive" }, 400);
+    }
+
+    if (!authStore) {
+      return c.json({ ok: false, error: "Challenge unavailable" }, 503);
+    }
+    const challenge = await authStore.issue({ serverId, keyId });
+    return c.json({
+      challengeId: challenge.id,
+      nonce: challenge.nonce,
+      at: challenge.at,
+      expiresAt: challengeExpiresAt(challenge.at, authStore.ttlMs),
+    }, 200);
+  }
+
   const requireDaemonJwt = async (c: Context, next: Next) => {
     if (!secrets) {
       return c.json({ ok: false, error: "unauthorized" }, 401);
@@ -203,44 +249,7 @@ export function registerDaemonApiRoutes(
       keyId?: string;
     }>().catch(() => ({}));
     if (body.keyId || body.serverId) {
-      const serverId = body.serverId?.trim();
-      const keyId = body.keyId?.trim();
-      if (!serverId || !keyId) {
-        return c.json({ ok: false, error: "Missing serverId or keyId" }, 400);
-      }
-
-      const limited = await enforceDaemonRestLimit(
-        c,
-        daemonRestRateLimitKey(serverId, "auth-challenge"),
-      );
-      if (limited) return limited;
-
-      const db = getDb(c);
-      if (db === undefined) {
-        return c.json({ ok: false, error: "Database unavailable" }, 503);
-      }
-
-      const daemonState = await getServerDaemonStateByServerId(db, serverId);
-      if (!daemonState) {
-        return c.json({ ok: false, error: "Server key not found" }, 404);
-      }
-      if (daemonState.key.id !== keyId) {
-        return c.json({ ok: false, error: "Server key mismatch" }, 400);
-      }
-      if (!isDaemonKeyActive(daemonState.key)) {
-        return c.json({ ok: false, error: "Server key is inactive" }, 400);
-      }
-
-      if (!authStore) {
-        return c.json({ ok: false, error: "Challenge unavailable" }, 503);
-      }
-      const challenge = await authStore.issue({ serverId, keyId });
-      return c.json({
-        challengeId: challenge.id,
-        nonce: challenge.nonce,
-        at: challenge.at,
-        expiresAt: challengeExpiresAt(challenge.at, authStore.ttlMs),
-      }, 200);
+      return issueServerKeyAuthChallenge(c, body.serverId, body.keyId);
     }
 
     const enrollChallengeLimited = await enforceDaemonRestLimit(

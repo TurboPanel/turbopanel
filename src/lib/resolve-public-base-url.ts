@@ -23,29 +23,26 @@ export function parseInstallBaseUrl(value: string | undefined): string | null {
   return publicUrlEntryToInstallOrigin(trimmed, readCaddyPort())
 }
 
+/** First non-empty entry → install origin, or null when missing/unusable. */
+function originFromFirstPublicUrlEntry(entries: readonly string[]): string | null {
+  const first = entries[0]?.trim()
+  if (!first) return null
+  return publicUrlEntryToInstallOrigin(first, readCaddyPort())
+}
+
 async function resolveStoredPublicUrlOrigin(c: Context): Promise<string | null> {
   const db = getDb(c)
   if (db) {
-    const urls = await getPublicUrls(db)
-    const first = urls[0]?.trim()
-    if (first) {
-      const parsed = publicUrlEntryToInstallOrigin(first, readCaddyPort())
-      if (parsed) return parsed
-    }
+    const parsed = originFromFirstPublicUrlEntry(await getPublicUrls(db))
+    if (parsed) return parsed
   }
 
-  if (typeof Deno !== 'undefined') {
-    const publicUrls = Deno.env.get('TURBOPANEL_PUBLIC_URLS')?.trim()
-    if (publicUrls) {
-      const first = publicUrls.split(',')[0]?.trim()
-      if (first) {
-        const parsed = publicUrlEntryToInstallOrigin(first, readCaddyPort())
-        if (parsed) return parsed
-      }
-    }
-  }
+  if (typeof Deno === 'undefined') return null
 
-  return null
+  const publicUrls = Deno.env.get('TURBOPANEL_PUBLIC_URLS')?.trim()
+  if (!publicUrls) return null
+
+  return originFromFirstPublicUrlEntry(publicUrls.split(','))
 }
 
 /**

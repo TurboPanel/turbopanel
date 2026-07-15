@@ -83,6 +83,22 @@ function createInitialCellDiagnostics(): CellDiagnostics {
   };
 }
 
+/** Coerce an unknown RPC body field to a string; non-strings become "". */
+function rpcString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+/** Serialize a trace detail value without Object's default `[object Object]`. */
+function serializeTraceValue(value: unknown): string {
+  if (
+    typeof value === "string" || typeof value === "number" ||
+    typeof value === "boolean" || typeof value === "bigint"
+  ) {
+    return `${value}`;
+  }
+  return JSON.stringify(value);
+}
+
 const TERMINAL_STATUSES = new Set<PendingRequestStatus>([
   "done",
   "failed",
@@ -487,10 +503,7 @@ export class DaemonCellObject {
     for (const key of Object.keys(detail).sort((a, b) => a.localeCompare(b))) {
       const value = detail[key];
       if (value === undefined || value === null) continue;
-      const serialized = typeof value === "object"
-        ? JSON.stringify(value)
-        : String(value);
-      parts.push(`${key}=${serialized}`);
+      parts.push(`${key}=${serializeTraceValue(value)}`);
     }
     const line = parts.join(" ");
     if (level === "info") {
@@ -1870,8 +1883,8 @@ export class DaemonCellObject {
       case "/rpc/mark-sent":
         await this.#markSent(
           this.#requireServerId(request, body),
-          String(body?.deliveryId ?? ""),
-          String(body?.connectionId ?? ""),
+          rpcString(body?.deliveryId),
+          rpcString(body?.connectionId),
           body?.sentAt as string | undefined,
         );
         return jsonResponse({ ok: true });
@@ -1889,7 +1902,7 @@ export class DaemonCellObject {
         return jsonResponse({
           record: await this.#getRequest(
             this.#resolveServerId(request),
-            String(url.searchParams.get("requestId") ?? body?.requestId ?? ""),
+            url.searchParams.get("requestId") ?? rpcString(body?.requestId),
           ),
         });
 
@@ -1907,7 +1920,7 @@ export class DaemonCellObject {
         return jsonResponse({
           record: await this.#waitForRequest(
             this.#requireServerId(request, body),
-            String(body?.requestId ?? ""),
+            rpcString(body?.requestId),
             Number(body?.timeoutMs ?? 0),
           ),
         });
@@ -1916,7 +1929,7 @@ export class DaemonCellObject {
         return jsonResponse({
           record: await this.#expireRequest(
             this.#requireServerId(request, body),
-            String(body?.requestId ?? ""),
+            rpcString(body?.requestId),
           ),
         });
 
@@ -1965,7 +1978,7 @@ export class DaemonCellObject {
         return jsonResponse({
           lease: await this.#claimDeliveryLease(
             this.#requireServerId(request, body),
-            String(body?.holder ?? ""),
+            rpcString(body?.holder),
             Number(body?.ttlMs ?? 0),
           ),
         });
@@ -1974,7 +1987,7 @@ export class DaemonCellObject {
         return jsonResponse({
           lease: await this.#renewDeliveryLease(
             this.#requireServerId(request, body),
-            String(body?.holder ?? ""),
+            rpcString(body?.holder),
             Number(body?.ttlMs ?? 0),
           ),
         });
@@ -1982,7 +1995,7 @@ export class DaemonCellObject {
       case "/rpc/lease/release":
         await this.#releaseDeliveryLease(
           this.#requireServerId(request, body),
-          String(body?.holder ?? ""),
+          rpcString(body?.holder),
         );
         return jsonResponse({ ok: true });
 

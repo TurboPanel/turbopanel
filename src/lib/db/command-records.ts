@@ -27,7 +27,7 @@ export type CommandRecord = {
   type: string
   status: CommandStatus
   payload: unknown
-  result: unknown | null
+  result: unknown
   error: string | null
   attempts: number
   createdAt: string

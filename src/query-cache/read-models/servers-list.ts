@@ -118,7 +118,7 @@ export async function cachedServersListReadModel(
 
   const { organizationId, visibleIds } = opts
   // Canonical order for both the cache key and the cached IN (...) query.
-  const sortedVisibleIds = [...visibleIds].sort()
+  const sortedVisibleIds = [...visibleIds].sort((a, b) => a.localeCompare(b))
   const visibleIdsKey = sortedVisibleIds.join(',')
   const registry = getDaemonCellRegistry(c)
   const cache = getQueryCache(c)

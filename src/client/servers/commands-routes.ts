@@ -48,7 +48,7 @@ function nonNegativeDiffMs(
 ): number | null {
   const ms = diffMs(start, end)
   if (ms === null) return null
-  return ms < 0 ? 0 : ms
+  return Math.max(0, ms)
 }
 
 function computePingLatency(record: CommandRecord): PingLatencyBreakdown {

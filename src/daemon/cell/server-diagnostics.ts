@@ -5,16 +5,12 @@
  * It must never be called from normal UI status views or on a timer.
  * Use the server status read model (server-status.ts) for all normal status reads.
  */
-/**
- * ADMIN / DEBUG ONLY — fetches a live DaemonCell snapshot.
- *
- * fetchDaemonServerCell hits the Durable Object or Redis cell directly.
- * It must never be called from normal UI status views or on a timer.
- * Use the server status read model (server-status.ts) for all normal status reads.
- */
 import type { Db } from '../../db.ts'
-import type { CellDiagnostics, DaemonCellRegistry } from './contracts.ts'
-import type { DaemonCellSnapshot } from './contracts.ts'
+import type {
+  CellDiagnostics,
+  DaemonCellRegistry,
+  DaemonCellSnapshot,
+} from './contracts.ts'
 
 export type FetchServerCellSuccess = {
   ok: true

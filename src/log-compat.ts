@@ -1,7 +1,7 @@
 const encoder = new TextEncoder()
 
 function splitMessageLines(message: string): string[] {
-  const normalized = message.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  const normalized = message.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
   const lines = normalized.split('\n')
   if (lines.length > 0 && lines.at(-1) === '') {
     lines.pop()

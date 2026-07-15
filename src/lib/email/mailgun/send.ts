@@ -48,11 +48,13 @@ export async function sendMailgunJob(
   const domain = config.domain.trim()
   const apiKey = config.apiKey.trim()
 
+  const basicAuth = btoa(`api:${apiKey}`)
+
   try {
     const res = await fetch(`${apiBase}/${encodeURIComponent(domain)}/messages`, {
       method: 'POST',
       headers: {
-        Authorization: `Basic ${btoa(`api:${apiKey}`)}`,
+        Authorization: `Basic ${basicAuth}`,
         'Content-Type': 'application/x-www-form-urlencoded',
       },
       body,

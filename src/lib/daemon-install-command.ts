@@ -3,10 +3,11 @@ export function encodeLicenseArg(
   licenseToken: string,
 ): string {
   const combined = `${licenseId}:${licenseToken}`
+  // `=` only appears as base64 padding, so stripping all equals is safe.
   return btoa(combined)
     .replaceAll('+', '-')
     .replaceAll('/', '_')
-    .replace(/=+$/, '')
+    .replaceAll('=', '')
 }
 
 export function buildLicenseInstallCommand(opts: {

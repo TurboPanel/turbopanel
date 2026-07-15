@@ -6,7 +6,10 @@ const HYPERDRIVE_CACHED_BINDING = '"binding": "HYPERDRIVE_CACHED"'
 export function stripJsoncLineComments(text: string): string {
   return text
     .split('\n')
-    .map((line) => line.replace(/\/\/.*$/, ''))
+    .map((line) => {
+      const commentAt = line.indexOf('//')
+      return commentAt < 0 ? line : line.slice(0, commentAt)
+    })
     .join('\n')
 }
 

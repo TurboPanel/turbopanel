@@ -67,7 +67,7 @@ export class ClickHouseHttpClient {
   readonly #schemaTimeoutMs: number;
 
   constructor(options: ClickHouseHttpClientOptions) {
-    this.#baseUrl = options.url.replace(/\/+$/, "");
+    this.#baseUrl = stripTrailingSlashes(options.url);
     this.#database = options.database;
     this.#user = options.user;
     this.#password = options.password;
@@ -196,6 +196,14 @@ export class ClickHouseHttpClient {
     if (kind === "schema") return this.#schemaTimeoutMs;
     return this.#queryTimeoutMs;
   }
+}
+
+function stripTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url.codePointAt(end - 1) === 0x2f) {
+    end -= 1;
+  }
+  return end === url.length ? url : url.slice(0, end);
 }
 
 function isAbortError(err: unknown): boolean {

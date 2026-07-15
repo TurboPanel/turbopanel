@@ -452,96 +452,48 @@ export function parseAeLatestAtMs(raw: unknown): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
-/**
- * Query AE for serverIds with a recent host sample. Returns a Map of
- * serverId → latest sample timestamp (epoch ms). Empty / unparseable rows
- * are skipped. Callers treat a thrown error as "AE unavailable".
- */
-export async function queryRecentlyActiveServerIds(
-  config: AnalyticsEngineSqlConfig,
-  opts: { sinceSeconds: number },
-): Promise<Map<string, number>> {
-  const sql = buildRecentlyActiveServerIdsSql({
-    sinceSeconds: opts.sinceSeconds,
-    dataset: config.dataset,
-  });
-  const result = await executeSql(config, sql);
-  const byId = new Map<string, number>();
-  for (const row of result.data) {
-    const id = String(row.server_id ?? "").trim();
-    if (id.length === 0) continue;
-    const latestAtMs = parseAeLatestAtMs(row.latest_at);
-    if (latestAtMs === null) continue;
-    byId.set(id, latestAtMs);
-  }
-  return byId;
+/** Accept only string serverIds from AE rows — never stringify objects. */
+function parseAeServerId(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const id = raw.trim();
+  return id.length > 0 ? id : null;
 }
 
-/**
- * Validate and unwrap a Cloudflare Analytics Engine SQL response.
- *
- * Preferred shape: client/v4 envelope `{ success, result: { data } }`.
- * Also accepts ClickHouse-style `{ data, meta?, rows? }` (what `FORMAT JSON`
- * returns) so we do not discard a successful result as opaque `success:false`.
- */
-export function parseCloudflareV4SqlResponse(
-  body: unknown,
-): AnalyticsEngineSqlResult {
-  if (body === null || typeof body !== "object" || Array.isArray(body)) {
-    throw new TypeError("AE SQL response is not a JSON object");
-  }
-  const envelope = body as CloudflareV4SqlEnvelope & {
-    data?: Array<Record<string, unknown>>;
-    meta?: Array<{ name: string; type: string }>;
-    rows?: number;
-  };
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
 
-  // ClickHouse FORMAT JSON / bare SQL result — no v4 `success` field.
-  if (
-    envelope.success === undefined &&
-    Array.isArray(envelope.data)
-  ) {
-    return {
-      meta: envelope.meta,
-      data: envelope.data,
-      rows: typeof envelope.rows === "number" ? envelope.rows : undefined,
-    };
-  }
+function formatCloudflareV4Error(err: CloudflareV4Error): string {
+  if (typeof err === "string") return err.trim();
+  const msg = err.message?.trim();
+  if (msg) return msg;
+  if (err.code != null) return `code=${err.code}`;
+  return "";
+}
 
-  if (envelope.success !== true) {
-    const messages = (envelope.errors ?? [])
-      .map((err) => {
-        if (typeof err === "string") return err.trim();
-        if (err && typeof err === "object") {
-          const msg = err.message?.trim();
-          if (msg) return msg;
-          const code = err.code;
-          if (code != null) return `code=${code}`;
-        }
-        return "";
-      })
-      .filter((msg): msg is string => Boolean(msg));
-    const resultError = envelope.result &&
-        typeof envelope.result === "object" &&
-        !Array.isArray(envelope.result) &&
-        typeof envelope.result.error === "string"
-      ? envelope.result.error.trim()
-      : "";
-    if (resultError) messages.push(resultError);
-    const detail = messages.length > 0
-      ? messages.join("; ")
-      : `opaque body keys=${
-        Object.keys(envelope).sort((a, b) => a.localeCompare(b)).join(",")
-      }`;
-    throw new Error(`AE SQL API error: ${detail}`);
-  }
+function collectAeSqlFailureDetail(
+  envelope: CloudflareV4SqlEnvelope & Record<string, unknown>,
+): string {
+  const messages = (envelope.errors ?? [])
+    .map(formatCloudflareV4Error)
+    .filter((msg) => msg.length > 0);
   const result = envelope.result;
-  if (result == null) {
-    return { data: [] };
+  if (
+    isPlainObject(result) &&
+    typeof result.error === "string" &&
+    result.error.trim()
+  ) {
+    messages.push(result.error.trim());
   }
-  if (typeof result !== "object" || Array.isArray(result)) {
-    throw new TypeError("AE SQL response result is not an object");
-  }
+  if (messages.length > 0) return messages.join("; ");
+  return `opaque body keys=${
+    Object.keys(envelope).sort((a, b) => a.localeCompare(b)).join(",")
+  }`;
+}
+
+function unwrapAeSqlSuccessResult(
+  result: NonNullable<CloudflareV4SqlEnvelope["result"]>,
+): AnalyticsEngineSqlResult {
   if (typeof result.error === "string" && result.error.length > 0) {
     throw new Error(`AE SQL query error: ${result.error}`);
   }
@@ -561,6 +513,72 @@ export function parseCloudflareV4SqlResponse(
     data,
     rows: typeof result.rows === "number" ? result.rows : undefined,
   };
+}
+
+/**
+ * Query AE for serverIds with a recent host sample. Returns a Map of
+ * serverId → latest sample timestamp (epoch ms). Empty / unparseable rows
+ * are skipped. Callers treat a thrown error as "AE unavailable".
+ */
+export async function queryRecentlyActiveServerIds(
+  config: AnalyticsEngineSqlConfig,
+  opts: { sinceSeconds: number },
+): Promise<Map<string, number>> {
+  const sql = buildRecentlyActiveServerIdsSql({
+    sinceSeconds: opts.sinceSeconds,
+    dataset: config.dataset,
+  });
+  const result = await executeSql(config, sql);
+  const byId = new Map<string, number>();
+  for (const row of result.data) {
+    const id = parseAeServerId(row.server_id);
+    if (id === null) continue;
+    const latestAtMs = parseAeLatestAtMs(row.latest_at);
+    if (latestAtMs === null) continue;
+    byId.set(id, latestAtMs);
+  }
+  return byId;
+}
+
+/**
+ * Validate and unwrap a Cloudflare Analytics Engine SQL response.
+ *
+ * Preferred shape: client/v4 envelope `{ success, result: { data } }`.
+ * Also accepts ClickHouse-style `{ data, meta?, rows? }` (what `FORMAT JSON`
+ * returns) so we do not discard a successful result as opaque `success:false`.
+ */
+export function parseCloudflareV4SqlResponse(
+  body: unknown,
+): AnalyticsEngineSqlResult {
+  if (!isPlainObject(body)) {
+    throw new TypeError("AE SQL response is not a JSON object");
+  }
+  const envelope = body as CloudflareV4SqlEnvelope & {
+    data?: Array<Record<string, unknown>>;
+    meta?: Array<{ name: string; type: string }>;
+    rows?: number;
+  };
+
+  // ClickHouse FORMAT JSON / bare SQL result — no v4 `success` field.
+  if (envelope.success === undefined && Array.isArray(envelope.data)) {
+    return {
+      meta: envelope.meta,
+      data: envelope.data,
+      rows: typeof envelope.rows === "number" ? envelope.rows : undefined,
+    };
+  }
+
+  if (envelope.success !== true) {
+    throw new Error(`AE SQL API error: ${collectAeSqlFailureDetail(envelope)}`);
+  }
+  const result = envelope.result;
+  if (result == null) {
+    return { data: [] };
+  }
+  if (!isPlainObject(result)) {
+    throw new TypeError("AE SQL response result is not an object");
+  }
+  return unwrapAeSqlSuccessResult(result);
 }
 
 async function executeSql(

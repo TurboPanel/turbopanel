@@ -4,8 +4,11 @@
  * Prints the config id on stdout. With --write-wrangler, patches wrangler.jsonc.
  *
  * Auth: CLOUDFLARE_API_TOKEN (preferred) or `wrangler login` OAuth.
+ *
+ * Subprocess args are typed-allowlisted and passed via execFileSync (no shell).
+ * Origin passwords never appear on argv — create requires the Cloudflare API.
  */
-import { spawnSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -13,57 +16,168 @@ import { fileURLToPath } from 'node:url'
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const repoRoot = join(scriptDir, '..')
 const wranglerJsoncPath = join(repoRoot, 'wrangler.jsonc')
-
-const ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID ?? 'a574c2793baa3e2276ac16e96097bc8c'
-const CONFIG_NAME = process.env.TURBOPANEL_TESTING_HYPERDRIVE_CACHED_NAME ?? 'testing-cached'
-const PRIMARY_ID = process.env.TURBOPANEL_TESTING_HYPERDRIVE_PRIMARY_ID ?? '83edd62a2d7e4e6ba8b5d77b01ca3729'
-const PLACEHOLDER_ID = '0000000000000000000000000000dev0'
+const vendoredNodeBin = '/opt/turbopanel/vendor/node/current/bin/node'
+const wranglerJsPath = join(repoRoot, 'node_modules', 'wrangler', 'bin', 'wrangler.js')
 
 const HYPERDRIVE_ID_RE = /^[0-9a-f]{32}$/
-/** Argv values passed to wrangler (no shell); reject null bytes and control chars. */
-const SAFE_ARGV_RE = /^[\u0020-\u007e]+$/
+const ACCOUNT_ID_RE = /^[0-9a-f]{32}$/
+/** Cloudflare Hyperdrive config display name (env override). */
+const CONFIG_NAME_RE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/
+/** Single DNS label (RFC-ish length; no leading/trailing hyphen). */
+const DNS_LABEL_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/
+/** Postgres role / database identifiers (no shell metacharacters). */
+const PG_IDENT_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,62}$/
 
-const writeWrangler = process.argv.includes('--write-wrangler')
+const PLACEHOLDER_ID = '0000000000000000000000000000dev0'
 
-function assertSafeArgv(value, label) {
-  if (typeof value !== 'string' || value.length === 0 || !SAFE_ARGV_RE.test(value)) {
-    throw new Error(`Invalid wrangler argument: ${label}`)
+function validatePattern(value, pattern, label) {
+  if (typeof value !== 'string' || value.length === 0 || !pattern.test(value)) {
+    throw new Error(`Invalid ${label}`)
   }
   return value
 }
 
-function assertHyperdriveId(id, label) {
-  if (typeof id !== 'string' || !HYPERDRIVE_ID_RE.test(id)) {
-    throw new Error(`Invalid Hyperdrive id: ${label}`)
-  }
-  return id
+function validateHyperdriveId(id, label) {
+  return validatePattern(id, HYPERDRIVE_ID_RE, `Hyperdrive id (${label})`)
 }
 
+function validateAccountId(id) {
+  return validatePattern(id, ACCOUNT_ID_RE, 'Cloudflare account id')
+}
+
+function validateConfigName(name) {
+  return validatePattern(name, CONFIG_NAME_RE, 'Hyperdrive config name')
+}
+
+/** Hostname or IPv4 literal from the primary Hyperdrive origin. */
+function isOriginHost(host) {
+  if (typeof host !== 'string' || host.length === 0 || host.length > 253) {
+    return false
+  }
+  const ipv4Parts = host.split('.')
+  if (ipv4Parts.length === 4 && ipv4Parts.every((part) => /^\d{1,3}$/.test(part))) {
+    return ipv4Parts.every((part) => {
+      const n = Number(part)
+      return n >= 0 && n <= 255
+    })
+  }
+  const labels = host.split('.')
+  if (labels.length === 1) {
+    return DNS_LABEL_RE.test(labels[0])
+  }
+  const tld = labels.at(-1)
+  if (!tld || tld.length < 2 || tld.length > 63 || !/^[A-Za-z]+$/.test(tld)) {
+    return false
+  }
+  return labels.slice(0, -1).every((label) => DNS_LABEL_RE.test(label))
+}
+
+function validateOriginHost(host) {
+  if (!isOriginHost(host)) {
+    throw new Error('Invalid origin host')
+  }
+  return host
+}
+
+function validateOriginPort(port) {
+  const raw = String(port)
+  if (!/^\d{1,5}$/.test(raw)) {
+    throw new Error('Invalid origin port')
+  }
+  const n = Number(raw)
+  if (n < 1 || n > 65535) {
+    throw new Error('Invalid origin port')
+  }
+  return raw
+}
+
+function validatePgIdent(value, label) {
+  return validatePattern(value, PG_IDENT_RE, label)
+}
+
+const ACCOUNT_ID = validateAccountId(
+  process.env.CLOUDFLARE_ACCOUNT_ID ?? 'a574c2793baa3e2276ac16e96097bc8c',
+)
+const CONFIG_NAME = validateConfigName(
+  process.env.TURBOPANEL_TESTING_HYPERDRIVE_CACHED_NAME ?? 'testing-cached',
+)
+const PRIMARY_ID = validateHyperdriveId(
+  process.env.TURBOPANEL_TESTING_HYPERDRIVE_PRIMARY_ID ?? '83edd62a2d7e4e6ba8b5d77b01ca3729',
+  'primary',
+)
+
+const writeWrangler = process.argv.includes('--write-wrangler')
+
 function resolveNodeBin() {
-  const vendored = '/opt/turbopanel/vendor/node/current/bin/node'
   try {
-    spawnSync(vendored, ['--version'], { stdio: 'ignore', shell: false })
-    return vendored
+    execFileSync(vendoredNodeBin, ['--version'], { stdio: 'ignore' })
+    return vendoredNodeBin
   } catch {
     return process.execPath
   }
 }
 
-function runWrangler(args) {
-  const nodeBin = resolveNodeBin()
-  const wranglerJs = join(repoRoot, 'node_modules', 'wrangler', 'bin', 'wrangler.js')
-  const argv = args.map((arg, index) => assertSafeArgv(arg, `argv[${index}]`))
-  const result = spawnSync(nodeBin, [wranglerJs, ...argv], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-    env: process.env,
-    shell: false,
-  })
-  if (result.status !== 0) {
-    // Do not echo argv/stderr — create may include --origin-password.
-    throw new Error(`wrangler failed with exit ${result.status ?? 'signal'}`)
+function wranglerHyperdriveList() {
+  try {
+    return execFileSync(resolveNodeBin(), [wranglerJsPath, 'hyperdrive', 'list'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: process.env,
+    }).trim()
+  } catch {
+    throw new Error('wrangler failed')
   }
-  return (result.stdout || '').trim()
+}
+
+function wranglerHyperdriveGet(id) {
+  const safeId = validateHyperdriveId(id, 'get')
+  try {
+    return execFileSync(resolveNodeBin(), [wranglerJsPath, 'hyperdrive', 'get', safeId], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: process.env,
+    }).trim()
+  } catch {
+    throw new Error('wrangler failed')
+  }
+}
+
+/**
+ * Create via wrangler without --origin-password (passwords stay off argv).
+ * Prefer createCachedConfig's Cloudflare API path when a password is required.
+ */
+function wranglerHyperdriveCreate(name, host, port, user, database) {
+  const safeName = validateConfigName(name)
+  const safeHost = validateOriginHost(host)
+  const safePort = validateOriginPort(port)
+  const safeUser = validatePgIdent(user, 'origin user')
+  const safeDatabase = validatePgIdent(database, 'database')
+  try {
+    return execFileSync(
+      resolveNodeBin(),
+      [
+        wranglerJsPath,
+        'hyperdrive',
+        'create',
+        safeName,
+        '--origin-host',
+        safeHost,
+        '--origin-port',
+        safePort,
+        '--origin-user',
+        safeUser,
+        '--database',
+        safeDatabase,
+      ],
+      {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        env: process.env,
+      },
+    ).trim()
+  } catch {
+    throw new Error('wrangler failed')
+  }
 }
 
 async function cfFetch(path, init = {}) {
@@ -104,17 +218,16 @@ async function listConfigs() {
   if (Array.isArray(apiResult)) {
     return apiResult.map((row) => ({ id: row.id, name: row.name }))
   }
-  const output = runWrangler(['hyperdrive', 'list'])
-  return parseWranglerListOutput(output)
+  return parseWranglerListOutput(wranglerHyperdriveList())
 }
 
 async function getConfig(id) {
-  assertHyperdriveId(id, 'get')
+  const safeId = validateHyperdriveId(id, 'get')
   const apiResult = await cfFetch(
-    `/accounts/${ACCOUNT_ID}/hyperdrive/configs/${id}`,
+    `/accounts/${ACCOUNT_ID}/hyperdrive/configs/${safeId}`,
   ).catch(() => null)
   if (apiResult) return apiResult
-  const output = runWrangler(['hyperdrive', 'get', id])
+  const output = wranglerHyperdriveGet(safeId)
   const match = /"id"\s*:\s*"([0-9a-f]{32})"/.exec(output)
   if (!match) {
     throw new Error('Could not parse hyperdrive get output')
@@ -130,21 +243,19 @@ async function createCachedConfig(primary) {
     )
   }
 
-  assertSafeArgv(CONFIG_NAME, 'config-name')
-  assertSafeArgv(origin.host, 'origin-host')
-  assertSafeArgv(String(origin.port ?? 5432), 'origin-port')
-  assertSafeArgv(origin.user, 'origin-user')
-  assertSafeArgv(origin.database, 'database')
-  if (origin.password) assertSafeArgv(origin.password, 'origin-password')
+  const host = validateOriginHost(origin.host)
+  const port = validateOriginPort(origin.port ?? 5432)
+  const user = validatePgIdent(origin.user, 'origin user')
+  const database = validatePgIdent(origin.database, 'database')
 
   const apiPayload = {
     name: CONFIG_NAME,
     origin: {
-      database: origin.database,
-      host: origin.host,
-      port: origin.port ?? 5432,
+      database,
+      host,
+      port: Number(port),
       scheme: origin.scheme ?? 'postgresql',
-      user: origin.user,
+      user,
       password: origin.password,
     },
     caching: { disabled: false },
@@ -154,25 +265,16 @@ async function createCachedConfig(primary) {
     `/accounts/${ACCOUNT_ID}/hyperdrive/configs`,
     { method: 'POST', body: JSON.stringify(apiPayload) },
   ).catch(() => null)
-  if (apiResult?.id) return assertHyperdriveId(apiResult.id, 'create-api')
+  if (apiResult?.id) return validateHyperdriveId(apiResult.id, 'create-api')
 
-  const args = [
-    'hyperdrive',
-    'create',
-    CONFIG_NAME,
-    '--origin-host',
-    origin.host,
-    '--origin-port',
-    String(origin.port ?? 5432),
-    '--origin-user',
-    origin.user,
-    '--database',
-    origin.database,
-  ]
+  // CLI fallback never receives --origin-password (argv injection + secret leak).
   if (origin.password) {
-    args.push('--origin-password', origin.password)
+    throw new Error(
+      `Set CLOUDFLARE_API_TOKEN to create ${CONFIG_NAME}; wrangler CLI fallback cannot pass origin passwords safely`,
+    )
   }
-  const output = runWrangler(args)
+
+  const output = wranglerHyperdriveCreate(CONFIG_NAME, host, port, user, database)
   const match = /"id"\s*:\s*"([0-9a-f]{32})"/.exec(output)
   if (!match) {
     throw new Error('Could not parse hyperdrive create output')
@@ -181,19 +283,40 @@ async function createCachedConfig(primary) {
 }
 
 function patchWranglerJsonc(id) {
-  assertHyperdriveId(id, 'patch')
+  const safeId = validateHyperdriveId(id, 'patch')
   const text = readFileSync(wranglerJsoncPath, 'utf8')
-  const testingBlock = /("testing"\s*:\s*\{[\s\S]*?"hyperdrive"\s*:\s*\[[\s\S]*?"binding"\s*:\s*"HYPERDRIVE_CACHED"\s*,\s*"id"\s*:\s*")[^"]+(")/.exec(text)
-  if (!testingBlock) {
-    throw new Error('Could not locate env.testing HYPERDRIVE_CACHED binding in wrangler.jsonc')
+  const missing = 'Could not locate env.testing HYPERDRIVE_CACHED binding in wrangler.jsonc'
+  const testingAt = text.indexOf('"testing"')
+  if (testingAt < 0) {
+    throw new Error(missing)
   }
-  const next = text.replace(testingBlock[0], `${testingBlock[1]}${id}${testingBlock[2]}`)
+  const marker = '"binding": "HYPERDRIVE_CACHED"'
+  const bindingAt = text.indexOf(marker, testingAt)
+  if (bindingAt < 0) {
+    throw new Error(missing)
+  }
+  // Stay inside env.testing — do not patch a later env (e.g. live).
+  const liveAt = text.indexOf('"live"', testingAt)
+  if (liveAt >= 0 && bindingAt > liveAt) {
+    throw new Error(missing)
+  }
+  const idKeyAt = text.indexOf('"id"', bindingAt)
+  if (idKeyAt < 0 || (liveAt >= 0 && idKeyAt > liveAt)) {
+    throw new Error(missing)
+  }
+  const colonAt = text.indexOf(':', idKeyAt)
+  const openQuote = colonAt < 0 ? -1 : text.indexOf('"', colonAt + 1)
+  const closeQuote = openQuote < 0 ? -1 : text.indexOf('"', openQuote + 1)
+  if (openQuote < 0 || closeQuote < 0) {
+    throw new Error(missing)
+  }
+  const next = `${text.slice(0, openQuote + 1)}${safeId}${text.slice(closeQuote)}`
   writeFileSync(wranglerJsoncPath, next)
 }
 
 /** Emit a validated Hyperdrive id on stdout (script contract — not diagnostic logging). */
 function emitConfigId(id) {
-  process.stdout.write(`${assertHyperdriveId(id, 'emit')}\n`)
+  process.stdout.write(`${validateHyperdriveId(id, 'emit')}\n`)
 }
 
 async function main() {

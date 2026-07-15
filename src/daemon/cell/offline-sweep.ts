@@ -83,16 +83,26 @@ export const SELF_HEAL_SWEEP_BUDGET = MAX_SWEEP_FANOUT - CONNECTED_SWEEP_BUDGET;
 /** Bound in-flight liveness RPCs per tick instead of bursting the whole batch at once. */
 const FANOUT_CONCURRENCY = 25;
 
+/** Format a trace field without relying on Object's default `[object Object]`. */
+function formatSweepTraceValue(value: unknown): string {
+  switch (typeof value) {
+    case "string":
+      return value;
+    case "number":
+    case "boolean":
+    case "bigint":
+      return String(value);
+    default:
+      return JSON.stringify(value);
+  }
+}
+
 function sweepTrace(event: string, detail: Record<string, unknown> = {}): void {
   const parts = [`offline-sweep event=${event}`];
   for (const key of Object.keys(detail).sort((a, b) => a.localeCompare(b))) {
     const value = detail[key];
     if (value === undefined || value === null) continue;
-    parts.push(
-      `${key}=${
-        typeof value === "object" ? JSON.stringify(value) : String(value)
-      }`,
-    );
+    parts.push(`${key}=${formatSweepTraceValue(value)}`);
   }
   console.info(parts.join(" "));
 }

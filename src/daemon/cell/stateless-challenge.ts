@@ -1,9 +1,5 @@
 import type { DerivedSecretsConfig } from "../../client/authn/secrets.ts";
-import {
-  DAEMON_CHALLENGE_TTL_MS,
-  DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-  type DaemonChallenge,
-} from "../authn/challenge.ts";
+import type { DaemonChallenge } from "../authn/challenge.ts";
 
 export {
   DAEMON_CHALLENGE_TTL_MS,
@@ -56,7 +52,7 @@ function base64urlDecode(input: string): Uint8Array {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.charCodeAt(i);
+    bytes[i] = binary.codePointAt(i) ?? 0;
   }
   return bytes;
 }
@@ -96,7 +92,7 @@ async function verifySignature(
 
 export async function issueChallenge(
   secrets: DerivedSecretsConfig,
-  params: { serverId?: string; keyId?: string } = {},
+  params: { serverId?: string; keyId?: string },
   ttlMs: number,
   nowMs = Date.now(),
 ): Promise<DaemonChallenge> {

@@ -24,50 +24,44 @@ function attachErrorLogging(redis: Redis, label: string): void {
   });
 }
 
+function parseStreamFields(fieldList: unknown): Record<string, string> {
+  const fields: Record<string, string> = {};
+  if (!Array.isArray(fieldList)) return fields;
+  for (let i = 0; i < fieldList.length; i += 2) {
+    fields[String(fieldList[i])] = String(fieldList[i + 1] ?? "");
+  }
+  return fields;
+}
+
+function parseStreamMessage(message: unknown): StreamEntry | null {
+  if (!Array.isArray(message) || message.length < 2) return null;
+  return { id: String(message[0]), fields: parseStreamFields(message[1]) };
+}
+
+function parseMessageList(messages: unknown): StreamEntry[] {
+  if (!Array.isArray(messages)) return [];
+  const entries: StreamEntry[] = [];
+  for (const message of messages) {
+    const entry = parseStreamMessage(message);
+    if (entry) entries.push(entry);
+  }
+  return entries;
+}
+
 function parseStreamEntries(raw: unknown): StreamEntry[] {
   if (!Array.isArray(raw) || raw.length === 0) return [];
 
   const entries: StreamEntry[] = [];
   for (const streamBlock of raw) {
     if (!Array.isArray(streamBlock) || streamBlock.length < 2) continue;
-    const messages = streamBlock[1];
-    if (!Array.isArray(messages)) continue;
-
-    for (const message of messages) {
-      if (!Array.isArray(message) || message.length < 2) continue;
-      const id = String(message[0]);
-      const fieldList = message[1];
-      const fields: Record<string, string> = {};
-      if (Array.isArray(fieldList)) {
-        for (let i = 0; i < fieldList.length; i += 2) {
-          fields[String(fieldList[i])] = String(fieldList[i + 1] ?? "");
-        }
-      }
-      entries.push({ id, fields });
-    }
+    entries.push(...parseMessageList(streamBlock[1]));
   }
   return entries;
 }
 
 function parseAutoClaimEntries(raw: unknown): StreamEntry[] {
   if (!Array.isArray(raw) || raw.length < 2) return [];
-  const messages = raw[1];
-  if (!Array.isArray(messages)) return [];
-
-  const entries: StreamEntry[] = [];
-  for (const message of messages) {
-    if (!Array.isArray(message) || message.length < 2) continue;
-    const id = String(message[0]);
-    const fieldList = message[1];
-    const fields: Record<string, string> = {};
-    if (Array.isArray(fieldList)) {
-      for (let i = 0; i < fieldList.length; i += 2) {
-        fields[String(fieldList[i])] = String(fieldList[i + 1] ?? "");
-      }
-    }
-    entries.push({ id, fields });
-  }
-  return entries;
+  return parseMessageList(raw[1]);
 }
 
 export class RedisCellClient {
@@ -267,21 +261,7 @@ export class RedisCellClient {
       ? await this.#cmd.xrange(key, start, end, "COUNT", count)
       : await this.#cmd.xrange(key, start, end);
 
-    if (!Array.isArray(raw)) return [];
-    const entries: StreamEntry[] = [];
-    for (const message of raw) {
-      if (!Array.isArray(message) || message.length < 2) continue;
-      const id = String(message[0]);
-      const fieldList = message[1];
-      const fields: Record<string, string> = {};
-      if (Array.isArray(fieldList)) {
-        for (let i = 0; i < fieldList.length; i += 2) {
-          fields[String(fieldList[i])] = String(fieldList[i + 1] ?? "");
-        }
-      }
-      entries.push({ id, fields });
-    }
-    return entries;
+    return parseMessageList(raw);
   }
 
   async xrevrange(
@@ -294,21 +274,7 @@ export class RedisCellClient {
       ? await this.#cmd.xrevrange(key, end, start, "COUNT", count)
       : await this.#cmd.xrevrange(key, end, start);
 
-    if (!Array.isArray(raw)) return [];
-    const entries: StreamEntry[] = [];
-    for (const message of raw) {
-      if (!Array.isArray(message) || message.length < 2) continue;
-      const id = String(message[0]);
-      const fieldList = message[1];
-      const fields: Record<string, string> = {};
-      if (Array.isArray(fieldList)) {
-        for (let i = 0; i < fieldList.length; i += 2) {
-          fields[String(fieldList[i])] = String(fieldList[i + 1] ?? "");
-        }
-      }
-      entries.push({ id, fields });
-    }
-    return entries;
+    return parseMessageList(raw);
   }
 
   async xlen(key: string): Promise<number> {

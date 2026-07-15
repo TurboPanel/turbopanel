@@ -29,7 +29,7 @@ async function verifyPamLogin(username: string, password: string): Promise<boole
     const result = await new Deno.Command('/bin/sh', {
       args: [
         '-c',
-        'printf \'%s\\n\' "$TP_PAM_PASSWORD" | sudo -n /usr/bin/pamtester login "$TP_PAM_USERNAME" authenticate',
+        String.raw`printf '%s\n' "$TP_PAM_PASSWORD" | sudo -n /usr/bin/pamtester login "$TP_PAM_USERNAME" authenticate`,
       ],
       env: {
         ...Deno.env.toObject(),
@@ -53,7 +53,7 @@ async function userHasInstallSudo(username: string): Promise<boolean> {
     const result = await new Deno.Command('/bin/sh', {
       args: [
         '-c',
-        'groups=$(id -nG "$TP_PAM_USERNAME" 2>/dev/null) || exit 1; for g in sudo wheel admin; do echo "$groups" | tr " " "\\n" | grep -qx "$g" && exit 0; done; exit 1',
+        String.raw`groups=$(id -nG "$TP_PAM_USERNAME" 2>/dev/null) || exit 1; for g in sudo wheel admin; do echo "$groups" | tr " " "\n" | grep -qx "$g" && exit 0; done; exit 1`,
       ],
       env: { ...Deno.env.toObject(), TP_PAM_USERNAME: username },
       stdout: 'null',

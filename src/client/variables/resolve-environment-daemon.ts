@@ -29,6 +29,11 @@ export type VariableParentRefs = {
   serverId?: string | null
 }
 
+type ChainMetadata = {
+  envMetadata: unknown
+  projectMetadata: unknown
+}
+
 function parseMetadataServerId(metadata: unknown): string | null {
   if (metadata === null || typeof metadata !== 'object' || Array.isArray(metadata)) {
     return null
@@ -96,6 +101,41 @@ async function resolveOrgColocatedFallback(
   return null
 }
 
+async function tryMetadataThenFallback(
+  db: Db,
+  organizationId: string,
+  metadata: unknown,
+  registry?: DaemonCellRegistry,
+): Promise<DaemonSecretRecipient | null> {
+  const serverId = parseMetadataServerId(metadata)
+  if (serverId) {
+    const recipient = await loadActiveRecipient(db, serverId, organizationId)
+    if (recipient) return recipient
+  }
+  return resolveOrgColocatedFallback(db, organizationId, registry)
+}
+
+async function tryEnvThenProjectThenFallback(
+  db: Db,
+  organizationId: string,
+  chain: ChainMetadata,
+  registry?: DaemonCellRegistry,
+): Promise<DaemonSecretRecipient | null> {
+  const envServerId = parseMetadataServerId(chain.envMetadata)
+  if (envServerId) {
+    const recipient = await loadActiveRecipient(db, envServerId, organizationId)
+    if (recipient) return recipient
+  }
+
+  const projectServerId = parseMetadataServerId(chain.projectMetadata)
+  if (projectServerId) {
+    const recipient = await loadActiveRecipient(db, projectServerId, organizationId)
+    if (recipient) return recipient
+  }
+
+  return resolveOrgColocatedFallback(db, organizationId, registry)
+}
+
 async function resolveFromEnvironmentChain(
   db: Db,
   environmentId: string,
@@ -117,22 +157,114 @@ async function resolveFromEnvironmentChain(
     .limit(1)
 
   const envRow = envRows[0]
-  if (!envRow) {
-    return null
-  }
+  if (!envRow) return null
 
-  const envServerId = parseMetadataServerId(envRow.envMetadata)
-  if (envServerId) {
-    const recipient = await loadActiveRecipient(db, envServerId, organizationId)
-    if (recipient) return recipient
-  }
+  return tryEnvThenProjectThenFallback(db, organizationId, envRow, registry)
+}
 
-  const projectServerId = parseMetadataServerId(envRow.projectMetadata)
-  if (projectServerId) {
-    const recipient = await loadActiveRecipient(db, projectServerId, organizationId)
-    if (recipient) return recipient
-  }
+async function resolveFromHostingId(
+  db: Db,
+  hostingId: string,
+  organizationId: string,
+  registry?: DaemonCellRegistry,
+): Promise<DaemonSecretRecipient | null> {
+  const hostingRows = await db
+    .select({
+      envMetadata: environment.metadata,
+      projectMetadata: project.metadata,
+    })
+    .from(hosting)
+    .innerJoin(service, eq(service.id, hosting.serviceId))
+    .innerJoin(environment, eq(environment.id, service.environmentId))
+    .innerJoin(project, eq(project.id, environment.projectId))
+    .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+    .where(and(
+      eq(hosting.id, hostingId),
+      eq(workspace.organizationId, organizationId),
+    ))
+    .limit(1)
 
+  const row = hostingRows[0]
+  if (!row) return null
+
+  return tryEnvThenProjectThenFallback(db, organizationId, row, registry)
+}
+
+async function resolveFromServiceId(
+  db: Db,
+  serviceId: string,
+  organizationId: string,
+  registry?: DaemonCellRegistry,
+): Promise<DaemonSecretRecipient | null> {
+  const serviceRows = await db
+    .select({
+      envMetadata: environment.metadata,
+      projectMetadata: project.metadata,
+    })
+    .from(service)
+    .innerJoin(environment, eq(environment.id, service.environmentId))
+    .innerJoin(project, eq(project.id, environment.projectId))
+    .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+    .where(and(
+      eq(service.id, serviceId),
+      eq(workspace.organizationId, organizationId),
+    ))
+    .limit(1)
+
+  const row = serviceRows[0]
+  if (!row) return null
+
+  return tryEnvThenProjectThenFallback(db, organizationId, row, registry)
+}
+
+async function resolveFromProjectId(
+  db: Db,
+  projectId: string,
+  organizationId: string,
+  registry?: DaemonCellRegistry,
+): Promise<DaemonSecretRecipient | null> {
+  const projectRows = await db
+    .select({ metadata: project.metadata })
+    .from(project)
+    .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+    .where(and(
+      eq(project.id, projectId),
+      eq(workspace.organizationId, organizationId),
+    ))
+    .limit(1)
+
+  const projectRow = projectRows[0]
+  if (!projectRow) return null
+
+  return tryMetadataThenFallback(db, organizationId, projectRow.metadata, registry)
+}
+
+async function resolveFromWorkspaceId(
+  db: Db,
+  workspaceId: string,
+  organizationId: string,
+  registry?: DaemonCellRegistry,
+): Promise<DaemonSecretRecipient | null> {
+  const workspaceRows = await db
+    .select({ id: workspace.id })
+    .from(workspace)
+    .where(and(
+      eq(workspace.id, workspaceId),
+      eq(workspace.organizationId, organizationId),
+    ))
+    .limit(1)
+
+  if (workspaceRows.length === 0) return null
+  return resolveOrgColocatedFallback(db, organizationId, registry)
+}
+
+async function resolveFromOrganizationId(
+  db: Db,
+  parentOrganizationId: string,
+  organizationId: string,
+  registry?: DaemonCellRegistry,
+): Promise<DaemonSecretRecipient | null> {
+  if (parentOrganizationId !== organizationId) return null
   return resolveOrgColocatedFallback(db, organizationId, registry)
 }
 
@@ -148,76 +280,12 @@ export async function resolveVariableDaemonRecipient(
   if (parent.serverId) {
     return loadActiveRecipient(db, parent.serverId, organizationId)
   }
-
   if (parent.hostingId) {
-    const hostingRows = await db
-      .select({
-        envMetadata: environment.metadata,
-        projectMetadata: project.metadata,
-      })
-      .from(hosting)
-      .innerJoin(service, eq(service.id, hosting.serviceId))
-      .innerJoin(environment, eq(environment.id, service.environmentId))
-      .innerJoin(project, eq(project.id, environment.projectId))
-      .innerJoin(workspace, eq(workspace.id, project.workspaceId))
-      .where(and(
-        eq(hosting.id, parent.hostingId),
-        eq(workspace.organizationId, organizationId),
-      ))
-      .limit(1)
-
-    const row = hostingRows[0]
-    if (!row) return null
-
-    const envServerId = parseMetadataServerId(row.envMetadata)
-    if (envServerId) {
-      const recipient = await loadActiveRecipient(db, envServerId, organizationId)
-      if (recipient) return recipient
-    }
-
-    const projectServerId = parseMetadataServerId(row.projectMetadata)
-    if (projectServerId) {
-      const recipient = await loadActiveRecipient(db, projectServerId, organizationId)
-      if (recipient) return recipient
-    }
-
-    return resolveOrgColocatedFallback(db, organizationId, registry)
+    return resolveFromHostingId(db, parent.hostingId, organizationId, registry)
   }
-
   if (parent.serviceId) {
-    const serviceRows = await db
-      .select({
-        envMetadata: environment.metadata,
-        projectMetadata: project.metadata,
-      })
-      .from(service)
-      .innerJoin(environment, eq(environment.id, service.environmentId))
-      .innerJoin(project, eq(project.id, environment.projectId))
-      .innerJoin(workspace, eq(workspace.id, project.workspaceId))
-      .where(and(
-        eq(service.id, parent.serviceId),
-        eq(workspace.organizationId, organizationId),
-      ))
-      .limit(1)
-
-    const row = serviceRows[0]
-    if (!row) return null
-
-    const envServerId = parseMetadataServerId(row.envMetadata)
-    if (envServerId) {
-      const recipient = await loadActiveRecipient(db, envServerId, organizationId)
-      if (recipient) return recipient
-    }
-
-    const projectServerId = parseMetadataServerId(row.projectMetadata)
-    if (projectServerId) {
-      const recipient = await loadActiveRecipient(db, projectServerId, organizationId)
-      if (recipient) return recipient
-    }
-
-    return resolveOrgColocatedFallback(db, organizationId, registry)
+    return resolveFromServiceId(db, parent.serviceId, organizationId, registry)
   }
-
   if (parent.environmentId) {
     return resolveFromEnvironmentChain(
       db,
@@ -226,49 +294,20 @@ export async function resolveVariableDaemonRecipient(
       registry,
     )
   }
-
   if (parent.projectId) {
-    const projectRows = await db
-      .select({ metadata: project.metadata })
-      .from(project)
-      .innerJoin(workspace, eq(workspace.id, project.workspaceId))
-      .where(and(
-        eq(project.id, parent.projectId),
-        eq(workspace.organizationId, organizationId),
-      ))
-      .limit(1)
-
-    const projectRow = projectRows[0]
-    if (!projectRow) return null
-
-    const projectServerId = parseMetadataServerId(projectRow.metadata)
-    if (projectServerId) {
-      const recipient = await loadActiveRecipient(db, projectServerId, organizationId)
-      if (recipient) return recipient
-    }
-
-    return resolveOrgColocatedFallback(db, organizationId, registry)
+    return resolveFromProjectId(db, parent.projectId, organizationId, registry)
   }
-
   if (parent.workspaceId) {
-    const workspaceRows = await db
-      .select({ id: workspace.id })
-      .from(workspace)
-      .where(and(
-        eq(workspace.id, parent.workspaceId),
-        eq(workspace.organizationId, organizationId),
-      ))
-      .limit(1)
-
-    if (workspaceRows.length === 0) return null
-    return resolveOrgColocatedFallback(db, organizationId, registry)
+    return resolveFromWorkspaceId(db, parent.workspaceId, organizationId, registry)
   }
-
   if (parent.organizationId) {
-    if (parent.organizationId !== organizationId) return null
-    return resolveOrgColocatedFallback(db, organizationId, registry)
+    return resolveFromOrganizationId(
+      db,
+      parent.organizationId,
+      organizationId,
+      registry,
+    )
   }
-
   return null
 }
 

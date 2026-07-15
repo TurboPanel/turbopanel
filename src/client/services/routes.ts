@@ -5,7 +5,7 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db.ts'
-import { environment, service } from '../../lib/db/schema.ts'
+import { service } from '../../lib/db/schema.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,

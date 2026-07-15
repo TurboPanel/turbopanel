@@ -33,6 +33,7 @@ load_runtime_dev_vars() {
     [[ -z "$line" ]] && continue
     case "$line" in
       *=*) export "$line" ;;
+      *) ;; # ignore lines without KEY=VALUE
     esac
   done < "$file"
 }
@@ -46,6 +47,7 @@ load_runtime_env() {
     [[ -z "$line" ]] && continue
     case "$line" in
       *=*) export "$line" ;;
+      *) ;; # ignore lines without KEY=VALUE
     esac
   done < "$file"
 }

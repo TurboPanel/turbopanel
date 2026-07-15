@@ -92,9 +92,15 @@ export function daemonCellLog(
   )
 }
 
+/** Serialize a trace detail value without Object's default `[object Object]`. */
 function serializeTraceValue(value: unknown): string {
-  if (typeof value === 'object') return JSON.stringify(value)
-  return String(value)
+  if (
+    typeof value === 'string' || typeof value === 'number' ||
+    typeof value === 'boolean' || typeof value === 'bigint'
+  ) {
+    return `${value}`
+  }
+  return JSON.stringify(value)
 }
 
 function formatTraceEvent(

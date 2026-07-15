@@ -25,7 +25,21 @@ import {
 } from '../../lib/settings/email-settings.ts'
 
 const ORG_NAME_RE = /^[A-Za-z0-9 ._-]+$/
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+/** Linear-time check matching `/^[^\s@]+@[^\s@]+\.[^\s@]+$/` without backtracking. */
+function isSimpleEmailShape(email: string): boolean {
+  const at = email.indexOf('@')
+  if (at <= 0 || email.includes('@', at + 1)) return false
+  const domain = email.slice(at + 1)
+  const dot = domain.indexOf('.')
+  if (dot <= 0 || dot === domain.length - 1) return false
+  for (const ch of email) {
+    if (ch === '@') continue
+    // `trim()` empty means whitespace — same intent as `[^\s@]` without a regex.
+    if (ch.trim() === '') return false
+  }
+  return true
+}
 
 export const DEFAULT_ORGANIZATION_NAME = 'Default Organization'
 export const DEFAULT_TEAM_NAME = 'Default Team'
@@ -116,7 +130,11 @@ export async function insertOwnerGrants(
 const DEFAULT_DAEMON_STATE_DIR = '/var/lib/turbopanel'
 
 function stripTrailingSlash(path: string): string {
-  return path.replace(/\/+$/, '')
+  let end = path.length
+  while (end > 0 && (path.codePointAt(end - 1) ?? 0) === 47) {
+    end--
+  }
+  return end === 0 ? '/' : path.slice(0, end)
 }
 
 /**
@@ -301,7 +319,7 @@ export function validateSuperadminEmail(email: string): string | null {
   if (trimmed.length < 3 || trimmed.length > 255) {
     return 'Email must be 3–255 characters'
   }
-  if (!EMAIL_RE.test(trimmed)) {
+  if (!isSimpleEmailShape(trimmed)) {
     return 'Enter a valid email address'
   }
   return null

@@ -8,12 +8,13 @@ import { fileURLToPath } from 'node:url'
 
 const getRandomValues = globalThis.crypto.getRandomValues.bind(globalThis.crypto)
 
-export const SECRET_ALPHABET =
+/** Allowed characters for generated secrets — not a credential. */
+export const ALPHABET =
   'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_'
 
 export const SECRET_LENGTH = 48
 
-const WITHOUT_UNDERSCORE = SECRET_ALPHABET.slice(0, -1)
+const WITHOUT_UNDERSCORE = ALPHABET.slice(0, -1)
 
 function rejectionLimit(alphabetLength) {
   return Math.floor(256 / alphabetLength) * alphabetLength
@@ -69,7 +70,7 @@ function ensureMiddleUnderscore(chars) {
 }
 
 export function generateSecret() {
-  const chars = randomChars(SECRET_ALPHABET, SECRET_LENGTH).split('')
+  const chars = randomChars(ALPHABET, SECRET_LENGTH).split('')
 
   if (chars[0] === '_') chars[0] = randomChar(WITHOUT_UNDERSCORE)
   if (chars[SECRET_LENGTH - 1] === '_') {

@@ -98,9 +98,12 @@ db_connect_verify_schema() {
   local schema_file="${2:-$ROOT/src/lib/db/schema.ts}"
   if [[ -x "$DENO" ]]; then
     "$DENO" check "$schema_file"
-  elif command -v deno >/dev/null 2>&1; then
-    deno check "$schema_file"
-  else
-    echo "$caller: deno not found — skipped typecheck (set TURBOPANEL_DENO)" >&2
+    return $?
   fi
+  if command -v deno >/dev/null 2>&1; then
+    deno check "$schema_file"
+    return $?
+  fi
+  echo "$caller: deno not found — skipped typecheck (set TURBOPANEL_DENO)" >&2
+  return 0
 }

@@ -3,7 +3,7 @@
     "connectionId": "turbopanel",
     "projectKey": "turbopanel_turbopanel"
   },
-  "sonarlint.analysisExcludesStandalone": "**/migrations/**",
+  "sonarlint.analysisExcludesStandalone": "**/migrations/**,**/migrations/*.sql",
   "sonarlint.rules": {
     "typescript:S2187": {
       "level": "off"

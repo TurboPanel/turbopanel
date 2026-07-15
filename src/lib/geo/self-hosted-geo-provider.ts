@@ -20,11 +20,8 @@ import type { ServerGeo } from './server-geo.ts'
  * Deno-only installs remains empty unless backfilled from a Workers connect.
  */
 export function resolveSelfHostedGeo(
-  remoteAddress: string | null | undefined,
+  _remoteAddress: string | null | undefined,
 ): ServerGeo | null {
-  if (remoteAddress == null || remoteAddress.trim().length === 0) {
-    return null
-  }
-
-  return null
+  // `_remoteAddress` retained for the MaxMind/mmdb extension point above.
+  return null // NOSONAR typescript:S3516 — intentional stub until GeoIP2 is wired
 }

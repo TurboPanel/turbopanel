@@ -39,7 +39,9 @@ function isTerminalRequestStatus(status: PendingRequestStatus): boolean {
 }
 
 function jitteredSleep(): Promise<void> {
-  const delay = POLL_BASE_MS + Math.floor(Math.random() * POLL_JITTER_MS);
+  // Timing jitter only (poll spacing); CSPRNG satisfies typescript:S2245.
+  const [byte] = crypto.getRandomValues(new Uint8Array(1));
+  const delay = POLL_BASE_MS + ((byte ?? 0) % POLL_JITTER_MS);
   return new Promise((resolve) => setTimeout(resolve, delay));
 }
 

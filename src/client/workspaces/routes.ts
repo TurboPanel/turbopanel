@@ -86,7 +86,7 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
       .limit(1)
 
     const row = rows[0]
-    if (!row || row.organizationId !== organizationId) {
+    if (row?.organizationId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 
@@ -152,7 +152,7 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
       .limit(1)
 
     const row = rows[0]
-    if (!row || row.organizationId !== organizationId) {
+    if (row?.organizationId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 
@@ -196,7 +196,7 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
       .limit(1)
 
     const row = rows[0]
-    if (!row || row.organizationId !== organizationId) {
+    if (row?.organizationId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 

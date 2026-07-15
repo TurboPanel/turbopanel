@@ -32,6 +32,11 @@ The **daemon is the constant** installed on every TurboPanel-managed host and is
 - Do not record secrets, tokens, or machine-specific credentials.
 - Remove or correct notes that prove wrong.
 
+### SonarQube (Automatic Analysis)
+
+- While SonarCloud **Automatic Analysis** is on, exclusions in `sonar-project.properties` are **ignored**. Put Automatic Analysis scope in **`.sonarcloud.properties`** (CI scanners still use `sonar-project.properties`).
+- Drizzle-generated SQL under **`migrations/`** must stay excluded (`**/migrations/**`) — never “fix” smells in those files.
+
 ### TypeScript style (SonarQube)
 
 - Prefer **`String#replaceAll()`** over **`String#replace()` with a global regex** when replacing every occurrence of a substring (`typescript:S7781`).

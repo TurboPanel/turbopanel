@@ -146,7 +146,10 @@ function extraDnsSans() {
 
   for (const args of [['-f'], ['-s']]) {
     try {
-      const name = execFileSync('hostname', args, { encoding: 'utf8' }).trim()
+      const name = execFileSync('/usr/bin/hostname', args, {
+        encoding: 'utf8',
+        env: { ...process.env, PATH: '/usr/bin:/bin' },
+      }).trim()
       if (isUsableDnsName(name, explicit)) sans.add(`DNS:${name}`)
     } catch {
       // hostname flags vary by platform
@@ -172,7 +175,7 @@ function subjectAltNames() {
     }
   }
 
-  return [...sans].map(normalizeSan).sort()
+  return [...sans].map(normalizeSan).sort((a, b) => a.localeCompare(b))
 }
 
 function serverCertMarkedAsCa() {
@@ -180,9 +183,9 @@ function serverCertMarkedAsCa() {
 
   try {
     const out = execFileSync(
-      'openssl',
+      '/usr/bin/openssl',
       ['x509', '-in', crtPath, '-noout', '-ext', 'basicConstraints'],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', env: { ...process.env, PATH: '/usr/bin:/bin' } },
     )
     return /CA:\s*TRUE/i.test(out)
   } catch {
@@ -195,9 +198,9 @@ function readCertSubjectAltNames() {
 
   try {
     const out = execFileSync(
-      'openssl',
+      '/usr/bin/openssl',
       ['x509', '-in', crtPath, '-noout', '-ext', 'subjectAltName'],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', env: { ...process.env, PATH: '/usr/bin:/bin' } },
     )
     const sans = new Set()
     for (const match of out.matchAll(/(?:DNS|IP Address):([^,\n]+)/g)) {
@@ -208,7 +211,7 @@ function readCertSubjectAltNames() {
         sans.add(normalizeSan(`IP:${value}`))
       }
     }
-    return [...sans].sort()
+    return [...sans].sort((a, b) => a.localeCompare(b))
   } catch {
     return []
   }
@@ -238,7 +241,7 @@ function ensureCa() {
 
   console.log('generate-self-signed-cert: creating platform CA')
   execFileSync(
-    'openssl',
+    '/usr/bin/openssl',
     [
       'req',
       '-x509',
@@ -251,7 +254,10 @@ function ensureCa() {
       '-addext', 'basicConstraints=critical,CA:TRUE,pathlen:0',
       '-addext', 'keyUsage=critical,keyCertSign,cRLSign',
     ],
-    { stdio: ['ignore', 'inherit', 'inherit'] },
+    {
+      stdio: ['ignore', 'inherit', 'inherit'],
+      env: { ...process.env, PATH: '/usr/bin:/bin' },
+    },
   )
   normalizeTlsKeyPermissions()
 }
@@ -265,7 +271,7 @@ function generateServerCert(expectedSans) {
   )
 
   execFileSync(
-    'openssl',
+    '/usr/bin/openssl',
     [
       'req',
       '-newkey', 'rsa:2048',
@@ -275,7 +281,10 @@ function generateServerCert(expectedSans) {
       '-subj', subject,
       '-addext', sans,
     ],
-    { stdio: ['ignore', 'inherit', 'inherit'] },
+    {
+      stdio: ['ignore', 'inherit', 'inherit'],
+      env: { ...process.env, PATH: '/usr/bin:/bin' },
+    },
   )
 
   writeFileSync(
@@ -307,7 +316,10 @@ function generateServerCert(expectedSans) {
     signArgs.push('-CAcreateserial')
   }
 
-  execFileSync('openssl', signArgs, { stdio: ['ignore', 'inherit', 'inherit'] })
+  execFileSync('/usr/bin/openssl', signArgs, {
+    stdio: ['ignore', 'inherit', 'inherit'],
+    env: { ...process.env, PATH: '/usr/bin:/bin' },
+  })
 
   removeTempServerFiles()
   normalizeTlsKeyPermissions()
@@ -333,11 +345,12 @@ if (
 mkdirSync(certsDir, { recursive: true })
 
 if (existsSync(crtPath) || existsSync(keyPath)) {
-  const reason = serverCertMarkedAsCa()
-    ? 'server certificate was marked as a CA'
-    : !caReady
-    ? 'local CA is missing'
-    : 'interface addresses or DNS names changed'
+  let reason = 'interface addresses or DNS names changed'
+  if (serverCertMarkedAsCa()) {
+    reason = 'server certificate was marked as a CA'
+  } else if (!caReady) {
+    reason = 'local CA is missing'
+  }
   console.log(`generate-self-signed-cert: ${reason}; regenerating server certificate`)
   removeServerLeafCert()
 }
@@ -347,6 +360,6 @@ try {
   generateServerCert(expectedSans)
 } catch (err) {
   console.error(`generate-self-signed-cert: failed to generate certificate: ${err.message}`)
-  console.error('generate-self-signed-cert: ensure openssl is installed and on PATH')
+  console.error('generate-self-signed-cert: ensure openssl is installed at /usr/bin/openssl')
   process.exit(1)
 }

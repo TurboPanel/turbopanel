@@ -162,8 +162,12 @@ function readSystemEmailObject(value: unknown): Record<string, string> {
   for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
     if (typeof raw === 'string') {
       out[key] = raw
+    } else if (
+      typeof raw === 'number' || typeof raw === 'boolean' || typeof raw === 'bigint'
+    ) {
+      out[key] = `${raw}`
     } else if (raw != null) {
-      out[key] = String(raw)
+      out[key] = JSON.stringify(raw)
     }
   }
   return out

@@ -11,8 +11,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * - Presentation: keep base for untouched top-level paths; overlay wins comments on overlay keys
  */
 export function mergeComposeOverlay(
-  base: ComposeDocument | unknown,
-  overlay: ComposeDocument | unknown | null | undefined,
+  base: unknown,
+  overlay?: unknown,
 ): ComposeDocument {
   const baseDoc = normalizeCompose(base)
   if (overlay == null) return baseDoc
@@ -46,8 +46,8 @@ export function mergeComposeOverlay(
     ...overlayDoc.presentation.comments,
   }
   const blankLines = {
-    ...(baseDoc.presentation.blankLines ?? {}),
-    ...(overlayDoc.presentation.blankLines ?? {}),
+    ...baseDoc.presentation.blankLines,
+    ...overlayDoc.presentation.blankLines,
   }
 
   return {
