@@ -5,7 +5,6 @@ import {
   DAEMON_CELL_PING,
   DAEMON_CELL_PONG,
   DAEMON_INBOUND_ALLOWED,
-  type DaemonMessage,
   outboundEnvelopeToWireMessage,
   parseDaemonMessage,
   wireMessageToInboundEnvelope,
@@ -30,12 +29,6 @@ import {
 import { resolveSelfHostedGeo } from "../lib/geo/self-hosted-geo-provider.ts";
 import { touchServerMetadata } from "../server-registry.ts";
 import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
-import type { ServerMetricsStore } from "./metrics/types.ts";
-import {
-  metricsPayloadByteLength,
-  rateLimitedMetricsLog,
-  validateHostMetricsSample,
-} from "./metrics/validation.ts";
 import { getServerDaemonStateByServerId } from "./authn/server-identity-db.ts";
 import type { RateLimiter } from "./rate-limit/contracts.ts";
 import { createInboundWindowGate } from "./rate-limit/inbound-window.ts";
@@ -194,46 +187,6 @@ async function handleDaemonCellPing(params: {
   }
 }
 
-/** Validate and fire-and-forget-persist a host metrics frame. */
-// Deprecated transition fallback: superseded by POST /api/daemon/v1/metrics;
-// removable once all daemons emit host metrics over HTTP.
-function handleMetricsMessage(params: {
-  message: DaemonMessage;
-  serverId: string;
-  raw: string;
-  metricsStore: ServerMetricsStore | undefined;
-}): void {
-  const { message, serverId, raw, metricsStore } = params;
-  const result = validateHostMetricsSample(message, {
-    serverId,
-    receivedAt: new Date().toISOString(),
-    payloadBytes: metricsPayloadByteLength(raw),
-  });
-  if (!result.ok) {
-    rateLimitedMetricsLog(serverId, result.reason, (reason) => {
-      compatLogWarn(
-        "metrics",
-        `ignored invalid metrics from ${serverId}: ${reason}`,
-      );
-    });
-    return;
-  }
-  const logWriteFailed = (err: unknown) => {
-    rateLimitedMetricsLog(serverId, "write_failed", () => {
-      compatLogWarn(
-        "metrics",
-        `metrics write failed for ${serverId}: ${String(err)}`,
-      );
-    });
-  };
-  try {
-    const writeResult = metricsStore?.writeHostSample(result.sample);
-    void Promise.resolve(writeResult).catch(logWriteFailed);
-  } catch (err) {
-    logWriteFailed(err);
-  }
-}
-
 export type DaemonWebSocketOptions = {
   developerSurface?: boolean;
   db?: Db;
@@ -241,7 +194,6 @@ export type DaemonWebSocketOptions = {
   /** Session keyring used to authorize the placeholder client/developer WS. */
   sessionSecrets?: DerivedSecretsConfig;
   daemonCellRegistry?: DaemonCellRegistry;
-  metricsStore?: ServerMetricsStore;
   connectLimiter?: RateLimiter;
   inboundMessageLimit?: number;
   inboundMessageWindowMs?: number;
@@ -348,16 +300,6 @@ export function registerDaemonWebSocket(
               connectionId ?? "unknown"
             }`,
           );
-          return;
-        }
-
-        if (message.type === "metrics") {
-          handleMetricsMessage({
-            message,
-            serverId: payload.sub,
-            raw,
-            metricsStore: options.metricsStore,
-          });
           return;
         }
 

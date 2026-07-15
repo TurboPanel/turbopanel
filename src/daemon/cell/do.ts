@@ -48,18 +48,6 @@ import {
   parseDaemonMessage,
   wireMessageToInboundEnvelope,
 } from "./protocol.ts";
-import {
-  type AnalyticsEngineDatasetLike,
-  resolveAnalyticsEngineSqlConfig,
-  resolveServerMetricsStore,
-  type ResolveServerMetricsStoreInput,
-} from "../metrics/store-selection.ts";
-import type { ServerMetricsStore } from "../metrics/types.ts";
-import {
-  metricsPayloadByteLength,
-  rateLimitedMetricsLog,
-  validateHostMetricsSample,
-} from "../metrics/validation.ts";
 
 function createInitialCellDiagnostics(): CellDiagnostics {
   return {
@@ -127,19 +115,6 @@ export function setDaemonCellProjectionDbFactoryForTests(
   factory: ProjectionDbFactory | null,
 ): void {
   projectionDbFactoryForTests = factory;
-}
-
-type MetricsStoreFactory = (
-  input: ResolveServerMetricsStoreInput,
-) => ServerMetricsStore;
-
-let metricsStoreFactory: MetricsStoreFactory = resolveServerMetricsStore;
-
-/** Test-only seam: override host metrics store resolution inside the DO. */
-export function setServerMetricsStoreFactoryForTests(
-  factory: MetricsStoreFactory | null,
-): void {
-  metricsStoreFactory = factory ?? resolveServerMetricsStore;
 }
 
 function nowIso(now = Date.now()): string {
@@ -314,7 +289,6 @@ export class DaemonCellObject {
   >();
   readonly #inboundLimit: number;
   readonly #inboundWindowMs: number;
-  #metricsStore: ServerMetricsStore | null = null;
   readonly #sql: (
     callSite: string,
     query: string,
@@ -355,8 +329,8 @@ export class DaemonCellObject {
    * Sync constructor bootstrap — restore hibernation WebSocket attachments only.
    *
    * Deliberately skips `#ensureSchema()` so a cold wake that only handles
-   * metrics (or liveness/diagnostics) never pays SQLite schema reads/writes.
-   * Callers that touch cell SQLite (`fetch` upgrade/storage RPCs, non-metrics
+   * liveness/diagnostics never pays SQLite schema reads/writes.
+   * Callers that touch cell SQLite (`fetch` upgrade/storage RPCs,
    * `webSocketMessage`, close/error cleanup, `alarm`) invoke `#ensureSchema()`
    * lazily before those paths.
    *
@@ -1493,7 +1467,6 @@ export class DaemonCellObject {
       return;
     }
 
-    const payloadBytes = metricsPayloadByteLength(message);
     const raw = typeof message === "string"
       ? message
       : new TextDecoder().decode(message);
@@ -1506,59 +1479,6 @@ export class DaemonCellObject {
       conn: attachment.connectionId,
       type: parsed.type,
     });
-
-    // Metrics must return before any SQLite/schema/alarm path so a
-    // hibernation cold-wake that only delivers host samples stays free of
-    // DO storage and alarm churn.
-    // Deprecated transition fallback: superseded by POST /api/daemon/v1/metrics;
-    // removable once all daemons emit host metrics over HTTP.
-    if (parsed.type === "metrics") {
-      const result = validateHostMetricsSample(parsed, {
-        serverId: attachment.serverId,
-        receivedAt: nowIso(),
-        payloadBytes,
-      });
-      if (!result.ok) {
-        rateLimitedMetricsLog(
-          attachment.serverId,
-          result.reason,
-          (reason) => {
-            this.#trace("metrics-invalid", {
-              serverId: attachment.serverId,
-              reason,
-            });
-            console.warn(
-              `metrics ignored invalid sample from ${attachment.serverId}: ${reason}`,
-            );
-          },
-        );
-        return;
-      }
-      const logWriteFailed = (err: unknown) => {
-        rateLimitedMetricsLog(
-          attachment.serverId,
-          "write_failed",
-          () => {
-            this.#trace("metrics-write-failed", {
-              serverId: attachment.serverId,
-              error: String(err),
-            });
-            console.warn(
-              `metrics write failed for ${attachment.serverId}: ${String(err)}`,
-            );
-          },
-        );
-      };
-      try {
-        const writeResult = this.#getMetricsStore().writeHostSample(
-          result.sample,
-        );
-        void Promise.resolve(writeResult).catch(logWriteFailed);
-      } catch (err) {
-        logWriteFailed(err);
-      }
-      return;
-    }
 
     this.#ensureSchema();
 
@@ -1575,19 +1495,6 @@ export class DaemonCellObject {
     );
     await this.#handleInboundMessage(attachment.serverId, parsed);
     await this.#scheduleNearestAlarm();
-  }
-
-  #getMetricsStore(): ServerMetricsStore {
-    if (!this.#metricsStore) {
-      this.#metricsStore = metricsStoreFactory({
-        runtime: "workers",
-        analyticsEngine:
-          (this.#env as { SERVER_METRICS?: AnalyticsEngineDatasetLike })
-            .SERVER_METRICS,
-        analyticsEngineSql: resolveAnalyticsEngineSqlConfig(this.#env),
-      });
-    }
-    return this.#metricsStore;
   }
 
   /**

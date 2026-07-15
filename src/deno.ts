@@ -222,7 +222,6 @@ registerDaemonWebSocket(routes, {
   secrets: daemonJwtKeyring,
   sessionSecrets,
   daemonCellRegistry,
-  metricsStore: serverMetricsStore,
   connectLimiter: daemonConnectLimiter,
   inboundMessageLimit: inboundLimits.limit,
   inboundMessageWindowMs: inboundLimits.windowMs,

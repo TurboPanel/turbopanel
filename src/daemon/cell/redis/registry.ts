@@ -1,6 +1,5 @@
 import type { Db } from "../../db.ts";
 import type {
-  ClearUpdateStatusOptions,
   DaemonCell,
   DaemonCellRegistry,
   DaemonCellSnapshot,

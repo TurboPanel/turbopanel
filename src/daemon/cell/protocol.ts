@@ -1,10 +1,5 @@
 import type { ServerAddresses } from "../../server-addresses.ts";
 import type { ServerOsMetadata } from "../../lib/db/server-metadata.ts";
-import type {
-  HostMetricsDimensions,
-  HostMetrics,
-} from "../metrics/contract.ts";
-
 
 export type DaemonAgentInfo = {
   commit: string;
@@ -133,17 +128,7 @@ export type DaemonMessage =
     at: string;
     daemonReceivedAt?: string;
     daemonRespondedAt?: string;
-  }
-  | {
-    type: "metrics";
-    version: 1;
-    at: string;
-    intervalSeconds: number;
-    sequence: number;
-    metrics: HostMetrics;
-    dimensions: HostMetricsDimensions;
   };
-
 
 /** Read-time stale window when no inbound traffic is recorded on the cell. */
 export const DAEMON_STALE_MS = 60_000;
@@ -164,7 +149,6 @@ export const DAEMON_INBOUND_ALLOWED = new Set(
     "update-result",
     "command-ack",
     "command-outcome",
-    "metrics",
   ] as const,
 );
 
@@ -286,7 +270,6 @@ export function wireMessageToInboundEnvelope(
   switch (msg.type) {
     case "hello":
     case "heartbeat":
-    case "metrics":
       return null;
 
     case "addresses-result":

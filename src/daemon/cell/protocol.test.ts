@@ -9,10 +9,6 @@ import {
   parseDaemonMessage,
   wireMessageToInboundEnvelope,
 } from "./protocol.ts";
-import {
-  buildHostMetricsSample,
-  METRICS_SCHEMA_VERSION,
-} from "../metrics/contract.ts";
 
 
 const UUID_RE =
@@ -210,25 +206,11 @@ it("wireMessageToInboundEnvelope returns null for non-inbound types", () => {
   );
 });
 
-it("metrics message is accepted without a cell envelope", () => {
-  const msg: DaemonMessage = buildHostMetricsSample({
-    at: "2020-01-01T00:00:00.000Z",
-    intervalSeconds: 60,
-    sequence: 1,
-    metrics: { cpuUsagePercent: 10 },
-    dimensions: {
-      schemaVersion: METRICS_SCHEMA_VERSION,
-      daemonVersion: "test",
-      operatingSystem: "linux",
-      architecture: "aarch64",
-      kernelRelease: "6.12.0",
-    },
-  });
-
-  const parsed = parseDaemonMessage(JSON.stringify(msg));
-  assertEquals(parsed, msg);
-  assert(DAEMON_INBOUND_ALLOWED.has("metrics"));
-  assertEquals(wireMessageToInboundEnvelope(msg), null);
+it("metrics messages are not accepted on the daemon WebSocket", () => {
+  assertEquals(
+    (DAEMON_INBOUND_ALLOWED as ReadonlySet<string>).has("metrics"),
+    false,
+  );
 });
 
 

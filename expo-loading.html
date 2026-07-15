@@ -4,7 +4,6 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TurboPanel — starting…</title>
-  <meta http-equiv="refresh" content="2">
   <style>
     * { box-sizing: border-box; }
     html, body {
@@ -50,5 +49,11 @@
     <div class="spinner" aria-hidden="true"></div>
     <p>Starting Expo dev server…</p>
   </div>
+  <script>
+    // Poll until Expo is up; Caddy serves this page on 502/503 from the Expo upstream.
+    setTimeout(() => {
+      location.reload()
+    }, 2000)
+  </script>
 </body>
 </html>

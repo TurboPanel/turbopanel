@@ -3,10 +3,11 @@
  * Ensure env.testing has a dedicated cached Hyperdrive config (testing-cached).
  * Prints the config id on stdout. With --write-wrangler, patches wrangler.jsonc.
  *
- * Auth: CLOUDFLARE_API_TOKEN (preferred) or `wrangler login` OAuth.
+ * Auth: CLOUDFLARE_API_TOKEN required to *create* a missing config; list/get may
+ * use the token or `wrangler login` OAuth.
  *
- * Subprocess args are typed-allowlisted and passed via execFileSync (no shell).
- * Origin passwords never appear on argv — create requires the Cloudflare API.
+ * Subprocess args for list/get are typed-allowlisted and passed via execFileSync
+ * (no shell). Hyperdrive create is Cloudflare API only — never origin fields on argv.
  */
 import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -142,44 +143,6 @@ function wranglerHyperdriveGet(id) {
   }
 }
 
-/**
- * Create via wrangler without --origin-password (passwords stay off argv).
- * Prefer createCachedConfig's Cloudflare API path when a password is required.
- */
-function wranglerHyperdriveCreate(name, host, port, user, database) {
-  const safeName = validateConfigName(name)
-  const safeHost = validateOriginHost(host)
-  const safePort = validateOriginPort(port)
-  const safeUser = validatePgIdent(user, 'origin user')
-  const safeDatabase = validatePgIdent(database, 'database')
-  try {
-    return execFileSync(
-      resolveNodeBin(),
-      [
-        wranglerJsPath,
-        'hyperdrive',
-        'create',
-        safeName,
-        '--origin-host',
-        safeHost,
-        '--origin-port',
-        safePort,
-        '--origin-user',
-        safeUser,
-        '--database',
-        safeDatabase,
-      ],
-      {
-        cwd: repoRoot,
-        encoding: 'utf8',
-        env: process.env,
-      },
-    ).trim()
-  } catch {
-    throw new Error('wrangler failed')
-  }
-}
-
 async function cfFetch(path, init = {}) {
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim()
   if (!token) return null
@@ -261,25 +224,21 @@ async function createCachedConfig(primary) {
     caching: { disabled: false },
   }
 
+  // Create only via Cloudflare API — never pass origin host/user/database on
+  // wrangler argv (jssecurity:S6350 argument injection; passwords off argv too).
+  if (!process.env.CLOUDFLARE_API_TOKEN?.trim()) {
+    throw new Error(
+      `Set CLOUDFLARE_API_TOKEN to create ${CONFIG_NAME}; create is API-only`,
+    )
+  }
   const apiResult = await cfFetch(
     `/accounts/${ACCOUNT_ID}/hyperdrive/configs`,
     { method: 'POST', body: JSON.stringify(apiPayload) },
-  ).catch(() => null)
-  if (apiResult?.id) return validateHyperdriveId(apiResult.id, 'create-api')
-
-  // CLI fallback never receives --origin-password (argv injection + secret leak).
-  if (origin.password) {
-    throw new Error(
-      `Set CLOUDFLARE_API_TOKEN to create ${CONFIG_NAME}; wrangler CLI fallback cannot pass origin passwords safely`,
-    )
+  )
+  if (!apiResult?.id) {
+    throw new Error(`Cloudflare API did not return an id for ${CONFIG_NAME}`)
   }
-
-  const output = wranglerHyperdriveCreate(CONFIG_NAME, host, port, user, database)
-  const match = /"id"\s*:\s*"([0-9a-f]{32})"/.exec(output)
-  if (!match) {
-    throw new Error('Could not parse hyperdrive create output')
-  }
-  return match[1]
+  return validateHyperdriveId(apiResult.id, 'create-api')
 }
 
 function patchWranglerJsonc(id) {
