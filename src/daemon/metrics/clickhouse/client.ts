@@ -10,6 +10,14 @@
  * interpolated into SQL — only newline-delimited JSON bodies.
  */
 
+/** Short deadline for fire-and-forget inserts (stall should not hang the process). */
+export const CLICKHOUSE_INSERT_TIMEOUT_MS = 5_000;
+
+/** Bounded deadline for chart/summary queries and schema DDL. */
+export const CLICKHOUSE_QUERY_TIMEOUT_MS = 30_000;
+
+export const CLICKHOUSE_SCHEMA_TIMEOUT_MS = 30_000;
+
 export type ClickHouseHttpClientOptions = {
   url: string;
   database: string;
@@ -17,7 +25,12 @@ export type ClickHouseHttpClientOptions = {
   password: string;
   /** Injected for tests. */
   fetch?: typeof fetch;
+  insertTimeoutMs?: number;
+  queryTimeoutMs?: number;
+  schemaTimeoutMs?: number;
 };
+
+export type ClickHouseRequestKind = "insert" | "query" | "schema";
 
 export class ClickHouseHttpError extends Error {
   readonly status: number;
@@ -31,12 +44,27 @@ export class ClickHouseHttpError extends Error {
   }
 }
 
+export class ClickHouseHttpTimeoutError extends Error {
+  readonly timeoutMs: number;
+  readonly kind: ClickHouseRequestKind;
+
+  constructor(kind: ClickHouseRequestKind, timeoutMs: number) {
+    super(`ClickHouse ${kind} exceeded ${timeoutMs}ms timeout`);
+    this.name = "ClickHouseHttpTimeoutError";
+    this.kind = kind;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
 export class ClickHouseHttpClient {
   readonly #baseUrl: string;
   readonly #database: string;
   readonly #user: string;
   readonly #password: string;
   readonly #fetch: typeof fetch;
+  readonly #insertTimeoutMs: number;
+  readonly #queryTimeoutMs: number;
+  readonly #schemaTimeoutMs: number;
 
   constructor(options: ClickHouseHttpClientOptions) {
     this.#baseUrl = options.url.replace(/\/+$/, "");
@@ -44,11 +72,21 @@ export class ClickHouseHttpClient {
     this.#user = options.user;
     this.#password = options.password;
     this.#fetch = options.fetch ?? fetch;
+    this.#insertTimeoutMs = options.insertTimeoutMs ??
+      CLICKHOUSE_INSERT_TIMEOUT_MS;
+    this.#queryTimeoutMs = options.queryTimeoutMs ??
+      CLICKHOUSE_QUERY_TIMEOUT_MS;
+    this.#schemaTimeoutMs = options.schemaTimeoutMs ??
+      CLICKHOUSE_SCHEMA_TIMEOUT_MS;
   }
 
   /** DDL / statements with no result set. */
   async exec(sql: string): Promise<void> {
-    const response = await this.#request({ query: sql, method: "POST" });
+    const response = await this.#request({
+      query: sql,
+      method: "POST",
+      kind: "schema",
+    });
     if (!response.ok) {
       throw new ClickHouseHttpError(response.status, await response.text());
     }
@@ -75,6 +113,7 @@ export class ClickHouseHttpClient {
       method: "POST",
       body,
       headers: { "Content-Type": "application/json" },
+      kind: "insert",
     });
     if (!response.ok) {
       throw new ClickHouseHttpError(response.status, await response.text());
@@ -96,6 +135,7 @@ export class ClickHouseHttpClient {
       query,
       method: "POST",
       params,
+      kind: "query",
     });
     if (!response.ok) {
       throw new ClickHouseHttpError(response.status, await response.text());
@@ -117,6 +157,7 @@ export class ClickHouseHttpClient {
     body?: string;
     headers?: Record<string, string>;
     params?: Record<string, string | number | boolean>;
+    kind: ClickHouseRequestKind;
   }): Promise<Response> {
     const url = new URL(this.#baseUrl);
     url.searchParams.set("database", this.#database);
@@ -126,16 +167,41 @@ export class ClickHouseHttpClient {
         url.searchParams.set(`param_${key}`, String(value));
       }
     }
-    return await this.#fetch(url.toString(), {
-      method: input.method,
-      headers: {
-        "X-ClickHouse-User": this.#user,
-        "X-ClickHouse-Key": this.#password,
-        ...input.headers,
-      },
-      body: input.body,
-    });
+    const timeoutMs = this.#timeoutFor(input.kind);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await this.#fetch(url.toString(), {
+        method: input.method,
+        headers: {
+          "X-ClickHouse-User": this.#user,
+          "X-ClickHouse-Key": this.#password,
+          ...input.headers,
+        },
+        body: input.body,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (isAbortError(err)) {
+        throw new ClickHouseHttpTimeoutError(input.kind, timeoutMs);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
   }
+
+  #timeoutFor(kind: ClickHouseRequestKind): number {
+    if (kind === "insert") return this.#insertTimeoutMs;
+    if (kind === "schema") return this.#schemaTimeoutMs;
+    return this.#queryTimeoutMs;
+  }
+}
+
+function isAbortError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === "AbortError") return true;
+  return err.message.toLowerCase().includes("abort");
 }
 
 function assertSafeIdentifier(value: string, label: string): void {

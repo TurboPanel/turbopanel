@@ -28,6 +28,13 @@ export const HOST_METRICS_TABLE = AE_DATASET_NAME;
 /** Default raw-table TTL days (override via buildSchemaStatements config). */
 export const DEFAULT_RAW_RETENTION_DAYS = 90;
 
+/**
+ * Keep tiny wide-row inserts in Compact parts until a meaningful threshold.
+ * Defaults keep small ~1/min batches Compact (Wide uses one file per column).
+ */
+export const MIN_BYTES_FOR_WIDE_PART = 10_485_760; // 10 MiB
+export const MIN_ROWS_FOR_WIDE_PART = 10_000;
+
 export type SchemaRetentionConfig = {
   retentionDays: number;
 };
@@ -69,7 +76,16 @@ function buildMetricsTableDdl(retentionDays: number): string {
     `PARTITION BY toYYYYMM(${AE_TIMESTAMP_COLUMN})`,
     `ORDER BY (${AE_INDEX_SERVER_ID_COLUMN}, ${AE_TIMESTAMP_COLUMN})`,
     `TTL ${AE_TIMESTAMP_COLUMN} + INTERVAL ${retentionDays} DAY DELETE`,
+    `SETTINGS min_bytes_for_wide_part = ${MIN_BYTES_FOR_WIDE_PART}, min_rows_for_wide_part = ${MIN_ROWS_FOR_WIDE_PART}`,
   ].join("\n");
+}
+
+/** Idempotent ALTER for existing tables (CREATE IF NOT EXISTS does not update). */
+function buildMetricsTableAlterStatements(retentionDays: number): string[] {
+  return [
+    `ALTER TABLE ${HOST_METRICS_TABLE} MODIFY SETTING min_bytes_for_wide_part = ${MIN_BYTES_FOR_WIDE_PART}, min_rows_for_wide_part = ${MIN_ROWS_FOR_WIDE_PART}`,
+    `ALTER TABLE ${HOST_METRICS_TABLE} MODIFY TTL ${AE_TIMESTAMP_COLUMN} + INTERVAL ${retentionDays} DAY DELETE`,
+  ];
 }
 
 /** Ordered idempotent DDL for the shared AE-named metrics table. */
@@ -80,7 +96,10 @@ export function buildSchemaStatements(
     "retentionDays",
     config.retentionDays,
   );
-  return [buildMetricsTableDdl(retentionDays)];
+  return [
+    buildMetricsTableDdl(retentionDays),
+    ...buildMetricsTableAlterStatements(retentionDays),
+  ];
 }
 
 function assertPositiveDays(label: string, value: number): number {

@@ -3,12 +3,16 @@ import { METRICS_SCHEMA_VERSION } from "../contract.ts";
 import { HOST_METRIC_KEYS } from "../contract.ts";
 import { AE_DATASET_NAME } from "../analytics-engine/field-map.ts";
 import type { AuthenticatedHostMetricsSample } from "../types.ts";
-import { ClickHouseHttpClient } from "./client.ts";
+import {
+  ClickHouseHttpClient,
+  ClickHouseHttpTimeoutError,
+} from "./client.ts";
 import { it } from "@std/testing/bdd";
 import { HOST_METRICS_TABLE } from "./schema.ts";
 import {
   buildHostMetricsRow,
   ClickHouseServerMetricsStore,
+  type ClickHouseStoreOptions,
 } from "./store.ts";
 
 function sample(
@@ -49,6 +53,10 @@ class FakeClickHouseHttpClient {
     params?: Record<string, string | number | boolean>,
   ) => Promise<Record<string, unknown>[]> = () => Promise.resolve([]);
   failQuery = false;
+  insertImpl: (
+    table: string,
+    rows: ReadonlyArray<Record<string, unknown>>,
+  ) => Promise<void> = () => Promise.resolve();
 
   exec(sql: string): Promise<void> {
     this.execCalls.push(sql);
@@ -60,7 +68,7 @@ class FakeClickHouseHttpClient {
     rows: ReadonlyArray<Record<string, unknown>>,
   ): Promise<void> {
     this.insertCalls.push({ table, rows });
-    return Promise.resolve();
+    return this.insertImpl(table, rows);
   }
 
   query<T extends Record<string, unknown>>(
@@ -75,7 +83,10 @@ class FakeClickHouseHttpClient {
   }
 }
 
-function storeWithFake(fake: FakeClickHouseHttpClient): ClickHouseServerMetricsStore {
+function storeWithFake(
+  fake: FakeClickHouseHttpClient,
+  options?: Omit<ClickHouseStoreOptions, "client">,
+): ClickHouseServerMetricsStore {
   return new ClickHouseServerMetricsStore(
     {
       url: "http://127.0.0.1:8123",
@@ -84,7 +95,7 @@ function storeWithFake(fake: FakeClickHouseHttpClient): ClickHouseServerMetricsS
       password: "secret",
       retentionDays: 90,
     },
-    { client: fake as unknown as ClickHouseHttpClient },
+    { client: fake as unknown as ClickHouseHttpClient, ...options },
   );
 }
 
@@ -101,32 +112,120 @@ it("buildHostMetricsRow uses positional AE column names", () => {
   assertEquals(row.server_id, undefined);
 });
 
-it("writeHostSample inserts one JSONEachRow into the shared metrics table", async () => {
+it("writeHostSample enqueues a single row without immediate insert", async () => {
   const fake = new FakeClickHouseHttpClient();
-  const store = storeWithFake(fake);
+  const store = storeWithFake(fake, { writeBatchMaxRows: 10 });
   await store.writeHostSample(sample());
+  assertEquals(fake.insertCalls.length, 0);
+  await store.flushWrites();
   assertEquals(fake.insertCalls.length, 1);
   assertEquals(fake.insertCalls[0]!.table, HOST_METRICS_TABLE);
   assertEquals(fake.insertCalls[0]!.rows.length, 1);
   assertEquals(fake.insertCalls[0]!.rows[0]!.double1, 12.5);
 });
 
-it("ensureSchema runs idempotent CREATE only (no destructive DDL)", async () => {
+it("writeHostSample flushes a multi-row batch when max rows is reached", async () => {
   const fake = new FakeClickHouseHttpClient();
-  const store = storeWithFake(fake);
+  const store = storeWithFake(fake, { writeBatchMaxRows: 3 });
+  await store.writeHostSample(sample({ sequence: 1 }));
+  await store.writeHostSample(sample({ sequence: 2 }));
+  assertEquals(fake.insertCalls.length, 0);
+  await store.writeHostSample(sample({ sequence: 3 }));
+  assertEquals(fake.insertCalls.length, 1);
+  assertEquals(fake.insertCalls[0]!.rows.length, 3);
+});
+
+it("writeHostSample age flush inserts pending rows", async () => {
+  const fake = new FakeClickHouseHttpClient();
+  const timers: Array<{ cb: () => void }> = [];
+  const store = storeWithFake(fake, {
+    writeBatchMaxRows: 10,
+    writeBatchMaxAgeMs: 1_000,
+    setTimeoutFn: ((cb: () => void) => {
+      timers.push({ cb });
+      return 1 as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout,
+    clearTimeoutFn: (() => {}) as typeof clearTimeout,
+  });
   await store.writeHostSample(sample());
-  assertEquals(fake.execCalls.length, 1);
+  assertEquals(fake.insertCalls.length, 0);
+  assertEquals(timers.length, 1);
+  timers[0]!.cb();
+  await Promise.resolve();
+  await Promise.resolve();
+  assertEquals(fake.insertCalls.length, 1);
+  assertEquals(fake.insertCalls[0]!.rows.length, 1);
+});
+
+it("queryHostSeries force-flushes pending writes before querying", async () => {
+  const fake = new FakeClickHouseHttpClient();
+  fake.queryImpl = () => Promise.resolve([]);
+  const store = storeWithFake(fake, { writeBatchMaxRows: 10 });
+  await store.writeHostSample(sample());
+  assertEquals(fake.insertCalls.length, 0);
+  await store.queryHostSeries({
+    serverId: "11111111-1111-4111-8111-111111111111",
+    metrics: ["cpuUsagePercent"],
+    from: "2026-01-01T00:00:00.000Z",
+    to: "2026-01-01T00:30:00.000Z",
+  });
+  assertEquals(fake.insertCalls.length, 1);
+  assertEquals(fake.queryCalls.length >= 1, true);
+});
+
+it("flush errors are logged and swallowed on background flush", async () => {
+  const fake = new FakeClickHouseHttpClient();
+  fake.insertImpl = () => Promise.reject(new Error("insert failed"));
+  const errors: unknown[] = [];
+  const timers: Array<{ cb: () => void }> = [];
+  const store = storeWithFake(fake, {
+    writeBatchMaxRows: 10,
+    writeBatchMaxAgeMs: 1_000,
+    onFlushError: (err) => errors.push(err),
+    setTimeoutFn: ((cb: () => void) => {
+      timers.push({ cb });
+      return 1 as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout,
+    clearTimeoutFn: (() => {}) as typeof clearTimeout,
+  });
+  await store.writeHostSample(sample());
+  timers[0]!.cb();
+  await Promise.resolve();
+  await Promise.resolve();
+  assertEquals(errors.length, 1);
+  assertEquals((errors[0] as Error).message, "insert failed");
+});
+
+it("ensureSchema runs CREATE plus idempotent ALTERs (no destructive DDL)", async () => {
+  const fake = new FakeClickHouseHttpClient();
+  const store = storeWithFake(fake, { writeBatchMaxRows: 1 });
+  await store.writeHostSample(sample());
+  assertEquals(fake.execCalls.length, 3);
   assertEquals(fake.execCalls[0]!.includes("CREATE TABLE IF NOT EXISTS"), true);
-  assertEquals(fake.execCalls[0]!.includes("DROP "), false);
+  assertEquals(fake.execCalls[1]!.includes("MODIFY SETTING"), true);
+  assertEquals(fake.execCalls[2]!.includes("MODIFY TTL"), true);
+  assertEquals(fake.execCalls.every((sql) => !sql.includes("DROP ")), true);
+});
+
+it("ensureSchema applies retention TTL alter for existing tables", async () => {
+  const fake = new FakeClickHouseHttpClient();
+  const store = storeWithFake(fake, { writeBatchMaxRows: 1 });
+  await store.ensureSchema();
+  assertEquals(
+    fake.execCalls.some((sql) =>
+      sql.includes("MODIFY TTL timestamp + INTERVAL 90 DAY DELETE")
+    ),
+    true,
+  );
 });
 
 it("ensureSchema runs at most once across multiple writes", async () => {
   const fake = new FakeClickHouseHttpClient();
-  const store = storeWithFake(fake);
+  const store = storeWithFake(fake, { writeBatchMaxRows: 1 });
   await store.writeHostSample(sample({ sequence: 1 }));
   await store.writeHostSample(sample({ sequence: 2 }));
   await store.writeHostSample(sample({ sequence: 3 }));
-  assertEquals(fake.execCalls.length, 1);
+  assertEquals(fake.execCalls.length, 3);
   assertEquals(fake.insertCalls.length, 3);
 });
 
@@ -265,9 +364,26 @@ it("queryHostSeries surfaces ClickHouse failures (not empty soft result)", async
   );
 });
 
+it("queryHostSeries surfaces ClickHouseHttpTimeoutError for route mapping", async () => {
+  const fake = new FakeClickHouseHttpClient();
+  fake.queryImpl = () =>
+    Promise.reject(new ClickHouseHttpTimeoutError("query", 30_000));
+  const store = storeWithFake(fake);
+  await assertRejects(
+    () =>
+      store.queryHostSeries({
+        serverId: "11111111-1111-4111-8111-111111111111",
+        metrics: ["cpuUsagePercent"],
+        from: "2026-01-01T00:00:00.000Z",
+        to: "2026-01-01T00:30:00.000Z",
+      }),
+    ClickHouseHttpTimeoutError,
+  );
+});
+
 it("writeHostSample preserves AE missing-metric sentinel for null metrics", async () => {
   const fake = new FakeClickHouseHttpClient();
-  const store = storeWithFake(fake);
+  const store = storeWithFake(fake, { writeBatchMaxRows: 1 });
   const metrics = {} as AuthenticatedHostMetricsSample["metrics"];
   for (const key of HOST_METRIC_KEYS) {
     metrics[key] = null;

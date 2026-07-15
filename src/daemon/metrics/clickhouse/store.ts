@@ -8,6 +8,9 @@
  * a clear "ClickHouse unavailable" response. Write failures still surface via
  * rejected promises; `deno-ws.ts` treats `writeHostSample` as fire-and-forget
  * (awaits-and-catches / does not await into the WS handler).
+ *
+ * Writes are batched in-process (row count + age) so ~1 sample/min traffic
+ * lands as fewer MergeTree parts. Server async_insert is secondary only.
  */
 
 import { HOST_METRIC_KEYS } from "../contract.ts";
@@ -45,12 +48,21 @@ import {
   HOST_METRICS_TABLE,
 } from "./schema.ts";
 
+/** Flush when this many pending rows accumulate (small co-located fleet). */
+export const CLICKHOUSE_WRITE_BATCH_MAX_ROWS = 10;
+
+/**
+ * Max age before an incomplete batch flushes. Intentionally longer than the
+ * ~60 s sample cadence so several one-row samples coalesce into one insert.
+ */
+export const CLICKHOUSE_WRITE_BATCH_MAX_AGE_MS = 5 * 60_000;
+
 export type ClickHouseStoreConfig = {
   url: string;
   database: string;
   user: string;
   password: string;
-  /** Raw-table TTL days (default 90). */
+  /** Raw-table TTL days (default 90). Applied on create and via MODIFY TTL. */
   retentionDays?: number;
 };
 
@@ -59,19 +71,44 @@ export type ClickHouseStoreOptions = {
   client?: ClickHouseHttpClient;
   /** Injected fetch for the default client. */
   fetch?: typeof fetch;
+  /** Override insert batch size (default {@link CLICKHOUSE_WRITE_BATCH_MAX_ROWS}). */
+  writeBatchMaxRows?: number;
+  /** Override insert batch age (default {@link CLICKHOUSE_WRITE_BATCH_MAX_AGE_MS}). */
+  writeBatchMaxAgeMs?: number;
+  setTimeoutFn?: typeof setTimeout;
+  clearTimeoutFn?: typeof clearTimeout;
+  onFlushError?: (error: unknown) => void;
+  insertTimeoutMs?: number;
+  queryTimeoutMs?: number;
+  schemaTimeoutMs?: number;
 };
 
 export class ClickHouseServerMetricsStore implements ServerMetricsStore {
   readonly #client: ClickHouseHttpClient;
   readonly #retentionDays: number;
+  readonly #batchMaxRows: number;
+  readonly #batchMaxAgeMs: number;
+  readonly #setTimeout: typeof setTimeout;
+  readonly #clearTimeout: typeof clearTimeout;
+  readonly #onFlushError: (error: unknown) => void;
   #schemaReady = false;
   #schemaPromise: Promise<void> | null = null;
+  #pendingRows: Array<Record<string, unknown>> = [];
+  #flushTimer: ReturnType<typeof setTimeout> | null = null;
+  #flushPromise: Promise<void> | null = null;
 
   constructor(
     config: ClickHouseStoreConfig,
     options?: ClickHouseStoreOptions,
   ) {
     this.#retentionDays = config.retentionDays ?? DEFAULT_RAW_RETENTION_DAYS;
+    this.#batchMaxRows = options?.writeBatchMaxRows ??
+      CLICKHOUSE_WRITE_BATCH_MAX_ROWS;
+    this.#batchMaxAgeMs = options?.writeBatchMaxAgeMs ??
+      CLICKHOUSE_WRITE_BATCH_MAX_AGE_MS;
+    this.#setTimeout = options?.setTimeoutFn ?? setTimeout;
+    this.#clearTimeout = options?.clearTimeoutFn ?? clearTimeout;
+    this.#onFlushError = options?.onFlushError ?? defaultFlushErrorLog;
     if (options?.client) {
       this.#client = options.client;
     } else {
@@ -84,13 +121,23 @@ export class ClickHouseServerMetricsStore implements ServerMetricsStore {
       if (options?.fetch) {
         clientOpts.fetch = options.fetch;
       }
+      if (options?.insertTimeoutMs !== undefined) {
+        clientOpts.insertTimeoutMs = options.insertTimeoutMs;
+      }
+      if (options?.queryTimeoutMs !== undefined) {
+        clientOpts.queryTimeoutMs = options.queryTimeoutMs;
+      }
+      if (options?.schemaTimeoutMs !== undefined) {
+        clientOpts.schemaTimeoutMs = options.schemaTimeoutMs;
+      }
       this.#client = new ClickHouseHttpClient(clientOpts);
     }
   }
 
   /**
-   * Fire-and-forget insert. Returns a Promise so callers can `.catch`; the WS
-   * path must not await it into the message handler.
+   * Fire-and-forget insert (batched). Returns a Promise so callers can
+   * `.catch`; the WS path must not await it into the message handler.
+   * Resolves once the sample is queued (or when a full batch flush completes).
    */
   writeHostSample(
     input: AuthenticatedHostMetricsSample,
@@ -98,8 +145,14 @@ export class ClickHouseServerMetricsStore implements ServerMetricsStore {
     return this.#writeHostSample(input);
   }
 
+  /** Force-flush pending writes (queries / shutdown). */
+  flushWrites(): Promise<void> {
+    return this.#flushPending({ rethrow: true });
+  }
+
   async queryHostSeries(input: HostSeriesQuery): Promise<HostSeriesResult> {
     await this.ensureSchema();
+    await this.flushWrites();
     const from = assertIsoTimestamp("from", input.from);
     const to = assertIsoTimestamp("to", input.to);
     assertRange(from, to);
@@ -138,6 +191,7 @@ export class ClickHouseServerMetricsStore implements ServerMetricsStore {
 
   async queryHostSummary(input: HostSummaryQuery): Promise<HostSummaryResult> {
     await this.ensureSchema();
+    await this.flushWrites();
     const from = assertIsoTimestamp("from", input.from);
     const to = assertIsoTimestamp("to", input.to);
     assertRange(from, to);
@@ -190,9 +244,60 @@ export class ClickHouseServerMetricsStore implements ServerMetricsStore {
     input: AuthenticatedHostMetricsSample,
   ): Promise<void> {
     await this.ensureSchema();
-    const row = buildHostMetricsRow(input);
-    await this.#client.insertRows(HOST_METRICS_TABLE, [row]);
+    this.#pendingRows.push(buildHostMetricsRow(input));
+    if (this.#pendingRows.length >= this.#batchMaxRows) {
+      await this.#flushPending({ rethrow: true });
+      return;
+    }
+    this.#armFlushTimer();
   }
+
+  #armFlushTimer(): void {
+    if (this.#flushTimer !== null) return;
+    this.#flushTimer = this.#setTimeout(() => {
+      this.#flushTimer = null;
+      void this.#flushPending({ rethrow: false });
+    }, this.#batchMaxAgeMs);
+  }
+
+  #clearFlushTimer(): void {
+    if (this.#flushTimer === null) return;
+    this.#clearTimeout(this.#flushTimer);
+    this.#flushTimer = null;
+  }
+
+  async #flushPending(opts: { rethrow: boolean }): Promise<void> {
+    if (this.#flushPromise) {
+      await this.#flushPromise;
+      if (this.#pendingRows.length === 0) return;
+    }
+    this.#clearFlushTimer();
+    if (this.#pendingRows.length === 0) return;
+
+    const batch = this.#pendingRows.splice(0);
+    this.#flushPromise = this.#insertBatch(batch, opts.rethrow)
+      .finally(() => {
+        this.#flushPromise = null;
+      });
+    await this.#flushPromise;
+  }
+
+  async #insertBatch(
+    batch: Array<Record<string, unknown>>,
+    rethrow: boolean,
+  ): Promise<void> {
+    try {
+      await this.#client.insertRows(HOST_METRICS_TABLE, batch);
+    } catch (error) {
+      this.#onFlushError(error);
+      if (rethrow) throw error;
+    }
+  }
+}
+
+function defaultFlushErrorLog(error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`clickhouse metrics write flush failed: ${message}`);
 }
 
 /**

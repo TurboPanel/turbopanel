@@ -3,6 +3,7 @@ import { it } from "@std/testing/bdd";
 import {
   ClickHouseHttpClient,
   ClickHouseHttpError,
+  ClickHouseHttpTimeoutError,
 } from "./client.ts";
 import { AE_DATASET_NAME } from "../analytics-engine/field-map.ts";
 
@@ -11,6 +12,7 @@ type CapturedRequest = {
   method: string;
   headers: Headers;
   body: string | null;
+  signal?: AbortSignal | null;
 };
 
 function installFakeFetch(
@@ -37,6 +39,7 @@ function installFakeFetch(
       method: init?.method ?? "GET",
       headers,
       body,
+      signal: init?.signal ?? null,
     };
     calls.push(captured);
     return await handler(captured);
@@ -146,4 +149,56 @@ it("ClickHouseHttpClient throws ClickHouseHttpError on non-2xx", async () => {
   );
   assertEquals(err.status, 404);
   assertEquals(err.body.includes("Table missing"), true);
+});
+
+it("ClickHouseHttpClient surfaces insert timeout via AbortController", async () => {
+  const { fetch } = installFakeFetch((req) =>
+    new Promise((_resolve, reject) => {
+      req.signal?.addEventListener("abort", () => {
+        const err = new Error("The operation was aborted");
+        err.name = "AbortError";
+        reject(err);
+      });
+    })
+  );
+  const client = new ClickHouseHttpClient({
+    url: "http://127.0.0.1:8123",
+    database: "db",
+    user: "u",
+    password: "p",
+    fetch,
+    insertTimeoutMs: 20,
+  });
+  const err = await assertRejects(
+    () => client.insertRows(AE_DATASET_NAME, [{ index1: "a", double1: 1 }]),
+    ClickHouseHttpTimeoutError,
+  );
+  assertEquals(err.kind, "insert");
+  assertEquals(err.timeoutMs, 20);
+});
+
+it("ClickHouseHttpClient surfaces query timeout cleanly", async () => {
+  const { fetch } = installFakeFetch((req) =>
+    new Promise((_resolve, reject) => {
+      req.signal?.addEventListener("abort", () => {
+        const err = new Error("The operation was aborted");
+        err.name = "AbortError";
+        reject(err);
+      });
+    })
+  );
+  const client = new ClickHouseHttpClient({
+    url: "http://127.0.0.1:8123",
+    database: "db",
+    user: "u",
+    password: "p",
+    fetch,
+    queryTimeoutMs: 15,
+  });
+  const err = await assertRejects(
+    () => client.query("SELECT 1"),
+    ClickHouseHttpTimeoutError,
+  );
+  assertEquals(err.kind, "query");
+  assertEquals(err.timeoutMs, 15);
 });

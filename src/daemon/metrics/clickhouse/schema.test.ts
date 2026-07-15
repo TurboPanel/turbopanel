@@ -5,6 +5,8 @@ import {
   buildSchemaStatements,
   DEFAULT_RAW_RETENTION_DAYS,
   HOST_METRICS_TABLE,
+  MIN_BYTES_FOR_WIDE_PART,
+  MIN_ROWS_FOR_WIDE_PART,
 } from "./schema.ts";
 
 it("HOST_METRICS_TABLE matches the Analytics Engine dataset name", () => {
@@ -15,7 +17,7 @@ it("buildSchemaStatements creates only the shared AE-named metrics table", () =>
   const statements = buildSchemaStatements({
     retentionDays: DEFAULT_RAW_RETENTION_DAYS,
   });
-  assertEquals(statements.length, 1);
+  assertEquals(statements.length, 3);
   const ddl = statements[0]!;
   assertEquals(
     ddl.includes(`CREATE TABLE IF NOT EXISTS ${HOST_METRICS_TABLE}`),
@@ -31,6 +33,35 @@ it("buildSchemaStatements embeds configured retentionDays in TTL", () => {
   const statements = buildSchemaStatements({ retentionDays: 42 });
   const ddl = statements[0]!;
   assertEquals(ddl.includes("TTL timestamp + INTERVAL 42 DAY DELETE"), true);
+  assertEquals(
+    statements.some((sql) =>
+      sql.includes("MODIFY TTL timestamp + INTERVAL 42 DAY DELETE")
+    ),
+    true,
+  );
+});
+
+it("buildSchemaStatements sets compact-part thresholds on create and alter", () => {
+  const statements = buildSchemaStatements({
+    retentionDays: DEFAULT_RAW_RETENTION_DAYS,
+  });
+  const ddl = statements[0]!;
+  assertEquals(
+    ddl.includes(`min_bytes_for_wide_part = ${MIN_BYTES_FOR_WIDE_PART}`),
+    true,
+  );
+  assertEquals(
+    ddl.includes(`min_rows_for_wide_part = ${MIN_ROWS_FOR_WIDE_PART}`),
+    true,
+  );
+  assertEquals(
+    statements.some((sql) =>
+      sql.includes(
+        `MODIFY SETTING min_bytes_for_wide_part = ${MIN_BYTES_FOR_WIDE_PART}, min_rows_for_wide_part = ${MIN_ROWS_FOR_WIDE_PART}`,
+      )
+    ),
+    true,
+  );
 });
 
 it("buildSchemaStatements uses positional Float64 metric columns (AE parity)", () => {
