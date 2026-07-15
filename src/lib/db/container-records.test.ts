@@ -182,6 +182,111 @@ test('reconcileEnvironmentContainers drops rows for services absent from the rep
   })
 })
 
+test('reconcileEnvironmentContainers creates missing services from the report', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping container reconcile tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+
+  const [insertedOrg] = await db
+    .insert(organization)
+    .values({ displayName: 'Container Reconcile Org' })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg!.id
+
+  const [insertedWorkspace] = await db
+    .insert(workspace)
+    .values({ displayName: 'Container Reconcile Workspace', organizationId })
+    .returning({ id: workspace.id })
+  const workspaceId = insertedWorkspace!.id
+
+  const now = new Date().toISOString()
+  const [insertedServer] = await db
+    .insert(server)
+    .values({
+      organizationId,
+      displayName: 'Container Reconcile Server',
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
+
+  const [insertedProject] = await db
+    .insert(project)
+    .values({
+      displayName: 'Container Reconcile Project',
+      workspaceId,
+    })
+    .returning({ id: project.id })
+  const projectId = insertedProject!.id
+
+  const [insertedEnvironment] = await db
+    .insert(environment)
+    .values({
+      displayName: 'Container Reconcile Env',
+      projectId,
+    })
+    .returning({ id: environment.id })
+  const environmentId = insertedEnvironment!.id
+
+  try {
+    await reconcileEnvironmentContainers(db, {
+      serverId,
+      environmentId,
+      containers: [
+        {
+          composeServiceName: 'nginx',
+          containerId: 'cid-nginx',
+          containerName: 'proj-nginx-1',
+          status: 'running',
+        },
+      ],
+    })
+
+    const serviceRows = await db
+      .select({
+        id: service.id,
+        displayName: service.displayName,
+        metadata: service.metadata,
+      })
+      .from(service)
+      .where(eq(service.environmentId, environmentId))
+
+    assertEquals(serviceRows.length, 1)
+    assertEquals(serviceRows[0]!.displayName, 'nginx')
+    assertEquals(
+      (serviceRows[0]!.metadata as { composeServiceName: string }).composeServiceName,
+      'nginx',
+    )
+
+    const containerRows = await db
+      .select({
+        serviceId: container.serviceId,
+        metadata: container.metadata,
+      })
+      .from(container)
+      .where(eq(container.serverId, serverId))
+
+    assertEquals(containerRows.length, 1)
+    assertEquals(containerRows[0]!.serviceId, serviceRows[0]!.id)
+    assertEquals(
+      (containerRows[0]!.metadata as { containerId: string }).containerId,
+      'cid-nginx',
+    )
+  } finally {
+    await db.delete(container).where(eq(container.serverId, serverId))
+    await db.delete(service).where(eq(service.environmentId, environmentId))
+    await db.delete(environment).where(eq(environment.id, environmentId))
+    await db.delete(project).where(eq(project.id, projectId))
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(workspace).where(eq(workspace.id, workspaceId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+})
+
 test('reconcileEnvironmentContainers clears all rows on authoritative empty report', async () => {
   await withReconcileFixtures(async ({
     db,
