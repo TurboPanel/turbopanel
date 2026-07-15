@@ -27,7 +27,15 @@ const DEV_ENV = {
   TURBOPANEL_DAEMON_STATE_DIR: '/var/lib/turbopanel',
 } as const
 
-Deno.test('production defaults resolve the FHS tree with an empty env', () => {
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test('production defaults resolve the FHS tree with an empty env', () => {
   assertEquals(resolveInstanceConfigDir({}), '/etc/turbopanel')
   assertEquals(resolveStateDir({}), '/var/lib/turbopanel')
   assertEquals(resolveLogDir({}), '/var/log/turbopanel')
@@ -36,7 +44,7 @@ Deno.test('production defaults resolve the FHS tree with an empty env', () => {
   assertEquals(resolveInstanceSocket({}), '/run/turbopanel/instance.sock')
 })
 
-Deno.test('exported default constants match the canonical FHS paths', () => {
+test('exported default constants match the canonical FHS paths', () => {
   assertEquals(DEFAULT_CONFIG_DIR, '/etc/turbopanel')
   assertEquals(DEFAULT_STATE_DIR, '/var/lib/turbopanel')
   assertEquals(DEFAULT_LOG_DIR, '/var/log/turbopanel')
@@ -45,7 +53,7 @@ Deno.test('exported default constants match the canonical FHS paths', () => {
   assertEquals(DEFAULT_UI_ROOT, '/opt/turbopanel/share/ui')
 })
 
-Deno.test('production runtime config paths compose under /etc/turbopanel', () => {
+test('production runtime config paths compose under /etc/turbopanel', () => {
   const paths = resolveInstanceRuntimeConfigPaths({})
   assertEquals(paths.runtimeEnvPath, '/etc/turbopanel/instance/runtime.env')
   assertEquals(
@@ -54,7 +62,7 @@ Deno.test('production runtime config paths compose under /etc/turbopanel', () =>
   )
 })
 
-Deno.test('co-located dev resolves the same FHS tree from injected config', () => {
+test('co-located dev resolves the same FHS tree from injected config', () => {
   assertEquals(resolveInstanceConfigDir(DEV_ENV), '/etc/turbopanel')
   assertEquals(resolveStateDir(DEV_ENV), '/var/lib/turbopanel')
   assertEquals(resolveLogDir(DEV_ENV), '/var/log/turbopanel')
@@ -62,7 +70,7 @@ Deno.test('co-located dev resolves the same FHS tree from injected config', () =
   assertEquals(resolveUiRoot(DEV_ENV), '/opt/turbopanel/share/ui')
 })
 
-Deno.test('co-located dev runtime config lives under /etc/turbopanel', () => {
+test('co-located dev runtime config lives under /etc/turbopanel', () => {
   const paths = resolveInstanceRuntimeConfigPaths(DEV_ENV)
   assertEquals(paths.runtimeEnvPath, '/etc/turbopanel/instance/runtime.env')
   assertEquals(
@@ -71,13 +79,13 @@ Deno.test('co-located dev runtime config lives under /etc/turbopanel', () => {
   )
 })
 
-Deno.test('trailing slashes are stripped from overrides', () => {
+test('trailing slashes are stripped from overrides', () => {
   assertEquals(resolveInstanceConfigDir({ TURBOPANEL_CONFIG_DIR: '/etc/tp/' }), '/etc/tp')
   assertEquals(resolveStateDir({ TURBOPANEL_STATE_DIR: '/var/tp///' }), '/var/tp')
   assertEquals(resolveUiRoot({ TURBOPANEL_UI_ROOT: '/srv/ui/' }), '/srv/ui')
 })
 
-Deno.test('socket resolution honors overrides and the socket-dir fallback', () => {
+test('socket resolution honors overrides and the socket-dir fallback', () => {
   assertEquals(
     resolveInstanceSocket({ TURBOPANEL_SOCKET: '/tmp/custom.sock' }),
     '/tmp/custom.sock',
@@ -88,7 +96,7 @@ Deno.test('socket resolution honors overrides and the socket-dir fallback', () =
   )
 })
 
-Deno.test('socket resolution follows the run-dir override', () => {
+test('socket resolution follows the run-dir override', () => {
   // TURBOPANEL_RUN_DIR relocates the socket alongside every other run-dir
   // consumer, keeping the instance and Caddy dial path aligned.
   assertEquals(
@@ -113,7 +121,7 @@ Deno.test('socket resolution follows the run-dir override', () => {
   )
 })
 
-Deno.test('run dir falls back to the socket dir before the FHS default', () => {
+test('run dir falls back to the socket dir before the FHS default', () => {
   assertEquals(
     resolveRunDir({ TURBOPANEL_SOCKET_DIR: '/tmp/sockets' }),
     '/tmp/sockets',
@@ -127,7 +135,7 @@ Deno.test('run dir falls back to the socket dir before the FHS default', () => {
   )
 })
 
-Deno.test('caddyUnixDialPath strips the leading slash for unix// dialing', () => {
+test('caddyUnixDialPath strips the leading slash for unix// dialing', () => {
   assertEquals(
     caddyUnixDialPath('/run/turbopanel/instance.sock'),
     'run/turbopanel/instance.sock',

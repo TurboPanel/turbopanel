@@ -17,7 +17,15 @@ function mockDb(label: string): Db {
   return { label } as unknown as Db
 }
 
-Deno.test('resolveWorkersCachedDb returns undefined when HYPERDRIVE_CACHED is absent', () => {
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test('resolveWorkersCachedDb returns undefined when HYPERDRIVE_CACHED is absent', () => {
   const env = {
     HYPERDRIVE: mockHyperdrive('postgres://primary'),
     TURBOPANEL_DATABASE_URL: 'postgres://fallback',
@@ -26,7 +34,7 @@ Deno.test('resolveWorkersCachedDb returns undefined when HYPERDRIVE_CACHED is ab
   assertEquals(resolveWorkersCachedDb(env), undefined)
 })
 
-Deno.test('resolveWorkersCachedDb returns a database when HYPERDRIVE_CACHED is present', () => {
+test('resolveWorkersCachedDb returns a database when HYPERDRIVE_CACHED is present', () => {
   const cachedDb = mockDb('cached')
   setWorkersDbFactoryForTests((binding: HyperdriveBinding) => {
     assertEquals(binding.connectionString, 'postgres://cached')
@@ -44,7 +52,7 @@ Deno.test('resolveWorkersCachedDb returns a database when HYPERDRIVE_CACHED is p
   }
 })
 
-Deno.test('resolveWorkersQueryCache uses passthrough when HYPERDRIVE_CACHED is absent', async () => {
+test('resolveWorkersQueryCache uses passthrough when HYPERDRIVE_CACHED is absent', async () => {
   const db = mockDb('primary')
   const env = {
     HYPERDRIVE: mockHyperdrive('postgres://primary'),
@@ -66,7 +74,7 @@ Deno.test('resolveWorkersQueryCache uses passthrough when HYPERDRIVE_CACHED is a
   assertEquals(loadedWith, db)
 })
 
-Deno.test('resolveWorkersQueryCache uses cached Hyperdrive db when HYPERDRIVE_CACHED is present', async () => {
+test('resolveWorkersQueryCache uses cached Hyperdrive db when HYPERDRIVE_CACHED is present', async () => {
   const primaryDb = mockDb('primary')
   const cachedDb = mockDb('cached')
   setWorkersDbFactoryForTests((binding: HyperdriveBinding) =>
@@ -99,14 +107,14 @@ Deno.test('resolveWorkersQueryCache uses cached Hyperdrive db when HYPERDRIVE_CA
   }
 })
 
-Deno.test('resolveWorkersDaemonRateLimiters returns noop adapters when bindings absent', async () => {
+test('resolveWorkersDaemonRateLimiters returns noop adapters when bindings absent', async () => {
   const env = {} as CloudflareBindings
   const { connect, rest } = resolveWorkersDaemonRateLimiters(env)
   assertEquals(await connect.limit({ key: 'k' }), { success: true })
   assertEquals(await rest.limit({ key: 'k' }), { success: true })
 })
 
-Deno.test('resolveWorkersDaemonRateLimiters wraps present RateLimit bindings', async () => {
+test('resolveWorkersDaemonRateLimiters wraps present RateLimit bindings', async () => {
   const connectKeys: string[] = []
   const restKeys: string[] = []
   const env = {
@@ -131,7 +139,7 @@ Deno.test('resolveWorkersDaemonRateLimiters wraps present RateLimit bindings', a
   assertEquals(restKeys, ['rest-b'])
 })
 
-Deno.test('isPlaceholderHyperdriveCachedId matches only the dev placeholder', () => {
+test('isPlaceholderHyperdriveCachedId matches only the dev placeholder', () => {
   assertEquals(
     isPlaceholderHyperdriveCachedId('0000000000000000000000000000dev0'),
     true,
@@ -143,7 +151,7 @@ Deno.test('isPlaceholderHyperdriveCachedId matches only the dev placeholder', ()
   assertEquals(isPlaceholderHyperdriveCachedId(undefined), false)
 })
 
-Deno.test('wrangler exercised envs must not use HYPERDRIVE_CACHED placeholder', async () => {
+test('wrangler exercised envs must not use HYPERDRIVE_CACHED placeholder', async () => {
   const { assertExercisedHyperdriveCachedBindings, readHyperdriveCachedIdsFromWranglerJsonc } =
     await import('./wrangler-hyperdrive-bindings.ts')
   const wranglerText = await Deno.readTextFile(

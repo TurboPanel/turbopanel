@@ -3,6 +3,12 @@
  * Deno runtime and `deno check` use `deno.json` libs; this file satisfies
  * editors that type-check via tsconfig.json without the Deno LSP.
  */
+
+/** Minimal Node/`nodejs_compat` env access for shared modules (Workers + tooling). */
+declare const process: {
+  env: Record<string, string | undefined>
+}
+
 declare namespace Deno {
   namespace env {
     function get(key: string): string | undefined
@@ -120,13 +126,15 @@ declare module 'jsr:@std/assert' {
   ): void
   export function assertRejects(
     fn: () => Promise<unknown> | unknown,
-    ErrorClass?: new (...args: unknown[]) => Error,
+    // Match ErrorConstructor / subclass ctors (`unknown[]` rejects Error itself).
+    ErrorClass?: abstract new (...args: never[]) => Error,
     msgIncludes?: string,
     msg?: string,
   ): Promise<void>
   export function assertThrows(
     fn: () => unknown,
-    ErrorClass?: new (...args: unknown[]) => Error,
+    // Match ErrorConstructor / subclass ctors (`unknown[]` rejects Error itself).
+    ErrorClass?: abstract new (...args: never[]) => Error,
     msgIncludes?: string,
     msg?: string,
   ): void
@@ -143,4 +151,22 @@ declare module '@std/testing/bdd' {
     options: { ignore?: boolean; only?: boolean },
     fn: () => void | Promise<void>,
   ): void
+}
+
+declare module '@std/testing/mock' {
+  export interface Stub {
+    restore(): void
+  }
+  export function stub<T>(
+    object: T,
+    property: keyof T,
+    value?: unknown,
+  ): Stub
+}
+
+/** Minimal `node:buffer` surface for the editor language service (Deno provides the real module). */
+declare module 'node:buffer' {
+  export class Buffer extends Uint8Array {
+    static from(data: Uint8Array | readonly number[] | string): Buffer
+  }
 }

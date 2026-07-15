@@ -46,7 +46,15 @@ function withRedis(
   }
 }
 
-Deno.test(
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test(
   'redis rate limiter allows up to limit then denies for a key',
   withRedis(async (client) => {
     const key = `test-limit-${crypto.randomUUID()}`
@@ -66,7 +74,7 @@ Deno.test(
   }),
 )
 
-Deno.test(
+test(
   'redis rate limiter treats distinct keys independently',
   withRedis(async (client) => {
     const keyA = `test-a-${crypto.randomUUID()}`
@@ -87,7 +95,7 @@ Deno.test(
   }),
 )
 
-Deno.test(
+test(
   'redis rate limiter refills capacity over time',
   withRedis(async (client) => {
     const key = `test-refill-${crypto.randomUUID()}`
@@ -107,7 +115,7 @@ Deno.test(
   }),
 )
 
-Deno.test(
+test(
   'redis rate limiter stores under tp:ratelimit:* namespace',
   withRedis(async (client) => {
     const logical = daemonConnectRateLimitKey(`test-${crypto.randomUUID()}`)
@@ -129,7 +137,7 @@ Deno.test(
   }),
 )
 
-Deno.test('createRedisRateLimiter fails open when eval throws', async () => {
+test('createRedisRateLimiter fails open when eval throws', async () => {
   const badClient = {
     eval: () => Promise.reject(new Error('redis down')),
   } as unknown as RedisCellClient
@@ -141,7 +149,7 @@ Deno.test('createRedisRateLimiter fails open when eval throws', async () => {
   assertEquals(await limiter.limit({ key: 'any' }), { success: true })
 })
 
-Deno.test('createRedisRateLimiter satisfies RateLimiter with shared keys', async () => {
+test('createRedisRateLimiter satisfies RateLimiter with shared keys', async () => {
   const seen: string[] = []
   const client = {
     eval: (
@@ -169,7 +177,7 @@ Deno.test('createRedisRateLimiter satisfies RateLimiter with shared keys', async
   ])
 })
 
-Deno.test('resolveDaemonConnectRateLimit / REST defaults match Workers wrangler', () => {
+test('resolveDaemonConnectRateLimit / REST defaults match Workers wrangler', () => {
   const empty = { get: () => undefined }
   assertEquals(resolveDaemonConnectRateLimit(empty), {
     limit: 6,

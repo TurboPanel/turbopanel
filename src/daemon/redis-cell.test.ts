@@ -132,7 +132,15 @@ function assertNoMisattributedStorage(
   }
 }
 
-Deno.test(
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test(
   "getDiagnostics returns redis counters after attach, inbound, enqueue, detach",
   withRedisCell(async ({ cell }) => {
     const attached = await cell.attachDaemonSocket({
@@ -174,7 +182,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "getDiagnostics populates storage counters when TURBOPANEL_DAEMON_DEBUG is enabled",
   withDebugRedisCell(async ({ cell }) => {
     const attached = await cell.attachDaemonSocket({
@@ -204,7 +212,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "storageByCallSite attributes Redis ops to the logical method without cross-attribution",
   withDebugRedisCell(async ({ cell }) => {
     await cell.reconcileStalePresence();
@@ -280,7 +288,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "attachDaemonSocket acquires lease and returns connectionId and lease holder",
   withRedisCell(async ({ cell }) => {
     const attached = await cell.attachDaemonSocket({
@@ -291,7 +299,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "second attachDaemonSocket throws while lease is held",
   withRedisCell(async ({ cell }) => {
     await cell.attachDaemonSocket({
@@ -308,7 +316,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "detachDaemonSocket with correct connectionId releases lease",
   withRedisCell(async ({ cell }) => {
     const first = await cell.attachDaemonSocket({
@@ -324,7 +332,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "detachDaemonSocket with wrong connectionId is a no-op",
   withRedisCell(async ({ cell, client, serverId }) => {
     const attached = await cell.attachDaemonSocket({
@@ -338,7 +346,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "enqueue appends to outbox and readOutboxBatch reads in order",
   withRedisCell(async ({ cell }) => {
     const attached = await cell.attachDaemonSocket({
@@ -375,7 +383,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "ackOutbox clears pending entries and drops outbox stream length",
   withRedisCell(async ({ cell, client, serverId }) => {
     const attached = await cell.attachDaemonSocket({
@@ -410,7 +418,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "enqueue with the same deliveryId is idempotent",
   withRedisCell(async ({ cell, client, serverId }) => {
     const deliveryId = generateDeliveryId();
@@ -435,7 +443,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "XAUTOCLAIM reclaims pending outbox entries after reconnect",
   withRedisCell(async ({ cell }) => {
     const firstAttach = await cell.attachDaemonSocket({
@@ -493,7 +501,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "request record expires after TTL",
   withRedisCell(async ({ cell }) => {
     const requestId = generateRequestId();
@@ -515,7 +523,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "createRequestAndWait returns expired when no daemon responds",
   withRedisCell(async ({ cell }) => {
     const requestId = generateRequestId();
@@ -537,7 +545,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "handleInbound retains update request row through pending window",
   withRedisCell(async ({ cell, client, serverId }) => {
     const requestId = generateRequestId();
@@ -570,7 +578,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "clearUpdateStatus removes terminal update request rows",
   withRedisCell(async ({ cell, serverId }) => {
     const requestId = generateRequestId();
@@ -684,7 +692,7 @@ function createSweepMockDb(initialDaemon: ServerDaemonState): {
   return { db, updateCalls };
 }
 
-Deno.test(
+test(
   "maintain expires offline in-flight update and projects Postgres state",
   withRedisCell(async ({ client, serverId }) => {
     const { db, getDaemon } = createProjectionTrackingDb(serverId);
@@ -719,7 +727,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "clearUpdateStatus expires stale in-flight update when allowStale is set",
   withRedisCell(async ({ cell, serverId }) => {
     const requestId = generateRequestId();
@@ -745,7 +753,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "command-dispatch ack is non-terminal then outcome completes correlation",
   withRedisCell(async ({ cell, client, serverId }) => {
     const requestId = generateRequestId();
@@ -803,7 +811,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "createRequestAndWait resolves after command-dispatch ack then outcome",
   withRedisCell(async ({ cell }) => {
     const requestId = generateRequestId();
@@ -845,7 +853,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "handleInbound retains update request row through pending window",
   withRedisCell(async ({ cell, client, serverId }) => {
     const requestId = generateRequestId();
@@ -878,7 +886,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "timed-out request is not delivered after reconnect",
   withRedisCell(async ({ cell }) => {
     const requestId = generateRequestId();
@@ -911,7 +919,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "createRequestAndWait resolves done when command-dispatch ack then outcome arrive",
   withRedisCell(async ({ cell }) => {
     const requestId = generateRequestId();
@@ -950,7 +958,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "listOnlineServerIds tracks attach and detach",
   withRedisCell(async ({ cell, registry, serverId }) => {
     const attached = await cell.attachDaemonSocket({
@@ -967,7 +975,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "reconcileStalePresence removes stale online entry when lease expired",
   withRedisCell(async ({ cell, client, registry, serverId }) => {
     const attached = await cell.attachDaemonSocket({
@@ -987,7 +995,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "reconcileStalePresence demotes when lastInboundAt exceeds offline sweep threshold",
   withRedisCell(async ({ cell, client, registry, serverId }) => {
     await cell.attachDaemonSocket({
@@ -1010,7 +1018,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "attach and onDaemonConnected projects online status to postgres",
   withRedisCell(async ({ cell, serverId }) => {
     const connectedAt = new Date().toISOString();
@@ -1043,7 +1051,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "onDaemonHeartbeat debounces postgres lastSeenAt to at most once per 60s",
   withRedisCell(async ({ cell, serverId }) => {
     const staleAt = new Date(Date.now() - 61_000).toISOString();
@@ -1077,7 +1085,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "sweepStalePresence projects offline when reconcileStalePresence demotes",
   withRedisCell(async ({ cell, client, registry, serverId }) => {
     await cell.attachDaemonSocket({
@@ -1117,7 +1125,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "reconcileStalePresence demotes when lastInboundAt exceeds offline sweep threshold",
   withRedisCell(async ({ cell, client, registry, serverId }) => {
     await cell.attachDaemonSocket({
@@ -1141,7 +1149,7 @@ Deno.test(
 );
 
 
-Deno.test(
+test(
   "attach and onDaemonConnected projects online status to postgres",
   withRedisCell(async ({ cell, serverId }) => {
     const connectedAt = new Date().toISOString();
@@ -1174,7 +1182,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "onDaemonHeartbeat debounces postgres lastSeenAt to at most once per 60s",
   withRedisCell(async ({ cell, serverId }) => {
     const staleAt = new Date(Date.now() - 61_000).toISOString();
@@ -1208,7 +1216,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "sweepStalePresence projects offline when reconcileStalePresence demotes",
   withRedisCell(async ({ cell, client, registry, serverId }) => {
     await cell.attachDaemonSocket({
@@ -1248,7 +1256,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "inbound after stale sweep restores postgres online status",
   withRedisCell(async ({ cell, client, registry, serverId }) => {
     const attached = await cell.attachDaemonSocket({
@@ -1308,7 +1316,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "heartbeat updates lastSeenAt in meta",
   withRedisCell(async ({ cell, client, serverId }) => {
     const attached = await cell.attachDaemonSocket({
@@ -1328,7 +1336,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "heartbeat is coalesced within 60s",
   withRedisCell(async ({ cell, client, serverId }) => {
     const attached = await cell.attachDaemonSocket({
@@ -1354,7 +1362,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "delivery lease operations do not affect attached daemon socket lease",
   withRedisCell(async ({ cell, client, serverId }) => {
     const attached = await cell.attachDaemonSocket({
@@ -1381,7 +1389,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "attach uses persistent daemon socket lease",
   withRedisCell(async ({ cell, client, serverId }) => {
     await cell.attachDaemonSocket({
@@ -1393,7 +1401,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "recordInbound within coalesce window does not trigger postgres projection",
   withRedisCell(async ({ cell, client, serverId }) => {
     const attached = await cell.attachDaemonSocket({
@@ -1436,7 +1444,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "coalesced pure-ping recordInbound skips Redis storage within coalesce window",
   withDebugRedisCell(async ({ cell }) => {
     const attached = await cell.attachDaemonSocket({
@@ -1473,7 +1481,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "coalesced recordInbound does not bump lastSeenAt within 60s",
   withRedisCell(async ({ cell, client, serverId }) => {
     const attached = await cell.attachDaemonSocket({
@@ -1492,7 +1500,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "cell ping recordInbound refreshes lastSeenAt and prevents stale demotion",
   withRedisCell(async ({ cell, client, registry, serverId }) => {
     const attached = await cell.attachDaemonSocket({
@@ -1524,7 +1532,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "coalesced heartbeat persists agent on first heartbeat after attach",
   withRedisCell(async ({ cell, client, serverId }) => {
     const attached = await cell.attachDaemonSocket({
@@ -1548,7 +1556,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "purge deletes all cell keys and removes from online set",
   withRedisCell(async ({ cell, client, registry, serverId }) => {
     await cell.attachDaemonSocket({
@@ -1567,7 +1575,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "purge deletes historical connection hashes after reconnect",
   withRedisCell(async ({ cell, client, serverId }) => {
     const first = await cell.attachDaemonSocket({
@@ -1597,7 +1605,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "heartbeat past one interval keeps server online and advances lastSeenAt",
   withRedisCell(async ({ cell, client, registry, serverId }) => {
     const attached = await cell.attachDaemonSocket({
@@ -1628,7 +1636,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "handleInbound deletes non-update request row on terminal status",
   withRedisCell(async ({ cell, client, serverId }) => {
     const requestId = generateRequestId();
@@ -1669,7 +1677,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "handleInbound retains update request row through pending window",
   withRedisCell(async ({ cell, client, serverId }) => {
     const requestId = generateRequestId();
@@ -1702,7 +1710,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "handleInbound retains update request row through pending window",
   withRedisCell(async ({ cell, client, serverId }) => {
     const requestId = generateRequestId();
@@ -1735,7 +1743,7 @@ Deno.test(
   }),
 );
 
-Deno.test(
+test(
   "clearUpdateStatus removes terminal update request rows",
   withRedisCell(async ({ cell, serverId }) => {
     const requestId = generateRequestId();

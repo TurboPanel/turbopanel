@@ -1,11 +1,12 @@
 import { assertEquals, assertThrows } from 'jsr:@std/assert'
+import { it } from '@std/testing/bdd'
 import {
   assertValidHostname,
   HOSTNAME_MAX_LENGTH,
   isValidHostname,
 } from './hostname.ts'
 
-Deno.test('isValidHostname accepts RFC-1123 names', () => {
+it('isValidHostname accepts RFC-1123 names', () => {
   assertEquals(isValidHostname('a'), true)
   assertEquals(isValidHostname('web-01'), true)
   assertEquals(isValidHostname('host.example.com'), true)
@@ -15,7 +16,7 @@ Deno.test('isValidHostname accepts RFC-1123 names', () => {
   assertEquals(isValidHostname(labels), true)
 })
 
-Deno.test('isValidHostname rejects unsafe values', () => {
+it('isValidHostname rejects unsafe values', () => {
   const reject = [
     'a b',
     'Web01',
@@ -43,7 +44,7 @@ Deno.test('isValidHostname rejects unsafe values', () => {
   }
 })
 
-Deno.test('assertValidHostname throws for unsafe values', () => {
+it('assertValidHostname throws for unsafe values', () => {
   assertThrows(() => assertValidHostname('a b'), Error, 'Invalid hostname')
   assertValidHostname('web-01')
 })

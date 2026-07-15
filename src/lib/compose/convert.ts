@@ -37,6 +37,94 @@ function stringKey(key: unknown): string | null {
   return null
 }
 
+type PresentationCollector = {
+  comments: Record<string, ComposeComment>
+  blankLines: Record<string, number>
+}
+
+function presentationPath(path: string): string {
+  return path || '$'
+}
+
+function isYamlSequence(node: Node): node is Node & { items: unknown[] } {
+  return !isYamlMap(node) && 'items' in node &&
+    Array.isArray((node as { items: unknown[] }).items)
+}
+
+function collectNodeFormatting(
+  node: Node,
+  path: string,
+  collector: PresentationCollector,
+): void {
+  const before = commentText(node, 'commentBefore')
+  const inline = commentText(node, 'comment')
+  if (before || inline) {
+    collector.comments[presentationPath(path)] = {
+      ...(before ? { before } : {}),
+      ...(inline ? { inline } : {}),
+    }
+  }
+
+  const blanks = blankLineCount(node)
+  if (blanks !== undefined) {
+    collector.blankLines[presentationPath(path)] = blanks
+  }
+}
+
+function collectKeyFormatting(
+  keyNode: Node | null | undefined,
+  path: string,
+  collector: PresentationCollector,
+): void {
+  const before = commentText(keyNode, 'commentBefore')
+  const inline = commentText(keyNode, 'comment')
+  if (before || inline) {
+    collector.comments[path] = {
+      ...collector.comments[path],
+      ...(before ? { before } : {}),
+      ...(inline ? { inline } : {}),
+    }
+  }
+
+  const blanks = blankLineCount(keyNode)
+  if (blanks !== undefined) {
+    collector.blankLines[path] = blanks
+  }
+}
+
+function walkPresentation(
+  node: Node | null | undefined,
+  path: string,
+  collector: PresentationCollector,
+): void {
+  if (!node || typeof node !== 'object') return
+  collectNodeFormatting(node, path, collector)
+
+  if (isYamlMap(node)) {
+    walkMapPresentation(node, path, collector)
+    return
+  }
+  if (isYamlSequence(node)) {
+    node.items.forEach((item, index) => {
+      walkPresentation(item as Node | null | undefined, `${path}[${index}]`, collector)
+    })
+  }
+}
+
+function walkMapPresentation(
+  node: YAMLMap,
+  path: string,
+  collector: PresentationCollector,
+): void {
+  for (const item of node.items) {
+    const key = stringKey(item.key)
+    if (key === null) continue
+    const childPath = path ? `${path}.${key}` : key
+    collectKeyFormatting(item.key as Node | null | undefined, childPath, collector)
+    walkPresentation(item.value as Node | null | undefined, childPath, collector)
+  }
+}
+
 function collectPresentation(doc: Document.Parsed): ComposePresentation {
   const keyOrder: string[] = []
   const comments: Record<string, ComposeComment> = {}
@@ -50,56 +138,7 @@ function collectPresentation(doc: Document.Parsed): ComposePresentation {
     }
   }
 
-  // Path-aware walk collects comments / blank lines
-  function walk(node: Node | null | undefined, path: string) {
-    if (!node || typeof node !== 'object') return
-
-    const before = commentText(node, 'commentBefore')
-    const inline = commentText(node, 'comment')
-    if (before || inline) {
-      comments[path || '$'] = {
-        ...(before ? { before } : {}),
-        ...(inline ? { inline } : {}),
-      }
-    }
-    const blanks = blankLineCount(node)
-    if (blanks !== undefined) {
-      blankLines[path || '$'] = blanks
-    }
-
-    if (isYamlMap(node)) {
-      for (const item of node.items) {
-        const key = stringKey(item.key)
-        if (key === null) continue
-        const childPath = path ? `${path}.${key}` : key
-        const keyNode = item.key as Node | null | undefined
-        const keyBefore = commentText(keyNode, 'commentBefore')
-        const keyInline = commentText(keyNode, 'comment')
-        if (keyBefore || keyInline) {
-          comments[childPath] = {
-            ...comments[childPath],
-            ...(keyBefore ? { before: keyBefore } : {}),
-            ...(keyInline ? { inline: keyInline } : {}),
-          }
-        }
-        const keyBlanks = blankLineCount(keyNode)
-        if (keyBlanks !== undefined) {
-          blankLines[childPath] = keyBlanks
-        }
-        walk(item.value as Node | null | undefined, childPath)
-      }
-    } else if (
-      'items' in node && Array.isArray((node as { items: unknown[] }).items) &&
-      !isYamlMap(node)
-    ) {
-      const seq = node as { items: unknown[] }
-      for (let i = 0; i < seq.items.length; i++) {
-        walk(seq.items[i] as Node | null | undefined, `${path}[${i}]`)
-      }
-    }
-  }
-
-  walk(root, '')
+  walkPresentation(root, '', { comments, blankLines })
 
   return {
     keyOrder,
@@ -108,80 +147,111 @@ function collectPresentation(doc: Document.Parsed): ComposePresentation {
   }
 }
 
+function reorderTopLevelKeys(root: YAMLMap, keyOrder: readonly string[]): void {
+  if (keyOrder.length === 0) return
+
+  const byKey = new Map<string, Pair>()
+  const leftovers: Pair[] = []
+  for (const item of root.items) {
+    const key = stringKey(item.key)
+    if (key !== null && !byKey.has(key)) {
+      byKey.set(key, item)
+    } else {
+      leftovers.push(item)
+    }
+  }
+
+  const ordered: Pair[] = []
+  for (const key of keyOrder) {
+    const pair = byKey.get(key)
+    if (!pair) continue
+    ordered.push(pair)
+    byKey.delete(key)
+  }
+  root.items = [...ordered, ...byKey.values(), ...leftovers]
+}
+
+function applyNodeFormatting(
+  node: Node,
+  path: string,
+  presentation: ComposePresentation,
+): void {
+  const comment = presentation.comments[presentationPath(path)]
+  if (comment?.before) {
+    ;(node as { commentBefore?: string }).commentBefore = comment.before
+  }
+  if (comment?.inline) {
+    ;(node as { comment?: string }).comment = comment.inline
+  }
+  const blanks = presentation.blankLines?.[presentationPath(path)]
+  if (blanks && blanks > 0) {
+    ;(node as { spaceBefore?: boolean }).spaceBefore = true
+  }
+}
+
+function applyKeyFormatting(
+  keyNode: unknown,
+  path: string,
+  presentation: ComposePresentation,
+): void {
+  if (!keyNode || typeof keyNode !== 'object') return
+
+  const comment = presentation.comments[path]
+  if (comment?.before) {
+    ;(keyNode as { commentBefore?: string }).commentBefore = comment.before
+  }
+  if (comment?.inline) {
+    ;(keyNode as { comment?: string }).comment = comment.inline
+  }
+  const blanks = presentation.blankLines?.[path]
+  if (blanks && blanks > 0) {
+    ;(keyNode as { spaceBefore?: boolean }).spaceBefore = true
+  }
+}
+
+function applyPresentationAt(
+  node: Node | null | undefined,
+  path: string,
+  presentation: ComposePresentation,
+): void {
+  if (!node || typeof node !== 'object') return
+  applyNodeFormatting(node, path, presentation)
+
+  if (isYamlMap(node)) {
+    applyMapPresentation(node, path, presentation)
+    return
+  }
+  if (isYamlSequence(node)) {
+    node.items.forEach((item, index) => {
+      applyPresentationAt(
+        item as Node | null | undefined,
+        `${path}[${index}]`,
+        presentation,
+      )
+    })
+  }
+}
+
+function applyMapPresentation(
+  node: YAMLMap,
+  path: string,
+  presentation: ComposePresentation,
+): void {
+  for (const item of node.items) {
+    const key = stringKey(item.key)
+    if (key === null) continue
+    const childPath = path ? `${path}.${key}` : key
+    applyKeyFormatting(item.key, childPath, presentation)
+    applyPresentationAt(item.value as Node | null | undefined, childPath, presentation)
+  }
+}
+
 function applyPresentation(doc: Document, presentation: ComposePresentation): void {
   const root = doc.contents
   if (!isYamlMap(root)) return
 
-  // Reorder top-level keys
-  if (presentation.keyOrder.length > 0) {
-    const byKey = new Map<string, Pair>()
-    const leftovers: Pair[] = []
-    for (const item of root.items) {
-      const key = stringKey(item.key)
-      if (key !== null && !byKey.has(key)) {
-        byKey.set(key, item)
-      } else {
-        leftovers.push(item)
-      }
-    }
-    const ordered: Pair[] = []
-    for (const key of presentation.keyOrder) {
-      const pair = byKey.get(key)
-      if (pair) {
-        ordered.push(pair)
-        byKey.delete(key)
-      }
-    }
-    for (const [, pair] of byKey) {
-      ordered.push(pair)
-    }
-    root.items = [...ordered, ...leftovers]
-  }
-
-  function applyAt(node: Node | null | undefined, path: string) {
-    if (!node || typeof node !== 'object') return
-    const comment = presentation.comments[path || '$']
-    if (comment?.before) {
-      ;(node as { commentBefore?: string }).commentBefore = comment.before
-    }
-    if (comment?.inline) {
-      ;(node as { comment?: string }).comment = comment.inline
-    }
-    const blanks = presentation.blankLines?.[path || '$']
-    if (blanks && blanks > 0) {
-      ;(node as { spaceBefore?: boolean }).spaceBefore = true
-    }
-
-    if (isYamlMap(node)) {
-      for (const item of node.items) {
-        const key = stringKey(item.key)
-        if (key === null) continue
-        const childPath = path ? `${path}.${key}` : key
-        const childComment = presentation.comments[childPath]
-        if (childComment?.before && item.key && typeof item.key === 'object') {
-          ;(item.key as { commentBefore?: string }).commentBefore = childComment.before
-        }
-        if (childComment?.inline && item.key && typeof item.key === 'object') {
-          ;(item.key as { comment?: string }).comment = childComment.inline
-        }
-        const childBlanks = presentation.blankLines?.[childPath]
-        if (childBlanks && childBlanks > 0 && item.key && typeof item.key === 'object') {
-          ;(item.key as { spaceBefore?: boolean }).spaceBefore = true
-        }
-        applyAt(item.value as Node | null | undefined, childPath)
-      }
-    } else if (
-      'items' in node && Array.isArray((node as { items: unknown[] }).items) &&
-      !isYamlMap(node)
-    ) {
-      const seq = node as { items: unknown[] }
-      for (let i = 0; i < seq.items.length; i++) {
-        applyAt(seq.items[i] as Node | null | undefined, `${path}[${i}]`)
-      }
-    }
-  }
-
-  applyAt(root, '')
+  reorderTopLevelKeys(root, presentation.keyOrder)
+  applyPresentationAt(root, '', presentation)
 }
 
 export class ComposeParseError extends Error {

@@ -170,7 +170,15 @@ async function withRoleUser(
   }
 }
 
-Deno.test('POST /api/admin/v1/cells/:serverId/purge returns 403 for admin role', async () => {
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test('POST /api/admin/v1/cells/:serverId/purge returns 403 for admin role', async () => {
   await withRoleUser('admin', async ({ app, cookie }) => {
     const serverId = crypto.randomUUID()
     const res = await app.request(`${ADMIN_API_PREFIX}/cells/${serverId}/purge`, {
@@ -182,7 +190,7 @@ Deno.test('POST /api/admin/v1/cells/:serverId/purge returns 403 for admin role',
   })
 })
 
-Deno.test('POST /api/admin/v1/cells/:serverId/purge purges a cell for superadmin', async () => {
+test('POST /api/admin/v1/cells/:serverId/purge purges a cell for superadmin', async () => {
   await withRoleUser('superadmin', async ({ app, cookie }) => {
     const serverId = crypto.randomUUID()
     const res = await app.request(`${ADMIN_API_PREFIX}/cells/${serverId}/purge`, {
@@ -196,7 +204,7 @@ Deno.test('POST /api/admin/v1/cells/:serverId/purge purges a cell for superadmin
   })
 })
 
-Deno.test('POST /api/admin/v1/cells/purge-batch returns 403 for admin role', async () => {
+test('POST /api/admin/v1/cells/purge-batch returns 403 for admin role', async () => {
   await withRoleUser('admin', async ({ app, cookie }) => {
     const res = await app.request(`${ADMIN_API_PREFIX}/cells/purge-batch`, {
       method: 'POST',
@@ -211,7 +219,7 @@ Deno.test('POST /api/admin/v1/cells/purge-batch returns 403 for admin role', asy
   })
 })
 
-Deno.test('POST /api/admin/v1/cells/purge-batch reports per-id results for superadmin', async () => {
+test('POST /api/admin/v1/cells/purge-batch reports per-id results for superadmin', async () => {
   await withRoleUser('superadmin', async ({ app, cookie }) => {
     const okId = crypto.randomUUID()
     const failId = crypto.randomUUID()

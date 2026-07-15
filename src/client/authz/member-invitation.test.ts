@@ -76,7 +76,15 @@ async function withTestFixtures(
   }
 }
 
-Deno.test('default invited member gets organization:manage grant', async () => {
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test('default invited member gets organization:manage grant', async () => {
   await withTestFixtures(async ({ db, userId, organizationId }) => {
     const grants = defaultInvitationGrants(organizationId)
     await materializeInvitationGrants(db, userId, grants, organizationId)
@@ -101,7 +109,7 @@ Deno.test('default invited member gets organization:manage grant', async () => {
   })
 })
 
-Deno.test('organization:manage grant allows canManageOrganization', async () => {
+test('organization:manage grant allows canManageOrganization', async () => {
   await withTestFixtures(async ({ db, userId, organizationId }) => {
     const grants = defaultInvitationGrants(organizationId)
     await materializeInvitationGrants(db, userId, grants, organizationId)
@@ -113,7 +121,7 @@ Deno.test('organization:manage grant allows canManageOrganization', async () => 
   })
 })
 
-Deno.test('invitation grant materialization is idempotent', async () => {
+test('invitation grant materialization is idempotent', async () => {
   await withTestFixtures(async ({ db, userId, organizationId }) => {
     const grants = defaultInvitationGrants(organizationId)
 
@@ -137,7 +145,7 @@ Deno.test('invitation grant materialization is idempotent', async () => {
   })
 })
 
-Deno.test('invitation grant rejects nonexistent entity id', async () => {
+test('invitation grant rejects nonexistent entity id', async () => {
   await withTestFixtures(async ({ db, userId, organizationId }) => {
     const missingEntityId = crypto.randomUUID()
 
@@ -167,7 +175,7 @@ Deno.test('invitation grant rejects nonexistent entity id', async () => {
   })
 })
 
-Deno.test('invitation grant rejects incompatible permission on existing workspace entity', async () => {
+test('invitation grant rejects incompatible permission on existing workspace entity', async () => {
   await withTestFixtures(async ({ db, userId, organizationId, workspaceId }) => {
     try {
       await materializeInvitationGrants(
@@ -201,7 +209,7 @@ Deno.test('invitation grant rejects incompatible permission on existing workspac
   })
 })
 
-Deno.test('invitation grant rejects cross-organization entity target', async () => {
+test('invitation grant rejects cross-organization entity target', async () => {
   await withTestFixtures(async ({ db, userId, workspaceId }) => {
     const otherOrg = await db
       .insert(organization)

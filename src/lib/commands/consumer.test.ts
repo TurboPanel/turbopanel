@@ -20,6 +20,14 @@ import type { CommandEnvelope } from './envelope.ts'
 
 const dbUrl = getDatabaseUrl()
 
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
 const TEST_COMMAND_ACTOR = {
   actorEntityType: 'user',
   actorEntityId: '00000000-0000-4000-8000-000000000001',
@@ -73,7 +81,6 @@ function createDispatchMockRegistry(
       connectionId: 'conn',
       lease: {
         holder: 'conn',
-        token: 'conn',
         expiresAt: new Date(Date.now() + 45_000).toISOString(),
       },
     }),
@@ -125,7 +132,7 @@ function createDispatchMockRegistry(
     releaseDeliveryLease: async () => {},
     readOutboxBatch: async () => [],
     ackOutbox: async () => {},
-    prune: async () => false,
+    prune: async () => [],
     clearUpdateStatus: async () => ({ cleared: 0 }),
     purge: async () => {},
   }
@@ -200,7 +207,7 @@ function buildEnvelope(
   }
 }
 
-Deno.test('processCommandEnvelope fails fast when daemon is offline', async () => {
+test('processCommandEnvelope fails fast when daemon is offline', async () => {
   await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
     const record = await createCommandRecord(db, {
       serverId,
@@ -221,7 +228,7 @@ Deno.test('processCommandEnvelope fails fast when daemon is offline', async () =
   })
 })
 
-Deno.test('processCommandEnvelope succeeds for online ping command', async () => {
+test('processCommandEnvelope succeeds for online ping command', async () => {
   await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)
     const record = await createCommandRecord(db, {
@@ -271,7 +278,7 @@ Deno.test('processCommandEnvelope succeeds for online ping command', async () =>
   })
 })
 
-Deno.test('processCommandEnvelope updates server metadata on hostname success', async () => {
+test('processCommandEnvelope updates server metadata on hostname success', async () => {
   await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)
     const record = await createCommandRecord(db, {
@@ -308,7 +315,7 @@ Deno.test('processCommandEnvelope updates server metadata on hostname success', 
   })
 })
 
-Deno.test('processCommandEnvelope maps failed and timed out pending requests', async () => {
+test('processCommandEnvelope maps failed and timed out pending requests', async () => {
   await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)
 
@@ -357,7 +364,7 @@ Deno.test('processCommandEnvelope maps failed and timed out pending requests', a
   })
 })
 
-Deno.test('processCommandEnvelope no-ops for terminal or expired commands', async () => {
+test('processCommandEnvelope no-ops for terminal or expired commands', async () => {
   await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)
 

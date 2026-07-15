@@ -12,7 +12,7 @@ import { isDaemonDebugEnabled } from "../logger.ts";
 import { DEVELOPER_API_PREFIX } from "../surfaces.ts";
 import { buildDeveloperRouter } from "./routes-core.ts";
 
-const TEST_SECRET = "aa_developer_routes_core_test_secret_b";
+const TEST_SECRET = "aa_developer_routes_core_test_secret_b_pad_abcdefghij0";
 
 function createDiagnosticsCell(serverId: string): DaemonCell {
   const diagnostics: CellDiagnostics = {

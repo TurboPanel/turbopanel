@@ -1,5 +1,6 @@
 import { assertEquals, assertThrows } from 'jsr:@std/assert'
 import {
+  ComposeParseError,
   composeDocumentToRuntimeYaml,
   composeDocumentToYaml,
   emptyComposeDocument,
@@ -8,6 +9,14 @@ import {
   validateComposeDocument,
   yamlToComposeDocument,
 } from './index.ts'
+
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
 
 const SAMPLE = `version: "3.9"
 
@@ -22,7 +31,7 @@ networks:
   front: {}
 `
 
-Deno.test('yamlToComposeDocument preserves top-level key order and comments', () => {
+test('yamlToComposeDocument preserves top-level key order and comments', () => {
   const doc = yamlToComposeDocument(SAMPLE)
   assertEquals(doc.version, 1)
   assertEquals(doc.presentation.keyOrder[0], 'version')
@@ -36,26 +45,26 @@ Deno.test('yamlToComposeDocument preserves top-level key order and comments', ()
   assertEquals(roundTrip.indexOf('services:') < roundTrip.indexOf('networks:'), true)
 })
 
-Deno.test('composeDocumentToRuntimeYaml drops presentation-only concerns but keeps data', () => {
+test('composeDocumentToRuntimeYaml drops presentation-only concerns but keeps data', () => {
   const doc = yamlToComposeDocument(SAMPLE)
   const runtime = composeDocumentToRuntimeYaml(doc)
   assertEquals(runtime.includes('nginx:alpine'), true)
   assertEquals(runtime.includes('front:'), true)
 })
 
-Deno.test('normalizeCompose does not lift bare compose objects', () => {
+test('normalizeCompose does not lift bare compose objects', () => {
   const bare = { services: { api: { image: 'node:22' } } }
   const doc = normalizeCompose(bare)
   assertEquals(doc, emptyComposeDocument())
 })
 
-Deno.test('validateComposeDocument rejects bare compose objects', () => {
+test('validateComposeDocument rejects bare compose objects', () => {
   const bare = { services: { api: { image: 'node:22' } } }
   const result = validateComposeDocument(bare)
   assertEquals(result.ok, false)
 })
 
-Deno.test('validateComposeDocument accepts ComposeDocument and null', () => {
+test('validateComposeDocument accepts ComposeDocument and null', () => {
   const empty = emptyComposeDocument()
   assertEquals(validateComposeDocument(empty).ok, true)
   assertEquals(validateComposeDocument(null).ok, true)
@@ -72,13 +81,13 @@ Deno.test('validateComposeDocument accepts ComposeDocument and null', () => {
   }
 })
 
-Deno.test('emptyComposeDocument validates', () => {
+test('emptyComposeDocument validates', () => {
   const empty = emptyComposeDocument()
   const result = validateComposeDocument(empty)
   assertEquals(result.ok, true)
 })
 
-Deno.test('mergeComposeOverlay deep-merges services', () => {
+test('mergeComposeOverlay deep-merges services', () => {
   const base = yamlToComposeDocument(`
 services:
   web:
@@ -102,14 +111,14 @@ services:
   assertEquals(services.web.ports, ['8080:80'])
 })
 
-Deno.test('yamlToComposeDocument rejects invalid YAML', () => {
+test('yamlToComposeDocument rejects invalid YAML', () => {
   assertThrows(
     () => yamlToComposeDocument('services: [\n  - broken'),
-    Error,
+    ComposeParseError,
   )
 })
 
-Deno.test('empty overlay inherits base', () => {
+test('empty overlay inherits base', () => {
   const base = emptyComposeDocument()
   base.data = { services: { web: { image: 'nginx' } } }
   const merged = mergeComposeOverlay(base, emptyComposeDocument())

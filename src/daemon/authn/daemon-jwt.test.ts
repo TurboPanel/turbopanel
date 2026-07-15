@@ -67,7 +67,15 @@ async function buildTokenWithPayload(
   return `${encodedHeader}.${encodedPayload}.${encodedSignature}`;
 }
 
-Deno.test("issueDaemonJwt produces a 15-minute JWT", async () => {
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test("issueDaemonJwt produces a 15-minute JWT", async () => {
   const keyring = await createKeyring();
   const issued = await issueDaemonJwt(
     { sub: "server-1", kid: "key-1" },
@@ -85,7 +93,7 @@ Deno.test("issueDaemonJwt produces a 15-minute JWT", async () => {
   assertExists(payload.jti);
 });
 
-Deno.test("verifyDaemonJwt accepts a valid token", async () => {
+test("verifyDaemonJwt accepts a valid token", async () => {
   const keyring = await createKeyring();
   const issued = await issueDaemonJwt(
     { sub: "server-1", kid: "key-1" },
@@ -99,7 +107,7 @@ Deno.test("verifyDaemonJwt accepts a valid token", async () => {
   assertEquals(payload.jti.length > 0, true);
 });
 
-Deno.test("verifyDaemonJwt rejects an expired token", async () => {
+test("verifyDaemonJwt rejects an expired token", async () => {
   const keyring = await createKeyring();
   const nowMs = Date.now() - (16 * 60 * 1000);
   const issued = await issueDaemonJwt(
@@ -111,7 +119,7 @@ Deno.test("verifyDaemonJwt rejects an expired token", async () => {
   assertEquals(payload, null);
 });
 
-Deno.test("verifyDaemonJwt rejects a tampered payload", async () => {
+test("verifyDaemonJwt rejects a tampered payload", async () => {
   const keyring = await createKeyring();
   const issued = await issueDaemonJwt(
     { sub: "server-1", kid: "key-1" },
@@ -125,7 +133,7 @@ Deno.test("verifyDaemonJwt rejects a tampered payload", async () => {
   assertEquals(verified, null);
 });
 
-Deno.test("verifyDaemonJwt rejects wrong aud", async () => {
+test("verifyDaemonJwt rejects wrong aud", async () => {
   const nowSeconds = Math.floor(Date.now() / 1000);
   const token = await buildTokenWithPayload({
     sub: "server-1",
@@ -142,7 +150,7 @@ Deno.test("verifyDaemonJwt rejects wrong aud", async () => {
   assertEquals(verified, null);
 });
 
-Deno.test("verifyDaemonJwt rejects wrong typ", async () => {
+test("verifyDaemonJwt rejects wrong typ", async () => {
   const nowSeconds = Math.floor(Date.now() / 1000);
   const token = await buildTokenWithPayload({
     sub: "server-1",

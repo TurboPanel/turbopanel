@@ -12,7 +12,15 @@ const baseKey = {
   createdAt: "2020-01-01T00:00:00.000Z",
 };
 
-Deno.test("parseServerDaemonState prefers explicit status over projection", () => {
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test("parseServerDaemonState prefers explicit status over projection", () => {
   const row = {
     key: baseKey,
     projection: {
@@ -34,7 +42,7 @@ Deno.test("parseServerDaemonState prefers explicit status over projection", () =
   assertEquals(parsed?.status?.lastSeenAt, "2020-02-01T00:00:00.000Z");
 });
 
-Deno.test("parseServerDaemonState without status uses no status field", () => {
+test("parseServerDaemonState without status uses no status field", () => {
   const row = {
     key: baseKey,
     projection: {

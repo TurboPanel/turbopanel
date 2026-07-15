@@ -1,4 +1,5 @@
-import amqplib from 'npm:amqplib'
+import { Buffer } from 'node:buffer'
+import amqplib from 'amqplib'
 import {
   assertEmailAmqpTopology,
   EMAIL_AMQP_EXCHANGE,
@@ -26,19 +27,17 @@ class DenoAmqpQueue implements EmailQueue {
 
   private async ensureConnected(): Promise<boolean> {
     if (this.channel) return true
-    if (!this.connectPromise) {
-      this.connectPromise = (async () => {
-        this.connection = await amqplib.connect(this.opts.amqpUrl)
-        this.channel = await this.connection.createConfirmChannel()
-        await assertEmailAmqpTopology(this.channel)
-      })().catch((error) => {
-        compatLogWarn('email', `AMQP connection failed: ${error}`)
-        this.connection = null
-        this.channel = null
-      }).finally(() => {
-        this.connectPromise = null
-      })
-    }
+    this.connectPromise ??= (async () => {
+      this.connection = await amqplib.connect(this.opts.amqpUrl)
+      this.channel = await this.connection.createConfirmChannel()
+      await assertEmailAmqpTopology(this.channel)
+    })().catch((error: unknown) => {
+      compatLogWarn('email', `AMQP connection failed: ${error}`)
+      this.connection = null
+      this.channel = null
+    }).finally(() => {
+      this.connectPromise = null
+    })
     await this.connectPromise
     return this.channel !== null
   }
@@ -51,9 +50,9 @@ class DenoAmqpQueue implements EmailQueue {
         this.channel!.publish(
           EMAIL_AMQP_EXCHANGE,
           EMAIL_AMQP_ROUTING_KEY,
-          this.encoder.encode(JSON.stringify(job)),
+          Buffer.from(this.encoder.encode(JSON.stringify(job))),
           { persistent: true, mandatory: true },
-          (error) => {
+          (error: Error | null) => {
             if (error) reject(error)
             else resolve()
           },

@@ -36,6 +36,10 @@ import {
   resolveEmailSettings,
 } from '../../lib/settings/email-settings.ts'
 import { registerOtpRoutes } from './otp-http.ts'
+import {
+  type AuthRateLimitPurpose,
+  getSharedAuthRateLimiter,
+} from './auth-rate-limit.ts'
 
 export type AuthRouteOpts = {
   secrets?: DerivedSecretsConfig
@@ -78,6 +82,37 @@ function buildCookieHeader(
 
 function requestTls(c: Context) {
   return resolveRequestTls(c.req.url, c.req.header('x-forwarded-proto'))
+}
+
+/** Resolve the client IP for rate-limit keying (proxied via Caddy `X-Real-IP`). */
+export function resolveClientIp(c: Context): string | null {
+  return (
+    c.req.header('X-Real-IP') ??
+    c.req.header('X-Forwarded-For')?.split(',')[0]?.trim() ??
+    null
+  )
+}
+
+/**
+ * Enforce the shared auth rate limiter for a route. Returns a `429` response
+ * when the caller has exceeded the window budget, or `null` when allowed.
+ */
+export function enforceAuthRateLimit(
+  c: Context,
+  purpose: AuthRateLimitPurpose,
+  identity: string | null | undefined,
+): Response | null {
+  const result = getSharedAuthRateLimiter().check(
+    purpose,
+    identity,
+    resolveClientIp(c),
+  )
+  if (result.allowed) {
+    return null
+  }
+  return c.json({ ok: false, error: 'Too many requests' }, 429, {
+    'Retry-After': String(result.retryAfterSeconds),
+  })
 }
 
 function nowTs(): string {
@@ -418,6 +453,11 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Invalid request' }, 400)
     }
 
+    const signInLimited = enforceAuthRateLimit(c, 'sign-in', username)
+    if (signInLimited) {
+      return signInLimited
+    }
+
     if (
       opts.runtime === 'deno' &&
       username === PAM_ROOT_USERNAME &&
@@ -531,6 +571,11 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
     }
 
     const trimmedEmail = parsed.email.trim().toLowerCase()
+
+    const signupLimited = enforceAuthRateLimit(c, 'sign-up', trimmedEmail)
+    if (signupLimited) {
+      return signupLimited
+    }
 
     const existingUser = await db
       .select({ id: user.id })

@@ -228,7 +228,8 @@ it('Workers OTP auto-registration succeeds without install completion', async ()
   const db = createDenoDb()
   const email = `workers-otp-${crypto.randomUUID()}@example.com`
   const app = await createAuthRouteApp(db, 'workers', '1')
-  const otp = await createEmailOtp(db, email, 'sign-in')
+  const created = await createEmailOtp(db, email, 'sign-in')
+  const otp = created.status === 'created' ? created.otp : ''
 
   try {
     const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-in/otp`, {

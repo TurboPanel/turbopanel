@@ -10,7 +10,6 @@ import {
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { getAccessManagementPermission } from '../authz/access-management.ts'
 import {
-  mapEffectToAllowed,
   mapGrantRows,
   revokeAccessGrant,
 } from '../authz/access-grants.ts'
@@ -94,6 +93,62 @@ async function assertCanManageAccessOr403(
     entity.entityType,
     entity.entityId,
   )
+}
+
+interface CreateAccessInput {
+  subjectKind: 'user' | 'team' | 'organization'
+  subjectId: string
+  resourceId: string
+  permissionKey: PermissionKey
+}
+
+async function parseCreateAccessBody(
+  c: Context,
+): Promise<CreateAccessInput | { response: Response }> {
+  let body: unknown
+  try {
+    body = await c.req.json()
+  } catch {
+    return { response: c.json({ error: 'Invalid request' }, 400) }
+  }
+
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { response: c.json({ error: 'Invalid request' }, 400) }
+  }
+
+  const record = body as Record<string, unknown>
+  const { subjectKind, subjectId, resourceId, effect, permissionKey } = record
+
+  if (
+    subjectKind !== 'user' &&
+    subjectKind !== 'team' &&
+    subjectKind !== 'organization'
+  ) {
+    return { response: c.json({ error: 'Invalid request' }, 400) }
+  }
+  if (typeof subjectId !== 'string' || typeof resourceId !== 'string') {
+    return { response: c.json({ error: 'Invalid request' }, 400) }
+  }
+  // Deny grants are not supported — authorization only evaluates allow grants,
+  // so a deny would be silently ineffective. Reject it explicitly.
+  if (effect === 'deny') {
+    return { response: c.json({ error: 'Deny grants are not supported' }, 400) }
+  }
+  if (effect !== undefined && effect !== 'allow') {
+    return { response: c.json({ error: 'Invalid request' }, 400) }
+  }
+  if (
+    typeof permissionKey !== 'string' ||
+    permissionKey.length === 0 ||
+    !isPermissionKey(permissionKey)
+  ) {
+    return { response: c.json({ error: 'permissionKey is required' }, 400) }
+  }
+  if (!isUuid(resourceId) || !isUuid(subjectId)) {
+    return { response: c.json({ error: 'Invalid request' }, 400) }
+  }
+
+  return { subjectKind, subjectId, resourceId, permissionKey }
 }
 
 export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
@@ -383,49 +438,11 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
     const session = c.get('session')
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    let body: unknown
-    try {
-      body = await c.req.json()
-    } catch {
-      return c.json({ error: 'Invalid request' }, 400)
+    const parsed = await parseCreateAccessBody(c)
+    if ('response' in parsed) {
+      return parsed.response
     }
-
-    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-
-    const record = body as Record<string, unknown>
-    const subjectKind = record.subjectKind
-    const subjectId = record.subjectId
-    const resourceId = record.resourceId
-    const effect = record.effect
-    const permissionKey = record.permissionKey
-
-    if (
-      subjectKind !== 'user' &&
-      subjectKind !== 'team' &&
-      subjectKind !== 'organization'
-    ) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-    if (typeof subjectId !== 'string' || typeof resourceId !== 'string') {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-    if (effect !== 'allow' && effect !== 'deny') {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-
-    if (
-      typeof permissionKey !== 'string' ||
-      permissionKey.length === 0 ||
-      !isPermissionKey(permissionKey)
-    ) {
-      return c.json({ error: 'permissionKey is required' }, 400)
-    }
-
-    if (!isUuid(resourceId) || !isUuid(subjectId)) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
+    const { subjectKind, subjectId, resourceId, permissionKey } = parsed
 
     const entity = await resolveEntityById(db, resourceId)
     if (!entity) {
@@ -443,8 +460,8 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
       entityType: entity.entityType,
       entityId: entity.entityId,
       actorType: subjectKind,
-      actorId,
-      allow: mapEffectToAllowed(effect),
+      actorId: subjectId,
+      allow: true,
       permissionKey,
     })
 

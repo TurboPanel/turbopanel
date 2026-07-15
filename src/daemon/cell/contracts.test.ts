@@ -12,7 +12,15 @@ function isTerminalStatus(status: PendingRequestStatus): boolean {
   return TERMINAL_STATUSES.has(status);
 }
 
-Deno.test("mergeSnapshotPresence prefers meta-layer presence fields", () => {
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test("mergeSnapshotPresence prefers meta-layer presence fields", () => {
   const stored: DaemonCellSnapshot = {
     serverId: "srv-1",
     version: 1,
@@ -39,7 +47,7 @@ Deno.test("mergeSnapshotPresence prefers meta-layer presence fields", () => {
   assertEquals(merged.updatedAt, "2020-01-02T00:00:00.000Z");
 });
 
-Deno.test("mergeSnapshotPresence falls back when meta fields are absent", () => {
+test("mergeSnapshotPresence falls back when meta fields are absent", () => {
   const stored: DaemonCellSnapshot = {
     serverId: "srv-1",
     version: 2,
@@ -60,7 +68,7 @@ Deno.test("mergeSnapshotPresence falls back when meta fields are absent", () => 
   assertEquals(merged.connectedAt, "2020-01-01T00:00:00.000Z");
 });
 
-Deno.test("PendingRequestStatus terminal check mirrors Redis cell semantics", () => {
+test("PendingRequestStatus terminal check mirrors Redis cell semantics", () => {
   for (const status of ["done", "failed", "expired"] as const) {
     assert(isTerminalStatus(status), `${status} should be terminal`);
   }
@@ -69,7 +77,7 @@ Deno.test("PendingRequestStatus terminal check mirrors Redis cell semantics", ()
   }
 });
 
-Deno.test("DaemonCellSnapshot minimal shape has required fields", () => {
+test("DaemonCellSnapshot minimal shape has required fields", () => {
   const snapshot: DaemonCellSnapshot = {
     serverId: "srv-test",
     version: 0,

@@ -1,5 +1,5 @@
 import { assertEquals, assertExists, assertThrows } from 'jsr:@std/assert'
-import { stub } from 'jsr:@std/testing@1/mock'
+import { stub } from '@std/testing/mock'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -53,6 +53,14 @@ const SERVER_STATUS_RECORD_KEYS: (keyof ServerStatusRecord)[] = [
 ]
 
 const dbUrl = getDatabaseUrl()
+
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
 
 function createMockCell(
   serverId: string,
@@ -258,7 +266,7 @@ function createStubDbForCachedReadTests(): ReturnType<typeof createDenoDb> {
   } as unknown as ReturnType<typeof createDenoDb>
 }
 
-Deno.test('createListRowsOnlyReadDb default-denies non-select database access', () => {
+test('createListRowsOnlyReadDb default-denies non-select database access', () => {
   const db = createStubDbForCachedReadTests()
   const readDb = createListRowsOnlyReadDb(db)
 
@@ -281,7 +289,7 @@ Deno.test('createListRowsOnlyReadDb default-denies non-select database access', 
   }
 })
 
-Deno.test('createListRowsOnlyReadDb rejects partial servers-list select columns', async () => {
+test('createListRowsOnlyReadDb rejects partial servers-list select columns', async () => {
   const db = createStubDbForCachedReadTests()
   const readDb = createListRowsOnlyReadDb(db)
 
@@ -442,7 +450,7 @@ async function withServerDeleteFixtures(
   }
 }
 
-Deno.test('DELETE /servers/:id deletes the row and purges the daemon cell', async () => {
+test('DELETE /servers/:id deletes the row and purges the daemon cell', async () => {
   await withServerDeleteFixtures(async ({
     db,
     app,
@@ -474,7 +482,7 @@ Deno.test('DELETE /servers/:id deletes the row and purges the daemon cell', asyn
   })
 })
 
-Deno.test('DELETE /servers/:id returns 404 for a missing server', async () => {
+test('DELETE /servers/:id returns 404 for a missing server', async () => {
   await withServerDeleteFixtures(async ({
     db,
     app,
@@ -498,7 +506,7 @@ Deno.test('DELETE /servers/:id returns 404 for a missing server', async () => {
   })
 })
 
-Deno.test('DELETE /servers/:id returns 403 for the co-located control plane server', async () => {
+test('DELETE /servers/:id returns 403 for the co-located control plane server', async () => {
   await withServerDeleteFixtures(async ({
     db,
     app,
@@ -534,7 +542,7 @@ Deno.test('DELETE /servers/:id returns 403 for the co-located control plane serv
   })
 })
 
-Deno.test('DELETE /servers/:id returns 409 when networks block deletion', async () => {
+test('DELETE /servers/:id returns 409 when networks block deletion', async () => {
   await withServerDeleteFixtures(async ({
     db,
     app,
@@ -578,7 +586,7 @@ Deno.test('DELETE /servers/:id returns 409 when networks block deletion', async 
   })
 })
 
-Deno.test('DELETE /servers/:id invalidates the bound license on Deno', async () => {
+test('DELETE /servers/:id invalidates the bound license on Deno', async () => {
   await withServerDeleteFixtures(async ({
     db,
     app,
@@ -616,7 +624,7 @@ Deno.test('DELETE /servers/:id invalidates the bound license on Deno', async () 
   })
 })
 
-Deno.test('DELETE /servers/:id returns 409 when child resources block deletion', async () => {
+test('DELETE /servers/:id returns 409 when child resources block deletion', async () => {
   await withServerDeleteFixtures(async ({
     db,
     app,
@@ -658,7 +666,7 @@ Deno.test('DELETE /servers/:id returns 409 when child resources block deletion',
   })
 })
 
-Deno.test('DELETE /servers/:id returns 503 when daemon cell registry is unavailable', async () => {
+test('DELETE /servers/:id returns 503 when daemon cell registry is unavailable', async () => {
   if (!dbUrl) {
     console.warn('Skipping server route tests: TURBOPANEL_DATABASE_URL not set')
     return
@@ -736,7 +744,7 @@ Deno.test('DELETE /servers/:id returns 503 when daemon cell registry is unavaila
   }
 })
 
-Deno.test('DELETE /servers/:id returns 500 when purge fails after row delete', async () => {
+test('DELETE /servers/:id returns 500 when purge fails after row delete', async () => {
   if (!dbUrl) {
     console.warn('Skipping server route tests: TURBOPANEL_DATABASE_URL not set')
     return
@@ -828,7 +836,7 @@ Deno.test('DELETE /servers/:id returns 500 when purge fails after row delete', a
   }
 })
 
-Deno.test('GET /servers/updates does not call listRequests on the cell', async () => {
+test('GET /servers/updates does not call listRequests on the cell', async () => {
   if (!dbUrl) {
     console.warn('Skipping server route tests: TURBOPANEL_DATABASE_URL not set')
     return
@@ -951,7 +959,7 @@ function assertServerStatusRecordShape(record: Record<string, unknown>): void {
   assertEquals(Object.keys(record).sort(), [...SERVER_STATUS_RECORD_KEYS].sort())
 }
 
-Deno.test('GET /servers returns Postgres data without calling getSnapshots', async () => {
+test('GET /servers returns Postgres data without calling getSnapshots', async () => {
   await withServerDeleteFixtures(async ({
     db,
     userId,
@@ -990,7 +998,7 @@ Deno.test('GET /servers returns Postgres data without calling getSnapshots', asy
   })
 })
 
-Deno.test('GET /servers includes os, osDisplay, and osLogo from metadata without caching them', async () => {
+test('GET /servers includes os, osDisplay, and osLogo from metadata without caching them', async () => {
   await withServerDeleteFixtures(async ({
     db,
     secrets,
@@ -1060,7 +1068,7 @@ Deno.test('GET /servers includes os, osDisplay, and osLogo from metadata without
   })
 })
 
-Deno.test('GET /servers/status returns Postgres data without calling getSnapshots', async () => {
+test('GET /servers/status returns Postgres data without calling getSnapshots', async () => {
   await withServerDeleteFixtures(async ({
     db,
     secrets,
@@ -1098,7 +1106,7 @@ Deno.test('GET /servers/status returns Postgres data without calling getSnapshot
   })
 })
 
-Deno.test('GET /servers/:id/status returns Postgres data without calling getSnapshots', async () => {
+test('GET /servers/:id/status returns Postgres data without calling getSnapshots', async () => {
   await withServerDeleteFixtures(async ({
     db,
     secrets,
@@ -1135,7 +1143,7 @@ Deno.test('GET /servers/:id/status returns Postgres data without calling getSnap
   })
 })
 
-Deno.test('GET /servers/:id/cell returns 403 for a non-admin session user', async () => {
+test('GET /servers/:id/cell returns 403 for a non-admin session user', async () => {
   await withServerDeleteFixtures(async ({
     db,
     app,
@@ -1156,7 +1164,7 @@ Deno.test('GET /servers/:id/cell returns 403 for a non-admin session user', asyn
   })
 })
 
-Deno.test('GET /servers/:id/cell returns data for an admin user', async () => {
+test('GET /servers/:id/cell returns data for an admin user', async () => {
   if (!dbUrl) {
     console.warn('Skipping server route tests: TURBOPANEL_DATABASE_URL not set')
     return
@@ -1217,7 +1225,7 @@ Deno.test('GET /servers/:id/cell returns data for an admin user', async () => {
   }
 })
 
-Deno.test('GET /servers uses only the approved servers-list read model cache helper', async () => {
+test('GET /servers uses only the approved servers-list read model cache helper', async () => {
   await withServerDeleteFixtures(async ({
     db,
     secrets,
@@ -1249,7 +1257,7 @@ Deno.test('GET /servers uses only the approved servers-list read model cache hel
   })
 })
 
-Deno.test('GET /servers — cached payload is list rows only (presence comes from primary db)', async () => {
+test('GET /servers — cached payload is list rows only (presence comes from primary db)', async () => {
   await withServerDeleteFixtures(async ({
     db,
     secrets,
@@ -1292,7 +1300,7 @@ Deno.test('GET /servers — cached payload is list rows only (presence comes fro
   })
 })
 
-Deno.test('GET /servers — empty visibleIds short-circuits before cache', async () => {
+test('GET /servers — empty visibleIds short-circuits before cache', async () => {
   if (!dbUrl) {
     console.warn('Skipping server route tests: TURBOPANEL_DATABASE_URL not set')
     return
@@ -1355,7 +1363,7 @@ Deno.test('GET /servers — empty visibleIds short-circuits before cache', async
   }
 })
 
-Deno.test('GET /servers — differing visibleIds produce different cache keys', async () => {
+test('GET /servers — differing visibleIds produce different cache keys', async () => {
   await withServerDeleteFixtures(async ({
     db,
     secrets,
@@ -1405,7 +1413,7 @@ Deno.test('GET /servers — differing visibleIds produce different cache keys', 
   })
 })
 
-Deno.test('GET /servers — presence reflects live data, not cached value', async () => {
+test('GET /servers — presence reflects live data, not cached value', async () => {
   await withServerDeleteFixtures(async ({
     db,
     secrets,
@@ -1445,7 +1453,7 @@ Deno.test('GET /servers — presence reflects live data, not cached value', asyn
   })
 })
 
-Deno.test('GET /servers does not return stale servers after organization grant revocation', async () => {
+test('GET /servers does not return stale servers after organization grant revocation', async () => {
   await withServerDeleteFixtures(async ({
     db,
     secrets,

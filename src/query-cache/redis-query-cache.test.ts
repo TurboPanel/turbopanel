@@ -47,7 +47,15 @@ function withRedisQueryCache(
   }
 }
 
-Deno.test(
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test(
   'cached returns loader result on miss then serves from cache on hit',
   withRedisQueryCache(async ({ client, namespace, db }) => {
     const cache = createRedisQueryCache({ client, db })
@@ -94,7 +102,7 @@ Deno.test(
   }),
 )
 
-Deno.test(
+test(
   'cached clamps ttlSeconds to MAX_QUERY_CACHE_TTL_SECONDS',
   withRedisQueryCache(async ({ client, namespace, db }) => {
     const cache = createRedisQueryCache({ client, db })
@@ -113,7 +121,7 @@ Deno.test(
   }),
 )
 
-Deno.test('cached falls back to loader when Redis get throws', async () => {
+test('cached falls back to loader when Redis get throws', async () => {
   const db = null as unknown as Db
   let loadCount = 0
   const client = {
@@ -136,7 +144,7 @@ Deno.test('cached falls back to loader when Redis get throws', async () => {
   assertEquals(loadCount, 1)
 })
 
-Deno.test('cached returns loader result when Redis set throws', async () => {
+test('cached returns loader result when Redis set throws', async () => {
   const db = null as unknown as Db
   let loadCount = 0
   let setKey: string | undefined
@@ -166,7 +174,7 @@ Deno.test('cached returns loader result when Redis set throws', async () => {
   assertEquals(setKey, queryCacheKey('servers-list', 'redis-set-error'))
 })
 
-Deno.test('getReadModel rejects unapproved read models', async () => {
+test('getReadModel rejects unapproved read models', async () => {
   const db = null as unknown as Db
   const client = {
     get: () => Promise.resolve(null),
@@ -185,7 +193,7 @@ Deno.test('getReadModel rejects unapproved read models', async () => {
   )
 })
 
-Deno.test(
+test(
   'cached falls back to loader when cached value is invalid JSON',
   withRedisQueryCache(async ({ client, namespace, db }) => {
     const cache = createRedisQueryCache({ client, db })

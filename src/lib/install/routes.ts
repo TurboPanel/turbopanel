@@ -5,7 +5,11 @@ import {
   SESSION_EXPIRES_IN_MS,
 } from '../../client/authn/crypto.ts'
 import { verifyInstallHostCredentials } from '../../client/authn/credentials.ts'
-import { buildSessionResponse, type AuthRouteOpts } from '../../client/authn/http.ts'
+import {
+  buildSessionResponse,
+  enforceAuthRateLimit,
+  type AuthRouteOpts,
+} from '../../client/authn/http.ts'
 import {
   completeInstanceInstall,
   isInstanceInstalled,
@@ -13,6 +17,44 @@ import {
 import { createSession, getSession } from '../../client/authn/session-store.ts'
 import { getDb } from '../../db.ts'
 import { INSTALL_API_PREFIX } from '../../surfaces.ts'
+
+interface CompleteInstallInput {
+  username: string
+  password: string
+  superadminEmail: string
+  superadminPassword: string
+}
+
+async function parseCompleteInstallBody(
+  c: Context,
+): Promise<CompleteInstallInput | { response: Response }> {
+  let body: unknown
+  try {
+    body = await c.req.json()
+  } catch {
+    return { response: c.json({ ok: false, error: 'Invalid request' }, 400) }
+  }
+
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { response: c.json({ ok: false, error: 'Invalid request' }, 400) }
+  }
+
+  const record = body as Record<string, unknown>
+  const { username, password, superadminEmail, superadminPassword } = record
+
+  if (
+    typeof username !== 'string' ||
+    !username.trim() ||
+    typeof password !== 'string' ||
+    !password ||
+    typeof superadminEmail !== 'string' ||
+    typeof superadminPassword !== 'string'
+  ) {
+    return { response: c.json({ ok: false, error: 'Invalid request' }, 400) }
+  }
+
+  return { username, password, superadminEmail, superadminPassword }
+}
 
 async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
   if (opts.runtime !== 'deno') {
@@ -32,29 +74,15 @@ async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
     return c.json({ ok: false, error: 'Instance is already configured' }, 409)
   }
 
-  let body: unknown
-  try {
-    body = await c.req.json()
-  } catch {
-    return c.json({ ok: false, error: 'Invalid request' }, 400)
+  const parsed = await parseCompleteInstallBody(c)
+  if ('response' in parsed) {
+    return parsed.response
   }
+  const { username, password, superadminEmail, superadminPassword } = parsed
 
-  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-    return c.json({ ok: false, error: 'Invalid request' }, 400)
-  }
-
-  const record = body as Record<string, unknown>
-  const { username, password, superadminEmail, superadminPassword } = record
-
-  if (
-    typeof username !== 'string' ||
-    !username.trim() ||
-    typeof password !== 'string' ||
-    !password ||
-    typeof superadminEmail !== 'string' ||
-    typeof superadminPassword !== 'string'
-  ) {
-    return c.json({ ok: false, error: 'Invalid request' }, 400)
+  const limited = enforceAuthRateLimit(c, 'install-complete', username.trim())
+  if (limited) {
+    return limited
   }
 
   const hostOk = await verifyInstallHostCredentials(
@@ -159,6 +187,11 @@ export function registerInstallRoutes(app: Hono, opts: AuthRouteOpts) {
       !password
     ) {
       return c.json({ ok: false, error: 'Invalid request' }, 400)
+    }
+
+    const limited = enforceAuthRateLimit(c, 'install-bootstrap', username.trim())
+    if (limited) {
+      return limited
     }
 
     const ok = await verifyInstallHostCredentials(

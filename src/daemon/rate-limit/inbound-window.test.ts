@@ -1,7 +1,15 @@
 import { assertEquals } from 'jsr:@std/assert'
 import { createInboundWindowGate } from './inbound-window.ts'
 
-Deno.test('inbound window allows up to limit then drops', () => {
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test('inbound window allows up to limit then drops', () => {
   const gate = createInboundWindowGate(3, 60_000)
   assertEquals(gate.allow('c1'), true)
   assertEquals(gate.allow('c1'), true)
@@ -10,7 +18,7 @@ Deno.test('inbound window allows up to limit then drops', () => {
   assertEquals(gate.allow('c1'), false)
 })
 
-Deno.test('inbound window is independent per connection', () => {
+test('inbound window is independent per connection', () => {
   const gate = createInboundWindowGate(1, 60_000)
   assertEquals(gate.allow('a'), true)
   assertEquals(gate.allow('a'), false)
@@ -18,7 +26,7 @@ Deno.test('inbound window is independent per connection', () => {
   assertEquals(gate.allow('b'), false)
 })
 
-Deno.test('inbound window release clears state', () => {
+test('inbound window release clears state', () => {
   const gate = createInboundWindowGate(1, 60_000)
   assertEquals(gate.allow('c1'), true)
   assertEquals(gate.allow('c1'), false)
@@ -26,7 +34,7 @@ Deno.test('inbound window release clears state', () => {
   assertEquals(gate.allow('c1'), true)
 })
 
-Deno.test('inbound window resets after windowMs', async () => {
+test('inbound window resets after windowMs', async () => {
   const gate = createInboundWindowGate(1, 20)
   assertEquals(gate.allow('c1'), true)
   assertEquals(gate.allow('c1'), false)

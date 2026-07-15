@@ -22,9 +22,9 @@ import {
 import { hashPassword } from './password.ts'
 import { createSession, getSession, type SessionData } from './session-store.ts'
 import type { AuthRouteOpts } from './http.ts'
-import { buildSessionResponse } from './http.ts'
+import { buildSessionResponse, enforceAuthRateLimit } from './http.ts'
 import { compatLogWarn } from '../../log-compat.ts'
-import { getDb } from '../../db.ts'
+import { getDb, type Db } from '../../db.ts'
 import { account, user } from '../../lib/db/schema.ts'
 import { getEmailQueue } from '../../lib/email/types.ts'
 import type { OtpType } from '../../lib/email/types.ts'
@@ -127,6 +127,58 @@ function enqueueEmailOtp(
     })
 }
 
+async function resolveOtpSignInUserId(
+  c: Context,
+  opts: AuthRouteOpts,
+  db: Db,
+  trimmedEmail: string,
+  name: string | undefined,
+): Promise<{ userId: string } | { response: Response }> {
+  const existingUsers = await db
+    .select({ id: user.id, isDisabled: user.isDisabled })
+    .from(user)
+    .where(eq(user.email, trimmedEmail))
+    .limit(1)
+
+  const existingUser = existingUsers[0]
+  if (existingUser?.isDisabled) {
+    return {
+      response: c.json({ ok: false, error: 'Invalid credentials' }, 403),
+    }
+  }
+  if (existingUser) {
+    return { userId: existingUser.id }
+  }
+
+  if (opts.runtime === 'deno' && !(await isInstanceInstalled(db))) {
+    return {
+      response: c.json({ ok: false, error: 'Complete initial setup first' }, 403),
+    }
+  }
+  if (!(await isSignupEnabled(db, opts.signupEnvOverride, opts.runtime))) {
+    return {
+      response: c.json({ ok: false, error: 'Sign-up is not enabled' }, 403),
+    }
+  }
+
+  const displayName = name?.trim() ? name.trim() : undefined
+  const inserted = await db
+    .insert(user)
+    .values({
+      email: trimmedEmail,
+      isEmailVerified: true,
+      role: 'user',
+      ...(displayName && { displayName }),
+    })
+    .returning({ id: user.id })
+
+  const created = inserted[0]
+  if (!created) {
+    return { response: c.json({ ok: false, error: 'Sign-in failed' }, 500) }
+  }
+  return { userId: created.id }
+}
+
 export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
   auth.post('/send-otp', async (c) => {
     const db = getDb(c)
@@ -157,6 +209,11 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
 
     let trimmedEmail = email.trim().toLowerCase()
 
+    const sendOtpLimited = enforceAuthRateLimit(c, 'send-otp', trimmedEmail)
+    if (sendOtpLimited) {
+      return sendOtpLimited
+    }
+
     if (type === 'email-verification') {
       const sessionData = await readActiveSession(c, opts)
       if (!sessionData) {
@@ -169,8 +226,12 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
       trimmedEmail = sessionEmail
     }
 
-    const otp = await createEmailOtp(db, trimmedEmail, type)
-    enqueueEmailOtp(c, opts, trimmedEmail, otp, type)
+    const otpResult = await createEmailOtp(db, trimmedEmail, type)
+    if (otpResult.status === 'cooldown') {
+      // Resend cooldown active — respond identically so callers cannot probe.
+      return c.json({ ok: true }, 200)
+    }
+    enqueueEmailOtp(c, opts, trimmedEmail, otpResult.otp, type)
 
     return c.json({ ok: true }, 200)
   })
@@ -209,6 +270,12 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
     }
 
     const trimmedEmail = email.trim().toLowerCase()
+
+    const verifyOtpLimited = enforceAuthRateLimit(c, 'verify-otp', trimmedEmail)
+    if (verifyOtpLimited) {
+      return verifyOtpLimited
+    }
+
     const result = await verifyEmailOtp(db, trimmedEmail, type, otp, {
       consume: false,
     })
@@ -248,49 +315,29 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
     }
 
     const trimmedEmail = email.trim().toLowerCase()
+
+    const signInOtpLimited = enforceAuthRateLimit(c, 'sign-in-otp', trimmedEmail)
+    if (signInOtpLimited) {
+      return signInOtpLimited
+    }
+
     const verifyResult = await verifyEmailOtp(db, trimmedEmail, 'sign-in', otp)
     const mapped = mapVerifyResult(verifyResult)
     if (mapped.status !== 200) {
       return c.json(mapped.body, mapped.status)
     }
 
-    const existingUsers = await db
-      .select({ id: user.id })
-      .from(user)
-      .where(eq(user.email, trimmedEmail))
-      .limit(1)
-
-    let userId: string
-
-    if (existingUsers.length === 0) {
-      if (opts.runtime === 'deno' && !(await isInstanceInstalled(db))) {
-        return c.json({ ok: false, error: 'Complete initial setup first' }, 403)
-      }
-
-      if (!(await isSignupEnabled(db, opts.signupEnvOverride, opts.runtime))) {
-        return c.json({ ok: false, error: 'Sign-up is not enabled' }, 403)
-      }
-
-      const displayName =
-        typeof name === 'string' && name.trim() ? name.trim() : undefined
-      const inserted = await db
-        .insert(user)
-        .values({
-          email: trimmedEmail,
-          isEmailVerified: true,
-          role: 'user',
-          ...(displayName && { displayName }),
-        })
-        .returning({ id: user.id })
-
-      const created = inserted[0]
-      if (!created) {
-        return c.json({ ok: false, error: 'Sign-in failed' }, 500)
-      }
-      userId = created.id
-    } else {
-      userId = existingUsers[0]!.id
+    const resolved = await resolveOtpSignInUserId(
+      c,
+      opts,
+      db,
+      trimmedEmail,
+      typeof name === 'string' ? name : undefined,
+    )
+    if ('response' in resolved) {
+      return resolved.response
     }
+    const userId = resolved.userId
 
     const { token } = await createSession(db, userId, {
       ipAddress: c.req.header('X-Real-IP') ?? undefined,
@@ -347,6 +394,15 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Invalid request' }, 400)
     }
 
+    const verifyEmailLimited = enforceAuthRateLimit(
+      c,
+      'verify-email-otp',
+      sessionEmail,
+    )
+    if (verifyEmailLimited) {
+      return verifyEmailLimited
+    }
+
     const verifyResult = await verifyEmailOtp(
       db,
       sessionEmail,
@@ -389,8 +445,21 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
     }
 
     const trimmedEmail = email.trim().toLowerCase()
-    const otp = await createEmailOtp(db, trimmedEmail, 'forget-password')
-    enqueueEmailOtp(c, opts, trimmedEmail, otp, 'forget-password')
+
+    const resetRequestLimited = enforceAuthRateLimit(
+      c,
+      'reset-password-request',
+      trimmedEmail,
+    )
+    if (resetRequestLimited) {
+      return resetRequestLimited
+    }
+
+    const otpResult = await createEmailOtp(db, trimmedEmail, 'forget-password')
+    if (otpResult.status === 'cooldown') {
+      return c.json({ ok: true }, 200)
+    }
+    enqueueEmailOtp(c, opts, trimmedEmail, otpResult.otp, 'forget-password')
 
     return c.json({ ok: true }, 200)
   })
@@ -447,13 +516,18 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
     }
 
     const users = await db
-      .select({ id: user.id })
+      .select({ id: user.id, isDisabled: user.isDisabled })
       .from(user)
       .where(eq(user.email, trimmedEmail))
       .limit(1)
 
     const foundUser = users[0]
     if (!foundUser) {
+      return c.json({ ok: false, error: 'User not found' }, 404)
+    }
+
+    // Disabled users must not be able to complete a password reset.
+    if (foundUser.isDisabled) {
       return c.json({ ok: false, error: 'User not found' }, 404)
     }
 

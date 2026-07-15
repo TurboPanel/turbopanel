@@ -16,7 +16,7 @@ const CELL_SERVER_ID_HEADER = "X-Turbopanel-Cell-Server-Id";
 const CELL_GEO_HEADER = "X-Turbopanel-Cell-Geo";
 const REAL_IP_HEADER = "X-Real-IP";
 
-const TEST_SECRET = "aa_workers_ws_forward_test_secret_value_b";
+const TEST_SECRET = "aa_workers_ws_forward_test_secret_value_b_pad_abcdefghij0";
 
 async function createTestSecrets() {
   return deriveDaemonJwtKeyring(

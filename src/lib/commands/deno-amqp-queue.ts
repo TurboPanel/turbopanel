@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer'
-import amqplib from 'npm:amqplib'
+import amqplib from 'amqplib'
 import {
   assertCommandAmqpTopology,
   COMMAND_AMQP_EXCHANGE,
@@ -29,19 +29,17 @@ class DenoAmqpCommandQueue implements CommandQueue {
 
   private async ensureConnected(): Promise<boolean> {
     if (this.channel) return true
-    if (!this.connectPromise) {
-      this.connectPromise = (async () => {
-        this.connection = await amqplib.connect(this.opts.amqpUrl)
-        this.channel = await this.connection.createConfirmChannel()
-        await assertCommandAmqpTopology(this.channel)
-      })().catch((error) => {
-        compatLogWarn('command-queue', `AMQP connection failed: ${error}`)
-        this.connection = null
-        this.channel = null
-      }).finally(() => {
-        this.connectPromise = null
-      })
-    }
+    this.connectPromise ??= (async () => {
+      this.connection = await amqplib.connect(this.opts.amqpUrl)
+      this.channel = await this.connection.createConfirmChannel()
+      await assertCommandAmqpTopology(this.channel)
+    })().catch((error: unknown) => {
+      compatLogWarn('command-queue', `AMQP connection failed: ${error}`)
+      this.connection = null
+      this.channel = null
+    }).finally(() => {
+      this.connectPromise = null
+    })
     await this.connectPromise
     return this.channel !== null
   }
@@ -59,7 +57,7 @@ class DenoAmqpCommandQueue implements CommandQueue {
           COMMAND_AMQP_ROUTING_KEY,
           content,
           { persistent: true, mandatory: true },
-          (error) => {
+          (error: Error | null) => {
             if (error) reject(error)
             else resolve()
           },

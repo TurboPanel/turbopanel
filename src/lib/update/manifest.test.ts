@@ -4,7 +4,15 @@ import {
   resolveTrunkManifest,
 } from "./manifest.ts";
 
-Deno.test("resolveTrunkManifest coalesces concurrent lookups", async () => {
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test("resolveTrunkManifest coalesces concurrent lookups", async () => {
   resetTrunkManifestCacheForTests();
   let fetchCount = 0;
   const originalFetch = globalThis.fetch;
@@ -55,7 +63,7 @@ Deno.test("resolveTrunkManifest coalesces concurrent lookups", async () => {
   }
 });
 
-Deno.test("resolveTrunkManifest reuses cached manifest within TTL", async () => {
+test("resolveTrunkManifest reuses cached manifest within TTL", async () => {
   resetTrunkManifestCacheForTests();
   let fetchCount = 0;
   const originalFetch = globalThis.fetch;

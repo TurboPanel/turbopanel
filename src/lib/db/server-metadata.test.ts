@@ -6,7 +6,15 @@ import {
   serverOsMetadataEquals,
 } from './server-metadata.ts'
 
-Deno.test('formatServerOsDisplay formats Debian with point release', () => {
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test('formatServerOsDisplay formats Debian with point release', () => {
   assertEquals(
     formatServerOsDisplay({
       family: 'linux',
@@ -19,7 +27,7 @@ Deno.test('formatServerOsDisplay formats Debian with point release', () => {
   )
 })
 
-Deno.test('formatServerOsDisplay formats Raspberry Pi OS from variant', () => {
+test('formatServerOsDisplay formats Raspberry Pi OS from variant', () => {
   assertEquals(
     formatServerOsDisplay({
       family: 'linux',
@@ -32,7 +40,7 @@ Deno.test('formatServerOsDisplay formats Raspberry Pi OS from variant', () => {
   )
 })
 
-Deno.test('formatServerOsDisplay formats raspbian ID as Raspberry Pi OS', () => {
+test('formatServerOsDisplay formats raspbian ID as Raspberry Pi OS', () => {
   assertEquals(
     formatServerOsDisplay({
       family: 'linux',
@@ -44,7 +52,7 @@ Deno.test('formatServerOsDisplay formats raspbian ID as Raspberry Pi OS', () => 
   )
 })
 
-Deno.test('formatServerOsDisplay falls back when fields are sparse', () => {
+test('formatServerOsDisplay falls back when fields are sparse', () => {
   assertEquals(
     formatServerOsDisplay({ family: 'linux', id: 'ubuntu', version: '24.04' }),
     'Ubuntu 24.04',
@@ -63,7 +71,7 @@ Deno.test('formatServerOsDisplay falls back when fields are sparse', () => {
   assertEquals(formatServerOsDisplay(undefined), null)
 })
 
-Deno.test('resolveServerOsLogoKey picks debian vs raspberry-pi-os', () => {
+test('resolveServerOsLogoKey picks debian vs raspberry-pi-os', () => {
   assertEquals(
     resolveServerOsLogoKey({ family: 'linux', id: 'debian' }),
     'debian',
@@ -83,7 +91,7 @@ Deno.test('resolveServerOsLogoKey picks debian vs raspberry-pi-os', () => {
   assertEquals(resolveServerOsLogoKey({ family: 'linux', id: 'ubuntu' }), null)
 })
 
-Deno.test('parseServerOsMetadata accepts daemon hello os blocks', () => {
+test('parseServerOsMetadata accepts daemon hello os blocks', () => {
   assertEquals(
     parseServerOsMetadata({
       family: 'linux',
@@ -108,7 +116,7 @@ Deno.test('parseServerOsMetadata accepts daemon hello os blocks', () => {
   assertEquals(parseServerOsMetadata('nope'), undefined)
 })
 
-Deno.test('serverOsMetadataEquals compares field-wise including variant', () => {
+test('serverOsMetadataEquals compares field-wise including variant', () => {
   const a = {
     family: 'linux' as const,
     id: 'debian',

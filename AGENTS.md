@@ -48,6 +48,19 @@ The **daemon is the constant** installed on every TurboPanel-managed host and is
 - Do not leave **`TODO`** in code — use `Future:` in a normal comment (`typescript:S1135`).
 - Use **RFC 5737 TEST-NET** addresses (e.g. `203.0.113.x`) in tests, not arbitrary public IPs (`typescript:S1313`).
 - Add **`// NOSONAR rule-key — reason`** when a semantic type alias or path check is intentional (`typescript:S6564`, `typescript:S5443`).
+- Deno tests: Sonar `typescript:S2187` only recognizes `test()` / `it()` / `describe()`, not `Deno.test`. **Every `*.test.ts` file that would otherwise call `Deno.test(...)` MUST** either use BDD (`import { describe, it } from '@std/testing/bdd'`) or alias `Deno.test` — never leave a bare `Deno.test(` in a test file. The canonical alias (same pattern as `../daemon`, applied to all existing Deno test files) is placed once, right after the imports:
+
+  ```ts
+  /**
+   * Jest/Mocha-shaped alias for {@link Deno.test}.
+   *
+   * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+   * reports Deno suites as empty; keep this alias so analysis sees real tests.
+   */
+  const test = Deno.test.bind(Deno)
+  ```
+
+  Then call `test('...', () => { … })` (or the object form `test({ name, fn })`) instead of `Deno.test(...)`. When adding a new Deno test file, add this alias from the start.
 
 ### Ansible style (SonarQube)
 

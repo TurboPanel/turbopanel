@@ -1,5 +1,6 @@
 import type { Context } from 'hono'
 import { isDeveloperSurfaceEnabled } from '../dev-mode.ts'
+import { parseSecretsEnv } from '../client/authn/secrets.ts'
 
 const LOCAL_CONSOLE_SCHEME = 'Local-Console'
 const LOCAL_CONSOLE_MAX_SKEW_MS = 60_000
@@ -11,22 +12,20 @@ function isLocalConsoleAuthEnabled(): boolean {
 
 function resolveLocalConsoleRootSecret(): string | undefined {
   if (typeof Deno === 'undefined') return undefined
-  const direct = Deno.env.get('TURBOPANEL_SECRET')?.trim()
-  if (direct) return direct
-  const secrets = Deno.env.get('TURBOPANEL_SECRETS')?.trim()
-  if (!secrets) return undefined
-  let highest: { version: number; value: string } | null = null
-  for (const entry of secrets.split(',')) {
-    const colon = entry.indexOf(':')
-    if (colon <= 0) continue
-    const version = Number.parseInt(entry.slice(0, colon), 10)
-    const value = entry.slice(colon + 1).trim()
-    if (!Number.isInteger(version) || !value) continue
-    if (!highest || version > highest.version) {
-      highest = { version, value }
-    }
+  try {
+    // Share the same validated parse/selection as the rest of the process.
+    // `parseSecretsEnv` sorts versioned secrets descending, so entry [0] is the
+    // current signing secret. Invalid/weak configurations throw and disable
+    // local-console auth rather than falling back to a loose parse.
+    const config = parseSecretsEnv(
+      Deno.env.get('TURBOPANEL_SECRET'),
+      Deno.env.get('TURBOPANEL_SECRETS'),
+      'deno',
+    )
+    return config.versioned[0]?.value
+  } catch {
+    return undefined
   }
-  return highest?.value
 }
 
 function decodeBase64Url(value: string): Uint8Array | null {

@@ -39,7 +39,7 @@ function run(cmd) {
 }
 
 function sudo(cmd) {
-  run(`sudo ${cmd}`)
+  run(`/usr/bin/sudo ${cmd}`)
 }
 
 async function dirLooksCorrect() {
@@ -72,7 +72,7 @@ async function main() {
       run(`chmod ${MODE.toString(8)} '${SOCKET_DIR}'`)
     } else {
       try {
-        execSync('sudo -n true', { stdio: 'ignore' })
+        execSync('/usr/bin/sudo -n true', { stdio: 'ignore' })
       } catch {
         console.error(
           `[ensure-socket-dir] ${SOCKET_DIR} is missing or misconfigured and passwordless sudo is unavailable.`,
@@ -91,7 +91,9 @@ async function main() {
   console.log(`TURBOPANEL_SOCKET_DIAL=${SOCKET_DIAL}`)
 }
 
-main().catch((err) => {
+try {
+  await main()
+} catch (err) {
   console.error('[ensure-socket-dir]', err instanceof Error ? err.message : err)
   process.exit(1)
-})
+}

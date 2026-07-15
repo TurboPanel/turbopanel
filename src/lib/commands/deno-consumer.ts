@@ -1,4 +1,4 @@
-import amqplib from 'npm:amqplib'
+import amqplib from 'amqplib'
 import type { Db } from '../../db.ts'
 import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
 import { compatLogError, compatLogWarn } from '../../log-compat.ts'

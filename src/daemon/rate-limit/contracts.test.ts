@@ -8,7 +8,15 @@ import {
   daemonRestRateLimitKey,
 } from './keys.ts'
 
-Deno.test('createNoopRateLimiter always returns success', async () => {
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test('createNoopRateLimiter always returns success', async () => {
   const limiter = createNoopRateLimiter()
   const first = await limiter.limit({ key: 'any' })
   const second = await limiter.limit({ key: 'other' })
@@ -16,7 +24,7 @@ Deno.test('createNoopRateLimiter always returns success', async () => {
   assertEquals(second, { success: true })
 })
 
-Deno.test('createWorkersRateLimiter delegates to binding.limit with key', async () => {
+test('createWorkersRateLimiter delegates to binding.limit with key', async () => {
   const seen: string[] = []
   const binding = {
     limit: (options: { key: string }) => {
@@ -31,7 +39,7 @@ Deno.test('createWorkersRateLimiter delegates to binding.limit with key', async 
   assertEquals(seen, ['allow', 'deny'])
 })
 
-Deno.test('daemon rate-limit keys are stable and include id + route', () => {
+test('daemon rate-limit keys are stable and include id + route', () => {
   assertEquals(
     daemonConnectRateLimitKey('srv-1'),
     'daemon:connect:srv-1',

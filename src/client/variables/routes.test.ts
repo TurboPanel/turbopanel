@@ -204,7 +204,15 @@ async function withVariableFixtures(
   }
 }
 
-Deno.test('GET /variables lists visible variables for org owner', async () => {
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test('GET /variables lists visible variables for org owner', async () => {
   await withVariableFixtures(async ({
     db,
     app,
@@ -232,7 +240,7 @@ Deno.test('GET /variables lists visible variables for org owner', async () => {
   })
 })
 
-Deno.test('PATCH /variables/:id seals plaintext when isSecret toggles true without value', async () => {
+test('PATCH /variables/:id seals plaintext when isSecret toggles true without value', async () => {
   await withVariableFixtures(async ({
     db,
     app,
@@ -286,7 +294,7 @@ Deno.test('PATCH /variables/:id seals plaintext when isSecret toggles true witho
   })
 })
 
-Deno.test('PATCH /variables/:id rejects secret to non-secret without replacement value', async () => {
+test('PATCH /variables/:id rejects secret to non-secret without replacement value', async () => {
   await withVariableFixtures(async ({
     db,
     app,
@@ -355,7 +363,7 @@ async function postVariable(
   })
 }
 
-Deno.test('POST /variables with organizationId only succeeds', async () => {
+test('POST /variables with organizationId only succeeds', async () => {
   await withVariableFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const response = await postVariable(app, cookie, organizationId, {
@@ -375,7 +383,7 @@ Deno.test('POST /variables with organizationId only succeeds', async () => {
   })
 })
 
-Deno.test('POST /variables with workspaceId only succeeds', async () => {
+test('POST /variables with workspaceId only succeeds', async () => {
   await withVariableFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const response = await postVariable(app, cookie, organizationId, {
@@ -387,7 +395,7 @@ Deno.test('POST /variables with workspaceId only succeeds', async () => {
   })
 })
 
-Deno.test('POST /variables with projectId only succeeds', async () => {
+test('POST /variables with projectId only succeeds', async () => {
   await withVariableFixtures(async ({ db, app, secrets, userId, organizationId, projectId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const response = await postVariable(app, cookie, organizationId, {
@@ -399,7 +407,7 @@ Deno.test('POST /variables with projectId only succeeds', async () => {
   })
 })
 
-Deno.test('POST /variables with serviceId only succeeds', async () => {
+test('POST /variables with serviceId only succeeds', async () => {
   await withVariableFixtures(async ({ db, app, secrets, userId, organizationId, serviceId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const response = await postVariable(app, cookie, organizationId, {
@@ -411,7 +419,7 @@ Deno.test('POST /variables with serviceId only succeeds', async () => {
   })
 })
 
-Deno.test('POST /variables with serverId only succeeds', async () => {
+test('POST /variables with serverId only succeeds', async () => {
   await withVariableFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const response = await postVariable(app, cookie, organizationId, {
@@ -423,7 +431,7 @@ Deno.test('POST /variables with serverId only succeeds', async () => {
   })
 })
 
-Deno.test('POST /variables with two parent fields returns 400', async () => {
+test('POST /variables with two parent fields returns 400', async () => {
   await withVariableFixtures(async ({ db, app, secrets, userId, organizationId, projectId, environmentId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const response = await postVariable(app, cookie, organizationId, {
@@ -438,7 +446,7 @@ Deno.test('POST /variables with two parent fields returns 400', async () => {
   })
 })
 
-Deno.test('POST /variables with no parent field returns 400', async () => {
+test('POST /variables with no parent field returns 400', async () => {
   await withVariableFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const response = await postVariable(app, cookie, organizationId, {
@@ -451,7 +459,7 @@ Deno.test('POST /variables with no parent field returns 400', async () => {
   })
 })
 
-Deno.test('POST /variables duplicate key within same parent returns 409', async () => {
+test('POST /variables duplicate key within same parent returns 409', async () => {
   await withVariableFixtures(async ({ db, app, secrets, userId, organizationId, projectId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const first = await postVariable(app, cookie, organizationId, {
@@ -470,7 +478,7 @@ Deno.test('POST /variables duplicate key within same parent returns 409', async 
   })
 })
 
-Deno.test('POST /variables same key in different parents both succeed', async () => {
+test('POST /variables same key in different parents both succeed', async () => {
   await withVariableFixtures(async ({
     db,
     app,
@@ -497,7 +505,7 @@ Deno.test('POST /variables same key in different parents both succeed', async ()
   })
 })
 
-Deno.test('PATCH /variables/:id rejects environmentId change', async () => {
+test('PATCH /variables/:id rejects environmentId change', async () => {
   await withVariableFixtures(async ({
     db,
     app,
@@ -535,7 +543,7 @@ Deno.test('PATCH /variables/:id rejects environmentId change', async () => {
   })
 })
 
-Deno.test('POST /variables rejects non-boolean isSecret string', async () => {
+test('POST /variables rejects non-boolean isSecret string', async () => {
   await withVariableFixtures(async ({ db, app, secrets, userId, organizationId, environmentId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const response = await postVariable(app, cookie, organizationId, {
@@ -556,7 +564,7 @@ Deno.test('POST /variables rejects non-boolean isSecret string', async () => {
   })
 })
 
-Deno.test('POST /variables rejects non-boolean isSecret number', async () => {
+test('POST /variables rejects non-boolean isSecret number', async () => {
   await withVariableFixtures(async ({ db, app, secrets, userId, organizationId, environmentId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const response = await postVariable(app, cookie, organizationId, {
@@ -577,7 +585,7 @@ Deno.test('POST /variables rejects non-boolean isSecret number', async () => {
   })
 })
 
-Deno.test('POST /variables preserves empty-string value', async () => {
+test('POST /variables preserves empty-string value', async () => {
   await withVariableFixtures(async ({ db, app, secrets, userId, organizationId, environmentId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const response = await postVariable(app, cookie, organizationId, {
@@ -606,7 +614,7 @@ Deno.test('POST /variables preserves empty-string value', async () => {
   })
 })
 
-Deno.test('PATCH /variables/:id preserves empty-string value', async () => {
+test('PATCH /variables/:id preserves empty-string value', async () => {
   await withVariableFixtures(async ({ db, app, secrets, userId, organizationId, environmentId }) => {
     const [insertedVariable] = await db
       .insert(variable)
@@ -636,7 +644,7 @@ Deno.test('PATCH /variables/:id preserves empty-string value', async () => {
   })
 })
 
-Deno.test('PATCH /variables/:id preserves empty-string when toggling to secret', async () => {
+test('PATCH /variables/:id preserves empty-string when toggling to secret', async () => {
   await withVariableFixtures(async ({
     db,
     app,
@@ -690,7 +698,7 @@ Deno.test('PATCH /variables/:id preserves empty-string when toggling to secret',
   })
 })
 
-Deno.test('GET /variables/resolved applies service override chain and excludes server scope', async () => {
+test('GET /variables/resolved applies service override chain and excludes server scope', async () => {
   await withVariableFixtures(async ({
     db,
     app,

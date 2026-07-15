@@ -5,7 +5,15 @@ import {
   parseServerGeo,
 } from "./server-geo.ts";
 
-Deno.test("extractCloudflareGeo maps cf.colo to datacenter", () => {
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test("extractCloudflareGeo maps cf.colo to datacenter", () => {
   const geo = extractCloudflareGeo({
     country: "US",
     city: "Austin",
@@ -20,13 +28,13 @@ Deno.test("extractCloudflareGeo maps cf.colo to datacenter", () => {
   });
 });
 
-Deno.test("parseServerGeo ignores legacy colo field", () => {
+test("parseServerGeo ignores legacy colo field", () => {
   assertEquals(parseServerGeo({ country: "US", colo: "AMS" }), {
     country: "US",
   });
 });
 
-Deno.test("geoEquals ignores capturedAt", () => {
+test("geoEquals ignores capturedAt", () => {
   assertEquals(
     geoEquals(
       { country: "US", capturedAt: "2020-01-01T00:00:00.000Z" },

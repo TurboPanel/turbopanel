@@ -1,6 +1,6 @@
 import { assertEquals, assertRejects } from 'jsr:@std/assert'
-import { stub } from 'jsr:@std/testing@1/mock'
-import amqplib from 'npm:amqplib'
+import { stub } from '@std/testing/mock'
+import amqplib from 'amqplib'
 import {
   assertCommandAmqpTopology,
   COMMAND_AMQP_DLQ,
@@ -11,6 +11,14 @@ import {
 } from './command-amqp-topology.ts'
 import { createDenoAmqpCommandQueue } from './deno-amqp-queue.ts'
 import type { CommandEnvelope } from './envelope.ts'
+
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
 
 type RecordedCall = { method: string; args: unknown[] }
 
@@ -44,7 +52,7 @@ function createRecordingChannel() {
   }
 }
 
-Deno.test('assertCommandAmqpTopology declares DLX, DLQ, exchange, and main queue', async () => {
+test('assertCommandAmqpTopology declares DLX, DLQ, exchange, and main queue', async () => {
   const channel = createRecordingChannel()
   await assertCommandAmqpTopology(channel)
 
@@ -80,7 +88,7 @@ Deno.test('assertCommandAmqpTopology declares DLX, DLQ, exchange, and main queue
   })
 })
 
-Deno.test('createDenoAmqpCommandQueue publishes persistent mandatory envelopes', async () => {
+test('createDenoAmqpCommandQueue publishes persistent mandatory envelopes', async () => {
   const channel = createRecordingChannel()
   const fakeConnection = {
     createConfirmChannel: async () => channel,
@@ -112,7 +120,7 @@ Deno.test('createDenoAmqpCommandQueue publishes persistent mandatory envelopes',
   }
 })
 
-Deno.test('createDenoAmqpCommandQueue rejects when confirm callback fails', async () => {
+test('createDenoAmqpCommandQueue rejects when confirm callback fails', async () => {
   const channel = createRecordingChannel()
   channel.publish = (
     _exchange: string,

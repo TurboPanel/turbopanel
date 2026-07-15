@@ -166,7 +166,15 @@ function createMockCell(snapshot: Record<string, unknown> = {}) {
   };
 }
 
-Deno.test("onDaemonHeartbeat projects agent.commit for update status via resolveFleetPresence", async () => {
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test("onDaemonHeartbeat projects agent.commit for update status via resolveFleetPresence", async () => {
   const { db, getDaemon } = createTrackingDb(
     { key: baseKey, projection: { hostname: "host-1" } },
     {
@@ -211,7 +219,7 @@ Deno.test("onDaemonHeartbeat projects agent.commit for update status via resolve
   assertEquals(current?.commit, agent.commit);
 });
 
-Deno.test("onDaemonConnected persists optional geo into metadata", async () => {
+test("onDaemonConnected persists optional geo into metadata", async () => {
   const { db, updateCalls } = createTrackingDb({ key: baseKey });
 
   await onDaemonConnected(
@@ -234,7 +242,7 @@ Deno.test("onDaemonConnected persists optional geo into metadata", async () => {
   });
 });
 
-Deno.test("onDaemonConnected sets status in daemon jsonb", async () => {
+test("onDaemonConnected sets status in daemon jsonb", async () => {
   const { db, updateCalls } = createTrackingDb({ key: baseKey });
 
   await onDaemonConnected(
@@ -253,7 +261,7 @@ Deno.test("onDaemonConnected sets status in daemon jsonb", async () => {
   assertEquals(typeof status?.lastSeenAt, "string");
 });
 
-Deno.test("onDaemonConnected repeated within 60s skips write when already online", async () => {
+test("onDaemonConnected repeated within 60s skips write when already online", async () => {
   const connectedAt = "2020-01-01T00:00:00.000Z";
   const recent = new Date().toISOString();
   const { db, updateCalls } = createTrackingDb(
@@ -279,7 +287,7 @@ Deno.test("onDaemonConnected repeated within 60s skips write when already online
   assertEquals(updateCalls.length, 0);
 });
 
-Deno.test("onDaemonConnected repeated after 60s updates lastSeenAt only", async () => {
+test("onDaemonConnected repeated after 60s updates lastSeenAt only", async () => {
   const connectedAt = "2020-01-01T00:00:00.000Z";
   const stale = new Date(Date.now() - 61_000).toISOString();
   const { db, updateCalls } = createTrackingDb(
@@ -309,7 +317,7 @@ Deno.test("onDaemonConnected repeated after 60s updates lastSeenAt only", async 
   assertEquals(status?.statusChangedAt, null);
 });
 
-Deno.test("onDaemonDisconnected sets offline status in daemon jsonb without lastSeenAt change", async () => {
+test("onDaemonDisconnected sets offline status in daemon jsonb without lastSeenAt change", async () => {
   const { db, updateCalls } = createTrackingDb(
     { key: baseKey, projection: { hostname: "host-1" } },
     {
@@ -329,7 +337,7 @@ Deno.test("onDaemonDisconnected sets offline status in daemon jsonb without last
   assertEquals(status?.lastSeenAt, "2020-01-01T00:00:00.000Z");
 });
 
-Deno.test("onDaemonConnected self-heals Postgres offline when cell is live", async () => {
+test("onDaemonConnected self-heals Postgres offline when cell is live", async () => {
   const recentAt = new Date().toISOString();
   const { db, updateCalls } = createTrackingDb(
     { key: baseKey, projection: { hostname: "host-1" } },
@@ -358,7 +366,7 @@ Deno.test("onDaemonConnected self-heals Postgres offline when cell is live", asy
   assertEquals(status?.connected, true);
 });
 
-Deno.test("onDaemonConnectedFromEvidence marks online without a cell", async () => {
+test("onDaemonConnectedFromEvidence marks online without a cell", async () => {
   const recentAt = new Date().toISOString();
   const connectedAt = "2020-01-01T00:00:00.000Z";
   const { db, updateCalls } = createTrackingDb(
@@ -384,7 +392,7 @@ Deno.test("onDaemonConnectedFromEvidence marks online without a cell", async () 
   assertEquals(daemon?.projection?.machineId, "mid-1");
 });
 
-Deno.test("onDaemonHeartbeat within 60s skips DB write when agent unchanged", async () => {
+test("onDaemonHeartbeat within 60s skips DB write when agent unchanged", async () => {
   const agent = {
     commit: "abc123",
     buildId: "build-1",
@@ -415,7 +423,7 @@ Deno.test("onDaemonHeartbeat within 60s skips DB write when agent unchanged", as
   assertEquals(getSelectCallCount(), 0);
 });
 
-Deno.test("onDaemonInbound projects new agent before steady-state skip", async () => {
+test("onDaemonInbound projects new agent before steady-state skip", async () => {
   const agent = {
     commit: "abc123",
     buildId: "build-1",
@@ -445,7 +453,7 @@ Deno.test("onDaemonInbound projects new agent before steady-state skip", async (
   assertEquals(getDaemon()?.projection?.agent?.commit, "abc123");
 });
 
-Deno.test("onDaemonInbound repairs stale updating on steady-state hello when agent matches trunk", async () => {
+test("onDaemonInbound repairs stale updating on steady-state hello when agent matches trunk", async () => {
   resetTrunkManifestCacheForTests();
   seedTrunkManifestCacheForTests({
     commit: "target-commit",
@@ -494,7 +502,7 @@ Deno.test("onDaemonInbound repairs stale updating on steady-state hello when age
   assertEquals(updateCalls.length, 1);
 });
 
-Deno.test("onDaemonConnected self-heals Postgres offline when cell is live", async () => {
+test("onDaemonConnected self-heals Postgres offline when cell is live", async () => {
   const recentAt = new Date().toISOString();
   const { db, updateCalls } = createTrackingDb(
     { key: baseKey, projection: { hostname: "host-1" } },
@@ -523,7 +531,7 @@ Deno.test("onDaemonConnected self-heals Postgres offline when cell is live", asy
   assertEquals(status?.connected, true);
 });
 
-Deno.test("onDaemonInbound within 60s skips heartbeat write when agent unchanged", async () => {
+test("onDaemonInbound within 60s skips heartbeat write when agent unchanged", async () => {
   const agent = {
     commit: "abc123",
     buildId: "build-1",
@@ -553,7 +561,7 @@ Deno.test("onDaemonInbound within 60s skips heartbeat write when agent unchanged
   assertEquals(getSelectCallCount(), 2);
 });
 
-Deno.test("onDaemonHeartbeat after 60s writes lastSeenAt", async () => {
+test("onDaemonHeartbeat after 60s writes lastSeenAt", async () => {
   const agent = {
     commit: "abc123",
     buildId: "build-1",
@@ -583,7 +591,7 @@ Deno.test("onDaemonHeartbeat after 60s writes lastSeenAt", async () => {
   assertEquals(typeof status?.lastSeenAt, "string");
 });
 
-Deno.test("onDaemonHeartbeat without agent after 60s writes lastSeenAt", async () => {
+test("onDaemonHeartbeat without agent after 60s writes lastSeenAt", async () => {
   const stale = new Date(Date.now() - 61_000).toISOString();
   const { db, updateCalls } = createTrackingDb(
     {
@@ -612,7 +620,7 @@ Deno.test("onDaemonHeartbeat without agent after 60s writes lastSeenAt", async (
   assertEquals(status?.connected, true);
 });
 
-Deno.test("onDaemonInbound restores online projection after stale sweep", async () => {
+test("onDaemonInbound restores online projection after stale sweep", async () => {
   const stale = new Date(Date.now() - DAEMON_OFFLINE_SWEEP_MS - 1000)
     .toISOString();
   const { db, updateCalls } = createTrackingDb(
@@ -645,7 +653,7 @@ Deno.test("onDaemonInbound restores online projection after stale sweep", async 
   assertEquals(statusFromPatch(onlinePatch)?.daemonStatus, "online");
 });
 
-Deno.test("onDaemonUpdateQueued writes projection.update as updating", async () => {
+test("onDaemonUpdateQueued writes projection.update as updating", async () => {
   const { db, getDaemon } = createTrackingDb({ key: baseKey });
 
   await onDaemonUpdateQueued(
@@ -663,7 +671,7 @@ Deno.test("onDaemonUpdateQueued writes projection.update as updating", async () 
   assertEquals(update?.queuedAt, "2020-01-01T00:00:00.000Z");
 });
 
-Deno.test("onDaemonUpdateResult writes projection.update as done or failed", async () => {
+test("onDaemonUpdateResult writes projection.update as done or failed", async () => {
   const { db, getDaemon } = createTrackingDb({
     key: baseKey,
     projection: {
@@ -704,7 +712,7 @@ Deno.test("onDaemonUpdateResult writes projection.update as done or failed", asy
   assertEquals(update?.error, "reconcile failed");
 });
 
-Deno.test("onDaemonUpdateReset clears projection.update to idle", async () => {
+test("onDaemonUpdateReset clears projection.update to idle", async () => {
   const { db, getDaemon } = createTrackingDb({
     key: baseKey,
     projection: {
@@ -722,7 +730,7 @@ Deno.test("onDaemonUpdateReset clears projection.update to idle", async () => {
   assertEquals(update?.status, "idle");
 });
 
-Deno.test("onDaemonUpdateExpired writes projection.update as expired", async () => {
+test("onDaemonUpdateExpired writes projection.update as expired", async () => {
   const { db, getDaemon } = createTrackingDb({
     key: baseKey,
     projection: {
@@ -752,7 +760,7 @@ Deno.test("onDaemonUpdateExpired writes projection.update as expired", async () 
   );
 });
 
-Deno.test("repairStaleProjectedUpdate marks done when daemon commit matches trunk", async () => {
+test("repairStaleProjectedUpdate marks done when daemon commit matches trunk", async () => {
   const { db, getDaemon } = createTrackingDb({
     key: baseKey,
     projection: {
@@ -786,7 +794,7 @@ Deno.test("repairStaleProjectedUpdate marks done when daemon commit matches trun
   assertEquals(update?.status, "done");
 });
 
-Deno.test("maybeRepairUpdateFromAgentHello clears updating when agent matches trunk", async () => {
+test("maybeRepairUpdateFromAgentHello clears updating when agent matches trunk", async () => {
   const { db, getDaemon } = createTrackingDb({
     key: baseKey,
     projection: {

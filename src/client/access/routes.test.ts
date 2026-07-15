@@ -145,7 +145,15 @@ async function withTestFixtures(
   }
 }
 
-Deno.test('DELETE /access/:id rejects revoking the sole organization owner', async () => {
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test('DELETE /access/:id rejects revoking the sole organization owner', async () => {
   await withTestFixtures(async ({ db, app, secrets, actorId, organizationId }) => {
     const [soleOwnerGrant] = await db
       .insert(grant)
@@ -171,7 +179,7 @@ Deno.test('DELETE /access/:id rejects revoking the sole organization owner', asy
   })
 })
 
-Deno.test('DELETE /access/:id allows revoking a non-final organization owner', async () => {
+test('DELETE /access/:id allows revoking a non-final organization owner', async () => {
   await withTestFixtures(async ({ db, app, secrets, actorId, targetId, organizationId }) => {
     await db.insert(grant).values({
       entityType: 'organization',
@@ -206,7 +214,7 @@ Deno.test('DELETE /access/:id allows revoking a non-final organization owner', a
   })
 })
 
-Deno.test('DELETE /access/:id rejects revoking the sole team owner', async () => {
+test('DELETE /access/:id rejects revoking the sole team owner', async () => {
   await withTestFixtures(async ({ db, app, secrets, actorId, targetId, organizationId, teamId }) => {
     await db.insert(grant).values({
       entityType: 'organization',
@@ -241,7 +249,7 @@ Deno.test('DELETE /access/:id rejects revoking the sole team owner', async () =>
   })
 })
 
-Deno.test('GET /access/check honors team-scoped grants without org grants', async () => {
+test('GET /access/check honors team-scoped grants without org grants', async () => {
   await withTestFixtures(async ({ db, app, secrets, targetId, organizationId, teamId }) => {
     await db.insert(grant).values({
       entityType: 'team',
@@ -269,7 +277,7 @@ Deno.test('GET /access/check honors team-scoped grants without org grants', asyn
   })
 })
 
-Deno.test('POST /access rejects organization permission on workspace entity', async () => {
+test('POST /access rejects organization permission on workspace entity', async () => {
   await withTestFixtures(async ({
     db,
     app,
@@ -297,7 +305,7 @@ Deno.test('POST /access rejects organization permission on workspace entity', as
       },
       body: JSON.stringify({
         subjectKind: 'user',
-        actorId: targetId,
+        subjectId: targetId,
         resourceId: workspaceId,
         effect: 'allow',
         permissionKey: 'organization:own',
@@ -310,7 +318,115 @@ Deno.test('POST /access rejects organization permission on workspace entity', as
   })
 })
 
-Deno.test('GET /access/check returns boolean for variable and managed resource ids', async () => {
+test('POST /access rejects deny grants with 400', async () => {
+  await withTestFixtures(async ({
+    db,
+    app,
+    secrets,
+    actorId,
+    targetId,
+    organizationId,
+  }) => {
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId: actorId,
+      permission: 'organization:own',
+      allow: true,
+    })
+
+    const cookie = await sessionCookie(db, secrets, actorId)
+    const res = await app.request('/access', {
+      method: 'POST',
+      headers: {
+        ...orgRequestHeaders(cookie, organizationId),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        subjectKind: 'user',
+        subjectId: targetId,
+        resourceId: organizationId,
+        effect: 'deny',
+        permissionKey: 'organization:manage',
+      }),
+    })
+
+    if (res.status !== 400) {
+      throw new Error(`expected 400 for deny grant, got ${res.status}`)
+    }
+
+    // The deny grant must not have been persisted.
+    const denyRows = await db
+      .select({ id: grant.id })
+      .from(grant)
+      .where(and(
+        eq(grant.entityId, organizationId),
+        eq(grant.actorId, targetId),
+      ))
+
+    if (denyRows.length !== 0) {
+      throw new Error('deny grant should not be persisted')
+    }
+  })
+})
+
+test('POST /access creates an allow grant with the validated subject id', async () => {
+  await withTestFixtures(async ({
+    db,
+    app,
+    secrets,
+    actorId,
+    targetId,
+    organizationId,
+  }) => {
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId: actorId,
+      permission: 'organization:own',
+      allow: true,
+    })
+
+    const cookie = await sessionCookie(db, secrets, actorId)
+    const res = await app.request('/access', {
+      method: 'POST',
+      headers: {
+        ...orgRequestHeaders(cookie, organizationId),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        subjectKind: 'user',
+        subjectId: targetId,
+        resourceId: organizationId,
+        effect: 'allow',
+        permissionKey: 'organization:manage',
+      }),
+    })
+
+    if (res.status !== 200) {
+      throw new Error(`expected 200 creating allow grant, got ${res.status}`)
+    }
+
+    const rows = await db
+      .select({ id: grant.id, actorId: grant.actorId, allow: grant.allow })
+      .from(grant)
+      .where(and(
+        eq(grant.entityId, organizationId),
+        eq(grant.actorId, targetId),
+        eq(grant.permission, 'organization:manage'),
+      ))
+      .limit(1)
+
+    const created = rows[0]
+    if (!created || created.actorId !== targetId || created.allow !== true) {
+      throw new Error('allow grant was not persisted for the validated subject id')
+    }
+  })
+})
+
+test('GET /access/check returns boolean for variable and managed resource ids', async () => {
   await withTestFixtures(async ({
     db,
     app,
@@ -385,7 +501,7 @@ Deno.test('GET /access/check returns boolean for variable and managed resource i
   })
 })
 
-Deno.test('GET /access/resource-id rejects unsupported workspace kind', async () => {
+test('GET /access/resource-id rejects unsupported workspace kind', async () => {
   await withTestFixtures(async ({
     db,
     app,
@@ -406,7 +522,7 @@ Deno.test('GET /access/resource-id rejects unsupported workspace kind', async ()
   })
 })
 
-Deno.test('GET /access/resource-id allows admin session for team kind', async () => {
+test('GET /access/resource-id allows admin session for team kind', async () => {
   await withTestFixtures(async ({ db, app, secrets, organizationId, teamId }) => {
     const adminEmail = `access-route-admin-${crypto.randomUUID()}@example.com`
 

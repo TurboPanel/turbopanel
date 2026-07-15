@@ -39,7 +39,15 @@ async function createSecretsConfig() {
   return parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, "deno");
 }
 
-Deno.test("encryptSecretForDaemon / decryptSecretForDaemon round-trip", async () => {
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test("encryptSecretForDaemon / decryptSecretForDaemon round-trip", async () => {
   const secretsConfig = await createSecretsConfig();
   const recipient = {
     serverId: "11111111-1111-4111-8111-111111111111",
@@ -57,7 +65,7 @@ Deno.test("encryptSecretForDaemon / decryptSecretForDaemon round-trip", async ()
   );
 });
 
-Deno.test("decryptSecretForDaemon rejects recipient mismatch", async () => {
+test("decryptSecretForDaemon rejects recipient mismatch", async () => {
   const secretsConfig = await createSecretsConfig();
   const recipient = {
     serverId: "11111111-1111-4111-8111-111111111111",
@@ -78,14 +86,14 @@ Deno.test("decryptSecretForDaemon rejects recipient mismatch", async () => {
   );
 });
 
-Deno.test("encryptSecret / decryptSecret round-trip", async () => {
+test("encryptSecret / decryptSecret round-trip", async () => {
   const secrets = await createCurrentSecrets();
   const envelope = await encryptSecret(secrets, "hello-secret");
   assertEquals(isSealedEnvelope(envelope), true);
   assertEquals(await decryptSecret(secrets, envelope), "hello-secret");
 });
 
-Deno.test("decryptSecret supports rotation fallbacks", async () => {
+test("decryptSecret supports rotation fallbacks", async () => {
   const rotated = await createRotatedSecrets();
   const envelope = await encryptSecret(rotated, "rotated-value");
   assertEquals(await decryptSecret(rotated, envelope), "rotated-value");
@@ -95,7 +103,7 @@ Deno.test("decryptSecret supports rotation fallbacks", async () => {
   assertEquals(await decryptSecret(rotated, v1Envelope), "v1-key-version-value");
 });
 
-Deno.test("decryptSecret rejects unknown key version", async () => {
+test("decryptSecret rejects unknown key version", async () => {
   const secrets = await createCurrentSecrets();
   const envelope = await encryptSecret(secrets, "x");
   const tamperedVersion = envelope.replace(/\.1\./, ".99.");
@@ -105,7 +113,7 @@ Deno.test("decryptSecret rejects unknown key version", async () => {
   );
 });
 
-Deno.test("decryptSecret rejects malformed and tampered envelopes", async () => {
+test("decryptSecret rejects malformed and tampered envelopes", async () => {
   const secrets = await createCurrentSecrets();
   await assertRejects(
     () => decryptSecret(secrets, "tpsecret.v1"),
@@ -125,7 +133,7 @@ Deno.test("decryptSecret rejects malformed and tampered envelopes", async () => 
   );
 });
 
-Deno.test("isSealedEnvelope detects sealed values only", async () => {
+test("isSealedEnvelope detects sealed values only", async () => {
   const secrets = await createCurrentSecrets();
   const envelope = await encryptSecret(secrets, "x");
   assertEquals(isSealedEnvelope(envelope), true);

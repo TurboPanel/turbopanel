@@ -70,7 +70,10 @@ export function resolvePostgresConnectionParts(url: string): {
     return undefined
   } catch {
     // `postgresql://user:pass@/db?host=/path` has no hostname — URL rejects it.
-    const match = url.match(/^postgres(?:ql)?:\/\/([^:@]+)(?::([^@]*))?@\/([^?]+)(?:\?(.*))?$/)
+    const match =
+      /^postgres(?:ql)?:\/\/([^:@]+)(?::([^@]*))?@\/([^?]+)(?:\?(.*))?$/.exec(
+        url,
+      )
     if (!match) return undefined
 
     const [, userEnc, passwordEnc = '', dbEnc, query = ''] = match

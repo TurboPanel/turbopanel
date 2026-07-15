@@ -51,7 +51,7 @@ async function issueTestDaemonJwt(
   keyId: string,
 ): Promise<string> {
   const secret = env.TURBOPANEL_SECRET ??
-    "aa_daemon_cell_vitest_secret_value_aaaa_b";
+    "aa_daemon_cell_vitest_secret_value_aaaa_b_pad_abcdefghij0";
   const secrets = await deriveDaemonJwtKeyring(
     parseSecretsEnv(secret, undefined, "workers"),
   );

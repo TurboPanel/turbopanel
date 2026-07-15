@@ -17,7 +17,15 @@ async function withTestDb(fn: (db: ReturnType<typeof createDenoDb>) => Promise<v
   await fn(db)
 }
 
-Deno.test('resolveServerId blocks unauthenticated server creation', async () => {
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test('resolveServerId blocks unauthenticated server creation', async () => {
   await withTestDb(async (db) => {
     const resolved = await resolveServerId(db, {
       hostname: `server-registry-${crypto.randomUUID()}`,
@@ -27,7 +35,7 @@ Deno.test('resolveServerId blocks unauthenticated server creation', async () => 
   })
 })
 
-Deno.test('resolveServerId still resolves existing server by serverId', async () => {
+test('resolveServerId still resolves existing server by serverId', async () => {
   await withTestDb(async (db) => {
     const now = new Date().toISOString()
     const [inserted] = await db
@@ -52,7 +60,7 @@ Deno.test('resolveServerId still resolves existing server by serverId', async ()
   })
 })
 
-Deno.test('resolveServerId creates row for licensed enrollment', async () => {
+test('resolveServerId creates row for licensed enrollment', async () => {
   await withTestDb(async (db) => {
     const [org] = await db
       .insert(organization)

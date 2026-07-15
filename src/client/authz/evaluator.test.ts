@@ -86,7 +86,15 @@ async function withTestFixtures(
   }
 }
 
-Deno.test('organization:own grant allows full org access', async () => {
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test('organization:own grant allows full org access', async () => {
   await withTestFixtures(async ({ db, userId, organizationId, workspaceId }) => {
     await db.insert(grant).values({
       entityType: 'organization',
@@ -105,7 +113,7 @@ Deno.test('organization:own grant allows full org access', async () => {
   })
 })
 
-Deno.test('organization:manage grant allows full org access', async () => {
+test('organization:manage grant allows full org access', async () => {
   await withTestFixtures(async ({ db, userId, organizationId, workspaceId }) => {
     await db.insert(grant).values({
       entityType: 'organization',
@@ -124,7 +132,7 @@ Deno.test('organization:manage grant allows full org access', async () => {
   })
 })
 
-Deno.test('user without grants is denied', async () => {
+test('user without grants is denied', async () => {
   await withTestFixtures(async ({ db, userId, organizationId, workspaceId }) => {
     const canOrg = await can(db, userId, 'organization:own', 'organization', organizationId)
     const canWorkspace = await can(db, userId, 'organization:own', 'workspace', workspaceId)
@@ -134,7 +142,7 @@ Deno.test('user without grants is denied', async () => {
   })
 })
 
-Deno.test('superadmin bypass', async () => {
+test('superadmin bypass', async () => {
   await withTestFixtures(async ({ db, organizationId, workspaceId }) => {
     const superadminEmail = `evaluator-superadmin-${crypto.randomUUID()}@example.com`
 
@@ -164,7 +172,7 @@ Deno.test('superadmin bypass', async () => {
   })
 })
 
-Deno.test('admin bypass', async () => {
+test('admin bypass', async () => {
   await withTestFixtures(async ({ db, organizationId, workspaceId }) => {
     const adminEmail = `evaluator-admin-${crypto.randomUUID()}@example.com`
 
@@ -194,7 +202,7 @@ Deno.test('admin bypass', async () => {
   })
 })
 
-Deno.test('listVisible returns all leaves for org owner', async () => {
+test('listVisible returns all leaves for org owner', async () => {
   await withTestFixtures(async ({ db, userId, organizationId, workspaceId }) => {
     await db.insert(grant).values({
       entityType: 'organization',
@@ -217,7 +225,7 @@ Deno.test('listVisible returns all leaves for org owner', async () => {
   })
 })
 
-Deno.test('team:own grant allows team ownership check via can()', async () => {
+test('team:own grant allows team ownership check via can()', async () => {
   await withTestFixtures(async ({ db, userId, teamId }) => {
     await db.insert(grant).values({
       entityType: 'team',
@@ -236,7 +244,7 @@ Deno.test('team:own grant allows team ownership check via can()', async () => {
   })
 })
 
-Deno.test('team:manage grant allows team management but not ownership via can()', async () => {
+test('team:manage grant allows team management but not ownership via can()', async () => {
   await withTestFixtures(async ({ db, userId, teamId }) => {
     await db.insert(grant).values({
       entityType: 'team',
@@ -255,7 +263,7 @@ Deno.test('team:manage grant allows team management but not ownership via can()'
   })
 })
 
-Deno.test('team grant without org grant is denied for org-scoped workspace check', async () => {
+test('team grant without org grant is denied for org-scoped workspace check', async () => {
   await withTestFixtures(async ({ db, userId, teamId, workspaceId }) => {
     await db.insert(grant).values({
       entityType: 'team',
@@ -273,7 +281,7 @@ Deno.test('team grant without org grant is denied for org-scoped workspace check
   })
 })
 
-Deno.test('listVisible returns empty for user without grants', async () => {
+test('listVisible returns empty for user without grants', async () => {
   await withTestFixtures(async ({ db, userId, organizationId }) => {
     const visible = await listVisible(db, {
       kind: 'workspace',
@@ -287,7 +295,7 @@ Deno.test('listVisible returns empty for user without grants', async () => {
   })
 })
 
-Deno.test('listVisible returns variable ids for org owner', async () => {
+test('listVisible returns variable ids for org owner', async () => {
   await withTestFixtures(async ({ db, userId, organizationId, workspaceId }) => {
     const [insertedProject] = await db
       .insert(project)
@@ -337,7 +345,7 @@ Deno.test('listVisible returns variable ids for org owner', async () => {
   })
 })
 
-Deno.test('organization grant allows can() on managed and variable entities', async () => {
+test('organization grant allows can() on managed and variable entities', async () => {
   await withTestFixtures(async ({ db, userId, organizationId, workspaceId }) => {
     const [insertedProject] = await db
       .insert(project)

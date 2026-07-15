@@ -395,7 +395,15 @@ async function withEnrollFixture(
   }
 }
 
-Deno.test("GET /jwks.json returns public OKP keys only", async () => {
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test("GET /jwks.json returns public OKP keys only", async () => {
   const app = new Hono<AppEnv>();
   const keyring = await createTestSecrets();
   const challengeSigningSecrets = await createTestChallengeSecrets();
@@ -468,7 +476,7 @@ Deno.test("GET /jwks.json returns public OKP keys only", async () => {
   assertEquals(verified, true);
 });
 
-Deno.test("POST /enroll rejects invalid license", async () => {
+test("POST /enroll rejects invalid license", async () => {
   await withEnrollFixture(async ({ app, licenseId, machineId, hostname }) => {
     const challengeResponse = await app.request(
       "/api/daemon/v1/auth/challenge",
@@ -511,7 +519,7 @@ Deno.test("POST /enroll rejects invalid license", async () => {
   });
 });
 
-Deno.test("POST /enroll rejects request without licenseToken", async () => {
+test("POST /enroll rejects request without licenseToken", async () => {
   await withEnrollFixture(async ({ app, licenseId, machineId, hostname }) => {
     const challengeResponse = await app.request(
       "/api/daemon/v1/auth/challenge",
@@ -555,7 +563,7 @@ Deno.test("POST /enroll rejects request without licenseToken", async () => {
   });
 });
 
-Deno.test("POST /enroll rejects invalid signature", async () => {
+test("POST /enroll rejects invalid signature", async () => {
   await withEnrollFixture(
     async ({ app, licenseId, licenseToken, machineId, hostname }) => {
       const challengeResponse = await app.request(
@@ -591,7 +599,7 @@ Deno.test("POST /enroll rejects invalid signature", async () => {
   );
 });
 
-Deno.test("POST /enroll stores public key only after proof-of-possession", async () => {
+test("POST /enroll stores public key only after proof-of-possession", async () => {
   await withEnrollFixture(async ({ db, serverId, keyId, key }) => {
     const daemonState = await readDaemonState(db, serverId);
     assertExists(daemonState);
@@ -602,7 +610,7 @@ Deno.test("POST /enroll stores public key only after proof-of-possession", async
   });
 });
 
-Deno.test("POST /enroll returns serverId and server.daemon.key.id", async () => {
+test("POST /enroll returns serverId and server.daemon.key.id", async () => {
   await withEnrollFixture(async ({ enrollBody, db }) => {
     assertExists(enrollBody.serverId);
     assertExists(enrollBody.keyId);
@@ -611,7 +619,7 @@ Deno.test("POST /enroll returns serverId and server.daemon.key.id", async () => 
   });
 });
 
-Deno.test("POST /enroll re-enrollment replaces daemon key on server row", async () => {
+test("POST /enroll re-enrollment replaces daemon key on server row", async () => {
   await withEnrollFixture(async ({
     db,
     app,
@@ -676,7 +684,7 @@ Deno.test("POST /enroll re-enrollment replaces daemon key on server row", async 
   });
 });
 
-Deno.test("POST /enroll re-enrollment with recovery credential from same organization", async () => {
+test("POST /enroll re-enrollment with recovery credential from same organization", async () => {
   await withEnrollFixture(async ({
     db,
     app,
@@ -757,7 +765,7 @@ Deno.test("POST /enroll re-enrollment with recovery credential from same organiz
   });
 });
 
-Deno.test("POST /enroll re-enrollment with same key clears revocation", async () => {
+test("POST /enroll re-enrollment with same key clears revocation", async () => {
   await withEnrollFixture(async ({
     db,
     app,
@@ -832,7 +840,7 @@ Deno.test("POST /enroll re-enrollment with same key clears revocation", async ()
   });
 });
 
-Deno.test("POST /auth/session rejects malformed JSON", async () => {
+test("POST /auth/session rejects malformed JSON", async () => {
   await withEnrollFixture(async ({ app }) => {
     const response = await app.request("/api/daemon/v1/auth/session", {
       method: "POST",
@@ -845,7 +853,7 @@ Deno.test("POST /auth/session rejects malformed JSON", async () => {
   });
 });
 
-Deno.test("POST /auth/session rejects missing required fields", async () => {
+test("POST /auth/session rejects missing required fields", async () => {
   await withEnrollFixture(async ({ app, serverId, keyId }) => {
     const response = await app.request("/api/daemon/v1/auth/session", {
       method: "POST",
@@ -861,7 +869,7 @@ Deno.test("POST /auth/session rejects missing required fields", async () => {
   });
 });
 
-Deno.test("POST /enroll rejects re-enrollment from a different license with matching machineId", async () => {
+test("POST /enroll rejects re-enrollment from a different license with matching machineId", async () => {
   await withEnrollFixture(async ({
     db,
     app,
@@ -943,7 +951,7 @@ Deno.test("POST /enroll rejects re-enrollment from a different license with matc
   });
 });
 
-Deno.test("POST /enroll rejects re-enrollment from a different organization with matching hostname", async () => {
+test("POST /enroll rejects re-enrollment from a different organization with matching hostname", async () => {
   await withEnrollFixture(async ({
     db,
     app,
@@ -1026,7 +1034,7 @@ Deno.test("POST /enroll rejects re-enrollment from a different organization with
   });
 });
 
-Deno.test("POST /auth/challenge rejects unknown keyId", async () => {
+test("POST /auth/challenge rejects unknown keyId", async () => {
   await withEnrollFixture(async ({ app, keyId }) => {
     const response = await app.request("/api/daemon/v1/auth/challenge", {
       method: "POST",
@@ -1037,7 +1045,7 @@ Deno.test("POST /auth/challenge rejects unknown keyId", async () => {
   });
 });
 
-Deno.test("POST /auth/challenge rejects mismatched keyId", async () => {
+test("POST /auth/challenge rejects mismatched keyId", async () => {
   await withEnrollFixture(async ({ app, serverId }) => {
     const response = await app.request("/api/daemon/v1/auth/challenge", {
       method: "POST",
@@ -1050,7 +1058,7 @@ Deno.test("POST /auth/challenge rejects mismatched keyId", async () => {
   });
 });
 
-Deno.test("POST /auth/challenge rejects revoked daemon key", async () => {
+test("POST /auth/challenge rejects revoked daemon key", async () => {
   await withEnrollFixture(async ({ db, app, serverId, keyId }) => {
     await revokeDaemonKey(db, serverId);
 
@@ -1065,7 +1073,7 @@ Deno.test("POST /auth/challenge rejects revoked daemon key", async () => {
   });
 });
 
-Deno.test("POST /auth/session rejects expired challenge", async () => {
+test("POST /auth/session rejects expired challenge", async () => {
   await withEnrollFixture(
     async ({ app, serverId, keyId, key, machineId, hostname }) => {
       const challengeSecrets = await createTestChallengeSecrets();
@@ -1103,7 +1111,7 @@ Deno.test("POST /auth/session rejects expired challenge", async () => {
   );
 });
 
-Deno.test("POST /auth/session rejects invalid signature", async () => {
+test("POST /auth/session rejects invalid signature", async () => {
   await withEnrollFixture(
     async ({ app, serverId, keyId, machineId, hostname }) => {
       const challenge = await issueAuthChallenge(app, serverId, keyId);
@@ -1125,7 +1133,7 @@ Deno.test("POST /auth/session rejects invalid signature", async () => {
   );
 });
 
-Deno.test("POST /auth/session returns a 15-minute JWT", async () => {
+test("POST /auth/session returns a 15-minute JWT", async () => {
   await withEnrollFixture(
     async ({ db, serverId, keyId, key, machineId, hostname }) => {
       const tracking = createSnapshotTrackingCell(serverId);
@@ -1183,7 +1191,7 @@ Deno.test("POST /auth/session returns a 15-minute JWT", async () => {
   );
 });
 
-Deno.test("invalidateLicense revokes daemon keys on bound servers", async () => {
+test("invalidateLicense revokes daemon keys on bound servers", async () => {
   await withEnrollFixture(
     async ({ db, organizationId, licenseId, serverId }) => {
       const invalidated = await invalidateLicense(
@@ -1204,7 +1212,7 @@ Deno.test("invalidateLicense revokes daemon keys on bound servers", async () => 
   );
 });
 
-Deno.test("POST /auth/session rejects inactive license", async () => {
+test("POST /auth/session rejects inactive license", async () => {
   await withEnrollFixture(
     async ({
       db,
@@ -1250,7 +1258,7 @@ Deno.test("POST /auth/session rejects inactive license", async () => {
   );
 });
 
-Deno.test("Protected route rejects missing JWT", async () => {
+test("Protected route rejects missing JWT", async () => {
   await withEnrollFixture(async ({ app }) => {
     const response = await app.request("/api/daemon/v1/commands/lease", {
       method: "POST",
@@ -1259,7 +1267,7 @@ Deno.test("Protected route rejects missing JWT", async () => {
   });
 });
 
-Deno.test("Protected route rejects invalid JWT", async () => {
+test("Protected route rejects invalid JWT", async () => {
   await withEnrollFixture(async ({ app }) => {
     const response = await app.request("/api/daemon/v1/commands/lease", {
       method: "POST",
@@ -1271,7 +1279,7 @@ Deno.test("Protected route rejects invalid JWT", async () => {
   });
 });
 
-Deno.test("stateless challenge issue and consume round-trip", async () => {
+test("stateless challenge issue and consume round-trip", async () => {
   const secrets = await createTestChallengeSecrets();
   const store = createStatelessChallengeStore(secrets, 60_000);
   const issued = await store.issue({ serverId: "server-1", keyId: "key-1" });
@@ -1284,7 +1292,7 @@ Deno.test("stateless challenge issue and consume round-trip", async () => {
   assertEquals(consumed?.nonce, issued.nonce);
 });
 
-Deno.test("stateless challenge consume rejects wrong serverId", async () => {
+test("stateless challenge consume rejects wrong serverId", async () => {
   const secrets = await createTestChallengeSecrets();
   const store = createStatelessChallengeStore(secrets, 60_000);
   const issued = await store.issue({ serverId: "server-1", keyId: "key-1" });
@@ -1296,7 +1304,7 @@ Deno.test("stateless challenge consume rejects wrong serverId", async () => {
   assertEquals(consumed, null);
 });
 
-Deno.test("stateless challenge consume rejects expired token", async () => {
+test("stateless challenge consume rejects expired token", async () => {
   const secrets = await createTestChallengeSecrets();
   const issued = await issueChallenge(
     secrets,
@@ -1312,7 +1320,7 @@ Deno.test("stateless challenge consume rejects expired token", async () => {
   assertEquals(consumed, null);
 });
 
-Deno.test("stateless challenge allows replay within TTL", async () => {
+test("stateless challenge allows replay within TTL", async () => {
   // Not single-use: a valid token can be consumed repeatedly until it expires.
   // Security relies on the short TTL plus Ed25519 proof-of-possession at session time.
   const secrets = await createTestChallengeSecrets();
@@ -1333,7 +1341,7 @@ Deno.test("stateless challenge allows replay within TTL", async () => {
   assertEquals(second?.nonce, issued.nonce);
 });
 
-Deno.test("POST /commands/lease returns 401 without JWT", async () => {
+test("POST /commands/lease returns 401 without JWT", async () => {
   await withEnrollFixture(async ({ app }) => {
     const response = await app.request("/api/daemon/v1/commands/lease", {
       method: "POST",
@@ -1342,7 +1350,7 @@ Deno.test("POST /commands/lease returns 401 without JWT", async () => {
   });
 });
 
-Deno.test("POST /commands/lease returns 200 with valid JWT", async () => {
+test("POST /commands/lease returns 200 with valid JWT", async () => {
   await withEnrollFixture(async ({ app, serverId, keyId }) => {
     const daemonToken = await issueDaemonToken(serverId, keyId);
     const response = await app.request("/api/daemon/v1/commands/lease", {
@@ -1357,7 +1365,7 @@ Deno.test("POST /commands/lease returns 200 with valid JWT", async () => {
   });
 });
 
-Deno.test("POST /auth/challenge returns 429 when restLimiter denies", async () => {
+test("POST /auth/challenge returns 429 when restLimiter denies", async () => {
   const app = new Hono<AppEnv>();
   const secrets = await createTestSecrets();
   const challengeSigningSecrets = await createTestChallengeSecrets();
@@ -1384,7 +1392,7 @@ Deno.test("POST /auth/challenge returns 429 when restLimiter denies", async () =
   assertEquals(body, { ok: false, error: "rate_limited" });
 });
 
-Deno.test("POST /auth/challenge enrollment path returns 429 when restLimiter denies", async () => {
+test("POST /auth/challenge enrollment path returns 429 when restLimiter denies", async () => {
   const app = new Hono<AppEnv>();
   const secrets = await createTestSecrets();
   const challengeSigningSecrets = await createTestChallengeSecrets();
@@ -1408,7 +1416,7 @@ Deno.test("POST /auth/challenge enrollment path returns 429 when restLimiter den
   assertEquals(body, { ok: false, error: "rate_limited" });
 });
 
-Deno.test("POST /commands/lease returns 429 when restLimiter denies with valid JWT", async () => {
+test("POST /commands/lease returns 429 when restLimiter denies with valid JWT", async () => {
   const app = new Hono<AppEnv>();
   const secrets = await createTestSecrets();
   const challengeSigningSecrets = await createTestChallengeSecrets();
@@ -1432,7 +1440,7 @@ Deno.test("POST /commands/lease returns 429 when restLimiter denies with valid J
   assertEquals(body, { ok: false, error: "rate_limited" });
 });
 
-Deno.test("POST /commands/lease proceeds when restLimiter allows", async () => {
+test("POST /commands/lease proceeds when restLimiter allows", async () => {
   const app = new Hono<AppEnv>();
   const secrets = await createTestSecrets();
   const challengeSigningSecrets = await createTestChallengeSecrets();
@@ -1460,7 +1468,7 @@ Deno.test("POST /commands/lease proceeds when restLimiter allows", async () => {
   const body = await response.json() as { commands: unknown[] };
   assertEquals(body, { commands: [] });
 });
-Deno.test("POST /secrets/decrypt returns 401 without JWT", async () => {
+test("POST /secrets/decrypt returns 401 without JWT", async () => {
   await withEnrollFixture(async ({ app }) => {
     const response = await app.request("/api/daemon/v1/secrets/decrypt", {
       method: "POST",
@@ -1471,7 +1479,7 @@ Deno.test("POST /secrets/decrypt returns 401 without JWT", async () => {
   });
 });
 
-Deno.test("POST /secrets/decrypt returns 400 on malformed body", async () => {
+test("POST /secrets/decrypt returns 400 on malformed body", async () => {
   await withEnrollFixture(async ({ app, serverId, keyId }) => {
     const daemonToken = await issueDaemonToken(serverId, keyId);
 
@@ -1497,7 +1505,7 @@ Deno.test("POST /secrets/decrypt returns 400 on malformed body", async () => {
   });
 });
 
-Deno.test("POST /secrets/decrypt round-trips batch with mixed valid/invalid", async () => {
+test("POST /secrets/decrypt round-trips batch with mixed valid/invalid", async () => {
   await withEnrollFixture(async ({ app, serverId, keyId }) => {
     const secretsConfig = createTestSecretsConfig();
     const sealed = await encryptSecretForDaemon(
@@ -1526,7 +1534,7 @@ Deno.test("POST /secrets/decrypt round-trips batch with mixed valid/invalid", as
   });
 });
 
-Deno.test("POST /secrets/decrypt rejects envelopes sealed for another daemon", async () => {
+test("POST /secrets/decrypt rejects envelopes sealed for another daemon", async () => {
   await withEnrollFixture(async ({ app, serverId, keyId }) => {
     const secretsConfig = createTestSecretsConfig();
     const sealed = await encryptSecretForDaemon(
@@ -1550,7 +1558,7 @@ Deno.test("POST /secrets/decrypt rejects envelopes sealed for another daemon", a
   });
 });
 
-Deno.test("POST /secrets/decrypt rejects global tpsecret envelopes (daemon-scoped only)", async () => {
+test("POST /secrets/decrypt rejects global tpsecret envelopes (daemon-scoped only)", async () => {
   await withEnrollFixture(async ({ app, serverId, keyId }) => {
     const daemonToken = await issueDaemonToken(serverId, keyId);
     const response = await app.request("/api/daemon/v1/secrets/decrypt", {
@@ -1567,7 +1575,7 @@ Deno.test("POST /secrets/decrypt rejects global tpsecret envelopes (daemon-scope
   });
 });
 
-Deno.test("Enrolled daemon can auto-refresh JWT", async () => {
+test("Enrolled daemon can auto-refresh JWT", async () => {
   await withEnrollFixture(
     async ({ app, serverId, keyId, key, machineId, hostname }) => {
       const secrets = await createTestSecrets();
@@ -1706,7 +1714,7 @@ async function createMetricsTestApp(options: {
   return { app, writes };
 }
 
-Deno.test("POST /metrics accepts valid frame and writes sample", async () => {
+test("POST /metrics accepts valid frame and writes sample", async () => {
   const { app, writes } = await createMetricsTestApp();
   const serverId = "srv-metrics-ok";
   const daemonToken = await issueDaemonToken(serverId, "key-metrics-ok");
@@ -1724,7 +1732,7 @@ Deno.test("POST /metrics accepts valid frame and writes sample", async () => {
   assertEquals(writes[0]?.serverId, serverId);
 });
 
-Deno.test("POST /metrics rejects invalid frame without writing", async () => {
+test("POST /metrics rejects invalid frame without writing", async () => {
   const { app, writes } = await createMetricsTestApp();
   const daemonToken = await issueDaemonToken(
     "srv-metrics-bad",
@@ -1745,7 +1753,7 @@ Deno.test("POST /metrics rejects invalid frame without writing", async () => {
   assertEquals(writes.length, 0);
 });
 
-Deno.test("POST /metrics returns 401 without JWT", async () => {
+test("POST /metrics returns 401 without JWT", async () => {
   const { app, writes } = await createMetricsTestApp();
   const response = await app.request("/api/daemon/v1/metrics", {
     method: "POST",
@@ -1756,7 +1764,7 @@ Deno.test("POST /metrics returns 401 without JWT", async () => {
   assertEquals(writes.length, 0);
 });
 
-Deno.test("POST /metrics returns 429 when restLimiter denies with valid JWT", async () => {
+test("POST /metrics returns 429 when restLimiter denies with valid JWT", async () => {
   const { app, writes } = await createMetricsTestApp({
     restLimiter: {
       limit: async () => ({ success: false }),
@@ -1779,7 +1787,7 @@ Deno.test("POST /metrics returns 429 when restLimiter denies with valid JWT", as
   assertEquals(writes.length, 0);
 });
 
-Deno.test("POST /metrics ignores body-supplied serverId", async () => {
+test("POST /metrics ignores body-supplied serverId", async () => {
   const { app, writes } = await createMetricsTestApp();
   const serverId = "srv-metrics-auth";
   const daemonToken = await issueDaemonToken(serverId, "key-metrics-auth");

@@ -18,7 +18,12 @@ export const accessSchemas = {
         format: 'uuid',
         description: 'Primary key of the organization or team entity.',
       },
-      effect: { type: 'string', enum: ['allow', 'deny'], default: 'allow' },
+      effect: {
+        type: 'string',
+        enum: ['allow'],
+        default: 'allow',
+        description: 'Only allow grants are supported; deny grants are rejected.',
+      },
       permissionKey: {
         $ref: '#/components/schemas/PermissionKey',
         description:
@@ -82,7 +87,11 @@ export const accessSchemas = {
         description:
           'UUID of the grant target entity (organization or team primary key).',
       },
-      effect: { type: 'string', enum: ['allow', 'deny'] },
+      effect: {
+        type: 'string',
+        enum: ['allow'],
+        description: 'Always allow — deny grants are not supported.',
+      },
       permissionKey: { $ref: '#/components/schemas/PermissionKey' },
     },
   },
@@ -112,7 +121,11 @@ export const accessSchemas = {
         description:
           'UUID of the grant target entity. Must resolve to an organization or team row.',
       },
-      effect: { type: 'string', enum: ['allow', 'deny'] },
+      effect: {
+        type: 'string',
+        enum: ['allow'],
+        description: 'Only allow grants are supported; deny grants are rejected with 400.',
+      },
       permissionKey: {
         $ref: '#/components/schemas/PermissionKey',
         description:

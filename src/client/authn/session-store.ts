@@ -66,6 +66,7 @@ export async function getSession(
       username: user.username,
       email: user.email,
       role: user.role,
+      isDisabled: user.isDisabled,
     })
     .from(session)
     .innerJoin(user, eq(session.userId, user.id))
@@ -79,6 +80,11 @@ export async function getSession(
 
   const row = rows[0]
   if (!row) {
+    return null
+  }
+
+  // Disabled users must not be able to keep using an already-issued session.
+  if (row.isDisabled) {
     return null
   }
 

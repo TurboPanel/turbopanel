@@ -1,7 +1,15 @@
 import { assertEquals } from 'jsr:@std/assert'
 import { mergeServerMetadataIdentity } from './server-registry.ts'
 
-Deno.test('mergeServerMetadataIdentity merges os and skips unchanged writes', () => {
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test('mergeServerMetadataIdentity merges os and skips unchanged writes', () => {
   const os = {
     family: 'linux' as const,
     id: 'debian',

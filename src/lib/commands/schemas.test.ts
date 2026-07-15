@@ -15,31 +15,39 @@ import {
 } from './schemas.ts'
 import type { CommandType } from './types.ts'
 
-Deno.test('parsePingPayload accepts empty object', () => {
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test('parsePingPayload accepts empty object', () => {
   assertEquals(parsePingPayload({}), {})
 })
 
-Deno.test('parsePingPayload rejects non-object values', () => {
+test('parsePingPayload rejects non-object values', () => {
   for (const value of [null, [], 'x']) {
     assertThrows(() => parsePingPayload(value), Error, 'Invalid ping payload')
   }
 })
 
-Deno.test('parseRebootPayload accepts empty object', () => {
+test('parseRebootPayload accepts empty object', () => {
   assertEquals(parseRebootPayload({}), {})
 })
 
-Deno.test('parseRebootPayload rejects non-object values', () => {
+test('parseRebootPayload rejects non-object values', () => {
   for (const value of [null, [], 'x']) {
     assertThrows(() => parseRebootPayload(value), Error, 'Invalid reboot payload')
   }
 })
 
-Deno.test('parseHostnameSetPayload accepts valid hostname', () => {
+test('parseHostnameSetPayload accepts valid hostname', () => {
   assertEquals(parseHostnameSetPayload({ hostname: 'web-01' }), { hostname: 'web-01' })
 })
 
-Deno.test('parseHostnameSetPayload rejects invalid hostnames', () => {
+test('parseHostnameSetPayload rejects invalid hostnames', () => {
   for (const hostname of [undefined, '', 'a b', 'a;b']) {
     assertThrows(
       () => parseHostnameSetPayload({ hostname }),
@@ -54,7 +62,7 @@ Deno.test('parseHostnameSetPayload rejects invalid hostnames', () => {
   )
 })
 
-Deno.test('parsePingResult keeps only valid string hop fields', () => {
+test('parsePingResult keeps only valid string hop fields', () => {
   assertEquals(parsePingResult(null), {})
   assertEquals(
     parsePingResult({
@@ -85,7 +93,7 @@ Deno.test('parsePingResult keeps only valid string hop fields', () => {
   assertEquals(parsePingResult({ daemonBuild: {} }), {})
 })
 
-Deno.test('parseRebootResult returns default for non-records and round-trips valid results', () => {
+test('parseRebootResult returns default for non-records and round-trips valid results', () => {
   assertEquals(parseRebootResult(null), { scheduled: false })
   assertEquals(parseRebootResult({ scheduled: true, summary: 'ok' }), {
     scheduled: true,
@@ -94,7 +102,7 @@ Deno.test('parseRebootResult returns default for non-records and round-trips val
   assertEquals(parseRebootResult({ scheduled: true }), { scheduled: true })
 })
 
-Deno.test('parseHostnameSetResult round-trips valid results', () => {
+test('parseHostnameSetResult round-trips valid results', () => {
   assertEquals(
     parseHostnameSetResult({ observedHostname: 'web-01', summary: 'ok' }),
     { observedHostname: 'web-01', summary: 'ok' },
@@ -105,7 +113,7 @@ Deno.test('parseHostnameSetResult round-trips valid results', () => {
   )
 })
 
-Deno.test('parseHostnameSetResult rejects missing or empty observedHostname', () => {
+test('parseHostnameSetResult rejects missing or empty observedHostname', () => {
   for (const value of [{}, { observedHostname: '' }, { observedHostname: 1 }]) {
     assertThrows(
       () => parseHostnameSetResult(value),
@@ -115,7 +123,7 @@ Deno.test('parseHostnameSetResult rejects missing or empty observedHostname', ()
   }
 })
 
-Deno.test('parseCommandPayload and parseCommandResult dispatch by type', () => {
+test('parseCommandPayload and parseCommandResult dispatch by type', () => {
   assertEquals(parseCommandPayload('daemon.ping' as CommandType, {}), {})
   assertEquals(
     parseCommandPayload('server.hostname.set' as CommandType, { hostname: 'web-01' }),
@@ -158,7 +166,7 @@ Deno.test('parseCommandPayload and parseCommandResult dispatch by type', () => {
   )
 })
 
-Deno.test('encodeCommandEnvelope round-trips through parseCommandEnvelope', () => {
+test('encodeCommandEnvelope round-trips through parseCommandEnvelope', () => {
   const envelope = {
     commandId: 'cmd-1',
     serverId: 'srv-1',
@@ -171,7 +179,7 @@ Deno.test('encodeCommandEnvelope round-trips through parseCommandEnvelope', () =
   assertEquals(parseCommandEnvelope(envelope), envelope)
 })
 
-Deno.test('parseCommandEnvelope rejects invalid envelopes', () => {
+test('parseCommandEnvelope rejects invalid envelopes', () => {
   assertThrows(() => parseCommandEnvelope('not-json'), Error, 'Invalid command envelope')
   assertThrows(() => parseCommandEnvelope(null), Error, 'Invalid command envelope')
   assertThrows(

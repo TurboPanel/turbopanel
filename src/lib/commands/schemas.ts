@@ -71,6 +71,18 @@ export type RebootCommandResult = {
   summary?: string
 }
 
+function parseDaemonBuild(value: unknown): PingCommandResult['daemonBuild'] {
+  if (!isRecord(value)) {
+    return undefined
+  }
+  const build: NonNullable<PingCommandResult['daemonBuild']> = {}
+  if (isString(value.commit)) build.commit = value.commit
+  if (isString(value.buildId)) build.buildId = value.buildId
+  if (isString(value.builtAt)) build.builtAt = value.builtAt
+  if (isString(value.channel)) build.channel = value.channel
+  return Object.keys(build).length > 0 ? build : undefined
+}
+
 export function parsePingResult(value: unknown): PingCommandResult {
   if (!isRecord(value)) {
     return {}
@@ -87,16 +99,8 @@ export function parsePingResult(value: unknown): PingCommandResult {
   if (isString(value.daemonRespondedAt)) result.daemonRespondedAt = value.daemonRespondedAt
   if (isString(value.resultRecordedAt)) result.resultRecordedAt = value.resultRecordedAt
   if (isString(value.daemonHostname)) result.daemonHostname = value.daemonHostname
-  if (isRecord(value.daemonBuild)) {
-    const build: NonNullable<PingCommandResult['daemonBuild']> = {}
-    if (isString(value.daemonBuild.commit)) build.commit = value.daemonBuild.commit
-    if (isString(value.daemonBuild.buildId)) build.buildId = value.daemonBuild.buildId
-    if (isString(value.daemonBuild.builtAt)) build.builtAt = value.daemonBuild.builtAt
-    if (isString(value.daemonBuild.channel)) build.channel = value.daemonBuild.channel
-    if (Object.keys(build).length > 0) {
-      result.daemonBuild = build
-    }
-  }
+  const daemonBuild = parseDaemonBuild(value.daemonBuild)
+  if (daemonBuild) result.daemonBuild = daemonBuild
   return result
 }
 
@@ -173,7 +177,7 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
   }
   const hostingsRaw = value.hostings
   if (!Array.isArray(hostingsRaw)) {
-    throw new Error('Invalid environment.deploy payload')
+    throw new TypeError('Invalid environment.deploy payload')
   }
   const hostings: EnvironmentDeployHosting[] = []
   for (const entry of hostingsRaw) {

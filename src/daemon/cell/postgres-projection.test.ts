@@ -135,7 +135,15 @@ const testGeoUpdated: ServerGeo = {
   capturedAt: "2020-06-01T00:00:00.000Z",
 };
 
-Deno.test("projectServerDaemon online persists metadata.geo when remoteAddress is new", async () => {
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test("projectServerDaemon online persists metadata.geo when remoteAddress is new", async () => {
   const { db, updateCalls } = createMockDb({ key: baseKey });
 
   await projectServerDaemon(db, serverId, {
@@ -157,7 +165,7 @@ Deno.test("projectServerDaemon online persists metadata.geo when remoteAddress i
   });
 });
 
-Deno.test("projectServerDaemon repeated online backfills metadata.geo when same IP and geo was missing", async () => {
+test("projectServerDaemon repeated online backfills metadata.geo when same IP and geo was missing", async () => {
   const connectedAt = "2020-01-01T00:00:00.000Z";
   const recent = new Date().toISOString();
   const cloudflareGeo: ServerGeo = {
@@ -207,7 +215,7 @@ Deno.test("projectServerDaemon repeated online backfills metadata.geo when same 
   });
 });
 
-Deno.test("projectServerDaemon repeated online skips write when only geo changed with same IP", async () => {
+test("projectServerDaemon repeated online skips write when only geo changed with same IP", async () => {
   const connectedAt = "2020-01-01T00:00:00.000Z";
   const recent = new Date().toISOString();
   const { db, updateCalls } = createMockDb(
@@ -243,7 +251,7 @@ Deno.test("projectServerDaemon repeated online skips write when only geo changed
   assertEquals(updateCalls.length, 0);
 });
 
-Deno.test("projectServerDaemon repeated online refreshes geo when remoteAddress changes", async () => {
+test("projectServerDaemon repeated online refreshes geo when remoteAddress changes", async () => {
   const connectedAt = "2020-01-01T00:00:00.000Z";
   const recent = new Date().toISOString();
   const { db, updateCalls } = createMockDb(
@@ -284,7 +292,7 @@ Deno.test("projectServerDaemon repeated online refreshes geo when remoteAddress 
   });
 });
 
-Deno.test("projectServerDaemon identity trigger backfills metadata.geo when geo was missing", async () => {
+test("projectServerDaemon identity trigger backfills metadata.geo when geo was missing", async () => {
   const { db, updateCalls } = createMockDb(
     {
       key: baseKey,
@@ -316,7 +324,7 @@ Deno.test("projectServerDaemon identity trigger backfills metadata.geo when geo 
   });
 });
 
-Deno.test("projectServerDaemon identity trigger skips metadata.geo when stored geo exists and IP unchanged", async () => {
+test("projectServerDaemon identity trigger skips metadata.geo when stored geo exists and IP unchanged", async () => {
   const { db, updateCalls } = createMockDb(
     {
       key: baseKey,
@@ -343,7 +351,7 @@ Deno.test("projectServerDaemon identity trigger skips metadata.geo when stored g
   assertEquals(updateCalls.length, 0);
 });
 
-Deno.test("projectServerDaemon online sets status in daemon jsonb", async () => {
+test("projectServerDaemon online sets status in daemon jsonb", async () => {
   const { db, updateCalls } = createMockDb({ key: baseKey });
 
   await projectServerDaemon(db, serverId, {
@@ -365,7 +373,7 @@ Deno.test("projectServerDaemon online sets status in daemon jsonb", async () => 
   });
 });
 
-Deno.test("projectServerDaemon repeated online within 60s skips write", async () => {
+test("projectServerDaemon repeated online within 60s skips write", async () => {
   const connectedAt = "2020-01-01T00:00:00.000Z";
   const recent = new Date().toISOString();
   const { db, updateCalls } = createMockDb(
@@ -392,7 +400,7 @@ Deno.test("projectServerDaemon repeated online within 60s skips write", async ()
   assertEquals(updateCalls.length, 0);
 });
 
-Deno.test("projectServerDaemon repeated online after 60s updates lastSeenAt only", async () => {
+test("projectServerDaemon repeated online after 60s updates lastSeenAt only", async () => {
   const connectedAt = "2020-01-01T00:00:00.000Z";
   const stale = new Date(Date.now() - 61_000).toISOString();
   const { db, updateCalls, getStatus } = createMockDb(
@@ -424,7 +432,7 @@ Deno.test("projectServerDaemon repeated online after 60s updates lastSeenAt only
   assertEquals(getStatus().connectedAt, connectedAt);
 });
 
-Deno.test("projectServerDaemon offline clears connected without touching lastSeenAt", async () => {
+test("projectServerDaemon offline clears connected without touching lastSeenAt", async () => {
   const { db, updateCalls } = createMockDb(
     {
       key: baseKey,
@@ -451,7 +459,7 @@ Deno.test("projectServerDaemon offline clears connected without touching lastSee
   assertEquals(status?.lastSeenAt, "2020-01-01T00:00:00.000Z");
 });
 
-Deno.test("onDaemonDisconnected projects disconnected status in daemon jsonb", async () => {
+test("onDaemonDisconnected projects disconnected status in daemon jsonb", async () => {
   const { db, updateCalls } = createMockDb(
     {
       key: baseKey,
@@ -474,7 +482,7 @@ Deno.test("onDaemonDisconnected projects disconnected status in daemon jsonb", a
   assertEquals(status?.lastSeenAt, "2020-01-01T00:00:00.000Z");
 });
 
-Deno.test("projectServerDaemon disconnected matches offline status patch", async () => {
+test("projectServerDaemon disconnected matches offline status patch", async () => {
   const { db, updateCalls, getDaemon } = createMockDb(
     {
       key: baseKey,
@@ -498,7 +506,7 @@ Deno.test("projectServerDaemon disconnected matches offline status patch", async
   assertEquals(getDaemon().projection?.agent, testAgent);
 });
 
-Deno.test("projectServerDaemon heartbeat within 60s skips write", async () => {
+test("projectServerDaemon heartbeat within 60s skips write", async () => {
   const recent = new Date().toISOString();
   const { db, updateCalls } = createMockDb(
     {
@@ -521,7 +529,7 @@ Deno.test("projectServerDaemon heartbeat within 60s skips write", async () => {
   assertEquals(updateCalls.length, 0);
 });
 
-Deno.test("projectServerDaemon heartbeat after 60s updates lastSeenAt", async () => {
+test("projectServerDaemon heartbeat after 60s updates lastSeenAt", async () => {
   const stale = new Date(Date.now() - 61_000).toISOString();
   const { db, updateCalls } = createMockDb(
     {
@@ -547,7 +555,7 @@ Deno.test("projectServerDaemon heartbeat after 60s updates lastSeenAt", async ()
   assertEquals(status?.connected, true);
 });
 
-Deno.test("projectServerDaemon heartbeat without agent after 60s updates lastSeenAt", async () => {
+test("projectServerDaemon heartbeat without agent after 60s updates lastSeenAt", async () => {
   const stale = new Date(Date.now() - 61_000).toISOString();
   const { db, updateCalls } = createMockDb(
     {
@@ -575,7 +583,7 @@ Deno.test("projectServerDaemon heartbeat without agent after 60s updates lastSee
   assertEquals(status?.connected, true);
 });
 
-Deno.test("projectServerDaemon preserves server.daemon.key on write", async () => {
+test("projectServerDaemon preserves server.daemon.key on write", async () => {
   const { db, updateCalls } = createMockDb({
     key: baseKey,
     projection: { hostname: "host-1" },
@@ -596,7 +604,7 @@ Deno.test("projectServerDaemon preserves server.daemon.key on write", async () =
   assertEquals(merged?.key?.fingerprint, baseKey.fingerprint);
 });
 
-Deno.test("projectServerDaemon agent trigger updates jsonb only", async () => {
+test("projectServerDaemon agent trigger updates jsonb only", async () => {
   const { db, updateCalls } = createMockDb({
     key: baseKey,
     projection: { hostname: "host-1" },
@@ -617,7 +625,7 @@ Deno.test("projectServerDaemon agent trigger updates jsonb only", async () => {
   assert(updateCalls[0]?.daemon != null);
 });
 
-Deno.test("projectServerDaemon identity trigger updates jsonb only", async () => {
+test("projectServerDaemon identity trigger updates jsonb only", async () => {
   const { db, updateCalls } = createMockDb({
     key: baseKey,
     projection: {
@@ -641,7 +649,7 @@ Deno.test("projectServerDaemon identity trigger updates jsonb only", async () =>
   assertEquals(merged?.projection?.agent, testAgent);
 });
 
-Deno.test("projectServerDaemon identity trigger preserves projection.update", async () => {
+test("projectServerDaemon identity trigger preserves projection.update", async () => {
   const updatingProjection = {
     status: "updating" as const,
     requestId: "req-1",
@@ -668,7 +676,7 @@ Deno.test("projectServerDaemon identity trigger preserves projection.update", as
   assertEquals(merged?.projection?.update, updatingProjection);
 });
 
-Deno.test("projectServerDaemon online trigger preserves projection.update", async () => {
+test("projectServerDaemon online trigger preserves projection.update", async () => {
   const updatingProjection = {
     status: "updating" as const,
     requestId: "req-1",
@@ -699,7 +707,7 @@ Deno.test("projectServerDaemon online trigger preserves projection.update", asyn
   assertEquals(merged?.projection?.update, updatingProjection);
 });
 
-Deno.test("agentChanged detects optional field backfill for unchanged build", () => {
+test("agentChanged detects optional field backfill for unchanged build", () => {
   const current = {
     agent: {
       commit: "abc123",
@@ -732,7 +740,7 @@ Deno.test("agentChanged detects optional field backfill for unchanged build", ()
   );
 });
 
-Deno.test("mergeAgentPreserving backfills optional fields for unchanged build", () => {
+test("mergeAgentPreserving backfills optional fields for unchanged build", () => {
   const current = {
     agent: {
       commit: "abc123",
@@ -756,7 +764,7 @@ Deno.test("mergeAgentPreserving backfills optional fields for unchanged build", 
   );
 });
 
-Deno.test("readProjectionsForServers reads status.connected as online", async () => {
+test("readProjectionsForServers reads status.connected as online", async () => {
   const connectedDaemon = {
     key: baseKey,
     projection: {
@@ -792,7 +800,7 @@ Deno.test("readProjectionsForServers reads status.connected as online", async ()
   assertEquals("hostname" in read, false);
 });
 
-Deno.test("projectServerDaemon agent trigger backfills builtAt for unchanged build", async () => {
+test("projectServerDaemon agent trigger backfills builtAt for unchanged build", async () => {
   const { db, updateCalls } = createMockDb({
     key: baseKey,
     projection: {
@@ -824,7 +832,7 @@ Deno.test("projectServerDaemon agent trigger backfills builtAt for unchanged bui
   });
 });
 
-Deno.test("projectServerDaemon update-expired writes projection.update as expired", async () => {
+test("projectServerDaemon update-expired writes projection.update as expired", async () => {
   const { db, getDaemon } = createMockDb({
     key: baseKey,
     projection: {
@@ -850,7 +858,7 @@ Deno.test("projectServerDaemon update-expired writes projection.update as expire
   assertEquals(update?.finishedAt, "2020-01-01T00:05:00.000Z");
 });
 
-Deno.test("listConnectedServerIdsFromProjection includes status.connected rows", async () => {
+test("listConnectedServerIdsFromProjection includes status.connected rows", async () => {
   const connectedDaemon: ServerDaemonState = {
     key: baseKey,
     status: {
@@ -876,7 +884,7 @@ Deno.test("listConnectedServerIdsFromProjection includes status.connected rows",
   assertEquals(ids, [serverId]);
 });
 
-Deno.test("steadyStateInboundSkipsDbRead gates on lastSeenAt only", () => {
+test("steadyStateInboundSkipsDbRead gates on lastSeenAt only", () => {
   const recentAt = new Date().toISOString();
   const agent = {
     commit: "abc123",
@@ -921,7 +929,7 @@ function offlineDaemonState(
   };
 }
 
-Deno.test("listRecentlyOfflineServersForSweep returns recent offline rows only", async () => {
+test("listRecentlyOfflineServersForSweep returns recent offline rows only", async () => {
   const nowMs = Date.parse("2020-06-01T12:00:00.000Z");
   const recentAt = new Date(nowMs - 60_000).toISOString();
   const staleAt = new Date(nowMs - RECENT_OFFLINE_SWEEP_MS - 60_000).toISOString();
@@ -967,7 +975,7 @@ Deno.test("listRecentlyOfflineServersForSweep returns recent offline rows only",
   assertEquals(candidates[1]?.offlineAt, recentAt);
 });
 
-Deno.test("rotateSweepBatch selects candidates beyond the first budget on later ticks", () => {
+test("rotateSweepBatch selects candidates beyond the first budget on later ticks", () => {
   const items = Array.from({ length: 1_000 }, (_, index) => ({
     id: `srv-${String(index).padStart(4, "0")}`,
     connectedAt: null,

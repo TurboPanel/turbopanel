@@ -209,7 +209,7 @@ it(
         cell.attachDaemonSocket({
           keyId: crypto.randomUUID(),
         }),
-      Error as new (...args: unknown[]) => Error,
+      Error,
       "daemon socket lease held",
     );
   }),

@@ -20,23 +20,23 @@ export function configurePbkdf2Iterations(raw?: string | null): void {
 
 function base64urlEncode(bytes: Uint8Array): string {
   let binary = ''
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i])
+  for (const byte of bytes) {
+    binary += String.fromCodePoint(byte)
   }
   return btoa(binary)
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=/g, '')
+    .replaceAll('+', '-')
+    .replaceAll('/', '_')
+    .replaceAll('=', '')
 }
 
 function base64urlDecode(encoded: string): Uint8Array | null {
-  const padded = encoded.replace(/-/g, '+').replace(/_/g, '/')
+  const padded = encoded.replaceAll('-', '+').replaceAll('_', '/')
   const padLen = (4 - (padded.length % 4)) % 4
   try {
     const binary = atob(padded + '='.repeat(padLen))
     const bytes = new Uint8Array(binary.length)
     for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i)
+      bytes[i] = binary.codePointAt(i) ?? 0
     }
     return bytes
   } catch {
@@ -91,7 +91,7 @@ export async function verifyPassword(
 
   const salt = base64urlDecode(parts[3])
   const expected = base64urlDecode(parts[4])
-  if (!salt || !expected || expected.length !== KEY_BYTES) {
+  if (!salt || expected?.length !== KEY_BYTES) {
     return false
   }
 
