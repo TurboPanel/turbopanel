@@ -42,6 +42,20 @@ function sample(
   };
 }
 
+/** Drain microtasks until `predicate` is true (background flush paths). */
+async function waitFor(
+  predicate: () => boolean,
+  maxTurns = 50,
+): Promise<void> {
+  for (let i = 0; i < maxTurns; i++) {
+    if (predicate()) return;
+    await Promise.resolve();
+  }
+  if (!predicate()) {
+    throw new TypeError("waitFor timed out");
+  }
+}
+
 class FakeClickHouseHttpClient {
   execCalls: string[] = [];
   insertCalls: Array<{ table: string; rows: ReadonlyArray<Record<string, unknown>> }> =
@@ -151,8 +165,7 @@ it("writeHostSample age flush inserts pending rows", async () => {
   assertEquals(fake.insertCalls.length, 0);
   assertEquals(timers.length, 1);
   timers[0]!.cb();
-  await Promise.resolve();
-  await Promise.resolve();
+  await waitFor(() => fake.insertCalls.length === 1);
   assertEquals(fake.insertCalls.length, 1);
   assertEquals(fake.insertCalls[0]!.rows.length, 1);
 });
@@ -190,8 +203,7 @@ it("flush errors are logged and swallowed on background flush", async () => {
   });
   await store.writeHostSample(sample());
   timers[0]!.cb();
-  await Promise.resolve();
-  await Promise.resolve();
+  await waitFor(() => errors.length === 1);
   assertEquals(errors.length, 1);
   assertEquals((errors[0] as Error).message, "insert failed");
 });

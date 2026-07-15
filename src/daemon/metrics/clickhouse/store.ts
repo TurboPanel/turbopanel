@@ -243,7 +243,9 @@ export class ClickHouseServerMetricsStore implements ServerMetricsStore {
   async #writeHostSample(
     input: AuthenticatedHostMetricsSample,
   ): Promise<void> {
-    await this.ensureSchema();
+    // Enqueue before any await so concurrent chart queries that
+    // `flushWrites()` cannot race ahead of an in-flight `ensureSchema()` and
+    // observe an empty pending buffer for a sample already accepted with 202.
     this.#pendingRows.push(buildHostMetricsRow(input));
     if (this.#pendingRows.length >= this.#batchMaxRows) {
       await this.#flushPending({ rethrow: true });
@@ -274,6 +276,9 @@ export class ClickHouseServerMetricsStore implements ServerMetricsStore {
     this.#clearFlushTimer();
     if (this.#pendingRows.length === 0) return;
 
+    await this.ensureSchema();
+    if (this.#pendingRows.length === 0) return;
+
     const batch = this.#pendingRows.splice(0);
     this.#flushPromise = this.#insertBatch(batch, opts.rethrow)
       .finally(() => {
@@ -289,8 +294,12 @@ export class ClickHouseServerMetricsStore implements ServerMetricsStore {
     try {
       await this.#client.insertRows(HOST_METRICS_TABLE, batch);
     } catch (error) {
+      // Re-queue so a later query flush / timer can retry; dropping the batch
+      // permanently left charts empty after a transient ClickHouse hiccup.
+      this.#pendingRows.unshift(...batch);
       this.#onFlushError(error);
       if (rethrow) throw error;
+      this.#armFlushTimer();
     }
   }
 }

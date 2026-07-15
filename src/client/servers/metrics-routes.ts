@@ -185,12 +185,17 @@ export function registerServerMetricsRoutes(
       result,
     })
 
-    const ttlSeconds = resolveChartCacheTtlSeconds({
-      toMs: queryRange.toMs,
-      nowMs: Date.now(),
-      resolutionSeconds,
-    })
-    await cache.set(cacheKey, payload, ttlSeconds)
+    // Do not cache empty live series — the first sample often lands seconds
+    // after the first chart fetch; a 45s empty cache keeps the UI stuck on
+    // "No server metrics yet" despite successful daemon POSTs.
+    if (payload.sampleCount > 0) {
+      const ttlSeconds = resolveChartCacheTtlSeconds({
+        toMs: queryRange.toMs,
+        nowMs: Date.now(),
+        resolutionSeconds,
+      })
+      await cache.set(cacheKey, payload, ttlSeconds)
+    }
     return c.json(payload)
   })
 

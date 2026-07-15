@@ -529,8 +529,12 @@ export function registerDaemonApiRoutes(
         });
       };
       try {
-        const writeResult = store?.writeHostSample(result.sample);
-        void Promise.resolve(writeResult).catch(logWriteFailed);
+        // Await queueing so chart queries that flush pending rows can see
+        // this sample; still return 202 without waiting on ClickHouse I/O
+        // beyond schema/batch thresholds inside writeHostSample.
+        if (store) {
+          await store.writeHostSample(result.sample);
+        }
       } catch (err) {
         logWriteFailed(err);
       }
