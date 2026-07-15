@@ -1,4 +1,3 @@
-// NOSONAR typescript:S2187 — Deno.test() cases below; Sonar does not recognize Deno's test API
 /**
  * Route authz for server commands.
  *
@@ -9,6 +8,7 @@
  */
 import { assertEquals } from 'jsr:@std/assert'
 import { and, eq } from 'drizzle-orm'
+import { it } from '@std/testing/bdd'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import { getDatabaseUrl } from '../../db-url.ts'
@@ -280,7 +280,7 @@ async function withCommandRouteFixtures(
   }
 }
 
-Deno.test('POST /servers/:id/commands/ping queues command for authorized user', async () => {
+it('POST /servers/:id/commands/ping queues command for authorized user', async () => {
   await withCommandRouteFixtures({}, async ({
     db,
     app,
@@ -323,7 +323,7 @@ Deno.test('POST /servers/:id/commands/ping queues command for authorized user', 
   })
 })
 
-Deno.test('POST /servers/:id/commands/ping returns 403 without org grant', async () => {
+it('POST /servers/:id/commands/ping returns 403 without org grant', async () => {
   await withCommandRouteFixtures({ withGrant: false }, async ({
     db,
     app,
@@ -347,7 +347,7 @@ Deno.test('POST /servers/:id/commands/ping returns 403 without org grant', async
   })
 })
 
-Deno.test('POST /servers/:id/commands/reboot queues command for authorized user', async () => {
+it('POST /servers/:id/commands/reboot queues command for authorized user', async () => {
   await withCommandRouteFixtures({}, async ({
     db,
     app,
@@ -390,7 +390,7 @@ Deno.test('POST /servers/:id/commands/reboot queues command for authorized user'
   })
 })
 
-Deno.test('POST /servers/:id/commands/reboot returns 403 without org grant', async () => {
+it('POST /servers/:id/commands/reboot returns 403 without org grant', async () => {
   await withCommandRouteFixtures({ withGrant: false }, async ({
     db,
     app,
@@ -414,7 +414,7 @@ Deno.test('POST /servers/:id/commands/reboot returns 403 without org grant', asy
   })
 })
 
-Deno.test('POST /servers/:id/commands/reboot returns 403 for cross-org server', async () => {
+it('POST /servers/:id/commands/reboot returns 403 for cross-org server', async () => {
   await withCommandRouteFixtures({}, async ({
     db,
     app,
@@ -462,7 +462,7 @@ Deno.test('POST /servers/:id/commands/reboot returns 403 for cross-org server', 
   })
 })
 
-Deno.test('POST /servers/:id/hostname validates hostname and queues on success', async () => {
+it('POST /servers/:id/hostname validates hostname and queues on success', async () => {
   await withCommandRouteFixtures({}, async ({
     db,
     app,
@@ -524,7 +524,7 @@ Deno.test('POST /servers/:id/hostname validates hostname and queues on success',
   })
 })
 
-Deno.test('POST /servers/:id/hostname returns 403 without org grant', async () => {
+it('POST /servers/:id/hostname returns 403 without org grant', async () => {
   await withCommandRouteFixtures({ withGrant: false }, async ({
     db,
     app,
@@ -552,7 +552,7 @@ Deno.test('POST /servers/:id/hostname returns 403 without org grant', async () =
   })
 })
 
-Deno.test('POST /servers/:id/commands/ping and hostname return 403 for cross-org server', async () => {
+it('POST /servers/:id/commands/ping and hostname return 403 for cross-org server', async () => {
   await withCommandRouteFixtures({}, async ({
     db,
     app,
@@ -612,7 +612,7 @@ Deno.test('POST /servers/:id/commands/ping and hostname return 403 for cross-org
   })
 })
 
-Deno.test('GET /servers/:id/commands/:commandId returns latency for terminal ping', async () => {
+it('GET /servers/:id/commands/:commandId returns latency for terminal ping', async () => {
   await withCommandRouteFixtures({}, async ({
     db,
     app,
@@ -673,7 +673,7 @@ Deno.test('GET /servers/:id/commands/:commandId returns latency for terminal pin
   })
 })
 
-Deno.test('GET /servers/:id/commands/:commandId returns 404 for cross-org or unknown ids', async () => {
+it('GET /servers/:id/commands/:commandId returns 404 for cross-org or unknown ids', async () => {
   await withCommandRouteFixtures({}, async ({
     db,
     app,
@@ -736,7 +736,7 @@ Deno.test('GET /servers/:id/commands/:commandId returns 404 for cross-org or unk
   })
 })
 
-Deno.test('command routes return 503 when dispatch infrastructure is unavailable', async () => {
+it('command routes return 503 when dispatch infrastructure is unavailable', async () => {
   await withCommandRouteFixtures({
     withCommandQueue: false,
     withRegistry: true,

@@ -1,5 +1,5 @@
-// NOSONAR typescript:S2187 — Deno.test() cases below; Sonar does not recognize Deno's test API
 import { and, eq } from 'drizzle-orm'
+import { it } from '@std/testing/bdd'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'
 import {
@@ -86,7 +86,7 @@ async function withTestFixtures(
   }
 }
 
-Deno.test('validatePermissionEntityCompatibility rejects org permissions on non-org entities', () => {
+it('validatePermissionEntityCompatibility rejects org permissions on non-org entities', () => {
   const orgOwn = validatePermissionEntityCompatibility('organization:own', 'workspace')
   if (orgOwn.ok) {
     throw new Error('organization:own on workspace should be rejected')
@@ -98,7 +98,7 @@ Deno.test('validatePermissionEntityCompatibility rejects org permissions on non-
   }
 })
 
-Deno.test('validatePermissionEntityCompatibility rejects team permissions on non-team entities', () => {
+it('validatePermissionEntityCompatibility rejects team permissions on non-team entities', () => {
   const teamOwn = validatePermissionEntityCompatibility('team:own', 'organization')
   if (teamOwn.ok) {
     throw new Error('team:own on organization should be rejected')
@@ -110,7 +110,7 @@ Deno.test('validatePermissionEntityCompatibility rejects team permissions on non
   }
 })
 
-Deno.test('createAccessGrant rejects invalid permission and entity combinations', async () => {
+it('createAccessGrant rejects invalid permission and entity combinations', async () => {
   await withTestFixtures(async ({ db, userId, organizationId, workspaceId, teamId }) => {
     const invalidOrgOnWorkspace = await createAccessGrant(db, {
       entityType: 'workspace',

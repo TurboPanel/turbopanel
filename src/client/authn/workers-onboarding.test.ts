@@ -1,5 +1,5 @@
-// NOSONAR typescript:S2187 — Deno.test() cases below; Sonar does not recognize Deno's test API
 import { eq } from 'drizzle-orm'
+import { it } from '@std/testing/bdd'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import { getDatabaseUrl } from '../../db-url.ts'
@@ -137,7 +137,7 @@ async function cleanupUser(db: ReturnType<typeof createDenoDb>, email: string) {
   await db.delete(user).where(eq(user.id, userId))
 }
 
-Deno.test('Workers password sign-up succeeds on a fresh database without install', async () => {
+it('Workers password sign-up succeeds on a fresh database without install', async () => {
   if (!dbUrl) {
     console.warn('Skipping Workers sign-up test: TURBOPANEL_DATABASE_URL not set')
     return
@@ -163,7 +163,7 @@ Deno.test('Workers password sign-up succeeds on a fresh database without install
   }
 })
 
-Deno.test('Workers sign-up creates an organization for the new user', async () => {
+it('Workers sign-up creates an organization for the new user', async () => {
   if (!dbUrl) {
     console.warn('Skipping Workers org sign-up test: TURBOPANEL_DATABASE_URL not set')
     return
@@ -219,7 +219,7 @@ Deno.test('Workers sign-up creates an organization for the new user', async () =
   }
 })
 
-Deno.test('Workers OTP auto-registration succeeds without install completion', async () => {
+it('Workers OTP auto-registration succeeds without install completion', async () => {
   if (!dbUrl) {
     console.warn('Skipping Workers OTP test: TURBOPANEL_DATABASE_URL not set')
     return
@@ -251,7 +251,7 @@ Deno.test('Workers OTP auto-registration succeeds without install completion', a
   }
 })
 
-Deno.test('Deno sign-up still requires install completion on a fresh database', async () => {
+it('Deno sign-up still requires install completion on a fresh database', async () => {
   if (!dbUrl) {
     console.warn('Skipping Deno install gate test: TURBOPANEL_DATABASE_URL not set')
     return
@@ -278,7 +278,7 @@ Deno.test('Deno sign-up still requires install completion on a fresh database', 
   }
 })
 
-Deno.test('Deno status reflects email verification from resolved email settings', async () => {
+it('Deno status reflects email verification from resolved email settings', async () => {
   if (!dbUrl) {
     console.warn(
       'Skipping Deno email verification status test: TURBOPANEL_DATABASE_URL not set',
@@ -311,7 +311,7 @@ Deno.test('Deno status reflects email verification from resolved email settings'
   }
 })
 
-Deno.test('Deno sign-up auto-verifies when email delivery is not configured', async () => {
+it('Deno sign-up auto-verifies when email delivery is not configured', async () => {
   if (!dbUrl) {
     console.warn(
       'Skipping Deno sign-up auto-verify test: TURBOPANEL_DATABASE_URL not set',
@@ -357,7 +357,7 @@ Deno.test('Deno sign-up auto-verifies when email delivery is not configured', as
   }
 })
 
-Deno.test('Deno sign-up rejects when verification is required but the queue is noop', async () => {
+it('Deno sign-up rejects when verification is required but the queue is noop', async () => {
   if (!dbUrl) {
     console.warn(
       'Skipping Deno noop queue sign-up test: TURBOPANEL_DATABASE_URL not set',
@@ -403,7 +403,7 @@ Deno.test('Deno sign-up rejects when verification is required but the queue is n
   }
 })
 
-Deno.test('Workers sign-up leaves no org residue when verification email enqueue fails', async () => {
+it('Workers sign-up leaves no org residue when verification email enqueue fails', async () => {
   if (!dbUrl) {
     console.warn(
       'Skipping Workers enqueue rollback test: TURBOPANEL_DATABASE_URL not set',
