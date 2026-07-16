@@ -5,6 +5,7 @@ import { authPaths, buildAuthSchemas } from './auth.ts'
 import { environmentPaths, environmentSchemas } from './environments.ts'
 import { containerPaths, containerSchemas } from './containers.ts'
 import { hostingPaths, hostingSchemas } from './hostings.ts'
+import { principalPaths, principalSchemas } from './principals.ts'
 import { tlsPaths, tlsSchemas } from './tls.ts'
 import { installOpenApiPaths, installOpenApiSchemas } from './install.ts'
 import { networkPaths, networkSchemas } from './networks.ts'
@@ -55,6 +56,7 @@ export function getClientOpenApiSpec(
       { name: 'Services', description: 'Service CRUD' },
       { name: 'Hostings', description: 'Hosting CRUD' },
       { name: 'Containers', description: 'Container CRUD' },
+      { name: 'Principals', description: 'Service principal (account) CRUD' },
       { name: 'TLS', description: 'Organization TLS certificate library' },
       { name: 'Servers', description: 'Server fleet and update management' },
       { name: 'Networks', description: 'Server network management' },
@@ -65,7 +67,7 @@ export function getClientOpenApiSpec(
     ],
     'x-tagGroups': [
       { name: 'Authentication & Authorization', tags: ['Authentication', 'Authorization'] },
-      { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Variables', 'Services', 'Hostings', 'Containers', 'TLS'] },
+      { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Variables', 'Services', 'Hostings', 'Containers', 'Principals', 'TLS'] },
       { name: 'Infrastructure', tags: ['Servers', 'Networks', 'Licenses'] },
       { name: 'Platform', tags: ['Health', ...(includeInstall ? ['Install'] : [])] },
     ],
@@ -92,6 +94,7 @@ export function getClientOpenApiSpec(
         ...serviceSchemas,
         ...hostingSchemas,
         ...containerSchemas,
+        ...principalSchemas,
         ...tlsSchemas,
         ...(includeInstall ? installOpenApiSchemas : {}),
       },
@@ -110,6 +113,7 @@ export function getClientOpenApiSpec(
       ...servicePaths,
       ...hostingPaths,
       ...containerPaths,
+      ...principalPaths,
       ...tlsPaths,
       ...(includeInstall ? installOpenApiPaths : {}),
     },

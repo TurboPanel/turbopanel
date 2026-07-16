@@ -7,6 +7,7 @@ import {
   hosting,
   managed,
   organization,
+  principal,
   project,
   variable,
   workspace,
@@ -176,6 +177,14 @@ export async function verifyEntityExists(
         .select({ id: variable.id })
         .from(variable)
         .where(eq(variable.id, entityId))
+        .limit(1)
+      return rows.length > 0
+    }
+    case 'principal': {
+      const rows = await db
+        .select({ id: principal.id })
+        .from(principal)
+        .where(eq(principal.id, entityId))
         .limit(1)
       return rows.length > 0
     }
@@ -366,6 +375,20 @@ export async function resolveEntityOrganizationId(
         LEFT JOIN workspace hw ON hw.id = hp.workspace_id
         LEFT JOIN server sv ON sv.id = v.server_id
         WHERE v.id = ${entityId}::uuid
+        LIMIT 1
+      `)
+      return rows[0]?.organization_id ?? null
+    }
+    case 'principal': {
+      const rows = await db.execute<{ organization_id: string }>(sql`
+        SELECT w.organization_id AS organization_id
+        FROM principal p
+        JOIN assignment a ON a.principal_id = p.id
+        JOIN service s ON s.id = a.service_id
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project pr ON pr.id = e.project_id
+        JOIN workspace w ON w.id = pr.workspace_id
+        WHERE p.id = ${entityId}::uuid
         LIMIT 1
       `)
       return rows[0]?.organization_id ?? null

@@ -100,7 +100,7 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `dev/
 |---|---|
 | **Identity** | `user`, `account`, `session`, `verification`, `passkey`, `2fa` |
 | **Organizations** | `organization`, `member`, `team`, `teammate`, `invitation` (no `organization_id`; `team_id NOT NULL`), `license`, `tls` |
-| **Resource tree** | `workspace`, `project`, `environment`, `service`, `hosting`, `container`, `network`, `managed`, `variable` |
+| **Resource tree** | `workspace`, `project`, `environment`, `service`, `hosting`, `container`, `network`, `managed`, `variable`, `principal`, `assignment` |
 | **Authorization** | `grant` |
 | **Config** | `setting` (`value` is `jsonb`) |
 | **Runtime** | `server`, `command` |
@@ -113,6 +113,7 @@ Canonical order (org scope is derived via joins — not stored on child rows):
 
 ```
 organization → workspace → project → environment → service → hosting
+organization → workspace → project → environment → service → assignment ← principal (M:N)
 organization → workspace → project → environment → service → container (1:N)
 organization → workspace → project → managed (1:1)
 organization → workspace → project → environment → variable (1:N, env-scoped)
@@ -133,13 +134,15 @@ organization → server → variable (1:N, server-scoped; excluded from inherita
 | `hosting` | `service_id NOT NULL` | Public routing for a service (Traefik + edge Caddy). Optional **`tls_id`** → `tls.id` (`ON DELETE SET NULL`) pins an org certificate; null = auto-match by SAN at deploy. **`options`**: `{ hostnames[], pathPrefix?, targetPort? }`. **`metadata`**: deploy status fields. Org derived via service chain. |
 | `tls` | `organization_id NOT NULL` | Org TLS certificate library (`upload` / `lets_encrypt` / `self_signed`). **`certificate_pem`**: public chain (nullable while LE pending). **`private_key_pem`**: sealed `tpsecret` only — never returned on client GET. **`metadata`**: `{ dnsNames, hasWildcard, notBefore, notAfter, fingerprintSha256, subject, issuer, status, acme? }`. **`options`**: `{ prefer?, autoRenew?, requestedHostnames? }`. `ON DELETE CASCADE` from org; hosting pins clear on cert delete. |
 | `container` | `service_id NOT NULL` + `server_id NOT NULL` | Pins a deployed Docker container to a service and records which server hosts it. **`metadata`** holds the pinned container id + status (no dedicated columns). Both FKs `ON DELETE RESTRICT` (deleting a service or server with existing containers is blocked, mirroring `hosting`/`network`). |
+| `principal` | none (org derived via `assignment` → `service`) | Account identity attachable to services. **`kind`** CHECK `('system', 'database')`; **`provider`** CHECK `('pam', 'postgres', 'mysql', 'redis')`; **`username`** `varchar(255)` CHECK `^[A-Za-z_][A-Za-z0-9_-]*$` (POSIX/DB account allowlist, 1–255 chars). **`password`** is nullable + write-only; value sealing/encryption (`tpsecret`/`tpdaemon`) is **deferred to a later phase** — no encryption wiring yet. **`metadata`** holds `uid`/`gid`/`home`. **No `organization_id`** (derived through assignments) and **no global unique on `username`** (the same account name legitimately recurs across systems). |
+| `assignment` | `principal_id NOT NULL` + `service_id NOT NULL` | Join edge for the principal↔service many-to-many. `principal_id` FK `ON DELETE CASCADE` (deleting a principal removes its edges); `service_id` FK `ON DELETE RESTRICT` (a service still referenced by principals cannot be deleted, mirroring `container`). Unique `(principal_id, service_id)`; btree indexes on each FK. |
 | `network` | `server_id NOT NULL` | Linked to a server; org derived via server. Cascade delete. |
 | `managed` | `project_id NOT NULL` (unique) | Linking table; project is source of truth for timestamps; `ON DELETE CASCADE`. **`metadata`**: kebab-case catalog `code`, etc. |
 | `variable` | exactly one of `organization_id`, `workspace_id`, `project_id`, `environment_id`, `service_id`, `server_id` (all nullable FKs; CHECK enforces one parent) | Config vars/secrets at any resource scope; `is_secret` flag; secret `value` is a sealed envelope; partial unique indexes on `(key, <parent_fk>)` per scope; `ON DELETE CASCADE`. Key must match `^[A-Za-z_][A-Za-z0-9_]*$`. **Inheritance order** (runtime resolution, excludes server-scoped): `service` → `environment` → `project` → `workspace` → `organization` (lower scope wins). **Server-scoped** variables are fetched separately and do not participate in the inheritance chain. |
 
 **Project cascade delete** (`deleteProjectCascade` in `project-delete.ts`): after all containers under the project are non-active (`exited`/`dead`/`removing`), `DELETE /projects/:id` deletes in order `container` → `hosting` → `service` → `environment` → `project` (variables/`managed` cascade via FK). Active containers return **409** `project_has_running_services` — stop stacks first via `environment.stop`. Restrictive FKs stay in place as a safety net.
 
-Authorization ancestry and `listVisible()` resolve organization through this chain in SQL (`evaluator.ts`, `create-access-grant.ts`). **`variable`** and **`managed`** are in `RESOURCE_KINDS`, `GRANT_ENTITY_TYPES`, and `ENTITY_TYPES` (`catalog.ts`); `resolveEntityById()` and `can()` resolve their org via parent joins (same paths as `create-access-grant.ts`). **`GET /access/check`** accepts any resolvable entity UUID (including `variable` and `managed`). **`GET /access/resource-id`** accepts only `organization` and `team` kinds (grant-management UI). Access grants still target org/team entities only.
+Authorization ancestry and `listVisible()` resolve organization through this chain in SQL (`evaluator.ts`, `create-access-grant.ts`). **`variable`** and **`managed`** are in `RESOURCE_KINDS`, `GRANT_ENTITY_TYPES`, and `ENTITY_TYPES` (`catalog.ts`); `resolveEntityById()` and `can()` resolve their org via parent joins (same paths as `create-access-grant.ts`). **`principal`** is in `RESOURCE_KINDS` and `ENTITY_TYPES` but **not** `GRANT_ENTITY_TYPES` — org is derived via `assignment → service → environment → project → workspace` (returns null when unassigned); `assignment` itself is not a grantable authz entity. **`GET /access/check`** accepts any resolvable entity UUID (including `variable` and `managed`). **`GET /access/resource-id`** accepts only `organization` and `team` kinds (grant-management UI). Access grants still target org/team entities only.
 
 > Permissions are **static code constants** defined in `../../client/authz/catalog.ts` (`PERMISSIONS`, `ENTITY_TYPES`, `SUBJECT_TYPES`) — not DB rows. There are no `role`, `permission`, or `permit` tables. The Drizzle table export is **`grant`** (not `accessGrant`).
 
@@ -201,6 +204,12 @@ List and get enforce visibility via `listVisible` / org-level grant checks in SQ
 | `POST` | `/api/client/v1/hostings` | org owner/manager; `serviceId` required |
 | `PATCH` | `/api/client/v1/hostings/{id}` | org owner/manager |
 | `DELETE` | `/api/client/v1/hostings/{id}` | org owner/manager |
+| `GET` | `/api/client/v1/principals` | org owner/manager (optional `?serviceId=` via `assignment`); returns rows with `serviceIds`; **password never returned** |
+| `GET` | `/api/client/v1/principals/{id}` | org owner/manager; returns row + `serviceIds`; **password never returned** |
+| `POST` | `/api/client/v1/principals` | org owner/manager on each target service; body `kind`/`provider`/`username` + ≥1 `serviceIds` (inserts `principal` + `assignment` edges); does **not** accept `password` |
+| `PATCH` | `/api/client/v1/principals/{id}` | org owner/manager; optional field updates and/or `serviceIds` replacement; does **not** accept `password` |
+| `POST` | `/api/client/v1/principals/{id}/password` | org owner/manager; write-only password set/reset (only password write path; sealing/`tpdaemon` encrypt deferred) |
+| `DELETE` | `/api/client/v1/principals/{id}` | org owner/manager; deletes principal (`assignment` edges cascade) |
 | `GET` | `/api/client/v1/networks` | org manager (`organization:manage`; requires `?serverId=`) |
 | `POST` | `/api/client/v1/networks` | org manager; body `{ serverId }` |
 | `DELETE` | `/api/client/v1/networks/{id}` | org manager |

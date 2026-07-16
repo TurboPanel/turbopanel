@@ -226,6 +226,22 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         JOIN workspace w ON w.id = p.workspace_id
         WHERE c.id = ${entityId}::uuid
       `
+    case 'principal':
+      // Org-level grants are sufficient for can(); only emit the organization
+      // ancestor (via assignment → service → … → workspace).
+      return sql`
+        SELECT 'principal'::text AS entity_type, p.id AS entity_id, 0 AS depth
+        FROM principal p WHERE p.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'organization'::text, w.organization_id, 1
+        FROM principal p
+        JOIN assignment a ON a.principal_id = p.id
+        JOIN service s ON s.id = a.service_id
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project pr ON pr.id = e.project_id
+        JOIN workspace w ON w.id = pr.workspace_id
+        WHERE p.id = ${entityId}::uuid
+      `
     case 'server':
       return sql`
         SELECT 'server'::text AS entity_type, s.id AS entity_id, 0 AS depth
@@ -433,6 +449,14 @@ function buildLeavesBody(kind: string, organizationId: string): SQL {
         JOIN environment e ON e.id = s.environment_id
         JOIN project p ON p.id = e.project_id
         JOIN workspace w ON w.id = p.workspace_id
+        WHERE w.organization_id = ${organizationId}::uuid`
+    case 'principal':
+      return sql`SELECT DISTINCT p.id FROM principal p
+        JOIN assignment a ON a.principal_id = p.id
+        JOIN service s ON s.id = a.service_id
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project pr ON pr.id = e.project_id
+        JOIN workspace w ON w.id = pr.workspace_id
         WHERE w.organization_id = ${organizationId}::uuid`
     case 'server':
       return sql`SELECT id FROM server WHERE organization_id = ${organizationId}::uuid`

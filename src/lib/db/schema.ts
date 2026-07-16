@@ -697,6 +697,101 @@ export const container = pgTable(
     }).onDelete('restrict'),
   ]
 )
+/**
+ * A principal is an account identity that can be attached to services — a host
+ * (PAM) user or a database engine user. Org is derived through `assignment` →
+ * `service`; there is deliberately no `organization_id` column here.
+ */
+export const principal = pgTable(
+  'principal',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    /** `system` (host/PAM account) | `database` (engine account) */
+    kind: text().notNull(),
+    /** `pam` | `postgres` | `mysql` | `redis` */
+    provider: text().notNull(),
+    /**
+     * Account name. Allowlist mirrors POSIX/database account naming: starts
+     * with a letter or underscore, then letters/digits/underscore/hyphen
+     * (`^[A-Za-z_][A-Za-z0-9_-]*$`), 1–255 chars.
+     */
+    username: varchar({ length: 255 }).notNull(),
+    /**
+     * Write-only credential. Value sealing/encryption (`tpsecret`/`tpdaemon`
+     * envelopes) is intentionally deferred to a later phase — no encryption
+     * wiring here yet.
+     */
+    password: text(),
+    /** Holds `uid` / `gid` / `home`. */
+    metadata: jsonb(),
+    options: jsonb(),
+  },
+  (table) => [
+    check('principal_kind_check', sql`kind IN ('system', 'database')`),
+    check(
+      'principal_provider_check',
+      sql`provider IN ('pam', 'postgres', 'mysql', 'redis')`
+    ),
+    check(
+      'principal_username_format_check',
+      sql`(char_length((username)::text) >= 1) AND (char_length((username)::text) <= 255) AND ((username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text)`
+    ),
+    // No global unique on `username`: the same account name (e.g. `postgres`,
+    // `www-data`) legitimately recurs across different systems/services.
+  ]
+)
+/**
+ * Join edge: principal ↔ service (many-to-many). Deleting a principal removes
+ * its edges (cascade); a service still referenced by principals cannot be
+ * deleted (restrict), mirroring `container`'s restrict on `service`.
+ */
+export const assignment = pgTable(
+  'assignment',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    principalId: uuid('principal_id').notNull(),
+    serviceId: uuid('service_id').notNull(),
+  },
+  (table) => [
+    index('idx_assignment_principal_id').using(
+      'btree',
+      table.principalId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_assignment_service_id').using(
+      'btree',
+      table.serviceId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.principalId],
+      foreignColumns: [principal.id],
+      name: 'assignment_principal_id_principal_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serviceId],
+      foreignColumns: [service.id],
+      name: 'assignment_service_id_service_id_fk',
+    }).onDelete('restrict'),
+    unique('assignment_principal_service_unique').on(table.principalId, table.serviceId),
+  ]
+)
 export const grant = pgTable(
   'grant',
   {

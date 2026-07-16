@@ -724,6 +724,12 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `POST` | `/api/client/v1/variables` | Create variable under an environment; `isSecret=true` seals via `encryptSecret` (instance imports encrypt only — decryption is daemon-only via `POST /api/daemon/v1/secrets/decrypt`) |
 | `PATCH` | `/api/client/v1/variables/:id` | Update variable; re-seals on secret value update |
 | `DELETE` | `/api/client/v1/variables/:id` | Delete variable |
+| `GET` | `/api/client/v1/principals` | List principals visible via `listVisible` (optional `?serviceId=` via `assignment`); each row includes `serviceIds`; **password never returned** |
+| `GET` | `/api/client/v1/principals/:id` | Get principal + `serviceIds`; **password never returned** |
+| `POST` | `/api/client/v1/principals` | Create principal (`kind`/`provider`/`username` + ≥1 `serviceIds`); does **not** accept `password` |
+| `PATCH` | `/api/client/v1/principals/:id` | Update principal fields and/or replace `serviceIds` assignments; does **not** accept `password` |
+| `POST` | `/api/client/v1/principals/:id/password` | Set/reset write-only `password` (only password write path; sealing/`tpdaemon` encrypt is a future phase) |
+| `DELETE` | `/api/client/v1/principals/:id` | Delete principal (`assignment` edges cascade) |
 | `GET` | `/api/client/v1/licenses` | List licenses (`organization:own`) — API only; not shown in the end-user UI |
 | `POST` | `/api/client/v1/licenses` | Create a one-shot registration key (`organization:own`; used by Add Server) |
 | `DELETE` | `/api/client/v1/licenses/{id}` | Invalidate a license (`organization:own`; soft `revoked_at`, disconnects bound servers) |

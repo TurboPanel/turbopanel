@@ -26,18 +26,33 @@ export const RESOURCE_KINDS = [
   'managed',
   'container',
   'tls',
+  'principal',
 ] as const
 
-/** Entity kinds that may appear on access_grant rows (resource tree + team). */
+/**
+ * Entity kinds that may appear on access_grant rows (resource tree + team).
+ * `principal` is intentionally omitted — grants stay org/team-scoped; principal
+ * participates in `can()` / `listVisible()` via {@link RESOURCE_KINDS} only.
+ */
 export const GRANT_ENTITY_TYPES = [
-  ...RESOURCE_KINDS,
+  'organization',
+  'workspace',
+  'environment',
+  'project',
+  'service',
+  'server',
+  'hosting',
+  'variable',
+  'managed',
+  'container',
+  'tls',
   'team',
 ] as const
 
 export const ENTITY_TYPES = [
   'organization', 'team', 'workspace', 'environment',
   'project', 'service', 'hosting', 'server', 'variable', 'managed',
-  'container', 'tls',
+  'container', 'tls', 'principal',
 ] as const
 export type EntityType = (typeof ENTITY_TYPES)[number]
 
