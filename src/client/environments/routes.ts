@@ -160,7 +160,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     if (optionsResult instanceof Response) return optionsResult
     const composeOption = applyValidatedComposeOption(optionsResult)
     if (!composeOption.ok) {
-      return c.json({ error: 'Invalid request' }, 400)
+      return c.json({ error: 'compose_invalid', issues: composeOption.issues }, 400)
     }
 
     const metadataResult = parseJsonbObject(c, body, 'metadata')
@@ -230,7 +230,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     if (optionsResult !== null) {
       const composeOption = applyValidatedComposeOption(optionsResult)
       if (!composeOption.ok) {
-        return c.json({ error: 'Invalid request' }, 400)
+        return c.json({ error: 'compose_invalid', issues: composeOption.issues }, 400)
       }
       patchFields.options = optionsResult
     }

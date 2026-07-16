@@ -29,6 +29,13 @@
       "when": 1784155956850,
       "tag": "0003_add_tls_table",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1784224288654,
+      "tag": "0004_uniq_server_license_id",
+      "breakpoints": true
     }
   ]
 }

@@ -29,6 +29,7 @@ import {
   SERVER_HAS_BLOCKERS_ERROR,
 } from './delete-guards.ts'
 import { createLicense } from '../authn/license.ts'
+import { ORG_ID_HEADER } from '../org-context.ts'
 import { buildServerDaemonState } from '../../daemon/authn/daemon-state.ts'
 import { attachDaemonStateToServer } from '../../daemon/authn/server-identity-db.ts'
 import { registerServerRoutes } from './routes.ts'
@@ -586,7 +587,7 @@ test('DELETE /servers/:id returns 409 when networks block deletion', async () =>
   })
 })
 
-test('DELETE /servers/:id invalidates the bound license on Deno', async () => {
+test('DELETE /servers/:id invalidates the bound license', async () => {
   await withServerDeleteFixtures(async ({
     db,
     app,
@@ -594,7 +595,6 @@ test('DELETE /servers/:id invalidates the bound license on Deno', async () => {
     userId,
     organizationId,
     serverId,
-    registry,
   }) => {
     const { licenseId } = await createLicense(db, { organizationId })
     await db
@@ -622,6 +622,100 @@ test('DELETE /servers/:id invalidates the bound license on Deno', async () => {
 
     await db.delete(license).where(eq(license.id, licenseId))
   })
+})
+
+test('DELETE /servers/:id invalidates the bound license on Workers runtime', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping server route tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+  const registry = createTrackingRegistry()
+  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+  const app = new Hono<AppEnv>()
+  app.use('*', (c, next) => {
+    c.set('db', db)
+    c.set('daemonCellRegistry', registry)
+    return next()
+  })
+  registerServerRoutes(app, { secrets, runtime: 'workers' })
+
+  const email = `server-delete-workers-${crypto.randomUUID()}@example.com`
+  const [insertedOrg] = await db
+    .insert(organization)
+    .values({ displayName: 'Server Delete Workers Org' })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg!.id
+
+  const [insertedUser] = await db
+    .insert(user)
+    .values({ email, isEmailVerified: true, role: 'user' })
+    .returning({ id: user.id })
+  const userId = insertedUser!.id
+
+  await db.insert(member).values({ organizationId, userId })
+  await db.insert(grant).values({
+    entityType: 'organization',
+    entityId: organizationId,
+    actorType: 'user',
+    actorId: userId,
+    permission: 'organization:manage',
+    allow: true,
+  })
+
+  const now = new Date().toISOString()
+  const [insertedServer] = await db
+    .insert(server)
+    .values({
+      createdAt: now,
+      updatedAt: now,
+      organizationId,
+      displayName: 'Workers Delete Me',
+    })
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
+
+  try {
+    const { licenseId } = await createLicense(db, { organizationId })
+    await db
+      .update(server)
+      .set({ licenseId, updatedAt: new Date().toISOString() })
+      .where(eq(server.id, serverId))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/servers/${serverId}`, {
+      method: 'DELETE',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 200)
+
+    const [licenseRow] = await db
+      .select({ revokedAt: license.revokedAt })
+      .from(license)
+      .where(eq(license.id, licenseId))
+      .limit(1)
+    assertExists(licenseRow?.revokedAt)
+
+    await db.delete(license).where(eq(license.id, licenseId))
+  } finally {
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(grant).where(and(
+      eq(grant.actorId, userId),
+      eq(grant.entityId, organizationId),
+    ))
+    await db.delete(member).where(and(
+      eq(member.userId, userId),
+      eq(member.organizationId, organizationId),
+    ))
+    await db.delete(user).where(eq(user.id, userId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
 })
 
 test('DELETE /servers/:id returns 409 when child resources block deletion', async () => {

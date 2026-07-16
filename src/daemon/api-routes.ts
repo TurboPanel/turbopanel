@@ -337,14 +337,16 @@ export function registerDaemonApiRoutes(
       return c.json({ ok: false, error: "Invalid signature" }, 403);
     }
 
+    const serverIdBody = normalizeRequiredString(body.serverId) ?? undefined;
     const serverId = await resolveServerId(db, {
+      serverId: serverIdBody,
       machineId,
       hostname,
       licenseId,
       licenseToken,
     });
     if (!serverId) {
-      return c.json({ ok: false, error: "Unable to resolve server" }, 400);
+      return c.json({ ok: false, error: "License already consumed or invalid" }, 400);
     }
 
     const existing = await getServerDaemonStateByFingerprint(db, fingerprint);

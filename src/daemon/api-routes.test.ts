@@ -13,7 +13,7 @@ import {
 } from "../client/authn/license.ts";
 import { getDatabaseUrl } from "../db-url.ts";
 import { createDenoDb } from "../db.ts";
-import { organization, server } from "../lib/db/schema.ts";
+import { organization, license, server } from "../lib/db/schema.ts";
 import { registerDaemonApiRoutes } from "./api-routes.ts";
 import type {
   DaemonCell,
@@ -661,6 +661,7 @@ test("POST /enroll re-enrollment replaces daemon key on server row", async () =>
       body: JSON.stringify({
         licenseId,
         licenseToken,
+        serverId,
         machineId,
         hostname,
         publicJwk: newKey.publicJwk,
@@ -684,23 +685,114 @@ test("POST /enroll re-enrollment replaces daemon key on server row", async () =>
   });
 });
 
-test("POST /enroll re-enrollment with recovery credential from same organization", async () => {
+test("POST /enroll rejects a second host once the license is latched", async () => {
+  await withEnrollFixture(async ({
+    app,
+    licenseId,
+    licenseToken,
+    serverId,
+    machineId,
+    hostname,
+  }) => {
+    const challengeResponse = await app.request(
+      "/api/daemon/v1/auth/challenge",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
+    assertEquals(challengeResponse.status, 200);
+    const challenge = await challengeResponse.json() as {
+      challengeId: string;
+      nonce: string;
+    };
+    const otherKey = await generateKeyMaterial();
+    const payload = buildEnrollmentPayload({
+      challengeId: challenge.challengeId,
+      nonce: challenge.nonce,
+      licenseId,
+      machineId: `other-${machineId}`,
+      hostname: `other-${hostname}`,
+      publicKeyFingerprint: otherKey.fingerprint,
+    });
+    const signature = await signPayload(otherKey.privateKey, payload);
+
+    const enrollResponse = await app.request("/api/daemon/v1/enroll", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        licenseId,
+        licenseToken,
+        machineId: `other-${machineId}`,
+        hostname: `other-${hostname}`,
+        publicJwk: otherKey.publicJwk,
+        challengeId: challenge.challengeId,
+        signature,
+      }),
+    });
+    assertEquals(enrollResponse.status, 400);
+    const body = await enrollResponse.json() as { error?: string };
+    assertEquals(body.error, "License already consumed or invalid");
+
+    // Same license + persisted serverId still re-enrolls the latched server.
+    const reChallengeResponse = await app.request(
+      "/api/daemon/v1/auth/challenge",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
+    assertEquals(reChallengeResponse.status, 200);
+    const reChallenge = await reChallengeResponse.json() as {
+      challengeId: string;
+      nonce: string;
+    };
+    const reKey = await generateKeyMaterial();
+    const rePayload = buildEnrollmentPayload({
+      challengeId: reChallenge.challengeId,
+      nonce: reChallenge.nonce,
+      licenseId,
+      machineId,
+      hostname,
+      publicKeyFingerprint: reKey.fingerprint,
+    });
+    const reSignature = await signPayload(reKey.privateKey, rePayload);
+    const reEnroll = await app.request("/api/daemon/v1/enroll", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        licenseId,
+        licenseToken,
+        serverId,
+        machineId,
+        hostname,
+        publicJwk: reKey.publicJwk,
+        challengeId: reChallenge.challengeId,
+        signature: reSignature,
+      }),
+    });
+    assertEquals(reEnroll.status, 200);
+    const reBody = await reEnroll.json() as { serverId: string };
+    assertEquals(reBody.serverId, serverId);
+  });
+});
+
+test("POST /enroll with a fresh license creates a new server even on the same host", async () => {
   await withEnrollFixture(async ({
     db,
     app,
     organizationId,
-    licenseId,
-    licenseToken,
     serverId,
-    keyId,
-    key,
+    licenseId,
     machineId,
     hostname,
   }) => {
-    const { licenseId: recoveryLicenseId, licenseToken: recoveryLicenseToken } =
+    const { licenseId: freshLicenseId, licenseToken: freshLicenseToken } =
       await createLicense(db, {
         organizationId,
-        displayName: "Recovery Daemon API Routes Test License",
+        displayName: "Fresh One-Shot License",
       });
 
     const challengeResponse = await app.request(
@@ -720,7 +812,7 @@ test("POST /enroll re-enrollment with recovery credential from same organization
     const payload = buildEnrollmentPayload({
       challengeId: challenge.challengeId,
       nonce: challenge.nonce,
-      licenseId: recoveryLicenseId,
+      licenseId: freshLicenseId,
       machineId,
       hostname,
       publicKeyFingerprint: newKey.fingerprint,
@@ -731,8 +823,8 @@ test("POST /enroll re-enrollment with recovery credential from same organization
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        licenseId: recoveryLicenseId,
-        licenseToken: recoveryLicenseToken,
+        licenseId: freshLicenseId,
+        licenseToken: freshLicenseToken,
         machineId,
         hostname,
         publicJwk: newKey.publicJwk,
@@ -745,23 +837,16 @@ test("POST /enroll re-enrollment with recovery credential from same organization
       serverId: string;
       keyId: string;
     };
-    assertEquals(body.serverId, serverId);
-    assertEquals(body.keyId !== keyId, true);
+    assertEquals(body.serverId !== serverId, true);
 
-    const [row] = await db
-      .select({
-        licenseId: server.licenseId,
-        daemon: server.daemon,
-      })
+    const [original] = await db
+      .select({ licenseId: server.licenseId })
       .from(server)
       .where(eq(server.id, serverId));
-    const daemonState = parseServerDaemonState(row?.daemon);
-    assertExists(daemonState);
-    assertEquals(row?.licenseId, licenseId);
-    assertEquals(daemonState.key.id, body.keyId);
-    assertEquals(daemonState.key.fingerprint, newKey.fingerprint);
-    assertEquals(daemonState.key.revokedAt, null);
-    assertEquals(daemonState.key.fingerprint !== key.fingerprint, true);
+    assertEquals(original?.licenseId, licenseId);
+
+    await db.delete(server).where(eq(server.id, body.serverId));
+    await db.delete(license).where(eq(license.id, freshLicenseId));
   });
 });
 
@@ -808,6 +893,7 @@ test("POST /enroll re-enrollment with same key clears revocation", async () => {
       body: JSON.stringify({
         licenseId,
         licenseToken,
+        serverId,
         machineId,
         hostname,
         publicJwk: key.publicJwk,
@@ -866,171 +952,6 @@ test("POST /auth/session rejects missing required fields", async () => {
     assertEquals(response.status, 400);
     const body = await response.json() as { error?: string };
     assertEquals(body.error, "Missing required session fields");
-  });
-});
-
-test("POST /enroll rejects re-enrollment from a different license with matching machineId", async () => {
-  await withEnrollFixture(async ({
-    db,
-    app,
-    machineId,
-    hostname,
-    serverId,
-    licenseId,
-    organizationId,
-  }) => {
-    const [otherOrgRow] = await db
-      .insert(organization)
-      .values({ displayName: "Other Daemon API Routes Test Org" })
-      .returning({ id: organization.id });
-    const otherOrganizationId = otherOrgRow!.id;
-    const { licenseId: otherLicenseId, licenseToken: otherLicenseToken } =
-      await createLicense(db, {
-        organizationId: otherOrganizationId,
-        displayName: "Other Daemon API Routes Test License",
-      });
-
-    try {
-      const challengeResponse = await app.request(
-        "/api/daemon/v1/auth/challenge",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
-        },
-      );
-      assertEquals(challengeResponse.status, 200);
-      const challenge = await challengeResponse.json() as {
-        challengeId: string;
-        nonce: string;
-      };
-      const otherKey = await generateKeyMaterial();
-      const payload = buildEnrollmentPayload({
-        challengeId: challenge.challengeId,
-        nonce: challenge.nonce,
-        licenseId: otherLicenseId,
-        machineId,
-        hostname,
-        publicKeyFingerprint: otherKey.fingerprint,
-      });
-      const signature = await signPayload(otherKey.privateKey, payload);
-
-      const enrollResponse = await app.request("/api/daemon/v1/enroll", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          licenseId: otherLicenseId,
-          licenseToken: otherLicenseToken,
-          machineId,
-          hostname,
-          publicJwk: otherKey.publicJwk,
-          challengeId: challenge.challengeId,
-          signature,
-        }),
-      });
-      assertEquals(enrollResponse.status, 400);
-      const body = await enrollResponse.json() as { error?: string };
-      assertEquals(body.error, "Unable to resolve server");
-
-      const rows = await db
-        .select({
-          id: server.id,
-          licenseId: server.licenseId,
-          organizationId: server.organizationId,
-        })
-        .from(server)
-        .where(eq(server.id, serverId));
-      assertEquals(rows.length, 1);
-      assertEquals(rows[0]?.licenseId, licenseId);
-      assertEquals(rows[0]?.organizationId, organizationId);
-    } finally {
-      await db.delete(organization).where(
-        eq(organization.id, otherOrganizationId),
-      );
-    }
-  });
-});
-
-test("POST /enroll rejects re-enrollment from a different organization with matching hostname", async () => {
-  await withEnrollFixture(async ({
-    db,
-    app,
-    machineId,
-    hostname,
-    serverId,
-    licenseId,
-    organizationId,
-  }) => {
-    const [otherOrgRow] = await db
-      .insert(organization)
-      .values({ displayName: "Cross Org Daemon API Routes Test Org" })
-      .returning({ id: organization.id });
-    const otherOrganizationId = otherOrgRow!.id;
-    const { licenseId: otherLicenseId, licenseToken: otherLicenseToken } =
-      await createLicense(db, {
-        organizationId: otherOrganizationId,
-        displayName: "Cross Org Daemon API Routes Test License",
-      });
-
-    try {
-      const otherMachineId = `other-${crypto.randomUUID()}`;
-      const challengeResponse = await app.request(
-        "/api/daemon/v1/auth/challenge",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
-        },
-      );
-      assertEquals(challengeResponse.status, 200);
-      const challenge = await challengeResponse.json() as {
-        challengeId: string;
-        nonce: string;
-      };
-      const otherKey = await generateKeyMaterial();
-      const payload = buildEnrollmentPayload({
-        challengeId: challenge.challengeId,
-        nonce: challenge.nonce,
-        licenseId: otherLicenseId,
-        machineId: otherMachineId,
-        hostname,
-        publicKeyFingerprint: otherKey.fingerprint,
-      });
-      const signature = await signPayload(otherKey.privateKey, payload);
-
-      const enrollResponse = await app.request("/api/daemon/v1/enroll", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          licenseId: otherLicenseId,
-          licenseToken: otherLicenseToken,
-          machineId: otherMachineId,
-          hostname,
-          publicJwk: otherKey.publicJwk,
-          challengeId: challenge.challengeId,
-          signature,
-        }),
-      });
-      assertEquals(enrollResponse.status, 400);
-      const body = await enrollResponse.json() as { error?: string };
-      assertEquals(body.error, "Unable to resolve server");
-
-      const rows = await db
-        .select({
-          id: server.id,
-          licenseId: server.licenseId,
-          organizationId: server.organizationId,
-        })
-        .from(server)
-        .where(eq(server.id, serverId));
-      assertEquals(rows.length, 1);
-      assertEquals(rows[0]?.licenseId, licenseId);
-      assertEquals(rows[0]?.organizationId, organizationId);
-    } finally {
-      await db.delete(organization).where(
-        eq(organization.id, otherOrganizationId),
-      );
-    }
   });
 });
 

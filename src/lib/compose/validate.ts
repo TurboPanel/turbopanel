@@ -1,4 +1,14 @@
-import { isPlacementServerId, TURBOPANEL_EXTENSION_KEY } from './placement.ts'
+import { composeDocumentToYaml } from './convert.ts'
+import {
+  blockingComposeLintIssues,
+  lintComposeYaml,
+  type ComposeLintIssue,
+} from './lint.ts'
+import {
+  isPlacementServerId,
+  stripComposePlacement,
+  TURBOPANEL_EXTENSION_KEY,
+} from './placement.ts'
 import {
   emptyComposeDocument,
   isComposeDocument,
@@ -9,6 +19,8 @@ import {
 export type ComposeValidationIssue = {
   path: string
   message: string
+  level?: ComposeLintIssue['level']
+  line?: number
 }
 
 export type ComposeValidationResult =
@@ -21,6 +33,8 @@ export type ComposeValidationResult =
  * A blank document (`data: {}`) is allowed for draft projects; `services` is
  * optional until the author adds it. When present, `services` must be a mapping
  * (including the legacy empty form `services: {}`).
+ * After shape checks, runs the same compose linter as the UI editor and rejects
+ * blocking issues (unknown keys, services missing image/build, invalid YAML).
  * Intentionally empty values (`null` / `undefined`) become emptyComposeDocument().
  */
 export function validateComposeDocument(value: unknown): ComposeValidationResult {
@@ -55,6 +69,22 @@ export function validateComposeDocument(value: unknown): ComposeValidationResult
   if (issues.length > 0) {
     return { ok: false, issues }
   }
+
+  const lintIssues = blockingComposeLintIssues(
+    lintComposeYaml(composeDocumentToYaml(document)),
+  )
+  if (lintIssues.length > 0) {
+    return {
+      ok: false,
+      issues: lintIssues.map((issue) => ({
+        path: issue.path,
+        message: issue.line ? `Line ${issue.line}: ${issue.message}` : issue.message,
+        level: issue.level,
+        line: issue.line,
+      })),
+    }
+  }
+
   return { ok: true, document }
 }
 
@@ -120,6 +150,22 @@ export function applyValidatedComposeOption(
   if (!result.ok) return result
   options.compose = result.document
   return { ok: true }
+}
+
+/**
+ * Strip `x-turbopanel.placement` from project compose options after validation.
+ * Server pins belong on environment overlays, not project base compose.
+ */
+export function stripProjectComposePlacementOption(
+  options: Record<string, unknown> | null,
+): void {
+  if (options === null || !('compose' in options)) {
+    return
+  }
+  if (!isComposeDocument(options.compose)) {
+    return
+  }
+  options.compose = stripComposePlacement(options.compose)
 }
 
 export { isComposeDocument }

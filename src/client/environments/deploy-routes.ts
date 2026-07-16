@@ -18,6 +18,7 @@ import {
   composeDocumentToRuntimeYaml,
   mergeComposeOverlay,
   readComposePlacementServerId,
+  stripComposePlacement,
 } from '../../lib/compose/index.ts'
 import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
 import type {
@@ -342,9 +343,11 @@ async function loadDeployComposeYaml(
 
   try {
     const baseCompose = assertComposeDocument(extractComposeFromOptions(projectRow.options))
-    const placementServerId = readComposePlacementServerId(baseCompose)
     const overlayCompose = assertComposeDocument(extractComposeFromOptions(envRow.options))
-    const merged = mergeComposeOverlay(baseCompose, overlayCompose)
+    // Placement is environment-owned. Ignore stale project pins (hard cut) so
+    // they neither select the deploy target nor leak into runtime YAML.
+    const placementServerId = readComposePlacementServerId(overlayCompose)
+    const merged = mergeComposeOverlay(stripComposePlacement(baseCompose), overlayCompose)
     return {
       envRow,
       projectRow,
@@ -551,6 +554,172 @@ export function registerEnvironmentDeployRoutes(
       composeYaml: loaded.composeYaml,
       hostings: hostingBuilt.hostings,
       tlsMaterial,
+    })
+  })
+}
+
+function readMetadataServerId(metadata: unknown): string | null {
+  if (isPlainObject(metadata) && typeof metadata.serverId === 'string' && metadata.serverId) {
+    return metadata.serverId
+  }
+  return null
+}
+
+async function loadStopTarget(
+  db: Db,
+  environmentId: string,
+): Promise<
+  | {
+    projectId: string
+    projectName: string
+    placementServerId: string | null
+    metadataServerId: string | null
+  }
+  | Response
+> {
+  const [envRow] = await db
+    .select({
+      id: environment.id,
+      projectId: environment.projectId,
+      options: environment.options,
+      metadata: environment.metadata,
+    })
+    .from(environment)
+    .where(eq(environment.id, environmentId))
+    .limit(1)
+  if (!envRow) return Response.json({ error: 'Not found' }, { status: 404 })
+
+  const [projectRow] = await db
+    .select({
+      id: project.id,
+      displayName: project.displayName,
+    })
+    .from(project)
+    .where(eq(project.id, envRow.projectId))
+    .limit(1)
+  if (!projectRow) return Response.json({ error: 'Not found' }, { status: 404 })
+
+  let placementServerId: string | null = null
+  try {
+    const overlayCompose = assertComposeDocument(extractComposeFromOptions(envRow.options))
+    placementServerId = readComposePlacementServerId(overlayCompose)
+  } catch {
+    // Placement may be absent or compose invalid — fall back to metadata.serverId.
+  }
+
+  return {
+    projectId: projectRow.id,
+    projectName:
+      `tp-${projectComposeName(projectRow.displayName, projectRow.id)}-${environmentId.slice(0, 8)}`,
+    placementServerId,
+    metadataServerId: readMetadataServerId(envRow.metadata),
+  }
+}
+
+async function enqueueStopCommand(
+  db: Db,
+  commandQueue: CommandQueue,
+  params: {
+    serverId: string
+    userId: string
+    environmentId: string
+    projectId: string
+    projectName: string
+  },
+): Promise<Response> {
+  const expiresAt = new Date(Date.now() + 120_000).toISOString()
+  const record = await createCommandRecord(db, {
+    serverId: params.serverId,
+    actorEntityType: 'user',
+    actorEntityId: params.userId,
+    type: 'environment.stop',
+    payload: {
+      environmentId: params.environmentId,
+      projectId: params.projectId,
+      projectName: params.projectName,
+    },
+    expiresAt,
+  })
+
+  const envelope: CommandEnvelope = {
+    commandId: record.id,
+    serverId: params.serverId,
+    type: 'environment.stop',
+    attempt: 1,
+    queuedAt: record.queuedAt ?? record.createdAt,
+  }
+
+  try {
+    await commandQueue.enqueue(envelope)
+  } catch {
+    await transitionCommand(db, record.id, {
+      status: 'failed',
+      error: 'Command queue unavailable',
+    })
+    return Response.json({ error: 'Command queue unavailable' }, { status: 503 })
+  }
+
+  return Response.json({
+    ok: true as const,
+    commandId: record.id,
+    status: 'queued' as const,
+    serverId: params.serverId,
+  })
+}
+
+/**
+ * Register `POST /environments/:id/stop` — compose down (+ volumes) teardown.
+ * Status is polled via existing `GET /servers/:serverId/commands/:commandId`.
+ */
+export function registerEnvironmentStopRoutes(
+  router: Hono<AppEnv>,
+  opts: AuthRouteOpts,
+) {
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for environment stop routes')
+  }
+  router.use('/environments/:id/stop', createSessionMiddleware(opts.secrets))
+
+  router.post('/environments/:id/stop', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const environmentId = c.req.param('id')
+    const denied = await assertCanManageOr403(c, 'environment', environmentId)
+    if (denied) return denied
+
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+
+    const entityOrgId = await resolveEntityOrganizationId(db, 'environment', environmentId)
+    if (!entityOrgId || entityOrgId !== orgResult) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
+    const commandQueue = assertDispatchInfrastructure(c)
+    if (commandQueue instanceof Response) return commandQueue
+
+    const loaded = await loadStopTarget(db, environmentId)
+    if (loaded instanceof Response) return loaded
+
+    const target = await resolveDeployTargetServer(
+      c,
+      db,
+      orgResult,
+      null,
+      loaded.placementServerId ?? loaded.metadataServerId,
+    )
+    if (target instanceof Response) return target
+
+    return enqueueStopCommand(db, commandQueue, {
+      serverId: target.serverId,
+      userId: session.userId,
+      environmentId,
+      projectId: loaded.projectId,
+      projectName: loaded.projectName,
     })
   })
 }

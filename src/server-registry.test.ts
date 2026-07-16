@@ -94,3 +94,53 @@ test('resolveServerId creates row for licensed enrollment', async () => {
     }
   })
 })
+
+test('resolveServerId rejects a second host once the license is latched', async () => {
+  await withTestDb(async (db) => {
+    const [org] = await db
+      .insert(organization)
+      .values({ displayName: 'One-Shot License Org' })
+      .returning({ id: organization.id })
+
+    const organizationId = org!.id
+    const { licenseId, licenseToken } = await createLicense(db, {
+      organizationId,
+      displayName: 'One-Shot License',
+    })
+
+    const first = await resolveServerId(db, {
+      hostname: `first-${crypto.randomUUID()}`,
+      machineId: `machine-${crypto.randomUUID()}`,
+      licenseId,
+      licenseToken,
+    })
+
+    try {
+      if (!first) {
+        throw new Error('expected first enroll to create a server')
+      }
+
+      const second = await resolveServerId(db, {
+        hostname: `second-${crypto.randomUUID()}`,
+        machineId: `machine-${crypto.randomUUID()}`,
+        licenseId,
+        licenseToken,
+      })
+      assertEquals(second, null)
+
+      const reenroll = await resolveServerId(db, {
+        serverId: first,
+        hostname: `first-again-${crypto.randomUUID()}`,
+        machineId: `machine-${crypto.randomUUID()}`,
+        licenseId,
+        licenseToken,
+      })
+      assertEquals(reenroll, first)
+    } finally {
+      if (first) {
+        await db.delete(server).where(eq(server.id, first))
+      }
+      await db.delete(organization).where(eq(organization.id, organizationId))
+    }
+  })
+})

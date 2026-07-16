@@ -304,6 +304,74 @@ export function parseEnvironmentDeployResult(value: unknown): EnvironmentDeployC
   return result
 }
 
+export type EnvironmentStopCommandPayload = {
+  environmentId: string
+  projectId: string
+  projectName: string
+}
+
+export type EnvironmentStopCommandResult = {
+  projectName: string
+  summary?: string
+  /** Authoritative report — stop always returns `[]` on success so Postgres clears pins. */
+  containers?: EnvironmentDeployContainer[]
+}
+
+export function parseEnvironmentStopPayload(value: unknown): EnvironmentStopCommandPayload {
+  if (!isRecord(value)) {
+    throw new Error('Invalid environment.stop payload')
+  }
+  const environmentId = value.environmentId
+  const projectId = value.projectId
+  const projectName = value.projectName
+  if (
+    !isString(environmentId) ||
+    !isString(projectId) ||
+    !isString(projectName) ||
+    environmentId.length === 0 ||
+    projectId.length === 0 ||
+    projectName.length === 0
+  ) {
+    throw new Error('Invalid environment.stop payload')
+  }
+  return { environmentId, projectId, projectName }
+}
+
+export function parseEnvironmentStopResult(value: unknown): EnvironmentStopCommandResult {
+  if (!isRecord(value)) {
+    return { projectName: '' }
+  }
+  const result: EnvironmentStopCommandResult = {
+    projectName: isString(value.projectName) ? value.projectName : '',
+  }
+  if (isString(value.summary)) result.summary = value.summary
+  if (Array.isArray(value.containers)) {
+    const containers: EnvironmentDeployContainer[] = []
+    for (const entry of value.containers) {
+      if (!isRecord(entry)) continue
+      if (
+        !isString(entry.composeServiceName) ||
+        !isString(entry.containerId) ||
+        !isString(entry.containerName) ||
+        !isString(entry.status)
+      ) {
+        continue
+      }
+      const container: EnvironmentDeployContainer = {
+        composeServiceName: entry.composeServiceName,
+        containerId: entry.containerId,
+        containerName: entry.containerName,
+        status: entry.status,
+      }
+      if (isString(entry.serviceId)) container.serviceId = entry.serviceId
+      containers.push(container)
+      if (containers.length >= MAX_ENVIRONMENT_DEPLOY_CONTAINERS) break
+    }
+    result.containers = containers
+  }
+  return result
+}
+
 export function parseCommandPayload(
   type: CommandType,
   value: unknown,
@@ -311,7 +379,8 @@ export function parseCommandPayload(
   | PingCommandPayload
   | HostnameSetCommandPayload
   | RebootCommandPayload
-  | EnvironmentDeployCommandPayload {
+  | EnvironmentDeployCommandPayload
+  | EnvironmentStopCommandPayload {
   switch (type) {
     case 'daemon.ping':
       return parsePingPayload(value)
@@ -321,6 +390,8 @@ export function parseCommandPayload(
       return parseRebootPayload(value)
     case 'environment.deploy':
       return parseEnvironmentDeployPayload(value)
+    case 'environment.stop':
+      return parseEnvironmentStopPayload(value)
   }
 }
 
@@ -331,7 +402,8 @@ export function parseCommandResult(
   | PingCommandResult
   | HostnameSetCommandResult
   | RebootCommandResult
-  | EnvironmentDeployCommandResult {
+  | EnvironmentDeployCommandResult
+  | EnvironmentStopCommandResult {
   switch (type) {
     case 'daemon.ping':
       return parsePingResult(value)
@@ -341,5 +413,7 @@ export function parseCommandResult(
       return parseRebootResult(value)
     case 'environment.deploy':
       return parseEnvironmentDeployResult(value)
+    case 'environment.stop':
+      return parseEnvironmentStopResult(value)
   }
 }

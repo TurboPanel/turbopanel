@@ -24,6 +24,8 @@ import { nowIso } from './ids.ts'
 import {
   parseEnvironmentDeployPayload,
   parseEnvironmentDeployResult,
+  parseEnvironmentStopPayload,
+  parseEnvironmentStopResult,
   parseHostnameSetResult,
   parsePingResult,
 } from './schemas.ts'
@@ -34,6 +36,7 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'server.hostname.set': 120_000,
   'server.reboot': 120_000,
   'environment.deploy': 600_000,
+  'environment.stop': 120_000,
 }
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 60_000
@@ -43,7 +46,8 @@ function commandTimeoutMs(type: string): number {
     type === 'daemon.ping' ||
     type === 'server.hostname.set' ||
     type === 'server.reboot' ||
-    type === 'environment.deploy'
+    type === 'environment.deploy' ||
+    type === 'environment.stop'
   ) {
     return COMMAND_TIMEOUT_MS[type]
   }
@@ -251,6 +255,33 @@ export async function processCommandEnvelope(
               serverId: envelope.serverId,
               environmentId,
               containers: deployResult.containers,
+            })
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          commandConsumerTrace('dispatch-result', {
+            commandId: record.id,
+            commandType: record.type,
+            serverId: envelope.serverId,
+            resultStatus: 'succeeded',
+            containerReconcileError: message,
+          })
+          compatLogWarn(
+            'command-consumer',
+            `container reconcile failed for command ${record.id}: ${message}`,
+          )
+        }
+      }
+
+      if (record.type === 'environment.stop') {
+        try {
+          const { environmentId } = parseEnvironmentStopPayload(record.payload)
+          const stopResult = parseEnvironmentStopResult(pending.result)
+          if (stopResult.containers !== undefined) {
+            await reconcileEnvironmentContainers(db, {
+              serverId: envelope.serverId,
+              environmentId,
+              containers: stopResult.containers,
             })
           }
         } catch (err) {

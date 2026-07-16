@@ -3,6 +3,7 @@ export const COMMAND_TYPES = [
   'server.hostname.set',
   'server.reboot',
   'environment.deploy',
+  'environment.stop',
 ] as const
 
 export type CommandType = (typeof COMMAND_TYPES)[number]

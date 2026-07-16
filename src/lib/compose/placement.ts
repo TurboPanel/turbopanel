@@ -1,4 +1,4 @@
-import type { ComposeDocument } from './types.ts'
+import { normalizeCompose, type ComposeDocument } from './types.ts'
 
 export const TURBOPANEL_EXTENSION_KEY = 'x-turbopanel'
 
@@ -46,4 +46,51 @@ export function readComposePlacementServerId(document: ComposeDocument): string 
   }
 
   return trimmed
+}
+
+/**
+ * Remove `x-turbopanel.placement` while preserving any other extension fields.
+ * Deletes the `x-turbopanel` key entirely when nothing remains.
+ *
+ * Used for the hard cut that moves server pins to environments: project base
+ * compose must not contribute placement to merged runtime YAML.
+ */
+export function stripComposePlacement(document: ComposeDocument): ComposeDocument {
+  const normalized = normalizeCompose(document)
+  const extension = normalized.data[TURBOPANEL_EXTENSION_KEY]
+  if (!isPlainObject(extension) || !('placement' in extension)) {
+    return normalized
+  }
+
+  const { placement: _removed, ...rest } = extension
+  const data = { ...normalized.data }
+  const keyOrder = [...normalized.presentation.keyOrder]
+
+  if (Object.keys(rest).length === 0) {
+    delete data[TURBOPANEL_EXTENSION_KEY]
+    return {
+      version: 1,
+      data,
+      presentation: {
+        keyOrder: keyOrder.filter((key) => key !== TURBOPANEL_EXTENSION_KEY),
+        comments: { ...normalized.presentation.comments },
+        ...(normalized.presentation.blankLines
+          ? { blankLines: { ...normalized.presentation.blankLines } }
+          : {}),
+      },
+    }
+  }
+
+  data[TURBOPANEL_EXTENSION_KEY] = rest
+  return {
+    version: 1,
+    data,
+    presentation: {
+      keyOrder,
+      comments: { ...normalized.presentation.comments },
+      ...(normalized.presentation.blankLines
+        ? { blankLines: { ...normalized.presentation.blankLines } }
+        : {}),
+    },
+  }
 }

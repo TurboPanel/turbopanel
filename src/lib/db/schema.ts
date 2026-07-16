@@ -262,6 +262,10 @@ export const server = pgTable(
       foreignColumns: [license.id],
       name: 'server_license_id_license_id_fk',
     }).onDelete('restrict'),
+    // One server per registration key — licenses are single-use seats.
+    uniqueIndex('uniq_server_license_id')
+      .on(table.licenseId)
+      .where(sql`${table.licenseId} IS NOT NULL`),
   ]
 )
 // Lifecycle timestamps live in metadata; nowIso() ISO-UTC strings sort lexicographically.

@@ -7,6 +7,7 @@ import {
   mergeComposeOverlay,
   normalizeCompose,
   readComposePlacementServerId,
+  stripComposePlacement,
   TURBOPANEL_EXTENSION_KEY,
   validateComposeDocument,
   yamlToComposeDocument,
@@ -207,6 +208,21 @@ test('validateComposeDocument accepts blank data without services', () => {
   assertEquals(result.ok, true)
 })
 
+test('validateComposeDocument rejects services missing image/build', () => {
+  const result = validateComposeDocument({
+    version: 1,
+    data: {
+      services: {
+        nginx: { imaage: 'nginx' },
+      },
+    },
+    presentation: { keyOrder: ['services'], comments: {} },
+  })
+  assertEquals(result.ok, false)
+  if (result.ok) return
+  assertEquals(result.issues.some((issue) => issue.message.includes('image')), true)
+})
+
 test('yamlToComposeDocument treats blank source as empty draft', () => {
   assertEquals(yamlToComposeDocument(''), emptyComposeDocument())
   assertEquals(yamlToComposeDocument('\n'), emptyComposeDocument())
@@ -352,4 +368,38 @@ x-turbopanel:
     server_id: ${PLACEMENT_UUID}
 `)
   assertEquals(readComposePlacementServerId(fromYaml), PLACEMENT_UUID)
+})
+
+test('stripComposePlacement removes placement-only extension', () => {
+  const stripped = stripComposePlacement(documentWithPlacement(PLACEMENT_UUID))
+  assertEquals(readComposePlacementServerId(stripped), null)
+  assertEquals(TURBOPANEL_EXTENSION_KEY in stripped.data, false)
+  assertEquals(stripped.presentation.keyOrder.includes(TURBOPANEL_EXTENSION_KEY), false)
+})
+
+test('stripComposePlacement preserves unrelated x-turbopanel fields', () => {
+  const doc = {
+    version: 1 as const,
+    data: {
+      services: {},
+      [TURBOPANEL_EXTENSION_KEY]: {
+        placement: { server_id: PLACEMENT_UUID },
+        future: { keep: true },
+      },
+    },
+    presentation: { keyOrder: ['services', TURBOPANEL_EXTENSION_KEY], comments: {} },
+  }
+  const stripped = stripComposePlacement(doc)
+  assertEquals(readComposePlacementServerId(stripped), null)
+  assertEquals(stripped.data[TURBOPANEL_EXTENSION_KEY], { future: { keep: true } })
+})
+
+test('mergeComposeOverlay after stripComposePlacement ignores project pin', () => {
+  const projectPin = crypto.randomUUID()
+  const envPin = PLACEMENT_UUID
+  const base = documentWithPlacement(projectPin)
+  const overlay = documentWithPlacement(envPin)
+  const merged = mergeComposeOverlay(stripComposePlacement(base), overlay)
+  assertEquals(readComposePlacementServerId(merged), envPin)
+  assertEquals(composeDocumentToRuntimeYaml(merged).includes(projectPin), false)
 })

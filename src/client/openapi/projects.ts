@@ -52,6 +52,10 @@ export const projectSchemas = {
     properties: {
       displayName: { type: 'string' },
       description: { type: 'string' },
+      workspaceId: {
+        type: 'string',
+        description: 'Move the project to another workspace in the same organization',
+      },
       options: {
         type: 'object',
         nullable: true,

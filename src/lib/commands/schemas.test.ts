@@ -146,6 +146,18 @@ test('parseCommandPayload and parseCommandResult dispatch by type', () => {
       hostings: [],
     },
   )
+  assertEquals(
+    parseCommandPayload('environment.stop' as CommandType, {
+      environmentId: 'env-1',
+      projectId: 'proj-1',
+      projectName: 'tp-demo',
+    }),
+    {
+      environmentId: 'env-1',
+      projectId: 'proj-1',
+      projectName: 'tp-demo',
+    },
+  )
   assertEquals(parseCommandResult('daemon.ping' as CommandType, { daemonHostname: 'x' }), {
     daemonHostname: 'x',
   })
@@ -197,6 +209,14 @@ test('parseCommandPayload and parseCommandResult dispatch by type', () => {
         },
       ],
     },
+  )
+  assertEquals(
+    parseCommandResult('environment.stop' as CommandType, {
+      projectName: 'tp-demo',
+      summary: 'stopped',
+      containers: [],
+    }),
+    { projectName: 'tp-demo', summary: 'stopped', containers: [] },
   )
 })
 

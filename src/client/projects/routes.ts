@@ -20,6 +20,7 @@ import {
 import {
   applyValidatedComposeOption,
   emptyComposeDocument,
+  stripProjectComposePlacementOption,
 } from '../../lib/compose/index.ts'
 import {
   assertCanCreateOr403,
@@ -34,9 +35,9 @@ import {
 } from '../shared.ts'
 import { resolveEnvironmentDaemonRecipient } from '../variables/resolve-environment-daemon.ts'
 import {
-  hierarchyDeleteHasChildrenResponse,
-  runHierarchyDelete,
-} from '../hierarchy-delete.ts'
+  deleteProjectCascade,
+  PROJECT_HAS_RUNNING_SERVICES_ERROR,
+} from '../../lib/db/project-delete.ts'
 
 type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
@@ -243,9 +244,11 @@ async function parseCreateProjectInput(
 
   const optionsResult = parseJsonbObject(c, body, 'options')
   if (optionsResult instanceof Response) return optionsResult
-  if (!applyValidatedComposeOption(optionsResult).ok) {
-    return c.json({ error: 'Invalid request' }, 400)
+  const createComposeOption = applyValidatedComposeOption(optionsResult)
+  if (!createComposeOption.ok) {
+    return c.json({ error: 'compose_invalid', issues: createComposeOption.issues }, 400)
   }
+  stripProjectComposePlacementOption(optionsResult)
 
   const metadataResult = parseJsonbObject(c, body, 'metadata')
   if (metadataResult instanceof Response) return metadataResult
@@ -260,6 +263,37 @@ async function parseCreateProjectInput(
     options: optionsResult,
     metadata: metadataResult,
   }
+}
+
+/**
+ * Validates an optional move target for PATCH. Returns `undefined` when no
+ * move was requested; otherwise the target workspace id or an error Response.
+ */
+async function parseProjectMoveTarget(
+  c: Context<AppEnv>,
+  db: Db,
+  body: Record<string, unknown>,
+  organizationId: string,
+): Promise<string | Response | undefined> {
+  if (body.workspaceId === undefined) return undefined
+
+  const workspaceId = requireStringField(c, body, 'workspaceId')
+  if (workspaceId instanceof Response) return workspaceId
+
+  const workspaceRows = await db
+    .select({ id: workspace.id })
+    .from(workspace)
+    .where(and(eq(workspace.id, workspaceId), eq(workspace.organizationId, organizationId)))
+    .limit(1)
+
+  if (!workspaceRows[0]) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+
+  const denied = await assertCanCreateOr403(c, 'workspace', workspaceId)
+  if (denied) return denied
+
+  return workspaceId
 }
 
 async function insertDockerComposeProject(
@@ -503,10 +537,14 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
+    const moveTarget = await parseProjectMoveTarget(c, db, body, organizationId)
+    if (moveTarget instanceof Response) return moveTarget
+
     let patchFields: {
       displayName?: string | null
       description?: string | null
       options?: Record<string, unknown> | null
+      workspaceId?: string
       updatedAt: string
     }
     try {
@@ -520,9 +558,14 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (optionsResult !== null) {
       const composeOption = applyValidatedComposeOption(optionsResult)
       if (!composeOption.ok) {
-        return c.json({ error: 'Invalid request' }, 400)
+        return c.json({ error: 'compose_invalid', issues: composeOption.issues }, 400)
       }
+      stripProjectComposePlacementOption(optionsResult)
       patchFields.options = optionsResult
+    }
+
+    if (moveTarget !== undefined) {
+      patchFields.workspaceId = moveTarget
     }
 
     await db
@@ -553,11 +596,9 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const denied = await assertCanOr403(c, 'organization:own', 'project', id)
     if (denied) return denied
 
-    const result = await runHierarchyDelete(db, async (tx) => {
-      await tx.delete(project).where(eq(project.id, id))
-    })
-    if (result === 'has_children') {
-      return hierarchyDeleteHasChildrenResponse(c)
+    const result = await deleteProjectCascade(db, id)
+    if (!result.ok) {
+      return c.json({ error: PROJECT_HAS_RUNNING_SERVICES_ERROR }, 409)
     }
 
     return c.json({ ok: true as const })

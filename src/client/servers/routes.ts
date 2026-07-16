@@ -199,14 +199,18 @@ async function purgeServerDaemonCell(
   }
 }
 
-async function revokeBoundLicenseOnDenoDelete(
-  opts: AuthRouteOpts,
+/**
+ * Soft-revokes the registration key that enrolled this server.
+ * Licenses are one-shot: deleting the server retires the key on every runtime
+ * so it cannot enroll a replacement host.
+ */
+async function revokeBoundLicenseOnServerDelete(
   db: Db,
   serverId: string,
   licenseId: string | null,
   organizationId: string,
 ): Promise<void> {
-  if (opts.runtime !== 'deno' || !licenseId) return
+  if (!licenseId) return
 
   const invalidated = await revokeLicense(db, licenseId, organizationId)
   if (!invalidated) {
@@ -651,7 +655,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     await clearServerDaemonState(db, id)
 
     const purgeError = await purgeServerDaemonCell(registry, id)
-    await revokeBoundLicenseOnDenoDelete(opts, db, id, row.licenseId, organizationId)
+    await revokeBoundLicenseOnServerDelete(db, id, row.licenseId, organizationId)
 
     if (purgeError) {
       return c.json({

@@ -3,8 +3,8 @@ import type { Response } from 'hono'
 export type LicenseRuntime = 'deno' | 'workers'
 
 /**
- * Billing gate for license invalidation. Self-hosted always allows.
- * Workers: future subscription / seat billing checks go here.
+ * Billing gate for license invalidation. Always allows today.
+ * Future subscription / seat billing checks go here for both runtimes.
  */
 export async function assertLicenseInvalidationAllowed(
   _runtime: LicenseRuntime,

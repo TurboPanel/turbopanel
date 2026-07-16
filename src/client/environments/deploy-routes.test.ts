@@ -298,18 +298,17 @@ test('POST /environments/:id/deploy pinned auto-resolves without body serverId',
     secrets,
     userId,
     organizationId,
-    projectId,
     environmentId,
     serverId,
     commandQueue,
   }) => {
     await db
-      .update(project)
+      .update(environment)
       .set({
         options: { compose: composeWithPlacement(serverId) },
         updatedAt: new Date().toISOString(),
       })
-      .where(eq(project.id, projectId))
+      .where(eq(environment.id, environmentId))
 
     const cookie = await sessionCookie(db, secrets, userId)
     const res = await app.request(`/environments/${environmentId}/deploy`, {
@@ -347,7 +346,6 @@ test('POST /environments/:id/deploy rejects body serverId mismatch with pin', as
     secrets,
     userId,
     organizationId,
-    projectId,
     environmentId,
     serverId,
     commandQueue,
@@ -366,12 +364,12 @@ test('POST /environments/:id/deploy rejects body serverId mismatch with pin', as
 
     try {
       await db
-        .update(project)
+        .update(environment)
         .set({
           options: { compose: composeWithPlacement(serverId) },
           updatedAt: new Date().toISOString(),
         })
-        .where(eq(project.id, projectId))
+        .where(eq(environment.id, environmentId))
 
       const cookie = await sessionCookie(db, secrets, userId)
       const res = await app.request(`/environments/${environmentId}/deploy`, {
@@ -400,7 +398,7 @@ test('POST /environments/:id/deploy rejects body serverId mismatch with pin', as
   })
 })
 
-test('POST /environments/:id/deploy legacy unpinned requires body serverId', async () => {
+test('POST /environments/:id/deploy unpinned requires body serverId', async () => {
   await withDeployFixtures(async ({
     db,
     app,
@@ -443,25 +441,24 @@ test('POST /environments/:id/deploy legacy unpinned requires body serverId', asy
   })
 })
 
-test('POST /environments/:id/deploy stale pin returns 404', async () => {
+test('POST /environments/:id/deploy stale environment pin returns 404', async () => {
   await withDeployFixtures(async ({
     db,
     app,
     secrets,
     userId,
     organizationId,
-    projectId,
     environmentId,
     commandQueue,
   }) => {
     const staleServerId = crypto.randomUUID()
     await db
-      .update(project)
+      .update(environment)
       .set({
         options: { compose: composeWithPlacement(staleServerId) },
         updatedAt: new Date().toISOString(),
       })
-      .where(eq(project.id, projectId))
+      .where(eq(environment.id, environmentId))
 
     const cookie = await sessionCookie(db, secrets, userId)
     const res = await app.request(`/environments/${environmentId}/deploy`, {
@@ -477,5 +474,98 @@ test('POST /environments/:id/deploy stale pin returns 404', async () => {
     assertEquals(res.status, 404)
     assertEquals(await res.json(), { error: 'Not found' })
     assertEquals(commandQueue.envelopes.length, 0)
+  })
+})
+
+test('POST /environments/:id/deploy ignores stale project pin (hard cut)', async () => {
+  await withDeployFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    projectId,
+    environmentId,
+    serverId,
+    commandQueue,
+  }) => {
+    await db
+      .update(project)
+      .set({
+        options: { compose: composeWithPlacement(crypto.randomUUID()) },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(project.id, projectId))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const missingRes = await app.request(`/environments/${environmentId}/deploy`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    })
+    assertEquals(missingRes.status, 400)
+    assertEquals(await missingRes.json(), { error: 'Invalid request' })
+    assertEquals(commandQueue.envelopes.length, 0)
+
+    const okRes = await app.request(`/environments/${environmentId}/deploy`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ serverId }),
+    })
+    assertEquals(okRes.status, 200)
+    assertEquals(commandQueue.envelopes.length, 1)
+    assertEquals(commandQueue.envelopes[0]!.serverId, serverId)
+  })
+})
+
+test('POST /environments/:id/deploy environment pin overrides stale project pin', async () => {
+  await withDeployFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    projectId,
+    environmentId,
+    serverId,
+    commandQueue,
+  }) => {
+    await db
+      .update(project)
+      .set({
+        options: { compose: composeWithPlacement(crypto.randomUUID()) },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(project.id, projectId))
+    await db
+      .update(environment)
+      .set({
+        options: { compose: composeWithPlacement(serverId) },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(environment.id, environmentId))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/environments/${environmentId}/deploy`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    })
+
+    assertEquals(res.status, 200)
+    assertEquals(commandQueue.envelopes.length, 1)
+    assertEquals(commandQueue.envelopes[0]!.serverId, serverId)
   })
 })
