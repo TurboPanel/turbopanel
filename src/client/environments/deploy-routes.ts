@@ -137,10 +137,75 @@ type BuildHostingResult =
   }
   | { error: Response }
 
+type OrgTlsCandidate = TlsCandidate & {
+  certificatePem: string | null
+  privateKeyPem: string | null
+}
+
+type ServiceRow = {
+  id: string
+  displayName: string | null
+  metadata: unknown
+}
+
+type HostingRow = {
+  id: string
+  options: unknown
+  tlsId: string | null
+}
+
+function tlsPinErrorCode(
+  error: 'pin_not_found' | 'pin_mismatch' | 'pin_not_ready',
+): string {
+  switch (error) {
+    case 'pin_mismatch':
+      return 'tls_pin_mismatch'
+    case 'pin_not_ready':
+      return 'tls_pin_not_ready'
+    case 'pin_not_found':
+      return 'tls_pin_not_found'
+  }
+}
+
+function resolveHostingEntry(
+  h: HostingRow,
+  svc: Readonly<{ id: string; composeServiceName: string }>,
+  candidates: OrgTlsCandidate[],
+): { entry: DeployHostingPayload } | { skip: true } | { error: Response } {
+  const hostnames = readHostnames(h.options)
+  if (hostnames.length === 0) return { skip: true }
+
+  const resolved = resolveTlsForHosting({
+    pinId: h.tlsId,
+    hostnames,
+    candidates,
+  })
+  if (!resolved.ok) {
+    return {
+      error: Response.json(
+        { error: tlsPinErrorCode(resolved.error), hostingId: h.id },
+        { status: 400 },
+      ),
+    }
+  }
+
+  return {
+    entry: {
+      hostingId: h.id,
+      serviceId: svc.id,
+      composeServiceName: svc.composeServiceName,
+      hostnames,
+      pathPrefix: readPathPrefix(h.options),
+      targetPort: readTargetPort(h.options),
+      tlsId: resolved.tlsId,
+    },
+  }
+}
+
 async function loadOrgTlsCandidates(
   db: Db,
   organizationId: string,
-): Promise<Array<TlsCandidate & { certificatePem: string | null; privateKeyPem: string | null }>> {
+): Promise<OrgTlsCandidate[]> {
   const rows = await db
     .select({
       id: tls.id,
@@ -152,9 +217,7 @@ async function loadOrgTlsCandidates(
     .from(tls)
     .where(eq(tls.organizationId, organizationId))
 
-  const out: Array<
-    TlsCandidate & { certificatePem: string | null; privateKeyPem: string | null }
-  > = []
+  const out: OrgTlsCandidate[] = []
   for (const row of rows) {
     const metadata = parseTlsMetadata(row.metadata)
     if (!metadata) continue
@@ -167,6 +230,40 @@ async function loadOrgTlsCandidates(
     })
   }
   return out
+}
+
+async function buildHostingsForService(
+  db: Db,
+  svc: ServiceRow,
+  candidates: OrgTlsCandidate[],
+): Promise<{ hostings: DeployHostingPayload[]; tlsIds: string[] } | { error: Response }> {
+  const composeServiceName = readComposeServiceName(
+    svc.metadata,
+    svc.displayName ?? svc.id,
+  )
+  const hostingRows = await db
+    .select({
+      id: hosting.id,
+      options: hosting.options,
+      tlsId: hosting.tlsId,
+    })
+    .from(hosting)
+    .where(eq(hosting.serviceId, svc.id))
+
+  const hostings: DeployHostingPayload[] = []
+  const tlsIds: string[] = []
+  for (const h of hostingRows) {
+    const result = resolveHostingEntry(
+      h,
+      { id: svc.id, composeServiceName },
+      candidates,
+    )
+    if ('skip' in result) continue
+    if ('error' in result) return result
+    hostings.push(result.entry)
+    if (result.entry.tlsId) tlsIds.push(result.entry.tlsId)
+  }
+  return { hostings, tlsIds }
 }
 
 async function buildHostingPayload(
@@ -188,53 +285,10 @@ async function buildHostingPayload(
   const resolvedTlsIds = new Set<string>()
 
   for (const svc of serviceRows) {
-    const composeServiceName = readComposeServiceName(
-      svc.metadata,
-      svc.displayName ?? svc.id,
-    )
-    const hostingRows = await db
-      .select({
-        id: hosting.id,
-        options: hosting.options,
-        tlsId: hosting.tlsId,
-      })
-      .from(hosting)
-      .where(eq(hosting.serviceId, svc.id))
-
-    for (const h of hostingRows) {
-      const hostnames = readHostnames(h.options)
-      if (hostnames.length === 0) continue
-
-      const resolved = resolveTlsForHosting({
-        pinId: h.tlsId,
-        hostnames,
-        candidates,
-      })
-      if (!resolved.ok) {
-        let message = 'tls_pin_invalid'
-        if (resolved.error === 'pin_mismatch') message = 'tls_pin_mismatch'
-        if (resolved.error === 'pin_not_ready') message = 'tls_pin_not_ready'
-        if (resolved.error === 'pin_not_found') message = 'tls_pin_not_found'
-        return {
-          error: Response.json(
-            { error: message, hostingId: h.id },
-            { status: 400 },
-          ),
-        }
-      }
-
-      if (resolved.tlsId) resolvedTlsIds.add(resolved.tlsId)
-
-      hostingPayload.push({
-        hostingId: h.id,
-        serviceId: svc.id,
-        composeServiceName,
-        hostnames,
-        pathPrefix: readPathPrefix(h.options),
-        targetPort: readTargetPort(h.options),
-        tlsId: resolved.tlsId,
-      })
-    }
+    const built = await buildHostingsForService(db, svc, candidates)
+    if ('error' in built) return built
+    hostingPayload.push(...built.hostings)
+    for (const tlsId of built.tlsIds) resolvedTlsIds.add(tlsId)
   }
 
   return { hostings: hostingPayload, resolvedTlsIds: [...resolvedTlsIds] }

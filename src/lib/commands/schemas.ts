@@ -182,14 +182,13 @@ export type EnvironmentDeployCommandResult = {
 
 const MAX_ENVIRONMENT_DEPLOY_CONTAINERS = 100
 
-export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeployCommandPayload {
-  if (!isRecord(value)) {
-    throw new Error('Invalid environment.deploy payload')
-  }
-  const environmentId = value.environmentId
-  const projectId = value.projectId
-  const projectName = value.projectName
-  const composeYaml = value.composeYaml
+function requireDeployPayloadStrings(
+  value: Record<string, unknown>,
+): Pick<
+  EnvironmentDeployCommandPayload,
+  'environmentId' | 'projectId' | 'projectName' | 'composeYaml'
+> {
+  const { environmentId, projectId, projectName, composeYaml } = value
   if (
     !isString(environmentId) ||
     !isString(projectId) ||
@@ -199,66 +198,112 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
   ) {
     throw new Error('Invalid environment.deploy payload')
   }
-  const hostingsRaw = value.hostings
-  if (!Array.isArray(hostingsRaw)) {
+  return { environmentId, projectId, projectName, composeYaml }
+}
+
+function parseDeployHostingEntry(entry: unknown): EnvironmentDeployHosting {
+  if (!isRecord(entry)) throw new Error('Invalid environment.deploy payload')
+  if (
+    !isString(entry.hostingId) ||
+    !isString(entry.serviceId) ||
+    !isString(entry.composeServiceName)
+  ) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  if (!Array.isArray(entry.hostnames) || !entry.hostnames.every(isString)) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  const hosting: EnvironmentDeployHosting = {
+    hostingId: entry.hostingId,
+    serviceId: entry.serviceId,
+    composeServiceName: entry.composeServiceName,
+    hostnames: entry.hostnames as string[],
+  }
+  if (isString(entry.pathPrefix)) hosting.pathPrefix = entry.pathPrefix
+  if (typeof entry.targetPort === 'number' && Number.isFinite(entry.targetPort)) {
+    hosting.targetPort = entry.targetPort
+  }
+  if (entry.tlsId === null) {
+    hosting.tlsId = null
+  } else if (isString(entry.tlsId)) {
+    hosting.tlsId = entry.tlsId
+  }
+  return hosting
+}
+
+function parseDeployHostings(value: unknown): EnvironmentDeployHosting[] {
+  if (!Array.isArray(value)) {
     throw new TypeError('Invalid environment.deploy payload')
   }
-  const hostings: EnvironmentDeployHosting[] = []
-  for (const entry of hostingsRaw) {
-    if (!isRecord(entry)) throw new Error('Invalid environment.deploy payload')
-    if (
-      !isString(entry.hostingId) ||
-      !isString(entry.serviceId) ||
-      !isString(entry.composeServiceName)
-    ) {
-      throw new Error('Invalid environment.deploy payload')
-    }
-    if (!Array.isArray(entry.hostnames) || !entry.hostnames.every(isString)) {
-      throw new Error('Invalid environment.deploy payload')
-    }
-    const hosting: EnvironmentDeployHosting = {
-      hostingId: entry.hostingId,
-      serviceId: entry.serviceId,
-      composeServiceName: entry.composeServiceName,
-      hostnames: entry.hostnames as string[],
-    }
-    if (isString(entry.pathPrefix)) hosting.pathPrefix = entry.pathPrefix
-    if (typeof entry.targetPort === 'number' && Number.isFinite(entry.targetPort)) {
-      hosting.targetPort = entry.targetPort
-    }
-    if (entry.tlsId === null) {
-      hosting.tlsId = null
-    } else if (isString(entry.tlsId)) {
-      hosting.tlsId = entry.tlsId
-    }
-    hostings.push(hosting)
-  }
+  return value.map(parseDeployHostingEntry)
+}
 
-  let tlsMaterial: EnvironmentDeployTlsMaterial[] | undefined
-  if (Array.isArray(value.tlsMaterial)) {
-    tlsMaterial = []
-    for (const entry of value.tlsMaterial) {
-      if (!isRecord(entry)) throw new Error('Invalid environment.deploy payload')
-      if (
-        !isString(entry.tlsId) ||
-        !isString(entry.certificatePem) ||
-        !isString(entry.privateKeyEnvelope)
-      ) {
-        throw new Error('Invalid environment.deploy payload')
-      }
-      tlsMaterial.push({
-        tlsId: entry.tlsId,
-        certificatePem: entry.certificatePem,
-        privateKeyEnvelope: entry.privateKeyEnvelope,
-      })
-    }
+function parseDeployTlsMaterialEntry(entry: unknown): EnvironmentDeployTlsMaterial {
+  if (!isRecord(entry)) throw new Error('Invalid environment.deploy payload')
+  if (
+    !isString(entry.tlsId) ||
+    !isString(entry.certificatePem) ||
+    !isString(entry.privateKeyEnvelope)
+  ) {
+    throw new Error('Invalid environment.deploy payload')
   }
-
   return {
-    environmentId,
-    projectId,
-    projectName,
-    composeYaml,
+    tlsId: entry.tlsId,
+    certificatePem: entry.certificatePem,
+    privateKeyEnvelope: entry.privateKeyEnvelope,
+  }
+}
+
+function parseDeployTlsMaterial(
+  value: unknown,
+): EnvironmentDeployTlsMaterial[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.map(parseDeployTlsMaterialEntry)
+}
+
+function parseDeployContainerEntry(entry: unknown): EnvironmentDeployContainer | undefined {
+  if (!isRecord(entry)) return undefined
+  if (
+    !isString(entry.composeServiceName) ||
+    !isString(entry.containerId) ||
+    !isString(entry.containerName) ||
+    !isString(entry.status)
+  ) {
+    return undefined
+  }
+  const container: EnvironmentDeployContainer = {
+    composeServiceName: entry.composeServiceName,
+    containerId: entry.containerId,
+    containerName: entry.containerName,
+    status: entry.status,
+  }
+  if (isString(entry.serviceId)) container.serviceId = entry.serviceId
+  return container
+}
+
+function parseDeployContainers(value: unknown): EnvironmentDeployContainer[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const containers: EnvironmentDeployContainer[] = []
+  for (const entry of value) {
+    const container = parseDeployContainerEntry(entry)
+    if (!container) continue
+    containers.push(container)
+    if (containers.length >= MAX_ENVIRONMENT_DEPLOY_CONTAINERS) break
+  }
+  // Preserve an explicitly empty array so callers can distinguish
+  // "authoritative empty report" from "containers field omitted".
+  return containers
+}
+
+export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeployCommandPayload {
+  if (!isRecord(value)) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  const strings = requireDeployPayloadStrings(value)
+  const hostings = parseDeployHostings(value.hostings)
+  const tlsMaterial = parseDeployTlsMaterial(value.tlsMaterial)
+  return {
+    ...strings,
     hostings,
     ...(tlsMaterial !== undefined ? { tlsMaterial } : {}),
   }
@@ -275,32 +320,8 @@ export function parseEnvironmentDeployResult(value: unknown): EnvironmentDeployC
   if (Array.isArray(value.services) && value.services.every(isString)) {
     result.services = value.services as string[]
   }
-  if (Array.isArray(value.containers)) {
-    const containers: EnvironmentDeployContainer[] = []
-    for (const entry of value.containers) {
-      if (!isRecord(entry)) continue
-      if (
-        !isString(entry.composeServiceName) ||
-        !isString(entry.containerId) ||
-        !isString(entry.containerName) ||
-        !isString(entry.status)
-      ) {
-        continue
-      }
-      const container: EnvironmentDeployContainer = {
-        composeServiceName: entry.composeServiceName,
-        containerId: entry.containerId,
-        containerName: entry.containerName,
-        status: entry.status,
-      }
-      if (isString(entry.serviceId)) container.serviceId = entry.serviceId
-      containers.push(container)
-      if (containers.length >= MAX_ENVIRONMENT_DEPLOY_CONTAINERS) break
-    }
-    // Preserve an explicitly empty array so callers can distinguish
-    // "authoritative empty report" from "containers field omitted".
-    result.containers = containers
-  }
+  const containers = parseDeployContainers(value.containers)
+  if (containers !== undefined) result.containers = containers
   return result
 }
 
@@ -345,30 +366,8 @@ export function parseEnvironmentStopResult(value: unknown): EnvironmentStopComma
     projectName: isString(value.projectName) ? value.projectName : '',
   }
   if (isString(value.summary)) result.summary = value.summary
-  if (Array.isArray(value.containers)) {
-    const containers: EnvironmentDeployContainer[] = []
-    for (const entry of value.containers) {
-      if (!isRecord(entry)) continue
-      if (
-        !isString(entry.composeServiceName) ||
-        !isString(entry.containerId) ||
-        !isString(entry.containerName) ||
-        !isString(entry.status)
-      ) {
-        continue
-      }
-      const container: EnvironmentDeployContainer = {
-        composeServiceName: entry.composeServiceName,
-        containerId: entry.containerId,
-        containerName: entry.containerName,
-        status: entry.status,
-      }
-      if (isString(entry.serviceId)) container.serviceId = entry.serviceId
-      containers.push(container)
-      if (containers.length >= MAX_ENVIRONMENT_DEPLOY_CONTAINERS) break
-    }
-    result.containers = containers
-  }
+  const containers = parseDeployContainers(value.containers)
+  if (containers !== undefined) result.containers = containers
   return result
 }
 

@@ -7,6 +7,7 @@ import {
   encryptSecret,
   isSealedEnvelope,
 } from '../authn/data-encryption.ts'
+import type { DerivedSecretsConfig } from '../authn/secrets.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
@@ -52,6 +53,21 @@ type TlsPublicRow = {
   createdAt: string
   updatedAt: string
 }
+
+type CreateTlsMaterial = {
+  certificatePem: string | null
+  privateKeyPemSealed: string | null
+  metadata: TlsMetadata
+  options: TlsOptions | null
+}
+
+type CreateTlsFailure = {
+  error: string
+  detail?: string
+  status: 400
+}
+
+type CreateTlsResult = CreateTlsMaterial | CreateTlsFailure
 
 function toPublicRow(row: {
   id: string
@@ -106,9 +122,175 @@ function assertTpSecretPrivateKey(sealed: string): void {
   }
 }
 
+function isCreateTlsFailure(result: CreateTlsResult): result is CreateTlsFailure {
+  return 'status' in result
+}
+
+function createFailure(error: string, detail?: string): CreateTlsFailure {
+  if (detail === undefined) {
+    return { error, status: 400 }
+  }
+  return { error, detail, status: 400 }
+}
+
+async function materialFromUpload(
+  body: Record<string, unknown>,
+  secrets: DerivedSecretsConfig,
+): Promise<CreateTlsResult> {
+  if (typeof body.certificatePem !== 'string' || typeof body.privateKeyPem !== 'string') {
+    return createFailure('Invalid request')
+  }
+  try {
+    // Normalize chain ordering (leaf first).
+    const certificatePem = splitCertificateChain(body.certificatePem).join('')
+    const parsed = await parseCertificatePem(certificatePem)
+    const matches = await privateKeyMatchesCertificate(body.privateKeyPem, parsed)
+    if (!matches) {
+      return createFailure('certificate_key_mismatch')
+    }
+    const privateKeyPemSealed = await encryptSecret(
+      secrets,
+      body.privateKeyPem.trim(),
+    )
+    assertTpSecretPrivateKey(privateKeyPemSealed)
+    return {
+      certificatePem,
+      privateKeyPemSealed,
+      metadata: metadataFromParsed(parsed, 'ready'),
+      options: null,
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'invalid certificate'
+    return createFailure('invalid_certificate', message)
+  }
+}
+
+async function materialFromSelfSigned(
+  body: Record<string, unknown>,
+  secrets: DerivedSecretsConfig,
+): Promise<CreateTlsResult> {
+  const hostnames = parseHostnames(body.hostnames)
+  if (!hostnames) {
+    return createFailure('Invalid request')
+  }
+  try {
+    const material = await mintSelfSignedCertificate(hostnames)
+    const privateKeyPemSealed = await encryptSecret(
+      secrets,
+      material.privateKeyPem,
+    )
+    assertTpSecretPrivateKey(privateKeyPemSealed)
+    return {
+      certificatePem: material.certificatePem,
+      privateKeyPemSealed,
+      metadata: metadataFromParsed(material.parsed, 'ready'),
+      options: { requestedHostnames: hostnames },
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'self-signed mint failed'
+    return createFailure('invalid_certificate', message)
+  }
+}
+
+function materialFromLetsEncrypt(body: Record<string, unknown>): CreateTlsResult {
+  const hostnames = parseHostnames(body.hostnames)
+  if (!hostnames) {
+    return createFailure('Invalid request')
+  }
+  return {
+    certificatePem: null,
+    privateKeyPemSealed: null,
+    metadata: {
+      dnsNames: hostnames,
+      hasWildcard: hostnames.some((n) => n.startsWith('*.')),
+      notBefore: new Date(0).toISOString(),
+      notAfter: new Date(0).toISOString(),
+      fingerprintSha256: '',
+      subject: '',
+      issuer: '',
+      status: 'pending',
+      acme: {
+        challengeType:
+          body.challengeType === 'dns-01' ? 'dns-01' : 'http-01',
+      },
+    },
+    options: {
+      autoRenew: body.autoRenew !== false,
+      requestedHostnames: hostnames,
+    },
+  }
+}
+
+async function buildCreateTlsMaterial(
+  source: TlsSource,
+  body: Record<string, unknown>,
+  secrets: DerivedSecretsConfig,
+): Promise<CreateTlsResult> {
+  switch (source) {
+    case 'upload':
+      return materialFromUpload(body, secrets)
+    case 'self_signed':
+      return materialFromSelfSigned(body, secrets)
+    case 'lets_encrypt':
+      return materialFromLetsEncrypt(body)
+  }
+}
+
+function withPreferOption(
+  options: TlsOptions | null,
+  prefer: unknown,
+): TlsOptions | null {
+  if (typeof prefer !== 'number' || !Number.isFinite(prefer)) {
+    return options
+  }
+  if (options) {
+    return { ...options, prefer }
+  }
+  return { prefer }
+}
+
+type OptionsPatchResult =
+  | { ok: true; options: TlsOptions; changed: boolean }
+  | { ok: false }
+
+function applyTlsOptionsPatch(
+  currentOptions: TlsOptions,
+  body: Record<string, unknown>,
+): OptionsPatchResult {
+  const nextOptions: TlsOptions = { ...currentOptions }
+  let changed = false
+
+  if (body.prefer !== undefined) {
+    if (body.prefer === null) {
+      delete nextOptions.prefer
+      changed = true
+    } else if (typeof body.prefer === 'number' && Number.isFinite(body.prefer)) {
+      nextOptions.prefer = body.prefer
+      changed = true
+    } else {
+      return { ok: false }
+    }
+  }
+
+  if (body.autoRenew !== undefined) {
+    if (typeof body.autoRenew !== 'boolean') {
+      return { ok: false }
+    }
+    nextOptions.autoRenew = body.autoRenew
+    changed = true
+  }
+
+  return { ok: true, options: nextOptions, changed }
+}
+
 export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
-  router.use('/tls', createSessionMiddleware(opts.secrets))
-  router.use('/tls/:id', createSessionMiddleware(opts.secrets))
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for tls routes')
+  }
+  const secrets = opts.secrets
+
+  router.use('/tls', createSessionMiddleware(secrets))
+  router.use('/tls/:id', createSessionMiddleware(secrets))
 
   router.get('/tls', async (c) => {
     const db = getDb(c)
@@ -233,84 +415,22 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       return c.json({ error: 'Encryption unavailable — no encryption key configured' }, 503)
     }
 
-    let certificatePem: string | null = null
-    let privateKeyPemSealed: string | null = null
-    let metadata: TlsMetadata
-    let options: TlsOptions | null = null
-
-    if (source === 'upload') {
-      if (typeof body.certificatePem !== 'string' || typeof body.privateKeyPem !== 'string') {
-        return c.json({ error: 'Invalid request' }, 400)
+    const material = await buildCreateTlsMaterial(
+      source,
+      body,
+      dataEncryptionSecrets,
+    )
+    if (isCreateTlsFailure(material)) {
+      if (material.detail === undefined) {
+        return c.json({ error: material.error }, material.status)
       }
-      try {
-        // Normalize chain ordering (leaf first).
-        certificatePem = splitCertificateChain(body.certificatePem).join('')
-        const parsed = await parseCertificatePem(certificatePem)
-        const matches = await privateKeyMatchesCertificate(body.privateKeyPem, parsed)
-        if (!matches) {
-          return c.json({ error: 'certificate_key_mismatch' }, 400)
-        }
-        privateKeyPemSealed = await encryptSecret(
-          dataEncryptionSecrets,
-          body.privateKeyPem.trim(),
-        )
-        assertTpSecretPrivateKey(privateKeyPemSealed)
-        metadata = metadataFromParsed(parsed, 'ready')
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'invalid certificate'
-        return c.json({ error: 'invalid_certificate', detail: message }, 400)
-      }
-    } else if (source === 'self_signed') {
-      const hostnames = parseHostnames(body.hostnames)
-      if (!hostnames) {
-        return c.json({ error: 'Invalid request' }, 400)
-      }
-      try {
-        const material = await mintSelfSignedCertificate(hostnames)
-        certificatePem = material.certificatePem
-        privateKeyPemSealed = await encryptSecret(
-          dataEncryptionSecrets,
-          material.privateKeyPem,
-        )
-        assertTpSecretPrivateKey(privateKeyPemSealed)
-        metadata = metadataFromParsed(material.parsed, 'ready')
-        options = { requestedHostnames: hostnames }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'self-signed mint failed'
-        return c.json({ error: 'invalid_certificate', detail: message }, 400)
-      }
-    } else {
-      // lets_encrypt seam — pending until ACME worker fills PEMs
-      const hostnames = parseHostnames(body.hostnames)
-      if (!hostnames) {
-        return c.json({ error: 'Invalid request' }, 400)
-      }
-      metadata = {
-        dnsNames: hostnames,
-        hasWildcard: hostnames.some((n) => n.startsWith('*.')),
-        notBefore: new Date(0).toISOString(),
-        notAfter: new Date(0).toISOString(),
-        fingerprintSha256: '',
-        subject: '',
-        issuer: '',
-        status: 'pending',
-        acme: {
-          challengeType:
-            body.challengeType === 'dns-01' ? 'dns-01' : 'http-01',
-        },
-      }
-      options = {
-        autoRenew: body.autoRenew !== false,
-        requestedHostnames: hostnames,
-      }
+      return c.json(
+        { error: material.error, detail: material.detail },
+        material.status,
+      )
     }
 
-    if (
-      typeof body.prefer === 'number' &&
-      Number.isFinite(body.prefer)
-    ) {
-      options = { ...(options ?? {}), prefer: body.prefer }
-    }
+    const options = withPreferOption(material.options, body.prefer)
 
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
@@ -319,9 +439,9 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
           organizationId,
           displayName,
           source,
-          certificatePem,
-          privateKeyPem: privateKeyPemSealed,
-          metadata,
+          certificatePem: material.certificatePem,
+          privateKeyPem: material.privateKeyPemSealed,
+          metadata: material.metadata,
           options,
         })
         .returning({ id: tls.id })
@@ -379,32 +499,15 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       }
     }
 
-    const currentOptions = parseTlsOptions(existing.options) ?? {}
-    let optionsChanged = false
-    const nextOptions: TlsOptions = { ...currentOptions }
-
-    if (body.prefer !== undefined) {
-      if (body.prefer === null) {
-        delete nextOptions.prefer
-        optionsChanged = true
-      } else if (typeof body.prefer === 'number' && Number.isFinite(body.prefer)) {
-        nextOptions.prefer = body.prefer
-        optionsChanged = true
-      } else {
-        return c.json({ error: 'Invalid request' }, 400)
-      }
+    const optionsPatch = applyTlsOptionsPatch(
+      parseTlsOptions(existing.options) ?? {},
+      body,
+    )
+    if (!optionsPatch.ok) {
+      return c.json({ error: 'Invalid request' }, 400)
     }
-
-    if (body.autoRenew !== undefined) {
-      if (typeof body.autoRenew !== 'boolean') {
-        return c.json({ error: 'Invalid request' }, 400)
-      }
-      nextOptions.autoRenew = body.autoRenew
-      optionsChanged = true
-    }
-
-    if (optionsChanged) {
-      patch.options = nextOptions
+    if (optionsPatch.changed) {
+      patch.options = optionsPatch.options
     }
 
     if (body.revoke === true) {

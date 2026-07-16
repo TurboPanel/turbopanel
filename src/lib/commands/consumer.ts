@@ -8,7 +8,10 @@
  * There is no per-server polling or cross-cell fan-out.
  */
 import type { Db } from '../../db.ts'
-import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
+import type {
+  DaemonCellRegistry,
+  PendingRequestRecord,
+} from '../../daemon/cell/contracts.ts'
 import { generateDeliveryId } from '../../daemon/cell/protocol.ts'
 import { resolveFleetPresence } from '../../daemon/cell/server-status.ts'
 import {
@@ -17,7 +20,11 @@ import {
 } from '../../server-registry.ts'
 import { commandConsumerTrace } from '../../logger.ts'
 import { compatLogWarn } from '../../log-compat.ts'
-import { getCommandRecord, transitionCommand } from '../db/command-records.ts'
+import {
+  getCommandRecord,
+  transitionCommand,
+  type CommandRecord,
+} from '../db/command-records.ts'
 import { reconcileEnvironmentContainers } from '../db/container-records.ts'
 import type { CommandEnvelope } from './envelope.ts'
 import { nowIso } from './ids.ts'
@@ -111,23 +118,26 @@ function enrichPingResult(
   return { ...parsed, cellDispatchedAt: pending.sentAt }
 }
 
-export async function processCommandEnvelope(
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+async function loadDispatchableRecord(
   db: Db,
-  registry: DaemonCellRegistry,
   envelope: CommandEnvelope,
-): Promise<void> {
+): Promise<CommandRecord | null> {
   const record = await getCommandRecord(db, envelope.commandId)
   if (!record) {
-    return
+    return null
   }
 
   if (TERMINAL_COMMAND_STATUSES.has(record.status)) {
-    return
+    return null
   }
 
   if (record.expiresAt && Date.parse(record.expiresAt) < Date.now()) {
     await transitionCommand(db, record.id, { status: 'timed_out' })
-    return
+    return null
   }
 
   if (record.serverId !== envelope.serverId) {
@@ -135,9 +145,17 @@ export async function processCommandEnvelope(
       'command-consumer',
       `envelope mismatch for command ${envelope.commandId}: record server=${record.serverId}, envelope server=${envelope.serverId}`,
     )
-    return
+    return null
   }
 
+  return record
+}
+
+async function markDispatching(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+): Promise<void> {
   commandConsumerTrace('dispatch-start', {
     commandId: record.id,
     commandType: record.type,
@@ -149,7 +167,14 @@ export async function processCommandEnvelope(
     dispatchStartedAt: nowIso(),
     attempts: record.attempts + 1,
   })
+}
 
+async function ensureServerAndDaemonOnline(
+  db: Db,
+  registry: DaemonCellRegistry,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+): Promise<boolean> {
   const serverBinding = await getServerLicenseBinding(db, envelope.serverId)
   if (!serverBinding) {
     compatLogWarn(
@@ -160,7 +185,7 @@ export async function processCommandEnvelope(
       status: 'failed',
       error: 'Server not found',
     })
-    return
+    return false
   }
 
   const presenceMap = await resolveFleetPresence(db, registry, [envelope.serverId])
@@ -176,9 +201,18 @@ export async function processCommandEnvelope(
       status: 'failed',
       error: 'Daemon not connected',
     })
-    return
+    return false
   }
 
+  return true
+}
+
+async function enqueueAndAwaitOutcome(
+  db: Db,
+  registry: DaemonCellRegistry,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+): Promise<PendingRequestRecord | null> {
   const outbound = {
     kind: 'command-dispatch' as const,
     requestId: record.id,
@@ -215,134 +249,251 @@ export async function processCommandEnvelope(
       serverId: envelope.serverId,
       resultStatus: 'timed_out',
     })
-    return
   }
+  return pending
+}
 
+async function applyHostnameSideEffect(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown,
+): Promise<void> {
+  if (record.type !== 'server.hostname.set') return
+  const observedHostname = extractObservedHostname(result)
+  if (!observedHostname) return
+  await touchServerMetadata(db, envelope.serverId, {
+    hostname: observedHostname,
+  })
+}
+
+async function reconcileContainersSafely(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+  environmentId: string,
+  containers: Parameters<typeof reconcileEnvironmentContainers>[1]['containers'],
+): Promise<void> {
+  try {
+    await reconcileEnvironmentContainers(db, {
+      serverId: envelope.serverId,
+      environmentId,
+      containers,
+    })
+  } catch (err) {
+    const message = errorMessage(err)
+    commandConsumerTrace('dispatch-result', {
+      commandId: record.id,
+      commandType: record.type,
+      serverId: envelope.serverId,
+      resultStatus: 'succeeded',
+      containerReconcileError: message,
+    })
+    compatLogWarn(
+      'command-consumer',
+      `container reconcile failed for command ${record.id}: ${message}`,
+    )
+  }
+}
+
+async function applyEnvironmentDeploySideEffect(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown,
+): Promise<void> {
+  if (record.type !== 'environment.deploy') return
+  try {
+    const { environmentId } = parseEnvironmentDeployPayload(record.payload)
+    const deployResult = parseEnvironmentDeployResult(result)
+    // Only reconcile when the daemon included an authoritative containers
+    // report (including `[]`). Omitting the field means collection failed.
+    if (deployResult.containers === undefined) return
+    await reconcileContainersSafely(
+      db,
+      record,
+      envelope,
+      environmentId,
+      deployResult.containers,
+    )
+  } catch (err) {
+    const message = errorMessage(err)
+    commandConsumerTrace('dispatch-result', {
+      commandId: record.id,
+      commandType: record.type,
+      serverId: envelope.serverId,
+      resultStatus: 'succeeded',
+      containerReconcileError: message,
+    })
+    compatLogWarn(
+      'command-consumer',
+      `container reconcile failed for command ${record.id}: ${message}`,
+    )
+  }
+}
+
+async function applyEnvironmentStopSideEffect(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown,
+): Promise<void> {
+  if (record.type !== 'environment.stop') return
+  try {
+    const { environmentId } = parseEnvironmentStopPayload(record.payload)
+    const stopResult = parseEnvironmentStopResult(result)
+    if (stopResult.containers === undefined) return
+    await reconcileContainersSafely(
+      db,
+      record,
+      envelope,
+      environmentId,
+      stopResult.containers,
+    )
+  } catch (err) {
+    const message = errorMessage(err)
+    commandConsumerTrace('dispatch-result', {
+      commandId: record.id,
+      commandType: record.type,
+      serverId: envelope.serverId,
+      resultStatus: 'succeeded',
+      containerReconcileError: message,
+    })
+    compatLogWarn(
+      'command-consumer',
+      `container reconcile failed for command ${record.id}: ${message}`,
+    )
+  }
+}
+
+async function applySucceededSideEffects(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown,
+): Promise<void> {
+  await applyHostnameSideEffect(db, record, envelope, result)
+  await applyEnvironmentDeploySideEffect(db, record, envelope, result)
+  await applyEnvironmentStopSideEffect(db, record, envelope, result)
+}
+
+async function handlePendingDone(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+  pending: PendingRequestRecord,
+): Promise<void> {
+  await transitionCommand(db, record.id, {
+    status: 'succeeded',
+    result: enrichPingResult(record.type, pending.result, pending),
+    ackedAt: pending.ackAt ?? pending.finishedAt,
+    startedAt: pending.ackAt ?? pending.finishedAt,
+    finishedAt: pending.finishedAt,
+  })
+  commandConsumerTrace('dispatch-result', {
+    commandId: record.id,
+    commandType: record.type,
+    serverId: envelope.serverId,
+    pendingStatus: pending.status,
+    resultStatus: 'succeeded',
+  })
+  await applySucceededSideEffects(db, record, envelope, pending.result)
+}
+
+async function handlePendingFailed(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+  pending: PendingRequestRecord,
+): Promise<void> {
+  const error = pending.error ?? 'Command failed'
+  await transitionCommand(db, record.id, {
+    status: 'failed',
+    error,
+  })
+  commandConsumerTrace('dispatch-result', {
+    commandId: record.id,
+    commandType: record.type,
+    serverId: envelope.serverId,
+    pendingStatus: pending.status,
+    resultStatus: 'failed',
+    error,
+  })
+}
+
+async function handlePendingExpired(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+  pending: PendingRequestRecord,
+): Promise<void> {
+  await transitionCommand(db, record.id, { status: 'timed_out' })
+  commandConsumerTrace('dispatch-result', {
+    commandId: record.id,
+    commandType: record.type,
+    serverId: envelope.serverId,
+    pendingStatus: pending.status,
+    resultStatus: 'timed_out',
+  })
+}
+
+async function handlePendingUnexpected(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+  pending: PendingRequestRecord,
+): Promise<void> {
+  const error = `Unexpected pending request status: ${pending.status}`
+  await transitionCommand(db, record.id, {
+    status: 'failed',
+    error,
+  })
+  commandConsumerTrace('dispatch-result', {
+    commandId: record.id,
+    commandType: record.type,
+    serverId: envelope.serverId,
+    pendingStatus: pending.status,
+    resultStatus: 'failed',
+    error,
+  })
+}
+
+async function applyPendingOutcome(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+  pending: PendingRequestRecord,
+): Promise<void> {
   switch (pending.status) {
-    case 'done': {
-      await transitionCommand(db, record.id, {
-        status: 'succeeded',
-        result: enrichPingResult(record.type, pending.result, pending),
-        ackedAt: pending.ackAt ?? pending.finishedAt,
-        startedAt: pending.ackAt ?? pending.finishedAt,
-        finishedAt: pending.finishedAt,
-      })
-      commandConsumerTrace('dispatch-result', {
-        commandId: record.id,
-        commandType: record.type,
-        serverId: envelope.serverId,
-        pendingStatus: pending.status,
-        resultStatus: 'succeeded',
-      })
-
-      if (record.type === 'server.hostname.set') {
-        const observedHostname = extractObservedHostname(pending.result)
-        if (observedHostname) {
-          await touchServerMetadata(db, envelope.serverId, {
-            hostname: observedHostname,
-          })
-        }
-      }
-
-      if (record.type === 'environment.deploy') {
-        try {
-          const { environmentId } = parseEnvironmentDeployPayload(record.payload)
-          const deployResult = parseEnvironmentDeployResult(pending.result)
-          // Only reconcile when the daemon included an authoritative containers
-          // report (including `[]`). Omitting the field means collection failed.
-          if (deployResult.containers !== undefined) {
-            await reconcileEnvironmentContainers(db, {
-              serverId: envelope.serverId,
-              environmentId,
-              containers: deployResult.containers,
-            })
-          }
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err)
-          commandConsumerTrace('dispatch-result', {
-            commandId: record.id,
-            commandType: record.type,
-            serverId: envelope.serverId,
-            resultStatus: 'succeeded',
-            containerReconcileError: message,
-          })
-          compatLogWarn(
-            'command-consumer',
-            `container reconcile failed for command ${record.id}: ${message}`,
-          )
-        }
-      }
-
-      if (record.type === 'environment.stop') {
-        try {
-          const { environmentId } = parseEnvironmentStopPayload(record.payload)
-          const stopResult = parseEnvironmentStopResult(pending.result)
-          if (stopResult.containers !== undefined) {
-            await reconcileEnvironmentContainers(db, {
-              serverId: envelope.serverId,
-              environmentId,
-              containers: stopResult.containers,
-            })
-          }
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err)
-          commandConsumerTrace('dispatch-result', {
-            commandId: record.id,
-            commandType: record.type,
-            serverId: envelope.serverId,
-            resultStatus: 'succeeded',
-            containerReconcileError: message,
-          })
-          compatLogWarn(
-            'command-consumer',
-            `container reconcile failed for command ${record.id}: ${message}`,
-          )
-        }
-      }
-      break
-    }
-    case 'failed': {
-      const error = pending.error ?? 'Command failed'
-      await transitionCommand(db, record.id, {
-        status: 'failed',
-        error,
-      })
-      commandConsumerTrace('dispatch-result', {
-        commandId: record.id,
-        commandType: record.type,
-        serverId: envelope.serverId,
-        pendingStatus: pending.status,
-        resultStatus: 'failed',
-        error,
-      })
-      break
-    }
-    case 'expired': {
-      await transitionCommand(db, record.id, { status: 'timed_out' })
-      commandConsumerTrace('dispatch-result', {
-        commandId: record.id,
-        commandType: record.type,
-        serverId: envelope.serverId,
-        pendingStatus: pending.status,
-        resultStatus: 'timed_out',
-      })
-      break
-    }
-    default: {
-      const error = `Unexpected pending request status: ${pending.status}`
-      await transitionCommand(db, record.id, {
-        status: 'failed',
-        error,
-      })
-      commandConsumerTrace('dispatch-result', {
-        commandId: record.id,
-        commandType: record.type,
-        serverId: envelope.serverId,
-        pendingStatus: pending.status,
-        resultStatus: 'failed',
-        error,
-      })
-      break
-    }
+    case 'done':
+      await handlePendingDone(db, record, envelope, pending)
+      return
+    case 'failed':
+      await handlePendingFailed(db, record, envelope, pending)
+      return
+    case 'expired':
+      await handlePendingExpired(db, record, envelope, pending)
+      return
+    default:
+      await handlePendingUnexpected(db, record, envelope, pending)
   }
+}
+
+export async function processCommandEnvelope(
+  db: Db,
+  registry: DaemonCellRegistry,
+  envelope: CommandEnvelope,
+): Promise<void> {
+  const record = await loadDispatchableRecord(db, envelope)
+  if (!record) return
+
+  await markDispatching(db, record, envelope)
+
+  const ready = await ensureServerAndDaemonOnline(db, registry, record, envelope)
+  if (!ready) return
+
+  const pending = await enqueueAndAwaitOutcome(db, registry, record, envelope)
+  if (!pending) return
+
+  await applyPendingOutcome(db, record, envelope, pending)
 }

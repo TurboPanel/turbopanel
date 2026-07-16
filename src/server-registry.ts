@@ -235,6 +235,48 @@ async function applyLicensedServerBinding(
   }
 }
 
+/** Touch metadata and latch org/license when the credential matches this row. */
+async function authorizeAndBindLicensedServer(
+  db: Db,
+  serverId: string,
+  identity: ServerHelloIdentity,
+  licenseId: string,
+  organizationId: string,
+): Promise<string | null> {
+  const binding = await getServerLicenseBinding(db, serverId)
+  if (!binding || !credentialAuthorizedForServer(binding, licenseId)) {
+    return null
+  }
+  await touchServerMetadata(db, serverId, identity)
+  await applyLicensedServerBinding(db, serverId, identity, organizationId)
+  return serverId
+}
+
+async function insertLicensedServer(
+  db: Db,
+  identity: ServerHelloIdentity,
+  licenseId: string,
+  organizationId: string,
+): Promise<string> {
+  const patch = metadataPatch(identity)
+  const now = nowTs()
+  const inserted = await db
+    .insert(server)
+    .values({
+      licenseId,
+      organizationId,
+      displayName: defaultDisplayName(identity),
+      createdAt: now,
+      updatedAt: now,
+      metadata: Object.keys(patch).length > 0 ? patch : null,
+    })
+    .returning({ id: server.id })
+
+  const id = inserted[0]?.id
+  if (!id) throw new Error('failed to insert server row')
+  return id
+}
+
 async function resolveLicensedServerId(
   db: Db,
   identity: ServerHelloIdentity,
@@ -251,57 +293,35 @@ async function resolveLicensedServerId(
   if (boundServerId) {
     const reusable = await findReusableLicensedServerId(db, identity, licenseId)
     if (!reusable) return null
-
-    const binding = await getServerLicenseBinding(db, reusable)
-    if (!binding || !credentialAuthorizedForServer(binding, licenseId)) {
-      return null
-    }
-    await touchServerMetadata(db, reusable, identity)
-    await applyLicensedServerBinding(
+    return authorizeAndBindLicensedServer(
       db,
       reusable,
       identity,
+      licenseId,
       verified.organizationId,
     )
-    return reusable
   }
 
-  const patch = metadataPatch(identity)
-  const now = nowTs()
   try {
-    const inserted = await db
-      .insert(server)
-      .values({
-        licenseId,
-        organizationId: verified.organizationId,
-        displayName: defaultDisplayName(identity),
-        createdAt: now,
-        updatedAt: now,
-        metadata: Object.keys(patch).length > 0 ? patch : null,
-      })
-      .returning({ id: server.id })
-
-    const id = inserted[0]?.id
-    if (!id) throw new Error('failed to insert server row')
-    return id
+    return await insertLicensedServer(
+      db,
+      identity,
+      licenseId,
+      verified.organizationId,
+    )
   } catch (err) {
     if (!isUniqueViolation(err)) throw err
     // Concurrent first enroll: the winner owns the license; only that server
     // may continue, and only when this caller presents the matching serverId.
     const raced = await findReusableLicensedServerId(db, identity, licenseId)
     if (!raced) return null
-    const racedBinding = await getServerLicenseBinding(db, raced)
-    if (!racedBinding || !credentialAuthorizedForServer(racedBinding, licenseId)) {
-      return null
-    }
-    await touchServerMetadata(db, raced, identity)
-    await applyLicensedServerBinding(
+    return authorizeAndBindLicensedServer(
       db,
       raced,
       identity,
+      licenseId,
       verified.organizationId,
     )
-    return raced
   }
 }
 

@@ -97,19 +97,15 @@ export function decodePrivateKeyToPkcs8(pem: string): {
 
 const OID_RSA = '1.2.840.113549.1.1.1'
 const OID_EC = '1.2.840.10045.2.1'
-const OID_ED25519 = '1.3.101.112'
+// Ed25519 algorithm OID (RFC 8410) — not an IP address.
+const OID_ED25519 = '1.3.101.112' // NOSONAR typescript:S1313 — ASN.1 OID, not an IP
 
 function detectPkcs8Algorithm(pkcs8: Uint8Array): 'rsa' | 'ec' | 'okp' {
   // PrivateKeyInfo ::= SEQUENCE { version, algorithm, privateKey }
   // Scan for known algorithm OIDs in the DER.
-  const hex = Array.from(pkcs8)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
-  // OID encodings (without tag/length): approximate substring search via DER bytes
   if (containsOid(pkcs8, OID_RSA)) return 'rsa'
   if (containsOid(pkcs8, OID_ED25519)) return 'okp'
   if (containsOid(pkcs8, OID_EC)) return 'ec'
-  void hex
   throw new PemError('unrecognized PKCS#8 key algorithm')
 }
 

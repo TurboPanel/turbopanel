@@ -1,14 +1,12 @@
 import { and, eq, inArray } from 'drizzle-orm'
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { getDb } from '../../db.ts'
-import { hosting, tls } from '../../lib/db/schema.ts'
-
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+import { getDb, type Db } from '../../db.ts'
+import { hosting } from '../../lib/db/schema.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -24,9 +22,40 @@ import {
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
 
-export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
-  router.use('/hostings', createSessionMiddleware(opts.secrets))
-  router.use('/hostings/:id', createSessionMiddleware(opts.secrets))
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+type OptionalTlsIdResult =
+  | { kind: 'absent' }
+  | { kind: 'value'; value: string | null }
+  | { kind: 'error'; response: Response }
+
+async function parseOptionalTlsId(
+  c: Context,
+  db: Db,
+  organizationId: string,
+  tlsIdRaw: unknown,
+): Promise<OptionalTlsIdResult> {
+  if (tlsIdRaw === undefined) return { kind: 'absent' }
+  if (tlsIdRaw === null) return { kind: 'value', value: null }
+  if (typeof tlsIdRaw === 'string' && UUID_RE.test(tlsIdRaw)) {
+    const tlsOrgId = await resolveEntityOrganizationId(db, 'tls', tlsIdRaw)
+    if (tlsOrgId !== organizationId) {
+      return { kind: 'error', response: c.json({ error: 'Not found' }, 404) }
+    }
+    return { kind: 'value', value: tlsIdRaw }
+  }
+  return { kind: 'error', response: c.json({ error: 'Invalid request' }, 400) }
+}
+
+export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for hosting routes')
+  }
+  const secrets = opts.secrets
+
+  router.use('/hostings', createSessionMiddleware(secrets))
+  router.use('/hostings/:id', createSessionMiddleware(secrets))
 
   router.get('/hostings', async (c) => {
     const db = getDb(c)
@@ -88,7 +117,7 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const id = c.req.param('id')
     const entityOrgId = await resolveEntityOrganizationId(db, 'hosting', id)
-    if (!entityOrgId || entityOrgId !== organizationId) {
+    if (entityOrgId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 
@@ -140,7 +169,7 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
     const serviceId = serviceIdRaw.trim()
 
     const serviceOrgId = await resolveEntityOrganizationId(db, 'service', serviceId)
-    if (!serviceOrgId || serviceOrgId !== organizationId) {
+    if (serviceOrgId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 
@@ -161,20 +190,8 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
     const optionsResult = parseJsonbObject(c, body, 'options')
     if (optionsResult instanceof Response) return optionsResult
 
-    let tlsId: string | null | undefined
-    if (body.tlsId !== undefined) {
-      if (body.tlsId === null) {
-        tlsId = null
-      } else if (typeof body.tlsId === 'string' && UUID_RE.test(body.tlsId)) {
-        const tlsOrgId = await resolveEntityOrganizationId(db, 'tls', body.tlsId)
-        if (!tlsOrgId || tlsOrgId !== organizationId) {
-          return c.json({ error: 'Not found' }, 404)
-        }
-        tlsId = body.tlsId
-      } else {
-        return c.json({ error: 'Invalid request' }, 400)
-      }
-    }
+    const tlsIdResult = await parseOptionalTlsId(c, db, organizationId, body.tlsId)
+    if (tlsIdResult.kind === 'error') return tlsIdResult.response
 
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
@@ -183,7 +200,7 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
           displayName,
           description,
           serviceId,
-          ...(tlsId !== undefined ? { tlsId } : {}),
+          ...(tlsIdResult.kind === 'value' ? { tlsId: tlsIdResult.value } : {}),
           ...(metadataResult !== null ? { metadata: metadataResult } : {}),
           ...(optionsResult !== null ? { options: optionsResult } : {}),
         })
@@ -207,7 +224,7 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const id = c.req.param('id')
     const entityOrgId = await resolveEntityOrganizationId(db, 'hosting', id)
-    if (!entityOrgId || entityOrgId !== organizationId) {
+    if (entityOrgId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 
@@ -239,23 +256,9 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
     if (optionsResult instanceof Response) return optionsResult
     if (optionsResult !== null) patchFields.options = optionsResult
 
-    if (body.tlsId !== undefined) {
-      if (body.tlsId === null) {
-        patchFields.tlsId = null
-      } else if (typeof body.tlsId === 'string' && UUID_RE.test(body.tlsId)) {
-        const [tlsRow] = await db
-          .select({ id: tls.id, organizationId: tls.organizationId })
-          .from(tls)
-          .where(eq(tls.id, body.tlsId))
-          .limit(1)
-        if (!tlsRow || tlsRow.organizationId !== organizationId) {
-          return c.json({ error: 'Not found' }, 404)
-        }
-        patchFields.tlsId = body.tlsId
-      } else {
-        return c.json({ error: 'Invalid request' }, 400)
-      }
-    }
+    const tlsIdResult = await parseOptionalTlsId(c, db, organizationId, body.tlsId)
+    if (tlsIdResult.kind === 'error') return tlsIdResult.response
+    if (tlsIdResult.kind === 'value') patchFields.tlsId = tlsIdResult.value
 
     await db
       .update(hosting)
@@ -278,7 +281,7 @@ export function registerHostingRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const id = c.req.param('id')
     const entityOrgId = await resolveEntityOrganizationId(db, 'hosting', id)
-    if (!entityOrgId || entityOrgId !== organizationId) {
+    if (entityOrgId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 
