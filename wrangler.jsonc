@@ -82,12 +82,17 @@
   "vars": {
     "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c"
   },
-  "migrations": [
-    {
-      "tag": "v1-daemon-cell",
-      "new_sqlite_classes": ["DaemonCellObject"]
+  "exports": {
+    "instance_DaemonCellObject": {
+      "type": "durable-object",
+      "state": "renamed",
+      "renamed_to": "DaemonCellObject"
+    },
+    "DaemonCellObject": {
+      "type": "durable-object",
+      "storage": "sqlite"
     }
-  ],
+  },
   "env": {
     "testing": {
       "queues": {
