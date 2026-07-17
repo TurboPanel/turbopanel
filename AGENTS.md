@@ -474,9 +474,11 @@ The DO caches `#serverId` (and live-socket presence) once in the constructor via
 
 **Purge:** `DELETE /api/client/v1/servers/:id` hard-deletes the Postgres row and calls `DaemonCell.purge()` to wipe all `tp:cell:{serverId}:*` keys (Redis) or DO SQLite state (Workers). Blocked for the co-located control-plane server (403). Preflight blockers today: `network` and `container` rows referencing the server (409 `server_has_blockers` via `src/client/servers/delete-guards.ts`); future service placement checks extend the same helper. After the server row is deleted, invalidates that server's `license_id` when set (both Deno and Workers — licenses are one-shot seats; even if cell purge fails). Co-located server delete remains blocked separately so the control-plane license is never removed this way.
 
-**License invalidate (not delete):** `DELETE /api/client/v1/licenses/:id` sets `license.revoked_at`, revokes daemon keys on bound servers, and rejects `POST /api/daemon/v1/auth/session` when the server's `license_id` is inactive. Co-located control-plane license remains non-invalidateable. Server rows stay until separately deleted. End users never manage licenses in the UI — seats are minted inside Add Server and retired when the bound server is deleted.
+**License invalidate (not delete):** `DELETE /api/client/v1/licenses/:id` sets `license.revoked_at`, revokes daemon keys on bound servers, and rejects `POST /api/daemon/v1/auth/session` when the server's `license_id` is inactive. Co-located control-plane license remains non-invalidateable via the API. Server rows stay until separately deleted. End users never manage licenses in the UI — seats are minted inside Add Server and retired when the bound server is deleted.
 
 **One-shot registration keys:** each license binds to at most one server (`uniq_server_license_id` partial unique index). First successful enroll latches the key; a second host presenting the same key without the persisted `serverId` is rejected (`License already consumed or invalid`). Re-enroll of the same daemon requires the on-disk `server.id` plus the original key. Deleting the server soft-revokes the license so it cannot enroll a replacement host.
+
+**Colocated license (`this server`):** install creates one active license named `COLOCATED_SERVER_DISPLAY_NAME` (`'this server'`) and writes plaintext id/token under the daemon state dir (`/var/lib/turbopanel/license.id` + `license.token`). DB stores only the PBKDF2 hash — if disk credentials disappear, Deno boot (`ensureColocatedLicenseCredentialsOnDisk`) rotates: revoke all active `this server` licenses for the default org, mint exactly one fresh license, rewrite disk. Partial unique index `uniq_license_colocated_active` plus a reserved-name reject on `POST /licenses` keep the invariant. See `src/lib/db/AGENTS.md` (`license` table).
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
@@ -731,7 +733,7 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `PATCH` | `/api/client/v1/variables/:id` | Update variable; re-seals on secret value update (lazy re-seal-on-write under the current key version) |
 | `DELETE` | `/api/client/v1/variables/:id` | Delete variable |
 | `GET` | `/api/client/v1/licenses` | List licenses (`organization:own`) — API only; not shown in the end-user UI |
-| `POST` | `/api/client/v1/licenses` | Create a one-shot registration key (`organization:own`; used by Add Server) |
+| `POST` | `/api/client/v1/licenses` | Create a one-shot registration key (`organization:own`; used by Add Server); rejects reserved display name `'this server'` |
 | `DELETE` | `/api/client/v1/licenses/{id}` | Invalidate a license (`organization:own`; soft `revoked_at`, disconnects bound servers) |
 | `GET` | `/api/client/v1/tls` | List org TLS certs (metadata + public PEM; private key never returned) |
 | `POST` | `/api/client/v1/tls` | Create cert (`upload` / `self_signed` / `lets_encrypt`); seals private key with `encryptSecret` (`tpsecret`) |

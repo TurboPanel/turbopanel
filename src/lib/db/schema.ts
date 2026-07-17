@@ -104,6 +104,14 @@ export const license = pgTable(
       'btree',
       table.organizationId.asc().nullsLast().op('uuid_ops')
     ),
+    // Exactly one active colocated control-plane license per org
+    // (`display_name = 'this server'`). Reserved name is rejected on
+    // `POST /licenses` so user-minted keys cannot collide.
+    uniqueIndex('uniq_license_colocated_active')
+      .on(table.organizationId)
+      .where(
+        sql`${table.displayName} = 'this server' AND ${table.revokedAt} IS NULL`,
+      ),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],

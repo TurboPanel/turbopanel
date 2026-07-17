@@ -1,13 +1,15 @@
-import { eq } from 'drizzle-orm'
+import { and, eq, isNull } from 'drizzle-orm'
 import { it } from '@std/testing/bdd'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb, type Db } from '../../db.ts'
 import {
+  COLOCATED_SERVER_DISPLAY_NAME,
   completeInstanceInstall,
   DEFAULT_ORGANIZATION_NAME,
   INSTANCE_ALREADY_CONFIGURED_ERROR,
   INSTANCE_INSTALL_SENTINEL_KEY,
   isInstanceInstalled,
+  rotateColocatedLicenseCredentials,
 } from './install-state.ts'
 import { SUPERADMIN_ROLE } from './session-store.ts'
 import {
@@ -160,5 +162,73 @@ it('concurrent install completions create exactly one superadmin bootstrap', asy
     if (winnerOrgId && winnerUserId) {
       await cleanupInstall(db, winnerOrgId, winnerUserId)
     }
+  }
+})
+
+it('rotateColocatedLicenseCredentials revokes stale this-server licenses then mints one', async () => {
+  if (!dbUrl) {
+    console.warn(
+      'Skipping colocated license rotate test: TURBOPANEL_DATABASE_URL not set',
+    )
+    return
+  }
+
+  const db = createDenoDb()
+  const insertedOrg = await db
+    .insert(organization)
+    .values({ displayName: `Colocated License Rotate ${crypto.randomUUID()}` })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg[0]!.id
+
+  try {
+    // Seed one active colocated license (plaintext is intentionally discarded —
+    // recovery cannot reuse it).
+    const [stale] = await db
+      .insert(license)
+      .values({
+        organizationId,
+        displayName: COLOCATED_SERVER_DISPLAY_NAME,
+        token: `stale-hash-${crypto.randomUUID()}`,
+      })
+      .returning({ id: license.id })
+
+    const rotated = await rotateColocatedLicenseCredentials(db, organizationId)
+
+    const active = await db
+      .select({ id: license.id, revokedAt: license.revokedAt })
+      .from(license)
+      .where(and(
+        eq(license.organizationId, organizationId),
+        eq(license.displayName, COLOCATED_SERVER_DISPLAY_NAME),
+        isNull(license.revokedAt),
+      ))
+
+    if (active.length !== 1) {
+      throw new Error(
+        `expected exactly one active colocated license, got ${active.length}`,
+      )
+    }
+    if (active[0]?.id !== rotated.licenseId) {
+      throw new Error('active colocated license id does not match rotated mint')
+    }
+    if (active[0]?.id === stale!.id) {
+      throw new Error('stale colocated license must not remain active')
+    }
+
+    const staleRow = await db
+      .select({ revokedAt: license.revokedAt })
+      .from(license)
+      .where(eq(license.id, stale!.id))
+      .limit(1)
+    if (!staleRow[0]?.revokedAt) {
+      throw new Error('stale colocated license must be revoked')
+    }
+
+    if (!rotated.licenseToken || rotated.licenseToken.length < 8) {
+      throw new Error('rotated mint must return a plaintext token once')
+    }
+  } finally {
+    await db.delete(license).where(eq(license.organizationId, organizationId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
   }
 })

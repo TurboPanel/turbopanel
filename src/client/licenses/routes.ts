@@ -2,6 +2,7 @@ import type { Context } from 'hono'
 import { Hono } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import {
+  COLOCATED_SERVER_DISPLAY_NAME,
   colocatedLicenseRevokeError,
   isProtectedColocatedLicenseId,
   resolveProtectedColocatedLicenseIds,
@@ -148,6 +149,18 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const denied = await assertBillingOrOrgMember(c, organizationId)
     if (denied) return denied
+
+    // Reserved for the co-located control-plane license (install / disk recovery).
+    // Must stay unique per org (`uniq_license_colocated_active`).
+    if (displayName?.trim() === COLOCATED_SERVER_DISPLAY_NAME) {
+      return c.json(
+        {
+          error:
+            `'${COLOCATED_SERVER_DISPLAY_NAME}' is reserved for the co-located control plane`,
+        },
+        400,
+      )
+    }
 
     const devSurface = opts.runtime === 'deno' && isDeveloperSurfaceEnabled()
     // The install base URL override is a runtime-agnostic developer convenience

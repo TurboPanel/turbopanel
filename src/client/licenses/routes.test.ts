@@ -9,6 +9,7 @@ import {
 } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
+import { COLOCATED_SERVER_DISPLAY_NAME } from '../authn/install-state.ts'
 import {
   grant,
   license,
@@ -111,6 +112,61 @@ async function withTestFixtures(
   }
 }
 
+async function withOwnerFixtures(
+  fn: (ctx: {
+    db: ReturnType<typeof createDenoDb>
+    app: Hono<AppEnv>
+    secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>
+    ownerId: string
+    organizationId: string
+  }) => Promise<void>,
+): Promise<void> {
+  if (!dbUrl) {
+    console.warn('Skipping license route tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+  const { app, secrets } = await createLicenseTestApp(db)
+
+  const ownerEmail = `license-route-owner-${crypto.randomUUID()}@example.com`
+
+  const insertedOrg = await db
+    .insert(organization)
+    .values({ displayName: 'License Route Owner Org' })
+    .returning({ id: organization.id })
+
+  const organizationId = insertedOrg[0]!.id
+
+  const insertedOwner = await db
+    .insert(user)
+    .values({ email: ownerEmail, isEmailVerified: true, role: 'user' })
+    .returning({ id: user.id })
+
+  const ownerId = insertedOwner[0]!.id
+
+  await db.insert(member).values({ organizationId, userId: ownerId })
+
+  await db.insert(grant).values({
+    entityType: 'organization',
+    entityId: organizationId,
+    actorType: 'user',
+    actorId: ownerId,
+    permission: 'organization:own',
+    allow: true,
+  })
+
+  try {
+    await fn({ db, app, secrets, ownerId, organizationId })
+  } finally {
+    await db.delete(license).where(eq(license.organizationId, organizationId))
+    await db.delete(grant).where(eq(grant.entityId, organizationId))
+    await db.delete(member).where(eq(member.organizationId, organizationId))
+    await db.delete(user).where(eq(user.id, ownerId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+}
+
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
  *
@@ -172,6 +228,34 @@ test('DELETE /licenses/:id is forbidden for an organization manager', async () =
       .limit(1)
     if (rows[0]?.revokedAt) {
       throw new Error('org manager must not be able to revoke a license')
+    }
+  })
+})
+
+test('POST /licenses rejects reserved colocated displayName', async () => {
+  await withOwnerFixtures(async ({ db, app, secrets, ownerId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, ownerId)
+    const res = await app.request('/licenses', {
+      method: 'POST',
+      headers: {
+        ...orgRequestHeaders(cookie, organizationId),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ displayName: COLOCATED_SERVER_DISPLAY_NAME }),
+    })
+
+    if (res.status !== 400) {
+      throw new Error(
+        `expected 400 creating license with reserved displayName, got ${res.status}`,
+      )
+    }
+
+    const rows = await db
+      .select({ id: license.id })
+      .from(license)
+      .where(eq(license.organizationId, organizationId))
+    if (rows.length !== 0) {
+      throw new Error('reserved displayName must not create a license row')
     }
   })
 })

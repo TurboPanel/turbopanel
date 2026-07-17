@@ -17,7 +17,7 @@ import {
   user,
   workspace,
 } from '../../lib/db/schema.ts'
-import { createLicense } from './license.ts'
+import { createLicense, invalidateLicense } from './license.ts'
 import { hashPassword } from './password.ts'
 import { SUPERADMIN_ROLE } from './session-store.ts'
 import { compatLogInfo, compatLogWarn } from '../../log-compat.ts'
@@ -721,8 +721,13 @@ export async function persistColocatedLicenseCredentials(
 }
 
 /**
- * After a partial install (DB configured but license files missing), mint a
- * fresh colocated license and persist it so the daemon can enroll.
+ * After a partial install (DB configured but license files missing), rotate the
+ * colocated license and persist credentials so the daemon can enroll.
+ *
+ * The plaintext token is unrecoverable once disk files are gone (DB stores only
+ * a PBKDF2 hash). Recovery therefore revokes every active
+ * {@link COLOCATED_SERVER_DISPLAY_NAME} license for the default org, then mints
+ * exactly one fresh license — at most one active colocated license per org.
  */
 export async function ensureColocatedLicenseCredentialsOnDisk(
   db: Db,
@@ -744,15 +749,49 @@ export async function ensureColocatedLicenseCredentialsOnDisk(
   const organizationId = await findDefaultInstalledOrganizationId(db)
   if (!organizationId) return
 
-  const { licenseId, licenseToken } = await createLicense(db, {
+  const { licenseId, licenseToken } = await rotateColocatedLicenseCredentials(
+    db,
     organizationId,
-    displayName: COLOCATED_SERVER_DISPLAY_NAME,
-  })
+  )
   await persistColocatedLicenseCredentials(licenseId, licenseToken)
   compatLogInfo(
     'install',
     'restored colocated license credentials on disk after partial install',
   )
+}
+
+/**
+ * Revoke every active colocated (`this server`) license for an org, then mint
+ * exactly one fresh license. Used by disk-credential recovery and tests.
+ */
+export async function rotateColocatedLicenseCredentials(
+  db: Db,
+  organizationId: string,
+): Promise<{ licenseId: string; licenseToken: string }> {
+  await revokeActiveColocatedLicenses(db, organizationId)
+  return createLicense(db, {
+    organizationId,
+    displayName: COLOCATED_SERVER_DISPLAY_NAME,
+  })
+}
+
+/** Soft-invalidate every active colocated (`this server`) license for an org. */
+async function revokeActiveColocatedLicenses(
+  db: Db,
+  organizationId: string,
+): Promise<void> {
+  const active = await db
+    .select({ id: license.id })
+    .from(license)
+    .where(and(
+      eq(license.organizationId, organizationId),
+      eq(license.displayName, COLOCATED_SERVER_DISPLAY_NAME),
+      isNull(license.revokedAt),
+    ))
+
+  for (const row of active) {
+    await invalidateLicense(db, row.id, organizationId)
+  }
 }
 
 export async function createOrganizationForUser(

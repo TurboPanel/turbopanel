@@ -50,6 +50,13 @@
       "when": 1784300528529,
       "tag": "0006_verification_identifier_unique",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1784316506430,
+      "tag": "0007_uniq_license_colocated_active",
+      "breakpoints": true
     }
   ]
 }
