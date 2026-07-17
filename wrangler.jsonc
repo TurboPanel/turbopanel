@@ -83,11 +83,6 @@
     "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c"
   },
   "exports": {
-    "instance_DaemonCellObject": {
-      "type": "durable-object",
-      "state": "renamed",
-      "renamed_to": "DaemonCellObject"
-    },
     "DaemonCellObject": {
       "type": "durable-object",
       "storage": "sqlite"

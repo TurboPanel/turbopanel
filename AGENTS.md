@@ -320,7 +320,7 @@ Server nodes are tracked by a **Daemon Cell** abstraction keyed by `serverId`. T
 | Deno (self-hosted) | `RedisDaemonCell` (`src/daemon/cell/redis/`) | Redis Streams + HASH + SET at `tp:cell:{serverId}:*`; Unix socket `/run/turbopanel/redis.sock` |
 | Cloudflare Workers | `DaemonCellObject` (`src/daemon/cell/do.ts`) | SQLite-backed Durable Object per server, named by `serverId` |
 
-Wrangler declares the Workers Durable Object lifecycle with `exports` in `wrangler.jsonc`: `DaemonCellObject` is the live SQLite-backed class, and `instance_DaemonCellObject` is a renamed tombstone for the old provisioned namespace.
+Wrangler declares the Workers Durable Object lifecycle with `exports` in `wrangler.jsonc` (`DaemonCellObject`, SQLite). The Cloudflare dashboard lists that namespace as `instance_DaemonCellObject` because the live Worker script is named `instance` — `{script}_{class}` is display only, not a separate class.
 
 Postgres remains canonical for business data (`server`). The cell is the low-latency hot projection and coordination layer for **presence only** — no monitor tables, no monitor wire payloads, and no HTTP heartbeat ingestion path.
 
