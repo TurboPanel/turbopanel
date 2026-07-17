@@ -115,7 +115,6 @@ function resolveCommandAmqpUrl(): string | null {
   return DEFAULT_AMQP_URL
 }
 const runtimeEnv = Deno.env.toObject()
-const emailSettings = await resolveEmailSettings(db, runtimeEnv)
 const secretsConfig = parseSecretsEnv(
   Deno.env.get('TURBOPANEL_SECRET'),
   Deno.env.get('TURBOPANEL_SECRETS'),
@@ -125,6 +124,8 @@ const sessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing
 const daemonJwtKeyring = await deriveDaemonJwtKeyring(secretsConfig)
 const challengeSigningSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-challenge-signing')
 const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(secretsConfig, 'data-encryption')
+// Derived after data-encryption secrets so DB-backed email secrets can be decrypted.
+const emailSettings = await resolveEmailSettings(db, runtimeEnv, dataEncryptionSecrets)
 const daemonCellRegistry = createRedisDaemonCellRegistry({ db })
 const queryCache = createRedisQueryCache({ client: daemonCellRegistry.client, db })
 const serverMetricsStore = resolveServerMetricsStore({

@@ -63,6 +63,93 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Read a request body while enforcing a hard byte budget, aborting the stream
+ * as soon as the budget is exceeded so an oversized upload is never fully
+ * buffered. Returns `{ ok: false }` when the limit is exceeded.
+ */
+async function readRequestBodyWithLimit(
+  c: Context,
+  maxBytes: number,
+): Promise<{ ok: true; text: string } | { ok: false }> {
+  const stream = c.req.raw.body;
+  if (!stream) {
+    return { ok: true, text: "" };
+  }
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        return { ok: false };
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { ok: true, text: new TextDecoder().decode(merged) };
+}
+
+/** Maximum number of ciphertexts accepted per `/secrets/decrypt` request. */
+export const MAX_SECRETS_DECRYPT_BATCH = 100;
+
+/**
+ * Per-ciphertext character budget. A daemon envelope carrying a single TLS
+ * private key base64url-encodes to a few KiB; 16 KiB leaves generous headroom
+ * while rejecting pathological inputs.
+ */
+export const MAX_SECRETS_DECRYPT_CIPHERTEXT_CHARS = 16 * 1024;
+
+/**
+ * Whole-request byte budget, read (and aborted) before JSON parsing. Sized as
+ * the batch cap × per-ciphertext cap plus JSON array/quoting overhead.
+ */
+export const MAX_SECRETS_DECRYPT_BODY_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Decrypt a single recipient-bound daemon envelope. Returns the plaintext, or
+ * `null` when the value is not a daemon envelope, is not addressed to this
+ * recipient, or fails to decrypt. Never throws.
+ */
+async function decryptDaemonCiphertext(
+  secretsConfig: SecretsConfig,
+  recipient: { serverId: string; keyId: string },
+  ciphertext: string,
+): Promise<string | null> {
+  try {
+    if (!isDaemonSealedEnvelope(ciphertext)) {
+      return null;
+    }
+    const parsed = parseDaemonSecretEnvelope(ciphertext);
+    if (!parsed) {
+      return null;
+    }
+    if (
+      parsed.serverId !== recipient.serverId ||
+      parsed.keyId !== recipient.keyId
+    ) {
+      return null;
+    }
+    return await decryptSecretForDaemon(secretsConfig, recipient, ciphertext);
+  } catch {
+    return null;
+  }
+}
+
 function challengeExpiresAt(at: string, ttlMs: number): string {
   const atMs = new Date(at).getTime();
   if (!Number.isFinite(atMs)) {
@@ -545,8 +632,6 @@ export function registerDaemonApiRoutes(
     },
   );
 
-  const MAX_SECRETS_DECRYPT_BATCH = 100;
-
   // Recipient-bound daemon envelopes only — JWT sub/kid must match envelope metadata.
   daemon.post(
     "/secrets/decrypt",
@@ -560,9 +645,30 @@ export function registerDaemonApiRoutes(
       const daemonServerId = c.get("daemonServerId") as string;
       const daemonKeyId = c.get("daemonKeyId") as string;
 
-      const body = await c.req
-        .json<{ ciphertexts?: unknown }>()
-        .catch(() => ({} as { ciphertexts?: unknown }));
+      // Reject oversized uploads before buffering / parsing. Cheap Content-Length
+      // gate first, then a hard byte budget enforced while streaming the body.
+      const declaredLength = Number(c.req.header("content-length") ?? "");
+      if (
+        Number.isFinite(declaredLength) &&
+        declaredLength > MAX_SECRETS_DECRYPT_BODY_BYTES
+      ) {
+        return c.json({ ok: false, error: "request body too large" }, 413);
+      }
+      const bodyRead = await readRequestBodyWithLimit(
+        c,
+        MAX_SECRETS_DECRYPT_BODY_BYTES,
+      );
+      if (!bodyRead.ok) {
+        return c.json({ ok: false, error: "request body too large" }, 413);
+      }
+
+      let body: { ciphertexts?: unknown };
+      try {
+        body = JSON.parse(bodyRead.text) as { ciphertexts?: unknown };
+      } catch {
+        return c.json({ ok: false, error: "invalid json" }, 400);
+      }
+
       if (!Array.isArray(body.ciphertexts)) {
         return c.json(
           { ok: false, error: "ciphertexts must be an array" },
@@ -581,37 +687,39 @@ export function registerDaemonApiRoutes(
           400,
         );
       }
-      if (!body.ciphertexts.every((entry) => typeof entry === "string")) {
-        return c.json({ ok: false, error: "ciphertexts must be strings" }, 400);
+      for (const entry of body.ciphertexts) {
+        if (typeof entry !== "string") {
+          return c.json(
+            { ok: false, error: "ciphertexts must be strings" },
+            400,
+          );
+        }
+        if (entry.length > MAX_SECRETS_DECRYPT_CIPHERTEXT_CHARS) {
+          return c.json(
+            {
+              ok: false,
+              error:
+                `ciphertext exceeds ${MAX_SECRETS_DECRYPT_CIPHERTEXT_CHARS} chars`,
+            },
+            400,
+          );
+        }
       }
 
       const recipient = { serverId: daemonServerId, keyId: daemonKeyId };
 
-      const plaintexts = await Promise.all(
-        body.ciphertexts.map(async (ciphertext) => {
-          try {
-            if (!isDaemonSealedEnvelope(ciphertext)) {
-              return null;
-            }
-            const parsed = parseDaemonSecretEnvelope(ciphertext);
-            if (!parsed) {
-              return null;
-            }
-            if (
-              parsed.serverId !== daemonServerId || parsed.keyId !== daemonKeyId
-            ) {
-              return null;
-            }
-            return await decryptSecretForDaemon(
-              secretsConfig,
-              recipient,
-              ciphertext,
-            );
-          } catch {
-            return null;
-          }
-        }),
-      );
+      // Sequential decryption — bounded work, no unbounded parallelism over the
+      // whole batch (each entry does an AES-GCM decrypt of daemon key material).
+      const plaintexts: (string | null)[] = [];
+      for (const ciphertext of body.ciphertexts as string[]) {
+        plaintexts.push(
+          await decryptDaemonCiphertext(
+            secretsConfig,
+            recipient,
+            ciphertext,
+          ),
+        );
+      }
 
       return c.json({ plaintexts }, 200);
     },

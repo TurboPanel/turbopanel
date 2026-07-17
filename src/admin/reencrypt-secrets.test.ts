@@ -12,7 +12,8 @@ import {
 } from '../client/authn/secrets.ts'
 import { getDatabaseUrl } from '../db-url.ts'
 import { createDenoDb, type Db } from '../db.ts'
-import { organization, principal, tls, variable } from '../lib/db/schema.ts'
+import { organization, principal, setting, tls, variable } from '../lib/db/schema.ts'
+import { SYSTEM_EMAIL_DB_KEY } from '../lib/settings/email-settings.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../test-fixtures/secrets.ts'
 import { reencryptAtRestSecrets } from './reencrypt-secrets.ts'
 
@@ -121,6 +122,15 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
       options jsonb
     )
   `))
+  await tx.execute(sql.raw(`
+    CREATE TABLE setting (
+      id uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+      created_at timestamptz(3) DEFAULT now() NOT NULL,
+      updated_at timestamptz(3) DEFAULT now() NOT NULL,
+      key text NOT NULL,
+      value jsonb NOT NULL
+    )
+  `))
 }
 
 test('reencryptAtRestSecrets reseals old tpsecret blobs and skips tpdaemon/current', async () => {
@@ -139,11 +149,15 @@ test('reencryptAtRestSecrets reseals old tpsecret blobs and skips tpdaemon/curre
   const v1PrincipalPlain = 'principal-v1-password'
   const v2VariablePlain = 'variable-already-v2'
   const daemonPlain = 'daemon-bound-secret'
+  const v1MailgunKeyPlain = 'mailgun-v1-api-key'
+  const v1SmtpPassPlain = 'smtp-v1-password'
 
   const v1VariableEnvelope = await encryptSecret(v1Only, v1VariablePlain)
   const v1TlsEnvelope = await encryptSecret(v1Only, v1TlsPlain)
   const v1PrincipalEnvelope = await encryptSecret(v1Only, v1PrincipalPlain)
   const v2VariableEnvelope = await encryptSecret(rotated, v2VariablePlain)
+  const v1MailgunKeyEnvelope = await encryptSecret(v1Only, v1MailgunKeyPlain)
+  const v1SmtpPassEnvelope = await encryptSecret(v1Only, v1SmtpPassPlain)
   const daemonEnvelope = await encryptSecretForDaemon(
     secretsConfig,
     {
@@ -240,12 +254,23 @@ test('reencryptAtRestSecrets reseals old tpsecret blobs and skips tpdaemon/curre
         })
         .returning({ id: principal.id })
 
+      // Single SYSTEM_EMAIL row: two old-version secret keys + a plaintext
+      // non-secret key (PROVIDER) that must be left untouched.
+      await scoped.insert(setting).values({
+        key: SYSTEM_EMAIL_DB_KEY,
+        value: {
+          PROVIDER: 'mailgun',
+          MAILGUN_API_KEY: v1MailgunKeyEnvelope,
+          SMTP_PASS: v1SmtpPassEnvelope,
+        },
+      })
+
       const summary = await reencryptAtRestSecrets(scoped, rotated)
 
-      // Fixture-only schema: 4 variables + 1 tls + 1 principal.
+      // Fixture-only schema: 4 variables + 1 tls + 1 principal + 2 email secrets.
       assertEquals(summary, {
-        scanned: 6,
-        reencrypted: 3,
+        scanned: 8,
+        reencrypted: 5,
         skipped: 2,
         failed: 1,
       })
@@ -275,6 +300,24 @@ test('reencryptAtRestSecrets reseals old tpsecret blobs and skips tpdaemon/curre
       assertEquals(
         await decryptSecret(rotated, updatedPrincipal!.password!),
         v1PrincipalPlain,
+      )
+
+      const [updatedEmail] = await scoped
+        .select({ value: setting.value })
+        .from(setting)
+        .where(eq(setting.key, SYSTEM_EMAIL_DB_KEY))
+      const emailObj = updatedEmail!.value as Record<string, string>
+      // Non-secret key stays plaintext and unchanged.
+      assertEquals(emailObj.PROVIDER, 'mailgun')
+      assertEquals(parseSecretEnvelope(emailObj.MAILGUN_API_KEY), { keyVersion: 2 })
+      assertEquals(
+        await decryptSecret(rotated, emailObj.MAILGUN_API_KEY),
+        v1MailgunKeyPlain,
+      )
+      assertEquals(parseSecretEnvelope(emailObj.SMTP_PASS), { keyVersion: 2 })
+      assertEquals(
+        await decryptSecret(rotated, emailObj.SMTP_PASS),
+        v1SmtpPassPlain,
       )
 
       const [unchangedV2] = await scoped

@@ -1,5 +1,6 @@
 import { sendMailgunJob } from '../src/lib/email/mailgun/send.ts'
 import { resolveEmailSettings } from '../src/lib/settings/email-settings.ts'
+import type { DerivedSecretsConfig } from '../src/client/authn/secrets.ts'
 import type { EmailJob } from '../src/lib/email/types.ts'
 import type { MailerSendResult } from '../src/lib/email/sender-types.ts'
 import { PermanentSendError, validateEmailAddress } from '../src/lib/email/validate-address.ts'
@@ -35,13 +36,16 @@ function isPermanentError(error: unknown): boolean {
 export class MailerMailgunSender {
   private readonly db: Db | undefined
   private readonly env: Record<string, string | undefined>
+  private readonly dataEncryptionSecrets: DerivedSecretsConfig | undefined
 
   constructor(opts: {
     db: Db | undefined
     env?: Record<string, string | undefined>
+    dataEncryptionSecrets?: DerivedSecretsConfig
   }) {
     this.db = opts.db
     this.env = opts.env ?? Deno.env.toObject()
+    this.dataEncryptionSecrets = opts.dataEncryptionSecrets
   }
 
   private async resolveMailgunConfig(): Promise<{
@@ -50,7 +54,11 @@ export class MailerMailgunSender {
     from: string
     apiBase: string
   }> {
-    const resolved = await resolveEmailSettings(this.db, this.env)
+    const resolved = await resolveEmailSettings(
+      this.db,
+      this.env,
+      this.dataEncryptionSecrets,
+    )
     return validateMailgunSettings(resolved)
   }
 
@@ -82,6 +90,7 @@ export class MailerMailgunSender {
 export function createMailerMailgunSender(opts: {
   db: Db | undefined
   env?: Record<string, string | undefined>
+  dataEncryptionSecrets?: DerivedSecretsConfig
 }): MailerMailgunSender {
   return new MailerMailgunSender(opts)
 }

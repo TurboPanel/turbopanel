@@ -1,5 +1,6 @@
 import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
+import type { DerivedSecretsConfig } from './secrets.ts'
 import { isMissingRelationError } from '../../db-errors.ts'
 import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
 import { resolveFleetPresence } from '../../daemon/cell/fleet-presence.ts'
@@ -256,11 +257,12 @@ export async function getInstallStatus(
   db: Db,
   envOverride?: SignupEnvOverride,
   platformEnv: Record<string, string | undefined> = {},
+  dataEncryptionSecrets?: DerivedSecretsConfig,
 ): Promise<InstallStatus> {
   // Sequential: parallel drizzle queries on postgres.js can wedge the pool (Deno dev).
   const installed = await isInstanceInstalled(db)
   const signupEnabled = await isSignupEnabled(db, envOverride)
-  const emailSettings = await resolveEmailSettings(db, platformEnv)
+  const emailSettings = await resolveEmailSettings(db, platformEnv, dataEncryptionSecrets)
   const emailVerificationEnabled = isEmailActiveForRuntime(emailSettings, 'deno')
   const needsInstall = !installed
   return {
@@ -287,8 +289,9 @@ export async function getClientPublicStatus(
   runtime: 'deno' | 'workers',
   envOverride?: SignupEnvOverride,
   platformEnv: Record<string, string | undefined> = {},
+  dataEncryptionSecrets?: DerivedSecretsConfig,
 ): Promise<ClientPublicStatus | null> {
-  const emailSettings = await resolveEmailSettings(db, platformEnv)
+  const emailSettings = await resolveEmailSettings(db, platformEnv, dataEncryptionSecrets)
   const emailVerificationEnabled = isEmailActiveForRuntime(emailSettings, runtime)
 
   if (runtime === 'workers') {
@@ -313,7 +316,7 @@ export async function getClientPublicStatus(
     return null
   }
 
-  const status = await getInstallStatus(db, envOverride, platformEnv)
+  const status = await getInstallStatus(db, envOverride, platformEnv, dataEncryptionSecrets)
   return { ok: true, ...status }
 }
 

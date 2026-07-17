@@ -35,6 +35,7 @@ import {
 } from './public-urls.ts'
 import {
   emailSettingsToApiShape,
+  emailUpdatesRequireEncryption,
   resolveEmailSettings,
   updateEmailSettings,
 } from '../lib/settings/email-settings.ts'
@@ -291,7 +292,12 @@ export function registerAdminRoutes(app: Hono, opts: {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const resolved = await resolveEmailSettings(db, resolvePlatformEnv(c, opts))
+    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+    const resolved = await resolveEmailSettings(
+      db,
+      resolvePlatformEnv(c, opts),
+      dataEncryptionSecrets,
+    )
     return c.json({ settings: emailSettingsToApiShape(resolved) })
   })
 
@@ -309,8 +315,18 @@ export function registerAdminRoutes(app: Hono, opts: {
       if (typeof value === 'string' || value === null) updates[key] = value
     }
 
+    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+    // DB-backed secret writes must be sealed at rest — require an encryption key,
+    // mirroring TLS and variable secret writes.
+    if (emailUpdatesRequireEncryption(updates) && !dataEncryptionSecrets) {
+      return c.json(
+        { error: 'Encryption unavailable — no encryption key configured' },
+        503,
+      )
+    }
+
     const env = resolvePlatformEnv(c, opts)
-    const resolved = await updateEmailSettings(db, env, updates)
+    const resolved = await updateEmailSettings(db, env, updates, dataEncryptionSecrets)
     return c.json({ settings: emailSettingsToApiShape(resolved) })
   })
 

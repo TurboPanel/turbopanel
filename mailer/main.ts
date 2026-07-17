@@ -8,6 +8,11 @@ import {
   type EmailProvider,
   type ResolvedEmailSettings,
 } from '../src/lib/settings/email-settings.ts'
+import {
+  deriveEncryptionSecretsConfig,
+  parseSecretsEnv,
+} from '../src/client/authn/secrets.ts'
+import type { DerivedSecretsConfig } from '../src/client/authn/secrets.ts'
 import type { MailerSender } from '../src/lib/email/sender-types.ts'
 import { createMailerDb } from './db.ts'
 import { createMailerMailgunSender } from './mailgun-sender.ts'
@@ -131,7 +136,7 @@ async function getCachedEmailSettings(): Promise<ResolvedEmailSettings> {
   if (cachedSettings && now - cachedSettings.fetchedAt < SETTINGS_TTL_MS) {
     return cachedSettings.value
   }
-  const fresh = await resolveEmailSettings(db, mailerEnv)
+  const fresh = await resolveEmailSettings(db, mailerEnv, dataEncryptionSecrets)
   cachedSettings = { value: fresh, fetchedAt: now }
   return fresh
 }
@@ -163,6 +168,31 @@ const amqpUrl = Deno.env.get('TURBOPANEL_AMQP_URL') ?? DEFAULT_AMQP_URL
 const mailerEnv = Deno.env.toObject()
 const db = createMailerDb()
 
+/**
+ * Derive the data-encryption keyring from the root secret so DB-backed email
+ * secrets (`MAILGUN_API_KEY` / `SMTP_PASS`, sealed as `tpsecret`) can be
+ * decrypted. Best-effort: without a configured root secret (or on a derive
+ * failure) DB-backed secrets simply resolve as unset, while env-var settings
+ * (which the mailer unit also receives) keep working.
+ */
+async function resolveMailerDataEncryptionSecrets(
+  env: Record<string, string | undefined>,
+): Promise<DerivedSecretsConfig | undefined> {
+  const secret = env.TURBOPANEL_SECRET?.trim()
+  const secrets = env.TURBOPANEL_SECRETS?.trim()
+  if (!secret && !secrets) return undefined
+  try {
+    const config = parseSecretsEnv(env.TURBOPANEL_SECRET, env.TURBOPANEL_SECRETS, 'deno')
+    return await deriveEncryptionSecretsConfig(config, 'data-encryption')
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error)
+    logWarn('mailer', `failed to derive data-encryption secrets: ${errMsg}`)
+    return undefined
+  }
+}
+
+const dataEncryptionSecrets = await resolveMailerDataEncryptionSecrets(mailerEnv)
+
 // Holder so we can swap the limiter on live setting changes without losing all state.
 const limiterHolder: { current: RateLimiter } = { current: new RateLimiter() }
 
@@ -174,12 +204,12 @@ lastAppliedBurst = initialBurst
 
 function createSenderForProvider(provider: EmailProvider): MailerSender {
   if (provider === 'mailgun') {
-    return createMailerMailgunSender({ db, env: mailerEnv })
+    return createMailerMailgunSender({ db, env: mailerEnv, dataEncryptionSecrets })
   }
   if (provider === 'mailpit') {
-    return createMailerMailpitSender({ db, env: mailerEnv })
+    return createMailerMailpitSender({ db, env: mailerEnv, dataEncryptionSecrets })
   }
-  return createMailerSmtpSender({ db, env: mailerEnv })
+  return createMailerSmtpSender({ db, env: mailerEnv, dataEncryptionSecrets })
 }
 
 const senderHolder: { current: MailerSender } = {

@@ -1,6 +1,7 @@
 import {
   resolveEmailSettings,
 } from '../../settings/email-settings.ts'
+import type { DerivedSecretsConfig } from '../../../client/authn/secrets.ts'
 import type { Db } from '../../../db.ts'
 import { resolveMailpitApiBaseUrl, sendMailpitJob } from '../mailpit/send.ts'
 import { createNoopQueue } from '../noop-queue.ts'
@@ -68,8 +69,9 @@ export function createWorkersMailpitQueue(opts: WorkersMailpitQueueOptions): Ema
 export async function resolveWorkersEmailQueue(
   db: Db | undefined,
   env: Record<string, string | undefined>,
+  dataEncryptionSecrets?: DerivedSecretsConfig,
 ): Promise<EmailQueue> {
-  const resolved = await resolveEmailSettings(db, env)
+  const resolved = await resolveEmailSettings(db, env, dataEncryptionSecrets)
   const workersProvider = resolved.provider
   if (workersProvider === 'mailpit') {
     return createWorkersMailpitQueue({

@@ -18,7 +18,11 @@ import {
 } from '../client/authn/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import type { Db } from '../db.ts'
-import { principal, tls, variable } from '../lib/db/schema.ts'
+import { principal, setting, tls, variable } from '../lib/db/schema.ts'
+import {
+  EMAIL_SECRET_KEYS,
+  SYSTEM_EMAIL_DB_KEY,
+} from '../lib/settings/email-settings.ts'
 
 export const REENCRYPT_BATCH_SIZE = 200
 
@@ -106,7 +110,7 @@ async function sweepSecretVariables(
     if (rows.length < REENCRYPT_BATCH_SIZE) {
       return
     }
-    cursor = rows[rows.length - 1]!.id
+    cursor = rows.at(-1)!.id
   }
 }
 
@@ -150,7 +154,7 @@ async function sweepTlsPrivateKeys(
     if (rows.length < REENCRYPT_BATCH_SIZE) {
       return
     }
-    cursor = rows[rows.length - 1]!.id
+    cursor = rows.at(-1)!.id
   }
 }
 
@@ -196,7 +200,74 @@ async function sweepPrincipalPasswords(
     if (rows.length < REENCRYPT_BATCH_SIZE) {
       return
     }
-    cursor = rows[rows.length - 1]!.id
+    cursor = rows.at(-1)!.id
+  }
+}
+
+/**
+ * Re-seal `MAILGUN_API_KEY` / `SMTP_PASS` in the single `SYSTEM_EMAIL` settings
+ * row. All email secrets live in one JSON `setting.value`, so a single
+ * compare-and-swap on the whole row persists every resealed key at once; a
+ * concurrent writer that changed the row leaves the reseals uncounted (skipped).
+ */
+async function sweepEmailSettingSecrets(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  summary: ReencryptSweepSummary,
+): Promise<void> {
+  const rows = await db
+    .select({ value: setting.value })
+    .from(setting)
+    .where(eq(setting.key, SYSTEM_EMAIL_DB_KEY))
+    .limit(1)
+
+  const original = rows[0]?.value
+  if (
+    original === undefined ||
+    original === null ||
+    typeof original !== 'object' ||
+    Array.isArray(original)
+  ) {
+    return
+  }
+
+  const originalObj = original as Record<string, unknown>
+  const nextObj: Record<string, unknown> = { ...originalObj }
+  let resealedCount = 0
+
+  for (const shortKey of EMAIL_SECRET_KEYS) {
+    const raw = nextObj[shortKey]
+    if (typeof raw !== 'string' || raw === '') continue
+
+    summary.scanned += 1
+    const parsed = parseSecretEnvelope(raw)
+    if (parsed === null || parsed.keyVersion === secrets.current.version) {
+      summary.skipped += 1
+      continue
+    }
+
+    try {
+      const plaintext = await decryptSecret(secrets, raw)
+      nextObj[shortKey] = await encryptSecret(secrets, plaintext)
+      resealedCount += 1
+    } catch {
+      summary.failed += 1
+    }
+  }
+
+  if (resealedCount === 0) return
+
+  const updated = await db
+    .update(setting)
+    .set({ value: nextObj, updatedAt: nowIso() })
+    .where(and(eq(setting.key, SYSTEM_EMAIL_DB_KEY), eq(setting.value, original)))
+    .returning({ key: setting.key })
+
+  if (updated.length > 0) {
+    summary.reencrypted += resealedCount
+  } else {
+    // Concurrent writer changed the row; leave the newer values untouched.
+    summary.skipped += resealedCount
   }
 }
 
@@ -208,5 +279,6 @@ export async function reencryptAtRestSecrets(
   await sweepSecretVariables(db, dataEncryptionSecrets, summary)
   await sweepTlsPrivateKeys(db, dataEncryptionSecrets, summary)
   await sweepPrincipalPasswords(db, dataEncryptionSecrets, summary)
+  await sweepEmailSettingSecrets(db, dataEncryptionSecrets, summary)
   return summary
 }

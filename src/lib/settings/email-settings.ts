@@ -1,6 +1,12 @@
 import { eq } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import { setting } from '../db/schema.ts'
+import {
+  decryptSecret,
+  encryptSecret,
+  isSealedEnvelope,
+} from '../../client/authn/data-encryption.ts'
+import type { DerivedSecretsConfig } from '../../client/authn/secrets.ts'
 import type { SmtpConfig } from '../email/smtp/smtp-resolve.ts'
 import {
   normalizeSettingFullKey,
@@ -9,7 +15,8 @@ import {
   type SettingSource,
 } from './resolver.ts'
 
-const SYSTEM_EMAIL_DB_KEY = 'SYSTEM_EMAIL'
+/** DB key for the single JSON row that stores all email settings. */
+export const SYSTEM_EMAIL_DB_KEY = 'SYSTEM_EMAIL'
 
 export const EMAIL_SETTINGS_PREFIX = 'TURBOPANEL_SYSTEM_EMAIL'
 
@@ -229,11 +236,38 @@ function collectEmailSettingMutations(
   return mutations
 }
 
+/**
+ * Seal secret-key mutations as `tpsecret` envelopes before they are written.
+ * Non-secret keys and deletions pass through untouched. Requires
+ * data-encryption secrets whenever a secret value is being stored.
+ */
+async function sealEmailMutation(
+  mutation: EmailSettingMutation,
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined,
+): Promise<EmailSettingMutation> {
+  if (mutation.value === null) return mutation
+  if (!EMAIL_SECRET_KEYS.has(mutation.shortKey)) return mutation
+  if (!dataEncryptionSecrets) {
+    throw new Error(
+      'data encryption secrets required to store email secret settings',
+    )
+  }
+  return {
+    shortKey: mutation.shortKey,
+    value: await encryptSecret(dataEncryptionSecrets, mutation.value),
+  }
+}
+
 async function applyEmailSettingMutations(
   db: Db,
   mutations: EmailSettingMutation[],
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined,
 ): Promise<void> {
   if (mutations.length === 0) return
+
+  const sealed = await Promise.all(
+    mutations.map((mutation) => sealEmailMutation(mutation, dataEncryptionSecrets)),
+  )
 
   await db.transaction(async (tx) => {
     const rows = await tx
@@ -245,7 +279,7 @@ async function applyEmailSettingMutations(
 
     const obj = readSystemEmailObject(rows[0]?.value)
 
-    for (const { shortKey, value } of mutations) {
+    for (const { shortKey, value } of sealed) {
       if (value === null) {
         delete obj[shortKey]
       } else {
@@ -271,15 +305,52 @@ async function applyEmailSettingMutations(
   })
 }
 
-async function loadEmailSettingDbValues(db: Db): Promise<Map<string, string>> {
+/**
+ * Decrypt a DB-stored email secret value for runtime use.
+ *
+ * New writes always store `tpsecret` envelopes. Legacy plaintext values are
+ * returned as-is for migration compatibility. When a value is a sealed envelope
+ * but no data-encryption secrets are available (or decryption fails), returns
+ * `undefined` so the setting resolves as unset rather than leaking ciphertext.
+ */
+async function decryptEmailSecretValue(
+  value: string,
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined,
+): Promise<string | undefined> {
+  if (!isSealedEnvelope(value)) {
+    // Legacy plaintext — readable for migration compatibility.
+    return value
+  }
+  if (!dataEncryptionSecrets) {
+    return undefined
+  }
+  try {
+    return await decryptSecret(dataEncryptionSecrets, value)
+  } catch {
+    return undefined
+  }
+}
+
+async function loadEmailSettingDbValues(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined,
+): Promise<Map<string, string>> {
   const obj = await loadSystemEmailObject(db)
   const out = new Map<string, string>()
 
   for (const shortKey of EMAIL_SETTING_SHORT_KEYS) {
     const stored = obj[shortKey]
-    if (stored !== undefined && stored !== '') {
-      out.set(fullEmailSettingKey(shortKey), stored)
+    if (stored === undefined || stored === '') continue
+
+    if (EMAIL_SECRET_KEYS.has(shortKey)) {
+      const plaintext = await decryptEmailSecretValue(stored, dataEncryptionSecrets)
+      if (plaintext !== undefined && plaintext !== '') {
+        out.set(fullEmailSettingKey(shortKey), plaintext)
+      }
+      continue
     }
+
+    out.set(fullEmailSettingKey(shortKey), stored)
   }
 
   return out
@@ -288,8 +359,11 @@ async function loadEmailSettingDbValues(db: Db): Promise<Map<string, string>> {
 async function createEmailSettingsResolver(
   db: Db | undefined,
   env: Record<string, string | undefined>,
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined,
 ): Promise<SettingsResolver> {
-  const dbValues = db ? await loadEmailSettingDbValues(db) : new Map<string, string>()
+  const dbValues = db
+    ? await loadEmailSettingDbValues(db, dataEncryptionSecrets)
+    : new Map<string, string>()
   return new SettingsResolver({
     prefix: EMAIL_SETTINGS_PREFIX,
     keys: EMAIL_SETTINGS_SCHEMA,
@@ -301,8 +375,9 @@ async function createEmailSettingsResolver(
 export async function resolveEmailSettings(
   db: Db | undefined,
   env: Record<string, string | undefined>,
+  dataEncryptionSecrets?: DerivedSecretsConfig,
 ): Promise<ResolvedEmailSettings> {
-  const resolver = await createEmailSettingsResolver(db, env)
+  const resolver = await createEmailSettingsResolver(db, env, dataEncryptionSecrets)
 
   const keys = {} as Record<EmailSettingShortKey, EmailSettingMeta>
   for (const shortKey of EMAIL_SETTING_SHORT_KEYS) {
@@ -387,11 +462,29 @@ export async function updateEmailSettings(
   db: Db,
   env: Record<string, string | undefined>,
   updates: Record<string, string | null>,
+  dataEncryptionSecrets?: DerivedSecretsConfig,
 ): Promise<ResolvedEmailSettings> {
-  const resolver = await createEmailSettingsResolver(db, env)
+  const resolver = await createEmailSettingsResolver(db, env, dataEncryptionSecrets)
   const mutations = collectEmailSettingMutations(resolver, updates)
-  await applyEmailSettingMutations(db, mutations)
-  return await resolveEmailSettings(db, env)
+  await applyEmailSettingMutations(db, mutations, dataEncryptionSecrets)
+  return await resolveEmailSettings(db, env, dataEncryptionSecrets)
+}
+
+/**
+ * True when any incoming update sets (not clears) an `EMAIL_SECRET_KEYS` entry,
+ * which requires data-encryption secrets to seal at rest. Used by the admin
+ * route to gate DB-backed secret writes, mirroring TLS / variable secret writes.
+ */
+export function emailUpdatesRequireEncryption(
+  updates: Record<string, string | null>,
+): boolean {
+  for (const [key, value] of Object.entries(updates)) {
+    if (typeof value !== 'string') continue
+    if (value.trim() === '') continue
+    const shortKey = resolveShortKeyFromInput(key)
+    if (shortKey && EMAIL_SECRET_KEYS.has(shortKey)) return true
+  }
+  return false
 }
 
 function resolveShortKeyFromInput(key: string): EmailSettingShortKey | null {

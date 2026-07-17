@@ -1,3 +1,4 @@
+import type { DerivedSecretsConfig } from '../../../client/authn/secrets.ts'
 import type { EmailJob } from '../types.ts'
 import type { MailerSendResult } from '../sender-types.ts'
 
@@ -9,6 +10,7 @@ export class MailerSmtpSender {
   constructor(_opts: {
     db?: unknown
     env?: Record<string, string | undefined>
+    dataEncryptionSecrets?: DerivedSecretsConfig
   }) {
     throw new Error(SMTP_UNAVAILABLE)
   }
@@ -21,6 +23,7 @@ export class MailerSmtpSender {
 export function createMailerSmtpSender(_opts: {
   db?: unknown
   env?: Record<string, string | undefined>
+  dataEncryptionSecrets?: DerivedSecretsConfig
 }): MailerSmtpSender {
   throw new Error(SMTP_UNAVAILABLE)
 }

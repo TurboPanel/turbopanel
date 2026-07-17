@@ -14,7 +14,12 @@ import {
 import { getDatabaseUrl } from "../db-url.ts";
 import { createDenoDb } from "../db.ts";
 import { organization, license, server } from "../lib/db/schema.ts";
-import { registerDaemonApiRoutes } from "./api-routes.ts";
+import {
+  MAX_SECRETS_DECRYPT_BATCH,
+  MAX_SECRETS_DECRYPT_BODY_BYTES,
+  MAX_SECRETS_DECRYPT_CIPHERTEXT_CHARS,
+  registerDaemonApiRoutes,
+} from "./api-routes.ts";
 import type {
   DaemonCell,
   DaemonCellRegistry,
@@ -1494,6 +1499,105 @@ test("POST /secrets/decrypt rejects global tpsecret envelopes (daemon-scoped onl
     const body = await response.json() as { plaintexts: (string | null)[] };
     assertEquals(body.plaintexts, [null]);
   });
+});
+
+async function createDecryptTestApp(): Promise<Hono<AppEnv>> {
+  const app = new Hono<AppEnv>();
+  const secrets = await createTestSecrets();
+  const challengeSigningSecrets = await createTestChallengeSecrets();
+  const secretsConfig = createTestSecretsConfig();
+  registerDaemonApiRoutes(app, {
+    secrets,
+    challengeSigningSecrets,
+    secretsConfig,
+  });
+  return app;
+}
+
+test("POST /secrets/decrypt rejects an oversized request body", async () => {
+  const app = await createDecryptTestApp();
+  const daemonToken = await issueDaemonToken("srv-decrypt-big", "key-big");
+  // Body exceeds the byte budget; rejected before JSON parsing.
+  const oversized = "x".repeat(MAX_SECRETS_DECRYPT_BODY_BYTES + 128);
+  const response = await app.request("/api/daemon/v1/secrets/decrypt", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${daemonToken}`,
+      "Content-Type": "application/json",
+    },
+    body: oversized,
+  });
+  assertEquals(response.status, 413);
+  const body = await response.json() as { ok: boolean; error: string };
+  assertEquals(body.ok, false);
+});
+
+test("POST /secrets/decrypt rejects an oversized ciphertext string", async () => {
+  const app = await createDecryptTestApp();
+  const daemonToken = await issueDaemonToken("srv-decrypt-long", "key-long");
+  const longCiphertext = "a".repeat(MAX_SECRETS_DECRYPT_CIPHERTEXT_CHARS + 1);
+  const response = await app.request("/api/daemon/v1/secrets/decrypt", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${daemonToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ ciphertexts: [longCiphertext] }),
+  });
+  assertEquals(response.status, 400);
+  const body = await response.json() as { ok: boolean; error: string };
+  assertEquals(body.ok, false);
+  assert(body.error.includes(`${MAX_SECRETS_DECRYPT_CIPHERTEXT_CHARS}`));
+});
+
+test("POST /secrets/decrypt rejects a batch larger than the limit", async () => {
+  const app = await createDecryptTestApp();
+  const daemonToken = await issueDaemonToken("srv-decrypt-batch", "key-batch");
+  const ciphertexts = new Array(MAX_SECRETS_DECRYPT_BATCH + 1).fill(
+    "tpsecret.v1.1.x.y",
+  );
+  const response = await app.request("/api/daemon/v1/secrets/decrypt", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${daemonToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ ciphertexts }),
+  });
+  assertEquals(response.status, 400);
+  const body = await response.json() as { ok: boolean; error: string };
+  assertEquals(body.ok, false);
+});
+
+test("POST /secrets/decrypt decrypts a normal TLS-sized daemon envelope", async () => {
+  const app = await createDecryptTestApp();
+  const serverId = "00000000-0000-4000-8000-0000000000aa";
+  const keyId = "key-tls-sized";
+  const secretsConfig = createTestSecretsConfig();
+  // Simulate a TLS private-key PEM (~1.8 KiB) sealed as a daemon envelope.
+  const pemBody = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSj".repeat(45);
+  const privateKeyPem =
+    `-----BEGIN PRIVATE KEY-----\n${pemBody}\n-----END PRIVATE KEY-----\n`;
+  const sealed = await encryptSecretForDaemon(
+    secretsConfig,
+    { serverId, keyId },
+    privateKeyPem,
+  );
+  assert(sealed.length <= MAX_SECRETS_DECRYPT_CIPHERTEXT_CHARS);
+  const daemonToken = await issueDaemonToken(serverId, keyId);
+
+  const response = await app.request("/api/daemon/v1/secrets/decrypt", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${daemonToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ ciphertexts: [sealed] }),
+  });
+  assertEquals(response.status, 200);
+  const body = await response.json() as { plaintexts: (string | null)[] };
+  assertEquals(body.plaintexts.length, 1);
+  assertEquals(body.plaintexts[0], privateKeyPem);
 });
 
 test("Enrolled daemon can auto-refresh JWT", async () => {

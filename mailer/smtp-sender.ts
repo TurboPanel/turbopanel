@@ -5,6 +5,7 @@ import {
   createEmailVerificationLinkEmail,
 } from '../src/lib/email/templates.ts'
 import { resolveEmailSettings, type ResolvedEmailSettings } from '../src/lib/settings/email-settings.ts'
+import type { DerivedSecretsConfig } from '../src/client/authn/secrets.ts'
 import type { EmailJob } from '../src/lib/email/types.ts'
 import type { MailerSendResult } from '../src/lib/email/sender-types.ts'
 import { PermanentSendError, validateEmailAddress } from '../src/lib/email/validate-address.ts'
@@ -102,14 +103,17 @@ function isPermanentSmtpError(error: unknown): boolean {
 export class MailerSmtpSender {
   private readonly db: Db | undefined
   private readonly env: Record<string, string | undefined>
+  private readonly dataEncryptionSecrets: DerivedSecretsConfig | undefined
   private transportCache: { sig: string; transport: Transporter } | null = null
 
   constructor(opts: {
     db: Db | undefined
     env?: Record<string, string | undefined>
+    dataEncryptionSecrets?: DerivedSecretsConfig
   }) {
     this.db = opts.db
     this.env = opts.env ?? Deno.env.toObject()
+    this.dataEncryptionSecrets = opts.dataEncryptionSecrets
   }
 
   private smtpSignature(cfg: SmtpConfig | undefined): string {
@@ -118,7 +122,7 @@ export class MailerSmtpSender {
   }
 
   private async resolveEmailConfig(): Promise<Awaited<ReturnType<typeof resolveEmailSettings>>> {
-    return await resolveEmailSettings(this.db, this.env)
+    return await resolveEmailSettings(this.db, this.env, this.dataEncryptionSecrets)
   }
 
   private async resolveSmtpConfig(): Promise<SmtpConfig | undefined> {
@@ -245,6 +249,7 @@ export class MailerSmtpSender {
 export function createMailerSmtpSender(opts: {
   db: Db | undefined
   env?: Record<string, string | undefined>
+  dataEncryptionSecrets?: DerivedSecretsConfig
 }): MailerSmtpSender {
   return new MailerSmtpSender(opts)
 }

@@ -398,7 +398,8 @@ async function resolveSignupGate(
     (opts.runtime === 'deno' && typeof Deno !== 'undefined'
       ? Deno.env.toObject()
       : {})
-  const emailSettings = await resolveEmailSettings(db, env)
+  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  const emailSettings = await resolveEmailSettings(db, env, dataEncryptionSecrets)
   const emailVerificationEnabled = isEmailActiveForRuntime(
     emailSettings,
     opts.runtime,

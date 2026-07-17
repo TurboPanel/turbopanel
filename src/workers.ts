@@ -73,11 +73,19 @@ async function initWorkerApp(env: CloudflareBindings) {
   // Workers Mailgun path sends directly (no AMQP/RabbitMQ). Cloudflare Workers provides
   // its own concurrency, retries, and queueing at the platform level, so the instance
   // enqueues to Mailgun immediately via resolveWorkersEmailQueue -> WorkersMailgunQueue.
-  cachedEmailQueue = await resolveWorkersEmailQueue(db, platformEnv)
+  cachedEmailQueue = await resolveWorkersEmailQueue(
+    db,
+    platformEnv,
+    cachedDataEncryptionSecrets ?? undefined,
+  )
   cachedCommandQueue = env.TURBOPANEL_COMMAND_QUEUE
     ? createWorkersCommandQueue(env.TURBOPANEL_COMMAND_QUEUE)
     : createNoopCommandQueue()
-  const emailSettings = await resolveEmailSettings(db, platformEnv)
+  const emailSettings = await resolveEmailSettings(
+    db,
+    platformEnv,
+    cachedDataEncryptionSecrets ?? undefined,
+  )
   cachedServerMetricsStore = resolveServerMetricsStore({
     runtime: 'workers',
     analyticsEngine: (env as { SERVER_METRICS?: AnalyticsEngineDatasetLike })
