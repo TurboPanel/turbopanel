@@ -5,7 +5,11 @@ import {
   decryptSecretForDaemon,
   encryptSecret,
   encryptSecretForDaemon,
+  generateSealedSecret,
+  isDaemonSealedEnvelope,
   isSealedEnvelope,
+  parseSecretEnvelope,
+  resealSecretForDaemon,
 } from "./data-encryption.ts";
 import {
   deriveEncryptionSecretsConfig,
@@ -103,6 +107,22 @@ test("decryptSecret supports rotation fallbacks", async () => {
   assertEquals(await decryptSecret(rotated, v1Envelope), "v1-key-version-value");
 });
 
+test("reseals to current key version on write after rotation", async () => {
+  const v1Only = await createV1OnlySecrets();
+  const rotated = await createRotatedSecrets();
+  const v1Envelope = await encryptSecret(v1Only, "rotate-me");
+  assertEquals(parseSecretEnvelope(v1Envelope), { keyVersion: 1 });
+
+  const plaintext = await decryptSecret(rotated, v1Envelope);
+  const resealed = await encryptSecret(rotated, plaintext);
+  assertEquals(parseSecretEnvelope(resealed), {
+    keyVersion: rotated.current.version,
+  });
+  assertEquals(rotated.current.version, 2);
+  assertEquals(resealed === v1Envelope, false);
+  assertEquals(await decryptSecret(rotated, resealed), "rotate-me");
+});
+
 test("decryptSecret rejects unknown key version", async () => {
   const secrets = await createCurrentSecrets();
   const envelope = await encryptSecret(secrets, "x");
@@ -131,6 +151,42 @@ test("decryptSecret rejects malformed and tampered envelopes", async () => {
     () => decryptSecret(secrets, parts.join(".")),
     DataEncryptionError,
   );
+});
+
+test("resealSecretForDaemon reseals tpsecret → tpdaemon for recipient", async () => {
+  const secretsConfig = await createSecretsConfig();
+  const dataEncryptionSecrets = await createCurrentSecrets();
+  const recipient = {
+    serverId: "11111111-1111-4111-8111-111111111111",
+    keyId: "22222222-2222-4222-8222-222222222222",
+  };
+  const tpsecret = await encryptSecret(dataEncryptionSecrets, "delivery-secret");
+  const tpdaemon = await resealSecretForDaemon(
+    secretsConfig,
+    dataEncryptionSecrets,
+    recipient,
+    tpsecret,
+  );
+  assertEquals(isDaemonSealedEnvelope(tpdaemon), true);
+  assertEquals(
+    await decryptSecretForDaemon(secretsConfig, recipient, tpdaemon),
+    "delivery-secret",
+  );
+});
+
+test("generateSealedSecret returns plaintext and decryptable tpsecret", async () => {
+  const dataEncryptionSecrets = await createCurrentSecrets();
+  const { plaintext, sealed } = await generateSealedSecret(dataEncryptionSecrets);
+  assertEquals(sealed.startsWith("tpsecret.v1."), true);
+  assertEquals(await decryptSecret(dataEncryptionSecrets, sealed), plaintext);
+});
+
+test("principal-password sealing stores tpsecret never plaintext", async () => {
+  const dataEncryptionSecrets = await createCurrentSecrets();
+  const { plaintext, sealed } = await generateSealedSecret(dataEncryptionSecrets);
+  assertEquals(sealed.startsWith("tpsecret.v1."), true);
+  assertEquals(sealed.includes(plaintext), false);
+  assertEquals(await decryptSecret(dataEncryptionSecrets, sealed), plaintext);
 });
 
 test("isSealedEnvelope detects sealed values only", async () => {

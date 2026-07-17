@@ -3,7 +3,7 @@ import type { Context } from 'hono'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
-import { encryptSecretForDaemon } from '../authn/data-encryption.ts'
+import { encryptSecret } from '../authn/data-encryption.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
@@ -15,10 +15,6 @@ import {
   getOrgId,
   parseJsonBody,
 } from '../shared.ts'
-import {
-  resolveVariableDaemonRecipient,
-  type VariableParentRefs,
-} from './resolve-environment-daemon.ts'
 import {
   resolveInheritedVariablesForEnvironment,
   resolveInheritedVariablesForHosting,
@@ -195,18 +191,6 @@ function parseVariableParent(
   return { column, id, entityKind }
 }
 
-function parentRefsFromRow(row: VariableParentRefs & { id?: string }): VariableParentRefs {
-  return {
-    organizationId: row.organizationId,
-    workspaceId: row.workspaceId,
-    projectId: row.projectId,
-    environmentId: row.environmentId,
-    serviceId: row.serviceId,
-    hostingId: row.hostingId,
-    serverId: row.serverId,
-  }
-}
-
 function buildInsertValues(
   parent: ParsedVariableParent,
   fields: {
@@ -240,32 +224,14 @@ function hasImmutableParentChange(body: Record<string, unknown>): boolean {
 
 async function sealVariableValue(
   c: Context<AppEnv>,
-  parent: VariableParentRefs,
-  organizationId: string,
   value: string,
 ): Promise<string | Response> {
-  const db = getDb(c)
-  if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-  const secretsConfig = c.get('secretsConfig')
-  if (!secretsConfig) {
+  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  if (!dataEncryptionSecrets) {
     return c.json({ error: 'Encryption unavailable — no encryption key configured' }, 503)
   }
 
-  const recipient = await resolveVariableDaemonRecipient(
-    db,
-    parent,
-    organizationId,
-    c.get('daemonCellRegistry'),
-  )
-  if (!recipient) {
-    return c.json(
-      { error: 'No encryption-capable daemon assigned to this variable scope' },
-      422,
-    )
-  }
-
-  return encryptSecretForDaemon(secretsConfig, recipient, value)
+  return encryptSecret(dataEncryptionSecrets, value)
 }
 
 function parseOptionalStringValue(
@@ -295,7 +261,7 @@ function parseOptionalDescription(
   return value
 }
 
-type ExistingVariableForPatch = VariableParentRefs & {
+type ExistingVariableForPatch = {
   isSecret: boolean
   value: string
 }
@@ -347,52 +313,37 @@ function resolvePatchIsSecret(
 
 async function sealOrPlainValue(
   c: Context<AppEnv>,
-  parentRefs: VariableParentRefs,
-  organizationId: string,
   plaintext: string,
   asSecret: boolean,
 ): Promise<string | Response> {
   if (!asSecret) return plaintext
-  return sealVariableValue(c, parentRefs, organizationId, plaintext)
+  return sealVariableValue(c, plaintext)
 }
 
 async function applyValueAndSecretPatch(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
   existing: ExistingVariableForPatch,
-  organizationId: string,
   nextIsSecret: boolean,
   updateFields: VariablePatchFields,
 ): Promise<Response | undefined> {
   const valueProvided = body.value !== undefined
   const switchingToSecret = nextIsSecret && !existing.isSecret
   const switchingFromSecret = !nextIsSecret && existing.isSecret
-  const parentRefs = parentRefsFromRow(existing)
 
   if (valueProvided) {
     if (body.value !== null && typeof body.value !== 'string') {
       return c.json({ error: 'Invalid request' }, 400)
     }
     const plaintextValue = body.value ?? ''
-    const stored = await sealOrPlainValue(
-      c,
-      parentRefs,
-      organizationId,
-      plaintextValue,
-      nextIsSecret,
-    )
+    const stored = await sealOrPlainValue(c, plaintextValue, nextIsSecret)
     if (stored instanceof Response) return stored
     updateFields.value = stored
     return
   }
 
   if (switchingToSecret) {
-    const sealed = await sealVariableValue(
-      c,
-      parentRefs,
-      organizationId,
-      existing.value,
-    )
+    const sealed = await sealVariableValue(c, existing.value)
     if (sealed instanceof Response) return sealed
     updateFields.value = sealed
     return
@@ -410,7 +361,6 @@ async function buildVariablePatchFields(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
   existing: ExistingVariableForPatch,
-  organizationId: string,
 ): Promise<VariablePatchFields | Response> {
   const updateFields: VariablePatchFields = {
     updatedAt: new Date().toISOString(),
@@ -433,7 +383,6 @@ async function buildVariablePatchFields(
     c,
     body,
     existing,
-    organizationId,
     secretResult.nextIsSecret,
     updateFields,
   )
@@ -489,14 +438,7 @@ async function parseVariableCreateFields(
   if (parsedDescription instanceof Response) return parsedDescription
 
   const plaintextValue = parsedValue ?? ''
-  const parentRefs: VariableParentRefs = { [parent.column]: parent.id }
-  const storedValue = await sealOrPlainValue(
-    c,
-    parentRefs,
-    organizationId,
-    plaintextValue,
-    isSecret,
-  )
+  const storedValue = await sealOrPlainValue(c, plaintextValue, isSecret)
   if (storedValue instanceof Response) return storedValue
 
   return {
@@ -720,13 +662,6 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
 
     const existingRows = await db
       .select({
-        organizationId: variable.organizationId,
-        workspaceId: variable.workspaceId,
-        projectId: variable.projectId,
-        environmentId: variable.environmentId,
-        serviceId: variable.serviceId,
-        hostingId: variable.hostingId,
-        serverId: variable.serverId,
         isSecret: variable.isSecret,
         value: variable.value,
       })
@@ -739,12 +674,7 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const updateFields = await buildVariablePatchFields(
-      c,
-      body,
-      existing,
-      organizationId,
-    )
+    const updateFields = await buildVariablePatchFields(c, body, existing)
     if (updateFields instanceof Response) return updateFields
 
     try {

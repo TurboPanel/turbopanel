@@ -1,0 +1,308 @@
+import { assertEquals, assertRejects } from 'jsr:@std/assert'
+import { and, eq } from 'drizzle-orm'
+import { getDatabaseUrl } from '../../db-url.ts'
+import { createDenoDb } from '../../db.ts'
+import {
+  deriveEncryptionSecretsConfig,
+  parseSecretsEnv,
+} from '../authn/secrets.ts'
+import { decryptSecret } from '../authn/data-encryption.ts'
+import {
+  assignment,
+  environment,
+  grant,
+  member,
+  organization,
+  principal,
+  project,
+  service,
+  user,
+  workspace,
+} from '../../lib/db/schema.ts'
+import {
+  createPrincipal,
+  replaceAssignments,
+  setPrincipalPassword,
+} from './store.ts'
+import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+
+const dbUrl = getDatabaseUrl()
+
+async function withPrincipalFixtures(
+  fn: (ctx: {
+    db: ReturnType<typeof createDenoDb>
+    dataEncryptionSecrets: Awaited<
+      ReturnType<typeof deriveEncryptionSecretsConfig>
+    >
+    serviceId: string
+    principalId: string
+  }) => Promise<void>,
+): Promise<void> {
+  if (!dbUrl) {
+    console.warn('Skipping principal store tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
+    secretsConfig,
+    'data-encryption',
+  )
+
+  const insertedOrg = await db
+    .insert(organization)
+    .values({ displayName: 'Principal Store Test Org' })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg[0]!.id
+
+  const insertedUser = await db
+    .insert(user)
+    .values({
+      email: `principal-store-${crypto.randomUUID()}@example.com`,
+      isEmailVerified: true,
+      role: 'user',
+    })
+    .returning({ id: user.id })
+  const userId = insertedUser[0]!.id
+
+  await db.insert(member).values({ organizationId, userId })
+  await db.insert(grant).values({
+    entityType: 'organization',
+    entityId: organizationId,
+    actorType: 'user',
+    actorId: userId,
+    permission: 'organization:own',
+    allow: true,
+  })
+
+  const [insertedWorkspace] = await db
+    .insert(workspace)
+    .values({ displayName: 'Principal Store Workspace', organizationId })
+    .returning({ id: workspace.id })
+  const workspaceId = insertedWorkspace!.id
+
+  const [insertedProject] = await db
+    .insert(project)
+    .values({
+      displayName: 'Principal Store Project',
+      workspaceId,
+    })
+    .returning({ id: project.id })
+  const projectId = insertedProject!.id
+
+  const [insertedEnvironment] = await db
+    .insert(environment)
+    .values({
+      displayName: 'Principal Store Env',
+      projectId,
+    })
+    .returning({ id: environment.id })
+  const environmentId = insertedEnvironment!.id
+
+  const [insertedService] = await db
+    .insert(service)
+    .values({
+      displayName: 'Principal Store Service',
+      environmentId,
+    })
+    .returning({ id: service.id })
+  const serviceId = insertedService!.id
+
+  const [insertedPrincipal] = await db
+    .insert(principal)
+    .values({
+      kind: 'database',
+      provider: 'postgres',
+      username: 'app_user',
+    })
+    .returning({ id: principal.id })
+  const principalId = insertedPrincipal!.id
+
+  await db.insert(assignment).values({
+    principalId,
+    serviceId,
+  })
+
+  try {
+    await fn({
+      db,
+      dataEncryptionSecrets,
+      serviceId,
+      principalId,
+    })
+  } finally {
+    await db.delete(assignment).where(eq(assignment.principalId, principalId))
+    await db.delete(principal).where(eq(principal.id, principalId))
+    await db.delete(service).where(eq(service.id, serviceId))
+    await db.delete(environment).where(eq(environment.id, environmentId))
+    await db.delete(project).where(eq(project.id, projectId))
+    await db.delete(grant).where(and(
+      eq(grant.actorId, userId),
+      eq(grant.entityId, organizationId),
+    ))
+    await db.delete(member).where(and(
+      eq(member.userId, userId),
+      eq(member.organizationId, organizationId),
+    ))
+    await db.delete(workspace).where(eq(workspace.id, workspaceId))
+    await db.delete(user).where(eq(user.id, userId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+}
+
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+test('setPrincipalPassword with password seals as tpsecret and never stores plaintext', async () => {
+  await withPrincipalFixtures(async ({
+    db,
+    dataEncryptionSecrets,
+    principalId,
+  }) => {
+    const plaintext = 'explicit-principal-secret'
+    const result = await setPrincipalPassword(
+      db,
+      dataEncryptionSecrets,
+      principalId,
+      { password: plaintext },
+    )
+    assertEquals(result.plaintext, undefined)
+
+    const rows = await db
+      .select({ password: principal.password })
+      .from(principal)
+      .where(eq(principal.id, principalId))
+      .limit(1)
+    const stored = rows[0]!.password
+    assertEquals(typeof stored, 'string')
+    assertEquals(stored!.startsWith('tpsecret.v1.'), true)
+    assertEquals(stored!.includes(plaintext), false)
+    assertEquals(await decryptSecret(dataEncryptionSecrets, stored!), plaintext)
+  })
+})
+
+test('setPrincipalPassword generate:true returns plaintext once and stores tpsecret', async () => {
+  await withPrincipalFixtures(async ({
+    db,
+    dataEncryptionSecrets,
+    principalId,
+  }) => {
+    const result = await setPrincipalPassword(
+      db,
+      dataEncryptionSecrets,
+      principalId,
+      { generate: true },
+    )
+    assertEquals(typeof result.plaintext, 'string')
+    assertEquals((result.plaintext?.length ?? 0) > 0, true)
+
+    const rows = await db
+      .select({ password: principal.password })
+      .from(principal)
+      .where(eq(principal.id, principalId))
+      .limit(1)
+    const stored = rows[0]!.password
+    assertEquals(typeof stored, 'string')
+    assertEquals(stored!.startsWith('tpsecret.v1.'), true)
+    assertEquals(stored!.includes(result.plaintext!), false)
+    assertEquals(
+      await decryptSecret(dataEncryptionSecrets, stored!),
+      result.plaintext,
+    )
+  })
+})
+
+test('setPrincipalPassword throws when principal id is missing', async () => {
+  await withPrincipalFixtures(async ({ db, dataEncryptionSecrets }) => {
+    const missingId = crypto.randomUUID()
+
+    await assertRejects(
+      () =>
+        setPrincipalPassword(db, dataEncryptionSecrets, missingId, {
+          password: 'stale-principal-secret',
+        }),
+      Error,
+      'Principal not found',
+    )
+
+    await assertRejects(
+      () =>
+        setPrincipalPassword(db, dataEncryptionSecrets, missingId, {
+          generate: true,
+        }),
+      Error,
+      'Principal not found',
+    )
+  })
+})
+
+test('createPrincipal and replaceAssignments write expected assignment edges', async () => {
+  await withPrincipalFixtures(async ({ db, serviceId }) => {
+    const [secondService] = await db
+      .insert(service)
+      .values({
+        displayName: 'Principal Store Service 2',
+        environmentId: (
+          await db
+            .select({ environmentId: service.environmentId })
+            .from(service)
+            .where(eq(service.id, serviceId))
+            .limit(1)
+        )[0]!.environmentId,
+      })
+      .returning({ id: service.id })
+    const secondServiceId = secondService!.id
+
+    let createdId: string | undefined
+    try {
+      createdId = await createPrincipal(
+        db,
+        {
+          kind: 'database',
+          provider: 'postgres',
+          username: 'created_user',
+        },
+        [serviceId],
+      )
+
+      let edges = await db
+        .select({ serviceId: assignment.serviceId })
+        .from(assignment)
+        .where(eq(assignment.principalId, createdId))
+      assertEquals(edges.map((row) => row.serviceId).toSorted((a, b) => a.localeCompare(b)), [
+        serviceId,
+      ])
+
+      await replaceAssignments(db, createdId, [secondServiceId])
+      edges = await db
+        .select({ serviceId: assignment.serviceId })
+        .from(assignment)
+        .where(eq(assignment.principalId, createdId))
+      assertEquals(edges.map((row) => row.serviceId).toSorted((a, b) => a.localeCompare(b)), [
+        secondServiceId,
+      ])
+
+      await replaceAssignments(db, createdId, [serviceId, secondServiceId])
+      edges = await db
+        .select({ serviceId: assignment.serviceId })
+        .from(assignment)
+        .where(eq(assignment.principalId, createdId))
+      assertEquals(
+        edges.map((row) => row.serviceId).toSorted((a, b) => a.localeCompare(b)),
+        [serviceId, secondServiceId].toSorted((a, b) => a.localeCompare(b)),
+      )
+    } finally {
+      if (createdId) {
+        await db.delete(assignment).where(eq(assignment.principalId, createdId))
+        await db.delete(principal).where(eq(principal.id, createdId))
+      }
+      await db.delete(service).where(eq(service.id, secondServiceId))
+    }
+  })
+})

@@ -131,10 +131,10 @@ organization → server → variable (1:N, server-scoped; excluded from inherita
 | `project` | `workspace_id` | Docker Compose / catalog project. **`metadata`**: `type` (`"docker-compose"` \| `"managed"` \| `"template"`), `managed_id` (managed only). **`options.compose`**: base **ComposeDocument** (versioned JSON with presentation for YAML comments/order) — see `src/lib/compose/`. Project compose does **not** own server placement (sanitized on save). |
 | `environment` | `project_id` | Staging/production/etc. within a project. **`metadata`**: may include `serverId` after deploy (last successful deploy target). **`options.compose`**: per-environment ComposeDocument overlay merged onto the project base at deploy; may carry `x-turbopanel.placement.server_id` (environment-owned whole-server pin). |
 | `service` | `environment_id` | Deployable unit within an environment. **`metadata`**: e.g. `composeServiceName`. **`options`**: reserved (future per-service placement). |
-| `hosting` | `service_id NOT NULL` | Public routing for a service (Traefik + edge Caddy). Optional **`tls_id`** → `tls.id` (`ON DELETE SET NULL`) pins an org certificate; null = auto-match by SAN at deploy. **`options`**: `{ hostnames[], pathPrefix?, targetPort? }`. **`metadata`**: deploy status fields. Org derived via service chain. |
+| `hosting` | `service_id NOT NULL` | Public routing for a service (Traefik + edge Caddy). Optional **`tls_id`** → `tls.id` (`ON DELETE SET NULL`) pins an org certificate; null = basic self-signed (Caddy `tls internal`) at deploy — library certs must be pinned explicitly. **`options`**: `{ hostnames[], pathPrefix?, targetPort? }`. **`metadata`**: deploy status fields. Org derived via service chain. |
 | `tls` | `organization_id NOT NULL` | Org TLS certificate library (`upload` / `lets_encrypt` / `self_signed`). **`certificate_pem`**: public chain (nullable while LE pending). **`private_key_pem`**: sealed `tpsecret` only — never returned on client GET. **`metadata`**: `{ dnsNames, hasWildcard, notBefore, notAfter, fingerprintSha256, subject, issuer, status, acme? }`. **`options`**: `{ prefer?, autoRenew?, requestedHostnames? }`. `ON DELETE CASCADE` from org; hosting pins clear on cert delete. |
 | `container` | `service_id NOT NULL` + `server_id NOT NULL` | Pins a deployed Docker container to a service and records which server hosts it. **`metadata`** holds the pinned container id + status (no dedicated columns). Both FKs `ON DELETE RESTRICT` (deleting a service or server with existing containers is blocked, mirroring `hosting`/`network`). |
-| `principal` | none (org derived via `assignment` → `service`) | Account identity attachable to services. **`kind`** CHECK `('system', 'database')`; **`provider`** CHECK `('pam', 'postgres', 'mysql', 'redis')`; **`username`** `varchar(255)` CHECK `^[A-Za-z_][A-Za-z0-9_-]*$` (POSIX/DB account allowlist, 1–255 chars). **`password`** is nullable + write-only; value sealing/encryption (`tpsecret`/`tpdaemon`) is **deferred to a later phase** — no encryption wiring yet. **`metadata`** holds `uid`/`gid`/`home`. **No `organization_id`** (derived through assignments) and **no global unique on `username`** (the same account name legitimately recurs across systems). |
+| `principal` | none (org derived via `assignment` → `service`) | Behind-the-scenes account identity for hosting/database-user flows (not a public client CRUD surface; see `src/client/principals/store.ts`). **`kind`** CHECK `('system', 'database')`; **`provider`** CHECK `('pam', 'postgres', 'mysql', 'redis')`; **`username`** `varchar(255)` CHECK `^[A-Za-z_][A-Za-z0-9_-]*$` (POSIX/DB account allowlist, 1–255 chars). **`password`** is nullable + write-only; stored as a sealed `tpsecret` envelope at rest (never returned on read; delivery re-seals to `tpdaemon`). **`metadata`** holds `uid`/`gid`/`home`. **No `organization_id`** (derived through assignments) and **no global unique on `username`** (the same account name legitimately recurs across systems). |
 | `assignment` | `principal_id NOT NULL` + `service_id NOT NULL` | Join edge for the principal↔service many-to-many. `principal_id` FK `ON DELETE CASCADE` (deleting a principal removes its edges); `service_id` FK `ON DELETE RESTRICT` (a service still referenced by principals cannot be deleted, mirroring `container`). Unique `(principal_id, service_id)`; btree indexes on each FK. |
 | `network` | `server_id NOT NULL` | Linked to a server; org derived via server. Cascade delete. |
 | `managed` | `project_id NOT NULL` (unique) | Linking table; project is source of truth for timestamps; `ON DELETE CASCADE`. **`metadata`**: kebab-case catalog `code`, etc. |
@@ -185,7 +185,7 @@ List and get enforce visibility via `listVisible` / org-level grant checks in SQ
 | `GET` | `/api/client/v1/variables` | org owner/manager (optional `?environmentId=`) |
 | `GET` | `/api/client/v1/variables/{id}` | org owner/manager |
 | `POST` | `/api/client/v1/variables` | org owner/manager on parent environment; `isSecret=true` seals value via `encryptSecret`; sealed values are never returned |
-| `PATCH` | `/api/client/v1/variables/{id}` | org owner/manager; re-seals on secret value update |
+| `PATCH` | `/api/client/v1/variables/{id}` | org owner/manager; re-seals on secret value update (lazy re-seal-on-write under the current data-encryption key version) |
 | `DELETE` | `/api/client/v1/variables/{id}` | org owner/manager |
 | `GET` | `/api/client/v1/projects` | org owner/manager (optional `?workspaceId=`); returns `metadata` and `options` |
 | `GET` | `/api/client/v1/projects/{id}` | org owner/manager; returns `metadata` and `options` |
@@ -204,17 +204,13 @@ List and get enforce visibility via `listVisible` / org-level grant checks in SQ
 | `POST` | `/api/client/v1/hostings` | org owner/manager; `serviceId` required |
 | `PATCH` | `/api/client/v1/hostings/{id}` | org owner/manager |
 | `DELETE` | `/api/client/v1/hostings/{id}` | org owner/manager |
-| `GET` | `/api/client/v1/principals` | org owner/manager (optional `?serviceId=` via `assignment`); returns rows with `serviceIds`; **password never returned** |
-| `GET` | `/api/client/v1/principals/{id}` | org owner/manager; returns row + `serviceIds`; **password never returned** |
-| `POST` | `/api/client/v1/principals` | org owner/manager on each target service; body `kind`/`provider`/`username` + ≥1 `serviceIds` (inserts `principal` + `assignment` edges); does **not** accept `password` |
-| `PATCH` | `/api/client/v1/principals/{id}` | org owner/manager; optional field updates and/or `serviceIds` replacement; does **not** accept `password` |
-| `POST` | `/api/client/v1/principals/{id}/password` | org owner/manager; write-only password set/reset (only password write path; sealing/`tpdaemon` encrypt deferred) |
-| `DELETE` | `/api/client/v1/principals/{id}` | org owner/manager; deletes principal (`assignment` edges cascade) |
 | `GET` | `/api/client/v1/networks` | org manager (`organization:manage`; requires `?serverId=`) |
 | `POST` | `/api/client/v1/networks` | org manager; body `{ serverId }` |
 | `DELETE` | `/api/client/v1/networks/{id}` | org manager |
 
 Implemented in `src/client/*/routes.ts`, registered from `registerClientRoutes`.
+
+**Principals** are not exposed as public client CRUD. Hosting/database-user flows create `principal` / `assignment` rows via `src/client/principals/store.ts`; passwords are sealed as `tpsecret` at rest and re-sealed to `tpdaemon` only at delivery.
 
 `GET /api/client/v1/servers` uses `listVisible()` for server visibility (not raw org membership). License endpoints (`GET`/`POST` `/licenses`, `DELETE` `/licenses/{id}`) require org ownership (`organization:own`).
 

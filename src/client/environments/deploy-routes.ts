@@ -3,10 +3,7 @@ import type { Context } from 'hono'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
-import {
-  decryptSecret,
-  encryptSecretForDaemon,
-} from '../authn/data-encryption.ts'
+import { resealSecretForDaemon } from '../authn/data-encryption.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import {
@@ -340,17 +337,17 @@ async function sealTlsMaterialForDaemon(
     ) {
       return c.json({ error: 'tls_key_not_sealed', tlsId }, 500)
     }
-    let plaintextKey: string
+    let privateKeyEnvelope: string
     try {
-      plaintextKey = await decryptSecret(dataEncryptionSecrets, row.privateKeyPem)
+      privateKeyEnvelope = await resealSecretForDaemon(
+        secretsConfig,
+        dataEncryptionSecrets,
+        { serverId, keyId },
+        row.privateKeyPem,
+      )
     } catch {
       return c.json({ error: 'tls_decrypt_failed', tlsId }, 500)
     }
-    const privateKeyEnvelope = await encryptSecretForDaemon(
-      secretsConfig,
-      { serverId, keyId },
-      plaintextKey,
-    )
     material.push({
       tlsId,
       certificatePem: row.certificatePem,

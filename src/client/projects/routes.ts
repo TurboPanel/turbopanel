@@ -3,8 +3,8 @@ import type { Context } from 'hono'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
-import { encryptSecretForDaemon } from '../authn/data-encryption.ts'
-import type { SecretsConfig } from '../authn/secrets.ts'
+import { encryptSecret } from '../authn/data-encryption.ts'
+import type { DerivedSecretsConfig } from '../authn/secrets.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
@@ -14,6 +14,7 @@ import {
   getCatalogEntry,
   isCreateProjectType,
   listCatalog,
+  resolveCatalogVariablePlaintext,
   type CatalogEntry,
   type CreateProjectType,
 } from './catalog/index.ts'
@@ -33,7 +34,6 @@ import {
   parseJsonbObject,
   requireStringField,
 } from '../shared.ts'
-import { resolveEnvironmentDaemonRecipient } from '../variables/resolve-environment-daemon.ts'
 import {
   deleteProjectCascade,
   PROJECT_HAS_RUNNING_SERVICES_ERROR,
@@ -41,13 +41,11 @@ import {
 
 type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
-async function scaffoldCatalogEnvironments(
+export async function scaffoldCatalogEnvironments(
   tx: DbTx,
-  db: Db,
   projectId: string,
-  organizationId: string,
   entry: CatalogEntry,
-  secretsConfig: SecretsConfig,
+  dataEncryptionSecrets: DerivedSecretsConfig,
 ) {
   for (const env of entry.environments) {
     const [insertedEnv] = await tx
@@ -62,20 +60,14 @@ async function scaffoldCatalogEnvironments(
 
     if (!env.variables) continue
 
-    const recipient = await resolveEnvironmentDaemonRecipient(
-      db,
-      insertedEnv.id,
-      organizationId,
-    )
-    if (!recipient) {
-      throw new Error('no encryption-capable daemon for catalog environment')
-    }
+    // One map per environment so sharedCredentialId only aliases within that env.
+    const sharedCredentials = new Map<string, string>()
 
     for (const v of env.variables) {
-      let storedValue: string | null = v.value
-      if (v.isSecret) {
-        storedValue = await encryptSecretForDaemon(secretsConfig, recipient, v.value)
-      }
+      const plaintext = resolveCatalogVariablePlaintext(v, sharedCredentials)
+      const storedValue = v.isSecret
+        ? await encryptSecret(dataEncryptionSecrets, plaintext)
+        : plaintext
       await tx.insert(variable).values({
         environmentId: insertedEnv.id,
         key: v.key,
@@ -124,17 +116,11 @@ function resolveCatalogEntryForCreate(
 
 function mapCreateProjectError(err: unknown): {
   error: string
-  status: 503 | 422
+  status: 503
 } | null {
   if (!(err instanceof Error)) return null
   if (err.message === 'encryption unavailable') {
     return { error: 'Encryption unavailable', status: 503 }
-  }
-  if (err.message === 'no encryption-capable daemon for catalog environment') {
-    return {
-      error: 'No encryption-capable daemon assigned to this environment',
-      status: 422,
-    }
   }
   return null
 }
@@ -146,11 +132,10 @@ async function runCreateProjectTransaction(
     displayName: string | null
     description: string | null
     workspaceId: string
-    organizationId: string
     metadata: Record<string, unknown> | null
     options: Record<string, unknown> | null
     catalogEntry: CatalogEntry | undefined
-    secretsConfig: SecretsConfig | undefined
+    dataEncryptionSecrets: DerivedSecretsConfig | undefined
   },
 ): Promise<string> {
   return db.transaction(async (tx) => {
@@ -164,23 +149,22 @@ async function runCreateProjectTransaction(
       })
     }
 
-    if (!input.secretsConfig) {
+    if (!input.dataEncryptionSecrets) {
       throw new Error('encryption unavailable')
     }
     if (!input.catalogEntry) {
       throw new TypeError('catalog entry required for template/managed projects')
     }
 
-    return insertCatalogProject(tx, db, {
+    return insertCatalogProject(tx, {
       projectType: input.projectType,
       displayName: input.displayName,
       description: input.description,
       workspaceId: input.workspaceId,
-      organizationId: input.organizationId,
       metadata: input.metadata,
       options: input.options,
       entry: input.catalogEntry,
-      secretsConfig: input.secretsConfig,
+      dataEncryptionSecrets: input.dataEncryptionSecrets,
     })
   })
 }
@@ -331,17 +315,15 @@ async function insertDockerComposeProject(
 
 async function insertCatalogProject(
   tx: DbTx,
-  db: Db,
   fields: {
     projectType: 'template' | 'managed'
     displayName: string | null
     description: string | null
     workspaceId: string
-    organizationId: string
     metadata: Record<string, unknown> | null
     options: Record<string, unknown> | null
     entry: CatalogEntry
-    secretsConfig: SecretsConfig
+    dataEncryptionSecrets: DerivedSecretsConfig
   },
 ): Promise<string> {
   const [inserted] = await tx
@@ -373,11 +355,9 @@ async function insertCatalogProject(
 
   await scaffoldCatalogEnvironments(
     tx,
-    db,
     inserted.id,
-    fields.organizationId,
     fields.entry,
-    fields.secretsConfig,
+    fields.dataEncryptionSecrets,
   )
   return inserted.id
 }
@@ -504,7 +484,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     try {
       const id = await runCreateProjectTransaction(db, {
         ...input,
-        secretsConfig: c.get('secretsConfig'),
+        dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
       })
       return c.json({ ok: true as const, id })
     } catch (err) {

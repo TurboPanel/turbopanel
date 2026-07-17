@@ -342,6 +342,44 @@ test('validateComposeDocument accepts valid placement', () => {
   assertEquals(result.ok, true)
 })
 
+test('validateComposeDocument accepts x-turbopanel.view editor|visual', () => {
+  const base = documentWithPlacement(PLACEMENT_UUID)
+  for (const view of ['editor', 'visual'] as const) {
+    const result = validateComposeDocument({
+      ...base,
+      data: {
+        ...base.data,
+        [TURBOPANEL_EXTENSION_KEY]: {
+          ...(base.data[TURBOPANEL_EXTENSION_KEY] as Record<string, unknown>),
+          view,
+        },
+      },
+    })
+    assertEquals(result.ok, true)
+  }
+})
+
+test('validateComposeDocument rejects invalid x-turbopanel.view', () => {
+  const base = documentWithPlacement(PLACEMENT_UUID)
+  const result = validateComposeDocument({
+    ...base,
+    data: {
+      ...base.data,
+      [TURBOPANEL_EXTENSION_KEY]: {
+        ...(base.data[TURBOPANEL_EXTENSION_KEY] as Record<string, unknown>),
+        view: 'yaml',
+      },
+    },
+  })
+  assertEquals(result.ok, false)
+  if (!result.ok) {
+    assertEquals(
+      result.issues.some((i) => i.path === 'x-turbopanel.view'),
+      true,
+    )
+  }
+})
+
 test('validateComposeDocument remains backward compatible without x-turbopanel', () => {
   const result = validateComposeDocument({
     version: 1,

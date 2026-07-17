@@ -28,9 +28,11 @@ export {
   type ComposeLintLevel,
 } from './lint.ts'
 export {
+  isComposeEditorView,
   isPlacementServerId,
   readComposePlacementServerId,
   stripComposePlacement,
   TURBOPANEL_EXTENSION_KEY,
+  type ComposeEditorView,
   type ComposeTurbopanelExtension,
 } from './placement.ts'

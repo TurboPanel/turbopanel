@@ -11,7 +11,7 @@ export const hostingSchemas = {
       serviceId: { type: 'string' },
       tlsId: {
         type: ['string', 'null'],
-        description: 'Pinned org TLS certificate id; null = auto-match by SAN',
+        description: 'Pinned org TLS certificate id; null = basic self-signed (Caddy tls internal)',
       },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },

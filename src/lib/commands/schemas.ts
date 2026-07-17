@@ -160,7 +160,7 @@ export type EnvironmentDeployHosting = {
   pathPrefix?: string
   /** Container port Traefik should target (default 80). */
   targetPort?: number
-  /** Resolved org TLS id (pin or auto); null/omit = Caddy `tls internal`. */
+  /** Resolved org TLS id when pinned; null/omit = Caddy `tls internal` (self-signed). */
   tlsId?: string | null
 }
 

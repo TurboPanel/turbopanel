@@ -7,6 +7,7 @@ import {
 import {
   isPlacementServerId,
   stripComposePlacement,
+  isComposeEditorView,
   TURBOPANEL_EXTENSION_KEY,
 } from './placement.ts'
 import {
@@ -104,6 +105,13 @@ function validateTurbopanelExtension(
   if (!isPlainMapping(extension)) {
     issues.push({ path: 'x-turbopanel', message: 'x-turbopanel must be a mapping' })
     return
+  }
+
+  if ('view' in extension && !isComposeEditorView(extension.view)) {
+    issues.push({
+      path: 'x-turbopanel.view',
+      message: 'view must be "editor" or "visual"',
+    })
   }
 
   if (!('placement' in extension)) {

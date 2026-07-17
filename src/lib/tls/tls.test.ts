@@ -118,43 +118,25 @@ describe('resolveTlsForHosting', () => {
     assertEquals(result, { ok: false, error: 'pin_not_ready' })
   })
 
-  it('auto-matches exact over wildcard', () => {
+  it('defaults to internal self-signed when no pin (never auto-picks library certs)', () => {
     const result = resolveTlsForHosting({
       pinId: null,
       hostnames: ['api.example.com'],
       candidates: [
         candidate('wild', ['*.example.com']),
         candidate('exact', ['api.example.com']),
+        candidate('le', ['api.example.com']),
       ],
-      now,
-    })
-    assertEquals(result, { ok: true, tlsId: 'exact', reason: 'auto' })
-  })
-
-  it('falls back to internal when nothing matches', () => {
-    const result = resolveTlsForHosting({
-      pinId: null,
-      hostnames: ['orphan.test'],
-      candidates: [candidate('wild', ['*.example.com'])],
       now,
     })
     assertEquals(result, { ok: true, tlsId: null, reason: 'internal' })
   })
 
-  it('excludes expired candidates from auto-match', () => {
+  it('defaults to internal when hostnames are empty', () => {
     const result = resolveTlsForHosting({
       pinId: null,
-      hostnames: ['api.example.com'],
-      candidates: [
-        {
-          id: 'expired',
-          metadata: {
-            ...candidate('expired', ['*.example.com']).metadata,
-            notAfter: '2025-01-01T00:00:00.000Z',
-          },
-          options: null,
-        },
-      ],
+      hostnames: [],
+      candidates: [candidate('exact', ['api.example.com'])],
       now,
     })
     assertEquals(result, { ok: true, tlsId: null, reason: 'internal' })

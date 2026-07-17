@@ -38,6 +38,7 @@ import {
   resolveEmailSettings,
   updateEmailSettings,
 } from '../lib/settings/email-settings.ts'
+import { reencryptAtRestSecrets } from './reencrypt-secrets.ts'
 
 const COMMAND_TIMEOUT_MS = 30_000
 const ADDRESSES_TIMEOUT_MS = 10_000
@@ -598,6 +599,22 @@ export function registerAdminRoutes(app: Hono, opts: {
       const message = err instanceof Error ? err.message : String(err)
       return c.json({ ok: false, error: message }, 500)
     }
+  })
+
+  admin.post('/secrets/reencrypt', createRootOnlyMiddleware(opts.secrets), async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+    if (!dataEncryptionSecrets) {
+      return c.json(
+        { ok: false, error: 'Encryption unavailable — no encryption key configured' },
+        503,
+      )
+    }
+
+    const summary = await reencryptAtRestSecrets(db, dataEncryptionSecrets)
+    return c.json({ ok: true, ...summary })
   })
 
   if (opts.devSurface) {

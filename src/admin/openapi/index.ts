@@ -175,6 +175,17 @@ export function getAdminOpenApiSpec(
             },
           },
         },
+        SecretsReencryptResponse: {
+          type: 'object',
+          required: ['ok', 'scanned', 'reencrypted', 'skipped', 'failed'],
+          properties: {
+            ok: { type: 'boolean', const: true },
+            scanned: { type: 'integer' },
+            reencrypted: { type: 'integer' },
+            skipped: { type: 'integer' },
+            failed: { type: 'integer' },
+          },
+        },
       },
     },
     paths: {
@@ -496,6 +507,29 @@ export function getAdminOpenApiSpec(
               },
             },
             '503': { description: 'Daemon cell registry unavailable' },
+          },
+        },
+      },
+      [`${ADMIN_API_PREFIX}/secrets/reencrypt`]: {
+        post: {
+          tags: ['Instance'],
+          summary: 'Re-encrypt at-rest secrets to the current key version',
+          description:
+            'Sweeps secret variables, TLS private keys, and principal passwords. ' +
+            'Re-seals only non-current `tpsecret` envelopes; skips `tpdaemon` and already-current blobs.',
+          security: [...cookieSecurity],
+          responses: {
+            '200': {
+              description: 'Sweep completed',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/SecretsReencryptResponse' },
+                },
+              },
+            },
+            '401': { description: 'Unauthorized' },
+            '403': { description: 'Superadmin access required' },
+            '503': { description: 'Database or encryption unavailable' },
           },
         },
       },

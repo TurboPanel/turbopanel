@@ -8,10 +8,12 @@
  * Daemon-recipient envelopes (`tpdaemon.v1.<serverId>.<keyId>.<keyVersion>.<iv>.<ciphertext>`)
  * derive per-recipient AES-GCM keys via HKDF info `daemon-secret-encryption:<serverId>:<keyId>`.
  *
- * Boundary: client/UI code imports only `encryptSecret` / `encryptSecretForDaemon`. Decryption is
- * exposed solely through `POST /api/daemon/v1/secrets/decrypt` (daemon JWT, recipient-scoped).
+ * Boundary: client/UI code imports only `encryptSecret` / `generateSealedSecret` for at-rest
+ * sealing. Delivery paths use `resealSecretForDaemon` (decrypt tpsecret → encrypt tpdaemon).
+ * Daemon decrypt remains solely via `POST /api/daemon/v1/secrets/decrypt` (JWT, recipient-scoped).
  */
 
+import { generatePassword } from "../../generate-secret.ts";
 import type { DerivedSecretsConfig, SecretsConfig } from "./secrets.ts";
 import { deriveEncryptionSecretsConfig } from "./secrets.ts";
 
@@ -83,6 +85,37 @@ function buildDaemonEncryptionPurpose(recipient: DaemonSecretRecipient): string 
 export type ParsedDaemonSecretEnvelope = DaemonSecretRecipient & {
   keyVersion: number;
 };
+
+export type ParsedSecretEnvelope = {
+  keyVersion: number;
+};
+
+/**
+ * Cheap structural parse of a `tpsecret` envelope (version only).
+ * Returns `null` for `tpdaemon`, plaintext, or malformed values — never trial-decrypts.
+ */
+export function parseSecretEnvelope(envelope: string): ParsedSecretEnvelope | null {
+  if (!envelope.startsWith(`${ENVELOPE_MAGIC}.`)) {
+    return null;
+  }
+
+  const parts = envelope.split(".");
+  if (parts.length !== 5) {
+    return null;
+  }
+
+  const [magic, formatVersion, keyVersionStr] = parts;
+  if (magic !== ENVELOPE_MAGIC || formatVersion !== ENVELOPE_FORMAT_VERSION) {
+    return null;
+  }
+
+  const keyVersion = Number.parseInt(keyVersionStr, 10);
+  if (!Number.isInteger(keyVersion) || keyVersionStr.length === 0) {
+    return null;
+  }
+
+  return { keyVersion };
+}
 
 export function parseDaemonSecretEnvelope(envelope: string): ParsedDaemonSecretEnvelope | null {
   if (!isDaemonSealedEnvelope(envelope)) {
@@ -265,4 +298,30 @@ export async function decryptSecretForDaemon(
   } catch {
     throw new DataEncryptionError("decryption failed");
   }
+}
+
+/**
+ * Decrypt an at-rest `tpsecret` envelope and re-seal it as a recipient-bound
+ * `tpdaemon` envelope for daemon delivery.
+ */
+export async function resealSecretForDaemon(
+  secretsConfig: SecretsConfig,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  recipient: DaemonSecretRecipient,
+  tpsecretEnvelope: string,
+): Promise<string> {
+  const plaintext = await decryptSecret(dataEncryptionSecrets, tpsecretEnvelope);
+  return encryptSecretForDaemon(secretsConfig, recipient, plaintext);
+}
+
+/**
+ * Generate a random password, seal it as `tpsecret`, and return the plaintext
+ * once for show-once UX. The helper never persists either value.
+ */
+export async function generateSealedSecret(
+  dataEncryptionSecrets: DerivedSecretsConfig,
+): Promise<{ plaintext: string; sealed: string }> {
+  const plaintext = generatePassword();
+  const sealed = await encryptSecret(dataEncryptionSecrets, plaintext);
+  return { plaintext, sealed };
 }

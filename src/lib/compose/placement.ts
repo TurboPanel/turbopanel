@@ -2,10 +2,18 @@ import { normalizeCompose, type ComposeDocument } from './types.ts'
 
 export const TURBOPANEL_EXTENSION_KEY = 'x-turbopanel'
 
+/** Compose Editor | Visual tab preference stored under `x-turbopanel.view`. */
+export type ComposeEditorView = 'editor' | 'visual'
+
 export type ComposeTurbopanelExtension = {
   placement?: {
     server_id?: string
   }
+  view?: ComposeEditorView
+}
+
+export function isComposeEditorView(value: unknown): value is ComposeEditorView {
+  return value === 'editor' || value === 'visual'
 }
 
 /** Lenient UUID (any version), matching server-registry enrollment IDs. */

@@ -1,5 +1,5 @@
 /**
- * Hostname coverage and org TLS library resolution (pin + auto-match).
+ * Hostname coverage and org TLS library resolution (explicit pin or internal).
  */
 
 import type {
@@ -54,67 +54,11 @@ function isReadyCandidate(
   return now.getTime() >= notBefore && now.getTime() <= notAfter
 }
 
-type Ranked = {
-  id: string
-  exactCount: number
-  longestWildcard: number
-  prefer: number
-  notAfterMs: number
-}
-
-function rankCandidate(
-  candidate: TlsCandidate,
-  hostnames: string[],
-): Ranked | null {
-  const names = candidate.metadata.dnsNames
-  if (!coversAllHostnames(names, hostnames)) return null
-
-  let exactCount = 0
-  let longestWildcard = 0
-  for (const hostname of hostnames) {
-    const host = normalizeHostname(hostname)
-    for (const raw of names) {
-      const name = normalizeHostname(raw)
-      if (name === host) {
-        exactCount += 1
-        break
-      }
-      if (name.startsWith('*.') && coversHostname([name], host)) {
-        longestWildcard = Math.max(longestWildcard, name.length)
-      }
-    }
-  }
-
-  const prefer =
-    typeof candidate.options?.prefer === 'number' &&
-      Number.isFinite(candidate.options.prefer)
-      ? candidate.options.prefer
-      : 0
-  const notAfterMs = Date.parse(candidate.metadata.notAfter) || 0
-
-  return {
-    id: candidate.id,
-    exactCount,
-    longestWildcard,
-    prefer,
-    notAfterMs,
-  }
-}
-
-function compareRanked(a: Ranked, b: Ranked): number {
-  if (b.exactCount !== a.exactCount) return b.exactCount - a.exactCount
-  if (b.longestWildcard !== a.longestWildcard) {
-    return b.longestWildcard - a.longestWildcard
-  }
-  if (b.prefer !== a.prefer) return b.prefer - a.prefer
-  return b.notAfterMs - a.notAfterMs
-}
-
 /**
  * Resolve which org TLS cert (if any) should cover a hosting.
  * - pin set → must cover all hostnames and be ready
- * - else best auto match among ready covering candidates
- * - else tls internal (`tlsId: null`)
+ * - else Caddy `tls internal` (basic self-signed) — never auto-picks library
+ *   certs (including Let's Encrypt); those require an explicit pin
  */
 export function resolveTlsForHosting(params: {
   pinId: string | null | undefined
@@ -131,35 +75,22 @@ export function resolveTlsForHosting(params: {
     return { ok: true, tlsId: null, reason: 'internal' }
   }
 
-  const byId = new Map(params.candidates.map((c) => [c.id, c]))
-
-  if (params.pinId) {
-    const pinned = byId.get(params.pinId)
-    if (!pinned) {
-      return { ok: false, error: 'pin_not_found' }
-    }
-    if (!isReadyCandidate(pinned.metadata, now)) {
-      return { ok: false, error: 'pin_not_ready' }
-    }
-    if (!coversAllHostnames(pinned.metadata.dnsNames, hostnames)) {
-      return { ok: false, error: 'pin_mismatch' }
-    }
-    return { ok: true, tlsId: pinned.id, reason: 'pin' }
-  }
-
-  const ranked: Ranked[] = []
-  for (const candidate of params.candidates) {
-    if (!isReadyCandidate(candidate.metadata, now)) continue
-    const rank = rankCandidate(candidate, hostnames)
-    if (rank) ranked.push(rank)
-  }
-
-  if (ranked.length === 0) {
+  if (!params.pinId) {
     return { ok: true, tlsId: null, reason: 'internal' }
   }
 
-  ranked.sort(compareRanked)
-  return { ok: true, tlsId: ranked[0]!.id, reason: 'auto' }
+  const byId = new Map(params.candidates.map((c) => [c.id, c]))
+  const pinned = byId.get(params.pinId)
+  if (!pinned) {
+    return { ok: false, error: 'pin_not_found' }
+  }
+  if (!isReadyCandidate(pinned.metadata, now)) {
+    return { ok: false, error: 'pin_not_ready' }
+  }
+  if (!coversAllHostnames(pinned.metadata.dnsNames, hostnames)) {
+    return { ok: false, error: 'pin_mismatch' }
+  }
+  return { ok: true, tlsId: pinned.id, reason: 'pin' }
 }
 
 export function parseTlsMetadata(value: unknown): TlsMetadata | null {

@@ -52,7 +52,7 @@ export type TlsCandidate = {
 }
 
 export type ResolveTlsResult =
-  | { ok: true; tlsId: string | null; reason: 'pin' | 'auto' | 'internal' }
+  | { ok: true; tlsId: string | null; reason: 'pin' | 'internal' }
   | { ok: false; error: 'pin_not_found' | 'pin_mismatch' | 'pin_not_ready' }
 
 export const TLS_SOURCES: readonly TlsSource[] = [

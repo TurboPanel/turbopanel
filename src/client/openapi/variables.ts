@@ -152,10 +152,6 @@ export const variablePaths = {
           description: 'Encryption unavailable',
           content: { 'application/json': { schema: clientErrorJson } },
         },
-        '422': {
-          description: 'No encryption-capable daemon assigned to variable scope',
-          content: { 'application/json': { schema: clientErrorJson } },
-        },
       },
     },
   },
@@ -177,10 +173,6 @@ export const variablePaths = {
         ...conflictResponse,
         '503': {
           description: 'Encryption unavailable',
-          content: { 'application/json': { schema: clientErrorJson } },
-        },
-        '422': {
-          description: 'No encryption-capable daemon assigned to variable scope',
           content: { 'application/json': { schema: clientErrorJson } },
         },
       },

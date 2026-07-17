@@ -114,7 +114,7 @@ export const license = pgTable(
 /**
  * Organization TLS certificate library (upload / Let's Encrypt / self-signed).
  * Private keys are sealed `tpsecret` envelopes — never returned on client GET.
- * Hosting pins via `hosting.tls_id`; deploy auto-matches by SAN when unset.
+ * Hosting pins via `hosting.tls_id`; unset uses Caddy `tls internal` (self-signed).
  */
 export const tls = pgTable(
   'tls',
@@ -629,7 +629,7 @@ export const hosting = pgTable(
       .defaultNow()
       .notNull(),
     serviceId: uuid('service_id').notNull(),
-    /** Optional pin into the org TLS library; null = auto-match by SAN. */
+    /** Optional pin into the org TLS library; null = Caddy tls internal (self-signed). */
     tlsId: uuid('tls_id'),
     displayName: varchar('display_name', { length: 255 }),
     description: varchar('description', { length: 255 }),
@@ -726,9 +726,9 @@ export const principal = pgTable(
      */
     username: varchar({ length: 255 }).notNull(),
     /**
-     * Write-only credential. Value sealing/encryption (`tpsecret`/`tpdaemon`
-     * envelopes) is intentionally deferred to a later phase — no encryption
-     * wiring here yet.
+     * Write-only credential. Stored as a `tpsecret.v1…` envelope (instance
+     * at-rest seal). Never returned on GET; delivery re-seals to `tpdaemon`
+     * for the target daemon.
      */
     password: text(),
     /** Holds `uid` / `gid` / `home`. */

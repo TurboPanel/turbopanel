@@ -9,8 +9,12 @@ import {
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
-import { encryptSecretForDaemon, decryptSecretForDaemon } from '../authn/data-encryption.ts'
+import {
+  deriveEncryptionSecretsConfig,
+  deriveSecretsConfig,
+  parseSecretsEnv,
+} from '../authn/secrets.ts'
+import { decryptSecret, encryptSecret } from '../authn/data-encryption.ts'
 import { buildServerDaemonState } from '../../daemon/authn/daemon-state.ts'
 import { computePublicKeyFingerprint } from '../../daemon/authn/server-key.ts'
 import {
@@ -40,20 +44,25 @@ async function generateDaemonKey() {
   const publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey)
   const fingerprint = await computePublicKeyFingerprint(publicJwk)
   const daemonState = buildServerDaemonState({ publicJwk, fingerprint })
-  return { daemonState, keyId: daemonState.key.id }
+  return { daemonState }
 }
 
 async function createVariableTestApp(db: ReturnType<typeof createDenoDb>) {
   const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+  const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
+    secretsConfig,
+    'data-encryption',
+  )
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
     c.set('secretsConfig', secretsConfig)
+    c.set('dataEncryptionSecrets', dataEncryptionSecrets)
     return next()
   })
   registerVariableRoutes(app, { secrets, runtime: 'deno' })
-  return { app, secrets, secretsConfig }
+  return { app, secrets, secretsConfig, dataEncryptionSecrets }
 }
 
 async function sessionCookie(
@@ -72,6 +81,7 @@ async function withVariableFixtures(
     app: Hono<AppEnv>
     secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>
     secretsConfig: ReturnType<typeof parseSecretsEnv>
+    dataEncryptionSecrets: Awaited<ReturnType<typeof deriveEncryptionSecretsConfig>>
     userId: string
     organizationId: string
     workspaceId: string
@@ -79,7 +89,6 @@ async function withVariableFixtures(
     environmentId: string
     serviceId: string
     serverId: string
-    keyId: string
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
@@ -88,8 +97,9 @@ async function withVariableFixtures(
   }
 
   const db = createDenoDb()
-  const { app, secrets, secretsConfig } = await createVariableTestApp(db)
-  const { daemonState, keyId } = await generateDaemonKey()
+  const { app, secrets, secretsConfig, dataEncryptionSecrets } =
+    await createVariableTestApp(db)
+  const { daemonState } = await generateDaemonKey()
 
   const insertedOrg = await db
     .insert(organization)
@@ -170,6 +180,7 @@ async function withVariableFixtures(
       app,
       secrets,
       secretsConfig,
+      dataEncryptionSecrets,
       userId,
       organizationId,
       workspaceId,
@@ -177,7 +188,6 @@ async function withVariableFixtures(
       environmentId,
       serviceId,
       serverId,
-      keyId,
     })
   } finally {
     await db.delete(variable).where(eq(variable.environmentId, environmentId))
@@ -245,12 +255,10 @@ test('PATCH /variables/:id seals plaintext when isSecret toggles true without va
     db,
     app,
     secrets,
-    secretsConfig,
+    dataEncryptionSecrets,
     userId,
     organizationId,
     environmentId,
-    serverId,
-    keyId,
   }) => {
     const [insertedVariable] = await db
       .insert(variable)
@@ -283,13 +291,9 @@ test('PATCH /variables/:id seals plaintext when isSecret toggles true without va
 
     const row = rows[0]!
     assertEquals(row.isSecret, true)
-    assertEquals(row.value?.startsWith('tpdaemon.v1.'), true)
+    assertEquals(row.value?.startsWith('tpsecret.v1.'), true)
 
-    const decrypted = await decryptSecretForDaemon(
-      secretsConfig,
-      { serverId, keyId },
-      row.value!,
-    )
+    const decrypted = await decryptSecret(dataEncryptionSecrets, row.value!)
     assertEquals(decrypted, 'plain-secret')
   })
 })
@@ -299,18 +303,12 @@ test('PATCH /variables/:id rejects secret to non-secret without replacement valu
     db,
     app,
     secrets,
-    secretsConfig,
+    dataEncryptionSecrets,
     userId,
     organizationId,
     environmentId,
-    serverId,
-    keyId,
   }) => {
-    const sealed = await encryptSecretForDaemon(
-      secretsConfig,
-      { serverId, keyId },
-      'stored-secret',
-    )
+    const sealed = await encryptSecret(dataEncryptionSecrets, 'stored-secret')
 
     const [insertedVariable] = await db
       .insert(variable)
@@ -649,12 +647,10 @@ test('PATCH /variables/:id preserves empty-string when toggling to secret', asyn
     db,
     app,
     secrets,
-    secretsConfig,
+    dataEncryptionSecrets,
     userId,
     organizationId,
     environmentId,
-    serverId,
-    keyId,
   }) => {
     const [insertedVariable] = await db
       .insert(variable)
@@ -687,13 +683,9 @@ test('PATCH /variables/:id preserves empty-string when toggling to secret', asyn
 
     const row = rows[0]!
     assertEquals(row.isSecret, true)
-    assertEquals(row.value.startsWith('tpdaemon.v1.'), true)
+    assertEquals(row.value.startsWith('tpsecret.v1.'), true)
 
-    const decrypted = await decryptSecretForDaemon(
-      secretsConfig,
-      { serverId, keyId },
-      row.value,
-    )
+    const decrypted = await decryptSecret(dataEncryptionSecrets, row.value)
     assertEquals(decrypted, '')
   })
 })

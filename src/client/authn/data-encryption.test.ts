@@ -5,9 +5,12 @@ import {
   decryptSecretForDaemon,
   encryptSecret,
   encryptSecretForDaemon,
+  generateSealedSecret,
   isDaemonSealedEnvelope,
   isSealedEnvelope,
   parseDaemonSecretEnvelope,
+  parseSecretEnvelope,
+  resealSecretForDaemon,
 } from './data-encryption.ts'
 import {
   deriveEncryptionSecretsConfig,
@@ -89,6 +92,22 @@ describe('encryptSecret / decryptSecret', () => {
     expect(await decryptSecret(rotated, v1Envelope)).toBe('v1-key-version-value')
   })
 
+  it('reseals to current key version on write after rotation', async () => {
+    const v1Only = await createV1OnlySecrets()
+    const rotated = await createRotatedSecrets()
+    const v1Envelope = await encryptSecret(v1Only, 'rotate-me')
+    expect(parseSecretEnvelope(v1Envelope)).toEqual({ keyVersion: 1 })
+
+    const plaintext = await decryptSecret(rotated, v1Envelope)
+    const resealed = await encryptSecret(rotated, plaintext)
+    expect(parseSecretEnvelope(resealed)).toEqual({
+      keyVersion: rotated.current.version,
+    })
+    expect(rotated.current.version).toBe(2)
+    expect(resealed).not.toBe(v1Envelope)
+    expect(await decryptSecret(rotated, resealed)).toBe('rotate-me')
+  })
+
   it('rejects unknown key version without trial decryption', async () => {
     const secrets = await createCurrentSecrets()
     const envelope = await encryptSecret(secrets, 'x')
@@ -116,6 +135,48 @@ describe('encryptSecret / decryptSecret', () => {
     await expect(decryptSecret(secrets, parts.join('.'))).rejects.toThrow(
       DataEncryptionError,
     )
+  })
+})
+
+describe('resealSecretForDaemon', () => {
+  const recipient = {
+    serverId: '11111111-1111-4111-8111-111111111111',
+    keyId: '22222222-2222-4222-8222-222222222222',
+  }
+
+  it('reseals tpsecret → tpdaemon for the bound recipient', async () => {
+    const secretsConfig = await createSecretsConfig()
+    const dataEncryptionSecrets = await createCurrentSecrets()
+    const tpsecret = await encryptSecret(dataEncryptionSecrets, 'delivery-secret')
+    const tpdaemon = await resealSecretForDaemon(
+      secretsConfig,
+      dataEncryptionSecrets,
+      recipient,
+      tpsecret,
+    )
+    expect(isDaemonSealedEnvelope(tpdaemon)).toBe(true)
+    expect(await decryptSecretForDaemon(secretsConfig, recipient, tpdaemon)).toBe(
+      'delivery-secret',
+    )
+  })
+})
+
+describe('generateSealedSecret', () => {
+  it('returns plaintext and a tpsecret envelope that decrypts to it', async () => {
+    const dataEncryptionSecrets = await createCurrentSecrets()
+    const { plaintext, sealed } = await generateSealedSecret(dataEncryptionSecrets)
+    expect(plaintext.length).toBeGreaterThan(0)
+    expect(sealed.startsWith('tpsecret.v1.')).toBe(true)
+    expect(await decryptSecret(dataEncryptionSecrets, sealed)).toBe(plaintext)
+  })
+
+  it('principal-password sealing stores tpsecret never plaintext', async () => {
+    // Mirrors POST /principals/:id/password { generate: true } persist path.
+    const dataEncryptionSecrets = await createCurrentSecrets()
+    const { plaintext, sealed } = await generateSealedSecret(dataEncryptionSecrets)
+    expect(sealed.startsWith('tpsecret.v1.')).toBe(true)
+    expect(sealed.includes(plaintext)).toBe(false)
+    expect(await decryptSecret(dataEncryptionSecrets, sealed)).toBe(plaintext)
   })
 })
 

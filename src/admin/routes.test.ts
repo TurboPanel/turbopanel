@@ -9,14 +9,18 @@ import {
   HTTP_SESSION_COOKIE_NAME,
 } from '../client/authn/crypto.ts'
 import { createSession } from '../client/authn/session-store.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../client/authn/secrets.ts'
+import {
+  deriveEncryptionSecretsConfig,
+  deriveSecretsConfig,
+  parseSecretsEnv,
+} from '../client/authn/secrets.ts'
 import { user } from '../lib/db/schema.ts'
 import { eq } from 'drizzle-orm'
 import { ADMIN_API_PREFIX } from '../surfaces.ts'
 import { registerAdminRoutes } from './routes.ts'
 
 const dbUrl = getDatabaseUrl()
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { TEST_ONLY_TURBOPANEL_SECRET } from '../test-fixtures/secrets.ts'
 
 function createMockCell(
   serverId: string,
@@ -115,10 +119,15 @@ function createTrackingRegistry(failIds: Set<string> = new Set()): {
 async function createAdminTestApp(registry: DaemonCellRegistry) {
   const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+  const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
+    secretsConfig,
+    'data-encryption',
+  )
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', createDenoDb())
     c.set('daemonCellRegistry', registry)
+    c.set('dataEncryptionSecrets', dataEncryptionSecrets)
     return next()
   })
   registerAdminRoutes(app, {
@@ -228,10 +237,15 @@ test('POST /api/admin/v1/cells/purge-batch reports per-id results for superadmin
 
     const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
     const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+    const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
+      secretsConfig,
+      'data-encryption',
+    )
     const batchApp = new Hono<AppEnv>()
     batchApp.use('*', (c, next) => {
       c.set('db', createDenoDb())
       c.set('daemonCellRegistry', registry)
+      c.set('dataEncryptionSecrets', dataEncryptionSecrets)
       return next()
     })
     registerAdminRoutes(batchApp, {
@@ -258,5 +272,33 @@ test('POST /api/admin/v1/cells/purge-batch reports per-id results for superadmin
     assertEquals(body.results[1].ok, false)
     assertEquals(typeof body.results[1].error, 'string')
     assertEquals(purgedIds, [okId])
+  })
+})
+
+test('POST /api/admin/v1/secrets/reencrypt returns 403 for admin role', async () => {
+  await withRoleUser('admin', async ({ app, cookie }) => {
+    const res = await app.request(`${ADMIN_API_PREFIX}/secrets/reencrypt`, {
+      method: 'POST',
+      headers: { Cookie: cookie },
+    })
+
+    assertEquals(res.status, 403)
+  })
+})
+
+test('POST /api/admin/v1/secrets/reencrypt returns summary for superadmin', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const res = await app.request(`${ADMIN_API_PREFIX}/secrets/reencrypt`, {
+      method: 'POST',
+      headers: { Cookie: cookie },
+    })
+
+    assertEquals(res.status, 200)
+    const body = await res.json()
+    assertEquals(body.ok, true)
+    assertEquals(typeof body.scanned, 'number')
+    assertEquals(typeof body.reencrypted, 'number')
+    assertEquals(typeof body.skipped, 'number')
+    assertEquals(typeof body.failed, 'number')
   })
 })
