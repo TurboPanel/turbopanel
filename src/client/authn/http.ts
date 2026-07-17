@@ -84,13 +84,27 @@ function requestTls(c: Context) {
   return resolveRequestTls(c.req.url, c.req.header('x-forwarded-proto'))
 }
 
-/** Resolve the client IP for rate-limit keying (proxied via Caddy `X-Real-IP`). */
-export function resolveClientIp(c: Context): string | null {
-  return (
-    c.req.header('X-Real-IP') ??
-    c.req.header('X-Forwarded-For')?.split(',')[0]?.trim() ??
-    null
-  )
+/**
+ * Resolve the client IP for rate-limit keying from trusted runtime data only.
+ *
+ * - Workers: prefer `CF-Connecting-IP` (edge-stamped). Ignore client-supplied
+ *   `X-Real-IP` / `X-Forwarded-For`.
+ * - Deno: trust `X-Real-IP` only when served behind the local Caddy → Unix
+ *   socket path (the instance does not accept remote TCP). Ignore
+ *   `X-Forwarded-For` (client-spoofable).
+ */
+export function resolveClientIp(
+  c: Context,
+  runtime: 'deno' | 'workers',
+): string | null {
+  if (runtime === 'workers') {
+    const cfConnectingIp = c.req.header('CF-Connecting-IP')?.trim()
+    return cfConnectingIp || null
+  }
+
+  // Deno behind local Caddy (Unix socket) — Caddy stamps X-Real-IP.
+  const realIp = c.req.header('X-Real-IP')?.trim()
+  return realIp || null
 }
 
 /**
@@ -101,11 +115,12 @@ export function enforceAuthRateLimit(
   c: Context,
   purpose: AuthRateLimitPurpose,
   identity: string | null | undefined,
+  runtime: 'deno' | 'workers',
 ): Response | null {
   const result = getSharedAuthRateLimiter().check(
     purpose,
     identity,
-    resolveClientIp(c),
+    resolveClientIp(c, runtime),
   )
   if (result.allowed) {
     return null
@@ -453,7 +468,12 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Invalid request' }, 400)
     }
 
-    const signInLimited = enforceAuthRateLimit(c, 'sign-in', username)
+    const signInLimited = enforceAuthRateLimit(
+      c,
+      'sign-in',
+      username,
+      opts.runtime,
+    )
     if (signInLimited) {
       return signInLimited
     }
@@ -492,7 +512,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
     }
 
     const { token } = await createSession(db, result.userId, {
-      ipAddress: c.req.header('X-Real-IP') ?? undefined,
+      ipAddress: resolveClientIp(c, opts.runtime) ?? undefined,
       userAgent: c.req.header('User-Agent') ?? undefined,
     })
     const cookieValue = await buildSignedCookie(token, opts.secrets)
@@ -572,7 +592,12 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
 
     const trimmedEmail = parsed.email.trim().toLowerCase()
 
-    const signupLimited = enforceAuthRateLimit(c, 'sign-up', trimmedEmail)
+    const signupLimited = enforceAuthRateLimit(
+      c,
+      'sign-up',
+      trimmedEmail,
+      opts.runtime,
+    )
     if (signupLimited) {
       return signupLimited
     }

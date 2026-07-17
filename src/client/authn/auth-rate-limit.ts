@@ -3,8 +3,9 @@
  * auth endpoints. Keeps abuse throttling identical across the routes registered
  * in `http.ts`, `otp-http.ts`, and `lib/install/routes.ts`.
  *
- * Keys combine the route purpose, a normalized email/username identity, and the
- * client IP so a single attacker cannot rotate one dimension to bypass the cap.
+ * Each attempt is counted in **two independent buckets** (identity and IP) for
+ * the route purpose. Both checks must pass — rotating IP cannot bypass the
+ * account-level cap, and rotating identity cannot bypass the IP-level cap.
  * This is a per-process fixed-window counter — it does not need Redis/DO because
  * auth abuse throttling is best-effort defense-in-depth, not a billing control.
  */
@@ -98,28 +99,46 @@ export function createAuthRateLimiter(
     return policies[purpose] ?? defaultPolicy
   }
 
+  function record(key: string, policy: AuthRateLimitPolicy): AuthRateLimitResult {
+    const current = now()
+    const existing = windows.get(key)
+
+    if (!existing || current - existing.windowStartMs >= policy.windowMs) {
+      windows.set(key, { windowStartMs: current, count: 1 })
+      return { allowed: true, retryAfterSeconds: 0 }
+    }
+
+    existing.count += 1
+    if (existing.count > policy.limit) {
+      const elapsed = current - existing.windowStartMs
+      const remainingMs = Math.max(0, policy.windowMs - elapsed)
+      return {
+        allowed: false,
+        retryAfterSeconds: Math.ceil(remainingMs / 1000),
+      }
+    }
+    return { allowed: true, retryAfterSeconds: 0 }
+  }
+
   return {
     check(purpose, identity, ip): AuthRateLimitResult {
       const policy = policyFor(purpose)
-      const key = `${purpose}:${normalizeIdentity(identity)}:${normalizeIp(ip)}`
-      const current = now()
-      const existing = windows.get(key)
-
-      if (!existing || current - existing.windowStartMs >= policy.windowMs) {
-        windows.set(key, { windowStartMs: current, count: 1 })
+      // Independent buckets — both must pass.
+      const identityResult = record(
+        `${purpose}:id:${normalizeIdentity(identity)}`,
+        policy,
+      )
+      const ipResult = record(`${purpose}:ip:${normalizeIp(ip)}`, policy)
+      if (identityResult.allowed && ipResult.allowed) {
         return { allowed: true, retryAfterSeconds: 0 }
       }
-
-      existing.count += 1
-      if (existing.count > policy.limit) {
-        const elapsed = current - existing.windowStartMs
-        const remainingMs = Math.max(0, policy.windowMs - elapsed)
-        return {
-          allowed: false,
-          retryAfterSeconds: Math.ceil(remainingMs / 1000),
-        }
+      return {
+        allowed: false,
+        retryAfterSeconds: Math.max(
+          identityResult.retryAfterSeconds,
+          ipResult.retryAfterSeconds,
+        ),
       }
-      return { allowed: true, retryAfterSeconds: 0 }
     },
     reset(): void {
       windows.clear()

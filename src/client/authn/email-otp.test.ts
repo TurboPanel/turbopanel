@@ -115,3 +115,31 @@ it('concurrent wrong OTP attempts are counted atomically (no lost updates)', asy
     await cleanupOtp(db, email)
   }
 })
+
+it('parallel first-time createEmailOtp leaves only one active OTP row', async () => {
+  if (!dbUrl) {
+    console.warn(
+      'Skipping OTP create concurrency test: TURBOPANEL_DATABASE_URL not set',
+    )
+    return
+  }
+  const db = createDenoDb()
+  const email = `otp-create-race-${crypto.randomUUID()}@example.com`
+  try {
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        createEmailOtp(db, email, 'sign-in', 300, { cooldownMs: 0 })),
+    )
+    const created = results.filter((r) => r.status === 'created')
+    assertEquals(created.length >= 1, true)
+
+    const hash = await hashEmailForOtp(email)
+    const rows = await db
+      .select({ id: verification.id })
+      .from(verification)
+      .where(eq(verification.identifier, `otp:sign-in:${hash}`))
+    assertEquals(rows.length, 1)
+  } finally {
+    await cleanupOtp(db, email)
+  }
+})

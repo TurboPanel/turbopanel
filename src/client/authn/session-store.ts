@@ -105,3 +105,13 @@ export async function deleteSession(
     await db.delete(session).where(eq(session.token, token))
   }
 }
+
+/** Revoke every session for `userId` (e.g. after password reset). */
+export async function deleteSessionsByUserId(
+  db: Db | undefined,
+  userId: string,
+): Promise<void> {
+  if (db !== undefined) {
+    await db.delete(session).where(eq(session.userId, userId))
+  }
+}

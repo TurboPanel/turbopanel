@@ -35,7 +35,7 @@ describe('createAuthRateLimiter', () => {
     assertEquals(limiter.check('sign-in', 'a@b.com', '203.0.113.2').allowed, true)
   })
 
-  it('keys separately by purpose, identity, and IP', () => {
+  it('enforces independent identity and IP buckets (both must pass)', () => {
     let now = 0
     const limiter = createAuthRateLimiter({
       defaultPolicy: { limit: 1, windowMs: 60_000 },
@@ -43,14 +43,42 @@ describe('createAuthRateLimiter', () => {
     })
 
     assertEquals(limiter.check('sign-in', 'a@b.com', '203.0.113.3').allowed, true)
-    // Same identity, different IP — separate bucket.
-    assertEquals(limiter.check('sign-in', 'a@b.com', '203.0.113.4').allowed, true)
-    // Same IP, different identity — separate bucket.
-    assertEquals(limiter.check('sign-in', 'c@d.com', '203.0.113.3').allowed, true)
-    // Same identity + IP, different purpose — separate bucket.
+    // Same identity, different IP — identity bucket already spent.
+    assertEquals(limiter.check('sign-in', 'a@b.com', '203.0.113.4').allowed, false)
+
+    limiter.reset()
+    assertEquals(limiter.check('sign-in', 'a@b.com', '203.0.113.3').allowed, true)
+    // Same IP, different identity — IP bucket already spent.
+    assertEquals(limiter.check('sign-in', 'c@d.com', '203.0.113.3').allowed, false)
+
+    limiter.reset()
+    assertEquals(limiter.check('sign-in', 'a@b.com', '203.0.113.3').allowed, true)
+    // Same identity + IP, different purpose — separate purpose buckets.
     assertEquals(limiter.check('send-otp', 'a@b.com', '203.0.113.3').allowed, true)
-    // Exact same key now blocked.
+    // Exact same purpose/identity/IP now blocked on both dimensions.
     assertEquals(limiter.check('sign-in', 'a@b.com', '203.0.113.3').allowed, false)
+  })
+
+  it('same-account attempts from different IPs cannot bypass the account cap', () => {
+    let now = 0
+    const limiter = createAuthRateLimiter({
+      defaultPolicy: { limit: 2, windowMs: 60_000 },
+      now: () => now,
+    })
+
+    assertEquals(
+      limiter.check('sign-in', 'victim@example.com', '203.0.113.10').allowed,
+      true,
+    )
+    assertEquals(
+      limiter.check('sign-in', 'victim@example.com', '203.0.113.11').allowed,
+      true,
+    )
+    // Third attempt from yet another IP — identity bucket exhausted.
+    assertEquals(
+      limiter.check('sign-in', 'victim@example.com', '203.0.113.12').allowed,
+      false,
+    )
   })
 
   it('normalizes identity casing/whitespace and missing IP', () => {
@@ -64,7 +92,7 @@ describe('createAuthRateLimiter', () => {
       limiter.check('sign-in', '  User@Example.com  ', null).allowed,
       true,
     )
-    // Normalizes to the same key -> blocked.
+    // Normalizes to the same identity key -> blocked.
     assertEquals(
       limiter.check('sign-in', 'user@example.com', undefined).allowed,
       false,

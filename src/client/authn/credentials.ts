@@ -26,21 +26,25 @@ async function verifyPamLogin(username: string, password: string): Promise<boole
   if (!HOST_USERNAME_RE.test(username)) return false
 
   try {
-    const result = await new Deno.Command('/bin/sh', {
-      args: [
-        '-c',
-        String.raw`printf '%s\n' "$TP_PAM_PASSWORD" | sudo -n /usr/bin/pamtester login "$TP_PAM_USERNAME" authenticate`,
-      ],
-      env: {
-        ...Deno.env.toObject(),
-        TP_PAM_USERNAME: username,
-        TP_PAM_PASSWORD: password,
-      },
+    // Pipe the password on stdin — never put it in the child environment
+    // or invoke a shell pipeline.
+    const child = new Deno.Command('sudo', {
+      args: ['-n', '/usr/bin/pamtester', 'login', username, 'authenticate'],
+      stdin: 'piped',
       stdout: 'null',
       stderr: 'null',
-    }).output()
+      // Do not spread Deno.env or inject the password into the child environment.
+    }).spawn()
 
-    return result.success
+    const writer = child.stdin.getWriter()
+    try {
+      await writer.write(new TextEncoder().encode(`${password}\n`))
+    } finally {
+      await writer.close()
+    }
+
+    const status = await child.status
+    return status.success
   } catch {
     return false
   }

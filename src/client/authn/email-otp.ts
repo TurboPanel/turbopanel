@@ -78,9 +78,9 @@ export type CreateEmailOtpResult =
  * inside its cooldown window, this returns `{ status: 'cooldown' }` and leaves
  * both the OTP and the attempts row untouched.
  *
- * The `verification` table has only a btree index on `identifier` (no unique
- * constraint), so this runs inside a transaction and selects the current OTP
- * row `FOR UPDATE` to serialize concurrent (re)sends.
+ * Relies on the unique constraint on `verification.identifier` plus a
+ * transaction + `FOR UPDATE` so concurrent first-time creates cannot race into
+ * duplicate active OTP rows; writes use an atomic upsert.
  */
 export async function createEmailOtp(
   db: Db,
@@ -109,7 +109,13 @@ export async function createEmailOtp(
       .limit(1)
 
     const current = existing[0]
-    if (current && current.expiresAt > nowTs() && cooldownMs > 0) {
+    // Compare as Date — Postgres returns `YYYY-MM-DD HH:MM:SS+00` which is not
+    // lexicographically ordered against ISO-8601 `nowTs()` (`…T…Z`).
+    if (
+      current &&
+      new Date(current.expiresAt).getTime() > Date.now() &&
+      cooldownMs > 0
+    ) {
       const ageMs = Date.now() - new Date(current.createdAt).getTime()
       if (ageMs < cooldownMs) {
         return {
@@ -119,13 +125,29 @@ export async function createEmailOtp(
       }
     }
 
-    await tx.delete(verification).where(eq(verification.identifier, identifier))
+    const stamp = nowTs()
+    await tx
+      .insert(verification)
+      .values({
+        identifier,
+        value: otp,
+        expiresAt,
+        createdAt: stamp,
+        updatedAt: stamp,
+      })
+      .onConflictDoUpdate({
+        target: verification.identifier,
+        set: {
+          value: otp,
+          expiresAt,
+          // Reset the cooldown clock when replacing an expired/cooled-down OTP.
+          createdAt: stamp,
+          updatedAt: stamp,
+        },
+      })
+
+    // Reset attempts under the same uniqueness rule (delete-or-absent).
     await tx.delete(verification).where(eq(verification.identifier, attemptsId))
-    await tx.insert(verification).values({
-      identifier,
-      value: otp,
-      expiresAt,
-    })
 
     return { status: 'created', otp }
   })
@@ -158,8 +180,6 @@ export async function verifyEmailOtp(
   const attemptsId = attemptsIdentifier(type, emailHash)
 
   return await db.transaction(async (tx) => {
-    const now = nowTs()
-
     const rows = await tx
       .select({
         id: verification.id,
@@ -176,7 +196,8 @@ export async function verifyEmailOtp(
       return 'invalid'
     }
 
-    if (row.expiresAt <= now) {
+    // Date compare — do not lexicographically compare Postgres vs ISO strings.
+    if (new Date(row.expiresAt).getTime() <= Date.now()) {
       await tx.delete(verification).where(eq(verification.id, row.id))
       return 'expired'
     }
@@ -185,6 +206,7 @@ export async function verifyEmailOtp(
       .select({ id: verification.id, value: verification.value })
       .from(verification)
       .where(eq(verification.identifier, attemptsId))
+      .for('update')
       .limit(1)
 
     const attempts = Number.parseInt(attemptsRows[0]?.value ?? '0', 10)
@@ -194,18 +216,25 @@ export async function verifyEmailOtp(
 
     if (!constantTimeEqual(row.value, otp)) {
       const nextAttempts = attempts + 1
-      if (attemptsRows[0]) {
-        await tx
-          .update(verification)
-          .set({ value: String(nextAttempts), updatedAt: nowTs() })
-          .where(eq(verification.id, attemptsRows[0].id))
-      } else {
-        await tx.insert(verification).values({
+      const stamp = nowTs()
+      // Upsert under the unique identifier constraint so concurrent verifiers
+      // cannot create duplicate attempts rows; FOR UPDATE above serializes
+      // increments on an existing row.
+      await tx
+        .insert(verification)
+        .values({
           identifier: attemptsId,
           value: String(nextAttempts),
           expiresAt: row.expiresAt,
         })
-      }
+        .onConflictDoUpdate({
+          target: verification.identifier,
+          set: {
+            value: String(nextAttempts),
+            expiresAt: row.expiresAt,
+            updatedAt: stamp,
+          },
+        })
       return 'invalid'
     }
 

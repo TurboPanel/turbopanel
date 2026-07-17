@@ -43,6 +43,13 @@
       "when": 1784234526848,
       "tag": "0005_add_principal_and_assignment_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1784300528529,
+      "tag": "0006_verification_identifier_unique",
+      "breakpoints": true
     }
   ]
 }

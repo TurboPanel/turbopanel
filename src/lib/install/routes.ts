@@ -8,6 +8,7 @@ import { verifyInstallHostCredentials } from '../../client/authn/credentials.ts'
 import {
   buildSessionResponse,
   enforceAuthRateLimit,
+  resolveClientIp,
   type AuthRouteOpts,
 } from '../../client/authn/http.ts'
 import {
@@ -80,7 +81,12 @@ async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
   }
   const { username, password, superadminEmail, superadminPassword } = parsed
 
-  const limited = enforceAuthRateLimit(c, 'install-complete', username.trim())
+  const limited = enforceAuthRateLimit(
+    c,
+    'install-complete',
+    username.trim(),
+    opts.runtime,
+  )
   if (limited) {
     return limited
   }
@@ -102,7 +108,7 @@ async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
     })
 
     const { token } = await createSession(db, result.userId, {
-      ipAddress: c.req.header('X-Real-IP') ?? undefined,
+      ipAddress: resolveClientIp(c, opts.runtime) ?? undefined,
       userAgent: c.req.header('User-Agent') ?? undefined,
     })
     const sessionCookie = await buildSignedCookie(token, opts.secrets)
@@ -189,7 +195,12 @@ export function registerInstallRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Invalid request' }, 400)
     }
 
-    const limited = enforceAuthRateLimit(c, 'install-bootstrap', username.trim())
+    const limited = enforceAuthRateLimit(
+      c,
+      'install-bootstrap',
+      username.trim(),
+      opts.runtime,
+    )
     if (limited) {
       return limited
     }

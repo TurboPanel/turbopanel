@@ -1,4 +1,4 @@
-import { eq, and, gt } from 'drizzle-orm'
+import { and, gt } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import { verification } from '../../lib/db/schema.ts'
 
@@ -23,9 +23,8 @@ function generateEmailVerificationToken(): string {
 /**
  * Create (or replace) the email verification token for `email`.
  *
- * The `verification` table has only a plain btree index on `identifier`
- * (no unique constraint), so `onConflictDoUpdate` is not viable. Delete any
- * existing token for the email and insert the new one inside one transaction.
+ * Uses an atomic upsert on the unique `verification.identifier` constraint so
+ * concurrent creates cannot race into duplicate rows.
  */
 export async function createEmailVerificationToken(
   db: Db,
@@ -34,15 +33,23 @@ export async function createEmailVerificationToken(
   const token = generateEmailVerificationToken()
   const expiresAt = new Date(Date.now() + EMAIL_VERIFICATION_EXPIRES_IN_MS)
     .toISOString()
+  const stamp = nowTs()
 
-  await db.transaction(async (tx) => {
-    await tx.delete(verification).where(eq(verification.identifier, email))
-    await tx.insert(verification).values({
+  await db
+    .insert(verification)
+    .values({
       identifier: email,
       value: token,
       expiresAt,
     })
-  })
+    .onConflictDoUpdate({
+      target: verification.identifier,
+      set: {
+        value: token,
+        expiresAt,
+        updatedAt: stamp,
+      },
+    })
 
   return token
 }

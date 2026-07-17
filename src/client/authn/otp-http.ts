@@ -20,9 +20,18 @@ import {
   validateSuperadminPassword,
 } from './install-state.ts'
 import { hashPassword } from './password.ts'
-import { createSession, getSession, type SessionData } from './session-store.ts'
+import {
+  createSession,
+  deleteSessionsByUserId,
+  getSession,
+  type SessionData,
+} from './session-store.ts'
 import type { AuthRouteOpts } from './http.ts'
-import { buildSessionResponse, enforceAuthRateLimit } from './http.ts'
+import {
+  buildSessionResponse,
+  enforceAuthRateLimit,
+  resolveClientIp,
+} from './http.ts'
 import { compatLogWarn } from '../../log-compat.ts'
 import { getDb, type Db } from '../../db.ts'
 import { account, user } from '../../lib/db/schema.ts'
@@ -209,7 +218,12 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
 
     let trimmedEmail = email.trim().toLowerCase()
 
-    const sendOtpLimited = enforceAuthRateLimit(c, 'send-otp', trimmedEmail)
+    const sendOtpLimited = enforceAuthRateLimit(
+      c,
+      'send-otp',
+      trimmedEmail,
+      opts.runtime,
+    )
     if (sendOtpLimited) {
       return sendOtpLimited
     }
@@ -271,7 +285,12 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
 
     const trimmedEmail = email.trim().toLowerCase()
 
-    const verifyOtpLimited = enforceAuthRateLimit(c, 'verify-otp', trimmedEmail)
+    const verifyOtpLimited = enforceAuthRateLimit(
+      c,
+      'verify-otp',
+      trimmedEmail,
+      opts.runtime,
+    )
     if (verifyOtpLimited) {
       return verifyOtpLimited
     }
@@ -316,7 +335,12 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
 
     const trimmedEmail = email.trim().toLowerCase()
 
-    const signInOtpLimited = enforceAuthRateLimit(c, 'sign-in-otp', trimmedEmail)
+    const signInOtpLimited = enforceAuthRateLimit(
+      c,
+      'sign-in-otp',
+      trimmedEmail,
+      opts.runtime,
+    )
     if (signInOtpLimited) {
       return signInOtpLimited
     }
@@ -340,7 +364,7 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
     const userId = resolved.userId
 
     const { token } = await createSession(db, userId, {
-      ipAddress: c.req.header('X-Real-IP') ?? undefined,
+      ipAddress: resolveClientIp(c, opts.runtime) ?? undefined,
       userAgent: c.req.header('User-Agent') ?? undefined,
     })
     const cookieValue = await buildSignedCookie(token, opts.secrets)
@@ -398,6 +422,7 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
       c,
       'verify-email-otp',
       sessionEmail,
+      opts.runtime,
     )
     if (verifyEmailLimited) {
       return verifyEmailLimited
@@ -450,6 +475,7 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
       c,
       'reset-password-request',
       trimmedEmail,
+      opts.runtime,
     )
     if (resetRequestLimited) {
       return resetRequestLimited
@@ -504,6 +530,17 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
     }
 
     const trimmedEmail = email.trim().toLowerCase()
+
+    const resetLimited = enforceAuthRateLimit(
+      c,
+      'reset-password',
+      trimmedEmail,
+      opts.runtime,
+    )
+    if (resetLimited) {
+      return resetLimited
+    }
+
     const verifyResult = await verifyEmailOtp(
       db,
       trimmedEmail,
@@ -532,16 +569,23 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
     }
 
     const hashedPassword = await hashPassword(password)
-    const updated = await db
-      .update(account)
-      .set({ password: hashedPassword, updatedAt: nowTs() })
-      .where(
-        and(
-          eq(account.userId, foundUser.id),
-          eq(account.providerId, 'credential'),
-        ),
-      )
-      .returning({ id: account.id })
+    const updated = await db.transaction(async (tx) => {
+      const rows = await tx
+        .update(account)
+        .set({ password: hashedPassword, updatedAt: nowTs() })
+        .where(
+          and(
+            eq(account.userId, foundUser.id),
+            eq(account.providerId, 'credential'),
+          ),
+        )
+        .returning({ id: account.id })
+
+      if (rows.length > 0) {
+        await deleteSessionsByUserId(tx, foundUser.id)
+      }
+      return rows
+    })
 
     if (updated.length === 0) {
       return c.json({ ok: false, error: 'User not found' }, 404)

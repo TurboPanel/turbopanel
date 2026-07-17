@@ -1064,9 +1064,6 @@ export const verification = pgTable(
     value: text().notNull(),
   },
   (table) => [
-    index('idx_verification_identifier').using(
-      'btree',
-      table.identifier.asc().nullsLast().op('text_ops')
-    ),
+    unique('verification_identifier_unique').on(table.identifier),
   ]
 )
