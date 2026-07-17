@@ -77,6 +77,7 @@ type PublicUrlsApplyUrlsResult =
 async function resolvePublicUrlsForApply(
   db: Db,
   body: unknown,
+  allowHttp: boolean,
 ): Promise<PublicUrlsApplyUrlsResult> {
   if (body && typeof body === 'object' && 'urls' in body) {
     const urlsBody = body as { urls: unknown }
@@ -90,7 +91,7 @@ async function resolvePublicUrlsForApply(
         body: { ok: false, error: 'expected { urls?: string[] }' },
       }
     }
-    const parsed = parsePublicUrlEntries(urlsBody.urls)
+    const parsed = parsePublicUrlEntries(urlsBody.urls, { allowHttp })
     if (!parsed.ok) {
       return { ok: false, status: 422, body: parsed }
     }
@@ -277,7 +278,7 @@ export function registerAdminRoutes(app: Hono, opts: {
       return c.json({ ok: false, error: 'expected { urls: string[] }' }, 400)
     }
 
-    const parsed = parsePublicUrlEntries(body.urls)
+    const parsed = parsePublicUrlEntries(body.urls, { allowHttp: opts.devSurface })
     if (!parsed.ok) {
       return c.json(parsed, 422)
     }
@@ -325,7 +326,7 @@ export function registerAdminRoutes(app: Hono, opts: {
     if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
 
     const body = await c.req.json().catch(() => null)
-    const urlsResult = await resolvePublicUrlsForApply(db, body)
+    const urlsResult = await resolvePublicUrlsForApply(db, body, opts.devSurface)
     if (!urlsResult.ok) {
       return c.json(urlsResult.body, urlsResult.status)
     }

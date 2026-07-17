@@ -231,7 +231,7 @@ type ParsedSignupBody =
   | { ok: true; email: string; password: string }
   | { ok: false; error: string }
 
-function parseSignupBody(body: unknown): ParsedSignupBody {
+export function parseSignupBody(body: unknown): ParsedSignupBody {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     return { ok: false, error: 'Invalid request' }
   }

@@ -14,6 +14,7 @@ import {
   setting,
   team,
   user,
+  workspace,
 } from '../../lib/db/schema.ts'
 import { createLicense } from './license.ts'
 import { hashPassword } from './password.ts'
@@ -43,6 +44,7 @@ function isSimpleEmailShape(email: string): boolean {
 
 export const DEFAULT_ORGANIZATION_NAME = 'Default Organization'
 export const DEFAULT_TEAM_NAME = 'Default Team'
+export const DEFAULT_WORKSPACE_NAME = 'Default Workspace'
 export const COLOCATED_SERVER_DISPLAY_NAME = 'this server'
 
 export const IS_SIGNUP_ENABLED_CONFIG_KEY = 'IS_SIGNUP_ENABLED'
@@ -124,6 +126,26 @@ export async function insertOwnerGrants(
         grant.permission,
       ],
     })
+}
+
+/** Insert the org's initial workspace. Call inside the same transaction as org create. */
+export async function insertDefaultWorkspace(
+  db: Db,
+  organizationId: string,
+): Promise<string> {
+  const inserted = await db
+    .insert(workspace)
+    .values({
+      organizationId,
+      displayName: DEFAULT_WORKSPACE_NAME,
+    })
+    .returning({ id: workspace.id })
+
+  const workspaceId = inserted[0]?.id
+  if (!workspaceId) {
+    throw new Error('Default workspace creation failed')
+  }
+  return workspaceId
 }
 
 /** Production FHS state dir for persistent daemon identity (dev and managed). */
@@ -325,9 +347,39 @@ export function validateSuperadminEmail(email: string): string | null {
   return null
 }
 
+/**
+ * Special characters accepted by the password policy. This set is the canonical
+ * server-side mirror of the UI's `validatePassword` in
+ * `ui/src/components/auth/sign-up-screen.tsx` — keep the two in lockstep so the
+ * UI and API cannot drift.
+ */
+export const PASSWORD_SPECIAL_CHARS_PATTERN = /[$!@%&*#^()_+=-]/
+const PASSWORD_DIGIT_PATTERN = /\d/
+export const PASSWORD_MIN_LENGTH = 8
+
+/**
+ * Canonical server-side password policy, enforced on every password-setting
+ * path (install, sign-up, password reset) so a direct API call cannot bypass
+ * the rules the UI presents. Structural rules match the UI mirror
+ * (`ui/src/components/auth/sign-up-screen.tsx` → `validatePassword`):
+ * at least {@link PASSWORD_MIN_LENGTH} characters, at least one digit, at least
+ * one special character, and no leading/trailing whitespace.
+ *
+ * Returns a human-readable error string for the first failing rule, or `null`
+ * when the password satisfies the policy.
+ */
 export function validateSuperadminPassword(password: string): string | null {
-  if (password.length < 8) {
-    return 'Password must be at least 8 characters'
+  if (password !== password.trim()) {
+    return 'Password must not have leading or trailing whitespace'
+  }
+  if (password.length < PASSWORD_MIN_LENGTH) {
+    return `Password must be at least ${PASSWORD_MIN_LENGTH} characters`
+  }
+  if (!PASSWORD_DIGIT_PATTERN.test(password)) {
+    return 'Password must include at least one number'
+  }
+  if (!PASSWORD_SPECIAL_CHARS_PATTERN.test(password)) {
+    return 'Password must include at least one special character'
   }
   return null
 }
@@ -751,6 +803,8 @@ export async function createOrganizationForUser(
         ],
       })
 
+    await insertDefaultWorkspace(tx, organizationId)
+
     return { organizationId, teamId }
   })
 }
@@ -862,6 +916,8 @@ export async function completeInstanceInstall(
           grant.permission,
         ],
       })
+
+    await insertDefaultWorkspace(tx, organizationId)
 
     const { licenseId, licenseToken } = await createLicense(tx, {
       organizationId,

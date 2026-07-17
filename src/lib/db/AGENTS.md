@@ -152,7 +152,7 @@ Drizzle relations are defined for future Better Auth adapter use. `IS_SIGNUP_ENA
 
 **Uniqueness:** `member(organization_id, user_id)` and `teammate(team_id, user_id)` prevent duplicate membership rows on concurrent invite acceptance/retries.
 
-**Install (Deno):** A fresh DB has no org or superadmin. `src/client/authn/install-state.ts` `isInstanceInstalled()` is false until `completeInstanceInstall` creates org + team + superadmin user with a named org. **`organization.slug`** stays **NULL** (reserved for a future feature). Org extras (e.g. logo URL) belong in **`organization.metadata`** — there is no `logo` column. Install sets **`email`** and **`role`** (on `user`) only — `display_name`, `username`, and `display_username` stay **NULL** until the user chooses them.
+**Install (Deno):** A fresh DB has no org or superadmin. `src/client/authn/install-state.ts` `isInstanceInstalled()` is false until `completeInstanceInstall` creates org + team + **Default Workspace** + superadmin user with a named org. **`organization.slug`** stays **NULL** (reserved for a future feature). Org extras (e.g. logo URL) belong in **`organization.metadata`** — there is no `logo` column. Install sets **`email`** and **`role`** (on `user`) only — `display_name`, `username`, and `display_username` stay **NULL** until the user chooses them.
 
 ### Client API (authz integration)
 
@@ -367,7 +367,7 @@ Runtime authorization lives in `../../client/authz/` (pure TypeScript, safe for 
 
 `can()` resolves org-level access in a **single CTE query** (`subjectset` → `ancestry` → org grant `hits`) — one round-trip. Users with `organization:own` or `organization:manage` on an org may access any entity in that org. A platform-admin bypass (`EXISTS … WHERE role IN ('superadmin', 'admin')`) is OR'd into the final result. Superadmin-only platform operations (e.g. developer reset-dev) remain gated separately by `user.role === 'superadmin'`. `listVisible()` returns all leaf ids in the org when the user has org-level access — **never rely on client-side filtering** for visibility.
 
-**Install (Deno):** `completeInstanceInstall` inserts exactly one `organization:own` grant on the org and one `team:own` grant on the default team for the superadmin user.
+**Install (Deno):** `completeInstanceInstall` inserts exactly one `organization:own` grant on the org, one `team:own` grant on the default team, and a **Default Workspace** for the superadmin user. Workers sign-up (`createOrganizationForUser`) creates the same Default Workspace when provisioning an org.
 
 **Completed:** Resource ancestry is computed directly from real domain tables (`organization → workspace → project → environment → service/hosting`, `organization → server`); the generic `resource` shadow table has been dropped. The `grant.allow` column (formerly `allowed`) stores whether a grant permits (`true`) or denies (`false`) the listed permission.
 

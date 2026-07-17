@@ -16,11 +16,20 @@ function readCaddyPort(): string {
   return Deno.env.get('CADDY_PORT')?.trim() || '8443'
 }
 
-/** Parse a user-supplied public HTTPS base URL (dev install command override). */
-export function parseInstallBaseUrl(value: string | undefined): string | null {
+/**
+ * Parse a user-supplied public base URL (dev install command override).
+ *
+ * Production requires HTTPS: plaintext `http:` is rejected unless the caller
+ * passes the development-only `{ allowHttp: true }` allowance, so a plaintext
+ * control-plane URL cannot leak into a managed install command.
+ */
+export function parseInstallBaseUrl(
+  value: string | undefined,
+  opts: { allowHttp?: boolean } = {},
+): string | null {
   const trimmed = value?.trim()
   if (!trimmed) return null
-  return publicUrlEntryToInstallOrigin(trimmed, readCaddyPort())
+  return publicUrlEntryToInstallOrigin(trimmed, readCaddyPort(), opts)
 }
 
 /** First non-empty entry → install origin, or null when missing/unusable. */

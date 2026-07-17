@@ -110,6 +110,42 @@ it('password reset revokes existing sessions', async () => {
   await db.delete(user).where(eq(user.id, userId))
 })
 
+it('reset-password/otp rejects weak passwords before touching the OTP', async () => {
+  if (!dbUrl) {
+    console.warn(
+      'Skipping reset-password weak-password test: TURBOPANEL_DATABASE_URL not set',
+    )
+    return
+  }
+
+  const db = createDenoDb()
+  const { app } = await createAuthApp(db)
+
+  // These weak passwords passed the old min-length-only rule; the centralized
+  // server policy must now reject them with 400 before OTP verification.
+  const weakPasswords = ['abcdefgh', '12345678', ' passw0rd! ']
+  for (const password of weakPasswords) {
+    const response = await app.request(
+      `${CLIENT_API_PREFIX}/auth/reset-password/otp`,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'X-Real-IP': '203.0.113.62',
+        },
+        body: JSON.stringify({
+          email: `reset-weak-${crypto.randomUUID()}@example.com`,
+          otp: '000000',
+          password,
+        }),
+      },
+    )
+    assertEquals(response.status, 400)
+    const payload = (await response.json()) as { ok: boolean; error?: string }
+    assertEquals(payload.ok, false)
+  }
+})
+
 it('reset-password/otp returns 429 when the limiter is exceeded', async () => {
   if (!dbUrl) {
     console.warn(

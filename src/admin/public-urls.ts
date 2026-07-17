@@ -21,9 +21,18 @@ function hasNonOriginUrlParts(url: URL): boolean {
   return (url.pathname !== '/' && url.pathname !== '') || Boolean(url.search) || Boolean(url.hash)
 }
 
-/** True when the URL is an http(s) origin with a valid public host and no extras. */
-function isHttpOrHttpsOriginUrl(url: URL): boolean {
+/**
+ * True when the URL is an https origin (or a plaintext http origin when the
+ * caller passes an explicit development-only allowance) with a valid public host
+ * and no extras.
+ *
+ * Plaintext `http:` is rejected by default so a dev-only control-plane URL can
+ * never escape into production install commands or persisted daemon runtime
+ * configuration for managed servers.
+ */
+function isHttpOrHttpsOriginUrl(url: URL, allowHttp = false): boolean {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+  if (url.protocol === 'http:' && !allowHttp) return false
   if (!isValidPublicHost(url.hostname)) return false
   if (url.username || url.password) return false
   return !hasNonOriginUrlParts(url)
@@ -68,10 +77,14 @@ export function hostFromPublicUrlEntry(entry: string): string | null {
 /**
  * Normalize a stored or env public URL entry to an HTTPS origin for install commands.
  * Accepts persisted origin strings and bare host / host:port forms.
+ *
+ * Plaintext `http:` origins are rejected unless the caller passes the
+ * development-only `{ allowHttp: true }` allowance.
  */
 export function publicUrlEntryToInstallOrigin(
   entry: string,
   defaultHttpsPort = '8443',
+  opts: { allowHttp?: boolean } = {},
 ): string | null {
   const trimmed = entry.trim()
   if (!trimmed) return null
@@ -79,7 +92,7 @@ export function publicUrlEntryToInstallOrigin(
   try {
     if (trimmed.includes('://')) {
       const url = new URL(trimmed)
-      if (!isHttpOrHttpsOriginUrl(url)) return null
+      if (!isHttpOrHttpsOriginUrl(url, opts.allowHttp)) return null
       return trimTrailingSlash(url.origin)
     }
 
@@ -93,14 +106,17 @@ export function publicUrlEntryToInstallOrigin(
   }
 }
 
-function parseAndNormalizePublicUrlEntry(entry: string): string | null {
+function parseAndNormalizePublicUrlEntry(
+  entry: string,
+  allowHttp = false,
+): string | null {
   const trimmed = entry.trim()
   if (!trimmed) return null
 
   if (trimmed.includes('://')) {
     try {
       const url = new URL(trimmed)
-      if (!isHttpOrHttpsOriginUrl(url)) return null
+      if (!isHttpOrHttpsOriginUrl(url, allowHttp)) return null
       return url.origin
     } catch {
       return null
@@ -118,18 +134,32 @@ export type ParsePublicUrlEntriesResult =
   | { ok: true; urls: string[] }
   | { ok: false; error: string; invalid: string[] }
 
-export function parsePublicUrlEntries(raw: string[]): ParsePublicUrlEntriesResult {
+/**
+ * Parse and validate public URL entries.
+ *
+ * Plaintext `http:` entries are rejected (reported as invalid) unless the caller
+ * passes the development-only `{ allowHttp: true }` allowance. Managed/production
+ * callers must never pass the allowance, so a dev-only plaintext control-plane
+ * URL cannot be persisted into daemon runtime configuration.
+ */
+export function parsePublicUrlEntries(
+  raw: string[],
+  opts: { allowHttp?: boolean } = {},
+): ParsePublicUrlEntriesResult {
   const validated: string[] = []
   const invalid: string[] = []
   const seen = new Set<string>()
 
   for (const entry of raw) {
-    const normalized = parseAndNormalizePublicUrlEntry(entry)
+    const normalized = parseAndNormalizePublicUrlEntry(entry, opts.allowHttp)
     if (!normalized) {
       invalid.push(entry)
       continue
     }
-    const dedupeKey = publicUrlEntryToInstallOrigin(normalized) ?? normalized
+    const dedupeKey =
+      publicUrlEntryToInstallOrigin(normalized, undefined, {
+        allowHttp: opts.allowHttp,
+      }) ?? normalized
     if (seen.has(dedupeKey)) continue
     seen.add(dedupeKey)
     validated.push(normalized)

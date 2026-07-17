@@ -149,12 +149,24 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const devSurface = opts.runtime === 'deno' && isDeveloperSurfaceEnabled()
     // The install base URL override is a runtime-agnostic developer convenience
-    // (the UI only surfaces it in __DEV__). Parsing is safe on both Deno and
-    // Workers, so don't gate it behind the Deno-only devSurface — that left
-    // Workers dev unable to use the override at all.
-    const parsedInstallBaseUrl = parseInstallBaseUrl(installBaseUrl)
+    // (the UI only surfaces it in __DEV__). Parsing an HTTPS override is safe on
+    // both Deno and Workers, so don't gate that behind the Deno-only devSurface —
+    // that left Workers dev unable to use the override at all. A plaintext
+    // `http:` override is only permitted on the developer surface; outside dev it
+    // is rejected so a plaintext control-plane URL cannot leak into a managed
+    // install command.
+    const parsedInstallBaseUrl = parseInstallBaseUrl(installBaseUrl, {
+      allowHttp: devSurface,
+    })
     if (installBaseUrl?.trim() && !parsedInstallBaseUrl) {
-      return c.json({ error: 'installBaseUrl must be a valid http(s) URL' }, 400)
+      return c.json(
+        {
+          error: devSurface
+            ? 'installBaseUrl must be a valid http(s) URL'
+            : 'installBaseUrl must be a valid https URL',
+        },
+        400,
+      )
     }
 
     // The instance does not build daemon release artifacts. In self-hosted dev

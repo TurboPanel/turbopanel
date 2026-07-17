@@ -3,6 +3,7 @@ import {
   getClientPublicStatus,
   normalizeSignupEnvOverride,
   resolveIsSignupEnabled,
+  validateSuperadminPassword,
 } from './install-state.ts'
 
 describe('normalizeSignupEnvOverride', () => {
@@ -62,6 +63,45 @@ describe('resolveIsSignupEnabled', () => {
     expect(resolveIsSignupEnabled(undefined, undefined, { runtime: 'deno' })).toBe(
       false,
     )
+  })
+})
+
+describe('validateSuperadminPassword (canonical server policy)', () => {
+  // This validator is the single server-side gate shared by the install wizard,
+  // sign-up, and password reset. It must reject weak passwords that the old
+  // min-length-only rule accepted, matching the UI mirror.
+  it('rejects weak passwords that passed the old min-length-only rule', () => {
+    // 8+ chars but no digit and no special char.
+    expect(validateSuperadminPassword('abcdefgh')).toBe(
+      'Password must include at least one number',
+    )
+    // Digits only, no special char.
+    expect(validateSuperadminPassword('12345678')).toBe(
+      'Password must include at least one special character',
+    )
+    // Letters + digit but no special char.
+    expect(validateSuperadminPassword('password1')).toBe(
+      'Password must include at least one special character',
+    )
+  })
+
+  it('rejects passwords shorter than the minimum length', () => {
+    expect(validateSuperadminPassword('aB1!')).toBe(
+      'Password must be at least 8 characters',
+    )
+  })
+
+  it('rejects passwords with leading or trailing whitespace', () => {
+    expect(validateSuperadminPassword(' passw0rd! ')).toBe(
+      'Password must not have leading or trailing whitespace',
+    )
+    expect(validateSuperadminPassword('passw0rd!\n')).toBe(
+      'Password must not have leading or trailing whitespace',
+    )
+  })
+
+  it('accepts a password that satisfies every rule', () => {
+    expect(validateSuperadminPassword('sup3r-secret!')).toBeNull()
   })
 })
 

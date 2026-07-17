@@ -6,6 +6,12 @@ import type { OtpType } from '../../lib/email/types.ts'
 export const OTP_IDENTIFIER_PREFIX = 'otp'
 export const OTP_ATTEMPTS_IDENTIFIER_PREFIX = 'otp-attempts'
 export const MAX_OTP_ATTEMPTS = 3
+
+/**
+ * Domain-separation context for the OTP verifier digest. Bumping the version
+ * suffix invalidates every previously-stored digest (forced rotation).
+ */
+const OTP_VERIFIER_CONTEXT = 'turbopanel-email-otp-verifier-v1'
 /**
  * Minimum interval between OTP (re)sends for the same identifier. Prevents an
  * attacker from calling `createEmailOtp()` repeatedly to wipe the attempts
@@ -39,6 +45,37 @@ export async function hashEmailForOtp(email: string): Promise<string> {
   const digest = await crypto.subtle.digest(
     'SHA-256',
     new TextEncoder().encode(normalized),
+  )
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+/**
+ * Derive the at-rest OTP verifier digest.
+ *
+ * `verification.value` must never hold the raw OTP: a DB read (backup, replica,
+ * log) would otherwise expose a live credential. Instead we store a SHA-256
+ * digest bound to the OTP purpose ({@link OTP_VERIFIER_CONTEXT}), the flow
+ * `type`, and the email context (`emailHash`), and compare submitted OTPs
+ * against the re-derived digest. Binding the context means a digest captured for
+ * one flow/email cannot be replayed against another. The OTP itself is
+ * high-entropy-per-attempt but short, so the {@link MAX_OTP_ATTEMPTS} attempt
+ * cap (tracked in a separate row) — not a slow hash — is the brute-force
+ * defense; a fast digest is sufficient here.
+ *
+ * Rollout: any pre-existing plaintext row simply fails the digest comparison and
+ * is treated as invalid (the caller re-sends a fresh OTP).
+ */
+export async function deriveOtpVerifier(
+  type: OtpType,
+  emailHash: string,
+  otp: string,
+): Promise<string> {
+  const material = `${OTP_VERIFIER_CONTEXT}:${type}:${emailHash}:${otp}`
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(material),
   )
   return Array.from(new Uint8Array(digest))
     .map((byte) => byte.toString(16).padStart(2, '0'))
@@ -92,6 +129,8 @@ export async function createEmailOtp(
   const cooldownMs = opts?.cooldownMs ?? OTP_RESEND_COOLDOWN_MS
   const otp = generateOtp()
   const emailHash = await hashEmailForOtp(email)
+  // Store only the verifier digest at rest — never the raw OTP.
+  const verifier = await deriveOtpVerifier(type, emailHash, otp)
   const identifier = otpIdentifier(type, emailHash)
   const attemptsId = attemptsIdentifier(type, emailHash)
   const expiresAt = new Date(Date.now() + expiresInSeconds * 1000).toISOString()
@@ -130,7 +169,7 @@ export async function createEmailOtp(
       .insert(verification)
       .values({
         identifier,
-        value: otp,
+        value: verifier,
         expiresAt,
         createdAt: stamp,
         updatedAt: stamp,
@@ -138,7 +177,7 @@ export async function createEmailOtp(
       .onConflictDoUpdate({
         target: verification.identifier,
         set: {
-          value: otp,
+          value: verifier,
           expiresAt,
           // Reset the cooldown clock when replacing an expired/cooled-down OTP.
           createdAt: stamp,
@@ -176,6 +215,7 @@ export async function verifyEmailOtp(
 ): Promise<VerifyEmailOtpResult> {
   const consume = opts?.consume !== false
   const emailHash = await hashEmailForOtp(email)
+  const submittedVerifier = await deriveOtpVerifier(type, emailHash, otp)
   const identifier = otpIdentifier(type, emailHash)
   const attemptsId = attemptsIdentifier(type, emailHash)
 
@@ -214,7 +254,7 @@ export async function verifyEmailOtp(
       return 'too_many_attempts'
     }
 
-    if (!constantTimeEqual(row.value, otp)) {
+    if (!constantTimeEqual(row.value, submittedVerifier)) {
       const nextAttempts = attempts + 1
       const stamp = nowTs()
       // Upsert under the unique identifier constraint so concurrent verifiers

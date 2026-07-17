@@ -116,6 +116,39 @@ it('concurrent wrong OTP attempts are counted atomically (no lost updates)', asy
   }
 })
 
+it('createEmailOtp stores a verifier digest, never the raw OTP', async () => {
+  if (!dbUrl) {
+    console.warn(
+      'Skipping OTP digest-at-rest test: TURBOPANEL_DATABASE_URL not set',
+    )
+    return
+  }
+  const db = createDenoDb()
+  const email = `otp-digest-${crypto.randomUUID()}@example.com`
+  try {
+    const created = await createEmailOtp(db, email, 'sign-in', 300, {
+      cooldownMs: 0,
+    })
+    assertEquals(created.status, 'created')
+    const otp = created.status === 'created' ? created.otp : ''
+
+    const hash = await hashEmailForOtp(email)
+    const rows = await db
+      .select({ value: verification.value })
+      .from(verification)
+      .where(eq(verification.identifier, `otp:sign-in:${hash}`))
+    assertEquals(rows.length, 1)
+    // The at-rest value must never be the plaintext OTP.
+    assertEquals(rows[0].value === otp, false)
+
+    // The correct OTP still verifies against the stored digest.
+    const ok = await verifyEmailOtp(db, email, 'sign-in', otp)
+    assertEquals(ok, 'ok')
+  } finally {
+    await cleanupOtp(db, email)
+  }
+})
+
 it('parallel first-time createEmailOtp leaves only one active OTP row', async () => {
   if (!dbUrl) {
     console.warn(

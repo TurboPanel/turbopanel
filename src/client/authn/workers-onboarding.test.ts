@@ -17,9 +17,11 @@ import {
   team,
   teammate,
   user,
+  workspace,
 } from '../../lib/db/schema.ts'
 import { CLIENT_API_PREFIX } from '../../surfaces.ts'
 import type { SignupEnvOverride } from './install-state.ts'
+import { DEFAULT_WORKSPACE_NAME } from './install-state.ts'
 import type { EmailJob, EmailQueue } from '../../lib/email/types.ts'
 import { createNoopQueue } from '../../lib/email/noop-queue.ts'
 
@@ -119,6 +121,7 @@ async function cleanupOrg(db: ReturnType<typeof createDenoDb>, userId: string) {
   await db.delete(member).where(eq(member.userId, userId))
 
   for (const organizationId of organizationIds) {
+    await db.delete(workspace).where(eq(workspace.organizationId, organizationId))
     await db.delete(team).where(eq(team.organizationId, organizationId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
@@ -151,7 +154,7 @@ it('Workers password sign-up succeeds on a fresh database without install', asyn
     const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email, password: 'password1' }),
+      body: JSON.stringify({ email, password: 'password1!' }),
     })
 
     if (res.status !== 201) {
@@ -177,7 +180,7 @@ it('Workers sign-up creates an organization for the new user', async () => {
     const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email, password: 'password1' }),
+      body: JSON.stringify({ email, password: 'password1!' }),
     })
 
     if (res.status !== 201) {
@@ -213,6 +216,21 @@ it('Workers sign-up creates an organization for the new user', async () => {
       .limit(1)
     if (orgRows.length !== 1) {
       throw new Error(`expected organization row for ${organizationId}`)
+    }
+
+    const workspaceRows = await db
+      .select({ displayName: workspace.displayName })
+      .from(workspace)
+      .where(eq(workspace.organizationId, organizationId))
+    if (workspaceRows.length !== 1) {
+      throw new Error(
+        `expected exactly one workspace, got ${JSON.stringify(workspaceRows)}`,
+      )
+    }
+    if (workspaceRows[0]?.displayName !== DEFAULT_WORKSPACE_NAME) {
+      throw new Error(
+        `expected workspace displayName ${DEFAULT_WORKSPACE_NAME}, got ${workspaceRows[0]?.displayName}`,
+      )
     }
   } finally {
     await cleanupUser(db, email)
@@ -270,7 +288,7 @@ it('Deno sign-up still requires install completion on a fresh database', async (
   const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email, password: 'password1' }),
+    body: JSON.stringify({ email, password: 'password1!' }),
   })
 
   if (res.status !== 403) {
@@ -335,7 +353,7 @@ it('Deno sign-up auto-verifies when email delivery is not configured', async () 
     const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email, password: 'password1' }),
+      body: JSON.stringify({ email, password: 'password1!' }),
     })
 
     if (res.status !== 201) {
@@ -384,7 +402,7 @@ it('Deno sign-up rejects when verification is required but the queue is noop', a
     const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email, password: 'password1' }),
+      body: JSON.stringify({ email, password: 'password1!' }),
     })
 
     if (res.status !== 503) {
@@ -427,7 +445,7 @@ it('Workers sign-up leaves no org residue when verification email enqueue fails'
     const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email, password: 'password1' }),
+      body: JSON.stringify({ email, password: 'password1!' }),
     })
 
     if (res.status !== 503) {
