@@ -511,7 +511,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanOr403(c, 'organization:own', 'project', id)
+    const denied = await assertCanOr403(c, 'organization:manage', 'project', id)
     if (denied) return denied
 
     const body = await parseJsonBody(c)
@@ -573,7 +573,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanOr403(c, 'organization:own', 'project', id)
+    const denied = await assertCanOr403(c, 'organization:manage', 'project', id)
     if (denied) return denied
 
     const result = await deleteProjectCascade(db, id)

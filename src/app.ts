@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import type { SessionData } from './client/authn/session-store.ts'
+import type { AuthRateLimiter } from './client/authn/auth-rate-limit.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from './client/authn/secrets.ts'
 import { registerClientRoutes } from './client/routes.ts'
 import { registerCorsMiddleware } from './cors.ts'
@@ -29,12 +30,25 @@ export type AppEnv = {
      * this stays unset when no storage backend is configured for the runtime.
      */
     serverMetricsStore?: ServerMetricsStore
+    /**
+     * Runtime serving the request. Used by session-cookie TLS resolution to
+     * decide whether `X-Forwarded-Proto` is trustworthy (Deno Caddy-over-Unix
+     * trusted proxy) or must be ignored (Workers — URL-derived only). Set by
+     * `createApp`; a missing value is treated as the secure URL-derived path.
+     */
+    runtime?: 'deno' | 'workers'
     /** Platform env bindings for settings resolution (Workers per-request; Deno process env). */
     platformEnv?: Record<string, string | undefined>
     /** AES-GCM data encryption keys (client routes encrypt only). */
     dataEncryptionSecrets?: DerivedSecretsConfig
     /** Root secret config for per-daemon recipient sealing. */
     secretsConfig?: SecretsConfig
+    /**
+     * Durable, globally-shared auth throttle. Injected per-runtime by the
+     * entrypoints (`workers.ts` / `deno.ts`). Absent in unit tests, where auth
+     * routes fall back to the process-local shared limiter.
+     */
+    authRateLimiter?: AuthRateLimiter
   }
 }
 
@@ -73,6 +87,15 @@ export function createApp(
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>()
   registerCorsMiddleware(app, corsOrigins)
+  // Publish the runtime so session-cookie TLS resolution knows whether the
+  // Deno trusted-proxy path (honors X-Forwarded-Proto) or the Workers
+  // URL-derived path applies. Registered before routes so every downstream
+  // handler and middleware sees it.
+  const resolvedRuntime = runtime ?? 'workers'
+  app.use('*', (c, next) => {
+    c.set('runtime', resolvedRuntime)
+    return next()
+  })
   if (db) {
     app.use('*', (c, next) => {
       c.set('db', db)

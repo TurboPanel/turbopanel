@@ -37,7 +37,9 @@ import {
 } from '../../lib/settings/email-settings.ts'
 import { registerOtpRoutes } from './otp-http.ts'
 import {
+  type AuthRateLimiter,
   type AuthRateLimitPurpose,
+  createFailClosedAuthRateLimiter,
   getSharedAuthRateLimiter,
 } from './auth-rate-limit.ts'
 
@@ -60,9 +62,15 @@ export type SessionResponse = {
   needsInstall?: boolean
 }
 
-function readSessionCookie(c: Context): string | null {
-  const forwardedProto = c.req.header('x-forwarded-proto')
-  const cookieName = resolveSessionCookieName(c.req.url, forwardedProto)
+function readSessionCookie(
+  c: Context,
+  runtime: 'deno' | 'workers',
+): string | null {
+  const cookieName = resolveSessionCookieName({
+    requestUrl: c.req.url,
+    runtime,
+    forwardedProto: c.req.header('x-forwarded-proto'),
+  })
   return getCookie(c, cookieName) ?? null
 }
 
@@ -80,8 +88,12 @@ function buildCookieHeader(
   return header
 }
 
-function requestTls(c: Context) {
-  return resolveRequestTls(c.req.url, c.req.header('x-forwarded-proto'))
+function requestTls(c: Context, runtime: 'deno' | 'workers') {
+  return resolveRequestTls({
+    requestUrl: c.req.url,
+    runtime,
+    forwardedProto: c.req.header('x-forwarded-proto'),
+  })
 }
 
 /**
@@ -107,17 +119,41 @@ export function resolveClientIp(
   return realIp || null
 }
 
+let failClosedWorkersLimiter: AuthRateLimiter | undefined
+
 /**
- * Enforce the shared auth rate limiter for a route. Returns a `429` response
- * when the caller has exceeded the window budget, or `null` when allowed.
+ * Resolve the limiter for a request. The per-runtime entrypoint injects a
+ * durable, globally-shared limiter into the request context. When it is absent:
+ *
+ * - **Workers**: never fall back to the per-isolate shared limiter (each isolate
+ *   keeps its own counters, so abuse could rotate across them). Fail closed.
+ * - **Deno / tests**: the process-local shared limiter is safe (single process).
  */
-export function enforceAuthRateLimit(
+function resolveAuthRateLimiter(
+  c: Context,
+  runtime: 'deno' | 'workers',
+): AuthRateLimiter {
+  const injected = c.get('authRateLimiter') as AuthRateLimiter | undefined
+  if (injected) return injected
+  if (runtime === 'workers') {
+    failClosedWorkersLimiter ??= createFailClosedAuthRateLimiter()
+    return failClosedWorkersLimiter
+  }
+  return getSharedAuthRateLimiter()
+}
+
+/**
+ * Enforce the durable auth rate limiter for a route. Resolves to a `429`
+ * response when the caller has exceeded the window budget, or `null` when
+ * allowed.
+ */
+export async function enforceAuthRateLimit(
   c: Context,
   purpose: AuthRateLimitPurpose,
   identity: string | null | undefined,
   runtime: 'deno' | 'workers',
-): Response | null {
-  const result = getSharedAuthRateLimiter().check(
+): Promise<Response | null> {
+  const result = await resolveAuthRateLimiter(c, runtime).check(
     purpose,
     identity,
     resolveClientIp(c, runtime),
@@ -444,6 +480,10 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
 
   auth.post('/sign-in', async (c) => {
     const db = getDb(c)
+    const secrets = opts.secrets
+    if (!secrets) {
+      return c.json({ ok: false, error: 'Not configured' }, 503)
+    }
     let body: unknown
     try {
       body = await c.req.json()
@@ -469,7 +509,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Invalid request' }, 400)
     }
 
-    const signInLimited = enforceAuthRateLimit(
+    const signInLimited = await enforceAuthRateLimit(
       c,
       'sign-in',
       username,
@@ -516,8 +556,8 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       ipAddress: resolveClientIp(c, opts.runtime) ?? undefined,
       userAgent: c.req.header('User-Agent') ?? undefined,
     })
-    const cookieValue = await buildSignedCookie(token, opts.secrets)
-    const tls = requestTls(c)
+    const cookieValue = await buildSignedCookie(token, secrets)
+    const tls = requestTls(c, opts.runtime)
     const setCookieHeader = buildCookieHeader(
       cookieValue,
       SESSION_EXPIRES_IN_MS / 1000,
@@ -542,16 +582,20 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
 
   auth.post('/sign-out', async (c) => {
     const db = getDb(c)
-    const cookieValue = readSessionCookie(c)
+    const secrets = opts.secrets
+    if (!secrets) {
+      return c.json({ ok: false, error: 'Not configured' }, 503)
+    }
+    const cookieValue = readSessionCookie(c, opts.runtime)
 
     if (cookieValue) {
-      const result = await verifySignedCookie(cookieValue, opts.secrets)
+      const result = await verifySignedCookie(cookieValue, secrets)
       if (result) {
         await deleteSession(db, result.token)
       }
     }
 
-    const tls = requestTls(c)
+    const tls = requestTls(c, opts.runtime)
     let clearCookie =
       `${tls.cookieName}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`
     if (tls.isHttps) {
@@ -593,7 +637,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
 
     const trimmedEmail = parsed.email.trim().toLowerCase()
 
-    const signupLimited = enforceAuthRateLimit(
+    const signupLimited = await enforceAuthRateLimit(
       c,
       'sign-up',
       trimmedEmail,
@@ -699,13 +743,17 @@ export function registerAuthnRoutes(app: Hono, opts: AuthRouteOpts) {
 
   authn.get('/session', async (c) => {
     const db = getDb(c)
+    const secrets = opts.secrets
+    if (!secrets) {
+      return c.json({ ok: false }, 401)
+    }
 
-    const cookieValue = readSessionCookie(c)
+    const cookieValue = readSessionCookie(c, opts.runtime)
     if (!cookieValue) {
       return c.json({ ok: false }, 401)
     }
 
-    const result = await verifySignedCookie(cookieValue, opts.secrets)
+    const result = await verifySignedCookie(cookieValue, secrets)
     if (!result) {
       return c.json({ ok: false }, 401)
     }

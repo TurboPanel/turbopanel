@@ -132,6 +132,33 @@ test('organization:manage grant allows full org access', async () => {
   })
 })
 
+test('organization:manage grant does not satisfy an organization:own check', async () => {
+  await withTestFixtures(async ({ db, userId, organizationId, workspaceId }) => {
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId: userId,
+      permission: 'organization:manage',
+      allow: true,
+    })
+
+    const ownsOrg = await can(db, userId, 'organization:own', 'organization', organizationId)
+    const ownsWorkspace = await can(db, userId, 'organization:own', 'workspace', workspaceId)
+    const managesOrg = await can(db, userId, 'organization:manage', 'organization', organizationId)
+
+    if (ownsOrg) {
+      throw new Error('organization:manage grant must not satisfy an organization:own check on the org')
+    }
+    if (ownsWorkspace) {
+      throw new Error('organization:manage grant must not satisfy an organization:own check on org entities')
+    }
+    if (!managesOrg) {
+      throw new Error('organization:manage grant should still satisfy an organization:manage check')
+    }
+  })
+})
+
 test('user without grants is denied', async () => {
   await withTestFixtures(async ({ db, userId, organizationId, workspaceId }) => {
     const canOrg = await can(db, userId, 'organization:own', 'organization', organizationId)

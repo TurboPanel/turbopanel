@@ -650,7 +650,7 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanOr403(c, 'organization:own', 'variable', id)
+    const denied = await assertCanOr403(c, 'organization:manage', 'variable', id)
     if (denied) return denied
 
     const body = await parseJsonBody(c)
@@ -712,7 +712,7 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanOr403(c, 'organization:own', 'variable', id)
+    const denied = await assertCanOr403(c, 'organization:manage', 'variable', id)
     if (denied) return denied
 
     await db.delete(variable).where(eq(variable.id, id))

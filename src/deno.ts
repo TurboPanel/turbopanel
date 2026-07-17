@@ -31,6 +31,7 @@ import {
   resolveDaemonRestRateLimit,
   resolveDaemonWsInboundLimits,
 } from './daemon/rate-limit/redis-rate-limiter.ts'
+import { createDurableAuthRateLimiter } from './client/authn/auth-rate-limit.ts'
 import { registerVersionRoute } from './daemon/version.ts'
 import { registerSystemRoutes } from './developer/system-routes.ts'
 import { registerDevSyncRoutes } from './developer/dev-sync.ts'
@@ -153,6 +154,16 @@ const daemonRestLimiter = createRedisRateLimiter({
   limit: restRate.limit,
   periodSeconds: restRate.periodSeconds,
 })
+// Durable, globally-shared client-auth throttle over Redis (same infrastructure
+// as the daemon limiters). Redis errors fail open inside createRedisRateLimiter,
+// so a broker hiccup never locks legitimate users out.
+const authRateLimiter = createDurableAuthRateLimiter(
+  createRedisRateLimiter({
+    client: daemonCellRegistry.client,
+    limit: 10,
+    periodSeconds: 60,
+  }),
+)
 
 let commandConsumer: { close(): Promise<void> } | null = null
 if (isNoopCommandQueue(commandQueue)) {
@@ -193,7 +204,11 @@ const app = createApp({
 })
 const routes = app as unknown as Hono
 routes.use('*', (c, next) => {
+  // Deno serves behind the local Caddy → Unix socket, so session-cookie TLS
+  // uses the trusted-proxy path that honors X-Forwarded-Proto.
+  c.set('runtime', 'deno')
   c.set('platformEnv', Deno.env.toObject())
+  c.set('authRateLimiter', authRateLimiter)
   return next()
 })
 registerInstallRoutes(routes, {

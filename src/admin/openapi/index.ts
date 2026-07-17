@@ -1,4 +1,4 @@
-import { resolveSessionCookieName } from '../../client/authn/crypto.ts'
+import { resolveSessionCookieNameFromUrl } from '../../client/authn/crypto.ts'
 import { ADMIN_API_PREFIX } from '../../surfaces.ts'
 
 const cookieSecurity = [{ cookieAuth: [] }] as const
@@ -8,7 +8,7 @@ export function getAdminOpenApiSpec(
   serverUrl: string,
   opts?: { devSurface?: boolean },
 ): object {
-  const sessionCookieName = resolveSessionCookieName(serverUrl)
+  const sessionCookieName = resolveSessionCookieNameFromUrl(serverUrl)
 
   return {
     openapi: '3.1.0',

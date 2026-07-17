@@ -188,7 +188,7 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanOr403(c, 'organization:own', 'service', id)
+    const denied = await assertCanOr403(c, 'organization:manage', 'service', id)
     if (denied) return denied
 
     const body = await parseJsonBody(c)
@@ -240,7 +240,7 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanOr403(c, 'organization:own', 'service', id)
+    const denied = await assertCanOr403(c, 'organization:manage', 'service', id)
     if (denied) return denied
 
     const result = await runHierarchyDelete(db, async (tx) => {

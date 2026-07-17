@@ -88,27 +88,13 @@ export function buildPatchUpdateFields(
   return result
 }
 
-/** Read access: org owners/managers and platform admins may read any entity in the org. */
-export async function assertCanReadOr403(
-  c: Context,
-  kind: string,
-  entityId: string,
-): Promise<Response | null> {
-  const db = getDb(c)
-  if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-  const session = c.get('session')
-  if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-  const allowed = await can(db, session.userId, 'organization:own', kind, entityId)
-
-  if (!allowed) {
-    return c.json({ error: 'Forbidden' }, 403)
-  }
-  return null
-}
-
-/** Manage access: org managers and platform admins may manage entities in the org. */
+/**
+ * Manage access: org owners/managers and platform admins may manage entities in
+ * the org. This is the canonical broad (owner-or-manager) org-access check — it
+ * uses `organization:manage`, which the evaluator satisfies for either an owner
+ * or a manager grant. Do NOT use `organization:own` for broad access: after the
+ * evaluator was tightened, `organization:own` is an exact owner-only check.
+ */
 export async function assertCanManageOr403(
   c: Context,
   kind: string,
@@ -128,23 +114,32 @@ export async function assertCanManageOr403(
   return null
 }
 
-/** Create access: org owners/managers and platform admins may create under the parent scope. */
+/**
+ * Read access: org owners/managers and platform admins may read any entity in
+ * the org. There is no lower "viewer" grant, so read access currently maps to
+ * manage-level access. Delegates to {@link assertCanManageOr403} so the broad
+ * org-access check stays in one place.
+ */
+export async function assertCanReadOr403(
+  c: Context,
+  kind: string,
+  entityId: string,
+): Promise<Response | null> {
+  return assertCanManageOr403(c, kind, entityId)
+}
+
+/**
+ * Create access: org owners/managers and platform admins may create under the
+ * parent scope. This is a broad (owner-or-manager) org-access check; it
+ * delegates to {@link assertCanManageOr403}. Do NOT use `organization:own`
+ * here — that is now an exact owner-only check.
+ */
 export async function assertCanCreateOr403(
   c: Context,
   parentKind: string,
   parentId: string,
 ): Promise<Response | null> {
-  const db = getDb(c)
-  if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-  const session = c.get('session')
-  if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-  const allowed = await can(db, session.userId, 'organization:own', parentKind, parentId)
-  if (!allowed) {
-    return c.json({ error: 'Forbidden' }, 403)
-  }
-  return null
+  return assertCanManageOr403(c, parentKind, parentId)
 }
 
 export async function parseJsonBody(

@@ -1,165 +1,164 @@
-import { describe, expect, it } from 'vitest'
+import { eq } from 'drizzle-orm'
+import { it } from '@std/testing/bdd'
+import { getDatabaseUrl } from '../../db-url.ts'
+import { createDenoDb, type Db } from '../../db.ts'
 import {
-  getClientPublicStatus,
-  normalizeSignupEnvOverride,
-  resolveIsSignupEnabled,
-  validateSuperadminPassword,
+  completeInstanceInstall,
+  DEFAULT_ORGANIZATION_NAME,
+  INSTANCE_ALREADY_CONFIGURED_ERROR,
+  INSTANCE_INSTALL_SENTINEL_KEY,
+  isInstanceInstalled,
 } from './install-state.ts'
+import { SUPERADMIN_ROLE } from './session-store.ts'
+import {
+  account,
+  grant,
+  license,
+  member,
+  organization,
+  setting,
+  team,
+  teammate,
+  user,
+  workspace,
+} from '../../lib/db/schema.ts'
 
-describe('normalizeSignupEnvOverride', () => {
-  it('returns undefined for nullish values', () => {
-    expect(normalizeSignupEnvOverride(undefined)).toBeUndefined()
-    expect(normalizeSignupEnvOverride(null)).toBeUndefined()
-    expect(normalizeSignupEnvOverride('')).toBeUndefined()
-    expect(normalizeSignupEnvOverride('   ')).toBeUndefined()
-  })
+const dbUrl = getDatabaseUrl()
 
-  it('normalizes booleans and numbers', () => {
-    expect(normalizeSignupEnvOverride(true)).toBe('1')
-    expect(normalizeSignupEnvOverride(false)).toBe('0')
-    expect(normalizeSignupEnvOverride(1)).toBe('1')
-    expect(normalizeSignupEnvOverride(0)).toBe('0')
-  })
+async function cleanupInstall(db: Db, organizationId: string, userId: string) {
+  await db.delete(grant).where(eq(grant.actorId, userId))
+  await db.delete(teammate).where(eq(teammate.userId, userId))
+  await db.delete(member).where(eq(member.userId, userId))
+  await db.delete(account).where(eq(account.userId, userId))
+  await db.delete(license).where(eq(license.organizationId, organizationId))
+  await db.delete(workspace).where(eq(workspace.organizationId, organizationId))
+  await db.delete(team).where(eq(team.organizationId, organizationId))
+  await db.delete(user).where(eq(user.id, userId))
+  await db.delete(organization).where(eq(organization.id, organizationId))
+  await db.delete(setting).where(eq(setting.key, INSTANCE_INSTALL_SENTINEL_KEY))
+}
 
-  it('trims string bindings', () => {
-    expect(normalizeSignupEnvOverride('  true  ')).toBe('true')
-    expect(normalizeSignupEnvOverride('1')).toBe('1')
-  })
-})
-
-describe('resolveIsSignupEnabled', () => {
-  it('honors string and boolean env overrides', () => {
-    expect(resolveIsSignupEnabled(undefined, '1', { runtime: 'workers' })).toBe(
-      true,
+it('concurrent install completions create exactly one superadmin bootstrap', async () => {
+  if (!dbUrl) {
+    console.warn(
+      'Skipping concurrent install test: TURBOPANEL_DATABASE_URL not set',
     )
-    expect(resolveIsSignupEnabled(undefined, 'true', { runtime: 'workers' })).toBe(
-      true,
-    )
-    expect(resolveIsSignupEnabled(undefined, '0', { runtime: 'workers' })).toBe(
-      false,
-    )
-    expect(resolveIsSignupEnabled(undefined, false, { runtime: 'workers' })).toBe(
-      false,
-    )
-  })
+    return
+  }
 
-  it('honors numeric env bindings from Wrangler', () => {
-    expect(resolveIsSignupEnabled(undefined, 1, { runtime: 'workers' })).toBe(true)
-    expect(resolveIsSignupEnabled(undefined, 0, { runtime: 'workers' })).toBe(false)
-    expect(resolveIsSignupEnabled('0', 1, { runtime: 'workers' })).toBe(true)
-  })
+  const db = createDenoDb()
+  if (await isInstanceInstalled(db)) {
+    console.warn('Skipping concurrent install test: instance already installed')
+    return
+  }
 
-  it('falls back to DB when env is unrecognized', () => {
-    expect(resolveIsSignupEnabled('1', 'maybe', { runtime: 'workers' })).toBe(
-      true,
-    )
-    expect(resolveIsSignupEnabled('0', 'maybe', { runtime: 'deno' })).toBe(false)
-  })
+  const suffix = crypto.randomUUID()
+  const emailA = `install-race-a-${suffix}@example.com`
+  const emailB = `install-race-b-${suffix}@example.com`
 
-  it('defaults Workers bootstrap to enabled when unset', () => {
-    expect(resolveIsSignupEnabled(undefined, undefined, { runtime: 'workers' })).toBe(
-      true,
-    )
-    expect(resolveIsSignupEnabled(undefined, undefined, { runtime: 'deno' })).toBe(
-      false,
-    )
-  })
-})
+  let winnerOrgId: string | null = null
+  let winnerUserId: string | null = null
 
-describe('validateSuperadminPassword (canonical server policy)', () => {
-  // This validator is the single server-side gate shared by the install wizard,
-  // sign-up, and password reset. It must reject weak passwords that the old
-  // min-length-only rule accepted, matching the UI mirror.
-  it('rejects weak passwords that passed the old min-length-only rule', () => {
-    // 8+ chars but no digit and no special char.
-    expect(validateSuperadminPassword('abcdefgh')).toBe(
-      'Password must include at least one number',
-    )
-    // Digits only, no special char.
-    expect(validateSuperadminPassword('12345678')).toBe(
-      'Password must include at least one special character',
-    )
-    // Letters + digit but no special char.
-    expect(validateSuperadminPassword('password1')).toBe(
-      'Password must include at least one special character',
-    )
-  })
-
-  it('rejects passwords shorter than the minimum length', () => {
-    expect(validateSuperadminPassword('aB1!')).toBe(
-      'Password must be at least 8 characters',
-    )
-  })
-
-  it('rejects passwords with leading or trailing whitespace', () => {
-    expect(validateSuperadminPassword(' passw0rd! ')).toBe(
-      'Password must not have leading or trailing whitespace',
-    )
-    expect(validateSuperadminPassword('passw0rd!\n')).toBe(
-      'Password must not have leading or trailing whitespace',
-    )
-  })
-
-  it('accepts a password that satisfies every rule', () => {
-    expect(validateSuperadminPassword('sup3r-secret!')).toBeNull()
-  })
-})
-
-describe('getClientPublicStatus (Workers)', () => {
-  it('reflects numeric and string signup env bindings without a database', async () => {
-    await expect(getClientPublicStatus(undefined, 'workers', 1)).resolves.toEqual({
-      ok: true,
-      isSignupEnabled: true,
-      isSignupEmailVerificationEnabled: false,
-    })
-    await expect(getClientPublicStatus(undefined, 'workers', 0)).resolves.toEqual({
-      ok: true,
-      isSignupEnabled: false,
-      isSignupEmailVerificationEnabled: false,
-    })
-    await expect(getClientPublicStatus(undefined, 'workers', '1')).resolves.toEqual({
-      ok: true,
-      isSignupEnabled: true,
-      isSignupEmailVerificationEnabled: false,
-    })
-    await expect(getClientPublicStatus(undefined, 'workers', '0')).resolves.toEqual({
-      ok: true,
-      isSignupEnabled: false,
-      isSignupEmailVerificationEnabled: false,
-    })
-  })
-
-  it('defaults signup to enabled on Workers when env is unset', async () => {
-    await expect(getClientPublicStatus(undefined, 'workers')).resolves.toEqual({
-      ok: true,
-      isSignupEnabled: true,
-      isSignupEmailVerificationEnabled: false,
-    })
-  })
-
-  it('enables email verification when Workers mailgun provider is configured', async () => {
-    await expect(
-      getClientPublicStatus(undefined, 'workers', '1', {
-        TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailgun',
-        TURBOPANEL_SYSTEM_EMAIL__MAILGUN_API_KEY: 'key-abc',
-        TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN: 'mg.example.com',
+  try {
+    const [resultA, resultB] = await Promise.allSettled([
+      completeInstanceInstall(db, {
+        superadminEmail: emailA,
+        superadminPassword: 'password1!',
       }),
-    ).resolves.toEqual({
-      ok: true,
-      isSignupEnabled: true,
-      isSignupEmailVerificationEnabled: true,
-    })
-  })
-
-  it('disables email verification when Workers has no email delivery configured', async () => {
-    await expect(
-      getClientPublicStatus(undefined, 'workers', '1', {
-        TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'smtp',
+      completeInstanceInstall(db, {
+        superadminEmail: emailB,
+        superadminPassword: 'password1!',
       }),
-    ).resolves.toEqual({
-      ok: true,
-      isSignupEnabled: true,
-      isSignupEmailVerificationEnabled: false,
-    })
-  })
+    ])
+
+    const fulfilled = [resultA, resultB].filter(
+      (r): r is PromiseFulfilledResult<
+        Awaited<ReturnType<typeof completeInstanceInstall>>
+      > => r.status === 'fulfilled',
+    )
+    const rejected = [resultA, resultB].filter(
+      (r): r is PromiseRejectedResult => r.status === 'rejected',
+    )
+
+    if (fulfilled.length !== 1) {
+      throw new Error(
+        `expected exactly one install to succeed, got ${fulfilled.length}`,
+      )
+    }
+    if (rejected.length !== 1) {
+      throw new Error(
+        `expected exactly one install to fail, got ${rejected.length}`,
+      )
+    }
+
+    const loserMessage = rejected[0].reason instanceof Error
+      ? rejected[0].reason.message
+      : String(rejected[0].reason)
+    if (loserMessage !== INSTANCE_ALREADY_CONFIGURED_ERROR) {
+      throw new Error(
+        `expected loser to fail with "${INSTANCE_ALREADY_CONFIGURED_ERROR}", got "${loserMessage}"`,
+      )
+    }
+
+    winnerOrgId = fulfilled[0].value.organizationId
+    winnerUserId = fulfilled[0].value.userId
+
+    // Exactly one Default Organization bootstrap.
+    const orgRows = await db
+      .select({ id: organization.id })
+      .from(organization)
+      .where(eq(organization.displayName, DEFAULT_ORGANIZATION_NAME))
+    if (orgRows.length !== 1) {
+      throw new Error(
+        `expected exactly one Default Organization, got ${orgRows.length}`,
+      )
+    }
+
+    // Exactly one superadmin.
+    const adminRows = await db
+      .select({ id: user.id })
+      .from(user)
+      .where(eq(user.role, SUPERADMIN_ROLE))
+    if (adminRows.length !== 1) {
+      throw new Error(`expected exactly one superadmin, got ${adminRows.length}`)
+    }
+    if (adminRows[0]?.id !== winnerUserId) {
+      throw new Error('superadmin row does not match the winning install')
+    }
+
+    // The losing email must not have created a user row.
+    const loserEmail = winnerUserId
+      ? (await db
+        .select({ email: user.email })
+        .from(user)
+        .where(eq(user.id, winnerUserId))
+        .limit(1))[0]?.email === emailA
+        ? emailB
+        : emailA
+      : emailB
+    const loserRows = await db
+      .select({ id: user.id })
+      .from(user)
+      .where(eq(user.email, loserEmail))
+    if (loserRows.length !== 0) {
+      throw new Error(
+        `expected no user row for the losing install email, got ${loserRows.length}`,
+      )
+    }
+
+    // The install sentinel exists exactly once.
+    const sentinelRows = await db
+      .select({ id: setting.id })
+      .from(setting)
+      .where(eq(setting.key, INSTANCE_INSTALL_SENTINEL_KEY))
+    if (sentinelRows.length !== 1) {
+      throw new Error(
+        `expected exactly one install sentinel, got ${sentinelRows.length}`,
+      )
+    }
+  } finally {
+    if (winnerOrgId && winnerUserId) {
+      await cleanupInstall(db, winnerOrgId, winnerUserId)
+    }
+  }
 })

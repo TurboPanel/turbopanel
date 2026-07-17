@@ -200,7 +200,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanOr403(c, 'organization:own', 'environment', id)
+    const denied = await assertCanOr403(c, 'organization:manage', 'environment', id)
     if (denied) return denied
 
     const body = await parseJsonBody(c)
@@ -260,7 +260,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanOr403(c, 'organization:own', 'environment', id)
+    const denied = await assertCanOr403(c, 'organization:manage', 'environment', id)
     if (denied) return denied
 
     const result = await runHierarchyDelete(db, async (tx) => {

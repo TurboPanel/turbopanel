@@ -36,10 +36,33 @@ function tlsFromProtocol(protocol: string): RequestTls | null {
 }
 
 /**
- * Resolve cookie name + Secure flag from proxy headers first, then the request URL.
- * Deno unix sockets behind Caddy use `http+unix://` URLs while `X-Forwarded-Proto` is `https`.
+ * URL-derived TLS state. This is the platform-trusted signal on Cloudflare
+ * Workers (the request URL scheme reflects the real client connection) and the
+ * fallback for the Deno trusted-proxy path. It never consults request headers,
+ * so a spoofed `X-Forwarded-Proto` cannot influence it.
  */
-export function resolveRequestTls(
+export function resolveRequestTlsFromUrl(requestUrl: string): RequestTls {
+  try {
+    const resolved = tlsFromProtocol(new URL(requestUrl).protocol);
+    if (resolved) return resolved;
+  } catch {
+    // fall through to the safe default
+  }
+  return { isHttps: false, cookieName: HTTP_SESSION_COOKIE_NAME };
+}
+
+/**
+ * Trusted-proxy TLS resolution for the **Deno Caddy-over-Unix-socket entrypoint
+ * only**. Caddy terminates TLS and forwards the request over a local Unix socket,
+ * so the request URL is `http+unix://…` / `http://…` while `X-Forwarded-Proto`
+ * carries the real client scheme set by the trusted local proxy.
+ *
+ * This is the ONLY resolver permitted to honor `X-Forwarded-Proto`. It must
+ * never be used for a publicly-reachable listener (e.g. Workers), where the
+ * header is client-controlled and could downgrade the session cookie to the
+ * non-`Secure` HTTP name.
+ */
+export function resolveTrustedProxyRequestTls(
   requestUrl: string,
   forwardedProto?: string | null,
 ): RequestTls {
@@ -47,23 +70,51 @@ export function resolveRequestTls(
   if (normalized === "https" || normalized === "http") {
     return tlsFromProtocol(`${normalized}:`)!;
   }
-
-  try {
-    const resolved = tlsFromProtocol(new URL(requestUrl).protocol);
-    if (resolved) return resolved;
-  } catch {
-    // fall through
-  }
-
-  return { isHttps: false, cookieName: HTTP_SESSION_COOKIE_NAME };
+  return resolveRequestTlsFromUrl(requestUrl);
 }
 
-/** `http:` → {@link HTTP_SESSION_COOKIE_NAME}; `https:` → {@link HTTPS_SESSION_COOKIE_NAME}. */
-export function resolveSessionCookieName(
-  requestUrl: string,
-  forwardedProto?: string | null,
-): string {
-  return resolveRequestTls(requestUrl, forwardedProto).cookieName;
+export type RequestTlsSignal = {
+  requestUrl: string;
+  runtime: "deno" | "workers";
+  /** Raw `X-Forwarded-Proto`; only honored on the Deno trusted-proxy path. */
+  forwardedProto?: string | null;
+};
+
+/**
+ * Runtime-aware TLS resolver for session-cookie security. `X-Forwarded-Proto`
+ * is **not** trusted by default:
+ *
+ * - **Workers:** HTTPS state is derived only from the request URL (a
+ *   platform-trusted signal). A spoofed `X-Forwarded-Proto: http` on an HTTPS
+ *   request is ignored, so it can never produce the non-`Secure` HTTP cookie
+ *   name or omit `Secure`.
+ * - **Deno:** uses the trusted-proxy path (local Caddy → Unix socket) and honors
+ *   `X-Forwarded-Proto`, falling back to the request URL. The Deno instance only
+ *   accepts connections from the local Caddy over the Unix socket, so the header
+ *   originates from a trusted proxy.
+ */
+export function resolveRequestTls(signal: RequestTlsSignal): RequestTls {
+  if (signal.runtime === "deno") {
+    return resolveTrustedProxyRequestTls(
+      signal.requestUrl,
+      signal.forwardedProto,
+    );
+  }
+  return resolveRequestTlsFromUrl(signal.requestUrl);
+}
+
+/** Runtime-aware session cookie name (see {@link resolveRequestTls}). */
+export function resolveSessionCookieName(signal: RequestTlsSignal): string {
+  return resolveRequestTls(signal).cookieName;
+}
+
+/**
+ * URL-only cookie name for documentation / OpenAPI surfaces (Scalar), which
+ * only need to display the cookie name derived from the API base URL. This is
+ * never a security decision and is never header-influenced.
+ */
+export function resolveSessionCookieNameFromUrl(requestUrl: string): string {
+  return resolveRequestTlsFromUrl(requestUrl).cookieName;
 }
 
 export const SESSION_EXPIRES_IN_MS = 7 * 24 * 60 * 60 * 1000;

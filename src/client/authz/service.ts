@@ -76,6 +76,12 @@ async function hasTeamGrant(
   return rows.length > 0
 }
 
+/**
+ * Exact owner-only check: platform admins bypass; otherwise the user must hold
+ * an `organization:own` grant on the organization. An `organization:manage`
+ * grant is NOT sufficient. This is the service-level owner-only guard reused by
+ * owner-only flows; HTTP routes should reach for `assertOrgOwnerOr403`.
+ */
 export async function canOwnOrganization(
   db: Db,
   userId: string,

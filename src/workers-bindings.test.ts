@@ -1,6 +1,7 @@
 import { assert, assertEquals } from 'jsr:@std/assert'
 import {
   resolveWorkersCachedDb,
+  resolveWorkersClientAuthRateLimiter,
   resolveWorkersDaemonRateLimiters,
   resolveWorkersQueryCache,
   isPlaceholderHyperdriveCachedId,
@@ -137,6 +138,43 @@ test('resolveWorkersDaemonRateLimiters wraps present RateLimit bindings', async 
   assertEquals(await rest.limit({ key: 'rest-b' }), { success: false })
   assertEquals(connectKeys, ['connect-a'])
   assertEquals(restKeys, ['rest-b'])
+})
+
+test('resolveWorkersClientAuthRateLimiter wraps the binding into a durable limiter', async () => {
+  const keys: string[] = []
+  const env = {
+    CLIENT_AUTH_RATE_LIMITER: {
+      limit: (options: { key: string }) => {
+        keys.push(options.key)
+        return Promise.resolve({ success: true })
+      },
+    },
+  } as unknown as CloudflareBindings
+
+  const limiter = resolveWorkersClientAuthRateLimiter(env)
+  const result = await limiter.check('sign-in', 'user@example.com', '203.0.113.7')
+  assertEquals(result.allowed, true)
+  // Two independent buckets (identity + IP) keyed against the shared binding.
+  assertEquals(keys.length, 2)
+  assert(keys.some((k) => k.includes(':id:')))
+  assert(keys.some((k) => k.includes(':ip:')))
+})
+
+test('resolveWorkersClientAuthRateLimiter fails closed in production when binding missing', async () => {
+  // Production-like env (no dev surface flag, no binding).
+  const env = {} as CloudflareBindings
+  const limiter = resolveWorkersClientAuthRateLimiter(env)
+  const result = await limiter.check('sign-in', 'user@example.com', '203.0.113.8')
+  assertEquals(result.allowed, false)
+  assert(result.retryAfterSeconds > 0)
+})
+
+test('resolveWorkersClientAuthRateLimiter allows per-isolate fallback on the dev surface', async () => {
+  const env = { TURBOPANEL_DEV_SURFACE: '1' } as CloudflareBindings
+  const limiter = resolveWorkersClientAuthRateLimiter(env)
+  const result = await limiter.check('sign-in', 'dev@example.com', '203.0.113.9')
+  // Dev fallback allows the first attempt (per-isolate limiter, not fail-closed).
+  assertEquals(result.allowed, true)
 })
 
 test('isPlaceholderHyperdriveCachedId matches only the dev placeholder', () => {

@@ -34,3 +34,22 @@ export async function assertCanOr403(
 
   return null
 }
+
+/**
+ * Exact owner-only guard for owner-only routes (access-grant management,
+ * license lifecycle). Requires an `organization:own` grant on the entity's
+ * organization — an `organization:manage` grant is NOT sufficient. Resolves the
+ * entity's owning organization via {@link can}, so it works for any entity type
+ * (organization, team, or a resource that resolves to an org).
+ *
+ * Use this instead of `assertCanOr403(c, 'organization:own', …)` at owner-only
+ * call sites so the owner-only intent is explicit and cannot be silently
+ * downgraded to a broad org-access check.
+ */
+export async function assertOrgOwnerOr403(
+  c: Context,
+  entityType: string,
+  entityId: string,
+): Promise<Response | null> {
+  return assertCanOr403(c, 'organization:own', entityType, entityId)
+}

@@ -5,6 +5,12 @@ import type { QueryCache } from './query-cache/contracts.ts'
 import type { RateLimiter } from './daemon/rate-limit/contracts.ts'
 import { createNoopRateLimiter } from './daemon/rate-limit/contracts.ts'
 import { createWorkersRateLimiter } from './daemon/rate-limit/workers-rate-limiter.ts'
+import {
+  type AuthRateLimiter,
+  createDurableAuthRateLimiter,
+  createFailClosedAuthRateLimiter,
+  getSharedAuthRateLimiter,
+} from './client/authn/auth-rate-limit.ts'
 
 type WorkersDbFactory = (binding: HyperdriveBinding) => Db
 
@@ -78,8 +84,35 @@ export function resolveWorkersDaemonRateLimiters(
   }
 }
 
+/**
+ * Resolve the durable client-auth limiter for Workers.
+ *
+ * - Binding present → durable, globally-shared limiter over the `RateLimit`
+ *   binding (counters shared across isolates).
+ * - Binding absent on a **dev** surface → per-isolate limiter (acceptable for
+ *   local `wrangler dev`).
+ * - Binding absent on **production** → fail-closed limiter. Auth endpoints
+ *   return 429 rather than silently degrading to a bypassable per-isolate
+ *   counter. This is the configuration check that stops production Workers from
+ *   quietly running without a shared throttle.
+ */
+export function resolveWorkersClientAuthRateLimiter(
+  env: CloudflareBindings,
+): AuthRateLimiter {
+  if (env.CLIENT_AUTH_RATE_LIMITER) {
+    return createDurableAuthRateLimiter(
+      createWorkersRateLimiter(env.CLIENT_AUTH_RATE_LIMITER),
+    )
+  }
+  if (isWorkersDevSurface(env)) {
+    return getSharedAuthRateLimiter()
+  }
+  return createFailClosedAuthRateLimiter()
+}
+
 let cachedHyperdriveWarningLogged = false
 let daemonRateLimiterWarningLogged = false
+let clientAuthRateLimiterWarningLogged = false
 
 /**
  * Warn once when production-like Workers env has primary Hyperdrive but no cached
@@ -108,6 +141,21 @@ export function warnIfDaemonRateLimitersMissing(env: CloudflareBindings): void {
   daemonRateLimiterWarningLogged = true
   console.warn(
     'DAEMON_CONNECT_RATE_LIMITER / DAEMON_REST_RATE_LIMITER binding(s) missing; daemon rate limits are noops.',
+  )
+}
+
+/**
+ * Warn once when production-like Workers env is missing the client-auth rate
+ * limit binding — auth endpoints will fail closed until it is bound.
+ */
+export function warnIfClientAuthRateLimiterMissing(env: CloudflareBindings): void {
+  if (clientAuthRateLimiterWarningLogged) return
+  if (env.CLIENT_AUTH_RATE_LIMITER) return
+  if (isWorkersDevSurface(env)) return
+
+  clientAuthRateLimiterWarningLogged = true
+  console.warn(
+    'CLIENT_AUTH_RATE_LIMITER binding missing; client auth endpoints fail closed (429) until it is bound.',
   )
 }
 

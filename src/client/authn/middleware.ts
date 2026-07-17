@@ -34,8 +34,25 @@ export type ResolvedSession = {
   token: string
 }
 
+/**
+ * Resolve the runtime from context (set by `createApp`). Unknown values fall
+ * back to the secure URL-derived path (`'workers'`), so a missing signal never
+ * results in trusting a client-supplied `X-Forwarded-Proto`.
+ */
+function resolveRuntime(c: Context): 'deno' | 'workers' {
+  return c.get('runtime') === 'deno' ? 'deno' : 'workers'
+}
+
+function requestTls(c: Context) {
+  return resolveRequestTls({
+    requestUrl: c.req.url,
+    runtime: resolveRuntime(c),
+    forwardedProto: c.req.header('x-forwarded-proto'),
+  })
+}
+
 function buildCookieHeader(cookieValue: string, c: Context): string {
-  const tls = resolveRequestTls(c.req.url, c.req.header('x-forwarded-proto'))
+  const tls = requestTls(c)
   let header =
     `${tls.cookieName}=${cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_EXPIRES_IN_MS / 1000}`
   if (tls.isHttps) {
@@ -58,7 +75,7 @@ export async function resolveSession(
   secrets: DerivedSecretsConfig,
   db?: Db,
 ): Promise<ResolvedSession | null> {
-  const tls = resolveRequestTls(c.req.url, c.req.header('x-forwarded-proto'))
+  const tls = requestTls(c)
   const cookieValue = getCookie(c, tls.cookieName)
   const result = cookieValue
     ? await verifySignedCookie(cookieValue, secrets)

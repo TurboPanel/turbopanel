@@ -506,10 +506,14 @@ function buildLeavesBody(kind: string, organizationId: string): SQL {
 
 /**
  * Resolve whether `userId` holds the requested permission on the entity.
- * Org-level `organization:own` / `organization:manage` grants on the owning
+ *
+ * Organization permission evaluation respects the requested permission:
+ * `organization:own` requires an owner grant (`organization:own`), while
+ * `organization:manage` accepts either an owner or a manager grant
+ * (`organization:own` / `organization:manage`). Org-level grants on the owning
  * organization apply to all entities in that org. For team-scoped checks on a
  * team entity, direct `team:own` / `team:manage` grants on the team are also
- * honored.
+ * honored (`team:own` requires an owner grant; `team:manage` accepts either).
  */
 export async function can(
   db: Db,
@@ -521,6 +525,15 @@ export async function can(
 ): Promise<boolean> {
   const actorsetBody = buildActorsetBody(userId, opts?.subjects)
   const ancestryBody = buildAncestryBody(entityType, entityId)
+
+  // Respect the requested organization permission: an `organization:own` check
+  // must require an owner grant, while `organization:manage` accepts owner or
+  // manager grants. Team-scoped requests keep the prior org-delegation
+  // behavior (an org owner/manager may act on any team in the org).
+  const orgPermissionFilter =
+    permissionKey === 'organization:own'
+      ? sql`ag.permission = 'organization:own'`
+      : sql`ag.permission IN ('organization:own', 'organization:manage')`
 
   const isTeamScopedCheck =
     entityType === 'team' &&
@@ -552,7 +565,7 @@ export async function can(
         ON ss.actor_type = ag.actor_type AND ss.actor_id = ag.actor_id
       WHERE ag.entity_type = 'organization'
         AND ag.entity_id = (SELECT entity_id FROM org_id)
-        AND ag.permission IN ('organization:own', 'organization:manage')
+        AND ${orgPermissionFilter}
         AND ag.allow = true
       LIMIT 1
     ),

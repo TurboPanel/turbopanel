@@ -7,7 +7,6 @@ import {
   resolveInvitationGrants,
 } from '../authn/invitation-grants.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { getAccessManagementPermission } from '../authz/access-management.ts'
 import {
   mapGrantRows,
   revokeAccessGrant,
@@ -18,9 +17,9 @@ import {
   resolveEntityByKindAndItemId,
 } from '../authz/entity-resolver.ts'
 import {
-  assertCanOr403,
   assertNotLastOrgOwner,
   assertNotLastTeamOwner,
+  assertOrgOwnerOr403,
   can,
   canManageOrganization,
 } from '../authz/index.ts'
@@ -76,6 +75,10 @@ async function assertRevocableAllowGrant(
   }
 }
 
+// Listing, creating, and revoking access grants are owner-only operations.
+// An organization *manager* must not be able to reach them, so this uses the
+// exact owner-only guard (`organization:own`) rather than a broad org-access
+// check.
 async function assertCanManageAccessOr403(
   c: Context,
   db: Db,
@@ -86,12 +89,7 @@ async function assertCanManageAccessOr403(
     return c.json({ error: 'Not found' }, 404)
   }
 
-  return assertCanOr403(
-    c,
-    getAccessManagementPermission(entity.entityType),
-    entity.entityType,
-    entity.entityId,
-  )
+  return assertOrgOwnerOr403(c, entity.entityType, entity.entityId)
 }
 
 interface CreateAccessInput {

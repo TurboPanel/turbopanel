@@ -10,7 +10,7 @@ import { createLicense, invalidateLicense, listLicenses, listServersBoundToLicen
 import { assertLicenseInvalidationAllowed } from '../authn/license-lifecycle.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { assertCanOr403 } from '../authz/index.ts'
+import { assertOrgOwnerOr403 } from '../authz/index.ts'
 import { compatLogInfo } from '../../log-compat.ts'
 import { getDb, getDaemonCellRegistry } from '../../db.ts'
 import { isDeveloperSurfaceEnabled } from '../../dev-mode.ts'
@@ -21,11 +21,13 @@ import {
 } from '../../lib/resolve-public-base-url.ts'
 import { getOrgId } from '../shared.ts'
 
+// License create/list/revoke are owner-only. Use the exact owner-only guard so
+// an organization manager cannot mint or revoke registration keys.
 async function assertBillingOrOrgMember(
   c: Context,
   organizationId: string,
 ): Promise<Response | null> {
-  return assertCanOr403(c, 'organization:own', 'organization', organizationId)
+  return assertOrgOwnerOr403(c, 'organization', organizationId)
 }
 
 type LicenseCreateFields = {

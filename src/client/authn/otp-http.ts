@@ -52,8 +52,12 @@ function nowTs(): string {
   return new Date().toISOString()
 }
 
-function requestTls(c: Context) {
-  return resolveRequestTls(c.req.url, c.req.header('x-forwarded-proto'))
+function requestTls(c: Context, runtime: 'deno' | 'workers') {
+  return resolveRequestTls({
+    requestUrl: c.req.url,
+    runtime,
+    forwardedProto: c.req.header('x-forwarded-proto'),
+  })
 }
 
 function buildCookieHeader(
@@ -75,8 +79,11 @@ async function readActiveSession(
   opts: AuthRouteOpts,
 ): Promise<SessionData | null> {
   const db = getDb(c)
-  const forwardedProto = c.req.header('x-forwarded-proto')
-  const cookieName = resolveSessionCookieName(c.req.url, forwardedProto)
+  const cookieName = resolveSessionCookieName({
+    requestUrl: c.req.url,
+    runtime: opts.runtime,
+    forwardedProto: c.req.header('x-forwarded-proto'),
+  })
   const cookieValue = getCookie(c, cookieName) ?? null
 
   if (!cookieValue) return null
@@ -218,7 +225,7 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
 
     let trimmedEmail = email.trim().toLowerCase()
 
-    const sendOtpLimited = enforceAuthRateLimit(
+    const sendOtpLimited = await enforceAuthRateLimit(
       c,
       'send-otp',
       trimmedEmail,
@@ -285,7 +292,7 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
 
     const trimmedEmail = email.trim().toLowerCase()
 
-    const verifyOtpLimited = enforceAuthRateLimit(
+    const verifyOtpLimited = await enforceAuthRateLimit(
       c,
       'verify-otp',
       trimmedEmail,
@@ -335,7 +342,7 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
 
     const trimmedEmail = email.trim().toLowerCase()
 
-    const signInOtpLimited = enforceAuthRateLimit(
+    const signInOtpLimited = await enforceAuthRateLimit(
       c,
       'sign-in-otp',
       trimmedEmail,
@@ -368,7 +375,7 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
       userAgent: c.req.header('User-Agent') ?? undefined,
     })
     const cookieValue = await buildSignedCookie(token, opts.secrets)
-    const tls = requestTls(c)
+    const tls = requestTls(c, opts.runtime)
     const setCookieHeader = buildCookieHeader(
       cookieValue,
       SESSION_EXPIRES_IN_MS / 1000,
@@ -418,7 +425,7 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Invalid request' }, 400)
     }
 
-    const verifyEmailLimited = enforceAuthRateLimit(
+    const verifyEmailLimited = await enforceAuthRateLimit(
       c,
       'verify-email-otp',
       sessionEmail,
@@ -471,7 +478,7 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
 
     const trimmedEmail = email.trim().toLowerCase()
 
-    const resetRequestLimited = enforceAuthRateLimit(
+    const resetRequestLimited = await enforceAuthRateLimit(
       c,
       'reset-password-request',
       trimmedEmail,
@@ -531,7 +538,7 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
 
     const trimmedEmail = email.trim().toLowerCase()
 
-    const resetLimited = enforceAuthRateLimit(
+    const resetLimited = await enforceAuthRateLimit(
       c,
       'reset-password',
       trimmedEmail,

@@ -81,7 +81,7 @@ async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
   }
   const { username, password, superadminEmail, superadminPassword } = parsed
 
-  const limited = enforceAuthRateLimit(
+  const limited = await enforceAuthRateLimit(
     c,
     'install-complete',
     username.trim(),
@@ -112,7 +112,11 @@ async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
       userAgent: c.req.header('User-Agent') ?? undefined,
     })
     const sessionCookie = await buildSignedCookie(token, opts.secrets)
-    const tls = resolveRequestTls(c.req.url, c.req.header('x-forwarded-proto'))
+    const tls = resolveRequestTls({
+      requestUrl: c.req.url,
+      runtime: opts.runtime,
+      forwardedProto: c.req.header('x-forwarded-proto'),
+    })
     let setCookie =
       `${tls.cookieName}=${sessionCookie}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_EXPIRES_IN_MS / 1000}`
     if (tls.isHttps) {
@@ -195,7 +199,7 @@ export function registerInstallRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Invalid request' }, 400)
     }
 
-    const limited = enforceAuthRateLimit(
+    const limited = await enforceAuthRateLimit(
       c,
       'install-bootstrap',
       username.trim(),

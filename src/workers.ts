@@ -32,12 +32,15 @@ import {
 } from './daemon/metrics/store-selection.ts'
 import type { ServerMetricsStore } from './daemon/metrics/types.ts'
 import {
+  resolveWorkersClientAuthRateLimiter,
   resolveWorkersDaemonRateLimiters,
   resolveWorkersDb,
   resolveWorkersQueryCache,
   warnIfCachedHyperdriveMissing,
+  warnIfClientAuthRateLimiterMissing,
   warnIfDaemonRateLimitersMissing,
 } from './workers-bindings.ts'
+import type { AuthRateLimiter } from './client/authn/auth-rate-limit.ts'
 
 export { DaemonCellObject } from './daemon/cell/do.ts'
 
@@ -51,6 +54,7 @@ let cachedSecretsConfig: ReturnType<typeof parseSecretsEnv> | null = null
 let cachedEmailQueue: EmailQueue | null = null
 let cachedCommandQueue: CommandQueue | null = null
 let cachedServerMetricsStore: ServerMetricsStore | null = null
+let cachedAuthRateLimiter: AuthRateLimiter | null = null
 let cachedDaemonCellRegistryFactory:
   | ((env: CloudflareBindings, db?: ReturnType<typeof createWorkersDb>) =>
     ReturnType<typeof createDurableObjectDaemonCellRegistry>)
@@ -106,6 +110,8 @@ async function initWorkerApp(env: CloudflareBindings) {
     secretsConfig: cachedSecretsConfig ?? undefined,
   })
   warnIfDaemonRateLimitersMissing(env)
+  warnIfClientAuthRateLimiterMissing(env)
+  cachedAuthRateLimiter = resolveWorkersClientAuthRateLimiter(env)
   const rateLimiters = resolveWorkersDaemonRateLimiters(env)
   registerDaemonApiRoutes(cachedApp, {
     secrets: cachedDaemonJwtKeyring ?? undefined,
@@ -152,6 +158,9 @@ export default {
     const queryCache = resolveWorkersQueryCache(env, db)
     const requestApp = new Hono<AppEnv>()
     requestApp.use('*', async (c, next) => {
+      // Session-cookie TLS uses the URL-derived (Workers) path — a spoofed
+      // X-Forwarded-Proto must never downgrade the cookie's Secure flag/name.
+      c.set('runtime', 'workers')
       if (db) {
         c.set('db', db)
       }
@@ -160,6 +169,7 @@ export default {
       }
       if (cachedEmailQueue) c.set('emailQueue', cachedEmailQueue)
       if (cachedCommandQueue) c.set('commandQueue', cachedCommandQueue)
+      if (cachedAuthRateLimiter) c.set('authRateLimiter', cachedAuthRateLimiter)
       c.set('platformEnv', stringBindingEnv(env))
       if (postgresConnectionString) {
         c.set('postgresConnectionString', postgresConnectionString)

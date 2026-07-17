@@ -50,6 +50,20 @@ export const COLOCATED_SERVER_DISPLAY_NAME = 'this server'
 
 export const IS_SIGNUP_ENABLED_CONFIG_KEY = 'IS_SIGNUP_ENABLED'
 
+/**
+ * Reserved `setting.key` used as a **unique install sentinel** so initial setup
+ * cannot race into creating multiple superadmins/organizations. It relies on the
+ * `setting_key_unique` constraint: the first `completeInstanceInstall()`
+ * transaction inserts this key, and any concurrent install transaction blocks on
+ * that key until the first commits, then observes the conflict (no returned row)
+ * and aborts. No schema migration is required — the row lives in the existing
+ * `setting` table. See `src/lib/db/AGENTS.md` (Install sentinel invariant).
+ */
+export const INSTANCE_INSTALL_SENTINEL_KEY = 'INSTANCE_INSTALL_SENTINEL'
+
+/** Thrown when initial install is attempted but the instance is already configured. */
+export const INSTANCE_ALREADY_CONFIGURED_ERROR = 'Instance is already configured'
+
 /** Wrangler / platform env bindings may arrive as strings, numbers, or booleans. */
 export type SignupEnvOverride = string | number | boolean | null
 
@@ -816,8 +830,10 @@ export async function completeInstanceInstall(
   db: Db,
   input: CompleteInstallInput,
 ): Promise<{ organizationId: string; userId: string; licenseId: string }> {
+  // Preflight only — friendly fast-fail. The authoritative guard is the unique
+  // install sentinel acquired inside the transaction below.
   if (await isInstanceInstalled(db)) {
-    throw new Error('Instance is already configured')
+    throw new Error(INSTANCE_ALREADY_CONFIGURED_ERROR)
   }
 
   const emailError = validateSuperadminEmail(input.superadminEmail)
@@ -842,6 +858,31 @@ export async function completeInstanceInstall(
   }
 
   const result = await db.transaction(async (tx) => {
+    // Acquire the unique install sentinel first. Concurrent installs block on
+    // this `setting.key` (setting_key_unique) until we commit; the loser then
+    // observes the conflict (no returned row) and aborts. This serializes
+    // install completion at the database level so only one superadmin bootstrap
+    // can ever be created, even under concurrent requests across isolates.
+    const sentinel = await tx
+      .insert(setting)
+      .values({
+        key: INSTANCE_INSTALL_SENTINEL_KEY,
+        value: { installedAt: nowTs() },
+      })
+      .onConflictDoNothing({ target: setting.key })
+      .returning({ id: setting.id })
+
+    if (sentinel.length === 0) {
+      throw new Error(INSTANCE_ALREADY_CONFIGURED_ERROR)
+    }
+
+    // Re-check while holding the sentinel. Guards installs that predate the
+    // sentinel row (org + superadmin already exist without a sentinel): the
+    // sentinel insert would otherwise succeed and create a second superadmin.
+    if (await isInstanceInstalled(tx)) {
+      throw new Error(INSTANCE_ALREADY_CONFIGURED_ERROR)
+    }
+
     const insertedOrg = await tx
       .insert(organization)
       .values({

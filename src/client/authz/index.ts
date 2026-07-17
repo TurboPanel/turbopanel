@@ -12,7 +12,7 @@ export type {
   Subject,
   SubjectKind,
 } from './evaluator.ts'
-export { assertCanOr403 } from './http.ts'
+export { assertCanOr403, assertOrgOwnerOr403 } from './http.ts'
 export { getAccessManagementPermission } from './access-management.ts'
 export {
   isPlatformAdmin,

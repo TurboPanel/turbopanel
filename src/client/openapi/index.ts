@@ -1,4 +1,4 @@
-import { resolveSessionCookieName } from '../authn/crypto.ts'
+import { resolveSessionCookieNameFromUrl } from '../authn/crypto.ts'
 import { sharedSchemas } from './shared.ts'
 import { accessPaths, accessSchemas } from './access.ts'
 import { authPaths, buildAuthSchemas } from './auth.ts'
@@ -29,7 +29,7 @@ export function getClientOpenApiSpec(
   const installCommandDescription = includeInstall
     ? 'Shell command to install a daemon with this license via the instance install wrapper.'
     : 'Shell command to install a daemon with this license via the CDN installer (Workers does not expose /api/install/v1).'
-  const sessionCookieName = resolveSessionCookieName(serverUrl)
+  const sessionCookieName = resolveSessionCookieNameFromUrl(serverUrl)
 
   return {
     openapi: '3.1.0',

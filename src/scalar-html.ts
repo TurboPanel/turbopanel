@@ -1,8 +1,8 @@
-import { resolveSessionCookieName } from './client/authn/crypto.ts'
+import { resolveSessionCookieNameFromUrl } from './client/authn/crypto.ts'
 
 /** Self-contained Scalar CDN embed HTML for GET /api/client/v1/reference. */
 export function buildClientScalarHtml(specUrl: string, requestOrigin: string): string {
-  const sessionCookieName = resolveSessionCookieName(requestOrigin)
+  const sessionCookieName = resolveSessionCookieNameFromUrl(requestOrigin)
   const configuration = JSON.stringify({
     theme: 'purple',
     layout: 'modern',
@@ -71,7 +71,7 @@ export function buildDaemonScalarHtml(specUrl: string): string {
 
 /** Self-contained Scalar CDN embed HTML for GET /api/admin/v1/reference. */
 export function buildAdminScalarHtml(specUrl: string, requestOrigin: string): string {
-  const sessionCookieName = resolveSessionCookieName(requestOrigin)
+  const sessionCookieName = resolveSessionCookieNameFromUrl(requestOrigin)
   const configuration = JSON.stringify({
     theme: 'purple',
     layout: 'modern',

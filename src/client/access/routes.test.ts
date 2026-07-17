@@ -153,6 +153,118 @@ async function withTestFixtures(
  */
 const test = Deno.test.bind(Deno)
 
+test('GET /access is forbidden for an organization manager', async () => {
+  await withTestFixtures(async ({ db, app, secrets, actorId, organizationId }) => {
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId: actorId,
+      permission: 'organization:manage',
+      allow: true,
+    })
+
+    const cookie = await sessionCookie(db, secrets, actorId)
+    const res = await app.request(
+      `/access?resourceId=${organizationId}`,
+      { headers: orgRequestHeaders(cookie, organizationId) },
+    )
+
+    if (res.status !== 403) {
+      throw new Error(`expected 403 listing access grants as org manager, got ${res.status}`)
+    }
+  })
+})
+
+test('POST /access is forbidden for an organization manager', async () => {
+  await withTestFixtures(async ({ db, app, secrets, actorId, targetId, organizationId }) => {
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId: actorId,
+      permission: 'organization:manage',
+      allow: true,
+    })
+
+    const cookie = await sessionCookie(db, secrets, actorId)
+    const res = await app.request('/access', {
+      method: 'POST',
+      headers: {
+        ...orgRequestHeaders(cookie, organizationId),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        subjectKind: 'user',
+        subjectId: targetId,
+        resourceId: organizationId,
+        effect: 'allow',
+        permissionKey: 'organization:manage',
+      }),
+    })
+
+    if (res.status !== 403) {
+      throw new Error(`expected 403 creating access grant as org manager, got ${res.status}`)
+    }
+
+    const rows = await db
+      .select({ id: grant.id })
+      .from(grant)
+      .where(and(
+        eq(grant.entityId, organizationId),
+        eq(grant.actorId, targetId),
+      ))
+    if (rows.length !== 0) {
+      throw new Error('org manager must not be able to create an access grant')
+    }
+  })
+})
+
+test('DELETE /access/:id is forbidden for an organization manager', async () => {
+  await withTestFixtures(async ({ db, app, secrets, actorId, targetId, organizationId }) => {
+    // Manager acting on the request.
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId: actorId,
+      permission: 'organization:manage',
+      allow: true,
+    })
+
+    // An existing grant the manager should not be able to revoke.
+    const [targetGrant] = await db
+      .insert(grant)
+      .values({
+        entityType: 'organization',
+        entityId: organizationId,
+        actorType: 'user',
+        actorId: targetId,
+        permission: 'organization:manage',
+        allow: true,
+      })
+      .returning({ id: grant.id })
+
+    const cookie = await sessionCookie(db, secrets, actorId)
+    const res = await app.request(`/access/${targetGrant!.id}`, {
+      method: 'DELETE',
+      headers: orgRequestHeaders(cookie, organizationId),
+    })
+
+    if (res.status !== 403) {
+      throw new Error(`expected 403 revoking access grant as org manager, got ${res.status}`)
+    }
+
+    const rows = await db
+      .select({ id: grant.id })
+      .from(grant)
+      .where(eq(grant.id, targetGrant!.id))
+    if (rows.length !== 1) {
+      throw new Error('org manager must not be able to revoke an access grant')
+    }
+  })
+})
+
 test('DELETE /access/:id rejects revoking the sole organization owner', async () => {
   await withTestFixtures(async ({ db, app, secrets, actorId, organizationId }) => {
     const [soleOwnerGrant] = await db
