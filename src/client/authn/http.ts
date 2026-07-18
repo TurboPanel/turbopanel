@@ -13,6 +13,7 @@ import {
   createOrganizationForUser,
   isInstanceInstalled,
   resolveEffectiveSignupEnabled,
+  resolveSignupEnvOverrideFromContext,
   type SignupEnvOverride,
   validateSuperadminEmail,
   validateSuperadminPassword,
@@ -432,7 +433,14 @@ async function resolveSignupGate(
   }
 
   if (
-    !(await resolveEffectiveSignupEnabled(db, opts.runtime, opts.signupEnvOverride))
+    !(await resolveEffectiveSignupEnabled(
+      db,
+      opts.runtime,
+      resolveSignupEnvOverrideFromContext(
+        c.get('platformEnv') as Record<string, string | undefined> | undefined,
+        opts.signupEnvOverride,
+      ),
+    ))
   ) {
     return {
       ok: false,

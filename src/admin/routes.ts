@@ -2,6 +2,10 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { createAdminAccessMiddleware, createRootOnlyMiddleware } from '../client/authn/middleware.ts'
 import { resolveColocatedServerId } from '../client/authn/install-state.ts'
+import {
+  getSignupSettingMeta,
+  setSignupEnabledSetting,
+} from '../client/authn/install-state.ts'
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import {
   broadcastEchoToFleet,
@@ -331,6 +335,71 @@ export function registerAdminRoutes(app: Hono, opts: {
     // (see workers.ts fetch middleware) — no isolate-level queue cache to
     // invalidate after this write.
     return c.json({ settings: emailSettingsToApiShape(resolved) })
+  })
+
+  admin.get('/settings/signup', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const platformEnv = resolvePlatformEnv(c, opts)
+    const meta = await getSignupSettingMeta(
+      db,
+      opts.runtime,
+      platformEnv.TURBOPANEL_IS_SIGNUP_ENABLED,
+    )
+    return c.json({
+      enabled: meta.enabled,
+      dbValue: meta.dbValue,
+      isEnvForced: meta.isEnvForced,
+      envOverride: meta.envOverride,
+    })
+  })
+
+  admin.put('/settings/signup', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const body = await c.req.json().catch(() => null)
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return c.json({ error: 'expected { enabled: boolean }' }, 400)
+    }
+    const enabled = (body as { enabled?: unknown }).enabled
+    if (typeof enabled !== 'boolean') {
+      return c.json({ error: 'expected { enabled: boolean }' }, 400)
+    }
+
+    const platformEnv = resolvePlatformEnv(c, opts)
+    const before = await getSignupSettingMeta(
+      db,
+      opts.runtime,
+      platformEnv.TURBOPANEL_IS_SIGNUP_ENABLED,
+    )
+    if (before.isEnvForced) {
+      return c.json(
+        {
+          error:
+            'Sign-up is force-controlled by TURBOPANEL_IS_SIGNUP_ENABLED; clear that env var to use the panel toggle.',
+          enabled: before.enabled,
+          dbValue: before.dbValue,
+          isEnvForced: true,
+          envOverride: before.envOverride,
+        },
+        409,
+      )
+    }
+
+    await setSignupEnabledSetting(db, enabled)
+    const meta = await getSignupSettingMeta(
+      db,
+      opts.runtime,
+      platformEnv.TURBOPANEL_IS_SIGNUP_ENABLED,
+    )
+    return c.json({
+      enabled: meta.enabled,
+      dbValue: meta.dbValue,
+      isEnvForced: meta.isEnvForced,
+      envOverride: meta.envOverride,
+    })
   })
 
   admin.post('/instance/public-urls/apply', async (c) => {

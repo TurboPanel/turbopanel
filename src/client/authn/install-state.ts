@@ -85,6 +85,22 @@ export function normalizeSignupEnvOverride(
 }
 
 /**
+ * Prefer the per-request `platformEnv` binding (Workers dashboard / Deno process
+ * env) over a value captured at `createApp()` init so force-enable/disable takes
+ * effect without waiting for an isolate recycle.
+ */
+export function resolveSignupEnvOverrideFromContext(
+  platformEnv: Record<string, string | undefined> | undefined,
+  fallback?: SignupEnvOverride,
+): SignupEnvOverride | undefined {
+  const fromPlatform = normalizeSignupEnvOverride(
+    platformEnv?.TURBOPANEL_IS_SIGNUP_ENABLED,
+  )
+  if (fromPlatform !== undefined) return fromPlatform
+  return fallback
+}
+
+/**
  * Resolve whether public sign-up is enabled from a DB value and optional env
  * force override.
  *
@@ -293,6 +309,79 @@ export async function resolveEffectiveSignupEnabled(
     return resolveIsSignupEnabled(undefined, envOverride, { runtime })
   }
   return isSignupEnabled(db, envOverride, runtime)
+}
+
+export type SignupSettingMeta = {
+  /** Effective flag after env force + DB resolution. */
+  enabled: boolean
+  /** Raw DB value (`'1'` / `'0'`), or null when unset. */
+  dbValue: '0' | '1' | null
+  /** True when `TURBOPANEL_IS_SIGNUP_ENABLED` is a recognized force override. */
+  isEnvForced: boolean
+  envOverride: string | null
+}
+
+/** Read signup setting metadata for the admin panel. */
+export async function getSignupSettingMeta(
+  db: Db,
+  runtime: 'deno' | 'workers',
+  envOverride?: SignupEnvOverride,
+): Promise<SignupSettingMeta> {
+  const normalizedEnv = normalizeSignupEnvOverride(envOverride)
+  let isEnvForced = false
+  if (normalizedEnv !== undefined) {
+    const flag = normalizedEnv.toLowerCase()
+    isEnvForced = flag === '1' || flag === 'true' || flag === '0' || flag === 'false'
+  }
+
+  let dbValue: '0' | '1' | null = null
+  try {
+    const rows = await db
+      .select({ value: setting.value })
+      .from(setting)
+      .where(eq(setting.key, IS_SIGNUP_ENABLED_CONFIG_KEY))
+      .limit(1)
+    const raw = rows[0]?.value
+    let asString: string | null = null
+    if (typeof raw === 'string') {
+      asString = raw
+    } else if (raw != null) {
+      asString = String(raw)
+    }
+    if (asString === '0' || asString === '1') {
+      dbValue = asString
+    }
+  } catch (err) {
+    if (!isMissingRelationError(err)) throw err
+  }
+
+  return {
+    enabled: await resolveEffectiveSignupEnabled(db, runtime, envOverride),
+    dbValue,
+    isEnvForced,
+    envOverride: normalizedEnv ?? null,
+  }
+}
+
+/**
+ * Persist the panel-controlled `IS_SIGNUP_ENABLED` DB setting.
+ * Env force overrides still win at read time when configured.
+ */
+export async function setSignupEnabledSetting(
+  db: Db,
+  enabled: boolean,
+): Promise<void> {
+  const value = enabled ? '1' : '0'
+  await db
+    .insert(setting)
+    .values({ key: IS_SIGNUP_ENABLED_CONFIG_KEY, value })
+    .onConflictDoUpdate({
+      target: setting.key,
+      set: {
+        value,
+        updatedAt: nowTs(),
+      },
+    })
 }
 
 export async function getInstallStatus(

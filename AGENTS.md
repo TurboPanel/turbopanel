@@ -917,6 +917,6 @@ sequenceDiagram
 - `src/lib/update/manifest.ts` — Workers-safe trunk manifest resolver (`fetch`-only; returns `null` on any failure)
 - `src/lib/email/` — shared queue types/templates; `smtp/` (Deno/AMQP) and `mailgun/` (Workers) backends
 - `src/developer/` — developer surface (Deno-only routes + Workers-safe `routes-core.ts`)
-- `src/admin/routes.ts` — admin surface (`/api/admin/v1`); **now mounted** on both runtimes; gated to `superadmin` or `admin` via `createAdminAccessMiddleware`; dev-only OpenAPI/Scalar; `GET/PUT /instance/public-urls` persists `TURBOPANEL_PUBLIC_URLS` in the `setting` table; superadmin `POST /secrets/reencrypt` sweeps at-rest `tpsecret` blobs onto the current data-encryption key version (`src/admin/reencrypt-secrets.ts`).
+- `src/admin/routes.ts` — admin surface (`/api/admin/v1`); **now mounted** on both runtimes; gated to `superadmin` or `admin` via `createAdminAccessMiddleware`; dev-only OpenAPI/Scalar; `GET/PUT /instance/public-urls` persists `TURBOPANEL_PUBLIC_URLS` in the `setting` table; `GET/PUT /settings/signup` toggles public sign-up via `IS_SIGNUP_ENABLED`; superadmin `POST /secrets/reencrypt` sweeps at-rest `tpsecret` blobs onto the current data-encryption key version (`src/admin/reencrypt-secrets.ts`).
 - `src/resource-routes.ts` — workspace/environment/project/service/hosting CRUD
 - `src/server-paths.ts` / `src/server-registry.ts` — Unix socket path + daemon server row resolution

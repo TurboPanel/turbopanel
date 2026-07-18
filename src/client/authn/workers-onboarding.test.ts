@@ -11,6 +11,7 @@ import {
   IS_SIGNUP_ENABLED_CONFIG_KEY,
   isInstanceInstalled,
   resolveIsSignupEnabled,
+  resolveSignupEnvOverrideFromContext,
   type SignupEnvOverride,
 } from './install-state.ts'
 import {
@@ -539,6 +540,24 @@ it('resolveIsSignupEnabled: env force overrides DB; unset defaults to disabled',
   }
   if (resolveIsSignupEnabled(undefined, undefined, { runtime: 'deno' }) !== false) {
     throw new Error('Deno must default to disabled when DB and env are unset')
+  }
+})
+
+it('resolveSignupEnvOverrideFromContext prefers per-request platformEnv over createApp fallback', () => {
+  const fromPlatform = resolveSignupEnvOverrideFromContext(
+    { TURBOPANEL_IS_SIGNUP_ENABLED: '1' },
+    '0',
+  )
+  if (fromPlatform !== '1') {
+    throw new Error(`expected platformEnv force-enable, got ${String(fromPlatform)}`)
+  }
+  const fromFallback = resolveSignupEnvOverrideFromContext({}, '1')
+  if (fromFallback !== '1') {
+    throw new Error(`expected fallback when platformEnv unset, got ${String(fromFallback)}`)
+  }
+  const neither = resolveSignupEnvOverrideFromContext(undefined, undefined)
+  if (neither !== undefined) {
+    throw new Error(`expected undefined when both unset, got ${String(neither)}`)
   }
 })
 

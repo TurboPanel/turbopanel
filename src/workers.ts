@@ -17,6 +17,7 @@ import { createWorkersDb } from './db'
 import { registerWorkersDaemonWebSocket } from './daemon/workers-ws.ts'
 import { resolveWorkersEmailQueue } from './lib/email/mailgun/workers-queue.ts'
 import type { EmailQueue } from './lib/email/types.ts'
+import { normalizeSignupEnvOverride } from './client/authn/install-state.ts'
 import { createWorkersCommandQueue } from './lib/commands/workers-queue.ts'
 import { createNoopCommandQueue } from './lib/commands/noop-command-queue.ts'
 import type { CommandQueue } from './lib/commands/queue.ts'
@@ -77,9 +78,10 @@ async function initWorkerApp(env: CloudflareBindings) {
       .SERVER_METRICS,
     analyticsEngineSql: resolveAnalyticsEngineSqlConfig(env),
   })
-  // Email queue + signup are resolved per request (DB/admin toggles) — do not
-  // bake them into createApp() so panel changes apply without a Worker restart.
-  // signupEnvOverride remains the optional env *force* only (undefined in live).
+  // Email queue + signup force are resolved per request from current env/DB —
+  // do not bake them into createApp() so dashboard/panel changes apply without
+  // waiting for an isolate recycle. signupEnvOverride here is only a fallback
+  // for tests that omit platformEnv.
   cachedApp = createApp({
     commandQueue: cachedCommandQueue,
     secrets: cachedSessionSecrets,
@@ -122,6 +124,12 @@ function stringBindingEnv(env: CloudflareBindings): Record<string, string | unde
   const out: Record<string, string | undefined> = {}
   for (const [key, value] of Object.entries(env)) {
     if (typeof value === 'string') out[key] = value
+  }
+  // Plain-text dashboard vars are normally strings, but bindings may arrive as
+  // numbers/booleans — keep the signup force visible on platformEnv either way.
+  const signupForce = normalizeSignupEnvOverride(env.TURBOPANEL_IS_SIGNUP_ENABLED)
+  if (signupForce !== undefined) {
+    out.TURBOPANEL_IS_SIGNUP_ENABLED = signupForce
   }
   return out
 }

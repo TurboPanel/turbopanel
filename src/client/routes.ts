@@ -5,7 +5,10 @@ import {
   registerAuthRoutes,
   type AuthRouteOpts,
 } from './authn/http.ts'
-import { getClientPublicStatus } from './authn/install-state.ts'
+import {
+  getClientPublicStatus,
+  resolveSignupEnvOverrideFromContext,
+} from './authn/install-state.ts'
 import { getDb } from '../db.ts'
 import { registerAccessRoutes } from './access/routes.ts'
 import {
@@ -42,13 +45,16 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
 
   client.get('/status', async (c) => {
     const db = getDb(c)
+    const platformEnv = c.get('platformEnv')
     // Effective signup flag is resolved inside getClientPublicStatus via
     // resolveEffectiveSignupEnabled — same helper as sign-up / OTP auto-reg.
+    // Prefer per-request platformEnv so dashboard force overrides apply without
+    // an isolate recycle (do not rely on createApp()-captured signupEnvOverride).
     const payload = await getClientPublicStatus(
       db,
       opts.runtime,
-      opts.signupEnvOverride,
-      c.get('platformEnv'),
+      resolveSignupEnvOverrideFromContext(platformEnv, opts.signupEnvOverride),
+      platformEnv,
       c.get('dataEncryptionSecrets'),
     )
     if (payload === null) {
