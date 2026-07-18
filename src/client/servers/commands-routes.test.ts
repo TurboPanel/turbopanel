@@ -623,8 +623,8 @@ it('GET /servers/:id/commands/:commandId returns latency for terminal ping', asy
   }) => {
     const record = await createCommandRecord(db, {
       serverId,
-      actorEntityType: 'user',
-      actorEntityId: userId,
+      actorType: 'user',
+      actorId: userId,
       type: 'daemon.ping',
       payload: {},
     })
@@ -700,8 +700,8 @@ it('GET /servers/:id/commands/:commandId returns 404 for cross-org or unknown id
 
     const crossOrgCommand = await createCommandRecord(db, {
       serverId: otherServer!.id,
-      actorEntityType: 'user',
-      actorEntityId: userId,
+      actorType: 'user',
+      actorId: userId,
       type: 'daemon.ping',
       payload: {},
     })

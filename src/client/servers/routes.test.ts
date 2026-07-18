@@ -256,6 +256,11 @@ function createStubDbForCachedReadTests(): ReturnType<typeof createDenoDb> {
   return {
     select: () => ({
       from: () => ({
+        leftJoin: () => ({
+          where: () => ({
+            orderBy: () => Promise.resolve([]),
+          }),
+        }),
         where: () => ({
           orderBy: () => Promise.resolve([]),
         }),
@@ -304,7 +309,7 @@ test('createListRowsOnlyReadDb rejects partial servers-list select columns', asy
       id: server.id,
       displayName: server.displayName,
       organizationId: server.organizationId,
-      licenseId: server.licenseId,
+      licenseId: license.id,
       options: server.options,
       createdAt: server.createdAt,
       daemon: server.daemon,
@@ -318,7 +323,7 @@ test('createListRowsOnlyReadDb rejects partial servers-list select columns', asy
     id: server.id,
     displayName: server.displayName,
     organizationId: server.organizationId,
-    licenseId: server.licenseId,
+    licenseId: license.id,
     options: server.options,
     createdAt: server.createdAt,
   })
@@ -598,9 +603,9 @@ test('DELETE /servers/:id invalidates the bound license', async () => {
   }) => {
     const { licenseId } = await createLicense(db, { organizationId })
     await db
-      .update(server)
-      .set({ licenseId, updatedAt: new Date().toISOString() })
-      .where(eq(server.id, serverId))
+      .update(license)
+      .set({ serverId, updatedAt: new Date().toISOString() })
+      .where(eq(license.id, licenseId))
 
     const cookie = await sessionCookie(db, secrets, userId)
     const res = await app.request(`/servers/${serverId}`, {
@@ -680,9 +685,9 @@ test('DELETE /servers/:id invalidates the bound license on Workers runtime', asy
   try {
     const { licenseId } = await createLicense(db, { organizationId })
     await db
-      .update(server)
-      .set({ licenseId, updatedAt: new Date().toISOString() })
-      .where(eq(server.id, serverId))
+      .update(license)
+      .set({ serverId, updatedAt: new Date().toISOString() })
+      .where(eq(license.id, licenseId))
 
     const cookie = await sessionCookie(db, secrets, userId)
     const res = await app.request(`/servers/${serverId}`, {
@@ -879,9 +884,12 @@ test('DELETE /servers/:id returns 500 when purge fails after row delete', async 
     createdAt: now,
     updatedAt: now,
     organizationId,
-    licenseId,
     displayName: 'Purge Fail',
   })
+  await db
+    .update(license)
+    .set({ serverId, updatedAt: now })
+    .where(eq(license.id, licenseId))
 
   try {
     const cookie = await sessionCookie(db, secrets, userId)

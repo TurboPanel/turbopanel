@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm'
+import { desc, eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import { nowIso } from '../commands/ids.ts'
 import type { CommandStatus } from '../commands/types.ts'
@@ -8,8 +8,6 @@ type CommandDbRow = typeof command.$inferSelect
 
 type CommandMetadata = {
   error?: string | null
-  createdAt?: string
-  updatedAt?: string
   queuedAt?: string | null
   dispatchStartedAt?: string | null
   sentAt?: string | null
@@ -43,8 +41,8 @@ export type CommandRecord = {
 
 type CreateCommandRecordParams = {
   serverId: string
-  actorEntityType: string
-  actorEntityId: string
+  actorType: string
+  actorId: string
   type: string
   payload: unknown
   expiresAt?: string
@@ -96,16 +94,16 @@ export function serializeCommandRecord(row: CommandDbRow): CommandRecord {
   return {
     id: row.id,
     serverId: row.serverId,
-    actorEntityType: row.actorEntityType,
-    actorEntityId: row.actorEntityId,
+    actorEntityType: row.actorType,
+    actorEntityId: row.actorId,
     type: row.name,
     status: (row.status ?? 'queued') as CommandStatus,
     payload: row.payload,
     result: row.result ?? null,
     error: meta.error ?? null,
     attempts: row.attempts ?? 0,
-    createdAt: meta.createdAt ?? '',
-    updatedAt: meta.updatedAt ?? '',
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
     queuedAt: meta.queuedAt ?? null,
     dispatchStartedAt: meta.dispatchStartedAt ?? null,
     sentAt: meta.sentAt ?? null,
@@ -122,8 +120,6 @@ export async function createCommandRecord(
 ): Promise<CommandRecord> {
   const now = nowIso()
   const metadata: CommandMetadata = {
-    createdAt: now,
-    updatedAt: now,
     queuedAt: now,
     ...(params.expiresAt !== undefined ? { expiresAt: params.expiresAt } : {}),
   }
@@ -132,8 +128,8 @@ export async function createCommandRecord(
     .insert(command)
     .values({
       serverId: params.serverId,
-      actorEntityType: params.actorEntityType,
-      actorEntityId: params.actorEntityId,
+      actorType: params.actorType,
+      actorId: params.actorId,
       name: params.type,
       status: 'queued',
       attempts: 0,
@@ -172,7 +168,7 @@ export async function listServerCommands(
     .select()
     .from(command)
     .where(eq(command.serverId, params.serverId))
-    .orderBy(sql`${command.metadata}->>'createdAt' DESC`)
+    .orderBy(desc(command.createdAt))
     .limit(limit)
 
   return rows.map(serializeCommandRecord)
@@ -184,9 +180,7 @@ export async function transitionCommand(
   patch: CommandTransitionPatch,
 ): Promise<CommandRecord | null> {
   const now = nowIso()
-  const metadataPatch: Record<string, unknown> = {
-    updatedAt: now,
-  }
+  const metadataPatch: Record<string, unknown> = {}
 
   if (patch.error !== undefined) {
     metadataPatch.error = patch.error
@@ -208,6 +202,7 @@ export async function transitionCommand(
     .update(command)
     .set({
       status: patch.status,
+      updatedAt: now,
       ...(patch.attempts === undefined ? {} : { attempts: patch.attempts }),
       ...(patch.result === undefined ? {} : { result: patch.result }),
       metadata: sql`${command.metadata} || ${JSON.stringify(metadataPatch)}::jsonb`,

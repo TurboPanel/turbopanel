@@ -29,8 +29,8 @@ const dbUrl = getDatabaseUrl()
 const test = Deno.test.bind(Deno)
 
 const TEST_COMMAND_ACTOR = {
-  actorEntityType: 'user',
-  actorEntityId: '00000000-0000-4000-8000-000000000001',
+  actorType: 'user',
+  actorId: '00000000-0000-4000-8000-000000000001',
 } as const
 
 async function attachConnectedDaemonStatus(

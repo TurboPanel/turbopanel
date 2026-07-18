@@ -120,6 +120,7 @@ organization → workspace → project → environment → variable (1:N, env-sc
 organization → workspace → variable (1:N)
 organization → project → variable (1:N)
 organization → workspace → project → environment → service → variable (1:N)
+organization → workspace → project → environment → service → hosting → variable (1:N)
 organization → server → network
 organization → server → container
 organization → server → variable (1:N, server-scoped; excluded from inheritance chain)
@@ -136,9 +137,9 @@ organization → server → variable (1:N, server-scoped; excluded from inherita
 | `container` | `service_id NOT NULL` + `server_id NOT NULL` | Pins a deployed Docker container to a service and records which server hosts it. **`metadata`** holds the pinned container id + status (no dedicated columns). Both FKs `ON DELETE RESTRICT` (deleting a service or server with existing containers is blocked, mirroring `hosting`/`network`). |
 | `principal` | none (org derived via `assignment` → `service`) | Behind-the-scenes account identity for hosting/database-user flows (not a public client CRUD surface; see `src/client/principals/store.ts`). **`kind`** CHECK `('system', 'database')`; **`provider`** CHECK `('pam', 'postgres', 'mysql', 'redis')`; **`username`** `varchar(255)` CHECK `^[A-Za-z_][A-Za-z0-9_-]*$` (POSIX/DB account allowlist, 1–255 chars). **`password`** is nullable + write-only; stored as a sealed `tpsecret` envelope at rest (never returned on read; delivery re-seals to `tpdaemon`). **`metadata`** holds `uid`/`gid`/`home`. **No `organization_id`** (derived through assignments) and **no global unique on `username`** (the same account name legitimately recurs across systems). |
 | `assignment` | `principal_id NOT NULL` + `service_id NOT NULL` | Join edge for the principal↔service many-to-many. `principal_id` FK `ON DELETE CASCADE` (deleting a principal removes its edges); `service_id` FK `ON DELETE RESTRICT` (a service still referenced by principals cannot be deleted, mirroring `container`). Unique `(principal_id, service_id)`; btree indexes on each FK. |
-| `network` | `server_id NOT NULL` | Linked to a server; org derived via server. Cascade delete. |
+| `network` | `server_id NOT NULL` | Linked to a server; org derived via server. `server_id` FK `ON DELETE RESTRICT` (server deletion is blocked while network rows exist). |
 | `managed` | `project_id NOT NULL` (unique) | Linking table; project is source of truth for timestamps; `ON DELETE CASCADE`. **`metadata`**: kebab-case catalog `code`, etc. |
-| `variable` | exactly one of `organization_id`, `workspace_id`, `project_id`, `environment_id`, `service_id`, `server_id` (all nullable FKs; CHECK enforces one parent) | Config vars/secrets at any resource scope; `is_secret` flag; secret `value` is a sealed envelope; partial unique indexes on `(key, <parent_fk>)` per scope; `ON DELETE CASCADE`. Key must match `^[A-Za-z_][A-Za-z0-9_]*$`. **Inheritance order** (runtime resolution, excludes server-scoped): `service` → `environment` → `project` → `workspace` → `organization` (lower scope wins). **Server-scoped** variables are fetched separately and do not participate in the inheritance chain. |
+| `variable` | exactly one of `organization_id`, `workspace_id`, `project_id`, `environment_id`, `service_id`, `hosting_id`, `server_id` (all nullable FKs; CHECK enforces one parent) | Config vars/secrets at any resource scope; `is_secret` flag; secret `value` is a sealed envelope; partial unique indexes on `(key, <parent_fk>)` per scope; `ON DELETE CASCADE`. Key must match `^[A-Za-z_][A-Za-z0-9_]*$`. **Inheritance** (runtime resolution; lower scope wins): service resolution uses `service` → `environment` → `project` → `workspace` → `organization`; hosting resolution uses `hosting` → `service` → `environment` → `project` → `workspace` → `organization`. **Server-scoped** variables are fetched separately and do not participate in either inheritance chain. |
 
 **Project cascade delete** (`deleteProjectCascade` in `project-delete.ts`): after all containers under the project are non-active (`exited`/`dead`/`removing`), `DELETE /projects/:id` deletes in order `container` → `hosting` → `service` → `environment` → `project` (variables/`managed` cascade via FK). Active containers return **409** `project_has_running_services` — stop stacks first via `environment.stop`. Restrictive FKs stay in place as a safety net.
 
@@ -224,13 +225,17 @@ Permissions are **static code constants** in `../../client/authz/catalog.ts` —
 
 Organization-scoped API tokens for server registration. Each row belongs to an `organization` (`organization_id`, cascade delete). `display_name` is optional. `token` stores a PBKDF2-SHA256 hash in the same `$pbkdf2-sha256$…` format as `account.password`. Soft-delete via `revoked_at` — revoked licenses remain in the table for audit; application code should treat non-null `revoked_at` as inactive.
 
-**Colocated control-plane license invariant:** install and Deno boot recovery mint a license with `display_name = 'this server'` (`COLOCATED_SERVER_DISPLAY_NAME`). Exactly **one active** (`revoked_at IS NULL`) colocated license may exist per organization — enforced by partial unique index `uniq_license_colocated_active` on `license(organization_id) WHERE display_name = 'this server' AND revoked_at IS NULL`. `POST /api/client/v1/licenses` rejects that reserved display name so user-minted registration keys cannot collide. Relationship to servers remains `server.license_id` + `uniq_server_license_id` (one server per license) — do **not** add a bidirectional `license.server_id`.
+**One-shot latch:** `license.server_id` (nullable FK → `server.id`, `ON DELETE SET NULL`) is set on first successful enroll. Partial unique index `uniq_license_server_id` on `license(server_id) WHERE server_id IS NOT NULL` enforces one license per server. Unconsumed seats have `server_id IS NULL`. Revoked rows may keep `server_id` until the server is deleted (SET NULL).
+
+**Colocated control-plane license:** install and Deno boot recovery mint a license with `display_name = 'this server'` (`COLOCATED_SERVER_DISPLAY_NAME`). `POST /api/client/v1/licenses` rejects that reserved display name so user-minted registration keys cannot collide. Uniqueness of active colocated seats is application-level (disk rotate revokes then mints one) — there is no display-name unique index.
 
 **Disk recovery (`ensureColocatedLicenseCredentialsOnDisk`):** plaintext tokens are written once to `/var/lib/turbopanel/license.id` + `license.token` (via `TURBOPANEL_DAEMON_STATE_DIR` / `TURBOPANEL_STATE_DIR`) and are unrecoverable from the DB hash. When those files are missing on an installed instance, recovery **revokes** every active `this server` license for the default org (`rotateColocatedLicenseCredentials` → `invalidateLicense`), then mints exactly one fresh license and rewrites disk credentials — never appends a second active orphan.
 
 ### `server` table
 
-Each physical server node gets a row in `server` (`id` uuidv7). On daemon connect the instance resolves `serverId` (reuse by persisted id, `metadata.machineId`, or `metadata.hostname`), tracks presence in the **Daemon Cell**, and returns `serverId` in enrollment responses. The daemon persists it at `/var/lib/turbopanel/daemon/state/server.id` (production: owned by the `turbopanel` user; co-located dev: dev-user-owned under the same FHS path). Server rows are hard-deleted — there is no soft-delete column. `display_name` and `organization_id` match the old trunk shape; daemon registration stores `machineId` / `hostname` in `metadata` (see `server-metadata.ts`). `license_id` (nullable FK → `license.id`, `ON DELETE RESTRICT`) records which license token the server registered with. `organization_id` FK uses `ON DELETE RESTRICT` — Postgres blocks deleting an organization or license that still has referencing server rows. Deleting a server cascades to its `network` rows (`network.server_id` → `server.id`, `ON DELETE CASCADE`).
+Each physical server node gets a row in `server` (`id` uuidv7). On daemon connect the instance resolves `serverId` (reuse by persisted id, `metadata.machineId`, or `metadata.hostname`), tracks presence in the **Daemon Cell**, and returns `serverId` in enrollment responses. The daemon persists it at `/var/lib/turbopanel/daemon/state/server.id` (production: owned by the `turbopanel` user; co-located dev: dev-user-owned under the same FHS path). Server rows are hard-deleted — there is no soft-delete column. `display_name` and `organization_id` match the old trunk shape; daemon registration stores `machineId` / `hostname` in `metadata` (see `server-metadata.ts`). Which registration key enrolled the server is on `license.server_id` (not a column on `server`). `organization_id` FK uses `ON DELETE RESTRICT` — Postgres blocks deleting an organization that still has referencing server rows. `network.server_id` → `server.id` is `ON DELETE RESTRICT` — server deletion is blocked while network rows exist. Deleting a server clears `license.server_id` via `ON DELETE SET NULL`; the app soft-revokes the bound license after delete.
+
+Canonical column order: `id`, `created_at`, `updated_at`, `organization_id`, `display_name`, `daemon`, `metadata`, `options` (`daemon` before the trailing `metadata`/`options` pair). Index `idx_server_organization_id` (btree on `organization_id`) mirrors `idx_workspace_organization_id` and backs `listVisible()` joins.
 
 **Cell metadata fields** (stored in `server.metadata` and/or `server.options` JSONB — no migration required):
 
@@ -298,20 +303,21 @@ Canonical command/job history — source of truth for UI status and history. Do 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | uuid (uuidv7) | Primary key |
+| `created_at` | timestamptz(3) NOT NULL `now()` | Real column; index/order source |
+| `updated_at` | timestamptz(3) NOT NULL `now()` | Bumped by `transitionCommand` |
 | `server_id` | uuid NOT NULL | FK → `server.id`, `ON DELETE CASCADE` (org derived from server) |
-| `actor_entity_type` | text NOT NULL | Open set — e.g. `'user'`; no FK, polymorphic |
-| `actor_entity_id` | uuid NOT NULL | ID of the acting entity; no FK |
-| `metadata` | jsonb NOT NULL | Lifecycle blob — see fields below |
+| `actor_type` | text NOT NULL | Open set — e.g. `'user'`; no FK |
+| `actor_id` | uuid NOT NULL | ID of the acting entity; no FK |
+| `name` | text NOT NULL | Command type (e.g. `daemon.ping`) |
+| `status` | text NOT NULL `'queued'` | See status values |
+| `attempts` | integer NOT NULL `0` | Dispatch retry count |
 | `payload` | jsonb NOT NULL | Typed command input (small, bounded) |
 | `result` | jsonb nullable | Typed command output (small, bounded) |
+| `metadata` | jsonb NOT NULL | Remaining lifecycle blob — see fields below |
 
 | Metadata key | Type | Notes |
 |---|---|---|
-| `name` | string | Command type (e.g. `daemon.ping`, `server.hostname.set`) |
-| `status` | string | See status values |
 | `error` | string \| null | Terminal error message |
-| `attempts` | number | Dispatch retry count (default 0) |
-| `createdAt` / `updatedAt` | ISO-UTC string | Row lifecycle; ISO-UTC sorts lexicographically so the jsonb expression index on `createdAt` orders chronologically |
 | `queuedAt` | ISO-UTC \| null | Set when status → `queued` |
 | `dispatchStartedAt` | ISO-UTC \| null | Set when status → `dispatching` |
 | `sentAt` | ISO-UTC \| null | Set when status → `sent` |
@@ -337,12 +343,12 @@ Canonical command/job history — source of truth for UI status and history. Do 
 | `cancelled` | Cancelled before completion (terminal) |
 
 **Indexes:**
-- `idx_command_server_id_created_at` — btree on `(server_id, (metadata->>'createdAt') DESC)` — backs `listServerCommands` ordering
-- `idx_command_status` — btree on `((metadata->>'status'))` — supports status-filtered queries
+- `idx_command_server_id_created_at` — btree on `(server_id, created_at DESC)` — backs `listServerCommands` ordering
+- `idx_command_status` — btree on `status` — supports status-filtered queries
 
 Only FK is `server_id → server.id` (`ON DELETE CASCADE`). Organization is derived from the server — no `organization_id` column on `command`.
 
-**Lifecycle timestamps:** All lifecycle timestamps and status live in the `metadata` jsonb blob. `transitionCommand` merges patches atomically via `metadata || patch::jsonb`. `serializeCommandRecord` in `command-records.ts` flattens the blob into the stable `CommandRecord` type for callers.
+**Lifecycle timestamps:** `status`, `created_at`, `updated_at` (and `attempts`, `name`, `result`) are **real columns**. Granular lifecycle timestamps (`queuedAt`…`finishedAt`, `expiresAt`) and `error` remain in `metadata`. `transitionCommand` writes the `status`/`updated_at`/`attempts`/`result` columns and merges the rest into `metadata`. `serializeCommandRecord` in `command-records.ts` flattens both column and metadata fields into the stable `CommandRecord` type for callers.
 
 Server delete cascades to command rows (`ON DELETE CASCADE` on `server_id`).
 

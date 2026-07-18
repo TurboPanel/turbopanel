@@ -26,7 +26,7 @@ import {
   type DaemonOutboundEnvelope,
 } from '../../daemon/cell/protocol.ts'
 import { clearServerDaemonState } from '../../daemon/authn/server-identity-db.ts'
-import { server } from '../../lib/db/schema.ts'
+import { server, license } from '../../lib/db/schema.ts'
 import {
   formatServerOsDisplay,
   resolveServerOsLogoKey,
@@ -626,7 +626,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const organizationId = orgResult
 
     const [row] = await db
-      .select({ id: server.id, licenseId: server.licenseId })
+      .select({ id: server.id })
       .from(server)
       .where(and(eq(server.id, id), eq(server.organizationId, organizationId)))
       .limit(1)
@@ -645,6 +645,12 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const blocked = await assertServerDeletable(c, db, registry, id, organizationId)
     if (blocked) return blocked
 
+    const [boundLicense] = await db
+      .select({ id: license.id })
+      .from(license)
+      .where(eq(license.serverId, id))
+      .limit(1)
+
     const result = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(server).where(eq(server.id, id))
     })
@@ -655,7 +661,12 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     await clearServerDaemonState(db, id)
 
     const purgeError = await purgeServerDaemonCell(registry, id)
-    await revokeBoundLicenseOnServerDelete(db, id, row.licenseId, organizationId)
+    await revokeBoundLicenseOnServerDelete(
+      db,
+      id,
+      boundLicense?.id ?? null,
+      organizationId,
+    )
 
     if (purgeError) {
       return c.json({

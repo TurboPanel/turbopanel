@@ -492,8 +492,8 @@ async function enqueueDeployCommand(
   const expiresAt = new Date(Date.now() + 600_000).toISOString()
   const record = await createCommandRecord(db, {
     serverId: params.serverId,
-    actorEntityType: 'user',
-    actorEntityId: params.userId,
+    actorType: 'user',
+    actorId: params.userId,
     type: 'environment.deploy',
     payload: {
       environmentId: params.environmentId,
@@ -681,8 +681,8 @@ async function enqueueStopCommand(
   const expiresAt = new Date(Date.now() + 120_000).toISOString()
   const record = await createCommandRecord(db, {
     serverId: params.serverId,
-    actorEntityType: 'user',
-    actorEntityId: params.userId,
+    actorType: 'user',
+    actorId: params.userId,
     type: 'environment.stop',
     payload: {
       environmentId: params.environmentId,

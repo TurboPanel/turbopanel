@@ -581,11 +581,11 @@ export async function resolveProtectedColocatedLicenseIds(
     const colocatedServerId = await findColocatedServerIdFromRegistry(db, registry)
     if (colocatedServerId) {
       const rows = await db
-        .select({ licenseId: server.licenseId })
-        .from(server)
-        .where(eq(server.id, colocatedServerId))
+        .select({ id: license.id })
+        .from(license)
+        .where(eq(license.serverId, colocatedServerId))
         .limit(1)
-      const licenseId = rows[0]?.licenseId
+      const licenseId = rows[0]?.id
       if (licenseId != null) {
         ids.add(licenseId)
         return ids

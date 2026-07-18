@@ -15,7 +15,7 @@ import {
   parseDaemonSecretEnvelope,
 } from "../client/authn/data-encryption.ts";
 import { getDb, getServerMetricsStore } from "../db.ts";
-import { server } from "../lib/db/schema.ts";
+import { license } from "../lib/db/schema.ts";
 import {
   metricsPayloadByteLength,
   rateLimitedMetricsLog,
@@ -499,9 +499,9 @@ export function registerDaemonApiRoutes(
     }
 
     const [licenseRow] = await db
-      .select({ licenseId: server.licenseId })
-      .from(server)
-      .where(eq(server.id, serverId))
+      .select({ licenseId: license.id })
+      .from(license)
+      .where(eq(license.serverId, serverId))
       .limit(1);
     if (licenseRow?.licenseId) {
       const activeLicense = await lookupActiveLicense(db, licenseRow.licenseId);

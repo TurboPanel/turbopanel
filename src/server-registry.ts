@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm'
+import { and, eq, isNull, sql } from 'drizzle-orm'
 import type { Db } from './db.ts'
 import { verifyDaemonLicense } from './daemon/authn/license.ts'
 import {
@@ -7,7 +7,7 @@ import {
   type ServerMetadata,
   type ServerOsMetadata,
 } from './lib/db/server-metadata.ts'
-import { server } from './lib/db/schema.ts'
+import { license, server } from './lib/db/schema.ts'
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -142,12 +142,12 @@ async function findServerBoundToLicense(
   db: Db,
   licenseId: string,
 ): Promise<string | undefined> {
-  const byLicense = await db
-    .select({ id: server.id })
-    .from(server)
-    .where(eq(server.licenseId, licenseId))
+  const [row] = await db
+    .select({ serverId: license.serverId })
+    .from(license)
+    .where(eq(license.id, licenseId))
     .limit(1)
-  return byLicense[0]?.id
+  return row?.serverId ?? undefined
 }
 
 /**
@@ -187,15 +187,23 @@ export async function getServerLicenseBinding(
   db: Db,
   serverId: string,
 ): Promise<ServerLicenseBinding | null> {
-  const [row] = await db
-    .select({
-      licenseId: server.licenseId,
-      organizationId: server.organizationId,
-    })
+  const [serverRow] = await db
+    .select({ organizationId: server.organizationId })
     .from(server)
     .where(eq(server.id, serverId))
     .limit(1)
-  return row ?? null
+  if (!serverRow) return null
+
+  const [licenseRow] = await db
+    .select({ id: license.id })
+    .from(license)
+    .where(eq(license.serverId, serverId))
+    .limit(1)
+
+  return {
+    licenseId: licenseRow?.id ?? null,
+    organizationId: serverRow.organizationId,
+  }
 }
 
 /** Accept only the same license that already latched this server (or unbound). */
@@ -219,8 +227,15 @@ async function applyLicensedServerBinding(
 
   const now = nowTs()
   if (!binding.licenseId) {
+    await db
+      .update(license)
+      .set({ serverId, updatedAt: now })
+      .where(and(
+        eq(license.id, licenseId),
+        isNull(license.serverId),
+        isNull(license.revokedAt),
+      ))
     await db.update(server).set({
-      licenseId,
       organizationId,
       updatedAt: now,
     }).where(eq(server.id, serverId))
@@ -252,6 +267,11 @@ async function authorizeAndBindLicensedServer(
   return serverId
 }
 
+/**
+ * Insert a server then latch the license. If the license was already consumed
+ * (concurrent enroll), delete the orphan server and throw unique violation so
+ * the caller can take the race-reuse path.
+ */
 async function insertLicensedServer(
   db: Db,
   identity: ServerHelloIdentity,
@@ -263,7 +283,6 @@ async function insertLicensedServer(
   const inserted = await db
     .insert(server)
     .values({
-      licenseId,
       organizationId,
       displayName: defaultDisplayName(identity),
       createdAt: now,
@@ -274,6 +293,24 @@ async function insertLicensedServer(
 
   const id = inserted[0]?.id
   if (!id) throw new Error('failed to insert server row')
+
+  const latched = await db
+    .update(license)
+    .set({ serverId: id, updatedAt: now })
+    .where(and(
+      eq(license.id, licenseId),
+      isNull(license.serverId),
+      isNull(license.revokedAt),
+    ))
+    .returning({ id: license.id })
+
+  if (latched.length === 0) {
+    await db.delete(server).where(eq(server.id, id))
+    const err = new Error('license already consumed') as Error & { code: string }
+    err.code = '23505'
+    throw err
+  }
+
   return id
 }
 

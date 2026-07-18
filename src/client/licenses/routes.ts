@@ -151,7 +151,6 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
     if (denied) return denied
 
     // Reserved for the co-located control-plane license (install / disk recovery).
-    // Must stay unique per org (`uniq_license_colocated_active`).
     if (displayName?.trim() === COLOCATED_SERVER_DISPLAY_NAME) {
       return c.json(
         {

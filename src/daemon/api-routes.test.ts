@@ -845,10 +845,10 @@ test("POST /enroll with a fresh license creates a new server even on the same ho
     assertEquals(body.serverId !== serverId, true);
 
     const [original] = await db
-      .select({ licenseId: server.licenseId })
-      .from(server)
-      .where(eq(server.id, serverId));
-    assertEquals(original?.licenseId, licenseId);
+      .select({ serverId: license.serverId })
+      .from(license)
+      .where(eq(license.id, licenseId));
+    assertEquals(original?.serverId, serverId);
 
     await db.delete(server).where(eq(server.id, body.serverId));
     await db.delete(license).where(eq(license.id, freshLicenseId));

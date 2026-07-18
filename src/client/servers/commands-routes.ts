@@ -146,8 +146,8 @@ export function registerServerCommandRoutes(router: Hono, opts: AuthRouteOpts) {
     const expiresAt = new Date(Date.now() + 60_000).toISOString()
     const record = await createCommandRecord(db, {
       serverId: id,
-      actorEntityType: 'user',
-      actorEntityId: session.userId,
+      actorType: 'user',
+      actorId: session.userId,
       type: 'daemon.ping',
       payload: {},
       expiresAt,
@@ -197,8 +197,8 @@ export function registerServerCommandRoutes(router: Hono, opts: AuthRouteOpts) {
     const expiresAt = new Date(Date.now() + 120_000).toISOString()
     const record = await createCommandRecord(db, {
       serverId: id,
-      actorEntityType: 'user',
-      actorEntityId: session.userId,
+      actorType: 'user',
+      actorId: session.userId,
       type: 'server.reboot',
       payload: {},
       expiresAt,
@@ -262,8 +262,8 @@ export function registerServerCommandRoutes(router: Hono, opts: AuthRouteOpts) {
     const expiresAt = new Date(Date.now() + 300_000).toISOString()
     const record = await createCommandRecord(db, {
       serverId: id,
-      actorEntityType: 'user',
-      actorEntityId: session.userId,
+      actorType: 'user',
+      actorId: session.userId,
       type: 'server.hostname.set',
       payload: { hostname },
       expiresAt,

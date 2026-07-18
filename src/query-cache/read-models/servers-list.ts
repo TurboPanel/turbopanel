@@ -1,5 +1,5 @@
 import type { Context } from 'hono'
-import { inArray } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import {
   getDb,
   getDaemonCellRegistry,
@@ -12,7 +12,7 @@ import {
   buildProjectionsFromDaemonRows,
   loadServerRowsForFleetPresence,
 } from '../../daemon/cell/postgres-projection.ts'
-import { server } from '../../lib/db/schema.ts'
+import { license, server } from '../../lib/db/schema.ts'
 import { resolveColocatedServerIdSet } from '../../client/servers/colocated.ts'
 import { runApprovedCachedReadModel } from '../cached-query.ts'
 import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
@@ -47,8 +47,9 @@ export type ServersListDisplayPayload = {
  * SQL executed (read-only SELECT only; no transactions, mutations, or stable/
  * volatile PostgreSQL functions such as `now()`, `random()`, `nextval()`,
  * `clock_timestamp()`):
- *   1. `SELECT id, display_name, organization_id, license_id, options, created_at
- *      FROM server WHERE id IN (:visibleIds) ORDER BY created_at`
+ *   1. `SELECT server.id, display_name, organization_id, license.id, options,
+ *      created_at FROM server LEFT JOIN license ON license.server_id = server.id
+ *      WHERE server.id IN (:visibleIds) ORDER BY created_at`
  *   2. `SELECT id, daemon, metadata FROM server WHERE id IN (:serverIds)`
  *      (shared preload for presence + org-scoped colocated enrichment)
  *
@@ -69,11 +70,12 @@ async function loadCachedListRows(
       id: server.id,
       displayName: server.displayName,
       organizationId: server.organizationId,
-      licenseId: server.licenseId,
+      licenseId: license.id,
       options: server.options,
       createdAt: server.createdAt,
     })
     .from(server)
+    .leftJoin(license, eq(license.serverId, server.id))
     .where(inArray(server.id, visibleIds))
     .orderBy(server.createdAt)
 }

@@ -5,57 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1783210591457,
+      "when": 1784346875988,
       "tag": "0000_init",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1783638000000,
-      "tag": "0001_hosting_service_options_metadata",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1784148301235,
-      "tag": "0002_add_container_table",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1784155956850,
-      "tag": "0003_add_tls_table",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1784224288654,
-      "tag": "0004_uniq_server_license_id",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "7",
-      "when": 1784234526848,
-      "tag": "0005_add_principal_and_assignment_tables",
-      "breakpoints": true
-    },
-    {
-      "idx": 6,
-      "version": "7",
-      "when": 1784300528529,
-      "tag": "0006_verification_identifier_unique",
-      "breakpoints": true
-    },
-    {
-      "idx": 7,
-      "version": "7",
-      "when": 1784316506430,
-      "tag": "0007_uniq_license_colocated_active",
       "breakpoints": true
     }
   ]

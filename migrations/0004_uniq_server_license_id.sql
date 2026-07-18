@@ -1,1 +1,0 @@
-CREATE UNIQUE INDEX "uniq_server_license_id" ON "server" USING btree ("license_id") WHERE "server"."license_id" IS NOT NULL;

@@ -1,4 +1,10 @@
-/** Introspected from live dev DB (`dev/scripts/introspect.sh`). Review style before commit. */
+/**
+ * Hand-curated canonical schema. Column order (especially the trailing
+ * `metadata`/`options` pair) is intentional and maintained by hand — do **not**
+ * re-introspect (`dev/scripts/introspect.sh`) over this file; that reorders
+ * columns and clobbers the manual layout. Generate versioned SQL via
+ * `pnpm generate --name <summary>`.
+ */
 
 import { sql } from 'drizzle-orm'
 import {
@@ -27,13 +33,13 @@ export const invitation = pgTable(
     createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
+    userId: uuid('user_id').notNull(),
+    teamId: uuid('team_id').notNull(),
     expiresAt: timestamp('expires_at', {
       precision: 3,
       withTimezone: true,
       mode: 'string',
     }).notNull(),
-    userId: uuid('user_id').notNull(),
-    teamId: uuid('team_id').notNull(),
     email: varchar({ length: 255 }).notNull(),
     status: varchar({ length: 255 }).notNull(),
     /** Intended access grants materialized on accept — see `InvitationGrantSpec`. */
@@ -41,6 +47,14 @@ export const invitation = pgTable(
   },
   (table) => [
     index('idx_invitation_email').using('btree', table.email.asc().nullsLast().op('text_ops')),
+    index('idx_invitation_user_id').using(
+      'btree',
+      table.userId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_invitation_team_id').using(
+      'btree',
+      table.teamId.asc().nullsLast().op('uuid_ops')
+    ),
     foreignKey({
       columns: [table.userId],
       foreignColumns: [user.id],
@@ -77,46 +91,6 @@ export const organization = pgTable(
       'organization_display_name_format_check',
       sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
     ),
-  ]
-)
-export const license = pgTable(
-  'license',
-  {
-    id: uuid()
-      .default(sql`uuidv7()`)
-      .primaryKey()
-      .notNull(),
-    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
-      .defaultNow()
-      .notNull(),
-    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
-      .defaultNow()
-      .notNull(),
-    organizationId: uuid('organization_id').notNull(),
-    displayName: varchar('display_name', { length: 255 }),
-    /** PBKDF2-SHA256 hashed token — same format as account.password */
-    token: text().notNull(),
-    /** Soft-delete */
-    revokedAt: timestamp('revoked_at', { precision: 3, withTimezone: true, mode: 'string' }),
-  },
-  (table) => [
-    index('idx_license_organization_id').using(
-      'btree',
-      table.organizationId.asc().nullsLast().op('uuid_ops')
-    ),
-    // Exactly one active colocated control-plane license per org
-    // (`display_name = 'this server'`). Reserved name is rejected on
-    // `POST /licenses` so user-minted keys cannot collide.
-    uniqueIndex('uniq_license_colocated_active')
-      .on(table.organizationId)
-      .where(
-        sql`${table.displayName} = 'this server' AND ${table.revokedAt} IS NULL`,
-      ),
-    foreignKey({
-      columns: [table.organizationId],
-      foreignColumns: [organization.id],
-      name: 'license_organization_id_organization_id_fk',
-    }).onDelete('cascade'),
   ]
 )
 /**
@@ -179,7 +153,9 @@ export const passkey = pgTable(
       precision: 3,
       withTimezone: true,
       mode: 'string',
-    }).defaultNow(),
+    })
+      .defaultNow()
+      .notNull(),
     userId: uuid('user_id').notNull(),
     aaguid: text(),
     name: varchar({ length: 255 }),
@@ -246,37 +222,81 @@ export const server = pgTable(
       precision: 3,
       withTimezone: true,
       mode: 'string',
-    }).notNull(),
+    })
+      .defaultNow()
+      .notNull(),
     updatedAt: timestamp('updated_at', {
       precision: 3,
       withTimezone: true,
       mode: 'string',
-    }).notNull(),
+    })
+      .defaultNow()
+      .notNull(),
     organizationId: uuid('organization_id'),
-    licenseId: uuid('license_id'),
     displayName: varchar('display_name', { length: 255 }),
+    daemon: jsonb(),
     metadata: jsonb(),
     options: jsonb(),
-    daemon: jsonb('daemon'),
   },
   (table) => [
+    index('idx_server_organization_id').using(
+      'btree',
+      table.organizationId.asc().nullsLast().op('uuid_ops')
+    ),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
       name: 'server_organization_id_organization_id_fk',
     }).onDelete('restrict'),
-    foreignKey({
-      columns: [table.licenseId],
-      foreignColumns: [license.id],
-      name: 'server_license_id_license_id_fk',
-    }).onDelete('restrict'),
-    // One server per registration key — licenses are single-use seats.
-    uniqueIndex('uniq_server_license_id')
-      .on(table.licenseId)
-      .where(sql`${table.licenseId} IS NOT NULL`),
   ]
 )
-// Lifecycle timestamps live in metadata; nowIso() ISO-UTC strings sort lexicographically.
+/**
+ * Organization-scoped registration keys. Consumption latches on `server_id`
+ * (one license per server). Defined after `server` so the FK can reference it.
+ */
+export const license = pgTable(
+  'license',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    organizationId: uuid('organization_id').notNull(),
+    /** Set on first successful enroll — one-shot seat latch. */
+    serverId: uuid('server_id'),
+    displayName: varchar('display_name', { length: 255 }),
+    /** PBKDF2-SHA256 hashed token — same format as account.password */
+    token: text().notNull(),
+    /** Soft-delete */
+    revokedAt: timestamp('revoked_at', { precision: 3, withTimezone: true, mode: 'string' }),
+  },
+  (table) => [
+    index('idx_license_organization_id').using(
+      'btree',
+      table.organizationId.asc().nullsLast().op('uuid_ops')
+    ),
+    // One license per server once consumed (revoked rows keep server_id for audit).
+    uniqueIndex('uniq_license_server_id')
+      .on(table.serverId)
+      .where(sql`${table.serverId} IS NOT NULL`),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'license_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'license_server_id_server_id_fk',
+    }).onDelete('set null'),
+  ]
+)
 export const command = pgTable(
   'command',
   {
@@ -284,21 +304,27 @@ export const command = pgTable(
       .default(sql`uuidv7()`)
       .primaryKey()
       .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
     serverId: uuid('server_id').notNull(),
-    actorEntityType: text('actor_entity_type').notNull(),
-    actorEntityId: uuid('actor_entity_id').notNull(),
+    actorType: text('actor_type').notNull(),
+    actorId: uuid('actor_id').notNull(),
     name: text().notNull(),
     status: text().notNull().default('queued'),
     attempts: integer().default(0).notNull(),
-    metadata: jsonb().notNull(),
     payload: jsonb().notNull(),
     result: jsonb(),
+    metadata: jsonb().notNull(),
   },
   (table) => [
     index('idx_command_server_id_created_at').using(
       'btree',
       table.serverId.asc(),
-      sql`(${table.metadata}->>'createdAt') desc`
+      table.createdAt.desc()
     ),
     index('idx_command_status').using('btree', table.status.asc()),
     foreignKey({
@@ -350,7 +376,6 @@ export const workspace = pgTable(
     description: varchar('description', { length: 255 }),
   },
   (table) => [
-    unique('workspace_id_org_unique').on(table.id, table.organizationId),
     index('idx_workspace_organization_id').using(
       'btree',
       table.organizationId.asc().nullsLast().op('uuid_ops')
@@ -412,7 +437,9 @@ export const managed = pgTable(
     createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
-    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' }),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
     projectId: uuid('project_id').notNull(),
     metadata: jsonb(),
     options: jsonb(),
@@ -842,12 +869,12 @@ export const session = pgTable(
     updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
+    userId: uuid('user_id').notNull(),
     expiresAt: timestamp('expires_at', {
       precision: 3,
       withTimezone: true,
       mode: 'string',
     }).notNull(),
-    userId: uuid('user_id').notNull(),
     token: varchar({ length: 255 }).notNull(),
     ipAddress: varchar('ip_address', { length: 45 }),
     userAgent: text('user_agent'),
@@ -1041,7 +1068,6 @@ export const twoFactor = pgTable(
     backupCodes: text('backup_codes').notNull(),
   },
   (table) => [
-    index('idx_2fa_secret').using('btree', table.secret.asc().nullsLast().op('text_ops')),
     index('idx_2fa_user_id').using('btree', table.userId.asc().nullsLast().op('uuid_ops')),
     foreignKey({
       columns: [table.userId],

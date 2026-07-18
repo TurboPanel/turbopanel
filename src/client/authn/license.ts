@@ -83,10 +83,11 @@ export async function disconnectServersBoundToLicense(
 ): Promise<void> {
   const rows = await db
     .select({ id: server.id })
-    .from(server)
+    .from(license)
+    .innerJoin(server, eq(server.id, license.serverId))
     .where(and(
-      eq(server.licenseId, licenseId),
-      eq(server.organizationId, organizationId),
+      eq(license.id, licenseId),
+      eq(license.organizationId, organizationId),
     ))
 
   for (const row of rows) {
@@ -121,28 +122,19 @@ export async function listServersBoundToLicenses(
 
   const rows = await db
     .select({
-      licenseId: server.licenseId,
+      licenseId: license.id,
       id: server.id,
       displayName: server.displayName,
     })
-    .from(server)
+    .from(license)
+    .innerJoin(server, eq(server.id, license.serverId))
     .where(and(
-      eq(server.organizationId, organizationId),
-      inArray(server.licenseId, licenseIds),
+      eq(license.organizationId, organizationId),
+      inArray(license.id, licenseIds),
     ))
 
-  const byLicense = new Map<string, LicenseBoundServer[]>()
   for (const row of rows) {
-    if (!row.licenseId) continue
-    const list = byLicense.get(row.licenseId) ?? []
-    list.push({ id: row.id, displayName: row.displayName })
-    byLicense.set(row.licenseId, list)
-  }
-
-  for (const [licenseId, servers] of byLicense) {
-    if (servers.length === 1) {
-      bound.set(licenseId, servers[0]!)
-    }
+    bound.set(row.licenseId, { id: row.id, displayName: row.displayName })
   }
 
   return bound
