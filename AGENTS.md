@@ -619,6 +619,20 @@ Credential-account passwords use **PBKDF2-HMAC-SHA256** via `crypto.subtle` (`sr
 - JWT payload: `sub` (serverId), `kid` (`server.daemon.key.id`), `jti` (random uuid, logging only), `iss`, `aud`, `typ`, `iat`, `exp`. No `sid`. Daemon JWTs are **EdDSA (Ed25519)** signed; header carries `alg: "EdDSA"`, `typ: "JWT"`, and a string `kid` (SHA-256 fingerprint of the public JWK). Verification selects the public key by `kid`.
 - Revoking daemon auth: set `server.daemon.key.revokedAt`. Existing JWTs remain valid until their 15-minute expiry. New JWT issuance fails.
 
+Do-not-retry-soon mapping for enroll/session responses (daemon intent):
+
+| Status + message (`/enroll`, `/auth/session`) | Daemon action |
+|---|---|
+| `401 Invalid license` | permanent → daemon parks (5 min–1 h backoff) |
+| `400 License already consumed or invalid` | permanent → daemon parks |
+| `400 License is inactive` | permanent → daemon parks |
+| `400 Server key is inactive` | permanent → daemon parks |
+| `403 Invalid signature` / `409 Fingerprint already exists` | permanent → daemon parks |
+| `404 Server key not found` / `400 Server key mismatch` | stale-identity → recoverable re-enroll (keeps persisted `serverId`) |
+| `429` / `5xx` / `400 Invalid or expired challenge` | transient → normal full-jitter reconnect |
+
+The daemon-side parked state (not `DAEMON_REST_RATE_LIMITER`) is the primary protection against enroll/challenge storms after a control-plane identity loss (e.g. DB wipe); `DAEMON_REST_RATE_LIMITER` remains a backstop that must behave even when limits fail open. Canonical daemon backoff/unpark behavior: **`../daemon/AGENTS.md`** (Instance client → parked state) — do not duplicate it here.
+
 ```mermaid
 sequenceDiagram
     participant Daemon
