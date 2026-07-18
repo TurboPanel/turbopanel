@@ -12,7 +12,7 @@ import { PAM_ROOT_USERNAME, verifyCredentials } from './credentials.ts'
 import {
   createOrganizationForUser,
   isInstanceInstalled,
-  isSignupEnabled,
+  resolveEffectiveSignupEnabled,
   type SignupEnvOverride,
   validateSuperadminEmail,
   validateSuperadminPassword,
@@ -31,6 +31,7 @@ import type { Db } from '../../db.ts'
 import { account, user } from '../../lib/db/schema.ts'
 import { type EmailQueue, getEmailQueue } from '../../lib/email/types.ts'
 import { isNoopEmailQueue } from '../../lib/email/noop-queue.ts'
+import { emailQueueFromResolvedSettings } from '../../lib/email/mailgun/workers-queue.ts'
 import {
   isEmailActiveForRuntime,
   resolveEmailSettings,
@@ -46,7 +47,13 @@ import {
 export type AuthRouteOpts = {
   secrets?: DerivedSecretsConfig
   runtime: 'deno' | 'workers'
-  /** `TURBOPANEL_IS_SIGNUP_ENABLED` — env override for Workers and self-hosted. */
+  /**
+   * Optional `TURBOPANEL_IS_SIGNUP_ENABLED` force override. When set to
+   * `1`/`true` or `0`/`false` it overrides the `IS_SIGNUP_ENABLED` database
+   * setting; when unset the DB (panel) toggle wins. Do not bake a production
+   * default-disabled `0` into Wrangler vars — leave unset so admins can open
+   * sign-up without a deploy.
+   */
   signupEnvOverride: SignupEnvOverride | undefined
   emailFrom?: string
   baseUrl?: string
@@ -365,13 +372,12 @@ async function enqueueSignupVerification(
   queue: EmailQueue,
   trimmedEmail: string,
   userId: string,
+  emailFrom: string,
 ): Promise<Response | null> {
   const verificationToken = await createEmailVerificationToken(db, trimmedEmail)
   const baseOrigin = await resolveVerificationBaseUrlAsync(c, opts)
   const verificationUrl =
     `${baseOrigin}/verify-email?token=${encodeURIComponent(verificationToken)}`
-  const emailFrom =
-    c.get('emailFrom') ?? opts.emailFrom ?? 'noreply@turbopanel.local'
 
   try {
     await queue.enqueue({
@@ -404,7 +410,13 @@ async function enqueueSignupVerification(
 }
 
 type SignupGate =
-  | { ok: true; emailVerificationEnabled: boolean }
+  | {
+      ok: true
+      emailVerificationEnabled: boolean
+      /** Queue aligned with the same settings that decided verification. */
+      emailQueue: EmailQueue | undefined
+      emailFrom: string
+    }
   | { ok: false; response: Response }
 
 async function resolveSignupGate(
@@ -419,7 +431,9 @@ async function resolveSignupGate(
     }
   }
 
-  if (!(await isSignupEnabled(db, opts.signupEnvOverride, opts.runtime))) {
+  if (
+    !(await resolveEffectiveSignupEnabled(db, opts.runtime, opts.signupEnvOverride))
+  ) {
     return {
       ok: false,
       response: c.json({ ok: false, error: 'Sign-up is not enabled' }, 403),
@@ -440,7 +454,20 @@ async function resolveSignupGate(
     emailSettings,
     opts.runtime,
   )
-  return { ok: true, emailVerificationEnabled }
+  // Prefer an injected context queue (Deno AMQP / test doubles). On Workers,
+  // fall back to a queue derived from the *same* settings used for the
+  // verification gate so admin email config changes apply without a restart
+  // even if middleware omitted the queue.
+  const emailQueue = getEmailQueue(c) ??
+    (opts.runtime === 'workers'
+      ? emailQueueFromResolvedSettings(emailSettings, env)
+      : undefined)
+  const emailFrom =
+    emailSettings.from ||
+    c.get('emailFrom') ||
+    opts.emailFrom ||
+    'noreply@turbopanel.local'
+  return { ok: true, emailVerificationEnabled, emailQueue, emailFrom }
 }
 
 async function deliverSignupVerification(
@@ -450,6 +477,7 @@ async function deliverSignupVerification(
   queue: EmailQueue | undefined,
   trimmedEmail: string,
   userId: string,
+  emailFrom: string,
 ): Promise<Response | null> {
   if (!queue) {
     compatLogWarn(
@@ -468,6 +496,7 @@ async function deliverSignupVerification(
       queue,
       trimmedEmail,
       userId,
+      emailFrom,
     )
   } catch (err) {
     compatLogError('auth', `verification token generation failed: ${err}`)
@@ -621,7 +650,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
     if (!gate.ok) {
       return gate.response
     }
-    const { emailVerificationEnabled } = gate
+    const { emailVerificationEnabled, emailQueue: signupQueue, emailFrom } = gate
 
     let body: unknown
     try {
@@ -657,7 +686,6 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Email is already registered' }, 409)
     }
 
-    const signupQueue = getEmailQueue(c)
     if (emailVerificationEnabled && isNoopEmailQueue(signupQueue)) {
       return c.json(
         {
@@ -694,6 +722,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       signupQueue,
       trimmedEmail,
       created.userId,
+      emailFrom,
     )
     if (verificationResponse) {
       return verificationResponse

@@ -42,6 +42,8 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
 
   client.get('/status', async (c) => {
     const db = getDb(c)
+    // Effective signup flag is resolved inside getClientPublicStatus via
+    // resolveEffectiveSignupEnabled — same helper as sign-up / OTP auto-reg.
     const payload = await getClientPublicStatus(
       db,
       opts.runtime,

@@ -85,14 +85,24 @@ export function normalizeSignupEnvOverride(
 }
 
 /**
- * Env override wins when it is a recognized enable/disable flag; otherwise the DB
- * setting applies. On Workers, sign-up defaults to enabled when both are unset so
- * fresh deployments can bootstrap via public sign-up (no Deno install wizard).
+ * Resolve whether public sign-up is enabled from a DB value and optional env
+ * force override.
+ *
+ * **Env overrides the database** when set to a recognized force-enable
+ * (`1` / `true`) or force-disable (`0` / `false`) flag — use
+ * `TURBOPANEL_IS_SIGNUP_ENABLED` only for explicit operational force behavior
+ * (e.g. permanently open a testing env). Unrecognized / unset env values do
+ * not override.
+ *
+ * When no force override is configured, the `IS_SIGNUP_ENABLED` database
+ * setting wins so a panel toggle can open or close sign-up without a code
+ * deploy. When both env and DB are unset, sign-up defaults to **disabled**
+ * on every runtime (including Workers).
  */
 export function resolveIsSignupEnabled(
   dbValue: string | null | undefined,
   envOverride?: SignupEnvOverride,
-  options?: { runtime?: 'deno' | 'workers' },
+  _options?: { runtime?: 'deno' | 'workers' },
 ): boolean {
   const normalizedEnv = normalizeSignupEnvOverride(envOverride)
   if (normalizedEnv !== undefined) {
@@ -102,7 +112,6 @@ export function resolveIsSignupEnabled(
   }
   if (dbValue === '1') return true
   if (dbValue === '0') return false
-  if (options?.runtime === 'workers') return true
   return false
 }
 
@@ -267,6 +276,25 @@ export async function isSignupEnabled(
   }
 }
 
+/**
+ * Shared entry point for `/status`, `/auth/sign-up`, and OTP auto-registration
+ * so the effective signup flag cannot drift across those surfaces.
+ *
+ * Reads the current DB setting on every call (plus any env force override).
+ * Do not capture this boolean once at Worker `createApp()` init — panel toggles
+ * must take effect without a redeploy.
+ */
+export async function resolveEffectiveSignupEnabled(
+  db: Db | undefined,
+  runtime: 'deno' | 'workers',
+  envOverride?: SignupEnvOverride,
+): Promise<boolean> {
+  if (db === undefined) {
+    return resolveIsSignupEnabled(undefined, envOverride, { runtime })
+  }
+  return isSignupEnabled(db, envOverride, runtime)
+}
+
 export async function getInstallStatus(
   db: Db,
   envOverride?: SignupEnvOverride,
@@ -275,7 +303,7 @@ export async function getInstallStatus(
 ): Promise<InstallStatus> {
   // Sequential: parallel drizzle queries on postgres.js can wedge the pool (Deno dev).
   const installed = await isInstanceInstalled(db)
-  const signupEnabled = await isSignupEnabled(db, envOverride)
+  const signupEnabled = await resolveEffectiveSignupEnabled(db, 'deno', envOverride)
   const emailSettings = await resolveEmailSettings(db, platformEnv, dataEncryptionSecrets)
   const emailVerificationEnabled = isEmailActiveForRuntime(emailSettings, 'deno')
   const needsInstall = !installed
@@ -305,24 +333,19 @@ export async function getClientPublicStatus(
   platformEnv: Record<string, string | undefined> = {},
   dataEncryptionSecrets?: DerivedSecretsConfig,
 ): Promise<ClientPublicStatus | null> {
-  const emailSettings = await resolveEmailSettings(db, platformEnv, dataEncryptionSecrets)
-  const emailVerificationEnabled = isEmailActiveForRuntime(emailSettings, runtime)
-
   if (runtime === 'workers') {
-    if (db === undefined) {
-      return {
-        ok: true,
-        isSignupEnabled: resolveIsSignupEnabled(undefined, envOverride, {
-          runtime: 'workers',
-        }),
-        isSignupEmailVerificationEnabled: emailVerificationEnabled,
-      }
-    }
-    const signupEnabled = await isSignupEnabled(db, envOverride, 'workers')
+    const emailSettings = await resolveEmailSettings(
+      db,
+      platformEnv,
+      dataEncryptionSecrets,
+    )
     return {
       ok: true,
-      isSignupEnabled: signupEnabled,
-      isSignupEmailVerificationEnabled: emailVerificationEnabled,
+      isSignupEnabled: await resolveEffectiveSignupEnabled(db, runtime, envOverride),
+      isSignupEmailVerificationEnabled: isEmailActiveForRuntime(
+        emailSettings,
+        runtime,
+      ),
     }
   }
 

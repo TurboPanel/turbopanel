@@ -16,7 +16,7 @@ const denoClientStatusSchema = {
     isSignupEnabled: {
       type: 'boolean',
       description:
-        'Whether public sign-up is enabled (DB setting or TURBOPANEL_IS_SIGNUP_ENABLED env override).',
+        'Whether public sign-up is enabled. The `IS_SIGNUP_ENABLED` database setting wins unless `TURBOPANEL_IS_SIGNUP_ENABLED` is set to an explicit force-enable (`1`/`true`) or force-disable (`0`/`false`). Defaults to false when both are unset.',
     },
   },
 } as const
@@ -31,7 +31,7 @@ const workersClientStatusSchema = {
     isSignupEnabled: {
       type: 'boolean',
       description:
-        'Whether public sign-up is enabled (DB setting or TURBOPANEL_IS_SIGNUP_ENABLED env override). Defaults to true when unset.',
+        'Whether public sign-up is enabled. The `IS_SIGNUP_ENABLED` database setting wins unless `TURBOPANEL_IS_SIGNUP_ENABLED` is set to an explicit force-enable (`1`/`true`) or force-disable (`0`/`false`). Defaults to false when both are unset so production can open sign-up from the panel without a deploy.',
     },
   },
 } as const
@@ -350,7 +350,7 @@ export const authPaths: Record<string, unknown> = {
       tags: ['Authentication'],
       summary: 'Create a user account when sign-up is enabled',
       description:
-        'Creates a regular user account when sign-up is enabled (`IS_SIGNUP_ENABLED` in DB or `TURBOPANEL_IS_SIGNUP_ENABLED` env override). On Deno self-hosted, the install wizard must complete first. On Workers, sign-up is the first-user bootstrap path. No session is returned — the user must sign in after verifying email.',
+        'Creates a regular user account when sign-up is enabled (`IS_SIGNUP_ENABLED` DB setting, or `TURBOPANEL_IS_SIGNUP_ENABLED` force override). On Deno self-hosted, the install wizard must complete first. On Workers, sign-up is the first-user bootstrap path. No session is returned — the user must sign in after verifying email.',
       requestBody: {
         required: true,
         content: {

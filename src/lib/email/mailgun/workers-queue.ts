@@ -72,6 +72,19 @@ export async function resolveWorkersEmailQueue(
   dataEncryptionSecrets?: DerivedSecretsConfig,
 ): Promise<EmailQueue> {
   const resolved = await resolveEmailSettings(db, env, dataEncryptionSecrets)
+  return emailQueueFromResolvedSettings(resolved, env)
+}
+
+/**
+ * Build a Workers email queue from already-resolved settings.
+ *
+ * Callers that also need the verification gate (sign-up) should resolve
+ * settings once, then use this helper so gate and queue stay aligned.
+ */
+export function emailQueueFromResolvedSettings(
+  resolved: Awaited<ReturnType<typeof resolveEmailSettings>>,
+  env: Record<string, string | undefined>,
+): EmailQueue {
   const workersProvider = resolved.provider
   if (workersProvider === 'mailpit') {
     return createWorkersMailpitQueue({

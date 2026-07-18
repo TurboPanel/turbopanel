@@ -6,24 +6,45 @@ import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'
 import { createEmailOtp } from './email-otp.ts'
 import { registerAuthRoutes } from './http.ts'
-import { isInstanceInstalled } from './install-state.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from './secrets.ts'
+import {
+  DEFAULT_WORKSPACE_NAME,
+  IS_SIGNUP_ENABLED_CONFIG_KEY,
+  isInstanceInstalled,
+  resolveIsSignupEnabled,
+  type SignupEnvOverride,
+} from './install-state.ts'
+import {
+  deriveEncryptionSecretsConfig,
+  deriveSecretsConfig,
+  parseSecretsEnv,
+} from './secrets.ts'
+import { createAuthRateLimiter } from './auth-rate-limit.ts'
 import { registerClientRoutes } from '../routes.ts'
 import {
   account,
   grant,
   member,
   organization,
+  setting,
   team,
   teammate,
   user,
   workspace,
 } from '../../lib/db/schema.ts'
 import { CLIENT_API_PREFIX } from '../../surfaces.ts'
-import type { SignupEnvOverride } from './install-state.ts'
-import { DEFAULT_WORKSPACE_NAME } from './install-state.ts'
 import type { EmailJob, EmailQueue } from '../../lib/email/types.ts'
-import { createNoopQueue } from '../../lib/email/noop-queue.ts'
+import { createNoopQueue, isNoopEmailQueue } from '../../lib/email/noop-queue.ts'
+import { resolveWorkersEmailQueue } from '../../lib/email/mailgun/workers-queue.ts'
+import {
+  SYSTEM_EMAIL_DB_KEY,
+  updateEmailSettings,
+} from '../../lib/settings/email-settings.ts'
+import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+
+/** Generous limiter so multi-case Workers suites do not trip the shared IP bucket. */
+const testAuthRateLimiter = createAuthRateLimiter({
+  defaultPolicy: { limit: 10_000, windowMs: 60_000 },
+})
 
 class DeliveringEmailQueue implements EmailQueue {
   async enqueue(_job: EmailJob): Promise<void> {}
@@ -34,8 +55,6 @@ class FailingEmailQueue implements EmailQueue {
     throw new Error('simulated enqueue failure')
   }
 }
-
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -49,6 +68,23 @@ const MAILPIT_PLATFORM_ENV = {
   TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
 } as const
 
+async function setSignupEnabledSetting(
+  db: ReturnType<typeof createDenoDb>,
+  value: '0' | '1' | null,
+): Promise<void> {
+  if (value === null) {
+    await db.delete(setting).where(eq(setting.key, IS_SIGNUP_ENABLED_CONFIG_KEY))
+    return
+  }
+  await db
+    .insert(setting)
+    .values({ key: IS_SIGNUP_ENABLED_CONFIG_KEY, value })
+    .onConflictDoUpdate({
+      target: setting.key,
+      set: { value, updatedAt: new Date().toISOString() },
+    })
+}
+
 async function createAuthRouteApp(
   db: ReturnType<typeof createDenoDb>,
   runtime: 'deno' | 'workers',
@@ -56,6 +92,7 @@ async function createAuthRouteApp(
   options?: {
     emailQueue?: EmailQueue
     platformEnv?: Record<string, string | undefined>
+    dataEncryptionSecrets?: Awaited<ReturnType<typeof deriveEncryptionSecretsConfig>>
   },
 ) {
   const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, runtime)
@@ -63,11 +100,17 @@ async function createAuthRouteApp(
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
+    // Workers fail closed without an injected durable limiter; tests use the
+    // process-local shared limiter so auth routes remain exercisable.
+    c.set('authRateLimiter', testAuthRateLimiter)
     if (options?.platformEnv) {
       c.set('platformEnv', options.platformEnv)
     }
     if (options?.emailQueue) {
       c.set('emailQueue', options.emailQueue)
+    }
+    if (options?.dataEncryptionSecrets) {
+      c.set('dataEncryptionSecrets', options.dataEncryptionSecrets)
     }
     return next()
   })
@@ -93,6 +136,7 @@ async function createClientRouteApp(
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
+    c.set('authRateLimiter', testAuthRateLimiter)
     if (platformEnv) {
       c.set('platformEnv', platformEnv)
     }
@@ -476,6 +520,183 @@ it('Workers sign-up leaves no org residue when verification email enqueue fails'
       )
     }
   } finally {
+    await cleanupUser(db, email)
+  }
+})
+
+it('resolveIsSignupEnabled: env force overrides DB; unset defaults to disabled', () => {
+  if (resolveIsSignupEnabled('1', '0') !== false) {
+    throw new Error('force-disable env must override DB enabled')
+  }
+  if (resolveIsSignupEnabled('0', '1') !== true) {
+    throw new Error('force-enable env must override DB disabled')
+  }
+  if (resolveIsSignupEnabled('1', undefined) !== true) {
+    throw new Error('DB enabled must win when env is unset')
+  }
+  if (resolveIsSignupEnabled(undefined, undefined, { runtime: 'workers' }) !== false) {
+    throw new Error('Workers must default to disabled when DB and env are unset')
+  }
+  if (resolveIsSignupEnabled(undefined, undefined, { runtime: 'deno' }) !== false) {
+    throw new Error('Deno must default to disabled when DB and env are unset')
+  }
+})
+
+it('Workers status, sign-up, and OTP auto-registration agree when DB signup is toggled', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping Workers signup toggle agreement test: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+  // No env force — panel/DB toggle must control all three surfaces.
+  const statusApp = await createClientRouteApp(db, 'workers')
+  const authApp = await createAuthRouteApp(db, 'workers')
+  const emailOff = `workers-signup-off-${crypto.randomUUID()}@example.com`
+  const emailOn = `workers-signup-on-${crypto.randomUUID()}@example.com`
+
+  try {
+    await setSignupEnabledSetting(db, '0')
+
+    const statusOff = await statusApp.request(`${CLIENT_API_PREFIX}/status`)
+    if (statusOff.status !== 200) {
+      throw new Error(`expected status 200, got ${statusOff.status}`)
+    }
+    const offPayload = await statusOff.json() as { isSignupEnabled: boolean }
+    if (offPayload.isSignupEnabled !== false) {
+      throw new Error(`expected isSignupEnabled=false, got ${JSON.stringify(offPayload)}`)
+    }
+
+    const signUpOff = await authApp.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: emailOff, password: 'password1!' }),
+    })
+    if (signUpOff.status !== 403) {
+      throw new Error(`expected sign-up 403 when disabled, got ${signUpOff.status}`)
+    }
+
+    const otpOff = await createEmailOtp(db, emailOff, 'sign-in')
+    const otpOffCode = otpOff.status === 'created' ? otpOff.otp : ''
+    const otpSignInOff = await authApp.request(`${CLIENT_API_PREFIX}/auth/sign-in/otp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: emailOff, otp: otpOffCode }),
+    })
+    if (otpSignInOff.status !== 403) {
+      throw new Error(
+        `expected OTP auto-reg 403 when signup disabled, got ${otpSignInOff.status}`,
+      )
+    }
+
+    await setSignupEnabledSetting(db, '1')
+
+    const statusOn = await statusApp.request(`${CLIENT_API_PREFIX}/status`)
+    const onPayload = await statusOn.json() as { isSignupEnabled: boolean }
+    if (onPayload.isSignupEnabled !== true) {
+      throw new Error(`expected isSignupEnabled=true after toggle, got ${JSON.stringify(onPayload)}`)
+    }
+
+    const signUpOn = await authApp.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: emailOn, password: 'password1!' }),
+    })
+    if (signUpOn.status !== 201) {
+      throw new Error(
+        `expected sign-up 201 when enabled, got ${signUpOn.status}: ${await signUpOn.text()}`,
+      )
+    }
+
+    const otpEmail = `workers-otp-on-${crypto.randomUUID()}@example.com`
+    const otpOn = await createEmailOtp(db, otpEmail, 'sign-in')
+    const otpOnCode = otpOn.status === 'created' ? otpOn.otp : ''
+    const otpSignInOn = await authApp.request(`${CLIENT_API_PREFIX}/auth/sign-in/otp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: otpEmail, otp: otpOnCode }),
+    })
+    if (otpSignInOn.status !== 200) {
+      throw new Error(
+        `expected OTP auto-reg 200 when signup enabled, got ${otpSignInOn.status}: ${await otpSignInOn.text()}`,
+      )
+    }
+    await cleanupUser(db, otpEmail)
+  } finally {
+    await setSignupEnabledSetting(db, null)
+    await cleanupUser(db, emailOff)
+    await cleanupUser(db, emailOn)
+  }
+})
+
+it('Workers email queue follows DB Mailgun settings without a Worker restart', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping Workers email settings→queue test: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'workers')
+  const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
+    secretsConfig,
+    'data-encryption',
+  )
+  const email = `workers-mailgun-signup-${crypto.randomUUID()}@example.com`
+
+  try {
+    await db.delete(setting).where(eq(setting.key, SYSTEM_EMAIL_DB_KEY))
+
+    const before = await resolveWorkersEmailQueue(db, {}, dataEncryptionSecrets)
+    if (!isNoopEmailQueue(before)) {
+      throw new Error('expected noop queue before Mailgun settings are saved')
+    }
+
+    await updateEmailSettings(
+      db,
+      {},
+      {
+        PROVIDER: 'mailgun',
+        MAILGUN_API_KEY: 'key-from-admin-panel',
+        MAILGUN_DOMAIN: 'mg.example.com',
+        FROM: 'noreply@example.com',
+      },
+      dataEncryptionSecrets,
+    )
+
+    const after = await resolveWorkersEmailQueue(db, {}, dataEncryptionSecrets)
+    if (isNoopEmailQueue(after)) {
+      throw new Error('expected real Mailgun queue after saving email settings')
+    }
+
+    // Sign-up must use the settings-derived queue (verification required) without
+    // any platformEnv Mailgun bindings — proving admin config is live.
+    await setSignupEnabledSetting(db, '1')
+    const app = await createAuthRouteApp(db, 'workers', undefined, {
+      emailQueue: after,
+      dataEncryptionSecrets,
+    })
+
+    const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email, password: 'password1!' }),
+    })
+    // Real MailgunQueue fails to reach Mailgun in tests → 503 after rollback,
+    // or 201 if enqueue somehow succeeds. Either proves we are past the
+    // "email not configured" noop gate.
+    if (res.status === 503) {
+      const body = await res.json() as { error?: string }
+      if (body.error?.includes('not configured')) {
+        throw new Error(
+          `sign-up still treated email as unconfigured after Mailgun save: ${JSON.stringify(body)}`,
+        )
+      }
+    } else if (res.status !== 201) {
+      throw new Error(`unexpected sign-up status ${res.status}: ${await res.text()}`)
+    }
+  } finally {
+    await setSignupEnabledSetting(db, null)
+    await db.delete(setting).where(eq(setting.key, SYSTEM_EMAIL_DB_KEY))
     await cleanupUser(db, email)
   }
 })

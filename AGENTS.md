@@ -707,7 +707,7 @@ Add a `TURBOPANEL_SECRET` to `dev/.env` before running `pnpm dev` (Tilt syncs it
 
 **CORS (Scalar / docs site):** when `TURBOPANEL_UI_CORS_ORIGINS` is set (comma-separated browser origins), `src/cors.ts` reflects matching `Origin` headers on API responses. Co-located dev injects `http://localhost:{WEBSITE_PORT}` and `http://127.0.0.1:{WEBSITE_PORT}` via `instance-launch` on the Deno instance unit (and Workers `.dev.vars` when `turbopanel_instance_runtime=workers`) so the docs site can fetch OpenAPI through Caddy cross-origin. Cloudflare Workers production/testing set matching website origins in `wrangler.jsonc` (`live`: `https://turbopanel.io`; `testing`: `https://testing.turbopanel.io`).
 
-**Public sign-up (Workers dev):** `TURBOPANEL_IS_SIGNUP_ENABLED=1` (or `true`) in `dev/.env` → `sync-env.sh` writes it to `instance/.dev.vars`. Env override wins over the `IS_SIGNUP_ENABLED` DB setting. Local Tilt defaults it to `1` in `.env.example`.
+**Public sign-up:** `IS_SIGNUP_ENABLED` in the `setting` table is the panel-controlled toggle (default disabled when unset). `TURBOPANEL_IS_SIGNUP_ENABLED=1`/`true` or `0`/`false` is an optional **force** override that wins over the database — use it only for explicit operational force (e.g. permanently open a testing env). Do not bake a production default-disabled `0` into Wrangler `vars`; leave the live env unset so admins can open sign-up without a code deploy. Local Tilt may still set `TURBOPANEL_IS_SIGNUP_ENABLED=1` in `.env.example` / `.dev.vars` as a force-enable for dev.
 
 #### Auth routes
 
@@ -717,10 +717,10 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 |---|---|---|
 | `POST` | `/api/client/v1/auth/sign-in` | Verify DB user credentials, create session (rejects root; use install wizard) |
 | `POST` | `/api/client/v1/auth/sign-out` | Delete session, clear cookie |
-| `POST` | `/api/client/v1/auth/sign-up` | Create a regular user account when signup is enabled (`IS_SIGNUP_ENABLED = '1'` in DB, or `TURBOPANEL_IS_SIGNUP_ENABLED=1`/`true` env override); no session returned — user must sign in. Generates a 24h email verification token and enqueues a `signup-verification` email job (Deno → RabbitMQ → mailer → SMTP/Mailpit; Workers → Mailgun directly). Also logs the token and verify URL to console in dev |
+| `POST` | `/api/client/v1/auth/sign-up` | Create a regular user account when signup is enabled (`IS_SIGNUP_ENABLED` DB setting, or `TURBOPANEL_IS_SIGNUP_ENABLED` force override); no session returned — user must sign in. Generates a 24h email verification token and enqueues a `signup-verification` email job (Deno → RabbitMQ → mailer → SMTP/Mailpit; Workers → Mailgun directly). Also logs the token and verify URL to console in dev |
 | `GET` | `/api/client/v1/auth/verify-email?token=<token>` | Consume a 24-hour email verification token; sets `user.isEmailVerified = true` |
 | `GET` | `/api/client/v1/authn/session` | Return current user session or 401 |
-| `GET` | `/api/client/v1/status` | Public: `{ needsInstall, isInstallMode, isSignupEnabled }` — Deno: install mode until org + superadmin exist; Workers: always `needsInstall: false`, `isSignupEnabled` from DB + env override |
+| `GET` | `/api/client/v1/status` | Public: `{ needsInstall, isInstallMode, isSignupEnabled }` — Deno: install mode until org + superadmin exist; Workers: always `needsInstall: false`, `isSignupEnabled` from DB (panel toggle) unless an env force override is set |
 | `POST` | `/api/install/v1/bootstrap` | Deno: verify host PAM (root or sudo user), no cookies |
 | `POST` | `/api/install/v1/` | Deno: host PAM + superadmin setup → superadmin session only |
 | `GET` | `/api/client/v1/servers` | Session required: servers visible to the user via `listVisible`, with live `connected` / `hostname` from the daemon hub |
@@ -779,7 +779,7 @@ The `src/lib/email/` module defines a queue abstraction (`EmailQueue`, `EmailJob
 ### Deno vs Workers paths
 
 - **Deno (self-hosted)** — always publishes email jobs through RabbitMQ via `src/lib/email/smtp/deno-amqp-queue.ts`. The Deno instance itself does not deliver email — it only publishes to RabbitMQ; the **`mailer/`** consumer (`turbopanel-mailer.service`) handles delivery. The mailer is installed by the `instance-launch` role; in Tilt dev it is the `mailer` resource. When the broker is unreachable (or `TURBOPANEL_AMQP_URL` is explicitly empty), the instance uses a noop queue — it does not send Mailgun directly from the instance process.
-- **Workers** — `src/lib/email/mailgun/workers-queue.ts` (`createWorkersMailgunQueue`) sends directly to Mailgun inside `enqueue` via `sendMailgunJob`. There is no AMQP/RabbitMQ involvement. Cloudflare Workers provides concurrency control, retries, and durability at the platform level, so a queue consumer is unnecessary. Confirmed in `src/workers.ts`: `resolveWorkersEmailQueue` yields a `WorkersMailgunQueue` (or noop) which is passed to the app and used per-request.
+- **Workers** — `src/lib/email/mailgun/workers-queue.ts` (`createWorkersMailgunQueue`) sends directly to Mailgun inside `enqueue` via `sendMailgunJob`. There is no AMQP/RabbitMQ involvement. Cloudflare Workers provides concurrency control, retries, and durability at the platform level, so a queue consumer is unnecessary. Confirmed in `src/workers.ts`: each fetch resolves `resolveWorkersEmailQueue` from the current DB settings + `platformEnv` (not a permanently cached queue) so admin `PUT /api/admin/v1/settings/email` takes effect without a Worker restart.
 
 The **`mailer/`** consumer runs as **`turbopanel-mailer.service`** on managed hosts (installed by the `instance-launch` role). In Tilt dev it is the standalone `mailer` resource (Deno mode only). See "Deno mailer throttling and prefetch" below for rate/burst/prefetch behavior.
 

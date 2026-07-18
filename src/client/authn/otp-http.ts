@@ -15,7 +15,7 @@ import {
 } from './email-otp.ts'
 import {
   isInstanceInstalled,
-  isSignupEnabled,
+  resolveEffectiveSignupEnabled,
   validateSuperadminEmail,
   validateSuperadminPassword,
 } from './install-state.ts'
@@ -171,7 +171,9 @@ async function resolveOtpSignInUserId(
       response: c.json({ ok: false, error: 'Complete initial setup first' }, 403),
     }
   }
-  if (!(await isSignupEnabled(db, opts.signupEnvOverride, opts.runtime))) {
+  if (
+    !(await resolveEffectiveSignupEnabled(db, opts.runtime, opts.signupEnvOverride))
+  ) {
     return {
       response: c.json({ ok: false, error: 'Sign-up is not enabled' }, 403),
     }

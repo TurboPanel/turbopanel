@@ -327,6 +327,9 @@ export function registerAdminRoutes(app: Hono, opts: {
 
     const env = resolvePlatformEnv(c, opts)
     const resolved = await updateEmailSettings(db, env, updates, dataEncryptionSecrets)
+    // Workers resolves the email queue per request from current DB settings
+    // (see workers.ts fetch middleware) — no isolate-level queue cache to
+    // invalidate after this write.
     return c.json({ settings: emailSettingsToApiShape(resolved) })
   })
 
