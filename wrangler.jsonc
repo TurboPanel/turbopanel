@@ -240,6 +240,10 @@
       "vars": {
         "TURBOPANEL_BASE_URL": "https://turbopanel.app",
         "TURBOPANEL_UI_CORS_ORIGINS": "https://turbopanel.io",
+        // Default force-disable so the binding exists on every deploy; flip to
+        // "1" in the Cloudflare dashboard (then Deploy) to open public sign-up.
+        // A dashboard-only add of this key is wiped by the next wrangler deploy.
+        "TURBOPANEL_IS_SIGNUP_ENABLED": "0",
         "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c"
       }
     }
