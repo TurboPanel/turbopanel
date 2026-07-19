@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildLicenseInstallCommand,
+  CDN_RUN_SCRIPT_DISPLAY,
   encodeLicenseArg,
 } from './daemon-install-command.ts'
 
 function extractLicenseArg(command: string): string {
-  const match = /--license ([^\s]+)/.exec(command)
-  if (!match) throw new Error('no --license in command')
+  const match = /TURBOPANEL_LICENSE=([^\s]+)/.exec(command)
+  if (!match) throw new Error('no TURBOPANEL_LICENSE in command')
   return match[1]
 }
 
@@ -26,12 +27,16 @@ describe('buildLicenseInstallCommand', () => {
       'curl -fsSLk https://huey.turbopanel.dev:8443/run.sh',
     )
     expect(command).not.toContain('/api/install/v1/daemon-install.sh')
-    expect(command).toContain('| sh -s --')
-    expect(command).not.toContain('sudo sh -s --')
-    expect(command).toContain('--host https://huey.turbopanel.dev:8443')
+    expect(command).toContain(`| TURBOPANEL_LICENSE=${encoded}`)
+    expect(command).toContain('TURBOPANEL_HOST=https://huey.turbopanel.dev:8443')
+    expect(command).toContain('TURBOPANEL_INSECURE_TLS=1')
+    expect(command).toMatch(/ sh$/)
+    expect(command).not.toContain('sh -s --')
+    expect(command).not.toContain('--license')
+    expect(command).not.toContain('--host')
+    expect(command).not.toContain('--insecure-tls')
     expect(command).not.toContain('--binary-url')
-    expect(command).toContain('--insecure-tls')
-    expect(command).toContain(`--license ${encoded}`)
+    expect(command).not.toContain('sudo')
     expect(encoded).not.toMatch(/[:+/=]/)
   })
 
@@ -46,8 +51,8 @@ describe('buildLicenseInstallCommand', () => {
 
     expect(command).toContain('curl -fsSL http://huey.lan:8880/run.sh')
     expect(command).not.toContain('curl -fsSLk')
-    expect(command).not.toContain('--insecure-tls')
-    expect(command).toContain('--host http://huey.lan:8880')
+    expect(command).not.toContain('TURBOPANEL_INSECURE_TLS')
+    expect(command).toContain('TURBOPANEL_HOST=http://huey.lan:8880')
   })
 
   it('uses run.sh on self-hosted Deno installs', () => {
@@ -64,11 +69,10 @@ describe('buildLicenseInstallCommand', () => {
     )
     expect(command).not.toContain('/api/install/v1/daemon-install.sh')
     expect(command).not.toContain('raw.githubusercontent.com')
-    expect(command).toContain('| sh -s --')
-    expect(command).not.toContain('sudo sh -s --')
-    expect(command).toContain('--host https://huey.lan:8443')
+    expect(command).toContain('TURBOPANEL_HOST=https://huey.lan:8443')
+    expect(command).toContain('TURBOPANEL_INSECURE_TLS=1')
+    expect(command).not.toContain('sh -s --')
     expect(command).not.toContain('--binary-url')
-    expect(command).toContain('--insecure-tls')
   })
 
   it('uses the CDN installer on Workers', () => {
@@ -81,18 +85,20 @@ describe('buildLicenseInstallCommand', () => {
 
     const encoded = encodeLicenseArg('license-id', 'token')
 
-    expect(command).toContain('curl -fsSL https://trbp.nl/run.sh | sh -s --')
+    expect(command).toBe(
+      `curl -fsSL ${CDN_RUN_SCRIPT_DISPLAY} | TURBOPANEL_LICENSE=${encoded} sh`,
+    )
+    expect(command).not.toContain('https://trbp.nl')
     expect(command).not.toContain('TURBOPANEL_INSTALL_SCRIPT_URL')
     expect(command).not.toContain('raw.githubusercontent.com')
     expect(command).not.toContain('--binary-url')
     expect(command).not.toContain('--instance-url')
-    expect(command).not.toContain('--host')
-    expect(command).toContain(`--license ${encoded}`)
-    expect(command).toContain('| sh -s --')
+    expect(command).not.toContain('TURBOPANEL_HOST')
+    expect(command).not.toContain('sh -s --')
     expect(command).not.toContain('sudo')
   })
 
-  it('includes --host on Workers for non-production instance URLs', () => {
+  it('includes TURBOPANEL_HOST on Workers for non-production instance URLs', () => {
     const command = buildLicenseInstallCommand({
       runtime: 'workers',
       instanceUrl: 'https://panel.example.com',
@@ -100,7 +106,8 @@ describe('buildLicenseInstallCommand', () => {
       licenseToken: 'token',
     })
 
-    expect(command).toContain('--host https://panel.example.com')
+    expect(command).toContain(`curl -fsSL ${CDN_RUN_SCRIPT_DISPLAY}`)
+    expect(command).toContain('TURBOPANEL_HOST=https://panel.example.com')
   })
 
   it('does not require the operator to prefix sudo', () => {
@@ -113,8 +120,8 @@ describe('buildLicenseInstallCommand', () => {
 
     const encoded = encodeLicenseArg('abc', 'secret')
 
-    expect(command).toMatch(/curl -fsSL .+ \| sh -s --/)
-    expect(command).toContain(`--license ${encoded}`)
+    expect(command).toMatch(/curl -fsSL .+ \| TURBOPANEL_LICENSE=/)
+    expect(command).toContain(`TURBOPANEL_LICENSE=${encoded}`)
     expect(command).not.toContain('--binary-url')
     expect(command).not.toContain('sudo')
   })

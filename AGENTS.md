@@ -755,7 +755,7 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `PATCH` | `/api/client/v1/variables/:id` | Update variable; re-seals on secret value update (lazy re-seal-on-write under the current key version) |
 | `DELETE` | `/api/client/v1/variables/:id` | Delete variable |
 | `GET` | `/api/client/v1/licenses` | List licenses (`organization:own`) — API only; not shown in the end-user UI |
-| `POST` | `/api/client/v1/licenses` | Create a one-shot registration key (`organization:own`; used by Add Server); rejects reserved display name `'this server'` |
+| `POST` | `/api/client/v1/licenses` | Create a one-shot registration key (`organization:own`; used by Add Server); rejects reserved display name `'this server'`. Response includes `installCommand` from `buildLicenseInstallCommand` — production shape is `curl -fsSL trbp.nl/run.sh \| TURBOPANEL_LICENSE=… sh` (optional `TURBOPANEL_HOST` / `TURBOPANEL_INSECURE_TLS=1`); see `src/lib/daemon-install-command.ts`. |
 | `DELETE` | `/api/client/v1/licenses/{id}` | Invalidate a license (`organization:own`; soft `revoked_at`, disconnects bound servers) |
 | `GET` | `/api/client/v1/tls` | List org TLS certs (metadata + public PEM; private key never returned) |
 | `POST` | `/api/client/v1/tls` | Create cert (`upload` / `self_signed` / `lets_encrypt`); seals private key with `encryptSecret` (`tpsecret`) |

@@ -10,12 +10,29 @@ export function encodeLicenseArg(
     .replaceAll('=', '')
 }
 
+/** CDN bootstrap URL shown in production install commands (curl follows http→https). */
+export const CDN_RUN_SCRIPT_DISPLAY = 'trbp.nl/run.sh'
+
+function buildInstallPipeline(opts: {
+  curlUrl: string
+  licenseArg: string
+  host?: string
+  insecureTls?: boolean
+  curlInsecure?: boolean
+}): string {
+  const curl = opts.curlInsecure ? 'curl -fsSLk' : 'curl -fsSL'
+  const envParts = [`TURBOPANEL_LICENSE=${opts.licenseArg}`]
+  if (opts.host) envParts.push(`TURBOPANEL_HOST=${opts.host}`)
+  if (opts.insecureTls) envParts.push('TURBOPANEL_INSECURE_TLS=1')
+  return `${curl} ${opts.curlUrl} | ${envParts.join(' ')} sh`
+}
+
 export function buildLicenseInstallCommand(opts: {
   runtime: 'deno' | 'workers'
   instanceUrl: string
   licenseId: string
   licenseToken: string
-  /** Dev/self-signed installs: curl -k and pass --insecure-tls to run.sh. */
+  /** Dev/self-signed installs: curl -k and pass TURBOPANEL_INSECURE_TLS to run.sh. */
   insecureTls?: boolean
 }): string {
   const {
@@ -30,20 +47,21 @@ export function buildLicenseInstallCommand(opts: {
   const licenseArg = encodeLicenseArg(licenseId, licenseToken)
   const includeHost = instanceUrl !== 'https://turbopanel.app'
   const scriptBase = instanceUrl.replace(/\/$/, '')
+  const host = includeHost ? instanceUrl : undefined
 
   if (runtime === 'deno') {
-    const hostFlag = includeHost ? ` --host ${instanceUrl}` : ''
-    const tlsFlag = insecureTls ? ' --insecure-tls' : ''
-    const curl = insecureTls ? 'curl -fsSLk' : 'curl -fsSL'
-    return (
-      `${curl} ${scriptBase}/run.sh | ` +
-      `sh -s -- --license ${licenseArg}${hostFlag}${tlsFlag}`
-    )
+    return buildInstallPipeline({
+      curlUrl: `${scriptBase}/run.sh`,
+      licenseArg,
+      host,
+      insecureTls,
+      curlInsecure: insecureTls,
+    })
   }
 
-  const hostFlag = includeHost ? ` --host ${instanceUrl}` : ''
-  return (
-    `curl -fsSL https://trbp.nl/run.sh | ` +
-    `sh -s -- --license ${licenseArg}${hostFlag}`
-  )
+  return buildInstallPipeline({
+    curlUrl: CDN_RUN_SCRIPT_DISPLAY,
+    licenseArg,
+    host,
+  })
 }
