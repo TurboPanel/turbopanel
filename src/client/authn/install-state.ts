@@ -133,10 +133,10 @@ export function resolveIsSignupEnabled(
 
 /**
  * Config guard: the Workers **live** environment must not force-enable public
- * sign-up via `TURBOPANEL_IS_SIGNUP_ENABLED` in git. Live should ship `"0"`
- * (binding present for Cloudflare dashboard flips) or leave the var unset.
- * Pass `allowForceEnable: true` only for deliberate test-only fixtures —
- * never for production `env.live` parsing.
+ * sign-up via `TURBOPANEL_IS_SIGNUP_ENABLED` in git. Live should leave the var
+ * unset in `wrangler.jsonc` (set it only in the Cloudflare dashboard;
+ * `keep_vars` preserves it). Pass `allowForceEnable: true` only for
+ * deliberate test-only fixtures — never for production `env.live` parsing.
  */
 export function assertLiveSignupNotForceEnabled(
   liveSignupVar: SignupEnvOverride | undefined,
@@ -148,7 +148,7 @@ export function assertLiveSignupNotForceEnabled(
   const flag = normalized.toLowerCase()
   if (flag === '1' || flag === 'true') {
     throw new Error(
-      'env.live must not commit TURBOPANEL_IS_SIGNUP_ENABLED as a force-enable; ship "0" (or unset) and open sign-up via the Cloudflare dashboard',
+      'env.live must not commit TURBOPANEL_IS_SIGNUP_ENABLED as a force-enable; leave it unset in wrangler.jsonc and open sign-up via the Cloudflare dashboard',
     )
   }
 }

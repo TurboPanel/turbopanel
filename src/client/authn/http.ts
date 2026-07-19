@@ -57,11 +57,10 @@ export type AuthRouteOpts = {
   /**
    * Optional `TURBOPANEL_IS_SIGNUP_ENABLED` force override. When set to
    * `1`/`true` or `0`/`false` it overrides the `IS_SIGNUP_ENABLED` database
-   * setting; when unset the DB (panel) toggle wins. Live Workers ships `"0"`
-   * in `wrangler.jsonc` so the binding exists for Cloudflare dashboard flips
-   * (absent vars are wiped on deploy); open sign-up by setting the live Worker
-   * var to `"1"` in the dashboard and deploying that version — never commit
-   * a force-enable on `env.live`.
+   * setting; when unset the DB (panel) toggle wins. Live Workers: set this
+   * only in the Cloudflare dashboard (Worker `instance`) — do not commit it
+   * under `env.live.vars` or every `wrangler deploy` will overwrite the
+   * dashboard value. `keep_vars: true` preserves dashboard-only vars.
    */
   signupEnvOverride: SignupEnvOverride | undefined
   emailFrom?: string
