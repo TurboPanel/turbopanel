@@ -244,12 +244,6 @@
       "vars": {
         "TURBOPANEL_BASE_URL": "https://turbopanel.app",
         "TURBOPANEL_UI_CORS_ORIGINS": "https://turbopanel.io",
-        // Do NOT commit TURBOPANEL_IS_SIGNUP_ENABLED here. Vars listed in
-        // wrangler.jsonc are rewritten on every `wrangler deploy`, so a git
-        // value of "0" would undo Cloudflare dashboard flips. Set/change it
-        // only in the dashboard on Worker `instance` (keep_vars above keeps
-        // dashboard-only vars). A config regression guard fails if live is
-        // force-enabled in git.
         "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c"
       }
     }
