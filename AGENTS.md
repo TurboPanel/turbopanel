@@ -478,7 +478,7 @@ The DO caches `#serverId` (and live-socket presence) once in the constructor via
 
 **One-shot registration keys:** each license binds to at most one server (`license.server_id` + `uniq_license_server_id` partial unique index). First successful enroll latches the key; a second host presenting the same key without the persisted `serverId` is rejected (`License already consumed or invalid`). Re-enroll of the same daemon requires the on-disk `server.id` plus the original key. Deleting the server soft-revokes the license so it cannot enroll a replacement host.
 
-**Colocated license (`this server`):** install creates one active license named `COLOCATED_SERVER_DISPLAY_NAME` (`'this server'`) and writes plaintext id/token under the daemon state dir (`/var/lib/turbopanel/license.id` + `license.token`). DB stores only the PBKDF2 hash — if disk credentials disappear, Deno boot (`ensureColocatedLicenseCredentialsOnDisk`) rotates: revoke all active `this server` licenses for the default org, mint exactly one fresh license, rewrite disk. Reserved-name reject on `POST /licenses` keeps user keys from colliding with the label. See `src/lib/db/AGENTS.md` (`license` table).
+**Colocated license (`this server`):** install creates one active license named `COLOCATED_SERVER_DISPLAY_NAME` (`'this server'`) and writes plaintext id/token under the daemon state dir (`/var/lib/turbopanel/license.id` + `license.token`). DB stores only the Argon2id hash — if disk credentials disappear, Deno boot (`ensureColocatedLicenseCredentialsOnDisk`) rotates: revoke all active `this server` licenses for the default org, mint exactly one fresh license, rewrite disk. Reserved-name reject on `POST /licenses` keeps user keys from colliding with the label. See `src/lib/db/AGENTS.md` (`license` table).
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
@@ -604,7 +604,13 @@ The instance uses a **custom PAM-style auth model** built entirely on the **Web 
 
 #### Password hashing
 
-Credential-account passwords use **PBKDF2-HMAC-SHA256** via `crypto.subtle` (`src/client/authn/password.ts`). This is the strongest password-hashing primitive available in native Workers/Deno Web Crypto — Argon2 and scrypt are not exposed, and WASM Argon2 is heavier and awkward in Workers. Stored format: `$pbkdf2-sha256$<iterations>$<base64url-salt>$<base64url-hash>`. New hashes use `TURBOPANEL_PBKDF2_ITERATIONS` (default **600,000** when unset); the iteration count is embedded so existing hashes still verify. Verification uses constant-time byte comparison. Do not use plain SHA-256 for passwords.
+Credential-account passwords use **Argon2id** via `@noble/hashes` (`src/client/authn/password.ts`) — pure TypeScript, no WASM loader, runs on both Deno and Cloudflare Workers. Stored PHC format: `$argon2id$v=19$m=<m>,t=<t>,p=<p>$<b64-salt>$<b64-hash>`. New hashes use the OWASP 2026 minimum baseline **`m=19456,t=2,p=1`** (~19 MiB working set, well under the default 128 MiB Workers isolate limit). Verification re-derives the digest as bytes and compares with XOR-accumulation constant-time equality — do **not** delegate final equality to library `argon2Verify` helpers. Do not use plain SHA-256 or PBKDF2 for new passwords.
+
+**NIST vs OWASP decision (picked the stronger option):** Argon2id is cryptographically stronger against offline GPU/ASIC cracking. NIST SP 800-63B-4 requires a memory-hard verifier (SHOULD) and SP 800-132's PBKDF2 is the FIPS-friendly-but-weaker path; TurboPanel is non-FIPS, so OWASP's concrete Argon2id floor wins. PBKDF2 was deliberately **not** chosen "for NIST," and Workers SubtleCrypto PBKDF2@100k was rejected (fails OWASP's ≥600k floor).
+
+**Pre-MVP hard cutover:** no migration, no legacy PBKDF2 verify, no dual-format storage, no lazy rehash. Old `$pbkdf2-sha256$…` hashes fail verification — wipe/recreate test accounts.
+
+**Boot behavior + raise-only override:** both `src/workers.ts` (per-isolate `initWorkerApp`) and `src/deno.ts` (before `Deno.serve`) call `assertPasswordHasherAvailable()` and fail fast rather than degrading. Optional raise-only override via `configureArgon2idWorkFactor` — `TURBOPANEL_ARGON2ID_MEMORY_KIB` / `TURBOPANEL_ARGON2ID_TIME_COST` may only raise `m`/`t` above the OWASP floor (values below the floor are ignored with a warning).
 
 **Daemon key authentication:** daemon auth now starts with HTTP-first enrollment/session issuance, then uses a short-lived stateless daemon JWT for protected daemon REST and daemon WebSocket upgrade authentication.
 - **Enrollment challenge + proof**: daemon requests `POST /api/daemon/v1/auth/challenge` (no credentials), signs `buildEnrollmentPayload()` (`turbopanel-daemon-enroll-v1` canonical format), then calls `POST /api/daemon/v1/enroll` with `{ licenseId, licenseToken, publicJwk, challengeId, signature, serverId? }`. The instance verifies license + proof-of-possession, resolves/creates `server`, and stores the daemon public key on the server row. Licenses are one-shot: after a server latches, re-enroll requires the persisted `serverId`; a fresh license always creates a new server.
@@ -765,7 +771,7 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `src/client/authn/crypto.ts` | Web Crypto primitives: session cookie signing |
 | `src/client/authn/session-store.ts` | `createSession`, `getSession`, `deleteSession`; `SessionData` type (`role` included) |
 | `src/client/authn/credentials.ts` | `verifyCredentials`, `verifyInstallHostCredentials`; PAM host install gate + DB credential users |
-| `src/client/authn/password.ts` | PBKDF2-SHA256 hash/verify for credential accounts |
+| `src/client/authn/password.ts` | Argon2id hash/verify for credential accounts |
 | `src/client/authn/email-verification.ts` | `createEmailVerificationToken` / `consumeEmailVerificationToken` — token lifecycle against the `verification` table (`identifier` = email, `value` = 64-char hex, `expiresAt` = 24h) |
 | `src/client/authn/http.ts` | `registerAuthRoutes` — sign-in / sign-out / session / verify-email HTTP handlers |
 | `src/lib/install/routes.ts` | `registerInstallRoutes` — self-hosted install wizard (`/api/install/v1/*`; Deno entry only) |

@@ -1,5 +1,4 @@
 import { Hono } from 'hono'
-import { configurePbkdf2Iterations } from './client/authn/password.ts'
 import type { DaemonJwtKeyring } from './daemon/authn/daemon-jwt-keyring.ts'
 import { deriveDaemonJwtKeyring } from './daemon/authn/daemon-jwt-keyring.ts'
 import {
@@ -18,6 +17,10 @@ import { registerWorkersDaemonWebSocket } from './daemon/workers-ws.ts'
 import { resolveWorkersEmailQueue } from './lib/email/mailgun/workers-queue.ts'
 import type { EmailQueue } from './lib/email/types.ts'
 import { normalizeSignupEnvOverride } from './client/authn/install-state.ts'
+import {
+  assertPasswordHasherAvailable,
+  configureArgon2idWorkFactor,
+} from './client/authn/password.ts'
 import { createWorkersCommandQueue } from './lib/commands/workers-queue.ts'
 import { createNoopCommandQueue } from './lib/commands/noop-command-queue.ts'
 import type { CommandQueue } from './lib/commands/queue.ts'
@@ -58,12 +61,16 @@ let cachedDaemonCellRegistryFactory:
   | null = null
 
 async function initWorkerApp(env: CloudflareBindings) {
-  configurePbkdf2Iterations(env.TURBOPANEL_PBKDF2_ITERATIONS)
   const secretsConfig = parseSecretsEnv(
     env.TURBOPANEL_SECRET,
     env.TURBOPANEL_SECRETS,
     'workers',
   )
+  configureArgon2idWorkFactor({
+    memoryKib: env.TURBOPANEL_ARGON2ID_MEMORY_KIB,
+    timeCost: env.TURBOPANEL_ARGON2ID_TIME_COST,
+  })
+  await assertPasswordHasherAvailable()
   cachedSecretsConfig = secretsConfig
   cachedSessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   cachedDaemonJwtKeyring = await deriveDaemonJwtKeyring(secretsConfig)

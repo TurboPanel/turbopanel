@@ -52,11 +52,14 @@ interface CloudflareBindings {
   TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN?: string
   TURBOPANEL_SYSTEM_EMAIL__FROM?: string
   TURBOPANEL_BASE_URL?: string
-  TURBOPANEL_PBKDF2_ITERATIONS?: string
   /** When `1` or `true`, expose dev-only admin OpenAPI/Scalar routes (`wrangler dev` only). */
   TURBOPANEL_DEV_SURFACE?: string
   /** When `1` or `true`, enable verbose daemon-cell debug logging. */
   TURBOPANEL_DAEMON_DEBUG?: string
+  /** Raise-only Argon2id memory cost (KiB); ignored when below the OWASP floor (19456). */
+  TURBOPANEL_ARGON2ID_MEMORY_KIB?: string
+  /** Raise-only Argon2id time cost (t); ignored when below the OWASP floor (2). */
+  TURBOPANEL_ARGON2ID_TIME_COST?: string
   /** Cloudflare account id for Analytics Engine SQL API queries. */
   CLOUDFLARE_ACCOUNT_ID?: string
   /** Account Analytics Read token for AE SQL API (secret). */

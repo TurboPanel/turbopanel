@@ -1,11 +1,11 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import {
-  configurePbkdf2Iterations,
-  currentPbkdf2Iterations,
-  DEFAULT_PBKDF2_ITERATIONS,
+  ARGON2ID_ITERATIONS,
+  ARGON2ID_MEMORY_KIB,
+  ARGON2ID_PARALLELISM,
+  ARGON2ID_VERSION,
+  getArgon2idPolicy,
   hashPassword,
-  MIN_PBKDF2_ITERATIONS,
-  passwordNeedsRehash,
   verifyPassword,
 } from "./password.ts";
 
@@ -15,58 +15,135 @@ import {
  */
 const test = Deno.test.bind(Deno);
 
-function iterationsOf(encoded: string): number {
-  return Number.parseInt(encoded.split("$")[2], 10);
+/**
+ * These hashes are NFKC-normalized Argon2id (`@noble/hashes`, pure-TS, no WASM)
+ * shared by account passwords and license tokens, per the pre-MVP hard cutover.
+ */
+function phcParams(
+  encoded: string,
+): { m: number; t: number; p: number; v: number } {
+  const parts = encoded.split("$");
+  const version = Number.parseInt(parts[2]!.slice(2), 10);
+  const params = Object.fromEntries(
+    parts[3]!.split(",").map((token) => {
+      const eq = token.indexOf("=");
+      return [token.slice(0, eq), token.slice(eq + 1)];
+    }),
+  );
+  return {
+    v: version,
+    m: Number.parseInt(params.m!, 10),
+    t: Number.parseInt(params.t!, 10),
+    p: Number.parseInt(params.p!, 10),
+  };
 }
 
-test("missing TURBOPANEL_PBKDF2_ITERATIONS uses the safe minimum", async () => {
-  configurePbkdf2Iterations(undefined);
-  assertEquals(currentPbkdf2Iterations(), MIN_PBKDF2_ITERATIONS);
+test("hashPassword emits Argon2id PHC at the OWASP baseline", async () => {
   const encoded = await hashPassword("pw");
-  assertEquals(iterationsOf(encoded) >= MIN_PBKDF2_ITERATIONS, true);
+  assertEquals(encoded.startsWith("$argon2id$"), true);
+  assertEquals(phcParams(encoded), {
+    v: ARGON2ID_VERSION,
+    m: ARGON2ID_MEMORY_KIB,
+    t: ARGON2ID_ITERATIONS,
+    p: ARGON2ID_PARALLELISM,
+  });
 });
 
-test("a low iteration count cannot weaken new hashes", async () => {
-  configurePbkdf2Iterations("1000");
-  assertEquals(currentPbkdf2Iterations(), MIN_PBKDF2_ITERATIONS);
+test("OWASP floor guard: emitted params and policy stay at/above baseline", async () => {
   const encoded = await hashPassword("pw");
-  assertEquals(iterationsOf(encoded), MIN_PBKDF2_ITERATIONS);
+  const params = phcParams(encoded);
+  assertEquals(params.m >= ARGON2ID_MEMORY_KIB, true);
+  assertEquals(params.t >= ARGON2ID_ITERATIONS, true);
+  assertEquals(params.p, ARGON2ID_PARALLELISM);
+
+  const policy = getArgon2idPolicy();
+  assertEquals(policy.memoryKib >= ARGON2ID_MEMORY_KIB, true);
+  assertEquals(policy.iterations >= ARGON2ID_ITERATIONS, true);
+  assertEquals(policy.parallelism, ARGON2ID_PARALLELISM);
+  assertEquals(policy.version, ARGON2ID_VERSION);
 });
 
-test("an invalid iteration value falls back to the minimum", async () => {
-  configurePbkdf2Iterations("not-a-number");
-  assertEquals(currentPbkdf2Iterations(), MIN_PBKDF2_ITERATIONS);
-  const encoded = await hashPassword("pw");
-  assertEquals(iterationsOf(encoded), MIN_PBKDF2_ITERATIONS);
-});
-
-test("a value above the minimum is honored", () => {
-  const stronger = MIN_PBKDF2_ITERATIONS + 200_000;
-  configurePbkdf2Iterations(String(stronger));
-  assertEquals(currentPbkdf2Iterations(), stronger);
-  configurePbkdf2Iterations(undefined);
-});
-
-test("verifyPassword still verifies hashes with an embedded lower count", async () => {
-  // Force a stronger current policy, then verify a hash minted at the minimum.
-  configurePbkdf2Iterations(undefined);
+test("verifyPassword accepts the correct password and rejects wrong ones", async () => {
   const encoded = await hashPassword("correct horse");
   assertEquals(await verifyPassword("correct horse", encoded), true);
   assertEquals(await verifyPassword("wrong", encoded), false);
 });
 
-test("passwordNeedsRehash flags hashes below the current policy", async () => {
-  configurePbkdf2Iterations(undefined);
-  const atPolicy = await hashPassword("pw");
-  assertEquals(passwordNeedsRehash(atPolicy), false);
+test("verifyPassword applies NFKC normalization", async () => {
+  // U+FB01 LATIN SMALL LIGATURE FI → "fi" under NFKC (not NFC alone).
+  const ligatureEncoded = await hashPassword("ﬁle");
+  assertEquals(await verifyPassword("file", ligatureEncoded), true);
 
-  const belowPolicy =
-    `$pbkdf2-sha256$1000$c2FsdHNhbHRzYWx0c2E$${"a".repeat(43)}`;
-  assertEquals(passwordNeedsRehash(belowPolicy), true);
-
-  assertEquals(passwordNeedsRehash("garbage"), false);
+  // Composed vs decomposed accent (Café).
+  const composedEncoded = await hashPassword("Caf\u00e9");
+  assertEquals(await verifyPassword("Cafe\u0301", composedEncoded), true);
 });
 
-test("defaults expose the documented constant", () => {
-  assertEquals(MIN_PBKDF2_ITERATIONS, DEFAULT_PBKDF2_ITERATIONS);
+/** 16-byte salt + 32-byte digest (PHC unpadded base64), digest is filler only. */
+const PHC_SALT_B64 = "c2FsdHNhbHRzYWx0c2FsdA"; // "saltsaltsaltsalt"
+const PHC_DIGEST_B64 = "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE"; // 32× "a"
+
+test("verifyPassword rejects wrong-algorithm tags and malformed hashes", async () => {
+  assertEquals(await verifyPassword("pw", "garbage"), false);
+  // Wrong Argon2 variant / non-argon2id tags must fail closed.
+  assertEquals(
+    await verifyPassword(
+      "pw",
+      `$argon2i$v=19$m=19456,t=2,p=1$${PHC_SALT_B64}$${PHC_DIGEST_B64}`,
+    ),
+    false,
+  );
+  assertEquals(
+    await verifyPassword(
+      "pw",
+      `$scrypt$ln=16,r=8,p=1$${PHC_SALT_B64}$${PHC_DIGEST_B64}`,
+    ),
+    false,
+  );
+  // Partial numeric params must not parse (`Number.parseInt` would accept these).
+  assertEquals(
+    await verifyPassword(
+      "pw",
+      `$argon2id$v=19$m=19456junk,t=2,p=1$${PHC_SALT_B64}$${PHC_DIGEST_B64}`,
+    ),
+    false,
+  );
+  assertEquals(
+    await verifyPassword(
+      "pw",
+      `$argon2id$v=19$m=19456,t=2.9,p=1$${PHC_SALT_B64}$${PHC_DIGEST_B64}`,
+    ),
+    false,
+  );
+  // Undersized salt (12 bytes) must fail closed.
+  assertEquals(
+    await verifyPassword(
+      "pw",
+      `$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0$${PHC_DIGEST_B64}`,
+    ),
+    false,
+  );
+  // Unknown / duplicate parameter names.
+  assertEquals(
+    await verifyPassword(
+      "pw",
+      `$argon2id$v=19$m=19456,t=2,p=1,key=1$${PHC_SALT_B64}$${PHC_DIGEST_B64}`,
+    ),
+    false,
+  );
+  assertEquals(
+    await verifyPassword(
+      "pw",
+      `$argon2id$v=19$m=19456,m=19456,t=2$${PHC_SALT_B64}$${PHC_DIGEST_B64}`,
+    ),
+    false,
+  );
+  // Above documented verification caps — fail closed, never throw.
+  assertEquals(
+    await verifyPassword(
+      "pw",
+      `$argon2id$v=19$m=999999,t=2,p=1$${PHC_SALT_B64}$${PHC_DIGEST_B64}`,
+    ),
+    false,
+  );
 });

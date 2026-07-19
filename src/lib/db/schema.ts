@@ -271,7 +271,7 @@ export const license = pgTable(
     /** Set on first successful enroll — one-shot seat latch. */
     serverId: uuid('server_id'),
     displayName: varchar('display_name', { length: 255 }),
-    /** PBKDF2-SHA256 hashed token — same format as account.password */
+    /** Argon2id PHC hashed token — same format as account.password */
     token: text().notNull(),
     /** Soft-delete */
     revokedAt: timestamp('revoked_at', { precision: 3, withTimezone: true, mode: 'string' }),

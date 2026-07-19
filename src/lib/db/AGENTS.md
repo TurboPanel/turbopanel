@@ -223,7 +223,7 @@ Permissions are **static code constants** in `../../client/authz/catalog.ts` —
 
 ### `license` table
 
-Organization-scoped API tokens for server registration. Each row belongs to an `organization` (`organization_id`, cascade delete). `display_name` is optional. `token` stores a PBKDF2-SHA256 hash in the same `$pbkdf2-sha256$…` format as `account.password`. Soft-delete via `revoked_at` — revoked licenses remain in the table for audit; application code should treat non-null `revoked_at` as inactive.
+Organization-scoped API tokens for server registration. Each row belongs to an `organization` (`organization_id`, cascade delete). `display_name` is optional. `token` stores an Argon2id PHC hash in the same `$argon2id$…` format as `account.password`. Soft-delete via `revoked_at` — revoked licenses remain in the table for audit; application code should treat non-null `revoked_at` as inactive.
 
 **One-shot latch:** `license.server_id` (nullable FK → `server.id`, `ON DELETE SET NULL`) is set on first successful enroll. Partial unique index `uniq_license_server_id` on `license(server_id) WHERE server_id IS NOT NULL` enforces one license per server. Unconsumed seats have `server_id IS NULL`. Revoked rows may keep `server_id` until the server is deleted (SET NULL).
 

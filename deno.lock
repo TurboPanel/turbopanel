@@ -1939,6 +1939,7 @@
       "jsr:@std/encoding@1",
       "jsr:@std/path@1",
       "jsr:@std/testing@1",
+      "npm:@noble/hashes@1.8.0",
       "npm:amqplib@^2.0.1",
       "npm:drizzle-orm@~0.43.1",
       "npm:ioredis@^5.11.1",
@@ -1950,6 +1951,7 @@
       "dependencies": [
         "npm:@cloudflare/vitest-pool-workers@~0.8.38",
         "npm:@cloudflare/workers-types@^5.20260704.1",
+        "npm:@noble/hashes@1.8.0",
         "npm:amqplib@^2.0.1",
         "npm:drizzle-kit@~0.31.1",
         "npm:drizzle-orm@~0.43.1",

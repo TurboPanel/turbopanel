@@ -1,78 +1,122 @@
+import { argon2idAsync } from '@noble/hashes/argon2.js'
 import { compatLogWarn } from '../../log-compat.ts'
 
-export const DEFAULT_PBKDF2_ITERATIONS = 600_000
-
-/**
- * Hard floor for PBKDF2 iterations used when hashing **new** passwords and
- * license tokens. `TURBOPANEL_PBKDF2_ITERATIONS` may only raise the work factor
- * above this minimum — lower, invalid, or missing values are ignored (with a
- * warning) so a misconfiguration can never weaken freshly generated hashes.
- */
-export const MIN_PBKDF2_ITERATIONS = DEFAULT_PBKDF2_ITERATIONS
+/** OWASP 2026 minimum Argon2id baseline (KiB / iterations / parallelism). */
+export const ARGON2ID_MEMORY_KIB = 19_456
+export const ARGON2ID_ITERATIONS = 2
+export const ARGON2ID_PARALLELISM = 1
+export const ARGON2ID_VERSION = 0x13
 
 const SALT_BYTES = 16
 const KEY_BYTES = 32
 
-let hashIterations = DEFAULT_PBKDF2_ITERATIONS
+/**
+ * Upper bounds for stored/verification params (and raise-only configure).
+ *
+ * Caps keep corrupted PHC strings from requesting unbounded memory or time.
+ * 64 MiB stays comfortably under the default 128 MiB Workers isolate limit;
+ * iteration/parallelism caps match values @noble/hashes can run without DoS.
+ */
+const VERIFY_MAX_MEMORY_KIB = 65_536
+const VERIFY_MAX_ITERATIONS = 16
+const VERIFY_MAX_PARALLELISM = 4
 
-/** Apply `TURBOPANEL_PBKDF2_ITERATIONS` at runtime boot (Workers env binding or Deno env). */
-export function configurePbkdf2Iterations(raw?: string | null): void {
-  const trimmed = raw?.trim()
-  if (!trimmed) {
-    hashIterations = MIN_PBKDF2_ITERATIONS
-    return
-  }
-  const parsed = Number.parseInt(trimmed, 10)
-  if (!Number.isFinite(parsed) || parsed < MIN_PBKDF2_ITERATIONS) {
-    compatLogWarn(
-      'auth',
-      `TURBOPANEL_PBKDF2_ITERATIONS="${trimmed}" is below the minimum ${MIN_PBKDF2_ITERATIONS} — using the minimum instead`,
-    )
-    hashIterations = MIN_PBKDF2_ITERATIONS
-    return
-  }
-  hashIterations = parsed
+/** Effective policy — raise-only via {@link configureArgon2idWorkFactor}. */
+let currentMemoryKib = ARGON2ID_MEMORY_KIB
+let currentIterations = ARGON2ID_ITERATIONS
+
+/**
+ * Optional raise-only work-factor override (mirrors the old PBKDF2 clamp).
+ *
+ * Parses each value; absent, invalid, or below the OWASP floor keeps the floor
+ * and warns. Only assigns when the parsed value is ≥ the floor — never weakens.
+ * Values above the documented verification caps are clamped to the cap.
+ */
+export function configureArgon2idWorkFactor(opts: {
+  memoryKib?: string | null
+  timeCost?: string | null
+}): void {
+  currentMemoryKib = resolveRaiseOnly(
+    opts.memoryKib,
+    ARGON2ID_MEMORY_KIB,
+    VERIFY_MAX_MEMORY_KIB,
+    'memoryKiB (m)',
+  )
+  currentIterations = resolveRaiseOnly(
+    opts.timeCost,
+    ARGON2ID_ITERATIONS,
+    VERIFY_MAX_ITERATIONS,
+    'time cost (t)',
+  )
 }
 
-/** The iteration count applied to newly hashed passwords/license tokens. */
-export function currentPbkdf2Iterations(): number {
-  return hashIterations
+function resolveRaiseOnly(
+  raw: string | null | undefined,
+  floor: number,
+  ceiling: number,
+  label: string,
+): number {
+  if (raw == null || raw === '') return floor
+  const parsed = parsePositiveInt(raw)
+  if (parsed === null || parsed < floor) {
+    compatLogWarn(
+      'auth',
+      `Argon2id ${label} invalid or below the minimum (${raw}); using the minimum (${floor}) instead`,
+    )
+    return floor
+  }
+  if (parsed > ceiling) {
+    compatLogWarn(
+      'auth',
+      `Argon2id ${label} above the maximum (${raw}); using the maximum (${ceiling}) instead`,
+    )
+    return ceiling
+  }
+  return parsed
+}
+
+/** Effective Argon2id policy after any raise-only configure. */
+export function getArgon2idPolicy(): {
+  memoryKib: number
+  iterations: number
+  parallelism: number
+  version: number
+} {
+  return {
+    memoryKib: currentMemoryKib,
+    iterations: currentIterations,
+    parallelism: ARGON2ID_PARALLELISM,
+    version: ARGON2ID_VERSION,
+  }
 }
 
 /**
- * Rehash-on-login planning: returns true when a stored hash uses fewer
- * iterations than the current policy, so callers may transparently re-hash the
- * password on a successful sign-in. A malformed hash returns false (verify
- * fails independently).
+ * Boot self-test: hash + verify a sentinel at the current policy.
+ * Throws on failure so callers can refuse to start rather than degrade.
  */
-export function passwordNeedsRehash(encoded: string): boolean {
-  const parts = encoded.split('$')
-  if (parts.length !== 5 || parts[1] !== 'pbkdf2-sha256') {
-    return false
+export async function assertPasswordHasherAvailable(): Promise<void> {
+  const sentinel = 'turbopanel-argon2id-self-test'
+  const encoded = await hashPassword(sentinel)
+  const ok = await verifyPassword(sentinel, encoded)
+  if (!ok) {
+    throw new Error('Argon2id password hasher self-test failed')
   }
-  const iterations = Number.parseInt(parts[2], 10)
-  if (!Number.isFinite(iterations) || iterations < 1) {
-    return false
-  }
-  return iterations < hashIterations
 }
 
-function base64urlEncode(bytes: Uint8Array): string {
+/** Standard Base64 without padding (PHC / Argon2 encoded form). */
+function phcBase64Encode(bytes: Uint8Array): string {
   let binary = ''
   for (const byte of bytes) {
     binary += String.fromCodePoint(byte)
   }
-  return btoa(binary)
-    .replaceAll('+', '-')
-    .replaceAll('/', '_')
-    .replaceAll('=', '')
+  return btoa(binary).replaceAll('=', '')
 }
 
-function base64urlDecode(encoded: string): Uint8Array | null {
-  const padded = encoded.replaceAll('-', '+').replaceAll('_', '/')
-  const padLen = (4 - (padded.length % 4)) % 4
+function phcBase64Decode(encoded: string): Uint8Array | null {
+  if (!encoded || /[^A-Za-z0-9+/]/.test(encoded)) return null
+  const padLen = (4 - (encoded.length % 4)) % 4
   try {
-    const binary = atob(padded + '='.repeat(padLen))
+    const binary = atob(encoded + '='.repeat(padLen))
     const bytes = new Uint8Array(binary.length)
     for (let i = 0; i < binary.length; i++) {
       bytes[i] = binary.codePointAt(i) ?? 0
@@ -83,63 +127,198 @@ function base64urlDecode(encoded: string): Uint8Array | null {
   }
 }
 
-async function deriveKey(
+type ParsedArgon2id = {
+  version: number
+  memoryKib: number
+  iterations: number
+  parallelism: number
+  salt: Uint8Array
+  digest: Uint8Array
+}
+
+/**
+ * Full-string positive decimal integer after trimming.
+ * Rejects partial parses (`19456junk`, `2.9`, `1foo`) that `Number.parseInt` accepts.
+ */
+function parsePositiveInt(raw: string | undefined): number | null {
+  if (raw == null) return null
+  const trimmed = raw.trim()
+  if (!/^[1-9]\d*$/.test(trimmed)) return null
+  const value = Number(trimmed)
+  if (!Number.isSafeInteger(value) || value < 1) return null
+  return value
+}
+
+/**
+ * Whether parsed Argon2id params are within library + documented verification caps.
+ * Library requires `m >= 8*p`, `t >= 1`, `1 <= p < 2^24`; we tighten further so
+ * corrupted DB rows cannot request unbounded memory or time.
+ */
+function isSupportedArgon2Params(
+  memoryKib: number,
+  iterations: number,
+  parallelism: number,
+): boolean {
+  if (
+    !Number.isSafeInteger(parallelism) ||
+    parallelism < 1 ||
+    parallelism > VERIFY_MAX_PARALLELISM
+  ) {
+    return false
+  }
+  if (
+    !Number.isSafeInteger(iterations) ||
+    iterations < 1 ||
+    iterations > VERIFY_MAX_ITERATIONS
+  ) {
+    return false
+  }
+  const minMemoryKib = 8 * parallelism
+  if (
+    !Number.isSafeInteger(memoryKib) ||
+    memoryKib < minMemoryKib ||
+    memoryKib > VERIFY_MAX_MEMORY_KIB
+  ) {
+    return false
+  }
+  return true
+}
+
+/** Parse exactly `m`, `t`, and `p` from a PHC param segment (no duplicates/unknowns). */
+function parsePhcParamSegment(
+  segment: string,
+): { memoryKib: number; iterations: number; parallelism: number } | null {
+  const tokens = segment.split(',')
+  if (tokens.length !== 3) return null
+
+  const params: Record<string, string> = {}
+  for (const token of tokens) {
+    const eq = token.indexOf('=')
+    if (eq <= 0) return null
+    const name = token.slice(0, eq)
+    if (name !== 'm' && name !== 't' && name !== 'p') return null
+    if (Object.hasOwn(params, name)) return null
+    params[name] = token.slice(eq + 1)
+  }
+
+  const memoryKib = parsePositiveInt(params.m)
+  const iterations = parsePositiveInt(params.t)
+  const parallelism = parsePositiveInt(params.p)
+  if (memoryKib === null || iterations === null || parallelism === null) {
+    return null
+  }
+  if (!isSupportedArgon2Params(memoryKib, iterations, parallelism)) {
+    return null
+  }
+  return { memoryKib, iterations, parallelism }
+}
+
+/**
+ * Parse a PHC Argon2id string:
+ * `$argon2id$v=19$m=<m>,t=<t>,p=<p>$<b64salt>$<b64digest>`
+ *
+ * Accepts exactly the parameter names `m`, `t`, and `p` (no duplicates/unknowns),
+ * a 16-byte salt, and a 32-byte digest.
+ */
+function parseArgon2idPhc(encoded: string): ParsedArgon2id | null {
+  const parts = encoded.split('$')
+  if (parts.length !== 6 || parts[0] !== '' || parts[1] !== 'argon2id') {
+    return null
+  }
+
+  const versionRaw = parts[2]
+  if (!versionRaw?.startsWith('v=')) return null
+  const version = parsePositiveInt(versionRaw.slice(2))
+  if (version !== ARGON2ID_VERSION) return null
+
+  const work = parsePhcParamSegment(parts[3]!)
+  if (!work) return null
+
+  const salt = phcBase64Decode(parts[4]!)
+  const digest = phcBase64Decode(parts[5]!)
+  if (salt?.length !== SALT_BYTES || digest?.length !== KEY_BYTES) {
+    return null
+  }
+
+  return {
+    version,
+    memoryKib: work.memoryKib,
+    iterations: work.iterations,
+    parallelism: work.parallelism,
+    salt,
+    digest,
+  }
+}
+
+async function deriveArgon2id(
   password: string,
   salt: Uint8Array,
+  memoryKib: number,
   iterations: number,
+  parallelism: number,
 ): Promise<Uint8Array> {
-  const keyMaterial = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(password),
-    'PBKDF2',
-    false,
-    ['deriveBits'],
-  )
-  const bits = await crypto.subtle.deriveBits(
-    {
-      name: 'PBKDF2',
-      hash: 'SHA-256',
-      salt: salt.buffer.slice(salt.byteOffset, salt.byteOffset + salt.byteLength) as ArrayBuffer,
-      iterations,
-    },
-    keyMaterial,
-    KEY_BYTES * 8,
-  )
-  return new Uint8Array(bits)
+  const normalized = password.normalize('NFKC')
+  return await argon2idAsync(normalized, salt, {
+    m: memoryKib,
+    t: iterations,
+    p: parallelism,
+    dkLen: KEY_BYTES,
+    version: ARGON2ID_VERSION,
+  })
+}
+
+function constantTimeEqual(actual: Uint8Array, expected: Uint8Array): boolean {
+  if (actual.length !== expected.length) return false
+  let diff = 0
+  for (let i = 0; i < actual.length; i++) {
+    diff |= actual[i]! ^ expected[i]!
+  }
+  return diff === 0
 }
 
 export async function hashPassword(password: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES))
-  const key = await deriveKey(password, salt, hashIterations)
-  return `$pbkdf2-sha256$${hashIterations}$${base64urlEncode(salt)}$${base64urlEncode(key)}`
+  const memoryKib = currentMemoryKib
+  const iterations = currentIterations
+  const digest = await deriveArgon2id(
+    password,
+    salt,
+    memoryKib,
+    iterations,
+    ARGON2ID_PARALLELISM,
+  )
+  return (
+    `$argon2id$v=${ARGON2ID_VERSION}$m=${memoryKib},t=${iterations},p=${ARGON2ID_PARALLELISM}$` +
+    `${phcBase64Encode(salt)}$${phcBase64Encode(digest)}`
+  )
 }
 
+/**
+ * Verify a password against a stored Argon2id PHC string.
+ *
+ * Derives the candidate digest as bytes and compares with XOR-accumulation
+ * constant-time equality. Does **not** delegate final equality to library
+ * verify helpers (e.g. `argon2Verify`). Malformed encodings and derivation
+ * errors fail closed (`false`) rather than throwing.
+ */
 export async function verifyPassword(
   password: string,
   encoded: string,
 ): Promise<boolean> {
-  const parts = encoded.split('$')
-  if (parts.length !== 5 || parts[1] !== 'pbkdf2-sha256') {
+  const parsed = parseArgon2idPhc(encoded)
+  if (!parsed) return false
+
+  let actual: Uint8Array
+  try {
+    actual = await deriveArgon2id(
+      password,
+      parsed.salt,
+      parsed.memoryKib,
+      parsed.iterations,
+      parsed.parallelism,
+    )
+  } catch {
     return false
   }
-
-  const iterations = Number.parseInt(parts[2], 10)
-  if (!Number.isFinite(iterations) || iterations < 1) {
-    return false
-  }
-
-  const salt = base64urlDecode(parts[3])
-  const expected = base64urlDecode(parts[4])
-  if (!salt || expected?.length !== KEY_BYTES) {
-    return false
-  }
-
-  const actual = await deriveKey(password, salt, iterations)
-  if (actual.length !== expected.length) return false
-
-  let diff = 0
-  for (let i = 0; i < actual.length; i++) {
-    diff |= actual[i] ^ expected[i]
-  }
-  return diff === 0
+  return constantTimeEqual(actual, parsed.digest)
 }

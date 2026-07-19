@@ -20,7 +20,8 @@
     "nodemailer": "npm:nodemailer@^6.10.1",
     "@turbopanel/email/smtp-sender": "./src/lib/email/smtp/smtp-sender.ts",
     "ioredis": "npm:ioredis@^5.11.1",
-    "yaml": "npm:yaml@^2.8.0"
+    "yaml": "npm:yaml@^2.8.0",
+    "@noble/hashes/": "npm:@noble/hashes@1.8.0/"
   },
   "lint": {
     "rules": {

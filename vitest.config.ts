@@ -27,6 +27,7 @@ export default defineWorkersConfig({
       'src/client/authn/install-state.test.ts',
       'src/client/authn/signup-validation.test.ts',
       'src/client/authn/data-encryption.test.ts',
+      'src/client/authn/password.test.ts',
       'src/daemon/metrics/validation.test.ts',
       'mailer/rate-limiter.test.ts',
     ],

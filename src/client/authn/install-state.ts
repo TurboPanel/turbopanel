@@ -837,7 +837,7 @@ export async function persistColocatedLicenseCredentials(
  * colocated license and persist credentials so the daemon can enroll.
  *
  * The plaintext token is unrecoverable once disk files are gone (DB stores only
- * a PBKDF2 hash). Recovery therefore revokes every active
+ * an Argon2id hash). Recovery therefore revokes every active
  * {@link COLOCATED_SERVER_DISPLAY_NAME} license for the default org, then mints
  * exactly one fresh license — at most one active colocated license per org.
  */

@@ -18,6 +18,7 @@
     "check:do-hibernation:fixtures": "node scripts/check-durable-object-hibernation.mjs --fixtures"
   },
   "dependencies": {
+    "@noble/hashes": "1.8.0",
     "amqplib": "^2.0.1",
     "drizzle-orm": "^0.43.1",
     "hono": "4.12.23",

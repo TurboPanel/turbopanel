@@ -1,5 +1,4 @@
 import type { Hono } from 'hono'
-import { configurePbkdf2Iterations } from './client/authn/password.ts'
 import {
   deriveDaemonJwtKeyring,
 } from './daemon/authn/daemon-jwt-keyring.ts'
@@ -17,6 +16,10 @@ import { DAEMON_CELL_MAINTAIN_MS } from './daemon/cell/protocol.ts'
 import {
   ensureColocatedLicenseCredentialsOnDisk,
 } from './client/authn/install-state.ts'
+import {
+  assertPasswordHasherAvailable,
+  configureArgon2idWorkFactor,
+} from './client/authn/password.ts'
 import { registerAdminRoutes } from './admin/routes.ts'
 import { registerInstallRoutes } from './lib/install/routes.ts'
 import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
@@ -64,7 +67,6 @@ import {
   prepareInstanceSocket,
   resolveInstanceSocket,
 } from './server-paths.ts'
-configurePbkdf2Iterations(Deno.env.get('TURBOPANEL_PBKDF2_ITERATIONS'))
 
 const developerSurface = isDeveloperSurfaceEnabled()
 const db = createDenoDb()
@@ -116,6 +118,12 @@ function resolveCommandAmqpUrl(): string | null {
   return DEFAULT_AMQP_URL
 }
 const runtimeEnv = Deno.env.toObject()
+configureArgon2idWorkFactor({
+  memoryKib: Deno.env.get('TURBOPANEL_ARGON2ID_MEMORY_KIB') ?? null,
+  timeCost: Deno.env.get('TURBOPANEL_ARGON2ID_TIME_COST') ?? null,
+})
+await assertPasswordHasherAvailable()
+logInfo('auth', 'Argon2id password hasher available')
 const secretsConfig = parseSecretsEnv(
   Deno.env.get('TURBOPANEL_SECRET'),
   Deno.env.get('TURBOPANEL_SECRETS'),
