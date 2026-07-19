@@ -131,6 +131,67 @@ export function resolveIsSignupEnabled(
   return false
 }
 
+/**
+ * Config guard: the Workers **live** environment must not force-enable public
+ * sign-up via `TURBOPANEL_IS_SIGNUP_ENABLED`. Unset (panel/`IS_SIGNUP_ENABLED`
+ * controls) or an explicit force-disable (`0`/`false`) are allowed. Pass
+ * `allowForceEnable: true` only for deliberate test-only fixtures — never for
+ * production `env.live` parsing.
+ */
+export function assertLiveSignupNotForceEnabled(
+  liveSignupVar: SignupEnvOverride | undefined,
+  options?: { allowForceEnable?: boolean },
+): void {
+  if (options?.allowForceEnable) return
+  const normalized = normalizeSignupEnvOverride(liveSignupVar)
+  if (normalized === undefined) return
+  const flag = normalized.toLowerCase()
+  if (flag === '1' || flag === 'true') {
+    throw new Error(
+      'env.live must not set TURBOPANEL_IS_SIGNUP_ENABLED to a force-enable value; leave it unset so IS_SIGNUP_ENABLED in the database controls public sign-up',
+    )
+  }
+}
+
+/**
+ * Read `env.live.vars.TURBOPANEL_IS_SIGNUP_ENABLED` from wrangler.jsonc text
+ * (JSONC line comments stripped). Returns `undefined` when the live env or
+ * the var is absent.
+ */
+export function readLiveSignupEnvOverrideFromWranglerJsonc(
+  wranglerText: string,
+): string | undefined {
+  // Local import avoids a hard dependency cycle with workers-bindings helpers.
+  const withoutComments = wranglerText
+    .split('\n')
+    .map((line) => {
+      const commentAt = line.indexOf('//')
+      return commentAt < 0 ? line : line.slice(0, commentAt)
+    })
+    .join('\n')
+  const liveMatch = /"live"\s*:\s*\{/.exec(withoutComments)
+  if (!liveMatch) return undefined
+  const liveBlock = withoutComments.slice(liveMatch.index)
+  const varsMatch = /"vars"\s*:\s*\{/.exec(liveBlock)
+  if (!varsMatch) return undefined
+  const varsStart = varsMatch.index + varsMatch[0].length
+  // Find matching closing brace for the vars object.
+  let depth = 1
+  let i = varsStart
+  while (i < liveBlock.length && depth > 0) {
+    const ch = liveBlock[i]
+    if (ch === '{') depth += 1
+    else if (ch === '}') depth -= 1
+    i += 1
+  }
+  const varsBody = liveBlock.slice(varsStart, i - 1)
+  const valueMatch =
+    /"TURBOPANEL_IS_SIGNUP_ENABLED"\s*:\s*"([^"]*)"/.exec(varsBody)
+  if (!valueMatch) return undefined
+  const trimmed = valueMatch[1].trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
 export type InstallStatus = {
   needsInstall: boolean
   isInstallMode: boolean

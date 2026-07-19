@@ -240,7 +240,9 @@
       "vars": {
         "TURBOPANEL_BASE_URL": "https://turbopanel.app",
         "TURBOPANEL_UI_CORS_ORIGINS": "https://turbopanel.io",
-        "TURBOPANEL_IS_SIGNUP_ENABLED": "1",
+        // Leave TURBOPANEL_IS_SIGNUP_ENABLED unset so IS_SIGNUP_ENABLED in the
+        // database (admin panel toggle) controls public sign-up. Do not ship
+        // "1"/"true" here — that force-enables sign-up on every deploy.
         "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c"
       }
     }

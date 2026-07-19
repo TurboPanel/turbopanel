@@ -47,6 +47,12 @@ import {
 
 export type AuthRouteOpts = {
   secrets?: DerivedSecretsConfig
+  /**
+   * HMAC keyring for at-rest email OTP verifiers (`email-otp-verifier` purpose).
+   * Required for OTP create/verify routes; derived at boot from
+   * `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS`.
+   */
+  otpVerifierSecrets?: DerivedSecretsConfig
   runtime: 'deno' | 'workers'
   /**
    * Optional `TURBOPANEL_IS_SIGNUP_ENABLED` force override. When set to

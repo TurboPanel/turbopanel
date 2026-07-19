@@ -1,22 +1,35 @@
 import { assertEquals } from '@std/assert'
 import { describe, it } from '@std/testing/bdd'
 import { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
+import { createApp, type AppEnv } from '../../app.ts'
 import { CLIENT_API_PREFIX } from '../../surfaces.ts'
+import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import { registerAuthRoutes, resolveClientIp } from './http.ts'
 import {
   type AuthRateLimiter,
   createAuthRateLimiter,
+  createFailClosedAuthRateLimiter,
 } from './auth-rate-limit.ts'
+import { deriveSecretsConfig, parseSecretsEnv } from './secrets.ts'
 
 /**
  * Build an app with the auth limiter injected through the request context, the
  * same channel the per-runtime entrypoints use to supply a durable limiter.
  */
-function buildApp(
+async function buildApp(
   limiter: AuthRateLimiter | undefined,
   runtime: 'deno' | 'workers' = 'workers',
-): Hono<AppEnv> {
+): Promise<Hono<AppEnv>> {
+  const secretsConfig = parseSecretsEnv(
+    TEST_ONLY_TURBOPANEL_SECRET,
+    undefined,
+    runtime,
+  )
+  const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+  const otpVerifierSecrets = await deriveSecretsConfig(
+    secretsConfig,
+    'email-otp-verifier',
+  )
   const app = new Hono<AppEnv>()
   const client = new Hono<AppEnv>()
   if (limiter) {
@@ -26,6 +39,8 @@ function buildApp(
     })
   }
   registerAuthRoutes(client as unknown as Hono, {
+    secrets,
+    otpVerifierSecrets,
     runtime,
     signupEnvOverride: undefined,
     emailFrom: 'noreply@turbopanel.local',
@@ -91,7 +106,7 @@ describe('resolveClientIp', () => {
 
 it('sign-in returns 429 with Retry-After once the limiter blocks', async () => {
   // limit 1 per window: first attempt allowed, second blocked.
-  const app = buildApp(
+  const app = await buildApp(
     createAuthRateLimiter({ defaultPolicy: { limit: 1, windowMs: 60_000 } }),
     'workers',
   )
@@ -116,7 +131,7 @@ it('sign-in returns 429 with Retry-After once the limiter blocks', async () => {
 })
 
 it('spoofed X-Real-IP / X-Forwarded-For cannot bypass Workers rate limits', async () => {
-  const app = buildApp(
+  const app = await buildApp(
     createAuthRateLimiter({ defaultPolicy: { limit: 1, windowMs: 60_000 } }),
     'workers',
   )
@@ -149,7 +164,7 @@ it('spoofed X-Real-IP / X-Forwarded-For cannot bypass Workers rate limits', asyn
 it('Workers auth fails closed when no durable limiter is injected', async () => {
   // No limiter in context -> Workers must not silently fall back to a
   // per-isolate limiter. The very first attempt is rejected (fail closed).
-  const app = buildApp(undefined, 'workers')
+  const app = await buildApp(undefined, 'workers')
 
   const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-in`, {
     method: 'POST',
@@ -164,7 +179,7 @@ it('Workers auth fails closed when no durable limiter is injected', async () => 
 })
 
 it('same-account attempts from different IPs cannot bypass the account cap', async () => {
-  const app = buildApp(
+  const app = await buildApp(
     createAuthRateLimiter({ defaultPolicy: { limit: 1, windowMs: 60_000 } }),
     'workers',
   )
@@ -182,4 +197,38 @@ it('same-account attempts from different IPs cannot bypass the account cap', asy
   assertEquals((await makeRequest('203.0.113.20')).status, 401)
   // Different IP, same identity -> still blocked (identity bucket).
   assertEquals((await makeRequest('203.0.113.21')).status, 429)
+})
+
+it('Deno createApp injects authRateLimiter before client routes (deny-all → 429)', async () => {
+  // Regression: Deno previously set authRateLimiter *after* registerClientRoutes,
+  // so client auth fell through to getSharedAuthRateLimiter(). A deny-all limiter
+  // passed to createApp must be the one auth routes use.
+  const secretsConfig = parseSecretsEnv(
+    TEST_ONLY_TURBOPANEL_SECRET,
+    undefined,
+    'deno',
+  )
+  const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+  const otpVerifierSecrets = await deriveSecretsConfig(
+    secretsConfig,
+    'email-otp-verifier',
+  )
+  const app = createApp({
+    secrets,
+    otpVerifierSecrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+    authRateLimiter: createFailClosedAuthRateLimiter(),
+  })
+
+  const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-in`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'X-Real-IP': '203.0.113.77',
+    },
+    body: JSON.stringify({ username: 'someone@example.com', password: 'x' }),
+  })
+  assertEquals(res.status, 429)
+  assertEquals(res.headers.get('Retry-After') !== null, true)
 })

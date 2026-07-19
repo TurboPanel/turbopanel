@@ -68,6 +68,8 @@ export function createApp(
     serverMetricsStore,
     dataEncryptionSecrets,
     secretsConfig,
+    authRateLimiter,
+    otpVerifierSecrets,
   }: {
     db?: Db
     emailQueue?: EmailQueue
@@ -83,6 +85,15 @@ export function createApp(
     serverMetricsStore?: ServerMetricsStore
     dataEncryptionSecrets?: DerivedSecretsConfig
     secretsConfig?: SecretsConfig
+    /**
+     * Durable auth throttle. When set, registered as app-level middleware
+     * **before** client routes so Deno Redis (and tests) see it on auth
+     * handlers. Workers still wraps per-request in `workers.ts` and may leave
+     * this unset on `createApp()`.
+     */
+    authRateLimiter?: AuthRateLimiter
+    /** HMAC keyring for email OTP verifiers — forwarded to client auth routes. */
+    otpVerifierSecrets?: DerivedSecretsConfig
   } = {},
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>()
@@ -151,11 +162,20 @@ export function createApp(
       return next()
     })
   }
+  // Auth limiter must be set before registerClientRoutes — Deno previously
+  // injected it too late (after client auth was already mounted).
+  if (authRateLimiter) {
+    app.use('*', (c, next) => {
+      c.set('authRateLimiter', authRateLimiter)
+      return next()
+    })
+  }
   app.get('/', (c) => c.text('TurboPanel'))
   app.get(HEALTH_PATH, (c) => c.json({ ok: true }))
   if (secrets) {
     registerClientRoutes(app, {
       secrets,
+      otpVerifierSecrets,
       runtime: runtime ?? 'workers',
       signupEnvOverride,
       emailFrom,

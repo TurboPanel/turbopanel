@@ -4,7 +4,10 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'
-import { createEmailOtp } from './email-otp.ts'
+import {
+  createEmailOtp,
+  OTP_VERIFIER_SECRET_PURPOSE,
+} from './email-otp.ts'
 import { registerAuthRoutes } from './http.ts'
 import {
   DEFAULT_WORKSPACE_NAME,
@@ -98,6 +101,10 @@ async function createAuthRouteApp(
 ) {
   const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, runtime)
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+  const otpVerifierSecrets = await deriveSecretsConfig(
+    secretsConfig,
+    OTP_VERIFIER_SECRET_PURPOSE,
+  )
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
@@ -118,6 +125,7 @@ async function createAuthRouteApp(
   const client = new Hono()
   registerAuthRoutes(client, {
     secrets,
+    otpVerifierSecrets,
     runtime,
     signupEnvOverride,
     emailFrom: 'noreply@turbopanel.local',
@@ -134,6 +142,10 @@ async function createClientRouteApp(
 ) {
   const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, runtime)
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+  const otpVerifierSecrets = await deriveSecretsConfig(
+    secretsConfig,
+    OTP_VERIFIER_SECRET_PURPOSE,
+  )
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
@@ -145,6 +157,7 @@ async function createClientRouteApp(
   })
   registerClientRoutes(app, {
     secrets,
+    otpVerifierSecrets,
     runtime,
     signupEnvOverride,
     emailFrom: 'noreply@turbopanel.local',
@@ -291,7 +304,12 @@ it('Workers OTP auto-registration succeeds without install completion', async ()
   const db = createDenoDb()
   const email = `workers-otp-${crypto.randomUUID()}@example.com`
   const app = await createAuthRouteApp(db, 'workers', '1')
-  const created = await createEmailOtp(db, email, 'sign-in')
+  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'workers')
+  const otpVerifierSecrets = await deriveSecretsConfig(
+    secretsConfig,
+    OTP_VERIFIER_SECRET_PURPOSE,
+  )
+  const created = await createEmailOtp(db, email, 'sign-in', otpVerifierSecrets)
   const otp = created.status === 'created' ? created.otp : ''
 
   try {
@@ -543,6 +561,29 @@ it('resolveIsSignupEnabled: env force overrides DB; unset defaults to disabled',
   }
 })
 
+it('live Wrangler must not force-enable public sign-up', async () => {
+  const { assertLiveSignupNotForceEnabled, readLiveSignupEnvOverrideFromWranglerJsonc } =
+    await import('./install-state.ts')
+  const wranglerText = await Deno.readTextFile(
+    new URL('../../../wrangler.jsonc', import.meta.url),
+  )
+  const liveValue = readLiveSignupEnvOverrideFromWranglerJsonc(wranglerText)
+  assertLiveSignupNotForceEnabled(liveValue)
+
+  // Guard itself rejects force-enable unless explicitly allowed for tests.
+  try {
+    assertLiveSignupNotForceEnabled('1')
+    throw new Error('expected assertLiveSignupNotForceEnabled("1") to throw')
+  } catch (err) {
+    if (!(err instanceof Error) || !err.message.includes('must not set')) {
+      throw err
+    }
+  }
+  assertLiveSignupNotForceEnabled('1', { allowForceEnable: true })
+  assertLiveSignupNotForceEnabled('0')
+  assertLiveSignupNotForceEnabled(undefined)
+})
+
 it('resolveSignupEnvOverrideFromContext prefers per-request platformEnv over createApp fallback', () => {
   const fromPlatform = resolveSignupEnvOverrideFromContext(
     { TURBOPANEL_IS_SIGNUP_ENABLED: '1' },
@@ -595,7 +636,22 @@ it('Workers status, sign-up, and OTP auto-registration agree when DB signup is t
       throw new Error(`expected sign-up 403 when disabled, got ${signUpOff.status}`)
     }
 
-    const otpOff = await createEmailOtp(db, emailOff, 'sign-in')
+    const otpSecretsConfig = parseSecretsEnv(
+      TEST_ONLY_TURBOPANEL_SECRET,
+      undefined,
+      'workers',
+    )
+    const otpVerifierSecrets = await deriveSecretsConfig(
+      otpSecretsConfig,
+      OTP_VERIFIER_SECRET_PURPOSE,
+    )
+
+    const otpOff = await createEmailOtp(
+      db,
+      emailOff,
+      'sign-in',
+      otpVerifierSecrets,
+    )
     const otpOffCode = otpOff.status === 'created' ? otpOff.otp : ''
     const otpSignInOff = await authApp.request(`${CLIENT_API_PREFIX}/auth/sign-in/otp`, {
       method: 'POST',
@@ -628,7 +684,12 @@ it('Workers status, sign-up, and OTP auto-registration agree when DB signup is t
     }
 
     const otpEmail = `workers-otp-on-${crypto.randomUUID()}@example.com`
-    const otpOn = await createEmailOtp(db, otpEmail, 'sign-in')
+    const otpOn = await createEmailOtp(
+      db,
+      otpEmail,
+      'sign-in',
+      otpVerifierSecrets,
+    )
     const otpOnCode = otpOn.status === 'created' ? otpOn.otp : ''
     const otpSignInOn = await authApp.request(`${CLIENT_API_PREFIX}/auth/sign-in/otp`, {
       method: 'POST',

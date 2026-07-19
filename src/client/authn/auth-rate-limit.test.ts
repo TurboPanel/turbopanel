@@ -3,10 +3,39 @@ import { describe, it } from '@std/testing/bdd'
 import type { RateLimiter } from '../../daemon/rate-limit/contracts.ts'
 import {
   type AuthRateLimitPurpose,
+  authRateLimitKeys,
   createAuthRateLimiter,
   createDurableAuthRateLimiter,
   createFailClosedAuthRateLimiter,
 } from './auth-rate-limit.ts'
+
+describe('authRateLimitKeys', () => {
+  it('uses fixed-size digests and never embeds the raw email or IP', async () => {
+    const keys = await authRateLimitKeys(
+      'sign-in',
+      'user@example.com',
+      '203.0.113.1',
+    )
+    assertEquals(keys.identityKey.startsWith('sign-in:id:'), true)
+    assertEquals(keys.ipKey.startsWith('sign-in:ip:'), true)
+    assertEquals(keys.identityKey.includes('user@example.com'), false)
+    assertEquals(keys.ipKey.includes('203.0.113.1'), false)
+    // SHA-256 hex = 64 chars after the purpose:id: / purpose:ip: prefix.
+    assertEquals(keys.identityKey.slice('sign-in:id:'.length).length, 64)
+    assertEquals(keys.ipKey.slice('sign-in:ip:'.length).length, 64)
+  })
+
+  it('normalizes identity casing and caps excessive input before hashing', async () => {
+    const a = await authRateLimitKeys('sign-in', '  User@Example.com  ', null)
+    const b = await authRateLimitKeys('sign-in', 'user@example.com', undefined)
+    assertEquals(a.identityKey, b.identityKey)
+
+    const huge = 'a'.repeat(10_000) + '@example.com'
+    const capped = await authRateLimitKeys('sign-in', huge, '203.0.113.9')
+    assertEquals(capped.identityKey.includes('@example.com'), false)
+    assertEquals(capped.identityKey.slice('sign-in:id:'.length).length, 64)
+  })
+})
 
 describe('createAuthRateLimiter', () => {
   it('allows attempts up to the limit then blocks with retry-after', async () => {

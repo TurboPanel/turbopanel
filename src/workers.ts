@@ -42,12 +42,14 @@ import {
   warnIfDaemonRateLimitersMissing,
 } from './workers-bindings.ts'
 import type { AuthRateLimiter } from './client/authn/auth-rate-limit.ts'
+import { OTP_VERIFIER_SECRET_PURPOSE } from './client/authn/email-otp.ts'
 
 export { DaemonCellObject } from './daemon/cell/do.ts'
 
 let initPromise: Promise<void> | null = null
 let cachedApp: ReturnType<typeof createApp> | null = null
 let cachedSessionSecrets: Awaited<ReturnType<typeof deriveSecretsConfig>> | null = null
+let cachedOtpVerifierSecrets: DerivedSecretsConfig | null = null
 let cachedDaemonJwtKeyring: DaemonJwtKeyring | null = null
 let cachedChallengeSigningSecrets: DerivedSecretsConfig | null = null
 let cachedDataEncryptionSecrets: DerivedSecretsConfig | null = null
@@ -73,6 +75,10 @@ async function initWorkerApp(env: CloudflareBindings) {
   await assertPasswordHasherAvailable()
   cachedSecretsConfig = secretsConfig
   cachedSessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+  cachedOtpVerifierSecrets = await deriveSecretsConfig(
+    secretsConfig,
+    OTP_VERIFIER_SECRET_PURPOSE,
+  )
   cachedDaemonJwtKeyring = await deriveDaemonJwtKeyring(secretsConfig)
   cachedChallengeSigningSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-challenge-signing')
   cachedDataEncryptionSecrets = await deriveEncryptionSecretsConfig(secretsConfig, 'data-encryption')
@@ -92,6 +98,7 @@ async function initWorkerApp(env: CloudflareBindings) {
   cachedApp = createApp({
     commandQueue: cachedCommandQueue,
     secrets: cachedSessionSecrets,
+    otpVerifierSecrets: cachedOtpVerifierSecrets ?? undefined,
     runtime: 'workers',
     corsOrigins: env.TURBOPANEL_UI_CORS_ORIGINS,
     signupEnvOverride: env.TURBOPANEL_IS_SIGNUP_ENABLED,

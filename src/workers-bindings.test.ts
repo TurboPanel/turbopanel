@@ -158,6 +158,14 @@ test('resolveWorkersClientAuthRateLimiter wraps the binding into a durable limit
   assertEquals(keys.length, 2)
   assert(keys.some((k) => k.includes(':id:')))
   assert(keys.some((k) => k.includes(':ip:')))
+  // Durable keys must not contain the raw email or IP.
+  assert(!keys.some((k) => k.includes('user@example.com')))
+  assert(!keys.some((k) => k.includes('203.0.113.7')))
+  // Digests are fixed-length hex after the purpose:id: / purpose:ip: segment.
+  for (const key of keys) {
+    const digest = key.replace(/^auth:[^:]+:(?:id|ip):/, '')
+    assertEquals(digest.length, 64)
+  }
 })
 
 test('resolveWorkersClientAuthRateLimiter fails closed in production when binding missing', async () => {

@@ -257,7 +257,12 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
       trimmedEmail = sessionEmail
     }
 
-    const otpResult = await createEmailOtp(db, trimmedEmail, type)
+    const otpSecrets = opts.otpVerifierSecrets
+    if (!otpSecrets) {
+      return c.json({ ok: false, error: 'Not configured' }, 503)
+    }
+
+    const otpResult = await createEmailOtp(db, trimmedEmail, type, otpSecrets)
     if (otpResult.status === 'cooldown') {
       // Resend cooldown active — respond identically so callers cannot probe.
       return c.json({ ok: true }, 200)
@@ -300,6 +305,11 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Invalid request' }, 400)
     }
 
+    const emailError = validateSuperadminEmail(email)
+    if (emailError) {
+      return c.json({ ok: false, error: emailError }, 400)
+    }
+
     const trimmedEmail = email.trim().toLowerCase()
 
     const verifyOtpLimited = await enforceAuthRateLimit(
@@ -312,7 +322,12 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
       return verifyOtpLimited
     }
 
-    const result = await verifyEmailOtp(db, trimmedEmail, type, otp, {
+    const otpSecrets = opts.otpVerifierSecrets
+    if (!otpSecrets) {
+      return c.json({ ok: false, error: 'Not configured' }, 503)
+    }
+
+    const result = await verifyEmailOtp(db, trimmedEmail, type, otp, otpSecrets, {
       consume: false,
     })
     const mapped = mapVerifyResult(result)
@@ -350,6 +365,11 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Invalid request' }, 400)
     }
 
+    const emailError = validateSuperadminEmail(email)
+    if (emailError) {
+      return c.json({ ok: false, error: emailError }, 400)
+    }
+
     const trimmedEmail = email.trim().toLowerCase()
 
     const signInOtpLimited = await enforceAuthRateLimit(
@@ -362,7 +382,18 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
       return signInOtpLimited
     }
 
-    const verifyResult = await verifyEmailOtp(db, trimmedEmail, 'sign-in', otp)
+    const otpSecrets = opts.otpVerifierSecrets
+    if (!otpSecrets) {
+      return c.json({ ok: false, error: 'Not configured' }, 503)
+    }
+
+    const verifyResult = await verifyEmailOtp(
+      db,
+      trimmedEmail,
+      'sign-in',
+      otp,
+      otpSecrets,
+    )
     const mapped = mapVerifyResult(verifyResult)
     if (mapped.status !== 200) {
       return c.json(mapped.body, mapped.status)
@@ -429,6 +460,11 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Invalid request' }, 400)
     }
 
+    const emailError = validateSuperadminEmail(email)
+    if (emailError) {
+      return c.json({ ok: false, error: emailError }, 400)
+    }
+
     const sessionEmail = sessionData.email.trim().toLowerCase()
     const trimmedEmail = email.trim().toLowerCase()
     if (trimmedEmail !== sessionEmail) {
@@ -445,11 +481,17 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
       return verifyEmailLimited
     }
 
+    const otpSecrets = opts.otpVerifierSecrets
+    if (!otpSecrets) {
+      return c.json({ ok: false, error: 'Not configured' }, 503)
+    }
+
     const verifyResult = await verifyEmailOtp(
       db,
       sessionEmail,
       'email-verification',
       otp,
+      otpSecrets,
     )
     const mapped = mapVerifyResult(verifyResult)
     if (mapped.status !== 200) {
@@ -486,6 +528,11 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Invalid request' }, 400)
     }
 
+    const emailError = validateSuperadminEmail(email)
+    if (emailError) {
+      return c.json({ ok: false, error: emailError }, 400)
+    }
+
     const trimmedEmail = email.trim().toLowerCase()
 
     const resetRequestLimited = await enforceAuthRateLimit(
@@ -498,7 +545,17 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
       return resetRequestLimited
     }
 
-    const otpResult = await createEmailOtp(db, trimmedEmail, 'forget-password')
+    const otpSecrets = opts.otpVerifierSecrets
+    if (!otpSecrets) {
+      return c.json({ ok: false, error: 'Not configured' }, 503)
+    }
+
+    const otpResult = await createEmailOtp(
+      db,
+      trimmedEmail,
+      'forget-password',
+      otpSecrets,
+    )
     if (otpResult.status === 'cooldown') {
       return c.json({ ok: true }, 200)
     }
@@ -546,6 +603,11 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: passwordError }, 400)
     }
 
+    const emailError = validateSuperadminEmail(email)
+    if (emailError) {
+      return c.json({ ok: false, error: emailError }, 400)
+    }
+
     const trimmedEmail = email.trim().toLowerCase()
 
     const resetLimited = await enforceAuthRateLimit(
@@ -558,11 +620,17 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
       return resetLimited
     }
 
+    const otpSecrets = opts.otpVerifierSecrets
+    if (!otpSecrets) {
+      return c.json({ ok: false, error: 'Not configured' }, 503)
+    }
+
     const verifyResult = await verifyEmailOtp(
       db,
       trimmedEmail,
       'forget-password',
       otp,
+      otpSecrets,
     )
     const mapped = mapVerifyResult(verifyResult)
     if (mapped.status !== 200) {

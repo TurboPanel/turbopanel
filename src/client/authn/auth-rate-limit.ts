@@ -59,6 +59,12 @@ const DEFAULT_POLICY: AuthRateLimitPolicy = { limit: 10, windowMs: 60_000 }
 export const DEFAULT_DURABLE_AUTH_WINDOW_SECONDS = 60
 
 /**
+ * Cap normalized identity / IP material before hashing so durable backends
+ * never see unbounded key strings (and so digests stay stable).
+ */
+export const AUTH_RATE_LIMIT_IDENTITY_MAX_CHARS = 320
+
+/**
  * Per-purpose defaults applied to the process-wide shared limiter. Not baked
  * into {@link createAuthRateLimiter} so callers (and tests) that pass an
  * explicit `defaultPolicy`/`policies` get exactly what they configure.
@@ -94,26 +100,58 @@ type WindowEntry = { windowStartMs: number; count: number }
 
 function normalizeIdentity(identity: string | null | undefined): string {
   const trimmed = (identity ?? '').trim().toLowerCase()
-  return trimmed || 'anonymous'
+  if (!trimmed) return 'anonymous'
+  if (trimmed.length > AUTH_RATE_LIMIT_IDENTITY_MAX_CHARS) {
+    return trimmed.slice(0, AUTH_RATE_LIMIT_IDENTITY_MAX_CHARS)
+  }
+  return trimmed
 }
 
 function normalizeIp(ip: string | null | undefined): string {
   const trimmed = (ip ?? '').trim()
-  return trimmed || 'unknown'
+  if (!trimmed) return 'unknown'
+  if (trimmed.length > AUTH_RATE_LIMIT_IDENTITY_MAX_CHARS) {
+    return trimmed.slice(0, AUTH_RATE_LIMIT_IDENTITY_MAX_CHARS)
+  }
+  return trimmed
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes)
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+/**
+ * Fixed-size, non-reversible digest for rate-limit bucket material. Raw emails
+ * and IPs must never appear in durable backend keys or operator logs of those
+ * keys.
+ */
+async function digestKeyMaterial(kind: 'id' | 'ip', value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(`${kind}:${value}`),
+  )
+  return bytesToHex(new Uint8Array(digest))
 }
 
 /**
  * Build the two independent bucket keys (identity + IP) for a purpose. Shared
- * by the in-memory and durable backends so they key identically.
+ * by the in-memory and durable backends so they key identically. Keys embed
+ * SHA-256 digests of the normalized identity/IP — never the raw values.
  */
-export function authRateLimitKeys(
+export async function authRateLimitKeys(
   purpose: AuthRateLimitPurpose,
   identity: string | null | undefined,
   ip: string | null | undefined,
-): { identityKey: string; ipKey: string } {
+): Promise<{ identityKey: string; ipKey: string }> {
+  const [identityDigest, ipDigest] = await Promise.all([
+    digestKeyMaterial('id', normalizeIdentity(identity)),
+    digestKeyMaterial('ip', normalizeIp(ip)),
+  ])
   return {
-    identityKey: `${purpose}:id:${normalizeIdentity(identity)}`,
-    ipKey: `${purpose}:ip:${normalizeIp(ip)}`,
+    identityKey: `${purpose}:id:${identityDigest}`,
+    ipKey: `${purpose}:ip:${ipDigest}`,
   }
 }
 
@@ -155,10 +193,9 @@ export function createAuthRateLimiter(
   }
 
   return {
-    // deno-lint-ignore require-await
     async check(purpose, identity, ip): Promise<AuthRateLimitResult> {
       const policy = policyFor(purpose)
-      const { identityKey, ipKey } = authRateLimitKeys(purpose, identity, ip)
+      const { identityKey, ipKey } = await authRateLimitKeys(purpose, identity, ip)
       // Independent buckets — both must pass.
       const identityResult = record(identityKey, policy)
       const ipResult = record(ipKey, policy)
@@ -194,7 +231,7 @@ export function createDurableAuthRateLimiter(
   const retryAfterSeconds = options.windowSeconds ?? DEFAULT_DURABLE_AUTH_WINDOW_SECONDS
   return {
     async check(purpose, identity, ip): Promise<AuthRateLimitResult> {
-      const { identityKey, ipKey } = authRateLimitKeys(purpose, identity, ip)
+      const { identityKey, ipKey } = await authRateLimitKeys(purpose, identity, ip)
       // Independent buckets — both must pass. Prefix keeps auth counters from
       // colliding with daemon rate-limit keys in a shared backend namespace.
       const [identityOutcome, ipOutcome] = await Promise.all([

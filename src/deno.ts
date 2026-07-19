@@ -35,6 +35,7 @@ import {
   resolveDaemonWsInboundLimits,
 } from './daemon/rate-limit/redis-rate-limiter.ts'
 import { createDurableAuthRateLimiter } from './client/authn/auth-rate-limit.ts'
+import { OTP_VERIFIER_SECRET_PURPOSE } from './client/authn/email-otp.ts'
 import { registerVersionRoute } from './daemon/version.ts'
 import { registerSystemRoutes } from './developer/system-routes.ts'
 import { registerDevSyncRoutes } from './developer/dev-sync.ts'
@@ -130,6 +131,10 @@ const secretsConfig = parseSecretsEnv(
   'deno',
 )
 const sessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+const otpVerifierSecrets = await deriveSecretsConfig(
+  secretsConfig,
+  OTP_VERIFIER_SECRET_PURPOSE,
+)
 const daemonJwtKeyring = await deriveDaemonJwtKeyring(secretsConfig)
 const challengeSigningSecrets = await deriveSecretsConfig(secretsConfig, 'daemon-challenge-signing')
 const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(secretsConfig, 'data-encryption')
@@ -199,6 +204,7 @@ const app = createApp({
   emailQueue,
   commandQueue,
   secrets: sessionSecrets,
+  otpVerifierSecrets,
   runtime: 'deno',
   corsOrigins: Deno.env.get('TURBOPANEL_UI_CORS_ORIGINS'),
   signupEnvOverride: Deno.env.get('TURBOPANEL_IS_SIGNUP_ENABLED'),
@@ -209,6 +215,9 @@ const app = createApp({
   serverMetricsStore,
   dataEncryptionSecrets,
   secretsConfig,
+  // Inject before client routes mount — must not be registered after
+  // registerClientRoutes (see createApp authRateLimiter middleware).
+  authRateLimiter,
 })
 const routes = app as unknown as Hono
 routes.use('*', (c, next) => {
@@ -216,11 +225,11 @@ routes.use('*', (c, next) => {
   // uses the trusted-proxy path that honors X-Forwarded-Proto.
   c.set('runtime', 'deno')
   c.set('platformEnv', Deno.env.toObject())
-  c.set('authRateLimiter', authRateLimiter)
   return next()
 })
 registerInstallRoutes(routes, {
   secrets: sessionSecrets,
+  otpVerifierSecrets,
   runtime: 'deno',
   signupEnvOverride: Deno.env.get('TURBOPANEL_IS_SIGNUP_ENABLED'),
 })

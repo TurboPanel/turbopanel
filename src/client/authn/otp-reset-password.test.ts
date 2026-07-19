@@ -34,6 +34,10 @@ async function createAuthApp(db: ReturnType<typeof createDenoDb>) {
     'deno',
   )
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+  const otpVerifierSecrets = await deriveSecretsConfig(
+    secretsConfig,
+    'email-otp-verifier',
+  )
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
@@ -42,12 +46,13 @@ async function createAuthApp(db: ReturnType<typeof createDenoDb>) {
   const client = new Hono()
   registerAuthRoutes(client, {
     secrets,
+    otpVerifierSecrets,
     runtime: 'deno',
     signupEnvOverride: undefined,
     emailFrom: 'noreply@turbopanel.local',
   })
   app.route(CLIENT_API_PREFIX, client)
-  return { app, secrets }
+  return { app, secrets, otpVerifierSecrets }
 }
 
 it('password reset revokes existing sessions', async () => {
@@ -60,7 +65,7 @@ it('password reset revokes existing sessions', async () => {
 
   const db = createDenoDb()
   const email = `reset-session-${crypto.randomUUID()}@example.com`
-  const { app } = await createAuthApp(db)
+  const { app, otpVerifierSecrets } = await createAuthApp(db)
 
   const [insertedUser] = await db
     .insert(user)
@@ -82,9 +87,16 @@ it('password reset revokes existing sessions', async () => {
   const { token: oldToken } = await createSession(db, userId, {})
   assertEquals((await getSession(db, oldToken))?.userId, userId)
 
-  const created = await createEmailOtp(db, email, 'forget-password', 300, {
-    cooldownMs: 0,
-  })
+  const created = await createEmailOtp(
+    db,
+    email,
+    'forget-password',
+    otpVerifierSecrets,
+    300,
+    {
+      cooldownMs: 0,
+    },
+  )
   assertEquals(created.status, 'created')
   if (created.status !== 'created') return
 
