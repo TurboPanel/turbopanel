@@ -575,7 +575,7 @@ it('live Wrangler must not force-enable public sign-up', async () => {
     assertLiveSignupNotForceEnabled('1')
     throw new Error('expected assertLiveSignupNotForceEnabled("1") to throw')
   } catch (err) {
-    if (!(err instanceof Error) || !err.message.includes('must not set')) {
+    if (!(err instanceof Error) || !err.message.includes('must not commit')) {
       throw err
     }
   }

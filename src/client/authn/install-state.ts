@@ -133,10 +133,10 @@ export function resolveIsSignupEnabled(
 
 /**
  * Config guard: the Workers **live** environment must not force-enable public
- * sign-up via `TURBOPANEL_IS_SIGNUP_ENABLED`. Unset (panel/`IS_SIGNUP_ENABLED`
- * controls) or an explicit force-disable (`0`/`false`) are allowed. Pass
- * `allowForceEnable: true` only for deliberate test-only fixtures — never for
- * production `env.live` parsing.
+ * sign-up via `TURBOPANEL_IS_SIGNUP_ENABLED` in git. Live should ship `"0"`
+ * (binding present for Cloudflare dashboard flips) or leave the var unset.
+ * Pass `allowForceEnable: true` only for deliberate test-only fixtures —
+ * never for production `env.live` parsing.
  */
 export function assertLiveSignupNotForceEnabled(
   liveSignupVar: SignupEnvOverride | undefined,
@@ -148,7 +148,7 @@ export function assertLiveSignupNotForceEnabled(
   const flag = normalized.toLowerCase()
   if (flag === '1' || flag === 'true') {
     throw new Error(
-      'env.live must not set TURBOPANEL_IS_SIGNUP_ENABLED to a force-enable value; leave it unset so IS_SIGNUP_ENABLED in the database controls public sign-up',
+      'env.live must not commit TURBOPANEL_IS_SIGNUP_ENABLED as a force-enable; ship "0" (or unset) and open sign-up via the Cloudflare dashboard',
     )
   }
 }

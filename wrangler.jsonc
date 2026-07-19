@@ -240,9 +240,13 @@
       "vars": {
         "TURBOPANEL_BASE_URL": "https://turbopanel.app",
         "TURBOPANEL_UI_CORS_ORIGINS": "https://turbopanel.io",
-        // Leave TURBOPANEL_IS_SIGNUP_ENABLED unset so IS_SIGNUP_ENABLED in the
-        // database (admin panel toggle) controls public sign-up. Do not ship
-        // "1"/"true" here — that force-enables sign-up on every deploy.
+        // Keep the binding present so it can be flipped in the Cloudflare
+        // dashboard (vars absent from wrangler.jsonc are wiped on the next
+        // `wrangler deploy`). Default closed ("0"); set to "1" in the
+        // dashboard (and Deploy that version) to open public sign-up. Do not
+        // commit "1"/"true" here — a config regression guard fails if live is
+        // force-enabled in git.
+        "TURBOPANEL_IS_SIGNUP_ENABLED": "0",
         "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c"
       }
     }
