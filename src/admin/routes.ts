@@ -1,9 +1,9 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { createAdminAccessMiddleware, createRootOnlyMiddleware } from '../client/authn/middleware.ts'
-import { resolveColocatedServerId } from '../client/authn/install-state.ts'
 import {
   getSignupSettingMeta,
+  resolveColocatedServerId,
   setSignupEnabledSetting,
 } from '../client/authn/install-state.ts'
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
