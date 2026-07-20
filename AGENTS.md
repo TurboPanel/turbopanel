@@ -125,12 +125,10 @@ All TurboPanel runtime sockets live under **`/run/turbopanel/`** (on Linux, `/va
 | `TURBOPANEL_SOCKET` | — | Full socket path override |
 | `TURBOPANEL_SOCKET_DIR` | `/run/turbopanel` | Directory when using the default filename |
 | `TURBOPANEL_SOCKET_DIAL` | `run/turbopanel/instance.sock` | Caddy `unix//` dial path (no leading slash) |
-| `TURBOPANEL_UI_MODE` | `static` | `dev` proxies to Expo; `static` serves exported UI |
+| `TURBOPANEL_UI_MODE` | `static` | Instance/developer-surface gate (`dev` enables Expo UI unit + developer API on co-located hosts); production Caddy always serves static UI |
 | `TURBOPANEL_UI_ROOT` | `/opt/turbopanel/share/ui` | Directory of `expo export --platform web` output (local manual dev typically sets `../ui/dist`) |
 | `TURBOPANEL_UI_SERVICE` | `turbopanel-ui` | Name of the Expo systemd unit on managed hosts (injected for orchestration; no instance API surface today) |
 | `CADDY_PORT` | `8443` | HTTPS listen port |
-| `CADDY_HTTP_PORT` | `8880` | Dev-only plaintext HTTP listener mirroring the HTTPS entrypoint |
-| `TURBOPANEL_DEV_HTTP_CONTROL_PLANE` | off | Must be `"1"` to serve plaintext traffic on `CADDY_HTTP_PORT`; injected automatically in co-located dev via `turbopanel_dev_user` |
 | `CADDY_TLS_CERT` | `./certs/self-signed.crt` | Server leaf certificate (signed by platform CA) |
 | `CADDY_TLS_KEY` | `./certs/self-signed.key` | Server leaf private key |
 | `TURBOPANEL_TLS_EXTRA_SANS` | — | Comma-separated DNS names for the server cert (e.g. `turbopanel.lan`) |
@@ -200,28 +198,26 @@ The instance Deno process runs with scoped permissions (see the `instance-launch
 
 The daemon's orchestration bootstrap runs the `socket-dirs-setup` Ansible playbook, which installs `/etc/tmpfiles.d/turbopanel.conf` and applies it with `systemd-tmpfiles --create`. The directory is recreated on boot automatically.
 
-## Caddy (dev + production)
+## Caddy (production)
 
-Caddy terminates TLS and routes traffic from a single HTTPS entrypoint:
+This repo's `Caddyfile` is **production-only**. Caddy terminates TLS and routes:
 
 - `/api/*` and `/ws/*` → Deno instance (`unix:///run/turbopanel/instance.sock`)
-- everything else → Expo dev server (**dev**) or static export (**production**)
+- everything else → static UI export (`TURBOPANEL_UI_ROOT`, default `/opt/turbopanel/share/ui`)
 
 `reverse_proxy` to the Unix socket sets `X-Real-IP {remote_host}` on `/api/*` and `/ws/*`. The instance uses that header to deduplicate daemon WebSocket reconnects (without it, every reconnect looked like a new fleet member behind the proxy).
 
-In **dev** mode, the Expo upstream proxy must forward `Host {http.request.hostport}` (not `127.0.0.1:8081`, and not `{http.request.host}` alone). Expo's CORS middleware compares `Origin`'s URL `.host` (which includes the port, e.g. `tpdev.lan:8880`) to `req.headers.host`; `{http.request.host}` strips the port so LAN origins get HTML 500s that show up as `Unexpected token '<'` in the browser.
+**Co-located development** does not use this file. When `turbopanel_dev_user` is set, `turbopanel-caddy.service` loads `~/dev/orchestration/Caddyfile` instead (Expo proxy, plaintext `:8880`, optional wrangler upstream, `/downloads/daemon` + `/run.sh`). See **`../dev/AGENTS.md`** (Ansible overlay / Caddyfile).
 
-### Development
+### Production
 
-Caddy/cert installs are handled by the daemon's `caddy` and `instance-certs` Ansible roles; `turbopanel-caddy.service` runs as the **dev user** in development (`turbopaneli` in production).
+Caddy/cert installs are handled by the daemon's `caddy` and `instance-certs` Ansible roles; `turbopanel-caddy.service` runs as `turbopaneli:turbopanel` in production.
 
-- Entrypoint: `https://<host>:8443` (Caddy, defined in `Caddyfile`) — binds all interfaces; use `localhost` or the machine's LAN IP.
+- Entrypoint: `https://<host>:8443` (this `Caddyfile`) — binds all interfaces; use `localhost` or the machine's LAN IP.
 - Self-hosted TLS uses a **platform CA** (`certs/ca.crt` + `certs/ca.key`) that signs a **server leaf cert** (`certs/self-signed.crt` + `.key`) presented by Caddy (`auto_https off`, no Let's Encrypt). **`auto_https off` is mandatory and must never be removed.** Caddy must never auto-provision certs via ACME or on-demand TLS. All cert issuance goes through `scripts/generate-self-signed-cert.mjs` (self-hosted, platform CA) or an explicitly-configured publicly-trusted cert. The `instance-certs-apply.yml` playbook is the runtime cert-regen path triggered by the admin public-URL apply action. The CA is long-lived and can issue additional certificates later; daemons fetch it from `GET /api/daemon/v1/instance/ca`. Trust `certs/ca.crt` in browsers/OS to avoid warnings.
 - Override the resolved binary with `TURBOPANEL_CADDY` (and `TURBOPANEL_DENO` for Deno).
 
-#### Dev-only plaintext HTTP entrypoint (`:8880`)
-
-Co-located dev also exposes `http://<host>:8880` (`CADDY_HTTP_PORT`, default `8880`) — a plaintext mirror of every route on `:8443` with no TLS termination. It exists to bypass self-signed TLS friction when troubleshooting daemon WebSocket connections and to attach a daemon without any CA/cert setup. The block serves `/api/*`, `/ws/*` (including the `@workers_runtime` branch to `WRANGLER_DEV_PORT`), the Expo dev proxy, `/downloads/daemon/*`, `/run.sh`, and the production static-file fallback identically to the HTTPS entrypoint, regardless of `TURBOPANEL_INSTANCE_RUNTIME` (`deno` or `workers`), since both runtimes share this single Caddy proxy. Requests are rejected with **403** unless `TURBOPANEL_DEV_HTTP_CONTROL_PLANE=1`; Ansible sets that flag automatically only when `turbopanel_dev_user` is set (co-located dev hosts). It is never enabled on managed or production installs.
+There is **no** plaintext HTTP listener in the production Caddyfile. Co-located `:8880` lives only in the dev overlay Caddyfile.
 
 ### Daemon TLS trust model (3 paths)
 
@@ -235,9 +231,9 @@ The daemon validates the instance server cert on **every** connect — both chai
 
 Note: `Deno.createHttpClient({ caCerts })` **adds** to the system roots (does not replace them), so configuring the platform CA does not break validation of publicly-trusted certs.
 
-### Production (static UI)
+### Static UI
 
-When `TURBOPANEL_UI_MODE=static`, Caddy serves the exported web build from `TURBOPANEL_UI_ROOT` (default `/opt/turbopanel/share/ui`), `isDeveloperSurfaceEnabled()` is disabled (see `src/dev-mode.ts`), and `turbopanel-ui.service` is stopped/disabled by the `instance-launch` role.
+Caddy serves the exported web build from `TURBOPANEL_UI_ROOT` (default `/opt/turbopanel/share/ui`). On co-located hosts, `TURBOPANEL_UI_MODE=static` also disables `isDeveloperSurfaceEnabled()` (see `src/dev-mode.ts`) and stops `turbopanel-ui.service` via the `instance-launch` role — while still loading the **dev** overlay Caddyfile when `turbopanel_dev_user` is set (plaintext `:8880` remains available).
 
 Build the static export locally or switch via the dev console **Switch to production build** (runs `ui-build` → `instance-build` → `instance-launch`). For a compiled instance binary, `deno task compile` in this repo produces `dist/turbopanel-instance` with all `--allow-*` flags baked in at compile time (mirrors the `turbopanel-instance.service` `ExecStart` permissions).
 
@@ -245,11 +241,11 @@ Manual export + Caddy:
 
 ```bash
 cd ../ui && pnpm export
-cd ../turbopanel
+cd ../instance
 TURBOPANEL_UI_ROOT=../ui/dist caddy run --config Caddyfile --adapter caddyfile
 ```
 
-Caddy serves files from `TURBOPANEL_UI_ROOT` (default `/opt/turbopanel/share/ui`; the local manual dev example above sets `../ui/dist`) and falls back to `/index.html` for client-side routes (SPA), matching the Cloudflare Workers asset routing in `ui/wrangler.jsonc`.
+Caddy serves files from `TURBOPANEL_UI_ROOT` (default `/opt/turbopanel/share/ui`; the local manual example above sets `../ui/dist`) and falls back to `/index.html` for client-side routes (SPA), matching the Cloudflare Workers asset routing in `ui/wrangler.jsonc`.
 
 Set `CADDY_TLS_CERT` / `CADDY_TLS_KEY` only when overriding the default server leaf certificate paths.
 
@@ -716,7 +712,7 @@ Add a `TURBOPANEL_SECRET` to `dev/.env` before running `pnpm dev` (Tilt syncs it
 
 **Rotation:** writing or updating a secret always seals under the current key version (**lazy re-seal-on-write**). After rotating the keyring (`TURBOPANEL_SECRETS`), new writes use the new version immediately; existing rows sealed under older versions remain decryptable via fallbacks until rewritten. Superadmin `POST /api/admin/v1/secrets/reencrypt` runs a batched sweep over `variable.value`, `tls.privateKeyPem`, and `principal.password`, re-sealing only non-current `tpsecret` envelopes (skips already-current blobs and any `tpdaemon` material). Each write is conditional on the original envelope still being present (id + secret-column compare-and-swap) so a concurrent update during rotation is left untouched and counted as `skipped`. Returns `{ ok, scanned, reencrypted, skipped, failed }`.
 
-**CORS (Scalar / docs site):** when `TURBOPANEL_UI_CORS_ORIGINS` is set (comma-separated browser origins), `src/cors.ts` reflects matching `Origin` headers on API responses. Co-located dev injects `http://localhost:{WEBSITE_PORT}` and `http://127.0.0.1:{WEBSITE_PORT}` via `instance-launch` on the Deno instance unit (and Workers `.dev.vars` when `turbopanel_instance_runtime=workers`) so the docs site can fetch OpenAPI through Caddy cross-origin. Cloudflare Workers production/testing set matching website origins in `wrangler.jsonc` (`live`: `https://turbopanel.io`; `testing`: `https://testing.turbopanel.io`).
+**CORS (Scalar / docs site):** when `TURBOPANEL_UI_CORS_ORIGINS` is set (comma-separated browser origins), `src/cors.ts` reflects matching `Origin` headers on API responses. Co-located dev (`turbopanel_dev_user` set) injects `http://localhost:{WEBSITE_PORT}` and `http://127.0.0.1:{WEBSITE_PORT}` via `instance-launch` on the Deno instance unit (and Workers `.dev.vars` when `turbopanel_instance_runtime=workers`) so the docs site can fetch OpenAPI through Caddy cross-origin — never emitted on managed/production hosts. Cloudflare Workers production/testing set matching website origins in `wrangler.jsonc` (`live`: `https://turbopanel.io`; `testing`: `https://testing.turbopanel.io`).
 
 **Public sign-up:** `IS_SIGNUP_ENABLED` in the `setting` table is the panel-controlled toggle (default disabled when unset). `TURBOPANEL_IS_SIGNUP_ENABLED=1`/`true` or `0`/`false` is an optional **force** override that wins over the database.
 
