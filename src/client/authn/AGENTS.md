@@ -1,0 +1,190 @@
+# Authentication — AGENTS.md
+
+Custom PAM-style auth on the Web Crypto API (runs on both Deno and Workers): Argon2id password hashing, opaque DB-backed sessions with signed cookies, the host PAM install gate, the session-secret keyring + `tpsecret`/`tpdaemon` data encryption, daemon key authentication (Ed25519 JWT), and all client/install auth routes.
+
+Root context: `../../../AGENTS.md`. Daemon-side key verification files live under `../../daemon/authn/`; daemon cell + license lifecycle: `../../daemon/cell/AGENTS.md`.
+
+## Authentication
+
+The instance uses a **custom PAM-style auth model** built entirely on the **Web Crypto API** (`crypto.subtle`, `crypto.getRandomValues`). There is no dependency on Node.js crypto or `nodejs_compat` mode — the same primitives run on both Deno and Cloudflare Workers.
+
+**`nodejs_compat` is enabled** in `wrangler.jsonc` as a toolchain compatibility shim (required for drizzle-kit and postgres.js during the migration step). **Rarely use Node.js APIs in application code** — always prefer Cloudflare-native APIs: Web Crypto API (`crypto.subtle`, `crypto.getRandomValues`), Cloudflare Cache API, etc. Do not use `nodejs_compat` as justification for pulling in Node.js-specific libraries in application routes.
+
+#### Password hashing
+
+Credential-account passwords use **Argon2id** via `@noble/hashes` (`src/client/authn/password.ts`) — pure TypeScript, no WASM loader, runs on both Deno and Cloudflare Workers. Stored PHC format: `$argon2id$v=19$m=<m>,t=<t>,p=<p>$<b64-salt>$<b64-hash>`. New hashes use the OWASP 2026 minimum baseline **`m=19456,t=2,p=1`** (~19 MiB working set, well under the default 128 MiB Workers isolate limit). Verification re-derives the digest as bytes and compares with XOR-accumulation constant-time equality — do **not** delegate final equality to library `argon2Verify` helpers. Do not use plain SHA-256 or PBKDF2 for new passwords.
+
+**NIST vs OWASP decision (picked the stronger option):** Argon2id is cryptographically stronger against offline GPU/ASIC cracking. NIST SP 800-63B-4 requires a memory-hard verifier (SHOULD) and SP 800-132's PBKDF2 is the FIPS-friendly-but-weaker path; TurboPanel is non-FIPS, so OWASP's concrete Argon2id floor wins. PBKDF2 was deliberately **not** chosen "for NIST," and Workers SubtleCrypto PBKDF2@100k was rejected (fails OWASP's ≥600k floor).
+
+**Pre-MVP hard cutover:** no migration, no legacy PBKDF2 verify, no dual-format storage, no lazy rehash. Old `$pbkdf2-sha256$…` hashes fail verification — wipe/recreate test accounts.
+
+**Boot behavior + raise-only override:** both `src/workers.ts` (per-isolate `initWorkerApp`) and `src/deno.ts` (before `Deno.serve`) call `assertPasswordHasherAvailable()` and fail fast rather than degrading. Optional raise-only override via `configureArgon2idWorkFactor` — `TURBOPANEL_ARGON2ID_MEMORY_KIB` / `TURBOPANEL_ARGON2ID_TIME_COST` may only raise `m`/`t` above the OWASP floor (values below the floor are ignored with a warning).
+
+**Daemon key authentication:** daemon auth now starts with HTTP-first enrollment/session issuance, then uses a short-lived stateless daemon JWT for protected daemon REST and daemon WebSocket upgrade authentication.
+- **Enrollment challenge + proof**: daemon requests `POST /api/daemon/v1/auth/challenge` (no credentials), signs `buildEnrollmentPayload()` (`turbopanel-daemon-enroll-v1` canonical format), then calls `POST /api/daemon/v1/enroll` with `{ licenseId, licenseToken, publicJwk, challengeId, signature, serverId? }`. The instance verifies license + proof-of-possession, resolves/creates `server`, and stores the daemon public key on the server row. Licenses are one-shot: after a server latches, re-enroll requires the persisted `serverId`; a fresh license always creates a new server.
+- **Auth challenge + session token**: enrolled daemon requests `POST /api/daemon/v1/auth/challenge` with `{ serverId, keyId }`, signs `buildAuthPayload()` (`turbopanel-daemon-auth-v1` canonical format), then calls `POST /api/daemon/v1/auth/session` to receive a **15-minute stateless JWT**. Session issuance records key use in Postgres (`touchDaemonKeyLastUsed` on `server.daemon.key.lastUsedAt`) only — it does **not** call `DaemonCell.putSnapshot()` or wake the cell.
+- **JWT enforcement**: protected daemon REST routes use `requireDaemonJwt` middleware (`Authorization: Bearer <token>`) on `/commands/lease`, `/secrets/decrypt`, and `/metrics`; exempt routes include `GET /readiness`, `GET /instance/ca`, `GET /jwks.json`, `GET /openapi.json`, `GET /reference`, `POST /auth/challenge`, `POST /enroll`, and `POST /auth/session`. JWT verification checks signature, expiry, and claims only — no session row lookup.
+- **Rate limits (Workers)**: `DAEMON_REST_RATE_LIMITER` gates `/auth/challenge` (by `serverId` when present; anonymous enrollment challenges use the stable `enroll-challenge` sentinel via `daemonEnrollChallengeRateLimitKey`), `/enroll` (by `licenseId`), `/auth/session` (by `serverId`), `/commands/lease`, `/secrets/decrypt`, and `/metrics` (`enforceJwtRestLimit("metrics")`, key `daemon:rest:metrics:<serverId>`). Public reads (`/readiness`, `/instance/ca`, `/jwks.json`, `/openapi.json`, `/reference`) are unlimited. `DAEMON_CONNECT_RATE_LIMITER` gates the `/ws/daemon/v1` upgrade after JWT verify and before the cell wakes. Shared keys live in `src/daemon/rate-limit/`; Deno wiring is still a noop this phase.
+- Remote WSS connections require a valid daemon JWT at upgrade time; unauthenticated server row creation from `hostname`/`machineId` alone is disallowed.
+- Co-located socket daemons use the same auth model; there is no unauthenticated bypass.
+- `DAEMON_INBOUND_ALLOWED` in `src/daemon/cell/protocol.ts` is a static set of accepted post-auth message types — not an authz system.
+- Daemon identity is stored on the `server` row as typed jsonb `server.daemon` (`key` only). Hot-path timestamps live in `server.daemon_key_last_used_at` and `server.last_seen_at`. No `serverkey` or `daemonsession` tables.
+- Re-enrollment of an already-latched license requires the daemon's persisted `serverId` and replaces `server.daemon` entirely; old daemon keys are not kept for MVP. A different host cannot reuse a consumed license — mint a new key via Add Server.
+- JWT payload: `sub` (serverId), `kid` (`server.daemon.key.id`), `jti` (random uuid, logging only), `iss`, `aud`, `typ`, `iat`, `exp`. No `sid`. Daemon JWTs are **EdDSA (Ed25519)** signed; header carries `alg: "EdDSA"`, `typ: "JWT"`, and a string `kid` (SHA-256 fingerprint of the public JWK). Verification selects the public key by `kid`.
+- Revoking daemon auth: set `server.daemon.key.revokedAt`. Existing JWTs remain valid until their 15-minute expiry. New JWT issuance fails.
+
+Do-not-retry-soon mapping for enroll/session responses (daemon intent):
+
+| Status + message (`/enroll`, `/auth/session`) | Daemon action |
+|---|---|
+| `401 Invalid license` | permanent → daemon parks (5 min–1 h backoff) |
+| `400 License already consumed or invalid` | permanent → daemon parks |
+| `400 License is inactive` | permanent → daemon parks |
+| `400 Server key is inactive` | permanent → daemon parks |
+| `403 Invalid signature` / `409 Fingerprint already exists` | permanent → daemon parks |
+| `404 Server key not found` / `400 Server key mismatch` | stale-identity → recoverable re-enroll (keeps persisted `serverId`) |
+| `429` / `5xx` / `400 Invalid or expired challenge` | transient → normal full-jitter reconnect |
+
+The daemon-side parked state (not `DAEMON_REST_RATE_LIMITER`) is the primary protection against enroll/challenge storms after a control-plane identity loss (e.g. DB wipe); `DAEMON_REST_RATE_LIMITER` remains a backstop that must behave even when limits fail open. Canonical daemon backoff/unpark behavior: **`../daemon/AGENTS.md`** (Instance client → parked state) — do not duplicate it here.
+
+```mermaid
+sequenceDiagram
+    participant Daemon
+    participant Instance as Instance API
+
+    Daemon->>Instance: POST /api/daemon/v1/auth/challenge
+    Instance-->>Daemon: { challengeId, nonce, expiresAt }
+    Daemon->>Instance: POST /api/daemon/v1/auth/session (signed payload)
+    Instance-->>Daemon: { token, expiresAt }
+    Daemon->>Instance: GET /ws/daemon/v1\nAuthorization: Bearer <token>
+    Instance-->>Daemon: 101 Switching Protocols
+    Note over Daemon,Instance: WS open - live streaming only
+    Instance->>Daemon: ping
+    Daemon-->>Instance: pong
+```
+
+#### Session model
+
+Sessions are **opaque DB-backed tokens** with a signed cookie:
+
+- A 32-byte random token is generated and stored in the `session` table (`token`, `userId`, `expiresAt`, `ipAddress`, `userAgent`).
+- The cookie value sent to the browser is `<token>.v<version>.<HMAC-SHA256-signature>`, where the signature is computed over the raw token using the session secret for that version.
+- On every request the signature is verified first (constant-time); only then is the DB queried for the session row.
+- Cookie name: `turbopanel.session_token` on HTTP, `__Secure-turbopanel.session_token` on HTTPS (resolved from the request URL in `src/client/authn/crypto.ts`).
+- Cookie attributes: `HttpOnly; SameSite=Lax; Path=/; Max-Age=604800` (7 days). `Secure` is added automatically when the request URL is HTTPS.
+
+#### Host PAM install gate (Deno only, install wizard)
+
+On the **Deno runtime**, initial setup is gated by host PAM — **`root`** or any user in the **`sudo` / `wheel` / `admin`** groups. Host auth **never** receives a session or cookie. In **production** the instance process runs as **`turbopaneli`**; in **development** it runs as the dev user. It spawns **`sudo -n /usr/bin/pamtester login <username> authenticate`** directly and writes the password on **stdin** (never via a child-env var or `/bin/sh` pipeline — see `src/client/authn/credentials.ts`). **`pamtester`** must be installed on managed hosts (the daemon `daemon-prereqs` role). Sudoers: **`turbopaneli`** gets `NOPASSWD: /usr/bin/pamtester login * authenticate` in `instance-launch` `upgrade-sudoers.yml` (production). The instance systemd unit must grant **`--allow-run=/bin/sh,sudo,/usr/bin/sudo,pamtester,/usr/bin/pamtester`**.
+
+**Dev mode bypass (`TURBOPANEL_DEV_HOST_AUTH=group-only`):** When this env var is set, `verifyInstallHostCredentials` skips `verifyPamLogin` entirely. The password field must still be non-empty (the UI requires it), but it is not verified against PAM. Group membership (`sudo`/`wheel`/`admin`) is still checked via `id -nG`. This var is injected automatically by `dev/scripts/instance-serve.sh` in Tilt dev — it is never set on managed production hosts. `pamtester` is only required on managed hosts (installed by the daemon `daemon-prereqs` role).
+
+**Install flow:** `POST /api/install/v1/bootstrap` verifies host PAM and returns `{ ok: true }` only (no cookies). The UI keeps host username/password in the form and reveals superadmin fields client-side. `POST /api/install/v1/` re-verifies host PAM, creates org (**Default Organization**) + team (**Default Team**) + workspace (**Default Workspace**) + **superadmin** user (`role: superadmin`, email + credential `account`), assigns the co-located daemon, and returns a signed session cookie for the superadmin only. Host accounts cannot sign in via `/auth/sign-in`. This path is **never active on Workers**.
+
+Superadmin-only routes (`createRootOnlyMiddleware`, `resolveRootSession`) authorize by **`user.role === 'superadmin'`**, not PAM root. `user.role` ∈ `superadmin | admin | user` is **instance authority only** and is distinct from resource access profiles. **`superadmin` and `admin`** both bypass resource authorization checks — `can()` and `listVisible()` short-circuit in SQL without requiring any `grant` rows. Future superadmin-only platform operations (developer reset-dev, etc.) remain restricted to `superadmin` via middleware, not `admin`.
+
+#### Session secret configuration
+
+Both runtimes read the same root secret env vars. **`TURBOPANEL_SECRET`** = single-key mode (normalized to `v1` when `TURBOPANEL_SECRETS` is unset). **`TURBOPANEL_SECRETS`** = plural keyring (`2:secret,1:secret`; highest version is current signing key). **First key signs / all keys verify.** Every key yields a stable `kid`; JWT headers include the active `kid`.
+
+`deriveSecretsConfig()` HKDF-derives HMAC keys for `session-signing` and `daemon-challenge-signing`. `deriveEncryptionSecretsConfig()` derives AES-256-GCM keys for `data-encryption`. The **daemon-facing JWT** uses `deriveDaemonJwtKeyring()` (`src/daemon/authn/daemon-jwt-keyring.ts`: Ed25519, HKDF salt `turbopanel`, info `daemon-jwt-eddsa`) — the legacy HMAC `daemon-jwt-signing` purpose is no longer used for daemon JWTs.
+
+**JWKS** (`GET /api/daemon/v1/jwks.json`) publishes all currently-valid **public** Ed25519 verification keys only — never `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` or any HMAC key material. Old keys stay in JWKS during rotation and are removed once old tokens expire (≤15 min).
+
+**Rotation:** add a new active key at the highest version, deploy, old tokens verify during their ≤15-min window, then drop the old key from the keyring/JWKS.
+
+| Variable | Behaviour when missing |
+|---|---|
+| `TURBOPANEL_SECRET` | Single 48-char root key (`src/generate-secret.ts`); normalized to `v1` when `TURBOPANEL_SECRETS` is unset |
+| `TURBOPANEL_SECRETS` | Versioned list `2:secret,1:secret`; highest version is current signing key |
+
+| Runtime | Source |
+|---|---|
+| Deno | `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` env vars (`instance-launch` injects them on managed hosts) |
+| Workers | Same names as Wrangler bindings / `.dev.vars` (Tilt `sync-env.sh` writes them from `dev/.env`) |
+
+**Root secret format:** 48 characters from `[A-Za-z0-9_]`, always at least one `_` between positions 2–47 (never in position 1 or 48). Implementation: `scripts/generate-secret.mjs` (re-exported from `src/generate-secret.ts`). Generate with `pnpm generate:secret` in `instance/`. HKDF uses the UTF-8 bytes of the string as key material (`deriveKey` in `src/client/authn/secrets.ts`). Same helper (`generatePassword`) is the canonical generator for random passwords.
+
+At least one of `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` must be set in production. Workers always fail fast when both are missing. Co-located dev Ansible (`instance-launch`) persists a single signing secret at `/etc/turbopanel/instance/.instance_secret` (`root:<turbopanel_group>` mode `0640` so the dev console can HMAC Local-Console developer API calls) and injects it into `runtime.dev-vars` for **both** Deno and Workers runtimes so session cookies and daemon JWTs survive runtime toggles; the Deno unit also loads `runtime.dev-vars` via `EnvironmentFile`. Without that file, Deno co-located dev (`TURBOPANEL_UI_MODE` ≠ `static`) falls back to an ephemeral random key (sessions do not survive restarts or switches).
+
+Add a `TURBOPANEL_SECRET` to `dev/.env` before running `pnpm dev` (Tilt syncs it to `instance/.dev.vars` — see `dev/.env.example`).
+
+#### Data encryption
+
+`tpsecret` is the **universal at-rest format** for all persisted secrets (secret variables, TLS private keys, principal passwords). Shared symmetric encryption is keyed off the same root secret via HKDF (`info: "data-encryption"` → AES-256-GCM). Envelope format: `tpsecret.v1.<keyVersion>.<ivB64u>.<ciphertextWithTagB64u>`. The embedded `keyVersion` enables direct lookup against `DerivedSecretsConfig.current` / `.fallbacks` during rotation — no trial decryption. There are **no per-server at-rest keys**: a single `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` root of trust yields a rollable data-encryption keyring. A credential sealed as `tpsecret` is server-agnostic at rest and can be delivered to any authorized daemon.
+
+**Delivery:** at deploy/delivery time the instance decrypts the at-rest `tpsecret` and re-seals it as a recipient-bound `tpdaemon.v1.<serverId>.<keyId>.…` envelope via the shared `resealSecretForDaemon` helper (`src/client/authn/data-encryption.ts`). Daemons decrypt only those recipient-scoped envelopes through `POST /api/daemon/v1/secrets/decrypt` (daemon JWT). Global `tpsecret` blobs are never handed to daemons.
+
+**Boundary:** client/UI code imports only `encryptSecret` / `generateSealedSecret` for at-rest sealing (can generate a secret and show plaintext once); decryption is not exposed on the client surface. The symmetric key never leaves the instance.
+
+**Rotation:** writing or updating a secret always seals under the current key version (**lazy re-seal-on-write**). After rotating the keyring (`TURBOPANEL_SECRETS`), new writes use the new version immediately; existing rows sealed under older versions remain decryptable via fallbacks until rewritten. Superadmin `POST /api/admin/v1/secrets/reencrypt` runs a batched sweep over `variable.value`, `tls.privateKeyPem`, and `principal.password`, re-sealing only non-current `tpsecret` envelopes (skips already-current blobs and any `tpdaemon` material). Each write is conditional on the original envelope still being present (id + secret-column compare-and-swap) so a concurrent update during rotation is left untouched and counted as `skipped`. Returns `{ ok, scanned, reencrypted, skipped, failed }`.
+
+**CORS (Scalar / docs site):** when `TURBOPANEL_UI_CORS_ORIGINS` is set (comma-separated browser origins), `src/cors.ts` reflects matching `Origin` headers on API responses. Co-located dev (`turbopanel_dev_user` set) injects `http://localhost:{WEBSITE_PORT}` and `http://127.0.0.1:{WEBSITE_PORT}` via `instance-launch` on the Deno instance unit (and Workers `.dev.vars` when `turbopanel_instance_runtime=workers`) so the docs site can fetch OpenAPI through Caddy cross-origin — never emitted on managed/production hosts. Cloudflare Workers production/testing set matching website origins in `wrangler.jsonc` (`live`: `https://turbopanel.io`; `testing`: `https://testing.turbopanel.io`).
+
+**Public sign-up:** `IS_SIGNUP_ENABLED` in the `setting` table is the panel-controlled toggle (default disabled when unset). `TURBOPANEL_IS_SIGNUP_ENABLED=1`/`true` or `0`/`false` is an optional **force** override that wins over the database.
+
+**Live (Worker `instance`):** do **not** commit `TURBOPANEL_IS_SIGNUP_ENABLED` under `env.live.vars` — Wrangler treats committed vars as source of truth and overwrites dashboard edits on every `wrangler deploy`. Live uses top-level `keep_vars: true` so dashboard-only plaintext vars survive deploys. To open production sign-up: Cloudflare dashboard → Worker **`instance`** → Settings → Variables and Secrets → set `TURBOPANEL_IS_SIGNUP_ENABLED` = `1` → **Deploy** (editing alone is not enough; confirm the new version is 100% of production traffic). Verify with `GET https://turbopanel.app/api/client/v1/status` → `isSignupEnabled: true`. Never commit `"1"`/`"true"` on `env.live` (config regression guard). While the env force is set, the DB/panel toggle cannot override it. Testing keeps `"1"` in `env.testing.vars` as a permanent force-enable. Local Tilt may still set `TURBOPANEL_IS_SIGNUP_ENABLED=1` in `.env.example` / `.dev.vars` as a force-enable for dev.
+
+#### Auth routes
+
+Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/client/v1/auth/sign-in` | Verify DB user credentials, create session (rejects root; use install wizard) |
+| `POST` | `/api/client/v1/auth/sign-out` | Delete session, clear cookie |
+| `POST` | `/api/client/v1/auth/sign-up` | Create a regular user account when signup is enabled (`IS_SIGNUP_ENABLED` DB setting, or `TURBOPANEL_IS_SIGNUP_ENABLED` force override); no session returned — user must sign in. Generates a 24h email verification token and enqueues a `signup-verification` email job (Deno → RabbitMQ → mailer → SMTP/Mailpit; Workers → Mailgun directly). Also logs the token and verify URL to console in dev |
+| `GET` | `/api/client/v1/auth/verify-email?token=<token>` | Consume a 24-hour email verification token; sets `user.isEmailVerified = true` |
+| `GET` | `/api/client/v1/authn/session` | Return current user session or 401 |
+| `GET` | `/api/client/v1/status` | Public: `{ needsInstall, isInstallMode, isSignupEnabled }` — Deno: install mode until org + superadmin exist; Workers: always `needsInstall: false`, `isSignupEnabled` from DB (panel toggle) unless an env force override is set |
+| `POST` | `/api/install/v1/bootstrap` | Deno: verify host PAM (root or sudo user), no cookies |
+| `POST` | `/api/install/v1/` | Deno: host PAM + superadmin setup → superadmin session only |
+| `GET` | `/api/client/v1/servers` | Session required: servers visible to the user via `listVisible`, with live `connected` / `hostname` from the daemon hub |
+| `GET` | `/api/client/v1/servers/:id/update` | Read update status (current agent commit vs trunk manifest commit); requires server read access |
+| `POST` | `/api/client/v1/servers/:id/update` | Trigger a trunk update on the connected daemon; requires `organization:manage` on the server's org |
+| `POST` | `/api/client/v1/invitations/{id}/accept` | Accept a pending invitation; atomically claims the row, materializes `invitation.grants` into `grant` rows (default: `organization:manage` grant on the org), updates session `organizationId` |
+| `GET` | `/api/client/v1/permissions` | Permission catalog — four fixed keys (`organization:own`, `organization:manage`, `team:own`, `team:manage`); any authenticated user |
+| `GET` | `/api/client/v1/access?resourceId=<uuid>` | List access grants for a resource; requires `organization:own` on the resource (via `getAccessManagementPermission`); returns `{ access: AccessRecord[] }` with `subjectKind`, `resourceId`, `effect`, and `permissionKey` |
+| `GET` | `/api/client/v1/access/check?resourceId=<uuid>&permissionKey=…` | Check a single permission for the signed-in user; `permissionKey` must be one of `organization:own`, `organization:manage`, `team:own`, `team:manage`; returns `{ allowed: boolean }` |
+| `GET` | `/api/client/v1/access/resource-id?kind=<kind>&itemId=<uuid>` | Resolve `resourceId` for an entity in the session org; returns `{ resourceId, kind, itemId }` |
+| `POST` | `/api/client/v1/access` | Create an access grant; body accepts `{ subjectKind, subjectId, resourceId, effect, permissionKey }` where `permissionKey` is required and must be from the four-value catalog |
+| `DELETE` | `/api/client/v1/access/{id}` | Revoke a `grant` row; requires `organization:own` on the grant's target resource |
+| `GET` | `/api/client/v1/workspaces` | List workspaces visible via `listVisible` (org-level `organization:own` / `organization:manage` grants); full CRUD table in `src/lib/db/AGENTS.md` |
+| `GET` | `/api/client/v1/project-catalog` | Session required: UI-safe project catalog summaries (`code`, `kind`, `displayName`, `description`); static code-bundled list — no compose internals or secret default values |
+| `POST` | `/api/client/v1/projects` | Create project in a workspace; optional `type` (`docker-compose` \| `template` \| `managed`, default `docker-compose`) and `code` (required for template/managed from catalog); unknown types rejected; managed type inserts a `managed` row, sets `project.metadata.managed_id`, scaffolds environments/variables from catalog; secret catalog variables have no static defaults — scaffold generates high-entropy values (`generatePassword`) then seals via `encryptSecret` (`sharedCredentialId` reuses one generated credential where required) |
+| `GET` | `/api/client/v1/projects` / `GET …/projects/:id` | Returns `metadata` (read-only) and `options` (`options.compose` holds base Docker Compose JSON) |
+| `PATCH` | `/api/client/v1/projects/:id` | Accepts patchable `options` and optional `workspaceId` to move a project to another same-org workspace (target validated + `assertCanCreateOr403('workspace', …)`); `metadata` is read-only (set by create flow) |
+| `GET` | `/api/client/v1/environments` / `GET …/environments/:id` | Returns `metadata` and `options` (`options.compose` holds per-environment overlay) |
+| `POST` | `/api/client/v1/environments` | Optional `options` on create |
+| `PATCH` | `/api/client/v1/environments/:id` | Optional `options` patch |
+| `GET` | `/api/client/v1/variables` | List variables (optional `?environmentId=`); org owner/manager |
+| `GET` | `/api/client/v1/variables/:id` | Get variable; sealed secret values are never returned (`value: null` when `isSecret`) |
+| `POST` | `/api/client/v1/variables` | Create variable under an environment; `isSecret=true` seals via `encryptSecret` (client surface encrypts only — delivery re-seals to `tpdaemon` via `resealSecretForDaemon`; daemon decrypts via `POST /api/daemon/v1/secrets/decrypt`) |
+| `PATCH` | `/api/client/v1/variables/:id` | Update variable; re-seals on secret value update (lazy re-seal-on-write under the current key version) |
+| `DELETE` | `/api/client/v1/variables/:id` | Delete variable |
+| `GET` | `/api/client/v1/licenses` | List licenses (`organization:own`) — API only; not shown in the end-user UI |
+| `POST` | `/api/client/v1/licenses` | Create a one-shot registration key (`organization:own`; used by Add Server); rejects reserved display name `'this server'`. Response includes `installCommand` from `buildLicenseInstallCommand` — production shape is `curl -fsSL trbp.nl/run.sh \| TURBOPANEL_LICENSE=… sh` (optional `TURBOPANEL_HOST` / `TURBOPANEL_INSECURE_TLS=1`); see `src/lib/daemon-install-command.ts`. |
+| `DELETE` | `/api/client/v1/licenses/{id}` | Invalidate a license (`organization:own`; soft `revoked_at`, disconnects bound servers) |
+| `GET` | `/api/client/v1/tls` | List org TLS certs (metadata + public PEM; private key never returned) |
+| `POST` | `/api/client/v1/tls` | Create cert (`upload` / `self_signed` / `lets_encrypt`); seals private key with `encryptSecret` (`tpsecret`) |
+| `PATCH` | `/api/client/v1/tls/:id` | Update display name / prefer / autoRenew |
+| `DELETE` | `/api/client/v1/tls/:id` | Delete cert; clears hosting pins (`ON DELETE SET NULL`) |
+
+**Principals** are not a public client API. The `principal` / `assignment` tables are a behind-the-scenes store created by hosting/database-user flows (`src/client/principals/store.ts`); passwords are sealed as `tpsecret` at rest, never returned on read, and re-sealed to `tpdaemon` only at delivery.
+
+**Install mode (Deno self-hosted):** `isInstanceInstalled()` is false on a fresh DB. The UI `/install` page first verifies host PAM (`POST /api/install/v1/bootstrap`, client-side gate only), then collects superadmin email/password. Org/team/workspace names are fixed defaults (**Default Organization**, **Default Team**, **Default Workspace**). `completeInstanceInstall` inserts exactly one `organization:own` grant on the org and one `team:own` grant on the default team for the superadmin user. After install, sign-in uses superadmin email/password only. The co-located daemon's `server.organization_id` is assigned to **Default Organization** on install (`assignColocatedDaemonToOrganization` in `install-state.ts`, resolving the server row from the live hub or by `metadata.machineId` / hostname) and again when the Unix-socket daemon sends `hello` if still unassigned.
+
+#### New files
+
+| File | Purpose |
+|---|---|
+| `src/client/authn/crypto.ts` | Web Crypto primitives: session cookie signing |
+| `src/client/authn/session-store.ts` | `createSession`, `getSession`, `deleteSession`; `SessionData` type (`role` included) |
+| `src/client/authn/credentials.ts` | `verifyCredentials`, `verifyInstallHostCredentials`; PAM host install gate + DB credential users |
+| `src/client/authn/password.ts` | Argon2id hash/verify for credential accounts |
+| `src/client/authn/email-verification.ts` | `createEmailVerificationToken` / `consumeEmailVerificationToken` — token lifecycle against the `verification` table (`identifier` = email, `value` = 64-char hex, `expiresAt` = 24h) |
+| `src/client/authn/http.ts` | `registerAuthRoutes` — sign-in / sign-out / session / verify-email HTTP handlers |
+| `src/lib/install/routes.ts` | `registerInstallRoutes` — self-hosted install wizard (`/api/install/v1/*`; Deno entry only) |
+| `src/client/authn/install-state.ts` | Install detection, validation, `completeInstanceInstall`, colocated server assignment |
+| `src/client/authn/middleware.ts` | Session + superadmin middleware helpers |
+
