@@ -356,7 +356,8 @@ it("queryHostSeries computes gapCount for missing buckets", async () => {
     resolutionSeconds: 300,
   });
   assertEquals(result.points.length, 1);
-  assertEquals(result.gapCount, 12);
+  // Half-open [00:00, 00:10): buckets 00:00 + 00:05; partial (2 missing) + full miss (5).
+  assertEquals(result.gapCount, 7);
 });
 
 it("queryHostSeries surfaces ClickHouse failures (not empty soft result)", async () => {

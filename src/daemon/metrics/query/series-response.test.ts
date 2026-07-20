@@ -13,7 +13,7 @@ it("defaultExpectedSamplesPerBucket: one sample per minute of bucket", () => {
   assertEquals(defaultExpectedSamplesPerBucket(3600), 60);
 });
 
-it("computeSeriesGapCount: counts fully missing buckets", () => {
+it("computeSeriesGapCount: counts fully missing buckets on half-open range", () => {
   const fromMs = Date.parse("2026-01-01T00:00:00.000Z");
   const toMs = Date.parse("2026-01-01T00:10:00.000Z");
   const gapCount = computeSeriesGapCount({
@@ -26,13 +26,13 @@ it("computeSeriesGapCount: counts fully missing buckets", () => {
       expectedSampleCount: 5,
     }],
   });
-  // Three buckets (00:00, 00:05, 00:10); only 00:05 has data.
-  assertEquals(gapCount, 10);
+  // Half-open [00:00, 00:10): buckets 00:00 and 00:05; only 00:05 has data.
+  assertEquals(gapCount, 5);
 });
 
 it("computeSeriesGapCount: counts partial buckets", () => {
   const fromMs = Date.parse("2026-01-01T00:00:00.000Z");
-  const toMs = Date.parse("2026-01-01T00:00:00.000Z");
+  const toMs = Date.parse("2026-01-01T00:05:00.000Z");
   const gapCount = computeSeriesGapCount({
     fromMs,
     toMs,
@@ -44,6 +44,44 @@ it("computeSeriesGapCount: counts partial buckets", () => {
     }],
   });
   assertEquals(gapCount, 3);
+});
+
+it("computeSeriesGapCount: zero-width aligned range expects no buckets", () => {
+  const at = Date.parse("2026-01-01T00:00:00.000Z");
+  const gapCount = computeSeriesGapCount({
+    fromMs: at,
+    toMs: at,
+    resolutionSeconds: 300,
+    points: [],
+  });
+  assertEquals(gapCount, 0);
+});
+
+it("computeSeriesGapCount: ignores the exclusive end bucket even if present", () => {
+  const fromMs = Date.parse("2026-01-01T00:00:00.000Z");
+  const toMs = Date.parse("2026-01-01T01:00:00.000Z");
+  const points = [];
+  for (let minute = 0; minute < 60; minute += 1) {
+    const atMs = fromMs + minute * 60_000;
+    points.push({
+      at: new Date(atMs).toISOString(),
+      sampleCount: 1,
+      expectedSampleCount: 1,
+    });
+  }
+  // In-progress end bucket at 01:00 must not inflate expected/gaps.
+  points.push({
+    at: "2026-01-01T01:00:00.000Z",
+    sampleCount: 0,
+    expectedSampleCount: 1,
+  });
+  const gapCount = computeSeriesGapCount({
+    fromMs,
+    toMs,
+    resolutionSeconds: 60,
+    points,
+  });
+  assertEquals(gapCount, 0);
 });
 
 it("finalizeHostSeriesResult: replaces store gapCount with grid count", () => {
@@ -62,5 +100,6 @@ it("finalizeHostSeriesResult: replaces store gapCount with grid count", () => {
     "2026-01-01T00:10:00.000Z",
     result,
   );
-  assertEquals(finalized.gapCount, 15);
+  // Half-open [00:00, 00:10): two empty 5-minute buckets.
+  assertEquals(finalized.gapCount, 10);
 });

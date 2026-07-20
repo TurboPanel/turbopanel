@@ -419,7 +419,8 @@ it("queryHostSeriesViaSqlApi: computes gapCount for missing buckets", async () =
     },
   );
   assertEquals(result.points.length, 1);
-  assertEquals(result.gapCount, 10);
+  // Half-open [00:00, 00:10): buckets 00:00 + 00:05; one full → one missing × 5.
+  assertEquals(result.gapCount, 5);
 });
 
 it("queryHostSeriesViaSqlApi: flat ClickHouse-style response is accepted", async () => {

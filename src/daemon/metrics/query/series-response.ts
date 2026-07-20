@@ -46,7 +46,13 @@ export function defaultExpectedSamplesPerBucket(
   return Math.max(1, Math.round(resolutionSeconds / 60));
 }
 
-/** Count fully missing buckets and partial buckets on the canonical grid. */
+/**
+ * Count fully missing buckets and partial buckets on the canonical grid.
+ *
+ * The range is half-open `[from, to)` on bucket starts after floor alignment.
+ * Inclusive end would always expect the in-progress `to` bucket on live charts
+ * (e.g. 1 h @ 60 s → 61 slots), so coverage could almost never hit 100%.
+ */
 export function computeSeriesGapCount(input: {
   fromMs: number;
   toMs: number;
@@ -59,7 +65,7 @@ export function computeSeriesGapCount(input: {
   const bucketMs = input.resolutionSeconds * 1000;
   const startMs = bucketFloor(input.fromMs, input.resolutionSeconds);
   const endMs = bucketFloor(input.toMs, input.resolutionSeconds);
-  if (endMs < startMs) return 0;
+  if (endMs <= startMs) return 0;
 
   const pointByBucket = new Map<
     number,
@@ -82,7 +88,7 @@ export function computeSeriesGapCount(input: {
     input.resolutionSeconds,
   );
   let gapCount = 0;
-  for (let bucket = startMs; bucket <= endMs; bucket += bucketMs) {
+  for (let bucket = startMs; bucket < endMs; bucket += bucketMs) {
     const existing = pointByBucket.get(bucket);
     if (!existing) {
       gapCount += defaultExpected;
