@@ -14,7 +14,7 @@ export type HyperdriveBinding = {
   connectionString: string
 }
 
-/** Hyperdrive — one connection per isolate. `prepare: true` enables protocol-level prepared statements, which Hyperdrive requires to cache parameterized `SELECT` queries on the `HYPERDRIVE_CACHED` binding. Hyperdrive manages prepared-statement lifecycle across its connection pool, so session-scoped state is not a concern here. */
+/** Hyperdrive — `max: 1` connection per client (one client is created **per request**, not per isolate — see below). `prepare: true` enables protocol-level prepared statements, which Hyperdrive requires to cache parameterized `SELECT` queries on the `HYPERDRIVE_CACHED` binding. Hyperdrive manages prepared-statement lifecycle across its connection pool, so session-scoped state is not a concern here. */
 const PG_OPTS_WORKERS = { prepare: true as const, max: 1 }
 
 /**
@@ -52,6 +52,18 @@ const PG_OPTS_DENO = {
   backoff: 0,
 }
 
+/**
+ * Build a Workers/Hyperdrive postgres.js client.
+ *
+ * ⛔ Call this (via `resolveWorkersDb`) **once per request/invocation** — never
+ * cache the returned client in module/global/isolate scope and reuse it on a
+ * later request. On Workers a DB client/socket is an I/O object bound to the
+ * request that created it; reusing it across requests throws "Cannot perform
+ * I/O on behalf of a different request" and 500s (this caused a production
+ * outage). Hyperdrive pools server-side, so per-request creation is free.
+ * See `AGENTS.md` → Workers Hyperdrive (HARD RULE) and
+ * https://developers.cloudflare.com/hyperdrive/observability/troubleshooting/
+ */
 export function createWorkersDb(
   hyperdrive: HyperdriveBinding,
   options: WorkersDbOptions = {},
@@ -59,8 +71,8 @@ export function createWorkersDb(
   const client = postgres(hyperdrive.connectionString, {
     ...PG_OPTS_WORKERS,
     connect_timeout: options.connectTimeoutSeconds ?? DEFAULT_WORKERS_CONNECT_TIMEOUT_S,
-    // Only bound idle connections when asked. The Worker request isolate reuses
-    // one client per connection string via `resolveWorkersDb` (do not end it).
+    // Only bound idle connections when asked. `resolveWorkersDb` creates a fresh
+    // client per request (Workers cannot reuse a DB socket across requests); the
     // Durable Object projection opens a short-lived client and closes per call.
     ...(options.idleTimeoutSeconds !== undefined
       ? { idle_timeout: options.idleTimeoutSeconds }

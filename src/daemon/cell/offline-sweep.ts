@@ -578,7 +578,9 @@ export async function sweepOnce(
 
 /** Cron Trigger entry point (`workers.ts` `scheduled()`). */
 export async function runOfflineSweep(env: CloudflareBindings): Promise<void> {
-  // Isolate-scoped Hyperdrive singleton — do not endDbConnection here.
+  // Fresh per-invocation Hyperdrive client (Workers cannot reuse a DB socket
+  // across requests/cron invocations). Hyperdrive pools server-side, so this
+  // carries no connection-startup cost.
   const db = resolveWorkersDb(env);
   if (!db) return;
 

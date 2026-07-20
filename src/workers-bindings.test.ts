@@ -1,6 +1,5 @@
 import { assert, assertEquals } from 'jsr:@std/assert'
 import {
-  clearWorkersDbIsolateCacheForTests,
   resolveWorkersCachedDb,
   resolveWorkersClientAuthRateLimiter,
   resolveWorkersDaemonRateLimiters,
@@ -28,7 +27,10 @@ function mockDb(label: string): Db {
  */
 const test = Deno.test.bind(Deno)
 
-test('resolveWorkersDb reuses one client per connection string in the isolate', () => {
+// Workers cannot reuse a DB client/socket across requests ("Cannot perform I/O
+// on behalf of a different request"), so each resolve must mint a fresh client.
+// Hyperdrive pools connections server-side, so this has no startup cost.
+test('resolveWorkersDb creates a fresh client per resolve (no cross-request reuse)', () => {
   let createCount = 0
   setWorkersDbFactoryForTests((binding: HyperdriveBinding) => {
     createCount += 1
@@ -43,14 +45,14 @@ test('resolveWorkersDb reuses one client per connection string in the isolate', 
     const first = resolveWorkersDb(env)
     const second = resolveWorkersDb(env)
     assert(first !== undefined)
-    assertEquals(first, second)
-    assertEquals(createCount, 1)
+    assert(first !== second)
+    assertEquals(createCount, 2)
   } finally {
     setWorkersDbFactoryForTests(null)
   }
 })
 
-test('resolveWorkersCachedDb reuses one client per cached connection string', () => {
+test('resolveWorkersCachedDb creates a fresh client per resolve', () => {
   let createCount = 0
   setWorkersDbFactoryForTests((binding: HyperdriveBinding) => {
     createCount += 1
@@ -64,14 +66,14 @@ test('resolveWorkersCachedDb reuses one client per cached connection string', ()
 
     const first = resolveWorkersCachedDb(env)
     const second = resolveWorkersCachedDb(env)
-    assertEquals(first, second)
-    assertEquals(createCount, 1)
+    assert(first !== second)
+    assertEquals(createCount, 2)
   } finally {
     setWorkersDbFactoryForTests(null)
   }
 })
 
-test('resolveWorkersQueryCache reuses the Hyperdrive wrapper across resolves', () => {
+test('resolveWorkersQueryCache wraps a fresh Hyperdrive client per resolve', () => {
   setWorkersDbFactoryForTests((binding: HyperdriveBinding) =>
     mockDb(binding.connectionString)
   )
@@ -85,14 +87,14 @@ test('resolveWorkersQueryCache reuses the Hyperdrive wrapper across resolves', (
     const first = resolveWorkersQueryCache(env, primary)
     const second = resolveWorkersQueryCache(env, primary)
     assert(first !== undefined)
-    assertEquals(first, second)
+    assert(second !== undefined)
+    assert(first !== second)
   } finally {
     setWorkersDbFactoryForTests(null)
   }
 })
 
 test('resolveWorkersCachedDb returns undefined when HYPERDRIVE_CACHED is absent', () => {
-  clearWorkersDbIsolateCacheForTests()
   const env = {
     HYPERDRIVE: mockHyperdrive('postgres://primary'),
     TURBOPANEL_DATABASE_URL: 'postgres://fallback',
@@ -120,7 +122,6 @@ test('resolveWorkersCachedDb returns a database when HYPERDRIVE_CACHED is presen
 })
 
 test('resolveWorkersQueryCache uses passthrough when HYPERDRIVE_CACHED is absent', async () => {
-  clearWorkersDbIsolateCacheForTests()
   const db = mockDb('primary')
   const env = {
     HYPERDRIVE: mockHyperdrive('postgres://primary'),

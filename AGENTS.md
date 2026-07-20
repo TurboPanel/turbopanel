@@ -160,7 +160,27 @@ Route handlers read the per-request client via `getDb(c)` (set by `createApp({ d
 
 The Workers DB client uses `prepare: true` on postgres.js. Hyperdrive has supported named prepared statements since June 2024 and manages their lifecycle across its internal connection pool — per-session state is not a concern. Setting `prepare: true` is **required** for Hyperdrive to cache parameterized `SELECT` queries on the `HYPERDRIVE_CACHED` binding; with `prepare: false`, Hyperdrive sends every query as a simple (unprepared) query and marks all parameterized reads as uncacheable.
 
-**Isolate-scoped clients:** `resolveWorkersDb` / `resolveWorkersCachedDb` (`src/workers-bindings.ts`) reuse one postgres.js client per connection string for the Worker isolate lifetime (fetch / queue / offline-sweep cron). Never `endDbConnection` those handles — stacking a new `postgres(...)` per request leaks until the 128 MB isolate limit. Durable Object projection still opens short-lived clients via `createWorkersDb` and closes them in `finally`.
+#### ⛔ HARD RULE: one Hyperdrive/postgres.js client per request — NEVER cache a DB client across requests
+
+> **This rule is non-negotiable. Violating it took production down** (redeploy that cached the client → every DB call after the first in an isolate threw `HTTP 500` on sign-in/session, causing a sign-in↔welcome redirect loop). Do **not** "optimize" DB client management by reusing a client across requests. If you think reuse saves a connection, you are wrong — Hyperdrive already pools connections server-side, so per-request creation has **zero** connection-startup cost.
+
+**On Cloudflare Workers, a database client and its underlying socket are I/O objects bound to the request (invocation) that created them.** A single V8 isolate serves many `fetch` / `queue` / cron invocations. If you store a `postgres(...)` client in module/global scope or an isolate-level cache and reuse it on a later invocation, Cloudflare throws and the request 500s:
+
+- `Cannot perform I/O on behalf of a different request. I/O objects ... created in the context of one request handler cannot be accessed from a different request's handler.`
+- postgres.js: `write CONNECTION_ENDED` / `write CONNECTION_DESTROYED` / `write CONNECTION_CLOSED`
+- Creating the client in global scope instead throws `Disallowed operation called within global scope`.
+
+Cloudflare's own fix (Hyperdrive troubleshooting → **Stale connection and I/O context errors**): *"Create a new database client on every request instead of caching it in a global variable. Hyperdrive's connection pooling already eliminates the connection startup overhead."* — <https://developers.cloudflare.com/hyperdrive/observability/troubleshooting/> (see also <https://developers.cloudflare.com/hyperdrive/concepts/how-hyperdrive-works/>).
+
+**The contract in this repo:**
+
+- `resolveWorkersDb` / `resolveWorkersCachedDb` / `resolveWorkersQueryCache` (`src/workers-bindings.ts`) **create a fresh client per call**. `workers.ts` `fetch()` / `queue()` and the offline-sweep cron each resolve their own client for that one invocation. Do **not** add a `Map`/`WeakMap`/module-level singleton that returns the same client on a later invocation.
+- Do **not** call `endDbConnection` on the per-request request-path client — just let it fall out of scope; the isolate GCs it after the request, and Hyperdrive tears down the pooled server connection. (`endDbConnection` exists only for the short-lived Durable Object projection client below.)
+- Isolate/global scope is fine for **stateless** things (derived secrets, rate-limiter adapters, the compiled Hono app) — never for anything holding a socket/stream (DB clients, in-flight request/response bodies).
+
+**Durable Objects are a different isolate with different rules — do not conflate them.** A DO is its own long-lived object; its Postgres projection (`src/daemon/cell/do.ts`) opens a **short-lived** client via `createWorkersDb` and **must** `endDbConnection` it in `finally`, because an open outbound DB socket keeps the DO awake (non-hibernatable) and bills GB-s for the entire WebSocket lifetime (the 71-minute / ~547 GB-s incident). So: request Worker isolate → fresh-per-request, no close; Durable Object → fresh-per-op, always close. Never reuse a request-path client inside a DO or vice-versa. DO/cost rules: **Daemon Cell** section above.
+
+**Regression guard:** `src/workers-bindings.test.ts` asserts `resolveWorkersDb` / `resolveWorkersCachedDb` return a **new** client on each call (never the same instance). If you find yourself weakening that test to allow reuse, stop — you are about to reintroduce the outage.
 
 Previously `prepare: false` was used because older Hyperdrive versions did not support prepared statements. That restriction no longer applies.
 
