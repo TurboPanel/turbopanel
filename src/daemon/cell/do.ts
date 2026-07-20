@@ -899,6 +899,7 @@ export class DaemonCellObject {
       machineId?: string;
       os?: ServerOsMetadata;
     },
+    geo?: ServerGeo,
   ): Promise<void> {
     await this.#withProjectionDb("inbound", serverId, async (db) => {
       if (
@@ -916,7 +917,7 @@ export class DaemonCellObject {
         db,
         serverId,
         this.#projectionCell(serverId),
-        { at, agent },
+        { at, agent, geo },
       );
     });
     const atMs = at ? Date.parse(at) : Date.now();
@@ -1331,7 +1332,14 @@ export class DaemonCellObject {
     }
 
     const connectedAtMs = Date.parse(connectedAt) || Date.now();
-    server.serializeAttachment({ connectionId, serverId, connectedAtMs });
+    // Persist cf geo on the hibernation attachment so hello can backfill
+    // metadata.geo if the attach waitUntil projection races or fails.
+    server.serializeAttachment({
+      connectionId,
+      serverId,
+      connectedAtMs,
+      ...(geo ? { geo } : {}),
+    });
 
     this.#applyDaemonSocketAttach(serverId, connectionId, {
       keyId,
@@ -1404,6 +1412,7 @@ export class DaemonCellObject {
     attachment: {
       connectionId: string;
       serverId: string;
+      geo?: ServerGeo;
     },
     parsed: {
       type: "hello" | "heartbeat";
@@ -1438,10 +1447,12 @@ export class DaemonCellObject {
         hostIdentity?.machineId ||
         hostIdentity?.os,
     );
+    const attachGeo = parseServerGeo(attachment.geo) ?? undefined;
     const shouldProjectInbound = parsed.type === "hello"
       ? shouldProject ||
         Boolean(parsed.agent?.commit && parsed.agent?.buildId) ||
-        hasHostIdentity
+        hasHostIdentity ||
+        Boolean(attachGeo)
       : shouldProject;
     if (shouldProjectInbound) {
       await this.#projectInbound(
@@ -1449,6 +1460,7 @@ export class DaemonCellObject {
         at,
         parsed.agent,
         hostIdentity,
+        attachGeo,
       );
     }
   }
@@ -1460,6 +1472,7 @@ export class DaemonCellObject {
     const attachment = ws.deserializeAttachment() as {
       connectionId: string;
       serverId: string;
+      geo?: ServerGeo;
     } | null;
     if (!attachment) return;
 

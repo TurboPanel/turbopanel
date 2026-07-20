@@ -50,14 +50,39 @@ function mockProjectionSelectRow(row: {
   };
 }
 
+/** Unwrap drizzle `sql\`… || ${json}::jsonb\`` patches used for atomic metadata merges. */
+function unwrapMetadataPatch(value: unknown): ServerMetadata | null | undefined {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "object" && value !== null && "queryChunks" in value) {
+    const chunks = (value as { queryChunks: unknown[] }).queryChunks;
+    for (const chunk of chunks) {
+      if (typeof chunk === "string") {
+        try {
+          return JSON.parse(chunk) as ServerMetadata;
+        } catch {
+          // keep scanning
+        }
+      }
+    }
+    return undefined;
+  }
+  if (typeof value === "object") return value as ServerMetadata;
+  return undefined;
+}
+
 function mockProjectionUpdateChain(
   updateCalls: Array<Record<string, unknown>>,
   applyPatch: (patch: Record<string, unknown>) => void,
 ) {
   return {
     set: (patch: Record<string, unknown>) => {
-      updateCalls.push(patch);
-      applyPatch(patch);
+      const recorded = { ...patch };
+      const unwrapped = unwrapMetadataPatch(patch.metadata);
+      if (unwrapped !== undefined) {
+        recorded.metadata = unwrapped;
+      }
+      updateCalls.push(recorded);
+      applyPatch(recorded);
       return {
         where: () => Promise.resolve(undefined),
       };
@@ -85,7 +110,11 @@ function createMockDb(
       daemon = patch.daemon as ServerDaemonState;
     }
     if (patch.metadata !== undefined) {
-      metadata = patch.metadata as ServerMetadata | null;
+      // Simulate Postgres jsonb || — preserve keys only present on the left.
+      const incoming = patch.metadata as ServerMetadata | null;
+      metadata = incoming === null
+        ? null
+        : { ...(metadata ?? {}), ...incoming };
     }
   };
 

@@ -657,7 +657,11 @@ export async function projectServerDaemon(
       geoDue ? incomingGeo : undefined,
     );
     if (mergedMetadata) {
-      patch.metadata = mergedMetadata;
+      // jsonb || keeps keys that exist only in the live column (e.g. os written
+      // by a concurrent hello) so a stale full-object replace cannot wipe them.
+      patch.metadata = sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${
+        JSON.stringify(mergedMetadata)
+      }::jsonb`;
     }
   }
 

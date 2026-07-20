@@ -144,6 +144,27 @@ function mergeDaemonStatus(
   };
 }
 
+/** Unwrap drizzle `sql\`… || ${json}::jsonb\`` metadata patches. */
+function unwrapMetadataSqlPatch(
+  value: unknown,
+): Record<string, unknown> | null | undefined {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "object" && value !== null && "queryChunks" in value) {
+    for (const chunk of (value as { queryChunks: unknown[] }).queryChunks) {
+      if (typeof chunk === "string") {
+        try {
+          return JSON.parse(chunk) as Record<string, unknown>;
+        } catch {
+          // keep scanning
+        }
+      }
+    }
+    return undefined;
+  }
+  if (typeof value === "object") return value as Record<string, unknown>;
+  return undefined;
+}
+
 function createProjectionRecordingDb(
   statusOverrides: Partial<ServerDaemonStatus> = {},
   initialMetadata?: Record<string, unknown>,
@@ -186,12 +207,19 @@ function createProjectionRecordingDb(
     }),
     update: () => ({
       set: (patch: Record<string, unknown>) => {
-        updateCalls.push(patch);
+        const recorded = { ...patch };
+        const unwrapped = unwrapMetadataSqlPatch(patch.metadata);
+        if (unwrapped !== undefined) {
+          recorded.metadata = unwrapped;
+        }
+        updateCalls.push(recorded);
         if (patch.daemon) {
           daemon = patch.daemon as ServerDaemonState;
         }
-        if (patch.metadata !== undefined) {
-          metadata = patch.metadata as Record<string, unknown>;
+        if (unwrapped !== undefined) {
+          metadata = unwrapped === null
+            ? {}
+            : { ...metadata, ...unwrapped };
         }
         return {
           where: () => Promise.resolve(undefined),

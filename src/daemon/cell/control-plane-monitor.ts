@@ -69,12 +69,16 @@ export async function onDaemonConnectedFromEvidence(
  * Project inbound hello/heartbeat traffic. When the sparse Postgres status is
  * offline or the cell runtime flag was cleared by a stale sweep, treat inbound
  * as an online transition instead of a heartbeat-only touch.
+ *
+ * `opts.geo` comes from the Workers attach header (stamped on the hibernation
+ * WebSocket attachment). Pass it so hello can backfill `metadata.geo` when the
+ * attach `waitUntil` connect projection raced or failed.
  */
 export async function onDaemonInbound(
   db: Db,
   serverId: string,
   cell: DaemonCell,
-  opts: { at?: string; agent?: ProjectionAgent } = {},
+  opts: { at?: string; agent?: ProjectionAgent; geo?: ServerGeo } = {},
 ): Promise<void> {
   if (opts.agent?.commit && opts.agent?.buildId) {
     await maybeRepairUpdateFromAgentHello(db, serverId, opts.agent);
@@ -89,6 +93,18 @@ export async function onDaemonInbound(
   }
 
   const snapshot = await cell.getSnapshot();
+
+  // Backfill / refresh geo before the steady-state short-circuit — attach geo is
+  // only available on this socket and must not wait for a later reconnect.
+  if (opts.geo) {
+    await projectServerDaemon(db, serverId, {
+      kind: "identity",
+      identity: {
+        ...identityFromSnapshot(snapshot),
+        geo: opts.geo,
+      },
+    }, { cell });
+  }
 
   // Skip heartbeat-only Postgres reads when steady-state; repair above still runs.
   if (steadyStateInboundSkipsDbRead(snapshot, opts)) {
@@ -107,6 +123,7 @@ export async function onDaemonInbound(
       cell,
       snapshot.connectedAt ?? at,
       opts.agent,
+      opts.geo,
     );
     return;
   }

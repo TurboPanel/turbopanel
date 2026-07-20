@@ -86,13 +86,34 @@ export async function touchServerMetadata(
     .from(server)
     .where(eq(server.id, serverId))
     .limit(1)
-  const merged = mergeServerMetadataIdentity(
-    rows[0]?.metadata as ServerMetadata | null | undefined,
-    identity,
-  )
-  if (!merged) return
+  const base = rows[0]?.metadata as ServerMetadata | null | undefined
+  if (!mergeServerMetadataIdentity(base, identity)) return
+
+  // Patch only changed identity keys via jsonb || so a concurrent connect
+  // projection that wrote metadata.geo cannot be wiped by this hello update.
+  const patch = metadataPatch(identity)
+  const delta: Partial<ServerMetadata> = {}
+  if (
+    patch.machineId !== undefined &&
+    patch.machineId !== base?.machineId
+  ) {
+    delta.machineId = patch.machineId
+  }
+  if (patch.hostname !== undefined && patch.hostname !== base?.hostname) {
+    delta.hostname = patch.hostname
+  }
+  if (
+    patch.os !== undefined &&
+    !serverOsMetadataEquals(patch.os, base?.os)
+  ) {
+    delta.os = patch.os
+  }
+  if (Object.keys(delta).length === 0) return
+
   await db.update(server).set({
-    metadata: merged,
+    metadata: sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${
+      JSON.stringify(delta)
+    }::jsonb`,
     updatedAt: nowTs(),
   }).where(eq(server.id, serverId))
 }

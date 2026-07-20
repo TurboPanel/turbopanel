@@ -62,20 +62,48 @@ type TrackingDbRow = {
   metadata: Record<string, unknown>;
 };
 
+/** Unwrap drizzle `sql\`… || ${json}::jsonb\`` metadata patches. */
+function unwrapMetadataSqlPatch(
+  value: unknown,
+): Record<string, unknown> | null | undefined {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "object" && value !== null && "queryChunks" in value) {
+    for (const chunk of (value as { queryChunks: unknown[] }).queryChunks) {
+      if (typeof chunk === "string") {
+        try {
+          return JSON.parse(chunk) as Record<string, unknown>;
+        } catch {
+          // keep scanning
+        }
+      }
+    }
+    return undefined;
+  }
+  if (typeof value === "object") return value as Record<string, unknown>;
+  return undefined;
+}
+
 function createTrackingDbUpdateHandler(
   updateCalls: Array<Record<string, unknown>>,
   row: TrackingDbRow,
   setDaemon: (daemon: ServerDaemonState) => void,
 ) {
   return (patch: Record<string, unknown>) => {
-    updateCalls.push(patch);
+    const recorded = { ...patch };
+    const unwrapped = unwrapMetadataSqlPatch(patch.metadata);
+    if (unwrapped !== undefined) {
+      recorded.metadata = unwrapped;
+    }
+    updateCalls.push(recorded);
     if (patch.daemon) {
       const nextDaemon = patch.daemon as ServerDaemonState;
       setDaemon(nextDaemon);
       row.daemon = nextDaemon;
     }
-    if (patch.metadata !== undefined) {
-      row.metadata = patch.metadata as Record<string, unknown>;
+    if (unwrapped !== undefined) {
+      row.metadata = unwrapped === null
+        ? {}
+        : { ...row.metadata, ...unwrapped };
     }
     return {
       where: () => Promise.resolve(undefined),
@@ -104,6 +132,7 @@ function createTrackingDb(
   updateCalls: Array<Record<string, unknown>>;
   getSelectCallCount: () => number;
   getDaemon: () => ServerDaemonState;
+  getMetadata: () => Record<string, unknown>;
 } {
   const updateCalls: Array<Record<string, unknown>> = [];
   let selectCalls = 0;
@@ -130,7 +159,13 @@ function createTrackingDb(
     }),
   } as unknown as Db;
 
-  return { db, updateCalls, getSelectCallCount: () => selectCalls, getDaemon: () => daemon };
+  return {
+    db,
+    updateCalls,
+    getSelectCallCount: () => selectCalls,
+    getDaemon: () => daemon,
+    getMetadata: () => row.metadata,
+  };
 }
 
 function statusFromPatch(
@@ -240,6 +275,48 @@ test("onDaemonConnected persists optional geo into metadata", async () => {
     machineId: "mid-1",
     geo: testGeo,
   });
+});
+
+test("onDaemonInbound backfills metadata.geo when already online", async () => {
+  const recentAt = new Date().toISOString();
+  const { db, updateCalls, getMetadata } = createTrackingDb(
+    {
+      key: baseKey,
+      projection: {
+        hostname: "host-1",
+        machineId: "mid-1",
+        remoteAddress: "203.0.113.10",
+      },
+    },
+    {
+      connected: true,
+      daemonStatus: "online",
+      lastSeenAt: recentAt,
+      connectedAt: recentAt,
+    },
+  );
+
+  await onDaemonInbound(
+    db,
+    serverId,
+    createMockCell({
+      connected: true,
+      connectedAt: recentAt,
+      lastSeenAt: recentAt,
+      remoteAddress: "203.0.113.10",
+      hostname: "host-1",
+      machineId: "mid-1",
+    }) as never,
+    { at: recentAt, geo: testGeo },
+  );
+
+  assertEquals(
+    updateCalls.some((patch) =>
+      (patch.metadata as { geo?: ServerGeo } | undefined)?.geo?.country === "US"
+    ),
+    true,
+  );
+  assertEquals(getMetadata()?.geo, testGeo);
 });
 
 test("onDaemonConnected sets status in daemon jsonb", async () => {
