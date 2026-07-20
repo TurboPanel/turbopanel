@@ -10,7 +10,7 @@ export function encodeLicenseArg(
     .replaceAll('=', '')
 }
 
-/** CDN bootstrap URL shown in production install commands (curl follows http→https). */
+/** CDN bootstrap URL shown in production install commands (HTTP→HTTPS via CF 301). */
 export const CDN_RUN_SCRIPT_DISPLAY = 'trbp.nl/run.sh'
 
 function buildInstallPipeline(opts: {
