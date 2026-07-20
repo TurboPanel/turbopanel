@@ -224,6 +224,58 @@ it('Workers password sign-up succeeds on a fresh database without install', asyn
   }
 })
 
+it('Workers duplicate sign-up is indistinguishable from a new sign-up', async () => {
+  if (!dbUrl) {
+    console.warn(
+      'Skipping Workers duplicate sign-up test: TURBOPANEL_DATABASE_URL not set',
+    )
+    return
+  }
+
+  const db = createDenoDb()
+  const email = `workers-dup-signup-${crypto.randomUUID()}@example.com`
+  const app = await createAuthRouteApp(db, 'workers', '1')
+  const body = JSON.stringify({ email, password: 'password1!' })
+
+  try {
+    const first = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+    })
+    const firstJson = await first.json()
+    if (first.status !== 201) {
+      throw new Error(
+        `expected first sign-up 201, got ${first.status}: ${JSON.stringify(firstJson)}`,
+      )
+    }
+
+    const second = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+    })
+    const secondJson = await second.json()
+
+    // Anti-enumeration: caller must not be able to tell the account already exists.
+    if (second.status !== first.status) {
+      throw new Error(
+        `duplicate sign-up status ${second.status} differs from first ${first.status}`,
+      )
+    }
+    if (JSON.stringify(secondJson) !== JSON.stringify(firstJson)) {
+      throw new Error(
+        `duplicate sign-up body ${JSON.stringify(secondJson)} differs from first ${JSON.stringify(firstJson)}`,
+      )
+    }
+    if (secondJson.ok !== true) {
+      throw new Error(`expected { ok: true }, got ${JSON.stringify(secondJson)}`)
+    }
+  } finally {
+    await cleanupUser(db, email)
+  }
+})
+
 it('Workers sign-up creates an organization for the new user', async () => {
   if (!dbUrl) {
     console.warn('Skipping Workers org sign-up test: TURBOPANEL_DATABASE_URL not set')

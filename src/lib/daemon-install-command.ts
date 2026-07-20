@@ -1,3 +1,9 @@
+/** POSIX single-quote escaping for shell arguments and env values. */
+export function shellQuote(value: string): string {
+  const escaped = value.replaceAll("'", String.raw`'\''`)
+  return `'${escaped}'`
+}
+
 export function encodeLicenseArg(
   licenseId: string,
   licenseToken: string,
@@ -21,10 +27,10 @@ function buildInstallPipeline(opts: {
   curlInsecure?: boolean
 }): string {
   const curl = opts.curlInsecure ? 'curl -fsSLk' : 'curl -fsSL'
-  const envParts = [`TURBOPANEL_LICENSE=${opts.licenseArg}`]
-  if (opts.host) envParts.push(`TURBOPANEL_HOST=${opts.host}`)
+  const envParts = [`TURBOPANEL_LICENSE=${shellQuote(opts.licenseArg)}`]
+  if (opts.host) envParts.push(`TURBOPANEL_HOST=${shellQuote(opts.host)}`)
   if (opts.insecureTls) envParts.push('TURBOPANEL_INSECURE_TLS=1')
-  return `${curl} ${opts.curlUrl} | ${envParts.join(' ')} sh`
+  return `${curl} ${shellQuote(opts.curlUrl)} | ${envParts.join(' ')} sh`
 }
 
 export function buildLicenseInstallCommand(opts: {
@@ -32,7 +38,10 @@ export function buildLicenseInstallCommand(opts: {
   instanceUrl: string
   licenseId: string
   licenseToken: string
-  /** Dev/self-signed installs: curl -k and pass TURBOPANEL_INSECURE_TLS to run.sh. */
+  /**
+   * Dev/self-signed installs only: curl -k and pass TURBOPANEL_INSECURE_TLS to
+   * run.sh. Callers must not set this for production HTTPS origins.
+   */
   insecureTls?: boolean
 }): string {
   const {

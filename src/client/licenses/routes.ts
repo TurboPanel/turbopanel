@@ -192,7 +192,10 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
     })
 
     const instanceUrl = parsedInstallBaseUrl ?? await resolvePublicBaseUrl(c, opts)
-    const insecureTls = devSurface || parsedInstallBaseUrl != null
+    // Only enable curl -k / TURBOPANEL_INSECURE_TLS for the explicit developer
+    // surface (self-signed platform CA). A production HTTPS installBaseUrl
+    // override must not force insecure TLS.
+    const insecureTls = Boolean(devSurface)
     const installCommand = buildLicenseInstallCommand({
       runtime: opts.runtime,
       instanceUrl,

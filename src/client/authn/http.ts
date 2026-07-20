@@ -691,16 +691,9 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       return signupLimited
     }
 
-    const existingUser = await db
-      .select({ id: user.id })
-      .from(user)
-      .where(eq(user.email, trimmedEmail))
-      .limit(1)
-
-    if (existingUser.length > 0) {
-      return c.json({ ok: false, error: 'Email is already registered' }, 409)
-    }
-
+    // Check email delivery before the existing-user branch so both new and
+    // duplicate submissions see the same 503 when verification is required
+    // but undeliverable (avoids account-existence oracle via status codes).
     if (emailVerificationEnabled && isNoopEmailQueue(signupQueue)) {
       return c.json(
         {
@@ -709,6 +702,19 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
         },
         503,
       )
+    }
+
+    const existingUser = await db
+      .select({ id: user.id })
+      .from(user)
+      .where(eq(user.email, trimmedEmail))
+      .limit(1)
+
+    // Anti-enumeration: duplicate sign-ups return the same outward shape and
+    // status as a successful new registration. Do not reveal whether the
+    // email is already registered.
+    if (existingUser.length > 0) {
+      return c.json({ ok: true }, 201)
     }
 
     const hashedPassword = await hashPassword(parsed.password)
@@ -720,7 +726,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
     )
     if (!created.ok) {
       if (created.conflict) {
-        return c.json({ ok: false, error: 'Email is already registered' }, 409)
+        return c.json({ ok: true }, 201)
       }
       return c.json({ ok: false, error: 'Sign-up failed' }, 500)
     }

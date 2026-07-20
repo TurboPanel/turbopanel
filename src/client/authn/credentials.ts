@@ -1,6 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import { account, user } from '../../lib/db/schema.ts'
+import { isExplicitDevelopmentMode } from '../../dev-mode.ts'
 import { isInstanceInstalled } from './install-state.ts'
 import { verifyPassword } from './password.ts'
 import { compatLogWarn } from '../../log-compat.ts'
@@ -70,9 +71,23 @@ async function userHasInstallSudo(username: string): Promise<boolean> {
   }
 }
 
-/** Dev-only: bypass PAM password verification, keep group-membership check. */
-function isDevHostAuthMode(): boolean {
-  return Deno.env.get('TURBOPANEL_DEV_HOST_AUTH') === 'group-only'
+/**
+ * Dev-only: bypass PAM password verification, keep group-membership check.
+ *
+ * Requires both `TURBOPANEL_DEV_HOST_AUTH=group-only` **and**
+ * {@link isExplicitDevelopmentMode}. Production never honors the env var —
+ * if it is set outside explicit development mode it is ignored with a warning.
+ */
+export function isDevHostAuthMode(): boolean {
+  if (Deno.env.get('TURBOPANEL_DEV_HOST_AUTH') !== 'group-only') return false
+  if (!isExplicitDevelopmentMode()) {
+    compatLogWarn(
+      'auth',
+      'TURBOPANEL_DEV_HOST_AUTH=group-only is ignored outside explicit development mode',
+    )
+    return false
+  }
+  return true
 }
 
 /** PAM root or a sudo-capable host user — install wizard only, never issues a session. */

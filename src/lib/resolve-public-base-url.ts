@@ -3,17 +3,22 @@ import { getPublicUrls, publicUrlEntryToInstallOrigin } from '../admin/public-ur
 import { getDb } from '../db.ts'
 import { collectServerAddresses } from '../server-addresses-deno.ts'
 
-function trimTrailingSlash(url: string): string {
-  return url.replace(/\/$/, '')
-}
-
-function isUsableOrigin(origin: string): boolean {
-  return origin.length > 0 && origin !== 'null' && !origin.includes('://null')
-}
-
 function readCaddyPort(): string {
   if (typeof Deno === 'undefined') return '8443'
   return Deno.env.get('CADDY_PORT')?.trim() || '8443'
+}
+
+/**
+ * Validate an origin/host candidate with the same rules as install-base URL
+ * parsing. Returns a trimmed origin, or null when the value is unusable.
+ */
+function validatedInstallOrigin(
+  candidate: string | undefined,
+  opts: { allowHttp?: boolean } = {},
+): string | null {
+  const trimmed = candidate?.trim()
+  if (!trimmed) return null
+  return publicUrlEntryToInstallOrigin(trimmed, readCaddyPort(), opts)
 }
 
 /**
@@ -27,9 +32,7 @@ export function parseInstallBaseUrl(
   value: string | undefined,
   opts: { allowHttp?: boolean } = {},
 ): string | null {
-  const trimmed = value?.trim()
-  if (!trimmed) return null
-  return publicUrlEntryToInstallOrigin(trimmed, readCaddyPort(), opts)
+  return validatedInstallOrigin(value, opts)
 }
 
 /** First non-empty entry → install origin, or null when missing/unusable. */
@@ -59,6 +62,9 @@ async function resolveStoredPublicUrlOrigin(c: Context): Promise<string | null> 
  * and verification links. Behind the Unix socket, `new URL(c.req.url).origin` is null —
  * prefer operator-managed public URLs, then TURBOPANEL_BASE_URL, forwarded headers, or
  * a discovered host address.
+ *
+ * Every untrusted fallback (env, forwarded headers, request origin) is validated with
+ * the same origin rules as {@link parseInstallBaseUrl} before it is returned.
  */
 export async function resolvePublicBaseUrl(
   c: Context,
@@ -67,30 +73,31 @@ export async function resolvePublicBaseUrl(
   const fromStored = await resolveStoredPublicUrlOrigin(c)
   if (fromStored) return fromStored
 
-  const fromOpts = opts?.baseUrl?.trim()
-  if (fromOpts) return trimTrailingSlash(fromOpts)
+  const fromOpts = validatedInstallOrigin(opts?.baseUrl)
+  if (fromOpts) return fromOpts
 
   const platformEnv = c.get('platformEnv') as Record<string, string | undefined> | undefined
-  const fromWorkersEnv = platformEnv?.TURBOPANEL_BASE_URL?.trim()
-  if (fromWorkersEnv) return trimTrailingSlash(fromWorkersEnv)
+  const fromWorkersEnv = validatedInstallOrigin(platformEnv?.TURBOPANEL_BASE_URL)
+  if (fromWorkersEnv) return fromWorkersEnv
 
   if (typeof Deno !== 'undefined') {
-    const fromEnv = Deno.env.get('TURBOPANEL_BASE_URL')?.trim()
-    if (fromEnv) return trimTrailingSlash(fromEnv)
+    const fromEnv = validatedInstallOrigin(Deno.env.get('TURBOPANEL_BASE_URL'))
+    if (fromEnv) return fromEnv
   }
 
   const forwardedHost = c.req.header('x-forwarded-host')?.split(',')[0]?.trim()
   const forwardedProto = c.req.header('x-forwarded-proto')?.split(',')[0]?.trim()
   if (forwardedHost && forwardedHost !== 'null') {
-    const proto =
-      forwardedProto === 'https' || forwardedProto === 'http' ? forwardedProto : 'https'
-    const origin = trimTrailingSlash(`${proto}://${forwardedHost}`)
-    if (isUsableOrigin(origin)) return origin
+    // Only accept https origins from forwarded headers — plaintext or malformed
+    // hosts (paths, query strings, shell metacharacters) are ignored.
+    const proto = forwardedProto === 'http' ? 'http' : 'https'
+    const fromForwarded = validatedInstallOrigin(`${proto}://${forwardedHost}`)
+    if (fromForwarded) return fromForwarded
   }
 
   try {
-    const origin = new URL(c.req.url).origin
-    if (isUsableOrigin(origin)) return trimTrailingSlash(origin)
+    const fromRequest = validatedInstallOrigin(new URL(c.req.url).origin)
+    if (fromRequest) return fromRequest
   } catch {
     // Unix socket or relative request URL — fall through.
   }
