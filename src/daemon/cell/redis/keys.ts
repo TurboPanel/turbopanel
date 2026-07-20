@@ -16,10 +16,6 @@ export function outboxKey(serverId: string): string {
   return `tp:cell:${serverId}:outbox`;
 }
 
-export function eventsKey(serverId: string): string {
-  return `tp:cell:${serverId}:events`;
-}
-
 export function requestsKey(serverId: string): string {
   return `tp:cell:${serverId}:requests`;
 }

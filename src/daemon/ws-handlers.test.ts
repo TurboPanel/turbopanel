@@ -317,3 +317,22 @@ it("do-registry and workers-ws use stable getByName DO ids", async () => {
     assertEquals(/\bidFromName\s*\(/.test(stripped), false);
   }
 });
+
+it("do.ts uses singular schema and in-memory daemon-socket lease", async () => {
+  const doPath = new URL("./cell/do.ts", import.meta.url);
+  const source = await Deno.readTextFile(doPath);
+  const stripped = stripCommentsAndStrings(source);
+
+  // Persisted daemon-socket lease removed — holder is derived from getWebSockets().
+  assertEquals(/\bdaemon-socket\b/.test(stripped), false);
+  assertEquals(/\bDAEMON_SOCKET_LEASE_NAME\b/.test(stripped), false);
+  assertEquals(/\bgetWebSockets\s*\(/.test(stripped), true);
+
+  // Singular DDL lives in template strings — scan raw source.
+  assertEquals(/CREATE TABLE IF NOT EXISTS request\b/.test(source), true);
+  assertEquals(/CREATE TABLE IF NOT EXISTS lease\b/.test(source), true);
+  assertEquals(/CREATE TABLE IF NOT EXISTS cell\b/.test(source), true);
+  assertEquals(/CREATE TABLE IF NOT EXISTS outbox\b/.test(source), false);
+  assertEquals(/CREATE TABLE IF NOT EXISTS requests\b/.test(source), false);
+  assertEquals(/CREATE TABLE IF NOT EXISTS leases\b/.test(source), false);
+});

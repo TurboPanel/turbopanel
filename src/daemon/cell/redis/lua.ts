@@ -20,6 +20,9 @@ end
  * Demote stale daemon socket presence when the Redis lease has expired or
  * inbound activity is older than the sweep threshold.
  *
+ * Meta HGETs (connected, connectionId, lastInboundAt, lastSeenAt, connectedAt)
+ * are why those fields must survive on the Redis meta HASH (DO asymmetry).
+ *
  * KEYS[1] lease key, KEYS[2] meta hash, KEYS[3] online set
  * ARGV[1] serverId, ARGV[2] closedAt, ARGV[3] reason, ARGV[4] staleBeforeIso
  */

@@ -342,6 +342,7 @@ test(
       connectionId: "wrong-connection-id",
     });
     const leaseHolder = await client.get(leaseKey(serverId));
+    // Redis keeps a persisted socket leaseKey; the DO derives the holder from getWebSockets() instead.
     assertEquals(leaseHolder, attached.connectionId);
   }),
 );
@@ -414,6 +415,7 @@ test(
       count: 10,
     });
     assertEquals(pending.length, 0);
+    // Redis outbox Stream drops on ack; the DO merged request row is retained until prune.
     assertEquals(await client.xlen(outboxKey(serverId)), 0);
   }),
 );
@@ -1303,6 +1305,7 @@ test(
     });
 
     const meta = await client.hgetall(metaKey(serverId));
+    // Redis keeps sweep-critical meta (connected/lastSeenAt/agent); the DO dropped those cell columns.
     assertEquals(meta?.connected, "1");
 
     const online = await registry.listOnlineServerIds();
@@ -1637,7 +1640,7 @@ test(
 );
 
 test(
-  "handleInbound deletes non-update request row on terminal status",
+  "handleInbound retains non-update request row until prune",
   withRedisCell(async ({ cell, client, serverId }) => {
     const requestId = generateRequestId();
     const at = new Date().toISOString();
@@ -1669,6 +1672,22 @@ test(
 
     const record = await cell.getRequest(requestId);
     assertEquals(record?.status, "done");
+    const hash = await client.hgetall(requestKey(serverId, requestId));
+    assert(hash !== null);
+    if (hash === null) {
+      throw new TypeError("expected retained request HASH after terminal status");
+    }
+    assertEquals(hash.status, "done");
+    assert(typeof hash.expiresAt === "string" && hash.expiresAt.length > 0);
+    const listed = await cell.listRequests();
+    assertEquals(listed.length, 1);
+    assertEquals(listed[0]?.requestId, requestId);
+
+    await client.hset(requestKey(serverId, requestId), {
+      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+    await cell.prune();
+    assertEquals(await cell.getRequest(requestId), null);
     assertEquals(
       await client.hgetall(requestKey(serverId, requestId)),
       null,

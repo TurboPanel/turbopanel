@@ -25,7 +25,11 @@ export type CellDiagnostics = {
   storageByCallSite: Record<string, { reads: number; writes: number }>;
 };
 
-/** Single-writer lease keyed by connectionId; holder is the connection identity. */
+/**
+ * Single-writer lease keyed by connectionId; holder is the connection identity.
+ * On Workers (DO) the daemon-socket lease is in-memory only (`getWebSockets()` +
+ * hibernation attachments); the delivery lease remains SQLite-backed (`lease`).
+ */
 export type DaemonCellLease = {
   holder: string;
   expiresAt: string;
@@ -129,17 +133,17 @@ export type ClearUpdateStatusOptions = {
  *     Workers → DaemonCellObject (SQLite-backed Durable Object, do.ts)
  *     Deno    → RedisDaemonCell (Redis-backed, redis/cell.ts)
  *
- * Requests vs outbox (both instance→daemon):
- *   outbox   = durable delivery queue keyed by deliveryId — retryable frames
- *              (retry_count/retry_at on DO; stream + PEL/xautoclaim on Redis);
- *              deleted on ack; ephemeral once delivered.
- *   requests = correlation/response-tracking rows keyed by requestId
- *              (PendingRequestRecord) — pending-command lifecycle
- *              queued→sent→acked→done/failed/expired; terminal update rows
- *              retained TERMINAL_UPDATE_RETENTION_MS then pruned; daemon replies
- *              (handleInbound) mutate the request row = completed responses.
+ * Requests vs delivery (both instance→daemon; DO schema v2 merges them):
+ *   On Workers, one SQLite `request` row per requestId carries both concerns:
+ *     correlation — status queued→sent→acked→done/failed/expired
+ *                   (PendingRequestRecord; daemon replies mutate this row)
+ *     delivery    — delivery_status queued/inflight/sent/acked/dead, keyed by
+ *                   deliveryId (retry_count/retry_at); retain-on-ack, then pruned
+ *                   with the correlation row (expires_at / TERMINAL_UPDATE_RETENTION_MS)
+ *   Redis still uses a stream + PEL/xautoclaim for delivery and a separate
+ *   correlation key until the parity phase mirrors the merged model.
  *   The WS send (#pumpOutboxToDaemonSockets / startDaemonOutboxPump) is ephemeral
- *   in-memory delivery; durability lives in the outbox row until acked.
+ *   in-memory delivery; durability lives in the request row until pruned.
  *
  * The DaemonCell is NOT a status read API. Status reads go through the
  * server status read model (server-status.ts / fleet-presence.ts) backed by Postgres.

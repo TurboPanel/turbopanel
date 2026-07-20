@@ -16,6 +16,7 @@ import type { ServerOsMetadata } from "../../lib/db/server-metadata.ts";
 import { TERMINAL_UPDATE_RETENTION_MS } from "../../lib/update/constants.ts";
 import { touchServerMetadata } from "../../server-registry.ts";
 import { verifyDaemonJwt } from "../authn/daemon-jwt.ts";
+import { getServerDaemonStateByServerId } from "../authn/server-identity-db.ts";
 import { inboundHeartbeatProjectionDue } from "./postgres-projection.ts";
 import {
   onDaemonConnected,
@@ -96,7 +97,6 @@ const TERMINAL_STATUSES = new Set<PendingRequestStatus>([
 const DAEMON_SOCKET_LEASE_MS = 180_000;
 const OUTBOX_INFLIGHT_LEASE_MS = 30_000;
 const DELIVERY_LEASE_NAME = "delivery";
-const DAEMON_SOCKET_LEASE_NAME = "daemon-socket";
 const OUTBOX_PUMP_ALARM_MS = 2_000;
 const OUTBOX_MAX_RETRIES = 10;
 const OUTBOX_RETRY_MAX_MS = 300_000;
@@ -104,7 +104,7 @@ const CELL_GEO_HEADER = "X-Turbopanel-Cell-Geo";
 /** Schema stamp in `_cell_schema.version` — bump when `#ensureSchema` DDL changes.
  * DO SQLite rejects `PRAGMA user_version` (`SQLITE_AUTH`); `#readSchemaVersion`
  * tries that pragma first and falls back to this table on failure. */
-export const CELL_SCHEMA_VERSION = 1;
+export const CELL_SCHEMA_VERSION = 2;
 
 type ProjectionDbFactory = () => Db | null;
 
@@ -159,15 +159,6 @@ function isTerminalStatus(status: PendingRequestStatus): boolean {
   return TERMINAL_STATUSES.has(status);
 }
 
-function parseAgentJson(raw: string | null): DaemonAgentInfo | undefined {
-  if (!raw) return undefined;
-  try {
-    return JSON.parse(raw) as DaemonAgentInfo;
-  } catch {
-    return undefined;
-  }
-}
-
 function agentIdentityEqual(
   a: DaemonAgentInfo | undefined,
   b: DaemonAgentInfo | undefined,
@@ -191,13 +182,9 @@ function snapshotFromMetaRow(
     updatedAt: String(row.updated_at ?? nowIso()),
     remoteAddress: row.remote_address ? String(row.remote_address) : undefined,
     connected,
-    connectedAt: row.connected_at ? String(row.connected_at) : undefined,
-    lastInboundAt: row.last_seen_at ? String(row.last_seen_at) : undefined,
-    lastSeenAt: row.last_seen_at ? String(row.last_seen_at) : undefined,
     keyLastUsedAt: row.key_last_used_at
       ? String(row.key_last_used_at)
       : undefined,
-    agent: parseAgentJson(row.agent_json ? String(row.agent_json) : null),
   };
 }
 
@@ -280,6 +267,8 @@ export class DaemonCellObject {
   #runtimeConnected = false;
   #lastProjectedAtMs: number | null = null;
   #lastKnownAgent: DaemonAgentInfo | undefined;
+  #lastRemoteAddress: string | undefined;
+  #lastConnectedAt: string | undefined;
   #scheduledAlarmMs: number | null = null;
   #scheduledAlarmMsLoaded = false;
   /** Per-connection inbound message counters (in-memory; no timers). */
@@ -334,29 +323,101 @@ export class DaemonCellObject {
    * `webSocketMessage`, close/error cleanup, `alarm`) invoke `#ensureSchema()`
    * lazily before those paths.
    *
-   * Prefer the restored hibernation WebSocket attachment for `#serverId` so a
-   * `checkLiveness` wake with a live socket pays no business-row SQLite reads
-   * for the id. Socket-less wakes (sweep probe against a cell with no restored
-   * attachment) deliberately skip the `cell` table — `#resolveServerId` takes
-   * the request header/body, and only snapshot/alarm paths that lack a header
-   * fall back to a `server_id`-only SELECT. Trade-off: on a wake with a live
-   * socket, `#lastKnownAgent` starts `undefined`; `#getSnapshot` still returns
-   * the persisted agent (it reads `agent_json` via `SELECT *`), and
-   * `#shouldProjectInbound` will at most treat the first agent-carrying
-   * message after a wake as changed → one extra, correct projection. Rare
-   * (heartbeats are agent-gated) and never a SQLite write.
+   * Prefer the restored hibernation WebSocket attachment for `#serverId` and
+   * projection identity (`remoteAddress` / `connectedAt`) so a `checkLiveness`
+   * wake or self-heal `onDaemonConnected` with a live socket pays no
+   * business-row SQLite reads. Socket-less wakes (sweep probe against a cell
+   * with no restored attachment) resolve the id from the request header via
+   * `#resolveServerIdInMemory` (liveness) or `#resolveServerId` (snapshot/
+   * alarm — SQLite fallback only when the header is absent). Trade-off: on a
+   * wake with a live socket, `#lastKnownAgent` starts `undefined`; admin
+   * `#getSnapshot` reads agent from Postgres, and `#shouldProjectInbound` will
+   * at most treat the first agent-carrying message after a wake as changed →
+   * one extra, correct projection. Rare (heartbeats are agent-gated) and never
+   * a SQLite write.
    */
   #initializeFromStorage(): void {
     for (const ws of this.#ctx.getWebSockets()) {
       const attachment = ws.deserializeAttachment() as {
         serverId?: string;
+        remoteAddress?: string;
+        connectedAt?: string;
+        connectedAtMs?: number;
       } | null;
       const id = attachment?.serverId?.trim();
       if (!id) continue;
       this.#serverId = id;
       this.#runtimeConnected = true;
+      this.#restoreProjectionIdentityFromAttachment(attachment);
       return;
     }
+  }
+
+  /**
+   * Parse hibernation-safe projection identity from a WebSocket attachment.
+   * Prefer an explicit `connectedAt` ISO string; otherwise derive from
+   * `connectedAtMs`. Never touches SQLite.
+   */
+  #projectionIdentityFromAttachment(
+    attachment: {
+      remoteAddress?: string;
+      connectedAt?: string;
+      connectedAtMs?: number;
+    } | null,
+  ): { remoteAddress?: string; connectedAt?: string } {
+    if (!attachment) return {};
+    const remoteAddress =
+      typeof attachment.remoteAddress === "string" && attachment.remoteAddress
+        ? attachment.remoteAddress
+        : undefined;
+    if (typeof attachment.connectedAt === "string" && attachment.connectedAt) {
+      return { remoteAddress, connectedAt: attachment.connectedAt };
+    }
+    if (typeof attachment.connectedAtMs === "number") {
+      return {
+        remoteAddress,
+        connectedAt: new Date(attachment.connectedAtMs).toISOString(),
+      };
+    }
+    return { remoteAddress };
+  }
+
+  /** Restore `#lastRemoteAddress` / `#lastConnectedAt` from an attachment. */
+  #restoreProjectionIdentityFromAttachment(
+    attachment: {
+      remoteAddress?: string;
+      connectedAt?: string;
+      connectedAtMs?: number;
+    } | null,
+  ): void {
+    const identity = this.#projectionIdentityFromAttachment(attachment);
+    if (identity.remoteAddress) {
+      this.#lastRemoteAddress = identity.remoteAddress;
+    }
+    if (identity.connectedAt) {
+      this.#lastConnectedAt = identity.connectedAt;
+    }
+  }
+
+  /**
+   * Projection identity from live hibernation attachments when private fields
+   * were not restored (or were cleared). In-memory only — no SQLite.
+   */
+  #projectionIdentityFromAttachments(serverId: string): {
+    remoteAddress?: string;
+    connectedAt?: string;
+  } {
+    for (const ws of this.#ctx.getWebSockets()) {
+      const attachment = ws.deserializeAttachment() as {
+        serverId?: string;
+        remoteAddress?: string;
+        connectedAt?: string;
+        connectedAtMs?: number;
+      } | null;
+      if (attachment?.serverId !== serverId) continue;
+      return this.#projectionIdentityFromAttachment(attachment);
+    }
+    return {};
   }
 
   async #loadScheduledAlarmMsIfNeeded(): Promise<void> {
@@ -607,6 +668,23 @@ export class DaemonCellObject {
     }
 
     // Missing table / missing or stale stamp — create + stamp once.
+    // Cell state is ephemeral/rebuildable (daemon reconnects; presence and
+    // key_last_used_at are Postgres-canonical), so wipe-on-upgrade is safe.
+    if (existingVersion !== null && existingVersion < CELL_SCHEMA_VERSION) {
+      for (
+        const table of [
+          "cell",
+          "leases",
+          "outbox",
+          "requests",
+          "lease",
+          "request",
+        ]
+      ) {
+        this.#sql("ensure-schema", `DROP TABLE IF EXISTS ${table}`);
+      }
+    }
+
     this.#sql(
       "ensure-schema",
       `CREATE TABLE IF NOT EXISTS _cell_schema (
@@ -620,10 +698,7 @@ export class DaemonCellObject {
       CREATE TABLE IF NOT EXISTS cell (
         server_id TEXT PRIMARY KEY,
         remote_address TEXT,
-        connected_at TEXT,
-        last_seen_at TEXT,
         key_last_used_at TEXT,
-        agent_json TEXT,
         updated_at TEXT
       )
     `,
@@ -631,7 +706,7 @@ export class DaemonCellObject {
     this.#sql(
       "ensure-schema",
       `
-      CREATE TABLE IF NOT EXISTS leases (
+      CREATE TABLE IF NOT EXISTS lease (
         lease_name TEXT PRIMARY KEY,
         holder TEXT,
         expires_at TEXT
@@ -641,40 +716,27 @@ export class DaemonCellObject {
     this.#sql(
       "ensure-schema",
       `
-      CREATE TABLE IF NOT EXISTS outbox (
+      CREATE TABLE IF NOT EXISTS request (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
-        request_id TEXT,
+        request_id TEXT UNIQUE,
         delivery_id TEXT UNIQUE,
-        kind TEXT,
-        payload_json TEXT,
-        status TEXT DEFAULT 'queued',
-        created_at TEXT,
-        expires_at TEXT,
-        sent_at TEXT,
-        acked_at TEXT,
-        retry_count INTEGER DEFAULT 0,
-        retry_at TEXT
-      )
-    `,
-    );
-    this.#sql(
-      "ensure-schema",
-      `
-      CREATE TABLE IF NOT EXISTS requests (
-        request_id TEXT PRIMARY KEY,
         request_kind TEXT,
         command_text TEXT,
+        payload_json TEXT,
         status TEXT,
+        delivery_status TEXT DEFAULT 'queued',
         result_json TEXT,
         error TEXT,
         created_at TEXT,
         updated_at TEXT,
         expires_at TEXT,
+        sent_at TEXT,
         ack_at TEXT,
         finished_at TEXT,
-        sent_at TEXT,
         daemon_received_at TEXT,
-        daemon_responded_at TEXT
+        daemon_responded_at TEXT,
+        retry_count INTEGER DEFAULT 0,
+        retry_at TEXT
       )
     `,
     );
@@ -687,6 +749,30 @@ export class DaemonCellObject {
     this.#schemaReady = true;
   }
 
+  /**
+   * Resolve serverId for zero-SQLite read-only paths (`/rpc/liveness`).
+   * Uses only `#serverId`, the cell header, and hibernation WebSocket
+   * attachments — never `#sql` / `#resolveServerId`.
+   */
+  #resolveServerIdInMemory(request: Request): string | null {
+    if (this.#serverId) return this.#serverId;
+    const header = request.headers.get("X-Turbopanel-Cell-Server-Id")?.trim();
+    if (header) {
+      this.#serverId = header;
+      return header;
+    }
+    for (const ws of this.#ctx.getWebSockets()) {
+      const attachment = ws.deserializeAttachment() as {
+        serverId?: string;
+      } | null;
+      const id = attachment?.serverId?.trim();
+      if (!id) continue;
+      this.#serverId = id;
+      return id;
+    }
+    return null;
+  }
+
   #resolveServerId(request: Request): string | null {
     if (this.#serverId) return this.#serverId;
     const header = request.headers.get("X-Turbopanel-Cell-Server-Id")?.trim();
@@ -694,8 +780,9 @@ export class DaemonCellObject {
       this.#serverId = header;
       return header;
     }
-    // Header-less callers only (alarm / debug). Selects `server_id` alone —
-    // never `agent_json` — so liveness cannot inherit this cost.
+    // Header-less callers only (alarm / debug / snapshot). Selects
+    // `server_id` alone. Liveness must not call this — use
+    // `#resolveServerIdInMemory` instead.
     try {
       const cursor = this.#sql(
         "resolve-server-id",
@@ -765,20 +852,53 @@ export class DaemonCellObject {
     serverId: string,
     fn: (db: Db) => Promise<void>,
   ): Promise<void> {
+    await this.#withProjectionDbResult(label, serverId, fn);
+  }
+
+  /** Value-returning projection DB helper (same timeout + close contract). */
+  async #withProjectionDbResult<T>(
+    label: string,
+    serverId: string,
+    fn: (db: Db) => Promise<T>,
+  ): Promise<T | null> {
     const db = this.#newProjectionDb();
-    if (!db) return;
+    if (!db) return null;
     try {
-      await runWithDbTimeout(db, fn);
+      return await runWithDbTimeout(db, fn);
     } catch (err) {
       console.error(
         `daemon cell ${label} projection failed (${serverId}): ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
+      return null;
     } finally {
       // Force-close even if the op timed out; endDbConnection has its own 5s cap.
       await endDbConnection(db).catch(() => {});
     }
+  }
+
+  /** Cheap in-memory snapshot for the Postgres projection path — no SQLite. */
+  #buildRuntimeSnapshot(serverId: string): DaemonCellSnapshot {
+    const connected = this.#runtimeConnected || this.#hasLiveSocket(serverId);
+    const fromAttachment = this.#projectionIdentityFromAttachments(serverId);
+    const connectedAt = this.#lastConnectedAt ?? fromAttachment.connectedAt;
+    const remoteAddress = this.#lastRemoteAddress ??
+      fromAttachment.remoteAddress;
+    const lastSeenAt = this.#lastProjectedAtMs !== null
+      ? new Date(this.#lastProjectedAtMs).toISOString()
+      : undefined;
+    return {
+      serverId,
+      version: 0,
+      updatedAt: lastSeenAt ?? connectedAt ?? nowIso(),
+      connected,
+      connectedAt,
+      lastInboundAt: lastSeenAt,
+      lastSeenAt,
+      remoteAddress,
+      agent: this.#lastKnownAgent,
+    };
   }
 
   /** Gate Postgres work using in-memory projection state before opening Hyperdrive. */
@@ -806,7 +926,7 @@ export class DaemonCellObject {
    */
   #projectionCell(serverId: string): DaemonCell {
     return {
-      getSnapshot: () => this.#getSnapshot(serverId),
+      getSnapshot: () => Promise.resolve(this.#buildRuntimeSnapshot(serverId)),
       putSnapshot: (patch: Partial<DaemonCellSnapshot>) =>
         this.#putSnapshot(serverId, patch),
     } as unknown as DaemonCell;
@@ -948,36 +1068,28 @@ export class DaemonCellObject {
   }
 
   #existingDaemonSocketHolder(): string | null {
-    const cursor = this.#sql(
-      "attach",
-      "SELECT holder FROM leases WHERE lease_name = ?",
-      DAEMON_SOCKET_LEASE_NAME,
-    );
-    for (const row of cursor) {
-      const holder = String(row.holder ?? "");
+    for (const ws of this.#ctx.getWebSockets()) {
+      const attachment = ws.deserializeAttachment() as {
+        connectionId?: string;
+      } | null;
+      const holder = attachment?.connectionId?.trim();
       if (holder) return holder;
     }
     return null;
   }
 
-  #forceDetachDaemonSocket(serverId: string, connectionId: string): void {
-    const closedAt = nowIso();
-    this.#ctx.storage.transactionSync(() => {
-      this.#sql(
-        "attach",
-        `DELETE FROM leases
-         WHERE lease_name = ? AND holder = ?`,
-        DAEMON_SOCKET_LEASE_NAME,
-        connectionId,
-      );
-      this.#sql(
-        "attach",
-        `UPDATE cell SET last_seen_at = ?, updated_at = ?
-         WHERE server_id = ?`,
-        closedAt,
-        closedAt,
-        serverId,
-      );
+  /** True when no other live socket remains for this server (replace-safe). */
+  #isSoleOrNoOtherLiveSocket(
+    serverId: string,
+    connectionId: string,
+  ): boolean {
+    return !this.#ctx.getWebSockets().some((ws) => {
+      const attachment = ws.deserializeAttachment() as {
+        serverId?: string;
+        connectionId?: string;
+      } | null;
+      return attachment?.serverId === serverId &&
+        attachment.connectionId !== connectionId;
     });
   }
 
@@ -998,6 +1110,8 @@ export class DaemonCellObject {
     this.#serverId = serverId;
     this.#sweptOffline.delete(serverId);
     this.#runtimeConnected = true;
+    this.#lastRemoteAddress = meta.remoteAddress;
+    this.#lastConnectedAt = connectedAt;
     const connectedAtMs = Date.parse(connectedAt);
     this.#lastProjectedAtMs = Number.isNaN(connectedAtMs)
       ? Date.now()
@@ -1008,32 +1122,16 @@ export class DaemonCellObject {
       this.#sql(
         "attach",
         `INSERT INTO cell (
-          server_id, remote_address, connected_at,
-          last_seen_at, key_last_used_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?)
+          server_id, remote_address, key_last_used_at, updated_at
+        ) VALUES (?, ?, ?, ?)
         ON CONFLICT(server_id) DO UPDATE SET
           remote_address = excluded.remote_address,
-          connected_at = excluded.connected_at,
-          last_seen_at = excluded.last_seen_at,
           key_last_used_at = excluded.key_last_used_at,
           updated_at = excluded.updated_at`,
         serverId,
         meta.remoteAddress ?? "",
-        connectedAt,
-        connectedAt,
         keyLastUsedAt,
         connectedAt,
-      );
-      this.#sql(
-        "attach",
-        `INSERT INTO leases (lease_name, holder, expires_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(lease_name) DO UPDATE SET
-           holder = excluded.holder,
-           expires_at = excluded.expires_at`,
-        DAEMON_SOCKET_LEASE_NAME,
-        connectionId,
-        leaseExpiresAt,
       );
     });
 
@@ -1079,7 +1177,7 @@ export class DaemonCellObject {
       candidates.push(candidateMs);
     };
 
-    const hasDeliverableOutbox = this.#collectOutboxAlarmTimes(
+    const hasDeliverableOutbox = this.#collectRequestAlarmTimes(
       now,
       hasSocket,
       bumpPump,
@@ -1090,23 +1188,26 @@ export class DaemonCellObject {
       bumpPump(nowMs);
     }
 
-    this.#collectRequestAlarmTimes(nowMs, bumpCleanup);
-
     return candidates;
   }
 
-  #collectOutboxAlarmTimes(
+  /**
+   * Single scan over `request` for delivery pump/inflight + correlation
+   * expiry / terminal-retention alarm candidates.
+   */
+  #collectRequestAlarmTimes(
     now: string,
     hasSocket: boolean,
     bumpPump: (ms: number) => void,
     bumpCleanup: (ms: number) => void,
   ): boolean {
     let hasDeliverableOutbox = false;
-    const outboxCursor = this.#sql(
+    const cursor = this.#sql(
       "schedule-alarm",
-      "SELECT status, retry_at, sent_at, expires_at FROM outbox",
+      `SELECT delivery_status, status, retry_at, sent_at, expires_at, finished_at
+       FROM request`,
     );
-    for (const row of outboxCursor) {
+    for (const row of cursor) {
       if (
         this.#applyOutboxRowToAlarmSchedule(
           row,
@@ -1117,6 +1218,18 @@ export class DaemonCellObject {
         )
       ) {
         hasDeliverableOutbox = true;
+      }
+
+      // expires_at already scheduled via `#applyOutboxRowToAlarmSchedule`.
+      const status = String(row.status ?? "");
+      const finishedAt = row.finished_at ? String(row.finished_at) : null;
+      const finishedMs = safeParseMs(finishedAt);
+      if (
+        finishedMs !== null &&
+        (status === "acked" || status === "done" || status === "failed" ||
+          status === "expired")
+      ) {
+        bumpCleanup(finishedMs + TERMINAL_UPDATE_RETENTION_MS);
       }
     }
     return hasDeliverableOutbox;
@@ -1129,24 +1242,25 @@ export class DaemonCellObject {
     bumpPump: (ms: number) => void,
     bumpCleanup: (ms: number) => void,
   ): boolean {
-    const status = String(row.status ?? "");
+    const deliveryStatus = String(row.delivery_status ?? "");
     const retryAt = row.retry_at ? String(row.retry_at) : null;
     const sentAt = row.sent_at ? String(row.sent_at) : null;
     const expiresAt = row.expires_at ? String(row.expires_at) : null;
 
     let deliverable = false;
-    if (status === "queued" && (!retryAt || retryAt <= now)) {
+    if (deliveryStatus === "queued" && (!retryAt || retryAt <= now)) {
       deliverable = true;
     }
     const retryMs = safeParseMs(retryAt);
     if (
-      status === "queued" && retryMs !== null && retryAt && retryAt > now &&
+      deliveryStatus === "queued" && retryMs !== null && retryAt &&
+      retryAt > now &&
       hasSocket
     ) {
       bumpPump(retryMs);
     }
     const sentMs = safeParseMs(sentAt);
-    if (status === "inflight" && sentMs !== null && hasSocket) {
+    if (deliveryStatus === "inflight" && sentMs !== null && hasSocket) {
       bumpPump(sentMs + OUTBOX_INFLIGHT_LEASE_MS);
     }
     const expiresMs = safeParseMs(expiresAt);
@@ -1156,40 +1270,12 @@ export class DaemonCellObject {
     return deliverable;
   }
 
-  #collectRequestAlarmTimes(
-    nowMs: number,
-    bumpCleanup: (ms: number) => void,
-  ): void {
-    const requestsCursor = this.#sql(
-      "schedule-alarm",
-      "SELECT status, expires_at, finished_at FROM requests",
-    );
-    for (const row of requestsCursor) {
-      const status = String(row.status ?? "");
-      const expiresAt = row.expires_at ? String(row.expires_at) : null;
-      const finishedAt = row.finished_at ? String(row.finished_at) : null;
-
-      const expiresMs = safeParseMs(expiresAt);
-      if (expiresMs !== null) {
-        bumpCleanup(expiresMs);
-      }
-      const finishedMs = safeParseMs(finishedAt);
-      if (
-        finishedMs !== null &&
-        (status === "acked" || status === "done" || status === "failed" ||
-          status === "expired")
-      ) {
-        bumpCleanup(finishedMs + TERMINAL_UPDATE_RETENTION_MS);
-      }
-    }
-  }
-
   #hasDeliverableOutbox(nowMs = Date.now()): boolean {
     const now = nowIso(nowMs);
     return sqlCursorHasRow(this.#sql(
       "schedule-alarm",
-      `SELECT seq FROM outbox
-       WHERE status = 'queued' AND (retry_at IS NULL OR retry_at <= ?)
+      `SELECT seq FROM request
+       WHERE delivery_status = 'queued' AND (retry_at IS NULL OR retry_at <= ?)
        LIMIT 1`,
       now,
     ));
@@ -1198,9 +1284,10 @@ export class DaemonCellObject {
   #requeueExpiredInflightOutbox(nowMs = Date.now()): void {
     const cutoff = nowIso(nowMs - OUTBOX_INFLIGHT_LEASE_MS);
     this.#sql(
-      "outbox-requeue",
-      `UPDATE outbox SET status = 'queued', sent_at = NULL
-       WHERE status = 'inflight' AND sent_at IS NOT NULL AND sent_at <= ?`,
+      "delivery-requeue",
+      `UPDATE request SET delivery_status = 'queued', sent_at = NULL
+       WHERE delivery_status = 'inflight'
+         AND sent_at IS NOT NULL AND sent_at <= ?`,
       cutoff,
     );
   }
@@ -1208,8 +1295,8 @@ export class DaemonCellObject {
   #requeueOutbox(deliveryId: string): void {
     const nowMs = Date.now();
     const cursor = this.#sql(
-      "outbox-requeue",
-      "SELECT retry_count FROM outbox WHERE delivery_id = ?",
+      "delivery-requeue",
+      "SELECT retry_count FROM request WHERE delivery_id = ?",
       deliveryId,
     );
     let retryCount = 0;
@@ -1220,9 +1307,10 @@ export class DaemonCellObject {
     const nextRetryCount = retryCount + 1;
     if (nextRetryCount >= OUTBOX_MAX_RETRIES) {
       this.#sql(
-        "outbox-requeue",
-        `UPDATE outbox
-         SET status = 'dead', retry_count = ?, retry_at = NULL, sent_at = NULL
+        "delivery-requeue",
+        `UPDATE request
+         SET delivery_status = 'dead', retry_count = ?, retry_at = NULL,
+             sent_at = NULL
          WHERE delivery_id = ?`,
         nextRetryCount,
         deliveryId,
@@ -1232,9 +1320,10 @@ export class DaemonCellObject {
 
     const retryAt = nowIso(nowMs + outboxRetryDelayMs(nextRetryCount));
     this.#sql(
-      "outbox-requeue",
-      `UPDATE outbox
-       SET status = 'queued', retry_count = ?, retry_at = ?, sent_at = NULL
+      "delivery-requeue",
+      `UPDATE request
+       SET delivery_status = 'queued', retry_count = ?, retry_at = ?,
+           sent_at = NULL
        WHERE delivery_id = ?`,
       nextRetryCount,
       retryAt,
@@ -1323,7 +1412,6 @@ export class DaemonCellObject {
     this.#bumpDiag("wsAccepted");
 
     if (existingHolder && existingHolder !== connectionId) {
-      this.#forceDetachDaemonSocket(serverId, existingHolder);
       for (const ws of this.#ctx.getWebSockets()) {
         if (ws !== server) {
           ws.close(4000, "replaced by new connection");
@@ -1332,12 +1420,14 @@ export class DaemonCellObject {
     }
 
     const connectedAtMs = Date.parse(connectedAt) || Date.now();
-    // Persist cf geo on the hibernation attachment so hello can backfill
-    // metadata.geo if the attach waitUntil projection races or fails.
+    // Persist projection identity + cf geo on the hibernation attachment so
+    // `#buildRuntimeSnapshot` / hello can backfill after a wake if the attach
+    // waitUntil projection races or fails — without touching SQLite.
     server.serializeAttachment({
       connectionId,
       serverId,
       connectedAtMs,
+      ...(remoteAddress ? { remoteAddress } : {}),
       ...(geo ? { geo } : {}),
     });
 
@@ -1560,32 +1650,10 @@ export class DaemonCellObject {
 
     this.#inboundRate.delete(attachment.connectionId);
 
-    const closedAt = nowIso();
-
-    let isCurrentConnection = false;
-    this.#ctx.storage.transactionSync(() => {
-      this.#sql(
-        "cleanup",
-        `DELETE FROM leases
-         WHERE lease_name = ? AND holder = ?`,
-        DAEMON_SOCKET_LEASE_NAME,
-        attachment.connectionId,
-      );
-      isCurrentConnection = readSqlChanges(
-        this.#sql("cleanup", "SELECT changes() AS c"),
-      ) > 0;
-
-      if (isCurrentConnection) {
-        this.#sql(
-          "cleanup",
-          `UPDATE cell SET last_seen_at = ?, updated_at = ?
-           WHERE server_id = ?`,
-          closedAt,
-          closedAt,
-          attachment.serverId,
-        );
-      }
-    });
+    const isCurrentConnection = this.#isSoleOrNoOtherLiveSocket(
+      attachment.serverId,
+      attachment.connectionId,
+    );
 
     if (isCurrentConnection) {
       this.#runtimeConnected = false;
@@ -1607,7 +1675,7 @@ export class DaemonCellObject {
     const expiringUpdates: Array<{ requestId: string }> = [];
     const expiringCursor = this.#sql(
       "alarm",
-      `SELECT request_id, request_kind, status FROM requests
+      `SELECT request_id, request_kind, status FROM request
        WHERE expires_at <= ?
        AND request_kind = 'update'
        AND status NOT IN ('done', 'failed', 'expired', 'acked')`,
@@ -1617,23 +1685,31 @@ export class DaemonCellObject {
       expiringUpdates.push({ requestId: String(row.request_id ?? "") });
     }
 
-    this.#sql("alarm", "DELETE FROM requests WHERE expires_at <= ?", now);
+    // Non-terminal rows only — terminal/acked-with-finished_at rows are owned by
+    // the finished_at + TERMINAL_UPDATE_RETENTION_MS prune below (Redis parity).
+    // Deleting by expires_at here would drop a reply that landed just before the
+    // original TTL before polling consumers could read it.
     this.#sql(
       "alarm",
-      `DELETE FROM requests
+      `DELETE FROM request
+       WHERE expires_at <= ?
+       AND status NOT IN ('acked', 'done', 'failed', 'expired')`,
+      now,
+    );
+    this.#sql(
+      "alarm",
+      `DELETE FROM request
        WHERE status IN ('acked', 'done', 'failed', 'expired')
        AND finished_at IS NOT NULL
        AND finished_at <= ?`,
       nowIso(nowMs - TERMINAL_UPDATE_RETENTION_MS),
     );
-    this.#sql("alarm", "DELETE FROM outbox WHERE expires_at <= ?", now);
-    this.#sql("alarm", "DELETE FROM outbox WHERE status = 'dead'");
     return expiringUpdates;
   }
 
   /**
    * Opportunistic half-open backstop — runs only when `alarm()` fires for
-   * genuine work (outbox retry, request/outbox expiry, terminal retention).
+   * genuine work (outbox retry, request expiry, terminal retention).
    *
    * **Disconnect-first trade-off (Workers):** connected-cell offline detection
    * is driven by `webSocketClose` / `webSocketError` → `#cleanupWebSocket`.
@@ -1718,19 +1794,14 @@ export class DaemonCellObject {
       }
     }
 
-    const serverId = this.#resolveServerId(new Request("https://do.internal/"));
-    if (serverId) {
-      this.#ctx.storage.transactionSync(() => {
-        this.#sql("purge", "DELETE FROM leases");
-      });
-    }
-
     await this.#deleteAlarm("purge");
     await this.#deleteAll("purge");
     this.#scheduledAlarmMs = null;
     this.#scheduledAlarmMsLoaded = false;
     this.#schemaReady = false;
     this.#runtimeConnected = false;
+    this.#lastRemoteAddress = undefined;
+    this.#lastConnectedAt = undefined;
   }
 
   /** Read-only GET routes that don't need the shared body-parsing/switch below. */
@@ -1747,7 +1818,9 @@ export class DaemonCellObject {
     }
 
     if (path === "/rpc/liveness") {
-      const serverId = this.#resolveServerId(request);
+      // In-memory / header / attachment only — never `#resolveServerId`
+      // (that helper's SQLite fallback would violate the zero-SQLite contract).
+      const serverId = this.#resolveServerIdInMemory(request);
       if (!serverId) return errorResponse("server id unknown", 404);
       // Reuse the cron's liveness visit to reap dead/half-open or over-age
       // sockets (in-memory only; no SQLite) before reporting presence.
@@ -1985,23 +2058,58 @@ export class DaemonCellObject {
     const row = readFirstSqlRow(
       this.#sql("snapshot", "SELECT * FROM cell WHERE server_id = ?", serverId),
     );
-    if (row) {
-      const snapshot = snapshotFromMetaRow(
+    const base = row
+      ? snapshotFromMetaRow(serverId, row, this.#runtimeConnected)
+      : {
         serverId,
-        row,
-        this.#runtimeConnected,
-      );
-      if (this.#lastKnownAgent) {
-        return { ...snapshot, agent: this.#lastKnownAgent };
+        version: 0,
+        updatedAt: nowIso(),
+        connected: false,
+      };
+
+    const daemonState = await this.#withProjectionDbResult(
+      "snapshot",
+      serverId,
+      (db) => getServerDaemonStateByServerId(db, serverId),
+    );
+    if (daemonState) {
+      const status = daemonState.status;
+      const projectionAgent = daemonState.projection?.agent;
+      let agent = this.#lastKnownAgent;
+      if (projectionAgent?.commit && projectionAgent.buildId) {
+        agent = {
+          commit: projectionAgent.commit,
+          buildId: projectionAgent.buildId,
+          ...(projectionAgent.builtAt
+            ? { builtAt: projectionAgent.builtAt }
+            : {}),
+          ...(projectionAgent.channel
+            ? { channel: projectionAgent.channel }
+            : {}),
+        };
       }
-      return snapshot;
+      return {
+        ...base,
+        connected: status?.connected ?? base.connected,
+        connectedAt: status?.connectedAt ?? undefined,
+        lastInboundAt: status?.lastSeenAt ?? undefined,
+        lastSeenAt: status?.lastSeenAt ?? undefined,
+        agent,
+        remoteAddress: base.remoteAddress ??
+          daemonState.projection?.remoteAddress,
+      };
     }
 
+    // Fall back to in-memory presence + cell-row identity fields.
+    const runtime = this.#buildRuntimeSnapshot(serverId);
     return {
-      serverId,
-      version: 0,
-      updatedAt: nowIso(),
-      connected: false,
+      ...base,
+      connected: runtime.connected,
+      connectedAt: runtime.connectedAt,
+      lastInboundAt: runtime.lastInboundAt,
+      lastSeenAt: runtime.lastSeenAt,
+      agent: runtime.agent,
+      remoteAddress: base.remoteAddress ?? runtime.remoteAddress,
     };
   }
 
@@ -2013,10 +2121,6 @@ export class DaemonCellObject {
     const fields: Array<string | null> = [updatedAt];
     let sql = "UPDATE cell SET updated_at = ?";
 
-    if (patch.lastSeenAt !== undefined) {
-      sql += ", last_seen_at = ?";
-      fields.push(patch.lastSeenAt);
-    }
     if (patch.keyLastUsedAt !== undefined) {
       sql += ", key_last_used_at = ?";
       fields.push(patch.keyLastUsedAt);
@@ -2044,46 +2148,50 @@ export class DaemonCellObject {
     const createdAt = outbound.at ?? nowIso(now);
     const ttlSeconds = opts?.ttlSeconds ?? 300;
     const expiresAt = nowIso(now + ttlSeconds * 1000);
+    const commandText = outbound.kind === "command-dispatch"
+      ? outbound.commandType
+      : null;
+    const payloadJson = JSON.stringify(outbound);
 
     const existingRow = readFirstSqlRow(
       this.#sql(
         "enqueue",
-        "SELECT * FROM requests WHERE request_id = ?",
+        "SELECT * FROM request WHERE request_id = ?",
         outbound.requestId,
       ),
     );
     if (existingRow) {
-      const exists = sqlCursorHasRow(
-        this.#sql(
-          "enqueue",
-          "SELECT seq FROM outbox WHERE delivery_id = ?",
-          outbound.deliveryId,
-        ),
-      );
-      if (exists) {
+      const existingDeliveryId = existingRow.delivery_id
+        ? String(existingRow.delivery_id)
+        : "";
+      if (existingDeliveryId === outbound.deliveryId) {
         return parseRequestRow(serverId, existingRow);
       }
 
-      this.#ctx.storage.transactionSync(() => {
+      // Re-delivery: refresh delivery fields; leave correlation status alone.
+      this.#sql(
+        "enqueue",
+        `UPDATE request SET
+           delivery_id = ?,
+           payload_json = ?,
+           delivery_status = 'queued',
+           retry_count = 0,
+           retry_at = NULL,
+           sent_at = NULL,
+           updated_at = ?
+         WHERE request_id = ?`,
+        outbound.deliveryId,
+        payloadJson,
+        nowIso(),
+        outbound.requestId,
+      );
+      const refreshed = readFirstSqlRow(
         this.#sql(
           "enqueue",
-          `INSERT INTO outbox (
-            request_id, delivery_id, kind, payload_json, status, created_at, expires_at
-          ) VALUES (?, ?, ?, ?, 'queued', ?, ?)`,
+          "SELECT * FROM request WHERE request_id = ?",
           outbound.requestId,
-          outbound.deliveryId,
-          outbound.kind,
-          JSON.stringify(outbound),
-          createdAt,
-          expiresAt,
-        );
-        this.#sql(
-          "enqueue",
-          "UPDATE requests SET updated_at = ? WHERE request_id = ?",
-          nowIso(),
-          outbound.requestId,
-        );
-      });
+        ),
+      ) ?? existingRow;
       void this.#pumpOutboxToDaemonSockets(serverId);
       void this.#scheduleOutboxRetryIfNeeded();
       this.#trace("enqueue", {
@@ -2092,55 +2200,32 @@ export class DaemonCellObject {
         deliveryId: outbound.deliveryId,
         kind: outbound.kind,
       });
-      return parseRequestRow(serverId, existingRow);
+      return parseRequestRow(serverId, refreshed);
     }
 
-    this.#ctx.storage.transactionSync(() => {
-      this.#sql(
-        "enqueue",
-        `INSERT INTO requests (
-          request_id, request_kind, command_text, status, created_at, updated_at, expires_at
-        ) VALUES (?, ?, ?, 'queued', ?, ?, ?)`,
-        outbound.requestId,
-        outbound.kind,
-        outbound.kind === "command-dispatch" ? outbound.commandType : null,
-        createdAt,
-        createdAt,
-        expiresAt,
-      );
-      this.#sql(
-        "enqueue",
-        `INSERT INTO outbox (
-          request_id, delivery_id, kind, payload_json, status, created_at, expires_at
-        ) VALUES (?, ?, ?, ?, 'queued', ?, ?)`,
-        outbound.requestId,
-        outbound.deliveryId,
-        outbound.kind,
-        JSON.stringify(outbound),
-        createdAt,
-        expiresAt,
-      );
-    });
+    this.#sql(
+      "enqueue",
+      `INSERT INTO request (
+        request_id, delivery_id, request_kind, command_text, payload_json,
+        status, delivery_status, created_at, updated_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, 'queued', 'queued', ?, ?, ?)`,
+      outbound.requestId,
+      outbound.deliveryId,
+      outbound.kind,
+      commandText,
+      payloadJson,
+      createdAt,
+      createdAt,
+      expiresAt,
+    );
 
     const insertedRow = readFirstSqlRow(
       this.#sql(
         "enqueue",
-        "SELECT * FROM requests WHERE request_id = ?",
+        "SELECT * FROM request WHERE request_id = ?",
         outbound.requestId,
       ),
     );
-    if (insertedRow) {
-      void this.#pumpOutboxToDaemonSockets(serverId);
-      void this.#scheduleOutboxRetryIfNeeded();
-      this.#trace("enqueue", {
-        serverId,
-        requestId: outbound.requestId,
-        deliveryId: outbound.deliveryId,
-        kind: outbound.kind,
-      });
-      return parseRequestRow(serverId, insertedRow);
-    }
-
     void this.#pumpOutboxToDaemonSockets(serverId);
     void this.#scheduleOutboxRetryIfNeeded();
     this.#trace("enqueue", {
@@ -2149,6 +2234,9 @@ export class DaemonCellObject {
       deliveryId: outbound.deliveryId,
       kind: outbound.kind,
     });
+    if (insertedRow) {
+      return parseRequestRow(serverId, insertedRow);
+    }
     return {
       serverId,
       requestId: outbound.requestId,
@@ -2166,33 +2254,26 @@ export class DaemonCellObject {
     sentAt?: string,
   ): Promise<void> {
     const at = sentAt ?? nowIso();
-    let requestId: string | undefined;
-    this.#ctx.storage.transactionSync(() => {
+    this.#sql(
+      "mark-sent",
+      `UPDATE request SET
+         delivery_status = 'sent',
+         sent_at = ?,
+         status = CASE WHEN status = 'queued' THEN 'sent' ELSE status END,
+         updated_at = ?
+       WHERE delivery_id = ?`,
+      at,
+      at,
+      deliveryId,
+    );
+    const row = readFirstSqlRow(
       this.#sql(
         "mark-sent",
-        `UPDATE outbox SET status = 'sent', sent_at = ? WHERE delivery_id = ?`,
-        at,
+        "SELECT request_id FROM request WHERE delivery_id = ?",
         deliveryId,
-      );
-      const row = readFirstSqlRow(
-        this.#sql(
-          "mark-sent",
-          "SELECT request_id FROM outbox WHERE delivery_id = ?",
-          deliveryId,
-        ),
-      );
-      if (row) {
-        requestId = String(row.request_id);
-        this.#sql(
-          "mark-sent",
-          `UPDATE requests SET status = 'sent', sent_at = ?, updated_at = ?
-           WHERE request_id = ?`,
-          at,
-          at,
-          requestId,
-        );
-      }
-    });
+      ),
+    );
+    const requestId = row ? String(row.request_id) : undefined;
     this.#trace("mark-sent", { serverId, requestId, deliveryId });
   }
 
@@ -2213,7 +2294,7 @@ export class DaemonCellObject {
     const row = readFirstSqlRow(
       this.#sql(
         "request-read",
-        "SELECT * FROM requests WHERE request_id = ?",
+        "SELECT * FROM request WHERE request_id = ?",
         requestId,
       ),
     );
@@ -2229,7 +2310,7 @@ export class DaemonCellObject {
     const ackAt = inbound.at;
     this.#sql(
       "handle-inbound",
-      `UPDATE requests SET ack_at = ?, daemon_received_at = COALESCE(?, daemon_received_at),
+      `UPDATE request SET ack_at = ?, daemon_received_at = COALESCE(?, daemon_received_at),
        updated_at = ? WHERE request_id = ?`,
       ackAt,
       inbound.daemonReceivedAt,
@@ -2255,7 +2336,7 @@ export class DaemonCellObject {
     const ackAt = inbound.at;
     this.#sql(
       "handle-inbound",
-      `UPDATE requests SET status = 'acked', ack_at = ?, daemon_received_at = ?,
+      `UPDATE request SET status = 'acked', ack_at = ?, daemon_received_at = ?,
        updated_at = ? WHERE request_id = ?`,
       ackAt,
       inbound.daemonReceivedAt,
@@ -2357,15 +2438,29 @@ export class DaemonCellObject {
       daemonRespondedAt,
       ackAt,
     } = completion;
+    // Extend expires_at through the terminal retention window so a completion
+    // near the original TTL stays queryable until finished_at retention prune
+    // (matches Redis `#cleanupTerminalRequest`).
+    const finishedMs = Date.parse(finishedAt);
+    const retainUntil = Number.isFinite(finishedMs)
+      ? nowIso(finishedMs + TERMINAL_UPDATE_RETENTION_MS)
+      : nowIso(Date.now() + TERMINAL_UPDATE_RETENTION_MS);
     this.#sql(
       "handle-inbound",
-      `UPDATE requests SET status = ?, result_json = ?, error = ?,
-       finished_at = ?, daemon_received_at = COALESCE(?, daemon_received_at),
-       daemon_responded_at = ?, ack_at = COALESCE(ack_at, ?), updated_at = ? WHERE request_id = ?`,
+      `UPDATE request SET status = ?, result_json = ?, error = ?,
+       finished_at = ?, expires_at = CASE
+         WHEN expires_at IS NOT NULL AND expires_at > ? THEN expires_at
+         ELSE ?
+       END,
+       daemon_received_at = COALESCE(?, daemon_received_at),
+       daemon_responded_at = ?, ack_at = COALESCE(ack_at, ?), updated_at = ?
+       WHERE request_id = ?`,
       status,
       result === undefined ? null : JSON.stringify(result),
       error ?? null,
       finishedAt,
+      retainUntil,
+      retainUntil,
       daemonReceivedAt,
       daemonRespondedAt,
       ackAt,
@@ -2406,7 +2501,7 @@ export class DaemonCellObject {
     const row = readFirstSqlRow(
       this.#sql(
         "handle-inbound",
-        "SELECT * FROM requests WHERE request_id = ?",
+        "SELECT * FROM request WHERE request_id = ?",
         inbound.requestId,
       ),
     );
@@ -2435,8 +2530,9 @@ export class DaemonCellObject {
 
   #reclaimTerminalOutbox(requestId: string): void {
     this.#sql(
-      "outbox-ack",
-      "DELETE FROM outbox WHERE request_id = ?",
+      "delivery-ack",
+      `UPDATE request SET delivery_status = 'acked', retry_at = NULL
+       WHERE request_id = ?`,
       requestId,
     );
   }
@@ -2459,7 +2555,7 @@ export class DaemonCellObject {
     const cursor = requestKind
       ? this.#sql(
         "request-read",
-        `SELECT * FROM requests
+        `SELECT * FROM request
          WHERE request_kind = ?
          ORDER BY created_at DESC LIMIT ?`,
         requestKind,
@@ -2467,7 +2563,7 @@ export class DaemonCellObject {
       )
       : this.#sql(
         "request-read",
-        `SELECT * FROM requests ORDER BY created_at DESC LIMIT ?`,
+        `SELECT * FROM request ORDER BY created_at DESC LIMIT ?`,
         safeLimit,
       );
     const records: PendingRequestRecord[] = [];
@@ -2487,7 +2583,7 @@ export class DaemonCellObject {
 
   /**
    * Fast, non-blocking expiry for caller-side wait timeouts. Marks the request
-   * expired, reclaims matching outbox rows, and mirrors Redis parity (update
+   * expired, stops delivery (retain-on-ack), and mirrors Redis parity (update
    * rows are retained for the terminal retention window; others are purged).
    */
   async #expireRequest(
@@ -2514,15 +2610,37 @@ export class DaemonCellObject {
     }
 
     const requestKind = existing.requestKind;
+    const finishedMs = Date.parse(finishedAt);
+    const retainUntil = Number.isFinite(finishedMs)
+      ? nowIso(finishedMs + TERMINAL_UPDATE_RETENTION_MS)
+      : nowIso(Date.now() + TERMINAL_UPDATE_RETENTION_MS);
     this.#ctx.storage.transactionSync(() => {
-      this.#sql(
-        "expire-request",
-        `UPDATE requests SET status = 'expired', finished_at = ?, updated_at = ?
-         WHERE request_id = ?`,
-        finishedAt,
-        finishedAt,
-        requestId,
-      );
+      if (requestKind === "update") {
+        // Retain update rows through the terminal window (Redis parity).
+        this.#sql(
+          "expire-request",
+          `UPDATE request SET status = 'expired', finished_at = ?,
+           expires_at = CASE
+             WHEN expires_at IS NOT NULL AND expires_at > ? THEN expires_at
+             ELSE ?
+           END, updated_at = ?
+           WHERE request_id = ?`,
+          finishedAt,
+          retainUntil,
+          retainUntil,
+          finishedAt,
+          requestId,
+        );
+      } else {
+        this.#sql(
+          "expire-request",
+          `UPDATE request SET status = 'expired', finished_at = ?, updated_at = ?
+           WHERE request_id = ?`,
+          finishedAt,
+          finishedAt,
+          requestId,
+        );
+      }
       this.#reclaimTerminalOutbox(requestId);
     });
 
@@ -2530,7 +2648,7 @@ export class DaemonCellObject {
       ...existing,
       status: "expired",
       finishedAt,
-      expiresAt: finishedAt,
+      expiresAt: requestKind === "update" ? retainUntil : finishedAt,
     };
 
     if (requestKind === "update") {
@@ -2541,7 +2659,7 @@ export class DaemonCellObject {
 
     this.#sql(
       "expire-request",
-      "DELETE FROM requests WHERE request_id = ?",
+      "DELETE FROM request WHERE request_id = ?",
       requestId,
     );
     await this.#scheduleNearestAlarm();
@@ -2554,7 +2672,7 @@ export class DaemonCellObject {
   ): Promise<{ cleared: number }> {
     const inFlightCursor = this.#sql(
       "clear-update-status",
-      `SELECT request_id, status, created_at FROM requests
+      `SELECT request_id, status, created_at FROM request
        WHERE request_kind = 'update'
        AND status NOT IN ('acked', 'done', 'failed', 'expired')`,
     );
@@ -2578,7 +2696,7 @@ export class DaemonCellObject {
     for (const requestId of staleRequestIds) {
       this.#sql(
         "clear-update-status",
-        `UPDATE requests SET status = 'expired', finished_at = ?, updated_at = ?
+        `UPDATE request SET status = 'expired', finished_at = ?, updated_at = ?
          WHERE request_id = ?`,
         finishedAt,
         finishedAt,
@@ -2591,7 +2709,7 @@ export class DaemonCellObject {
 
     const terminalCursor = this.#sql(
       "clear-update-status",
-      `SELECT request_id FROM requests
+      `SELECT request_id FROM request
        WHERE request_kind = 'update'
        AND status IN ('acked', 'done', 'failed', 'expired')`,
     );
@@ -2605,7 +2723,7 @@ export class DaemonCellObject {
         this.#reclaimTerminalOutbox(requestId);
         this.#sql(
           "clear-update-status",
-          "DELETE FROM requests WHERE request_id = ?",
+          "DELETE FROM request WHERE request_id = ?",
           requestId,
         );
       }
@@ -2680,31 +2798,10 @@ export class DaemonCellObject {
       closedAt?: string;
     },
   ): Promise<void> {
-    const closedAt = params.closedAt ?? nowIso();
-
-    let isCurrentConnection = false;
-    this.#ctx.storage.transactionSync(() => {
-      this.#sql(
-        "cleanup",
-        `DELETE FROM leases
-         WHERE lease_name = ? AND holder = ?`,
-        DAEMON_SOCKET_LEASE_NAME,
-        params.connectionId,
-      );
-      isCurrentConnection = readSqlChanges(
-        this.#sql("cleanup", "SELECT changes() AS c"),
-      ) > 0;
-      if (isCurrentConnection) {
-        this.#sql(
-          "cleanup",
-          `UPDATE cell SET last_seen_at = ?, updated_at = ?
-           WHERE server_id = ?`,
-          closedAt,
-          closedAt,
-          serverId,
-        );
-      }
-    });
+    const isCurrentConnection = this.#isSoleOrNoOtherLiveSocket(
+      serverId,
+      params.connectionId,
+    );
 
     if (isCurrentConnection) {
       this.#runtimeConnected = false;
@@ -2729,7 +2826,7 @@ export class DaemonCellObject {
       sqlCursorHasRow(
         this.#sql(
           "lease",
-          "SELECT holder FROM leases WHERE lease_name = ?",
+          "SELECT holder FROM lease WHERE lease_name = ?",
           DELIVERY_LEASE_NAME,
         ),
       )
@@ -2740,7 +2837,7 @@ export class DaemonCellObject {
 
     this.#sql(
       "lease",
-      `INSERT INTO leases (lease_name, holder, expires_at)
+      `INSERT INTO lease (lease_name, holder, expires_at)
        VALUES (?, ?, ?)`,
       DELIVERY_LEASE_NAME,
       holder,
@@ -2776,7 +2873,7 @@ export class DaemonCellObject {
     const expiresAt = new Date(Date.now() + ttlMs).toISOString();
     this.#sql(
       "lease",
-      `UPDATE leases SET expires_at = ?
+      `UPDATE lease SET expires_at = ?
        WHERE lease_name = ? AND holder = ?`,
       expiresAt,
       leaseName,
@@ -2791,7 +2888,7 @@ export class DaemonCellObject {
   ): Promise<void> {
     this.#sql(
       "lease",
-      "DELETE FROM leases WHERE lease_name = ? AND holder = ?",
+      "DELETE FROM lease WHERE lease_name = ? AND holder = ?",
       DELIVERY_LEASE_NAME,
       holder,
     );
@@ -2810,9 +2907,10 @@ export class DaemonCellObject {
     const claimedAt = nowIso();
     this.#ctx.storage.transactionSync(() => {
       const cursor = this.#sql(
-        "outbox-read",
-        `SELECT seq, payload_json, delivery_id FROM outbox
-         WHERE status = 'queued' AND (retry_at IS NULL OR retry_at <= ?)
+        "delivery-read",
+        `SELECT seq, payload_json, delivery_id FROM request
+         WHERE delivery_status = 'queued'
+           AND (retry_at IS NULL OR retry_at <= ?)
          ORDER BY seq ASC LIMIT ?`,
         now,
         params.count,
@@ -2826,14 +2924,15 @@ export class DaemonCellObject {
           continue;
         }
         this.#sql(
-          "outbox-read",
-          `UPDATE outbox SET status = 'inflight', sent_at = ? WHERE seq = ?`,
+          "delivery-read",
+          `UPDATE request SET delivery_status = 'inflight', sent_at = ?
+           WHERE seq = ?`,
           claimedAt,
           row.seq,
         );
       }
     });
-    this.#trace("outbox-read", {
+    this.#trace("delivery-read", {
       serverId: _serverId,
       consumer: params.consumer,
       count: envelopes.length,
@@ -2845,14 +2944,17 @@ export class DaemonCellObject {
     serverId: string,
     deliveryIds: OutboxDeliveryId[],
   ): Promise<void> {
+    const updatedAt = nowIso();
     for (const deliveryId of deliveryIds) {
       this.#sql(
-        "outbox-ack",
-        "DELETE FROM outbox WHERE delivery_id = ?",
+        "delivery-ack",
+        `UPDATE request SET delivery_status = 'acked', updated_at = ?
+         WHERE delivery_id = ?`,
+        updatedAt,
         deliveryId,
       );
     }
-    this.#trace("outbox-ack", { serverId, count: deliveryIds.length });
+    this.#trace("delivery-ack", { serverId, count: deliveryIds.length });
     await this.#scheduleNearestAlarm();
   }
 }

@@ -13,7 +13,11 @@ import type {
   DaemonOutboundEnvelope,
   OutboxDeliveryId,
 } from "../protocol.ts";
-import { DAEMON_OFFLINE_SWEEP_MS, DAEMON_STALE_MS } from "../protocol.ts";
+import {
+  DAEMON_CELL_MAINTAIN_MS,
+  DAEMON_OFFLINE_SWEEP_MS,
+  DAEMON_STALE_MS,
+} from "../protocol.ts";
 import { TERMINAL_UPDATE_RETENTION_MS } from "../../../lib/update/constants.ts";
 import { cellTrace, isDaemonDebugEnabled, logDebug, logInfo } from "../../../logger.ts";
 import { onDaemonUpdateExpired } from "../control-plane-monitor.ts";
@@ -460,6 +464,16 @@ export class RedisDaemonCell implements DaemonCell {
     return demoted;
   }
 
+  /**
+   * Retain-on-terminal, then prune: every terminal kind keeps its correlation
+   * HASH for {@link TERMINAL_UPDATE_RETENTION_MS} (DO parity — done/failed rows
+   * survive until alarm/prune). {@link prune} reaps via {@link #purgeRequestRecord}.
+   *
+   * Redis EXPIRE is only a leak backstop — it must outlive retention plus one
+   * {@link DAEMON_CELL_MAINTAIN_MS} tick so {@link prune} can
+   * {@link #purgeRequestRecord} (HASH + leftover Stream entries) before the key
+   * vanishes.
+   */
   async #cleanupTerminalRequest(
     requestId: string,
     callSite: string,
@@ -473,17 +487,13 @@ export class RedisDaemonCell implements DaemonCell {
       return;
     }
 
-    const retainMs = recordFields.requestKind === "update"
-      ? TERMINAL_UPDATE_RETENTION_MS
-      : 0;
-    if (retainMs > 0) {
-      const retainUntil = nowIso(Date.now() + retainMs);
-      await redis.hset(reqKey, { expiresAt: retainUntil });
-      await redis.expire(reqKey, Math.ceil(retainMs / 1000));
-      return;
-    }
-
-    await this.#purgeRequestRecord(requestId, callSite, recordFields);
+    const retainUntil = nowIso(Date.now() + TERMINAL_UPDATE_RETENTION_MS);
+    await redis.hset(reqKey, { expiresAt: retainUntil });
+    // Safety TTL only — prune owns deletion of the HASH and Stream leftovers.
+    const safetyTtlSeconds = Math.ceil(
+      (TERMINAL_UPDATE_RETENTION_MS + DAEMON_CELL_MAINTAIN_MS) / 1000,
+    ) + 1;
+    await redis.expire(reqKey, safetyTtlSeconds);
   }
 
   async attachDaemonSocket(meta: {
@@ -512,6 +522,10 @@ export class RedisDaemonCell implements DaemonCell {
       }
     }
 
+    // DO holds the daemon-socket lease in-memory (getWebSockets() + hibernation
+    // attachments). Redis persists leaseKey because the Deno process has no
+    // per-connection isolate memory — RECONCILE_STALE_SOCKET_PRESENCE (lua.ts)
+    // and reclaimOrphanedSocketLeaseOnStartup depend on lease + meta.
     const acquired = await redis.setnxPersistent(leaseK, connectionId);
     if (!acquired) {
       throw new Error("daemon socket lease acquisition failed");
@@ -522,6 +536,10 @@ export class RedisDaemonCell implements DaemonCell {
 
     // connectionId/connected persist in meta HASH because Redis has no
     // per-connection isolate memory (needed by Lua sweep + orphan reclaim).
+    // Intentionally retain connected, connectionId, lastInboundAt, lastSeenAt,
+    // connectedAt (+ keyLastUsedAt) on Redis for the Lua sweep, snapshotFromMeta,
+    // and projection — even though the DO cell table dropped connected_at /
+    // last_seen_at / agent_json. Do not strip them.
     await redis.hset(metaKey(this.#serverId), {
       connected: "1",
       connectionId,
@@ -1081,6 +1099,8 @@ export class RedisDaemonCell implements DaemonCell {
     );
     if (isTerminalStatus(terminalRecord.status)) {
       this.#terminalResults.set(inbound.requestId, terminalRecord);
+      // Delivery is already acked via the outbox Stream (ackOutbox); no
+      // separate delivery bookkeeping is needed at completion.
       await this.#cleanupTerminalRequest(inbound.requestId, callSite, {
         ...fields,
         ...updates,
@@ -1208,13 +1228,9 @@ export class RedisDaemonCell implements DaemonCell {
     await this.enqueue(outbound);
     const result = await this.waitForRequest(outbound.requestId, timeoutMs);
     if (result) {
+      // Completion path already retained the row; do not purge — matches DO
+      // createRequestAndWait (never deletes on success; prune reaps later).
       if (isTerminalStatus(result.status)) {
-        if (result.requestKind !== "update") {
-          await this.#cleanupTerminalRequest(
-            outbound.requestId,
-            "createRequestAndWait",
-          );
-        }
         this.#terminalResults.delete(outbound.requestId);
       }
       return result;
@@ -1235,13 +1251,20 @@ export class RedisDaemonCell implements DaemonCell {
       expiresAt: expiredAt,
       finishedAt: expiredAt,
     };
+    // Kind-conditional expiry matches DO #expireRequest: retain update;
+    // purge non-update immediately (do not route through retain-all cleanup).
     if (outbound.kind === "update") {
       await this.#projectUpdateExpired(outbound.requestId, expiredAt);
+      await this.#cleanupTerminalRequest(
+        outbound.requestId,
+        "createRequestAndWait",
+      );
+    } else {
+      await this.#purgeRequestRecord(
+        outbound.requestId,
+        "createRequestAndWait",
+      );
     }
-    await this.#cleanupTerminalRequest(
-      outbound.requestId,
-      "createRequestAndWait",
-    );
     this.#terminalResults.delete(outbound.requestId);
     return expiredRecord;
   }
@@ -1370,6 +1393,8 @@ export class RedisDaemonCell implements DaemonCell {
   ): Promise<void> {
     this.#bumpMethodRoute("ackOutbox");
     const redis = this.#redis("ackOutbox");
+    // Correlation state is not discarded here — it lives on the request HASH
+    // until terminal+retention. xack+xdel only marks delivery done.
     const streamIds: string[] = [];
     for (const deliveryId of deliveryIds) {
       const streamId = await this.#resolveStreamIdForDelivery(
@@ -1421,7 +1446,7 @@ export class RedisDaemonCell implements DaemonCell {
             error: "Update timed out waiting for daemon acknowledgement",
           });
           await this.#projectUpdateExpired(requestId, finishedAt);
-          await this.#cleanupTerminalRequest(requestId, "clearUpdateStatus", {
+          await this.#purgeRequestRecord(requestId, "clearUpdateStatus", {
             ...fields,
             status: "expired",
             finishedAt,
@@ -1448,6 +1473,7 @@ export class RedisDaemonCell implements DaemonCell {
     const reqKey = requestKey(this.#serverId, requestId);
     const indexKey = requestsKey(this.#serverId);
     const recordFields = fields ?? await redis.hgetall(reqKey);
+    this.#terminalResults.delete(requestId);
     if (!recordFields) {
       await redis.zrem(indexKey, requestId);
       return;
@@ -1482,7 +1508,7 @@ export class RedisDaemonCell implements DaemonCell {
         requestKey(this.#serverId, requestId),
       );
       if (!fields) {
-        await redis.zrem(indexKey, requestId);
+        await this.#purgeRequestRecord(requestId, "prune");
         continue;
       }
       const expiresAtMs = Date.parse(fields.expiresAt ?? "");
@@ -1495,8 +1521,8 @@ export class RedisDaemonCell implements DaemonCell {
           expiredUpdates.push({ requestId, finishedAt });
           await this.#projectUpdateExpired(requestId, finishedAt);
         }
-        await redis.del(requestKey(this.#serverId, requestId));
-        await redis.zrem(indexKey, requestId);
+        // Prune merged correlation row + any leftover outbox Stream entries.
+        await this.#purgeRequestRecord(requestId, "prune", fields);
       }
     }
     return expiredUpdates;

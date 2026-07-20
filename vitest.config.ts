@@ -40,10 +40,13 @@ export default defineWorkersConfig({
         isolatedStorage: false,
         miniflare: {
           bindings: {
-            TURBOPANEL_SECRET: 'aa_daemon_cell_vitest_secret_value_aaaa_b',
+            TURBOPANEL_SECRET: 'aa_daemon_cell_vitest_secret_value_aaaa_b_pad_abcdefghij0',
             // Construct-time DO binding — runtime `env.TURBOPANEL_DAEMON_DEBUG = …`
             // in tests does not update the Durable Object's env snapshot.
             TURBOPANEL_DAEMON_DEBUG: '1',
+            // Same construct-time pattern for inbound flood-cap tests.
+            TURBOPANEL_DAEMON_WS_INBOUND_LIMIT: '120',
+            TURBOPANEL_DAEMON_WS_INBOUND_WINDOW_MS: '60000',
           },
         },
       },
