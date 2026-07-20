@@ -308,18 +308,18 @@ async function applyEmailSettingMutations(
 /**
  * Decrypt a DB-stored email secret value for runtime use.
  *
- * New writes always store `tpsecret` envelopes. Legacy plaintext values are
- * returned as-is for migration compatibility. When a value is a sealed envelope
- * but no data-encryption secrets are available (or decryption fails), returns
- * `undefined` so the setting resolves as unset rather than leaking ciphertext.
+ * DB values for `MAILGUN_API_KEY` / `SMTP_PASS` must be `tpsecret` envelopes.
+ * Plaintext or other non-envelope material fails closed (`undefined`) so the
+ * setting resolves as unset rather than activating an unsealed secret. When a
+ * value is a sealed envelope but no data-encryption secrets are available (or
+ * decryption fails), returns `undefined` so ciphertext is never leaked.
  */
 async function decryptEmailSecretValue(
   value: string,
   dataEncryptionSecrets: DerivedSecretsConfig | undefined,
 ): Promise<string | undefined> {
   if (!isSealedEnvelope(value)) {
-    // Legacy plaintext — readable for migration compatibility.
-    return value
+    return undefined
   }
   if (!dataEncryptionSecrets) {
     return undefined

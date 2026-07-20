@@ -34,7 +34,6 @@ export type ServerFleetPresence = {
   directAttach: boolean;
   keyId: string | null;
   connectedAt: string | null;
-  lastProjectedAt: string | null;
   lastInboundAt: string | null;
   lastSeenAt: string | null;
   keyLastUsedAt: string | null;
@@ -143,7 +142,7 @@ export async function resolveFleetPresence(
 
     const lastInboundAt = snapshot
       ? resolveLastInboundAt(snapshot)
-      : projection?.lastSeenAt ?? projection?.lastProjectedAt ?? null;
+      : projection?.lastSeenAt ?? null;
 
     result.set(row.id, {
       serverId: row.id,
@@ -154,10 +153,8 @@ export async function resolveFleetPresence(
       directAttach: rawRemote === "__direct__",
       keyId: projection?.keyId ?? state?.key.id ?? null,
       connectedAt: snapshot?.connectedAt ?? projection?.connectedAt ?? null,
-      lastProjectedAt: projection?.lastProjectedAt ?? null,
       lastInboundAt,
-      lastSeenAt: snapshot?.lastSeenAt ?? projection?.lastSeenAt ??
-        projection?.lastProjectedAt ?? null,
+      lastSeenAt: snapshot?.lastSeenAt ?? projection?.lastSeenAt ?? null,
       keyLastUsedAt: snapshot?.keyLastUsedAt ?? null,
       agent: projection?.agent ?? snapshot?.agent ?? undefined,
       geo: parseServerGeo(metadata.geo),
@@ -183,7 +180,7 @@ export async function resolveOnlineFleetPresence(
 export function fleetPresenceToConnection(presence: ServerFleetPresence) {
   return {
     id: presence.serverId,
-    connectedAt: presence.connectedAt ?? presence.lastProjectedAt ?? "",
+    connectedAt: presence.connectedAt ?? "",
     hostname: presence.hostname,
     serverId: presence.serverId,
     keyId: presence.keyId,

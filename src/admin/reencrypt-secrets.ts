@@ -2,8 +2,10 @@
  * Superadmin at-rest secret re-encryption sweep.
  *
  * Re-seals only non-current `tpsecret` blobs under `variable.value`,
- * `tls.privateKeyPem`, and `principal.password`. Never touches `tpdaemon`
- * envelopes or plaintext — those are skipped by construction.
+ * `tls.privateKeyPem`, `principal.password`, and email secret keys in the
+ * `SYSTEM_EMAIL` setting row. Variable/TLS/principal sweeps skip `tpdaemon`
+ * envelopes and plaintext by construction. Email secret keys that are not
+ * valid `tpsecret` envelopes are counted as `failed` (invalid/unsupported).
  *
  * Every write is conditional on the original envelope still being present
  * (compare-and-swap on id + secret column) so a concurrent update during
@@ -241,7 +243,12 @@ async function sweepEmailSettingSecrets(
 
     summary.scanned += 1
     const parsed = parseSecretEnvelope(raw)
-    if (parsed === null || parsed.keyVersion === secrets.current.version) {
+    if (parsed === null) {
+      // Plaintext or other non-tpsecret material is invalid at rest.
+      summary.failed += 1
+      continue
+    }
+    if (parsed.keyVersion === secrets.current.version) {
       summary.skipped += 1
       continue
     }

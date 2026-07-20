@@ -85,7 +85,6 @@ export type ServerDaemonProjectionRead = Omit<
   update?: UpdateProjection;
   connected: boolean;
   connectedAt?: string | null;
-  lastProjectedAt?: string | null;
   daemonConnected: boolean;
   daemonConnectedAt?: string | null;
   lastSeenAt?: string | null;
@@ -885,7 +884,6 @@ function toProjectionRead(row: {
     ...presenceProjection,
     connected: status.connected,
     connectedAt: status.connectedAt,
-    lastProjectedAt: status.lastSeenAt,
     daemonConnected: status.connected,
     daemonConnectedAt: status.connectedAt,
     lastSeenAt: status.lastSeenAt,

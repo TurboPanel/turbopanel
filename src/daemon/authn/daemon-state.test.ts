@@ -25,7 +25,6 @@ test("parseServerDaemonState prefers explicit status over projection", () => {
     key: baseKey,
     projection: {
       hostname: "legacy-host",
-      lastProjectedAt: "2020-01-01T00:00:00.000Z",
     },
     status: {
       connected: false,
@@ -40,6 +39,7 @@ test("parseServerDaemonState prefers explicit status over projection", () => {
   const parsed = parseServerDaemonState(row);
   assertEquals(parsed?.status?.connected, false);
   assertEquals(parsed?.status?.lastSeenAt, "2020-02-01T00:00:00.000Z");
+  assertEquals(parsed?.projection?.hostname, "legacy-host");
 });
 
 test("parseServerDaemonState without status uses no status field", () => {

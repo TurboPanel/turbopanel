@@ -6,6 +6,7 @@ import {
   COLOCATED_SERVER_DISPLAY_NAME,
   completeInstanceInstall,
   DEFAULT_ORGANIZATION_NAME,
+  getInstallStatus,
   INSTANCE_ALREADY_CONFIGURED_ERROR,
   INSTANCE_INSTALL_SENTINEL_KEY,
   isInstanceInstalled,
@@ -26,6 +27,55 @@ import {
 } from '../../lib/db/schema.ts'
 
 const dbUrl = getDatabaseUrl()
+
+it('unmigrated database does not report needsInstall as a normal state', async () => {
+  const missingRelation = Object.assign(
+    new Error('relation "organization" does not exist'),
+    { code: '42P01' },
+  )
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.reject(missingRelation),
+        }),
+      }),
+    }),
+  } as unknown as Db
+
+  let installedThrew = false
+  try {
+    await isInstanceInstalled(db)
+  } catch (err) {
+    installedThrew = true
+    if (!(err instanceof Error) || !err.message.includes('does not exist')) {
+      throw new Error(`unexpected isInstanceInstalled error: ${err}`)
+    }
+    if ((err as { code?: string }).code !== '42P01') {
+      throw new Error('expected PostgreSQL undefined_table code 42P01')
+    }
+  }
+  if (!installedThrew) {
+    throw new Error(
+      'expected isInstanceInstalled to throw for an unmigrated database',
+    )
+  }
+
+  let statusThrew = false
+  try {
+    await getInstallStatus(db)
+  } catch (err) {
+    statusThrew = true
+    if (!(err instanceof Error) || !err.message.includes('does not exist')) {
+      throw new Error(`unexpected getInstallStatus error: ${err}`)
+    }
+  }
+  if (!statusThrew) {
+    throw new Error(
+      'expected getInstallStatus to throw rather than report needsInstall',
+    )
+  }
+})
 
 async function cleanupInstall(db: Db, organizationId: string, userId: string) {
   await db.delete(grant).where(eq(grant.actorId, userId))

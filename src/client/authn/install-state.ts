@@ -1,7 +1,6 @@
 import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import type { DerivedSecretsConfig } from './secrets.ts'
-import { isMissingRelationError } from '../../db-errors.ts'
 import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
 import { resolveFleetPresence } from '../../daemon/cell/fleet-presence.ts'
 import {
@@ -301,28 +300,23 @@ function resolveColocatedLicenseCredentialsDir(): string {
 
 /** True once an org has a name and at least one superadmin account exists. */
 export async function isInstanceInstalled(db: Db): Promise<boolean> {
-  try {
-    const orgRows = await db
-      .select({ id: organization.id })
-      .from(organization)
-      .where(isNotNull(organization.displayName))
-      .limit(1)
+  const orgRows = await db
+    .select({ id: organization.id })
+    .from(organization)
+    .where(isNotNull(organization.displayName))
+    .limit(1)
 
-    if (orgRows.length === 0) return false
+  if (orgRows.length === 0) return false
 
-    const adminRows = await db
-      .select({ id: user.id, role: user.role })
-      .from(user)
-      .where(eq(user.role, SUPERADMIN_ROLE))
-      .limit(1)
+  const adminRows = await db
+    .select({ id: user.id, role: user.role })
+    .from(user)
+    .where(eq(user.role, SUPERADMIN_ROLE))
+    .limit(1)
 
-    if (adminRows.length === 0) return false
+  if (adminRows.length === 0) return false
 
-    return true
-  } catch (err) {
-    if (isMissingRelationError(err)) return false
-    throw err
-  }
+  return true
 }
 
 export async function isSignupEnabled(
@@ -330,27 +324,20 @@ export async function isSignupEnabled(
   envOverride?: SignupEnvOverride,
   runtime: 'deno' | 'workers' = 'deno',
 ): Promise<boolean> {
-  try {
-    const rows = await db
-      .select({ value: setting.value })
-      .from(setting)
-      .where(eq(setting.key, IS_SIGNUP_ENABLED_CONFIG_KEY))
-      .limit(1)
+  const rows = await db
+    .select({ value: setting.value })
+    .from(setting)
+    .where(eq(setting.key, IS_SIGNUP_ENABLED_CONFIG_KEY))
+    .limit(1)
 
-    const raw = rows[0]?.value
-    let dbValue: string | null = null
-    if (typeof raw === 'string') {
-      dbValue = raw
-    } else if (raw != null) {
-      dbValue = String(raw)
-    }
-    return resolveIsSignupEnabled(dbValue, envOverride, { runtime })
-  } catch (err) {
-    if (isMissingRelationError(err)) {
-      return resolveIsSignupEnabled(undefined, envOverride, { runtime })
-    }
-    throw err
+  const raw = rows[0]?.value
+  let dbValue: string | null = null
+  if (typeof raw === 'string') {
+    dbValue = raw
+  } else if (raw != null) {
+    dbValue = String(raw)
   }
+  return resolveIsSignupEnabled(dbValue, envOverride, { runtime })
 }
 
 /**
@@ -396,24 +383,20 @@ export async function getSignupSettingMeta(
   }
 
   let dbValue: '0' | '1' | null = null
-  try {
-    const rows = await db
-      .select({ value: setting.value })
-      .from(setting)
-      .where(eq(setting.key, IS_SIGNUP_ENABLED_CONFIG_KEY))
-      .limit(1)
-    const raw = rows[0]?.value
-    let asString: string | null = null
-    if (typeof raw === 'string') {
-      asString = raw
-    } else if (raw != null) {
-      asString = String(raw)
-    }
-    if (asString === '0' || asString === '1') {
-      dbValue = asString
-    }
-  } catch (err) {
-    if (!isMissingRelationError(err)) throw err
+  const rows = await db
+    .select({ value: setting.value })
+    .from(setting)
+    .where(eq(setting.key, IS_SIGNUP_ENABLED_CONFIG_KEY))
+    .limit(1)
+  const raw = rows[0]?.value
+  let asString: string | null = null
+  if (typeof raw === 'string') {
+    asString = raw
+  } else if (raw != null) {
+    asString = String(raw)
+  }
+  if (asString === '0' || asString === '1') {
+    dbValue = asString
   }
 
   return {

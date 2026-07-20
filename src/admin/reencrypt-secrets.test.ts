@@ -149,14 +149,12 @@ test('reencryptAtRestSecrets reseals old tpsecret blobs and skips tpdaemon/curre
   const v1PrincipalPlain = 'principal-v1-password'
   const v2VariablePlain = 'variable-already-v2'
   const daemonPlain = 'daemon-bound-secret'
-  const v1MailgunKeyPlain = 'mailgun-v1-api-key'
   const v1SmtpPassPlain = 'smtp-v1-password'
 
   const v1VariableEnvelope = await encryptSecret(v1Only, v1VariablePlain)
   const v1TlsEnvelope = await encryptSecret(v1Only, v1TlsPlain)
   const v1PrincipalEnvelope = await encryptSecret(v1Only, v1PrincipalPlain)
   const v2VariableEnvelope = await encryptSecret(rotated, v2VariablePlain)
-  const v1MailgunKeyEnvelope = await encryptSecret(v1Only, v1MailgunKeyPlain)
   const v1SmtpPassEnvelope = await encryptSecret(v1Only, v1SmtpPassPlain)
   const daemonEnvelope = await encryptSecretForDaemon(
     secretsConfig,
@@ -254,13 +252,13 @@ test('reencryptAtRestSecrets reseals old tpsecret blobs and skips tpdaemon/curre
         })
         .returning({ id: principal.id })
 
-      // Single SYSTEM_EMAIL row: two old-version secret keys + a plaintext
-      // non-secret key (PROVIDER) that must be left untouched.
+      // Single SYSTEM_EMAIL row: one plaintext secret (invalid/unsupported),
+      // one old-version sealed secret, plus a plaintext non-secret PROVIDER.
       await scoped.insert(setting).values({
         key: SYSTEM_EMAIL_DB_KEY,
         value: {
           PROVIDER: 'mailgun',
-          MAILGUN_API_KEY: v1MailgunKeyEnvelope,
+          MAILGUN_API_KEY: 'plaintext-legacy-mailgun-key',
           SMTP_PASS: v1SmtpPassEnvelope,
         },
       })
@@ -268,11 +266,13 @@ test('reencryptAtRestSecrets reseals old tpsecret blobs and skips tpdaemon/curre
       const summary = await reencryptAtRestSecrets(scoped, rotated)
 
       // Fixture-only schema: 4 variables + 1 tls + 1 principal + 2 email secrets.
+      // Plaintext MAILGUN_API_KEY fails; sealed SMTP_PASS reseals; unknown-version
+      // variable fails.
       assertEquals(summary, {
         scanned: 8,
-        reencrypted: 5,
+        reencrypted: 4,
         skipped: 2,
-        failed: 1,
+        failed: 2,
       })
 
       const [updatedV1Var] = await scoped
@@ -309,11 +309,9 @@ test('reencryptAtRestSecrets reseals old tpsecret blobs and skips tpdaemon/curre
       const emailObj = updatedEmail!.value as Record<string, string>
       // Non-secret key stays plaintext and unchanged.
       assertEquals(emailObj.PROVIDER, 'mailgun')
-      assertEquals(parseSecretEnvelope(emailObj.MAILGUN_API_KEY), { keyVersion: 2 })
-      assertEquals(
-        await decryptSecret(rotated, emailObj.MAILGUN_API_KEY),
-        v1MailgunKeyPlain,
-      )
+      // Plaintext secret is left untouched and counted as failed (not migrated).
+      assertEquals(emailObj.MAILGUN_API_KEY, 'plaintext-legacy-mailgun-key')
+      assertEquals(parseSecretEnvelope(emailObj.MAILGUN_API_KEY), null)
       assertEquals(parseSecretEnvelope(emailObj.SMTP_PASS), { keyVersion: 2 })
       assertEquals(
         await decryptSecret(rotated, emailObj.SMTP_PASS),

@@ -109,6 +109,9 @@ function createFakeSettingDb() {
     getStored(): Record<string, unknown> | undefined {
       return stored
     },
+    seedStored(value: Record<string, unknown>) {
+      stored = value
+    },
   }
   return db
 }
@@ -347,5 +350,30 @@ describe('DB-backed email secret encryption', () => {
       source: 'env',
       value: null,
     })
+  })
+
+  it('does not activate plaintext DB secret values', async () => {
+    const secrets = await deriveDataEncryptionSecrets(`1:${V1_SECRET}`)
+    const fakeDb = createFakeSettingDb()
+    fakeDb.seedStored({
+      PROVIDER: 'mailgun',
+      MAILGUN_API_KEY: 'plaintext-mailgun-key',
+      MAILGUN_DOMAIN: 'mg.example.com',
+      SMTP_PASS: 'plaintext-smtp-pass',
+    })
+
+    const resolved = await resolveEmailSettings(
+      fakeDb as unknown as Db,
+      {},
+      secrets,
+    )
+
+    expect(resolved.mailgunApiKey).toBeUndefined()
+    expect(resolved.keys.MAILGUN_API_KEY.source).toBe('default')
+    expect(resolved.keys.MAILGUN_API_KEY.value).toBe('')
+    expect(resolved.keys.SMTP_PASS.source).toBe('default')
+    expect(resolved.keys.SMTP_PASS.value).toBe('')
+    expect(isEmailActiveForRuntime(resolved, 'workers')).toBe(false)
+    expect(isEmailActiveForRuntime(resolved, 'deno')).toBe(false)
   })
 })

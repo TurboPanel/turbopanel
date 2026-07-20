@@ -8,7 +8,11 @@ The co-located dev server has live data — treat every database change as produ
 
 ## Schema sync directions
 
-> **Fresh database:** co-located dev converge runs `./scripts/bootstrap-dev-db.sh` via Ansible (`pnpm migrate`). Manual bootstrap: `./scripts/bootstrap-dev-db.sh` from the instance repo root.
+> **Fresh database:** versioned `pnpm migrate` is the only bootstrap path. Co-located
+> dev converge runs `./scripts/bootstrap-dev-db.sh` via Ansible (`pnpm migrate`).
+> Manual bootstrap: `./scripts/bootstrap-dev-db.sh` from the instance repo root.
+> An unmigrated database is an operational failure (missing relations propagate);
+> it must not be treated as install mode / `needsInstall`.
 
 | Direction | You changed | Command | drizzle-kit |
 |---|---|---|---|
