@@ -59,8 +59,9 @@ export function createWorkersDb(
   const client = postgres(hyperdrive.connectionString, {
     ...PG_OPTS_WORKERS,
     connect_timeout: options.connectTimeoutSeconds ?? DEFAULT_WORKERS_CONNECT_TIMEOUT_S,
-    // Only bound idle connections when asked — the shared request isolate keeps a
-    // long-lived connection on purpose; the DO projection closes per call anyway.
+    // Only bound idle connections when asked. The Worker request isolate reuses
+    // one client per connection string via `resolveWorkersDb` (do not end it).
+    // Durable Object projection opens a short-lived client and closes per call.
     ...(options.idleTimeoutSeconds !== undefined
       ? { idle_timeout: options.idleTimeoutSeconds }
       : {}),

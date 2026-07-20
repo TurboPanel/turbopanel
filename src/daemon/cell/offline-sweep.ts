@@ -42,7 +42,7 @@
  * granularity) plus `OFFLINE_SWEEP_STALE_MS` grace — worst case is close to
  * but a good deal cheaper than re-arming a DO alarm per server.
  */
-import { type Db, endDbConnection } from "../../db.ts";
+import type { Db } from "../../db.ts";
 import { resolveWorkersDb } from "../../workers-bindings.ts";
 import { createDurableObjectDaemonCellRegistry } from "./do-registry.ts";
 import {
@@ -578,6 +578,7 @@ export async function sweepOnce(
 
 /** Cron Trigger entry point (`workers.ts` `scheduled()`). */
 export async function runOfflineSweep(env: CloudflareBindings): Promise<void> {
+  // Isolate-scoped Hyperdrive singleton — do not endDbConnection here.
   const db = resolveWorkersDb(env);
   if (!db) return;
 
@@ -587,7 +588,5 @@ export async function runOfflineSweep(env: CloudflareBindings): Promise<void> {
     sweepTrace("sweep-failed", {
       error: err instanceof Error ? err.message : String(err),
     });
-  } finally {
-    await endDbConnection(db);
   }
 }

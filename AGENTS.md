@@ -162,6 +162,8 @@ Route handlers read the per-request client via `getDb(c)` (set by `createApp({ d
 
 The Workers DB client uses `prepare: true` on postgres.js. Hyperdrive has supported named prepared statements since June 2024 and manages their lifecycle across its internal connection pool — per-session state is not a concern. Setting `prepare: true` is **required** for Hyperdrive to cache parameterized `SELECT` queries on the `HYPERDRIVE_CACHED` binding; with `prepare: false`, Hyperdrive sends every query as a simple (unprepared) query and marks all parameterized reads as uncacheable.
 
+**Isolate-scoped clients:** `resolveWorkersDb` / `resolveWorkersCachedDb` (`src/workers-bindings.ts`) reuse one postgres.js client per connection string for the Worker isolate lifetime (fetch / queue / offline-sweep cron). Never `endDbConnection` those handles — stacking a new `postgres(...)` per request leaks until the 128 MB isolate limit. Durable Object projection still opens short-lived clients via `createWorkersDb` and closes them in `finally`.
+
 Previously `prepare: false` was used because older Hyperdrive versions did not support prepared statements. That restriction no longer applies.
 
 **Unsupported PostgreSQL features** (do not rely on these on the Workers/Hyperdrive path):

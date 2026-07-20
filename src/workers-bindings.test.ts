@@ -1,8 +1,10 @@
 import { assert, assertEquals } from 'jsr:@std/assert'
 import {
+  clearWorkersDbIsolateCacheForTests,
   resolveWorkersCachedDb,
   resolveWorkersClientAuthRateLimiter,
   resolveWorkersDaemonRateLimiters,
+  resolveWorkersDb,
   resolveWorkersQueryCache,
   isPlaceholderHyperdriveCachedId,
   setWorkersDbFactoryForTests,
@@ -26,7 +28,71 @@ function mockDb(label: string): Db {
  */
 const test = Deno.test.bind(Deno)
 
+test('resolveWorkersDb reuses one client per connection string in the isolate', () => {
+  let createCount = 0
+  setWorkersDbFactoryForTests((binding: HyperdriveBinding) => {
+    createCount += 1
+    return mockDb(`primary:${binding.connectionString}:${createCount}`)
+  })
+
+  try {
+    const env = {
+      HYPERDRIVE: mockHyperdrive('postgres://primary'),
+    } as CloudflareBindings
+
+    const first = resolveWorkersDb(env)
+    const second = resolveWorkersDb(env)
+    assert(first !== undefined)
+    assertEquals(first, second)
+    assertEquals(createCount, 1)
+  } finally {
+    setWorkersDbFactoryForTests(null)
+  }
+})
+
+test('resolveWorkersCachedDb reuses one client per cached connection string', () => {
+  let createCount = 0
+  setWorkersDbFactoryForTests((binding: HyperdriveBinding) => {
+    createCount += 1
+    return mockDb(`cached:${binding.connectionString}:${createCount}`)
+  })
+
+  try {
+    const env = {
+      HYPERDRIVE_CACHED: mockHyperdrive('postgres://cached'),
+    } as CloudflareBindings
+
+    const first = resolveWorkersCachedDb(env)
+    const second = resolveWorkersCachedDb(env)
+    assertEquals(first, second)
+    assertEquals(createCount, 1)
+  } finally {
+    setWorkersDbFactoryForTests(null)
+  }
+})
+
+test('resolveWorkersQueryCache reuses the Hyperdrive wrapper across resolves', () => {
+  setWorkersDbFactoryForTests((binding: HyperdriveBinding) =>
+    mockDb(binding.connectionString)
+  )
+
+  try {
+    const env = {
+      HYPERDRIVE: mockHyperdrive('postgres://primary'),
+      HYPERDRIVE_CACHED: mockHyperdrive('postgres://cached'),
+    } as CloudflareBindings
+    const primary = resolveWorkersDb(env)
+    const first = resolveWorkersQueryCache(env, primary)
+    const second = resolveWorkersQueryCache(env, primary)
+    assert(first !== undefined)
+    assertEquals(first, second)
+  } finally {
+    setWorkersDbFactoryForTests(null)
+  }
+})
+
 test('resolveWorkersCachedDb returns undefined when HYPERDRIVE_CACHED is absent', () => {
+  clearWorkersDbIsolateCacheForTests()
   const env = {
     HYPERDRIVE: mockHyperdrive('postgres://primary'),
     TURBOPANEL_DATABASE_URL: 'postgres://fallback',
@@ -54,6 +120,7 @@ test('resolveWorkersCachedDb returns a database when HYPERDRIVE_CACHED is presen
 })
 
 test('resolveWorkersQueryCache uses passthrough when HYPERDRIVE_CACHED is absent', async () => {
+  clearWorkersDbIsolateCacheForTests()
   const db = mockDb('primary')
   const env = {
     HYPERDRIVE: mockHyperdrive('postgres://primary'),
