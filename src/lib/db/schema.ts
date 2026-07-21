@@ -440,7 +440,9 @@ export const managed = pgTable(
     updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
-    projectId: uuid('project_id').notNull(),
+    projectId: uuid('project_id'),
+    serverId: uuid('server_id'),
+    displayName: varchar('display_name', { length: 255 }),
     metadata: jsonb(),
     options: jsonb(),
   },
@@ -449,12 +451,31 @@ export const managed = pgTable(
       'btree',
       table.projectId.asc().nullsLast().op('uuid_ops')
     ),
+    index('idx_managed_server_id').using(
+      'btree',
+      table.serverId.asc().nullsLast().op('uuid_ops')
+    ),
     foreignKey({
       columns: [table.projectId],
       foreignColumns: [project.id],
       name: 'managed_project_id_project_id_fk',
     }).onDelete('cascade'),
-    unique('managed_project_id_unique').on(table.projectId),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'managed_server_id_server_id_fk',
+    }).onDelete('restrict'),
+    uniqueIndex('managed_project_id_unique')
+      .on(table.projectId)
+      .where(sql`${table.projectId} IS NOT NULL`),
+    check(
+      'managed_parent_check',
+      sql`(${table.projectId} IS NOT NULL) OR (${table.serverId} IS NOT NULL)`,
+    ),
+    check(
+      'managed_display_name_format_check',
+      sql`(${table.displayName} IS NULL) OR (((char_length((${table.displayName})::text) >= 1) AND (char_length((${table.displayName})::text) <= 255)) AND ((${table.displayName})::text ~ '^[A-Za-z0-9 ._-]+$'::text))`,
+    ),
   ]
 )
 export const environment = pgTable(

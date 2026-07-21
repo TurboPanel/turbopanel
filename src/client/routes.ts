@@ -21,6 +21,7 @@ import { registerContainerRoutes } from './containers/routes.ts'
 import { registerHostingRoutes } from './hostings/routes.ts'
 import { registerTlsRoutes } from './tls/routes.ts'
 import { registerLicenseRoutes } from './licenses/routes.ts'
+import { registerManagedServiceRoutes } from './managed/routes.ts'
 import { registerNetworkRoutes } from './networks/routes.ts'
 import { registerProjectRoutes } from './projects/routes.ts'
 import { registerServerRoutes } from './servers/routes.ts'
@@ -64,6 +65,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
   })
 
   registerServerRoutes(client, opts)
+  registerManagedServiceRoutes(client, opts)
   registerNetworkRoutes(client, opts)
   registerLicenseRoutes(client, opts)
   registerOrganizationRoutes(client, opts)

@@ -263,19 +263,28 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         SELECT 'managed'::text AS entity_type, m.id AS entity_id, 0 AS depth
         FROM managed m WHERE m.id = ${entityId}::uuid
         UNION ALL
+        SELECT 'server'::text, m.server_id, 1
+        FROM managed m
+        WHERE m.id = ${entityId}::uuid AND m.server_id IS NOT NULL
+        UNION ALL
+        SELECT 'organization'::text, s.organization_id, 2
+        FROM managed m
+        JOIN server s ON s.id = m.server_id
+        WHERE m.id = ${entityId}::uuid AND m.server_id IS NOT NULL
+        UNION ALL
         SELECT 'project'::text, m.project_id, 1
-        FROM managed m WHERE m.id = ${entityId}::uuid
+        FROM managed m WHERE m.id = ${entityId}::uuid AND m.project_id IS NOT NULL
         UNION ALL
         SELECT 'workspace'::text, p.workspace_id, 2
         FROM managed m
         JOIN project p ON p.id = m.project_id
-        WHERE m.id = ${entityId}::uuid
+        WHERE m.id = ${entityId}::uuid AND m.project_id IS NOT NULL
         UNION ALL
         SELECT 'organization'::text, w.organization_id, 3
         FROM managed m
         JOIN project p ON p.id = m.project_id
         JOIN workspace w ON w.id = p.workspace_id
-        WHERE m.id = ${entityId}::uuid
+        WHERE m.id = ${entityId}::uuid AND m.project_id IS NOT NULL
       `
     case 'variable':
       return sql`

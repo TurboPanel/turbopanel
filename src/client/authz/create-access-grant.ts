@@ -337,12 +337,25 @@ export async function resolveEntityOrganizationId(
     }
     case 'managed': {
       const rows = await db.execute<{ organization_id: string }>(sql`
-        SELECT w.organization_id
-        FROM managed m
-        JOIN project p ON p.id = m.project_id
-        JOIN workspace w ON w.id = p.workspace_id
-        WHERE m.id = ${entityId}::uuid
-        LIMIT 1
+        SELECT COALESCE(
+          (
+            SELECT w.organization_id
+            FROM managed m
+            JOIN project p ON p.id = m.project_id
+            JOIN workspace w ON w.id = p.workspace_id
+            WHERE m.id = ${entityId}::uuid
+              AND m.project_id IS NOT NULL
+            LIMIT 1
+          ),
+          (
+            SELECT s.organization_id
+            FROM managed m
+            JOIN server s ON s.id = m.server_id
+            WHERE m.id = ${entityId}::uuid
+              AND m.server_id IS NOT NULL
+            LIMIT 1
+          )
+        ) AS organization_id
       `)
       return rows[0]?.organization_id ?? null
     }

@@ -8,6 +8,13 @@
       "when": 1784346875988,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1784646818925,
+      "tag": "0001_extend_managed_for_server_services",
+      "breakpoints": true
     }
   ]
 }
