@@ -21,6 +21,7 @@ import {
   hierarchyDeleteHasChildrenResponse,
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
+import { parseServiceOptions } from '../../lib/service-options.ts'
 
 export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
   router.use('/services', createSessionMiddleware(opts.secrets))
@@ -154,6 +155,13 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
     const optionsResult = parseJsonbObject(c, body, 'options')
     if (optionsResult instanceof Response) return optionsResult
 
+    let validatedOptions: Record<string, unknown> | null = null
+    if (optionsResult !== null) {
+      const parsed = parseServiceOptions(optionsResult)
+      if (parsed === null) return c.json({ error: 'invalid_service_options' }, 400)
+      validatedOptions = parsed
+    }
+
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(service)
@@ -162,7 +170,7 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
           description,
           environmentId,
           ...(metadataResult !== null ? { metadata: metadataResult } : {}),
-          ...(optionsResult !== null ? { options: optionsResult } : {}),
+          ...(validatedOptions !== null ? { options: validatedOptions } : {}),
         })
         .returning({ id: service.id })
       return inserted.id
@@ -213,7 +221,11 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const optionsResult = parseJsonbObject(c, body, 'options')
     if (optionsResult instanceof Response) return optionsResult
-    if (optionsResult !== null) patchFields.options = optionsResult
+    if (optionsResult !== null) {
+      const parsed = parseServiceOptions(optionsResult)
+      if (parsed === null) return c.json({ error: 'Invalid service options' }, 400)
+      patchFields.options = parsed
+    }
 
     await db
       .update(service)

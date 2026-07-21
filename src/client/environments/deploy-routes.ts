@@ -11,16 +11,20 @@ import {
   isDaemonKeyActive,
 } from '../../daemon/authn/server-identity-db.ts'
 import {
-  assertComposeDocument,
-  composeDocumentToRuntimeYaml,
-  mergeComposeOverlay,
+  prepareDeployCompose,
   readComposePlacementServerId,
-  stripComposePlacement,
-} from '../../lib/compose/index.ts'
+  readHostingProxyFromOptions,
+  extractComposeFromOptions,
+  type DeployPrepareError,
+} from './deploy-prepare.ts'
 import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
 import type {
   EnvironmentDeployHosting,
+  EnvironmentDeployPrincipalMaterial,
+  EnvironmentDeployServiceHook,
+  EnvironmentDeployStorageMaterial,
   EnvironmentDeployTlsMaterial,
+  EnvironmentDeployVariableMaterial,
 } from '../../lib/commands/schemas.ts'
 import { isNoopCommandQueue } from '../../lib/commands/noop-command-queue.ts'
 import { getCommandQueue, type CommandQueue } from '../../lib/commands/queue.ts'
@@ -63,6 +67,26 @@ function assertDispatchInfrastructure(c: Context<AppEnv>): CommandQueue | Respon
   }
 
   return commandQueue
+}
+
+function responseForPrepareError(
+  c: Context<AppEnv>,
+  prepared: DeployPrepareError,
+): Response {
+  if (prepared.kind === 'health_check') {
+    return c.json({
+      error: 'health_check_missing',
+      required: prepared.required,
+      services: prepared.services,
+    }, { status: 409 })
+  }
+  if (prepared.kind === 'empty_compose') {
+    return c.json({ error: 'compose_empty' }, { status: 400 })
+  }
+  return c.json({
+    error: 'resource_limit_exceeded',
+    violations: prepared.violations,
+  }, { status: 409 })
 }
 
 async function verifyServerInOrg(
@@ -108,10 +132,11 @@ function readTargetPort(options: unknown): number | undefined {
     : undefined
 }
 
-function extractComposeFromOptions(options: unknown): unknown {
-  if (!isPlainObject(options)) return null
-  return options.compose ?? null
-}
+import {
+  validateDeployHostings,
+  validateDeployStorageMaterialList,
+} from '../../lib/commands/deploy-validation.ts'
+import { assertComposeDocument } from '../../lib/compose/index.ts'
 
 function trimEdgeDashes(value: string): string {
   let start = 0
@@ -195,6 +220,7 @@ function resolveHostingEntry(
       pathPrefix: readPathPrefix(h.options),
       targetPort: readTargetPort(h.options),
       tlsId: resolved.tlsId,
+      proxy: readHostingProxyFromOptions(h.options),
     },
   }
 }
@@ -361,11 +387,10 @@ async function sealTlsMaterialForDaemon(
 type LoadedDeployCompose = {
   envRow: { id: string; projectId: string; options: unknown; metadata: unknown }
   projectRow: { id: string; displayName: string | null; options: unknown }
-  composeYaml: string
   placementServerId: string | null
 }
 
-async function loadDeployComposeYaml(
+async function loadDeployContext(
   db: Db,
   environmentId: string,
 ): Promise<LoadedDeployCompose | Response> {
@@ -393,16 +418,11 @@ async function loadDeployComposeYaml(
   if (!projectRow) return Response.json({ error: 'Not found' }, { status: 404 })
 
   try {
-    const baseCompose = assertComposeDocument(extractComposeFromOptions(projectRow.options))
     const overlayCompose = assertComposeDocument(extractComposeFromOptions(envRow.options))
-    // Placement is environment-owned. Ignore stale project pins (hard cut) so
-    // they neither select the deploy target nor leak into runtime YAML.
     const placementServerId = readComposePlacementServerId(overlayCompose)
-    const merged = mergeComposeOverlay(stripComposePlacement(baseCompose), overlayCompose)
     return {
       envRow,
       projectRow,
-      composeYaml: composeDocumentToRuntimeYaml(merged),
       placementServerId,
     }
   } catch {
@@ -414,7 +434,12 @@ async function authorizeDeployRequest(
   c: Context<AppEnv>,
   db: Db,
   environmentId: string,
-): Promise<{ userId: string; organizationId: string; requestedServerId: string | null } | Response> {
+): Promise<{
+  userId: string
+  organizationId: string
+  requestedServerId: string | null
+  acknowledgeHealthCheckWarnings: boolean
+} | Response> {
   const denied = await assertCanManageOr403(c, 'environment', environmentId)
   if (denied) return denied
 
@@ -441,10 +466,13 @@ async function authorizeDeployRequest(
     requestedServerId = value
   }
 
+  const acknowledgeHealthCheckWarnings = body.acknowledgeHealthCheckWarnings === true
+
   return {
     userId: session.userId,
     organizationId: orgResult,
     requestedServerId,
+    acknowledgeHealthCheckWarnings,
   }
 }
 
@@ -483,10 +511,15 @@ async function enqueueDeployCommand(
     userId: string
     environmentId: string
     projectId: string
+    organizationId: string
     projectName: string
     composeYaml: string
     hostings: DeployHostingPayload[]
     tlsMaterial: EnvironmentDeployTlsMaterial[]
+    variableMaterial: EnvironmentDeployVariableMaterial[]
+    storageMaterial: EnvironmentDeployStorageMaterial[]
+    principalMaterial: EnvironmentDeployPrincipalMaterial[]
+    serviceHooks: EnvironmentDeployServiceHook[]
   },
 ): Promise<Response> {
   const expiresAt = new Date(Date.now() + 600_000).toISOString()
@@ -498,12 +531,15 @@ async function enqueueDeployCommand(
     payload: {
       environmentId: params.environmentId,
       projectId: params.projectId,
+      organizationId: params.organizationId,
       projectName: params.projectName,
       composeYaml: params.composeYaml,
       hostings: params.hostings,
-      ...(params.tlsMaterial.length > 0
-        ? { tlsMaterial: params.tlsMaterial }
-        : {}),
+      ...(params.tlsMaterial.length > 0 ? { tlsMaterial: params.tlsMaterial } : {}),
+      ...(params.variableMaterial.length > 0 ? { variableMaterial: params.variableMaterial } : {}),
+      ...(params.storageMaterial.length > 0 ? { storageMaterial: params.storageMaterial } : {}),
+      ...(params.principalMaterial.length > 0 ? { principalMaterial: params.principalMaterial } : {}),
+      ...(params.serviceHooks.length > 0 ? { serviceHooks: params.serviceHooks } : {}),
     },
     expiresAt,
   })
@@ -557,7 +593,7 @@ export function registerEnvironmentDeployRoutes(
     const commandQueue = assertDispatchInfrastructure(c)
     if (commandQueue instanceof Response) return commandQueue
 
-    const loaded = await loadDeployComposeYaml(db, environmentId)
+    const loaded = await loadDeployContext(db, environmentId)
     if (loaded instanceof Response) return loaded
 
     const target = await resolveDeployTargetServer(
@@ -568,6 +604,15 @@ export function registerEnvironmentDeployRoutes(
       loaded.placementServerId,
     )
     if (target instanceof Response) return target
+
+    const prepared = await prepareDeployCompose(c, db, {
+      environmentId,
+      serverId: target.serverId,
+      organizationId: auth.organizationId,
+      acknowledgeHealthCheckWarnings: auth.acknowledgeHealthCheckWarnings,
+    })
+    if (prepared instanceof Response) return prepared
+    if ('kind' in prepared) return responseForPrepareError(c, prepared)
 
     const hostingBuilt = await buildHostingPayload(
       db,
@@ -596,15 +641,30 @@ export function registerEnvironmentDeployRoutes(
 
     const projectName = `tp-${projectComposeName(loaded.projectRow.displayName, loaded.projectRow.id)}-${environmentId.slice(0, 8)}`
 
+    const hostingValidationError = validateDeployHostings(hostingBuilt.hostings)
+    if (hostingValidationError) {
+      return c.json({ error: 'invalid_deploy_hosting', message: hostingValidationError }, 400)
+    }
+
+    const storageValidationError = validateDeployStorageMaterialList(prepared.storageMaterial)
+    if (storageValidationError) {
+      return c.json({ error: 'invalid_deploy_storage', message: storageValidationError }, 400)
+    }
+
     return enqueueDeployCommand(db, commandQueue, {
       serverId: target.serverId,
       userId: auth.userId,
       environmentId,
       projectId: loaded.projectRow.id,
+      organizationId: auth.organizationId,
       projectName,
-      composeYaml: loaded.composeYaml,
+      composeYaml: prepared.composeYaml,
       hostings: hostingBuilt.hostings,
       tlsMaterial,
+      variableMaterial: prepared.variableMaterial,
+      storageMaterial: prepared.storageMaterial,
+      principalMaterial: prepared.principalMaterial,
+      serviceHooks: prepared.hooks,
     })
   })
 }

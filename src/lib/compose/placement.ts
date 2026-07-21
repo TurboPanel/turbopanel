@@ -2,18 +2,10 @@ import { normalizeCompose, type ComposeDocument } from './types.ts'
 
 export const TURBOPANEL_EXTENSION_KEY = 'x-turbopanel'
 
-/** Compose Editor | Visual tab preference stored under `x-turbopanel.view`. */
-export type ComposeEditorView = 'editor' | 'visual'
-
 export type ComposeTurbopanelExtension = {
   placement?: {
     server_id?: string
   }
-  view?: ComposeEditorView
-}
-
-export function isComposeEditorView(value: unknown): value is ComposeEditorView {
-  return value === 'editor' || value === 'visual'
 }
 
 /** Lenient UUID (any version), matching server-registry enrollment IDs. */
@@ -85,6 +77,17 @@ export function stripComposePlacement(document: ComposeDocument): ComposeDocumen
         ...(normalized.presentation.blankLines
           ? { blankLines: { ...normalized.presentation.blankLines } }
           : {}),
+        ...(typeof normalized.presentation.documentCommentBefore === 'string' &&
+            normalized.presentation.documentCommentBefore.length > 0
+          ? { documentCommentBefore: normalized.presentation.documentCommentBefore }
+          : {}),
+        ...(typeof normalized.presentation.documentComment === 'string' &&
+            normalized.presentation.documentComment.length > 0
+          ? { documentComment: normalized.presentation.documentComment }
+          : {}),
+        ...(normalized.presentation.editorView
+          ? { editorView: normalized.presentation.editorView }
+          : {}),
       },
     }
   }
@@ -98,6 +101,17 @@ export function stripComposePlacement(document: ComposeDocument): ComposeDocumen
       comments: { ...normalized.presentation.comments },
       ...(normalized.presentation.blankLines
         ? { blankLines: { ...normalized.presentation.blankLines } }
+        : {}),
+      ...(typeof normalized.presentation.documentCommentBefore === 'string' &&
+          normalized.presentation.documentCommentBefore.length > 0
+        ? { documentCommentBefore: normalized.presentation.documentCommentBefore }
+        : {}),
+      ...(typeof normalized.presentation.documentComment === 'string' &&
+          normalized.presentation.documentComment.length > 0
+        ? { documentComment: normalized.presentation.documentComment }
+        : {}),
+      ...(normalized.presentation.editorView
+        ? { editorView: normalized.presentation.editorView }
         : {}),
     },
   }

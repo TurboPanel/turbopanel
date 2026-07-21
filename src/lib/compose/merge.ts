@@ -1,4 +1,4 @@
-import { normalizeCompose, type ComposeDocument } from './types.ts'
+import { isBlankComposeData, normalizeCompose, type ComposeDocument } from './types.ts'
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -18,24 +18,11 @@ export function mergeComposeOverlay(
   if (overlay == null) return baseDoc
   const overlayDoc = normalizeCompose(overlay)
 
-  const overlayEmpty =
-    Object.keys(overlayDoc.data).length === 0 ||
-    (Object.keys(overlayDoc.data).length === 1 &&
-      isPlainObject(overlayDoc.data.services) &&
-      Object.keys(overlayDoc.data.services as Record<string, unknown>).length === 0 &&
-      !overlayDoc.presentation.keyOrder.some((k) => k !== 'services'))
-
-  // Empty overlay with only empty services → treat as inherit
   if (
-    overlayEmpty &&
+    isBlankComposeData(overlayDoc.data) &&
     Object.keys(overlayDoc.presentation.comments).length === 0
   ) {
-    // Still merge if overlay has non-empty services or other keys
-    const hasExtra =
-      Object.keys(overlayDoc.data).some((k) => k !== 'services') ||
-      (isPlainObject(overlayDoc.data.services) &&
-        Object.keys(overlayDoc.data.services).length > 0)
-    if (!hasExtra) return baseDoc
+    return baseDoc
   }
 
   const mergedData = deepMerge(baseDoc.data, overlayDoc.data)
@@ -50,6 +37,14 @@ export function mergeComposeOverlay(
     ...overlayDoc.presentation.blankLines,
   }
 
+  const documentCommentBefore =
+    baseDoc.presentation.documentCommentBefore ??
+    overlayDoc.presentation.documentCommentBefore
+  const documentComment =
+    baseDoc.presentation.documentComment ?? overlayDoc.presentation.documentComment
+  const editorView =
+    overlayDoc.presentation.editorView ?? baseDoc.presentation.editorView
+
   return {
     version: 1,
     data: mergedData,
@@ -57,6 +52,9 @@ export function mergeComposeOverlay(
       keyOrder,
       comments,
       ...(Object.keys(blankLines).length > 0 ? { blankLines } : {}),
+      ...(documentCommentBefore ? { documentCommentBefore } : {}),
+      ...(documentComment ? { documentComment } : {}),
+      ...(editorView ? { editorView } : {}),
     },
   }
 }

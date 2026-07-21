@@ -29,6 +29,25 @@ export const serviceSchemas = {
       displayName: { type: 'string' },
       description: { type: 'string' },
       environmentId: { type: 'string' },
+      metadata: { type: 'object', nullable: true },
+      options: {
+        type: 'object',
+        nullable: true,
+        description: 'Service settings (healthCheck, resources, hooks)',
+      },
+    },
+  },
+  UpdateServiceRequest: {
+    type: 'object',
+    properties: {
+      displayName: { type: 'string' },
+      description: { type: 'string' },
+      metadata: { type: 'object', nullable: true },
+      options: {
+        type: 'object',
+        nullable: true,
+        description: 'Service settings (healthCheck, resources, hooks)',
+      },
     },
   },
 }
@@ -40,6 +59,7 @@ export const servicePaths = buildResourceCrudPaths({
   listSchema: 'ServicesResponse',
   rowSchema: 'ServiceRow',
   createSchema: 'CreateServiceRequest',
+  patchSchema: 'UpdateServiceRequest',
   parentQuery: {
     name: 'environmentId',
     description: 'Filter services under an environment',

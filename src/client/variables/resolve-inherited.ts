@@ -12,6 +12,9 @@ import {
 export type ResolvedVariableEntry = {
   value: string
   isSecret: boolean
+  isLiteral: boolean
+  forBuild: boolean
+  forRuntime: boolean
 }
 
 export type ResolvedVariableMap = Map<string, ResolvedVariableEntry>
@@ -20,6 +23,9 @@ type VariableRow = {
   key: string
   value: string
   isSecret: boolean
+  isLiteral: boolean
+  forBuild: boolean
+  forRuntime: boolean
 }
 
 type VariableParentColumn =
@@ -35,7 +41,13 @@ function mergeVariables(
   rows: VariableRow[],
 ): void {
   for (const row of rows) {
-    target.set(row.key, { value: row.value, isSecret: row.isSecret })
+    target.set(row.key, {
+      value: row.value,
+      isSecret: row.isSecret,
+      isLiteral: row.isLiteral,
+      forBuild: row.forBuild,
+      forRuntime: row.forRuntime,
+    })
   }
 }
 
@@ -50,6 +62,9 @@ async function loadVariablesForParent(
       key: variable.key,
       value: variable.value,
       isSecret: variable.isSecret,
+      isLiteral: variable.isLiteral,
+      forBuild: variable.forBuild,
+      forRuntime: variable.forRuntime,
     })
     .from(variable)
     .where(and(eq(columnRef, id), isNotNull(columnRef)))
@@ -187,6 +202,9 @@ export async function resolveServerScopedVariables(
       key: variable.key,
       value: variable.value,
       isSecret: variable.isSecret,
+      isLiteral: variable.isLiteral,
+      forBuild: variable.forBuild,
+      forRuntime: variable.forRuntime,
     })
     .from(variable)
     .where(and(eq(variable.serverId, serverId), isNotNull(variable.serverId)))

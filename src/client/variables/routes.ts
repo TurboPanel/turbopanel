@@ -64,6 +64,9 @@ const VARIABLE_SELECT_FIELDS = {
   key: variable.key,
   value: variable.value,
   isSecret: variable.isSecret,
+  isLiteral: variable.isLiteral,
+  forBuild: variable.forBuild,
+  forRuntime: variable.forRuntime,
   description: variable.description,
   createdAt: variable.createdAt,
   updatedAt: variable.updatedAt,
@@ -81,6 +84,9 @@ type VariableRow = {
   key: string
   value: string
   isSecret: boolean
+  isLiteral: boolean
+  forBuild: boolean
+  forRuntime: boolean
   description: string | null
   createdAt: string
   updatedAt: string
@@ -109,6 +115,9 @@ function serializeVariable(row: VariableRow) {
     serverId: row.serverId,
     key: row.key,
     isSecret: row.isSecret,
+    isLiteral: row.isLiteral,
+    forBuild: row.forBuild,
+    forRuntime: row.forRuntime,
     value: row.isSecret ? null : row.value,
     description: row.description,
     createdAt: row.createdAt,
@@ -136,11 +145,36 @@ function parseIsSecret(
   return body.isSecret
 }
 
+function parseOptionalBoolean(
+  c: Context<AppEnv>,
+  value: unknown,
+  fieldName: string,
+): boolean | Response | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'boolean') {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  return value
+}
+
+function trimVariableValueOnWrite(value: string): string {
+  return value.trim()
+}
+
 function serializeResolvedVariables(map: ResolvedVariableMap) {
-  const variables: Record<string, { isSecret: boolean; value: string | null }> = {}
+  const variables: Record<string, {
+    isSecret: boolean
+    isLiteral: boolean
+    forBuild: boolean
+    forRuntime: boolean
+    value: string | null
+  }> = {}
   for (const [key, entry] of map) {
     variables[key] = {
       isSecret: entry.isSecret,
+      isLiteral: entry.isLiteral,
+      forBuild: entry.forBuild,
+      forRuntime: entry.forRuntime,
       value: entry.isSecret ? null : entry.value,
     }
   }
@@ -197,6 +231,9 @@ function buildInsertValues(
     key: string
     value: string
     isSecret: boolean
+    isLiteral: boolean
+    forBuild: boolean
+    forRuntime: boolean
     description: string | null
   },
 ) {
@@ -211,6 +248,9 @@ function buildInsertValues(
     key: fields.key,
     value: fields.value,
     isSecret: fields.isSecret,
+    isLiteral: fields.isLiteral,
+    forBuild: fields.forBuild,
+    forRuntime: fields.forRuntime,
     description: fields.description,
     [parent.column]: parent.id,
   }
@@ -270,6 +310,9 @@ type VariablePatchFields = {
   key?: string
   value?: string
   isSecret?: boolean
+  isLiteral?: boolean
+  forBuild?: boolean
+  forRuntime?: boolean
   description?: string | null
   updatedAt: string
 }
@@ -335,7 +378,7 @@ async function applyValueAndSecretPatch(
     if (body.value !== null && typeof body.value !== 'string') {
       return c.json({ error: 'Invalid request' }, 400)
     }
-    const plaintextValue = body.value ?? ''
+    const plaintextValue = trimVariableValueOnWrite(body.value ?? '')
     const stored = await sealOrPlainValue(c, plaintextValue, nextIsSecret)
     if (stored instanceof Response) return stored
     updateFields.value = stored
@@ -357,6 +400,18 @@ async function applyValueAndSecretPatch(
   }
 }
 
+function applyOptionalBooleanPatch(
+  c: Context<AppEnv>,
+  body: Record<string, unknown>,
+  field: 'isLiteral' | 'forBuild' | 'forRuntime',
+  updateFields: VariablePatchFields,
+): Response | undefined {
+  if (body[field] === undefined) return
+  const parsed = parseOptionalBoolean(c, body[field], field)
+  if (parsed instanceof Response) return parsed
+  updateFields[field] = parsed
+}
+
 async function buildVariablePatchFields(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
@@ -371,6 +426,11 @@ async function buildVariablePatchFields(
 
   const descriptionError = applyOptionalDescriptionPatch(c, body, updateFields)
   if (descriptionError) return descriptionError
+
+  for (const field of ['isLiteral', 'forBuild', 'forRuntime'] as const) {
+    const boolError = applyOptionalBooleanPatch(c, body, field, updateFields)
+    if (boolError) return boolError
+  }
 
   const secretResult = resolvePatchIsSecret(c, body, existing.isSecret)
   if (secretResult instanceof Response) return secretResult
@@ -399,6 +459,9 @@ type VariableCreateFields = {
   parent: ParsedVariableParent
   key: string
   isSecret: boolean
+  isLiteral: boolean
+  forBuild: boolean
+  forRuntime: boolean
   value: string
   description: string | null
 }
@@ -428,6 +491,15 @@ async function parseVariableCreateFields(
   const isSecret = parseIsSecret(c, body)
   if (isSecret instanceof Response) return isSecret
 
+  const isLiteral = parseOptionalBoolean(c, body.isLiteral, 'isLiteral') ?? false
+  if (isLiteral instanceof Response) return isLiteral
+
+  const forBuild = parseOptionalBoolean(c, body.forBuild, 'forBuild') ?? false
+  if (forBuild instanceof Response) return forBuild
+
+  const forRuntime = parseOptionalBoolean(c, body.forRuntime, 'forRuntime') ?? true
+  if (forRuntime instanceof Response) return forRuntime
+
   const parsedValue = parseOptionalStringValue(c, body.value)
   if (parsedValue instanceof Response) return parsedValue
   if (parsedValue === null) {
@@ -437,7 +509,7 @@ async function parseVariableCreateFields(
   const parsedDescription = parseOptionalDescription(c, body.description)
   if (parsedDescription instanceof Response) return parsedDescription
 
-  const plaintextValue = parsedValue ?? ''
+  const plaintextValue = trimVariableValueOnWrite(parsedValue ?? '')
   const storedValue = await sealOrPlainValue(c, plaintextValue, isSecret)
   if (storedValue instanceof Response) return storedValue
 
@@ -445,6 +517,9 @@ async function parseVariableCreateFields(
     parent,
     key,
     isSecret,
+    isLiteral,
+    forBuild,
+    forRuntime,
     value: storedValue,
     description: parsedDescription ?? null,
   }
@@ -615,6 +690,9 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
             key: fields.key,
             value: fields.value,
             isSecret: fields.isSecret,
+            isLiteral: fields.isLiteral,
+            forBuild: fields.forBuild,
+            forRuntime: fields.forRuntime,
             description: fields.description,
           }))
           .returning({ id: variable.id })

@@ -536,6 +536,9 @@ export const variable = pgTable(
     key: varchar({ length: 255 }).notNull(),
     value: text().default('').notNull(),
     isSecret: boolean('is_secret').default(false).notNull(),
+    isLiteral: boolean('is_literal').default(false).notNull(),
+    forBuild: boolean('for_build').default(false).notNull(),
+    forRuntime: boolean('for_runtime').default(true).notNull(),
     description: varchar('description', { length: 255 }),
   },
   (table) => [
@@ -787,11 +790,22 @@ export const principal = pgTable(
      * for the target daemon.
      */
     password: text(),
+    /** Optional project scope for hosting principals. */
+    projectId: uuid('project_id'),
     /** Holds `uid` / `gid` / `home`. */
     metadata: jsonb(),
     options: jsonb(),
   },
   (table) => [
+    index('idx_principal_project_id').using(
+      'btree',
+      table.projectId.asc().nullsLast().op('uuid_ops'),
+    ),
+    foreignKey({
+      columns: [table.projectId],
+      foreignColumns: [project.id],
+      name: 'principal_project_id_project_id_fk',
+    }).onDelete('cascade'),
     check('principal_kind_check', sql`kind IN ('system', 'database')`),
     check(
       'principal_provider_check',
@@ -847,6 +861,97 @@ export const assignment = pgTable(
     }).onDelete('restrict'),
     unique('assignment_principal_service_unique').on(table.principalId, table.serviceId),
   ]
+)
+export const storage = pgTable(
+  'storage',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    organizationId: uuid('organization_id').notNull(),
+    projectId: uuid('project_id'),
+    environmentId: uuid('environment_id'),
+    serviceId: uuid('service_id'),
+    serverId: uuid('server_id'),
+    kind: text().notNull(),
+    name: varchar({ length: 255 }).notNull(),
+    sourcePath: text('source_path'),
+    destinationPath: text('destination_path'),
+    principalId: uuid('principal_id'),
+    /** Sealed file content (`tpsecret` or `tpdaemon`) for `kind=file` entries. */
+    contentEnvelope: text('content_envelope'),
+    metadata: jsonb(),
+    options: jsonb(),
+  },
+  (table) => [
+    index('idx_storage_organization_id').using(
+      'btree',
+      table.organizationId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_storage_project_id').using(
+      'btree',
+      table.projectId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_storage_environment_id').using(
+      'btree',
+      table.environmentId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_storage_service_id').using(
+      'btree',
+      table.serviceId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_storage_server_id').using(
+      'btree',
+      table.serverId.asc().nullsLast().op('uuid_ops'),
+    ),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'storage_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.projectId],
+      foreignColumns: [project.id],
+      name: 'storage_project_id_project_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.environmentId],
+      foreignColumns: [environment.id],
+      name: 'storage_environment_id_environment_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serviceId],
+      foreignColumns: [service.id],
+      name: 'storage_service_id_service_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'storage_server_id_server_id_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.principalId],
+      foreignColumns: [principal.id],
+      name: 'storage_principal_id_principal_id_fk',
+    }).onDelete('set null'),
+    check(
+      'storage_kind_check',
+      sql`kind IN ('docker_volume', 'bind_mount', 'file', 'directory')`,
+    ),
+    check(
+      'storage_exactly_one_parent_check',
+      sql`((project_id IS NOT NULL)::int +
+        (environment_id IS NOT NULL)::int +
+        (service_id IS NOT NULL)::int) = 1`,
+    ),
+  ],
 )
 export const grant = pgTable(
   'grant',

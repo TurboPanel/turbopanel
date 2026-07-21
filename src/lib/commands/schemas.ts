@@ -140,9 +140,54 @@ export type EnvironmentDeployTlsMaterial = {
   privateKeyEnvelope: string
 }
 
+export type EnvironmentDeployHostingProxy = {
+  forceHttps?: boolean
+  gzip?: boolean
+  brotli?: boolean
+  stripPrefix?: string
+}
+
+export type EnvironmentDeployVariableMaterial = {
+  key: string
+  composeServiceName: string | null
+  forBuild: boolean
+  forRuntime: boolean
+  isLiteral: boolean
+  valueEnvelope: string
+}
+
+export type EnvironmentDeployStorageMaterial = {
+  storageId: string
+  kind: 'docker_volume' | 'bind_mount' | 'file' | 'directory'
+  name: string
+  sourcePath?: string
+  destinationPath: string
+  principalId?: string
+  serviceId?: string
+  composeServiceName?: string
+  serverId: string
+  contentEnvelope?: string
+}
+
+export type EnvironmentDeployPrincipalMaterial = {
+  principalId: string
+  username: string
+  uid: number
+  gid: number
+  home?: string
+}
+
+export type EnvironmentDeployServiceHook = {
+  composeServiceName: string
+  preDeployCommand?: string
+  postDeployCommand?: string
+  buildDisableCache?: boolean
+}
+
 export type EnvironmentDeployCommandPayload = {
   environmentId: string
   projectId: string
+  organizationId: string
   projectName: string
   /** Runtime docker-compose YAML (presentation stripped). */
   composeYaml: string
@@ -150,6 +195,10 @@ export type EnvironmentDeployCommandPayload = {
   hostings: EnvironmentDeployHosting[]
   /** Unique TLS material referenced by `hostings[].tlsId` (deduped). */
   tlsMaterial?: EnvironmentDeployTlsMaterial[]
+  variableMaterial?: EnvironmentDeployVariableMaterial[]
+  storageMaterial?: EnvironmentDeployStorageMaterial[]
+  principalMaterial?: EnvironmentDeployPrincipalMaterial[]
+  serviceHooks?: EnvironmentDeployServiceHook[]
 }
 
 export type EnvironmentDeployHosting = {
@@ -162,6 +211,7 @@ export type EnvironmentDeployHosting = {
   targetPort?: number
   /** Resolved org TLS id when pinned; null/omit = Caddy `tls internal` (self-signed). */
   tlsId?: string | null
+  proxy?: EnvironmentDeployHostingProxy
 }
 
 export type EnvironmentDeployContainer = {
@@ -186,19 +236,49 @@ function requireDeployPayloadStrings(
   value: Record<string, unknown>,
 ): Pick<
   EnvironmentDeployCommandPayload,
-  'environmentId' | 'projectId' | 'projectName' | 'composeYaml'
+  'environmentId' | 'projectId' | 'organizationId' | 'projectName' | 'composeYaml'
 > {
-  const { environmentId, projectId, projectName, composeYaml } = value
+  const { environmentId, projectId, organizationId, projectName, composeYaml } = value
   if (
     !isString(environmentId) ||
     !isString(projectId) ||
+    !isString(organizationId) ||
     !isString(projectName) ||
     !isString(composeYaml) ||
     composeYaml.length === 0
   ) {
     throw new Error('Invalid environment.deploy payload')
   }
-  return { environmentId, projectId, projectName, composeYaml }
+  return { environmentId, projectId, organizationId, projectName, composeYaml }
+}
+
+function parseDeployHostingProxy(
+  value: unknown,
+): EnvironmentDeployHostingProxy | undefined {
+  if (!isRecord(value)) return undefined
+  const proxy: EnvironmentDeployHostingProxy = {}
+  if (typeof value.forceHttps === 'boolean') proxy.forceHttps = value.forceHttps
+  if (typeof value.gzip === 'boolean') proxy.gzip = value.gzip
+  if (typeof value.brotli === 'boolean') proxy.brotli = value.brotli
+  if (isString(value.stripPrefix)) proxy.stripPrefix = value.stripPrefix
+  return Object.keys(proxy).length > 0 ? proxy : undefined
+}
+
+function applyOptionalDeployHostingFields(
+  hosting: EnvironmentDeployHosting,
+  entry: Record<string, unknown>,
+): void {
+  if (isString(entry.pathPrefix)) hosting.pathPrefix = entry.pathPrefix
+  if (typeof entry.targetPort === 'number' && Number.isFinite(entry.targetPort)) {
+    hosting.targetPort = entry.targetPort
+  }
+  if (entry.tlsId === null) {
+    hosting.tlsId = null
+  } else if (isString(entry.tlsId)) {
+    hosting.tlsId = entry.tlsId
+  }
+  const proxy = parseDeployHostingProxy(entry.proxy)
+  if (proxy) hosting.proxy = proxy
 }
 
 function parseDeployHostingEntry(entry: unknown): EnvironmentDeployHosting {
@@ -219,15 +299,7 @@ function parseDeployHostingEntry(entry: unknown): EnvironmentDeployHosting {
     composeServiceName: entry.composeServiceName,
     hostnames: entry.hostnames as string[],
   }
-  if (isString(entry.pathPrefix)) hosting.pathPrefix = entry.pathPrefix
-  if (typeof entry.targetPort === 'number' && Number.isFinite(entry.targetPort)) {
-    hosting.targetPort = entry.targetPort
-  }
-  if (entry.tlsId === null) {
-    hosting.tlsId = null
-  } else if (isString(entry.tlsId)) {
-    hosting.tlsId = entry.tlsId
-  }
+  applyOptionalDeployHostingFields(hosting, entry)
   return hosting
 }
 
@@ -259,6 +331,107 @@ function parseDeployTlsMaterial(
 ): EnvironmentDeployTlsMaterial[] | undefined {
   if (!Array.isArray(value)) return undefined
   return value.map(parseDeployTlsMaterialEntry)
+}
+
+function parseDeployVariableMaterialEntry(entry: unknown): EnvironmentDeployVariableMaterial {
+  if (!isRecord(entry)) throw new Error('Invalid environment.deploy payload')
+  if (!isString(entry.key) || !isString(entry.valueEnvelope)) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  return {
+    key: entry.key,
+    composeServiceName: isString(entry.composeServiceName) ? entry.composeServiceName : null,
+    forBuild: entry.forBuild === true,
+    forRuntime: entry.forRuntime !== false,
+    isLiteral: entry.isLiteral === true,
+    valueEnvelope: entry.valueEnvelope,
+  }
+}
+
+function parseDeployVariableMaterial(
+  value: unknown,
+): EnvironmentDeployVariableMaterial[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.map(parseDeployVariableMaterialEntry)
+}
+
+function parseDeployStorageMaterialEntry(entry: unknown): EnvironmentDeployStorageMaterial {
+  if (!isRecord(entry)) throw new Error('Invalid environment.deploy payload')
+  if (
+    !isString(entry.storageId) ||
+    !isString(entry.kind) ||
+    !isString(entry.name) ||
+    !isString(entry.destinationPath) ||
+    !isString(entry.serverId)
+  ) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  const material: EnvironmentDeployStorageMaterial = {
+    storageId: entry.storageId,
+    kind: entry.kind as EnvironmentDeployStorageMaterial['kind'],
+    name: entry.name,
+    destinationPath: entry.destinationPath,
+    serverId: entry.serverId,
+  }
+  if (isString(entry.sourcePath)) material.sourcePath = entry.sourcePath
+  if (isString(entry.principalId)) material.principalId = entry.principalId
+  if (isString(entry.serviceId)) material.serviceId = entry.serviceId
+  if (isString(entry.composeServiceName)) material.composeServiceName = entry.composeServiceName
+  if (isString(entry.contentEnvelope)) material.contentEnvelope = entry.contentEnvelope
+  return material
+}
+
+function parseDeployPrincipalMaterialEntry(entry: unknown): EnvironmentDeployPrincipalMaterial {
+  if (!isRecord(entry)) throw new Error('Invalid environment.deploy payload')
+  if (
+    !isString(entry.principalId) ||
+    !isString(entry.username) ||
+    typeof entry.uid !== 'number' ||
+    typeof entry.gid !== 'number'
+  ) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  const material: EnvironmentDeployPrincipalMaterial = {
+    principalId: entry.principalId,
+    username: entry.username,
+    uid: entry.uid,
+    gid: entry.gid,
+  }
+  if (isString(entry.home)) material.home = entry.home
+  return material
+}
+
+function parseDeployPrincipalMaterial(
+  value: unknown,
+): EnvironmentDeployPrincipalMaterial[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.map(parseDeployPrincipalMaterialEntry)
+}
+
+function parseDeployStorageMaterial(
+  value: unknown,
+): EnvironmentDeployStorageMaterial[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.map(parseDeployStorageMaterialEntry)
+}
+
+function parseDeployServiceHookEntry(entry: unknown): EnvironmentDeployServiceHook {
+  if (!isRecord(entry)) throw new Error('Invalid environment.deploy payload')
+  if (!isString(entry.composeServiceName)) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  const hook: EnvironmentDeployServiceHook = {
+    composeServiceName: entry.composeServiceName,
+  }
+  if (isString(entry.preDeployCommand)) hook.preDeployCommand = entry.preDeployCommand
+  if (isString(entry.postDeployCommand)) hook.postDeployCommand = entry.postDeployCommand
+  if (entry.buildDisableCache === true) hook.buildDisableCache = true
+  return hook
+}
+
+function parseDeployServiceHooks(value: unknown): EnvironmentDeployServiceHook[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.map(parseDeployServiceHookEntry)
 }
 
 function parseDeployContainerEntry(entry: unknown): EnvironmentDeployContainer | undefined {
@@ -302,10 +475,18 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
   const strings = requireDeployPayloadStrings(value)
   const hostings = parseDeployHostings(value.hostings)
   const tlsMaterial = parseDeployTlsMaterial(value.tlsMaterial)
+  const variableMaterial = parseDeployVariableMaterial(value.variableMaterial)
+  const storageMaterial = parseDeployStorageMaterial(value.storageMaterial)
+  const principalMaterial = parseDeployPrincipalMaterial(value.principalMaterial)
+  const serviceHooks = parseDeployServiceHooks(value.serviceHooks)
   return {
     ...strings,
     hostings,
     ...(tlsMaterial !== undefined ? { tlsMaterial } : {}),
+    ...(variableMaterial !== undefined ? { variableMaterial } : {}),
+    ...(storageMaterial !== undefined ? { storageMaterial } : {}),
+    ...(principalMaterial !== undefined ? { principalMaterial } : {}),
+    ...(serviceHooks !== undefined ? { serviceHooks } : {}),
   }
 }
 

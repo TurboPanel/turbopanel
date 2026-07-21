@@ -10,7 +10,9 @@ import {
 } from 'yaml'
 import {
   emptyComposeDocument,
+  isBlankComposeData,
   normalizeCompose,
+  pruneBlankComposeData,
   type ComposeComment,
   type ComposeDocument,
   type ComposePresentation,
@@ -314,7 +316,11 @@ export function yamlToComposeDocument(source: string): ComposeDocument {
     throw new ComposeParseError('Compose file root must be a mapping')
   }
 
-  const data = json as Record<string, unknown>
+  const data = pruneBlankComposeData(json as Record<string, unknown>)
+  if (isBlankComposeData(data)) {
+    return emptyComposeDocument()
+  }
+
   const presentation = collectPresentation(doc)
 
   return {
@@ -322,7 +328,7 @@ export function yamlToComposeDocument(source: string): ComposeDocument {
     data,
     presentation: {
       keyOrder: presentation.keyOrder.length > 0
-        ? presentation.keyOrder
+        ? presentation.keyOrder.filter((key) => key in data)
         : Object.keys(data),
       comments: presentation.comments,
       ...(presentation.blankLines ? { blankLines: presentation.blankLines } : {}),
@@ -340,12 +346,13 @@ function composeDataToYaml(
   data: Record<string, unknown>,
   presentation?: ComposePresentation,
 ): string {
+  const payload = pruneBlankComposeData(data)
   // Blank drafts should look blank in the editor — not `{}` / `services: {}`.
-  if (Object.keys(data).length === 0) {
+  if (isBlankComposeData(payload)) {
     return '\n'
   }
 
-  const yamlDoc = new Document(data)
+  const yamlDoc = new Document(payload)
   if (presentation) {
     applyPresentation(yamlDoc, presentation)
   }

@@ -15,6 +15,20 @@
       "when": 1784646818925,
       "tag": "0001_extend_managed_for_server_services",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785000000000,
+      "tag": "0002_compose_parity",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1785100000000,
+      "tag": "0003_storage_content_envelope",
+      "breakpoints": true
     }
   ]
 }

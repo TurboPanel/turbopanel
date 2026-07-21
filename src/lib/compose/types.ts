@@ -30,6 +30,39 @@ export type ComposePresentation = {
   documentCommentBefore?: string
   /** Trailing `#` lines after the document root (`Document.comment`). */
   documentComment?: string
+  /** Editor | Visual tab preference — presentation only, never written to compose YAML. */
+  editorView?: ComposeEditorView
+}
+
+export type ComposeEditorView = 'editor' | 'visual'
+
+export function isComposeEditorView(value: unknown): value is ComposeEditorView {
+  return value === 'editor' || value === 'visual'
+}
+
+const TURBOPANEL_EXTENSION_KEY = 'x-turbopanel'
+
+function migrateLegacyEditorViewFromData(
+  data: Record<string, unknown>,
+  editorView: ComposeEditorView | undefined,
+): ComposeEditorView | undefined {
+  const extension = data[TURBOPANEL_EXTENSION_KEY]
+  if (!isRecord(extension) || !('view' in extension)) {
+    return editorView
+  }
+
+  const legacyView = extension.view
+  const { view: _removed, ...rest } = extension
+  if (Object.keys(rest).length === 0) {
+    delete data[TURBOPANEL_EXTENSION_KEY]
+  } else {
+    data[TURBOPANEL_EXTENSION_KEY] = rest
+  }
+
+  if (isComposeEditorView(legacyView)) {
+    return editorView ?? legacyView
+  }
+  return editorView
 }
 
 export type ComposeDocument = {
@@ -38,6 +71,37 @@ export type ComposeDocument = {
   data: Record<string, unknown>
   /** Editor presentation only — stripped for runtime deploy. */
   presentation: ComposePresentation
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isEmptyComposeMapping(value: unknown): boolean {
+  return isRecord(value) && Object.keys(value).length === 0
+}
+
+/** True when compose has no substantive content (e.g. `{}` or only `services: {}`). */
+export function isBlankComposeData(data: Record<string, unknown>): boolean {
+  const keys = Object.keys(data)
+  if (keys.length === 0) {
+    return true
+  }
+  return keys.every((key) => isEmptyComposeMapping(data[key]))
+}
+
+/** Drop top-level keys whose value is an empty mapping (`services: {}`, …). */
+export function pruneBlankComposeData(
+  data: Record<string, unknown>,
+): Record<string, unknown> {
+  const pruned: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(data)) {
+    if (isEmptyComposeMapping(value)) {
+      continue
+    }
+    pruned[key] = value
+  }
+  return pruned
 }
 
 export function emptyComposeDocument(): ComposeDocument {
@@ -79,23 +143,37 @@ export function isComposeDocument(value: unknown): value is ComposeDocument {
 export function normalizeCompose(value: unknown): ComposeDocument {
   if (value == null) return emptyComposeDocument()
   if (!isComposeDocument(value)) return emptyComposeDocument()
+  const data = pruneBlankComposeData({ ...value.data })
+  if (isBlankComposeData(data)) {
+    return emptyComposeDocument()
+  }
+  const presentation = value.presentation
+  const editorView = migrateLegacyEditorViewFromData(
+    data,
+    isComposeEditorView(presentation.editorView) ? presentation.editorView : undefined,
+  )
+  let keyOrder = presentation.keyOrder.filter((key) => key in data)
+  if (!(TURBOPANEL_EXTENSION_KEY in data)) {
+    keyOrder = keyOrder.filter((key) => key !== TURBOPANEL_EXTENSION_KEY)
+  }
   return {
     version: 1,
-    data: { ...value.data },
+    data,
     presentation: {
-      keyOrder: [...value.presentation.keyOrder],
-      comments: { ...value.presentation.comments },
-      ...(value.presentation.blankLines
-        ? { blankLines: { ...value.presentation.blankLines } }
+      keyOrder,
+      comments: { ...presentation.comments },
+      ...(presentation.blankLines
+        ? { blankLines: { ...presentation.blankLines } }
         : {}),
-      ...(typeof value.presentation.documentCommentBefore === 'string' &&
-          value.presentation.documentCommentBefore.length > 0
-        ? { documentCommentBefore: value.presentation.documentCommentBefore }
+      ...(typeof presentation.documentCommentBefore === 'string' &&
+          presentation.documentCommentBefore.length > 0
+        ? { documentCommentBefore: presentation.documentCommentBefore }
         : {}),
-      ...(typeof value.presentation.documentComment === 'string' &&
-          value.presentation.documentComment.length > 0
-        ? { documentComment: value.presentation.documentComment }
+      ...(typeof presentation.documentComment === 'string' &&
+          presentation.documentComment.length > 0
+        ? { documentComment: presentation.documentComment }
         : {}),
+      ...(editorView ? { editorView } : {}),
     },
   }
 }

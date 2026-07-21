@@ -1,0 +1,204 @@
+import type { ComposeDocument } from './types.ts'
+import {
+  formatStopGracePeriod,
+  parseServiceOptions,
+  resolveMaxRestartAttempts,
+  resolveStopGracePeriodSeconds,
+  type ServiceOptions,
+} from '../service-options.ts'
+
+export type ServiceOptionsByComposeName = Map<string, ServiceOptions>
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function listComposeServiceNames(document: ComposeDocument): string[] {
+  const services = document.data.services
+  if (!isRecord(services)) return []
+  return Object.keys(services).sort((a, b) => a.localeCompare(b))
+}
+
+function hasHealthCheck(service: Record<string, unknown>): boolean {
+  return isRecord(service.healthcheck)
+}
+
+export function serviceHasComposeHealthCheck(
+  document: ComposeDocument,
+  composeServiceName: string,
+): boolean {
+  const services = document.data.services
+  if (!isRecord(services)) return false
+  const service = services[composeServiceName]
+  return isRecord(service) && hasHealthCheck(service)
+}
+
+export type HealthCheckWarning = {
+  composeServiceName: string
+  policy: 'warn' | 'required'
+}
+
+export function collectHealthCheckWarnings(
+  document: ComposeDocument,
+  optionsByComposeName: ServiceOptionsByComposeName,
+): HealthCheckWarning[] {
+  const warnings: HealthCheckWarning[] = []
+  for (const composeServiceName of listComposeServiceNames(document)) {
+    const options = optionsByComposeName.get(composeServiceName) ?? {}
+    const parsed = parseServiceOptions(options) ?? {}
+    const policy = parsed.healthCheck?.policy ?? 'warn'
+    if (policy === 'disabled') continue
+    const services = document.data.services
+    const rawService = isRecord(services) ? services[composeServiceName] : undefined
+    if (isRecord(rawService) && hasHealthCheck(rawService)) {
+      continue
+    }
+    if (policy === 'warn' || policy === 'required') {
+      warnings.push({ composeServiceName, policy })
+    }
+  }
+  return warnings
+}
+
+function applyResources(
+  service: Record<string, unknown>,
+  resources: NonNullable<ServiceOptions['resources']>,
+): void {
+  if (resources.cpus !== undefined) {
+    service.cpus = resources.cpus
+  }
+  if (resources.memoryBytes !== undefined) {
+    service.mem_limit = resources.memoryBytes
+  }
+  if (resources.memoryReservationBytes !== undefined) {
+    service.mem_reservation = resources.memoryReservationBytes
+  }
+
+  const deploy = isRecord(service.deploy) ? { ...service.deploy } : {}
+  const deployResources = isRecord(deploy.resources) ? { ...deploy.resources } : {}
+  const limits = isRecord(deployResources.limits) ? { ...deployResources.limits } : {}
+
+  if (resources.cpus !== undefined) {
+    limits.cpus = String(resources.cpus)
+  }
+  if (resources.memoryBytes !== undefined) {
+    limits.memory = `${resources.memoryBytes}`
+  }
+
+  if (Object.keys(limits).length > 0) {
+    deployResources.limits = limits
+    deploy.resources = deployResources
+    service.deploy = deploy
+  }
+}
+
+function applyRestartPolicy(
+  service: Record<string, unknown>,
+  maxAttempts: number,
+): void {
+  const deploy = isRecord(service.deploy) ? { ...service.deploy } : {}
+  const restartPolicy = isRecord(deploy.restart_policy)
+    ? { ...deploy.restart_policy }
+    : { condition: 'on-failure' }
+  restartPolicy.max_attempts = maxAttempts
+  deploy.restart_policy = restartPolicy
+  service.deploy = deploy
+}
+
+export type ServiceDeployHook = {
+  composeServiceName: string
+  preDeployCommand?: string
+  postDeployCommand?: string
+  buildDisableCache?: boolean
+}
+
+export type ApplyServiceOptionsResult = {
+  document: ComposeDocument
+  hooks: ServiceDeployHook[]
+}
+
+function applyParsedOptionsToService(
+  service: Record<string, unknown>,
+  parsed: ServiceOptions,
+): void {
+  if (parsed.container?.name) {
+    service.container_name = parsed.container.name
+  }
+
+  if (service.stop_grace_period === undefined) {
+    service.stop_grace_period = formatStopGracePeriod(
+      resolveStopGracePeriodSeconds(parsed),
+    )
+  }
+
+  if (parsed.resources) {
+    applyResources(service, parsed.resources)
+  }
+
+  applyRestartPolicy(service, resolveMaxRestartAttempts(parsed))
+}
+
+function buildServiceDeployHook(
+  composeServiceName: string,
+  parsed: ServiceOptions,
+): ServiceDeployHook | undefined {
+  const hook: ServiceDeployHook = { composeServiceName }
+  if (parsed.preDeployCommand) hook.preDeployCommand = parsed.preDeployCommand
+  if (parsed.postDeployCommand) hook.postDeployCommand = parsed.postDeployCommand
+  if (parsed.build?.disableCache) hook.buildDisableCache = true
+  if (hook.preDeployCommand || hook.postDeployCommand || hook.buildDisableCache) {
+    return hook
+  }
+  return undefined
+}
+
+export function applyServiceOptionsToComposeDocument(
+  document: ComposeDocument,
+  optionsByComposeName: ServiceOptionsByComposeName,
+): ApplyServiceOptionsResult {
+  const data = { ...document.data }
+  const services = isRecord(data.services) ? { ...data.services } : {}
+  const hooks: ServiceDeployHook[] = []
+
+  for (const composeServiceName of listComposeServiceNames(document)) {
+    const rawService = services[composeServiceName]
+    if (!isRecord(rawService)) continue
+
+    const service = { ...rawService }
+    const parsed = parseServiceOptions(optionsByComposeName.get(composeServiceName)) ?? {}
+    applyParsedOptionsToService(service, parsed)
+
+    const hook = buildServiceDeployHook(composeServiceName, parsed)
+    if (hook) hooks.push(hook)
+
+    services[composeServiceName] = service
+  }
+
+  data.services = services
+
+  return {
+    document: {
+      version: 1,
+      data,
+      presentation: document.presentation,
+    },
+    hooks,
+  }
+}
+
+export function buildServiceOptionsMap(
+  rows: Array<{ metadata: unknown; options: unknown }>,
+  readComposeServiceName: (metadata: unknown, fallback: string) => string,
+  fallbackId: string,
+): ServiceOptionsByComposeName {
+  const map: ServiceOptionsByComposeName = new Map()
+  for (const row of rows) {
+    const composeServiceName = readComposeServiceName(
+      row.metadata,
+      fallbackId,
+    )
+    const parsed = parseServiceOptions(row.options)
+    if (parsed) map.set(composeServiceName, parsed)
+  }
+  return map
+}

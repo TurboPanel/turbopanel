@@ -227,11 +227,24 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         WHERE c.id = ${entityId}::uuid
       `
     case 'principal':
-      // Org-level grants are sufficient for can(); only emit the organization
-      // ancestor (via assignment → service → … → workspace).
       return sql`
         SELECT 'principal'::text AS entity_type, p.id AS entity_id, 0 AS depth
         FROM principal p WHERE p.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'project'::text, p.project_id, 1
+        FROM principal p
+        WHERE p.id = ${entityId}::uuid AND p.project_id IS NOT NULL
+        UNION ALL
+        SELECT 'workspace'::text, pr.workspace_id, 2
+        FROM principal p
+        JOIN project pr ON pr.id = p.project_id
+        WHERE p.id = ${entityId}::uuid AND p.project_id IS NOT NULL
+        UNION ALL
+        SELECT 'organization'::text, w.organization_id, 3
+        FROM principal p
+        JOIN project pr ON pr.id = p.project_id
+        JOIN workspace w ON w.id = pr.workspace_id
+        WHERE p.id = ${entityId}::uuid AND p.project_id IS NOT NULL
         UNION ALL
         SELECT 'organization'::text, w.organization_id, 1
         FROM principal p
@@ -419,6 +432,81 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         JOIN server sv ON sv.id = v.server_id
         WHERE v.id = ${entityId}::uuid AND v.server_id IS NOT NULL
       `
+    case 'storage':
+      return sql`
+        SELECT 'storage'::text AS entity_type, st.id AS entity_id, 0 AS depth
+        FROM storage st WHERE st.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'organization'::text, st.organization_id, 1
+        FROM storage st WHERE st.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'project'::text, st.project_id, 1
+        FROM storage st
+        WHERE st.id = ${entityId}::uuid AND st.project_id IS NOT NULL
+        UNION ALL
+        SELECT 'workspace'::text, p.workspace_id, 2
+        FROM storage st
+        JOIN project p ON p.id = st.project_id
+        WHERE st.id = ${entityId}::uuid AND st.project_id IS NOT NULL
+        UNION ALL
+        SELECT 'organization'::text, w.organization_id, 3
+        FROM storage st
+        JOIN project p ON p.id = st.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE st.id = ${entityId}::uuid AND st.project_id IS NOT NULL
+        UNION ALL
+        SELECT 'environment'::text, st.environment_id, 1
+        FROM storage st
+        WHERE st.id = ${entityId}::uuid AND st.environment_id IS NOT NULL
+        UNION ALL
+        SELECT 'project'::text, e.project_id, 2
+        FROM storage st
+        JOIN environment e ON e.id = st.environment_id
+        WHERE st.id = ${entityId}::uuid AND st.environment_id IS NOT NULL
+        UNION ALL
+        SELECT 'workspace'::text, p.workspace_id, 3
+        FROM storage st
+        JOIN environment e ON e.id = st.environment_id
+        JOIN project p ON p.id = e.project_id
+        WHERE st.id = ${entityId}::uuid AND st.environment_id IS NOT NULL
+        UNION ALL
+        SELECT 'organization'::text, w.organization_id, 4
+        FROM storage st
+        JOIN environment e ON e.id = st.environment_id
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE st.id = ${entityId}::uuid AND st.environment_id IS NOT NULL
+        UNION ALL
+        SELECT 'service'::text, st.service_id, 1
+        FROM storage st
+        WHERE st.id = ${entityId}::uuid AND st.service_id IS NOT NULL
+        UNION ALL
+        SELECT 'environment'::text, s.environment_id, 2
+        FROM storage st
+        JOIN service s ON s.id = st.service_id
+        WHERE st.id = ${entityId}::uuid AND st.service_id IS NOT NULL
+        UNION ALL
+        SELECT 'project'::text, e.project_id, 3
+        FROM storage st
+        JOIN service s ON s.id = st.service_id
+        JOIN environment e ON e.id = s.environment_id
+        WHERE st.id = ${entityId}::uuid AND st.service_id IS NOT NULL
+        UNION ALL
+        SELECT 'workspace'::text, p.workspace_id, 4
+        FROM storage st
+        JOIN service s ON s.id = st.service_id
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project p ON p.id = e.project_id
+        WHERE st.id = ${entityId}::uuid AND st.service_id IS NOT NULL
+        UNION ALL
+        SELECT 'organization'::text, w.organization_id, 5
+        FROM storage st
+        JOIN service s ON s.id = st.service_id
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE st.id = ${entityId}::uuid AND st.service_id IS NOT NULL
+      `
     default:
       throw new Error(`Unknown entity type for ancestry: ${entityType}`)
   }
@@ -461,6 +549,11 @@ function buildLeavesBody(kind: string, organizationId: string): SQL {
         WHERE w.organization_id = ${organizationId}::uuid`
     case 'principal':
       return sql`SELECT DISTINCT p.id FROM principal p
+        LEFT JOIN project pr ON pr.id = p.project_id
+        LEFT JOIN workspace w ON w.id = pr.workspace_id
+        WHERE w.organization_id = ${organizationId}::uuid
+        UNION
+        SELECT DISTINCT p.id FROM principal p
         JOIN assignment a ON a.principal_id = p.id
         JOIN service s ON s.id = a.service_id
         JOIN environment e ON e.id = s.environment_id
@@ -508,6 +601,27 @@ function buildLeavesBody(kind: string, organizationId: string): SQL {
         SELECT v.id FROM variable v
         JOIN server sv ON sv.id = v.server_id
         WHERE sv.organization_id = ${organizationId}::uuid`
+    case 'storage':
+      return sql`SELECT st.id FROM storage st
+        WHERE st.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT st.id FROM storage st
+        JOIN project p ON p.id = st.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE w.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT st.id FROM storage st
+        JOIN environment e ON e.id = st.environment_id
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE w.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT st.id FROM storage st
+        JOIN service s ON s.id = st.service_id
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE w.organization_id = ${organizationId}::uuid`
     default:
       throw new Error(`Unknown entity kind for visibility leaves: ${kind}`)
   }

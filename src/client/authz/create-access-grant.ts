@@ -9,6 +9,7 @@ import {
   organization,
   principal,
   project,
+  storage,
   variable,
   workspace,
   server,
@@ -185,6 +186,14 @@ export async function verifyEntityExists(
         .select({ id: principal.id })
         .from(principal)
         .where(eq(principal.id, entityId))
+        .limit(1)
+      return rows.length > 0
+    }
+    case 'storage': {
+      const rows = await db
+        .select({ id: storage.id })
+        .from(storage)
+        .where(eq(storage.id, entityId))
         .limit(1)
       return rows.length > 0
     }
@@ -396,6 +405,17 @@ export async function resolveEntityOrganizationId(
       const rows = await db.execute<{ organization_id: string }>(sql`
         SELECT w.organization_id AS organization_id
         FROM principal p
+        LEFT JOIN project pr ON pr.id = p.project_id
+        LEFT JOIN workspace w ON w.id = pr.workspace_id
+        WHERE p.id = ${entityId}::uuid
+          AND p.project_id IS NOT NULL
+        LIMIT 1
+      `)
+      if (rows[0]?.organization_id) return rows[0].organization_id
+
+      const assignmentRows = await db.execute<{ organization_id: string }>(sql`
+        SELECT w.organization_id AS organization_id
+        FROM principal p
         JOIN assignment a ON a.principal_id = p.id
         JOIN service s ON s.id = a.service_id
         JOIN environment e ON e.id = s.environment_id
@@ -404,7 +424,15 @@ export async function resolveEntityOrganizationId(
         WHERE p.id = ${entityId}::uuid
         LIMIT 1
       `)
-      return rows[0]?.organization_id ?? null
+      return assignmentRows[0]?.organization_id ?? null
+    }
+    case 'storage': {
+      const rows = await db
+        .select({ organizationId: storage.organizationId })
+        .from(storage)
+        .where(eq(storage.id, entityId))
+        .limit(1)
+      return rows[0]?.organizationId ?? null
     }
     default:
       return null

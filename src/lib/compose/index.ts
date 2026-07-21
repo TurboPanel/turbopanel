@@ -1,9 +1,13 @@
 export {
   emptyComposeDocument,
+  isBlankComposeData,
   isComposeDocument,
+  isComposeEditorView,
   normalizeCompose,
+  pruneBlankComposeData,
   type ComposeComment,
   type ComposeDocument,
+  type ComposeEditorView,
   type ComposePresentation,
 } from './types.ts'
 export {
@@ -28,11 +32,27 @@ export {
   type ComposeLintLevel,
 } from './lint.ts'
 export {
-  isComposeEditorView,
   isPlacementServerId,
   readComposePlacementServerId,
   stripComposePlacement,
   TURBOPANEL_EXTENSION_KEY,
-  type ComposeEditorView,
   type ComposeTurbopanelExtension,
 } from './placement.ts'
+export {
+  applyVariablesToComposeDocument,
+  escapeLiteralComposeValue,
+  trimVariableValue,
+  type ApplyVariablesResult,
+  type DeployVariableEntry,
+  type DeployVariableMaterial,
+} from './apply-variables.ts'
+export {
+  applyServiceOptionsToComposeDocument,
+  buildServiceOptionsMap,
+  collectHealthCheckWarnings,
+  serviceHasComposeHealthCheck,
+  type ApplyServiceOptionsResult,
+  type HealthCheckWarning,
+  type ServiceDeployHook,
+  type ServiceOptionsByComposeName,
+} from './apply-service-options.ts'

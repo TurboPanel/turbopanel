@@ -1,13 +1,16 @@
 import { and, eq, inArray } from 'drizzle-orm'
+import type { Context } from 'hono'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { getDb } from '../../db.ts'
-import { environment } from '../../lib/db/schema.ts'
+import { getDb, type Db } from '../../db.ts'
+import { environment, project } from '../../lib/db/schema.ts'
 import { applyValidatedComposeOption } from '../../lib/compose/index.ts'
+import { mergeProjectEnvironmentCompose } from './deploy-prepare.ts'
+import { reconcileServicesFromCompose } from './reconcile-services.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -23,6 +26,76 @@ import {
   hierarchyDeleteHasChildrenResponse,
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
+
+type EnvironmentPatchFields = {
+  displayName?: string | null
+  description?: string | null
+  metadata?: Record<string, unknown> | null
+  options?: Record<string, unknown> | null
+  updatedAt: string
+}
+
+function buildEnvironmentPatchFields(
+  c: Context<AppEnv>,
+  body: Record<string, unknown>,
+): EnvironmentPatchFields | Response {
+  let patchFields: EnvironmentPatchFields
+  try {
+    patchFields = buildPatchUpdateFields(body)
+  } catch {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
+  const metadataResult = parseJsonbObject(c, body, 'metadata')
+  if (metadataResult instanceof Response) return metadataResult
+  if (metadataResult !== null) {
+    patchFields.metadata = metadataResult
+  }
+  return patchFields
+}
+
+async function reconcileServicesAfterOptionsPatch(
+  db: Db,
+  environmentId: string,
+  optionsResult: Record<string, unknown>,
+): Promise<void> {
+  const [envRow] = await db
+    .select({ projectId: environment.projectId, options: environment.options })
+    .from(environment)
+    .where(eq(environment.id, environmentId))
+    .limit(1)
+  if (!envRow) return
+
+  const [projectRow] = await db
+    .select({ options: project.options })
+    .from(project)
+    .where(eq(project.id, envRow.projectId))
+    .limit(1)
+  if (!projectRow) return
+
+  const merged = mergeProjectEnvironmentCompose(projectRow.options, { ...optionsResult })
+  if (merged instanceof Response) return
+  await reconcileServicesFromCompose(db, environmentId, merged)
+}
+
+async function applyEnvironmentOptionsPatch(
+  c: Context<AppEnv>,
+  db: Db,
+  environmentId: string,
+  body: Record<string, unknown>,
+  patchFields: EnvironmentPatchFields,
+): Promise<Response | undefined> {
+  const optionsResult = parseJsonbObject(c, body, 'options')
+  if (optionsResult instanceof Response) return optionsResult
+  if (optionsResult === null) return
+
+  const composeOption = applyValidatedComposeOption(optionsResult)
+  if (!composeOption.ok) {
+    return c.json({ error: 'compose_invalid', issues: composeOption.issues }, 400)
+  }
+  patchFields.options = optionsResult
+  await reconcileServicesAfterOptionsPatch(db, environmentId, optionsResult)
+}
 
 export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
@@ -206,34 +279,11 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    let patchFields: {
-      displayName?: string | null
-      description?: string | null
-      metadata?: Record<string, unknown> | null
-      options?: Record<string, unknown> | null
-      updatedAt: string
-    }
-    try {
-      patchFields = buildPatchUpdateFields(body)
-    } catch {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
+    const patchFields = buildEnvironmentPatchFields(c, body)
+    if (patchFields instanceof Response) return patchFields
 
-    const metadataResult = parseJsonbObject(c, body, 'metadata')
-    if (metadataResult instanceof Response) return metadataResult
-    if (metadataResult !== null) {
-      patchFields.metadata = metadataResult
-    }
-
-    const optionsResult = parseJsonbObject(c, body, 'options')
-    if (optionsResult instanceof Response) return optionsResult
-    if (optionsResult !== null) {
-      const composeOption = applyValidatedComposeOption(optionsResult)
-      if (!composeOption.ok) {
-        return c.json({ error: 'compose_invalid', issues: composeOption.issues }, 400)
-      }
-      patchFields.options = optionsResult
-    }
+    const optionsError = await applyEnvironmentOptionsPatch(c, db, id, body, patchFields)
+    if (optionsError) return optionsError
 
     await db
       .update(environment)

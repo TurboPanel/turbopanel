@@ -128,11 +128,26 @@ function createTrackingRegistry(): DaemonCellRegistry {
   }
 }
 
-function composeWithPlacement(serverId: string): ComposeDocument {
+function composeWithEmptyServicesPlacement(serverId: string): ComposeDocument {
   return {
     version: 1,
     data: {
       services: {},
+      [TURBOPANEL_EXTENSION_KEY]: {
+        placement: { server_id: serverId },
+      },
+    },
+    presentation: { keyOrder: ['services', TURBOPANEL_EXTENSION_KEY], comments: {} },
+  }
+}
+
+function composeWithPlacement(serverId: string): ComposeDocument {
+  return {
+    version: 1,
+    data: {
+      services: {
+        web: { image: 'nginx:alpine' },
+      },
       [TURBOPANEL_EXTENSION_KEY]: {
         placement: { server_id: serverId },
       },
@@ -290,6 +305,50 @@ async function withDeployFixtures(
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
 }
+
+test('POST /environments/:id/deploy rejects empty compose', async () => {
+  await withDeployFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    projectId,
+    environmentId,
+    serverId,
+    commandQueue,
+  }) => {
+    await db
+      .update(environment)
+      .set({
+        options: { compose: composeWithEmptyServicesPlacement(serverId) },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(environment.id, environmentId))
+    await db
+      .update(project)
+      .set({
+        options: { compose: emptyComposeDocument() },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(project.id, projectId))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/environments/${environmentId}/deploy`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    })
+
+    assertEquals(res.status, 400)
+    assertEquals(await res.json(), { error: 'compose_empty' })
+    assertEquals(commandQueue.envelopes.length, 0)
+  })
+})
 
 test('POST /environments/:id/deploy pinned auto-resolves without body serverId', async () => {
   await withDeployFixtures(async ({

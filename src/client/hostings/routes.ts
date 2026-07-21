@@ -21,6 +21,7 @@ import {
   hierarchyDeleteHasChildrenResponse,
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
+import { parseHostingOptions } from '../../lib/hosting-options.ts'
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -190,6 +191,13 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const optionsResult = parseJsonbObject(c, body, 'options')
     if (optionsResult instanceof Response) return optionsResult
 
+    let validatedOptions: Record<string, unknown> | null = null
+    if (optionsResult !== null) {
+      const parsed = parseHostingOptions(optionsResult)
+      if (parsed === null) return c.json({ error: 'invalid_hosting_options' }, 400)
+      validatedOptions = parsed
+    }
+
     const tlsIdResult = await parseOptionalTlsId(c, db, organizationId, body.tlsId)
     if (tlsIdResult.kind === 'error') return tlsIdResult.response
 
@@ -202,7 +210,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
           serviceId,
           ...(tlsIdResult.kind === 'value' ? { tlsId: tlsIdResult.value } : {}),
           ...(metadataResult !== null ? { metadata: metadataResult } : {}),
-          ...(optionsResult !== null ? { options: optionsResult } : {}),
+          ...(validatedOptions !== null ? { options: validatedOptions } : {}),
         })
         .returning({ id: hosting.id })
       return inserted.id
@@ -254,7 +262,11 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const optionsResult = parseJsonbObject(c, body, 'options')
     if (optionsResult instanceof Response) return optionsResult
-    if (optionsResult !== null) patchFields.options = optionsResult
+    if (optionsResult !== null) {
+      const parsed = parseHostingOptions(optionsResult)
+      if (parsed === null) return c.json({ error: 'invalid_hosting_options' }, 400)
+      patchFields.options = parsed
+    }
 
     const tlsIdResult = await parseOptionalTlsId(c, db, organizationId, body.tlsId)
     if (tlsIdResult.kind === 'error') return tlsIdResult.response

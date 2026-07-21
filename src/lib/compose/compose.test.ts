@@ -228,6 +228,15 @@ test('yamlToComposeDocument treats blank source as empty draft', () => {
   assertEquals(yamlToComposeDocument('\n'), emptyComposeDocument())
 })
 
+test('yamlToComposeDocument treats services: {} as an empty draft', () => {
+  assertEquals(yamlToComposeDocument('services: {}\n'), emptyComposeDocument())
+  assertEquals(composeDocumentToYaml({
+    version: 1,
+    data: { services: {} },
+    presentation: { keyOrder: ['services'], comments: {} },
+  }), '\n')
+})
+
 test('mergeComposeOverlay deep-merges services', () => {
   const base = yamlToComposeDocument(`
 services:
@@ -342,42 +351,31 @@ test('validateComposeDocument accepts valid placement', () => {
   assertEquals(result.ok, true)
 })
 
-test('validateComposeDocument accepts x-turbopanel.view editor|visual', () => {
-  const base = documentWithPlacement(PLACEMENT_UUID)
-  for (const view of ['editor', 'visual'] as const) {
-    const result = validateComposeDocument({
-      ...base,
-      data: {
-        ...base.data,
-        [TURBOPANEL_EXTENSION_KEY]: {
-          ...(base.data[TURBOPANEL_EXTENSION_KEY] as Record<string, unknown>),
-          view,
-        },
-      },
-    })
-    assertEquals(result.ok, true)
-  }
+test('normalizeCompose migrates legacy x-turbopanel.view to presentation.editorView', () => {
+  const result = normalizeCompose({
+    version: 1,
+    data: {
+      services: { api: { image: 'node:22' } },
+      [TURBOPANEL_EXTENSION_KEY]: { view: 'visual' },
+    },
+    presentation: { keyOrder: ['services', TURBOPANEL_EXTENSION_KEY], comments: {} },
+  })
+  assertEquals(result.presentation.editorView, 'visual')
+  assertEquals(result.data[TURBOPANEL_EXTENSION_KEY], undefined)
+  assertEquals(composeDocumentToYaml(result).includes('x-turbopanel'), false)
 })
 
-test('validateComposeDocument rejects invalid x-turbopanel.view', () => {
-  const base = documentWithPlacement(PLACEMENT_UUID)
-  const result = validateComposeDocument({
-    ...base,
+test('normalizeCompose drops invalid legacy x-turbopanel.view without editorView', () => {
+  const result = normalizeCompose({
+    version: 1,
     data: {
-      ...base.data,
-      [TURBOPANEL_EXTENSION_KEY]: {
-        ...(base.data[TURBOPANEL_EXTENSION_KEY] as Record<string, unknown>),
-        view: 'yaml',
-      },
+      services: { api: { image: 'node:22' } },
+      [TURBOPANEL_EXTENSION_KEY]: { view: 'yaml' },
     },
+    presentation: { keyOrder: ['services', TURBOPANEL_EXTENSION_KEY], comments: {} },
   })
-  assertEquals(result.ok, false)
-  if (!result.ok) {
-    assertEquals(
-      result.issues.some((i) => i.path === 'x-turbopanel.view'),
-      true,
-    )
-  }
+  assertEquals(result.presentation.editorView, undefined)
+  assertEquals(result.data[TURBOPANEL_EXTENSION_KEY], undefined)
 })
 
 test('validateComposeDocument remains backward compatible without x-turbopanel', () => {

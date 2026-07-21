@@ -13,6 +13,12 @@ export const hostingSchemas = {
         type: ['string', 'null'],
         description: 'Pinned org TLS certificate id; null = basic self-signed (Caddy tls internal)',
       },
+      metadata: { type: 'object', nullable: true },
+      options: {
+        type: 'object',
+        nullable: true,
+        description: 'Hosting routing options (hostnames, pathPrefix, targetPort, proxy)',
+      },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
     },
@@ -35,6 +41,24 @@ export const hostingSchemas = {
       description: { type: 'string' },
       serviceId: { type: 'string' },
       tlsId: { type: ['string', 'null'] },
+      metadata: { type: 'object' },
+      options: {
+        type: 'object',
+        description: 'hostnames, pathPrefix, targetPort, proxy',
+      },
+    },
+  },
+  UpdateHostingRequest: {
+    type: 'object',
+    properties: {
+      displayName: { type: 'string' },
+      description: { type: 'string' },
+      tlsId: { type: ['string', 'null'] },
+      metadata: { type: 'object' },
+      options: {
+        type: 'object',
+        description: 'hostnames, pathPrefix, targetPort, proxy',
+      },
     },
   },
 }
@@ -46,6 +70,7 @@ export const hostingPaths = buildResourceCrudPaths({
   listSchema: 'HostingsResponse',
   rowSchema: 'HostingRow',
   createSchema: 'CreateHostingRequest',
+  patchSchema: 'UpdateHostingRequest',
   parentQuery: {
     name: 'serviceId',
     description: 'Filter hostings linked to a service',
