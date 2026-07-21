@@ -33,14 +33,16 @@ import {
 } from './daemon/metrics/store-selection.ts'
 import type { ServerMetricsStore } from './daemon/metrics/types.ts'
 import {
+  closeWorkersRequestDb,
+  openWorkersRequestDb,
   resolveWorkersClientAuthRateLimiter,
   resolveWorkersDaemonRateLimiters,
   resolveWorkersDb,
-  resolveWorkersQueryCache,
   warnIfCachedHyperdriveMissing,
   warnIfClientAuthRateLimiterMissing,
   warnIfDaemonRateLimitersMissing,
 } from './workers-bindings.ts'
+import { endDbConnection } from './db.ts'
 import type { AuthRateLimiter } from './client/authn/auth-rate-limit.ts'
 import { OTP_VERIFIER_SECRET_PURPOSE } from './client/authn/email-otp.ts'
 
@@ -157,47 +159,53 @@ export default {
       ?? env.TURBOPANEL_DATABASE_URL?.trim()
       ?? undefined
     warnIfCachedHyperdriveMissing(env)
-    const db = resolveWorkersDb(env)
-    const queryCache = resolveWorkersQueryCache(env, db)
-    const platformEnv = stringBindingEnv(env)
-    // Resolve email delivery from current DB + platform env on every request so
-    // admin PUT /settings/email takes effect without restarting the Worker.
-    // (Workers Mailgun sends directly — no AMQP.)
-    const emailQueue: EmailQueue = await resolveWorkersEmailQueue(
-      db,
-      platformEnv,
-      cachedDataEncryptionSecrets ?? undefined,
-    )
-    const requestApp = new Hono<AppEnv>()
-    requestApp.use('*', async (c, next) => {
-      // Session-cookie TLS uses the URL-derived (Workers) path — a spoofed
-      // X-Forwarded-Proto must never downgrade the cookie's Secure flag/name.
-      c.set('runtime', 'workers')
-      if (db) {
-        c.set('db', db)
-      }
-      if (queryCache) {
-        c.set('queryCache', queryCache)
-      }
-      c.set('emailQueue', emailQueue)
-      if (cachedCommandQueue) c.set('commandQueue', cachedCommandQueue)
-      if (cachedAuthRateLimiter) c.set('authRateLimiter', cachedAuthRateLimiter)
-      c.set('platformEnv', platformEnv)
-      if (postgresConnectionString) {
-        c.set('postgresConnectionString', postgresConnectionString)
-      }
-      if (cachedDaemonCellRegistryFactory) {
-        const registry = cachedDaemonCellRegistryFactory(env, db)
-        c.set('daemonCellRegistry', registry)
-      }
-      if (cachedServerMetricsStore) {
-        c.set('serverMetricsStore', cachedServerMetricsStore)
-      }
-      await next()
-    })
-    requestApp.route('/', cachedApp!)
+    // Fresh clients for this invocation only — close in finally via waitUntil
+    // so postgres.js pools cannot stack to the 128 MB isolate limit.
+    const dbHandles = openWorkersRequestDb(env)
+    const { db, queryCache } = dbHandles
+    try {
+      const platformEnv = stringBindingEnv(env)
+      // Resolve email delivery from current DB + platform env on every request so
+      // admin PUT /settings/email takes effect without restarting the Worker.
+      // (Workers Mailgun sends directly — no AMQP.)
+      const emailQueue: EmailQueue = await resolveWorkersEmailQueue(
+        db,
+        platformEnv,
+        cachedDataEncryptionSecrets ?? undefined,
+      )
+      const requestApp = new Hono<AppEnv>()
+      requestApp.use('*', async (c, next) => {
+        // Session-cookie TLS uses the URL-derived (Workers) path — a spoofed
+        // X-Forwarded-Proto must never downgrade the cookie's Secure flag/name.
+        c.set('runtime', 'workers')
+        if (db) {
+          c.set('db', db)
+        }
+        if (queryCache) {
+          c.set('queryCache', queryCache)
+        }
+        c.set('emailQueue', emailQueue)
+        if (cachedCommandQueue) c.set('commandQueue', cachedCommandQueue)
+        if (cachedAuthRateLimiter) c.set('authRateLimiter', cachedAuthRateLimiter)
+        c.set('platformEnv', platformEnv)
+        if (postgresConnectionString) {
+          c.set('postgresConnectionString', postgresConnectionString)
+        }
+        if (cachedDaemonCellRegistryFactory) {
+          const registry = cachedDaemonCellRegistryFactory(env, db)
+          c.set('daemonCellRegistry', registry)
+        }
+        if (cachedServerMetricsStore) {
+          c.set('serverMetricsStore', cachedServerMetricsStore)
+        }
+        await next()
+      })
+      requestApp.route('/', cachedApp!)
 
-    return requestApp.fetch(request, env, ctx)
+      return await requestApp.fetch(request, env, ctx)
+    } finally {
+      ctx.waitUntil(closeWorkersRequestDb(dbHandles).catch(() => {}))
+    }
   },
 
   async scheduled(
@@ -215,29 +223,33 @@ export default {
     await initPromise
 
     const db = resolveWorkersDb(env)
-    if (!db || !cachedDaemonCellRegistryFactory) {
-      batch.retryAll()
-      return
-    }
-
-    const registry = cachedDaemonCellRegistryFactory(env, db)
-
     try {
-      for (const msg of batch.messages) {
-        try {
-          const envelope = parseCommandEnvelope(msg.body)
-          await processCommandEnvelope(db, registry, envelope)
-          msg.ack()
-        } catch (error) {
-          if (isTransientError(error)) {
-            msg.retry()
-          } else {
+      if (!db || !cachedDaemonCellRegistryFactory) {
+        batch.retryAll()
+        return
+      }
+
+      const registry = cachedDaemonCellRegistryFactory(env, db)
+
+      try {
+        for (const msg of batch.messages) {
+          try {
+            const envelope = parseCommandEnvelope(msg.body)
+            await processCommandEnvelope(db, registry, envelope)
             msg.ack()
+          } catch (error) {
+            if (isTransientError(error)) {
+              msg.retry()
+            } else {
+              msg.ack()
+            }
           }
         }
+      } catch {
+        batch.retryAll()
       }
-    } catch {
-      batch.retryAll()
+    } finally {
+      if (db) await endDbConnection(db).catch(() => {})
     }
   },
 } satisfies ExportedHandler<CloudflareBindings>

@@ -55,12 +55,15 @@ const PG_OPTS_DENO = {
 /**
  * Build a Workers/Hyperdrive postgres.js client.
  *
- * ⛔ Call this (via `resolveWorkersDb`) **once per request/invocation** — never
- * cache the returned client in module/global/isolate scope and reuse it on a
- * later request. On Workers a DB client/socket is an I/O object bound to the
- * request that created it; reusing it across requests throws "Cannot perform
- * I/O on behalf of a different request" and 500s (this caused a production
- * outage). Hyperdrive pools server-side, so per-request creation is free.
+ * ⛔ Call this (via `resolveWorkersDb` / `openWorkersRequestDb`) **once per
+ * request/invocation** — never cache the returned client in module/global/
+ * isolate scope and reuse it on a later request. On Workers a DB client/socket
+ * is an I/O object bound to the request that created it; reusing it across
+ * requests throws "Cannot perform I/O on behalf of a different request" and
+ * 500s (this caused a production outage). Hyperdrive pools server-side, so
+ * per-request creation is free — but **always** `endDbConnection` /
+ * `closeWorkersRequestDb` when the invocation finishes so postgres.js pools
+ * do not stack to the 128 MB isolate memory limit.
  * See `AGENTS.md` → Workers Hyperdrive (HARD RULE) and
  * https://developers.cloudflare.com/hyperdrive/observability/troubleshooting/
  */

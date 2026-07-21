@@ -1,5 +1,7 @@
 import { assert, assertEquals } from 'jsr:@std/assert'
 import {
+  closeWorkersRequestDb,
+  openWorkersRequestDb,
   resolveWorkersCachedDb,
   resolveWorkersClientAuthRateLimiter,
   resolveWorkersDaemonRateLimiters,
@@ -174,6 +176,94 @@ test('resolveWorkersQueryCache uses cached Hyperdrive db when HYPERDRIVE_CACHED 
   } finally {
     setWorkersDbFactoryForTests(null)
   }
+})
+
+test('openWorkersRequestDb mints primary + cached once; closeWorkersRequestDb ends both', async () => {
+  let createCount = 0
+  const ended: string[] = []
+  setWorkersDbFactoryForTests((binding: HyperdriveBinding) => {
+    createCount += 1
+    const label = binding.connectionString
+    return {
+      label,
+      $client: {
+        end: () => {
+          ended.push(label)
+          return Promise.resolve()
+        },
+      },
+    } as unknown as Db
+  })
+
+  try {
+    const env = {
+      HYPERDRIVE: mockHyperdrive('postgres://primary'),
+      HYPERDRIVE_CACHED: mockHyperdrive('postgres://cached'),
+    } as CloudflareBindings
+
+    const handles = openWorkersRequestDb(env)
+    assertEquals(createCount, 2)
+    assert(handles.db !== undefined)
+    assert(handles.cachedDb !== undefined)
+    assert(handles.db !== handles.cachedDb)
+    assert(handles.queryCache !== undefined)
+
+    await closeWorkersRequestDb(handles)
+    assertEquals(
+      ended.sort((a, b) => a.localeCompare(b)),
+      ['postgres://cached', 'postgres://primary'],
+    )
+  } finally {
+    setWorkersDbFactoryForTests(null)
+  }
+})
+
+test('resolveWorkersQueryCache reuses a caller-supplied cachedDb (no second mint)', () => {
+  let createCount = 0
+  setWorkersDbFactoryForTests((binding: HyperdriveBinding) => {
+    createCount += 1
+    return mockDb(binding.connectionString)
+  })
+
+  try {
+    const env = {
+      HYPERDRIVE: mockHyperdrive('postgres://primary'),
+      HYPERDRIVE_CACHED: mockHyperdrive('postgres://cached'),
+    } as CloudflareBindings
+    const primary = resolveWorkersDb(env)
+    const cached = resolveWorkersCachedDb(env)
+    assertEquals(createCount, 2)
+    resolveWorkersQueryCache(env, primary, cached ?? null)
+    assertEquals(createCount, 2)
+  } finally {
+    setWorkersDbFactoryForTests(null)
+  }
+})
+
+test('workers.ts and offline-sweep.ts always close per-invocation DB clients', async () => {
+  const workersSource = await Deno.readTextFile(
+    new URL('./workers.ts', import.meta.url),
+  )
+  const sweepSource = await Deno.readTextFile(
+    new URL('./daemon/cell/offline-sweep.ts', import.meta.url),
+  )
+
+  assert(
+    /closeWorkersRequestDb\s*\(/.test(workersSource),
+    'workers.ts fetch must close via closeWorkersRequestDb',
+  )
+  assert(
+    /endDbConnection\s*\(/.test(workersSource),
+    'workers.ts queue must endDbConnection',
+  )
+  assert(
+    /endDbConnection\s*\(/.test(sweepSource),
+    'offline-sweep cron must endDbConnection',
+  )
+  assert(
+    /finally\s*\{[\s\S]*endDbConnection/.test(sweepSource),
+    'offline-sweep must end the client in finally',
+  )
 })
 
 test('resolveWorkersDaemonRateLimiters returns noop adapters when bindings absent', async () => {

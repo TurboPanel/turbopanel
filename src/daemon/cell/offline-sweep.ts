@@ -42,7 +42,7 @@
  * granularity) plus `OFFLINE_SWEEP_STALE_MS` grace — worst case is close to
  * but a good deal cheaper than re-arming a DO alarm per server.
  */
-import type { Db } from "../../db.ts";
+import { type Db, endDbConnection } from "../../db.ts";
 import { resolveWorkersDb } from "../../workers-bindings.ts";
 import { createDurableObjectDaemonCellRegistry } from "./do-registry.ts";
 import {
@@ -579,8 +579,8 @@ export async function sweepOnce(
 /** Cron Trigger entry point (`workers.ts` `scheduled()`). */
 export async function runOfflineSweep(env: CloudflareBindings): Promise<void> {
   // Fresh per-invocation Hyperdrive client (Workers cannot reuse a DB socket
-  // across requests/cron invocations). Hyperdrive pools server-side, so this
-  // carries no connection-startup cost.
+  // across requests/cron invocations). Always end it — leaving postgres.js
+  // pools open stacks memory until the isolate hits the 128 MB limit.
   const db = resolveWorkersDb(env);
   if (!db) return;
 
@@ -590,5 +590,7 @@ export async function runOfflineSweep(env: CloudflareBindings): Promise<void> {
     sweepTrace("sweep-failed", {
       error: err instanceof Error ? err.message : String(err),
     });
+  } finally {
+    await endDbConnection(db).catch(() => {});
   }
 }

@@ -1,4 +1,9 @@
-import { createWorkersDb, type Db, type HyperdriveBinding } from './db.ts'
+import {
+  createWorkersDb,
+  endDbConnection,
+  type Db,
+  type HyperdriveBinding,
+} from './db.ts'
 import { createHyperdriveQueryCache } from './query-cache/hyperdrive-query-cache.ts'
 import { createPassthroughQueryCache } from './query-cache/passthrough-query-cache.ts'
 import type { QueryCache } from './query-cache/contracts.ts'
@@ -11,6 +16,21 @@ import {
   createFailClosedAuthRateLimiter,
   getSharedAuthRateLimiter,
 } from './client/authn/auth-rate-limit.ts'
+
+/**
+ * Per-invocation Hyperdrive handles for the main Worker (`fetch` / `queue`).
+ *
+ * Create with {@link openWorkersRequestDb}, use for that one invocation only,
+ * then {@link closeWorkersRequestDb} in `finally` / `ctx.waitUntil` — never
+ * cache across requests (Hyperdrive I/O context) and never leave clients open
+ * (postgres.js pools stack until the isolate hits the 128 MB limit).
+ */
+export type WorkersRequestDbHandles = {
+  db: Db | undefined
+  /** Distinct `HYPERDRIVE_CACHED` client when present; ended separately. */
+  cachedDb: Db | undefined
+  queryCache: QueryCache | undefined
+}
 
 type WorkersDbFactory = (binding: HyperdriveBinding) => Db
 
@@ -38,7 +58,9 @@ export function isPlaceholderHyperdriveCachedId(id: string | undefined): boolean
  * created it — reusing one across requests throws "Cannot perform I/O on behalf
  * of a different request" and 500s. Hyperdrive already pools connections, so
  * per-request creation carries no connection-startup cost and must not be cached
- * in isolate/global scope. See Cloudflare Hyperdrive troubleshooting.
+ * in isolate/global scope. Always pair with {@link endDbConnection} /
+ * {@link closeWorkersRequestDb} when the invocation finishes. See Cloudflare
+ * Hyperdrive troubleshooting.
  */
 export function resolveWorkersDb(
   env: CloudflareBindings,
@@ -69,19 +91,58 @@ export function resolveWorkersCachedDb(
 /**
  * Resolve the query-cache adapter for a request. Wraps a per-request client —
  * never cached across requests (see {@link resolveWorkersDb}).
+ *
+ * Prefer {@link openWorkersRequestDb} on the Worker entry paths so primary +
+ * cached clients are created once and closed together. Pass `cachedDb` when
+ * the caller already resolved {@link resolveWorkersCachedDb} to avoid minting
+ * a second cached client.
  */
 export function resolveWorkersQueryCache(
   env: CloudflareBindings,
   db: Db | undefined,
+  cachedDb?: Db | null,
 ): QueryCache | undefined {
-  const cachedDb = resolveWorkersCachedDb(env)
-  if (cachedDb) {
-    return createHyperdriveQueryCache(cachedDb)
+  const resolvedCached =
+    cachedDb === undefined ? resolveWorkersCachedDb(env) : cachedDb ?? undefined
+  if (resolvedCached) {
+    return createHyperdriveQueryCache(resolvedCached)
   }
   if (db) {
     return createPassthroughQueryCache(db)
   }
   return undefined
+}
+
+/**
+ * Open fresh primary (+ optional cached) Hyperdrive clients for one Worker
+ * invocation. Pair with {@link closeWorkersRequestDb} — never reuse across
+ * requests.
+ */
+export function openWorkersRequestDb(
+  env: CloudflareBindings,
+): WorkersRequestDbHandles {
+  const db = resolveWorkersDb(env)
+  const cachedDb = resolveWorkersCachedDb(env)
+  return {
+    db,
+    cachedDb,
+    queryCache: resolveWorkersQueryCache(env, db, cachedDb ?? null),
+  }
+}
+
+/**
+ * Force-close per-invocation postgres.js clients. Safe to call when handles
+ * are undefined/missing; swallows nothing — callers may `.catch(() => {})`
+ * when scheduling via `waitUntil`.
+ */
+export async function closeWorkersRequestDb(
+  handles: WorkersRequestDbHandles,
+): Promise<void> {
+  const endings: Promise<void>[] = []
+  if (handles.db) endings.push(endDbConnection(handles.db))
+  if (handles.cachedDb) endings.push(endDbConnection(handles.cachedDb))
+  if (endings.length === 0) return
+  await Promise.all(endings)
 }
 
 /**
