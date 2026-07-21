@@ -1240,8 +1240,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "managed_server_id_server_id_fk": {
-          "name": "managed_server_id_server_id_fk",
+        "managed_server_fk": {
+          "name": "managed_server_fk",
           "tableFrom": "managed",
           "tableTo": "server",
           "columnsFrom": [

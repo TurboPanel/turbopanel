@@ -463,7 +463,7 @@ export const managed = pgTable(
     foreignKey({
       columns: [table.serverId],
       foreignColumns: [server.id],
-      name: 'managed_server_id_server_id_fk',
+      name: 'managed_server_fk',
     }).onDelete('restrict'),
     uniqueIndex('managed_project_id_unique')
       .on(table.projectId)
