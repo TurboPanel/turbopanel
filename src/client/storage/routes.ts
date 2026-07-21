@@ -5,13 +5,14 @@ import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { encryptSecret } from '../authn/data-encryption.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { assertCanReadOr403, listVisible } from '../authz/index.ts'
+import { listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db.ts'
 import { principal, storage } from '../../lib/db/schema.ts'
 import {
   assertCanCreateOr403,
   assertCanManageOr403,
+  assertCanReadOr403,
   getOrgId,
   parseJsonBody,
   parseJsonbObject,
