@@ -164,6 +164,41 @@ export async function runWithDbTimeout<T>(
   }
 }
 
+/**
+ * Generic (non-DB) hard timeout race, for background/foreground work in a
+ * Durable Object handler that isn't a Postgres/Hyperdrive call (e.g. JWT
+ * keyring derivation, outbox pump). Same shape as `runWithDbTimeout` above —
+ * the timer is always cleared before returning, and the losing side of the
+ * race is swallowed so a post-timeout rejection never surfaces as an
+ * unhandled rejection.
+ *
+ * Lives here (not in `do.ts`) for the same reason `runWithDbTimeout` does:
+ * the `do.ts` hibernation source-scan (`ws-handlers.test.ts`) asserts there
+ * is no literal `setTimeout`/`setInterval` in that file, because a Durable
+ * Object must never hold itself awake with a live timer at idle. A timer
+ * that only exists to *bound* an in-flight await (and is always cleared
+ * before this function returns) is safe to import from elsewhere — it can
+ * never itself keep the object non-hibernatable.
+ */
+export async function raceWithTimeout<T>(
+  work: Promise<T>,
+  timeoutMs: number,
+  timeoutMessage: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  work.catch(() => {})
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
 /** Run tooling DB work and close the postgres.js pool so short-lived scripts can exit. */
 export async function withToolingDb<T>(fn: (db: Db) => Promise<T>): Promise<T> {
   const url = getDatabaseUrl()

@@ -7,6 +7,7 @@ import {
   type Db,
   DB_OP_TIMEOUT_MS,
   endDbConnection,
+  raceWithTimeout,
   runWithDbTimeout,
 } from "../../db.ts";
 import { evaluateSocketHealth } from "./socket-health.ts";
@@ -49,6 +50,25 @@ import {
   parseDaemonMessage,
   wireMessageToInboundEnvelope,
 } from "./protocol.ts";
+
+/**
+ * Hard client-side deadline for background work fired from the WS-upgrade /
+ * enqueue paths (outbox pump) that is not gated behind `#withProjectionDb`'s
+ * own `runWithDbTimeout` guard. Without a bound, a dangling/un-awaited
+ * promise can keep riding Cloudflare's platform wall-time ceiling
+ * (observed as `outcome: "exceededWallTime"` at ~30s, near-zero CPU) instead
+ * of failing fast and leaving a trace — see the `exceededWallTime` bursts
+ * this guard was added for (billing-audit follow-up, Jul 2026).
+ */
+const BACKGROUND_TASK_TIMEOUT_MS = 5_000;
+
+/**
+ * Hard client-side deadline for daemon JWT keyring derivation on the
+ * WS-upgrade path. This call is `await`ed directly — it gates the 101
+ * response — so a stuck derivation must fail the upgrade fast (503) rather
+ * than block it for Cloudflare's full wall-time ceiling.
+ */
+const JWT_KEYRING_TIMEOUT_MS = 5_000;
 
 function createInitialCellDiagnostics(): CellDiagnostics {
   return {
@@ -546,6 +566,36 @@ export class DaemonCellObject {
     } else {
       console.debug(line);
     }
+  }
+
+  /**
+   * Fire background work via `ctx.waitUntil` with a hard timeout instead of a
+   * bare un-awaited (`void ...`) call. A dangling promise inside a Durable
+   * Object handler has no bound at all — if it stalls, the object rides
+   * Cloudflare's platform wall-time ceiling (~30s) to `exceededWallTime`
+   * with no application-level trace. This wraps it in `raceWithTimeout` and
+   * `#trace`s + `console.error`s on timeout so a stuck call fails fast and
+   * leaves evidence for the next billing audit.
+   */
+  #runBoundedBackground(
+    label: string,
+    serverId: string,
+    work: Promise<void>,
+    timeoutMs: number = BACKGROUND_TASK_TIMEOUT_MS,
+  ): void {
+    this.#ctx.waitUntil(
+      raceWithTimeout(
+        work,
+        timeoutMs,
+        `${label} exceeded ${timeoutMs}ms timeout`,
+      ).catch((err) => {
+        console.error(
+          `daemon-cell event=background-timeout label=${label} serverId=${serverId} error=${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }),
+    );
   }
 
   #bumpStorageCount(callSite: string, kind: "read" | "write"): void {
@@ -1392,7 +1442,21 @@ export class DaemonCellObject {
       : "";
     if (!token) return new Response("Unauthorized", { status: 401 });
 
-    const keyring = await this.#getDaemonJwtKeyring();
+    let keyring: DaemonJwtKeyring;
+    try {
+      keyring = await raceWithTimeout(
+        this.#getDaemonJwtKeyring(),
+        JWT_KEYRING_TIMEOUT_MS,
+        `jwt keyring derivation exceeded ${JWT_KEYRING_TIMEOUT_MS}ms timeout`,
+      );
+    } catch (err) {
+      console.error(
+        `daemon-cell event=jwt-keyring-timeout error=${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return new Response("Service Unavailable", { status: 503 });
+    }
     const payload = await verifyDaemonJwt(token, keyring);
     if (!payload) return new Response("Unauthorized", { status: 401 });
 
@@ -1450,7 +1514,11 @@ export class DaemonCellObject {
     this.#ctx.waitUntil(
       this.#projectConnected(serverId, connectedAt, geo ?? undefined, keyId),
     );
-    void this.#pumpOutboxToDaemonSockets(serverId);
+    this.#runBoundedBackground(
+      "pump-outbox",
+      serverId,
+      this.#pumpOutboxToDaemonSockets(serverId),
+    );
     await this.#scheduleNearestAlarm();
 
     return new Response(null, { status: 101, webSocket: client });
@@ -2192,7 +2260,11 @@ export class DaemonCellObject {
           outbound.requestId,
         ),
       ) ?? existingRow;
-      void this.#pumpOutboxToDaemonSockets(serverId);
+      this.#runBoundedBackground(
+        "pump-outbox",
+        serverId,
+        this.#pumpOutboxToDaemonSockets(serverId),
+      );
       void this.#scheduleOutboxRetryIfNeeded();
       this.#trace("enqueue", {
         serverId,
@@ -2226,7 +2298,11 @@ export class DaemonCellObject {
         outbound.requestId,
       ),
     );
-    void this.#pumpOutboxToDaemonSockets(serverId);
+    this.#runBoundedBackground(
+      "pump-outbox",
+      serverId,
+      this.#pumpOutboxToDaemonSockets(serverId),
+    );
     void this.#scheduleOutboxRetryIfNeeded();
     this.#trace("enqueue", {
       serverId,

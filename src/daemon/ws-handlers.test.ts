@@ -107,9 +107,31 @@ it(
     const attached = await cell.attachDaemonSocket({
       keyId: crypto.randomUUID(),
     });
+
+    // `attachDaemonSocket` seeds meta+snapshot `lastInboundAt` to
+    // `connectedAt` (now) AND primes the *in-memory*
+    // `#connectedHint`/`#lastInboundMs` coalesce hint on `cell` itself. Any
+    // `recordInbound` on that same instance within
+    // `presenceCoalesceFloorMs()` (~50s) of attach is therefore a no-op by
+    // design — see "Deno/Redis coalesce skew" in
+    // `src/daemon/cell/AGENTS.md` — regardless of what Redis holds; calling
+    // it right after attach used to look like a "ms-rounding flake" but was
+    // actually this coalescing firing deterministically every time.
+    //
+    // Exercise the genuine "resumed after silence" path instead: back-date
+    // the Redis-persisted `lastInboundAt` past the coalesce floor, then
+    // drive `recordInbound` from a *fresh* `RedisDaemonCell` instance (no
+    // in-memory hint primed) so it takes the Redis-backed coalesce check,
+    // which now correctly sees a stale last-inbound and lets the write
+    // through.
+    await client.hset(metaKey(serverId), {
+      lastInboundAt: new Date(Date.now() - 120_000).toISOString(),
+    });
+    const freshCell = new RedisDaemonCell(client, serverId);
+
     const at = new Date().toISOString();
 
-    await cell.recordInbound({
+    await freshCell.recordInbound({
       connectionId: attached.connectionId,
       at,
     });
