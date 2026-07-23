@@ -39,8 +39,8 @@ export type UpgradeStatus = {
 const TRUNK_BRANCH = Deno.env.get('TURBOPANEL_TRUNK_BRANCH')?.trim() || 'trunk'
 const INSTANCE_SERVICE = Deno.env.get('TURBOPANEL_INSTANCE_SERVICE')?.trim()
 const DEV_USER = Deno.env.get('TURBOPANEL_DEV_USER')?.trim() ?? ''
-/** Managed production installs run git as the dedicated turbopanel service user. */
-const PRODUCTION_GIT_USER = Deno.env.get('TURBOPANEL_USER')?.trim() || 'turbopanel'
+/** Managed production installs run git as the dedicated tp service user. */
+const PRODUCTION_GIT_USER = Deno.env.get('TURBOPANEL_USER')?.trim() || 'tp'
 
 let upgrading = false
 

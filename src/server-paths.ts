@@ -192,8 +192,8 @@ export async function prepareInstanceSocket(socketPath: string): Promise<void> {
  * Restrict the bound socket to owner+group read/write (0660).
  *
  * Co-located dev runs the instance stack as the dev user; managed installs use
- * turbopaneli with supplementary group turbopanel. `/run/turbopanel` is 2770
- * with setgid so both sides can bind and connect.
+ * the instance user (`tpctrl`) or Caddy (`tpcaddy`), both members of group `tp`.
+ * `/run/turbopanel` is 2770 with setgid so both sides can bind and connect.
  */
 export async function hardenInstanceSocket(
   socketPath: string,

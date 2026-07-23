@@ -6,7 +6,7 @@
  * Prints TURBOPANEL_SOCKET and TURBOPANEL_SOCKET_DIAL for dev env wiring.
  *
  * Mode is 2770 (group-writable + setgid): co-located dev collapses owner/group
- * onto the single dev user; managed installs use turbopanel:turbopanel so the
+ * onto the single dev user; managed installs use tp:tp so the
  * instance stack can bind sockets and share group access.
  */
 
@@ -27,11 +27,11 @@ const SOCKET_DIAL = SOCKET_PATH.replace(/^\/+/, '')
 const OWNER =
   process.env.TURBOPANEL_SOCKET_OWNER?.trim() ||
   process.env.TURBOPANEL_DEV_USER?.trim() ||
-  'turbopanel'
+  'tp'
 const GROUP =
   process.env.TURBOPANEL_SOCKET_GROUP?.trim() ||
   process.env.TURBOPANEL_DEV_USER?.trim() ||
-  'turbopanel'
+  'tp'
 const MODE = 0o2770
 
 function run(cmd) {

@@ -18,9 +18,27 @@ The **daemon is the constant** installed on every TurboPanel-managed host and is
 
 ## Users, group & socket permissions
 
-**Development (co-located):** a **single dev user** runs everything — no `turbopanel`, `turbopaneli`, or `turbopanelc` service accounts are created. Source repos live under `$HOME` (`~/daemon`, `~/instance`, `~/ui`, `~/website`) and are owned by the dev user. Mutable data (`/etc/turbopanel`, `/var/lib/turbopanel`, `/var/log/turbopanel`, `/run/turbopanel`) is dev-user-owned. Per-service runtime state may still live in gitignored checkout dirs (`instance/.local`, `ui/.local`, `ui/.expo`, `.config` trees). `/run/turbopanel` is owned by the dev user; the instance hardens its socket to **`0660`** owned by the dev user so the co-located daemon can connect.
+**Development (co-located):** a **single dev user** runs everything — no `tp`, `tpctrl`, or `tpcache` service accounts are created. Source repos live under `$HOME` (`~/daemon`, `~/instance`, `~/ui`, `~/website`) and are owned by the dev user. Mutable data (`/etc/turbopanel`, `/var/lib/turbopanel`, `/var/log/turbopanel`, `/run/turbopanel`) is dev-user-owned. Per-service runtime state may still live in gitignored checkout dirs (`instance/.local`, `ui/.local`, `ui/.expo`, `.config` trees). `/run/turbopanel` is owned by the dev user; the instance hardens its socket to **`0660`** owned by the dev user so the co-located daemon can connect.
 
-**Production:** dedicated service users — see `../daemon/AGENTS.md` (Filesystem layout) and the systemd table below for `turbopanel` / `turbopaneli` / `turbopanelc` ownership, ACLs, and `/run/turbopanel` **`2770 turbopanel:turbopanel`** (setgid).
+**Production:** dedicated service users — `tp` (daemon + Ansible), `tpctrl` (instance, UI, website, mailer, dbstudio), `tpcache` (Redis), `tpdata` (Postgres), `tpqueue` (RabbitMQ), `tpmetrics` (ClickHouse), `tpcaddy` (control-plane Caddy). See `../daemon/AGENTS.md` (Filesystem layout), the allocation table below, and the systemd table for ownership, ACLs, and `/run/turbopanel` **`2770 tp:tp`** (setgid).
+
+### Production UID/GID allocation
+
+| User / group | UID/GID | Runs |
+|---|---|---|
+| `tp` | 9999 | daemon (`turbopaneld`) + Ansible + shared group everyone joins |
+| `tpctrl` | 9998 | instance, UI, website, mailer, dbstudio |
+| `tpcache` | 9997 | Redis (+ `redis.sock` access group) |
+| `tpdata` | 9996 | Postgres |
+| `tpqueue` | 9995 | RabbitMQ |
+| `tpmetrics` | 9994 | ClickHouse |
+| `tpcaddy` | 9993 | control-plane Caddy |
+| `tpnginx` | 9992 | nginx (optional, `web-service-user`) |
+| `tpapache` | 9991 | Apache (optional) |
+| `tpols` | 9990 | OpenLiteSpeed (optional) |
+| `tplsws` | 9989 | LiteSpeed Enterprise (reserved) |
+
+**Application logins are unchanged** — `postgres_user`/`postgres_db` = `turbopanel`, RabbitMQ user = `turbopanel`, `clickhouse_app_user` = `turbopanel_app`, `clickhouse_database` = `turbopanel_metrics`, Docker network/volumes = `turbopanel*`.
 
 ## Documentation discipline
 
@@ -95,10 +113,10 @@ Installed and managed by the daemon via the `instance-launch` Ansible role:
 
 | Unit | User (dev) | User (production) | Notes |
 |---|---|---|---|
-| `turbopanel-instance.service` | current dev user | `turbopaneli:turbopanel` | Deno instance on the Unix socket |
-| `turbopanel-caddy.service` | current dev user | `turbopaneli:turbopanel` | TLS + reverse proxy on `:8443` (`GOMAXPROCS=1`, `CPUQuota=100%`) |
-| `turbopanel-ui.service` | current dev user | `turbopaneli:turbopanel` | Expo web dev server (`:8081`, dev only) |
-| `turbopaneld.service` | current dev user | `turbopanel:turbopanel` | runs Ansible; has sudo (production only) |
+| `turbopanel-instance.service` | current dev user | `tpctrl:tp` | Deno instance on the Unix socket |
+| `turbopanel-caddy.service` | current dev user | `tpcaddy:tp` | TLS + reverse proxy on `:8443` (`GOMAXPROCS=1`, `CPUQuota=100%`) |
+| `turbopanel-ui.service` | current dev user | `tpctrl:tp` | Expo web dev server (`:8081`, dev only) |
+| `turbopaneld.service` | current dev user | `tp:tp` | runs Ansible; has sudo (production only) |
 
 - `systemd/turbopanel-instance.service` was removed — the canonical unit is templated by the `instance-launch` role in `../daemon`.
 - Logs: `journalctl -u turbopanel-instance -u turbopanel-caddy -u turbopanel-ui -f`
@@ -110,11 +128,11 @@ In Deno mode (development and production), the Hono instance listens on a **Unix
 
 ### Directory layout
 
-All TurboPanel runtime sockets live under **`/run/turbopanel/`** (on Linux, `/var/run` symlinks to `/run`). In **development** the directory is owned by the dev user. In **production** it is **`2770 turbopanel:turbopanel`** (setgid) so the `turbopaneli` user (in group `turbopanel`) can bind:
+All TurboPanel runtime sockets live under **`/run/turbopanel/`** (on Linux, `/var/run` symlinks to `/run`). In **development** the directory is owned by the dev user. In **production** it is **`2770 tp:tp`** (setgid) so the `tpctrl`/`tpcaddy` users (in group `tp`) can bind:
 
 | Socket file | Service |
 |---|---|
-| `/run/turbopanel/instance.sock` | Hono instance (dev: mode `0660`, dev user; prod: mode `0660`, group `turbopanel`) |
+| `/run/turbopanel/instance.sock` | Hono instance (dev: mode `0660`, dev user; prod: mode `0660`, group `tp`) |
 | `/run/turbopanel/postgres/.s.PGSQL.5432` | PostgreSQL 18 (Docker bind-mount) |
 | `/run/turbopanel/<name>.sock` | Reserved for future services |
 
@@ -210,7 +228,7 @@ reverse_proxy unix//run/turbopanel/instance.sock
 
 ### Development
 
-The daemon's `runtime-sockets` role (and `scripts/ensure-socket-dir.mjs` for manual runs) ensures `/run/turbopanel` exists and is owned by the dev user in development (**`2770 turbopanel:turbopanel`** in production), using passwordless `sudo` when needed. After bind, the instance hardens the socket file to `0660` (owner+group only) so the daemon can connect.
+The daemon's `runtime-sockets` role (and `scripts/ensure-socket-dir.mjs` for manual runs) ensures `/run/turbopanel` exists and is owned by the dev user in development (**`2770 tp:tp`** in production), using passwordless `sudo` when needed. After bind, the instance hardens the socket file to `0660` (owner+group only) so the daemon can connect.
 
 The instance Deno process runs with scoped permissions (see the `instance-launch` unit template): `--allow-env --allow-sys=networkInterfaces --allow-read=/run/turbopanel,<daemon dir>,<instance dir> --allow-write=/run/turbopanel --allow-run=git,systemctl,tar` (`tar` is needed for the dev-sync tarball). TCP listeners and Unix-domain connects (Postgres `.s.PGSQL.5432`, Redis `redis.sock`, instance listen sock) go on `--allow-net` — Deno 2.9+ treats Unix-socket connect as net, not read. TCP dev Postgres adds `--allow-net=127.0.0.1:5432`.
 
@@ -231,7 +249,7 @@ This repo's `Caddyfile` is **production-only**. Caddy terminates TLS and routes:
 
 ### Production
 
-Caddy/cert installs are handled by the daemon's `caddy` and `instance-certs` Ansible roles; `turbopanel-caddy.service` runs as `turbopaneli:turbopanel` in production.
+Caddy/cert installs are handled by the daemon's `caddy` and `instance-certs` Ansible roles; `turbopanel-caddy.service` runs as `tpcaddy:tp` in production.
 
 - Entrypoint: `https://<host>:8443` (this `Caddyfile`) — binds all interfaces; use `localhost` or the machine's LAN IP.
 - Self-hosted TLS uses a **platform CA** (`certs/ca.crt` + `certs/ca.key`) that signs a **server leaf cert** (`certs/self-signed.crt` + `.key`) presented by Caddy (`auto_https off`, no Let's Encrypt). **`auto_https off` is mandatory and must never be removed.** Caddy must never auto-provision certs via ACME or on-demand TLS. All cert issuance goes through `scripts/generate-self-signed-cert.mjs` (self-hosted, platform CA) or an explicitly-configured publicly-trusted cert. The `instance-certs-apply.yml` playbook is the runtime cert-regen path triggered by the admin public-URL apply action. The CA is long-lived and can issue additional certificates later; daemons fetch it from `GET /api/daemon/v1/instance/ca`. Trust `certs/ca.crt` in browsers/OS to avoid warnings.
