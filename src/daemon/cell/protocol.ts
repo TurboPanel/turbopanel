@@ -1,5 +1,8 @@
 import type { ServerAddresses } from "../../server-addresses.ts";
-import type { ServerOsMetadata } from "../../lib/db/server-metadata.ts";
+import type {
+  ServerOsMetadata,
+  ServerTimeSync,
+} from "../../lib/db/server-metadata.ts";
 
 export type DaemonAgentInfo = {
   commit: string;
@@ -41,8 +44,20 @@ export type DaemonMessage =
     machineId?: string;
     /** Host OS from `/etc/os-release` (+ Deno build); persisted to `server.metadata.os`. */
     os?: ServerOsMetadata;
+    /** Host timezone + NTP state; persisted to `server.metadata.timeSync`. */
+    timeSync?: ServerTimeSync;
+    /** Host interface addresses; persisted to `server.metadata.addresses`. */
+    addresses?: ServerAddresses;
   }
-  | { type: "heartbeat"; at: string; agent?: DaemonAgentInfo }
+  | {
+    type: "heartbeat";
+    at: string;
+    agent?: DaemonAgentInfo;
+    /** Change-detected time-sync facts; persisted to `server.metadata.timeSync`. */
+    timeSync?: ServerTimeSync;
+    /** Change-detected addresses; persisted to `server.metadata.addresses`. */
+    addresses?: ServerAddresses;
+  }
   | { type: "echo"; payload: unknown; at: string }
   | { type: "version"; commit: string; branch: string; at: string }
   | { type: "addresses-request"; id: string; at: string }

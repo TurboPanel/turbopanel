@@ -52,24 +52,25 @@ Both backends are thin wrappers — they do not decide what SQL runs or what get
 
 ## Approved read models
 
-**Audit outcome:** every loader under `read-models/` was reviewed. The allowlist is complete and minimal — only `servers-list` qualifies today as an auth-agnostic, non-volatile read model. No other server read is both auth-agnostic and stable enough to cache; no loader leaks uncacheable or auth-sensitive statements onto the cached connection.
+**Audit outcome:** every loader under `read-models/` was reviewed. The allowlist is complete and minimal — `servers-list` and `server-detail` qualify as auth-agnostic, non-volatile read models (visibility/org checks stay on the primary connection). No loader leaks uncacheable or auth-sensitive/`daemon` statements onto the cached connection.
 
 | Id | Helper | Cached payload | Allowed SQL on cached connection |
 | --- | --- | --- | --- |
 | `servers-list` | `cachedServersListReadModel` | `ServersListRow[]` (list rows only) | **Only** statement #1 — list-rows `SELECT` on `server` — see `read-models/servers-list.ts` |
+| `server-detail` | `cachedServerDetailReadModel` | `ServerDetailRow \| null` (single row) | **Only** statement #1 — detail-row `SELECT` on `server` — see `read-models/server-detail.ts` |
 
-For `servers-list`, daemon/metadata presence projections (`resolveFleetPresence`) and colocated machine-id matching (`resolveColocatedServerIdSet`) run on the **primary** connection on every request, outside the cache. The route-facing `ServersListDisplayPayload` (`rows` + `presence` + `colocatedIds`) is assembled after the cached read returns.
+For `servers-list` and `server-detail`, daemon/metadata presence projections (`resolveFleetPresence`) and colocated machine-id matching (`resolveColocatedServerIdSet`) run on the **primary** connection on every request, outside the cache. Route-facing payloads assemble rows + presence after the cached read returns.
 
 The cached payload is a plain array of row objects (no `Map`/`Set`) and remains JSON-serializable for Redis.
 
 ### Enforcement guards
 
-Route tests (`src/client/servers/routes.test.ts`) use `createListRowsOnlyReadDb`, which:
+Route tests (`src/client/servers/routes.test.ts`) use `createListRowsOnlyReadDb` / `createDetailRowsOnlyReadDb`, which:
 
-- default-denies every database property except `select` (and the test-only `selectCallCount` accessor);
-- allowlists the documented list-row column set on `select` by **exact** key membership and count;
-- counts `select` invocations so tests pin **exactly one** cached statement per request;
-- asserts `recordingCache.readModels` is `['servers-list']` only.
+- default-deny every database property except `select` (and the test-only `selectCallCount` accessor);
+- allowlist the documented row column set on `select` by **exact** key membership and count;
+- count `select` invocations so tests pin **exactly one** cached statement per request;
+- assert `recordingCache.readModels` is `['servers-list']` or `['server-detail']` only.
 
 ### Cost note (Durable Objects)
 

@@ -132,6 +132,52 @@ function createMockDb(
   };
 }
 
+/** Simulates a stale metadata read while the live column holds fresher hello facts. */
+function createStaleReadMockDb(
+  initialDaemon: ServerDaemonState,
+  liveMetadata: ServerMetadata,
+  staleMetadata: ServerMetadata,
+  statusOverrides: Partial<ServerDaemonStatus> = {},
+): {
+  db: Db;
+  updateCalls: Array<Record<string, unknown>>;
+  getMetadata: () => ServerMetadata | null;
+} {
+  const updateCalls: Array<Record<string, unknown>> = [];
+  let daemon = mergeDaemonStatus(initialDaemon, statusOverrides);
+  let metadata = liveMetadata;
+
+  const applyPatch = (patch: Record<string, unknown>) => {
+    if (patch.daemon) {
+      daemon = patch.daemon as ServerDaemonState;
+    }
+    if (patch.metadata !== undefined) {
+      const incoming = patch.metadata as ServerMetadata | null;
+      metadata = incoming === null
+        ? null
+        : { ...(metadata ?? {}), ...incoming };
+    }
+  };
+
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () =>
+            Promise.resolve([{ daemon, metadata: staleMetadata }]),
+        }),
+      }),
+    }),
+    update: () => mockProjectionUpdateChain(updateCalls, applyPatch),
+  } as unknown as Db;
+
+  return {
+    db,
+    updateCalls,
+    getMetadata: () => metadata,
+  };
+}
+
 function statusFromPatch(
   patch: Record<string, unknown> | undefined,
 ): ServerDaemonStatus | undefined {
@@ -237,11 +283,7 @@ test("projectServerDaemon repeated online backfills metadata.geo when same IP an
 
   assertEquals(wrote, true);
   assertEquals(updateCalls.length, 1);
-  assertEquals(updateCalls[0]?.metadata, {
-    hostname: "host-1",
-    machineId: "mid-1",
-    geo: cloudflareGeo,
-  });
+  assertEquals(updateCalls[0]?.metadata, { geo: cloudflareGeo });
 });
 
 test("projectServerDaemon repeated online skips write when only geo changed with same IP", async () => {
@@ -314,11 +356,7 @@ test("projectServerDaemon repeated online refreshes geo when remoteAddress chang
 
   assertEquals(wrote, true);
   assertEquals(updateCalls.length, 1);
-  assertEquals(updateCalls[0]?.metadata, {
-    hostname: "host-1",
-    machineId: "mid-1",
-    geo: testGeoUpdated,
-  });
+  assertEquals(updateCalls[0]?.metadata, { geo: testGeoUpdated });
 });
 
 test("projectServerDaemon identity trigger backfills metadata.geo when geo was missing", async () => {
@@ -346,11 +384,7 @@ test("projectServerDaemon identity trigger backfills metadata.geo when geo was m
 
   assertEquals(wrote, true);
   assertEquals(updateCalls.length, 1);
-  assertEquals(updateCalls[0]?.metadata, {
-    hostname: "host-1",
-    machineId: "mid-1",
-    geo: testGeo,
-  });
+  assertEquals(updateCalls[0]?.metadata, { geo: testGeo });
 });
 
 test("projectServerDaemon identity trigger skips metadata.geo when stored geo exists and IP unchanged", async () => {
@@ -378,6 +412,122 @@ test("projectServerDaemon identity trigger skips metadata.geo when stored geo ex
 
   assertEquals(wrote, false);
   assertEquals(updateCalls.length, 0);
+});
+
+test("stale identity projection does not clobber fresh timeSync, addresses, os, or geo", async () => {
+  const freshTimeSync = {
+    timezone: "UTC",
+    ntpEnabled: true,
+    ntpSynced: true,
+    ntpServers: ["time.cloudflare.com"],
+    capturedAt: "2026-01-02T00:00:00.000Z",
+  };
+  const staleTimeSync = {
+    timezone: "America/Chicago",
+    ntpEnabled: false,
+    ntpServers: ["203.0.113.1"],
+    capturedAt: "2020-01-01T00:00:00.000Z",
+  };
+  const freshAddresses = {
+    privateIpv4: ["10.0.0.2"],
+    privateIpv6: [],
+    publicIpv4: ["203.0.113.50"],
+    publicIpv6: [],
+  };
+  const staleAddresses = {
+    privateIpv4: ["10.0.0.1"],
+    privateIpv6: [],
+    publicIpv4: [],
+    publicIpv6: [],
+  };
+  const freshOs = {
+    id: "debian",
+    versionId: "13",
+    prettyName: "Debian GNU/Linux 13 (trixie)",
+  };
+  const staleOs = {
+    id: "debian",
+    versionId: "12",
+    prettyName: "Debian GNU/Linux 12 (bookworm)",
+  };
+  const liveMetadata: ServerMetadata = {
+    hostname: "live-host",
+    machineId: "live-mid",
+    geo: testGeoUpdated,
+    os: freshOs,
+    timeSync: freshTimeSync,
+    addresses: freshAddresses,
+  };
+  const staleMetadata: ServerMetadata = {
+    hostname: "stale-host",
+    machineId: "stale-mid",
+    geo: testGeo,
+    os: staleOs,
+    timeSync: staleTimeSync,
+    addresses: staleAddresses,
+  };
+
+  const { db, updateCalls, getMetadata } = createStaleReadMockDb(
+    {
+      key: baseKey,
+      projection: {
+        hostname: "stale-host",
+        machineId: "stale-mid",
+        remoteAddress: "203.0.113.10",
+      },
+    },
+    liveMetadata,
+    staleMetadata,
+  );
+
+  await projectServerDaemon(db, serverId, {
+    kind: "identity",
+    identity: { hostname: "projected-host" },
+  });
+
+  assertEquals(updateCalls.length, 1);
+  const patch = updateCalls[0]?.metadata as ServerMetadata;
+  assertEquals(patch.hostname, "projected-host");
+  assertEquals(patch.timeSync, undefined);
+  assertEquals(patch.addresses, undefined);
+  assertEquals(patch.os, undefined);
+  assertEquals(patch.geo, undefined);
+
+  const metadata = getMetadata();
+  assertEquals(metadata?.timeSync, freshTimeSync);
+  assertEquals(metadata?.addresses, freshAddresses);
+  assertEquals(metadata?.os, freshOs);
+  assertEquals(metadata?.geo, testGeoUpdated);
+  assertEquals(metadata?.hostname, "projected-host");
+});
+
+test("identity projection replaces stored addresses when daemon reports empty lists", async () => {
+  const priorAddresses = {
+    privateIpv4: ["10.0.0.1"],
+    privateIpv6: [] as string[],
+    publicIpv4: ["203.0.113.10"],
+    publicIpv6: [] as string[],
+  };
+  const emptyReport = {
+    privateIpv4: [] as string[],
+    privateIpv6: [] as string[],
+    publicIpv4: [] as string[],
+    publicIpv6: [] as string[],
+  };
+  const { db, updateCalls } = createMockDb(
+    { key: baseKey },
+    {},
+    { addresses: priorAddresses },
+  );
+
+  await projectServerDaemon(db, serverId, {
+    kind: "identity",
+    identity: { addresses: emptyReport },
+  });
+
+  assertEquals(updateCalls.length, 1);
+  const patch = unwrapMetadataPatch(updateCalls[0]?.metadata);
+  assertEquals(patch?.addresses, emptyReport);
 });
 
 test("projectServerDaemon online sets status in daemon jsonb", async () => {

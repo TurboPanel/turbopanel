@@ -2,10 +2,18 @@ import { and, eq, isNull, sql } from 'drizzle-orm'
 import type { Db } from './db.ts'
 import { verifyDaemonLicense } from './daemon/authn/license.ts'
 import {
+  parseServerAddresses,
+  serverAddressesEquals,
+  type ServerAddresses,
+} from './server-addresses.ts'
+import {
   parseServerOsMetadata,
+  parseServerTimeSync,
   serverOsMetadataEquals,
+  serverTimeSyncEquals,
   type ServerMetadata,
   type ServerOsMetadata,
+  type ServerTimeSync,
 } from './lib/db/server-metadata.ts'
 import { license, server } from './lib/db/schema.ts'
 
@@ -19,6 +27,8 @@ export type ServerHelloIdentity = {
   licenseId?: string
   licenseToken?: string
   os?: ServerOsMetadata
+  timeSync?: ServerTimeSync
+  addresses?: ServerAddresses
 }
 
 function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
@@ -29,16 +39,31 @@ function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
   if (hostname) patch.hostname = hostname
   const os = parseServerOsMetadata(identity.os)
   if (os) patch.os = os
+  const timeSync = parseServerTimeSync(identity.timeSync)
+  if (timeSync) {
+    patch.timeSync = {
+      ...timeSync,
+      capturedAt: timeSync.capturedAt ?? new Date().toISOString(),
+    }
+  }
+  const addresses =
+    identity.addresses === undefined
+      ? undefined
+      : parseServerAddresses(identity.addresses)
+  if (addresses !== undefined) patch.addresses = addresses
   return patch
 }
 
 /**
- * Pure merge of hostname/machineId/os into `server.metadata` — no DB I/O.
- * Returns null when nothing would change (idempotent skip for callers).
+ * Pure merge of hostname/machineId/os/timeSync/addresses into `server.metadata`
+ * — no DB I/O. Returns null when nothing would change (idempotent skip).
  */
 export function mergeServerMetadataIdentity(
   current: ServerMetadata | null | undefined,
-  identity: Pick<ServerHelloIdentity, 'hostname' | 'machineId' | 'os'>,
+  identity: Pick<
+    ServerHelloIdentity,
+    'hostname' | 'machineId' | 'os' | 'timeSync' | 'addresses'
+  >,
 ): ServerMetadata | null {
   const patch = metadataPatch(identity)
   if (Object.keys(patch).length === 0) return null
@@ -57,6 +82,20 @@ export function mergeServerMetadataIdentity(
   }
   if (patch.os !== undefined && !serverOsMetadataEquals(patch.os, base.os)) {
     next.os = patch.os
+    changed = true
+  }
+  if (patch.timeSync !== undefined) {
+    const mergedTimeSync = { ...base.timeSync, ...patch.timeSync }
+    if (!serverTimeSyncEquals(mergedTimeSync, base.timeSync)) {
+      next.timeSync = mergedTimeSync
+      changed = true
+    }
+  }
+  if (
+    patch.addresses !== undefined &&
+    !serverAddressesEquals(patch.addresses, base.addresses)
+  ) {
+    next.addresses = patch.addresses
     changed = true
   }
 
@@ -107,6 +146,20 @@ export async function touchServerMetadata(
     !serverOsMetadataEquals(patch.os, base?.os)
   ) {
     delta.os = patch.os
+  }
+  if (patch.timeSync !== undefined) {
+    const mergedTimeSync = { ...base?.timeSync, ...patch.timeSync }
+    if (!serverTimeSyncEquals(mergedTimeSync, base?.timeSync)) {
+      // Persist the deep-merged object so jsonb || replaces the key with the
+      // full fact set (partial command outcomes must not clobber NTP fields).
+      delta.timeSync = mergedTimeSync
+    }
+  }
+  if (
+    patch.addresses !== undefined &&
+    !serverAddressesEquals(patch.addresses, base?.addresses)
+  ) {
+    delta.addresses = patch.addresses
   }
   if (Object.keys(delta).length === 0) return
 

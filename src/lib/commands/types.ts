@@ -1,7 +1,9 @@
 export const COMMAND_TYPES = [
   'daemon.ping',
   'server.hostname.set',
+  'server.ntp.set',
   'server.reboot',
+  'server.timezone.set',
   'environment.deploy',
   'environment.stop',
 ] as const

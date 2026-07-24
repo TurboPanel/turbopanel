@@ -228,6 +228,33 @@ test('processCommandEnvelope fails fast when daemon is offline', async () => {
   })
 })
 
+test('processCommandEnvelope does not persist timezone option when daemon is offline', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    const now = new Date().toISOString()
+    await db.update(server).set({
+      options: { timezone: 'UTC' },
+      updatedAt: now,
+    }).where(eq(server.id, serverId))
+
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'server.timezone.set',
+      payload: { timezone: 'America/Chicago' },
+    })
+    const registry = createDispatchMockRegistry(serverId, { waitForRequestResult: null })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const [row] = await db
+      .select({ options: server.options })
+      .from(server)
+      .where(eq(server.id, serverId))
+      .limit(1)
+    assertEquals((row?.options as { timezone?: string }).timezone, 'UTC')
+  })
+})
+
 test('processCommandEnvelope succeeds for online ping command', async () => {
   await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)
@@ -315,6 +342,115 @@ test('processCommandEnvelope updates server metadata on hostname success', async
   })
 })
 
+test('processCommandEnvelope persists server.options.timezone only after successful timezone command', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'server.timezone.set',
+      payload: { timezone: 'America/Chicago' },
+    })
+
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: { timezone: 'America/Chicago' },
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const [row] = await db
+      .select({ options: server.options, metadata: server.metadata })
+      .from(server)
+      .where(eq(server.id, serverId))
+      .limit(1)
+    const options = row?.options as { timezone?: string } | null
+    assertEquals(options?.timezone, 'America/Chicago')
+    assertEquals(
+      (row?.metadata as Record<string, unknown>).timeSync,
+      { timezone: 'America/Chicago' },
+    )
+  })
+})
+
+test('processCommandEnvelope leaves server.options.timezone unchanged on timezone failure', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const now = new Date().toISOString()
+    await db.update(server).set({
+      options: { timezone: 'UTC' },
+      updatedAt: now,
+    }).where(eq(server.id, serverId))
+
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'server.timezone.set',
+      payload: { timezone: 'America/Chicago' },
+    })
+
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'failed',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        error: 'daemon rejected command',
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const [row] = await db
+      .select({ options: server.options })
+      .from(server)
+      .where(eq(server.id, serverId))
+      .limit(1)
+    assertEquals((row?.options as { timezone?: string }).timezone, 'UTC')
+  })
+})
+
+test('processCommandEnvelope leaves server.options.timezone unchanged on timezone timeout', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const now = new Date().toISOString()
+    await db.update(server).set({
+      options: { timezone: 'UTC' },
+      updatedAt: now,
+    }).where(eq(server.id, serverId))
+
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'server.timezone.set',
+      payload: { timezone: 'America/Chicago' },
+    })
+
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: null,
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const [row] = await db
+      .select({ options: server.options })
+      .from(server)
+      .where(eq(server.id, serverId))
+      .limit(1)
+    assertEquals((row?.options as { timezone?: string }).timezone, 'UTC')
+  })
+})
+
 test('processCommandEnvelope maps failed and timed out pending requests', async () => {
   await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)
@@ -361,6 +497,58 @@ test('processCommandEnvelope maps failed and timed out pending requests', async 
     )
     const timeoutUpdated = await getCommandRecord(db, timeoutRecord.id)
     assertEquals(timeoutUpdated?.status, 'timed_out')
+  })
+})
+
+test('processCommandEnvelope leaves metadata.timeSync unchanged on malformed ntp success', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const priorTimeSync = {
+      timezone: 'UTC',
+      ntpEnabled: true,
+      ntpServers: ['pool.ntp.org'],
+      capturedAt: new Date().toISOString(),
+    }
+    const now = new Date().toISOString()
+    await db.update(server).set({
+      metadata: { timeSync: priorTimeSync },
+      updatedAt: now,
+    }).where(eq(server.id, serverId))
+
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'server.ntp.set',
+      payload: { enabled: true, servers: ['time.cloudflare.com'] },
+    })
+
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: { ntpEnabled: true, ntpSynced: true },
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.status, 'succeeded')
+
+    const [row] = await db
+      .select({ metadata: server.metadata })
+      .from(server)
+      .where(eq(server.id, serverId))
+      .limit(1)
+    assertEquals(
+      (row?.metadata as Record<string, unknown>).timeSync,
+      priorTimeSync,
+    )
   })
 })
 

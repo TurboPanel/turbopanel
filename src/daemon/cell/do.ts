@@ -13,7 +13,11 @@ import {
 import { evaluateSocketHealth } from "./socket-health.ts";
 import type { ServerGeo } from "../../lib/geo/server-geo.ts";
 import { parseServerGeo } from "../../lib/geo/server-geo.ts";
-import type { ServerOsMetadata } from "../../lib/db/server-metadata.ts";
+import type {
+  ServerOsMetadata,
+  ServerTimeSync,
+} from "../../lib/db/server-metadata.ts";
+import type { ServerAddresses } from "../../server-addresses.ts";
 import { TERMINAL_UPDATE_RETENTION_MS } from "../../lib/update/constants.ts";
 import { touchServerMetadata } from "../../server-registry.ts";
 import { verifyDaemonJwt } from "../authn/daemon-jwt.ts";
@@ -1068,6 +1072,8 @@ export class DaemonCellObject {
       hostname?: string;
       machineId?: string;
       os?: ServerOsMetadata;
+      timeSync?: ServerTimeSync;
+      addresses?: ServerAddresses;
     },
     geo?: ServerGeo,
   ): Promise<void> {
@@ -1075,12 +1081,16 @@ export class DaemonCellObject {
       if (
         hostIdentity?.hostname ||
         hostIdentity?.machineId ||
-        hostIdentity?.os
+        hostIdentity?.os ||
+        hostIdentity?.timeSync ||
+        hostIdentity?.addresses
       ) {
         await touchServerMetadata(db, serverId, {
           hostname: hostIdentity.hostname,
           machineId: hostIdentity.machineId,
           os: hostIdentity.os,
+          timeSync: hostIdentity.timeSync,
+          addresses: hostIdentity.addresses,
         });
       }
       await onDaemonInbound(
@@ -1579,6 +1589,8 @@ export class DaemonCellObject {
       hostname?: string;
       machineId?: string;
       os?: ServerOsMetadata;
+      timeSync?: ServerTimeSync;
+      addresses?: ServerAddresses;
     },
   ): Promise<void> {
     this.#bumpDiag("heartbeatCount");
@@ -1593,17 +1605,40 @@ export class DaemonCellObject {
       parsed.agent,
       attachment.connectionId,
     );
-    const hostIdentity = parsed.type === "hello"
-      ? {
+    const presenceFacts = {
+      timeSync: parsed.timeSync,
+      addresses: parsed.addresses,
+    };
+    const hasPresenceFacts = Boolean(
+      presenceFacts.timeSync || presenceFacts.addresses,
+    );
+    // hostname/os stay hello-only; timeSync/addresses project on both hello and
+    // change-detected heartbeats.
+    let hostIdentity:
+      | {
+        hostname?: string;
+        machineId?: string;
+        os?: ServerOsMetadata;
+        timeSync?: ServerTimeSync;
+        addresses?: ServerAddresses;
+      }
+      | undefined;
+    if (parsed.type === "hello") {
+      hostIdentity = {
         hostname: parsed.hostname,
         machineId: parsed.machineId,
         os: parsed.os,
-      }
-      : undefined;
+        ...presenceFacts,
+      };
+    } else if (hasPresenceFacts) {
+      hostIdentity = presenceFacts;
+    }
     const hasHostIdentity = Boolean(
       hostIdentity?.hostname ||
         hostIdentity?.machineId ||
-        hostIdentity?.os,
+        hostIdentity?.os ||
+        hostIdentity?.timeSync ||
+        hostIdentity?.addresses,
     );
     const attachGeo = parseServerGeo(attachment.geo) ?? undefined;
     const shouldProjectInbound = parsed.type === "hello"
@@ -1611,7 +1646,7 @@ export class DaemonCellObject {
         Boolean(parsed.agent?.commit && parsed.agent?.buildId) ||
         hasHostIdentity ||
         Boolean(attachGeo)
-      : shouldProject;
+      : shouldProject || hasPresenceFacts;
     if (shouldProjectInbound) {
       await this.#projectInbound(
         attachment.serverId,

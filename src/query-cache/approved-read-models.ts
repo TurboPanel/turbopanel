@@ -3,13 +3,12 @@
  * Add new entries only after security review — loaders must be read-only SELECTs.
  *
  * Audit (complete + minimal): every loader under `read-models/` was reviewed.
- * Only `servers-list` qualifies today — it is auth-agnostic after `listVisible`
- * on the primary connection, and its cached statement is a non-volatile
- * parameterized SELECT with no session/secret columns. No other server read is
- * both auth-agnostic and non-volatile enough to allowlist; no loader leaks an
- * uncacheable or auth-sensitive statement onto the cached connection.
+ * `servers-list` and `server-detail` qualify — both are auth-agnostic after
+ * visibility/org checks on the primary connection, and their cached statements
+ * are non-volatile parameterized SELECTs with no session/secret/`daemon`
+ * columns. Presence enrichment stays on the primary connection.
  */
-export const APPROVED_READ_MODELS = ['servers-list'] as const
+export const APPROVED_READ_MODELS = ['servers-list', 'server-detail'] as const
 
 export type ApprovedReadModelId = (typeof APPROVED_READ_MODELS)[number]
 

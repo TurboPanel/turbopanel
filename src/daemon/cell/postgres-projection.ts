@@ -17,13 +17,22 @@ import {
 } from "../authn/daemon-state.ts";
 import { getServerDaemonStateByServerId } from "../authn/server-identity-db.ts";
 import { server } from "../../lib/db/schema.ts";
-import type { ServerMetadata } from "../../lib/db/server-metadata.ts";
+import {
+  parseServerTimeSync,
+  serverTimeSyncEquals,
+  type ServerMetadata,
+  type ServerTimeSync,
+} from "../../lib/db/server-metadata.ts";
+import {
+  parseServerAddresses,
+  serverAddressesEquals,
+  type ServerAddresses,
+} from "../../server-addresses.ts";
 import {
   geoEquals,
   parseServerGeo,
   type ServerGeo,
 } from "../../lib/geo/server-geo.ts";
-import { mergeServerMetadataIdentity } from "../../server-registry.ts";
 import type { DaemonCell, DaemonCellSnapshot } from "./contracts.ts";
 
 export type ProjectionIdentity = {
@@ -32,6 +41,8 @@ export type ProjectionIdentity = {
   remoteAddress?: string;
   keyId?: string;
   geo?: ServerGeo;
+  timeSync?: ServerTimeSync;
+  addresses?: ServerAddresses;
 };
 
 export type ProjectionAgent = {
@@ -197,22 +208,46 @@ function geoRefreshDue(
   return storedGeo === null;
 }
 
+/** jsonb `||` delta — only keys that are actually changing (never stale nested facts). */
 function buildMetadataPatch(
   existingMetadata: ServerMetadata | null | undefined,
   projection: ServerDaemonProjection | undefined,
   incomingGeo?: ServerGeo,
-): ServerMetadata | null {
-  const identityMerged = mergeServerMetadataIdentity(existingMetadata, {
-    hostname: projection?.hostname,
-    machineId: projection?.machineId,
-  });
-  const geoDue = incomingGeo !== undefined;
-  if (!identityMerged && !geoDue) return null;
-  const base = identityMerged ?? { ...existingMetadata };
-  if (geoDue && incomingGeo) {
-    return { ...base, geo: incomingGeo };
+  identity?: ProjectionIdentity,
+): Partial<ServerMetadata> | null {
+  const delta: Partial<ServerMetadata> = {};
+
+  const hostname = projection?.hostname?.trim();
+  if (hostname && hostname !== existingMetadata?.hostname) {
+    delta.hostname = hostname;
   }
-  return identityMerged;
+  const machineId = projection?.machineId?.trim();
+  if (machineId && machineId !== existingMetadata?.machineId) {
+    delta.machineId = machineId;
+  }
+  if (incomingGeo !== undefined) {
+    delta.geo = incomingGeo;
+  }
+
+  const timeSync = parseServerTimeSync(identity?.timeSync);
+  if (timeSync) {
+    const merged = { ...existingMetadata?.timeSync, ...timeSync };
+    if (!serverTimeSyncEquals(merged, existingMetadata?.timeSync)) {
+      delta.timeSync = merged;
+    }
+  }
+  const addresses =
+    identity !== undefined && identity.addresses !== undefined
+      ? parseServerAddresses(identity.addresses)
+      : undefined;
+  if (
+    addresses !== undefined &&
+    !serverAddressesEquals(addresses, existingMetadata?.addresses)
+  ) {
+    delta.addresses = addresses;
+  }
+
+  return Object.keys(delta).length > 0 ? delta : null;
 }
 
 function buildIdentityProjection(
@@ -651,10 +686,15 @@ export async function projectServerDaemon(
   };
 
   if (touchMetadata) {
+    const projectionIdentity =
+      trigger.kind === "online" || trigger.kind === "identity"
+        ? trigger.identity
+        : undefined;
     const mergedMetadata = buildMetadataPatch(
       existing.metadata,
       nextProjection,
       geoDue ? incomingGeo : undefined,
+      projectionIdentity,
     );
     if (mergedMetadata) {
       // jsonb || keeps keys that exist only in the live column (e.g. os written

@@ -293,7 +293,7 @@ Four versioned surfaces each have REST + WS namespaces (where applicable). Prefi
 
 | Surface | REST | WS | Notes |
 |---|---|---|---|
-| Client (end-user UI) | `/api/client/v1/*` | `/ws/client/v1` | greenfield stubs |
+| Client (end-user UI) | `/api/client/v1/*` | `/ws/client/v1` | servers list/detail (+ addresses/timeSync/effective timezone), timezone/NTP commands, org default-timezone + `/timezones` |
 | Install (self-hosted wizard) | `/api/install/v1/*` | — | Deno only for POST endpoints; PAM-gated; no session/cookie on bootstrap |
 | Developer (dev console) | `/api/developer/v1/*` | `/ws/developer/v1` (stub) | fleet, diagnostics, shell, addresses, `system/upgrade`, `instance/tunnel-token`, `daemon/(:id/)sync-dev` |
 | Admin | `/api/admin/v1/*` | — | Mounted on both Deno and Workers; `superadmin` or `admin` role required; OpenAPI/Scalar at `/api/admin/v1/openapi.json` + `/reference` in development only |
@@ -302,6 +302,7 @@ Four versioned surfaces each have REST + WS namespaces (where applicable). Prefi
 - Route modules: `src/daemon/api-routes.ts`, `src/client/routes.ts`, `src/lib/install/routes.ts` (registered from `deno.ts` only); Deno-only routes `src/developer/system-routes.ts`, `src/developer/dev-sync.ts`, `src/developer/tunnel-routes.ts`, and the version route are registered in `src/deno.ts`. `src/admin/routes.ts` is mounted on both Deno and Workers (admin/superadmin session required). Workers-safe developer REST lives in `src/developer/routes-core.ts` (`workers.ts`); full Deno developer surface in `src/developer/routes.ts`.
 - The turbopanel-dev console calls developer routes via `src/instance-client.ts` (Unix socket + HTTPS fallback).
 - Hard cutover: daemon, UI, Caddy (`/ws/*`), and Workers routes (`wrangler.jsonc`) moved together. The external CDN node installer must fetch the CA from the new `/api/daemon/v1/instance/ca` path.
+- **Server timezone / NTP (client surface):** daemon hello + change-detected heartbeats project `timeSync`/`addresses` onto `server.metadata` (jsonb merge). `GET /api/client/v1/servers` and `GET /servers/:id` return those facts plus an **effective timezone** = `server.options.timezone` unless `organization.options.enforceServerTimezone` is true (then org `defaultServerTimezone` wins). Commands: `POST /servers/:id/timezone` (`server.timezone.set`, also persists the server override) and `POST /servers/:id/ntp` (`server.ntp.set`) — manage-gated, create-then-poll. Org defaults: `GET`/`PUT /organizations/:id/default-timezone`. Picker source: `GET /timezones` (`listTimezones()` / `isAllowedTimezone()`). Detail rows use the `server-detail` cached read model (mirrors `servers-list`).
 
 ## Subsystem docs (nested `AGENTS.md`)
 

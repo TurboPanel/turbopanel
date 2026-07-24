@@ -36,6 +36,7 @@ import { registerServerRoutes } from './routes.ts'
 import type { ServerStatusRecord } from './update-status.ts'
 import type { QueryCache } from '../../query-cache/contracts.ts'
 import type { ServersListRow } from '../../query-cache/read-models/servers-list.ts'
+import type { ServerDetailRow } from '../../query-cache/read-models/server-detail.ts'
 
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 
@@ -334,11 +335,11 @@ function createRecordingQueryCache(
   readDb: ReturnType<typeof createDenoDb>,
 ): QueryCache & {
   readModels: string[]
-  store: Map<string, ServersListRow[]>
+  store: Map<string, unknown>
   loadCallCount: number
 } {
   const readModels: string[] = []
-  const store = new Map<string, ServersListRow[]>()
+  const store = new Map<string, unknown>()
   let loadCallCount = 0
 
   return {
@@ -360,10 +361,58 @@ function createRecordingQueryCache(
       }
       loadCallCount += 1
       const result = await opts.load(readDb)
-      store.set(opts.key, result as ServersListRow[])
+      store.set(opts.key, result)
       return result
     },
   }
+}
+
+const SERVER_DETAIL_SELECT_KEYS = new Set([
+  'id',
+  'displayName',
+  'organizationId',
+  'licenseId',
+  'options',
+  'createdAt',
+])
+
+function assertServerDetailSelectFields(fields: Record<string, unknown>): void {
+  const keys = Object.keys(fields)
+  const exactColumnSet = keys.length === SERVER_DETAIL_SELECT_KEYS.size
+    && keys.every((key) => SERVER_DETAIL_SELECT_KEYS.has(key))
+  if (!exactColumnSet) {
+    throw new Error(
+      'readDb must only serve the documented server-detail row SELECT column set',
+    )
+  }
+}
+
+/** Cached readDb: only the approved detail-row SELECT; presence must use primary db. */
+function createDetailRowsOnlyReadDb(
+  db: ReturnType<typeof createDenoDb>,
+): ReturnType<typeof createDenoDb> & { selectCallCount: number } {
+  let selectCallCount = 0
+  const rejectCachedAccess = (prop: string | symbol): never => {
+    throw new Error(
+      `readDb must not access ${String(prop)}; only the detail-row SELECT is allowed`,
+    )
+  }
+  const proxy = new Proxy(db, {
+    get(_target, prop) {
+      if (prop === 'selectCallCount') {
+        return selectCallCount
+      }
+      if (prop === 'select') {
+        return (fields: Record<string, unknown>) => {
+          selectCallCount += 1
+          assertServerDetailSelectFields(fields)
+          return db.select(fields as Parameters<typeof db.select>[0])
+        }
+      }
+      return rejectCachedAccess(prop)
+    },
+  }) as ReturnType<typeof createDenoDb> & { selectCallCount: number }
+  return proxy
 }
 
 async function sessionCookie(
@@ -1394,7 +1443,7 @@ test('GET /servers — cached payload is list rows only (presence comes from pri
     assertEquals(recordingCache.readModels, ['servers-list'])
     assertEquals(readDb.selectCallCount, 1)
 
-    const cachedRows = recordingCache.store.values().next().value!
+    const cachedRows = recordingCache.store.values().next().value as ServersListRow[]
     assertEquals(cachedRows.length, 1)
     assertEquals(cachedRows[0].id, serverId)
     assertEquals('connected' in cachedRows[0], false)
@@ -1597,5 +1646,99 @@ test('GET /servers does not return stale servers after organization grant revoca
     const secondBody = await second.json()
     assertEquals(secondBody.servers, [])
     assertEquals(recordingCache.loadCallCount, 1)
+  })
+})
+
+test('GET /servers/:id returns detail with effective timezone/addresses/timeSync', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    await db
+      .update(organization)
+      .set({
+        options: {
+          defaultServerTimezone: 'UTC',
+          enforceServerTimezone: false,
+        },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(organization.id, organizationId))
+
+    const existing = await db
+      .select({ metadata: server.metadata, options: server.options })
+      .from(server)
+      .where(eq(server.id, serverId))
+      .limit(1)
+    await db
+      .update(server)
+      .set({
+        options: {
+          ...((existing[0]?.options as Record<string, unknown> | null) ?? {}),
+          timezone: 'America/Chicago',
+        },
+        metadata: {
+          ...(existing[0]?.metadata ?? {}),
+          addresses: {
+            privateIpv4: ['10.0.0.1'],
+            privateIpv6: [],
+            publicIpv4: ['203.0.113.10'],
+            publicIpv6: [],
+          },
+          timeSync: {
+            timezone: 'America/Chicago',
+            ntpEnabled: true,
+            ntpServers: ['time.cloudflare.com'],
+          },
+        },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(server.id, serverId))
+
+    const registry = createTrackingRegistry({
+      getCellThrows: true,
+      getSnapshotsThrows: true,
+      listOnlineServerIdsThrows: true,
+    })
+    const readDb = createDetailRowsOnlyReadDb(db)
+    const recordingCache = createRecordingQueryCache(readDb)
+    const { app } = await createServerRoutesTestApp(db, registry, recordingCache)
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/servers/${serverId}`, {
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 200)
+    const body = await res.json() as {
+      ok: boolean
+      server: {
+        id: string
+        timezone: string
+        timezoneSource: string
+        orgDefaultTimezone: string
+        addresses: { publicIpv4: string[] }
+        timeSync: { timezone: string }
+      }
+    }
+    assertEquals(body.ok, true)
+    assertEquals(body.server.id, serverId)
+    assertEquals(body.server.timezone, 'America/Chicago')
+    assertEquals(body.server.timezoneSource, 'server')
+    assertEquals(body.server.orgDefaultTimezone, 'UTC')
+    assertEquals(body.server.addresses.publicIpv4, ['203.0.113.10'])
+    assertEquals(body.server.timeSync.timezone, 'America/Chicago')
+    assertEquals(recordingCache.readModels, ['server-detail'])
+    assertEquals(readDb.selectCallCount, 1)
+    const cached = recordingCache.store.values().next().value as ServerDetailRow
+    assertEquals(cached.id, serverId)
+    assertEquals('daemon' in cached, false)
+    assertEquals('connected' in cached, false)
   })
 })

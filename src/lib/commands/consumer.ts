@@ -7,6 +7,7 @@
  * isolate (worker stub or Deno process), not inside the Durable Object.
  * There is no per-server polling or cross-cell fan-out.
  */
+import { eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import type {
   DaemonCellRegistry,
@@ -26,6 +27,7 @@ import {
   type CommandRecord,
 } from '../db/command-records.ts'
 import { reconcileEnvironmentContainers } from '../db/container-records.ts'
+import { server } from '../db/schema.ts'
 import type { CommandEnvelope } from './envelope.ts'
 import { nowIso } from './ids.ts'
 import {
@@ -34,14 +36,18 @@ import {
   parseEnvironmentStopPayload,
   parseEnvironmentStopResult,
   parseHostnameSetResult,
+  parseNtpSetResult,
   parsePingResult,
+  parseTimezoneSetResult,
 } from './schemas.ts'
 import { TERMINAL_COMMAND_STATUSES, type CommandType } from './types.ts'
 
 const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'daemon.ping': 30_000,
   'server.hostname.set': 120_000,
+  'server.ntp.set': 300_000,
   'server.reboot': 120_000,
+  'server.timezone.set': 300_000,
   'environment.deploy': 600_000,
   'environment.stop': 120_000,
 }
@@ -52,7 +58,9 @@ function commandTimeoutMs(type: string): number {
   if (
     type === 'daemon.ping' ||
     type === 'server.hostname.set' ||
+    type === 'server.ntp.set' ||
     type === 'server.reboot' ||
+    type === 'server.timezone.set' ||
     type === 'environment.deploy' ||
     type === 'environment.stop'
   ) {
@@ -267,6 +275,51 @@ async function applyHostnameSideEffect(
   })
 }
 
+async function applyTimeSyncSideEffect(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown,
+): Promise<void> {
+  if (record.type === 'server.timezone.set') {
+    try {
+      const timezoneResult = parseTimezoneSetResult(result)
+      await db.update(server).set({
+        options: sql`COALESCE(${server.options}, '{}'::jsonb) || ${
+          JSON.stringify({ timezone: timezoneResult.timezone })
+        }::jsonb`,
+        updatedAt: new Date().toISOString(),
+      }).where(eq(server.id, envelope.serverId))
+      await touchServerMetadata(db, envelope.serverId, {
+        timeSync: { timezone: timezoneResult.timezone },
+      })
+    } catch {
+      // Malformed success payload — leave metadata for the next heartbeat.
+    }
+    return
+  }
+  if (record.type !== 'server.ntp.set') return
+  try {
+    const ntpResult = parseNtpSetResult(result)
+    await touchServerMetadata(db, envelope.serverId, {
+      timeSync: {
+        ...(ntpResult.ntpEnabled === undefined
+          ? {}
+          : { ntpEnabled: ntpResult.ntpEnabled }),
+        ...(ntpResult.ntpSynced === undefined
+          ? {}
+          : { ntpSynced: ntpResult.ntpSynced }),
+        ntpServers: ntpResult.ntpServers,
+        ...(ntpResult.fallbackNtpServers === undefined
+          ? {}
+          : { fallbackNtpServers: ntpResult.fallbackNtpServers }),
+      },
+    })
+  } catch {
+    // Malformed success payload — leave metadata for the next heartbeat.
+  }
+}
+
 async function reconcileContainersSafely(
   db: Db,
   record: CommandRecord,
@@ -373,6 +426,7 @@ async function applySucceededSideEffects(
   result: unknown,
 ): Promise<void> {
   await applyHostnameSideEffect(db, record, envelope, result)
+  await applyTimeSyncSideEffect(db, record, envelope, result)
   await applyEnvironmentDeploySideEffect(db, record, envelope, result)
   await applyEnvironmentStopSideEffect(db, record, envelope, result)
 }

@@ -1,4 +1,6 @@
+import type { ServerAddresses } from '../../server-addresses.ts'
 import type { ServerGeo } from '../geo/server-geo.ts'
+import type { OrganizationOptions } from '../organization-options.ts'
 
 /** OS families we may report from the daemon; extend the union as support is added. */
 export type ServerOsFamily = 'linux' | 'windows' | 'freebsd' | 'darwin'
@@ -44,6 +46,19 @@ export type ServerCpuMetadata = {
 }
 
 /**
+ * Host time-sync facts mirrored from the daemon `HostTimeSync` shape, plus an
+ * optional `capturedAt` stamp when persisted on `server.metadata`.
+ */
+export type ServerTimeSync = {
+  timezone?: string
+  ntpEnabled?: boolean
+  ntpSynced?: boolean
+  ntpServers?: string[]
+  fallbackNtpServers?: string[]
+  capturedAt?: string
+}
+
+/**
  * JSON stored in `server.metadata`. Nested fields are optional; daemon registration
  * also stores `machineId` and `hostname` here for reconnect deduplication.
  */
@@ -67,6 +82,15 @@ export type ServerMetadata = {
    * connecting IP changes. Stored in jsonb — no migration required.
    */
   geo?: ServerGeo
+  /**
+   * Host interface addresses reported on daemon hello / change-detected heartbeat.
+   */
+  addresses?: ServerAddresses
+  /**
+   * Host timezone + NTP state from daemon hello / change-detected heartbeat
+   * (and refreshed on successful timezone/NTP command outcomes).
+   */
+  timeSync?: ServerTimeSync
 }
 
 /**
@@ -85,6 +109,11 @@ export type ServerOptions = {
    * Takes precedence over `server.metadata.cellGeneration` when set.
    */
   cellGeneration?: number
+  /**
+   * Operator timezone override for this server. Effective timezone is this value
+   * unless the org enforces its default (`enforceServerTimezone`).
+   */
+  timezone?: string
 }
 
 const OS_FAMILIES = new Set<ServerOsFamily>([
@@ -225,4 +254,114 @@ export function serverOsMetadataEquals(
     a.prettyName === b.prettyName &&
     a.arch === b.arch
   )
+}
+
+function optionalStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const out: string[] = []
+  for (const entry of value) {
+    if (typeof entry !== 'string') continue
+    const trimmed = entry.trim()
+    if (trimmed.length > 0) out.push(trimmed)
+  }
+  return out
+}
+
+function stringArraysEqual(
+  a: string[] | undefined,
+  b: string[] | undefined,
+): boolean {
+  if (a === b) return true
+  if (!a || !b) return a === b
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false
+  }
+  return true
+}
+
+/** Parse a best-effort time-sync block from daemon hello / stored metadata. */
+export function parseServerTimeSync(
+  value: unknown,
+): ServerTimeSync | undefined {
+  if (!isRecord(value)) return undefined
+  const timeSync: ServerTimeSync = {}
+  const timezone = optionalTrimmedString(value.timezone)
+  if (timezone) timeSync.timezone = timezone
+  if (typeof value.ntpEnabled === 'boolean') timeSync.ntpEnabled = value.ntpEnabled
+  if (typeof value.ntpSynced === 'boolean') timeSync.ntpSynced = value.ntpSynced
+  const ntpServers = optionalStringArray(value.ntpServers)
+  if (ntpServers !== undefined) timeSync.ntpServers = ntpServers
+  const fallbackNtpServers = optionalStringArray(value.fallbackNtpServers)
+  if (fallbackNtpServers !== undefined) {
+    timeSync.fallbackNtpServers = fallbackNtpServers
+  }
+  const capturedAt = optionalTrimmedString(value.capturedAt)
+  if (capturedAt) timeSync.capturedAt = capturedAt
+  return Object.keys(timeSync).length > 0 ? timeSync : undefined
+}
+
+/** Compare time-sync facts, ignoring `capturedAt`. */
+export function serverTimeSyncEquals(
+  a: ServerTimeSync | null | undefined,
+  b: ServerTimeSync | null | undefined,
+): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+  return (
+    a.timezone === b.timezone &&
+    a.ntpEnabled === b.ntpEnabled &&
+    a.ntpSynced === b.ntpSynced &&
+    stringArraysEqual(a.ntpServers, b.ntpServers) &&
+    stringArraysEqual(a.fallbackNtpServers, b.fallbackNtpServers)
+  )
+}
+
+/** Parse operator-controlled `server.options` jsonb. */
+export function parseServerOptions(value: unknown): ServerOptions | null {
+  if (!isRecord(value)) return null
+  const options: ServerOptions = {}
+  const timezone = optionalTrimmedString(value.timezone)
+  if (timezone) options.timezone = timezone
+  const cellLocationHint = optionalTrimmedString(value.cellLocationHint)
+  if (cellLocationHint) options.cellLocationHint = cellLocationHint
+  if (
+    typeof value.cellGeneration === 'number' &&
+    Number.isInteger(value.cellGeneration)
+  ) {
+    options.cellGeneration = value.cellGeneration
+  }
+  return Object.keys(options).length > 0 ? options : {}
+}
+
+export type EffectiveServerTimezone = {
+  timezone: string | null
+  source: 'server' | 'organization' | null
+}
+
+/**
+ * Resolve the effective server timezone.
+ *
+ * When the org enforces its default (`enforceServerTimezone`), the org default
+ * wins. Otherwise the per-server override wins over the org default.
+ */
+export function resolveEffectiveServerTimezone(
+  serverOptions: ServerOptions | null | undefined,
+  orgOptions: OrganizationOptions | null | undefined,
+): EffectiveServerTimezone {
+  const orgDefault = orgOptions?.defaultServerTimezone?.trim() || null
+  if (orgOptions?.enforceServerTimezone) {
+    return {
+      timezone: orgDefault,
+      source: orgDefault ? 'organization' : null,
+    }
+  }
+  const serverTz = serverOptions?.timezone?.trim() || null
+  if (serverTz) {
+    return { timezone: serverTz, source: 'server' }
+  }
+  if (orgDefault) {
+    return { timezone: orgDefault, source: 'organization' }
+  }
+  return { timezone: null, source: null }
 }

@@ -524,6 +524,126 @@ it('POST /servers/:id/hostname validates hostname and queues on success', async 
   })
 })
 
+it('POST /servers/:id/timezone queues command without persisting options.timezone', async () => {
+  await withCommandRouteFixtures({}, async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+    commandQueue,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+
+    const okRes = await app.request(`/servers/${serverId}/timezone`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ timezone: 'America/Chicago' }),
+    })
+    assertEquals(okRes.status, 200)
+    const okBody = await okRes.json() as { ok: boolean; commandId: string; status: string }
+    assertEquals(okBody.ok, true)
+    assertEquals(okBody.status, 'queued')
+
+    const [row] = await db
+      .select({ options: server.options })
+      .from(server)
+      .where(eq(server.id, serverId))
+      .limit(1)
+    const options = row?.options as { timezone?: string } | null
+    assertEquals(options?.timezone, undefined)
+
+    const commands = await db.select().from(command).where(eq(command.serverId, serverId))
+    assertEquals(commands.length, 1)
+    const record = await getCommandRecord(db, commands[0]!.id)
+    assertEquals(record?.type, 'server.timezone.set')
+    assertEquals(commandQueue!.envelopes.length, 1)
+    assertTrimmedCommandEnvelope(commandQueue!.envelopes[0]!, {
+      commandId: commands[0]!.id,
+      serverId,
+      type: 'server.timezone.set',
+      attempt: 1,
+      queuedAt: record!.queuedAt ?? record!.createdAt,
+    })
+  })
+})
+
+it('POST /servers/:id/ntp is manage-gated and validates payload', async () => {
+  await withCommandRouteFixtures({}, async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+    commandQueue,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+
+    const okRes = await app.request(`/servers/${serverId}/ntp`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        enabled: true,
+        servers: ['time.cloudflare.com'],
+      }),
+    })
+    assertEquals(okRes.status, 200)
+
+    const badRes = await app.request(`/servers/${serverId}/ntp`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ servers: ['999.999.999.999'] }),
+    })
+    assertEquals(badRes.status, 400)
+
+    const [otherOrg] = await db
+      .insert(organization)
+      .values({ displayName: 'Other Org NTP' })
+      .returning({ id: organization.id })
+    const now = new Date().toISOString()
+    const [otherServer] = await db
+      .insert(server)
+      .values({
+        organizationId: otherOrg!.id,
+        displayName: 'Other',
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: server.id })
+
+    const crossRes = await app.request(`/servers/${otherServer!.id}/ntp`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ enabled: true }),
+    })
+    // Cross-org server fails authz (403) or verifyServerInOrg (404) depending
+    // on grant resolution order; both deny the enqueue.
+    assertEquals([403, 404].includes(crossRes.status), true)
+    assertEquals(commandQueue!.envelopes.length, 1)
+
+    await db.delete(server).where(eq(server.id, otherServer!.id))
+    await db.delete(organization).where(eq(organization.id, otherOrg!.id))
+  })
+})
+
 it('POST /servers/:id/hostname returns 403 without org grant', async () => {
   await withCommandRouteFixtures({ withGrant: false }, async ({
     db,

@@ -1,9 +1,17 @@
 import { assertEquals } from 'jsr:@std/assert'
 import {
+  parseServerAddresses,
+  serverAddressesEquals,
+} from '../../server-addresses.ts'
+import {
   formatServerOsDisplay,
+  parseServerOptions,
   parseServerOsMetadata,
+  parseServerTimeSync,
+  resolveEffectiveServerTimezone,
   resolveServerOsLogoKey,
   serverOsMetadataEquals,
+  serverTimeSyncEquals,
 } from './server-metadata.ts'
 
 /**
@@ -126,4 +134,117 @@ test('serverOsMetadataEquals compares field-wise including variant', () => {
   assertEquals(serverOsMetadataEquals(a, { ...a }), true)
   assertEquals(serverOsMetadataEquals(a, { ...a, variant: undefined }), false)
   assertEquals(serverOsMetadataEquals(a, null), false)
+})
+
+test('parseServerTimeSync accepts daemon time-sync blocks', () => {
+  assertEquals(
+    parseServerTimeSync({
+      timezone: 'America/Chicago',
+      ntpEnabled: true,
+      ntpSynced: false,
+      ntpServers: ['time.cloudflare.com', '  '],
+      fallbackNtpServers: ['203.0.113.10'],
+      capturedAt: '2020-01-01T00:00:00.000Z',
+    }),
+    {
+      timezone: 'America/Chicago',
+      ntpEnabled: true,
+      ntpSynced: false,
+      ntpServers: ['time.cloudflare.com'],
+      fallbackNtpServers: ['203.0.113.10'],
+      capturedAt: '2020-01-01T00:00:00.000Z',
+    },
+  )
+  assertEquals(parseServerTimeSync({ timezone: '  ' }), undefined)
+  assertEquals(parseServerTimeSync('nope'), undefined)
+})
+
+test('serverTimeSyncEquals ignores capturedAt', () => {
+  const a = {
+    timezone: 'UTC',
+    ntpEnabled: true,
+    ntpServers: ['time.cloudflare.com'],
+    capturedAt: '2020-01-01T00:00:00.000Z',
+  }
+  assertEquals(
+    serverTimeSyncEquals(a, {
+      ...a,
+      capturedAt: '2020-01-02T00:00:00.000Z',
+    }),
+    true,
+  )
+  assertEquals(
+    serverTimeSyncEquals(a, { ...a, timezone: 'Europe/London' }),
+    false,
+  )
+})
+
+test('parseServerOptions and resolveEffectiveServerTimezone', () => {
+  assertEquals(parseServerOptions({ timezone: 'UTC', cellGeneration: 2 }), {
+    timezone: 'UTC',
+    cellGeneration: 2,
+  })
+  assertEquals(parseServerOptions(null), null)
+  assertEquals(parseServerOptions({}), {})
+
+  assertEquals(
+    resolveEffectiveServerTimezone(
+      { timezone: 'America/Chicago' },
+      { defaultServerTimezone: 'UTC', enforceServerTimezone: false },
+    ),
+    { timezone: 'America/Chicago', source: 'server' },
+  )
+  assertEquals(
+    resolveEffectiveServerTimezone(
+      { timezone: 'America/Chicago' },
+      { defaultServerTimezone: 'UTC', enforceServerTimezone: true },
+    ),
+    { timezone: 'UTC', source: 'organization' },
+  )
+  assertEquals(
+    resolveEffectiveServerTimezone({}, { defaultServerTimezone: 'UTC' }),
+    { timezone: 'UTC', source: 'organization' },
+  )
+  assertEquals(resolveEffectiveServerTimezone({}, {}), {
+    timezone: null,
+    source: null,
+  })
+})
+
+test('parseServerAddresses and serverAddressesEquals', () => {
+  const addresses = parseServerAddresses({
+    privateIpv4: ['10.0.0.1', ''],
+    privateIpv6: [],
+    publicIpv4: ['203.0.113.10'],
+    publicIpv6: ['2001:db8::1'],
+  })
+  assertEquals(addresses, {
+    privateIpv4: ['10.0.0.1'],
+    privateIpv6: [],
+    publicIpv4: ['203.0.113.10'],
+    publicIpv6: ['2001:db8::1'],
+  })
+  assertEquals(
+    parseServerAddresses({
+      privateIpv4: [],
+      privateIpv6: [],
+      publicIpv4: [],
+      publicIpv6: [],
+    }),
+    {
+      privateIpv4: [],
+      privateIpv6: [],
+      publicIpv4: [],
+      publicIpv6: [],
+    },
+  )
+  assertEquals(parseServerAddresses(undefined), undefined)
+  assertEquals(serverAddressesEquals(addresses, addresses), true)
+  assertEquals(
+    serverAddressesEquals(addresses, {
+      ...addresses!,
+      publicIpv4: ['203.0.113.11'],
+    }),
+    false,
+  )
 })

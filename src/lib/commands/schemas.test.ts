@@ -8,12 +8,16 @@ import {
   parseCommandResult,
   parseHostnameSetPayload,
   parseHostnameSetResult,
+  parseNtpSetPayload,
+  parseNtpSetResult,
   parsePingPayload,
   parsePingResult,
   parseRebootPayload,
   parseRebootResult,
+  parseTimezoneSetPayload,
+  parseTimezoneSetResult,
 } from './schemas.ts'
-import type { CommandType } from './types.ts'
+import { COMMAND_TYPES, type CommandType } from './types.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -123,17 +127,145 @@ test('parseHostnameSetResult rejects missing or empty observedHostname', () => {
   }
 })
 
+/** Keep byte-identical order with daemon `src/instance/commands/contracts.ts`. */
+const DAEMON_COMMAND_TYPES = [
+  'daemon.ping',
+  'server.hostname.set',
+  'server.ntp.set',
+  'server.reboot',
+  'server.timezone.set',
+  'environment.deploy',
+  'environment.stop',
+] as const
+
+test('COMMAND_TYPES matches daemon contracts canonical order', () => {
+  assertEquals([...COMMAND_TYPES], [...DAEMON_COMMAND_TYPES])
+})
+
+test('parseTimezoneSetPayload accepts valid IANA shapes', () => {
+  assertEquals(parseTimezoneSetPayload({ timezone: 'America/Chicago' }), {
+    timezone: 'America/Chicago',
+  })
+  assertEquals(parseTimezoneSetPayload({ timezone: 'UTC' }), { timezone: 'UTC' })
+})
+
+test('parseTimezoneSetPayload rejects invalid timezones', () => {
+  for (const timezone of [undefined, '', 'a b', 'a;b', 'Etc/GMT+0 ']) {
+    assertThrows(
+      () => parseTimezoneSetPayload({ timezone }),
+      Error,
+      'Invalid timezone set payload',
+    )
+  }
+})
+
+test('parseTimezoneSetResult round-trips', () => {
+  assertEquals(
+    parseTimezoneSetResult({ timezone: 'UTC', summary: 'ok' }),
+    { timezone: 'UTC', summary: 'ok' },
+  )
+})
+
+test('parseNtpSetPayload accepts enabled and server lists', () => {
+  assertEquals(
+    parseNtpSetPayload({
+      enabled: true,
+      servers: ['time.cloudflare.com', '203.0.113.10'],
+      fallbackServers: ['2001:db8::1'],
+    }),
+    {
+      enabled: true,
+      servers: ['time.cloudflare.com', '203.0.113.10'],
+      fallbackServers: ['2001:db8::1'],
+    },
+  )
+  assertEquals(parseNtpSetPayload({ enabled: false }), { enabled: false })
+})
+
+test('parseNtpSetPayload rejects invalid NTP servers and empty payloads', () => {
+  assertThrows(
+    () => parseNtpSetPayload({ servers: ['999.999.999.999'] }),
+    Error,
+    'Invalid NTP server',
+  )
+  assertThrows(
+    () => parseNtpSetPayload({}),
+    Error,
+    'ntp payload must include enabled',
+  )
+  assertThrows(
+    () => parseNtpSetPayload({ servers: [] }),
+    Error,
+    'must not be empty',
+  )
+})
+
+test('parseNtpSetResult keeps server lists', () => {
+  assertEquals(
+    parseNtpSetResult({
+      ntpEnabled: true,
+      ntpSynced: true,
+      ntpServers: ['time.cloudflare.com'],
+      fallbackNtpServers: ['203.0.113.10'],
+    }),
+    {
+      ntpEnabled: true,
+      ntpSynced: true,
+      ntpServers: ['time.cloudflare.com'],
+      fallbackNtpServers: ['203.0.113.10'],
+    },
+  )
+})
+
+test('parseNtpSetResult rejects missing or malformed ntpServers', () => {
+  assertThrows(
+    () => parseNtpSetResult({ ntpEnabled: true }),
+    TypeError,
+    'ntpServers must be an array',
+  )
+  assertThrows(
+    () => parseNtpSetResult({ ntpServers: 'time.cloudflare.com' }),
+    TypeError,
+    'ntpServers must be an array',
+  )
+  assertThrows(
+    () => parseNtpSetResult({ ntpServers: [123] }),
+    Error,
+    'Invalid NTP server in ntpServers',
+  )
+  assertThrows(
+    () =>
+      parseNtpSetResult({
+        ntpServers: ['time.cloudflare.com'],
+        fallbackNtpServers: '203.0.113.10',
+      }),
+    TypeError,
+    'fallbackNtpServers must be an array',
+  )
+})
+
 test('parseCommandPayload and parseCommandResult dispatch by type', () => {
   assertEquals(parseCommandPayload('daemon.ping' as CommandType, {}), {})
   assertEquals(
     parseCommandPayload('server.hostname.set' as CommandType, { hostname: 'web-01' }),
     { hostname: 'web-01' },
   )
+  assertEquals(
+    parseCommandPayload('server.timezone.set' as CommandType, {
+      timezone: 'UTC',
+    }),
+    { timezone: 'UTC' },
+  )
+  assertEquals(
+    parseCommandPayload('server.ntp.set' as CommandType, { enabled: true }),
+    { enabled: true },
+  )
   assertEquals(parseCommandPayload('server.reboot' as CommandType, {}), {})
   assertEquals(
     parseCommandPayload('environment.deploy' as CommandType, {
       environmentId: 'env-1',
       projectId: 'proj-1',
+      organizationId: 'org-1',
       projectName: 'tp-demo',
       composeYaml: 'services: {}\n',
       hostings: [],
@@ -141,6 +273,7 @@ test('parseCommandPayload and parseCommandResult dispatch by type', () => {
     {
       environmentId: 'env-1',
       projectId: 'proj-1',
+      organizationId: 'org-1',
       projectName: 'tp-demo',
       composeYaml: 'services: {}\n',
       hostings: [],
@@ -164,6 +297,14 @@ test('parseCommandPayload and parseCommandResult dispatch by type', () => {
   assertEquals(
     parseCommandResult('server.hostname.set' as CommandType, { observedHostname: 'web-01' }),
     { observedHostname: 'web-01' },
+  )
+  assertEquals(
+    parseCommandResult('server.timezone.set' as CommandType, { timezone: 'UTC' }),
+    { timezone: 'UTC' },
+  )
+  assertEquals(
+    parseCommandResult('server.ntp.set' as CommandType, { ntpServers: [] }),
+    { ntpServers: [] },
   )
   assertEquals(
     parseCommandResult('server.reboot' as CommandType, { scheduled: true, summary: 'ok' }),

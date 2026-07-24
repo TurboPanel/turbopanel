@@ -34,6 +34,29 @@ export const serverSchemas = {
       arch: { type: 'string', description: 'CPU arch (e.g. aarch64, x86_64).' },
     },
   },
+  ServerTimeSync: {
+    type: 'object',
+    description:
+      'Host timezone + NTP state from daemon hello / change-detected heartbeat.',
+    properties: {
+      timezone: { type: 'string' },
+      ntpEnabled: { type: 'boolean' },
+      ntpSynced: { type: 'boolean' },
+      ntpServers: { type: 'array', items: { type: 'string' } },
+      fallbackNtpServers: { type: 'array', items: { type: 'string' } },
+      capturedAt: { type: 'string', format: 'date-time' },
+    },
+  },
+  ServerAddresses: {
+    type: 'object',
+    description: 'Host interface addresses reported by the daemon.',
+    properties: {
+      privateIpv4: { type: 'array', items: { type: 'string' } },
+      privateIpv6: { type: 'array', items: { type: 'string' } },
+      publicIpv4: { type: 'array', items: { type: 'string' } },
+      publicIpv6: { type: 'array', items: { type: 'string' } },
+    },
+  },
   ServerRow: {
     type: 'object',
     properties: {
@@ -86,10 +109,86 @@ export const serverSchemas = {
         enum: ['debian', 'raspberry-pi-os', null],
         description: 'Logo key for the UI OS column.',
       },
+      addresses: {
+        oneOf: [
+          { $ref: '#/components/schemas/ServerAddresses' },
+          { type: 'null' },
+        ],
+        description:
+          'Host addresses from server.metadata.addresses. Null until reported.',
+      },
+      timeSync: {
+        oneOf: [
+          { $ref: '#/components/schemas/ServerTimeSync' },
+          { type: 'null' },
+        ],
+        description:
+          'Host time-sync from server.metadata.timeSync. Null until reported.',
+      },
+      timezone: {
+        type: ['string', 'null'],
+        description:
+          'Effective timezone (server override unless org enforceServerTimezone).',
+      },
+      timezoneSource: {
+        type: ['string', 'null'],
+        enum: ['server', 'organization', null],
+        description: 'Which layer supplied the effective timezone.',
+      },
       colocatedWithInstance: {
         type: 'boolean',
         description:
           'True when this server is the daemon co-located on the same host as this control plane instance.',
+      },
+    },
+  },
+  ServerDetailResponse: {
+    type: 'object',
+    required: ['ok', 'server'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      server: {
+        allOf: [
+          { $ref: '#/components/schemas/ServerRow' },
+          {
+            type: 'object',
+            properties: {
+              orgDefaultTimezone: { type: ['string', 'null'] },
+              enforceServerTimezone: { type: 'boolean' },
+            },
+          },
+        ],
+      },
+    },
+  },
+  CommandEnqueueResponse: {
+    type: 'object',
+    required: ['ok', 'commandId', 'status'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      commandId: { type: 'string', format: 'uuid' },
+      status: { type: 'string', const: 'queued' },
+    },
+  },
+  TimezoneSetRequest: {
+    type: 'object',
+    required: ['timezone'],
+    properties: {
+      timezone: {
+        type: 'string',
+        description: 'IANA timezone (must be in GET /timezones).',
+      },
+    },
+  },
+  NtpSetRequest: {
+    type: 'object',
+    properties: {
+      enabled: { type: 'boolean' },
+      servers: { type: 'array', items: { type: 'string' }, minItems: 1 },
+      fallbackServers: {
+        type: 'array',
+        items: { type: 'string' },
+        minItems: 1,
       },
     },
   },
@@ -562,6 +661,67 @@ export const serverPaths: Record<string, unknown> = {
     },
   },
   '/api/client/v1/servers/{id}': {
+    get: {
+      tags: ['Servers'],
+      summary: 'Get a single server detail row',
+      description:
+        'Returns display fields plus live presence (addresses, timeSync, effective timezone). Uses the server-detail cached read model for the row SELECT; presence enrichment is primary-DB only.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Server detail',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ServerDetailResponse' },
+            },
+          },
+        },
+        '401': {
+          description: 'Unauthorized',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '404': {
+          description: 'Server not found',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    },
     delete: {
       tags: ['Servers'],
       summary: 'Delete a server and purge its daemon cell',
@@ -650,6 +810,148 @@ export const serverPaths: Record<string, unknown> = {
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/DeleteServerPartialFailure' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/servers/{id}/timezone': {
+    post: {
+      tags: ['Servers'],
+      summary: 'Set server timezone',
+      description:
+        'Persists server.options.timezone and enqueues server.timezone.set. Manage-gated; poll via GET /servers/{id}/commands/{commandId}.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/TimezoneSetRequest' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Command queued',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/CommandEnqueueResponse' },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid timezone',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '404': {
+          description: 'Server not found',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/servers/{id}/ntp': {
+    post: {
+      tags: ['Servers'],
+      summary: 'Configure server NTP',
+      description:
+        'Enqueues server.ntp.set. Manage-gated; poll via GET /servers/{id}/commands/{commandId}.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/NtpSetRequest' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Command queued',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/CommandEnqueueResponse' },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid NTP payload',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '404': {
+          description: 'Server not found',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
             },
           },
         },

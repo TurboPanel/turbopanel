@@ -6,6 +6,14 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { can, listVisible } from '../authz/index.ts'
 import { assertCanManageOr403, assertCanReadOr403, getOrgId } from '../shared.ts'
 import { getDb, getDaemonCellRegistry, type Db } from '../../db.ts'
+import { parseOrganizationOptions } from '../../lib/organization-options.ts'
+import {
+  formatServerOsDisplay,
+  parseServerOptions,
+  resolveEffectiveServerTimezone,
+  resolveServerOsLogoKey,
+} from '../../lib/db/server-metadata.ts'
+import { cachedServerDetailReadModel } from '../../query-cache/read-models/server-detail.ts'
 import {
   fetchDaemonServerCell,
 } from '../../daemon/cell/server-diagnostics.ts'
@@ -26,11 +34,7 @@ import {
   type DaemonOutboundEnvelope,
 } from '../../daemon/cell/protocol.ts'
 import { clearServerDaemonState } from '../../daemon/authn/server-identity-db.ts'
-import { server, license } from '../../lib/db/schema.ts'
-import {
-  formatServerOsDisplay,
-  resolveServerOsLogoKey,
-} from '../../lib/db/server-metadata.ts'
+import { organization, server, license } from '../../lib/db/schema.ts'
 import { resolveTrunkManifest } from '../../lib/update/manifest.ts'
 import { revokeLicense } from '../authn/license.ts'
 import { compatLogWarn } from '../../log-compat.ts'
@@ -265,10 +269,21 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const presence = new Map(display.presence.map((live) => [live.serverId, live]))
     const colocatedIds = new Set(display.colocatedIds)
 
+    const [orgRow] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, organizationId))
+      .limit(1)
+    const orgOptions = parseOrganizationOptions(orgRow?.options)
+
     return c.json({
       servers: display.rows.map((row) => {
         const live = presence.get(row.id)
         const os = live?.os ?? null
+        const effective = resolveEffectiveServerTimezone(
+          parseServerOptions(row.options),
+          orgOptions,
+        )
         return {
           ...row,
           connected: live?.connected ?? false,
@@ -281,6 +296,10 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
           os,
           osDisplay: formatServerOsDisplay(os),
           osLogo: resolveServerOsLogoKey(os),
+          addresses: live?.addresses ?? null,
+          timeSync: live?.timeSync ?? null,
+          timezone: effective.timezone,
+          timezoneSource: effective.source,
           licenseId: row.licenseId ?? null,
         }
       }),
@@ -611,6 +630,77 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     }
 
     return c.json({ ok: true, ...queued })
+  })
+
+  router.get('/servers/:id', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+    const id = c.req.param('id')
+    const denied = await assertCanReadOr403(c, 'server', id)
+    if (denied) return denied
+
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
+
+    const [serverRow] = await db
+      .select({ id: server.id })
+      .from(server)
+      .where(and(eq(server.id, id), eq(server.organizationId, organizationId)))
+      .limit(1)
+    if (!serverRow) return c.json({ error: 'Not found' }, 404)
+
+    let display
+    try {
+      display = await cachedServerDetailReadModel(c, {
+        organizationId,
+        serverId: id,
+      })
+    } catch {
+      return c.json({ error: 'Database unavailable' }, 503)
+    }
+    if (!display) return c.json({ error: 'Not found' }, 404)
+
+    const [orgRow] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, organizationId))
+      .limit(1)
+    const orgOptions = parseOrganizationOptions(orgRow?.options)
+    const live = display.presence
+    const os = live?.os ?? null
+    const effective = resolveEffectiveServerTimezone(
+      parseServerOptions(display.row.options),
+      orgOptions,
+    )
+
+    return c.json({
+      ok: true,
+      server: {
+        ...display.row,
+        connected: live?.connected ?? false,
+        hostname: live?.hostname ?? null,
+        remoteAddress: live?.remoteAddress ?? null,
+        lastInboundAt: live?.lastInboundAt ?? null,
+        connectedAt: live?.connectedAt ?? null,
+        os,
+        osDisplay: formatServerOsDisplay(os),
+        osLogo: resolveServerOsLogoKey(os),
+        geo: live?.geo ?? null,
+        addresses: live?.addresses ?? null,
+        timeSync: live?.timeSync ?? null,
+        timezone: effective.timezone,
+        timezoneSource: effective.source,
+        orgDefaultTimezone: orgOptions.defaultServerTimezone ?? null,
+        enforceServerTimezone: orgOptions.enforceServerTimezone ?? false,
+        colocatedWithInstance: display.colocatedWithInstance,
+        licenseId: display.row.licenseId ?? null,
+      },
+    })
   })
 
   router.delete('/servers/:id', async (c) => {

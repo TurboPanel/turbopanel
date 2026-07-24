@@ -1,4 +1,5 @@
-import { isValidHostname } from './hostname.ts'
+import { isValidHostname, HOSTNAME_MAX_LENGTH } from './hostname.ts'
+import { isValidTimezone } from '../timezones.ts'
 import type { CommandType } from './types.ts'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -7,6 +8,77 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isString(value: unknown): value is string {
   return typeof value === 'string'
+}
+
+const SHELL_METACHAR_RE = /[;|&$`()<>\\"'!*?{}]/
+
+/** Dotted-quad shape (octets validated separately). Daemon parity. */
+const IPV4_SHAPE_RE = /^(?:\d{1,3}\.){3}\d{1,3}$/
+
+/** Must stay in sync with the daemon `server.ntp.set` validator. */
+function isValidIpv4Literal(value: string): boolean {
+  if (!IPV4_SHAPE_RE.test(value)) return false
+  const octets = value.split('.')
+  for (const octet of octets) {
+    if (!/^(?:0|[1-9]\d{0,2})$/.test(octet)) return false
+    const n = Number(octet)
+    if (n > 255) return false
+  }
+  return true
+}
+
+/**
+ * Conservative IPv6 literal check (RFC 4291 / RFC 5952 shapes).
+ * Must stay in sync with the daemon `server.ntp.set` validator.
+ */
+function isValidIpv6Literal(value: string): boolean {
+  if (!value.includes(':')) return false
+  if (value.includes('%')) return false
+  if (value.includes(':::')) return false
+
+  const sides = value.split('::')
+  if (sides.length > 2) return false
+
+  const parseSide = (side: string): number | null => {
+    if (side === '') return 0
+    const parts = side.split(':')
+    let hextets = 0
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i]!
+      if (part.includes('.')) {
+        if (i !== parts.length - 1) return null
+        if (!isValidIpv4Literal(part)) return null
+        hextets += 2
+        continue
+      }
+      if (!/^[0-9a-fA-F]{1,4}$/.test(part)) return null
+      hextets += 1
+    }
+    return hextets
+  }
+
+  if (sides.length === 1) {
+    const count = parseSide(sides[0]!)
+    return count === 8
+  }
+
+  const left = parseSide(sides[0]!)
+  const right = parseSide(sides[1]!)
+  if (left === null || right === null) return false
+  return left + right < 8
+}
+
+/** Must stay in sync with the daemon `server.ntp.set` validator. */
+export function isValidNtpServer(value: unknown): boolean {
+  if (typeof value !== 'string') return false
+  if (value.length === 0) return false
+  if (value.length > HOSTNAME_MAX_LENGTH) return false
+  if (/\s/.test(value)) return false
+  if (SHELL_METACHAR_RE.test(value)) return false
+  if (IPV4_SHAPE_RE.test(value)) return isValidIpv4Literal(value)
+  if (value.includes(':')) return isValidIpv6Literal(value)
+  if (isValidHostname(value)) return true
+  return false
 }
 
 export type PingCommandPayload = Record<string, never>
@@ -69,6 +141,147 @@ export type HostnameSetCommandResult = {
 export type RebootCommandResult = {
   scheduled: boolean
   summary?: string
+}
+
+/** Must stay in sync with the daemon `server.timezone.set` shape. */
+export type TimezoneSetCommandPayload = {
+  timezone: string
+}
+
+/** Must stay in sync with the daemon `server.timezone.set` shape. */
+export type TimezoneSetCommandResult = {
+  timezone: string
+  summary?: string
+}
+
+/** Must stay in sync with the daemon `server.ntp.set` shape. */
+export type NtpSetCommandPayload = {
+  enabled?: boolean
+  servers?: string[]
+  fallbackServers?: string[]
+}
+
+/** Must stay in sync with the daemon `server.ntp.set` shape. */
+export type NtpSetCommandResult = {
+  ntpEnabled?: boolean
+  ntpSynced?: boolean
+  ntpServers: string[]
+  fallbackNtpServers?: string[]
+  summary?: string
+}
+
+export function parseTimezoneSetPayload(value: unknown): TimezoneSetCommandPayload {
+  if (!isRecord(value)) {
+    throw new Error('Invalid timezone set payload')
+  }
+  const timezone = value.timezone
+  if (!isString(timezone) || timezone.length === 0 || !isValidTimezone(timezone)) {
+    throw new Error('Invalid timezone set payload')
+  }
+  return { timezone }
+}
+
+export function parseTimezoneSetResult(value: unknown): TimezoneSetCommandResult {
+  if (!isRecord(value)) {
+    throw new Error('Invalid timezone set result')
+  }
+  const timezone = value.timezone
+  if (!isString(timezone) || timezone.length === 0) {
+    throw new Error('Invalid timezone set result')
+  }
+  const result: TimezoneSetCommandResult = { timezone }
+  if (isString(value.summary)) {
+    result.summary = value.summary
+  }
+  return result
+}
+
+function parseOptionalNtpServerList(
+  value: unknown,
+  field: string,
+): string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) {
+    throw new TypeError(`${field} must be an array of server hostnames or IPs`)
+  }
+  if (value.length === 0) {
+    throw new Error(`${field} must not be empty when provided`)
+  }
+  const servers: string[] = []
+  for (const entry of value) {
+    if (!isValidNtpServer(entry)) {
+      throw new Error(`Invalid NTP server in ${field}`)
+    }
+    servers.push(entry as string)
+  }
+  return servers
+}
+
+export function parseNtpSetPayload(value: unknown): NtpSetCommandPayload {
+  if (!isRecord(value)) {
+    throw new Error('Invalid ntp set payload')
+  }
+  const payload: NtpSetCommandPayload = {}
+
+  if (value.enabled !== undefined) {
+    if (typeof value.enabled !== 'boolean') {
+      throw new TypeError('enabled must be a boolean')
+    }
+    payload.enabled = value.enabled
+  }
+
+  const servers = parseOptionalNtpServerList(value.servers, 'servers')
+  if (servers !== undefined) payload.servers = servers
+
+  const fallbackServers = parseOptionalNtpServerList(
+    value.fallbackServers,
+    'fallbackServers',
+  )
+  if (fallbackServers !== undefined) payload.fallbackServers = fallbackServers
+
+  if (
+    payload.enabled === undefined &&
+    payload.servers === undefined &&
+    payload.fallbackServers === undefined
+  ) {
+    throw new Error(
+      'ntp payload must include enabled, servers, and/or fallbackServers',
+    )
+  }
+
+  return payload
+}
+
+function parseRequiredNtpServerList(value: unknown, field: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new TypeError(`${field} must be an array of server hostnames or IPs`)
+  }
+  const servers: string[] = []
+  for (const entry of value) {
+    if (!isValidNtpServer(entry)) {
+      throw new Error(`Invalid NTP server in ${field}`)
+    }
+    servers.push(entry as string)
+  }
+  return servers
+}
+
+export function parseNtpSetResult(value: unknown): NtpSetCommandResult {
+  if (!isRecord(value)) {
+    throw new Error('Invalid ntp set result')
+  }
+  const result: NtpSetCommandResult = {
+    ntpServers: parseRequiredNtpServerList(value.ntpServers, 'ntpServers'),
+  }
+  if (typeof value.ntpEnabled === 'boolean') result.ntpEnabled = value.ntpEnabled
+  if (typeof value.ntpSynced === 'boolean') result.ntpSynced = value.ntpSynced
+  const fallback = parseOptionalNtpServerList(
+    value.fallbackNtpServers,
+    'fallbackNtpServers',
+  )
+  if (fallback !== undefined) result.fallbackNtpServers = fallback
+  if (isString(value.summary)) result.summary = value.summary
+  return result
 }
 
 function parseDaemonBuild(value: unknown): PingCommandResult['daemonBuild'] {
@@ -558,6 +771,8 @@ export function parseCommandPayload(
 ):
   | PingCommandPayload
   | HostnameSetCommandPayload
+  | TimezoneSetCommandPayload
+  | NtpSetCommandPayload
   | RebootCommandPayload
   | EnvironmentDeployCommandPayload
   | EnvironmentStopCommandPayload {
@@ -566,6 +781,10 @@ export function parseCommandPayload(
       return parsePingPayload(value)
     case 'server.hostname.set':
       return parseHostnameSetPayload(value)
+    case 'server.timezone.set':
+      return parseTimezoneSetPayload(value)
+    case 'server.ntp.set':
+      return parseNtpSetPayload(value)
     case 'server.reboot':
       return parseRebootPayload(value)
     case 'environment.deploy':
@@ -581,6 +800,8 @@ export function parseCommandResult(
 ):
   | PingCommandResult
   | HostnameSetCommandResult
+  | TimezoneSetCommandResult
+  | NtpSetCommandResult
   | RebootCommandResult
   | EnvironmentDeployCommandResult
   | EnvironmentStopCommandResult {
@@ -589,6 +810,10 @@ export function parseCommandResult(
       return parsePingResult(value)
     case 'server.hostname.set':
       return parseHostnameSetResult(value)
+    case 'server.timezone.set':
+      return parseTimezoneSetResult(value)
+    case 'server.ntp.set':
+      return parseNtpSetResult(value)
     case 'server.reboot':
       return parseRebootResult(value)
     case 'environment.deploy':

@@ -310,6 +310,8 @@ export function registerDaemonWebSocket(
             hostname: message.hostname,
             machineId: message.machineId,
             os: message.os,
+            timeSync: message.timeSync,
+            addresses: message.addresses,
           });
           await cell.recordInbound({
             connectionId,
@@ -324,6 +326,12 @@ export function registerDaemonWebSocket(
         }
 
         if (message.type === "heartbeat") {
+          if (message.timeSync || message.addresses) {
+            await touchServerMetadata(db, payload.sub, {
+              timeSync: message.timeSync,
+              addresses: message.addresses,
+            });
+          }
           await cell.recordInbound({
             connectionId,
             at: message.at,

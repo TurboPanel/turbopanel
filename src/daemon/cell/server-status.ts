@@ -12,8 +12,14 @@ import { parseServerDaemonState } from "../authn/daemon-state.ts";
 import type {
   ServerMetadata,
   ServerOsMetadata,
+  ServerTimeSync,
 } from "../../lib/db/server-metadata.ts";
-import { parseServerOsMetadata } from "../../lib/db/server-metadata.ts";
+import {
+  parseServerOsMetadata,
+  parseServerTimeSync,
+} from "../../lib/db/server-metadata.ts";
+import type { ServerAddresses } from "../../server-addresses.ts";
+import { parseServerAddresses } from "../../server-addresses.ts";
 import type { ServerGeo } from "../../lib/geo/server-geo.ts";
 import { parseServerGeo } from "../../lib/geo/server-geo.ts";
 import { server } from "../../lib/db/schema.ts";
@@ -46,6 +52,10 @@ export type ServerFleetPresence = {
   geo: ServerGeo | null;
   /** From `server.metadata.os` (daemon hello); null until reported. */
   os: ServerOsMetadata | null;
+  /** From `server.metadata.timeSync` (hello / change-detected heartbeat). */
+  timeSync: ServerTimeSync | null;
+  /** From `server.metadata.addresses` (hello / change-detected heartbeat). */
+  addresses: ServerAddresses | null;
 };
 
 function normalizeRemoteAddress(
@@ -159,6 +169,8 @@ export async function resolveFleetPresence(
       agent: projection?.agent ?? snapshot?.agent ?? undefined,
       geo: parseServerGeo(metadata.geo),
       os: parseServerOsMetadata(metadata.os) ?? null,
+      timeSync: parseServerTimeSync(metadata.timeSync) ?? null,
+      addresses: parseServerAddresses(metadata.addresses) ?? null,
     });
   }
 
