@@ -1,9 +1,3 @@
-/** POSIX single-quote escaping for shell arguments and env values. */
-export function shellQuote(value: string): string {
-  const escaped = value.replaceAll("'", String.raw`'\''`)
-  return `'${escaped}'`
-}
-
 export function encodeLicenseArg(
   licenseId: string,
   licenseToken: string,
@@ -19,6 +13,10 @@ export function encodeLicenseArg(
 /** CDN bootstrap URL shown in production install commands (HTTP→HTTPS via CF 301). */
 export const CDN_RUN_SCRIPT_DISPLAY = 'trbp.nl/run.sh'
 
+/**
+ * Build the install pipeline. Callers must pass a validated origin / host and a
+ * base64url license (no shell metacharacters) — values are emitted unquoted.
+ */
 function buildInstallPipeline(opts: {
   curlUrl: string
   licenseArg: string
@@ -27,10 +25,10 @@ function buildInstallPipeline(opts: {
   curlInsecure?: boolean
 }): string {
   const curl = opts.curlInsecure ? 'curl -fsSLk' : 'curl -fsSL'
-  const envParts = [`TURBOPANEL_LICENSE=${shellQuote(opts.licenseArg)}`]
-  if (opts.host) envParts.push(`TURBOPANEL_HOST=${shellQuote(opts.host)}`)
+  const envParts = [`TURBOPANEL_LICENSE=${opts.licenseArg}`]
+  if (opts.host) envParts.push(`TURBOPANEL_HOST=${opts.host}`)
   if (opts.insecureTls) envParts.push('TURBOPANEL_INSECURE_TLS=1')
-  return `${curl} ${shellQuote(opts.curlUrl)} | ${envParts.join(' ')} sh`
+  return `${curl} ${opts.curlUrl} | ${envParts.join(' ')} sh`
 }
 
 export function buildLicenseInstallCommand(opts: {
