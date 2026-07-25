@@ -561,6 +561,18 @@ export type EnvironmentDeployHostingPhp = {
   maxExecutionTime?: number
 }
 
+/**
+ * Project principal that owns a traditional-web site tree on the host.
+ * Daemon `ensureSystemPrincipals` creates the Linux user before apply;
+ * document roots are `chown`ed to this user with the engine group for read.
+ */
+export type EnvironmentDeployTraditionalWebPrincipal = {
+  principalId: string
+  username: string
+  uid: number
+  gid: number
+}
+
 export type EnvironmentDeployTraditionalWebSite = {
   composeServiceName: string
   engine: 'apache' | 'nginx' | 'openlitespeed'
@@ -571,6 +583,11 @@ export type EnvironmentDeployTraditionalWebSite = {
   /** Merged hosting web env (variables + options.web.env). */
   webEnv?: Record<string, string>
   php?: EnvironmentDeployHostingPhp
+  /**
+   * When set (from a project principal ↔ service assignment), the site tree
+   * is owned by this principal and Apache php-fpm workers run as that user.
+   */
+  principal?: EnvironmentDeployTraditionalWebPrincipal
 }
 
 export type EnvironmentDeployCommandPayload = {
@@ -969,7 +986,40 @@ function parseDeployTraditionalWebSiteEntry(
   if (webEnv) site.webEnv = webEnv
   const php = parseDeployHostingPhp(entry.php)
   if (php) site.php = php
+  const principal = parseDeployTraditionalWebPrincipal(entry.principal)
+  if (principal) site.principal = principal
   return site
+}
+
+const PRINCIPAL_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
+
+function parseDeployTraditionalWebPrincipal(
+  value: unknown,
+): EnvironmentDeployTraditionalWebPrincipal | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) {
+    throw new Error('Invalid traditionalWebSites.principal entry')
+  }
+  if (
+    !isString(value.principalId) ||
+    value.principalId.length === 0 ||
+    !isString(value.username) ||
+    !PRINCIPAL_USERNAME_RE.test(value.username) ||
+    typeof value.uid !== 'number' ||
+    !Number.isInteger(value.uid) ||
+    value.uid < 0 ||
+    typeof value.gid !== 'number' ||
+    !Number.isInteger(value.gid) ||
+    value.gid < 0
+  ) {
+    throw new Error('Invalid traditionalWebSites.principal entry')
+  }
+  return {
+    principalId: value.principalId,
+    username: value.username,
+    uid: value.uid,
+    gid: value.gid,
+  }
 }
 
 function parseDeployTraditionalWebSites(

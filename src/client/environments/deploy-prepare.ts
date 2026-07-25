@@ -37,6 +37,7 @@ import type {
   EnvironmentDeployHosting,
   EnvironmentDeployPrincipalMaterial,
   EnvironmentDeployStorageMaterial,
+  EnvironmentDeployTraditionalWebPrincipal,
   EnvironmentDeployTraditionalWebSite,
   EnvironmentDeployVariableMaterial,
 } from '../../lib/commands/schemas.ts'
@@ -66,7 +67,11 @@ import {
   resolveServerScopedVariables,
   type ResolvedVariableMap,
 } from '../variables/resolve-inherited.ts'
-import { loadPrincipalIdsAssignedToEnvironment } from '../principals/assignments.ts'
+import {
+  loadPrincipalIdsAssignedToEnvironment,
+  loadPrincipalIdsByServiceIdForEnvironment,
+  pickSolePrincipalId,
+} from '../principals/assignments.ts'
 
 export { readComposePlacementServerId }
 
@@ -146,6 +151,7 @@ export type DeployPrepareError =
   | { kind: 'empty_compose' }
   | { kind: 'datacenter_ip_required'; serverId: string }
   | { kind: 'docker_external_network_unregistered'; names: string[] }
+  | { kind: 'traditional_web_principal_ambiguous'; composeServiceName: string }
 
 async function sealVariableMaterialForDaemon(
   c: Context<AppEnv>,
@@ -601,6 +607,15 @@ export async function prepareDeployCompose(
     (hook) => !traditionalNames.has(hook.composeServiceName),
   )
 
+  const traditionalWebSitesOrError = await attachPrincipalsToTraditionalWebSites(
+    db,
+    params.environmentId,
+    serviceRows,
+    principalMaterial,
+    split.sites,
+  )
+  if ('kind' in traditionalWebSitesOrError) return traditionalWebSitesOrError
+
   const dockerExternalNetworks = collectComposeExternalDockerNetworkNames(
     split.composeYaml,
   )
@@ -623,8 +638,74 @@ export async function prepareDeployCompose(
     variableMaterial,
     storageMaterial,
     principalMaterial,
-    traditionalWebSites: split.sites,
+    traditionalWebSites: traditionalWebSitesOrError,
     dockerExternalNetworks,
+  }
+}
+
+/**
+ * Pin each traditional-web site to at most one assigned project principal.
+ * Multiple principals on the same service is ambiguous ownership → prepare error.
+ */
+export async function attachPrincipalsToTraditionalWebSites(
+  db: Db,
+  environmentId: string,
+  serviceRows: ReadonlyArray<{ id: string; metadata: unknown }>,
+  principalMaterial: readonly EnvironmentDeployPrincipalMaterial[],
+  sites: readonly TraditionalWebSiteSpec[],
+): Promise<
+  | EnvironmentDeployTraditionalWebSite[]
+  | { kind: 'traditional_web_principal_ambiguous'; composeServiceName: string }
+> {
+  if (sites.length === 0) return []
+
+  const principalById = new Map(
+    principalMaterial.map((entry) => [entry.principalId, entry]),
+  )
+  const principalIdsByServiceId = await loadPrincipalIdsByServiceIdForEnvironment(
+    db,
+    environmentId,
+  )
+  const serviceIdByComposeName = new Map<string, string>()
+  for (const row of serviceRows) {
+    serviceIdByComposeName.set(readComposeServiceName(row.metadata, row.id), row.id)
+  }
+
+  const out: EnvironmentDeployTraditionalWebSite[] = []
+  for (const site of sites) {
+    const serviceId = serviceIdByComposeName.get(site.composeServiceName)
+    const assignedIds = serviceId
+      ? (principalIdsByServiceId.get(serviceId) ?? [])
+      : []
+    const sole = pickSolePrincipalId(assignedIds)
+    if (sole.status === 'ambiguous') {
+      return {
+        kind: 'traditional_web_principal_ambiguous',
+        composeServiceName: site.composeServiceName,
+      }
+    }
+    const material = sole.status === 'one'
+      ? principalById.get(sole.principalId)
+      : undefined
+    const principalPin = material
+      ? toTraditionalWebPrincipal(material)
+      : undefined
+    out.push({
+      ...site,
+      ...(principalPin ? { principal: principalPin } : {}),
+    })
+  }
+  return out
+}
+
+function toTraditionalWebPrincipal(
+  material: EnvironmentDeployPrincipalMaterial,
+): EnvironmentDeployTraditionalWebPrincipal {
+  return {
+    principalId: material.principalId,
+    username: material.username,
+    uid: material.uid,
+    gid: material.gid,
   }
 }
 

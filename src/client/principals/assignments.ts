@@ -77,6 +77,57 @@ export async function loadPrincipalIdsAssignedToEnvironment(
     .sort((a, b) => a.localeCompare(b))
 }
 
+/**
+ * Principal ids assigned to each service in the environment
+ * (empty array when none). Keys are service ids.
+ */
+export async function loadPrincipalIdsByServiceIdForEnvironment(
+  db: Db,
+  environmentId: string,
+): Promise<Map<string, string[]>> {
+  const rows = await db
+    .select({
+      principalId: assignment.principalId,
+      serviceId: assignment.serviceId,
+    })
+    .from(assignment)
+    .innerJoin(service, eq(assignment.serviceId, service.id))
+    .where(eq(service.environmentId, environmentId))
+
+  const map = new Map<string, string[]>()
+  for (const row of rows) {
+    const list = map.get(row.serviceId) ?? []
+    list.push(row.principalId)
+    map.set(row.serviceId, list)
+  }
+  for (const [serviceId, list] of map) {
+    list.sort((a, b) => a.localeCompare(b))
+    map.set(serviceId, list)
+  }
+  return map
+}
+
+/** Result of picking at most one principal for a traditional-web ownership pin. */
+export type SolePrincipalPick =
+  | { status: 'none' }
+  | { status: 'one'; principalId: string }
+  | { status: 'ambiguous' }
+
+/**
+ * Pick the single principal for a traditional-web service ownership pin.
+ * Zero → `{ status: 'none' }`; one → that principal; more than one → ambiguous.
+ */
+export function pickSolePrincipalId(
+  principalIds: readonly string[],
+): SolePrincipalPick {
+  if (principalIds.length === 0) return { status: 'none' }
+  const [sole] = principalIds
+  if (principalIds.length === 1 && sole !== undefined) {
+    return { status: 'one', principalId: sole }
+  }
+  return { status: 'ambiguous' }
+}
+
 export function parseServiceIdsField(body: Record<string, unknown>): string[] | null {
   if (!('serviceIds' in body)) return []
   const raw = body.serviceIds

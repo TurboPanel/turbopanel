@@ -105,6 +105,14 @@ function responseForPrepareError(
         'Compose references external Docker network(s) that are not registered for this server. Add a Docker network under Servers → Networks with matching options.dockerNetworkName.',
     }, { status: 422 })
   }
+  if (prepared.kind === 'traditional_web_principal_ambiguous') {
+    return c.json({
+      error: 'traditional_web_principal_ambiguous',
+      composeServiceName: prepared.composeServiceName,
+      message:
+        `Traditional-web service "${prepared.composeServiceName}" has more than one project principal assigned. Keep a single principal for site ownership.`,
+    }, { status: 422 })
+  }
   return c.json({
     error: 'resource_limit_exceeded',
     violations: prepared.violations,
