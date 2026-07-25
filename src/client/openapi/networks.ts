@@ -38,6 +38,19 @@ export const networkSchemas = {
       network: { $ref: '#/components/schemas/NetworkRow' },
     },
   },
+  DockerNetworkOptions: {
+    type: 'object',
+    required: ['dockerNetworkName'],
+    properties: {
+      dockerNetworkName: {
+        type: 'string',
+        description:
+          'Host Docker network name matching compose networks.*.external name (or mapping key). Required when kind is docker.',
+        pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]*$',
+      },
+    },
+    additionalProperties: true,
+  },
   CreateNetworkRequest: {
     type: 'object',
     required: ['organizationId', 'kind'],
@@ -49,7 +62,14 @@ export const networkSchemas = {
       cidr: { type: 'string' },
       displayName: { type: 'string' },
       metadata: { type: 'object' },
-      options: { type: 'object' },
+      options: {
+        description:
+          'For kind=docker, must include dockerNetworkName (long-lived external Docker network).',
+        oneOf: [
+          { $ref: '#/components/schemas/DockerNetworkOptions' },
+          { type: 'object' },
+        ],
+      },
     },
   },
   PatchNetworkRequest: {
@@ -58,7 +78,15 @@ export const networkSchemas = {
       displayName: { type: 'string' },
       cidr: { type: ['string', 'null'] },
       metadata: { type: ['object', 'null'] },
-      options: { type: ['object', 'null'] },
+      options: {
+        description:
+          'When patching a kind=docker network, options must include a valid dockerNetworkName.',
+        oneOf: [
+          { $ref: '#/components/schemas/DockerNetworkOptions' },
+          { type: 'object' },
+          { type: 'null' },
+        ],
+      },
     },
   },
   CreateNetworkResponse: {
@@ -152,7 +180,8 @@ export const networkPaths: Record<string, unknown> = {
           },
         },
         '400': {
-          description: 'Invalid request',
+          description:
+            'Invalid request (including docker_network_name_required when kind=docker)',
           content: { 'application/json': { schema: errorBody } },
         },
         '401': {

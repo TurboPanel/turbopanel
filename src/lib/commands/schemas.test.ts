@@ -364,6 +364,66 @@ test('parseCommandPayload and parseCommandResult dispatch by type', () => {
   )
 })
 
+test('parseCommandPayload accepts traditionalWebSites and dockerExternalNetworks', () => {
+  assertEquals(
+    parseCommandPayload('environment.deploy' as CommandType, {
+      environmentId: 'env-1',
+      projectId: 'proj-1',
+      organizationId: 'org-1',
+      projectName: 'tp-demo',
+      composeYaml: 'services:\n  api:\n    image: node:22\n',
+      hostings: [],
+      dockerExternalNetworks: ['zeta-net', 'alpha-net', 'alpha-net'],
+      traditionalWebSites: [
+        {
+          composeServiceName: 'web',
+          engine: 'apache',
+          root: 'public',
+          listenPort: 18080,
+          webEnv: { APP_ENV: 'prod' },
+          php: { version: '8.4', memoryLimit: '256M', maxExecutionTime: 30 },
+        },
+      ],
+    }),
+    {
+      environmentId: 'env-1',
+      projectId: 'proj-1',
+      organizationId: 'org-1',
+      projectName: 'tp-demo',
+      composeYaml: 'services:\n  api:\n    image: node:22\n',
+      hostings: [],
+      dockerExternalNetworks: ['alpha-net', 'zeta-net'],
+      traditionalWebSites: [
+        {
+          composeServiceName: 'web',
+          engine: 'apache',
+          root: 'public',
+          listenPort: 18080,
+          webEnv: { APP_ENV: 'prod' },
+          php: { version: '8.4', memoryLimit: '256M', maxExecutionTime: 30 },
+        },
+      ],
+    },
+  )
+})
+
+test('parseCommandPayload rejects invalid dockerExternalNetworks names', () => {
+  assertThrows(
+    () =>
+      parseCommandPayload('environment.deploy' as CommandType, {
+        environmentId: 'env-1',
+        projectId: 'proj-1',
+        organizationId: 'org-1',
+        projectName: 'tp-demo',
+        composeYaml: 'services: {}\n',
+        hostings: [],
+        dockerExternalNetworks: ['-bad'],
+      }),
+    Error,
+    'Invalid dockerExternalNetworks entry',
+  )
+})
+
 const WG_PUBKEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
 
 test('parseWireguardApplyPayload accepts valid mesh material', () => {

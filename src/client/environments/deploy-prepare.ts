@@ -28,7 +28,10 @@ import {
   type ComposeDocument,
   type TraditionalWebSiteSpec,
 } from '../../lib/compose/index.ts'
-import { collectComposeExternalDockerNetworkNames } from '../../lib/compose/docker-external-networks.ts'
+import {
+  collectComposeExternalDockerNetworkNames,
+  pruneUnreferencedComposeNetworks,
+} from '../../lib/compose/docker-external-networks.ts'
 import { validateRegisteredExternalDockerNetworks } from './validate-docker-external-networks.ts'
 import type {
   EnvironmentDeployHosting,
@@ -641,12 +644,27 @@ function splitTraditionalWebFromDocument(document: ComposeDocument): {
     }
   }
 
+  const existingNetworks = isPlainObject(document.data.networks)
+    ? (document.data.networks as Record<string, unknown>)
+    : undefined
+  const prunedNetworks = pruneUnreferencedComposeNetworks(
+    containerServices,
+    existingNetworks,
+  )
+
+  const nextData: Record<string, unknown> = {
+    ...document.data,
+    services: containerServices,
+  }
+  if (prunedNetworks) {
+    nextData.networks = prunedNetworks
+  } else {
+    delete nextData.networks
+  }
+
   const containerDocument: ComposeDocument = {
     ...document,
-    data: {
-      ...document.data,
-      services: containerServices,
-    },
+    data: nextData,
   }
   return {
     composeYaml: composeDocumentToRuntimeYaml(containerDocument),

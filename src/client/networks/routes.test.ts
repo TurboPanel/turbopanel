@@ -14,6 +14,7 @@ import {
   datacenter,
   grant,
   member,
+  network,
   organization,
   server,
   user,
@@ -41,6 +42,85 @@ async function sessionCookie(
   const signed = await buildSignedCookie(token, secrets)
   return `${HTTP_SESSION_COOKIE_NAME}=${signed}`
 }
+
+test('POST /networks requires dockerNetworkName for kind=docker', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping network route tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+  const app = new Hono<AppEnv>()
+  app.use('*', (c, next) => {
+    c.set('db', db)
+    return next()
+  })
+  registerNetworkRoutes(app, { secrets, runtime: 'deno' })
+
+  const [orgA] = await db
+    .insert(organization)
+    .values({ displayName: 'Docker Net Org' })
+    .returning({ id: organization.id })
+  const organizationId = orgA!.id
+
+  const [u] = await db
+    .insert(user)
+    .values({ email: `docker-net-${crypto.randomUUID()}@example.com`, isEmailVerified: true })
+    .returning({ id: user.id })
+  const userId = u!.id
+
+  await db.insert(member).values({ organizationId, userId })
+  await db.insert(grant).values({
+    entityType: 'organization',
+    entityId: organizationId,
+    actorType: 'user',
+    actorId: userId,
+    permission: 'organization:manage',
+    allow: true,
+  })
+
+  const cookie = await sessionCookie(db, secrets, userId)
+  const missing = await app.request('/networks', {
+    method: 'POST',
+    headers: {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      organizationId,
+      kind: 'docker',
+      options: {},
+    }),
+  })
+  assertEquals(missing.status, 400)
+  assertEquals((await missing.json()).error, 'docker_network_name_required')
+
+  const created = await app.request('/networks', {
+    method: 'POST',
+    headers: {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      organizationId,
+      kind: 'docker',
+      options: { dockerNetworkName: '  turbopanel-shared  ' },
+    }),
+  })
+  assertEquals(created.status, 200)
+  const createdBody = await created.json() as { ok: true; id: string }
+  assertEquals(createdBody.ok, true)
+
+  await db.delete(network).where(eq(network.id, createdBody.id))
+  await db.delete(grant).where(eq(grant.actorId, userId))
+  await db.delete(member).where(eq(member.userId, userId))
+  await db.delete(user).where(eq(user.id, userId))
+  await db.delete(organization).where(eq(organization.id, organizationId))
+})
 
 test('POST /networks rejects datacenterId and serverId together', async () => {
   if (!dbUrl) {

@@ -19,6 +19,7 @@ import {
   parseJsonBody,
   parseJsonbObject,
 } from '../shared.ts'
+import { normalizeDockerNetworkOptions } from '../../lib/docker-network-name.ts'
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -181,9 +182,25 @@ function applyCidrPatch(
   return c.json({ error: 'Invalid request' }, 400)
 }
 
+/**
+ * `kind: docker` rows register long-lived host Docker networks for compose
+ * `networks.*.external`. Require a valid `options.dockerNetworkName`.
+ */
+function requireDockerNetworkOptions(
+  c: Context,
+  options: Record<string, unknown> | null,
+): Record<string, unknown> | Response {
+  const normalized = normalizeDockerNetworkOptions(options)
+  if (!normalized) {
+    return c.json({ error: 'docker_network_name_required' }, 400)
+  }
+  return normalized
+}
+
 function parseNetworkPatchFields(
   c: Context,
   body: Record<string, unknown>,
+  kind: string,
 ): NetworkPatchFields | Response {
   let patchFields: NetworkPatchFields
   try {
@@ -209,13 +226,20 @@ function parseNetworkPatchFields(
 
   const optionsResult = parseJsonbObject(c, body, 'options')
   if (optionsResult instanceof Response) return optionsResult
-  if (optionsResult !== null) patchFields.options = optionsResult
+  if (optionsResult !== null) {
+    if (kind === 'docker') {
+      const dockerOptions = requireDockerNetworkOptions(c, optionsResult)
+      if (dockerOptions instanceof Response) return dockerOptions
+      patchFields.options = dockerOptions
+    } else {
+      patchFields.options = optionsResult
+    }
+  }
 
   return patchFields
 }
 
-function buildNetworkCreateValues(input: {
-  organizationId: string
+type NetworkCreateFields = {
   kind: string
   datacenterId: string | null | undefined
   serverId: string | null | undefined
@@ -223,7 +247,75 @@ function buildNetworkCreateValues(input: {
   cidr: string | null
   metadata: Record<string, unknown> | null
   options: Record<string, unknown> | null
-}) {
+}
+
+function parseCreateNetworkOptions(
+  c: Context,
+  body: Record<string, unknown>,
+  kind: string,
+): Record<string, unknown> | null | Response {
+  const optionsResult = parseJsonbObject(c, body, 'options')
+  if (optionsResult instanceof Response) return optionsResult
+  if (kind !== 'docker') return optionsResult
+  return requireDockerNetworkOptions(c, optionsResult)
+}
+
+async function parseNetworkCreateFields(
+  c: Context,
+  db: Db,
+  organizationId: string,
+  body: Record<string, unknown>,
+): Promise<NetworkCreateFields | Response> {
+  const kind = parseNetworkKind(c, body)
+  if (kind instanceof Response) return kind
+
+  const datacenterId = await validateOptionalScopeId(
+    c,
+    db,
+    organizationId,
+    'datacenter',
+    body.datacenterId,
+  )
+  if (datacenterId instanceof Response) return datacenterId
+
+  const serverId = await validateOptionalScopeId(
+    c,
+    db,
+    organizationId,
+    'server',
+    body.serverId,
+  )
+  if (serverId instanceof Response) return serverId
+
+  const scopeDenied = assertSingleNetworkScope(c, datacenterId, serverId)
+  if (scopeDenied) return scopeDenied
+
+  const displayName = parseOptionalDisplayNameField(c, body)
+  if (displayName instanceof Response) return displayName
+
+  const cidr = parseOptionalCidrField(c, body)
+  if (cidr instanceof Response) return cidr
+
+  const metadataResult = parseJsonbObject(c, body, 'metadata')
+  if (metadataResult instanceof Response) return metadataResult
+
+  const optionsResult = parseCreateNetworkOptions(c, body, kind)
+  if (optionsResult instanceof Response) return optionsResult
+
+  return {
+    kind,
+    datacenterId,
+    serverId,
+    displayName,
+    cidr,
+    metadata: metadataResult,
+    options: optionsResult,
+  }
+}
+
+function buildNetworkCreateValues(input: {
+  organizationId: string
+} & NetworkCreateFields) {
   return {
     organizationId: input.organizationId,
     kind: input.kind,
@@ -365,53 +457,12 @@ export function registerNetworkRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const denied = await assertCanCreateOr403(c, 'organization', organizationId)
     if (denied) return denied
 
-    const kind = parseNetworkKind(c, body)
-    if (kind instanceof Response) return kind
-
-    const datacenterId = await validateOptionalScopeId(
-      c,
-      db,
-      organizationId,
-      'datacenter',
-      body.datacenterId,
-    )
-    if (datacenterId instanceof Response) return datacenterId
-
-    const serverId = await validateOptionalScopeId(
-      c,
-      db,
-      organizationId,
-      'server',
-      body.serverId,
-    )
-    if (serverId instanceof Response) return serverId
-
-    const scopeDenied = assertSingleNetworkScope(c, datacenterId, serverId)
-    if (scopeDenied) return scopeDenied
-
-    const displayName = parseOptionalDisplayNameField(c, body)
-    if (displayName instanceof Response) return displayName
-
-    const cidr = parseOptionalCidrField(c, body)
-    if (cidr instanceof Response) return cidr
-
-    const metadataResult = parseJsonbObject(c, body, 'metadata')
-    if (metadataResult instanceof Response) return metadataResult
-    const optionsResult = parseJsonbObject(c, body, 'options')
-    if (optionsResult instanceof Response) return optionsResult
+    const fields = await parseNetworkCreateFields(c, db, organizationId, body)
+    if (fields instanceof Response) return fields
 
     const [inserted] = await db
       .insert(network)
-      .values(buildNetworkCreateValues({
-        organizationId,
-        kind,
-        datacenterId,
-        serverId,
-        displayName,
-        cidr,
-        metadata: metadataResult,
-        options: optionsResult,
-      }))
+      .values(buildNetworkCreateValues({ organizationId, ...fields }))
       .returning({ id: network.id })
 
     const id = inserted?.id
@@ -447,7 +498,14 @@ export function registerNetworkRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: 'Invalid request' }, 400)
     }
 
-    const patchFields = parseNetworkPatchFields(c, body)
+    const [existing] = await db
+      .select({ kind: network.kind })
+      .from(network)
+      .where(eq(network.id, id))
+      .limit(1)
+    if (!existing) return c.json({ error: 'Not found' }, 404)
+
+    const patchFields = parseNetworkPatchFields(c, body, existing.kind)
     if (patchFields instanceof Response) return patchFields
 
     await db.update(network).set(patchFields).where(eq(network.id, id))
