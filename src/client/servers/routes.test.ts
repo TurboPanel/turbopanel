@@ -13,6 +13,7 @@ import {
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
 import {
+  datacenter,
   grant,
   license,
   member,
@@ -613,7 +614,9 @@ test('DELETE /servers/:id returns 409 when networks block deletion', async () =>
       .values({
         createdAt: now,
         updatedAt: now,
+        organizationId,
         serverId,
+        kind: 'server',
       })
       .returning({ id: network.id })
 
@@ -1741,4 +1744,172 @@ test('GET /servers/:id returns detail with effective timezone/addresses/timeSync
     assertEquals('daemon' in cached, false)
     assertEquals('connected' in cached, false)
   })
+})
+
+test('GET /servers/:id uses daemon timeSync when no configured timezone override', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    await db
+      .update(organization)
+      .set({
+        options: {
+          defaultServerTimezone: 'UTC',
+          enforceServerTimezone: false,
+        },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(organization.id, organizationId))
+
+    const existing = await db
+      .select({ metadata: server.metadata, options: server.options })
+      .from(server)
+      .where(eq(server.id, serverId))
+      .limit(1)
+    await db
+      .update(server)
+      .set({
+        options: {},
+        metadata: {
+          ...(existing[0]?.metadata ?? {}),
+          timeSync: {
+            timezone: 'Europe/Berlin',
+            ntpEnabled: true,
+          },
+        },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(server.id, serverId))
+
+    const registry = createTrackingRegistry({
+      getCellThrows: true,
+      getSnapshotsThrows: true,
+      listOnlineServerIdsThrows: true,
+    })
+    const readDb = createDetailRowsOnlyReadDb(db)
+    const recordingCache = createRecordingQueryCache(readDb)
+    const { app } = await createServerRoutesTestApp(db, registry, recordingCache)
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/servers/${serverId}`, {
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 200)
+    const body = await res.json() as {
+      server: { timezone: string | null; timezoneSource: string | null }
+    }
+    assertEquals(body.server.timezone, 'Europe/Berlin')
+    assertEquals(body.server.timezoneSource, null)
+  })
+})
+
+test('PATCH /servers/:id pins datacenterId and rejects cross-org datacenter', async () => {
+  if (!dbUrl) return
+
+  const db = createDenoDb()
+  const { app, secrets } = await createServerRoutesTestApp(db)
+
+  const [orgA] = await db
+    .insert(organization)
+    .values({ displayName: 'Patch Server Org A' })
+    .returning({ id: organization.id })
+  const [orgB] = await db
+    .insert(organization)
+    .values({ displayName: 'Patch Server Org B' })
+    .returning({ id: organization.id })
+
+  const [u] = await db
+    .insert(user)
+    .values({ email: `patch-srv-${crypto.randomUUID()}@example.com`, isEmailVerified: true })
+    .returning({ id: user.id })
+  const userId = u!.id
+
+  await db.insert(member).values({ organizationId: orgA!.id, userId })
+  await db.insert(grant).values({
+    entityType: 'organization',
+    entityId: orgA!.id,
+    actorType: 'user',
+    actorId: userId,
+    permission: 'organization:manage',
+    allow: true,
+  })
+
+  const now = new Date().toISOString()
+  const [srv] = await db
+    .insert(server)
+    .values({
+      organizationId: orgA!.id,
+      displayName: 'Host',
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: server.id })
+
+  const [dcA] = await db
+    .insert(datacenter)
+    .values({
+      organizationId: orgA!.id,
+      displayName: 'DC-A',
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: datacenter.id })
+
+  const [dcB] = await db
+    .insert(datacenter)
+    .values({
+      organizationId: orgB!.id,
+      displayName: 'DC-B',
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: datacenter.id })
+
+  const cookie = await sessionCookie(db, secrets, userId)
+
+  const okRes = await app.request(`/servers/${srv!.id}`, {
+    method: 'PATCH',
+    headers: {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: orgA!.id,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ datacenterId: dcA!.id }),
+  })
+  assertEquals(okRes.status, 200)
+
+  const [updated] = await db
+    .select({ datacenterId: server.datacenterId })
+    .from(server)
+    .where(eq(server.id, srv!.id))
+    .limit(1)
+  assertEquals(updated?.datacenterId, dcA!.id)
+
+  const badRes = await app.request(`/servers/${srv!.id}`, {
+    method: 'PATCH',
+    headers: {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: orgA!.id,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ datacenterId: dcB!.id }),
+  })
+  assertEquals(badRes.status, 404)
+
+  await db.delete(server).where(eq(server.id, srv!.id))
+  await db.delete(datacenter).where(eq(datacenter.id, dcA!.id))
+  await db.delete(datacenter).where(eq(datacenter.id, dcB!.id))
+  await db.delete(grant).where(eq(grant.actorId, userId))
+  await db.delete(member).where(eq(member.userId, userId))
+  await db.delete(user).where(eq(user.id, userId))
+  await db.delete(organization).where(eq(organization.id, orgA!.id))
+  await db.delete(organization).where(eq(organization.id, orgB!.id))
 })

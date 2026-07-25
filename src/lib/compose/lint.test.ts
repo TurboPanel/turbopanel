@@ -54,6 +54,16 @@ test('lintComposeYaml errors when service has neither image nor build', () => {
   assertEquals(missing?.message.includes('image'), true)
 })
 
+test('lintComposeYaml skips image requirement for traditional-web services', () => {
+  const source = `services:
+  site:
+    x-turbopanel:
+      serviceKind: traditional-web
+      engine: apache
+`
+  assertEquals(lintComposeYaml(source), [])
+})
+
 test('lintComposeYaml orders issues by line number', () => {
   const source = `services:
   # ok

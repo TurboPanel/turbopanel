@@ -4,6 +4,7 @@ export const COMMAND_TYPES = [
   'server.ntp.set',
   'server.reboot',
   'server.timezone.set',
+  'server.wireguard.apply',
   'environment.deploy',
   'environment.stop',
 ] as const

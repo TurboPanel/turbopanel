@@ -6,7 +6,7 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db.ts'
-import { hosting } from '../../lib/db/schema.ts'
+import { hosting, ip } from '../../lib/db/schema.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -21,7 +21,7 @@ import {
   hierarchyDeleteHasChildrenResponse,
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
-import { parseHostingOptions } from '../../lib/hosting-options.ts'
+import { parseHostingOptions, resolveHostingBind } from '../../lib/hosting-options.ts'
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -47,6 +47,157 @@ async function parseOptionalTlsId(
     return { kind: 'value', value: tlsIdRaw }
   }
   return { kind: 'error', response: c.json({ error: 'Invalid request' }, 400) }
+}
+
+type OptionalIpIdResult =
+  | { kind: 'absent' }
+  | { kind: 'value'; value: string | null }
+  | { kind: 'error'; response: Response }
+
+async function parseOptionalIpId(
+  c: Context,
+  db: Db,
+  organizationId: string,
+  ipIdRaw: unknown,
+): Promise<OptionalIpIdResult> {
+  if (ipIdRaw === undefined) return { kind: 'absent' }
+  if (ipIdRaw === null) return { kind: 'value', value: null }
+  if (typeof ipIdRaw === 'string' && UUID_RE.test(ipIdRaw)) {
+    const ipOrgId = await resolveEntityOrganizationId(db, 'ip', ipIdRaw)
+    if (ipOrgId !== organizationId) {
+      return { kind: 'error', response: c.json({ error: 'Not found' }, 404) }
+    }
+    return { kind: 'value', value: ipIdRaw }
+  }
+  return { kind: 'error', response: c.json({ error: 'Invalid request' }, 400) }
+}
+
+async function assertHostingPublicBindScope(
+  c: Context,
+  db: Db,
+  ipId: string,
+  options: ReturnType<typeof parseHostingOptions> | null,
+): Promise<Response | null> {
+  const bind = resolveHostingBind(options ?? undefined)
+  if (bind !== 'public') return null
+  const [ipRow] = await db
+    .select({ scope: ip.scope })
+    .from(ip)
+    .where(eq(ip.id, ipId))
+    .limit(1)
+  if (ipRow?.scope !== 'public') {
+    return c.json({ error: 'hosting_bind_scope_mismatch' }, 400)
+  }
+  return null
+}
+
+type OptionalHostingOptionsResult =
+  | { kind: 'absent' }
+  | { kind: 'value'; value: NonNullable<ReturnType<typeof parseHostingOptions>> }
+  | { kind: 'error'; response: Response }
+
+function parseOptionalHostingOptions(
+  c: Context,
+  body: Record<string, unknown>,
+): OptionalHostingOptionsResult {
+  const optionsResult = parseJsonbObject(c, body, 'options')
+  if (optionsResult instanceof Response) return { kind: 'error', response: optionsResult }
+  if (optionsResult === null) return { kind: 'absent' }
+  const parsed = parseHostingOptions(optionsResult)
+  if (parsed === null) {
+    return { kind: 'error', response: c.json({ error: 'invalid_hosting_options' }, 400) }
+  }
+  return { kind: 'value', value: parsed }
+}
+
+type HostingFkResult =
+  | { kind: 'error'; response: Response }
+  | {
+    kind: 'ok'
+    tlsId: Extract<OptionalTlsIdResult, { kind: 'absent' | 'value' }>
+    ipId: Extract<OptionalIpIdResult, { kind: 'absent' | 'value' }>
+  }
+
+async function resolveOptionalHostingFks(
+  c: Context,
+  db: Db,
+  organizationId: string,
+  body: Record<string, unknown>,
+): Promise<HostingFkResult> {
+  const tlsIdResult = await parseOptionalTlsId(c, db, organizationId, body.tlsId)
+  if (tlsIdResult.kind === 'error') {
+    return { kind: 'error', response: tlsIdResult.response }
+  }
+  const ipIdResult = await parseOptionalIpId(c, db, organizationId, body.ipId)
+  if (ipIdResult.kind === 'error') {
+    return { kind: 'error', response: ipIdResult.response }
+  }
+  return { kind: 'ok', tlsId: tlsIdResult, ipId: ipIdResult }
+}
+
+type HostingPatchFields = {
+  displayName?: string | null
+  description?: string | null
+  metadata?: Record<string, unknown> | null
+  options?: Record<string, unknown> | null
+  tlsId?: string | null
+  ipId?: string | null
+  updatedAt: string
+}
+
+async function buildHostingPatchFields(
+  c: Context,
+  db: Db,
+  organizationId: string,
+  body: Record<string, unknown>,
+): Promise<HostingPatchFields | Response> {
+  let patchFields: HostingPatchFields
+  try {
+    patchFields = buildPatchUpdateFields(body)
+  } catch {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
+  const metadataResult = parseJsonbObject(c, body, 'metadata')
+  if (metadataResult instanceof Response) return metadataResult
+  if (metadataResult !== null) patchFields.metadata = metadataResult
+
+  const optionsResult = parseOptionalHostingOptions(c, body)
+  if (optionsResult.kind === 'error') return optionsResult.response
+  if (optionsResult.kind === 'value') patchFields.options = optionsResult.value
+
+  const fks = await resolveOptionalHostingFks(c, db, organizationId, body)
+  if (fks.kind === 'error') return fks.response
+  if (fks.tlsId.kind === 'value') patchFields.tlsId = fks.tlsId.value
+  if (fks.ipId.kind === 'value') patchFields.ipId = fks.ipId.value
+
+  return patchFields
+}
+
+async function assertCreateHostingBindScope(
+  c: Context,
+  db: Db,
+  ipIdResult: Extract<OptionalIpIdResult, { kind: 'absent' | 'value' }>,
+  options: ReturnType<typeof parseHostingOptions> | null,
+): Promise<Response | null> {
+  if (ipIdResult.kind !== 'value' || !ipIdResult.value) return null
+  return assertHostingPublicBindScope(c, db, ipIdResult.value, options)
+}
+
+async function assertMergedHostingBindScope(
+  c: Context,
+  db: Db,
+  existing: Readonly<{ ipId: string | null; options: unknown }>,
+  patchFields: Readonly<{ ipId?: string | null; options?: Record<string, unknown> | null }>,
+): Promise<Response | null> {
+  const mergedOptions = patchFields.options === undefined
+    ? parseHostingOptions(existing.options)
+    : parseHostingOptions(patchFields.options)
+  const effectiveIpId = patchFields.ipId === undefined
+    ? existing.ipId
+    : patchFields.ipId
+  if (!effectiveIpId) return null
+  return assertHostingPublicBindScope(c, db, effectiveIpId, mergedOptions)
 }
 
 export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -93,6 +244,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         description: hosting.description,
         serviceId: hosting.serviceId,
         tlsId: hosting.tlsId,
+        ipId: hosting.ipId,
         metadata: hosting.metadata,
         options: hosting.options,
         createdAt: hosting.createdAt,
@@ -129,6 +281,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         description: hosting.description,
         serviceId: hosting.serviceId,
         tlsId: hosting.tlsId,
+        ipId: hosting.ipId,
         metadata: hosting.metadata,
         options: hosting.options,
         createdAt: hosting.createdAt,
@@ -188,18 +341,21 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const metadataResult = parseJsonbObject(c, body, 'metadata')
     if (metadataResult instanceof Response) return metadataResult
-    const optionsResult = parseJsonbObject(c, body, 'options')
-    if (optionsResult instanceof Response) return optionsResult
 
-    let validatedOptions: Record<string, unknown> | null = null
-    if (optionsResult !== null) {
-      const parsed = parseHostingOptions(optionsResult)
-      if (parsed === null) return c.json({ error: 'invalid_hosting_options' }, 400)
-      validatedOptions = parsed
-    }
+    const optionsResult = parseOptionalHostingOptions(c, body)
+    if (optionsResult.kind === 'error') return optionsResult.response
+    const validatedOptions = optionsResult.kind === 'value' ? optionsResult.value : null
 
-    const tlsIdResult = await parseOptionalTlsId(c, db, organizationId, body.tlsId)
-    if (tlsIdResult.kind === 'error') return tlsIdResult.response
+    const fks = await resolveOptionalHostingFks(c, db, organizationId, body)
+    if (fks.kind === 'error') return fks.response
+
+    const scopeDenied = await assertCreateHostingBindScope(
+      c,
+      db,
+      fks.ipId,
+      validatedOptions,
+    )
+    if (scopeDenied) return scopeDenied
 
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
@@ -208,7 +364,8 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
           displayName,
           description,
           serviceId,
-          ...(tlsIdResult.kind === 'value' ? { tlsId: tlsIdResult.value } : {}),
+          ...(fks.tlsId.kind === 'value' ? { tlsId: fks.tlsId.value } : {}),
+          ...(fks.ipId.kind === 'value' ? { ipId: fks.ipId.value } : {}),
           ...(metadataResult !== null ? { metadata: metadataResult } : {}),
           ...(validatedOptions !== null ? { options: validatedOptions } : {}),
         })
@@ -242,35 +399,23 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    let patchFields: {
-      displayName?: string | null
-      description?: string | null
-      metadata?: Record<string, unknown> | null
-      options?: Record<string, unknown> | null
-      tlsId?: string | null
-      updatedAt: string
-    }
-    try {
-      patchFields = buildPatchUpdateFields(body)
-    } catch {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
+    const [existingHosting] = await db
+      .select({ ipId: hosting.ipId, options: hosting.options })
+      .from(hosting)
+      .where(eq(hosting.id, id))
+      .limit(1)
+    if (!existingHosting) return c.json({ error: 'Not found' }, 404)
 
-    const metadataResult = parseJsonbObject(c, body, 'metadata')
-    if (metadataResult instanceof Response) return metadataResult
-    if (metadataResult !== null) patchFields.metadata = metadataResult
+    const patchFields = await buildHostingPatchFields(c, db, organizationId, body)
+    if (patchFields instanceof Response) return patchFields
 
-    const optionsResult = parseJsonbObject(c, body, 'options')
-    if (optionsResult instanceof Response) return optionsResult
-    if (optionsResult !== null) {
-      const parsed = parseHostingOptions(optionsResult)
-      if (parsed === null) return c.json({ error: 'invalid_hosting_options' }, 400)
-      patchFields.options = parsed
-    }
-
-    const tlsIdResult = await parseOptionalTlsId(c, db, organizationId, body.tlsId)
-    if (tlsIdResult.kind === 'error') return tlsIdResult.response
-    if (tlsIdResult.kind === 'value') patchFields.tlsId = tlsIdResult.value
+    const scopeDenied = await assertMergedHostingBindScope(
+      c,
+      db,
+      existingHosting,
+      patchFields,
+    )
+    if (scopeDenied) return scopeDenied
 
     await db
       .update(hosting)

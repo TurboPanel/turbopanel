@@ -1,5 +1,13 @@
 import { isValidHostname, HOSTNAME_MAX_LENGTH } from './hostname.ts'
+import { isValidIpAddress } from '../ip-address.ts'
 import { isValidTimezone } from '../timezones.ts'
+import {
+  assertValidWireguardInterfaceName,
+  isValidWireguardAllowedIp,
+  isValidWireguardEndpoint,
+  isValidWireguardListenPort,
+  isValidWireguardPublicKey,
+} from './wireguard.ts'
 import type { CommandType } from './types.ts'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -345,6 +353,156 @@ export function parseRebootResult(value: unknown): RebootCommandResult {
   return result
 }
 
+/** Must stay in sync with the daemon `server.wireguard.apply` shape. */
+export type WireguardApplyPeerMaterial = {
+  peerId: string
+  publicKey: string
+  allowedIps: string[]
+  endpoint?: string
+  persistentKeepalive?: number
+  presharedKeyEnvelope?: string
+}
+
+/** Must stay in sync with the daemon `server.wireguard.apply` shape. */
+export type WireguardApplyCommandPayload = {
+  vpnId: string
+  peerId: string
+  interfaceName: string
+  address: string
+  listenPort?: number
+  peers: WireguardApplyPeerMaterial[]
+}
+
+/** Must stay in sync with the daemon `server.wireguard.apply` shape. */
+export type WireguardApplyCommandResult = {
+  interfaceName: string
+  publicKey: string
+  listenPort?: number
+  applied: boolean
+  summary?: string
+}
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function parseWireguardUuid(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !UUID_RE.test(value)) {
+    throw new Error(`Invalid wireguard ${field}`)
+  }
+  return value
+}
+
+function parseWireguardPeerEntry(value: unknown): WireguardApplyPeerMaterial {
+  if (!isRecord(value)) {
+    throw new Error('Invalid wireguard peer entry')
+  }
+  const peerId = parseWireguardUuid(value.peerId, 'peerId')
+  const publicKey = value.publicKey
+  if (!isString(publicKey) || !isValidWireguardPublicKey(publicKey)) {
+    throw new Error('Invalid wireguard peer publicKey')
+  }
+  if (!Array.isArray(value.allowedIps) || value.allowedIps.length === 0) {
+    throw new Error('Invalid wireguard peer allowedIps')
+  }
+  const allowedIps: string[] = []
+  for (const entry of value.allowedIps) {
+    if (!isValidWireguardAllowedIp(entry)) {
+      throw new Error('Invalid wireguard peer allowedIps')
+    }
+    allowedIps.push((entry as string).trim())
+  }
+  const material: WireguardApplyPeerMaterial = { peerId, publicKey, allowedIps }
+  if (value.endpoint !== undefined) {
+    if (!isString(value.endpoint) || !isValidWireguardEndpoint(value.endpoint)) {
+      throw new Error('Invalid wireguard peer endpoint')
+    }
+    material.endpoint = value.endpoint
+  }
+  if (value.persistentKeepalive !== undefined) {
+    if (
+      typeof value.persistentKeepalive !== 'number' ||
+      !Number.isInteger(value.persistentKeepalive) ||
+      value.persistentKeepalive < 0 ||
+      value.persistentKeepalive > 65535
+    ) {
+      throw new Error('Invalid wireguard peer persistentKeepalive')
+    }
+    material.persistentKeepalive = value.persistentKeepalive
+  }
+  if (value.presharedKeyEnvelope !== undefined) {
+    if (
+      !isString(value.presharedKeyEnvelope) ||
+      value.presharedKeyEnvelope.length === 0
+    ) {
+      throw new Error('Invalid wireguard peer presharedKeyEnvelope')
+    }
+    material.presharedKeyEnvelope = value.presharedKeyEnvelope
+  }
+  return material
+}
+
+export function parseWireguardApplyPayload(value: unknown): WireguardApplyCommandPayload {
+  if (!isRecord(value)) {
+    throw new Error('Invalid wireguard apply payload')
+  }
+  const vpnId = parseWireguardUuid(value.vpnId, 'vpnId')
+  const peerId = parseWireguardUuid(value.peerId, 'peerId')
+  const interfaceName = value.interfaceName
+  assertValidWireguardInterfaceName(interfaceName)
+  const address = value.address
+  if (!isString(address) || address.length === 0 || !isValidWireguardAllowedIp(address)) {
+    throw new Error('Invalid wireguard apply address')
+  }
+  if (!Array.isArray(value.peers)) {
+    throw new TypeError('Invalid wireguard apply peers')
+  }
+  const peers = value.peers.map(parseWireguardPeerEntry)
+  const payload: WireguardApplyCommandPayload = {
+    vpnId,
+    peerId,
+    interfaceName,
+    address: address.trim(),
+    peers,
+  }
+  if (value.listenPort !== undefined) {
+    if (!isValidWireguardListenPort(value.listenPort)) {
+      throw new Error('Invalid wireguard apply listenPort')
+    }
+    payload.listenPort = value.listenPort
+  }
+  return payload
+}
+
+export function parseWireguardApplyResult(value: unknown): WireguardApplyCommandResult {
+  if (!isRecord(value)) {
+    throw new Error('Invalid wireguard apply result')
+  }
+  const interfaceName = value.interfaceName
+  assertValidWireguardInterfaceName(interfaceName)
+  const publicKey = value.publicKey
+  if (!isString(publicKey) || !isValidWireguardPublicKey(publicKey)) {
+    throw new Error('Invalid wireguard apply result publicKey')
+  }
+  if (typeof value.applied !== 'boolean') {
+    throw new TypeError('Invalid wireguard apply result applied')
+  }
+  const result: WireguardApplyCommandResult = {
+    interfaceName,
+    publicKey,
+    applied: value.applied,
+  }
+  if (value.listenPort !== undefined) {
+    if (!isValidWireguardListenPort(value.listenPort)) {
+      throw new Error('Invalid wireguard apply result listenPort')
+    }
+    result.listenPort = value.listenPort
+  }
+  if (isString(value.summary)) {
+    result.summary = value.summary
+  }
+  return result
+}
+
 export type EnvironmentDeployTlsMaterial = {
   tlsId: string
   /** Public leaf + intermediate chain PEM. */
@@ -397,21 +555,59 @@ export type EnvironmentDeployServiceHook = {
   buildDisableCache?: boolean
 }
 
+export type EnvironmentDeployHostingPhp = {
+  version?: string
+  memoryLimit?: string
+  maxExecutionTime?: number
+}
+
+export type EnvironmentDeployTraditionalWebSite = {
+  composeServiceName: string
+  engine: 'apache' | 'nginx' | 'openlitespeed'
+  /** Relative document-root segment under the site directory. */
+  root: string
+  /** Loopback port hosting Caddy reverse-proxies to. */
+  listenPort: number
+  /** Merged hosting web env (variables + options.web.env). */
+  webEnv?: Record<string, string>
+  php?: EnvironmentDeployHostingPhp
+}
+
 export type EnvironmentDeployCommandPayload = {
   environmentId: string
   projectId: string
   organizationId: string
   projectName: string
-  /** Runtime docker-compose YAML (presentation stripped). */
+  /** Runtime docker-compose YAML (presentation stripped). May be `services: {}` when all sites are traditional-web. */
   composeYaml: string
   /** Public hosting routes to wire through Traefik + edge Caddy. */
   hostings: EnvironmentDeployHosting[]
+  /**
+   * Host-native web sites (nginx MVP). Compose services with
+   * `x-turbopanel.serviceKind: traditional-web` are stripped from `composeYaml`
+   * and listed here instead.
+   */
+  traditionalWebSites?: EnvironmentDeployTraditionalWebSite[]
+  /** External Docker networks referenced in compose — ensured on the host before compose up. */
+  dockerExternalNetworks?: string[]
   /** Unique TLS material referenced by `hostings[].tlsId` (deduped). */
   tlsMaterial?: EnvironmentDeployTlsMaterial[]
   variableMaterial?: EnvironmentDeployVariableMaterial[]
   storageMaterial?: EnvironmentDeployStorageMaterial[]
   principalMaterial?: EnvironmentDeployPrincipalMaterial[]
   serviceHooks?: EnvironmentDeployServiceHook[]
+}
+
+export type EnvironmentDeployHostingPort = {
+  /** Host/entrypoint port exposed by Traefik. */
+  published: number
+  /** Container port the compose service listens on. */
+  target: number
+}
+
+export type EnvironmentDeployHostingWeb = {
+  env?: Record<string, string>
+  php?: EnvironmentDeployHostingPhp
 }
 
 export type EnvironmentDeployHosting = {
@@ -425,6 +621,21 @@ export type EnvironmentDeployHosting = {
   /** Resolved org TLS id when pinned; null/omit = Caddy `tls internal` (self-signed). */
   tlsId?: string | null
   proxy?: EnvironmentDeployHostingProxy
+  /**
+   * Resolved Caddy `bind` address for this hosting (public pinned IP, datacenter
+   * private IP, or loopback). Omitted when bind is public with no pin.
+   */
+  bindAddress?: string
+  /**
+   * `http` (default/omitted) routes `hostnames` through Traefik + edge Caddy.
+   * `tcp` / `udp` publish `ports[]` straight through Traefik — no hostname/TLS
+   * routing.
+   */
+  protocol?: 'http' | 'tcp' | 'udp'
+  /** Required (non-empty) when `protocol` is `tcp` or `udp`; ignored for `http`. */
+  ports?: EnvironmentDeployHostingPort[]
+  /** Merged hosting web env + PHP hints for traditional-web materialization. */
+  web?: EnvironmentDeployHostingWeb
 }
 
 export type EnvironmentDeployContainer = {
@@ -477,6 +688,70 @@ function parseDeployHostingProxy(
   return Object.keys(proxy).length > 0 ? proxy : undefined
 }
 
+const DEPLOY_HOSTING_PROTOCOLS = new Set(['http', 'tcp', 'udp'])
+
+function parseDeployHostingProtocol(
+  value: unknown,
+): EnvironmentDeployHosting['protocol'] | undefined {
+  if (value === undefined) return undefined
+  if (!isString(value) || !DEPLOY_HOSTING_PROTOCOLS.has(value)) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  return value as EnvironmentDeployHosting['protocol']
+}
+
+function isValidDeployPort(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 65535
+}
+
+function parseDeployHostingPortEntry(entry: unknown): EnvironmentDeployHostingPort {
+  if (!isRecord(entry) || !isValidDeployPort(entry.published) || !isValidDeployPort(entry.target)) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  return { published: entry.published, target: entry.target }
+}
+
+function parseDeployHostingPorts(
+  value: unknown,
+): EnvironmentDeployHostingPort[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  return value.map(parseDeployHostingPortEntry)
+}
+
+function parseDeployHostingPhp(value: unknown): EnvironmentDeployHostingPhp | undefined {
+  if (!isRecord(value)) return undefined
+  const php: EnvironmentDeployHostingPhp = {}
+  if (isString(value.version)) php.version = value.version
+  if (isString(value.memoryLimit)) php.memoryLimit = value.memoryLimit
+  if (typeof value.maxExecutionTime === 'number' && Number.isInteger(value.maxExecutionTime)) {
+    php.maxExecutionTime = value.maxExecutionTime
+  }
+  return Object.keys(php).length > 0 ? php : undefined
+}
+
+function parseDeployHostingWebEnv(value: unknown): Record<string, string> | undefined {
+  if (!isRecord(value)) return undefined
+  const env: Record<string, string> = {}
+  for (const [key, raw] of Object.entries(value)) {
+    if (!isString(raw)) continue
+    env[key] = raw
+  }
+  return Object.keys(env).length > 0 ? env : undefined
+}
+
+function parseDeployHostingWeb(value: unknown): EnvironmentDeployHostingWeb | undefined {
+  if (!isRecord(value)) return undefined
+  const web: EnvironmentDeployHostingWeb = {}
+  const env = parseDeployHostingWebEnv(value.env)
+  if (env) web.env = env
+  const php = parseDeployHostingPhp(value.php)
+  if (php) web.php = php
+  return Object.keys(web).length > 0 ? web : undefined
+}
+
 function applyOptionalDeployHostingFields(
   hosting: EnvironmentDeployHosting,
   entry: Record<string, unknown>,
@@ -492,6 +767,21 @@ function applyOptionalDeployHostingFields(
   }
   const proxy = parseDeployHostingProxy(entry.proxy)
   if (proxy) hosting.proxy = proxy
+  if (entry.bindAddress !== undefined) {
+    if (!isString(entry.bindAddress) || entry.bindAddress.length === 0) {
+      throw new Error('Invalid environment.deploy payload')
+    }
+    if (!isValidIpAddress(entry.bindAddress)) {
+      throw new Error('Invalid environment.deploy payload')
+    }
+    hosting.bindAddress = entry.bindAddress
+  }
+  const protocol = parseDeployHostingProtocol(entry.protocol)
+  if (protocol) hosting.protocol = protocol
+  const ports = parseDeployHostingPorts(entry.ports)
+  if (ports) hosting.ports = ports
+  const web = parseDeployHostingWeb(entry.web)
+  if (web) hosting.web = web
 }
 
 function parseDeployHostingEntry(entry: unknown): EnvironmentDeployHosting {
@@ -647,6 +937,72 @@ function parseDeployServiceHooks(value: unknown): EnvironmentDeployServiceHook[]
   return value.map(parseDeployServiceHookEntry)
 }
 
+const TRADITIONAL_WEB_ENGINES = new Set(['apache', 'nginx', 'openlitespeed'])
+
+function parseDeployTraditionalWebSiteEntry(
+  entry: unknown,
+): EnvironmentDeployTraditionalWebSite {
+  if (!isRecord(entry)) {
+    throw new Error('Invalid traditionalWebSites entry')
+  }
+  if (
+    !isString(entry.composeServiceName) ||
+    entry.composeServiceName.length === 0 ||
+    !isString(entry.engine) ||
+    !TRADITIONAL_WEB_ENGINES.has(entry.engine) ||
+    !isString(entry.root) ||
+    entry.root.length === 0 ||
+    typeof entry.listenPort !== 'number' ||
+    !Number.isInteger(entry.listenPort) ||
+    entry.listenPort < 1024 ||
+    entry.listenPort > 65_535
+  ) {
+    throw new Error('Invalid traditionalWebSites entry')
+  }
+  const site: EnvironmentDeployTraditionalWebSite = {
+    composeServiceName: entry.composeServiceName,
+    engine: entry.engine as EnvironmentDeployTraditionalWebSite['engine'],
+    root: entry.root,
+    listenPort: entry.listenPort,
+  }
+  const webEnv = parseDeployHostingWebEnv(entry.webEnv)
+  if (webEnv) site.webEnv = webEnv
+  const php = parseDeployHostingPhp(entry.php)
+  if (php) site.php = php
+  return site
+}
+
+function parseDeployTraditionalWebSites(
+  value: unknown,
+): EnvironmentDeployTraditionalWebSite[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) {
+    throw new TypeError('traditionalWebSites must be an array')
+  }
+  return value.map(parseDeployTraditionalWebSiteEntry)
+}
+
+const DOCKER_EXTERNAL_NETWORK_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/
+
+function parseDeployDockerExternalNetworks(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) {
+    throw new TypeError('dockerExternalNetworks must be an array')
+  }
+  const names: string[] = []
+  for (const entry of value) {
+    if (typeof entry !== 'string') {
+      throw new TypeError('dockerExternalNetworks must be an array of strings')
+    }
+    const trimmed = entry.trim()
+    if (!DOCKER_EXTERNAL_NETWORK_NAME_RE.test(trimmed)) {
+      throw new Error('Invalid dockerExternalNetworks entry')
+    }
+    names.push(trimmed)
+  }
+  return [...new Set(names)].sort((a, b) => a.localeCompare(b))
+}
+
 function parseDeployContainerEntry(entry: unknown): EnvironmentDeployContainer | undefined {
   if (!isRecord(entry)) return undefined
   if (
@@ -692,9 +1048,13 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
   const storageMaterial = parseDeployStorageMaterial(value.storageMaterial)
   const principalMaterial = parseDeployPrincipalMaterial(value.principalMaterial)
   const serviceHooks = parseDeployServiceHooks(value.serviceHooks)
+  const traditionalWebSites = parseDeployTraditionalWebSites(value.traditionalWebSites)
+  const dockerExternalNetworks = parseDeployDockerExternalNetworks(value.dockerExternalNetworks)
   return {
     ...strings,
     hostings,
+    ...(traditionalWebSites !== undefined ? { traditionalWebSites } : {}),
+    ...(dockerExternalNetworks !== undefined ? { dockerExternalNetworks } : {}),
     ...(tlsMaterial !== undefined ? { tlsMaterial } : {}),
     ...(variableMaterial !== undefined ? { variableMaterial } : {}),
     ...(storageMaterial !== undefined ? { storageMaterial } : {}),
@@ -774,6 +1134,7 @@ export function parseCommandPayload(
   | TimezoneSetCommandPayload
   | NtpSetCommandPayload
   | RebootCommandPayload
+  | WireguardApplyCommandPayload
   | EnvironmentDeployCommandPayload
   | EnvironmentStopCommandPayload {
   switch (type) {
@@ -787,6 +1148,8 @@ export function parseCommandPayload(
       return parseNtpSetPayload(value)
     case 'server.reboot':
       return parseRebootPayload(value)
+    case 'server.wireguard.apply':
+      return parseWireguardApplyPayload(value)
     case 'environment.deploy':
       return parseEnvironmentDeployPayload(value)
     case 'environment.stop':
@@ -803,6 +1166,7 @@ export function parseCommandResult(
   | TimezoneSetCommandResult
   | NtpSetCommandResult
   | RebootCommandResult
+  | WireguardApplyCommandResult
   | EnvironmentDeployCommandResult
   | EnvironmentStopCommandResult {
   switch (type) {
@@ -816,6 +1180,8 @@ export function parseCommandResult(
       return parseNtpSetResult(value)
     case 'server.reboot':
       return parseRebootResult(value)
+    case 'server.wireguard.apply':
+      return parseWireguardApplyResult(value)
     case 'environment.deploy':
       return parseEnvironmentDeployResult(value)
     case 'environment.stop':

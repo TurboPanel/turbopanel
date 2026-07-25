@@ -1,7 +1,7 @@
 export const principalSchemas = {
   ProjectPrincipalRow: {
     type: 'object',
-    required: ['id', 'kind', 'provider', 'username', 'createdAt', 'updatedAt'],
+    required: ['id', 'kind', 'provider', 'username', 'serviceIds', 'createdAt', 'updatedAt'],
     properties: {
       id: { type: 'string' },
       kind: { type: 'string' },
@@ -10,6 +10,11 @@ export const principalSchemas = {
       projectId: { type: ['string', 'null'] },
       metadata: { type: 'object', nullable: true },
       options: { type: 'object', nullable: true },
+      serviceIds: {
+        type: 'array',
+        items: { type: 'string', format: 'uuid' },
+        description: 'Services this principal is bound to (Linux user / storage owner)',
+      },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
     },
@@ -47,6 +52,16 @@ export const principalSchemas = {
       resourceLimits: { $ref: '#/components/schemas/ResourceLimits' },
     },
   },
+  UpdateProjectPrincipalAssignmentsRequest: {
+    type: 'object',
+    required: ['serviceIds'],
+    properties: {
+      serviceIds: {
+        type: 'array',
+        items: { type: 'string', format: 'uuid' },
+      },
+    },
+  },
 }
 
 export const principalPaths = {
@@ -71,6 +86,63 @@ export const principalPaths = {
             },
           },
         },
+      },
+    },
+    post: {
+      tags: ['Principals'],
+      summary: 'Create a project principal',
+      parameters: [
+        {
+          name: 'projectId',
+          in: 'path',
+          required: true,
+          schema: { type: 'string' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['username'],
+              properties: {
+                username: { type: 'string' },
+                serviceIds: {
+                  type: 'array',
+                  items: { type: 'string', format: 'uuid' },
+                },
+                options: { type: 'object' },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        200: { description: 'Created principal' },
+        400: { description: 'invalid_service_ids' },
+      },
+    },
+  },
+  '/api/client/v1/projects/{projectId}/principals/{id}': {
+    patch: {
+      tags: ['Principals'],
+      summary: 'Replace service assignments for a project principal',
+      parameters: [
+        { name: 'projectId', in: 'path', required: true, schema: { type: 'string' } },
+        { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/UpdateProjectPrincipalAssignmentsRequest' },
+          },
+        },
+      },
+      responses: {
+        200: { description: 'Updated assignments' },
+        400: { description: 'invalid_service_ids' },
       },
     },
   },

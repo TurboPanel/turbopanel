@@ -39,6 +39,25 @@ export {
   type ComposeTurbopanelExtension,
 } from './placement.ts'
 export {
+  collectServiceTurbopanelValidationIssues,
+  isTraditionalWebComposeService,
+  parseServiceTurbopanelExtension,
+  readServiceTurbopanelExtension,
+  TURBOPANEL_SERVICE_EXTENSION_KEY,
+  type ComposeServiceKind,
+  type ComposeServiceTurbopanelExtension,
+  type TraditionalWebEngine,
+} from './service-kind.ts'
+export {
+  allocateTraditionalWebListenPort,
+  assignTraditionalWebListenPorts,
+  emptyContainerComposeYaml,
+  isSafeTraditionalWebRoot,
+  splitTraditionalWebServices,
+  type SplitTraditionalWebResult,
+  type TraditionalWebSiteSpec,
+} from './traditional-web.ts'
+export {
   applyVariablesToComposeDocument,
   escapeLiteralComposeValue,
   trimVariableValue,

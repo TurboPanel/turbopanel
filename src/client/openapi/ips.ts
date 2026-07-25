@@ -1,0 +1,214 @@
+const errorBody = {
+  type: 'object',
+  required: ['error'],
+  properties: { error: { type: 'string' } },
+}
+
+export const ipSchemas = {
+  IpRow: {
+    type: 'object',
+    required: [
+      'id',
+      'organizationId',
+      'address',
+      'version',
+      'allocation',
+      'scope',
+      'createdAt',
+      'updatedAt',
+    ],
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      organizationId: { type: 'string', format: 'uuid' },
+      datacenterId: { type: ['string', 'null'], format: 'uuid' },
+      networkId: { type: ['string', 'null'], format: 'uuid' },
+      serverId: { type: ['string', 'null'], format: 'uuid' },
+      address: { type: 'string' },
+      version: { type: 'integer', enum: [4, 6] },
+      allocation: { type: 'string', enum: ['dedicated', 'shared'] },
+      scope: { type: 'string', enum: ['public', 'datacenter', 'loopback'] },
+      displayName: { type: ['string', 'null'] },
+      metadata: { type: ['object', 'null'] },
+      options: { type: ['object', 'null'] },
+      createdAt: { type: 'string', format: 'date-time' },
+      updatedAt: { type: 'string', format: 'date-time' },
+    },
+  },
+  IpsResponse: {
+    type: 'object',
+    required: ['ips'],
+    properties: {
+      ips: { type: 'array', items: { $ref: '#/components/schemas/IpRow' } },
+    },
+  },
+  IpResponse: {
+    type: 'object',
+    required: ['ip'],
+    properties: {
+      ip: { $ref: '#/components/schemas/IpRow' },
+    },
+  },
+  CreateIpRequest: {
+    type: 'object',
+    required: ['address', 'allocation', 'scope'],
+    properties: {
+      address: { type: 'string' },
+      version: { type: 'integer', enum: [4, 6] },
+      allocation: { type: 'string', enum: ['dedicated', 'shared'] },
+      scope: { type: 'string', enum: ['public', 'datacenter', 'loopback'] },
+      displayName: { type: 'string' },
+      datacenterId: { type: ['string', 'null'], format: 'uuid' },
+      networkId: { type: ['string', 'null'], format: 'uuid' },
+      serverId: { type: ['string', 'null'], format: 'uuid' },
+      metadata: { type: 'object' },
+      options: { type: 'object' },
+    },
+  },
+  PatchIpRequest: {
+    type: 'object',
+    properties: {
+      displayName: { type: 'string' },
+      datacenterId: { type: ['string', 'null'], format: 'uuid' },
+      networkId: { type: ['string', 'null'], format: 'uuid' },
+      serverId: { type: ['string', 'null'], format: 'uuid' },
+      metadata: { type: ['object', 'null'] },
+      options: { type: ['object', 'null'] },
+    },
+  },
+}
+
+export const ipPaths: Record<string, unknown> = {
+  '/api/client/v1/ips': {
+    get: {
+      tags: ['IPs'],
+      summary: 'List IP addresses',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        { name: 'datacenterId', in: 'query', schema: { type: 'string', format: 'uuid' } },
+        { name: 'serverId', in: 'query', schema: { type: 'string', format: 'uuid' } },
+        { name: 'networkId', in: 'query', schema: { type: 'string', format: 'uuid' } },
+        { name: 'scope', in: 'query', schema: { type: 'string', enum: ['public', 'datacenter', 'loopback'] } },
+        { name: 'allocation', in: 'query', schema: { type: 'string', enum: ['dedicated', 'shared'] } },
+      ],
+      responses: {
+        '200': {
+          description: 'IPs',
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/IpsResponse' } } },
+        },
+        '400': { description: 'Invalid request', content: { 'application/json': { schema: errorBody } } },
+        '401': { description: 'Unauthorized', content: { 'application/json': { schema: errorBody } } },
+        '403': { description: 'Forbidden', content: { 'application/json': { schema: errorBody } } },
+        '404': { description: 'Not found', content: { 'application/json': { schema: errorBody } } },
+      },
+    },
+    post: {
+      tags: ['IPs'],
+      summary: 'Create an IP address',
+      security: [{ cookieAuth: [] }],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': { schema: { $ref: '#/components/schemas/CreateIpRequest' } },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Created',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'id'],
+                properties: {
+                  ok: { type: 'boolean', const: true },
+                  id: { type: 'string', format: 'uuid' },
+                },
+              },
+            },
+          },
+        },
+        '400': { description: 'Invalid request', content: { 'application/json': { schema: errorBody } } },
+        '401': { description: 'Unauthorized', content: { 'application/json': { schema: errorBody } } },
+        '403': { description: 'Forbidden', content: { 'application/json': { schema: errorBody } } },
+        '409': { description: 'Address in use', content: { 'application/json': { schema: errorBody } } },
+      },
+    },
+  },
+  '/api/client/v1/ips/{id}': {
+    get: {
+      tags: ['IPs'],
+      summary: 'Get an IP address',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        '200': {
+          description: 'IP',
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/IpResponse' } } },
+        },
+        '401': { description: 'Unauthorized', content: { 'application/json': { schema: errorBody } } },
+        '403': { description: 'Forbidden', content: { 'application/json': { schema: errorBody } } },
+        '404': { description: 'Not found', content: { 'application/json': { schema: errorBody } } },
+      },
+    },
+    patch: {
+      tags: ['IPs'],
+      summary: 'Update an IP address',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': { schema: { $ref: '#/components/schemas/PatchIpRequest' } },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Updated',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok'],
+                properties: { ok: { type: 'boolean', const: true } },
+              },
+            },
+          },
+        },
+        '400': { description: 'Invalid request', content: { 'application/json': { schema: errorBody } } },
+        '401': { description: 'Unauthorized', content: { 'application/json': { schema: errorBody } } },
+        '403': { description: 'Forbidden', content: { 'application/json': { schema: errorBody } } },
+        '404': { description: 'Not found', content: { 'application/json': { schema: errorBody } } },
+      },
+    },
+    delete: {
+      tags: ['IPs'],
+      summary: 'Delete an IP address',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        '200': {
+          description: 'Deleted',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok'],
+                properties: { ok: { type: 'boolean', const: true } },
+              },
+            },
+          },
+        },
+        '401': { description: 'Unauthorized', content: { 'application/json': { schema: errorBody } } },
+        '403': { description: 'Forbidden', content: { 'application/json': { schema: errorBody } } },
+        '404': { description: 'Not found', content: { 'application/json': { schema: errorBody } } },
+        '409': { description: 'IP in use by hosting', content: { 'application/json': { schema: errorBody } } },
+      },
+    },
+  },
+}

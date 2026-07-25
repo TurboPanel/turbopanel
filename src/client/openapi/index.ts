@@ -8,6 +8,9 @@ import { hostingPaths, hostingSchemas } from './hostings.ts'
 import { tlsPaths, tlsSchemas } from './tls.ts'
 import { installOpenApiPaths, installOpenApiSchemas } from './install.ts'
 import { networkPaths, networkSchemas } from './networks.ts'
+import { datacenterPaths, datacenterSchemas } from './datacenters.ts'
+import { ipPaths, ipSchemas } from './ips.ts'
+import { vpnPaths, vpnSchemas } from './vpns.ts'
 import { buildLicensePaths, buildLicenseSchemas } from './licenses.ts'
 import { organizationPaths, organizationSchemas } from './organizations.ts'
 import { projectPaths, projectSchemas } from './projects.ts'
@@ -64,7 +67,10 @@ export function getClientOpenApiSpec(
       { name: 'Containers', description: 'Container CRUD' },
       { name: 'TLS', description: 'Organization TLS certificate library' },
       { name: 'Servers', description: 'Server fleet and update management' },
-      { name: 'Networks', description: 'Server network management' },
+      { name: 'Networks', description: 'Organization network registry' },
+      { name: 'Datacenters', description: 'Datacenter CRUD' },
+      { name: 'IPs', description: 'Managed IP address registry' },
+      { name: 'VPNs', description: 'WireGuard VPN meshes and peers' },
       { name: 'Licenses', description: 'License lifecycle' },
       ...(includeInstall
         ? [{ name: 'Install', description: 'Self-hosted install wizard (Deno only)' }]
@@ -73,7 +79,7 @@ export function getClientOpenApiSpec(
     'x-tagGroups': [
       { name: 'Authentication & Authorization', tags: ['Authentication', 'Authorization'] },
       { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Variables', 'Storage', 'Principals', 'Resource limits', 'Services', 'Hostings', 'Containers', 'TLS'] },
-      { name: 'Infrastructure', tags: ['Servers', 'Networks', 'Licenses'] },
+      { name: 'Infrastructure', tags: ['Servers', 'Networks', 'Datacenters', 'IPs', 'VPNs', 'Licenses'] },
       { name: 'Platform', tags: ['Health', ...(includeInstall ? ['Install'] : [])] },
     ],
     components: {
@@ -89,6 +95,9 @@ export function getClientOpenApiSpec(
         ...buildAuthSchemas(options?.runtime),
         ...serverSchemas,
         ...networkSchemas,
+        ...datacenterSchemas,
+        ...ipSchemas,
+        ...vpnSchemas,
         ...buildLicenseSchemas(installCommandDescription),
         ...accessSchemas,
         ...organizationSchemas,
@@ -111,6 +120,9 @@ export function getClientOpenApiSpec(
       ...authPaths,
       ...serverPaths,
       ...networkPaths,
+      ...datacenterPaths,
+      ...ipPaths,
+      ...vpnPaths,
       ...buildLicensePaths(installCommandDescription),
       ...accessPaths,
       ...organizationPaths,

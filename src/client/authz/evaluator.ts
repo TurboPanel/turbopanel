@@ -520,6 +520,51 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         JOIN workspace w ON w.id = p.workspace_id
         WHERE st.id = ${entityId}::uuid AND st.service_id IS NOT NULL
       `
+    case 'network':
+      return sql`
+        SELECT 'network'::text AS entity_type, n.id AS entity_id, 0 AS depth
+        FROM network n WHERE n.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'organization'::text, n.organization_id, 1
+        FROM network n WHERE n.id = ${entityId}::uuid
+      `
+    case 'datacenter':
+      return sql`
+        SELECT 'datacenter'::text AS entity_type, d.id AS entity_id, 0 AS depth
+        FROM datacenter d WHERE d.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'organization'::text, d.organization_id, 1
+        FROM datacenter d WHERE d.id = ${entityId}::uuid
+      `
+    case 'ip':
+      return sql`
+        SELECT 'ip'::text AS entity_type, i.id AS entity_id, 0 AS depth
+        FROM ip i WHERE i.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'organization'::text, i.organization_id, 1
+        FROM ip i WHERE i.id = ${entityId}::uuid
+      `
+    case 'vpn':
+      return sql`
+        SELECT 'vpn'::text AS entity_type, v.id AS entity_id, 0 AS depth
+        FROM vpn v WHERE v.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'organization'::text, v.organization_id, 1
+        FROM vpn v WHERE v.id = ${entityId}::uuid
+      `
+    case 'peer':
+      return sql`
+        SELECT 'peer'::text AS entity_type, p.id AS entity_id, 0 AS depth
+        FROM peer p WHERE p.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'vpn'::text, p.vpn_id, 1
+        FROM peer p WHERE p.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'organization'::text, v.organization_id, 2
+        FROM peer p
+        JOIN vpn v ON v.id = p.vpn_id
+        WHERE p.id = ${entityId}::uuid
+      `
     default:
       throw new Error(`Unknown entity type for ancestry: ${entityType}`)
   }
@@ -635,6 +680,18 @@ function buildLeavesBody(kind: string, organizationId: string): SQL {
         JOIN project p ON p.id = e.project_id
         JOIN workspace w ON w.id = p.workspace_id
         WHERE w.organization_id = ${organizationId}::uuid`
+    case 'network':
+      return sql`SELECT id FROM network WHERE organization_id = ${organizationId}::uuid`
+    case 'datacenter':
+      return sql`SELECT id FROM datacenter WHERE organization_id = ${organizationId}::uuid`
+    case 'ip':
+      return sql`SELECT id FROM ip WHERE organization_id = ${organizationId}::uuid`
+    case 'vpn':
+      return sql`SELECT id FROM vpn WHERE organization_id = ${organizationId}::uuid`
+    case 'peer':
+      return sql`SELECT p.id FROM peer p
+        JOIN vpn v ON v.id = p.vpn_id
+        WHERE v.organization_id = ${organizationId}::uuid`
     default:
       throw new Error(`Unknown entity kind for visibility leaves: ${kind}`)
   }

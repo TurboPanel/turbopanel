@@ -15,6 +15,12 @@ import {
   requireStringField,
 } from '../shared.ts'
 import { parseResourceLimits } from '../../lib/resource-limits.ts'
+import {
+  loadServiceIdsByPrincipalIds,
+  parseServiceIdsField,
+  servicesBelongToProject,
+} from './assignments.ts'
+import { replaceAssignments } from './store.ts'
 import { serializeProjectPrincipal } from './serialize.ts'
 
 const SYSTEM_PRINCIPAL_UID_START = 10_001
@@ -84,7 +90,16 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
       .from(principal)
       .where(eq(principal.projectId, projectId))
 
-    return c.json({ principals: rows.map(serializeProjectPrincipal) })
+    const serviceIdsByPrincipal = await loadServiceIdsByPrincipalIds(
+      db,
+      rows.map((row) => row.id),
+    )
+
+    return c.json({
+      principals: rows.map((row) =>
+        serializeProjectPrincipal(row, serviceIdsByPrincipal.get(row.id) ?? [])
+      ),
+    })
   })
 
   router.post('/projects/:projectId/principals', async (c) => {
@@ -112,18 +127,85 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const username = requireStringField(c, body, 'username')
     if (username instanceof Response) return username
 
+    const serviceIds = parseServiceIdsField(body)
+    if (serviceIds === null) {
+      return c.json({ error: 'invalid_service_ids' }, 400)
+    }
+    if (!(await servicesBelongToProject(db, projectId, serviceIds))) {
+      return c.json({ error: 'invalid_service_ids' }, 400)
+    }
+
     const { uid, gid } = await allocatePrincipalUid(db, orgResult)
 
-    const [inserted] = await db.insert(principal).values({
-      kind: 'system',
-      provider: 'pam',
-      username,
-      projectId,
-      metadata: { uid, gid, home: `/var/lib/turbopanel/principals/${username}` },
-      options: parseJsonbObject(body.options) ?? null,
-    }).returning({ id: principal.id })
+    const inserted = await db.transaction(async (tx) => {
+      const [row] = await tx.insert(principal).values({
+        kind: 'system',
+        provider: 'pam',
+        username,
+        projectId,
+        metadata: { uid, gid, home: `/var/lib/turbopanel/principals/${username}` },
+        options: parseJsonbObject(body.options) ?? null,
+      }).returning({ id: principal.id })
 
-    return c.json({ ok: true as const, id: inserted.id, uid, gid })
+      if (serviceIds.length > 0) {
+        await replaceAssignments(tx, row.id, serviceIds)
+      }
+      return row
+    })
+
+    return c.json({
+      ok: true as const,
+      id: inserted.id,
+      uid,
+      gid,
+      serviceIds,
+    })
+  })
+
+  router.patch('/projects/:projectId/principals/:id', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+
+    const projectId = c.req.param('projectId')
+    const id = c.req.param('id')
+
+    const [row] = await db.select().from(principal).where(eq(principal.id, id)).limit(1)
+    if (row?.projectId !== projectId) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
+    const denied = await assertCanManageOr403(c, 'project', projectId)
+    if (denied) return denied
+
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+
+    if (!('serviceIds' in body)) {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+
+    const serviceIds = parseServiceIdsField(body)
+    if (serviceIds === null) {
+      return c.json({ error: 'invalid_service_ids' }, 400)
+    }
+    if (!(await servicesBelongToProject(db, projectId, serviceIds))) {
+      return c.json({ error: 'invalid_service_ids' }, 400)
+    }
+
+    await db.transaction(async (tx) => {
+      await replaceAssignments(tx, id, serviceIds)
+      await tx.update(principal).set({
+        updatedAt: new Date().toISOString(),
+      }).where(eq(principal.id, id))
+    })
+
+    return c.json({ ok: true as const, serviceIds })
   })
 
   router.delete('/projects/:projectId/principals/:id', async (c) => {

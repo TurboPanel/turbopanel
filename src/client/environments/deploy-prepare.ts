@@ -20,19 +20,26 @@ import {
 import {
   assertComposeDocument,
   composeDocumentToRuntimeYaml,
+  emptyContainerComposeYaml,
   mergeComposeOverlay,
   readComposePlacementServerId,
+  splitTraditionalWebServices,
   stripComposePlacement,
   type ComposeDocument,
+  type TraditionalWebSiteSpec,
 } from '../../lib/compose/index.ts'
+import { collectComposeExternalDockerNetworkNames } from '../../lib/compose/docker-external-networks.ts'
+import { validateRegisteredExternalDockerNetworks } from './validate-docker-external-networks.ts'
 import type {
   EnvironmentDeployHosting,
   EnvironmentDeployPrincipalMaterial,
   EnvironmentDeployStorageMaterial,
+  EnvironmentDeployTraditionalWebSite,
   EnvironmentDeployVariableMaterial,
 } from '../../lib/commands/schemas.ts'
 import {
   environment,
+  ip,
   organization,
   principal,
   project,
@@ -41,15 +48,22 @@ import {
   storage,
 } from '../../lib/db/schema.ts'
 import { parseResourceLimits, checkResourceLimits, sumServiceResourceUsage } from '../../lib/resource-limits.ts'
-import { resolveHostingProxy } from '../../lib/hosting-options.ts'
+import {
+  parseHostingOptions,
+  resolveHostingBind,
+  resolveHostingProxy,
+} from '../../lib/hosting-options.ts'
+import { isValidIpAddress } from '../../lib/ip-address.ts'
 import { reconcileServicesFromCompose } from './reconcile-services.ts'
 import type { Db } from '../../db.ts'
 import {
+  mergeHostingVariablesForService,
   resolveInheritedVariablesForEnvironment,
   resolveInheritedVariablesForService,
   resolveServerScopedVariables,
   type ResolvedVariableMap,
 } from '../variables/resolve-inherited.ts'
+import { loadPrincipalIdsAssignedToEnvironment } from '../principals/assignments.ts'
 
 export { readComposePlacementServerId }
 
@@ -118,12 +132,17 @@ export type PreparedDeployCompose = {
   variableMaterial: EnvironmentDeployVariableMaterial[]
   storageMaterial: EnvironmentDeployStorageMaterial[]
   principalMaterial: EnvironmentDeployPrincipalMaterial[]
+  traditionalWebSites: EnvironmentDeployTraditionalWebSite[]
+  /** External Docker network names declared in compose — must be registered on the server. */
+  dockerExternalNetworks: string[]
 }
 
 export type DeployPrepareError =
   | { kind: 'health_check'; required: boolean; services: string[] }
   | { kind: 'resource_limit'; violations: ReturnType<typeof checkResourceLimits> }
   | { kind: 'empty_compose' }
+  | { kind: 'datacenter_ip_required'; serverId: string }
+  | { kind: 'docker_external_network_unregistered'; names: string[] }
 
 async function sealVariableMaterialForDaemon(
   c: Context<AppEnv>,
@@ -403,9 +422,14 @@ async function resolveDeployVariableBuckets(
 
   for (const composeServiceName of composeServices) {
     const row = serviceRowByComposeName.get(composeServiceName)
-    const varMap = row
-      ? await resolveInheritedVariablesForService(db, row.id)
-      : fallbackGlobal
+    let varMap: ResolvedVariableMap
+    if (row) {
+      varMap = await resolveInheritedVariablesForService(db, row.id)
+      // Hostname-scoped vars override service scope for compose injection.
+      await mergeHostingVariablesForService(db, row.id, varMap)
+    } else {
+      varMap = fallbackGlobal
+    }
     const mergedServer = new Map([...varMap, ...serverVars])
     perServiceEntries.set(
       composeServiceName,
@@ -552,19 +576,81 @@ export async function prepareDeployCompose(
   )
   if (storageMaterial instanceof Response) return storageMaterial
 
-  const principalMaterial = await loadPrincipalMaterial(
+  const assignmentPrincipalIds = await loadPrincipalIdsAssignedToEnvironment(
     db,
-    storageMaterial
-      .map((entry) => entry.principalId)
-      .filter((id): id is string => typeof id === 'string'),
+    params.environmentId,
+  )
+  const storagePrincipalIds = storageMaterial
+    .map((entry) => entry.principalId)
+    .filter((id): id is string => typeof id === 'string')
+  const principalMaterial = await loadPrincipalMaterial(db, [
+    ...assignmentPrincipalIds,
+    ...storagePrincipalIds,
+  ])
+
+  const split = splitTraditionalWebFromDocument(withServiceOptions.document)
+
+  // Drop traditional-web hooks — they are not Docker compose services.
+  const traditionalNames = new Set(
+    split.sites.map((site) => site.composeServiceName),
+  )
+  const hooks = withServiceOptions.hooks.filter(
+    (hook) => !traditionalNames.has(hook.composeServiceName),
   )
 
+  const dockerExternalNetworks = collectComposeExternalDockerNetworkNames(
+    split.composeYaml,
+  )
+  const unregisteredDockerNetworks = await validateRegisteredExternalDockerNetworks(
+    db,
+    params.organizationId,
+    params.serverId,
+    dockerExternalNetworks,
+  )
+  if (unregisteredDockerNetworks) {
+    return {
+      kind: 'docker_external_network_unregistered',
+      names: unregisteredDockerNetworks,
+    }
+  }
+
   return {
-    composeYaml: composeDocumentToRuntimeYaml(withServiceOptions.document),
-    hooks: withServiceOptions.hooks,
+    composeYaml: split.composeYaml,
+    hooks,
     variableMaterial,
     storageMaterial,
     principalMaterial,
+    traditionalWebSites: split.sites,
+    dockerExternalNetworks,
+  }
+}
+
+function splitTraditionalWebFromDocument(document: ComposeDocument): {
+  composeYaml: string
+  sites: TraditionalWebSiteSpec[]
+} {
+  const services = isPlainObject(document.data.services)
+    ? (document.data.services as Record<string, unknown>)
+    : {}
+  const { containerServices, sites } = splitTraditionalWebServices(services)
+
+  if (Object.keys(containerServices).length === 0) {
+    return {
+      composeYaml: emptyContainerComposeYaml(),
+      sites,
+    }
+  }
+
+  const containerDocument: ComposeDocument = {
+    ...document,
+    data: {
+      ...document.data,
+      services: containerServices,
+    },
+  }
+  return {
+    composeYaml: composeDocumentToRuntimeYaml(containerDocument),
+    sites,
   }
 }
 
@@ -577,6 +663,64 @@ export function readHostingProxyFromOptions(options: unknown): EnvironmentDeploy
     brotli: proxy.brotli,
     ...(proxy.stripPrefix ? { stripPrefix: proxy.stripPrefix } : {}),
   }
+}
+
+function inetAddressToString(address: unknown): string | undefined {
+  if (typeof address !== 'string') return undefined
+  const trimmed = address.trim()
+  if (!isValidIpAddress(trimmed)) return undefined
+  return trimmed
+}
+
+/**
+ * Resolve the Caddy `bind` address for one hosting entry at deploy-prepare time
+ * so the daemon stays DB-free. Returns `undefined` when no bind directive should
+ * be emitted (public bind with no pinned IP).
+ */
+export async function resolveHostingBindAddress(
+  db: Db,
+  params: Readonly<{
+    serverId: string
+    options: unknown
+    ipId: string | null
+  }>,
+): Promise<string | undefined | Extract<DeployPrepareError, { kind: 'datacenter_ip_required' }>> {
+  const bind = resolveHostingBind(parseHostingOptions(params.options))
+
+  if (bind === 'local') return '127.0.0.1'
+
+  if (bind === 'datacenter') {
+    const [row] = await db
+      .select({ address: ip.address })
+      .from(ip)
+      .where(and(eq(ip.serverId, params.serverId), eq(ip.scope, 'datacenter')))
+      .limit(1)
+    const address = inetAddressToString(row?.address)
+    if (!address) {
+      return { kind: 'datacenter_ip_required', serverId: params.serverId }
+    }
+    return address
+  }
+
+  // public (default)
+  if (!params.ipId) return undefined
+
+  const [row] = await db
+    .select({ address: ip.address, serverId: ip.serverId })
+    .from(ip)
+    .where(eq(ip.id, params.ipId))
+    .limit(1)
+  if (!row) {
+    throw new Error('hosting ip pin not found')
+  }
+  if (row.serverId !== null && row.serverId !== params.serverId) {
+    throw new Error('hosting ip pin server mismatch')
+  }
+  const address = inetAddressToString(row.address)
+  if (!address) {
+    throw new Error('hosting ip pin address invalid')
+  }
+  return address
 }
 
 export { extractComposeFromOptions }

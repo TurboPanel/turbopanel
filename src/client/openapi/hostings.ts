@@ -1,6 +1,28 @@
 import { buildResourceCrudPaths } from './shared.ts'
 
 export const hostingSchemas = {
+  HostingOptions: {
+    type: 'object',
+    properties: {
+      hostnames: { type: 'array', items: { type: 'string' } },
+      pathPrefix: { type: 'string' },
+      targetPort: { type: 'number' },
+      bind: {
+        type: 'string',
+        enum: ['public', 'datacenter', 'local'],
+        description: 'Ingress bind scope for this hosting',
+      },
+      proxy: {
+        type: 'object',
+        properties: {
+          forceHttps: { type: 'boolean' },
+          gzip: { type: 'boolean' },
+          brotli: { type: 'boolean' },
+          stripPrefix: { type: 'string' },
+        },
+      },
+    },
+  },
   HostingRow: {
     type: 'object',
     required: ['id', 'serviceId', 'createdAt', 'updatedAt'],
@@ -13,11 +35,17 @@ export const hostingSchemas = {
         type: ['string', 'null'],
         description: 'Pinned org TLS certificate id; null = basic self-signed (Caddy tls internal)',
       },
+      ipId: {
+        type: ['string', 'null'],
+        format: 'uuid',
+        description: 'Pinned org IP address id for ingress binding',
+      },
       metadata: { type: 'object', nullable: true },
       options: {
-        type: 'object',
-        nullable: true,
-        description: 'Hosting routing options (hostnames, pathPrefix, targetPort, proxy)',
+        oneOf: [
+          { $ref: '#/components/schemas/HostingOptions' },
+          { type: 'null' },
+        ],
       },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
@@ -40,12 +68,10 @@ export const hostingSchemas = {
       displayName: { type: 'string' },
       description: { type: 'string' },
       serviceId: { type: 'string' },
-      tlsId: { type: ['string', 'null'] },
+      tlsId: { type: ['string', 'null'], format: 'uuid' },
+      ipId: { type: ['string', 'null'], format: 'uuid' },
       metadata: { type: 'object' },
-      options: {
-        type: 'object',
-        description: 'hostnames, pathPrefix, targetPort, proxy',
-      },
+      options: { $ref: '#/components/schemas/HostingOptions' },
     },
   },
   UpdateHostingRequest: {
@@ -53,12 +79,10 @@ export const hostingSchemas = {
     properties: {
       displayName: { type: 'string' },
       description: { type: 'string' },
-      tlsId: { type: ['string', 'null'] },
+      tlsId: { type: ['string', 'null'], format: 'uuid' },
+      ipId: { type: ['string', 'null'], format: 'uuid' },
       metadata: { type: 'object' },
-      options: {
-        type: 'object',
-        description: 'hostnames, pathPrefix, targetPort, proxy',
-      },
+      options: { $ref: '#/components/schemas/HostingOptions' },
     },
   },
 }

@@ -87,9 +87,37 @@ async function mergeOrganizationChain(
 }
 
 /**
+ * Load hosting-scoped variables for every hosting under a service and merge
+ * them into `target` (later overrides earlier). Hosting ids are sorted so
+ * multi-hosting key conflicts are deterministic.
+ *
+ * Used at deploy so hostname-scoped overrides reach compose injection even
+ * though Docker applies env at the service level (not per-vhost).
+ */
+export async function mergeHostingVariablesForService(
+  db: Db,
+  serviceId: string,
+  target: ResolvedVariableMap,
+): Promise<void> {
+  const hostingRows = await db
+    .select({ id: hosting.id })
+    .from(hosting)
+    .where(eq(hosting.serviceId, serviceId))
+
+  const hostingIds = hostingRows
+    .map((row) => row.id)
+    .sort((a, b) => a.localeCompare(b))
+
+  for (const hostingId of hostingIds) {
+    mergeVariables(target, await loadVariablesForParent(db, 'hostingId', hostingId))
+  }
+}
+
+/**
  * Resolve inherited variables for a service by walking the chain:
  * organization → workspace → project → environment → service (later overrides earlier).
- * Server-scoped variables are excluded.
+ * Server-scoped variables are excluded. Hosting-scoped overrides are not included —
+ * call {@link mergeHostingVariablesForService} when compose deploy needs them.
  */
 export async function resolveInheritedVariablesForService(
   db: Db,

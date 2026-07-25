@@ -259,3 +259,37 @@ test('POST /licenses rejects reserved colocated displayName', async () => {
     }
   })
 })
+
+test('POST /licenses returns 409 when org server capacity is exhausted', async () => {
+  await withOwnerFixtures(async ({ db, app, secrets, ownerId, organizationId }) => {
+    await db.update(organization).set({
+      options: { maxServers: 0 },
+      updatedAt: new Date().toISOString(),
+    }).where(eq(organization.id, organizationId))
+
+    const cookie = await sessionCookie(db, secrets, ownerId)
+    const res = await app.request('/licenses', {
+      method: 'POST',
+      headers: orgRequestHeaders(cookie, organizationId),
+    })
+
+    if (res.status !== 409) {
+      throw new Error(`expected 409 when capacity exhausted, got ${res.status}`)
+    }
+    const body = await res.json() as { error?: string; maxServers?: number }
+    if (body.error !== 'server_capacity_exceeded') {
+      throw new Error(`expected server_capacity_exceeded, got ${body.error}`)
+    }
+    if (body.maxServers !== 0) {
+      throw new Error(`expected maxServers 0, got ${body.maxServers}`)
+    }
+
+    const rows = await db
+      .select({ id: license.id })
+      .from(license)
+      .where(eq(license.organizationId, organizationId))
+    if (rows.length !== 0) {
+      throw new Error('capacity rejection must not create a license row')
+    }
+  })
+})

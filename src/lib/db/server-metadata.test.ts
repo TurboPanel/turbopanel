@@ -9,6 +9,7 @@ import {
   parseServerOsMetadata,
   parseServerTimeSync,
   resolveEffectiveServerTimezone,
+  resolveServerResponseTimezone,
   resolveServerOsLogoKey,
   serverOsMetadataEquals,
   serverTimeSyncEquals,
@@ -203,12 +204,80 @@ test('parseServerOptions and resolveEffectiveServerTimezone', () => {
   )
   assertEquals(
     resolveEffectiveServerTimezone({}, { defaultServerTimezone: 'UTC' }),
-    { timezone: 'UTC', source: 'organization' },
+    { timezone: null, source: null },
   )
   assertEquals(resolveEffectiveServerTimezone({}, {}), {
     timezone: null,
     source: null,
   })
+})
+
+test('resolveEffectiveServerTimezone datacenter precedence matrix', () => {
+  const server = { timezone: 'America/Chicago' }
+  const org = { defaultServerTimezone: 'UTC', enforceServerTimezone: false }
+  const orgEnforce = { defaultServerTimezone: 'UTC', enforceServerTimezone: true }
+  const dc = { defaultServerTimezone: 'Europe/Berlin', enforceServerTimezone: false }
+  const dcEnforce = { defaultServerTimezone: 'Europe/Berlin', enforceServerTimezone: true }
+
+  assertEquals(resolveEffectiveServerTimezone(server, org, dcEnforce), {
+    timezone: 'Europe/Berlin',
+    source: 'datacenter',
+  })
+  assertEquals(resolveEffectiveServerTimezone(server, orgEnforce, dcEnforce), {
+    timezone: 'Europe/Berlin',
+    source: 'datacenter',
+  })
+  assertEquals(resolveEffectiveServerTimezone(server, orgEnforce, dc), {
+    timezone: 'UTC',
+    source: 'organization',
+  })
+  assertEquals(resolveEffectiveServerTimezone(server, org, dc), {
+    timezone: 'America/Chicago',
+    source: 'server',
+  })
+  assertEquals(resolveEffectiveServerTimezone({}, org, dc), {
+    timezone: null,
+    source: null,
+  })
+  assertEquals(resolveEffectiveServerTimezone({}, {}, dc), {
+    timezone: null,
+    source: null,
+  })
+})
+
+test('resolveServerResponseTimezone falls back to daemon-reported zone', () => {
+  assertEquals(
+    resolveServerResponseTimezone(
+      { timezone: null, source: null },
+      'Europe/Berlin',
+    ),
+    { timezone: 'Europe/Berlin', source: null },
+  )
+  assertEquals(
+    resolveServerResponseTimezone(
+      { timezone: null, source: null },
+      '  ',
+    ),
+    { timezone: null, source: null },
+  )
+  assertEquals(
+    resolveServerResponseTimezone(
+      { timezone: 'America/Chicago', source: 'server' },
+      'Europe/Berlin',
+    ),
+    { timezone: 'America/Chicago', source: 'server' },
+  )
+  assertEquals(
+    resolveServerResponseTimezone(
+      resolveEffectiveServerTimezone(
+        {},
+        { defaultServerTimezone: 'UTC', enforceServerTimezone: false },
+        { defaultServerTimezone: 'Europe/Berlin', enforceServerTimezone: false },
+      ),
+      'Europe/Berlin',
+    ),
+    { timezone: 'Europe/Berlin', source: null },
+  )
 })
 
 test('parseServerAddresses and serverAddressesEquals', () => {

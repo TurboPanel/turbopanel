@@ -3,8 +3,10 @@ import {
   LineCounter,
   parseDocument,
   type Node,
+  type Scalar,
   type YAMLMap,
 } from 'yaml'
+import { TURBOPANEL_SERVICE_EXTENSION_KEY } from './service-kind.ts'
 
 export type ComposeLintLevel = 'error' | 'warning'
 
@@ -189,6 +191,24 @@ function stringKey(key: unknown): string | null {
   return null
 }
 
+function scalarString(node: Node | null | undefined): string | null {
+  if (!node || typeof node !== 'object' || !('value' in node)) return null
+  const value = (node as Scalar).value
+  return typeof value === 'string' ? value : null
+}
+
+function serviceIsTraditionalWeb(valueNode: YAMLMap): boolean {
+  for (const item of valueNode.items) {
+    if (stringKey(item.key) !== TURBOPANEL_SERVICE_EXTENSION_KEY) continue
+    if (!isMap(item.value)) return false
+    for (const extItem of item.value.items) {
+      if (stringKey(extItem.key) !== 'serviceKind') continue
+      return scalarString(extItem.value as Node) === 'traditional-web'
+    }
+  }
+  return false
+}
+
 function lintService(
   name: string,
   valueNode: Node | null | undefined,
@@ -224,7 +244,8 @@ function lintService(
     }
   }
 
-  if (!hasImage && !hasBuild) {
+  const traditionalWeb = serviceIsTraditionalWeb(valueNode)
+  if (!traditionalWeb && !hasImage && !hasBuild) {
     issues.push({
       level: 'error',
       message: `Service "${name}" must define "image" or "build"`,

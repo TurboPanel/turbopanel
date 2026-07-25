@@ -6,6 +6,7 @@ import {
   resolveStopGracePeriodSeconds,
   type ServiceOptions,
 } from '../service-options.ts'
+import { isTraditionalWebComposeService } from './service-kind.ts'
 
 export type ServiceOptionsByComposeName = Map<string, ServiceOptions>
 
@@ -50,6 +51,10 @@ export function collectHealthCheckWarnings(
     if (policy === 'disabled') continue
     const services = document.data.services
     const rawService = isRecord(services) ? services[composeServiceName] : undefined
+    // Traditional-web sites are host nginx/apache — not Docker healthchecks.
+    if (isRecord(rawService) && isTraditionalWebComposeService(rawService)) {
+      continue
+    }
     if (isRecord(rawService) && hasHealthCheck(rawService)) {
       continue
     }

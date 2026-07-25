@@ -16,6 +16,8 @@ import {
   parseRebootResult,
   parseTimezoneSetPayload,
   parseTimezoneSetResult,
+  parseWireguardApplyPayload,
+  parseWireguardApplyResult,
 } from './schemas.ts'
 import { COMMAND_TYPES, type CommandType } from './types.ts'
 
@@ -134,6 +136,7 @@ const DAEMON_COMMAND_TYPES = [
   'server.ntp.set',
   'server.reboot',
   'server.timezone.set',
+  'server.wireguard.apply',
   'environment.deploy',
   'environment.stop',
 ] as const
@@ -358,6 +361,72 @@ test('parseCommandPayload and parseCommandResult dispatch by type', () => {
       containers: [],
     }),
     { projectName: 'tp-demo', summary: 'stopped', containers: [] },
+  )
+})
+
+const WG_PUBKEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
+
+test('parseWireguardApplyPayload accepts valid mesh material', () => {
+  const payload = parseWireguardApplyPayload({
+    vpnId: '550e8400-e29b-41d4-a716-446655440000',
+    peerId: '6ba7b810-9dad-11d1-80b4-00c04fd430c8',
+    interfaceName: 'tpwg550e8400',
+    address: '203.0.113.10/32',
+    listenPort: 51820,
+    peers: [
+      {
+        peerId: '6ba7b811-9dad-11d1-80b4-00c04fd430c8',
+        publicKey: WG_PUBKEY,
+        allowedIps: ['203.0.113.11/32'],
+        endpoint: '203.0.113.1:51820',
+      },
+    ],
+  })
+  assertEquals(payload.interfaceName, 'tpwg550e8400')
+})
+
+test('parseWireguardApplyPayload rejects invalid wireguard material', () => {
+  const base = {
+    vpnId: '550e8400-e29b-41d4-a716-446655440000',
+    peerId: '6ba7b810-9dad-11d1-80b4-00c04fd430c8',
+    interfaceName: 'tpwg550e8400',
+    address: '203.0.113.10/32',
+    peers: [{ peerId: '6ba7b811-9dad-11d1-80b4-00c04fd430c8', publicKey: WG_PUBKEY, allowedIps: ['203.0.113.11/32'] }],
+  }
+  assertThrows(
+    () => parseWireguardApplyPayload({ ...base, peers: [{ ...base.peers[0], publicKey: 'bad' }] }),
+    Error,
+    'Invalid wireguard peer publicKey',
+  )
+  assertThrows(
+    () => parseWireguardApplyPayload({ ...base, interfaceName: 'INVALID!' }),
+    Error,
+    'Invalid WireGuard interface name',
+  )
+  assertThrows(
+    () => parseWireguardApplyPayload({
+      ...base,
+      peers: [{ ...base.peers[0], allowedIps: ['203.0.113.11'] }],
+    }),
+    Error,
+    'Invalid wireguard peer allowedIps',
+  )
+  assertThrows(
+    () => parseWireguardApplyPayload({ ...base, listenPort: 70000 }),
+    Error,
+    'Invalid wireguard apply listenPort',
+  )
+})
+
+test('parseWireguardApplyResult round-trips applied flag', () => {
+  assertEquals(
+    parseWireguardApplyResult({
+      interfaceName: 'tpwg550e8400',
+      publicKey: WG_PUBKEY,
+      applied: true,
+      listenPort: 51820,
+    }).applied,
+    true,
   )
 })
 

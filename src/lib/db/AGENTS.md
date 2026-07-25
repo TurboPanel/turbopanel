@@ -104,7 +104,8 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `dev/
 |---|---|
 | **Identity** | `user`, `account`, `session`, `verification`, `passkey`, `2fa` |
 | **Organizations** | `organization`, `member`, `team`, `teammate`, `invitation` (no `organization_id`; `team_id NOT NULL`), `license`, `tls` |
-| **Resource tree** | `workspace`, `project`, `environment`, `service`, `hosting`, `container`, `network`, `managed`, `variable`, `principal`, `assignment` |
+| **Networking** | `datacenter`, `network`, `ip`, `vpn`, `peer` |
+| **Resource tree** | `workspace`, `project`, `environment`, `service`, `hosting`, `container`, `managed`, `variable`, `principal`, `assignment` |
 | **Authorization** | `grant` |
 | **Config** | `setting` (`value` is `jsonb`) |
 | **Runtime** | `server`, `command` |
@@ -113,7 +114,11 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `dev/
 
 ### Resource hierarchy
 
-Canonical order (org scope is derived via joins — not stored on child rows):
+**Legacy resource tree** (workspace → project → … → hosting/container): organization scope is derived via parent FK joins — not stored on those child rows (except `workspace`, which roots the tree with `organization_id`).
+
+**Org-owned networking tables** (`datacenter`, `network`, `ip`, `vpn`) persist **`organization_id` directly** on each row. Authz and domain logic for those entities should use that column (alongside optional `datacenter_id` / `server_id` / `network_id` links), not only join-derived ancestry from the compose tree.
+
+Canonical order:
 
 ```
 organization → workspace → project → environment → service → hosting
@@ -126,7 +131,11 @@ organization → workspace → variable (1:N)
 organization → project → variable (1:N)
 organization → workspace → project → environment → service → variable (1:N)
 organization → workspace → project → environment → service → hosting → variable (1:N)
+organization → datacenter → server
+organization → datacenter → network
 organization → server → network
+organization → ip
+organization → vpn → peer
 organization → server → container
 organization → server → variable (1:N, server-scoped; excluded from inheritance chain)
 ```
@@ -137,15 +146,21 @@ organization → server → variable (1:N, server-scoped; excluded from inherita
 | `project` | `workspace_id` | Docker Compose / catalog project. **`metadata`**: `type` (`"docker-compose"` \| `"managed"` \| `"template"`), `managed_id` (managed only). **`options.compose`**: base **ComposeDocument** (versioned JSON with presentation for YAML comments/order) — see `src/lib/compose/`. Project compose does **not** own server placement (sanitized on save). |
 | `environment` | `project_id` | Staging/production/etc. within a project. **`metadata`**: may include `serverId` after deploy (last successful deploy target). **`options.compose`**: per-environment ComposeDocument overlay merged onto the project base at deploy; may carry `x-turbopanel.placement.server_id` (environment-owned whole-server pin). |
 | `service` | `environment_id` | Deployable unit within an environment. **`metadata`**: e.g. `composeServiceName`. **`options`**: reserved (future per-service placement). |
-| `hosting` | `service_id NOT NULL` | Public routing for a service (Traefik + edge Caddy). Optional **`tls_id`** → `tls.id` (`ON DELETE SET NULL`) pins an org certificate; null = basic self-signed (Caddy `tls internal`) at deploy — library certs must be pinned explicitly. **`options`**: `{ hostnames[], pathPrefix?, targetPort? }`. **`metadata`**: deploy status fields. Org derived via service chain. |
+| `hosting` | `service_id NOT NULL` | Public routing for a service (Traefik + edge Caddy). Optional **`tls_id`** → `tls.id` (`ON DELETE SET NULL`) pins an org certificate; null = basic self-signed (Caddy `tls internal`) at deploy — library certs must be pinned explicitly. Optional **`ip_id`** → `ip.id` (`ON DELETE SET NULL`) pins a managed ingress address. **`options`**: `{ hostnames[], pathPrefix?, targetPort? }`. **`metadata`**: deploy status fields. Org derived via service chain. |
 | `tls` | `organization_id NOT NULL` | Org TLS certificate library (`upload` / `lets_encrypt` / `self_signed`). **`certificate_pem`**: public chain (nullable while LE pending). **`private_key_pem`**: sealed `tpsecret` only — never returned on client GET. **`metadata`**: `{ dnsNames, hasWildcard, notBefore, notAfter, fingerprintSha256, subject, issuer, status, acme? }`. **`options`**: `{ prefer?, autoRenew?, requestedHostnames? }`. `ON DELETE CASCADE` from org; hosting pins clear on cert delete. |
 | `container` | `service_id NOT NULL` + `server_id NOT NULL` | Pins a deployed Docker container to a service and records which server hosts it. **`metadata`** holds the pinned container id + status (no dedicated columns). Both FKs `ON DELETE RESTRICT` (deleting a service or server with existing containers is blocked, mirroring `hosting`/`network`). |
 | `principal` | optional `project_id` (project principals) + assignments | Behind-the-scenes account identity for hosting/database-user flows and **project principals** (`GET/POST/DELETE /api/client/v1/projects/:projectId/principals`). **`kind`** CHECK `('system', 'database')`; **`provider`** CHECK `('pam', 'postgres', 'mysql', 'redis')`; **`username`** `varchar(255)` CHECK `^[A-Za-z_][A-Za-z0-9_-]*$`. **`password`** is nullable + write-only; stored as a sealed `tpsecret` envelope at rest. **`metadata`** holds `uid`/`gid`/`home` (project principals allocate UID/GID from `organization.options.nextPrincipalUid`, starting at **10001**). Daemon `principal.ensure` runs during deploy when `principalMaterial[]` is present. **No global unique on `username`**. |
 | `assignment` | `principal_id NOT NULL` + `service_id NOT NULL` | Join edge for the principal↔service many-to-many. `principal_id` FK `ON DELETE CASCADE` (deleting a principal removes its edges); `service_id` FK `ON DELETE RESTRICT` (a service still referenced by principals cannot be deleted, mirroring `container`). Unique `(principal_id, service_id)`; btree indexes on each FK. |
-| `network` | `server_id NOT NULL` | Linked to a server; org derived via server. `server_id` FK `ON DELETE RESTRICT` (server deletion is blocked while network rows exist). |
+| `network` | `organization_id NOT NULL`; optional `datacenter_id` or `server_id` (CHECK: not both) | Org-owned network registry. **`kind`** CHECK `('datacenter', 'server', 'docker', 'vpn')`; nullable **`cidr`**. `server_id` and `datacenter_id` FKs `ON DELETE RESTRICT` — deleting a datacenter is blocked while scoped networks remain (API returns **409** `datacenter_has_networks`). |
+| `datacenter` | `organization_id NOT NULL` | Physical site grouping servers on a shared private network; optional on `server`. **`options`** may mirror org timezone enforcement (`defaultServerTimezone`, `enforceServerTimezone`) for a future resolver. `ON DELETE CASCADE` from org; `server.datacenter_id` and `ip.datacenter_id` SET NULL on datacenter delete; datacenter-scoped `network` rows RESTRICT delete. |
+| `ip` | `organization_id NOT NULL`; optional `datacenter_id`, `network_id`, `server_id` | Canonical managed addresses. **`address`** is native Postgres **`inet`** (see `net-types.ts`). **`version`** 4|6 (CHECK matches `family(address)`). **`scope`** CHECK `('public', 'datacenter', 'loopback')`. **`allocation`** CHECK `('dedicated', 'shared')`. Unique `(organization_id, address)`. **A server's private datacenter address is `ip WHERE server_id = … AND scope = 'datacenter'`** — there is no `server.datacenter_private_ip` column. Public VPS rows typically have no `network_id`. `server_id` FK RESTRICT. |
+| `vpn` | `organization_id NOT NULL`; optional `network_id` | Org WireGuard mesh; tunnel subnet expected as `network` with `kind = 'vpn'`. **`POST /vpns`** may accept **`meshCidr`** to create and link that network in one transaction (mutually exclusive with **`networkId`**). |
+| `peer` | `vpn_id NOT NULL`, `server_id NOT NULL`; optional `ip_id` | One server in a VPN mesh. **WireGuard private keys are never stored in Postgres** — only `public_key` is persisted. **`preshared_key`** is a write-only sealed `tpsecret` (same as `principal.password` / TLS private keys), never returned on GET. Unique `(vpn_id, server_id)` and `(vpn_id, public_key)`. |
 | `managed` | `project_id` and/or `environment_id` (CHECK: at least one) | Catalog apps: `project_id` unique (partial index). Environment-scoped managed DB/cache: `environment_id` (unique) + `display_name`; engine/status/endpoints in **`metadata`** (`engine`, `status`, `rootPrincipalId`, `host`, `port`). Root creds via **`principal`** sealed as `tpsecret`. API: `GET/POST …/environments/{id}/managed[/provision]` — the standalone `/managed-services` surface no longer exists. |
-| `variable` | exactly one of `organization_id`, `workspace_id`, `project_id`, `environment_id`, `service_id`, `hosting_id`, `server_id` (all nullable FKs; CHECK enforces one parent) | Config vars/secrets at any resource scope; `is_secret` flag; **`is_literal`**, **`for_build`**, **`for_runtime`** (default runtime-only) control deploy injection; secret `value` is a sealed envelope; partial unique indexes on `(key, <parent_fk>)` per scope; `ON DELETE CASCADE`. Key must match `^[A-Za-z_][A-Za-z0-9_]*$`. **Inheritance** (runtime resolution; lower scope wins): service resolution uses `service` → `environment` → `project` → `workspace` → `organization`; hosting resolution uses `hosting` → `service` → `environment` → `project` → `workspace` → `organization`. **Server-scoped** variables are fetched separately and do not participate in either inheritance chain. |
+| `variable` | exactly one of `organization_id`, `workspace_id`, `project_id`, `environment_id`, `service_id`, `hosting_id`, `server_id` (all nullable FKs; CHECK enforces one parent) | Config vars/secrets at any resource scope; `is_secret` flag; **`is_literal`**, **`for_build`**, **`for_runtime`** (default runtime-only) control deploy injection; secret `value` is a sealed envelope; partial unique indexes on `(key, <parent_fk>)` per scope; `ON DELETE CASCADE`. Key must match `^[A-Za-z_][A-Za-z0-9_]*$`. **Inheritance** (runtime resolution; lower scope wins): service resolution uses `service` → `environment` → `project` → `workspace` → `organization`; hosting resolution uses `hosting` → `service` → `environment` → `project` → `workspace` → `organization`. **Deploy compose injection** additionally merges hosting-scoped vars for that service via `mergeHostingVariablesForService` (sorted hosting ids; later wins on key conflicts) so hostname overrides reach containers even though Docker applies env at the service level. **Server-scoped** variables are fetched separately and do not participate in either inheritance chain. |
 | `storage` | `organization_id NOT NULL` + exactly one of `project_id`, `environment_id`, `service_id` (CHECK) | Platform storage registry (`docker_volume`, `bind_mount`, `file`, `directory`); `server_id` required for materialization; daemon writes under `<stateDir>/storage/<orgId>/<storageId>/`; included in deploy payload as `storageMaterial[]`. |
+
+Native Postgres **`inet`** and **`cidr`** columns are defined in `net-types.ts` via Drizzle `customType` — no regex CHECK constraints belong on those types.
 
 **Project cascade delete** (`deleteProjectCascade` in `project-delete.ts`): after all containers under the project are non-active (`exited`/`dead`/`removing`), `DELETE /projects/:id` deletes in order `container` → `hosting` → `service` → `environment` → `project` (variables/`managed` cascade via FK). Active containers return **409** `project_has_running_services` — stop stacks first via `environment.stop`. Restrictive FKs stay in place as a safety net.
 
@@ -155,7 +170,7 @@ Authorization ancestry and `listVisible()` resolve organization through this cha
 
 Drizzle relations are defined for future Better Auth adapter use. `IS_SIGNUP_ENABLED_CONFIG_KEY` is the `setting.key` for self-service signup. `setting.value` is `jsonb`. The `SYSTEM_EMAIL` key stores all email settings as a single JSON object (self-hosted mode only; env vars take precedence and leave this table empty).
 
-**Organizations:** `member` and `invitation` are **pure relationship tables** — `member.role` and `invitation.role` were removed because authorization is now derived exclusively from `grant` rows, not membership columns. **`invitation.grants`** (JSONB) stores the intended access grants (`InvitationGrantSpec[]` in `src/client/authn/invitation-grants.ts`); they are materialized into `grant` rows on accept. When `grants` is null, accept applies a default `organization:manage` grant on the org.
+**Organizations:** `member` and `invitation` are **pure relationship tables** — `member.role` and `invitation.role` were removed because authorization is now derived exclusively from `grant` rows, not membership columns. **`invitation.grants`** (JSONB) stores the intended access grants (`InvitationGrantSpec[]` in `src/client/authn/invitation-grants.ts`); they are materialized into `grant` rows on accept. When `grants` is null, accept applies a default `organization:manage` grant on the org. **`organization.options.maxServers`** caps enrolled servers + unconsumed registration keys (`null`/omitted = unlimited). Self-hosted operators set it via `GET`/`PUT /organizations/:id/server-capacity`; `POST /licenses` returns **409** `server_capacity_exceeded` when the org is at capacity. Workers/Stripe billing will write the same field later.
 
 **Uniqueness:** `member(organization_id, user_id)` and `teammate(team_id, user_id)` prevent duplicate membership rows on concurrent invite acceptance/retries.
 
@@ -181,6 +196,10 @@ List and get enforce visibility via `listVisible` / org-level grant checks in SQ
 
 | Method | Path | Permission |
 |---|---|---|
+| `GET` | `/api/client/v1/organizations/{id}/default-timezone` | org manager |
+| `PUT` | `/api/client/v1/organizations/{id}/default-timezone` | org manager |
+| `GET` | `/api/client/v1/organizations/{id}/server-capacity` | org manager |
+| `PUT` | `/api/client/v1/organizations/{id}/server-capacity` | org owner (`maxServers`; null = unlimited) |
 | `GET` | `/api/client/v1/workspaces` | org owner/manager or platform admin (via `listVisible`) |
 | `GET` | `/api/client/v1/workspaces/{id}` | org owner/manager or platform admin |
 | `POST` | `/api/client/v1/workspaces` | org owner/manager on org |
@@ -212,12 +231,35 @@ List and get enforce visibility via `listVisible` / org-level grant checks in SQ
 | `DELETE` | `/api/client/v1/services/{id}` | org owner/manager |
 | `GET` | `/api/client/v1/hostings` | org owner/manager (optional `?serviceId=`) |
 | `GET` | `/api/client/v1/hostings/{id}` | org owner/manager |
-| `POST` | `/api/client/v1/hostings` | org owner/manager; `serviceId` required |
+| `POST` | `/api/client/v1/hostings` | org owner/manager; `serviceId` required; optional `tlsId`, `ipId`, `options.bind` |
 | `PATCH` | `/api/client/v1/hostings/{id}` | org owner/manager |
 | `DELETE` | `/api/client/v1/hostings/{id}` | org owner/manager |
-| `GET` | `/api/client/v1/networks` | org manager (`organization:manage`; requires `?serverId=`) |
-| `POST` | `/api/client/v1/networks` | org manager; body `{ serverId }` |
-| `DELETE` | `/api/client/v1/networks/{id}` | org manager |
+| `GET` | `/api/client/v1/networks` | org owner/manager (optional `?datacenterId=`, `?serverId=`, `?kind=`) |
+| `GET` | `/api/client/v1/networks/{id}` | org owner/manager |
+| `POST` | `/api/client/v1/networks` | org owner/manager; body requires `kind`; optional `datacenterId` xor `serverId` |
+| `PATCH` | `/api/client/v1/networks/{id}` | org owner/manager; `datacenterId`/`serverId` immutable |
+| `DELETE` | `/api/client/v1/networks/{id}` | org owner/manager |
+| `GET` | `/api/client/v1/datacenters` | org owner/manager |
+| `GET` | `/api/client/v1/datacenters/{id}` | org owner/manager |
+| `POST` | `/api/client/v1/datacenters` | org owner/manager on org |
+| `PATCH` | `/api/client/v1/datacenters/{id}` | org owner/manager |
+| `DELETE` | `/api/client/v1/datacenters/{id}` | org owner/manager; **409** `datacenter_has_networks` when scoped networks remain |
+| `GET` | `/api/client/v1/ips` | org owner/manager (optional filters) |
+| `GET` | `/api/client/v1/ips/{id}` | org owner/manager |
+| `POST` | `/api/client/v1/ips` | org owner/manager |
+| `PATCH` | `/api/client/v1/ips/{id}` | org owner/manager; `address` / `allocation` / `scope` / `version` immutable |
+| `DELETE` | `/api/client/v1/ips/{id}` | org owner/manager; **409** when hosting pins the IP |
+| `GET` | `/api/client/v1/vpns` | org owner/manager |
+| `GET` | `/api/client/v1/vpns/{id}` | org owner/manager |
+| `POST` | `/api/client/v1/vpns` | org owner/manager |
+| `PATCH` | `/api/client/v1/vpns/{id}` | org owner/manager |
+| `DELETE` | `/api/client/v1/vpns/{id}` | org owner/manager |
+| `GET` | `/api/client/v1/vpns/{id}/peers` | org owner/manager; never returns `presharedKey` |
+| `POST` | `/api/client/v1/vpns/{id}/peers` | org owner/manager |
+| `PATCH` | `/api/client/v1/vpns/{id}/peers/{peerId}` | org owner/manager |
+| `DELETE` | `/api/client/v1/vpns/{id}/peers/{peerId}` | org owner/manager |
+| `POST` | `/api/client/v1/vpns/{id}/apply` | org manager; fans out `server.wireguard.apply` per peer (poll commands on each server) |
+| `PATCH` | `/api/client/v1/servers/{id}` | org manager; optional `displayName`, `datacenterId` |
 
 Implemented in `src/client/*/routes.ts`, registered from `registerClientRoutes`.
 
@@ -243,7 +285,7 @@ Organization-scoped API tokens for server registration. Each row belongs to an `
 
 Each physical server node gets a row in `server` (`id` uuidv7). On daemon connect the instance resolves `serverId` (reuse by persisted id, `metadata.machineId`, or `metadata.hostname`), tracks presence in the **Daemon Cell**, and returns `serverId` in enrollment responses. The daemon persists it at `/var/lib/turbopanel/daemon/state/server.id` (production: owned by **`tp:tp`**; co-located dev: dev-user-owned under the same FHS path). See the canonical [Production UID/GID allocation](../../../AGENTS.md#production-uidgid-allocation) table in the repo root `AGENTS.md`. Server rows are hard-deleted — there is no soft-delete column. `display_name` and `organization_id` match the old trunk shape; daemon registration stores `machineId` / `hostname` in `metadata` (see `server-metadata.ts`). Which registration key enrolled the server is on `license.server_id` (not a column on `server`). `organization_id` FK uses `ON DELETE RESTRICT` — Postgres blocks deleting an organization that still has referencing server rows. `network.server_id` → `server.id` is `ON DELETE RESTRICT` — server deletion is blocked while network rows exist. Deleting a server clears `license.server_id` via `ON DELETE SET NULL`; the app soft-revokes the bound license after delete.
 
-Canonical column order: `id`, `created_at`, `updated_at`, `organization_id`, `display_name`, `daemon`, `metadata`, `options` (`daemon` before the trailing `metadata`/`options` pair). Index `idx_server_organization_id` (btree on `organization_id`) mirrors `idx_workspace_organization_id` and backs `listVisible()` joins.
+Canonical column order: `id`, `created_at`, `updated_at`, `organization_id`, `datacenter_id`, `display_name`, `daemon`, `metadata`, `options` (`daemon` before the trailing `metadata`/`options` pair). Indexes `idx_server_organization_id` and `idx_server_datacenter_id` (btree) mirror workspace/datacenter joins. `organization_id` FK uses `ON DELETE RESTRICT`. `datacenter_id` FK uses `ON DELETE SET NULL` — deleting a datacenter unpins servers rather than blocking delete. `network.server_id` → `server.id` is `ON DELETE RESTRICT` — server deletion is blocked while network rows reference it (same for `ip.server_id` and `peer.server_id`). Deleting a server clears `license.server_id` via `ON DELETE SET NULL`; the app soft-revokes the bound license after delete.
 
 **Cell metadata fields** (stored in `server.metadata` and/or `server.options` JSONB — no migration required):
 

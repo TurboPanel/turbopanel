@@ -1,15 +1,249 @@
-import { eq } from 'drizzle-orm'
-import { Hono } from 'hono'
+import { and, eq, inArray } from 'drizzle-orm'
+import { Hono, type Context } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { assertCanOr403 } from '../authz/index.ts'
-import { getDb } from '../../db.ts'
-import { network, server } from '../../lib/db/schema.ts'
-import { parseJsonBody } from '../shared.ts'
+import { assertCanOr403, listVisible } from '../authz/index.ts'
+import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
+import { getDb, type Db } from '../../db.ts'
+import { network } from '../../lib/db/schema.ts'
+import { isValidCidr } from '../../lib/ip-address.ts'
+import { canAccessOrganization, ORG_ID_HEADER } from '../org-context.ts'
+import {
+  assertCanCreateOr403,
+  assertCanManageOr403,
+  assertCanReadOr403,
+  buildPatchUpdateFields,
+  getOrgId,
+  parseDisplayName,
+  parseJsonBody,
+  parseJsonbObject,
+} from '../shared.ts'
 
-export function registerNetworkRoutes(router: Hono, opts: AuthRouteOpts) {
-  router.use('/networks', createSessionMiddleware(opts.secrets))
-  router.use('/networks/:id', createSessionMiddleware(opts.secrets))
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+const NETWORK_KINDS = new Set(['datacenter', 'server', 'docker', 'vpn'])
+
+const NETWORK_SELECT = {
+  id: network.id,
+  organizationId: network.organizationId,
+  datacenterId: network.datacenterId,
+  serverId: network.serverId,
+  kind: network.kind,
+  cidr: network.cidr,
+  displayName: network.displayName,
+  metadata: network.metadata,
+  options: network.options,
+  createdAt: network.createdAt,
+  updatedAt: network.updatedAt,
+}
+
+type NetworkPatchFields = {
+  displayName?: string | null
+  cidr?: string | null
+  metadata?: Record<string, unknown> | null
+  options?: Record<string, unknown> | null
+  updatedAt: string
+}
+
+async function validateOptionalScopeId(
+  c: Context,
+  db: Db,
+  organizationId: string,
+  kind: 'datacenter' | 'server',
+  raw: unknown,
+): Promise<string | null | undefined | Response> {
+  if (raw === undefined) return undefined
+  if (raw === null) return null
+  if (typeof raw !== 'string' || !UUID_RE.test(raw)) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  const entityOrgId = await resolveEntityOrganizationId(db, kind, raw)
+  if (entityOrgId !== organizationId) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+  return raw
+}
+
+async function resolveOrgScopedQueryFilter(
+  c: Context,
+  db: Db,
+  organizationId: string,
+  queryKey: 'datacenterId' | 'serverId',
+  kind: 'datacenter' | 'server',
+): Promise<string | undefined | Response> {
+  const raw = c.req.query(queryKey)?.trim()
+  if (!raw) return undefined
+  if (!UUID_RE.test(raw)) return c.json({ error: 'Invalid request' }, 400)
+  const entityOrgId = await resolveEntityOrganizationId(db, kind, raw)
+  if (entityOrgId !== organizationId) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+  return raw
+}
+
+function resolveKindQueryFilter(c: Context): string | undefined | Response {
+  const kindFilter = c.req.query('kind')?.trim()
+  if (!kindFilter) return undefined
+  if (!NETWORK_KINDS.has(kindFilter)) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  return kindFilter
+}
+
+async function resolveCreateNetworkOrganization(
+  c: Context,
+  db: Db,
+  userId: string,
+  body: Record<string, unknown>,
+): Promise<string | Response> {
+  const orgIdRaw = body.organizationId
+  if (typeof orgIdRaw !== 'string' || !UUID_RE.test(orgIdRaw)) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
+  const contextOrgId = c.req.header(ORG_ID_HEADER)?.trim() ||
+    c.req.query('organizationId')?.trim()
+  if (contextOrgId && contextOrgId !== orgIdRaw) {
+    return c.json({ error: 'organizationId mismatch' }, 400)
+  }
+
+  const orgAllowed = await canAccessOrganization(db, userId, orgIdRaw)
+  if (!orgAllowed) {
+    return c.json({ error: 'Forbidden' }, 403)
+  }
+
+  return orgIdRaw
+}
+
+function parseNetworkKind(
+  c: Context,
+  body: Record<string, unknown>,
+): string | Response {
+  const kindRaw = body.kind
+  if (typeof kindRaw !== 'string' || !NETWORK_KINDS.has(kindRaw)) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  return kindRaw
+}
+
+function assertSingleNetworkScope(
+  c: Context,
+  datacenterId: string | null | undefined,
+  serverId: string | null | undefined,
+): Response | null {
+  const hasDatacenter = datacenterId !== undefined && datacenterId !== null
+  const hasServer = serverId !== undefined && serverId !== null
+  if (hasDatacenter && hasServer) {
+    return c.json({ error: 'network_single_scope_conflict' }, 400)
+  }
+  return null
+}
+
+function parseOptionalDisplayNameField(
+  c: Context,
+  body: Record<string, unknown>,
+): string | null | Response {
+  if (body.displayName === undefined) return null
+  try {
+    return parseDisplayName(body)
+  } catch {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+}
+
+function parseOptionalCidrField(
+  c: Context,
+  body: Record<string, unknown>,
+): string | null | Response {
+  if (body.cidr === undefined || body.cidr === null) return null
+  if (typeof body.cidr !== 'string' || !isValidCidr(body.cidr)) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  return body.cidr.trim()
+}
+
+function applyCidrPatch(
+  c: Context,
+  body: Record<string, unknown>,
+  patchFields: NetworkPatchFields,
+): Response | null {
+  if (body.cidr === undefined) return null
+  if (body.cidr === null) {
+    patchFields.cidr = null
+    return null
+  }
+  if (typeof body.cidr === 'string' && isValidCidr(body.cidr)) {
+    patchFields.cidr = body.cidr.trim()
+    return null
+  }
+  return c.json({ error: 'Invalid request' }, 400)
+}
+
+function parseNetworkPatchFields(
+  c: Context,
+  body: Record<string, unknown>,
+): NetworkPatchFields | Response {
+  let patchFields: NetworkPatchFields
+  try {
+    patchFields = buildPatchUpdateFields(body)
+  } catch {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
+  if (body.displayName !== undefined) {
+    try {
+      patchFields.displayName = parseDisplayName(body)
+    } catch {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+  }
+
+  const cidrDenied = applyCidrPatch(c, body, patchFields)
+  if (cidrDenied) return cidrDenied
+
+  const metadataResult = parseJsonbObject(c, body, 'metadata')
+  if (metadataResult instanceof Response) return metadataResult
+  if (metadataResult !== null) patchFields.metadata = metadataResult
+
+  const optionsResult = parseJsonbObject(c, body, 'options')
+  if (optionsResult instanceof Response) return optionsResult
+  if (optionsResult !== null) patchFields.options = optionsResult
+
+  return patchFields
+}
+
+function buildNetworkCreateValues(input: {
+  organizationId: string
+  kind: string
+  datacenterId: string | null | undefined
+  serverId: string | null | undefined
+  displayName: string | null
+  cidr: string | null
+  metadata: Record<string, unknown> | null
+  options: Record<string, unknown> | null
+}) {
+  return {
+    organizationId: input.organizationId,
+    kind: input.kind,
+    ...(input.datacenterId !== undefined ? { datacenterId: input.datacenterId } : {}),
+    ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
+    ...(input.displayName !== null ? { displayName: input.displayName } : {}),
+    ...(input.cidr !== null ? { cidr: input.cidr } : {}),
+    ...(input.metadata !== null ? { metadata: input.metadata } : {}),
+    ...(input.options !== null ? { options: input.options } : {}),
+  }
+}
+
+export function registerNetworkRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for network routes')
+  }
+  const secrets = opts.secrets
+
+  router.use('/networks', createSessionMiddleware(secrets))
+  router.use('/networks/:id', createSessionMiddleware(secrets))
 
   router.get('/networks', async (c) => {
     const db = getDb(c)
@@ -18,42 +252,96 @@ export function registerNetworkRoutes(router: Hono, opts: AuthRouteOpts) {
     const session = c.get('session')
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const serverId = c.req.query('serverId')?.trim()
-    if (!serverId) {
-      return c.json({ error: 'serverId query parameter is required' }, 400)
-    }
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
 
-    const serverRows = await db
-      .select({ organizationId: server.organizationId })
-      .from(server)
-      .where(eq(server.id, serverId))
-      .limit(1)
+    const manageDenied = await assertCanManageOr403(c, 'organization', organizationId)
+    if (manageDenied) return manageDenied
 
-    const organizationId = serverRows[0]?.organizationId
-    if (!organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(
-      c,
-      'organization:manage',
-      'organization',
+    const visibleIds = await listVisible(db, {
+      kind: 'network',
+      userId: session.userId,
       organizationId,
+    })
+
+    if (visibleIds.length === 0) {
+      return c.json({ networks: [] })
+    }
+
+    const conditions = [
+      inArray(network.id, visibleIds),
+      eq(network.organizationId, organizationId),
+    ]
+
+    const datacenterFilter = await resolveOrgScopedQueryFilter(
+      c,
+      db,
+      organizationId,
+      'datacenterId',
+      'datacenter',
     )
-    if (denied) return denied
+    if (datacenterFilter instanceof Response) return datacenterFilter
+    if (datacenterFilter) {
+      conditions.push(eq(network.datacenterId, datacenterFilter))
+    }
+
+    const serverFilter = await resolveOrgScopedQueryFilter(
+      c,
+      db,
+      organizationId,
+      'serverId',
+      'server',
+    )
+    if (serverFilter instanceof Response) return serverFilter
+    if (serverFilter) {
+      conditions.push(eq(network.serverId, serverFilter))
+    }
+
+    const kindFilter = resolveKindQueryFilter(c)
+    if (kindFilter instanceof Response) return kindFilter
+    if (kindFilter) {
+      conditions.push(eq(network.kind, kindFilter))
+    }
 
     const rows = await db
-      .select({
-        id: network.id,
-        serverId: network.serverId,
-        createdAt: network.createdAt,
-        updatedAt: network.updatedAt,
-      })
+      .select(NETWORK_SELECT)
       .from(network)
-      .where(eq(network.serverId, serverId))
+      .where(and(...conditions))
       .orderBy(network.createdAt)
 
     return c.json({ networks: rows })
+  })
+
+  router.get('/networks/:id', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
+
+    const id = c.req.param('id')
+    const entityOrgId = await resolveEntityOrganizationId(db, 'network', id)
+    if (entityOrgId !== organizationId) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
+    const denied = await assertCanReadOr403(c, 'network', id)
+    if (denied) return denied
+
+    const [row] = await db
+      .select(NETWORK_SELECT)
+      .from(network)
+      .where(eq(network.id, id))
+      .limit(1)
+
+    if (!row) return c.json({ error: 'Not found' }, 404)
+
+    return c.json({ network: row })
   })
 
   router.post('/networks', async (c) => {
@@ -66,42 +354,105 @@ export function registerNetworkRoutes(router: Hono, opts: AuthRouteOpts) {
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const serverIdRaw = body.serverId
-    if (typeof serverIdRaw !== 'string' || serverIdRaw.trim().length === 0) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-    const serverId = serverIdRaw.trim()
-
-    const serverRows = await db
-      .select({ organizationId: server.organizationId })
-      .from(server)
-      .where(eq(server.id, serverId))
-      .limit(1)
-
-    const organizationId = serverRows[0]?.organizationId
-    if (!organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(
+    const organizationId = await resolveCreateNetworkOrganization(
       c,
-      'organization:manage',
-      'organization',
-      organizationId,
+      db,
+      session.userId,
+      body,
     )
+    if (organizationId instanceof Response) return organizationId
+
+    const denied = await assertCanCreateOr403(c, 'organization', organizationId)
     if (denied) return denied
+
+    const kind = parseNetworkKind(c, body)
+    if (kind instanceof Response) return kind
+
+    const datacenterId = await validateOptionalScopeId(
+      c,
+      db,
+      organizationId,
+      'datacenter',
+      body.datacenterId,
+    )
+    if (datacenterId instanceof Response) return datacenterId
+
+    const serverId = await validateOptionalScopeId(
+      c,
+      db,
+      organizationId,
+      'server',
+      body.serverId,
+    )
+    if (serverId instanceof Response) return serverId
+
+    const scopeDenied = assertSingleNetworkScope(c, datacenterId, serverId)
+    if (scopeDenied) return scopeDenied
+
+    const displayName = parseOptionalDisplayNameField(c, body)
+    if (displayName instanceof Response) return displayName
+
+    const cidr = parseOptionalCidrField(c, body)
+    if (cidr instanceof Response) return cidr
+
+    const metadataResult = parseJsonbObject(c, body, 'metadata')
+    if (metadataResult instanceof Response) return metadataResult
+    const optionsResult = parseJsonbObject(c, body, 'options')
+    if (optionsResult instanceof Response) return optionsResult
 
     const [inserted] = await db
       .insert(network)
-      .values({ serverId })
+      .values(buildNetworkCreateValues({
+        organizationId,
+        kind,
+        datacenterId,
+        serverId,
+        displayName,
+        cidr,
+        metadata: metadataResult,
+        options: optionsResult,
+      }))
       .returning({ id: network.id })
 
     const id = inserted?.id
-    if (!id) {
-      return c.json({ error: 'Failed to create network' }, 500)
-    }
+    if (!id) return c.json({ error: 'Failed to create network' }, 500)
 
     return c.json({ ok: true as const, id })
+  })
+
+  router.patch('/networks/:id', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
+
+    const id = c.req.param('id')
+    const entityOrgId = await resolveEntityOrganizationId(db, 'network', id)
+    if (entityOrgId !== organizationId) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
+    const denied = await assertCanOr403(c, 'organization:manage', 'network', id)
+    if (denied) return denied
+
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+
+    if (body.datacenterId !== undefined || body.serverId !== undefined) {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+
+    const patchFields = parseNetworkPatchFields(c, body)
+    if (patchFields instanceof Response) return patchFields
+
+    await db.update(network).set(patchFields).where(eq(network.id, id))
+
+    return c.json({ ok: true as const })
   })
 
   router.delete('/networks/:id', async (c) => {
@@ -111,36 +462,17 @@ export function registerNetworkRoutes(router: Hono, opts: AuthRouteOpts) {
     const session = c.get('session')
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
+
     const id = c.req.param('id')
-
-    const networkRows = await db
-      .select({ serverId: network.serverId })
-      .from(network)
-      .where(eq(network.id, id))
-      .limit(1)
-
-    const networkRow = networkRows[0]
-    if (!networkRow) {
+    const entityOrgId = await resolveEntityOrganizationId(db, 'network', id)
+    if (entityOrgId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const serverRows = await db
-      .select({ organizationId: server.organizationId })
-      .from(server)
-      .where(eq(server.id, networkRow.serverId))
-      .limit(1)
-
-    const organizationId = serverRows[0]?.organizationId
-    if (!organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(
-      c,
-      'organization:manage',
-      'organization',
-      organizationId,
-    )
+    const denied = await assertCanOr403(c, 'organization:manage', 'network', id)
     if (denied) return denied
 
     await db.delete(network).where(eq(network.id, id))

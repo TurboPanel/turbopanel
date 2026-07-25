@@ -14,10 +14,17 @@ import {
   prepareDeployCompose,
   readComposePlacementServerId,
   readHostingProxyFromOptions,
+  resolveHostingBindAddress,
   extractComposeFromOptions,
   verifyServerInOrg,
   type DeployPrepareError,
 } from './deploy-prepare.ts'
+import { assignTraditionalWebListenPorts } from '../../lib/compose/traditional-web.ts'
+import {
+  attachWebMetadataToTraditionalSites,
+  resolveHostingDeployWeb,
+} from '../../lib/hosting-web-env.ts'
+import type { DerivedSecretsConfig } from '../authn/secrets.ts'
 import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
 import type {
   EnvironmentDeployHosting,
@@ -25,6 +32,7 @@ import type {
   EnvironmentDeployServiceHook,
   EnvironmentDeployStorageMaterial,
   EnvironmentDeployTlsMaterial,
+  EnvironmentDeployTraditionalWebSite,
   EnvironmentDeployVariableMaterial,
 } from '../../lib/commands/schemas.ts'
 import { isNoopCommandQueue } from '../../lib/commands/noop-command-queue.ts'
@@ -83,6 +91,20 @@ function responseForPrepareError(
   if (prepared.kind === 'empty_compose') {
     return c.json({ error: 'compose_empty' }, { status: 400 })
   }
+  if (prepared.kind === 'datacenter_ip_required') {
+    return c.json({
+      error: 'datacenter_ip_required',
+      serverId: prepared.serverId,
+    }, { status: 422 })
+  }
+  if (prepared.kind === 'docker_external_network_unregistered') {
+    return c.json({
+      error: 'docker_external_network_unregistered',
+      names: prepared.names,
+      message:
+        'Compose references external Docker network(s) that are not registered for this server. Add a Docker network under Servers → Networks with matching options.dockerNetworkName.',
+    }, { status: 422 })
+  }
   return c.json({
     error: 'resource_limit_exceeded',
     violations: prepared.violations,
@@ -119,6 +141,30 @@ function readTargetPort(options: unknown): number | undefined {
     : undefined
 }
 
+function readHostingProtocol(options: unknown): 'http' | 'tcp' | 'udp' {
+  if (!isPlainObject(options)) return 'http'
+  return options.protocol === 'tcp' || options.protocol === 'udp' ? options.protocol : 'http'
+}
+
+function isValidHostingPortValue(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 65535
+}
+
+function readHostingPorts(options: unknown): { published: number; target: number }[] {
+  if (!isPlainObject(options) || !Array.isArray(options.ports)) return []
+  const ports: { published: number; target: number }[] = []
+  for (const entry of options.ports) {
+    if (
+      isPlainObject(entry) &&
+      isValidHostingPortValue(entry.published) &&
+      isValidHostingPortValue(entry.target)
+    ) {
+      ports.push({ published: entry.published, target: entry.target })
+    }
+  }
+  return ports
+}
+
 import {
   validateDeployHostings,
   validateDeployStorageMaterialList,
@@ -145,6 +191,7 @@ type BuildHostingResult =
     resolvedTlsIds: string[]
   }
   | { error: Response }
+  | { prepareError: DeployPrepareError }
 
 type OrgTlsCandidate = TlsCandidate & {
   certificatePem: string | null
@@ -161,6 +208,7 @@ type HostingRow = {
   id: string
   options: unknown
   tlsId: string | null
+  ipId: string | null
 }
 
 function tlsPinErrorCode(
@@ -176,11 +224,19 @@ function tlsPinErrorCode(
   }
 }
 
-function resolveHostingEntry(
+async function resolveHttpHostingEntry(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
   h: HostingRow,
   svc: Readonly<{ id: string; composeServiceName: string }>,
   candidates: OrgTlsCandidate[],
-): { entry: DeployHostingPayload } | { skip: true } | { error: Response } {
+  serverId: string,
+): Promise<
+  | { entry: DeployHostingPayload }
+  | { skip: true }
+  | { error: Response }
+  | { prepareError: DeployPrepareError }
+> {
   const hostnames = readHostnames(h.options)
   if (hostnames.length === 0) return { skip: true }
 
@@ -198,6 +254,17 @@ function resolveHostingEntry(
     }
   }
 
+  const bindResolved = await resolveHostingBindAddress(db, {
+    serverId,
+    options: h.options,
+    ipId: h.ipId,
+  })
+  if (typeof bindResolved === 'object' && bindResolved !== null && 'kind' in bindResolved) {
+    return { prepareError: bindResolved }
+  }
+
+  const web = await resolveHostingDeployWeb(db, dataEncryptionSecrets, h.id, h.options)
+
   return {
     entry: {
       hostingId: h.id,
@@ -208,8 +275,70 @@ function resolveHostingEntry(
       targetPort: readTargetPort(h.options),
       tlsId: resolved.tlsId,
       proxy: readHostingProxyFromOptions(h.options),
+      ...(bindResolved === undefined ? {} : { bindAddress: bindResolved }),
+      ...(web === undefined ? {} : { web }),
     },
   }
+}
+
+/**
+ * `tcp` / `udp` hosting publishes raw port(s) straight through Traefik — no
+ * hostname/TLS routing, used for non-HTTP docker services (e.g. Postgres).
+ */
+async function resolveTcpUdpHostingEntry(
+  db: Db,
+  h: HostingRow,
+  svc: Readonly<{ id: string; composeServiceName: string }>,
+  protocol: 'tcp' | 'udp',
+  serverId: string,
+): Promise<
+  | { entry: DeployHostingPayload }
+  | { skip: true }
+  | { prepareError: DeployPrepareError }
+> {
+  const ports = readHostingPorts(h.options)
+  if (ports.length === 0) return { skip: true }
+
+  const bindResolved = await resolveHostingBindAddress(db, {
+    serverId,
+    options: h.options,
+    ipId: h.ipId,
+  })
+  if (typeof bindResolved === 'object' && bindResolved !== null && 'kind' in bindResolved) {
+    return { prepareError: bindResolved }
+  }
+
+  return {
+    entry: {
+      hostingId: h.id,
+      serviceId: svc.id,
+      composeServiceName: svc.composeServiceName,
+      hostnames: [],
+      protocol,
+      ports,
+      ...(bindResolved === undefined ? {} : { bindAddress: bindResolved }),
+    },
+  }
+}
+
+async function resolveHostingEntry(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  h: HostingRow,
+  svc: Readonly<{ id: string; composeServiceName: string }>,
+  candidates: OrgTlsCandidate[],
+  serverId: string,
+): Promise<
+  | { entry: DeployHostingPayload }
+  | { skip: true }
+  | { error: Response }
+  | { prepareError: DeployPrepareError }
+> {
+  const protocol = readHostingProtocol(h.options)
+  if (protocol === 'http') {
+    return resolveHttpHostingEntry(db, dataEncryptionSecrets, h, svc, candidates, serverId)
+  }
+  return resolveTcpUdpHostingEntry(db, h, svc, protocol, serverId)
 }
 
 async function loadOrgTlsCandidates(
@@ -244,9 +373,15 @@ async function loadOrgTlsCandidates(
 
 async function buildHostingsForService(
   db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
   svc: ServiceRow,
   candidates: OrgTlsCandidate[],
-): Promise<{ hostings: DeployHostingPayload[]; tlsIds: string[] } | { error: Response }> {
+  serverId: string,
+): Promise<
+  | { hostings: DeployHostingPayload[]; tlsIds: string[] }
+  | { error: Response }
+  | { prepareError: DeployPrepareError }
+> {
   const composeServiceName = readComposeServiceName(
     svc.metadata,
     svc.displayName ?? svc.id,
@@ -256,6 +391,7 @@ async function buildHostingsForService(
       id: hosting.id,
       options: hosting.options,
       tlsId: hosting.tlsId,
+      ipId: hosting.ipId,
     })
     .from(hosting)
     .where(eq(hosting.serviceId, svc.id))
@@ -263,13 +399,17 @@ async function buildHostingsForService(
   const hostings: DeployHostingPayload[] = []
   const tlsIds: string[] = []
   for (const h of hostingRows) {
-    const result = resolveHostingEntry(
+    const result = await resolveHostingEntry(
+      db,
+      dataEncryptionSecrets,
       h,
       { id: svc.id, composeServiceName },
       candidates,
+      serverId,
     )
     if ('skip' in result) continue
     if ('error' in result) return result
+    if ('prepareError' in result) return result
     hostings.push(result.entry)
     if (result.entry.tlsId) tlsIds.push(result.entry.tlsId)
   }
@@ -280,6 +420,8 @@ async function buildHostingPayload(
   db: Db,
   environmentId: string,
   organizationId: string,
+  serverId: string,
+  dataEncryptionSecrets: DerivedSecretsConfig,
 ): Promise<BuildHostingResult> {
   const serviceRows = await db
     .select({
@@ -295,8 +437,15 @@ async function buildHostingPayload(
   const resolvedTlsIds = new Set<string>()
 
   for (const svc of serviceRows) {
-    const built = await buildHostingsForService(db, svc, candidates)
+    const built = await buildHostingsForService(
+      db,
+      dataEncryptionSecrets,
+      svc,
+      candidates,
+      serverId,
+    )
     if ('error' in built) return built
+    if ('prepareError' in built) return built
     hostingPayload.push(...built.hostings)
     for (const tlsId of built.tlsIds) resolvedTlsIds.add(tlsId)
   }
@@ -502,11 +651,13 @@ async function enqueueDeployCommand(
     projectName: string
     composeYaml: string
     hostings: DeployHostingPayload[]
+    traditionalWebSites: EnvironmentDeployTraditionalWebSite[]
     tlsMaterial: EnvironmentDeployTlsMaterial[]
     variableMaterial: EnvironmentDeployVariableMaterial[]
     storageMaterial: EnvironmentDeployStorageMaterial[]
     principalMaterial: EnvironmentDeployPrincipalMaterial[]
     serviceHooks: EnvironmentDeployServiceHook[]
+    dockerExternalNetworks: string[]
   },
 ): Promise<Response> {
   const expiresAt = new Date(Date.now() + 600_000).toISOString()
@@ -522,11 +673,17 @@ async function enqueueDeployCommand(
       projectName: params.projectName,
       composeYaml: params.composeYaml,
       hostings: params.hostings,
+      ...(params.traditionalWebSites.length > 0
+        ? { traditionalWebSites: params.traditionalWebSites }
+        : {}),
       ...(params.tlsMaterial.length > 0 ? { tlsMaterial: params.tlsMaterial } : {}),
       ...(params.variableMaterial.length > 0 ? { variableMaterial: params.variableMaterial } : {}),
       ...(params.storageMaterial.length > 0 ? { storageMaterial: params.storageMaterial } : {}),
       ...(params.principalMaterial.length > 0 ? { principalMaterial: params.principalMaterial } : {}),
       ...(params.serviceHooks.length > 0 ? { serviceHooks: params.serviceHooks } : {}),
+      ...(params.dockerExternalNetworks.length > 0
+        ? { dockerExternalNetworks: params.dockerExternalNetworks }
+        : {}),
     },
     expiresAt,
   })
@@ -601,11 +758,21 @@ export function registerEnvironmentDeployRoutes(
     if (prepared instanceof Response) return prepared
     if ('kind' in prepared) return responseForPrepareError(c, prepared)
 
+    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+    if (!dataEncryptionSecrets) {
+      return c.json({ error: 'Encryption unavailable' }, 503)
+    }
+
     const hostingBuilt = await buildHostingPayload(
       db,
       environmentId,
       auth.organizationId,
+      target.serverId,
+      dataEncryptionSecrets,
     )
+    if ('prepareError' in hostingBuilt) {
+      return responseForPrepareError(c, hostingBuilt.prepareError)
+    }
     if ('error' in hostingBuilt) return hostingBuilt.error
 
     const tlsMaterial = await sealTlsMaterialForDaemon(
@@ -638,6 +805,20 @@ export function registerEnvironmentDeployRoutes(
       return c.json({ error: 'invalid_deploy_storage', message: storageValidationError }, 400)
     }
 
+    const preferredListenPorts = new Map<string, number>()
+    for (const entry of hostingBuilt.hostings) {
+      if (typeof entry.targetPort === 'number') {
+        preferredListenPorts.set(entry.composeServiceName, entry.targetPort)
+      }
+    }
+    const traditionalWebSites = attachWebMetadataToTraditionalSites(
+      assignTraditionalWebListenPorts(
+        prepared.traditionalWebSites,
+        preferredListenPorts,
+      ),
+      hostingBuilt.hostings,
+    )
+
     return enqueueDeployCommand(db, commandQueue, {
       serverId: target.serverId,
       userId: auth.userId,
@@ -647,11 +828,13 @@ export function registerEnvironmentDeployRoutes(
       projectName,
       composeYaml: prepared.composeYaml,
       hostings: hostingBuilt.hostings,
+      traditionalWebSites,
       tlsMaterial,
       variableMaterial: prepared.variableMaterial,
       storageMaterial: prepared.storageMaterial,
       principalMaterial: prepared.principalMaterial,
       serviceHooks: prepared.hooks,
+      dockerExternalNetworks: prepared.dockerExternalNetworks,
     })
   })
 }

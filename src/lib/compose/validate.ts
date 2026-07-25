@@ -9,6 +9,7 @@ import {
   stripComposePlacement,
   TURBOPANEL_EXTENSION_KEY,
 } from './placement.ts'
+import { collectServiceTurbopanelValidationIssues } from './service-kind.ts'
 import {
   emptyComposeDocument,
   isComposeDocument,
@@ -65,6 +66,13 @@ export function validateComposeDocument(value: unknown): ComposeValidationResult
   }
 
   validateTurbopanelExtension(document.data, issues)
+
+  const services = document.data.services
+  if (isPlainMapping(services)) {
+    for (const issue of collectServiceTurbopanelValidationIssues(services)) {
+      issues.push(issue)
+    }
+  }
 
   if (issues.length > 0) {
     return { ok: false, issues }

@@ -1,5 +1,6 @@
 import type { ServerAddresses } from '../../server-addresses.ts'
 import type { ServerGeo } from '../geo/server-geo.ts'
+import type { DatacenterOptions } from '../datacenter-options.ts'
 import type { OrganizationOptions } from '../organization-options.ts'
 
 /** OS families we may report from the daemon; extend the union as support is added. */
@@ -336,20 +337,30 @@ export function parseServerOptions(value: unknown): ServerOptions | null {
 
 export type EffectiveServerTimezone = {
   timezone: string | null
-  source: 'server' | 'organization' | null
+  source: 'server' | 'organization' | 'datacenter' | null
 }
 
 /**
- * Resolve the effective server timezone.
+ * Resolve configured server timezone (enforced defaults and explicit overrides).
  *
- * When the org enforces its default (`enforceServerTimezone`), the org default
- * wins. Otherwise the per-server override wins over the org default.
+ * Precedence: datacenter enforce, org enforce, `server.options.timezone`.
+ * Non-enforcing org/datacenter defaults and daemon-reported zones are applied
+ * in API routes via {@link resolveServerResponseTimezone}.
  */
 export function resolveEffectiveServerTimezone(
   serverOptions: ServerOptions | null | undefined,
   orgOptions: OrganizationOptions | null | undefined,
+  datacenterOptions?: DatacenterOptions | null,
 ): EffectiveServerTimezone {
+  const dcDefault = datacenterOptions?.defaultServerTimezone?.trim() || null
   const orgDefault = orgOptions?.defaultServerTimezone?.trim() || null
+
+  if (datacenterOptions?.enforceServerTimezone && dcDefault) {
+    return { timezone: dcDefault, source: 'datacenter' }
+  }
+  if (datacenterOptions?.enforceServerTimezone) {
+    return { timezone: null, source: null }
+  }
   if (orgOptions?.enforceServerTimezone) {
     return {
       timezone: orgDefault,
@@ -360,8 +371,17 @@ export function resolveEffectiveServerTimezone(
   if (serverTz) {
     return { timezone: serverTz, source: 'server' }
   }
-  if (orgDefault) {
-    return { timezone: orgDefault, source: 'organization' }
-  }
   return { timezone: null, source: null }
+}
+
+/** Apply daemon-reported timezone when no configured override was resolved. */
+export function resolveServerResponseTimezone(
+  effective: EffectiveServerTimezone,
+  daemonReportedTimezone: string | null | undefined,
+): EffectiveServerTimezone {
+  if (effective.timezone !== null) {
+    return effective
+  }
+  const timezone = daemonReportedTimezone?.trim() || null
+  return { timezone, source: null }
 }

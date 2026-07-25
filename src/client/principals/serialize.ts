@@ -10,11 +10,16 @@ export type SerializedProjectPrincipal = {
   projectId: string | null
   metadata: unknown
   options: unknown
+  /** Services this principal runs as / owns storage for (via `assignment`). */
+  serviceIds: string[]
   createdAt: string
   updatedAt: string
 }
 
-export function serializeProjectPrincipal(row: PrincipalRow): SerializedProjectPrincipal {
+export function serializeProjectPrincipal(
+  row: PrincipalRow,
+  serviceIds: readonly string[] = [],
+): SerializedProjectPrincipal {
   return {
     id: row.id,
     kind: row.kind,
@@ -23,6 +28,7 @@ export function serializeProjectPrincipal(row: PrincipalRow): SerializedProjectP
     projectId: row.projectId,
     metadata: row.metadata,
     options: row.options,
+    serviceIds: [...serviceIds].sort((a, b) => a.localeCompare(b)),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }

@@ -128,18 +128,28 @@ export const serverSchemas = {
       timezone: {
         type: ['string', 'null'],
         description:
-          'Effective timezone (server override unless org enforceServerTimezone).',
+          'Effective timezone: datacenter enforce, else org enforce, else server.options.timezone, else daemon-reported timeSync.timezone.',
       },
       timezoneSource: {
         type: ['string', 'null'],
-        enum: ['server', 'organization', null],
-        description: 'Which layer supplied the effective timezone.',
+        enum: ['server', 'organization', 'datacenter', null],
+        description:
+          'Which configured layer supplied timezone (null when only the daemon-reported zone is shown).',
       },
       colocatedWithInstance: {
         type: 'boolean',
         description:
           'True when this server is the daemon co-located on the same host as this control plane instance.',
       },
+      datacenterId: { type: ['string', 'null'], format: 'uuid' },
+      datacenterDisplayName: { type: ['string', 'null'] },
+    },
+  },
+  PatchServerRequest: {
+    type: 'object',
+    properties: {
+      displayName: { type: 'string' },
+      datacenterId: { type: ['string', 'null'], format: 'uuid' },
     },
   },
   ServerDetailResponse: {
@@ -710,6 +720,89 @@ export const serverPaths: Record<string, unknown> = {
         },
         '404': {
           description: 'Server not found',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    },
+    patch: {
+      tags: ['Servers'],
+      summary: 'Update server display name or datacenter pin',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/PatchServerRequest' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Updated',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok'],
+                properties: { ok: { type: 'boolean', const: true } },
+              },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid request',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '401': {
+          description: 'Unauthorized',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '404': {
+          description: 'Not found',
           content: {
             'application/json': {
               schema: {

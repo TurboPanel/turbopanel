@@ -20,9 +20,10 @@ describe('serializeProjectPrincipal', () => {
       updatedAt: '2026-01-01T00:00:00.000Z',
     } as PrincipalRow
 
-    const serialized = serializeProjectPrincipal(row)
+    const serialized = serializeProjectPrincipal(row, ['b-id', 'a-id'])
     assertEquals('password' in serialized, false)
     assertEquals(serialized.username, 'app')
     assertEquals(serialized.projectId, row.projectId)
+    assertEquals(serialized.serviceIds, ['b-id', 'a-id'])
   })
 })

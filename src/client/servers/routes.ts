@@ -1,16 +1,25 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { Hono, type Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { can, listVisible } from '../authz/index.ts'
-import { assertCanManageOr403, assertCanReadOr403, getOrgId } from '../shared.ts'
+import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
+import {
+  assertCanManageOr403,
+  assertCanReadOr403,
+  getOrgId,
+  parseDisplayName,
+  parseJsonBody,
+} from '../shared.ts'
 import { getDb, getDaemonCellRegistry, type Db } from '../../db.ts'
 import { parseOrganizationOptions } from '../../lib/organization-options.ts'
+import { parseDatacenterOptions } from '../../lib/datacenter-options.ts'
 import {
   formatServerOsDisplay,
   parseServerOptions,
   resolveEffectiveServerTimezone,
+  resolveServerResponseTimezone,
   resolveServerOsLogoKey,
 } from '../../lib/db/server-metadata.ts'
 import { cachedServerDetailReadModel } from '../../query-cache/read-models/server-detail.ts'
@@ -34,7 +43,7 @@ import {
   type DaemonOutboundEnvelope,
 } from '../../daemon/cell/protocol.ts'
 import { clearServerDaemonState } from '../../daemon/authn/server-identity-db.ts'
-import { organization, server, license } from '../../lib/db/schema.ts'
+import { organization, server, license, datacenter } from '../../lib/db/schema.ts'
 import { resolveTrunkManifest } from '../../lib/update/manifest.ts'
 import { revokeLicense } from '../authn/license.ts'
 import { compatLogWarn } from '../../log-compat.ts'
@@ -63,6 +72,9 @@ import { cachedServersListReadModel } from '../../query-cache/read-models/server
 
 const UPDATE_CHANNEL = 'trunk'
 const UPDATE_REQUEST_TTL_SECONDS = 300
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 const STATUS_CACHE_CONTROL = 'private, max-age=5'
 const STATUS_CACHE_MAX_AGE_MS = 5_000
@@ -225,6 +237,105 @@ async function revokeBoundLicenseOnServerDelete(
   }
 }
 
+async function loadDatacenterOptionsMap(
+  db: Db,
+  datacenterIds: Array<string | null | undefined>,
+): Promise<Map<string, ReturnType<typeof parseDatacenterOptions>>> {
+  const distinct = [
+    ...new Set(
+      datacenterIds.filter((id): id is string => typeof id === 'string' && id.length > 0),
+    ),
+  ]
+  if (distinct.length === 0) return new Map()
+
+  const rows = await db
+    .select({ id: datacenter.id, options: datacenter.options })
+    .from(datacenter)
+    .where(inArray(datacenter.id, distinct))
+
+  const map = new Map<string, ReturnType<typeof parseDatacenterOptions>>()
+  for (const row of rows) {
+    map.set(row.id, parseDatacenterOptions(row.options))
+  }
+  return map
+}
+
+async function loadDatacenterDisplayNamesMap(
+  db: Db,
+  datacenterIds: Array<string | null | undefined>,
+): Promise<Map<string, string | null>> {
+  const distinct = [
+    ...new Set(
+      datacenterIds.filter((id): id is string => typeof id === 'string' && id.length > 0),
+    ),
+  ]
+  if (distinct.length === 0) return new Map()
+
+  const rows = await db
+    .select({ id: datacenter.id, displayName: datacenter.displayName })
+    .from(datacenter)
+    .where(inArray(datacenter.id, distinct))
+
+  return new Map(rows.map((row) => [row.id, row.displayName]))
+}
+
+type ServerPatchFields = {
+  displayName?: string | null
+  datacenterId?: string | null
+  updatedAt: string
+}
+
+async function resolvePatchDatacenterId(
+  c: Context,
+  db: Db,
+  organizationId: string,
+  value: unknown,
+): Promise<string | null | Response> {
+  if (value === null) return null
+  if (typeof value !== 'string' || !UUID_RE.test(value)) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  const dcOrgId = await resolveEntityOrganizationId(db, 'datacenter', value)
+  if (dcOrgId !== organizationId) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+  return value
+}
+
+async function parseServerPatchBody(
+  c: Context,
+  db: Db,
+  organizationId: string,
+  body: Record<string, unknown>,
+): Promise<ServerPatchFields | Response> {
+  const patch: ServerPatchFields = { updatedAt: new Date().toISOString() }
+
+  if (body.displayName !== undefined) {
+    try {
+      patch.displayName = parseDisplayName(body)
+    } catch {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+  }
+
+  if (body.datacenterId !== undefined) {
+    const datacenterId = await resolvePatchDatacenterId(
+      c,
+      db,
+      organizationId,
+      body.datacenterId,
+    )
+    if (datacenterId instanceof Response) return datacenterId
+    patch.datacenterId = datacenterId
+  }
+
+  if (patch.displayName === undefined && patch.datacenterId === undefined) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
+  return patch
+}
+
 export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for server routes')
@@ -276,16 +387,45 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       .limit(1)
     const orgOptions = parseOrganizationOptions(orgRow?.options)
 
+    const serverIds = display.rows.map((row) => row.id)
+    const datacenterLinks = serverIds.length > 0
+      ? await db
+        .select({ id: server.id, datacenterId: server.datacenterId })
+        .from(server)
+        .where(inArray(server.id, serverIds))
+      : []
+    const datacenterIdByServerId = new Map(
+      datacenterLinks.map((link) => [link.id, link.datacenterId]),
+    )
+    const datacenterOptionsById = await loadDatacenterOptionsMap(
+      db,
+      datacenterLinks.map((link) => link.datacenterId),
+    )
+    const datacenterDisplayNamesById = await loadDatacenterDisplayNamesMap(
+      db,
+      datacenterLinks.map((link) => link.datacenterId),
+    )
+
     return c.json({
       servers: display.rows.map((row) => {
         const live = presence.get(row.id)
         const os = live?.os ?? null
-        const effective = resolveEffectiveServerTimezone(
-          parseServerOptions(row.options),
-          orgOptions,
+        const dcId = datacenterIdByServerId.get(row.id) ?? null
+        const dcOptions = dcId ? datacenterOptionsById.get(dcId) : undefined
+        const effective = resolveServerResponseTimezone(
+          resolveEffectiveServerTimezone(
+            parseServerOptions(row.options),
+            orgOptions,
+            dcOptions,
+          ),
+          live?.timeSync?.timezone,
         )
         return {
           ...row,
+          datacenterId: dcId,
+          datacenterDisplayName: dcId
+            ? datacenterDisplayNamesById.get(dcId) ?? null
+            : null,
           connected: live?.connected ?? false,
           hostname: live?.hostname ?? null,
           remoteAddress: live?.remoteAddress ?? null,
@@ -648,7 +788,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const organizationId = orgResult
 
     const [serverRow] = await db
-      .select({ id: server.id })
+      .select({ id: server.id, datacenterId: server.datacenterId })
       .from(server)
       .where(and(eq(server.id, id), eq(server.organizationId, organizationId)))
       .limit(1)
@@ -671,17 +811,36 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       .where(eq(organization.id, organizationId))
       .limit(1)
     const orgOptions = parseOrganizationOptions(orgRow?.options)
+    const datacenterOptionsById = await loadDatacenterOptionsMap(
+      db,
+      [serverRow.datacenterId],
+    )
+    const datacenterDisplayNamesById = await loadDatacenterDisplayNamesMap(
+      db,
+      [serverRow.datacenterId],
+    )
+    const dcOptions = serverRow.datacenterId
+      ? datacenterOptionsById.get(serverRow.datacenterId)
+      : undefined
     const live = display.presence
     const os = live?.os ?? null
-    const effective = resolveEffectiveServerTimezone(
-      parseServerOptions(display.row.options),
-      orgOptions,
+    const effective = resolveServerResponseTimezone(
+      resolveEffectiveServerTimezone(
+        parseServerOptions(display.row.options),
+        orgOptions,
+        dcOptions,
+      ),
+      live?.timeSync?.timezone,
     )
 
     return c.json({
       ok: true,
       server: {
         ...display.row,
+        datacenterId: serverRow.datacenterId ?? null,
+        datacenterDisplayName: serverRow.datacenterId
+          ? datacenterDisplayNamesById.get(serverRow.datacenterId) ?? null
+          : null,
         connected: live?.connected ?? false,
         hostname: live?.hostname ?? null,
         remoteAddress: live?.remoteAddress ?? null,
@@ -701,6 +860,39 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
         licenseId: display.row.licenseId ?? null,
       },
     })
+  })
+
+  router.patch('/servers/:id', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+    const id = c.req.param('id')
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
+
+    const [existing] = await db
+      .select({ id: server.id })
+      .from(server)
+      .where(and(eq(server.id, id), eq(server.organizationId, organizationId)))
+      .limit(1)
+    if (!existing) return c.json({ error: 'Not found' }, 404)
+
+    const denied = await assertCanManageOr403(c, 'server', id)
+    if (denied) return denied
+
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+
+    const patch = await parseServerPatchBody(c, db, organizationId, body)
+    if (patch instanceof Response) return patch
+
+    await db.update(server).set(patch).where(eq(server.id, id))
+
+    return c.json({ ok: true as const })
   })
 
   router.delete('/servers/:id', async (c) => {

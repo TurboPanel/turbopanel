@@ -1,5 +1,5 @@
 import { and, eq } from 'drizzle-orm'
-import { Hono, type Context } from 'hono'
+import { Hono } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import {
@@ -8,7 +8,7 @@ import {
   getOrgId,
   parseJsonBody,
 } from '../shared.ts'
-import { getDb, getDaemonCellRegistry } from '../../db.ts'
+import { getDb } from '../../db.ts'
 import { assertValidHostname } from '../../lib/commands/hostname.ts'
 import {
   parseNtpSetPayload,
@@ -16,18 +16,18 @@ import {
   parseTimezoneSetPayload,
 } from '../../lib/commands/schemas.ts'
 import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
-import { isNoopCommandQueue } from '../../lib/commands/noop-command-queue.ts'
-import { getCommandQueue } from '../../lib/commands/queue.ts'
-import type { CommandQueue } from '../../lib/commands/queue.ts'
 import {
   createCommandRecord,
   getCommandRecord,
   listServerCommands,
-  transitionCommand,
   type CommandRecord,
 } from '../../lib/db/command-records.ts'
 import { isAllowedTimezone } from '../../lib/timezones.ts'
 import { server } from '../../lib/db/schema.ts'
+import {
+  assertDispatchInfrastructure,
+  enqueueCommandOrCompensate,
+} from './command-dispatch.ts'
 
 type PingLatencyBreakdown = {
   apiToConsumerMs: number | null
@@ -87,39 +87,6 @@ async function verifyServerInOrg(
     .where(and(eq(server.id, serverId), eq(server.organizationId, organizationId)))
     .limit(1)
   return Boolean(row)
-}
-
-function assertDispatchInfrastructure(c: Context): CommandQueue | Response {
-  const registry = getDaemonCellRegistry(c)
-  if (!registry) {
-    return c.json({ error: 'Daemon cell registry unavailable' }, 503)
-  }
-
-  const commandQueue = getCommandQueue(c)
-  if (!commandQueue || isNoopCommandQueue(commandQueue)) {
-    return c.json({ error: 'Command queue unavailable' }, 503)
-  }
-
-  return commandQueue
-}
-
-async function enqueueCommandOrCompensate(
-  db: NonNullable<ReturnType<typeof getDb>>,
-  commandQueue: CommandQueue,
-  record: CommandRecord,
-  envelope: CommandEnvelope,
-  c: Context,
-): Promise<Response | null> {
-  try {
-    await commandQueue.enqueue(envelope)
-    return null
-  } catch {
-    await transitionCommand(db, record.id, {
-      status: 'failed',
-      error: 'Command queue unavailable',
-    })
-    return c.json({ error: 'Command queue unavailable' }, 503)
-  }
 }
 
 export function registerServerCommandRoutes(router: Hono, opts: AuthRouteOpts) {

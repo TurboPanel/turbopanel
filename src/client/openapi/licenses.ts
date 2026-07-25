@@ -163,6 +163,31 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
               },
             },
           },
+          '409': {
+            description:
+              'Organization server seat capacity exceeded (maxServers). Enrolled servers and unconsumed keys both count.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: [
+                    'error',
+                    'maxServers',
+                    'usedSeats',
+                    'serverCount',
+                    'reservedSeatCount',
+                  ],
+                  properties: {
+                    error: { type: 'string', const: 'server_capacity_exceeded' },
+                    maxServers: { type: ['integer', 'null'] },
+                    usedSeats: { type: 'integer' },
+                    serverCount: { type: 'integer' },
+                    reservedSeatCount: { type: 'integer' },
+                  },
+                },
+              },
+            },
+          },
           '503': {
             description: 'Database unavailable',
             content: {

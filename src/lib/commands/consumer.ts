@@ -27,7 +27,7 @@ import {
   type CommandRecord,
 } from '../db/command-records.ts'
 import { reconcileEnvironmentContainers } from '../db/container-records.ts'
-import { server } from '../db/schema.ts'
+import { peer, server } from '../db/schema.ts'
 import type { CommandEnvelope } from './envelope.ts'
 import { nowIso } from './ids.ts'
 import {
@@ -39,6 +39,8 @@ import {
   parseNtpSetResult,
   parsePingResult,
   parseTimezoneSetResult,
+  parseWireguardApplyPayload,
+  parseWireguardApplyResult,
 } from './schemas.ts'
 import { TERMINAL_COMMAND_STATUSES, type CommandType } from './types.ts'
 
@@ -48,6 +50,7 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'server.ntp.set': 300_000,
   'server.reboot': 120_000,
   'server.timezone.set': 300_000,
+  'server.wireguard.apply': 300_000,
   'environment.deploy': 600_000,
   'environment.stop': 120_000,
 }
@@ -61,6 +64,7 @@ function commandTimeoutMs(type: string): number {
     type === 'server.ntp.set' ||
     type === 'server.reboot' ||
     type === 'server.timezone.set' ||
+    type === 'server.wireguard.apply' ||
     type === 'environment.deploy' ||
     type === 'environment.stop'
   ) {
@@ -320,6 +324,64 @@ async function applyTimeSyncSideEffect(
   }
 }
 
+function isPostgresUniqueViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null &&
+    'code' in err && (err as { code: string }).code === '23505'
+}
+
+async function applyWireguardSideEffect(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown,
+): Promise<void> {
+  if (record.type !== 'server.wireguard.apply') return
+  try {
+    const payload = parseWireguardApplyPayload(record.payload)
+    const wireguardResult = parseWireguardApplyResult(result)
+
+    const [existing] = await db
+      .select({ listenPort: peer.listenPort })
+      .from(peer)
+      .where(and(eq(peer.id, payload.peerId), eq(peer.vpnId, payload.vpnId)))
+      .limit(1)
+
+    const updatedAt = nowIso()
+    const patch: {
+      publicKey: string
+      updatedAt: string
+      listenPort?: number
+    } = {
+      publicKey: wireguardResult.publicKey,
+      updatedAt,
+    }
+    if (
+      wireguardResult.listenPort !== undefined &&
+      existing?.listenPort === null
+    ) {
+      patch.listenPort = wireguardResult.listenPort
+    }
+
+    await db
+      .update(peer)
+      .set(patch)
+      .where(and(eq(peer.id, payload.peerId), eq(peer.vpnId, payload.vpnId)))
+  } catch (err) {
+    if (isPostgresUniqueViolation(err)) {
+      compatLogWarn(
+        'command-consumer',
+        `wireguard public key reconcile conflict for command ${record.id}`,
+      )
+      return
+    }
+    const message = err instanceof Error ? err.message : String(err)
+    compatLogWarn(
+      'command-consumer',
+      `wireguard side effect failed for command ${record.id}: ${message}`,
+    )
+  }
+}
+
 async function reconcileContainersSafely(
   db: Db,
   record: CommandRecord,
@@ -427,6 +489,7 @@ async function applySucceededSideEffects(
 ): Promise<void> {
   await applyHostnameSideEffect(db, record, envelope, result)
   await applyTimeSyncSideEffect(db, record, envelope, result)
+  await applyWireguardSideEffect(db, record, envelope, result)
   await applyEnvironmentDeploySideEffect(db, record, envelope, result)
   await applyEnvironmentStopSideEffect(db, record, envelope, result)
 }

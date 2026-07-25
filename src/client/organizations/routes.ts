@@ -3,16 +3,22 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
+import { assertOrgOwnerOr403 } from '../authz/index.ts'
 import { listAccessibleOrganizations } from '../org-context.ts'
 import { assertCanManageOr403, parseJsonBody } from '../shared.ts'
 import { getDb } from '../../db.ts'
 import { organization } from '../../lib/db/schema.ts'
-import { parseOrganizationOptions } from '../../lib/organization-options.ts'
+import {
+  parseMaxServersInput,
+  parseOrganizationOptions,
+} from '../../lib/organization-options.ts'
+import { loadOrgServerCapacity } from '../../lib/server-capacity.ts'
 import { isAllowedTimezone, listTimezones } from '../../lib/timezones.ts'
 
 export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   router.use('/organizations', createSessionMiddleware(opts.secrets))
   router.use('/organizations/:id/default-timezone', createSessionMiddleware(opts.secrets))
+  router.use('/organizations/:id/server-capacity', createSessionMiddleware(opts.secrets))
   router.use('/timezones', createSessionMiddleware(opts.secrets))
 
   router.get('/organizations', async (c) => {
@@ -114,6 +120,63 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
       defaultServerTimezone: options.defaultServerTimezone ?? null,
       enforceServerTimezone: options.enforceServerTimezone ?? false,
     })
+  })
+
+  router.get('/organizations/:id/server-capacity', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const id = c.req.param('id')
+    const denied = await assertCanManageOr403(c, 'organization', id)
+    if (denied) return denied
+
+    const capacity = await loadOrgServerCapacity(db, id)
+    if (!capacity) return c.json({ error: 'Not found' }, 404)
+
+    return c.json(capacity)
+  })
+
+  router.put('/organizations/:id/server-capacity', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const id = c.req.param('id')
+    const denied = await assertOrgOwnerOr403(c, 'organization', id)
+    if (denied) return denied
+
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+
+    if (!('maxServers' in body)) {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+
+    const parsed = parseMaxServersInput(body.maxServers)
+    if (!parsed.ok) {
+      return c.json(
+        { error: 'maxServers must be a non-negative integer or null' },
+        400,
+      )
+    }
+
+    const [orgRow] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1)
+    if (!orgRow) return c.json({ error: 'Not found' }, 404)
+
+    await db.update(organization).set({
+      options: sql`COALESCE(${organization.options}, '{}'::jsonb) || ${
+        JSON.stringify({ maxServers: parsed.value })
+      }::jsonb`,
+      updatedAt: new Date().toISOString(),
+    }).where(eq(organization.id, id))
+
+    const capacity = await loadOrgServerCapacity(db, id)
+    if (!capacity) return c.json({ error: 'Not found' }, 404)
+
+    return c.json({ ok: true as const, ...capacity })
   })
 
   router.get('/timezones', async (c) => {

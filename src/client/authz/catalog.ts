@@ -28,6 +28,11 @@ export const RESOURCE_KINDS = [
   'tls',
   'principal',
   'storage',
+  'network',
+  'datacenter',
+  'ip',
+  'vpn',
+  'peer',
 ] as const
 
 /**
@@ -54,6 +59,7 @@ export const ENTITY_TYPES = [
   'organization', 'team', 'workspace', 'environment',
   'project', 'service', 'hosting', 'server', 'variable', 'managed',
   'container', 'tls', 'principal', 'storage',
+  'network', 'datacenter', 'ip', 'vpn', 'peer',
 ] as const
 export type EntityType = (typeof ENTITY_TYPES)[number]
 

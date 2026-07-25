@@ -17,6 +17,11 @@ import {
   team,
   tls,
   user,
+  network,
+  datacenter,
+  ip,
+  vpn,
+  peer,
 } from '../../lib/db/schema.ts'
 import {
   isGrantEntityType,
@@ -194,6 +199,46 @@ export async function verifyEntityExists(
         .select({ id: storage.id })
         .from(storage)
         .where(eq(storage.id, entityId))
+        .limit(1)
+      return rows.length > 0
+    }
+    case 'network': {
+      const rows = await db
+        .select({ id: network.id })
+        .from(network)
+        .where(eq(network.id, entityId))
+        .limit(1)
+      return rows.length > 0
+    }
+    case 'datacenter': {
+      const rows = await db
+        .select({ id: datacenter.id })
+        .from(datacenter)
+        .where(eq(datacenter.id, entityId))
+        .limit(1)
+      return rows.length > 0
+    }
+    case 'ip': {
+      const rows = await db
+        .select({ id: ip.id })
+        .from(ip)
+        .where(eq(ip.id, entityId))
+        .limit(1)
+      return rows.length > 0
+    }
+    case 'vpn': {
+      const rows = await db
+        .select({ id: vpn.id })
+        .from(vpn)
+        .where(eq(vpn.id, entityId))
+        .limit(1)
+      return rows.length > 0
+    }
+    case 'peer': {
+      const rows = await db
+        .select({ id: peer.id })
+        .from(peer)
+        .where(eq(peer.id, entityId))
         .limit(1)
       return rows.length > 0
     }
@@ -435,6 +480,48 @@ export async function resolveEntityOrganizationId(
         .where(eq(storage.id, entityId))
         .limit(1)
       return rows[0]?.organizationId ?? null
+    }
+    case 'network': {
+      const rows = await db
+        .select({ organizationId: network.organizationId })
+        .from(network)
+        .where(eq(network.id, entityId))
+        .limit(1)
+      return rows[0]?.organizationId ?? null
+    }
+    case 'datacenter': {
+      const rows = await db
+        .select({ organizationId: datacenter.organizationId })
+        .from(datacenter)
+        .where(eq(datacenter.id, entityId))
+        .limit(1)
+      return rows[0]?.organizationId ?? null
+    }
+    case 'ip': {
+      const rows = await db
+        .select({ organizationId: ip.organizationId })
+        .from(ip)
+        .where(eq(ip.id, entityId))
+        .limit(1)
+      return rows[0]?.organizationId ?? null
+    }
+    case 'vpn': {
+      const rows = await db
+        .select({ organizationId: vpn.organizationId })
+        .from(vpn)
+        .where(eq(vpn.id, entityId))
+        .limit(1)
+      return rows[0]?.organizationId ?? null
+    }
+    case 'peer': {
+      const rows = await db.execute<{ organization_id: string }>(sql`
+        SELECT v.organization_id
+        FROM peer p
+        JOIN vpn v ON v.id = p.vpn_id
+        WHERE p.id = ${entityId}::uuid
+        LIMIT 1
+      `)
+      return rows[0]?.organization_id ?? null
     }
     default:
       return null

@@ -20,6 +20,11 @@ import {
   parseInstallBaseUrl,
   resolvePublicBaseUrl,
 } from '../../lib/resolve-public-base-url.ts'
+import {
+  canReserveServerSeat,
+  loadOrgServerCapacity,
+  SERVER_CAPACITY_EXCEEDED_ERROR,
+} from '../../lib/server-capacity.ts'
 import { getOrgId } from '../shared.ts'
 
 // License create/list/revoke are owner-only. Use the exact owner-only guard so
@@ -180,6 +185,23 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
             : 'installBaseUrl must be a valid https URL',
         },
         400,
+      )
+    }
+
+    // Seat check before minting: enrolled servers + unconsumed keys count
+    // against organization.options.maxServers (null/omitted = unlimited).
+    const capacity = await loadOrgServerCapacity(db, organizationId)
+    if (!capacity) return c.json({ error: 'Not found' }, 404)
+    if (!canReserveServerSeat(capacity)) {
+      return c.json(
+        {
+          error: SERVER_CAPACITY_EXCEEDED_ERROR,
+          maxServers: capacity.maxServers,
+          usedSeats: capacity.usedSeats,
+          serverCount: capacity.serverCount,
+          reservedSeatCount: capacity.reservedSeatCount,
+        },
+        409,
       )
     }
 
