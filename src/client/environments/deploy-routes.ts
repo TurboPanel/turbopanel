@@ -15,6 +15,7 @@ import {
   readComposePlacementServerId,
   readHostingProxyFromOptions,
   extractComposeFromOptions,
+  verifyServerInOrg,
   type DeployPrepareError,
 } from './deploy-prepare.ts'
 import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
@@ -36,7 +37,6 @@ import {
   environment,
   hosting,
   project,
-  server,
   service,
   tls,
 } from '../../lib/db/schema.ts'
@@ -87,19 +87,6 @@ function responseForPrepareError(
     error: 'resource_limit_exceeded',
     violations: prepared.violations,
   }, { status: 409 })
-}
-
-async function verifyServerInOrg(
-  db: Db,
-  serverId: string,
-  organizationId: string,
-): Promise<boolean> {
-  const [row] = await db
-    .select({ id: server.id })
-    .from(server)
-    .where(and(eq(server.id, serverId), eq(server.organizationId, organizationId)))
-    .limit(1)
-  return Boolean(row)
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

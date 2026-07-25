@@ -15,13 +15,13 @@ import {
   registerEnvironmentDeployRoutes,
   registerEnvironmentStopRoutes,
 } from './environments/deploy-routes.ts'
+import { registerEnvironmentManagedRoutes } from './environments/managed-routes.ts'
 import { registerEnvironmentRoutes } from './environments/routes.ts'
 import { registerVariableRoutes } from './variables/routes.ts'
 import { registerContainerRoutes } from './containers/routes.ts'
 import { registerHostingRoutes } from './hostings/routes.ts'
 import { registerTlsRoutes } from './tls/routes.ts'
 import { registerLicenseRoutes } from './licenses/routes.ts'
-import { registerManagedServiceRoutes } from './managed/routes.ts'
 import {
   registerOrganizationLimitsRoutes,
   registerProjectPrincipalRoutes,
@@ -71,7 +71,6 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
   })
 
   registerServerRoutes(client, opts)
-  registerManagedServiceRoutes(client, opts)
   registerNetworkRoutes(client, opts)
   registerLicenseRoutes(client, opts)
   registerOrganizationRoutes(client, opts)
@@ -80,6 +79,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
   registerEnvironmentRoutes(client, opts)
   registerEnvironmentDeployRoutes(client, opts)
   registerEnvironmentStopRoutes(client, opts)
+  registerEnvironmentManagedRoutes(client, opts)
   registerVariableRoutes(client, opts)
   registerProjectRoutes(client, opts)
   registerServiceRoutes(client, opts)

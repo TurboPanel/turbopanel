@@ -18,6 +18,7 @@ import { workspacePaths, workspaceSchemas } from './workspaces.ts'
 import { storagePaths, storageSchemas } from './storage.ts'
 import { principalPaths, principalSchemas } from './principals.ts'
 import { deployPaths, deploySchemas } from './deploy.ts'
+import { managedPaths, managedSchemas } from './managed.ts'
 
 /** Hand-authored OpenAPI 3.1 spec for documented client/install/health routes. */
 export type ClientOpenApiOptions = {
@@ -98,6 +99,7 @@ export function getClientOpenApiSpec(
         ...storageSchemas,
         ...principalSchemas,
         ...deploySchemas,
+        ...managedSchemas,
         ...serviceSchemas,
         ...hostingSchemas,
         ...containerSchemas,
@@ -119,6 +121,7 @@ export function getClientOpenApiSpec(
       ...storagePaths,
       ...principalPaths,
       ...deployPaths,
+      ...managedPaths,
       ...servicePaths,
       ...hostingPaths,
       ...containerPaths,

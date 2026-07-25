@@ -47,6 +47,17 @@ export type CatalogSummary = {
   description: string
 }
 
+/** Managed engine codes — environment-scoped services, not project-scoped catalog apps. */
+export const MANAGED_ENGINE_CODES = [
+  'postgres',
+  'mysql',
+  'mariadb',
+  'redis',
+  'clickhouse',
+] as const
+
+export type ManagedEngineCode = (typeof MANAGED_ENGINE_CODES)[number]
+
 function composeDocument(data: Record<string, unknown>): ComposeDocument {
   return {
     version: 1,
@@ -56,6 +67,66 @@ function composeDocument(data: Record<string, unknown>): ComposeDocument {
       comments: {},
     },
   }
+}
+
+/**
+ * True for environment-scoped managed engine catalog entries (Postgres, MySQL,
+ * …). These scaffold a project + first environment only — no project-scoped
+ * `managed` row / `managed_id`. Legacy catalog apps (e.g. wordpress-mysql)
+ * remain on the project-scoped managed marker path.
+ */
+export function isManagedEngineCatalogEntry(
+  entry: CatalogEntry,
+): entry is CatalogEntry & { code: ManagedEngineCode } {
+  return (
+    entry.kind === 'managed' &&
+    (MANAGED_ENGINE_CODES as readonly string[]).includes(entry.code)
+  )
+}
+
+/**
+ * Engine metadata stored on managed-engine catalog `options`.
+ *
+ * `provider` is the `principal.provider` CHECK value (`pam` \| `postgres` \|
+ * `mysql` \| `redis`) — not necessarily the same string as `engine`. ClickHouse
+ * uses `provider: 'postgres'` because `principal_provider_check` has no
+ * clickhouse variant; engine ≠ provider by design.
+ */
+export type ManagedEngineOptions = {
+  engine: ManagedEngineCode
+  rootUsername: string
+  provider: string
+  port: number
+}
+
+const PRINCIPAL_PROVIDERS = new Set(['pam', 'postgres', 'mysql', 'redis'])
+
+/**
+ * Validate and return managed-engine options from a catalog entry, or `null`
+ * when the entry is not an engine catalog row / fields are incomplete.
+ */
+export function readManagedEngineOptions(
+  entry: CatalogEntry,
+): ManagedEngineOptions | null {
+  if (!isManagedEngineCatalogEntry(entry)) return null
+  const options = entry.options
+  if (!options || typeof options !== 'object') return null
+
+  const engine = options.engine
+  const rootUsername = options.rootUsername
+  const provider = options.provider
+  const port = options.port
+
+  if (engine !== entry.code) return null
+  if (typeof rootUsername !== 'string' || rootUsername.length === 0) return null
+  if (typeof provider !== 'string' || !PRINCIPAL_PROVIDERS.has(provider)) {
+    return null
+  }
+  if (typeof port !== 'number' || !Number.isFinite(port) || port <= 0) {
+    return null
+  }
+
+  return { engine, rootUsername, provider, port }
 }
 
 const CATALOG: CatalogEntry[] = [
@@ -96,6 +167,128 @@ const CATALOG: CatalogEntry[] = [
       {
         displayName: 'production',
         description: 'Production environment',
+      },
+    ],
+  },
+  {
+    code: 'postgres',
+    kind: 'managed',
+    displayName: 'PostgreSQL',
+    description: 'Managed PostgreSQL database',
+    compose: composeDocument({
+      services: {
+        postgres: { image: 'postgres:16' },
+      },
+    }),
+    options: {
+      engine: 'postgres',
+      rootUsername: 'postgres',
+      provider: 'postgres',
+      port: 5432,
+    },
+    environments: [
+      {
+        displayName: 'production',
+        description: 'Production environment',
+        variables: [{ key: 'POSTGRES_PASSWORD', isSecret: true }],
+      },
+    ],
+  },
+  {
+    code: 'mysql',
+    kind: 'managed',
+    displayName: 'MySQL',
+    description: 'Managed MySQL database',
+    compose: composeDocument({
+      services: {
+        mysql: { image: 'mysql:8' },
+      },
+    }),
+    options: {
+      engine: 'mysql',
+      rootUsername: 'root',
+      provider: 'mysql',
+      port: 3306,
+    },
+    environments: [
+      {
+        displayName: 'production',
+        description: 'Production environment',
+        variables: [{ key: 'MYSQL_ROOT_PASSWORD', isSecret: true }],
+      },
+    ],
+  },
+  {
+    code: 'mariadb',
+    kind: 'managed',
+    displayName: 'MariaDB',
+    description: 'Managed MariaDB database',
+    compose: composeDocument({
+      services: {
+        mariadb: { image: 'mariadb:11' },
+      },
+    }),
+    options: {
+      engine: 'mariadb',
+      rootUsername: 'root',
+      provider: 'mysql',
+      port: 3306,
+    },
+    environments: [
+      {
+        displayName: 'production',
+        description: 'Production environment',
+        variables: [{ key: 'MYSQL_ROOT_PASSWORD', isSecret: true }],
+      },
+    ],
+  },
+  {
+    code: 'redis',
+    kind: 'managed',
+    displayName: 'Redis',
+    description: 'Managed Redis cache',
+    compose: composeDocument({
+      services: {
+        redis: { image: 'redis:7' },
+      },
+    }),
+    options: {
+      engine: 'redis',
+      rootUsername: 'default',
+      provider: 'redis',
+      port: 6379,
+    },
+    environments: [
+      {
+        displayName: 'production',
+        description: 'Production environment',
+        variables: [{ key: 'REDIS_PASSWORD', isSecret: true }],
+      },
+    ],
+  },
+  {
+    code: 'clickhouse',
+    kind: 'managed',
+    displayName: 'ClickHouse',
+    description: 'Managed ClickHouse analytics database',
+    compose: composeDocument({
+      services: {
+        clickhouse: { image: 'clickhouse/clickhouse-server:24' },
+      },
+    }),
+    // provider is 'postgres' (not 'clickhouse'): principal_provider_check only
+    // permits pam|postgres|mysql|redis — engine ≠ provider by design.
+    options: {
+      engine: 'clickhouse',
+      rootUsername: 'default',
+      provider: 'postgres',
+      port: 8123,
+    },
+    environments: [
+      {
+        displayName: 'production',
+        description: 'Production environment',
+        variables: [{ key: 'CLICKHOUSE_PASSWORD', isSecret: true }],
       },
     ],
   },

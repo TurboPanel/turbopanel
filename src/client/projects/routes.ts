@@ -13,6 +13,7 @@ import { environment, managed, project, variable, workspace } from '../../lib/db
 import {
   getCatalogEntry,
   isCreateProjectType,
+  isManagedEngineCatalogEntry,
   listCatalog,
   resolveCatalogVariablePlaintext,
   type CatalogEntry,
@@ -313,6 +314,20 @@ async function insertDockerComposeProject(
   return inserted.id
 }
 
+function catalogProjectOptions(
+  fields: {
+    options: Record<string, unknown> | null
+    entry: CatalogEntry
+  },
+  includeEngineOptions: boolean,
+): Record<string, unknown> {
+  if (fields.options) return fields.options
+  if (includeEngineOptions && fields.entry.options) {
+    return { compose: fields.entry.compose, ...fields.entry.options }
+  }
+  return { compose: fields.entry.compose }
+}
+
 async function insertCatalogProject(
   tx: DbTx,
   fields: {
@@ -326,18 +341,27 @@ async function insertCatalogProject(
     dataEncryptionSecrets: DerivedSecretsConfig
   },
 ): Promise<string> {
+  const isEngine =
+    fields.projectType === 'managed' && isManagedEngineCatalogEntry(fields.entry)
+
   const [inserted] = await tx
     .insert(project)
     .values({
       displayName: fields.displayName,
       description: fields.description,
       workspaceId: fields.workspaceId,
-      metadata: fields.metadata ?? { type: fields.projectType },
-      options: fields.options ?? { compose: fields.entry.compose },
+      metadata: fields.metadata ?? {
+        type: fields.projectType,
+        ...(isEngine ? { code: fields.entry.code } : {}),
+      },
+      options: catalogProjectOptions(fields, isEngine),
     })
     .returning({ id: project.id })
 
-  if (fields.projectType === 'managed') {
+  // Legacy catalog apps (e.g. wordpress-mysql) keep a project-scoped managed
+  // marker. Managed engines scaffold project + environment only; the
+  // environment-scoped managed row is created by later provisioning.
+  if (fields.projectType === 'managed' && !isEngine) {
     const [managedRow] = await tx
       .insert(managed)
       .values({

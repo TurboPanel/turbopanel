@@ -1,5 +1,5 @@
 import type { Context } from 'hono'
-import { eq, inArray, or } from 'drizzle-orm'
+import { and, eq, inArray, or } from 'drizzle-orm'
 import type { AppEnv } from '../../app.ts'
 import { decryptSecret, resealSecretForDaemon } from '../authn/data-encryption.ts'
 import {
@@ -21,6 +21,7 @@ import {
   assertComposeDocument,
   composeDocumentToRuntimeYaml,
   mergeComposeOverlay,
+  readComposePlacementServerId,
   stripComposePlacement,
   type ComposeDocument,
 } from '../../lib/compose/index.ts'
@@ -50,10 +51,41 @@ import {
   type ResolvedVariableMap,
 } from '../variables/resolve-inherited.ts'
 
-export { readComposePlacementServerId } from '../../lib/compose/index.ts'
+export { readComposePlacementServerId }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Read the environment overlay placement pin, or `null` when compose is
+ * absent/invalid or has no `x-turbopanel.placement.server_id`.
+ */
+export function readEnvironmentPlacementServerId(
+  environmentOptions: unknown,
+): string | null {
+  try {
+    const overlayCompose = assertComposeDocument(
+      extractComposeFromOptions(environmentOptions),
+    )
+    return readComposePlacementServerId(overlayCompose)
+  } catch {
+    return null
+  }
+}
+
+/** True when `serverId` belongs to `organizationId`. */
+export async function verifyServerInOrg(
+  db: Db,
+  serverId: string,
+  organizationId: string,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: server.id })
+    .from(server)
+    .where(and(eq(server.id, serverId), eq(server.organizationId, organizationId)))
+    .limit(1)
+  return Boolean(row)
 }
 
 function readComposeServiceName(metadata: unknown, fallback: string): string {

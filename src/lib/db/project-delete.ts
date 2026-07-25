@@ -39,7 +39,8 @@ export type ProjectDeleteResult =
 /**
  * Cascade-delete a project and all child resources after verifying no active
  * containers remain. Order: container → hosting → service → environment → project.
- * Variables and managed rows cascade via FK.
+ * Variables and managed rows cascade via FK (project-scoped managed from project;
+ * environment-scoped managed when environments are deleted).
  */
 export async function deleteProjectCascade(
   db: Db,

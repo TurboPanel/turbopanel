@@ -427,57 +427,6 @@ export const project = pgTable(
   ]
 )
 
-export const managed = pgTable(
-  'managed',
-  {
-    id: uuid()
-      .default(sql`uuidv7()`)
-      .primaryKey()
-      .notNull(),
-    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
-      .defaultNow()
-      .notNull(),
-    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
-      .defaultNow()
-      .notNull(),
-    projectId: uuid('project_id'),
-    serverId: uuid('server_id'),
-    displayName: varchar('display_name', { length: 255 }),
-    metadata: jsonb(),
-    options: jsonb(),
-  },
-  (table) => [
-    index('idx_managed_project_id').using(
-      'btree',
-      table.projectId.asc().nullsLast().op('uuid_ops')
-    ),
-    index('idx_managed_server_id').using(
-      'btree',
-      table.serverId.asc().nullsLast().op('uuid_ops')
-    ),
-    foreignKey({
-      columns: [table.projectId],
-      foreignColumns: [project.id],
-      name: 'managed_project_id_project_id_fk',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.serverId],
-      foreignColumns: [server.id],
-      name: 'managed_server_fk',
-    }).onDelete('restrict'),
-    uniqueIndex('managed_project_id_unique')
-      .on(table.projectId)
-      .where(sql`${table.projectId} IS NOT NULL`),
-    check(
-      'managed_parent_check',
-      sql`(${table.projectId} IS NOT NULL) OR (${table.serverId} IS NOT NULL)`,
-    ),
-    check(
-      'managed_display_name_format_check',
-      sql`(${table.displayName} IS NULL) OR (((char_length((${table.displayName})::text) >= 1) AND (char_length((${table.displayName})::text) <= 255)) AND ((${table.displayName})::text ~ '^[A-Za-z0-9 ._-]+$'::text))`,
-    ),
-  ]
-)
 export const environment = pgTable(
   'environment',
   {
@@ -510,6 +459,61 @@ export const environment = pgTable(
     check(
       'environment_display_name_format_check',
       sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+    ),
+  ]
+)
+
+export const managed = pgTable(
+  'managed',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    projectId: uuid('project_id'),
+    environmentId: uuid('environment_id'),
+    displayName: varchar('display_name', { length: 255 }),
+    metadata: jsonb(),
+    options: jsonb(),
+  },
+  (table) => [
+    index('idx_managed_project_id').using(
+      'btree',
+      table.projectId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_managed_environment_id').using(
+      'btree',
+      table.environmentId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.projectId],
+      foreignColumns: [project.id],
+      name: 'managed_project_id_project_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.environmentId],
+      foreignColumns: [environment.id],
+      name: 'managed_environment_id_environment_id_fk',
+    }).onDelete('cascade'),
+    uniqueIndex('managed_project_id_unique')
+      .on(table.projectId)
+      .where(sql`${table.projectId} IS NOT NULL`),
+    uniqueIndex('managed_environment_id_unique')
+      .on(table.environmentId)
+      .where(sql`${table.environmentId} IS NOT NULL`),
+    check(
+      'managed_parent_check',
+      sql`(${table.projectId} IS NOT NULL) OR (${table.environmentId} IS NOT NULL)`,
+    ),
+    check(
+      'managed_display_name_format_check',
+      sql`(${table.displayName} IS NULL) OR (((char_length((${table.displayName})::text) >= 1) AND (char_length((${table.displayName})::text) <= 255)) AND ((${table.displayName})::text ~ '^[A-Za-z0-9 ._-]+$'::text))`,
     ),
   ]
 )

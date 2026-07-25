@@ -554,19 +554,19 @@ test('GET /access/check returns boolean for variable and managed resource ids', 
 
     const projectId = insertedProject!.id
 
-    const [insertedManaged] = await db
-      .insert(managed)
-      .values({ projectId })
-      .returning({ id: managed.id })
-
-    const managedId = insertedManaged!.id
-
     const [insertedEnvironment] = await db
       .insert(environment)
       .values({ displayName: 'Access Route Env', projectId })
       .returning({ id: environment.id })
 
     const environmentId = insertedEnvironment!.id
+
+    const [insertedManaged] = await db
+      .insert(managed)
+      .values({ environmentId })
+      .returning({ id: managed.id })
+
+    const managedId = insertedManaged!.id
 
     const [insertedVariable] = await db
       .insert(variable)
@@ -606,8 +606,8 @@ test('GET /access/check returns boolean for variable and managed resource ids', 
       }
     } finally {
       await db.delete(variable).where(eq(variable.environmentId, environmentId))
+      await db.delete(managed).where(eq(managed.environmentId, environmentId))
       await db.delete(environment).where(eq(environment.projectId, projectId))
-      await db.delete(managed).where(eq(managed.projectId, projectId))
       await db.delete(project).where(eq(project.id, projectId))
     }
   })
