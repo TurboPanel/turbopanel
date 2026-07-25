@@ -713,6 +713,54 @@ async function enqueueDeployCommand(
   })
 }
 
+function preferredListenPortsFromHostings(
+  hostings: readonly DeployHostingPayload[],
+): Map<string, number> {
+  const preferredListenPorts = new Map<string, number>()
+  for (const entry of hostings) {
+    if (typeof entry.targetPort === 'number') {
+      preferredListenPorts.set(entry.composeServiceName, entry.targetPort)
+    }
+  }
+  return preferredListenPorts
+}
+
+function buildTraditionalWebSitesForDeploy(
+  traditionalWebSites: EnvironmentDeployTraditionalWebSite[],
+  hostings: DeployHostingPayload[],
+): EnvironmentDeployTraditionalWebSite[] {
+  return attachWebMetadataToTraditionalSites(
+    assignTraditionalWebListenPorts(
+      traditionalWebSites,
+      preferredListenPortsFromHostings(hostings),
+    ),
+    hostings,
+  )
+}
+
+function validateDeployMaterials(
+  hostings: DeployHostingPayload[],
+  storageMaterial: EnvironmentDeployStorageMaterial[],
+): Response | null {
+  const hostingValidationError = validateDeployHostings(hostings)
+  if (hostingValidationError) {
+    return Response.json(
+      { error: 'invalid_deploy_hosting', message: hostingValidationError },
+      { status: 400 },
+    )
+  }
+
+  const storageValidationError = validateDeployStorageMaterialList(storageMaterial)
+  if (storageValidationError) {
+    return Response.json(
+      { error: 'invalid_deploy_storage', message: storageValidationError },
+      { status: 400 },
+    )
+  }
+
+  return null
+}
+
 /**
  * Register `POST /environments/:id/deploy` — single-server compose deploy.
  * Status is polled via existing `GET /servers/:serverId/commands/:commandId`.
@@ -795,27 +843,14 @@ export function registerEnvironmentDeployRoutes(
 
     const projectName = `tp-${projectComposeName(loaded.projectRow.displayName, loaded.projectRow.id)}-${environmentId.slice(0, 8)}`
 
-    const hostingValidationError = validateDeployHostings(hostingBuilt.hostings)
-    if (hostingValidationError) {
-      return c.json({ error: 'invalid_deploy_hosting', message: hostingValidationError }, 400)
-    }
+    const materialsError = validateDeployMaterials(
+      hostingBuilt.hostings,
+      prepared.storageMaterial,
+    )
+    if (materialsError) return materialsError
 
-    const storageValidationError = validateDeployStorageMaterialList(prepared.storageMaterial)
-    if (storageValidationError) {
-      return c.json({ error: 'invalid_deploy_storage', message: storageValidationError }, 400)
-    }
-
-    const preferredListenPorts = new Map<string, number>()
-    for (const entry of hostingBuilt.hostings) {
-      if (typeof entry.targetPort === 'number') {
-        preferredListenPorts.set(entry.composeServiceName, entry.targetPort)
-      }
-    }
-    const traditionalWebSites = attachWebMetadataToTraditionalSites(
-      assignTraditionalWebListenPorts(
-        prepared.traditionalWebSites,
-        preferredListenPorts,
-      ),
+    const traditionalWebSites = buildTraditionalWebSitesForDeploy(
+      prepared.traditionalWebSites,
       hostingBuilt.hostings,
     )
 

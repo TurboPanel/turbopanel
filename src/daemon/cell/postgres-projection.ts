@@ -15,7 +15,10 @@ import {
   type ServerDaemonStatus,
   type UpdateProjection,
 } from "../authn/daemon-state.ts";
-import { getServerDaemonStateByServerId } from "../authn/server-identity-db.ts";
+import {
+  getServerDaemonStateByServerId,
+  type ServerDaemonStateWithMetadata,
+} from "../authn/server-identity-db.ts";
 import { server } from "../../lib/db/schema.ts";
 import {
   parseServerTimeSync,
@@ -236,10 +239,9 @@ function buildMetadataPatch(
       delta.timeSync = merged;
     }
   }
-  const addresses =
-    identity !== undefined && identity.addresses !== undefined
-      ? parseServerAddresses(identity.addresses)
-      : undefined;
+  const addresses = identity?.addresses !== undefined
+    ? parseServerAddresses(identity.addresses)
+    : undefined;
   if (
     addresses !== undefined &&
     !serverAddressesEquals(addresses, existingMetadata?.addresses)
@@ -337,7 +339,7 @@ function buildMergedDaemonState(
 }
 
 type ProjectionTriggerContext = {
-  existing: ServerDaemonState;
+  existing: ServerDaemonStateWithMetadata;
   currentProjection: ServerDaemonProjection | undefined;
   existingStatus: ServerDaemonStatus;
   now: string;
