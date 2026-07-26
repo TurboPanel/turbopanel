@@ -8,8 +8,15 @@ import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db.ts'
 import { environment, project } from '../../lib/db/schema.ts'
-import { applyValidatedComposeOption } from '../../lib/compose/index.ts'
-import { mergeProjectEnvironmentCompose } from './deploy-prepare.ts'
+import {
+  applyValidatedComposeOption,
+  isPlacementServerId,
+  stripComposePlacementOption,
+} from '../../lib/compose/index.ts'
+import {
+  mergeProjectEnvironmentCompose,
+  verifyServerInOrg,
+} from './deploy-prepare.ts'
 import { reconcileServicesFromCompose } from './reconcile-services.ts'
 import {
   assertCanCreateOr403,
@@ -21,7 +28,11 @@ import {
   parseJsonBody,
   parseJsonbObject,
   requireStringField,
+  stripPromotedMetadataKeys,
 } from '../shared.ts'
+
+/** Placement lives on `environment.server_id` — never persist it into metadata. */
+const ENVIRONMENT_PROMOTED_METADATA_KEYS = ['serverId'] as const
 import {
   hierarchyDeleteHasChildrenResponse,
   runHierarchyDelete,
@@ -30,10 +41,49 @@ import {
 type EnvironmentPatchFields = {
   displayName?: string | null
   description?: string | null
+  serverId?: string | null
   metadata?: Record<string, unknown> | null
   options?: Record<string, unknown> | null
   updatedAt: string
 }
+
+type EnvironmentRow = {
+  id: string
+  displayName: string | null
+  description: string | null
+  projectId: string
+  serverId: string | null
+  metadata: unknown
+  options: unknown
+  createdAt: string
+  updatedAt: string
+}
+
+function serializeEnvironment(row: EnvironmentRow) {
+  return {
+    id: row.id,
+    displayName: row.displayName,
+    description: row.description,
+    projectId: row.projectId,
+    serverId: row.serverId,
+    metadata: row.metadata,
+    options: row.options,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  }
+}
+
+const ENVIRONMENT_SELECT = {
+  id: environment.id,
+  displayName: environment.displayName,
+  description: environment.description,
+  projectId: environment.projectId,
+  serverId: environment.serverId,
+  metadata: environment.metadata,
+  options: environment.options,
+  createdAt: environment.createdAt,
+  updatedAt: environment.updatedAt,
+} as const
 
 function buildEnvironmentPatchFields(
   c: Context<AppEnv>,
@@ -49,7 +99,10 @@ function buildEnvironmentPatchFields(
   const metadataResult = parseJsonbObject(c, body, 'metadata')
   if (metadataResult instanceof Response) return metadataResult
   if (metadataResult !== null) {
-    patchFields.metadata = metadataResult
+    patchFields.metadata = stripPromotedMetadataKeys(
+      metadataResult,
+      ENVIRONMENT_PROMOTED_METADATA_KEYS,
+    )
   }
   return patchFields
 }
@@ -93,8 +146,132 @@ async function applyEnvironmentOptionsPatch(
   if (!composeOption.ok) {
     return c.json({ error: 'compose_invalid', issues: composeOption.issues }, 400)
   }
+  stripComposePlacementOption(optionsResult)
   patchFields.options = optionsResult
   await reconcileServicesAfterOptionsPatch(db, environmentId, optionsResult)
+}
+
+/**
+ * Optional `serverId` on create/patch. `undefined` means the field was omitted;
+ * `null` clears placement; a UUID pins a same-org server.
+ */
+async function parseOptionalServerId(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  body: Record<string, unknown>,
+): Promise<string | null | undefined | Response> {
+  if (!('serverId' in body)) return undefined
+
+  const value = body.serverId
+  if (value === null) return null
+  if (!isPlacementServerId(value)) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  if (!(await verifyServerInOrg(db, value, organizationId))) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+  return value
+}
+
+async function applyEnvironmentServerIdPatch(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  body: Record<string, unknown>,
+  patchFields: EnvironmentPatchFields,
+): Promise<Response | undefined> {
+  const serverId = await parseOptionalServerId(c, db, organizationId, body)
+  if (serverId instanceof Response) return serverId
+  if (serverId === undefined) return
+  patchFields.serverId = serverId
+}
+
+type CreateEnvironmentInput = {
+  projectId: string
+  displayName: string | null
+  description: string | null
+  serverId?: string | null
+  metadata: Record<string, unknown> | null
+  options: Record<string, unknown> | null
+}
+
+function parseCreateEnvironmentNames(
+  c: Context<AppEnv>,
+  body: Record<string, unknown>,
+): { displayName: string | null; description: string | null } | Response {
+  try {
+    return {
+      displayName: parseDisplayName(body),
+      description: parseDescription(body),
+    }
+  } catch {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+}
+
+function parseCreateEnvironmentJsonb(
+  c: Context<AppEnv>,
+  body: Record<string, unknown>,
+): {
+  metadata: Record<string, unknown> | null
+  options: Record<string, unknown> | null
+} | Response {
+  const optionsResult = parseJsonbObject(c, body, 'options')
+  if (optionsResult instanceof Response) return optionsResult
+  const composeOption = applyValidatedComposeOption(optionsResult)
+  if (!composeOption.ok) {
+    return c.json({ error: 'compose_invalid', issues: composeOption.issues }, 400)
+  }
+  if (optionsResult !== null) {
+    stripComposePlacementOption(optionsResult)
+  }
+
+  const metadataResult = parseJsonbObject(c, body, 'metadata')
+  if (metadataResult instanceof Response) return metadataResult
+  const metadata = metadataResult === null
+    ? null
+    : stripPromotedMetadataKeys(metadataResult, ENVIRONMENT_PROMOTED_METADATA_KEYS)
+
+  return { metadata, options: optionsResult }
+}
+
+async function parseCreateEnvironmentInput(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+): Promise<CreateEnvironmentInput | Response> {
+  const body = await parseJsonBody(c)
+  if (body instanceof Response) return body
+
+  const projectId = requireStringField(c, body, 'projectId')
+  if (projectId instanceof Response) return projectId
+
+  const projectOrgId = await resolveEntityOrganizationId(db, 'project', projectId)
+  if (!projectOrgId || projectOrgId !== organizationId) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+
+  const denied = await assertCanCreateOr403(c, 'project', projectId)
+  if (denied) return denied
+
+  const names = parseCreateEnvironmentNames(c, body)
+  if (names instanceof Response) return names
+
+  const jsonb = parseCreateEnvironmentJsonb(c, body)
+  if (jsonb instanceof Response) return jsonb
+
+  const serverId = await parseOptionalServerId(c, db, organizationId, body)
+  if (serverId instanceof Response) return serverId
+
+  return {
+    projectId,
+    displayName: names.displayName,
+    description: names.description,
+    ...(serverId !== undefined ? { serverId } : {}),
+    metadata: jsonb.metadata,
+    options: jsonb.options,
+  }
 }
 
 export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -135,21 +312,12 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     }
 
     const rows = await db
-      .select({
-        id: environment.id,
-        displayName: environment.displayName,
-        description: environment.description,
-        projectId: environment.projectId,
-        metadata: environment.metadata,
-        options: environment.options,
-        createdAt: environment.createdAt,
-        updatedAt: environment.updatedAt,
-      })
+      .select(ENVIRONMENT_SELECT)
       .from(environment)
       .where(and(...conditions))
       .orderBy(environment.createdAt)
 
-    return c.json({ environments: rows })
+    return c.json({ environments: rows.map(serializeEnvironment) })
   })
 
   router.get('/environments/:id', async (c) => {
@@ -170,16 +338,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     }
 
     const rows = await db
-      .select({
-        id: environment.id,
-        displayName: environment.displayName,
-        description: environment.description,
-        projectId: environment.projectId,
-        metadata: environment.metadata,
-        options: environment.options,
-        createdAt: environment.createdAt,
-        updatedAt: environment.updatedAt,
-      })
+      .select(ENVIRONMENT_SELECT)
       .from(environment)
       .where(eq(environment.id, id))
       .limit(1)
@@ -192,7 +351,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     const denied = await assertCanReadOr403(c, 'environment', id)
     if (denied) return denied
 
-    return c.json({ environment: row })
+    return c.json({ environment: serializeEnvironment(row) })
   })
 
   router.post('/environments', async (c) => {
@@ -204,50 +363,20 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
 
     const orgResult = await getOrgId(c, session.userId)
     if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
 
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
-
-    const projectId = requireStringField(c, body, 'projectId')
-    if (projectId instanceof Response) return projectId
-
-    const projectOrgId = await resolveEntityOrganizationId(db, 'project', projectId)
-    if (!projectOrgId || projectOrgId !== organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanCreateOr403(c, 'project', projectId)
-    if (denied) return denied
-
-    let displayName: string | null
-    let description: string | null
-    try {
-      displayName = parseDisplayName(body)
-      description = parseDescription(body)
-    } catch {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-
-    const optionsResult = parseJsonbObject(c, body, 'options')
-    if (optionsResult instanceof Response) return optionsResult
-    const composeOption = applyValidatedComposeOption(optionsResult)
-    if (!composeOption.ok) {
-      return c.json({ error: 'compose_invalid', issues: composeOption.issues }, 400)
-    }
-
-    const metadataResult = parseJsonbObject(c, body, 'metadata')
-    if (metadataResult instanceof Response) return metadataResult
+    const input = await parseCreateEnvironmentInput(c, db, orgResult)
+    if (input instanceof Response) return input
 
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(environment)
         .values({
-          displayName,
-          description,
-          projectId,
-          ...(metadataResult !== null ? { metadata: metadataResult } : {}),
-          ...(optionsResult !== null ? { options: optionsResult } : {}),
+          displayName: input.displayName,
+          description: input.description,
+          projectId: input.projectId,
+          ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
+          ...(input.metadata !== null ? { metadata: input.metadata } : {}),
+          ...(input.options !== null ? { options: input.options } : {}),
         })
         .returning({ id: environment.id })
       return inserted.id
@@ -281,6 +410,15 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
 
     const patchFields = buildEnvironmentPatchFields(c, body)
     if (patchFields instanceof Response) return patchFields
+
+    const serverIdError = await applyEnvironmentServerIdPatch(
+      c,
+      db,
+      organizationId,
+      body,
+      patchFields,
+    )
+    if (serverIdError) return serverIdError
 
     const optionsError = await applyEnvironmentOptionsPatch(c, db, id, body, patchFields)
     if (optionsError) return optionsError

@@ -1,7 +1,7 @@
 /** TLS certificate source discriminator — stored in `tls.source`. */
 export type TlsSource = 'upload' | 'lets_encrypt' | 'self_signed'
 
-/** Lifecycle status in `tls.metadata.status`. */
+/** Lifecycle status — dedicated `tls.status` column (also in API metadata DTO). */
 export type TlsStatus = 'ready' | 'pending' | 'expired' | 'failed' | 'revoked'
 
 export type TlsAcmeMetadata = {
@@ -10,7 +10,11 @@ export type TlsAcmeMetadata = {
   lastError?: string
 }
 
-/** Canonical `tls.metadata` shape. */
+/**
+ * Client-facing TLS metadata DTO. Persist `status` / `notAfter` /
+ * `fingerprintSha256` on dedicated columns; residual jsonb keeps dnsNames /
+ * subject / issuer / acme / notBefore / hasWildcard.
+ */
 export type TlsMetadata = {
   dnsNames: string[]
   hasWildcard: boolean

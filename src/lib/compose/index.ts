@@ -20,6 +20,7 @@ export { mergeComposeOverlay } from './merge.ts'
 export {
   applyValidatedComposeOption,
   assertComposeDocument,
+  stripComposePlacementOption,
   stripProjectComposePlacementOption,
   validateComposeDocument,
   type ComposeValidationIssue,
@@ -33,7 +34,6 @@ export {
 } from './lint.ts'
 export {
   isPlacementServerId,
-  readComposePlacementServerId,
   stripComposePlacement,
   TURBOPANEL_EXTENSION_KEY,
   type ComposeTurbopanelExtension,

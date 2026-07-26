@@ -446,6 +446,8 @@ export function registerDaemonApiRoutes(
       result = await attachDaemonStateToServer(db, serverId, {
         publicJwk,
         fingerprint,
+        hostname,
+        machineId,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

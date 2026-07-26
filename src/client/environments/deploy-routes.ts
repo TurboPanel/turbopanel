@@ -12,10 +12,8 @@ import {
 } from '../../daemon/authn/server-identity-db.ts'
 import {
   prepareDeployCompose,
-  readComposePlacementServerId,
   readHostingProxyFromOptions,
   resolveHostingBindAddress,
-  extractComposeFromOptions,
   verifyServerInOrg,
   type DeployPrepareError,
 } from './deploy-prepare.ts'
@@ -49,7 +47,7 @@ import {
   tls,
 } from '../../lib/db/schema.ts'
 import {
-  parseTlsMetadata,
+  assembleTlsMetadata,
   parseTlsOptions,
   resolveTlsForHosting,
   type TlsCandidate,
@@ -123,9 +121,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function readComposeServiceName(metadata: unknown, fallback: string): string {
-  if (isPlainObject(metadata) && typeof metadata.composeServiceName === 'string') {
-    return metadata.composeServiceName
+function readComposeServiceName(
+  composeServiceName: string | null | undefined,
+  fallback: string,
+): string {
+  if (typeof composeServiceName === 'string' && composeServiceName.length > 0) {
+    return composeServiceName
   }
   return fallback
 }
@@ -177,7 +178,6 @@ import {
   validateDeployHostings,
   validateDeployStorageMaterialList,
 } from '../../lib/commands/deploy-validation.ts'
-import { assertComposeDocument } from '../../lib/compose/index.ts'
 
 function trimEdgeDashes(value: string): string {
   let start = 0
@@ -209,7 +209,7 @@ type OrgTlsCandidate = TlsCandidate & {
 type ServiceRow = {
   id: string
   displayName: string | null
-  metadata: unknown
+  composeServiceName: string | null
 }
 
 type HostingRow = {
@@ -356,6 +356,9 @@ async function loadOrgTlsCandidates(
   const rows = await db
     .select({
       id: tls.id,
+      status: tls.status,
+      notAfter: tls.notAfter,
+      fingerprintSha256: tls.fingerprintSha256,
       metadata: tls.metadata,
       options: tls.options,
       certificatePem: tls.certificatePem,
@@ -366,7 +369,14 @@ async function loadOrgTlsCandidates(
 
   const out: OrgTlsCandidate[] = []
   for (const row of rows) {
-    const metadata = parseTlsMetadata(row.metadata)
+    const metadata = assembleTlsMetadata(
+      {
+        status: row.status,
+        notAfter: row.notAfter,
+        fingerprintSha256: row.fingerprintSha256,
+      },
+      row.metadata,
+    )
     if (!metadata) continue
     out.push({
       id: row.id,
@@ -391,7 +401,7 @@ async function buildHostingsForService(
   | { prepareError: DeployPrepareError }
 > {
   const composeServiceName = readComposeServiceName(
-    svc.metadata,
+    svc.composeServiceName,
     svc.displayName ?? svc.id,
   )
   const hostingRows = await db
@@ -435,7 +445,7 @@ async function buildHostingPayload(
     .select({
       id: service.id,
       displayName: service.displayName,
-      metadata: service.metadata,
+      composeServiceName: service.composeServiceName,
     })
     .from(service)
     .where(eq(service.environmentId, environmentId))
@@ -542,6 +552,7 @@ async function loadDeployContext(
     .select({
       id: environment.id,
       projectId: environment.projectId,
+      serverId: environment.serverId,
       options: environment.options,
       metadata: environment.metadata,
     })
@@ -561,16 +572,10 @@ async function loadDeployContext(
     .limit(1)
   if (!projectRow) return Response.json({ error: 'Not found' }, { status: 404 })
 
-  try {
-    const overlayCompose = assertComposeDocument(extractComposeFromOptions(envRow.options))
-    const placementServerId = readComposePlacementServerId(overlayCompose)
-    return {
-      envRow,
-      projectRow,
-      placementServerId,
-    }
-  } catch {
-    return Response.json({ error: 'Invalid compose document' }, { status: 400 })
+  return {
+    envRow,
+    projectRow,
+    placementServerId: envRow.serverId,
   }
 }
 
@@ -581,7 +586,6 @@ async function authorizeDeployRequest(
 ): Promise<{
   userId: string
   organizationId: string
-  requestedServerId: string | null
   acknowledgeHealthCheckWarnings: boolean
 } | Response> {
   const denied = await assertCanManageOr403(c, 'environment', environmentId)
@@ -601,50 +605,32 @@ async function authorizeDeployRequest(
   const body = await parseJsonBody(c)
   if (body instanceof Response) return body
 
-  let requestedServerId: string | null = null
-  if ('serverId' in body) {
-    const value = body.serverId
-    if (typeof value !== 'string' || !value) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-    requestedServerId = value
-  }
-
-  const acknowledgeHealthCheckWarnings = body.acknowledgeHealthCheckWarnings === true
-
   return {
     userId: session.userId,
     organizationId: orgResult,
-    requestedServerId,
-    acknowledgeHealthCheckWarnings,
+    acknowledgeHealthCheckWarnings: body.acknowledgeHealthCheckWarnings === true,
   }
 }
 
+/**
+ * Resolve deploy/stop target from `environment.server_id` only — body/compose
+ * placement is never a fallback.
+ */
 async function resolveDeployTargetServer(
   c: Context<AppEnv>,
   db: Db,
   organizationId: string,
-  requestedServerId: string | null,
   placementServerId: string | null,
 ): Promise<{ serverId: string } | Response> {
-  let serverId: string
-
-  if (placementServerId) {
-    if (requestedServerId && requestedServerId !== placementServerId) {
-      return c.json({ error: 'server_placement_mismatch' }, 400)
-    }
-    serverId = placementServerId
-  } else if (requestedServerId) {
-    serverId = requestedServerId
-  } else {
-    return c.json({ error: 'Invalid request' }, 400)
+  if (!placementServerId) {
+    return c.json({ error: 'server_placement_required' }, 409)
   }
 
-  if (!(await verifyServerInOrg(db, serverId, organizationId))) {
+  if (!(await verifyServerInOrg(db, placementServerId, organizationId))) {
     return c.json({ error: 'Not found' }, 404)
   }
 
-  return { serverId }
+  return { serverId: placementServerId }
 }
 
 async function enqueueDeployCommand(
@@ -800,7 +786,6 @@ export function registerEnvironmentDeployRoutes(
       c,
       db,
       auth.organizationId,
-      auth.requestedServerId,
       loaded.placementServerId,
     )
     if (target instanceof Response) return target
@@ -840,15 +825,6 @@ export function registerEnvironmentDeployRoutes(
     )
     if (tlsMaterial instanceof Response) return tlsMaterial
 
-    const prevMeta = isPlainObject(loaded.envRow.metadata) ? loaded.envRow.metadata : {}
-    await db
-      .update(environment)
-      .set({
-        metadata: { ...prevMeta, serverId: target.serverId },
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(environment.id, environmentId))
-
     const projectName = `tp-${projectComposeName(loaded.projectRow.displayName, loaded.projectRow.id)}-${environmentId.slice(0, 8)}`
 
     const materialsError = validateDeployMaterials(
@@ -882,13 +858,6 @@ export function registerEnvironmentDeployRoutes(
   })
 }
 
-function readMetadataServerId(metadata: unknown): string | null {
-  if (isPlainObject(metadata) && typeof metadata.serverId === 'string' && metadata.serverId) {
-    return metadata.serverId
-  }
-  return null
-}
-
 async function loadStopTarget(
   db: Db,
   environmentId: string,
@@ -897,7 +866,6 @@ async function loadStopTarget(
     projectId: string
     projectName: string
     placementServerId: string | null
-    metadataServerId: string | null
   }
   | Response
 > {
@@ -905,8 +873,7 @@ async function loadStopTarget(
     .select({
       id: environment.id,
       projectId: environment.projectId,
-      options: environment.options,
-      metadata: environment.metadata,
+      serverId: environment.serverId,
     })
     .from(environment)
     .where(eq(environment.id, environmentId))
@@ -923,20 +890,11 @@ async function loadStopTarget(
     .limit(1)
   if (!projectRow) return Response.json({ error: 'Not found' }, { status: 404 })
 
-  let placementServerId: string | null = null
-  try {
-    const overlayCompose = assertComposeDocument(extractComposeFromOptions(envRow.options))
-    placementServerId = readComposePlacementServerId(overlayCompose)
-  } catch {
-    // Placement may be absent or compose invalid — fall back to metadata.serverId.
-  }
-
   return {
     projectId: projectRow.id,
     projectName:
       `tp-${projectComposeName(projectRow.displayName, projectRow.id)}-${environmentId.slice(0, 8)}`,
-    placementServerId,
-    metadataServerId: readMetadataServerId(envRow.metadata),
+    placementServerId: envRow.serverId,
   }
 }
 
@@ -1033,8 +991,7 @@ export function registerEnvironmentStopRoutes(
       c,
       db,
       orgResult,
-      null,
-      loaded.placementServerId ?? loaded.metadataServerId,
+      loaded.placementServerId,
     )
     if (target instanceof Response) return target
 

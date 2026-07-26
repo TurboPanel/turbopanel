@@ -10,6 +10,7 @@ import type { ServerGeo } from "../lib/geo/server-geo.ts";
 import { issueDaemonJwt } from "./authn/daemon-jwt.ts";
 import {
   buildDefaultDaemonStatus,
+  mapServerDaemonStatusFromColumns,
   type ServerDaemonState,
   type ServerDaemonStatus,
 } from "./authn/daemon-state.ts";
@@ -24,6 +25,10 @@ import { generateDeliveryId, generateRequestId, DAEMON_CELL_PING, DAEMON_CELL_PO
 
 const HEARTBEAT_COALESCE_MS = 60_000;
 
+// `hostname` here models stray pre-migration jsonb content — `hostname` is a
+// dedicated `server` column now and `buildMetadataPatch` never reads/writes it,
+// so this key is inert legacy data the projection must tolerate, not a value
+// any current code path reflects back into `metadata` patches.
 const DEFAULT_PROJECTION_TEST_METADATA: Record<string, unknown> = {
   hostname: "host-1",
 };
@@ -131,20 +136,6 @@ async function waitFor(
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
-function mergeDaemonStatus(
-  daemon: ServerDaemonState,
-  statusOverrides: Partial<ServerDaemonStatus> = {},
-): ServerDaemonState {
-  return {
-    ...daemon,
-    status: {
-      ...buildDefaultDaemonStatus(),
-      ...(daemon.status),
-      ...statusOverrides,
-    },
-  };
-}
-
 /** Unwrap drizzle `sql\`… || ${json}::jsonb\`` metadata patches. */
 function unwrapMetadataSqlPatch(
   value: unknown,
@@ -166,6 +157,11 @@ function unwrapMetadataSqlPatch(
   return undefined;
 }
 
+/**
+ * Mock DB matching the `getServerDaemonStateByServerId` column select —
+ * fleet status/identity live on dedicated `server` columns, never on the
+ * sparse `daemon` jsonb (`{ key, projection? }`).
+ */
 function createProjectionRecordingDb(
   statusOverrides: Partial<ServerDaemonStatus> = {},
   initialMetadata?: Record<string, unknown>,
@@ -181,7 +177,7 @@ function createProjectionRecordingDb(
   let selectCalls = 0;
   let endCalls = 0;
   let metadata = { ...(initialMetadata ?? DEFAULT_PROJECTION_TEST_METADATA) };
-  let daemon = mergeDaemonStatus({
+  let daemon: ServerDaemonState = {
     key: {
       id: "key-1",
       algorithm: "Ed25519",
@@ -190,13 +186,19 @@ function createProjectionRecordingDb(
       createdAt: "2020-01-01T00:00:00.000Z",
     },
     projection: { hostname: "host-1" },
-  }, statusOverrides);
+  };
+  let hostname: string | null = null;
+  let machineId: string | null = null;
+  const columns = { ...buildDefaultDaemonStatus(), ...statusOverrides };
 
   const selectLimit = () => {
     selectCalls += 1;
     return Promise.resolve([{
       daemon,
       metadata,
+      hostname,
+      machineId,
+      ...columns,
     }]);
   };
 
@@ -214,8 +216,31 @@ function createProjectionRecordingDb(
           recorded.metadata = unwrapped;
         }
         updateCalls.push(recorded);
-        if (patch.daemon) {
+        if (patch.daemon !== undefined) {
           daemon = patch.daemon as ServerDaemonState;
+        }
+        if ("hostname" in patch) hostname = patch.hostname as string | null;
+        if ("machineId" in patch) {
+          machineId = patch.machineId as string | null;
+        }
+        if ("connected" in patch) {
+          columns.connected = patch.connected as boolean;
+        }
+        if ("daemonStatus" in patch) {
+          columns.daemonStatus = patch
+            .daemonStatus as ServerDaemonStatus["daemonStatus"];
+        }
+        if ("lastSeenAt" in patch) {
+          columns.lastSeenAt = patch.lastSeenAt as string | null;
+        }
+        if ("connectedAt" in patch) {
+          columns.connectedAt = patch.connectedAt as string | null;
+        }
+        if ("disconnectedAt" in patch) {
+          columns.disconnectedAt = patch.disconnectedAt as string | null;
+        }
+        if ("statusChangedAt" in patch) {
+          columns.statusChangedAt = patch.statusChangedAt as string | null;
         }
         if (unwrapped !== undefined) {
           metadata = unwrapped === null
@@ -239,18 +264,36 @@ function createProjectionRecordingDb(
     updateCalls,
     getSelectCallCount: () => selectCalls,
     getEndCallCount: () => endCalls,
-    getStatus: () => daemon.status ?? buildDefaultDaemonStatus(),
+    getStatus: () => mapServerDaemonStatusFromColumns(columns),
     setDaemonStatus: (patch: Partial<ServerDaemonStatus>) => {
-      daemon = mergeDaemonStatus(daemon, patch);
+      Object.assign(columns, patch);
     },
   };
 }
 
+/**
+ * Fleet status lives on dedicated columns in the UPDATE `.set()` patch now —
+ * never on `patch.daemon` jsonb. Extract whichever status columns are present
+ * on a given patch (callers only assert the subset relevant to that trigger).
+ */
 function statusFromPatch(
   patch: Record<string, unknown> | undefined,
-): ServerDaemonStatus | undefined {
-  const daemon = patch?.daemon as ServerDaemonState | undefined;
-  return daemon?.status;
+): Partial<ServerDaemonStatus> | undefined {
+  if (!patch) return undefined;
+  const keys = [
+    "connected",
+    "daemonStatus",
+    "lastSeenAt",
+    "connectedAt",
+    "disconnectedAt",
+    "statusChangedAt",
+  ] as const;
+  if (!keys.some((key) => key in patch)) return undefined;
+  const result: Partial<Record<string, unknown>> = {};
+  for (const key of keys) {
+    if (key in patch) result[key] = patch[key];
+  }
+  return result as Partial<ServerDaemonStatus>;
 }
 
 describe("DaemonCellObject diagnostics", () => {
@@ -802,10 +845,9 @@ describe("DaemonCellObject", () => {
         statusFromPatch(patch)?.connected === true
       );
       expect(connectedPatch).toBeDefined();
-      expect(connectedPatch?.metadata).toEqual({
-        hostname: "host-1",
-        geo,
-      });
+      // hostname lives on a dedicated `server` column now — `buildMetadataPatch`
+      // never writes it into the `metadata` jsonb delta.
+      expect(connectedPatch?.metadata).toEqual({ geo });
     });
 
     ws.close(1000, "test done");

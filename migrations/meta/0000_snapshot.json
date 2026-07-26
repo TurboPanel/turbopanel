@@ -1,5 +1,5 @@
 {
-  "id": "b8508ce7-9008-4caa-a75d-195987f6a62b",
+  "id": "f3a2a273-9d52-40a1-a4a3-912fd091b3b4",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -422,6 +422,30 @@
           "primaryKey": false,
           "notNull": true
         },
+        "container_id": {
+          "name": "container_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "container_name": {
+          "name": "container_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "compose_service_name": {
+          "name": "compose_service_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "metadata": {
           "name": "metadata",
           "type": "jsonb",
@@ -467,6 +491,43 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "idx_container_status": {
+          "name": "idx_container_status",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_container_server_container_id": {
+          "name": "uniq_container_server_container_id",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "container_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -503,6 +564,106 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.datacenter": {
+      "name": "datacenter",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "description": {
+          "name": "description",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "options": {
+          "name": "options",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "idx_datacenter_organization_id": {
+          "name": "idx_datacenter_organization_id",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "datacenter_organization_id_organization_id_fk": {
+          "name": "datacenter_organization_id_organization_id_fk",
+          "tableFrom": "datacenter",
+          "tableTo": "organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "datacenter_display_name_format_check": {
+          "name": "datacenter_display_name_format_check",
+          "value": "(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.environment": {
       "name": "environment",
       "schema": "",
@@ -533,6 +694,12 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         },
         "display_name": {
           "name": "display_name",
@@ -575,6 +742,22 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "idx_environment_server_id": {
+          "name": "idx_environment_server_id",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -584,6 +767,19 @@
           "tableTo": "project",
           "columnsFrom": [
             "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "environment_server_id_server_id_fk": {
+          "name": "environment_server_id_server_id_fk",
+          "tableFrom": "environment",
+          "tableTo": "server",
+          "columnsFrom": [
+            "server_id"
           ],
           "columnsTo": [
             "id"
@@ -759,6 +955,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "ip_id": {
+          "name": "ip_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "display_name": {
           "name": "display_name",
           "type": "varchar(255)",
@@ -816,6 +1018,22 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "idx_hosting_ip_id": {
+          "name": "idx_hosting_ip_id",
+          "columns": [
+            {
+              "expression": "ip_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -838,6 +1056,19 @@
           "tableTo": "tls",
           "columnsFrom": [
             "tls_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "hosting_ip_id_ip_id_fk": {
+          "name": "hosting_ip_id_ip_id_fk",
+          "tableFrom": "hosting",
+          "tableTo": "ip",
+          "columnsFrom": [
+            "ip_id"
           ],
           "columnsTo": [
             "id"
@@ -996,6 +1227,318 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.ip": {
+      "name": "ip",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "datacenter_id": {
+          "name": "datacenter_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "network_id": {
+          "name": "network_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "vpn_id": {
+          "name": "vpn_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "address": {
+          "name": "address",
+          "type": "inet",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "allocation": {
+          "name": "allocation",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "scope": {
+          "name": "scope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "options": {
+          "name": "options",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "idx_ip_organization_id": {
+          "name": "idx_ip_organization_id",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_ip_datacenter_id": {
+          "name": "idx_ip_datacenter_id",
+          "columns": [
+            {
+              "expression": "datacenter_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_ip_network_id": {
+          "name": "idx_ip_network_id",
+          "columns": [
+            {
+              "expression": "network_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_ip_server_id": {
+          "name": "idx_ip_server_id",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_ip_vpn_id": {
+          "name": "idx_ip_vpn_id",
+          "columns": [
+            {
+              "expression": "vpn_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_ip_org_address": {
+          "name": "uniq_ip_org_address",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "address",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"ip\".\"vpn_id\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_ip_vpn_address": {
+          "name": "uniq_ip_vpn_address",
+          "columns": [
+            {
+              "expression": "vpn_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "address",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"ip\".\"vpn_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "ip_organization_id_organization_id_fk": {
+          "name": "ip_organization_id_organization_id_fk",
+          "tableFrom": "ip",
+          "tableTo": "organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "ip_datacenter_id_datacenter_id_fk": {
+          "name": "ip_datacenter_id_datacenter_id_fk",
+          "tableFrom": "ip",
+          "tableTo": "datacenter",
+          "columnsFrom": [
+            "datacenter_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "ip_network_id_network_id_fk": {
+          "name": "ip_network_id_network_id_fk",
+          "tableFrom": "ip",
+          "tableTo": "network",
+          "columnsFrom": [
+            "network_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "ip_server_id_server_id_fk": {
+          "name": "ip_server_id_server_id_fk",
+          "tableFrom": "ip",
+          "tableTo": "server",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "ip_vpn_id_vpn_id_fk": {
+          "name": "ip_vpn_id_vpn_id_fk",
+          "tableFrom": "ip",
+          "tableTo": "vpn",
+          "columnsFrom": [
+            "vpn_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "ip_allocation_check": {
+          "name": "ip_allocation_check",
+          "value": "allocation IN ('dedicated', 'shared')"
+        },
+        "ip_scope_check": {
+          "name": "ip_scope_check",
+          "value": "scope IN ('public', 'datacenter', 'loopback', 'vpn')"
+        },
+        "ip_vpn_scope_check": {
+          "name": "ip_vpn_scope_check",
+          "value": "(\"ip\".\"scope\" = 'vpn' AND \"ip\".\"vpn_id\" IS NOT NULL) OR (\"ip\".\"scope\" <> 'vpn' AND \"ip\".\"vpn_id\" IS NULL)"
+        },
+        "ip_datacenter_free_pool_check": {
+          "name": "ip_datacenter_free_pool_check",
+          "value": "(\"ip\".\"datacenter_id\" IS NULL) OR (\"ip\".\"server_id\" IS NULL AND \"ip\".\"vpn_id\" IS NULL AND \"ip\".\"network_id\" IS NULL)"
+        },
+        "ip_display_name_format_check": {
+          "name": "ip_display_name_format_check",
+          "value": "(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.license": {
       "name": "license",
       "schema": "",
@@ -1145,11 +1688,29 @@
           "notNull": true,
           "default": "now()"
         },
-        "project_id": {
-          "name": "project_id",
+        "environment_id": {
+          "name": "environment_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "engine": {
+          "name": "engine",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "metadata": {
           "name": "metadata",
@@ -1165,11 +1726,11 @@
         }
       },
       "indexes": {
-        "idx_managed_project_id": {
-          "name": "idx_managed_project_id",
+        "idx_managed_environment_id": {
+          "name": "idx_managed_environment_id",
           "columns": [
             {
-              "expression": "project_id",
+              "expression": "environment_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last",
@@ -1180,15 +1741,46 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "idx_managed_engine": {
+          "name": "idx_managed_engine",
+          "columns": [
+            {
+              "expression": "engine",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "managed_environment_id_unique": {
+          "name": "managed_environment_id_unique",
+          "columns": [
+            {
+              "expression": "environment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
-        "managed_project_id_project_id_fk": {
-          "name": "managed_project_id_project_id_fk",
+        "managed_environment_id_environment_id_fk": {
+          "name": "managed_environment_id_environment_id_fk",
           "tableFrom": "managed",
-          "tableTo": "project",
+          "tableTo": "environment",
           "columnsFrom": [
-            "project_id"
+            "environment_id"
           ],
           "columnsTo": [
             "id"
@@ -1198,17 +1790,14 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "managed_project_id_unique": {
-          "name": "managed_project_id_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "project_id"
-          ]
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "managed_display_name_format_check": {
+          "name": "managed_display_name_format_check",
+          "value": "(\"managed\".\"display_name\" IS NULL) OR (((char_length((\"managed\".\"display_name\")::text) >= 1) AND (char_length((\"managed\".\"display_name\")::text) <= 255)) AND ((\"managed\".\"display_name\")::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
         }
       },
-      "policies": {},
-      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.member": {
@@ -1344,11 +1933,53 @@
           "notNull": true,
           "default": "now()"
         },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "datacenter_id": {
+          "name": "datacenter_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "server_id": {
           "name": "server_id",
           "type": "uuid",
           "primaryKey": false,
+          "notNull": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
           "notNull": true
+        },
+        "cidr": {
+          "name": "cidr",
+          "type": "cidr",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "options": {
+          "name": "options",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -1367,9 +1998,67 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "idx_network_organization_id": {
+          "name": "idx_network_organization_id",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_network_datacenter_id": {
+          "name": "idx_network_datacenter_id",
+          "columns": [
+            {
+              "expression": "datacenter_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
+        "network_organization_id_organization_id_fk": {
+          "name": "network_organization_id_organization_id_fk",
+          "tableFrom": "network",
+          "tableTo": "organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "network_datacenter_id_datacenter_id_fk": {
+          "name": "network_datacenter_id_datacenter_id_fk",
+          "tableFrom": "network",
+          "tableTo": "datacenter",
+          "columnsFrom": [
+            "datacenter_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
         "network_server_id_server_id_fk": {
           "name": "network_server_id_server_id_fk",
           "tableFrom": "network",
@@ -1387,7 +2076,20 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "network_kind_check": {
+          "name": "network_kind_check",
+          "value": "kind IN ('datacenter', 'server', 'docker')"
+        },
+        "network_single_scope_check": {
+          "name": "network_single_scope_check",
+          "value": "(\n        (\"network\".\"kind\" = 'datacenter' AND \"network\".\"datacenter_id\" IS NOT NULL AND \"network\".\"server_id\" IS NULL) OR\n        (\"network\".\"kind\" = 'server' AND \"network\".\"server_id\" IS NOT NULL AND \"network\".\"datacenter_id\" IS NULL) OR\n        (\"network\".\"kind\" = 'docker' AND \"network\".\"datacenter_id\" IS NULL AND \"network\".\"server_id\" IS NULL)\n      )"
+        },
+        "network_display_name_format_check": {
+          "name": "network_display_name_format_check",
+          "value": "(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.organization": {
@@ -1590,6 +2292,269 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.peer": {
+      "name": "peer",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "vpn_id": {
+          "name": "vpn_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "endpoint_ip_id": {
+          "name": "endpoint_ip_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tunnel_ip_id": {
+          "name": "tunnel_ip_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'member'"
+        },
+        "public_key": {
+          "name": "public_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "listen_port": {
+          "name": "listen_port",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "endpoint": {
+          "name": "endpoint",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "preshared_key": {
+          "name": "preshared_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "options": {
+          "name": "options",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "idx_peer_vpn_id": {
+          "name": "idx_peer_vpn_id",
+          "columns": [
+            {
+              "expression": "vpn_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_peer_server_id": {
+          "name": "idx_peer_server_id",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_peer_endpoint_ip_id": {
+          "name": "idx_peer_endpoint_ip_id",
+          "columns": [
+            {
+              "expression": "endpoint_ip_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_peer_tunnel_ip_id": {
+          "name": "idx_peer_tunnel_ip_id",
+          "columns": [
+            {
+              "expression": "tunnel_ip_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_peer_vpn_tunnel_ip": {
+          "name": "uniq_peer_vpn_tunnel_ip",
+          "columns": [
+            {
+              "expression": "vpn_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "tunnel_ip_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"peer\".\"tunnel_ip_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "peer_vpn_id_vpn_id_fk": {
+          "name": "peer_vpn_id_vpn_id_fk",
+          "tableFrom": "peer",
+          "tableTo": "vpn",
+          "columnsFrom": [
+            "vpn_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "peer_server_id_server_id_fk": {
+          "name": "peer_server_id_server_id_fk",
+          "tableFrom": "peer",
+          "tableTo": "server",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "peer_endpoint_ip_id_ip_id_fk": {
+          "name": "peer_endpoint_ip_id_ip_id_fk",
+          "tableFrom": "peer",
+          "tableTo": "ip",
+          "columnsFrom": [
+            "endpoint_ip_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "peer_tunnel_ip_id_ip_id_fk": {
+          "name": "peer_tunnel_ip_id_ip_id_fk",
+          "tableFrom": "peer",
+          "tableTo": "ip",
+          "columnsFrom": [
+            "tunnel_ip_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "peer_vpn_server_unique": {
+          "name": "peer_vpn_server_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "vpn_id",
+            "server_id"
+          ]
+        },
+        "peer_vpn_public_key_unique": {
+          "name": "peer_vpn_public_key_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "vpn_id",
+            "public_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "peer_role_check": {
+          "name": "peer_role_check",
+          "value": "role IN ('gateway', 'member')"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.principal": {
       "name": "principal",
       "schema": "",
@@ -1639,6 +2604,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "metadata": {
           "name": "metadata",
           "type": "jsonb",
@@ -1652,8 +2623,39 @@
           "notNull": false
         }
       },
-      "indexes": {},
-      "foreignKeys": {},
+      "indexes": {
+        "idx_principal_project_id": {
+          "name": "idx_principal_project_id",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "principal_project_id_project_id_fk": {
+          "name": "principal_project_id_project_id_fk",
+          "tableFrom": "principal",
+          "tableTo": "project",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -1804,9 +2806,65 @@
           "primaryKey": false,
           "notNull": false
         },
+        "datacenter_id": {
+          "name": "datacenter_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "display_name": {
           "name": "display_name",
           "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "hostname": {
+          "name": "hostname",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "machine_id": {
+          "name": "machine_id",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "connected": {
+          "name": "connected",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "daemon_status": {
+          "name": "daemon_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'unknown'"
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "connected_at": {
+          "name": "connected_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "disconnected_at": {
+          "name": "disconnected_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status_changed_at": {
+          "name": "status_changed_at",
+          "type": "timestamp(3) with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -1845,6 +2903,70 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "idx_server_datacenter_id": {
+          "name": "idx_server_datacenter_id",
+          "columns": [
+            {
+              "expression": "datacenter_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_server_machine_id": {
+          "name": "idx_server_machine_id",
+          "columns": [
+            {
+              "expression": "machine_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_server_hostname": {
+          "name": "idx_server_hostname",
+          "columns": [
+            {
+              "expression": "hostname",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_server_daemon_status": {
+          "name": "idx_server_daemon_status",
+          "columns": [
+            {
+              "expression": "daemon_status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -1860,12 +2982,30 @@
           ],
           "onDelete": "restrict",
           "onUpdate": "no action"
+        },
+        "server_datacenter_id_datacenter_id_fk": {
+          "name": "server_datacenter_id_datacenter_id_fk",
+          "tableFrom": "server",
+          "tableTo": "datacenter",
+          "columnsFrom": [
+            "datacenter_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "server_daemon_status_check": {
+          "name": "server_daemon_status_check",
+          "value": "\"server\".\"daemon_status\" IN ('online', 'offline', 'unknown')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.service": {
@@ -1911,6 +3051,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "compose_service_name": {
+          "name": "compose_service_name",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "metadata": {
           "name": "metadata",
           "type": "jsonb",
@@ -1937,6 +3083,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_service_environment_compose_name": {
+          "name": "uniq_service_environment_compose_name",
+          "columns": [
+            {
+              "expression": "environment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "compose_service_name",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"service\".\"compose_service_name\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -2123,6 +3291,287 @@
       },
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.storage": {
+      "name": "storage",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "environment_id": {
+          "name": "environment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "service_id": {
+          "name": "service_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_path": {
+          "name": "source_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "destination_path": {
+          "name": "destination_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "content_envelope": {
+          "name": "content_envelope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "options": {
+          "name": "options",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "idx_storage_organization_id": {
+          "name": "idx_storage_organization_id",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_storage_project_id": {
+          "name": "idx_storage_project_id",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_storage_environment_id": {
+          "name": "idx_storage_environment_id",
+          "columns": [
+            {
+              "expression": "environment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_storage_service_id": {
+          "name": "idx_storage_service_id",
+          "columns": [
+            {
+              "expression": "service_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_storage_server_id": {
+          "name": "idx_storage_server_id",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "storage_organization_id_organization_id_fk": {
+          "name": "storage_organization_id_organization_id_fk",
+          "tableFrom": "storage",
+          "tableTo": "organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "storage_project_id_project_id_fk": {
+          "name": "storage_project_id_project_id_fk",
+          "tableFrom": "storage",
+          "tableTo": "project",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "storage_environment_id_environment_id_fk": {
+          "name": "storage_environment_id_environment_id_fk",
+          "tableFrom": "storage",
+          "tableTo": "environment",
+          "columnsFrom": [
+            "environment_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "storage_service_id_service_id_fk": {
+          "name": "storage_service_id_service_id_fk",
+          "tableFrom": "storage",
+          "tableTo": "service",
+          "columnsFrom": [
+            "service_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "storage_server_id_server_id_fk": {
+          "name": "storage_server_id_server_id_fk",
+          "tableFrom": "storage",
+          "tableTo": "server",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "storage_principal_id_principal_id_fk": {
+          "name": "storage_principal_id_principal_id_fk",
+          "tableFrom": "storage",
+          "tableTo": "principal",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "storage_kind_check": {
+          "name": "storage_kind_check",
+          "value": "kind IN ('docker_volume', 'bind_mount', 'file', 'directory')"
+        },
+        "storage_exactly_one_parent_check": {
+          "name": "storage_exactly_one_parent_check",
+          "value": "((project_id IS NOT NULL)::int +\n        (environment_id IS NOT NULL)::int +\n        (service_id IS NOT NULL)::int) = 1"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.team": {
@@ -2382,6 +3831,25 @@
           "primaryKey": false,
           "notNull": false
         },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'ready'"
+        },
+        "not_after": {
+          "name": "not_after",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "fingerprint_sha256": {
+          "name": "fingerprint_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "metadata": {
           "name": "metadata",
           "type": "jsonb",
@@ -2408,6 +3876,44 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_tls_not_after": {
+          "name": "idx_tls_not_after",
+          "columns": [
+            {
+              "expression": "not_after",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "timestamptz_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_tls_organization_fingerprint_sha256": {
+          "name": "uniq_tls_organization_fingerprint_sha256",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "fingerprint_sha256",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"tls\".\"fingerprint_sha256\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -2738,6 +4244,27 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "is_literal": {
+          "name": "is_literal",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "for_build": {
+          "name": "for_build",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "for_runtime": {
+          "name": "for_runtime",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
         },
         "description": {
           "name": "description",
@@ -3180,6 +4707,127 @@
       },
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.vpn": {
+      "name": "vpn",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cidr": {
+          "name": "cidr",
+          "type": "cidr",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "options": {
+          "name": "options",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "idx_vpn_organization_id": {
+          "name": "idx_vpn_organization_id",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_vpn_organization_id_cidr": {
+          "name": "uniq_vpn_organization_id_cidr",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "cidr",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "vpn_organization_id_organization_id_fk": {
+          "name": "vpn_organization_id_organization_id_fk",
+          "tableFrom": "vpn",
+          "tableTo": "organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "vpn_display_name_format_check": {
+          "name": "vpn_display_name_format_check",
+          "value": "(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.workspace": {

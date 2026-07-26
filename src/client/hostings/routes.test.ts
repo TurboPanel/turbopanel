@@ -107,7 +107,6 @@ test('PATCH /hostings rejects public bind with non-public ip scope', async () =>
     .values({
       organizationId,
       address: '10.0.0.1',
-      version: 4,
       allocation: 'dedicated',
       scope: 'datacenter',
       createdAt: now,
@@ -224,7 +223,6 @@ test('PATCH /hostings returns 404 when ipId belongs to another org', async () =>
     .values({
       organizationId: orgB!.id,
       address: '203.0.113.55',
-      version: 4,
       allocation: 'dedicated',
       scope: 'public',
       createdAt: now,

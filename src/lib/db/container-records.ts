@@ -3,25 +3,21 @@ import type { Db } from '../../db.ts'
 import type { EnvironmentDeployContainer } from '../commands/schemas.ts'
 import { container, service } from './schema.ts'
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-/** Same resolution as deploy-routes: metadata.composeServiceName → displayName → id. */
-function readComposeServiceName(metadata: unknown, fallback: string): string {
-  if (isPlainObject(metadata) && typeof metadata.composeServiceName === 'string') {
-    return metadata.composeServiceName
-  }
-  return fallback
-}
-
 /** Matches `service_display_name_format_check` in schema. */
 const SERVICE_DISPLAY_NAME_RE = /^[A-Za-z0-9 ._-]+$/
 
 type ServiceRow = {
   id: string
   displayName: string | null
-  metadata: unknown
+  composeServiceName: string | null
+}
+
+/** Prefer the dedicated column; fall back to displayName then id. */
+function resolveServiceComposeName(row: ServiceRow): string {
+  if (typeof row.composeServiceName === 'string' && row.composeServiceName.length > 0) {
+    return row.composeServiceName
+  }
+  return row.displayName ?? row.id
 }
 
 function buildServiceComposeIndex(serviceRows: ServiceRow[]): {
@@ -31,8 +27,7 @@ function buildServiceComposeIndex(serviceRows: ServiceRow[]): {
   const serviceIds = new Set(serviceRows.map((row) => row.id))
   const serviceIdByComposeName = new Map<string, string>()
   for (const row of serviceRows) {
-    const composeName = readComposeServiceName(row.metadata, row.displayName ?? row.id)
-    serviceIdByComposeName.set(composeName, row.id)
+    serviceIdByComposeName.set(resolveServiceComposeName(row), row.id)
   }
   return { serviceIds, serviceIdByComposeName }
 }
@@ -75,13 +70,13 @@ async function ensureServicesForReportedContainers(
       names.map((composeServiceName) => ({
         environmentId,
         displayName: composeServiceName,
-        metadata: { composeServiceName },
+        composeServiceName,
       })),
     )
     .returning({
       id: service.id,
       displayName: service.displayName,
-      metadata: service.metadata,
+      composeServiceName: service.composeServiceName,
     })
 
   return [...serviceRows, ...inserted]
@@ -116,7 +111,7 @@ export async function reconcileEnvironmentContainers(
     .select({
       id: service.id,
       displayName: service.displayName,
-      metadata: service.metadata,
+      composeServiceName: service.composeServiceName,
     })
     .from(service)
     .where(eq(service.environmentId, environmentId))
@@ -181,12 +176,10 @@ export async function reconcileEnvironmentContainers(
       matched.map((row) => ({
         serviceId: row.serviceId,
         serverId,
-        metadata: {
-          containerId: row.containerId,
-          containerName: row.containerName,
-          status: row.status,
-          composeServiceName: row.composeServiceName,
-        },
+        containerId: row.containerId,
+        containerName: row.containerName,
+        status: row.status,
+        composeServiceName: row.composeServiceName,
       })),
     )
   })

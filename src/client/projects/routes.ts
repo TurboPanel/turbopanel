@@ -9,7 +9,7 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db.ts'
-import { environment, managed, project, variable, workspace } from '../../lib/db/schema.ts'
+import { environment, project, variable, workspace } from '../../lib/db/schema.ts'
 import {
   getCatalogEntry,
   isCreateProjectType,
@@ -358,25 +358,8 @@ async function insertCatalogProject(
     })
     .returning({ id: project.id })
 
-  // Legacy catalog apps (e.g. wordpress-mysql) keep a project-scoped managed
-  // marker. Managed engines scaffold project + environment only; the
-  // environment-scoped managed row is created by later provisioning.
-  if (fields.projectType === 'managed' && !isEngine) {
-    const [managedRow] = await tx
-      .insert(managed)
-      .values({
-        projectId: inserted.id,
-        metadata: { code: fields.entry.code },
-        options: fields.entry.options ?? null,
-      })
-      .returning({ id: managed.id })
-
-    await tx
-      .update(project)
-      .set({ metadata: { type: 'managed', managed_id: managedRow.id } })
-      .where(eq(project.id, inserted.id))
-  }
-
+  // Managed engines scaffold project + environment only; the environment-scoped
+  // managed row is created later by provisioning.
   await scaffoldCatalogEnvironments(
     tx,
     inserted.id,

@@ -13,10 +13,15 @@ function listComposeServiceNames(document: ComposeDocument): string[] {
   return Object.keys(services).sort((a, b) => a.localeCompare(b))
 }
 
-function readComposeServiceName(metadata: unknown): string | null {
-  if (!isRecord(metadata)) return null
-  const name = metadata.composeServiceName
-  return typeof name === 'string' && name.length > 0 ? name : null
+function resolveServiceComposeName(row: {
+  id: string
+  displayName: string | null
+  composeServiceName: string | null
+}): string {
+  if (typeof row.composeServiceName === 'string' && row.composeServiceName.length > 0) {
+    return row.composeServiceName
+  }
+  return row.displayName ?? row.id
 }
 
 export type ReconcileServicesResult = {
@@ -38,15 +43,14 @@ export async function reconcileServicesFromCompose(
     .select({
       id: service.id,
       displayName: service.displayName,
-      metadata: service.metadata,
+      composeServiceName: service.composeServiceName,
     })
     .from(service)
     .where(eq(service.environmentId, environmentId))
 
   const existingByComposeName = new Map<string, typeof existingRows[number]>()
   for (const row of existingRows) {
-    const composeServiceName = readComposeServiceName(row.metadata) ?? row.displayName ?? row.id
-    existingByComposeName.set(composeServiceName, row)
+    existingByComposeName.set(resolveServiceComposeName(row), row)
   }
 
   const created: string[] = []
@@ -56,20 +60,20 @@ export async function reconcileServicesFromCompose(
     const [inserted] = await db.insert(service).values({
       displayName: composeServiceName,
       environmentId,
-      metadata: { composeServiceName },
+      composeServiceName,
     }).returning({ id: service.id })
 
     created.push(inserted.id)
     existingByComposeName.set(composeServiceName, {
       id: inserted.id,
       displayName: composeServiceName,
-      metadata: { composeServiceName },
+      composeServiceName,
     })
   }
 
   const composeNameSet = new Set(composeNames)
   const orphans = existingRows
-    .map((row) => readComposeServiceName(row.metadata) ?? row.displayName ?? row.id)
+    .map((row) => resolveServiceComposeName(row))
     .filter((name) => !composeNameSet.has(name))
 
   return { created, orphans }

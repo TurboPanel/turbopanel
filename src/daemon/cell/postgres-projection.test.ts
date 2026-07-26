@@ -4,6 +4,7 @@ import type { ServerMetadata } from "../../lib/db/server-metadata.ts";
 import type { ServerGeo } from "../../lib/geo/server-geo.ts";
 import {
   buildDefaultDaemonStatus,
+  mapServerDaemonStatusFromColumns,
   parseServerDaemonState,
   type ServerDaemonState,
   type ServerDaemonStatus,
@@ -23,30 +24,42 @@ import { onDaemonDisconnected } from "./control-plane-monitor.ts";
 
 const serverId = "srv-projection-test";
 
-function mergeDaemonStatus(
-  daemon: ServerDaemonState,
-  statusOverrides: Partial<ServerDaemonStatus> = {},
-): ServerDaemonState {
-  return {
-    ...daemon,
-    status: {
-      ...buildDefaultDaemonStatus(),
-      ...daemon.status,
-      ...statusOverrides,
-    },
-  };
-}
-
-function mockProjectionSelectRow(row: {
+/**
+ * Mock row shape mirrors `getServerDaemonStateByServerId`'s select — `daemon`
+ * jsonb (`{ key, projection? }`, never `status`) plus dedicated fleet-status /
+ * identity columns.
+ */
+type MockRow = {
   daemon: ServerDaemonState;
   metadata: ServerMetadata | null;
-}) {
+  hostname: string | null;
+  machineId: string | null;
+  connected: boolean;
+  daemonStatus: string;
+  lastSeenAt: string | null;
+  connectedAt: string | null;
+  disconnectedAt: string | null;
+  statusChangedAt: string | null;
+};
+
+function buildMockRow(
+  daemon: ServerDaemonState,
+  statusOverrides: Partial<ServerDaemonStatus> = {},
+  metadata: ServerMetadata | null = null,
+  identity: { hostname?: string | null; machineId?: string | null } = {},
+): MockRow {
+  const status = { ...buildDefaultDaemonStatus(), ...statusOverrides };
   return {
-    from: () => ({
-      where: () => ({
-        limit: () => Promise.resolve([row]),
-      }),
-    }),
+    daemon,
+    metadata,
+    hostname: identity.hostname ?? null,
+    machineId: identity.machineId ?? null,
+    connected: status.connected,
+    daemonStatus: status.daemonStatus ?? "unknown",
+    lastSeenAt: status.lastSeenAt,
+    connectedAt: status.connectedAt,
+    disconnectedAt: status.disconnectedAt,
+    statusChangedAt: status.statusChangedAt,
   };
 }
 
@@ -70,9 +83,33 @@ function unwrapMetadataPatch(value: unknown): ServerMetadata | null | undefined 
   return undefined;
 }
 
+function applyPatchToRow(row: MockRow, patch: Record<string, unknown>) {
+  if ("daemon" in patch) {
+    row.daemon = patch.daemon as ServerDaemonState;
+  }
+  if ("metadata" in patch) {
+    const incoming = unwrapMetadataPatch(patch.metadata);
+    row.metadata = incoming === null || incoming === undefined
+      ? (incoming ?? null)
+      : { ...(row.metadata ?? {}), ...incoming };
+  }
+  if ("hostname" in patch) row.hostname = patch.hostname as string | null;
+  if ("machineId" in patch) row.machineId = patch.machineId as string | null;
+  if ("connected" in patch) row.connected = patch.connected as boolean;
+  if ("daemonStatus" in patch) row.daemonStatus = patch.daemonStatus as string;
+  if ("lastSeenAt" in patch) row.lastSeenAt = patch.lastSeenAt as string | null;
+  if ("connectedAt" in patch) row.connectedAt = patch.connectedAt as string | null;
+  if ("disconnectedAt" in patch) {
+    row.disconnectedAt = patch.disconnectedAt as string | null;
+  }
+  if ("statusChangedAt" in patch) {
+    row.statusChangedAt = patch.statusChangedAt as string | null;
+  }
+}
+
 function mockProjectionUpdateChain(
+  row: MockRow,
   updateCalls: Array<Record<string, unknown>>,
-  applyPatch: (patch: Record<string, unknown>) => void,
 ) {
   return {
     set: (patch: Record<string, unknown>) => {
@@ -82,7 +119,7 @@ function mockProjectionUpdateChain(
         recorded.metadata = unwrapped;
       }
       updateCalls.push(recorded);
-      applyPatch(recorded);
+      applyPatchToRow(row, patch);
       return {
         where: () => Promise.resolve(undefined),
       };
@@ -94,41 +131,36 @@ function createMockDb(
   initialDaemon: ServerDaemonState,
   statusOverrides: Partial<ServerDaemonStatus> = {},
   initialMetadata: ServerMetadata | null = null,
+  identity: { hostname?: string | null; machineId?: string | null } = {},
 ): {
   db: Db;
   updateCalls: Array<Record<string, unknown>>;
   getStatus: () => ServerDaemonStatus;
   getDaemon: () => ServerDaemonState;
   getMetadata: () => ServerMetadata | null;
+  getIdentity: () => { hostname: string | null; machineId: string | null };
 } {
   const updateCalls: Array<Record<string, unknown>> = [];
-  let daemon = mergeDaemonStatus(initialDaemon, statusOverrides);
-  let metadata = initialMetadata;
-
-  const applyPatch = (patch: Record<string, unknown>) => {
-    if (patch.daemon) {
-      daemon = patch.daemon as ServerDaemonState;
-    }
-    if (patch.metadata !== undefined) {
-      // Simulate Postgres jsonb || — preserve keys only present on the left.
-      const incoming = patch.metadata as ServerMetadata | null;
-      metadata = incoming === null
-        ? null
-        : { ...(metadata ?? {}), ...incoming };
-    }
-  };
+  const row = buildMockRow(initialDaemon, statusOverrides, initialMetadata, identity);
 
   const db = {
-    select: () => mockProjectionSelectRow({ daemon, metadata }),
-    update: () => mockProjectionUpdateChain(updateCalls, applyPatch),
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([row]),
+        }),
+      }),
+    }),
+    update: () => mockProjectionUpdateChain(row, updateCalls),
   } as unknown as Db;
 
   return {
     db,
     updateCalls,
-    getStatus: () => daemon.status ?? buildDefaultDaemonStatus(),
-    getDaemon: () => daemon,
-    getMetadata: () => metadata,
+    getStatus: () => mapServerDaemonStatusFromColumns(row),
+    getDaemon: () => row.daemon,
+    getMetadata: () => row.metadata,
+    getIdentity: () => ({ hostname: row.hostname, machineId: row.machineId }),
   };
 }
 
@@ -138,50 +170,34 @@ function createStaleReadMockDb(
   liveMetadata: ServerMetadata,
   staleMetadata: ServerMetadata,
   statusOverrides: Partial<ServerDaemonStatus> = {},
+  identity: { hostname?: string | null; machineId?: string | null } = {},
 ): {
   db: Db;
   updateCalls: Array<Record<string, unknown>>;
   getMetadata: () => ServerMetadata | null;
+  getIdentity: () => { hostname: string | null; machineId: string | null };
 } {
   const updateCalls: Array<Record<string, unknown>> = [];
-  let daemon = mergeDaemonStatus(initialDaemon, statusOverrides);
-  let metadata = liveMetadata;
-
-  const applyPatch = (patch: Record<string, unknown>) => {
-    if (patch.daemon) {
-      daemon = patch.daemon as ServerDaemonState;
-    }
-    if (patch.metadata !== undefined) {
-      const incoming = patch.metadata as ServerMetadata | null;
-      metadata = incoming === null
-        ? null
-        : { ...(metadata ?? {}), ...incoming };
-    }
-  };
+  const row = buildMockRow(initialDaemon, statusOverrides, liveMetadata, identity);
 
   const db = {
     select: () => ({
       from: () => ({
         where: () => ({
           limit: () =>
-            Promise.resolve([{ daemon, metadata: staleMetadata }]),
+            Promise.resolve([{ ...row, metadata: staleMetadata }]),
         }),
       }),
     }),
-    update: () => mockProjectionUpdateChain(updateCalls, applyPatch),
+    update: () => mockProjectionUpdateChain(row, updateCalls),
   } as unknown as Db;
 
   return {
     db,
     updateCalls,
-    getMetadata: () => metadata,
+    getMetadata: () => row.metadata,
+    getIdentity: () => ({ hostname: row.hostname, machineId: row.machineId }),
   };
-}
-
-function statusFromPatch(
-  patch: Record<string, unknown> | undefined,
-): ServerDaemonStatus | undefined {
-  return parseServerDaemonState(patch?.daemon)?.status ?? undefined;
 }
 
 const baseKey = {
@@ -233,11 +249,9 @@ test("projectServerDaemon online persists metadata.geo when remoteAddress is new
   });
 
   assertEquals(updateCalls.length, 1);
-  assertEquals(updateCalls[0]?.metadata, {
-    hostname: "host-1",
-    machineId: "mid-1",
-    geo: testGeo,
-  });
+  assertEquals(updateCalls[0]?.hostname, "host-1");
+  assertEquals(updateCalls[0]?.machineId, "mid-1");
+  assertEquals(updateCalls[0]?.metadata, { geo: testGeo });
 });
 
 test("projectServerDaemon repeated online backfills metadata.geo when same IP and geo was missing", async () => {
@@ -267,6 +281,7 @@ test("projectServerDaemon repeated online backfills metadata.geo when same IP an
       lastSeenAt: recent,
       connectedAt,
     },
+    null,
     { hostname: "host-1", machineId: "mid-1" },
   );
 
@@ -304,7 +319,8 @@ test("projectServerDaemon repeated online skips write when only geo changed with
       lastSeenAt: recent,
       connectedAt,
     },
-    { hostname: "host-1", machineId: "mid-1", geo: testGeo },
+    { geo: testGeo },
+    { hostname: "host-1", machineId: "mid-1" },
   );
 
   const wrote = await projectServerDaemon(db, serverId, {
@@ -340,7 +356,8 @@ test("projectServerDaemon repeated online refreshes geo when remoteAddress chang
       lastSeenAt: recent,
       connectedAt,
     },
-    { hostname: "host-1", machineId: "mid-1", geo: testGeo },
+    { geo: testGeo },
+    { hostname: "host-1", machineId: "mid-1" },
   );
 
   const wrote = await projectServerDaemon(db, serverId, {
@@ -371,6 +388,7 @@ test("projectServerDaemon identity trigger backfills metadata.geo when geo was m
       },
     },
     {},
+    null,
     { hostname: "host-1", machineId: "mid-1" },
   );
 
@@ -399,7 +417,8 @@ test("projectServerDaemon identity trigger skips metadata.geo when stored geo ex
       },
     },
     {},
-    { hostname: "host-1", machineId: "mid-1", geo: testGeo },
+    { geo: testGeo },
+    { hostname: "host-1", machineId: "mid-1" },
   );
 
   const wrote = await projectServerDaemon(db, serverId, {
@@ -451,23 +470,19 @@ test("stale identity projection does not clobber fresh timeSync, addresses, os, 
     prettyName: "Debian GNU/Linux 12 (bookworm)",
   };
   const liveMetadata: ServerMetadata = {
-    hostname: "live-host",
-    machineId: "live-mid",
     geo: testGeoUpdated,
     os: freshOs,
     timeSync: freshTimeSync,
     addresses: freshAddresses,
   };
   const staleMetadata: ServerMetadata = {
-    hostname: "stale-host",
-    machineId: "stale-mid",
     geo: testGeo,
     os: staleOs,
     timeSync: staleTimeSync,
     addresses: staleAddresses,
   };
 
-  const { db, updateCalls, getMetadata } = createStaleReadMockDb(
+  const { db, updateCalls, getMetadata, getIdentity } = createStaleReadMockDb(
     {
       key: baseKey,
       projection: {
@@ -478,6 +493,8 @@ test("stale identity projection does not clobber fresh timeSync, addresses, os, 
     },
     liveMetadata,
     staleMetadata,
+    {},
+    { hostname: "stale-host", machineId: "stale-mid" },
   );
 
   await projectServerDaemon(db, serverId, {
@@ -486,19 +503,16 @@ test("stale identity projection does not clobber fresh timeSync, addresses, os, 
   });
 
   assertEquals(updateCalls.length, 1);
-  const patch = updateCalls[0]?.metadata as ServerMetadata;
-  assertEquals(patch.hostname, "projected-host");
-  assertEquals(patch.timeSync, undefined);
-  assertEquals(patch.addresses, undefined);
-  assertEquals(patch.os, undefined);
-  assertEquals(patch.geo, undefined);
+  // Hostname is a dedicated column patch now — never part of the metadata delta.
+  assertEquals(updateCalls[0]?.hostname, "projected-host");
+  assertEquals(updateCalls[0]?.metadata, undefined);
 
+  assertEquals(getIdentity().hostname, "projected-host");
   const metadata = getMetadata();
   assertEquals(metadata?.timeSync, freshTimeSync);
   assertEquals(metadata?.addresses, freshAddresses);
   assertEquals(metadata?.os, freshOs);
   assertEquals(metadata?.geo, testGeoUpdated);
-  assertEquals(metadata?.hostname, "projected-host");
 });
 
 test("identity projection replaces stored addresses when daemon reports empty lists", async () => {
@@ -520,9 +534,12 @@ test("identity projection replaces stored addresses when daemon reports empty li
     { addresses: priorAddresses },
   );
 
+  // `identity` triggers only touch metadata when identity/geo actually changed
+  // (applyIdentityTrigger gates on identityDue/geoDue) — pair the addresses
+  // report with a remoteAddress change so the metadata delta is computed.
   await projectServerDaemon(db, serverId, {
     kind: "identity",
-    identity: { addresses: emptyReport },
+    identity: { remoteAddress: "203.0.113.10", addresses: emptyReport },
   });
 
   assertEquals(updateCalls.length, 1);
@@ -530,8 +547,8 @@ test("identity projection replaces stored addresses when daemon reports empty li
   assertEquals(patch?.addresses, emptyReport);
 });
 
-test("projectServerDaemon online sets status in daemon jsonb", async () => {
-  const { db, updateCalls } = createMockDb({ key: baseKey });
+test("projectServerDaemon online sets status columns and identity columns", async () => {
+  const { db, updateCalls, getStatus } = createMockDb({ key: baseKey });
 
   await projectServerDaemon(db, serverId, {
     kind: "online",
@@ -540,16 +557,17 @@ test("projectServerDaemon online sets status in daemon jsonb", async () => {
   });
 
   assertEquals(updateCalls.length, 1);
-  const status = statusFromPatch(updateCalls[0]);
-  assert(status);
-  assertEquals(status?.connected, true);
-  assertEquals(status?.connectedAt, "2020-01-01T00:00:00.000Z");
-  assertEquals(typeof status?.statusChangedAt, "string");
-  assertEquals(typeof status?.lastSeenAt, "string");
-  assertEquals(updateCalls[0]?.metadata, {
-    hostname: "host-1",
-    machineId: "mid-1",
-  });
+  const status = getStatus();
+  assertEquals(status.connected, true);
+  assertEquals(status.connectedAt, "2020-01-01T00:00:00.000Z");
+  assertEquals(typeof status.statusChangedAt, "string");
+  assertEquals(typeof status.lastSeenAt, "string");
+  assertEquals(updateCalls[0]?.hostname, "host-1");
+  assertEquals(updateCalls[0]?.machineId, "mid-1");
+  assertEquals(updateCalls[0]?.metadata, undefined);
+  // status columns are written directly on the patch — never nested in daemon jsonb.
+  const daemonPatch = updateCalls[0]?.daemon as Record<string, unknown> | undefined;
+  assertEquals(daemonPatch !== undefined && "status" in daemonPatch, false);
 });
 
 test("projectServerDaemon repeated online within 60s skips write", async () => {
@@ -566,6 +584,7 @@ test("projectServerDaemon repeated online within 60s skips write", async () => {
       lastSeenAt: recent,
       connectedAt,
     },
+    null,
     { hostname: "host-1", machineId: "mid-1" },
   );
 
@@ -593,6 +612,7 @@ test("projectServerDaemon repeated online after 60s updates lastSeenAt only", as
       lastSeenAt: stale,
       connectedAt,
     },
+    null,
     { hostname: "host-1", machineId: "mid-1" },
   );
 
@@ -604,15 +624,14 @@ test("projectServerDaemon repeated online after 60s updates lastSeenAt only", as
 
   assertEquals(wrote, true);
   assertEquals(updateCalls.length, 1);
-  const status = statusFromPatch(updateCalls[0]);
-  assertEquals(typeof status?.lastSeenAt, "string");
-  assertEquals(status?.connectedAt, connectedAt);
-  assertEquals(status?.statusChangedAt, null);
-  assertEquals(getStatus().connectedAt, connectedAt);
+  const status = getStatus();
+  assertEquals(typeof status.lastSeenAt, "string");
+  assertEquals(status.connectedAt, connectedAt);
+  assertEquals(status.statusChangedAt, null);
 });
 
 test("projectServerDaemon offline clears connected without touching lastSeenAt", async () => {
-  const { db, updateCalls } = createMockDb(
+  const { db, updateCalls, getStatus } = createMockDb(
     {
       key: baseKey,
       projection: {
@@ -631,15 +650,15 @@ test("projectServerDaemon offline clears connected without touching lastSeenAt",
   await projectServerDaemon(db, serverId, { kind: "offline" });
 
   assertEquals(updateCalls.length, 1);
-  const status = statusFromPatch(updateCalls[0]);
-  assertEquals(status?.connected, false);
-  assertEquals(typeof status?.disconnectedAt, "string");
-  assertEquals(typeof status?.statusChangedAt, "string");
-  assertEquals(status?.lastSeenAt, "2020-01-01T00:00:00.000Z");
+  const status = getStatus();
+  assertEquals(status.connected, false);
+  assertEquals(typeof status.disconnectedAt, "string");
+  assertEquals(typeof status.statusChangedAt, "string");
+  assertEquals(status.lastSeenAt, "2020-01-01T00:00:00.000Z");
 });
 
-test("onDaemonDisconnected projects disconnected status in daemon jsonb", async () => {
-  const { db, updateCalls } = createMockDb(
+test("onDaemonDisconnected projects disconnected status via columns", async () => {
+  const { db, updateCalls, getStatus } = createMockDb(
     {
       key: baseKey,
       projection: { hostname: "host-1" },
@@ -654,15 +673,15 @@ test("onDaemonDisconnected projects disconnected status in daemon jsonb", async 
   await onDaemonDisconnected(db, serverId);
 
   assertEquals(updateCalls.length, 1);
-  const status = statusFromPatch(updateCalls[0]);
-  assertEquals(status?.connected, false);
-  assertEquals(typeof status?.disconnectedAt, "string");
-  assertEquals(typeof status?.statusChangedAt, "string");
-  assertEquals(status?.lastSeenAt, "2020-01-01T00:00:00.000Z");
+  const status = getStatus();
+  assertEquals(status.connected, false);
+  assertEquals(typeof status.disconnectedAt, "string");
+  assertEquals(typeof status.statusChangedAt, "string");
+  assertEquals(status.lastSeenAt, "2020-01-01T00:00:00.000Z");
 });
 
 test("projectServerDaemon disconnected matches offline status patch", async () => {
-  const { db, updateCalls, getDaemon } = createMockDb(
+  const { db, updateCalls, getDaemon, getStatus } = createMockDb(
     {
       key: baseKey,
       projection: { hostname: "host-1", agent: testAgent },
@@ -677,10 +696,10 @@ test("projectServerDaemon disconnected matches offline status patch", async () =
   await projectServerDaemon(db, serverId, { kind: "disconnected" });
 
   assertEquals(updateCalls.length, 1);
-  const status = statusFromPatch(updateCalls[0]);
-  assertEquals(status?.connected, false);
-  assertEquals(typeof status?.disconnectedAt, "string");
-  assertEquals(status?.lastSeenAt, "2020-01-01T00:00:00.000Z");
+  const status = getStatus();
+  assertEquals(status.connected, false);
+  assertEquals(typeof status.disconnectedAt, "string");
+  assertEquals(status.lastSeenAt, "2020-01-01T00:00:00.000Z");
   assert(updateCalls[0]?.daemon != null);
   assertEquals(getDaemon().projection?.agent, testAgent);
 });
@@ -710,7 +729,7 @@ test("projectServerDaemon heartbeat within 60s skips write", async () => {
 
 test("projectServerDaemon heartbeat after 60s updates lastSeenAt", async () => {
   const stale = new Date(Date.now() - 61_000).toISOString();
-  const { db, updateCalls } = createMockDb(
+  const { db, updateCalls, getStatus } = createMockDb(
     {
       key: baseKey,
       projection: { agent: testAgent },
@@ -729,14 +748,14 @@ test("projectServerDaemon heartbeat after 60s updates lastSeenAt", async () => {
 
   assertEquals(wrote, true);
   assertEquals(updateCalls.length, 1);
-  const status = statusFromPatch(updateCalls[0]);
-  assertEquals(typeof status?.lastSeenAt, "string");
-  assertEquals(status?.connected, true);
+  const status = getStatus();
+  assertEquals(typeof status.lastSeenAt, "string");
+  assertEquals(status.connected, true);
 });
 
 test("projectServerDaemon heartbeat without agent after 60s updates lastSeenAt", async () => {
   const stale = new Date(Date.now() - 61_000).toISOString();
-  const { db, updateCalls } = createMockDb(
+  const { db, updateCalls, getStatus } = createMockDb(
     {
       key: baseKey,
       projection: { hostname: "host-1", agent: testAgent },
@@ -755,11 +774,10 @@ test("projectServerDaemon heartbeat without agent after 60s updates lastSeenAt",
 
   assertEquals(wrote, true);
   assertEquals(updateCalls.length, 1);
-  const status = statusFromPatch(updateCalls[0]);
-  assert(status);
-  assertEquals(typeof status?.lastSeenAt, "string");
-  assertEquals(status?.lastSeenAt !== stale, true);
-  assertEquals(status?.connected, true);
+  const status = getStatus();
+  assertEquals(typeof status.lastSeenAt, "string");
+  assertEquals(status.lastSeenAt !== stale, true);
+  assertEquals(status.connected, true);
 });
 
 test("projectServerDaemon preserves server.daemon.key on write", async () => {
@@ -784,7 +802,7 @@ test("projectServerDaemon preserves server.daemon.key on write", async () => {
 });
 
 test("projectServerDaemon agent trigger updates jsonb only", async () => {
-  const { db, updateCalls } = createMockDb({
+  const { db, updateCalls, getStatus } = createMockDb({
     key: baseKey,
     projection: { hostname: "host-1" },
   });
@@ -798,14 +816,17 @@ test("projectServerDaemon agent trigger updates jsonb only", async () => {
   });
 
   assertEquals(updateCalls.length, 1);
-  const status = statusFromPatch(updateCalls[0]);
-  assertEquals(status?.connected, false);
-  assertEquals(status?.lastSeenAt, null);
+  // No status columns were part of this patch — status stays at its prior value.
+  assertEquals("connected" in updateCalls[0]!, false);
+  assertEquals("daemonStatus" in updateCalls[0]!, false);
+  const status = getStatus();
+  assertEquals(status.connected, false);
+  assertEquals(status.lastSeenAt, null);
   assert(updateCalls[0]?.daemon != null);
 });
 
 test("projectServerDaemon identity trigger updates jsonb only", async () => {
-  const { db, updateCalls } = createMockDb({
+  const { db, updateCalls, getStatus } = createMockDb({
     key: baseKey,
     projection: {
       hostname: "old-host",
@@ -820,12 +841,14 @@ test("projectServerDaemon identity trigger updates jsonb only", async () => {
 
   assert(updateCalls.length >= 1);
   const projectionUpdate = updateCalls.find((call) => call.daemon != null);
-  const status = statusFromPatch(projectionUpdate);
-  assertEquals(status?.connected, false);
-  assertEquals(status?.lastSeenAt, null);
+  assertEquals("connected" in (projectionUpdate ?? {}), false);
+  const status = getStatus();
+  assertEquals(status.connected, false);
+  assertEquals(status.lastSeenAt, null);
   const merged = parseServerDaemonState(projectionUpdate?.daemon);
   assertEquals(merged?.projection?.hostname, "new-host");
   assertEquals(merged?.projection?.agent, testAgent);
+  assertEquals(projectionUpdate?.hostname, "new-host");
 });
 
 test("projectServerDaemon identity trigger preserves projection.update", async () => {
@@ -943,19 +966,11 @@ test("mergeAgentPreserving backfills optional fields for unchanged build", () =>
   );
 });
 
-test("readProjectionsForServers reads status.connected as online", async () => {
-  const connectedDaemon = {
+test("readProjectionsForServers reads connected column as online", async () => {
+  const connectedDaemon: ServerDaemonState = {
     key: baseKey,
     projection: {
       hostname: "legacy-host",
-    },
-    status: {
-      connected: true,
-      daemonStatus: "online",
-      connectedAt: "2020-06-01T12:00:00.000Z",
-      lastSeenAt: "2020-06-01T12:05:00.000Z",
-      disconnectedAt: null,
-      statusChangedAt: "2020-06-01T12:00:00.000Z",
     },
   };
 
@@ -965,6 +980,9 @@ test("readProjectionsForServers reads status.connected as online", async () => {
         where: () => Promise.resolve([{
           id: serverId,
           daemon: connectedDaemon,
+          connected: true,
+          lastSeenAt: "2020-06-01T12:05:00.000Z",
+          connectedAt: "2020-06-01T12:00:00.000Z",
         }]),
       }),
     }),
@@ -1037,23 +1055,12 @@ test("projectServerDaemon update-expired writes projection.update as expired", a
   assertEquals(update?.finishedAt, "2020-01-01T00:05:00.000Z");
 });
 
-test("listConnectedServerIdsFromProjection includes status.connected rows", async () => {
-  const connectedDaemon: ServerDaemonState = {
-    key: baseKey,
-    status: {
-      connected: true,
-      daemonStatus: "online",
-      lastSeenAt: "2020-01-01T00:00:00.000Z",
-      connectedAt: "2020-01-01T00:00:00.000Z",
-      disconnectedAt: null,
-      statusChangedAt: "2020-01-01T00:00:00.000Z",
-    },
-  };
+test("listConnectedServerIdsFromProjection includes rows with connected column set", async () => {
   const db = {
     select: () => ({
       from: () => ({
         where: () => Promise.resolve([
-          { id: serverId, daemon: connectedDaemon },
+          { id: serverId, connected: true },
         ]),
       }),
     }),
@@ -1088,23 +1095,21 @@ test("steadyStateInboundSkipsDbRead gates on lastSeenAt only", () => {
   );
 });
 
-function offlineDaemonState(
+function offlineServerRow(
   id: string,
+  connectedAt: string,
   disconnectedAt: string,
-): { id: string; daemon: ServerDaemonState } {
+): {
+  id: string;
+  connectedAt: string;
+  disconnectedAt: string;
+  statusChangedAt: string;
+} {
   return {
     id,
-    daemon: {
-      key: baseKey,
-      status: {
-        connected: false,
-        daemonStatus: "offline",
-        lastSeenAt: disconnectedAt,
-        connectedAt: "2020-01-01T00:00:00.000Z",
-        disconnectedAt,
-        statusChangedAt: disconnectedAt,
-      },
-    },
+    connectedAt,
+    disconnectedAt,
+    statusChangedAt: disconnectedAt,
   };
 }
 
@@ -1112,12 +1117,13 @@ test("listRecentlyOfflineServersForSweep returns recent offline rows only", asyn
   const nowMs = Date.parse("2020-06-01T12:00:00.000Z");
   const recentAt = new Date(nowMs - 60_000).toISOString();
   const staleAt = new Date(nowMs - RECENT_OFFLINE_SWEEP_MS - 60_000).toISOString();
+  const connectedAt = "2020-01-01T00:00:00.000Z";
   const rows = [
-    offlineDaemonState("srv-recent-1", recentAt),
-    offlineDaemonState("srv-recent-2", recentAt),
-    offlineDaemonState("srv-stale", staleAt),
+    offlineServerRow("srv-recent-1", connectedAt, recentAt),
+    offlineServerRow("srv-recent-2", connectedAt, recentAt),
+    offlineServerRow("srv-stale", connectedAt, staleAt),
     ...Array.from({ length: 20 }, (_, index) =>
-      offlineDaemonState(`srv-old-${index}`, staleAt)
+      offlineServerRow(`srv-old-${index}`, connectedAt, staleAt)
     ),
   ];
 
@@ -1127,16 +1133,12 @@ test("listRecentlyOfflineServersForSweep returns recent offline rows only", asyn
         where: (_predicate: unknown) => ({
           orderBy: (..._order: unknown[]) => Promise.resolve(
             rows.filter((row) => {
-              const status = row.daemon.status;
-              const recentTimestamp = status?.disconnectedAt ??
-                status?.statusChangedAt;
+              const recentTimestamp = row.disconnectedAt ?? row.statusChangedAt;
               if (!recentTimestamp) return false;
               return Date.parse(recentTimestamp) >=
                 nowMs - RECENT_OFFLINE_SWEEP_MS;
             }).sort((a, b) => {
-              const aAt = a.daemon.status?.disconnectedAt ?? "";
-              const bAt = b.daemon.status?.disconnectedAt ?? "";
-              const byTime = bAt.localeCompare(aAt);
+              const byTime = b.disconnectedAt.localeCompare(a.disconnectedAt);
               if (byTime !== 0) return byTime;
               return a.id.localeCompare(b.id);
             }),

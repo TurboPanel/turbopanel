@@ -13,14 +13,15 @@ import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db.ts'
 import {
+  assembleTlsMetadata,
   metadataFromParsed,
   mintSelfSignedCertificate,
   parseCertificatePem,
-  parseTlsMetadata,
   parseTlsOptions,
   privateKeyMatchesCertificate,
   refreshTlsStatus,
   splitCertificateChain,
+  splitTlsMetadata,
   TLS_SOURCES,
   type TlsMetadata,
   type TlsOptions,
@@ -74,13 +75,23 @@ function toPublicRow(row: {
   displayName: string | null
   source: string
   organizationId: string
+  status: string
+  notAfter: string | null
+  fingerprintSha256: string | null
   metadata: unknown
   options: unknown
   certificatePem: string | null
   createdAt: string
   updatedAt: string
 }): TlsPublicRow | null {
-  const metadata = parseTlsMetadata(row.metadata)
+  const metadata = assembleTlsMetadata(
+    {
+      status: row.status,
+      notAfter: row.notAfter,
+      fingerprintSha256: row.fingerprintSha256,
+    },
+    row.metadata,
+  )
   if (!metadata) return null
   return {
     id: row.id,
@@ -94,6 +105,21 @@ function toPublicRow(row: {
     updatedAt: row.updatedAt,
   }
 }
+
+const TLS_PUBLIC_SELECT = {
+  id: tls.id,
+  displayName: tls.displayName,
+  source: tls.source,
+  organizationId: tls.organizationId,
+  status: tls.status,
+  notAfter: tls.notAfter,
+  fingerprintSha256: tls.fingerprintSha256,
+  metadata: tls.metadata,
+  options: tls.options,
+  certificatePem: tls.certificatePem,
+  createdAt: tls.createdAt,
+  updatedAt: tls.updatedAt,
+} as const
 
 function parseSource(value: unknown): TlsSource | null {
   if (typeof value !== 'string') return null
@@ -124,6 +150,17 @@ function assertTpSecretPrivateKey(sealed: string): void {
 
 function isCreateTlsFailure(result: CreateTlsResult): result is CreateTlsFailure {
   return 'status' in result
+}
+
+function isPostgresUniqueViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null &&
+    'code' in err && (err as { code: string }).code === '23505'
+}
+
+function isTlsFingerprintUniqueViolation(err: unknown): boolean {
+  if (!isPostgresUniqueViolation(err)) return false
+  const message = err instanceof Error ? err.message : String(err)
+  return message.includes('uniq_tls_organization_fingerprint_sha256')
 }
 
 function createFailure(error: string, detail?: string): CreateTlsFailure {
@@ -314,17 +351,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
     }
 
     const rows = await db
-      .select({
-        id: tls.id,
-        displayName: tls.displayName,
-        source: tls.source,
-        organizationId: tls.organizationId,
-        metadata: tls.metadata,
-        options: tls.options,
-        certificatePem: tls.certificatePem,
-        createdAt: tls.createdAt,
-        updatedAt: tls.updatedAt,
-      })
+      .select(TLS_PUBLIC_SELECT)
       .from(tls)
       .where(
         and(inArray(tls.id, visibleIds), eq(tls.organizationId, organizationId)),
@@ -359,17 +386,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
     if (denied) return denied
 
     const [row] = await db
-      .select({
-        id: tls.id,
-        displayName: tls.displayName,
-        source: tls.source,
-        organizationId: tls.organizationId,
-        metadata: tls.metadata,
-        options: tls.options,
-        certificatePem: tls.certificatePem,
-        createdAt: tls.createdAt,
-        updatedAt: tls.updatedAt,
-      })
+      .select(TLS_PUBLIC_SELECT)
       .from(tls)
       .where(eq(tls.id, id))
       .limit(1)
@@ -432,21 +449,33 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
 
     const options = withPreferOption(material.options, body.prefer)
 
-    const id = await db.transaction(async (tx) => {
-      const [inserted] = await tx
-        .insert(tls)
-        .values({
-          organizationId,
-          displayName,
-          source,
-          certificatePem: material.certificatePem,
-          privateKeyPem: material.privateKeyPemSealed,
-          metadata: material.metadata,
-          options,
-        })
-        .returning({ id: tls.id })
-      return inserted.id
-    })
+    const { columns, residual } = splitTlsMetadata(material.metadata)
+    let id: string
+    try {
+      id = await db.transaction(async (tx) => {
+        const [inserted] = await tx
+          .insert(tls)
+          .values({
+            organizationId,
+            displayName,
+            source,
+            certificatePem: material.certificatePem,
+            privateKeyPem: material.privateKeyPemSealed,
+            status: columns.status,
+            notAfter: columns.notAfter,
+            fingerprintSha256: columns.fingerprintSha256,
+            metadata: residual,
+            options,
+          })
+          .returning({ id: tls.id })
+        return inserted.id
+      })
+    } catch (err) {
+      if (isTlsFingerprintUniqueViolation(err)) {
+        return c.json({ error: 'tls_fingerprint_conflict' }, 409)
+      }
+      throw err
+    }
 
     return c.json({ ok: true as const, id })
   })
@@ -477,6 +506,9 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
     const [existing] = await db
       .select({
         options: tls.options,
+        status: tls.status,
+        notAfter: tls.notAfter,
+        fingerprintSha256: tls.fingerprintSha256,
         metadata: tls.metadata,
       })
       .from(tls)
@@ -487,7 +519,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
     const patch: {
       displayName?: string | null
       options?: TlsOptions | null
-      metadata?: TlsMetadata
+      status?: string
       updatedAt: string
     } = { updatedAt: new Date().toISOString() }
 
@@ -511,9 +543,16 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
     }
 
     if (body.revoke === true) {
-      const metadata = parseTlsMetadata(existing.metadata)
+      const metadata = assembleTlsMetadata(
+        {
+          status: existing.status,
+          notAfter: existing.notAfter,
+          fingerprintSha256: existing.fingerprintSha256,
+        },
+        existing.metadata,
+      )
       if (!metadata) return c.json({ error: 'Invalid request' }, 500)
-      patch.metadata = { ...metadata, status: 'revoked' }
+      patch.status = 'revoked'
     }
 
     await db.update(tls).set(patch).where(eq(tls.id, id))

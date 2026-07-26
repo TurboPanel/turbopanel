@@ -8,7 +8,16 @@ export const environmentSchemas = {
       displayName: { type: ['string', 'null'] },
       description: { type: ['string', 'null'] },
       projectId: { type: 'string' },
-      metadata: { type: 'object', nullable: true },
+      serverId: {
+        type: ['string', 'null'],
+        format: 'uuid',
+        description: 'Placement pin source of truth (environment.server_id).',
+      },
+      metadata: {
+        type: 'object',
+        nullable: true,
+        description: 'Environment metadata.',
+      },
       options: {
         type: 'object',
         nullable: true,
@@ -35,7 +44,16 @@ export const environmentSchemas = {
       displayName: { type: 'string' },
       description: { type: 'string' },
       projectId: { type: 'string' },
-      metadata: { type: 'object', nullable: true },
+      serverId: {
+        type: ['string', 'null'],
+        format: 'uuid',
+        description: 'Placement pin source of truth.',
+      },
+      metadata: {
+        type: 'object',
+        nullable: true,
+        description: 'Environment metadata.',
+      },
       options: {
         type: 'object',
         description: 'Environment options; options.compose holds the per-environment overlay',
@@ -47,7 +65,16 @@ export const environmentSchemas = {
     properties: {
       displayName: { type: 'string' },
       description: { type: 'string' },
-      metadata: { type: 'object', nullable: true },
+      serverId: {
+        type: ['string', 'null'],
+        format: 'uuid',
+        description: 'Placement pin source of truth.',
+      },
+      metadata: {
+        type: 'object',
+        nullable: true,
+        description: 'Environment metadata.',
+      },
       options: {
         type: 'object',
         nullable: true,

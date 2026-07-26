@@ -9,6 +9,11 @@ import { mergeServerMetadataIdentity } from './server-registry.ts'
  */
 const test = Deno.test.bind(Deno)
 
+// `mergeServerMetadataIdentity` is a pure merge over `server.metadata` jsonb
+// (os / timeSync / addresses / geo) — hostname and machineId are dedicated
+// `server` columns now (see `identityColumnPatch` / `touchServerMetadata` in
+// server-registry.ts) and are never read or written by this function.
+
 test('mergeServerMetadataIdentity merges os and skips unchanged writes', () => {
   const os = {
     family: 'linux' as const,
@@ -17,19 +22,15 @@ test('mergeServerMetadataIdentity merges os and skips unchanged writes', () => {
     versionCodename: 'trixie',
   }
   const merged = mergeServerMetadataIdentity(
-    { hostname: 'old', machineId: 'mid-1' },
-    { hostname: 'new', os },
+    {},
+    { os },
   )
-  assertEquals(merged, {
-    hostname: 'new',
-    machineId: 'mid-1',
-    os,
-  })
+  assertEquals(merged, { os })
 
   assertEquals(
     mergeServerMetadataIdentity(
-      { hostname: 'new', machineId: 'mid-1', os },
-      { hostname: 'new', machineId: 'mid-1', os },
+      { os },
+      { os },
     ),
     null,
   )
@@ -50,7 +51,6 @@ test('mergeServerMetadataIdentity merges timeSync/addresses without clobbering o
   }
   const merged = mergeServerMetadataIdentity(
     {
-      hostname: 'web-01',
       os,
       geo,
       timeSync: { timezone: 'UTC', ntpEnabled: true, ntpServers: ['a'] },
@@ -109,4 +109,14 @@ test('mergeServerMetadataIdentity replaces stale addresses with empty daemon rep
     { addresses: emptyReport },
   )
   assertEquals(merged?.addresses, emptyReport)
+})
+
+test('mergeServerMetadataIdentity ignores hostname/machineId on the identity payload', () => {
+  // Passing hostname/machineId (dedicated columns) alongside no metadata-worthy
+  // change must not produce a patch — those fields never reach `server.metadata`.
+  const merged = mergeServerMetadataIdentity(
+    {},
+    { hostname: 'new-host', machineId: 'mid-1' },
+  )
+  assertEquals(merged, null)
 })

@@ -58,10 +58,15 @@ describe('reconcileServicesFromCompose', () => {
     assertEquals(second.created.length, 0)
 
     const rows = await db
-      .select({ metadata: service.metadata })
+      .select({ composeServiceName: service.composeServiceName })
       .from(service)
       .where(eq(service.environmentId, envRow.id))
     assertEquals(rows.length, 2)
+    const names = rows
+      .map((row) => row.composeServiceName)
+      .filter((name): name is string => typeof name === 'string')
+      .sort((a, b) => a.localeCompare(b))
+    assertEquals(names, ['api', 'web'])
 
     await db.delete(service).where(eq(service.environmentId, envRow.id))
     await db.delete(environment).where(eq(environment.id, envRow.id))

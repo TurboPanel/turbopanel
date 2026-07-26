@@ -15,13 +15,24 @@ export const tlsSchemas = {
       dnsNames: { type: 'array', items: { type: 'string' } },
       hasWildcard: { type: 'boolean' },
       notBefore: { type: 'string', format: 'date-time' },
-      notAfter: { type: 'string', format: 'date-time' },
-      fingerprintSha256: { type: 'string' },
+      notAfter: {
+        type: 'string',
+        format: 'date-time',
+        description:
+          'Column value mirrored into metadata for API stability (shape unchanged).',
+      },
+      fingerprintSha256: {
+        type: 'string',
+        description:
+          'Column value mirrored into metadata for API stability (shape unchanged).',
+      },
       subject: { type: 'string' },
       issuer: { type: 'string' },
       status: {
         type: 'string',
         enum: ['ready', 'pending', 'expired', 'failed', 'revoked'],
+        description:
+          'Column value mirrored into metadata for API stability (shape unchanged).',
       },
     },
   },

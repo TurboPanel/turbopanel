@@ -8,11 +8,17 @@ export {
   coversAllHostnames,
   coversHostname,
   normalizeHostname,
-  parseTlsMetadata,
   parseTlsOptions,
   resolveTlsForHosting,
 } from './match.ts'
-export { metadataFromParsed, refreshTlsStatus } from './metadata.ts'
+export {
+  assembleTlsMetadata,
+  metadataFromParsed,
+  refreshTlsStatus,
+  splitTlsMetadata,
+  type TlsResidualMetadata,
+  type TlsStatusColumns,
+} from './metadata.ts'
 export {
   decodeFirstCertificate,
   decodePemBlock,

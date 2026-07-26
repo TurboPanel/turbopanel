@@ -66,8 +66,16 @@ export const serverSchemas = {
       licenseId: { type: ['string', 'null'] },
       options: { type: ['object', 'null'], additionalProperties: true },
       createdAt: { type: 'string', format: 'date-time' },
-      connected: { type: 'boolean' },
-      hostname: { type: ['string', 'null'] },
+      connected: {
+        type: 'boolean',
+        description:
+          'Live presence from the promoted `server.connected` column (not `daemon.status`).',
+      },
+      hostname: {
+        type: ['string', 'null'],
+        description:
+          'Daemon-reported hostname from the promoted `server.hostname` column (not `metadata.hostname`).',
+      },
       remoteAddress: {
         type: ['string', 'null'],
         description:
@@ -77,13 +85,13 @@ export const serverSchemas = {
         type: ['string', 'null'],
         format: 'date-time',
         description:
-          'Last inbound WebSocket activity recorded in the daemon cell snapshot. Servers with no activity for 60s are treated as offline. Null when the daemon has never connected.',
+          'Last inbound WebSocket activity from the promoted `server.last_inbound_at` column. Servers with no activity for 60s are treated as offline. Null when the daemon has never connected.',
       },
       connectedAt: {
         type: ['string', 'null'],
         format: 'date-time',
         description:
-          'Time the current daemon WebSocket connection was established (resets on reconnect). Null when offline.',
+          'Time the current daemon WebSocket connection was established (promoted `server.connected_at`; resets on reconnect). Null when offline.',
       },
       geo: {
         type: ['object', 'null'],
@@ -208,6 +216,28 @@ export const serverSchemas = {
     properties: {
       ok: { type: 'boolean', const: true },
       snapshot: { type: 'object', additionalProperties: true },
+    },
+  },
+  ServerStatusResponse: {
+    type: 'object',
+    required: ['serverId', 'connected', 'daemonStatus', 'lastSeenAt', 'connectedAt'],
+    description:
+      'Postgres-backed status row for `GET /servers/{id}/status` (`ServerStatusRecord`).',
+    properties: {
+      serverId: { type: 'string', format: 'uuid' },
+      connected: { type: 'boolean' },
+      daemonStatus: {
+        type: ['string', 'null'],
+        enum: ['online', 'offline', 'unknown', null],
+      },
+      lastSeenAt: { type: ['string', 'null'], format: 'date-time' },
+      connectedAt: { type: ['string', 'null'], format: 'date-time' },
+      disconnectedAt: { type: ['string', 'null'], format: 'date-time' },
+      statusChangedAt: { type: ['string', 'null'], format: 'date-time' },
+      hostname: { type: ['string', 'null'] },
+      remoteAddress: { type: ['string', 'null'] },
+      geo: { type: ['object', 'null'], additionalProperties: true },
+      colocatedWithInstance: { type: 'boolean' },
     },
   },
   ServersResponse: {
@@ -372,6 +402,69 @@ export const serverPaths: Record<string, unknown> = {
         },
         '503': {
           description: 'Database unavailable',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/servers/{id}/status': {
+    get: {
+      tags: ['Servers'],
+      summary: 'Get Postgres-backed connection status for a visible server',
+      description:
+        'Returns `ServerStatusRecord` (connected, daemonStatus, lastSeenAt, connectedAt, …). Prefer this over the admin/debug cell snapshot.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Server status',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ServerStatusResponse' },
+            },
+          },
+        },
+        '401': {
+          description: 'Unauthorized',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '404': {
+          description: 'Server not found',
           content: {
             'application/json': {
               schema: {

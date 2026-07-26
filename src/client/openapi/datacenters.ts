@@ -348,7 +348,8 @@ export const datacenterPaths: Record<string, unknown> = {
           content: { "application/json": { schema: errorBody } },
         },
         "409": {
-          description: "Datacenter still has scoped networks",
+          description:
+            "`datacenter_has_networks` — remove or reassign scoped networks first. Datacenter-kind network CIDRs are what mesh gateways advertise as site routes.",
           content: { "application/json": { schema: errorBody } },
         },
       },

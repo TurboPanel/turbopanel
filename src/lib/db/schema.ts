@@ -120,6 +120,10 @@ export const tls = pgTable(
     certificatePem: text('certificate_pem'),
     /** Sealed `tpsecret` private key PEM; null while LE `pending` before keygen. */
     privateKeyPem: text('private_key_pem'),
+    /** `ready` | `pending` | `expired` | `failed` | `revoked` */
+    status: text().default('ready').notNull(),
+    notAfter: timestamp('not_after', { precision: 3, withTimezone: true, mode: 'string' }),
+    fingerprintSha256: text('fingerprint_sha256'),
     metadata: jsonb().notNull(),
     options: jsonb(),
   },
@@ -128,6 +132,13 @@ export const tls = pgTable(
       'btree',
       table.organizationId.asc().nullsLast().op('uuid_ops')
     ),
+    index('idx_tls_not_after').using(
+      'btree',
+      table.notAfter.asc().nullsLast().op('timestamptz_ops')
+    ),
+    uniqueIndex('uniq_tls_organization_fingerprint_sha256')
+      .on(table.organizationId, table.fingerprintSha256)
+      .where(sql`${table.fingerprintSha256} IS NOT NULL`),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -277,6 +288,32 @@ export const server = pgTable(
     organizationId: uuid('organization_id'),
     datacenterId: uuid('datacenter_id'),
     displayName: varchar('display_name', { length: 255 }),
+    hostname: varchar('hostname', { length: 255 }),
+    machineId: varchar('machine_id', { length: 255 }),
+    connected: boolean().default(false).notNull(),
+    /** `online` | `offline` | `unknown` — projected fleet liveness. */
+    daemonStatus: text('daemon_status').default('unknown').notNull(),
+    lastSeenAt: timestamp('last_seen_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    connectedAt: timestamp('connected_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    disconnectedAt: timestamp('disconnected_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    statusChangedAt: timestamp('status_changed_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /** Sparse `{ key, projection? }` — status lives in dedicated columns. */
     daemon: jsonb(),
     metadata: jsonb(),
     options: jsonb(),
@@ -290,6 +327,18 @@ export const server = pgTable(
       'btree',
       table.datacenterId.asc().nullsLast().op('uuid_ops')
     ),
+    index('idx_server_machine_id').using(
+      'btree',
+      table.machineId.asc().nullsLast().op('text_ops')
+    ),
+    index('idx_server_hostname').using(
+      'btree',
+      table.hostname.asc().nullsLast().op('text_ops')
+    ),
+    index('idx_server_daemon_status').using(
+      'btree',
+      table.daemonStatus.asc().nullsLast().op('text_ops')
+    ),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -300,6 +349,10 @@ export const server = pgTable(
       foreignColumns: [datacenter.id],
       name: 'server_datacenter_id_datacenter_id_fk',
     }).onDelete('set null'),
+    check(
+      'server_daemon_status_check',
+      sql`${table.daemonStatus} IN ('online', 'offline', 'unknown')`
+    ),
   ]
 )
 /**
@@ -440,14 +493,59 @@ export const network = pgTable(
     }).onDelete('restrict'),
     check(
       'network_kind_check',
-      sql`kind IN ('datacenter', 'server', 'docker', 'vpn')`
+      sql`kind IN ('datacenter', 'server', 'docker')`
     ),
     check(
       'network_single_scope_check',
-      sql`NOT ((${table.datacenterId} IS NOT NULL) AND (${table.serverId} IS NOT NULL))`
+      sql`(
+        (${table.kind} = 'datacenter' AND ${table.datacenterId} IS NOT NULL AND ${table.serverId} IS NULL) OR
+        (${table.kind} = 'server' AND ${table.serverId} IS NOT NULL AND ${table.datacenterId} IS NULL) OR
+        (${table.kind} = 'docker' AND ${table.datacenterId} IS NULL AND ${table.serverId} IS NULL)
+      )`
     ),
     check(
       'network_display_name_format_check',
+      sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+    ),
+  ]
+)
+/** Org-scoped WireGuard mesh — owns its overlay CIDR directly (no `network` row). */
+export const vpn = pgTable(
+  'vpn',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    organizationId: uuid('organization_id').notNull(),
+    /** Overlay tunnel subnet for this mesh. */
+    cidr: cidr().notNull(),
+    displayName: varchar('display_name', { length: 255 }),
+    metadata: jsonb(),
+    options: jsonb(),
+  },
+  (table) => [
+    index('idx_vpn_organization_id').using(
+      'btree',
+      table.organizationId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'vpn_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    uniqueIndex('uniq_vpn_organization_id_cidr').on(
+      table.organizationId,
+      table.cidr
+    ),
+    check(
+      'vpn_display_name_format_check',
       sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
     ),
   ]
@@ -456,7 +554,8 @@ export const network = pgTable(
  * Single source of truth for every managed address. There is deliberately **no**
  * `server.datacenter_private_ip` column — a server's private address is
  * `ip WHERE server_id = … AND scope = 'datacenter'`. Public VPS addresses carry
- * no `network_id`.
+ * no `network_id`. Overlay tunnel addresses are `scope = 'vpn'` with `vpn_id`.
+ * Address family (`version`) is derived from `address` in the API — not stored.
  */
 export const ip = pgTable(
   'ip',
@@ -475,8 +574,8 @@ export const ip = pgTable(
     datacenterId: uuid('datacenter_id'),
     networkId: uuid('network_id'),
     serverId: uuid('server_id'),
+    vpnId: uuid('vpn_id'),
     address: inet('address').notNull(),
-    version: integer().notNull(),
     allocation: text().notNull(),
     scope: text().notNull(),
     displayName: varchar('display_name', { length: 255 }),
@@ -494,6 +593,7 @@ export const ip = pgTable(
     ),
     index('idx_ip_network_id').using('btree', table.networkId.asc().nullsLast().op('uuid_ops')),
     index('idx_ip_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
+    index('idx_ip_vpn_id').using('btree', table.vpnId.asc().nullsLast().op('uuid_ops')),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -514,56 +614,29 @@ export const ip = pgTable(
       foreignColumns: [server.id],
       name: 'ip_server_id_server_id_fk',
     }).onDelete('restrict'),
-    check('ip_version_check', sql`version IN (4, 6)`),
+    foreignKey({
+      columns: [table.vpnId],
+      foreignColumns: [vpn.id],
+      name: 'ip_vpn_id_vpn_id_fk',
+    }).onDelete('cascade'),
     check('ip_allocation_check', sql`allocation IN ('dedicated', 'shared')`),
-    check('ip_scope_check', sql`scope IN ('public', 'datacenter', 'loopback')`),
-    check('ip_version_matches_address_check', sql`version = family(address)`),
-    uniqueIndex('uniq_ip_org_address').on(table.organizationId, table.address),
+    check('ip_scope_check', sql`scope IN ('public', 'datacenter', 'loopback', 'vpn')`),
+    check(
+      'ip_vpn_scope_check',
+      sql`(${table.scope} = 'vpn' AND ${table.vpnId} IS NOT NULL) OR (${table.scope} <> 'vpn' AND ${table.vpnId} IS NULL)`
+    ),
+    check(
+      'ip_datacenter_free_pool_check',
+      sql`(${table.datacenterId} IS NULL) OR (${table.serverId} IS NULL AND ${table.vpnId} IS NULL AND ${table.networkId} IS NULL)`
+    ),
+    uniqueIndex('uniq_ip_org_address')
+      .on(table.organizationId, table.address)
+      .where(sql`${table.vpnId} IS NULL`),
+    uniqueIndex('uniq_ip_vpn_address')
+      .on(table.vpnId, table.address)
+      .where(sql`${table.vpnId} IS NOT NULL`),
     check(
       'ip_display_name_format_check',
-      sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
-    ),
-  ]
-)
-/** Org-scoped WireGuard mesh. */
-export const vpn = pgTable(
-  'vpn',
-  {
-    id: uuid()
-      .default(sql`uuidv7()`)
-      .primaryKey()
-      .notNull(),
-    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
-      .defaultNow()
-      .notNull(),
-    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
-      .defaultNow()
-      .notNull(),
-    organizationId: uuid('organization_id').notNull(),
-    /** Tunnel subnet — expected to be a `network` row with `kind = 'vpn'`. */
-    networkId: uuid('network_id'),
-    displayName: varchar('display_name', { length: 255 }),
-    metadata: jsonb(),
-    options: jsonb(),
-  },
-  (table) => [
-    index('idx_vpn_organization_id').using(
-      'btree',
-      table.organizationId.asc().nullsLast().op('uuid_ops')
-    ),
-    index('idx_vpn_network_id').using('btree', table.networkId.asc().nullsLast().op('uuid_ops')),
-    foreignKey({
-      columns: [table.organizationId],
-      foreignColumns: [organization.id],
-      name: 'vpn_organization_id_organization_id_fk',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.networkId],
-      foreignColumns: [network.id],
-      name: 'vpn_network_id_network_id_fk',
-    }).onDelete('set null'),
-    check(
-      'vpn_display_name_format_check',
       sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
     ),
   ]
@@ -573,6 +646,7 @@ export const vpn = pgTable(
  *
  * **WireGuard private keys are never stored in Postgres** — the daemon generates
  * and holds the keypair on the host and reports only the public key back.
+ * Overlay addresses live as `ip(scope='vpn')` rows referenced by `tunnel_ip_id`.
  */
 export const peer = pgTable(
   'peer',
@@ -589,10 +663,16 @@ export const peer = pgTable(
       .notNull(),
     vpnId: uuid('vpn_id').notNull(),
     serverId: uuid('server_id').notNull(),
-    /** Public `ip` row used as the tunnel endpoint. */
-    ipId: uuid('ip_id'),
+    /** Public `ip` row used as the WireGuard endpoint. */
+    endpointIpId: uuid('endpoint_ip_id'),
+    /** Overlay `ip` row (`scope = 'vpn'`) for this peer's tunnel address. */
+    tunnelIpId: uuid('tunnel_ip_id'),
+    /**
+     * Mesh role — `gateway` advertises its datacenter CIDR to remote peers;
+     * `member` is host-route only.
+     */
+    role: text().notNull().default('member'),
     publicKey: text('public_key').notNull(),
-    tunnelAddress: inet('tunnel_address'),
     listenPort: integer('listen_port'),
     endpoint: varchar({ length: 255 }),
     /** Sealed `tpsecret` envelope — write-only, same handling as `principal.password`. */
@@ -603,7 +683,14 @@ export const peer = pgTable(
   (table) => [
     index('idx_peer_vpn_id').using('btree', table.vpnId.asc().nullsLast().op('uuid_ops')),
     index('idx_peer_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
-    index('idx_peer_ip_id').using('btree', table.ipId.asc().nullsLast().op('uuid_ops')),
+    index('idx_peer_endpoint_ip_id').using(
+      'btree',
+      table.endpointIpId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_peer_tunnel_ip_id').using(
+      'btree',
+      table.tunnelIpId.asc().nullsLast().op('uuid_ops')
+    ),
     foreignKey({
       columns: [table.vpnId],
       foreignColumns: [vpn.id],
@@ -615,12 +702,21 @@ export const peer = pgTable(
       name: 'peer_server_id_server_id_fk',
     }).onDelete('restrict'),
     foreignKey({
-      columns: [table.ipId],
+      columns: [table.endpointIpId],
       foreignColumns: [ip.id],
-      name: 'peer_ip_id_ip_id_fk',
+      name: 'peer_endpoint_ip_id_ip_id_fk',
     }).onDelete('set null'),
+    foreignKey({
+      columns: [table.tunnelIpId],
+      foreignColumns: [ip.id],
+      name: 'peer_tunnel_ip_id_ip_id_fk',
+    }).onDelete('restrict'),
     unique('peer_vpn_server_unique').on(table.vpnId, table.serverId),
     unique('peer_vpn_public_key_unique').on(table.vpnId, table.publicKey),
+    uniqueIndex('uniq_peer_vpn_tunnel_ip')
+      .on(table.vpnId, table.tunnelIpId)
+      .where(sql`${table.tunnelIpId} IS NOT NULL`),
+    check('peer_role_check', sql`role IN ('gateway', 'member')`),
   ]
 )
 export const workspace = pgTable(
@@ -706,6 +802,8 @@ export const environment = pgTable(
       .defaultNow()
       .notNull(),
     projectId: uuid('project_id').notNull(),
+    /** Whole-server placement pin — single source of truth (not compose / metadata). */
+    serverId: uuid('server_id'),
     displayName: varchar('display_name', { length: 255 }),
     description: varchar('description', { length: 255 }),
     metadata: jsonb(),
@@ -716,10 +814,19 @@ export const environment = pgTable(
       'btree',
       table.projectId.asc().nullsLast().op('uuid_ops')
     ),
+    index('idx_environment_server_id').using(
+      'btree',
+      table.serverId.asc().nullsLast().op('uuid_ops')
+    ),
     foreignKey({
       columns: [table.projectId],
       foreignColumns: [project.id],
       name: 'environment_project_id_project_id_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'environment_server_id_server_id_fk',
     }).onDelete('restrict'),
     check(
       'environment_display_name_format_check',
@@ -741,41 +848,31 @@ export const managed = pgTable(
     updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
-    projectId: uuid('project_id'),
-    environmentId: uuid('environment_id'),
+    /** Environment-scoped managed engine service (1:1 with environment). */
+    environmentId: uuid('environment_id').notNull(),
     displayName: varchar('display_name', { length: 255 }),
+    /** Catalog engine code (e.g. `postgres`, `redis`). */
+    engine: text(),
+    /** `provisioning` | `ready` | `failed` */
+    status: text(),
     metadata: jsonb(),
     options: jsonb(),
   },
   (table) => [
-    index('idx_managed_project_id').using(
-      'btree',
-      table.projectId.asc().nullsLast().op('uuid_ops')
-    ),
     index('idx_managed_environment_id').using(
       'btree',
       table.environmentId.asc().nullsLast().op('uuid_ops')
     ),
-    foreignKey({
-      columns: [table.projectId],
-      foreignColumns: [project.id],
-      name: 'managed_project_id_project_id_fk',
-    }).onDelete('cascade'),
+    index('idx_managed_engine').using(
+      'btree',
+      table.engine.asc().nullsLast().op('text_ops')
+    ),
     foreignKey({
       columns: [table.environmentId],
       foreignColumns: [environment.id],
       name: 'managed_environment_id_environment_id_fk',
     }).onDelete('cascade'),
-    uniqueIndex('managed_project_id_unique')
-      .on(table.projectId)
-      .where(sql`${table.projectId} IS NOT NULL`),
-    uniqueIndex('managed_environment_id_unique')
-      .on(table.environmentId)
-      .where(sql`${table.environmentId} IS NOT NULL`),
-    check(
-      'managed_parent_check',
-      sql`(${table.projectId} IS NOT NULL) OR (${table.environmentId} IS NOT NULL)`,
-    ),
+    uniqueIndex('managed_environment_id_unique').on(table.environmentId),
     check(
       'managed_display_name_format_check',
       sql`(${table.displayName} IS NULL) OR (((char_length((${table.displayName})::text) >= 1) AND (char_length((${table.displayName})::text) <= 255)) AND ((${table.displayName})::text ~ '^[A-Za-z0-9 ._-]+$'::text))`,
@@ -924,6 +1021,12 @@ export const service = pgTable(
     environmentId: uuid('environment_id').notNull(),
     displayName: varchar('display_name', { length: 255 }),
     description: varchar('description', { length: 255 }),
+    /**
+     * Compose service key — preferred over displayName for reconcile/deploy matching.
+     * Unique per environment when non-null (`uniq_service_environment_compose_name`);
+     * displayName itself is not unique and must not be assumed so.
+     */
+    composeServiceName: varchar('compose_service_name', { length: 255 }),
     metadata: jsonb(),
     options: jsonb(),
   },
@@ -932,6 +1035,10 @@ export const service = pgTable(
       'btree',
       table.environmentId.asc().nullsLast().op('uuid_ops')
     ),
+    /** Partial unique: multiple NULL compose names allowed; non-null must be unique per environment. */
+    uniqueIndex('uniq_service_environment_compose_name')
+      .on(table.environmentId, table.composeServiceName)
+      .where(sql`${table.composeServiceName} IS NOT NULL`),
     foreignKey({
       columns: [table.environmentId],
       foreignColumns: [environment.id],
@@ -1009,6 +1116,11 @@ export const container = pgTable(
       .notNull(),
     serviceId: uuid('service_id').notNull(),
     serverId: uuid('server_id').notNull(),
+    /** Docker container id reported by the daemon after deploy. */
+    containerId: text('container_id').notNull(),
+    containerName: text('container_name').notNull(),
+    status: text('status').notNull(),
+    composeServiceName: text('compose_service_name').notNull(),
     metadata: jsonb(),
     options: jsonb(),
   },
@@ -1021,6 +1133,11 @@ export const container = pgTable(
       'btree',
       table.serverId.asc().nullsLast().op('uuid_ops')
     ),
+    index('idx_container_status').using(
+      'btree',
+      table.status.asc().nullsLast().op('text_ops')
+    ),
+    uniqueIndex('uniq_container_server_container_id').on(table.serverId, table.containerId),
     foreignKey({
       columns: [table.serviceId],
       foreignColumns: [service.id],

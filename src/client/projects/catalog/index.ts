@@ -71,9 +71,8 @@ function composeDocument(data: Record<string, unknown>): ComposeDocument {
 
 /**
  * True for environment-scoped managed engine catalog entries (Postgres, MySQL,
- * …). These scaffold a project + first environment only — no project-scoped
- * `managed` row / `managed_id`. Legacy catalog apps (e.g. wordpress-mysql)
- * remain on the project-scoped managed marker path.
+ * …). These scaffold a project + first environment only — the environment-scoped
+ * `managed` row is created later by provisioning.
  */
 export function isManagedEngineCatalogEntry(
   entry: CatalogEntry,
@@ -132,9 +131,9 @@ export function readManagedEngineOptions(
 const CATALOG: CatalogEntry[] = [
   {
     code: 'wordpress-mysql',
-    kind: 'managed',
+    kind: 'template',
     displayName: 'WordPress with MySQL',
-    description: 'Managed WordPress site with MySQL database',
+    description: 'WordPress site with MySQL database',
     compose: composeDocument({
       services: {
         wordpress: { image: 'wordpress:latest', depends_on: ['db'] },

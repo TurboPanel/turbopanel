@@ -277,40 +277,25 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         FROM managed m WHERE m.id = ${entityId}::uuid
         UNION ALL
         SELECT 'environment'::text, m.environment_id, 1
-        FROM managed m
-        WHERE m.id = ${entityId}::uuid AND m.environment_id IS NOT NULL
+        FROM managed m WHERE m.id = ${entityId}::uuid
         UNION ALL
         SELECT 'project'::text, e.project_id, 2
         FROM managed m
         JOIN environment e ON e.id = m.environment_id
-        WHERE m.id = ${entityId}::uuid AND m.environment_id IS NOT NULL
+        WHERE m.id = ${entityId}::uuid
         UNION ALL
         SELECT 'workspace'::text, p.workspace_id, 3
         FROM managed m
         JOIN environment e ON e.id = m.environment_id
         JOIN project p ON p.id = e.project_id
-        WHERE m.id = ${entityId}::uuid AND m.environment_id IS NOT NULL
+        WHERE m.id = ${entityId}::uuid
         UNION ALL
         SELECT 'organization'::text, w.organization_id, 4
         FROM managed m
         JOIN environment e ON e.id = m.environment_id
         JOIN project p ON p.id = e.project_id
         JOIN workspace w ON w.id = p.workspace_id
-        WHERE m.id = ${entityId}::uuid AND m.environment_id IS NOT NULL
-        UNION ALL
-        SELECT 'project'::text, m.project_id, 1
-        FROM managed m WHERE m.id = ${entityId}::uuid AND m.project_id IS NOT NULL
-        UNION ALL
-        SELECT 'workspace'::text, p.workspace_id, 2
-        FROM managed m
-        JOIN project p ON p.id = m.project_id
-        WHERE m.id = ${entityId}::uuid AND m.project_id IS NOT NULL
-        UNION ALL
-        SELECT 'organization'::text, w.organization_id, 3
-        FROM managed m
-        JOIN project p ON p.id = m.project_id
-        JOIN workspace w ON w.id = p.workspace_id
-        WHERE m.id = ${entityId}::uuid AND m.project_id IS NOT NULL
+        WHERE m.id = ${entityId}::uuid
       `
     case 'variable':
       return sql`

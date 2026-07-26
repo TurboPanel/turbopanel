@@ -14,10 +14,7 @@ import {
   deriveSecretsConfig,
   parseSecretsEnv,
 } from '../authn/secrets.ts'
-import {
-  emptyComposeDocument,
-  TURBOPANEL_EXTENSION_KEY,
-} from '../../lib/compose/index.ts'
+import { emptyComposeDocument } from '../../lib/compose/index.ts'
 import type { ComposeDocument } from '../../lib/compose/types.ts'
 import {
   environment,
@@ -46,18 +43,15 @@ const dbUrl = getDatabaseUrl()
  */
 const test = Deno.test.bind(Deno)
 
-function composeWithPlacement(serverId: string): ComposeDocument {
+function composeWithPostgresService(): ComposeDocument {
   return {
     version: 1,
     data: {
       services: {
         postgres: { image: 'postgres:16' },
       },
-      [TURBOPANEL_EXTENSION_KEY]: {
-        placement: { server_id: serverId },
-      },
     },
-    presentation: { keyOrder: ['services', TURBOPANEL_EXTENSION_KEY], comments: {} },
+    presentation: { keyOrder: ['services'], comments: {} },
   }
 }
 
@@ -207,9 +201,10 @@ async function withManagedFixtures(
     .values({
       displayName: 'production',
       projectId,
+      serverId: withPlacement ? serverId : null,
       options: {
         compose: withPlacement
-          ? composeWithPlacement(serverId)
+          ? composeWithPostgresService()
           : emptyComposeDocument(),
       },
     })
@@ -231,7 +226,6 @@ async function withManagedFixtures(
   } finally {
     await db.delete(managed).where(eq(managed.environmentId, environmentId))
     await db.delete(principal).where(eq(principal.projectId, projectId))
-    await db.delete(managed).where(eq(managed.projectId, projectId))
     await db.delete(environment).where(eq(environment.id, environmentId))
     await db.delete(project).where(eq(project.id, projectId))
     await db.delete(workspace).where(eq(workspace.id, workspaceId))

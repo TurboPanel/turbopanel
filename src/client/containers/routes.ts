@@ -1,5 +1,7 @@
 import { and, eq, inArray } from 'drizzle-orm'
+import type { Context } from 'hono'
 import { Hono } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
@@ -14,11 +16,126 @@ import {
   parseJsonBody,
   parseJsonbObject,
   requireStringField,
+  stripPromotedMetadataKeys,
 } from '../shared.ts'
 import {
   hierarchyDeleteHasChildrenResponse,
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
+
+/** Identity/status/compose keys live on real columns — never persist into metadata. */
+const CONTAINER_PROMOTED_METADATA_KEYS = [
+  'containerId',
+  'containerName',
+  'status',
+  'composeServiceName',
+] as const
+
+type ContainerRow = {
+  id: string
+  serviceId: string
+  serverId: string
+  containerId: string
+  containerName: string
+  status: string
+  composeServiceName: string
+  metadata: unknown
+  options: unknown
+  createdAt: string
+  updatedAt: string
+}
+
+function serializeContainer(row: ContainerRow) {
+  return {
+    id: row.id,
+    serviceId: row.serviceId,
+    serverId: row.serverId,
+    containerId: row.containerId,
+    containerName: row.containerName,
+    status: row.status,
+    composeServiceName: row.composeServiceName,
+    metadata: row.metadata,
+    options: row.options,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  }
+}
+
+function readOptionalTopLevelString(
+  body: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = body[key]
+  return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+type CreateContainerFields = {
+  serviceId: string
+  serverId: string
+  containerId: string
+  containerName: string
+  status: string
+  composeServiceName: string
+  metadata: Record<string, unknown> | null
+  options: Record<string, unknown> | null
+}
+
+function parseCreateContainerFields(
+  c: Context<AppEnv>,
+  body: Record<string, unknown>,
+): CreateContainerFields | Response {
+  const serviceId = requireStringField(c, body, 'serviceId')
+  if (serviceId instanceof Response) return serviceId
+
+  const serverId = requireStringField(c, body, 'serverId')
+  if (serverId instanceof Response) return serverId
+
+  const containerId = requireStringField(c, body, 'containerId')
+  if (containerId instanceof Response) return containerId
+
+  const containerName = requireStringField(c, body, 'containerName')
+  if (containerName instanceof Response) return containerName
+
+  const status = requireStringField(c, body, 'status')
+  if (status instanceof Response) return status
+
+  const composeServiceName = requireStringField(c, body, 'composeServiceName')
+  if (composeServiceName instanceof Response) return composeServiceName
+
+  const metadataResult = parseJsonbObject(c, body, 'metadata')
+  if (metadataResult instanceof Response) return metadataResult
+  const optionsResult = parseJsonbObject(c, body, 'options')
+  if (optionsResult instanceof Response) return optionsResult
+
+  const metadata = metadataResult === null
+    ? null
+    : stripPromotedMetadataKeys(metadataResult, CONTAINER_PROMOTED_METADATA_KEYS)
+
+  return {
+    serviceId,
+    serverId,
+    containerId,
+    containerName,
+    status,
+    composeServiceName,
+    metadata,
+    options: optionsResult,
+  }
+}
+
+const CONTAINER_SELECT = {
+  id: container.id,
+  serviceId: container.serviceId,
+  serverId: container.serverId,
+  containerId: container.containerId,
+  containerName: container.containerName,
+  status: container.status,
+  composeServiceName: container.composeServiceName,
+  metadata: container.metadata,
+  options: container.options,
+  createdAt: container.createdAt,
+  updatedAt: container.updatedAt,
+} as const
 
 export function registerContainerRoutes(router: Hono, opts: AuthRouteOpts) {
   router.use('/containers', createSessionMiddleware(opts.secrets))
@@ -37,6 +154,7 @@ export function registerContainerRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const serviceId = c.req.query('serviceId')
     const serverId = c.req.query('serverId')
+    const status = c.req.query('status')
 
     const visibleIds = await listVisible(db, {
       kind: 'container',
@@ -55,22 +173,17 @@ export function registerContainerRoutes(router: Hono, opts: AuthRouteOpts) {
     if (serverId) {
       conditions.push(eq(container.serverId, serverId))
     }
+    if (status) {
+      conditions.push(eq(container.status, status))
+    }
 
     const rows = await db
-      .select({
-        id: container.id,
-        serviceId: container.serviceId,
-        serverId: container.serverId,
-        metadata: container.metadata,
-        options: container.options,
-        createdAt: container.createdAt,
-        updatedAt: container.updatedAt,
-      })
+      .select(CONTAINER_SELECT)
       .from(container)
       .where(and(...conditions))
       .orderBy(container.createdAt)
 
-    return c.json({ containers: rows })
+    return c.json({ containers: rows.map(serializeContainer) })
   })
 
   router.get('/containers/:id', async (c) => {
@@ -91,15 +204,7 @@ export function registerContainerRoutes(router: Hono, opts: AuthRouteOpts) {
     }
 
     const rows = await db
-      .select({
-        id: container.id,
-        serviceId: container.serviceId,
-        serverId: container.serverId,
-        metadata: container.metadata,
-        options: container.options,
-        createdAt: container.createdAt,
-        updatedAt: container.updatedAt,
-      })
+      .select(CONTAINER_SELECT)
       .from(container)
       .where(eq(container.id, id))
       .limit(1)
@@ -112,7 +217,7 @@ export function registerContainerRoutes(router: Hono, opts: AuthRouteOpts) {
     const denied = await assertCanReadOr403(c, 'container', id)
     if (denied) return denied
 
-    return c.json({ container: row })
+    return c.json({ container: serializeContainer(row) })
   })
 
   router.post('/containers', async (c) => {
@@ -129,13 +234,10 @@ export function registerContainerRoutes(router: Hono, opts: AuthRouteOpts) {
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const serviceId = requireStringField(c, body, 'serviceId')
-    if (serviceId instanceof Response) return serviceId
+    const fields = parseCreateContainerFields(c, body)
+    if (fields instanceof Response) return fields
 
-    const serverId = requireStringField(c, body, 'serverId')
-    if (serverId instanceof Response) return serverId
-
-    const serviceOrgId = await resolveEntityOrganizationId(db, 'service', serviceId)
+    const serviceOrgId = await resolveEntityOrganizationId(db, 'service', fields.serviceId)
     if (!serviceOrgId || serviceOrgId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
@@ -143,7 +245,7 @@ export function registerContainerRoutes(router: Hono, opts: AuthRouteOpts) {
     const serverRows = await db
       .select({ organizationId: server.organizationId })
       .from(server)
-      .where(eq(server.id, serverId))
+      .where(eq(server.id, fields.serverId))
       .limit(1)
 
     const serverOrgId = serverRows[0]?.organizationId
@@ -151,22 +253,21 @@ export function registerContainerRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanCreateOr403(c, 'service', serviceId)
+    const denied = await assertCanCreateOr403(c, 'service', fields.serviceId)
     if (denied) return denied
-
-    const metadataResult = parseJsonbObject(c, body, 'metadata')
-    if (metadataResult instanceof Response) return metadataResult
-    const optionsResult = parseJsonbObject(c, body, 'options')
-    if (optionsResult instanceof Response) return optionsResult
 
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(container)
         .values({
-          serviceId,
-          serverId,
-          ...(metadataResult !== null ? { metadata: metadataResult } : {}),
-          ...(optionsResult !== null ? { options: optionsResult } : {}),
+          serviceId: fields.serviceId,
+          serverId: fields.serverId,
+          containerId: fields.containerId,
+          containerName: fields.containerName,
+          status: fields.status,
+          composeServiceName: fields.composeServiceName,
+          ...(fields.metadata !== null ? { metadata: fields.metadata } : {}),
+          ...(fields.options !== null ? { options: fields.options } : {}),
         })
         .returning({ id: container.id })
       return inserted.id
@@ -201,6 +302,10 @@ export function registerContainerRoutes(router: Hono, opts: AuthRouteOpts) {
     let patchFields: {
       metadata?: Record<string, unknown> | null
       options?: Record<string, unknown> | null
+      containerId?: string
+      containerName?: string
+      status?: string
+      composeServiceName?: string
       updatedAt: string
     }
     try {
@@ -209,9 +314,23 @@ export function registerContainerRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Invalid request' }, 400)
     }
 
+    const nextContainerId = readOptionalTopLevelString(body, 'containerId')
+    const nextContainerName = readOptionalTopLevelString(body, 'containerName')
+    const nextStatus = readOptionalTopLevelString(body, 'status')
+    const nextComposeServiceName = readOptionalTopLevelString(body, 'composeServiceName')
+    if (nextContainerId) patchFields.containerId = nextContainerId
+    if (nextContainerName) patchFields.containerName = nextContainerName
+    if (nextStatus) patchFields.status = nextStatus
+    if (nextComposeServiceName) patchFields.composeServiceName = nextComposeServiceName
+
     const metadataResult = parseJsonbObject(c, body, 'metadata')
     if (metadataResult instanceof Response) return metadataResult
-    if (metadataResult !== null) patchFields.metadata = metadataResult
+    if (metadataResult !== null) {
+      patchFields.metadata = stripPromotedMetadataKeys(
+        metadataResult,
+        CONTAINER_PROMOTED_METADATA_KEYS,
+      )
+    }
 
     const optionsResult = parseJsonbObject(c, body, 'options')
     if (optionsResult instanceof Response) return optionsResult

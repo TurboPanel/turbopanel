@@ -33,9 +33,14 @@ export const managedSchemas = {
       serverId: {
         type: 'string',
         nullable: true,
-        description: 'Derived from environment compose placement pin',
+        description: 'Derived from `environment.server_id`',
       },
-      metadata: { type: 'object', additionalProperties: true },
+      metadata: {
+        type: 'object',
+        additionalProperties: true,
+        description:
+          'Residual metadata only (`rootPrincipalId`, `error`). Engine/status/host/port are top-level.',
+      },
       options: { type: 'object', additionalProperties: true, nullable: true },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
@@ -120,7 +125,7 @@ export const managedPaths = {
       tags: ['Environments'],
       summary: 'Provision an environment-scoped managed engine service',
       description:
-        'Requires organization:manage on the environment and a compose placement pin. Idempotent when a managed row already exists.',
+        'Requires organization:manage on the environment and a placement pin on `environment.server_id`. Idempotent when a managed row already exists.',
       parameters: [
         {
           name: 'id',
@@ -154,7 +159,8 @@ export const managedPaths = {
           },
         },
         409: {
-          description: 'Environment compose has no placement server pin',
+          description:
+            '`server_placement_required` — environment has no `server_id` placement pin',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ServerPlacementRequiredError' },

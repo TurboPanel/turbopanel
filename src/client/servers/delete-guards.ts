@@ -1,9 +1,9 @@
 import { and, count, eq } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { Db } from '../../db.ts'
-import { container, network, server } from '../../lib/db/schema.ts'
+import { container, ip, network, peer, server } from '../../lib/db/schema.ts'
 
-export type ServerDeleteBlockerKind = 'network' | 'container'
+export type ServerDeleteBlockerKind = 'network' | 'container' | 'peer' | 'ip'
 
 export type ServerDeleteBlocker = {
   kind: ServerDeleteBlockerKind
@@ -38,7 +38,12 @@ export async function listServerDeleteBlockers(
     .limit(1)
   if (!serverRow) return []
 
-  const [[networkCountRow], [containerCountRow]] = await Promise.all([
+  const [
+    [networkCountRow],
+    [containerCountRow],
+    [peerCountRow],
+    [ipCountRow],
+  ] = await Promise.all([
     db
       .select({ value: count() })
       .from(network)
@@ -47,6 +52,14 @@ export async function listServerDeleteBlockers(
       .select({ value: count() })
       .from(container)
       .where(eq(container.serverId, serverId)),
+    db
+      .select({ value: count() })
+      .from(peer)
+      .where(eq(peer.serverId, serverId)),
+    db
+      .select({ value: count() })
+      .from(ip)
+      .where(eq(ip.serverId, serverId)),
   ])
 
   const blockers: ServerDeleteBlocker[] = []
@@ -57,6 +70,14 @@ export async function listServerDeleteBlockers(
   const containerCount = Number(containerCountRow?.value ?? 0)
   if (containerCount > 0) {
     blockers.push({ kind: 'container', count: containerCount })
+  }
+  const peerCount = Number(peerCountRow?.value ?? 0)
+  if (peerCount > 0) {
+    blockers.push({ kind: 'peer', count: peerCount })
+  }
+  const ipCount = Number(ipCountRow?.value ?? 0)
+  if (ipCount > 0) {
+    blockers.push({ kind: 'ip', count: ipCount })
   }
   return blockers
 }

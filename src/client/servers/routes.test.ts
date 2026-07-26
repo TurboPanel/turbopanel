@@ -1090,21 +1090,16 @@ async function attachConnectedDaemonStatus(
     publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
     fingerprint: 'fp-test',
   })
-  const daemonState = buildServerDaemonState({
-    publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
-    fingerprint: 'fp-test',
-  })
   const now = new Date().toISOString()
-  daemonState.status = {
+  // Fleet status lives on dedicated `server` columns now — never on
+  // `server.daemon` jsonb (see `mapServerDaemonStatusFromColumns`).
+  await db.update(server).set({
     connected: true,
     daemonStatus: 'online',
     lastSeenAt: now,
     connectedAt: now,
     disconnectedAt: null,
     statusChangedAt: now,
-  }
-  await db.update(server).set({
-    daemon: daemonState,
     updatedAt: now,
   }).where(eq(server.id, serverId))
 }
@@ -1168,9 +1163,9 @@ test('GET /servers includes os, osDisplay, and osLogo from metadata without cach
     await db
       .update(server)
       .set({
+        // hostname is a dedicated column now — only os-shaped facts live in metadata.
         metadata: {
           ...(existing[0]?.metadata ?? {}),
-          hostname: 'os-host',
           os: {
             family: 'linux',
             id: 'debian',

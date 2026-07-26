@@ -100,12 +100,12 @@ export type ResolveFleetPresenceOptions = {
  * Resolve fleet presence.
  *
  * By default this path is Postgres-only: coarse presence and agent data come
- * from the sparse Postgres projection (`server.daemon.status` and
- * `server.daemon.projection`). It never calls `listOnlineServerIds` or
- * `getSnapshots`. On Workers, silent-failure offline correctness is
- * disconnect-first (`webSocketClose` / `webSocketError`); Redis (Deno) uses a
- * timer-driven sweep via `maintain()` at `DAEMON_OFFLINE_SWEEP_MS`. Neither
- * path reads live cell state at request time by default.
+ * from dedicated status columns plus sparse `server.daemon.projection`. It
+ * never calls `listOnlineServerIds` or `getSnapshots`. On Workers,
+ * silent-failure offline correctness is disconnect-first (`webSocketClose` /
+ * `webSocketError`); Redis (Deno) uses a timer-driven sweep via `maintain()`
+ * at `DAEMON_OFFLINE_SWEEP_MS`. Neither path reads live cell state at request
+ * time by default.
  * Pass `{ withSnapshots: true }` for explicit diagnostics/admin callers that
  * read live cell snapshots for every server up front.
  */
@@ -128,6 +128,14 @@ export async function resolveFleetPresence(
           id: server.id,
           daemon: server.daemon,
           metadata: server.metadata,
+          hostname: server.hostname,
+          machineId: server.machineId,
+          connected: server.connected,
+          daemonStatus: server.daemonStatus,
+          lastSeenAt: server.lastSeenAt,
+          connectedAt: server.connectedAt,
+          disconnectedAt: server.disconnectedAt,
+          statusChangedAt: server.statusChangedAt,
         })
         .from(server)
         .where(inArray(server.id, serverIds)),
@@ -147,24 +155,26 @@ export async function resolveFleetPresence(
     const rawRemote = projection?.remoteAddress ?? null;
     const snapshot = snapshots.get(row.id);
     const connected = snapshot === undefined
-      ? (projection?.connected ?? state?.status?.connected ?? false)
+      ? (projection?.connected ?? row.connected ?? false)
       : isSnapshotConnected(snapshot);
 
     const lastInboundAt = snapshot
       ? resolveLastInboundAt(snapshot)
-      : projection?.lastSeenAt ?? null;
+      : projection?.lastSeenAt ?? row.lastSeenAt ?? null;
 
     result.set(row.id, {
       serverId: row.id,
       connected,
-      hostname: metadata.hostname ?? null,
-      machineId: metadata.machineId ?? null,
+      hostname: row.hostname ?? null,
+      machineId: row.machineId ?? null,
       remoteAddress: normalizeRemoteAddress(rawRemote),
       directAttach: rawRemote === "__direct__",
       keyId: projection?.keyId ?? state?.key.id ?? null,
-      connectedAt: snapshot?.connectedAt ?? projection?.connectedAt ?? null,
+      connectedAt: snapshot?.connectedAt ?? projection?.connectedAt ??
+        row.connectedAt ?? null,
       lastInboundAt,
-      lastSeenAt: snapshot?.lastSeenAt ?? projection?.lastSeenAt ?? null,
+      lastSeenAt: snapshot?.lastSeenAt ?? projection?.lastSeenAt ??
+        row.lastSeenAt ?? null,
       keyLastUsedAt: snapshot?.keyLastUsedAt ?? null,
       agent: projection?.agent ?? snapshot?.agent ?? undefined,
       geo: parseServerGeo(metadata.geo),

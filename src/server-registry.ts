@@ -33,10 +33,6 @@ export type ServerHelloIdentity = {
 
 function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
   const patch: Partial<ServerMetadata> = {}
-  const machineId = identity.machineId?.trim()
-  const hostname = identity.hostname?.trim()
-  if (machineId) patch.machineId = machineId
-  if (hostname) patch.hostname = hostname
   const os = parseServerOsMetadata(identity.os)
   if (os) patch.os = os
   const timeSync = parseServerTimeSync(identity.timeSync)
@@ -54,9 +50,22 @@ function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
   return patch
 }
 
+function identityColumnPatch(identity: ServerHelloIdentity): {
+  hostname?: string
+  machineId?: string
+} {
+  const patch: { hostname?: string; machineId?: string } = {}
+  const machineId = identity.machineId?.trim()
+  const hostname = identity.hostname?.trim()
+  if (machineId) patch.machineId = machineId
+  if (hostname) patch.hostname = hostname
+  return patch
+}
+
 /**
- * Pure merge of hostname/machineId/os/timeSync/addresses into `server.metadata`
- * — no DB I/O. Returns null when nothing would change (idempotent skip).
+ * Pure merge of os/timeSync/addresses into `server.metadata` — no DB I/O.
+ * Hostname / machineId are dedicated columns (see {@link touchServerMetadata}).
+ * Returns null when nothing would change (idempotent skip).
  */
 export function mergeServerMetadataIdentity(
   current: ServerMetadata | null | undefined,
@@ -72,14 +81,6 @@ export function mergeServerMetadataIdentity(
   const next: ServerMetadata = { ...base }
 
   let changed = false
-  if (patch.machineId !== undefined && patch.machineId !== base.machineId) {
-    next.machineId = patch.machineId
-    changed = true
-  }
-  if (patch.hostname !== undefined && patch.hostname !== base.hostname) {
-    next.hostname = patch.hostname
-    changed = true
-  }
   if (patch.os !== undefined && !serverOsMetadataEquals(patch.os, base.os)) {
     next.os = patch.os
     changed = true
@@ -121,26 +122,32 @@ export async function touchServerMetadata(
   identity: ServerHelloIdentity,
 ): Promise<void> {
   const rows = await db
-    .select({ metadata: server.metadata })
+    .select({
+      metadata: server.metadata,
+      hostname: server.hostname,
+      machineId: server.machineId,
+    })
     .from(server)
     .where(eq(server.id, serverId))
     .limit(1)
-  const base = rows[0]?.metadata as ServerMetadata | null | undefined
-  if (!mergeServerMetadataIdentity(base, identity)) return
+  const row = rows[0]
+  if (!row) return
 
-  // Patch only changed identity keys via jsonb || so a concurrent connect
+  const base = row.metadata as ServerMetadata | null | undefined
+  const columns = identityColumnPatch(identity)
+  const metadataChanged = mergeServerMetadataIdentity(base, identity) !== null
+  const hostnameChanged = Boolean(
+    columns.hostname && columns.hostname !== row.hostname,
+  )
+  const machineIdChanged = Boolean(
+    columns.machineId && columns.machineId !== row.machineId,
+  )
+  if (!metadataChanged && !hostnameChanged && !machineIdChanged) return
+
+  // Patch only changed metadata keys via jsonb || so a concurrent connect
   // projection that wrote metadata.geo cannot be wiped by this hello update.
   const patch = metadataPatch(identity)
   const delta: Partial<ServerMetadata> = {}
-  if (
-    patch.machineId !== undefined &&
-    patch.machineId !== base?.machineId
-  ) {
-    delta.machineId = patch.machineId
-  }
-  if (patch.hostname !== undefined && patch.hostname !== base?.hostname) {
-    delta.hostname = patch.hostname
-  }
   if (
     patch.os !== undefined &&
     !serverOsMetadataEquals(patch.os, base?.os)
@@ -161,14 +168,17 @@ export async function touchServerMetadata(
   ) {
     delta.addresses = patch.addresses
   }
-  if (Object.keys(delta).length === 0) return
 
-  await db.update(server).set({
-    metadata: sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${
+  const update: Record<string, unknown> = { updatedAt: nowTs() }
+  if (hostnameChanged) update.hostname = columns.hostname
+  if (machineIdChanged) update.machineId = columns.machineId
+  if (Object.keys(delta).length > 0) {
+    update.metadata = sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${
       JSON.stringify(delta)
-    }::jsonb`,
-    updatedAt: nowTs(),
-  }).where(eq(server.id, serverId))
+    }::jsonb`
+  }
+
+  await db.update(server).set(update).where(eq(server.id, serverId))
 }
 
 async function findExistingServerId(
@@ -190,7 +200,7 @@ async function findExistingServerId(
     const byMachine = await db
       .select({ id: server.id })
       .from(server)
-      .where(sql`${server.metadata}->>'machineId' = ${machineId}`)
+      .where(eq(server.machineId, machineId))
       .limit(1)
     if (byMachine.length > 0) return byMachine[0].id
   }
@@ -200,7 +210,7 @@ async function findExistingServerId(
     const byHostname = await db
       .select({ id: server.id })
       .from(server)
-      .where(sql`${server.metadata}->>'hostname' = ${hostname}`)
+      .where(eq(server.hostname, hostname))
       .orderBy(server.createdAt)
       .limit(1)
     if (byHostname.length > 0) return byHostname[0].id
@@ -353,6 +363,7 @@ async function insertLicensedServer(
   organizationId: string,
 ): Promise<string> {
   const patch = metadataPatch(identity)
+  const columns = identityColumnPatch(identity)
   const now = nowTs()
   const inserted = await db
     .insert(server)
@@ -361,6 +372,8 @@ async function insertLicensedServer(
       displayName: defaultDisplayName(identity),
       createdAt: now,
       updatedAt: now,
+      ...(columns.hostname ? { hostname: columns.hostname } : {}),
+      ...(columns.machineId ? { machineId: columns.machineId } : {}),
       metadata: Object.keys(patch).length > 0 ? patch : null,
     })
     .returning({ id: server.id })
@@ -438,9 +451,9 @@ async function resolveLicensedServerId(
 
 /**
  * Resolve the canonical server.id (uuidv7) for a connecting daemon.
- * Reuses by serverId, metadata.machineId, or hostname. Creates a row only when
- * a valid license is presented. Returns null for unknown servers without a
- * license.
+ * Reuses by serverId, `machine_id`, or `hostname` columns. Creates a row only
+ * when a valid license is presented. Returns null for unknown servers without
+ * a license.
  */
 export async function resolveServerId(
   db: Db,

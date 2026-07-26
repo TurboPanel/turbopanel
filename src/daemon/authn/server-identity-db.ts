@@ -5,20 +5,39 @@ import { server } from "../../lib/db/schema.ts";
 import {
   buildDefaultDaemonStatus,
   buildServerDaemonState,
+  mapServerDaemonStatusFromColumns,
   parseServerDaemonState,
   type ServerDaemonState,
+  type ServerDaemonStatus,
 } from "./daemon-state.ts";
 
 function nowTs(): string {
   return new Date().toISOString();
 }
 
-export type { ServerDaemonKey, ServerDaemonState } from "./daemon-state.ts";
-export { isDaemonKeyActive, parseServerDaemonState } from "./daemon-state.ts";
+export type { ServerDaemonKey, ServerDaemonState, ServerDaemonStatus } from "./daemon-state.ts";
+export {
+  buildDefaultDaemonStatus,
+  isDaemonKeyActive,
+  mapServerDaemonStatusFromColumns,
+  parseServerDaemonState,
+} from "./daemon-state.ts";
 
 export type ServerDaemonStateWithMetadata = ServerDaemonState & {
+  status: ServerDaemonStatus;
+  hostname: string | null;
+  machineId: string | null;
   metadata: ServerMetadata | null;
 };
+
+const STATUS_COLUMNS = {
+  connected: server.connected,
+  daemonStatus: server.daemonStatus,
+  lastSeenAt: server.lastSeenAt,
+  connectedAt: server.connectedAt,
+  disconnectedAt: server.disconnectedAt,
+  statusChangedAt: server.statusChangedAt,
+} as const;
 
 export async function getServerDaemonStateByServerId(
   db: Db,
@@ -28,6 +47,9 @@ export async function getServerDaemonStateByServerId(
     .select({
       daemon: server.daemon,
       metadata: server.metadata,
+      hostname: server.hostname,
+      machineId: server.machineId,
+      ...STATUS_COLUMNS,
     })
     .from(server)
     .where(eq(server.id, serverId))
@@ -38,7 +60,9 @@ export async function getServerDaemonStateByServerId(
   if (!state) return null;
   return {
     ...state,
-    status: state.status ?? buildDefaultDaemonStatus(),
+    status: mapServerDaemonStatusFromColumns(row),
+    hostname: row.hostname ?? null,
+    machineId: row.machineId ?? null,
     metadata: (row.metadata ?? null) as ServerMetadata | null,
   };
 }
@@ -46,11 +70,12 @@ export async function getServerDaemonStateByServerId(
 export async function getServerDaemonStateByFingerprint(
   db: Db,
   fingerprint: string,
-): Promise<(ServerDaemonState & { serverId: string }) | null> {
+): Promise<(ServerDaemonState & { serverId: string; status: ServerDaemonStatus }) | null> {
   const [row] = await db
     .select({
       serverId: server.id,
       daemon: server.daemon,
+      ...STATUS_COLUMNS,
     })
     .from(server)
     .where(sql`${server.daemon}->'key'->>'fingerprint' = ${fingerprint}`)
@@ -59,7 +84,11 @@ export async function getServerDaemonStateByFingerprint(
   if (!row) return null;
   const state = parseServerDaemonState(row.daemon);
   if (!state) return null;
-  return { ...state, serverId: row.serverId };
+  return {
+    ...state,
+    status: mapServerDaemonStatusFromColumns(row),
+    serverId: row.serverId,
+  };
 }
 
 export async function attachDaemonStateToServer(
@@ -69,15 +98,28 @@ export async function attachDaemonStateToServer(
     publicJwk: JsonWebKey;
     fingerprint: string;
     algorithm?: "Ed25519";
+    hostname?: string | null;
+    machineId?: string | null;
   },
 ): Promise<{ keyId: string }> {
   const now = nowTs();
   const daemonState = buildServerDaemonState(params);
+  const defaultStatus = buildDefaultDaemonStatus();
+  const hostname = params.hostname?.trim() || null;
+  const machineId = params.machineId?.trim() || null;
 
   const updated = await db
     .update(server)
     .set({
       daemon: daemonState,
+      ...(hostname ? { hostname } : {}),
+      ...(machineId ? { machineId } : {}),
+      connected: defaultStatus.connected,
+      daemonStatus: defaultStatus.daemonStatus ?? "unknown",
+      lastSeenAt: defaultStatus.lastSeenAt,
+      connectedAt: defaultStatus.connectedAt,
+      disconnectedAt: defaultStatus.disconnectedAt,
+      statusChangedAt: defaultStatus.statusChangedAt,
       updatedAt: now,
     })
     .where(eq(server.id, serverId))
@@ -101,7 +143,6 @@ async function updateServerDaemonState(
   const daemonState: ServerDaemonState = {
     key: existing.key,
     ...(existing.projection ? { projection: existing.projection } : {}),
-    ...(existing.status ? { status: existing.status } : {}),
   };
 
   const now = nowTs();
@@ -147,10 +188,17 @@ export async function clearServerDaemonState(
   serverId: string,
 ): Promise<void> {
   const now = nowTs();
+  const defaultStatus = buildDefaultDaemonStatus();
   await db
     .update(server)
     .set({
       daemon: null,
+      connected: defaultStatus.connected,
+      daemonStatus: defaultStatus.daemonStatus ?? "unknown",
+      lastSeenAt: defaultStatus.lastSeenAt,
+      connectedAt: defaultStatus.connectedAt,
+      disconnectedAt: defaultStatus.disconnectedAt,
+      statusChangedAt: defaultStatus.statusChangedAt,
       updatedAt: now,
     })
     .where(eq(server.id, serverId));

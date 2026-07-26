@@ -53,6 +53,22 @@ export function parseJsonbObject(
   return value as Record<string, unknown>
 }
 
+/**
+ * Drop column-promoted keys from inbound metadata before JSONB persist.
+ * Callers still extract those keys onto real columns; responses may re-synthesize
+ * them for API compatibility.
+ */
+export function stripPromotedMetadataKeys(
+  metadata: Record<string, unknown>,
+  keys: readonly string[],
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...metadata }
+  for (const key of keys) {
+    delete next[key]
+  }
+  return next
+}
+
 /** PATCH payload: omit `displayName` when absent so partial updates do not clear it. */
 export function buildPatchUpdateFields(
   body: Record<string, unknown>,

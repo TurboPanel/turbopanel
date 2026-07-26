@@ -1,4 +1,6 @@
 {
+  // Standalone-only: ignored while Connected Mode is bound (see AGENTS.md).
+  // Migrations must also be excluded in SonarCloud Analysis Scope.
   "sonarlint.connectedMode.project": {
     "connectionId": "turbopanel",
     "projectKey": "turbopanel_turbopanel"

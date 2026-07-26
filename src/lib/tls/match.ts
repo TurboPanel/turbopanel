@@ -93,44 +93,6 @@ export function resolveTlsForHosting(params: {
   return { ok: true, tlsId: pinned.id, reason: 'pin' }
 }
 
-export function parseTlsMetadata(value: unknown): TlsMetadata | null {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return null
-  }
-  const record = value as Record<string, unknown>
-  if (!Array.isArray(record.dnsNames) || !record.dnsNames.every((n) => typeof n === 'string')) {
-    return null
-  }
-  if (typeof record.hasWildcard !== 'boolean') return null
-  if (typeof record.notBefore !== 'string' || typeof record.notAfter !== 'string') {
-    return null
-  }
-  if (typeof record.fingerprintSha256 !== 'string') return null
-  if (typeof record.subject !== 'string' || typeof record.issuer !== 'string') {
-    return null
-  }
-  const status = record.status
-  if (
-    status !== 'ready' &&
-    status !== 'pending' &&
-    status !== 'expired' &&
-    status !== 'failed' &&
-    status !== 'revoked'
-  ) {
-    return null
-  }
-  return {
-    dnsNames: record.dnsNames as string[],
-    hasWildcard: record.hasWildcard,
-    notBefore: record.notBefore,
-    notAfter: record.notAfter,
-    fingerprintSha256: record.fingerprintSha256,
-    subject: record.subject,
-    issuer: record.issuer,
-    status,
-  }
-}
-
 export function parseTlsOptions(value: unknown): TlsOptions | null {
   if (value === null || value === undefined) return null
   if (typeof value !== 'object' || Array.isArray(value)) return null

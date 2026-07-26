@@ -192,14 +192,17 @@ export function applyServiceOptionsToComposeDocument(
 }
 
 export function buildServiceOptionsMap(
-  rows: Array<{ metadata: unknown; options: unknown }>,
-  readComposeServiceName: (metadata: unknown, fallback: string) => string,
+  rows: Array<{ composeServiceName?: string | null; options: unknown }>,
+  readComposeServiceName: (
+    composeServiceName: string | null | undefined,
+    fallback: string,
+  ) => string,
   fallbackId: string,
 ): ServiceOptionsByComposeName {
   const map: ServiceOptionsByComposeName = new Map()
   for (const row of rows) {
     const composeServiceName = readComposeServiceName(
-      row.metadata,
+      row.composeServiceName,
       fallbackId,
     )
     const parsed = parseServiceOptions(row.options)

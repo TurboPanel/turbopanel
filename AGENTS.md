@@ -96,6 +96,13 @@ change. Future agents read `AGENTS.md` first.
   `sonar-project.properties`).
 - Drizzle-generated SQL under **`migrations/`** must stay excluded
   (`**/migrations/**`) — never “fix” smells in those files.
+- **SonarLint Connected Mode** does **not** honor
+  `sonarlint.analysisExcludesStandalone` or local `.sonarcloud.properties` /
+  `sonar-project.properties`. It only applies exclusions synced from the
+  SonarCloud project **Administration → General Settings → Analysis Scope →
+  Source File Exclusions**. Keep `**/migrations/**` there too (then
+  SonarLint → Update binding / reconnect) or IDE will still raise
+  `plsql:*` on drizzle-kit SQL.
 
 ### TypeScript style (SonarQube)
 
@@ -603,10 +610,10 @@ orientation; the detail moved to:
 | **Daemon Cell** (`/ws/daemon/v1`) | `src/daemon/cell/AGENTS.md`    | Presence, outbox + request correlation, Redis vs Durable Object backends, and the **canonical Durable Object cost / hibernation / billing rules** |
 | **Server metrics**                | `src/daemon/metrics/AGENTS.md` | Host-metrics ingestion, Analytics Engine (Workers) / ClickHouse (Deno) storage, query + chart caching                                             |
 | **Command Pipeline**              | `src/lib/commands/AGENTS.md`   | Typed commands, queue transport, and correlated dev-sync / tunnel-token / public-URL-apply requests                                               |
-| **Compose documents**             | `src/lib/compose/AGENTS.md`    | `ComposeDocument` model, `x-turbopanel` extension, linter, overlay merge                                                                          |
+| **Compose documents**             | `src/lib/compose/AGENTS.md`    | `ComposeDocument` model, `x-turbopanel` extension, linter, overlay merge; **placement pin is `environment.server_id`** (compose placement stripped on save) |
 | **Authentication**                | `src/client/authn/AGENTS.md`   | Argon2id, sessions, PAM install gate, secret keyring + data encryption, daemon key JWT, auth routes                                               |
 | **Email**                         | `src/lib/email/AGENTS.md`      | Queue abstraction, RabbitMQ→mailer (Deno) / Mailgun (Workers), settings, OTP surface                                                              |
-| **Database & schema**             | `src/lib/db/AGENTS.md`         | Drizzle schema, tables, migrations (Hyperdrive HARD RULE stays in **Database** above)                                                             |
+| **Database & schema**             | `src/lib/db/AGENTS.md`         | Drizzle schema, tables, migrations; deploy-tree columns (`container_*`, `service.compose_service_name`, `environment.server_id`)                   |
 | **Query cache**                   | `src/query-cache/AGENTS.md`    | Approved read-only cached `SELECT` models (Hyperdrive cached / Redis read-through)                                                                |
 
 ## OpenAPI & Scalar

@@ -3,12 +3,14 @@ import { and, eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../daemon/cell/contracts.ts'
-import { buildServerDaemonState } from '../../daemon/authn/daemon-state.ts'
 import { attachDaemonStateToServer } from '../../daemon/authn/server-identity-db.ts'
 import {
   command,
+  ip,
   organization,
+  peer,
   server,
+  vpn,
 } from '../db/schema.ts'
 import {
   createCommandRecord,
@@ -41,21 +43,16 @@ async function attachConnectedDaemonStatus(
     publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
     fingerprint: 'fp-test',
   })
-  const daemonState = buildServerDaemonState({
-    publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
-    fingerprint: 'fp-test',
-  })
   const now = new Date().toISOString()
-  daemonState.status = {
+  // Fleet status lives on dedicated `server` columns now — never on
+  // `server.daemon` jsonb (see `mapServerDaemonStatusFromColumns`).
+  await db.update(server).set({
     connected: true,
     daemonStatus: 'online',
     lastSeenAt: now,
     connectedAt: now,
     disconnectedAt: null,
     statusChangedAt: now,
-  }
-  await db.update(server).set({
-    daemon: daemonState,
     updatedAt: now,
   }).where(eq(server.id, serverId))
 }
@@ -333,12 +330,14 @@ test('processCommandEnvelope updates server metadata on hostname success', async
     const updated = await getCommandRecord(db, record.id)
     assertEquals(updated?.status, 'succeeded')
 
+    // Hostname is a dedicated `server` column now (see `touchServerMetadata` /
+    // `identityColumnPatch` in server-registry.ts) — never `server.metadata`.
     const [row] = await db
-      .select({ metadata: server.metadata })
+      .select({ hostname: server.hostname })
       .from(server)
       .where(eq(server.id, serverId))
       .limit(1)
-    assertEquals((row?.metadata as Record<string, unknown>).hostname, 'web-09')
+    assertEquals(row?.hostname, 'web-09')
   })
 })
 
@@ -549,6 +548,88 @@ test('processCommandEnvelope leaves metadata.timeSync unchanged on malformed ntp
       (row?.metadata as Record<string, unknown>).timeSync,
       priorTimeSync,
     )
+  })
+})
+
+test('processCommandEnvelope wireguard reconcile preserves tunnel_ip_id', async () => {
+  await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+
+    const [vpnRow] = await db.insert(vpn).values({
+      organizationId,
+      cidr: '203.0.113.0/24',
+      displayName: 'Consumer Mesh',
+    }).returning({ id: vpn.id })
+    const [tunnel] = await db.insert(ip).values({
+      organizationId,
+      vpnId: vpnRow!.id,
+      serverId,
+      address: '203.0.113.10',
+      allocation: 'dedicated',
+      scope: 'vpn',
+    }).returning({ id: ip.id })
+    const priorPublicKey = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
+    const [peerRow] = await db.insert(peer).values({
+      vpnId: vpnRow!.id,
+      serverId,
+      publicKey: priorPublicKey,
+      tunnelIpId: tunnel!.id,
+      role: 'member',
+    }).returning({ id: peer.id, tunnelIpId: peer.tunnelIpId })
+
+    const newPublicKey = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB='
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'server.wireguard.apply',
+      payload: {
+        vpnId: vpnRow!.id,
+        peerId: peerRow!.id,
+        interfaceName: 'tpwg550e8400',
+        address: '203.0.113.10/24',
+        peers: [],
+      },
+    })
+
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: {
+          interfaceName: 'tpwg550e8400',
+          publicKey: newPublicKey,
+          applied: true,
+          listenPort: 51820,
+        },
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.status, 'succeeded')
+
+    const [reconciled] = await db
+      .select({
+        publicKey: peer.publicKey,
+        tunnelIpId: peer.tunnelIpId,
+        listenPort: peer.listenPort,
+      })
+      .from(peer)
+      .where(eq(peer.id, peerRow!.id))
+      .limit(1)
+    assertEquals(reconciled?.publicKey, newPublicKey)
+    assertEquals(reconciled?.tunnelIpId, peerRow!.tunnelIpId)
+    assertEquals(reconciled?.listenPort, 51820)
+
+    await db.delete(peer).where(eq(peer.id, peerRow!.id))
+    await db.delete(ip).where(eq(ip.id, tunnel!.id))
+    await db.delete(vpn).where(eq(vpn.id, vpnRow!.id))
   })
 })
 

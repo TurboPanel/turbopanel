@@ -60,14 +60,12 @@ export type ServerTimeSync = {
 }
 
 /**
- * JSON stored in `server.metadata`. Nested fields are optional; daemon registration
- * also stores `machineId` and `hostname` here for reconnect deduplication.
+ * JSON stored in `server.metadata`. Nested fields are optional.
+ * Hostname / machineId live on dedicated `server` columns (not here).
  */
 export type ServerMetadata = {
   os?: ServerOsMetadata
   cpu?: ServerCpuMetadata
-  machineId?: string
-  hostname?: string
   /**
    * Cloudflare `locationHint` chosen at enrollment time (e.g. `"wnam"`, `"eeur"`).
    * Enrollment-time decision; region moves require a new generation.

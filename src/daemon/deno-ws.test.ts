@@ -12,6 +12,7 @@ import type { Db } from "../db.ts";
 import { generateSecret } from "../generate-secret.ts";
 import {
   buildDefaultDaemonStatus,
+  mapServerDaemonStatusFromColumns,
   parseServerDaemonState,
   type ServerDaemonState,
   type ServerDaemonStatus,
@@ -69,20 +70,11 @@ const baseDaemonKey = {
   createdAt: "2020-01-01T00:00:00.000Z",
 };
 
-function mergeDaemonStatus(
-  daemon: ServerDaemonState,
-  statusOverrides: Partial<ServerDaemonStatus> = {},
-): ServerDaemonState {
-  return {
-    ...daemon,
-    status: {
-      ...buildDefaultDaemonStatus(),
-      ...(daemon.status),
-      ...statusOverrides,
-    },
-  };
-}
-
+/**
+ * Mock DB matching the `getServerDaemonStateByServerId` column select —
+ * fleet status/identity live on dedicated `server` columns, never on the
+ * sparse `daemon` jsonb (`{ key, projection? }`).
+ */
 function createProjectionTrackingDb(
   _serverId: string,
   initialDaemon: ServerDaemonState,
@@ -93,16 +85,43 @@ function createProjectionTrackingDb(
   getStatus: () => ServerDaemonStatus;
   getUpdateCallCount: () => number;
 } {
-  let daemon = mergeDaemonStatus(initialDaemon, statusOverrides);
+  let daemon: ServerDaemonState = { ...initialDaemon };
+  const columns = { ...buildDefaultDaemonStatus(), ...statusOverrides };
   let updateCalls = 0;
 
   const db = {
-    select: () => createSelectChain(() => [{ daemon }]),
+    select: () =>
+      createSelectChain(() => [{
+        daemon,
+        metadata: null,
+        hostname: null,
+        machineId: null,
+        ...columns,
+      }]),
     update: () => ({
       set: (patch: Record<string, unknown>) => {
         updateCalls += 1;
-        if (patch.daemon) {
+        if (patch.daemon !== undefined) {
           daemon = patch.daemon as ServerDaemonState;
+        }
+        if ("connected" in patch) {
+          columns.connected = patch.connected as boolean;
+        }
+        if ("daemonStatus" in patch) {
+          columns.daemonStatus = patch
+            .daemonStatus as ServerDaemonStatus["daemonStatus"];
+        }
+        if ("lastSeenAt" in patch) {
+          columns.lastSeenAt = patch.lastSeenAt as string | null;
+        }
+        if ("connectedAt" in patch) {
+          columns.connectedAt = patch.connectedAt as string | null;
+        }
+        if ("disconnectedAt" in patch) {
+          columns.disconnectedAt = patch.disconnectedAt as string | null;
+        }
+        if ("statusChangedAt" in patch) {
+          columns.statusChangedAt = patch.statusChangedAt as string | null;
         }
         return {
           where: () => Promise.resolve(undefined),
@@ -114,7 +133,7 @@ function createProjectionTrackingDb(
   return {
     db,
     getDaemon: () => daemon,
-    getStatus: () => daemon.status ?? buildDefaultDaemonStatus(),
+    getStatus: () => mapServerDaemonStatusFromColumns(columns),
     getUpdateCallCount: () => updateCalls,
   };
 }

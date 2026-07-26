@@ -370,6 +370,8 @@ export type WireguardApplyCommandPayload = {
   interfaceName: string
   address: string
   listenPort?: number
+  /** When true, the daemon enables host IP forwarding (primary gateway). */
+  enableIpForwarding?: boolean
   peers: WireguardApplyPeerMaterial[]
 }
 
@@ -469,6 +471,12 @@ export function parseWireguardApplyPayload(value: unknown): WireguardApplyComman
       throw new Error('Invalid wireguard apply listenPort')
     }
     payload.listenPort = value.listenPort
+  }
+  if (value.enableIpForwarding !== undefined) {
+    if (typeof value.enableIpForwarding !== 'boolean') {
+      throw new TypeError('Invalid wireguard apply enableIpForwarding')
+    }
+    payload.enableIpForwarding = value.enableIpForwarding
   }
   return payload
 }

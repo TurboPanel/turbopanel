@@ -16,7 +16,6 @@ import {
   deleteProjectCascade,
   isActiveContainerStatus,
   PROJECT_HAS_RUNNING_SERVICES_ERROR,
-  readContainerStatus,
 } from './project-delete.ts'
 
 /**
@@ -40,12 +39,6 @@ test('isActiveContainerStatus treats stopped Docker states as inactive', () => {
   assertEquals(isActiveContainerStatus(undefined), true)
   assertEquals(isActiveContainerStatus(''), true)
   assertEquals(isActiveContainerStatus('unknown'), true)
-})
-
-test('readContainerStatus reads metadata.status', () => {
-  assertEquals(readContainerStatus({ status: 'running' }), 'running')
-  assertEquals(readContainerStatus(null), undefined)
-  assertEquals(readContainerStatus({}), undefined)
 })
 
 test('deleteProjectCascade rejects when containers are still active', async () => {
@@ -94,14 +87,17 @@ test('deleteProjectCascade rejects when containers are still active', async () =
 
   const [svc] = await db
     .insert(service)
-    .values({ displayName: 'web', environmentId })
+    .values({ displayName: 'web', environmentId, composeServiceName: 'web' })
     .returning({ id: service.id })
   const serviceId = svc!.id
 
   await db.insert(container).values({
     serviceId,
     serverId,
-    metadata: { status: 'running', composeServiceName: 'web' },
+    containerId: 'cid-running',
+    containerName: 'proj-web-1',
+    status: 'running',
+    composeServiceName: 'web',
   })
 
   try {
@@ -174,7 +170,7 @@ test('deleteProjectCascade removes children when containers are stopped', async 
 
   const [svc] = await db
     .insert(service)
-    .values({ displayName: 'web', environmentId })
+    .values({ displayName: 'web', environmentId, composeServiceName: 'web' })
     .returning({ id: service.id })
   const serviceId = svc!.id
 
@@ -191,7 +187,10 @@ test('deleteProjectCascade removes children when containers are stopped', async 
   await db.insert(container).values({
     serviceId,
     serverId,
-    metadata: { status: 'exited', composeServiceName: 'web' },
+    containerId: 'cid-exited',
+    containerName: 'proj-web-1',
+    status: 'exited',
+    composeServiceName: 'web',
   })
 
   try {

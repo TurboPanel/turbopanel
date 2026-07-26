@@ -6,7 +6,6 @@ import {
   emptyComposeDocument,
   mergeComposeOverlay,
   normalizeCompose,
-  readComposePlacementServerId,
   stripComposePlacement,
   TURBOPANEL_EXTENSION_KEY,
   validateComposeDocument,
@@ -277,6 +276,19 @@ test('empty overlay inherits base', () => {
 
 const PLACEMENT_UUID = '01989d42-9adb-7e65-bc2e-f38792c53691'
 
+/** Test-only helper: read `x-turbopanel.placement.server_id` for assertions. */
+function placementServerId(document: ReturnType<typeof emptyComposeDocument>): unknown {
+  const extension = document.data[TURBOPANEL_EXTENSION_KEY]
+  if (typeof extension !== 'object' || extension === null || Array.isArray(extension)) {
+    return undefined
+  }
+  const placement = (extension as Record<string, unknown>).placement
+  if (typeof placement !== 'object' || placement === null || Array.isArray(placement)) {
+    return undefined
+  }
+  return (placement as Record<string, unknown>).server_id
+}
+
 function documentWithPlacement(serverId: unknown): ReturnType<typeof emptyComposeDocument> {
   return {
     version: 1,
@@ -290,95 +302,18 @@ function documentWithPlacement(serverId: unknown): ReturnType<typeof emptyCompos
   }
 }
 
-test('readComposePlacementServerId returns valid server_id', () => {
-  const doc = documentWithPlacement(PLACEMENT_UUID)
-  assertEquals(readComposePlacementServerId(doc), PLACEMENT_UUID)
-})
-
-test('readComposePlacementServerId returns null when absent', () => {
-  assertEquals(readComposePlacementServerId(emptyComposeDocument()), null)
-})
-
-test('readComposePlacementServerId returns null for malformed shapes', () => {
-  assertEquals(
-    readComposePlacementServerId({
-      version: 1,
-      data: { services: {}, [TURBOPANEL_EXTENSION_KEY]: 'nope' },
-      presentation: { keyOrder: ['services'], comments: {} },
-    }),
-    null,
-  )
-  assertEquals(
-    readComposePlacementServerId({
-      version: 1,
-      data: {
-        services: {},
-        [TURBOPANEL_EXTENSION_KEY]: { placement: [] },
-      },
-      presentation: { keyOrder: ['services'], comments: {} },
-    }),
-    null,
-  )
-  assertEquals(readComposePlacementServerId(documentWithPlacement(123)), null)
-  assertEquals(readComposePlacementServerId(documentWithPlacement('')), null)
-  assertEquals(readComposePlacementServerId(documentWithPlacement('   ')), null)
-})
-
-test('validateComposeDocument rejects non-UUID server_id', () => {
-  const result = validateComposeDocument(documentWithPlacement('not-a-uuid'))
-  assertEquals(result.ok, false)
-  if (!result.ok) {
-    assertEquals(
-      result.issues.some((i) => i.path === 'x-turbopanel.placement.server_id'),
-      true,
-    )
-  }
-})
-
-test('validateComposeDocument rejects non-string server_id', () => {
-  const result = validateComposeDocument(documentWithPlacement(123))
-  assertEquals(result.ok, false)
-  if (!result.ok) {
-    assertEquals(
-      result.issues.some((i) => i.path === 'x-turbopanel.placement.server_id'),
-      true,
-    )
-  }
-})
-
-test('validateComposeDocument accepts valid placement', () => {
+test('validateComposeDocument rejects embedded placement', () => {
   const result = validateComposeDocument(documentWithPlacement(PLACEMENT_UUID))
-  assertEquals(result.ok, true)
+  assertEquals(result.ok, false)
+  if (!result.ok) {
+    assertEquals(
+      result.issues.some((i) => i.path === 'x-turbopanel.placement'),
+      true,
+    )
+  }
 })
 
-test('normalizeCompose migrates legacy x-turbopanel.view to presentation.editorView', () => {
-  const result = normalizeCompose({
-    version: 1,
-    data: {
-      services: { api: { image: 'node:22' } },
-      [TURBOPANEL_EXTENSION_KEY]: { view: 'visual' },
-    },
-    presentation: { keyOrder: ['services', TURBOPANEL_EXTENSION_KEY], comments: {} },
-  })
-  assertEquals(result.presentation.editorView, 'visual')
-  assertEquals(result.data[TURBOPANEL_EXTENSION_KEY], undefined)
-  assertEquals(composeDocumentToYaml(result).includes('x-turbopanel'), false)
-})
-
-test('normalizeCompose drops invalid legacy x-turbopanel.view without editorView', () => {
-  const result = normalizeCompose({
-    version: 1,
-    data: {
-      services: { api: { image: 'node:22' } },
-      [TURBOPANEL_EXTENSION_KEY]: { view: 'yaml' },
-    },
-    presentation: { keyOrder: ['services', TURBOPANEL_EXTENSION_KEY], comments: {} },
-  })
-  assertEquals(result.presentation.editorView, undefined)
-  assertEquals(result.data[TURBOPANEL_EXTENSION_KEY], undefined)
-})
-
-test('validateComposeDocument remains backward compatible without x-turbopanel', () => {
+test('validateComposeDocument remains valid without x-turbopanel', () => {
   const result = validateComposeDocument({
     version: 1,
     data: { services: { api: { image: 'node:22' } } },
@@ -403,12 +338,12 @@ x-turbopanel:
   placement:
     server_id: ${PLACEMENT_UUID}
 `)
-  assertEquals(readComposePlacementServerId(fromYaml), PLACEMENT_UUID)
+  assertEquals(placementServerId(fromYaml), PLACEMENT_UUID)
 })
 
 test('stripComposePlacement removes placement-only extension', () => {
   const stripped = stripComposePlacement(documentWithPlacement(PLACEMENT_UUID))
-  assertEquals(readComposePlacementServerId(stripped), null)
+  assertEquals(placementServerId(stripped), undefined)
   assertEquals(TURBOPANEL_EXTENSION_KEY in stripped.data, false)
   assertEquals(stripped.presentation.keyOrder.includes(TURBOPANEL_EXTENSION_KEY), false)
 })
@@ -426,7 +361,7 @@ test('stripComposePlacement preserves unrelated x-turbopanel fields', () => {
     presentation: { keyOrder: ['services', TURBOPANEL_EXTENSION_KEY], comments: {} },
   }
   const stripped = stripComposePlacement(doc)
-  assertEquals(readComposePlacementServerId(stripped), null)
+  assertEquals(placementServerId(stripped), undefined)
   assertEquals(stripped.data[TURBOPANEL_EXTENSION_KEY], { future: { keep: true } })
 })
 
@@ -436,6 +371,6 @@ test('mergeComposeOverlay after stripComposePlacement ignores project pin', () =
   const base = documentWithPlacement(projectPin)
   const overlay = documentWithPlacement(envPin)
   const merged = mergeComposeOverlay(stripComposePlacement(base), overlay)
-  assertEquals(readComposePlacementServerId(merged), envPin)
+  assertEquals(placementServerId(merged), envPin)
   assertEquals(composeDocumentToRuntimeYaml(merged).includes(projectPin), false)
 })

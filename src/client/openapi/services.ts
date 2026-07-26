@@ -8,6 +8,15 @@ export const serviceSchemas = {
       displayName: { type: ['string', 'null'] },
       description: { type: ['string', 'null'] },
       environmentId: { type: 'string' },
+      composeServiceName: {
+        type: ['string', 'null'],
+        description: 'Compose service name used for deploy reconcile and filters.',
+      },
+      metadata: {
+        type: ['object', 'null'],
+        description: 'Residual service metadata (promoted fields are top-level).',
+        additionalProperties: true,
+      },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
     },
@@ -29,6 +38,7 @@ export const serviceSchemas = {
       displayName: { type: 'string' },
       description: { type: 'string' },
       environmentId: { type: 'string' },
+      composeServiceName: { type: 'string' },
       metadata: { type: 'object', nullable: true },
       options: {
         type: 'object',
@@ -42,6 +52,7 @@ export const serviceSchemas = {
     properties: {
       displayName: { type: 'string' },
       description: { type: 'string' },
+      composeServiceName: { type: 'string', nullable: true },
       metadata: { type: 'object', nullable: true },
       options: {
         type: 'object',
@@ -64,4 +75,16 @@ export const servicePaths = buildResourceCrudPaths({
     name: 'environmentId',
     description: 'Filter services under an environment',
   },
+})
+
+const listGet = servicePaths['/api/client/v1/services'] as {
+  get: { parameters?: unknown[] }
+}
+listGet.get.parameters ??= []
+listGet.get.parameters.push({
+  name: 'composeServiceName',
+  in: 'query',
+  required: false,
+  schema: { type: 'string' },
+  description: 'Filter services by compose service name',
 })

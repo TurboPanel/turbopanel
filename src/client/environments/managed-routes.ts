@@ -23,10 +23,7 @@ import {
   parseDisplayName,
   parseJsonBody,
 } from '../shared.ts'
-import {
-  readEnvironmentPlacementServerId,
-  verifyServerInOrg,
-} from './deploy-prepare.ts'
+import { verifyServerInOrg } from './deploy-prepare.ts'
 
 const MANAGED_ENGINES = new Set<string>([
   'postgres',
@@ -36,33 +33,19 @@ const MANAGED_ENGINES = new Set<string>([
   'clickhouse',
 ])
 
-type ManagedEnvironmentMetadata = {
-  engine: ManagedEngineCode
-  status: 'provisioning' | 'ready' | 'failed'
+type ManagedResidualMetadata = {
   rootPrincipalId?: string
   host?: string
   port?: number
   error?: string
 }
 
-function parseManagedMetadata(value: unknown): ManagedEnvironmentMetadata | null {
+function parseManagedResidual(value: unknown): ManagedResidualMetadata {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return null
+    return {}
   }
   const record = value as Record<string, unknown>
-  const engine = record.engine
-  const status = record.status
-  if (
-    typeof engine !== 'string' ||
-    !MANAGED_ENGINES.has(engine) ||
-    typeof status !== 'string' ||
-    (status !== 'provisioning' && status !== 'ready' && status !== 'failed')
-  ) {
-    return null
-  }
   return {
-    engine: engine as ManagedEngineCode,
-    status,
     ...(typeof record.rootPrincipalId === 'string'
       ? { rootPrincipalId: record.rootPrincipalId }
       : {}),
@@ -77,6 +60,8 @@ function serializeManagedRow(
     id: string
     environmentId: string | null
     displayName: string | null
+    engine: string | null
+    status: string | null
     metadata: unknown
     options: unknown
     createdAt: string
@@ -84,17 +69,31 @@ function serializeManagedRow(
   },
   serverId: string | null,
 ) {
-  const meta = parseManagedMetadata(row.metadata)
+  const residual = parseManagedResidual(row.metadata)
+  const engine = row.engine && MANAGED_ENGINES.has(row.engine)
+    ? (row.engine as ManagedEngineCode)
+    : null
+  const status =
+    row.status === 'provisioning' || row.status === 'ready' || row.status === 'failed'
+      ? row.status
+      : 'provisioning'
+
+  // Flat engine/status/host/port; residual metadata only (no promoted mirrors).
+  const metadata: Record<string, unknown> = {
+    ...(residual.rootPrincipalId ? { rootPrincipalId: residual.rootPrincipalId } : {}),
+    ...(residual.error ? { error: residual.error } : {}),
+  }
+
   return {
     id: row.id,
     environmentId: row.environmentId,
     displayName: row.displayName,
-    engine: meta?.engine ?? null,
-    status: meta?.status ?? 'provisioning',
-    host: meta?.host ?? null,
-    port: meta?.port ?? null,
+    engine,
+    status,
+    host: residual.host ?? null,
+    port: residual.port ?? null,
     serverId,
-    metadata: row.metadata,
+    metadata,
     options: row.options,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -157,6 +156,7 @@ async function loadManagedProvisionContext(
     .select({
       id: environment.id,
       projectId: environment.projectId,
+      serverId: environment.serverId,
       displayName: environment.displayName,
       options: environment.options,
       metadata: environment.metadata,
@@ -180,7 +180,7 @@ async function loadManagedProvisionContext(
     return c.json({ error: 'not_managed_environment' }, 400)
   }
 
-  const serverId = readEnvironmentPlacementServerId(envRow.options)
+  const serverId = envRow.serverId
   if (!serverId) {
     return c.json({ error: 'server_placement_required' }, 409)
   }
@@ -205,6 +205,8 @@ async function findManagedForEnvironment(
       id: managed.id,
       environmentId: managed.environmentId,
       displayName: managed.displayName,
+      engine: managed.engine,
+      status: managed.status,
       metadata: managed.metadata,
       options: managed.options,
       createdAt: managed.createdAt,
@@ -243,7 +245,7 @@ export function registerEnvironmentManagedRoutes(
     if (auth instanceof Response) return auth
 
     const [envRow] = await db
-      .select({ options: environment.options })
+      .select({ serverId: environment.serverId })
       .from(environment)
       .where(eq(environment.id, environmentId))
       .limit(1)
@@ -254,8 +256,7 @@ export function registerEnvironmentManagedRoutes(
       return c.json({ managed: null })
     }
 
-    const serverId = readEnvironmentPlacementServerId(envRow.options)
-    return c.json({ managed: serializeManagedRow(row, serverId) })
+    return c.json({ managed: serializeManagedRow(row, envRow.serverId) })
   })
 
   router.post('/environments/:id/managed/provision', async (c) => {
@@ -334,9 +335,7 @@ export function registerEnvironmentManagedRoutes(
 
       // Future: host stays a loopback placeholder until the daemon
       // managed.provision command lands (Phase 3 roadmap).
-      const metadata: ManagedEnvironmentMetadata = {
-        engine: engineOptions.engine,
-        status: 'ready',
+      const residual: ManagedResidualMetadata = {
         rootPrincipalId,
         host: '127.0.0.1',
         port: engineOptions.port,
@@ -347,13 +346,17 @@ export function registerEnvironmentManagedRoutes(
         .values({
           environmentId,
           displayName: resolvedDisplayName,
-          metadata,
+          engine: engineOptions.engine,
+          status: 'ready',
+          metadata: residual,
           options: { engineVersion: 'latest' },
         })
         .returning({
           id: managed.id,
           environmentId: managed.environmentId,
           displayName: managed.displayName,
+          engine: managed.engine,
+          status: managed.status,
           metadata: managed.metadata,
           options: managed.options,
           createdAt: managed.createdAt,

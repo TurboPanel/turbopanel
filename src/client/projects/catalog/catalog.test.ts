@@ -25,7 +25,7 @@ test('listCatalog includes all managed engine codes as kind managed', () => {
   }
 })
 
-test('isManagedEngineCatalogEntry is true for engines and false for apps/templates', () => {
+test('isManagedEngineCatalogEntry is true for engines and false for templates', () => {
   for (const code of MANAGED_ENGINE_CODES) {
     const entry = getCatalogEntry(code)
     if (!entry) throw new TypeError(`missing catalog entry ${code}`)
@@ -34,6 +34,7 @@ test('isManagedEngineCatalogEntry is true for engines and false for apps/templat
 
   const wordpress = getCatalogEntry('wordpress-mysql')
   if (!wordpress) throw new TypeError('missing wordpress-mysql')
+  assertEquals(wordpress.kind, 'template')
   assertEquals(isManagedEngineCatalogEntry(wordpress), false)
 
   const staticSite = getCatalogEntry('static-site')
@@ -59,6 +60,7 @@ test('readManagedEngineOptions returns validated engine metadata', () => {
 
   const wordpress = getCatalogEntry('wordpress-mysql')
   if (!wordpress) throw new TypeError('missing wordpress-mysql')
+  assertEquals(wordpress.kind, 'template')
   assertEquals(readManagedEngineOptions(wordpress), null)
 })
 

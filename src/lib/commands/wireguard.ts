@@ -3,6 +3,9 @@ import { isValidCidr, isValidIpAddress, parseIpVersion } from '../ip-address.ts'
 
 export const WIREGUARD_INTERFACE_MAX_LENGTH = 15
 
+/** Seconds — set on peer entries that carry an endpoint (NAT keep-alive). */
+export const WIREGUARD_PERSISTENT_KEEPALIVE = 25
+
 const WIREGUARD_INTERFACE_RE = /^[a-z0-9_-]{1,15}$/
 
 const WIREGUARD_PUBLIC_KEY_RE = /^[A-Za-z0-9+/]{43}=$/

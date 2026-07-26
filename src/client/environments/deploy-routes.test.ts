@@ -11,10 +11,7 @@ import {
 } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
-import {
-  emptyComposeDocument,
-  TURBOPANEL_EXTENSION_KEY,
-} from '../../lib/compose/index.ts'
+import { emptyComposeDocument } from '../../lib/compose/index.ts'
 import type { ComposeDocument } from '../../lib/compose/types.ts'
 import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
 import type { CommandQueue } from '../../lib/commands/queue.ts'
@@ -128,31 +125,25 @@ function createTrackingRegistry(): DaemonCellRegistry {
   }
 }
 
-function composeWithEmptyServicesPlacement(serverId: string): ComposeDocument {
+function composeWithEmptyServices(): ComposeDocument {
   return {
     version: 1,
     data: {
       services: {},
-      [TURBOPANEL_EXTENSION_KEY]: {
-        placement: { server_id: serverId },
-      },
     },
-    presentation: { keyOrder: ['services', TURBOPANEL_EXTENSION_KEY], comments: {} },
+    presentation: { keyOrder: ['services'], comments: {} },
   }
 }
 
-function composeWithPlacement(serverId: string): ComposeDocument {
+function composeWithWebService(): ComposeDocument {
   return {
     version: 1,
     data: {
       services: {
         web: { image: 'nginx:alpine' },
       },
-      [TURBOPANEL_EXTENSION_KEY]: {
-        placement: { server_id: serverId },
-      },
     },
-    presentation: { keyOrder: ['services', TURBOPANEL_EXTENSION_KEY], comments: {} },
+    presentation: { keyOrder: ['services'], comments: {} },
   }
 }
 
@@ -321,7 +312,8 @@ test('POST /environments/:id/deploy rejects empty compose', async () => {
     await db
       .update(environment)
       .set({
-        options: { compose: composeWithEmptyServicesPlacement(serverId) },
+        serverId,
+        options: { compose: composeWithEmptyServices() },
         updatedAt: new Date().toISOString(),
       })
       .where(eq(environment.id, environmentId))
@@ -364,7 +356,8 @@ test('POST /environments/:id/deploy pinned auto-resolves without body serverId',
     await db
       .update(environment)
       .set({
-        options: { compose: composeWithPlacement(serverId) },
+        serverId,
+        options: { compose: composeWithWebService() },
         updatedAt: new Date().toISOString(),
       })
       .where(eq(environment.id, environmentId))
@@ -389,16 +382,17 @@ test('POST /environments/:id/deploy pinned auto-resolves without body serverId',
     assertEquals(commandQueue.envelopes[0]!.type, 'environment.deploy')
 
     const [envRow] = await db
-      .select({ metadata: environment.metadata })
+      .select({ serverId: environment.serverId, metadata: environment.metadata })
       .from(environment)
       .where(eq(environment.id, environmentId))
       .limit(1)
+    assertEquals(envRow?.serverId, serverId)
     const metadata = envRow?.metadata as { serverId?: string } | null
-    assertEquals(metadata?.serverId, serverId)
+    assertEquals(metadata?.serverId, undefined)
   })
 })
 
-test('POST /environments/:id/deploy rejects body serverId mismatch with pin', async () => {
+test('POST /environments/:id/deploy ignores body serverId and uses environment.server_id', async () => {
   await withDeployFixtures(async ({
     db,
     app,
@@ -425,7 +419,8 @@ test('POST /environments/:id/deploy rejects body serverId mismatch with pin', as
       await db
         .update(environment)
         .set({
-          options: { compose: composeWithPlacement(serverId) },
+          serverId,
+          options: { compose: composeWithWebService() },
           updatedAt: new Date().toISOString(),
         })
         .where(eq(environment.id, environmentId))
@@ -441,23 +436,18 @@ test('POST /environments/:id/deploy rejects body serverId mismatch with pin', as
         body: JSON.stringify({ serverId: otherServerId }),
       })
 
-      assertEquals(res.status, 400)
-      assertEquals(await res.json(), { error: 'server_placement_mismatch' })
-      assertEquals(commandQueue.envelopes.length, 0)
-
-      const rows = await db
-        .select({ id: command.id })
-        .from(command)
-        .where(eq(command.serverId, serverId))
-      assertEquals(rows.length, 0)
+      assertEquals(res.status, 200)
+      assertEquals(commandQueue.envelopes.length, 1)
+      assertEquals(commandQueue.envelopes[0]!.serverId, serverId)
     } finally {
       await db.delete(command).where(eq(command.serverId, otherServerId))
+      await db.delete(command).where(eq(command.serverId, serverId))
       await db.delete(server).where(eq(server.id, otherServerId))
     }
   })
 })
 
-test('POST /environments/:id/deploy unpinned requires body serverId', async () => {
+test('POST /environments/:id/deploy requires persisted environment.server_id', async () => {
   await withDeployFixtures(async ({
     db,
     app,
@@ -468,9 +458,18 @@ test('POST /environments/:id/deploy unpinned requires body serverId', async () =
     serverId,
     commandQueue,
   }) => {
+    await db
+      .update(environment)
+      .set({
+        serverId: null,
+        options: { compose: composeWithWebService() },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(environment.id, environmentId))
+
     const cookie = await sessionCookie(db, secrets, userId)
 
-    const okRes = await app.request(`/environments/${environmentId}/deploy`, {
+    const bodyServerIdRes = await app.request(`/environments/${environmentId}/deploy`, {
       method: 'POST',
       headers: {
         Cookie: cookie,
@@ -479,11 +478,9 @@ test('POST /environments/:id/deploy unpinned requires body serverId', async () =
       },
       body: JSON.stringify({ serverId }),
     })
-    assertEquals(okRes.status, 200)
-    assertEquals(commandQueue.envelopes.length, 1)
-    assertEquals(commandQueue.envelopes[0]!.serverId, serverId)
-
-    commandQueue.envelopes.length = 0
+    assertEquals(bodyServerIdRes.status, 409)
+    assertEquals(await bodyServerIdRes.json(), { error: 'server_placement_required' })
+    assertEquals(commandQueue.envelopes.length, 0)
 
     const missingRes = await app.request(`/environments/${environmentId}/deploy`, {
       method: 'POST',
@@ -494,8 +491,8 @@ test('POST /environments/:id/deploy unpinned requires body serverId', async () =
       },
       body: '{}',
     })
-    assertEquals(missingRes.status, 400)
-    assertEquals(await missingRes.json(), { error: 'Invalid request' })
+    assertEquals(missingRes.status, 409)
+    assertEquals(await missingRes.json(), { error: 'server_placement_required' })
     assertEquals(commandQueue.envelopes.length, 0)
   })
 })
@@ -510,33 +507,59 @@ test('POST /environments/:id/deploy stale environment pin returns 404', async ()
     environmentId,
     commandQueue,
   }) => {
-    const staleServerId = crypto.randomUUID()
-    await db
-      .update(environment)
-      .set({
-        options: { compose: composeWithPlacement(staleServerId) },
-        updatedAt: new Date().toISOString(),
+    const now = new Date().toISOString()
+    const [foreignOrg] = await db
+      .insert(organization)
+      .values({ displayName: 'Deploy Route Foreign Org' })
+      .returning({ id: organization.id })
+    const foreignOrgId = foreignOrg!.id
+    const [foreignServer] = await db
+      .insert(server)
+      .values({
+        organizationId: foreignOrgId,
+        displayName: 'Foreign Server',
+        createdAt: now,
+        updatedAt: now,
       })
-      .where(eq(environment.id, environmentId))
+      .returning({ id: server.id })
+    const foreignServerId = foreignServer!.id
 
-    const cookie = await sessionCookie(db, secrets, userId)
-    const res = await app.request(`/environments/${environmentId}/deploy`, {
-      method: 'POST',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      },
-      body: '{}',
-    })
+    try {
+      await db
+        .update(environment)
+        .set({
+          serverId: foreignServerId,
+          options: { compose: composeWithWebService() },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(environment.id, environmentId))
 
-    assertEquals(res.status, 404)
-    assertEquals(await res.json(), { error: 'Not found' })
-    assertEquals(commandQueue.envelopes.length, 0)
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/environments/${environmentId}/deploy`, {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: '{}',
+      })
+
+      assertEquals(res.status, 404)
+      assertEquals(await res.json(), { error: 'Not found' })
+      assertEquals(commandQueue.envelopes.length, 0)
+    } finally {
+      await db
+        .update(environment)
+        .set({ serverId: null, updatedAt: new Date().toISOString() })
+        .where(eq(environment.id, environmentId))
+      await db.delete(server).where(eq(server.id, foreignServerId))
+      await db.delete(organization).where(eq(organization.id, foreignOrgId))
+    }
   })
 })
 
-test('POST /environments/:id/deploy ignores stale project pin (hard cut)', async () => {
+test('POST /environments/:id/deploy ignores stale project compose placement (hard cut)', async () => {
   await withDeployFixtures(async ({
     db,
     app,
@@ -545,16 +568,33 @@ test('POST /environments/:id/deploy ignores stale project pin (hard cut)', async
     organizationId,
     projectId,
     environmentId,
-    serverId,
     commandQueue,
   }) => {
+    // Legacy project compose placement must never become a deploy target.
     await db
       .update(project)
       .set({
-        options: { compose: composeWithPlacement(crypto.randomUUID()) },
+        options: {
+          compose: {
+            version: 1,
+            data: {
+              services: { web: { image: 'nginx:alpine' } },
+              'x-turbopanel': { placement: { server_id: crypto.randomUUID() } },
+            },
+            presentation: { keyOrder: ['services', 'x-turbopanel'], comments: {} },
+          },
+        },
         updatedAt: new Date().toISOString(),
       })
       .where(eq(project.id, projectId))
+    await db
+      .update(environment)
+      .set({
+        serverId: null,
+        options: { compose: composeWithWebService() },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(environment.id, environmentId))
 
     const cookie = await sessionCookie(db, secrets, userId)
     const missingRes = await app.request(`/environments/${environmentId}/deploy`, {
@@ -566,26 +606,13 @@ test('POST /environments/:id/deploy ignores stale project pin (hard cut)', async
       },
       body: '{}',
     })
-    assertEquals(missingRes.status, 400)
-    assertEquals(await missingRes.json(), { error: 'Invalid request' })
+    assertEquals(missingRes.status, 409)
+    assertEquals(await missingRes.json(), { error: 'server_placement_required' })
     assertEquals(commandQueue.envelopes.length, 0)
-
-    const okRes = await app.request(`/environments/${environmentId}/deploy`, {
-      method: 'POST',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ serverId }),
-    })
-    assertEquals(okRes.status, 200)
-    assertEquals(commandQueue.envelopes.length, 1)
-    assertEquals(commandQueue.envelopes[0]!.serverId, serverId)
   })
 })
 
-test('POST /environments/:id/deploy environment pin overrides stale project pin', async () => {
+test('POST /environments/:id/deploy environment.server_id wins over legacy compose pins', async () => {
   await withDeployFixtures(async ({
     db,
     app,
@@ -600,14 +627,33 @@ test('POST /environments/:id/deploy environment pin overrides stale project pin'
     await db
       .update(project)
       .set({
-        options: { compose: composeWithPlacement(crypto.randomUUID()) },
+        options: {
+          compose: {
+            version: 1,
+            data: {
+              services: { web: { image: 'nginx:alpine' } },
+              'x-turbopanel': { placement: { server_id: crypto.randomUUID() } },
+            },
+            presentation: { keyOrder: ['services', 'x-turbopanel'], comments: {} },
+          },
+        },
         updatedAt: new Date().toISOString(),
       })
       .where(eq(project.id, projectId))
     await db
       .update(environment)
       .set({
-        options: { compose: composeWithPlacement(serverId) },
+        serverId,
+        options: {
+          compose: {
+            version: 1,
+            data: {
+              services: { web: { image: 'nginx:alpine' } },
+              'x-turbopanel': { placement: { server_id: crypto.randomUUID() } },
+            },
+            presentation: { keyOrder: ['services', 'x-turbopanel'], comments: {} },
+          },
+        },
         updatedAt: new Date().toISOString(),
       })
       .where(eq(environment.id, environmentId))

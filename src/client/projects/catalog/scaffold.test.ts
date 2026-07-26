@@ -100,8 +100,8 @@ test('scaffoldCatalogEnvironments seals managed secrets as tpsecret without plac
   }
 
   const entry = getCatalogEntry('wordpress-mysql')
-  if (!entry || entry.kind !== 'managed') {
-    throw new TypeError('expected wordpress-mysql managed catalog entry')
+  if (!entry || entry.kind !== 'template') {
+    throw new TypeError('expected wordpress-mysql template catalog entry')
   }
 
   const db = createDenoDb()
@@ -130,7 +130,7 @@ test('scaffoldCatalogEnvironments seals managed secrets as tpsecret without plac
     .values({
       workspaceId: ws!.id,
       displayName: 'Catalog Scaffold Project',
-      metadata: { type: 'managed' },
+      metadata: { type: 'template' },
       options: { compose: entry.compose },
     })
     .returning({ id: project.id })

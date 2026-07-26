@@ -86,7 +86,7 @@ async function withReconcileFixtures(
     .values({
       displayName: 'web',
       environmentId,
-      metadata: { composeServiceName: 'web' },
+      composeServiceName: 'web',
     })
     .returning({ id: service.id })
   const webServiceId = webService!.id
@@ -96,7 +96,7 @@ async function withReconcileFixtures(
     .values({
       displayName: 'worker',
       environmentId,
-      metadata: { composeServiceName: 'worker' },
+      composeServiceName: 'worker',
     })
     .returning({ id: service.id })
   const workerServiceId = workerService!.id
@@ -132,22 +132,18 @@ test('reconcileEnvironmentContainers drops rows for services absent from the rep
       {
         serviceId: webServiceId,
         serverId,
-        metadata: {
-          containerId: 'cid-web',
-          containerName: 'proj-web-1',
-          status: 'running',
-          composeServiceName: 'web',
-        },
+        containerId: 'cid-web',
+        containerName: 'proj-web-1',
+        status: 'running',
+        composeServiceName: 'web',
       },
       {
         serviceId: workerServiceId,
         serverId,
-        metadata: {
-          containerId: 'cid-worker',
-          containerName: 'proj-worker-1',
-          status: 'running',
-          composeServiceName: 'worker',
-        },
+        containerId: 'cid-worker',
+        containerName: 'proj-worker-1',
+        status: 'running',
+        composeServiceName: 'worker',
       },
     ])
 
@@ -168,17 +164,14 @@ test('reconcileEnvironmentContainers drops rows for services absent from the rep
     const rows = await db
       .select({
         serviceId: container.serviceId,
-        metadata: container.metadata,
+        containerId: container.containerId,
       })
       .from(container)
       .where(eq(container.serverId, serverId))
 
     assertEquals(rows.length, 1)
     assertEquals(rows[0]!.serviceId, webServiceId)
-    assertEquals(
-      (rows[0]!.metadata as { containerId: string }).containerId,
-      'cid-web-new',
-    )
+    assertEquals(rows[0]!.containerId, 'cid-web-new')
   })
 })
 
@@ -250,32 +243,26 @@ test('reconcileEnvironmentContainers creates missing services from the report', 
       .select({
         id: service.id,
         displayName: service.displayName,
-        metadata: service.metadata,
+        composeServiceName: service.composeServiceName,
       })
       .from(service)
       .where(eq(service.environmentId, environmentId))
 
     assertEquals(serviceRows.length, 1)
     assertEquals(serviceRows[0]!.displayName, 'nginx')
-    assertEquals(
-      (serviceRows[0]!.metadata as { composeServiceName: string }).composeServiceName,
-      'nginx',
-    )
+    assertEquals(serviceRows[0]!.composeServiceName, 'nginx')
 
     const containerRows = await db
       .select({
         serviceId: container.serviceId,
-        metadata: container.metadata,
+        containerId: container.containerId,
       })
       .from(container)
       .where(eq(container.serverId, serverId))
 
     assertEquals(containerRows.length, 1)
     assertEquals(containerRows[0]!.serviceId, serviceRows[0]!.id)
-    assertEquals(
-      (containerRows[0]!.metadata as { containerId: string }).containerId,
-      'cid-nginx',
-    )
+    assertEquals(containerRows[0]!.containerId, 'cid-nginx')
   } finally {
     await db.delete(container).where(eq(container.serverId, serverId))
     await db.delete(service).where(eq(service.environmentId, environmentId))
@@ -299,22 +286,18 @@ test('reconcileEnvironmentContainers clears all rows on authoritative empty repo
       {
         serviceId: webServiceId,
         serverId,
-        metadata: {
-          containerId: 'cid-web',
-          containerName: 'proj-web-1',
-          status: 'running',
-          composeServiceName: 'web',
-        },
+        containerId: 'cid-web',
+        containerName: 'proj-web-1',
+        status: 'running',
+        composeServiceName: 'web',
       },
       {
         serviceId: workerServiceId,
         serverId,
-        metadata: {
-          containerId: 'cid-worker',
-          containerName: 'proj-worker-1',
-          status: 'exited',
-          composeServiceName: 'worker',
-        },
+        containerId: 'cid-worker',
+        containerName: 'proj-worker-1',
+        status: 'exited',
+        composeServiceName: 'worker',
       },
     ])
 

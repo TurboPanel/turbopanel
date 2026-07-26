@@ -24,7 +24,7 @@ import { normalizeDockerNetworkOptions } from '../../lib/docker-network-name.ts'
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-const NETWORK_KINDS = new Set(['datacenter', 'server', 'docker', 'vpn'])
+const NETWORK_KINDS = new Set(['datacenter', 'server', 'docker'])
 
 const NETWORK_SELECT = {
   id: network.id,
@@ -129,14 +129,41 @@ function parseNetworkKind(
   return kindRaw
 }
 
-function assertSingleNetworkScope(
+function assertNetworkKindScope(
   c: Context,
+  kind: string,
   datacenterId: string | null | undefined,
   serverId: string | null | undefined,
 ): Response | null {
   const hasDatacenter = datacenterId !== undefined && datacenterId !== null
   const hasServer = serverId !== undefined && serverId !== null
+
   if (hasDatacenter && hasServer) {
+    return c.json({ error: 'network_single_scope_conflict' }, 400)
+  }
+
+  if (kind === 'datacenter') {
+    if (!hasDatacenter) {
+      return c.json({ error: 'network_scope_required' }, 400)
+    }
+    if (hasServer) {
+      return c.json({ error: 'network_single_scope_conflict' }, 400)
+    }
+    return null
+  }
+
+  if (kind === 'server') {
+    if (!hasServer) {
+      return c.json({ error: 'network_scope_required' }, 400)
+    }
+    if (hasDatacenter) {
+      return c.json({ error: 'network_single_scope_conflict' }, 400)
+    }
+    return null
+  }
+
+  // docker — org-wide; neither FK allowed
+  if (hasDatacenter || hasServer) {
     return c.json({ error: 'network_single_scope_conflict' }, 400)
   }
   return null
@@ -287,7 +314,7 @@ async function parseNetworkCreateFields(
   )
   if (serverId instanceof Response) return serverId
 
-  const scopeDenied = assertSingleNetworkScope(c, datacenterId, serverId)
+  const scopeDenied = assertNetworkKindScope(c, kind, datacenterId, serverId)
   if (scopeDenied) return scopeDenied
 
   const displayName = parseOptionalDisplayNameField(c, body)

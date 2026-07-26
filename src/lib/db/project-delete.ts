@@ -13,15 +13,6 @@ const STOPPED_CONTAINER_STATUSES = new Set(['exited', 'dead', 'removing'])
 
 export const PROJECT_HAS_RUNNING_SERVICES_ERROR = 'project_has_running_services'
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-export function readContainerStatus(metadata: unknown): string | undefined {
-  if (!isPlainObject(metadata)) return undefined
-  return typeof metadata.status === 'string' ? metadata.status : undefined
-}
-
 /**
  * True when a container still needs an environment.stop before project delete.
  * Stopped statuses (`exited` / `dead` / `removing`) are allowed; missing/unknown
@@ -39,8 +30,8 @@ export type ProjectDeleteResult =
 /**
  * Cascade-delete a project and all child resources after verifying no active
  * containers remain. Order: container → hosting → service → environment → project.
- * Variables and managed rows cascade via FK (project-scoped managed from project;
- * environment-scoped managed when environments are deleted).
+ * Variables and managed rows cascade via FK (environment-scoped managed when
+ * environments are deleted).
  */
 export async function deleteProjectCascade(
   db: Db,
@@ -65,13 +56,13 @@ export async function deleteProjectCascade(
       const containerRows = await db
         .select({
           id: container.id,
-          metadata: container.metadata,
+          status: container.status,
         })
         .from(container)
         .where(inArray(container.serviceId, serviceIds))
 
       for (const row of containerRows) {
-        if (isActiveContainerStatus(readContainerStatus(row.metadata))) {
+        if (isActiveContainerStatus(row.status)) {
           return { ok: false, error: 'project_has_running_services' }
         }
       }

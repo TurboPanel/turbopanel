@@ -8,7 +8,7 @@ import type { ServerFleetPresence } from '../../daemon/cell/fleet-presence.ts'
 import { resolveFleetPresence } from '../../daemon/cell/fleet-presence.ts'
 import {
   buildDefaultDaemonStatus,
-  parseServerDaemonState,
+  mapServerDaemonStatusFromColumns,
   type ServerDaemonStatus,
   type UpdateProjection,
 } from '../../daemon/authn/daemon-state.ts'
@@ -362,14 +362,21 @@ export async function readDaemonStatusesForServers(
   if (serverIds.length === 0) return new Map()
 
   const rows = await db
-    .select({ id: server.id, daemon: server.daemon })
+    .select({
+      id: server.id,
+      connected: server.connected,
+      daemonStatus: server.daemonStatus,
+      lastSeenAt: server.lastSeenAt,
+      connectedAt: server.connectedAt,
+      disconnectedAt: server.disconnectedAt,
+      statusChangedAt: server.statusChangedAt,
+    })
     .from(server)
     .where(inArray(server.id, serverIds))
 
   const result = new Map<string, ServerDaemonStatus>()
   for (const row of rows) {
-    const state = parseServerDaemonState(row.daemon)
-    result.set(row.id, state?.status ?? buildDefaultDaemonStatus())
+    result.set(row.id, mapServerDaemonStatusFromColumns(row))
   }
   return result
 }

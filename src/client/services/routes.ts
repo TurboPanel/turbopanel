@@ -1,5 +1,5 @@
 import { and, eq, inArray } from 'drizzle-orm'
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
@@ -16,12 +16,197 @@ import {
   parseJsonBody,
   parseJsonbObject,
   requireStringField,
+  stripPromotedMetadataKeys,
 } from '../shared.ts'
 import {
   hierarchyDeleteHasChildrenResponse,
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
 import { parseServiceOptions } from '../../lib/service-options.ts'
+
+/** Compose name lives on `service.compose_service_name` — never persist into metadata. */
+const SERVICE_PROMOTED_METADATA_KEYS = ['composeServiceName'] as const
+
+type ServiceRow = {
+  id: string
+  displayName: string | null
+  description: string | null
+  environmentId: string
+  composeServiceName: string | null
+  metadata: unknown
+  options: unknown
+  createdAt: string
+  updatedAt: string
+}
+
+function serializeService(row: ServiceRow) {
+  return {
+    id: row.id,
+    displayName: row.displayName,
+    description: row.description,
+    environmentId: row.environmentId,
+    composeServiceName: row.composeServiceName,
+    metadata: row.metadata,
+    options: row.options,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  }
+}
+
+const SERVICE_SELECT = {
+  id: service.id,
+  displayName: service.displayName,
+  description: service.description,
+  environmentId: service.environmentId,
+  composeServiceName: service.composeServiceName,
+  metadata: service.metadata,
+  options: service.options,
+  createdAt: service.createdAt,
+  updatedAt: service.updatedAt,
+} as const
+
+type OptionalServiceOptionsResult =
+  | { kind: 'absent' }
+  | { kind: 'value'; value: NonNullable<ReturnType<typeof parseServiceOptions>> }
+  | { kind: 'error'; response: Response }
+
+function parseOptionalServiceOptions(
+  c: Context,
+  body: Record<string, unknown>,
+): OptionalServiceOptionsResult {
+  const optionsResult = parseJsonbObject(c, body, 'options')
+  if (optionsResult instanceof Response) return { kind: 'error', response: optionsResult }
+  if (optionsResult === null) return { kind: 'absent' }
+  const parsed = parseServiceOptions(optionsResult)
+  if (parsed === null) {
+    return { kind: 'error', response: c.json({ error: 'invalid_service_options' }, 400) }
+  }
+  return { kind: 'value', value: parsed }
+}
+
+function resolveCreateComposeServiceName(
+  body: Record<string, unknown>,
+  displayName: string | null,
+): string | null {
+  if (
+    typeof body.composeServiceName === 'string' &&
+    body.composeServiceName.length > 0
+  ) {
+    return body.composeServiceName
+  }
+  if (displayName) return displayName
+  return null
+}
+
+type ComposeServiceNamePatchResult =
+  | { kind: 'absent' }
+  | { kind: 'value'; value: string | null }
+  | { kind: 'error'; response: Response }
+
+function parseComposeServiceNamePatch(
+  c: Context,
+  body: Record<string, unknown>,
+): ComposeServiceNamePatchResult {
+  if (body.composeServiceName === undefined) return { kind: 'absent' }
+  if (body.composeServiceName === null) return { kind: 'value', value: null }
+  if (typeof body.composeServiceName === 'string') {
+    return {
+      kind: 'value',
+      value: body.composeServiceName.length > 0 ? body.composeServiceName : null,
+    }
+  }
+  return { kind: 'error', response: c.json({ error: 'Invalid request' }, 400) }
+}
+
+type ServicePatchFields = {
+  displayName?: string | null
+  description?: string | null
+  composeServiceName?: string | null
+  metadata?: Record<string, unknown> | null
+  options?: Record<string, unknown> | null
+  updatedAt: string
+}
+
+function buildServicePatchFields(
+  c: Context,
+  body: Record<string, unknown>,
+): ServicePatchFields | Response {
+  let patchFields: ServicePatchFields
+  try {
+    patchFields = buildPatchUpdateFields(body)
+  } catch {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
+  const composeName = parseComposeServiceNamePatch(c, body)
+  if (composeName.kind === 'error') return composeName.response
+  if (composeName.kind === 'value') {
+    patchFields.composeServiceName = composeName.value
+  }
+
+  const metadataResult = parseJsonbObject(c, body, 'metadata')
+  if (metadataResult instanceof Response) return metadataResult
+  if (metadataResult !== null) {
+    patchFields.metadata = stripPromotedMetadataKeys(
+      metadataResult,
+      SERVICE_PROMOTED_METADATA_KEYS,
+    )
+  }
+
+  const optionsResult = parseOptionalServiceOptions(c, body)
+  if (optionsResult.kind === 'error') return optionsResult.response
+  if (optionsResult.kind === 'value') patchFields.options = optionsResult.value
+
+  return patchFields
+}
+
+type ServiceCreateFieldsResult =
+  | {
+    kind: 'ok'
+    displayName: string | null
+    description: string | null
+    composeServiceName: string | null
+    metadata: Record<string, unknown> | null
+    options: Record<string, unknown> | null
+  }
+  | { kind: 'error'; response: Response }
+
+function parseServiceCreateFields(
+  c: Context,
+  body: Record<string, unknown>,
+): ServiceCreateFieldsResult {
+  let displayName: string | null
+  let description: string | null
+  try {
+    displayName = parseDisplayName(body)
+    description = parseDescription(body)
+  } catch {
+    return { kind: 'error', response: c.json({ error: 'Invalid request' }, 400) }
+  }
+
+  const metadataResult = parseJsonbObject(c, body, 'metadata')
+  if (metadataResult instanceof Response) {
+    return { kind: 'error', response: metadataResult }
+  }
+
+  const optionsResult = parseOptionalServiceOptions(c, body)
+  if (optionsResult.kind === 'error') {
+    return { kind: 'error', response: optionsResult.response }
+  }
+
+  const metadata = metadataResult === null
+    ? null
+    : stripPromotedMetadataKeys(metadataResult, SERVICE_PROMOTED_METADATA_KEYS)
+
+  return {
+    kind: 'ok',
+    displayName,
+    description,
+    composeServiceName: resolveCreateComposeServiceName(body, displayName),
+    metadata,
+    options: optionsResult.kind === 'value' ? optionsResult.value : null,
+  }
+}
 
 export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
   router.use('/services', createSessionMiddleware(opts.secrets))
@@ -39,6 +224,7 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
     const organizationId = orgResult
 
     const environmentId = c.req.query('environmentId')
+    const composeServiceName = c.req.query('composeServiceName')
 
     const visibleIds = await listVisible(db, {
       kind: 'service',
@@ -54,23 +240,17 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
     if (environmentId) {
       conditions.push(eq(service.environmentId, environmentId))
     }
+    if (composeServiceName) {
+      conditions.push(eq(service.composeServiceName, composeServiceName))
+    }
 
     const rows = await db
-      .select({
-        id: service.id,
-        displayName: service.displayName,
-        description: service.description,
-        environmentId: service.environmentId,
-        metadata: service.metadata,
-        options: service.options,
-        createdAt: service.createdAt,
-        updatedAt: service.updatedAt,
-      })
+      .select(SERVICE_SELECT)
       .from(service)
       .where(and(...conditions))
       .orderBy(service.createdAt)
 
-    return c.json({ services: rows })
+    return c.json({ services: rows.map(serializeService) })
   })
 
   router.get('/services/:id', async (c) => {
@@ -91,16 +271,7 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
     }
 
     const rows = await db
-      .select({
-        id: service.id,
-        displayName: service.displayName,
-        description: service.description,
-        environmentId: service.environmentId,
-        metadata: service.metadata,
-        options: service.options,
-        createdAt: service.createdAt,
-        updatedAt: service.updatedAt,
-      })
+      .select(SERVICE_SELECT)
       .from(service)
       .where(eq(service.id, id))
       .limit(1)
@@ -113,7 +284,7 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
     const denied = await assertCanReadOr403(c, 'service', id)
     if (denied) return denied
 
-    return c.json({ service: row })
+    return c.json({ service: serializeService(row) })
   })
 
   router.post('/services', async (c) => {
@@ -141,36 +312,21 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
     const denied = await assertCanCreateOr403(c, 'environment', environmentId)
     if (denied) return denied
 
-    let displayName: string | null
-    let description: string | null
-    try {
-      displayName = parseDisplayName(body)
-      description = parseDescription(body)
-    } catch {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-
-    const metadataResult = parseJsonbObject(c, body, 'metadata')
-    if (metadataResult instanceof Response) return metadataResult
-    const optionsResult = parseJsonbObject(c, body, 'options')
-    if (optionsResult instanceof Response) return optionsResult
-
-    let validatedOptions: Record<string, unknown> | null = null
-    if (optionsResult !== null) {
-      const parsed = parseServiceOptions(optionsResult)
-      if (parsed === null) return c.json({ error: 'invalid_service_options' }, 400)
-      validatedOptions = parsed
-    }
+    const fields = parseServiceCreateFields(c, body)
+    if (fields.kind === 'error') return fields.response
 
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(service)
         .values({
-          displayName,
-          description,
+          displayName: fields.displayName,
+          description: fields.description,
           environmentId,
-          ...(metadataResult !== null ? { metadata: metadataResult } : {}),
-          ...(validatedOptions !== null ? { options: validatedOptions } : {}),
+          ...(fields.composeServiceName !== null
+            ? { composeServiceName: fields.composeServiceName }
+            : {}),
+          ...(fields.metadata !== null ? { metadata: fields.metadata } : {}),
+          ...(fields.options !== null ? { options: fields.options } : {}),
         })
         .returning({ id: service.id })
       return inserted.id
@@ -202,30 +358,8 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    let patchFields: {
-      displayName?: string | null
-      description?: string | null
-      metadata?: Record<string, unknown> | null
-      options?: Record<string, unknown> | null
-      updatedAt: string
-    }
-    try {
-      patchFields = buildPatchUpdateFields(body)
-    } catch {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-
-    const metadataResult = parseJsonbObject(c, body, 'metadata')
-    if (metadataResult instanceof Response) return metadataResult
-    if (metadataResult !== null) patchFields.metadata = metadataResult
-
-    const optionsResult = parseJsonbObject(c, body, 'options')
-    if (optionsResult instanceof Response) return optionsResult
-    if (optionsResult !== null) {
-      const parsed = parseServiceOptions(optionsResult)
-      if (parsed === null) return c.json({ error: 'Invalid service options' }, 400)
-      patchFields.options = parsed
-    }
+    const patchFields = buildServicePatchFields(c, body)
+    if (patchFields instanceof Response) return patchFields
 
     await db
       .update(service)

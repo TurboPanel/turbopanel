@@ -6,11 +6,12 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db.ts'
-import { hosting, ip } from '../../lib/db/schema.ts'
+import { hosting, ip, peer } from '../../lib/db/schema.ts'
 import {
-  deriveIpVersion,
   isValidIpAddress,
+  parseIpVersion,
 } from '../../lib/ip-address.ts'
+import { isAddressInVpnCidr } from '../../lib/net/vpn-address-allocator.ts'
 import {
   assertCanCreateOr403,
   assertCanManageOr403,
@@ -26,7 +27,7 @@ const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 const IP_ALLOCATIONS = new Set(['dedicated', 'shared'])
-const IP_SCOPES = new Set(['public', 'datacenter', 'loopback'])
+const IP_SCOPES = new Set(['public', 'datacenter', 'loopback', 'vpn'])
 
 const IP_SELECT = {
   id: ip.id,
@@ -34,8 +35,8 @@ const IP_SELECT = {
   datacenterId: ip.datacenterId,
   networkId: ip.networkId,
   serverId: ip.serverId,
+  vpnId: ip.vpnId,
   address: ip.address,
-  version: ip.version,
   allocation: ip.allocation,
   scope: ip.scope,
   displayName: ip.displayName,
@@ -49,6 +50,7 @@ const IP_SCOPE_FK_FIELDS = [
   ['datacenterId', 'datacenter'],
   ['networkId', 'network'],
   ['serverId', 'server'],
+  ['vpnId', 'vpn'],
 ] as const
 
 type IpScopeFkField = (typeof IP_SCOPE_FK_FIELDS)[number][0]
@@ -58,11 +60,11 @@ type IpScopeFks = {
   datacenterId?: string | null
   networkId?: string | null
   serverId?: string | null
+  vpnId?: string | null
 }
 
 type CreateIpFields = {
   address: string
-  version: number
   allocation: string
   scope: string
   displayName: string | null
@@ -77,7 +79,32 @@ type IpPatchFields = {
   datacenterId?: string | null
   networkId?: string | null
   serverId?: string | null
+  vpnId?: string | null
   updatedAt: string
+}
+
+type IpRow = {
+  id: string
+  organizationId: string
+  datacenterId: string | null
+  networkId: string | null
+  serverId: string | null
+  vpnId: string | null
+  address: string
+  allocation: string
+  scope: string
+  displayName: string | null
+  metadata: unknown
+  options: unknown
+  createdAt: string
+  updatedAt: string
+}
+
+function serializeIpRow(row: IpRow) {
+  return {
+    ...row,
+    version: parseIpVersion(row.address),
+  }
 }
 
 function isPostgresUniqueViolation(err: unknown): boolean {
@@ -88,7 +115,8 @@ function isPostgresUniqueViolation(err: unknown): boolean {
 function isIpAddressUniqueViolation(err: unknown): boolean {
   if (!isPostgresUniqueViolation(err)) return false
   const message = err instanceof Error ? err.message : String(err)
-  return message.includes('uniq_ip_org_address')
+  return message.includes('uniq_ip_org_address') ||
+    message.includes('uniq_ip_vpn_address')
 }
 
 async function assertSameOrgEntity(
@@ -151,8 +179,8 @@ async function appendOrgScopedIdFilter(
   db: Db,
   organizationId: string,
   conditions: SQL[],
-  queryKey: 'datacenterId' | 'serverId' | 'networkId',
-  kind: 'datacenter' | 'server' | 'network',
+  queryKey: 'datacenterId' | 'serverId' | 'networkId' | 'vpnId',
+  kind: 'datacenter' | 'server' | 'network' | 'vpn',
 ): Promise<Response | null> {
   const raw = c.req.query(queryKey)?.trim()
   if (!raw) return null
@@ -191,6 +219,7 @@ async function buildIpListConditions(
     ['datacenterId', 'datacenter'],
     ['serverId', 'server'],
     ['networkId', 'network'],
+    ['vpnId', 'vpn'],
   ] as const) {
     const denied = await appendOrgScopedIdFilter(
       c,
@@ -220,22 +249,68 @@ async function buildIpListConditions(
 function parseCreateIpAddress(
   c: Context,
   body: Record<string, unknown>,
-): { address: string; version: number } | Response {
+): { address: string } | Response {
   const addressRaw = body.address
   if (typeof addressRaw !== 'string' || !isValidIpAddress(addressRaw)) {
     return c.json({ error: 'Invalid request' }, 400)
   }
   const address = addressRaw.trim()
-  const version = deriveIpVersion(address)
-  if (version === null) return c.json({ error: 'Invalid request' }, 400)
-
-  if (body.version !== undefined) {
-    if (typeof body.version !== 'number' || body.version !== version) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
+  if (parseIpVersion(address) === null) {
+    return c.json({ error: 'Invalid request' }, 400)
   }
 
-  return { address, version }
+  // Clients must not supply version — it is derived from address on read.
+  if (body.version !== undefined) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
+  return { address }
+}
+
+function assertIpScopeFkRules(
+  c: Context,
+  scope: string,
+  scopeFks: IpScopeFks,
+): Response | null {
+  const hasVpn = scopeFks.vpnId !== undefined && scopeFks.vpnId !== null
+  const hasServer = scopeFks.serverId !== undefined && scopeFks.serverId !== null
+  const hasNetwork = scopeFks.networkId !== undefined && scopeFks.networkId !== null
+  const hasDatacenter =
+    scopeFks.datacenterId !== undefined && scopeFks.datacenterId !== null
+
+  if (scope === 'vpn') {
+    if (!hasVpn) {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+  } else if (hasVpn) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
+  // Mirrors `ip_datacenter_free_pool_check`: datacenterId cannot coexist with
+  // networkId, serverId, or vpnId.
+  if (hasDatacenter && (hasNetwork || hasServer || hasVpn)) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
+  return null
+}
+
+/**
+ * Validate that a `scope='vpn'` address falls inside its VPN's overlay CIDR —
+ * the same containment rule enforced for peer tunnel-IP assignment
+ * (`isAddressInVpnCidr` in `vpn-address-allocator.ts`).
+ */
+async function assertVpnScopedAddressInCidr(
+  c: Context,
+  db: Db,
+  vpnId: string,
+  address: string,
+): Promise<Response | null> {
+  const inCidr = await isAddressInVpnCidr(db, vpnId, address)
+  if (!inCidr) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  return null
 }
 
 function parseCreateIpEnums(
@@ -282,6 +357,19 @@ async function parseCreateIpFields(
   const scopeFks = await resolveIpScopeFks(c, db, organizationId, body)
   if (scopeFks instanceof Response) return scopeFks
 
+  const scopeDenied = assertIpScopeFkRules(c, enums.scope, scopeFks)
+  if (scopeDenied) return scopeDenied
+
+  if (enums.scope === 'vpn' && scopeFks.vpnId) {
+    const cidrDenied = await assertVpnScopedAddressInCidr(
+      c,
+      db,
+      scopeFks.vpnId,
+      addressFields.address,
+    )
+    if (cidrDenied) return cidrDenied
+  }
+
   return {
     ...addressFields,
     ...enums,
@@ -292,20 +380,87 @@ async function parseCreateIpFields(
   }
 }
 
+type ExistingIpScope = {
+  scope: string
+  vpnId: string | null
+  serverId: string | null
+  datacenterId: string | null
+  networkId: string | null
+  address: string
+}
+
+function rejectImmutableIpPatchFields(
+  c: Context,
+  body: Record<string, unknown>,
+): Response | null {
+  const immutable = ['address', 'version', 'allocation', 'scope'] as const
+  if (immutable.some((key) => body[key] !== undefined)) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  return null
+}
+
+function applyJsonbPatchFields(
+  c: Context,
+  body: Record<string, unknown>,
+  patchFields: IpPatchFields,
+): Response | null {
+  for (const key of ['metadata', 'options'] as const) {
+    const result = parseJsonbObject(c, body, key)
+    if (result instanceof Response) return result
+    if (result !== null) patchFields[key] = result
+  }
+  return null
+}
+
+/** Final FK values = existing row plus incoming patch (undefined keeps prior). */
+function mergeIpScopeFks(
+  existing: ExistingIpScope,
+  scopeFks: IpScopeFks,
+): IpScopeFks {
+  return {
+    vpnId: scopeFks.vpnId !== undefined ? scopeFks.vpnId : existing.vpnId,
+    serverId: scopeFks.serverId !== undefined ? scopeFks.serverId : existing.serverId,
+    datacenterId: scopeFks.datacenterId !== undefined
+      ? scopeFks.datacenterId
+      : existing.datacenterId,
+    networkId: scopeFks.networkId !== undefined
+      ? scopeFks.networkId
+      : existing.networkId,
+  }
+}
+
+async function assertVpnIpPatchRules(
+  c: Context,
+  db: Db,
+  existing: ExistingIpScope,
+  finalScopeFks: IpScopeFks,
+): Promise<Response | null> {
+  if (existing.scope !== 'vpn') return null
+
+  // Explicitly reject clearing vpnId on a vpn-scoped row (CHECK would 500).
+  if (finalScopeFks.vpnId === null) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  if (!finalScopeFks.vpnId) return null
+
+  return await assertVpnScopedAddressInCidr(
+    c,
+    db,
+    finalScopeFks.vpnId,
+    existing.address,
+  )
+}
+
 async function buildIpPatchFields(
   c: Context,
   db: Db,
   organizationId: string,
   body: Record<string, unknown>,
+  existing: ExistingIpScope,
 ): Promise<IpPatchFields | Response> {
-  if (
-    body.address !== undefined ||
-    body.version !== undefined ||
-    body.allocation !== undefined ||
-    body.scope !== undefined
-  ) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
+  const immutableDenied = rejectImmutableIpPatchFields(c, body)
+  if (immutableDenied) return immutableDenied
 
   let patchFields: IpPatchFields
   try {
@@ -314,16 +469,21 @@ async function buildIpPatchFields(
     return c.json({ error: 'Invalid request' }, 400)
   }
 
-  const metadataResult = parseJsonbObject(c, body, 'metadata')
-  if (metadataResult instanceof Response) return metadataResult
-  if (metadataResult !== null) patchFields.metadata = metadataResult
-
-  const optionsResult = parseJsonbObject(c, body, 'options')
-  if (optionsResult instanceof Response) return optionsResult
-  if (optionsResult !== null) patchFields.options = optionsResult
+  const jsonbDenied = applyJsonbPatchFields(c, body, patchFields)
+  if (jsonbDenied) return jsonbDenied
 
   const scopeFks = await resolveIpScopeFks(c, db, organizationId, body)
   if (scopeFks instanceof Response) return scopeFks
+
+  const finalScopeFks = mergeIpScopeFks(existing, scopeFks)
+
+  // Reuse create-time scope/FK rules against the post-patch shape.
+  const scopeDenied = assertIpScopeFkRules(c, existing.scope, finalScopeFks)
+  if (scopeDenied) return scopeDenied
+
+  const vpnDenied = await assertVpnIpPatchRules(c, db, existing, finalScopeFks)
+  if (vpnDenied) return vpnDenied
+
   Object.assign(patchFields, scopeFks)
 
   return patchFields
@@ -376,7 +536,7 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       .where(and(...conditions))
       .orderBy(ip.createdAt)
 
-    return c.json({ ips: rows })
+    return c.json({ ips: rows.map((row) => serializeIpRow(row)) })
   })
 
   router.get('/ips/:id', async (c) => {
@@ -407,7 +567,7 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
 
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    return c.json({ ip: row })
+    return c.json({ ip: serializeIpRow(row) })
   })
 
   router.post('/ips', async (c) => {
@@ -437,7 +597,6 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
           .values({
             organizationId,
             address: fields.address,
-            version: fields.version,
             allocation: fields.allocation,
             scope: fields.scope,
             displayName: fields.displayName,
@@ -448,6 +607,7 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
               ? { networkId: fields.networkId }
               : {}),
             ...(fields.serverId !== undefined ? { serverId: fields.serverId } : {}),
+            ...(fields.vpnId !== undefined ? { vpnId: fields.vpnId } : {}),
             ...(fields.metadata !== null ? { metadata: fields.metadata } : {}),
             ...(fields.options !== null ? { options: fields.options } : {}),
           })
@@ -483,10 +643,30 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
     const denied = await assertCanOr403(c, 'organization:manage', 'ip', id)
     if (denied) return denied
 
+    const [existingIp] = await db
+      .select({
+        scope: ip.scope,
+        vpnId: ip.vpnId,
+        serverId: ip.serverId,
+        datacenterId: ip.datacenterId,
+        networkId: ip.networkId,
+        address: ip.address,
+      })
+      .from(ip)
+      .where(eq(ip.id, id))
+      .limit(1)
+    if (!existingIp) return c.json({ error: 'Not found' }, 404)
+
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const patchFields = await buildIpPatchFields(c, db, organizationId, body)
+    const patchFields = await buildIpPatchFields(
+      c,
+      db,
+      organizationId,
+      body,
+      existingIp,
+    )
     if (patchFields instanceof Response) return patchFields
 
     await db.update(ip).set(patchFields).where(eq(ip.id, id))
@@ -520,6 +700,15 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       .where(eq(hosting.ipId, id))
       .limit(1)
     if (hostingRow) {
+      return c.json({ error: 'ip_in_use' }, 409)
+    }
+
+    const [peerTunnelRow] = await db
+      .select({ id: peer.id })
+      .from(peer)
+      .where(eq(peer.tunnelIpId, id))
+      .limit(1)
+    if (peerTunnelRow) {
       return c.json({ error: 'ip_in_use' }, 409)
     }
 

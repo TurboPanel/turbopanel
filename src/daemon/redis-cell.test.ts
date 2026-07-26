@@ -2,8 +2,12 @@ import { assert, assertEquals, assertRejects } from "jsr:@std/assert";
 import type { Db } from "../db.ts";
 import {
   buildDefaultDaemonStatus,
+  mapServerDaemonStatusFromColumns,
   parseServerDaemonState,
+  type ServerDaemonKey,
+  type ServerDaemonProjection,
   type ServerDaemonState,
+  type ServerDaemonStatus,
 } from "./authn/daemon-state.ts";
 import { sweepStalePresence, onDaemonInbound, onDaemonConnected, onDaemonHeartbeat } from "./cell/control-plane-monitor.ts";
 import { RedisDaemonCell } from "./cell/redis/cell.ts";
@@ -614,6 +618,13 @@ function createProjectionTrackingDb(serverId: string): {
   db: Db;
   getDaemon: () => ServerDaemonState;
 } {
+  // `server.daemon` is now sparse `{ key, projection? }` only — no `status`.
+  // This mock only exercises the update-projection lifecycle (not fleet
+  // liveness), so a static default status column set is enough to satisfy
+  // `getServerDaemonStateByServerId`'s column select. Note: `requestId` is
+  // intentionally omitted from the seed projection — `applyUpdateExpiredTrigger`
+  // bails out when a stored `requestId` mismatches the trigger's real
+  // (randomly generated) `requestId`.
   let daemon: ServerDaemonState = {
     key: {
       id: "key-1",
@@ -625,21 +636,27 @@ function createProjectionTrackingDb(serverId: string): {
     projection: {
       update: {
         status: "updating",
-        requestId: "pending",
         channel: "trunk",
         queuedAt: new Date(Date.now() - 400_000).toISOString(),
       },
     },
-    status: buildDefaultDaemonStatus(),
   };
+  const status = buildDefaultDaemonStatus();
 
-  const selectLimit = () => Promise.resolve([{ id: serverId, daemon }]);
+  const buildRow = () => ({
+    id: serverId,
+    daemon,
+    metadata: null,
+    hostname: null,
+    machineId: null,
+    ...status,
+  });
 
   const selectWhere = () => {
-    const rows = daemon.projection?.update?.status === "updating"
-      ? [{ id: serverId }]
-      : [{ id: serverId, daemon }];
-    return Object.assign(Promise.resolve(rows), { limit: selectLimit });
+    const rows = [buildRow()];
+    return Object.assign(Promise.resolve(rows), {
+      limit: () => Promise.resolve(rows),
+    });
   };
 
   const db = {
@@ -650,7 +667,7 @@ function createProjectionTrackingDb(serverId: string): {
     }),
     update: () => ({
       set: (patch: Record<string, unknown>) => {
-        if (patch.daemon) {
+        if (patch.daemon !== undefined) {
           daemon = patch.daemon as ServerDaemonState;
         }
         return {
@@ -663,14 +680,39 @@ function createProjectionTrackingDb(serverId: string): {
   return { db, getDaemon: () => daemon };
 }
 
-function createSweepMockDb(initialDaemon: ServerDaemonState): {
+/**
+ * Mock DB matching the `getServerDaemonStateByServerId` column select —
+ * fleet status/identity live on dedicated `server` columns, never on the
+ * sparse `daemon` jsonb (`{ key, projection? }`).
+ */
+function createSweepMockDb(init: {
+  key: ServerDaemonKey;
+  projection?: ServerDaemonProjection;
+  status?: Partial<ServerDaemonStatus>;
+  hostname?: string | null;
+  machineId?: string | null;
+}): {
   db: Db;
   updateCalls: Array<Record<string, unknown>>;
+  getStatus: () => ServerDaemonStatus;
 } {
   const updateCalls: Array<Record<string, unknown>> = [];
-  let daemon = initialDaemon;
+  let daemon: ServerDaemonState = {
+    key: init.key,
+    ...(init.projection ? { projection: init.projection } : {}),
+  };
+  let hostname = init.hostname ?? null;
+  let machineId = init.machineId ?? null;
+  const columns = { ...buildDefaultDaemonStatus(), ...init.status };
 
-  const selectLimit = () => Promise.resolve([{ daemon, metadata: null }]);
+  const selectLimit = () =>
+    Promise.resolve([{
+      daemon,
+      metadata: null,
+      hostname,
+      machineId,
+      ...columns,
+    }]);
 
   const db = {
     select: () => ({
@@ -681,8 +723,29 @@ function createSweepMockDb(initialDaemon: ServerDaemonState): {
     update: () => ({
       set: (patch: Record<string, unknown>) => {
         updateCalls.push(patch);
-        if (patch.daemon) {
+        if (patch.daemon !== undefined) {
           daemon = patch.daemon as ServerDaemonState;
+        }
+        if ("hostname" in patch) hostname = patch.hostname as string | null;
+        if ("machineId" in patch) machineId = patch.machineId as string | null;
+        if ("connected" in patch) {
+          columns.connected = patch.connected as boolean;
+        }
+        if ("daemonStatus" in patch) {
+          columns.daemonStatus = patch
+            .daemonStatus as ServerDaemonStatus["daemonStatus"];
+        }
+        if ("lastSeenAt" in patch) {
+          columns.lastSeenAt = patch.lastSeenAt as string | null;
+        }
+        if ("connectedAt" in patch) {
+          columns.connectedAt = patch.connectedAt as string | null;
+        }
+        if ("disconnectedAt" in patch) {
+          columns.disconnectedAt = patch.disconnectedAt as string | null;
+        }
+        if ("statusChangedAt" in patch) {
+          columns.statusChangedAt = patch.statusChangedAt as string | null;
         }
         return {
           where: () => Promise.resolve(undefined),
@@ -691,7 +754,11 @@ function createSweepMockDb(initialDaemon: ServerDaemonState): {
     }),
   } as unknown as Db;
 
-  return { db, updateCalls };
+  return {
+    db,
+    updateCalls,
+    getStatus: () => mapServerDaemonStatusFromColumns(columns),
+  };
 }
 
 test(
@@ -1047,9 +1114,8 @@ test(
     await onDaemonConnected(db, serverId, cell, connectedAt);
 
     assertEquals(updateCalls.length, 1);
-    const status = (updateCalls[0]?.daemon as ServerDaemonState)?.status;
-    assertEquals(status?.connected, true);
-    assertEquals(status?.connectedAt, connectedAt);
+    assertEquals(updateCalls[0]?.connected, true);
+    assertEquals(updateCalls[0]?.connectedAt, connectedAt);
   }),
 );
 
@@ -1122,8 +1188,7 @@ test(
     await sweepStalePresence(db, registry);
 
     assertEquals(updateCalls.length, 1);
-    const status = (updateCalls[0]?.daemon as ServerDaemonState)?.status;
-    assertEquals(status?.connected, false);
+    assertEquals(updateCalls[0]?.connected, false);
   }),
 );
 
@@ -1178,9 +1243,8 @@ test(
     await onDaemonConnected(db, serverId, cell, connectedAt);
 
     assertEquals(updateCalls.length, 1);
-    const status = (updateCalls[0]?.daemon as ServerDaemonState)?.status;
-    assertEquals(status?.connected, true);
-    assertEquals(status?.connectedAt, connectedAt);
+    assertEquals(updateCalls[0]?.connected, true);
+    assertEquals(updateCalls[0]?.connectedAt, connectedAt);
   }),
 );
 
@@ -1253,8 +1317,7 @@ test(
     await sweepStalePresence(db, registry);
 
     assertEquals(updateCalls.length, 1);
-    const status = (updateCalls[0]?.daemon as ServerDaemonState)?.status;
-    assertEquals(status?.connected, false);
+    assertEquals(updateCalls[0]?.connected, false);
   }),
 );
 
@@ -1312,10 +1375,9 @@ test(
     assert(online.includes(serverId));
 
     assertEquals(updateCalls.length, 2);
-    const status = (updateCalls.at(-1)?.daemon as ServerDaemonState)
-      ?.status;
-    assertEquals(status?.connected, true);
-    assertEquals(status?.daemonStatus, "online");
+    const last = updateCalls.at(-1);
+    assertEquals(last?.connected, true);
+    assertEquals(last?.daemonStatus, "online");
   }),
 );
 
@@ -1467,8 +1529,8 @@ test(
     const writesAfterSecond = diagAfterSecond.storageByCallSite["recordInbound"]?.writes ?? 0;
     const readsAfterSecond = diagAfterSecond.storageByCallSite["recordInbound"]?.reads ?? 0;
 
-    expect(writesAfterSecond).toBe(writesAfterAttach);
-    expect(readsAfterSecond).toBe(readsAfterAttach);
+    assertEquals(writesAfterSecond, writesAfterAttach);
+    assertEquals(readsAfterSecond, readsAfterAttach);
 
     await cell.recordInbound({
       connectionId: attached.connectionId,
@@ -1479,8 +1541,8 @@ test(
     const writesAfterWindow = diagAfterWindow.storageByCallSite["recordInbound"]?.writes ?? 0;
     const readsAfterWindow = diagAfterWindow.storageByCallSite["recordInbound"]?.reads ?? 0;
 
-    expect(writesAfterWindow).toBeGreaterThan(writesAfterAttach);
-    expect(readsAfterWindow).toBeGreaterThan(readsAfterAttach);
+    assert(writesAfterWindow > writesAfterAttach);
+    assert(readsAfterWindow > readsAfterAttach);
   }),
 );
 

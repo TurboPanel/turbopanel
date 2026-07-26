@@ -33,6 +33,7 @@ export type ServerDaemonProjection = {
   update?: UpdateProjection;
 };
 
+/** Fleet liveness — stored on dedicated `server` columns, not `server.daemon`. */
 export type ServerDaemonStatus = {
   connected: boolean;
   daemonStatus: "online" | "offline" | "unknown" | null;
@@ -42,10 +43,20 @@ export type ServerDaemonStatus = {
   statusChangedAt: string | null;
 };
 
+/** Sparse jsonb blob: `{ key, projection? }` — status lives in columns. */
 export type ServerDaemonState = {
   key: ServerDaemonKey;
   projection?: ServerDaemonProjection;
-  status?: ServerDaemonStatus;
+};
+
+/** Column row shape used by {@link mapServerDaemonStatusFromColumns}. */
+export type ServerDaemonStatusColumns = {
+  connected: boolean | null | undefined;
+  daemonStatus: string | null | undefined;
+  lastSeenAt: string | null | undefined;
+  connectedAt: string | null | undefined;
+  disconnectedAt: string | null | undefined;
+  statusChangedAt: string | null | undefined;
 };
 
 function isNonEmptyString(value: unknown): value is string {
@@ -69,9 +80,8 @@ function isPublicJwk(value: unknown): value is JsonWebKey {
 
 function isDaemonStatusValue(
   value: unknown,
-): value is ServerDaemonStatus["daemonStatus"] {
-  return value === "online" || value === "offline" || value === "unknown" ||
-    value === null;
+): value is NonNullable<ServerDaemonStatus["daemonStatus"]> {
+  return value === "online" || value === "offline" || value === "unknown";
 }
 
 const UPDATE_PROJECTION_STATUSES = new Set<UpdateProjection["status"]>([
@@ -159,35 +169,6 @@ function parseServerDaemonProjection(
   return parsed;
 }
 
-function parseServerDaemonStatus(raw: unknown): ServerDaemonStatus | null {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return null;
-  }
-  const status = raw as Record<string, unknown>;
-  if (typeof status.connected !== "boolean") {
-    return null;
-  }
-  if (!isDaemonStatusValue(status.daemonStatus)) {
-    return null;
-  }
-  if (
-    !isOptionalTimestamp(status.lastSeenAt) ||
-    !isOptionalTimestamp(status.connectedAt) ||
-    !isOptionalTimestamp(status.disconnectedAt) ||
-    !isOptionalTimestamp(status.statusChangedAt)
-  ) {
-    return null;
-  }
-  return {
-    connected: status.connected,
-    daemonStatus: status.daemonStatus,
-    lastSeenAt: status.lastSeenAt ?? null,
-    connectedAt: status.connectedAt ?? null,
-    disconnectedAt: status.disconnectedAt ?? null,
-    statusChangedAt: status.statusChangedAt ?? null,
-  };
-}
-
 function parseServerDaemonKey(raw: unknown): ServerDaemonKey | null {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     return null;
@@ -228,6 +209,27 @@ export function buildDefaultDaemonStatus(): ServerDaemonStatus {
   };
 }
 
+/** Map dedicated `server` status columns into the stable status DTO. */
+export function mapServerDaemonStatusFromColumns(
+  columns: ServerDaemonStatusColumns,
+): ServerDaemonStatus {
+  const daemonStatus = isDaemonStatusValue(columns.daemonStatus)
+    ? columns.daemonStatus
+    : "unknown";
+  return {
+    connected: columns.connected === true,
+    daemonStatus,
+    lastSeenAt: columns.lastSeenAt ?? null,
+    connectedAt: columns.connectedAt ?? null,
+    disconnectedAt: columns.disconnectedAt ?? null,
+    statusChangedAt: columns.statusChangedAt ?? null,
+  };
+}
+
+/**
+ * Parse the sparse `server.daemon` jsonb blob (`key` + optional `projection`).
+ * Fleet status is not read from jsonb — use {@link mapServerDaemonStatusFromColumns}.
+ */
 export function parseServerDaemonState(raw: unknown): ServerDaemonState | null {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     return null;
@@ -240,14 +242,10 @@ export function parseServerDaemonState(raw: unknown): ServerDaemonState | null {
   const parsedProjection = state.projection != null
     ? parseServerDaemonProjection(state.projection)
     : undefined;
-  const parsedStatus = state.status != null
-    ? parseServerDaemonStatus(state.status)
-    : undefined;
 
   return {
     key: parsedKey,
     ...(parsedProjection ? { projection: parsedProjection } : {}),
-    ...(parsedStatus ? { status: parsedStatus } : {}),
   };
 }
 

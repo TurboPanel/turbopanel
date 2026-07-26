@@ -214,20 +214,11 @@ function geoRefreshDue(
 /** jsonb `||` delta — only keys that are actually changing (never stale nested facts). */
 function buildMetadataPatch(
   existingMetadata: ServerMetadata | null | undefined,
-  projection: ServerDaemonProjection | undefined,
   incomingGeo?: ServerGeo,
   identity?: ProjectionIdentity,
 ): Partial<ServerMetadata> | null {
   const delta: Partial<ServerMetadata> = {};
 
-  const hostname = projection?.hostname?.trim();
-  if (hostname && hostname !== existingMetadata?.hostname) {
-    delta.hostname = hostname;
-  }
-  const machineId = projection?.machineId?.trim();
-  if (machineId && machineId !== existingMetadata?.machineId) {
-    delta.machineId = machineId;
-  }
   if (incomingGeo !== undefined) {
     delta.geo = incomingGeo;
   }
@@ -250,6 +241,23 @@ function buildMetadataPatch(
   }
 
   return Object.keys(delta).length > 0 ? delta : null;
+}
+
+/** Dedicated identity columns — hostname / machine_id (not metadata jsonb). */
+function buildIdentityColumnPatch(
+  existing: { hostname: string | null; machineId: string | null },
+  projection: ServerDaemonProjection | undefined,
+): { hostname?: string; machineId?: string } | null {
+  const patch: { hostname?: string; machineId?: string } = {};
+  const hostname = projection?.hostname?.trim();
+  if (hostname && hostname !== existing.hostname) {
+    patch.hostname = hostname;
+  }
+  const machineId = projection?.machineId?.trim();
+  if (machineId && machineId !== existing.machineId) {
+    patch.machineId = machineId;
+  }
+  return Object.keys(patch).length > 0 ? patch : null;
 }
 
 function buildIdentityProjection(
@@ -329,12 +337,28 @@ export function steadyStateInboundSkipsDbRead(
 function buildMergedDaemonState(
   existing: ServerDaemonState,
   nextProjection: ServerDaemonProjection | undefined,
-  nextStatus: ServerDaemonStatus,
 ): ServerDaemonState {
   return {
     key: existing.key,
     ...(nextProjection ? { projection: nextProjection } : {}),
-    status: nextStatus,
+  };
+}
+
+function statusColumnPatch(status: ServerDaemonStatus): {
+  connected: boolean;
+  daemonStatus: string;
+  lastSeenAt: string | null;
+  connectedAt: string | null;
+  disconnectedAt: string | null;
+  statusChangedAt: string | null;
+} {
+  return {
+    connected: status.connected,
+    daemonStatus: status.daemonStatus ?? "unknown",
+    lastSeenAt: status.lastSeenAt,
+    connectedAt: status.connectedAt,
+    disconnectedAt: status.disconnectedAt,
+    statusChangedAt: status.statusChangedAt,
   };
 }
 
@@ -649,8 +673,8 @@ function applyProjectionTrigger(
 }
 
 /**
- * Sparse projection into `server.daemon` — never clobbers `server.daemon.key`.
- * Liveness timestamps and connection status live in `server.daemon.status` jsonb.
+ * Sparse projection into `server.daemon` (`key` + `projection`) and dedicated
+ * status / identity columns — never clobbers `server.daemon.key`.
  */
 export async function projectServerDaemon(
   db: Db,
@@ -684,17 +708,35 @@ export async function projectServerDaemon(
 
   const patch: Record<string, unknown> = {
     updatedAt: now,
-    daemon: buildMergedDaemonState(existing, nextProjection, nextStatus),
   };
+
+  if (writeProjection || writeStatus) {
+    // Preserve key; rewrite projection when identity/agent/update changes.
+    // Status is never stored in jsonb — only dedicated columns.
+    patch.daemon = buildMergedDaemonState(
+      existing,
+      writeProjection ? nextProjection : existing.projection,
+    );
+  }
+
+  if (writeStatus) {
+    Object.assign(patch, statusColumnPatch(nextStatus));
+  }
 
   if (touchMetadata) {
     const projectionIdentity =
       trigger.kind === "online" || trigger.kind === "identity"
         ? trigger.identity
         : undefined;
+    const identityColumns = buildIdentityColumnPatch(
+      { hostname: existing.hostname, machineId: existing.machineId },
+      nextProjection,
+    );
+    if (identityColumns) {
+      Object.assign(patch, identityColumns);
+    }
     const mergedMetadata = buildMetadataPatch(
       existing.metadata,
-      nextProjection,
       geoDue ? incomingGeo : undefined,
       projectionIdentity,
     );
@@ -726,20 +768,11 @@ export async function listConnectedServerIdsFromProjection(
   db: Db,
 ): Promise<string[]> {
   const rows = await db
-    .select({ id: server.id, daemon: server.daemon })
+    .select({ id: server.id })
     .from(server)
-    .where(sql`(
-      ${server.daemon}->'status'->>'connected' = 'true'
-    )`);
+    .where(eq(server.connected, true));
 
-  const connected: string[] = [];
-  for (const row of rows) {
-    const state = parseServerDaemonState(row.daemon);
-    if (state?.status?.connected) {
-      connected.push(row.id);
-    }
-  }
-  return connected;
+  return rows.map((row) => row.id);
 }
 
 export type ConnectedServerForSweep = {
@@ -757,21 +790,18 @@ export async function listConnectedServersForSweep(
   db: Db,
 ): Promise<ConnectedServerForSweep[]> {
   const rows = await db
-    .select({ id: server.id, daemon: server.daemon })
+    .select({
+      id: server.id,
+      connectedAt: server.connectedAt,
+    })
     .from(server)
-    .where(sql`(
-      ${server.daemon}->'status'->>'connected' = 'true'
-    )`)
+    .where(eq(server.connected, true))
     .orderBy(server.id);
 
-  const candidates: ConnectedServerForSweep[] = [];
-  for (const row of rows) {
-    const state = parseServerDaemonState(row.daemon);
-    if (state?.status?.connected) {
-      candidates.push({ id: row.id, connectedAt: state.status.connectedAt });
-    }
-  }
-  return candidates;
+  return rows.map((row) => ({
+    id: row.id,
+    connectedAt: row.connectedAt ?? null,
+  }));
 }
 
 export type RecentlyOfflineServerForSweep = {
@@ -802,35 +832,36 @@ export async function listRecentlyOfflineServersForSweep(
   const cutoffIso = new Date(nowMs - RECENT_OFFLINE_SWEEP_MS).toISOString();
 
   const rows = await db
-    .select({ id: server.id, daemon: server.daemon })
+    .select({
+      id: server.id,
+      connectedAt: server.connectedAt,
+      disconnectedAt: server.disconnectedAt,
+      statusChangedAt: server.statusChangedAt,
+    })
     .from(server)
     .where(sql`(
-      ${server.daemon}->'status'->>'connected' = 'false'
+      ${server.connected} = false
       AND COALESCE(
-        ${server.daemon}->'status'->>'disconnectedAt',
-        ${server.daemon}->'status'->>'statusChangedAt'
+        ${server.disconnectedAt},
+        ${server.statusChangedAt}
       ) >= ${cutoffIso}
     )`)
     .orderBy(
       sql`COALESCE(
-        ${server.daemon}->'status'->>'disconnectedAt',
-        ${server.daemon}->'status'->>'statusChangedAt'
+        ${server.disconnectedAt},
+        ${server.statusChangedAt}
       ) DESC`,
       server.id,
     );
 
   const candidates: RecentlyOfflineServerForSweep[] = [];
   for (const row of rows) {
-    const state = parseServerDaemonState(row.daemon);
-    const status = state?.status;
-    if (!status || status.connected) continue;
-
-    const offlineAt = status.disconnectedAt ?? status.statusChangedAt;
+    const offlineAt = row.disconnectedAt ?? row.statusChangedAt;
     if (!offlineAt) continue;
 
     candidates.push({
       id: row.id,
-      connectedAt: status.connectedAt ?? null,
+      connectedAt: row.connectedAt ?? null,
       offlineAt,
     });
   }
@@ -878,6 +909,14 @@ export type ServerFleetPresenceRow = {
   id: string;
   daemon: unknown;
   metadata: unknown;
+  hostname: string | null;
+  machineId: string | null;
+  connected: boolean;
+  daemonStatus: string;
+  lastSeenAt: string | null;
+  connectedAt: string | null;
+  disconnectedAt: string | null;
+  statusChangedAt: string | null;
 };
 
 /** Single SELECT for fleet presence + colocated enrichment on a fixed server id set. */
@@ -892,13 +931,29 @@ export async function loadServerRowsForFleetPresence(
       id: server.id,
       daemon: server.daemon,
       metadata: server.metadata,
+      hostname: server.hostname,
+      machineId: server.machineId,
+      connected: server.connected,
+      daemonStatus: server.daemonStatus,
+      lastSeenAt: server.lastSeenAt,
+      connectedAt: server.connectedAt,
+      disconnectedAt: server.disconnectedAt,
+      statusChangedAt: server.statusChangedAt,
     })
     .from(server)
     .where(inArray(server.id, serverIds));
 }
 
+export type ProjectionDaemonRow = {
+  id: string;
+  daemon: unknown;
+  connected: boolean;
+  lastSeenAt: string | null;
+  connectedAt: string | null;
+};
+
 export function buildProjectionsFromDaemonRows(
-  rows: Array<{ id: string; daemon: unknown }>,
+  rows: ProjectionDaemonRow[],
 ): Map<string, ServerDaemonProjectionRead> {
   const result = new Map<string, ServerDaemonProjectionRead>();
   for (const row of rows) {
@@ -910,13 +965,12 @@ export function buildProjectionsFromDaemonRows(
   return result;
 }
 
-function toProjectionRead(row: {
-  id: string;
-  daemon: unknown;
-}): ServerDaemonProjectionRead | null {
+function toProjectionRead(row: ProjectionDaemonRow): ServerDaemonProjectionRead | null {
   const state = parseServerDaemonState(row.daemon);
-  const status = state?.status ?? buildDefaultDaemonStatus();
-  if (!state?.projection && !status.connected && !status.lastSeenAt) {
+  const connected = row.connected === true;
+  const lastSeenAt = row.lastSeenAt ?? null;
+  const connectedAt = row.connectedAt ?? null;
+  if (!state?.projection && !connected && !lastSeenAt) {
     return null;
   }
 
@@ -928,11 +982,11 @@ function toProjectionRead(row: {
   } = projection;
   return {
     ...presenceProjection,
-    connected: status.connected,
-    connectedAt: status.connectedAt,
-    daemonConnected: status.connected,
-    daemonConnectedAt: status.connectedAt,
-    lastSeenAt: status.lastSeenAt,
+    connected,
+    connectedAt,
+    daemonConnected: connected,
+    daemonConnectedAt: connectedAt,
+    lastSeenAt,
   };
 }
 
@@ -946,6 +1000,9 @@ export async function readProjectionsForServers(
     .select({
       id: server.id,
       daemon: server.daemon,
+      connected: server.connected,
+      lastSeenAt: server.lastSeenAt,
+      connectedAt: server.connectedAt,
     })
     .from(server)
     .where(inArray(server.id, serverIds));

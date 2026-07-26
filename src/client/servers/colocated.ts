@@ -4,7 +4,6 @@ import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
 import type { PreloadedFleetPresenceData } from '../../daemon/cell/server-status.ts'
 import { readProjectionsForServers } from '../../daemon/cell/postgres-projection.ts'
 import { resolveColocatedServerId, readLocalMachineId } from '../authn/install-state.ts'
-import type { ServerMetadata } from '../../lib/db/server-metadata.ts'
 import { server } from '../../lib/db/schema.ts'
 
 export type ResolveColocatedServerIdSetOptions = {
@@ -46,12 +45,11 @@ export async function resolveColocatedServerIdSet(
   if (localMachineId) {
     const rows = options.preloaded?.rows
       ?? await db
-        .select({ id: server.id, metadata: server.metadata })
+        .select({ id: server.id, machineId: server.machineId })
         .from(server)
         .where(inArray(server.id, serverIds))
     for (const row of rows) {
-      const metadata = (row.metadata ?? {}) as ServerMetadata
-      if (metadata.machineId === localMachineId) {
+      if (row.machineId === localMachineId) {
         colocated.add(row.id)
       }
     }

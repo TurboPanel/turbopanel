@@ -7,11 +7,14 @@ const errorBody = {
 export const vpnSchemas = {
   VpnRow: {
     type: 'object',
-    required: ['id', 'organizationId', 'createdAt', 'updatedAt'],
+    required: ['id', 'organizationId', 'cidr', 'createdAt', 'updatedAt'],
     properties: {
       id: { type: 'string', format: 'uuid' },
       organizationId: { type: 'string', format: 'uuid' },
-      networkId: { type: ['string', 'null'], format: 'uuid' },
+      cidr: {
+        type: 'string',
+        description: 'Mesh overlay CIDR; every peer interface address is allocated from this prefix.',
+      },
       displayName: { type: ['string', 'null'] },
       metadata: { type: ['object', 'null'] },
       options: { type: ['object', 'null'] },
@@ -21,14 +24,35 @@ export const vpnSchemas = {
   },
   PeerRow: {
     type: 'object',
-    required: ['id', 'vpnId', 'serverId', 'publicKey', 'createdAt', 'updatedAt'],
+    required: [
+      'id',
+      'vpnId',
+      'serverId',
+      'publicKey',
+      'role',
+      'createdAt',
+      'updatedAt',
+    ],
     properties: {
       id: { type: 'string', format: 'uuid' },
       vpnId: { type: 'string', format: 'uuid' },
       serverId: { type: 'string', format: 'uuid' },
-      ipId: { type: ['string', 'null'], format: 'uuid' },
+      endpointIpId: {
+        type: ['string', 'null'],
+        format: 'uuid',
+        description: 'Optional public/endpoint IP row used as the WireGuard endpoint.',
+      },
+      tunnelIpId: {
+        type: ['string', 'null'],
+        format: 'uuid',
+        description: 'Overlay `ip` row (scope=vpn) for this peer interface address.',
+      },
+      role: {
+        type: 'string',
+        enum: ['gateway', 'member'],
+        description: 'Gateway peers advertise their datacenter site routes; members do not.',
+      },
       publicKey: { type: 'string' },
-      tunnelAddress: { type: ['string', 'null'] },
       listenPort: { type: ['integer', 'null'] },
       endpoint: { type: ['string', 'null'] },
       metadata: { type: ['object', 'null'] },
@@ -60,13 +84,12 @@ export const vpnSchemas = {
   },
   CreateVpnRequest: {
     type: 'object',
+    required: ['cidr'],
     properties: {
       displayName: { type: 'string' },
-      networkId: { type: ['string', 'null'], format: 'uuid' },
-      meshCidr: {
+      cidr: {
         type: 'string',
-        description:
-          'When networkId is omitted, creates a VPN-kind network with this CIDR and links it to the new mesh. Mutually exclusive with networkId.',
+        description: 'Mesh overlay CIDR for peer interface addresses.',
       },
       metadata: { type: 'object' },
       options: { type: 'object' },
@@ -76,7 +99,10 @@ export const vpnSchemas = {
     type: 'object',
     properties: {
       displayName: { type: 'string' },
-      networkId: { type: ['string', 'null'], format: 'uuid' },
+      cidr: {
+        type: 'string',
+        description: 'Optional non-null mesh overlay CIDR replacement.',
+      },
       metadata: { type: ['object', 'null'] },
       options: { type: ['object', 'null'] },
     },
@@ -87,8 +113,19 @@ export const vpnSchemas = {
     properties: {
       serverId: { type: 'string', format: 'uuid' },
       publicKey: { type: 'string' },
-      ipId: { type: ['string', 'null'], format: 'uuid' },
-      tunnelAddress: { type: 'string' },
+      role: { type: 'string', enum: ['gateway', 'member'] },
+      endpointIpId: { type: ['string', 'null'], format: 'uuid' },
+      tunnelIpId: {
+        type: ['string', 'null'],
+        format: 'uuid',
+        description:
+          'Existing overlay `ip` row (scope=vpn). Mutually exclusive with tunnelAddress. When both tunnelIpId and tunnelAddress are omitted, an address is auto-allocated from vpn.cidr.',
+      },
+      tunnelAddress: {
+        type: 'string',
+        description:
+          'Explicit overlay address to allocate under vpn.cidr. Mutually exclusive with tunnelIpId. When both tunnelIpId and tunnelAddress are omitted, an address is auto-allocated from vpn.cidr.',
+      },
       listenPort: { type: 'integer' },
       endpoint: { type: 'string' },
       presharedKey: { type: 'string', description: 'Write-only; sealed at rest' },
@@ -101,8 +138,9 @@ export const vpnSchemas = {
     properties: {
       serverId: { type: 'string', format: 'uuid' },
       publicKey: { type: 'string' },
-      ipId: { type: ['string', 'null'], format: 'uuid' },
-      tunnelAddress: { type: ['string', 'null'] },
+      endpointIpId: { type: ['string', 'null'], format: 'uuid' },
+      tunnelIpId: { type: ['string', 'null'], format: 'uuid' },
+      role: { type: 'string', enum: ['gateway', 'member'] },
       listenPort: { type: ['integer', 'null'] },
       endpoint: { type: ['string', 'null'] },
       presharedKey: { type: ['string', 'null'], description: 'Write-only' },
@@ -171,7 +209,6 @@ export const vpnPaths: Record<string, unknown> = {
                 properties: {
                   ok: { type: 'boolean', const: true },
                   id: { type: 'string', format: 'uuid' },
-                  networkId: { type: 'string', format: 'uuid' },
                 },
               },
             },
@@ -180,6 +217,10 @@ export const vpnPaths: Record<string, unknown> = {
         '400': { description: 'Invalid request', content: { 'application/json': { schema: errorBody } } },
         '401': { description: 'Unauthorized', content: { 'application/json': { schema: errorBody } } },
         '403': { description: 'Forbidden', content: { 'application/json': { schema: errorBody } } },
+        '409': {
+          description: 'Conflict — `vpn_cidr_in_use` when another mesh already uses that CIDR.',
+          content: { 'application/json': { schema: errorBody } },
+        },
       },
     },
   },
@@ -231,6 +272,10 @@ export const vpnPaths: Record<string, unknown> = {
         '401': { description: 'Unauthorized', content: { 'application/json': { schema: errorBody } } },
         '403': { description: 'Forbidden', content: { 'application/json': { schema: errorBody } } },
         '404': { description: 'Not found', content: { 'application/json': { schema: errorBody } } },
+        '409': {
+          description: 'Conflict — `vpn_cidr_in_use` when another mesh already uses that CIDR.',
+          content: { 'application/json': { schema: errorBody } },
+        },
       },
     },
     delete: {
@@ -310,7 +355,11 @@ export const vpnPaths: Record<string, unknown> = {
         '401': { description: 'Unauthorized', content: { 'application/json': { schema: errorBody } } },
         '403': { description: 'Forbidden', content: { 'application/json': { schema: errorBody } } },
         '404': { description: 'Not found', content: { 'application/json': { schema: errorBody } } },
-        '409': { description: 'Conflict', content: { 'application/json': { schema: errorBody } } },
+        '409': {
+          description:
+            'Conflict — one of `peer_server_conflict`, `peer_public_key_conflict`, `peer_tunnel_ip_conflict`, `vpn_address_conflict`, `vpn_address_pool_exhausted`.',
+          content: { 'application/json': { schema: errorBody } },
+        },
         '503': { description: 'Encryption unavailable', content: { 'application/json': { schema: errorBody } } },
       },
     },
@@ -347,7 +396,11 @@ export const vpnPaths: Record<string, unknown> = {
         '401': { description: 'Unauthorized', content: { 'application/json': { schema: errorBody } } },
         '403': { description: 'Forbidden', content: { 'application/json': { schema: errorBody } } },
         '404': { description: 'Not found', content: { 'application/json': { schema: errorBody } } },
-        '409': { description: 'Conflict', content: { 'application/json': { schema: errorBody } } },
+        '409': {
+          description:
+            'Conflict — one of `peer_server_conflict`, `peer_public_key_conflict`, `peer_tunnel_ip_conflict`, `vpn_address_conflict`, `vpn_address_pool_exhausted`.',
+          content: { 'application/json': { schema: errorBody } },
+        },
       },
     },
     delete: {
@@ -397,7 +450,11 @@ export const vpnPaths: Record<string, unknown> = {
         '401': { description: 'Unauthorized', content: { 'application/json': { schema: errorBody } } },
         '403': { description: 'Forbidden', content: { 'application/json': { schema: errorBody } } },
         '404': { description: 'Not found', content: { 'application/json': { schema: errorBody } } },
-        '422': { description: 'Prepare error', content: { 'application/json': { schema: errorBody } } },
+        '422': {
+          description:
+            'Prepare error — one of `vpn_has_no_peers`, `peer_tunnel_address_required`, `daemon_key_unavailable`, `gateway_datacenter_required`, `gateway_datacenter_cidr_required`.',
+          content: { 'application/json': { schema: errorBody } },
+        },
         '503': { description: 'Unavailable', content: { 'application/json': { schema: errorBody } } },
       },
     },

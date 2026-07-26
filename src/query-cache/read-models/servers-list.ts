@@ -50,7 +50,9 @@ export type ServersListDisplayPayload = {
  *   1. `SELECT server.id, display_name, organization_id, license.id, options,
  *      created_at FROM server LEFT JOIN license ON license.server_id = server.id
  *      WHERE server.id IN (:visibleIds) ORDER BY created_at`
- *   2. `SELECT id, daemon, metadata FROM server WHERE id IN (:serverIds)`
+ *   2. `SELECT id, daemon, metadata, hostname, machine_id, connected,
+ *      daemon_status, last_seen_at, connected_at, disconnected_at,
+ *      status_changed_at FROM server WHERE id IN (:serverIds)`
  *      (shared preload for presence + org-scoped colocated enrichment)
  *
  * Cached SELECT (#1) reads no auth/session/secret columns — only the listed

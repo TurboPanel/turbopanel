@@ -22,7 +22,6 @@ import {
   composeDocumentToRuntimeYaml,
   emptyContainerComposeYaml,
   mergeComposeOverlay,
-  readComposePlacementServerId,
   splitTraditionalWebServices,
   stripComposePlacement,
   type ComposeDocument,
@@ -73,27 +72,8 @@ import {
   pickSolePrincipalId,
 } from '../principals/assignments.ts'
 
-export { readComposePlacementServerId }
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-/**
- * Read the environment overlay placement pin, or `null` when compose is
- * absent/invalid or has no `x-turbopanel.placement.server_id`.
- */
-export function readEnvironmentPlacementServerId(
-  environmentOptions: unknown,
-): string | null {
-  try {
-    const overlayCompose = assertComposeDocument(
-      extractComposeFromOptions(environmentOptions),
-    )
-    return readComposePlacementServerId(overlayCompose)
-  } catch {
-    return null
-  }
 }
 
 /** True when `serverId` belongs to `organizationId`. */
@@ -110,9 +90,12 @@ export async function verifyServerInOrg(
   return Boolean(row)
 }
 
-function readComposeServiceName(metadata: unknown, fallback: string): string {
-  if (isPlainObject(metadata) && typeof metadata.composeServiceName === 'string') {
-    return metadata.composeServiceName
+function readComposeServiceName(
+  composeServiceName: string | null | undefined,
+  fallback: string,
+): string {
+  if (typeof composeServiceName === 'string' && composeServiceName.length > 0) {
+    return composeServiceName
   }
   return fallback
 }
@@ -327,7 +310,11 @@ export function mergeProjectEnvironmentCompose(
   try {
     const baseCompose = assertComposeDocument(extractComposeFromOptions(projectOptions))
     const overlayCompose = assertComposeDocument(extractComposeFromOptions(environmentOptions))
-    return mergeComposeOverlay(stripComposePlacement(baseCompose), overlayCompose)
+    // Placement is never stored in compose — strip both sides before merge.
+    return mergeComposeOverlay(
+      stripComposePlacement(baseCompose),
+      stripComposePlacement(overlayCompose),
+    )
   } catch {
     return Response.json({ error: 'Invalid compose document' }, { status: 400 })
   }
@@ -382,7 +369,7 @@ async function mapResolvedVariablesToDeployEntries(
 
 type ServiceRow = {
   id: string
-  metadata: unknown
+  composeServiceName: string | null
   options: unknown
 }
 
@@ -409,7 +396,10 @@ async function resolveDeployVariableBuckets(
 
   const serviceRowByComposeName = new Map<string, ServiceRow>()
   for (const row of params.serviceRows) {
-    serviceRowByComposeName.set(readComposeServiceName(row.metadata, row.id), row)
+    serviceRowByComposeName.set(
+      readComposeServiceName(row.composeServiceName, row.id),
+      row,
+    )
   }
 
   const composeServices = isPlainObject(params.merged.data.services)
@@ -506,7 +496,7 @@ export async function prepareDeployCompose(
   const serviceRows = await db
     .select({
       id: service.id,
-      metadata: service.metadata,
+      composeServiceName: service.composeServiceName,
       options: service.options,
     })
     .from(service)
@@ -566,7 +556,10 @@ export async function prepareDeployCompose(
 
   const composeServiceNameByServiceId = new Map<string, string>()
   for (const row of serviceRows) {
-    composeServiceNameByServiceId.set(row.id, readComposeServiceName(row.metadata, row.id))
+    composeServiceNameByServiceId.set(
+      row.id,
+      readComposeServiceName(row.composeServiceName, row.id),
+    )
   }
 
   const storageMaterialRaw = await loadStorageMaterial(db, {
@@ -650,7 +643,7 @@ export async function prepareDeployCompose(
 export async function attachPrincipalsToTraditionalWebSites(
   db: Db,
   environmentId: string,
-  serviceRows: ReadonlyArray<{ id: string; metadata: unknown }>,
+  serviceRows: ReadonlyArray<{ id: string; composeServiceName: string | null }>,
   principalMaterial: readonly EnvironmentDeployPrincipalMaterial[],
   sites: readonly TraditionalWebSiteSpec[],
 ): Promise<
@@ -668,7 +661,10 @@ export async function attachPrincipalsToTraditionalWebSites(
   )
   const serviceIdByComposeName = new Map<string, string>()
   for (const row of serviceRows) {
-    serviceIdByComposeName.set(readComposeServiceName(row.metadata, row.id), row.id)
+    serviceIdByComposeName.set(
+      readComposeServiceName(row.composeServiceName, row.id),
+      row.id,
+    )
   }
 
   const out: EnvironmentDeployTraditionalWebSite[] = []

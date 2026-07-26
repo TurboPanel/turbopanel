@@ -198,6 +198,143 @@ test('POST /networks rejects datacenterId and serverId together', async () => {
   await db.delete(organization).where(eq(organization.id, organizationId))
 })
 
+test('POST /networks rejects kind=vpn and requires per-kind scope FKs', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping network route tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+  const app = new Hono<AppEnv>()
+  app.use('*', (c, next) => {
+    c.set('db', db)
+    return next()
+  })
+  registerNetworkRoutes(app, { secrets, runtime: 'deno' })
+
+  const [orgA] = await db
+    .insert(organization)
+    .values({ displayName: 'Net Scope Org' })
+    .returning({ id: organization.id })
+  const organizationId = orgA!.id
+
+  const [u] = await db
+    .insert(user)
+    .values({ email: `net-scope-${crypto.randomUUID()}@example.com`, isEmailVerified: true })
+    .returning({ id: user.id })
+  const userId = u!.id
+
+  await db.insert(member).values({ organizationId, userId })
+  await db.insert(grant).values({
+    entityType: 'organization',
+    entityId: organizationId,
+    actorType: 'user',
+    actorId: userId,
+    permission: 'organization:manage',
+    allow: true,
+  })
+
+  const now = new Date().toISOString()
+  const [dc] = await db
+    .insert(datacenter)
+    .values({ organizationId, displayName: 'DC1', createdAt: now, updatedAt: now })
+    .returning({ id: datacenter.id })
+  const [srv] = await db
+    .insert(server)
+    .values({ organizationId, displayName: 'Host1', createdAt: now, updatedAt: now })
+    .returning({ id: server.id })
+
+  const cookie = await sessionCookie(db, secrets, userId)
+
+  const vpnKind = await app.request('/networks', {
+    method: 'POST',
+    headers: {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      organizationId,
+      kind: 'vpn',
+      cidr: '203.0.113.0/24',
+    }),
+  })
+  assertEquals(vpnKind.status, 400)
+
+  const missingDc = await app.request('/networks', {
+    method: 'POST',
+    headers: {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      organizationId,
+      kind: 'datacenter',
+    }),
+  })
+  assertEquals(missingDc.status, 400)
+  assertEquals((await missingDc.json()).error, 'network_scope_required')
+
+  const missingServer = await app.request('/networks', {
+    method: 'POST',
+    headers: {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      organizationId,
+      kind: 'server',
+    }),
+  })
+  assertEquals(missingServer.status, 400)
+  assertEquals((await missingServer.json()).error, 'network_scope_required')
+
+  const dockerWithServer = await app.request('/networks', {
+    method: 'POST',
+    headers: {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      organizationId,
+      kind: 'docker',
+      serverId: srv!.id,
+      options: { dockerNetworkName: 'turbopanel-shared' },
+    }),
+  })
+  assertEquals(dockerWithServer.status, 400)
+  assertEquals((await dockerWithServer.json()).error, 'network_single_scope_conflict')
+
+  const okDc = await app.request('/networks', {
+    method: 'POST',
+    headers: {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      organizationId,
+      kind: 'datacenter',
+      datacenterId: dc!.id,
+    }),
+  })
+  assertEquals(okDc.status, 200)
+  const okDcBody = await okDc.json() as { ok: true; id: string }
+
+  await db.delete(network).where(eq(network.id, okDcBody.id))
+  await db.delete(server).where(eq(server.id, srv!.id))
+  await db.delete(datacenter).where(eq(datacenter.id, dc!.id))
+  await db.delete(grant).where(eq(grant.actorId, userId))
+  await db.delete(member).where(eq(member.userId, userId))
+  await db.delete(user).where(eq(user.id, userId))
+  await db.delete(organization).where(eq(organization.id, organizationId))
+})
+
 test('GET /networks returns 403 for org member without organization:manage', async () => {
   if (!dbUrl) {
     console.warn('Skipping network route tests: TURBOPANEL_DATABASE_URL not set')

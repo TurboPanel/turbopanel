@@ -42,29 +42,6 @@ export function isComposeEditorView(value: unknown): value is ComposeEditorView 
 
 const TURBOPANEL_EXTENSION_KEY = 'x-turbopanel'
 
-function migrateLegacyEditorViewFromData(
-  data: Record<string, unknown>,
-  editorView: ComposeEditorView | undefined,
-): ComposeEditorView | undefined {
-  const extension = data[TURBOPANEL_EXTENSION_KEY]
-  if (!isRecord(extension) || !('view' in extension)) {
-    return editorView
-  }
-
-  const legacyView = extension.view
-  const { view: _removed, ...rest } = extension
-  if (Object.keys(rest).length === 0) {
-    delete data[TURBOPANEL_EXTENSION_KEY]
-  } else {
-    data[TURBOPANEL_EXTENSION_KEY] = rest
-  }
-
-  if (isComposeEditorView(legacyView)) {
-    return editorView ?? legacyView
-  }
-  return editorView
-}
-
 export type ComposeDocument = {
   version: 1
   /** Compose tree as JSON (`services`, `networks`, …). */
@@ -148,10 +125,9 @@ export function normalizeCompose(value: unknown): ComposeDocument {
     return emptyComposeDocument()
   }
   const presentation = value.presentation
-  const editorView = migrateLegacyEditorViewFromData(
-    data,
-    isComposeEditorView(presentation.editorView) ? presentation.editorView : undefined,
-  )
+  const editorView = isComposeEditorView(presentation.editorView)
+    ? presentation.editorView
+    : undefined
   let keyOrder = presentation.keyOrder.filter((key) => key in data)
   if (!(TURBOPANEL_EXTENSION_KEY in data)) {
     keyOrder = keyOrder.filter((key) => key !== TURBOPANEL_EXTENSION_KEY)

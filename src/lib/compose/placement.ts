@@ -1,4 +1,8 @@
-import { normalizeCompose, type ComposeDocument } from './types.ts'
+import {
+  normalizeCompose,
+  type ComposeDocument,
+  type ComposePresentation,
+} from './types.ts'
 
 export const TURBOPANEL_EXTENSION_KEY = 'x-turbopanel'
 
@@ -20,40 +24,47 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-/**
- * Read `x-turbopanel.placement.server_id` when present as a non-empty string.
- * Malformed shapes return null; UUID format is enforced by validation, not here.
- */
-export function readComposePlacementServerId(document: ComposeDocument): string | null {
-  const extension = document.data[TURBOPANEL_EXTENSION_KEY]
-  if (!isPlainObject(extension)) {
-    return null
+function nonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length === 0) {
+    return undefined
   }
+  return value
+}
 
-  const placement = extension.placement
-  if (!isPlainObject(placement)) {
-    return null
+/** Shallow-clone presentation with a replacement keyOrder. */
+function clonePresentation(
+  presentation: ComposePresentation,
+  keyOrder: string[],
+): ComposePresentation {
+  const next: ComposePresentation = {
+    keyOrder,
+    comments: { ...presentation.comments },
   }
-
-  const serverId = placement.server_id
-  if (typeof serverId !== 'string') {
-    return null
+  if (presentation.blankLines) {
+    next.blankLines = { ...presentation.blankLines }
   }
-
-  const trimmed = serverId.trim()
-  if (trimmed.length === 0) {
-    return null
+  const documentCommentBefore = nonEmptyString(presentation.documentCommentBefore)
+  if (documentCommentBefore) {
+    next.documentCommentBefore = documentCommentBefore
   }
-
-  return trimmed
+  const documentComment = nonEmptyString(presentation.documentComment)
+  if (documentComment) {
+    next.documentComment = documentComment
+  }
+  if (presentation.editorView) {
+    next.editorView = presentation.editorView
+  }
+  return next
 }
 
 /**
  * Remove `x-turbopanel.placement` while preserving any other extension fields.
  * Deletes the `x-turbopanel` key entirely when nothing remains.
  *
- * Used for the hard cut that moves server pins to environments: project base
- * compose must not contribute placement to merged runtime YAML.
+ * Compose is not a placement store — placement lives on `environment.server_id`.
+ * This is an input-sanitization path only: it strips any placement a client
+ * might still submit embedded in compose, on save and again defensively
+ * before merging project + environment compose for deploy.
  */
 export function stripComposePlacement(document: ComposeDocument): ComposeDocument {
   const normalized = normalizeCompose(document)
@@ -71,24 +82,10 @@ export function stripComposePlacement(document: ComposeDocument): ComposeDocumen
     return {
       version: 1,
       data,
-      presentation: {
-        keyOrder: keyOrder.filter((key) => key !== TURBOPANEL_EXTENSION_KEY),
-        comments: { ...normalized.presentation.comments },
-        ...(normalized.presentation.blankLines
-          ? { blankLines: { ...normalized.presentation.blankLines } }
-          : {}),
-        ...(typeof normalized.presentation.documentCommentBefore === 'string' &&
-            normalized.presentation.documentCommentBefore.length > 0
-          ? { documentCommentBefore: normalized.presentation.documentCommentBefore }
-          : {}),
-        ...(typeof normalized.presentation.documentComment === 'string' &&
-            normalized.presentation.documentComment.length > 0
-          ? { documentComment: normalized.presentation.documentComment }
-          : {}),
-        ...(normalized.presentation.editorView
-          ? { editorView: normalized.presentation.editorView }
-          : {}),
-      },
+      presentation: clonePresentation(
+        normalized.presentation,
+        keyOrder.filter((key) => key !== TURBOPANEL_EXTENSION_KEY),
+      ),
     }
   }
 
@@ -96,23 +93,6 @@ export function stripComposePlacement(document: ComposeDocument): ComposeDocumen
   return {
     version: 1,
     data,
-    presentation: {
-      keyOrder,
-      comments: { ...normalized.presentation.comments },
-      ...(normalized.presentation.blankLines
-        ? { blankLines: { ...normalized.presentation.blankLines } }
-        : {}),
-      ...(typeof normalized.presentation.documentCommentBefore === 'string' &&
-          normalized.presentation.documentCommentBefore.length > 0
-        ? { documentCommentBefore: normalized.presentation.documentCommentBefore }
-        : {}),
-      ...(typeof normalized.presentation.documentComment === 'string' &&
-          normalized.presentation.documentComment.length > 0
-        ? { documentComment: normalized.presentation.documentComment }
-        : {}),
-      ...(normalized.presentation.editorView
-        ? { editorView: normalized.presentation.editorView }
-        : {}),
-    },
+    presentation: clonePresentation(normalized.presentation, keyOrder),
   }
 }

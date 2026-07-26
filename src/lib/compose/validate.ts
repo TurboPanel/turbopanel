@@ -5,7 +5,6 @@ import {
   type ComposeLintIssue,
 } from './lint.ts'
 import {
-  isPlacementServerId,
   stripComposePlacement,
   TURBOPANEL_EXTENSION_KEY,
 } from './placement.ts'
@@ -114,24 +113,12 @@ function validateTurbopanelExtension(
     return
   }
 
-  if (!('placement' in extension)) {
-    return
-  }
-
-  const placement = extension.placement
-  if (!isPlainMapping(placement)) {
-    issues.push({ path: 'x-turbopanel.placement', message: 'placement must be a mapping' })
-    return
-  }
-
-  if (!('server_id' in placement)) {
-    return
-  }
-
-  if (!isPlacementServerId(placement.server_id)) {
+  // Placement is not a stored compose shape — pin lives on environment.server_id.
+  // Reject any embedded placement; deploy/save boundaries also strip defensively.
+  if ('placement' in extension) {
     issues.push({
-      path: 'x-turbopanel.placement.server_id',
-      message: 'server_id must be a UUID string',
+      path: 'x-turbopanel.placement',
+      message: 'placement is not stored in compose; use environment.server_id',
     })
   }
 }
@@ -161,10 +148,11 @@ export function applyValidatedComposeOption(
 }
 
 /**
- * Strip `x-turbopanel.placement` from project compose options after validation.
- * Server pins belong on environment overlays, not project base compose.
+ * Strip `x-turbopanel.placement` from compose options after validation.
+ * Placement lives on `environment.server_id` — never in project base or
+ * environment overlay compose.
  */
-export function stripProjectComposePlacementOption(
+export function stripComposePlacementOption(
   options: Record<string, unknown> | null,
 ): void {
   if (options === null || !('compose' in options)) {
@@ -174,6 +162,13 @@ export function stripProjectComposePlacementOption(
     return
   }
   options.compose = stripComposePlacement(options.compose)
+}
+
+/** Alias kept for existing project-route call sites. */
+export function stripProjectComposePlacementOption(
+  options: Record<string, unknown> | null,
+): void {
+  stripComposePlacementOption(options)
 }
 
 export { isComposeDocument }
