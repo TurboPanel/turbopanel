@@ -1,0 +1,92 @@
+import {
+  isManagedEngineCode,
+  type ManagedEngineSpec,
+} from '../../lib/managed/index.ts'
+import type { ManagedSettings } from '../../lib/managed/settings.ts'
+import {
+  parseManagedStatus,
+  type ManagedConnectionInfo,
+  type ManagedEngineCode,
+} from '../../lib/managed/types.ts'
+
+export type ManagedResidualMetadata = {
+  rootPrincipalId?: string
+  host?: string
+  port?: number
+  error?: string
+}
+
+export function parseManagedResidual(value: unknown): ManagedResidualMetadata {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return {}
+  }
+  const record = value as Record<string, unknown>
+  return {
+    ...(typeof record.rootPrincipalId === 'string'
+      ? { rootPrincipalId: record.rootPrincipalId }
+      : {}),
+    ...(typeof record.host === 'string' ? { host: record.host } : {}),
+    ...(typeof record.port === 'number' ? { port: record.port } : {}),
+    ...(typeof record.error === 'string' ? { error: record.error } : {}),
+  }
+}
+
+export function serializeManagedRow(
+  row: {
+    id: string
+    environmentId: string | null
+    displayName: string | null
+    engine: string | null
+    status: string | null
+    metadata: unknown
+    options: unknown
+    createdAt: string
+    updatedAt: string
+  },
+  serverId: string | null,
+) {
+  const residual = parseManagedResidual(row.metadata)
+  const engine = row.engine && isManagedEngineCode(row.engine)
+    ? (row.engine as ManagedEngineCode)
+    : null
+  const status = parseManagedStatus(row.status) ?? 'provisioning'
+
+  const metadata: Record<string, unknown> = {
+    ...(residual.rootPrincipalId ? { rootPrincipalId: residual.rootPrincipalId } : {}),
+    ...(residual.error ? { error: residual.error } : {}),
+  }
+
+  return {
+    id: row.id,
+    environmentId: row.environmentId,
+    displayName: row.displayName,
+    engine,
+    status,
+    host: residual.host ?? null,
+    port: residual.port ?? null,
+    serverId,
+    metadata,
+    options: row.options,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  }
+}
+
+export function buildConnectionPayload(
+  spec: ManagedEngineSpec,
+  params: {
+    host: string
+    port: number
+    database: string
+    username: string
+    settings: ManagedSettings
+  },
+): ManagedConnectionInfo {
+  return spec.buildConnectionInfo({
+    host: params.host,
+    port: params.port,
+    database: params.database,
+    username: params.username,
+    settings: params.settings,
+  })
+}

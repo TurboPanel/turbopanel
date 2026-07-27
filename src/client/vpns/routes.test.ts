@@ -369,6 +369,147 @@ test('POST /vpns/:id/peers returns 400 for invalid publicKey', async () => {
   await db.delete(organization).where(eq(organization.id, orgA!.id))
 })
 
+test('POST /vpns/:id/peers accepts serverId only and defaults port + endpoint IP', async () => {
+  if (!dbUrl) return
+  const db = createDenoDb()
+  const seeded = await seedVpnManageSession(db, 'auto-peer')
+  const app = new Hono<AppEnv>()
+  app.use('*', (c, next) => {
+    c.set('db', db)
+    return next()
+  })
+  registerVpnRoutes(app, { secrets: seeded.secrets, runtime: 'deno' })
+
+  const [srv] = await db.insert(server).values({
+    organizationId: seeded.organizationId,
+    displayName: 'AutoHost',
+  }).returning({ id: server.id })
+  const [publicIp] = await db.insert(ip).values({
+    organizationId: seeded.organizationId,
+    serverId: srv!.id,
+    address: '198.51.100.10',
+    allocation: 'dedicated',
+    scope: 'public',
+  }).returning({ id: ip.id })
+
+  const res = await app.request(`/vpns/${seeded.vpnId}/peers`, {
+    method: 'POST',
+    headers: {
+      cookie: seeded.cookie,
+      [ORG_ID_HEADER]: seeded.organizationId,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ serverId: srv!.id, role: 'gateway' }),
+  })
+  assertEquals(res.status, 200)
+  const created = await res.json() as { ok: true; id: string }
+
+  const [row] = await db
+    .select({
+      publicKey: peer.publicKey,
+      listenPort: peer.listenPort,
+      endpointIpId: peer.endpointIpId,
+      role: peer.role,
+      tunnelIpId: peer.tunnelIpId,
+    })
+    .from(peer)
+    .where(eq(peer.id, created.id))
+    .limit(1)
+  assertEquals(row?.publicKey, null)
+  assertEquals(row?.listenPort, 51820)
+  assertEquals(row?.endpointIpId, publicIp!.id)
+  assertEquals(row?.role, 'gateway')
+  assertEquals(typeof row?.tunnelIpId, 'string')
+
+  await db.delete(peer).where(eq(peer.vpnId, seeded.vpnId))
+  await db.delete(ip).where(eq(ip.organizationId, seeded.organizationId))
+  await db.delete(server).where(eq(server.id, srv!.id))
+  await db.delete(vpn).where(eq(vpn.id, seeded.vpnId))
+  await db.delete(grant).where(eq(grant.actorId, seeded.userId))
+  await db.delete(member).where(eq(member.userId, seeded.userId))
+  await db.delete(user).where(eq(user.id, seeded.userId))
+  await db.delete(organization).where(eq(organization.id, seeded.organizationId))
+})
+
+test('POST /vpns/:id/apply bootstraps peers that lack publicKey', async () => {
+  if (!dbUrl) return
+  const db = createDenoDb()
+  const commandQueue = createRecordingCommandQueue()
+  const seeded = await seedVpnManageSession(db, 'bootstrap-apply')
+  const app = new Hono<AppEnv>()
+  app.use('*', (c, next) => {
+    c.set('db', db)
+    c.set('daemonCellRegistry', createStubRegistry())
+    c.set('commandQueue', commandQueue)
+    return next()
+  })
+  registerVpnRoutes(app, { secrets: seeded.secrets, runtime: 'deno' })
+
+  const [srvA] = await db.insert(server).values({
+    organizationId: seeded.organizationId,
+    displayName: 'BootA',
+  }).returning({ id: server.id })
+  const [srvB] = await db.insert(server).values({
+    organizationId: seeded.organizationId,
+    displayName: 'BootB',
+  }).returning({ id: server.id })
+  const [tunnelA] = await db.insert(ip).values({
+    organizationId: seeded.organizationId,
+    vpnId: seeded.vpnId,
+    serverId: srvA!.id,
+    address: '203.0.113.1',
+    allocation: 'dedicated',
+    scope: 'vpn',
+  }).returning({ id: ip.id })
+  const [tunnelB] = await db.insert(ip).values({
+    organizationId: seeded.organizationId,
+    vpnId: seeded.vpnId,
+    serverId: srvB!.id,
+    address: '203.0.113.2',
+    allocation: 'dedicated',
+    scope: 'vpn',
+  }).returning({ id: ip.id })
+  await db.insert(peer).values({
+    vpnId: seeded.vpnId,
+    serverId: srvA!.id,
+    tunnelIpId: tunnelA!.id,
+    listenPort: 51820,
+    role: 'member',
+  })
+  await db.insert(peer).values({
+    vpnId: seeded.vpnId,
+    serverId: srvB!.id,
+    tunnelIpId: tunnelB!.id,
+    listenPort: 51820,
+    role: 'member',
+  })
+
+  const res = await app.request(`/vpns/${seeded.vpnId}/apply`, {
+    method: 'POST',
+    headers: {
+      cookie: seeded.cookie,
+      [ORG_ID_HEADER]: seeded.organizationId,
+    },
+  })
+  assertEquals(res.status, 200)
+  const body = await res.json() as {
+    ok: true
+    results: Array<{ status: string }>
+  }
+  assertEquals(body.results.length, 2)
+  assertEquals(body.results.every((r) => r.status === 'queued'), true)
+  assertEquals(commandQueue.envelopes.length, 2)
+
+  await db.delete(peer).where(eq(peer.vpnId, seeded.vpnId))
+  await db.delete(ip).where(eq(ip.vpnId, seeded.vpnId))
+  await db.delete(server).where(eq(server.organizationId, seeded.organizationId))
+  await db.delete(vpn).where(eq(vpn.id, seeded.vpnId))
+  await db.delete(grant).where(eq(grant.actorId, seeded.userId))
+  await db.delete(member).where(eq(member.userId, seeded.userId))
+  await db.delete(user).where(eq(user.id, seeded.userId))
+  await db.delete(organization).where(eq(organization.id, seeded.organizationId))
+})
+
 test('PATCH /vpns/:id/peers/:peerId returns 400 for invalid publicKey', async () => {
   if (!dbUrl) return
   const db = createDenoDb()
@@ -523,7 +664,6 @@ test('POST /vpns/:id/apply enqueues one command per peer without presharedKey in
     publicKey: WG_PUBKEY,
     tunnelIpId: tunnelA!.id,
     role: 'member',
-    presharedKey: 'secret-should-not-leak',
   })
   await db.insert(peer).values({
     vpnId: vpnRow!.id,
@@ -540,8 +680,9 @@ test('POST /vpns/:id/apply enqueues one command per peer without presharedKey in
   })
   assertEquals(res.status, 200)
   const text = await res.text()
+  // Apply response must never echo write-only PSK fields (or sealed material).
   assertEquals(text.includes('presharedKey'), false)
-  assertEquals(text.includes('secret-should-not-leak'), false)
+  assertEquals(text.includes('presharedKeyEnvelope'), false)
   const body = JSON.parse(text) as { results: { status: string }[] }
   assertEquals(body.results.length, 2)
   assertEquals(body.results.every((row) => row.status === 'queued'), true)

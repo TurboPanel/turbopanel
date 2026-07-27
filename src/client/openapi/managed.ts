@@ -1,3 +1,58 @@
+const ENV_ID_PARAM = {
+  name: 'id',
+  in: 'path',
+  required: true,
+  schema: { type: 'string' },
+} as const
+
+const ORG_ID_PARAM = {
+  name: 'id',
+  in: 'path',
+  required: true,
+  schema: { type: 'string' },
+} as const
+
+const PRINCIPAL_ID_PARAM = {
+  name: 'principalId',
+  in: 'path',
+  required: true,
+  schema: { type: 'string' },
+} as const
+
+const DATABASE_NAME_PARAM = {
+  name: 'name',
+  in: 'path',
+  required: true,
+  schema: { type: 'string' },
+} as const
+
+const BACKUP_ID_PARAM = {
+  name: 'backupId',
+  in: 'path',
+  required: true,
+  schema: { type: 'string' },
+} as const
+
+function errorSchema(constError: string) {
+  return {
+    type: 'object',
+    required: ['error'],
+    properties: {
+      error: { type: 'string', const: constError },
+    },
+  }
+}
+
+function jsonSchema(ref: string) {
+  return {
+    content: {
+      'application/json': {
+        schema: { $ref: `#/components/schemas/${ref}` },
+      },
+    },
+  }
+}
+
 export const managedSchemas = {
   ManagedEnvironmentRow: {
     type: 'object',
@@ -26,14 +81,14 @@ export const managedSchemas = {
       },
       status: {
         type: 'string',
-        enum: ['provisioning', 'ready', 'failed'],
+        enum: ['provisioning', 'applying', 'ready', 'stopped', 'failed'],
       },
       host: { type: 'string', nullable: true },
       port: { type: 'number', nullable: true },
       serverId: {
         type: 'string',
         nullable: true,
-        description: 'Derived from `environment.server_id`',
+        description: 'Placement pin (`managed.server_id`)',
       },
       metadata: {
         type: 'object',
@@ -46,9 +101,29 @@ export const managedSchemas = {
       updatedAt: { type: 'string', format: 'date-time' },
     },
   },
-  ManagedEnvironmentResponse: {
+  ManagedSettings: {
     type: 'object',
-    required: ['managed'],
+    additionalProperties: true,
+    description:
+      'Engine settings (`image`, `ssl`, `resources`, `dockerOptions`, `engineConfig`, `exposure`, plus engine extras such as `initialDatabase`).',
+  },
+  ManagedConnectionInfo: {
+    type: 'object',
+    required: ['dsn', 'host', 'port', 'database', 'username'],
+    properties: {
+      dsn: {
+        type: 'string',
+        description: 'Connection string with password masked as `***`',
+      },
+      host: { type: 'string' },
+      port: { type: 'number' },
+      database: { type: 'string' },
+      username: { type: 'string' },
+    },
+  },
+  ManagedDetailResponse: {
+    type: 'object',
+    required: ['managed', 'connection', 'settings', 'server', 'rootUsername'],
     properties: {
       managed: {
         oneOf: [
@@ -56,18 +131,47 @@ export const managedSchemas = {
           { type: 'null' },
         ],
       },
+      connection: {
+        oneOf: [
+          { $ref: '#/components/schemas/ManagedConnectionInfo' },
+          { type: 'null' },
+        ],
+      },
+      settings: {
+        oneOf: [
+          { $ref: '#/components/schemas/ManagedSettings' },
+          { type: 'null' },
+        ],
+      },
+      server: {
+        type: 'object',
+        nullable: true,
+        properties: {
+          id: { type: 'string' },
+          displayName: { type: 'string', nullable: true },
+        },
+      },
+      rootUsername: { type: 'string', nullable: true },
     },
   },
-  ProvisionManagedRequest: {
+  CreateManagedRequest: {
     type: 'object',
     properties: {
       displayName: {
         type: 'string',
         description: 'Optional display name; defaults to the environment name',
       },
+      exposure: {
+        type: 'object',
+        properties: {
+          enabled: { type: 'boolean' },
+          publishedPort: { type: 'integer', minimum: 1, maximum: 65535 },
+          bind: { type: 'string', enum: ['public', 'datacenter', 'local'] },
+        },
+      },
     },
   },
-  ProvisionManagedResponse: {
+  CreateManagedResponse: {
     type: 'object',
     required: ['ok', 'managed'],
     properties: {
@@ -77,95 +181,702 @@ export const managedSchemas = {
         description: 'True when an existing managed row was returned unchanged',
       },
       managed: { $ref: '#/components/schemas/ManagedEnvironmentRow' },
+      commandId: {
+        type: 'string',
+        description: 'Present when a `managed.apply` command was enqueued',
+      },
+      serverId: { type: 'string' },
+      rootPassword: {
+        type: 'string',
+        description:
+          'Show-once plaintext root password — returned only on first create',
+      },
     },
   },
-  NotManagedEnvironmentError: {
+  ManagedApplyResponse: {
     type: 'object',
-    required: ['error'],
+    required: ['ok', 'commandId', 'serverId'],
     properties: {
-      error: { type: 'string', const: 'not_managed_environment' },
+      ok: { type: 'boolean', const: true },
+      commandId: { type: 'string' },
+      serverId: { type: 'string' },
     },
   },
-  ServerPlacementRequiredError: {
+  ManagedLifecycleRequest: {
     type: 'object',
-    required: ['error'],
+    required: ['action'],
     properties: {
-      error: { type: 'string', const: 'server_placement_required' },
+      action: { type: 'string', enum: ['start', 'stop', 'restart'] },
     },
   },
+  ManagedDeleteResponse: {
+    type: 'object',
+    required: ['ok', 'deleted'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      deleted: {
+        type: 'boolean',
+        description:
+          'True when the row was hard-deleted; false when `managed.destroy` was enqueued',
+      },
+      commandId: { type: 'string' },
+      serverId: { type: 'string' },
+    },
+  },
+  ManagedRootPasswordResponse: {
+    type: 'object',
+    required: ['ok', 'password', 'commandId', 'serverId'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      password: {
+        type: 'string',
+        description: 'Show-once plaintext root password',
+      },
+      commandId: { type: 'string' },
+      serverId: { type: 'string' },
+    },
+  },
+  ManagedUserRecord: {
+    type: 'object',
+    required: ['id', 'username', 'databases', 'privileges', 'createdAt'],
+    properties: {
+      id: { type: 'string' },
+      username: { type: 'string' },
+      databases: { type: 'array', items: { type: 'string' } },
+      privileges: { type: 'array', items: { type: 'string' } },
+      createdAt: { type: 'string', format: 'date-time' },
+    },
+  },
+  ManagedUsersResponse: {
+    type: 'object',
+    required: ['users'],
+    properties: {
+      users: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/ManagedUserRecord' },
+      },
+    },
+  },
+  CreateManagedUserRequest: {
+    type: 'object',
+    required: ['username', 'databases'],
+    properties: {
+      username: { type: 'string' },
+      databases: { type: 'array', items: { type: 'string' } },
+      privileges: { type: 'array', items: { type: 'string' } },
+    },
+  },
+  CreateManagedUserResponse: {
+    type: 'object',
+    required: ['ok', 'user', 'password', 'commandId', 'serverId'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      user: { $ref: '#/components/schemas/ManagedUserRecord' },
+      password: {
+        type: 'string',
+        description: 'Show-once plaintext password',
+      },
+      commandId: { type: 'string' },
+      serverId: { type: 'string' },
+    },
+  },
+  ManagedDatabasesResponse: {
+    type: 'object',
+    required: ['databases'],
+    properties: {
+      databases: { type: 'array', items: { type: 'string' } },
+    },
+  },
+  CreateManagedDatabaseRequest: {
+    type: 'object',
+    required: ['name'],
+    properties: {
+      name: { type: 'string' },
+    },
+  },
+  ManagedDatabaseMutationResponse: {
+    type: 'object',
+    required: ['ok', 'databases', 'commandId', 'serverId'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      databases: { type: 'array', items: { type: 'string' } },
+      commandId: { type: 'string' },
+      serverId: { type: 'string' },
+    },
+  },
+  ManagedStatusResponse: {
+    type: 'object',
+    required: ['status', 'host', 'port', 'containers'],
+    properties: {
+      status: { type: 'string', nullable: true },
+      host: { type: 'string', nullable: true },
+      port: { type: 'number', nullable: true },
+      containers: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/ContainerRow' },
+      },
+    },
+  },
+  ManagedLogsResponse: {
+    type: 'object',
+    required: ['logs'],
+    properties: {
+      logs: { type: 'string' },
+    },
+  },
+  OrganizationManagedListItem: {
+    type: 'object',
+    required: [
+      'id',
+      'engine',
+      'engineDisplayName',
+      'displayName',
+      'projectId',
+      'projectDisplayName',
+      'environmentId',
+      'environmentDisplayName',
+      'serverId',
+      'serverDisplayName',
+      'status',
+      'host',
+      'port',
+      'createdAt',
+    ],
+    properties: {
+      id: { type: 'string' },
+      engine: { type: 'string', nullable: true },
+      engineDisplayName: { type: 'string', nullable: true },
+      displayName: { type: 'string', nullable: true },
+      projectId: { type: 'string' },
+      projectDisplayName: { type: 'string', nullable: true },
+      environmentId: { type: 'string' },
+      environmentDisplayName: { type: 'string', nullable: true },
+      serverId: { type: 'string', nullable: true },
+      serverDisplayName: { type: 'string', nullable: true },
+      status: { type: 'string', nullable: true },
+      host: { type: 'string', nullable: true },
+      port: { type: 'number', nullable: true },
+      createdAt: { type: 'string', format: 'date-time' },
+    },
+  },
+  OrganizationManagedListResponse: {
+    type: 'object',
+    required: ['managed'],
+    properties: {
+      managed: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/OrganizationManagedListItem' },
+      },
+    },
+  },
+  ManagedBackupRecord: {
+    type: 'object',
+    required: ['id', 'createdAt', 'sizeBytes', 'checksum', 'path'],
+    properties: {
+      id: { type: 'string' },
+      createdAt: { type: 'string', format: 'date-time' },
+      sizeBytes: { type: 'integer' },
+      checksum: {
+        type: 'string',
+        description: 'SHA-256 hex digest of the artifact',
+      },
+      database: { type: 'string' },
+      path: {
+        type: 'string',
+        description: 'Daemon-local artifact path — never a downloadable URL',
+      },
+    },
+  },
+  ManagedBackupsResponse: {
+    type: 'object',
+    required: ['backups'],
+    properties: {
+      backups: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/ManagedBackupRecord' },
+        description: 'Newest first',
+      },
+    },
+  },
+  CreateManagedBackupRequest: {
+    type: 'object',
+    properties: {
+      database: {
+        type: 'string',
+        description:
+          'Must be one of the managed databases; defaults to the initial database',
+      },
+    },
+  },
+  CreateManagedBackupResponse: {
+    type: 'object',
+    required: ['ok', 'backupId', 'commandId', 'serverId'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      backupId: { type: 'string' },
+      commandId: { type: 'string' },
+      serverId: { type: 'string' },
+    },
+  },
+  ManagedBackupCommandResponse: {
+    type: 'object',
+    required: ['ok', 'commandId', 'serverId'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      commandId: { type: 'string' },
+      serverId: { type: 'string' },
+    },
+  },
+  ManagedBusyError: errorSchema('managed_busy'),
+  ServerPlacementRequiredError: errorSchema('server_placement_required'),
+  ServerOfflineError: errorSchema('server_offline'),
+  ManagedSettingsInvalidError: errorSchema('managed_settings_invalid'),
+  NotManagedEnvironmentError: errorSchema('not_managed_environment'),
+  ManagedEngineUnavailableError: errorSchema('managed_engine_unavailable'),
+  ManagedUserExistsError: errorSchema('managed_user_exists'),
+  ManagedBackupUnsupportedError: errorSchema('managed_backup_unsupported'),
+  BackupNotFoundError: errorSchema('backup_not_found'),
 }
 
 export const managedPaths = {
   '/api/client/v1/environments/{id}/managed': {
     get: {
-      tags: ['Environments'],
-      summary: 'Get the managed service row for an environment',
-      parameters: [
-        {
-          name: 'id',
-          in: 'path',
-          required: true,
-          schema: { type: 'string' },
-        },
-      ],
+      tags: ['Managed services'],
+      summary: 'Get managed service detail for an environment',
+      parameters: [ENV_ID_PARAM],
       responses: {
         200: {
-          description: 'Managed row, or null when not yet provisioned',
+          description: 'Managed detail (connection never includes a password)',
+          ...jsonSchema('ManagedDetailResponse'),
+        },
+      },
+    },
+    post: {
+      tags: ['Managed services'],
+      summary: 'Create / provision a managed engine on an environment',
+      description:
+        'Requires organization:manage and `environment.server_id`. Returns show-once `rootPassword` on first create. Idempotent thereafter.',
+      parameters: [ENV_ID_PARAM],
+      requestBody: {
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/CreateManagedRequest' },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Managed service created or already provisioned',
+          ...jsonSchema('CreateManagedResponse'),
+        },
+        400: {
+          description: 'not_managed_environment / managed_engine_unavailable / managed_settings_invalid',
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/ManagedEnvironmentResponse' },
+              schema: {
+                oneOf: [
+                  { $ref: '#/components/schemas/NotManagedEnvironmentError' },
+                  { $ref: '#/components/schemas/ManagedEngineUnavailableError' },
+                  { $ref: '#/components/schemas/ManagedSettingsInvalidError' },
+                ],
+              },
+            },
+          },
+        },
+        409: {
+          description: 'server_placement_required / server_offline / managed_busy',
+          content: {
+            'application/json': {
+              schema: {
+                oneOf: [
+                  { $ref: '#/components/schemas/ServerPlacementRequiredError' },
+                  { $ref: '#/components/schemas/ServerOfflineError' },
+                  { $ref: '#/components/schemas/ManagedBusyError' },
+                ],
+              },
+            },
+          },
+        },
+      },
+    },
+    patch: {
+      tags: ['Managed services'],
+      summary: 'Update managed settings (does not apply)',
+      parameters: [ENV_ID_PARAM],
+      requestBody: {
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/ManagedSettings' },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Settings persisted',
+          ...jsonSchema('ManagedDetailResponse'),
+        },
+        400: {
+          description: 'managed_settings_invalid',
+          ...jsonSchema('ManagedSettingsInvalidError'),
+        },
+        409: {
+          description: 'managed_busy',
+          ...jsonSchema('ManagedBusyError'),
+        },
+      },
+    },
+    delete: {
+      tags: ['Managed services'],
+      summary: 'Destroy managed service (two-step when running)',
+      parameters: [ENV_ID_PARAM],
+      responses: {
+        200: {
+          description: 'Hard-deleted or destroy command enqueued',
+          ...jsonSchema('ManagedDeleteResponse'),
+        },
+        409: {
+          description: 'managed_busy',
+          ...jsonSchema('ManagedBusyError'),
+        },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/apply': {
+    post: {
+      tags: ['Managed services'],
+      summary: 'Enqueue managed.apply',
+      parameters: [ENV_ID_PARAM],
+      responses: {
+        200: {
+          description: 'Apply enqueued',
+          ...jsonSchema('ManagedApplyResponse'),
+        },
+        409: {
+          description: 'managed_busy / server_offline',
+          content: {
+            'application/json': {
+              schema: {
+                oneOf: [
+                  { $ref: '#/components/schemas/ManagedBusyError' },
+                  { $ref: '#/components/schemas/ServerOfflineError' },
+                ],
+              },
             },
           },
         },
       },
     },
   },
-  '/api/client/v1/environments/{id}/managed/provision': {
+  '/api/client/v1/environments/{id}/managed/lifecycle': {
     post: {
-      tags: ['Environments'],
-      summary: 'Provision an environment-scoped managed engine service',
-      description:
-        'Requires organization:manage on the environment and a placement pin on `environment.server_id`. Idempotent when a managed row already exists.',
-      parameters: [
-        {
-          name: 'id',
-          in: 'path',
-          required: true,
-          schema: { type: 'string' },
-        },
-      ],
+      tags: ['Managed services'],
+      summary: 'Start / stop / restart managed service',
+      parameters: [ENV_ID_PARAM],
       requestBody: {
+        required: true,
         content: {
           'application/json': {
-            schema: { $ref: '#/components/schemas/ProvisionManagedRequest' },
+            schema: { $ref: '#/components/schemas/ManagedLifecycleRequest' },
           },
         },
       },
       responses: {
         200: {
-          description: 'Managed service provisioned (or existing row returned)',
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/ProvisionManagedResponse' },
-            },
-          },
-        },
-        400: {
-          description: 'Environment is not a managed engine project',
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/NotManagedEnvironmentError' },
-            },
-          },
+          description: 'Lifecycle command enqueued',
+          ...jsonSchema('ManagedApplyResponse'),
         },
         409: {
-          description:
-            '`server_placement_required` — environment has no `server_id` placement pin',
+          description: 'managed_busy / server_offline',
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/ServerPlacementRequiredError' },
+              schema: {
+                oneOf: [
+                  { $ref: '#/components/schemas/ManagedBusyError' },
+                  { $ref: '#/components/schemas/ServerOfflineError' },
+                ],
+              },
             },
           },
+        },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/root-password': {
+    post: {
+      tags: ['Managed services'],
+      summary: 'Rotate root password (show-once) and enqueue apply',
+      parameters: [ENV_ID_PARAM],
+      responses: {
+        200: {
+          description: 'Rotated',
+          ...jsonSchema('ManagedRootPasswordResponse'),
+        },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/users': {
+    get: {
+      tags: ['Managed services'],
+      summary: 'List managed users (never passwords)',
+      parameters: [ENV_ID_PARAM],
+      responses: {
+        200: {
+          description: 'Non-root principals',
+          ...jsonSchema('ManagedUsersResponse'),
+        },
+      },
+    },
+    post: {
+      tags: ['Managed services'],
+      summary: 'Create managed user (show-once password) and enqueue apply',
+      parameters: [ENV_ID_PARAM],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/CreateManagedUserRequest' },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'User created',
+          ...jsonSchema('CreateManagedUserResponse'),
+        },
+        409: {
+          description: 'managed_user_exists / managed_busy',
+          content: {
+            'application/json': {
+              schema: {
+                oneOf: [
+                  { $ref: '#/components/schemas/ManagedUserExistsError' },
+                  { $ref: '#/components/schemas/ManagedBusyError' },
+                ],
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/users/{principalId}': {
+    delete: {
+      tags: ['Managed services'],
+      summary: 'Delete managed user and enqueue apply with dropUsers',
+      parameters: [ENV_ID_PARAM, PRINCIPAL_ID_PARAM],
+      responses: {
+        200: {
+          description: 'User deleted; apply enqueued',
+          ...jsonSchema('ManagedApplyResponse'),
+        },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/databases': {
+    get: {
+      tags: ['Managed services'],
+      summary: 'List managed databases',
+      parameters: [ENV_ID_PARAM],
+      responses: {
+        200: {
+          description: 'Database names',
+          ...jsonSchema('ManagedDatabasesResponse'),
+        },
+      },
+    },
+    post: {
+      tags: ['Managed services'],
+      summary: 'Create managed database and enqueue apply',
+      parameters: [ENV_ID_PARAM],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/CreateManagedDatabaseRequest' },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Database added',
+          ...jsonSchema('ManagedDatabaseMutationResponse'),
+        },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/databases/{name}': {
+    delete: {
+      tags: ['Managed services'],
+      summary: 'Drop managed database and enqueue apply',
+      parameters: [ENV_ID_PARAM, DATABASE_NAME_PARAM],
+      responses: {
+        200: {
+          description: 'Database removed',
+          ...jsonSchema('ManagedDatabaseMutationResponse'),
+        },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/status': {
+    get: {
+      tags: ['Managed services'],
+      summary: 'Postgres-only managed status + containers',
+      parameters: [ENV_ID_PARAM],
+      responses: {
+        200: {
+          description: 'Status read model (no cell/DO reads)',
+          ...jsonSchema('ManagedStatusResponse'),
+        },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/logs': {
+    get: {
+      tags: ['Managed services'],
+      summary: 'Fetch managed compose logs via cell round-trip',
+      parameters: [
+        ENV_ID_PARAM,
+        {
+          name: 'tail',
+          in: 'query',
+          required: false,
+          schema: { type: 'integer', default: 200, maximum: 2000 },
+        },
+      ],
+      responses: {
+        200: {
+          description: 'Bounded log text',
+          ...jsonSchema('ManagedLogsResponse'),
+        },
+        503: {
+          description: 'Timeout or daemon unavailable',
+        },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/backups': {
+    get: {
+      tags: ['Managed services'],
+      summary: 'List managed backups (Postgres-only read of managed.options.backups)',
+      parameters: [ENV_ID_PARAM],
+      responses: {
+        200: {
+          description: 'Backup metadata only — never dump bytes',
+          ...jsonSchema('ManagedBackupsResponse'),
+        },
+      },
+    },
+    post: {
+      tags: ['Managed services'],
+      summary: 'Back up now: enqueue managed.backup (action=create)',
+      description:
+        'Streams the dump to the daemon state dir; no credential envelope is carried.',
+      parameters: [ENV_ID_PARAM],
+      requestBody: {
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/CreateManagedBackupRequest' },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Backup command enqueued',
+          ...jsonSchema('CreateManagedBackupResponse'),
+        },
+        400: {
+          description: 'managed_backup_unsupported',
+          ...jsonSchema('ManagedBackupUnsupportedError'),
+        },
+        409: {
+          description: 'managed_busy / server_offline',
+          content: {
+            'application/json': {
+              schema: {
+                oneOf: [
+                  { $ref: '#/components/schemas/ManagedBusyError' },
+                  { $ref: '#/components/schemas/ServerOfflineError' },
+                ],
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/backups/{backupId}': {
+    delete: {
+      tags: ['Managed services'],
+      summary: 'Delete a backup artifact: enqueue managed.backup (action=delete)',
+      description:
+        'Metadata is removed from `managed.options.backups` by the consumer on success.',
+      parameters: [ENV_ID_PARAM, BACKUP_ID_PARAM],
+      responses: {
+        200: {
+          description: 'Delete command enqueued',
+          ...jsonSchema('ManagedBackupCommandResponse'),
+        },
+        404: {
+          description: 'backup_not_found',
+          ...jsonSchema('BackupNotFoundError'),
+        },
+        409: {
+          description: 'managed_busy / server_offline',
+          content: {
+            'application/json': {
+              schema: {
+                oneOf: [
+                  { $ref: '#/components/schemas/ManagedBusyError' },
+                  { $ref: '#/components/schemas/ServerOfflineError' },
+                ],
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/backups/{backupId}/restore': {
+    post: {
+      tags: ['Managed services'],
+      summary: 'Restore a backup: enqueue managed.restore',
+      description:
+        'Daemon verifies the stored checksum/size before touching the running engine.',
+      parameters: [ENV_ID_PARAM, BACKUP_ID_PARAM],
+      responses: {
+        200: {
+          description: 'Restore command enqueued',
+          ...jsonSchema('ManagedBackupCommandResponse'),
+        },
+        404: {
+          description: 'backup_not_found',
+          ...jsonSchema('BackupNotFoundError'),
+        },
+        409: {
+          description: 'managed_busy / server_offline',
+          content: {
+            'application/json': {
+              schema: {
+                oneOf: [
+                  { $ref: '#/components/schemas/ManagedBusyError' },
+                  { $ref: '#/components/schemas/ServerOfflineError' },
+                ],
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/managed': {
+    get: {
+      tags: ['Managed services'],
+      summary: 'List org managed services (Postgres join read model)',
+      parameters: [ORG_ID_PARAM],
+      responses: {
+        200: {
+          description: 'One row per managed service',
+          ...jsonSchema('OrganizationManagedListResponse'),
         },
       },
     },

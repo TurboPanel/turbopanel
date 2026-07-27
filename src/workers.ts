@@ -235,7 +235,16 @@ export default {
         for (const msg of batch.messages) {
           try {
             const envelope = parseCommandEnvelope(msg.body)
-            await processCommandEnvelope(db, registry, envelope)
+            await processCommandEnvelope(db, registry, envelope, {
+              commandQueue: cachedCommandQueue ?? undefined,
+              resealDeps:
+                cachedSecretsConfig && cachedDataEncryptionSecrets
+                  ? {
+                    secretsConfig: cachedSecretsConfig,
+                    dataEncryptionSecrets: cachedDataEncryptionSecrets,
+                  }
+                  : undefined,
+            })
             msg.ack()
           } catch (error) {
             if (isTransientError(error)) {

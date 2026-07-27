@@ -3,6 +3,9 @@ import { isValidCidr, isValidIpAddress, parseIpVersion } from '../ip-address.ts'
 
 export const WIREGUARD_INTERFACE_MAX_LENGTH = 15
 
+/** Default UDP listen port when peer create omits `listenPort`. */
+export const WIREGUARD_DEFAULT_LISTEN_PORT = 51820
+
 /** Seconds — set on peer entries that carry an endpoint (NAT keep-alive). */
 export const WIREGUARD_PERSISTENT_KEEPALIVE = 25
 

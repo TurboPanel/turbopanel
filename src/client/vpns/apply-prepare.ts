@@ -1,12 +1,17 @@
-import type { Context } from 'hono'
 import { and, eq, inArray, isNotNull } from 'drizzle-orm'
-import type { AppEnv } from '../../app.ts'
 import { resealSecretForDaemon } from '../authn/data-encryption.ts'
+import type { DerivedSecretsConfig, SecretsConfig } from '../authn/secrets.ts'
 import {
   getServerDaemonStateByServerId,
   isDaemonKeyActive,
 } from '../../daemon/authn/server-identity-db.ts'
 import type { WireguardApplyCommandPayload } from '../../lib/commands/schemas.ts'
+import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
+import type { CommandQueue } from '../../lib/commands/queue.ts'
+import {
+  createCommandRecord,
+  transitionCommand,
+} from '../../lib/db/command-records.ts'
 import {
   deriveWireguardInterfaceName,
   isValidWireguardPublicKey,
@@ -27,12 +32,25 @@ export type VpnApplyPrepareError =
     datacenterId: string
   }
 
+export type VpnApplyResealDeps = {
+  secretsConfig: SecretsConfig
+  dataEncryptionSecrets: DerivedSecretsConfig
+}
+
 export type PreparedVpnApply = {
   interfaceName: string
   payloads: Array<{
     serverId: string
     payload: WireguardApplyCommandPayload
   }>
+}
+
+export type VpnApplyEnqueueResult = {
+  peerId: string
+  serverId: string
+  commandId?: string
+  status: 'queued' | 'failed'
+  error?: string
 }
 
 function prefixLengthFromCidr(cidrValue: string): number | null {
@@ -80,16 +98,14 @@ function resolvePeerEndpoint(
 }
 
 async function resealPeerPresharedForServer(
-  c: Context<AppEnv>,
   db: Db,
+  resealDeps: VpnApplyResealDeps | undefined,
   serverId: string,
   sealed: string | null,
 ): Promise<string | undefined | VpnApplyPrepareError> {
   if (!sealed) return undefined
 
-  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
-  const secretsConfig = c.get('secretsConfig')
-  if (!dataEncryptionSecrets || !secretsConfig) {
+  if (!resealDeps) {
     return { kind: 'daemon_key_unavailable', serverId }
   }
 
@@ -99,8 +115,8 @@ async function resealPeerPresharedForServer(
   }
 
   const envelope = await resealSecretForDaemon(
-    secretsConfig,
-    dataEncryptionSecrets,
+    resealDeps.secretsConfig,
+    resealDeps.dataEncryptionSecrets,
     { serverId, keyId: daemonState.key.id },
     sealed,
   )
@@ -309,9 +325,14 @@ function buildAllowedIps(params: {
   return [...allowed]
 }
 
+type PeerMaterialResult =
+  | WireguardApplyCommandPayload['peers'][number]
+  | VpnApplyPrepareError
+  | 'skip'
+
 async function buildPeerMaterial(
-  c: Context<AppEnv>,
   db: Db,
+  resealDeps: VpnApplyResealDeps | undefined,
   params: {
     targetServerId: string
     targetDatacenterId: string | null
@@ -321,14 +342,15 @@ async function buildPeerMaterial(
     siteCidrsByDc: Map<string, string[]>
     serversById: Map<string, ServerRow>
   },
-): Promise<WireguardApplyCommandPayload['peers'][number] | VpnApplyPrepareError> {
+): Promise<PeerMaterialResult> {
   const { other, ipById, targetServerId, targetDatacenterId } = params
   const tunnelAddress = resolveTunnelAddress(other, ipById)
   if (!tunnelAddress) {
     return { kind: 'peer_tunnel_address_required', peerId: other.id }
   }
-  if (!isValidWireguardPublicKey(other.publicKey)) {
-    throw new Error(`Invalid WireGuard public key for peer ${other.id}`)
+  // Bootstrap pass: peers without a reconciled key are omitted from remote lists.
+  if (!other.publicKey || !isValidWireguardPublicKey(other.publicKey)) {
+    return 'skip'
   }
 
   const hostRoute = hostRouteForTunnelAddress(tunnelAddress)
@@ -359,8 +381,8 @@ async function buildPeerMaterial(
 
   if (other.presharedKey) {
     const resealed = await resealPeerPresharedForServer(
-      c,
       db,
+      resealDeps,
       targetServerId,
       other.presharedKey,
     )
@@ -382,8 +404,8 @@ type VpnApplyContext = {
 }
 
 async function buildTargetPayload(
-  c: Context<AppEnv>,
   db: Db,
+  resealDeps: VpnApplyResealDeps | undefined,
   target: PeerRow,
   peerRows: PeerRow[],
   context: VpnApplyContext,
@@ -399,7 +421,7 @@ async function buildTargetPayload(
   const peers: WireguardApplyCommandPayload['peers'] = []
   for (const other of peerRows) {
     if (other.id === target.id) continue
-    const material = await buildPeerMaterial(c, db, {
+    const material = await buildPeerMaterial(db, resealDeps, {
       targetServerId: target.serverId,
       targetDatacenterId,
       other,
@@ -408,6 +430,7 @@ async function buildTargetPayload(
       siteCidrsByDc: context.siteCidrsByDc,
       serversById: context.serversById,
     })
+    if (material === 'skip') continue
     if (isPrepareError(material)) return material
     peers.push(material)
   }
@@ -433,9 +456,9 @@ async function buildTargetPayload(
 }
 
 export async function prepareVpnApplyPayloads(
-  c: Context<AppEnv>,
   db: Db,
   vpnId: string,
+  resealDeps?: VpnApplyResealDeps,
 ): Promise<PreparedVpnApply | VpnApplyPrepareError> {
   const [vpnRow] = await db
     .select({
@@ -473,7 +496,7 @@ export async function prepareVpnApplyPayloads(
   const payloads: PreparedVpnApply['payloads'] = []
 
   for (const target of peerRows) {
-    const payload = await buildTargetPayload(c, db, target, peerRows, {
+    const payload = await buildTargetPayload(db, resealDeps, target, peerRows, {
       vpnId,
       interfaceName,
       vpnCidr: vpnRow.cidr,
@@ -487,4 +510,117 @@ export async function prepareVpnApplyPayloads(
   }
 
   return { interfaceName, payloads }
+}
+
+/**
+ * Enqueue one `server.wireguard.apply` command per prepared peer payload.
+ * Used by the client apply route and the consumer mesh-complete follow-up.
+ */
+export async function enqueuePreparedVpnApply(params: {
+  db: Db
+  commandQueue: CommandQueue
+  actorType: string
+  actorId: string
+  prepared: PreparedVpnApply
+  expiresAt?: string
+}): Promise<VpnApplyEnqueueResult[]> {
+  const expiresAt = params.expiresAt ??
+    new Date(Date.now() + 300_000).toISOString()
+
+  return await Promise.all(
+    params.prepared.payloads.map(async ({ serverId: targetServerId, payload }) => {
+      const peerId = payload.peerId
+      try {
+        const record = await createCommandRecord(params.db, {
+          serverId: targetServerId,
+          actorType: params.actorType,
+          actorId: params.actorId,
+          type: 'server.wireguard.apply',
+          payload,
+          expiresAt,
+        })
+
+        const envelope: CommandEnvelope = {
+          commandId: record.id,
+          serverId: targetServerId,
+          type: 'server.wireguard.apply',
+          attempt: 1,
+          queuedAt: record.queuedAt ?? record.createdAt,
+        }
+
+        try {
+          await params.commandQueue.enqueue(envelope)
+        } catch {
+          await transitionCommand(params.db, record.id, {
+            status: 'failed',
+            error: 'Command queue unavailable',
+          })
+          return {
+            peerId,
+            serverId: targetServerId,
+            status: 'failed' as const,
+            error: 'Command queue unavailable',
+          }
+        }
+
+        return {
+          peerId,
+          serverId: targetServerId,
+          commandId: record.id,
+          status: 'queued' as const,
+        }
+      } catch {
+        return {
+          peerId,
+          serverId: targetServerId,
+          status: 'failed' as const,
+          error: 'enqueue_failed',
+        }
+      }
+    }),
+  )
+}
+
+/** True when every peer on the VPN has a reconciled WireGuard public key. */
+export async function vpnPeersAllKeyed(db: Db, vpnId: string): Promise<boolean> {
+  const rows = await db
+    .select({ publicKey: peer.publicKey })
+    .from(peer)
+    .where(eq(peer.vpnId, vpnId))
+  if (rows.length === 0) return false
+  return rows.every((row) =>
+    typeof row.publicKey === 'string' && isValidWireguardPublicKey(row.publicKey)
+  )
+}
+
+/**
+ * After a bootstrap apply fills a previously-null public key, enqueue a full
+ * mesh apply once every peer on the VPN is keyed.
+ */
+export async function maybeEnqueueVpnMeshComplete(params: {
+  db: Db
+  commandQueue: CommandQueue
+  resealDeps?: VpnApplyResealDeps
+  actorType: string
+  actorId: string
+  vpnId: string
+  filledNullKey: boolean
+}): Promise<void> {
+  if (!params.filledNullKey) return
+  if (!(await vpnPeersAllKeyed(params.db, params.vpnId))) return
+
+  const prepared = await prepareVpnApplyPayloads(
+    params.db,
+    params.vpnId,
+    params.resealDeps,
+  )
+  if ('kind' in prepared) return
+
+  await enqueuePreparedVpnApply({
+    db: params.db,
+    commandQueue: params.commandQueue,
+    actorType: params.actorType,
+    actorId: params.actorId,
+    prepared,
+  })
 }

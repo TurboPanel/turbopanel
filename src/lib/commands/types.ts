@@ -7,6 +7,11 @@ export const COMMAND_TYPES = [
   'server.wireguard.apply',
   'environment.deploy',
   'environment.stop',
+  'managed.apply',
+  'managed.lifecycle',
+  'managed.destroy',
+  'managed.backup',
+  'managed.restore',
 ] as const
 
 export type CommandType = (typeof COMMAND_TYPES)[number]

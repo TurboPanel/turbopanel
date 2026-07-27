@@ -40,6 +40,7 @@
     "test:authz": "deno test --allow-env --allow-net --allow-read src/client/authz/",
     "test:authn": "deno test --no-check --allow-env --allow-net --allow-read src/client/authn/workers-onboarding.test.ts",
     "test:paths": "deno test --allow-read src/server-paths.deno.test.ts",
-    "test:compose": "deno test --allow-read --allow-env src/lib/compose/"
+    "test:compose": "deno test --allow-read --allow-env src/lib/compose/",
+    "test:managed": "deno test --allow-read --allow-env src/lib/managed/"
   }
 }

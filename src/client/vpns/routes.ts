@@ -1,4 +1,4 @@
-import { and, eq, inArray, ne, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm'
 import { Hono, type Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -7,10 +7,11 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db.ts'
-import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
-import { createCommandRecord } from '../../lib/db/command-records.ts'
 import { ip, peer, vpn } from '../../lib/db/schema.ts'
-import { isValidWireguardPublicKey } from '../../lib/commands/wireguard.ts'
+import {
+  isValidWireguardPublicKey,
+  WIREGUARD_DEFAULT_LISTEN_PORT,
+} from '../../lib/commands/wireguard.ts'
 import { isValidCidr, isValidIpAddress, stripInetPrefixSuffix } from '../../lib/ip-address.ts'
 import {
   allocateVpnTunnelIpOnce,
@@ -19,13 +20,12 @@ import {
   isVpnAddressUniqueViolation,
   releaseVpnTunnelIpIfOrphaned,
 } from '../../lib/net/vpn-address-allocator.ts'
+import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
 import {
-  assertDispatchInfrastructure,
-  enqueueCommandOrCompensate,
-} from '../servers/command-dispatch.ts'
-import {
+  enqueuePreparedVpnApply,
   prepareVpnApplyPayloads,
   type VpnApplyPrepareError,
+  type VpnApplyResealDeps,
 } from './apply-prepare.ts'
 import {
   assertCanCreateOr403,
@@ -368,10 +368,11 @@ async function validateOrgServerId(
   return serverIdRaw
 }
 
-function parseRequiredPublicKey(
+function parseOptionalPublicKey(
   c: Context,
   publicKeyRaw: unknown,
-): string | Response {
+): string | null | Response {
+  if (publicKeyRaw === undefined || publicKeyRaw === null) return null
   if (typeof publicKeyRaw !== 'string' || publicKeyRaw.trim().length === 0) {
     return c.json({ error: 'Invalid request' }, 400)
   }
@@ -382,15 +383,56 @@ function parseRequiredPublicKey(
   return publicKey
 }
 
+function parseRequiredPublicKey(
+  c: Context,
+  publicKeyRaw: unknown,
+): string | Response {
+  const publicKey = parseOptionalPublicKey(c, publicKeyRaw)
+  if (publicKey instanceof Response) return publicKey
+  if (publicKey === null) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  return publicKey
+}
+
 function parseCreateOptionalListenPort(
   c: Context,
   value: unknown,
-): NullableNumberOrResponse {
-  if (value === undefined || value === null) return null
+): number | Response {
+  if (value === undefined || value === null) {
+    return WIREGUARD_DEFAULT_LISTEN_PORT
+  }
   if (typeof value !== 'number' || !Number.isInteger(value)) {
     return c.json({ error: 'Invalid request' }, 400)
   }
+  if (value < 1 || value > 65_535) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
   return value
+}
+
+/**
+ * Oldest public IP on the server — used as the WireGuard endpoint when create
+ * omits `endpointIpId`.
+ */
+async function resolveDefaultEndpointIpId(
+  db: Db,
+  organizationId: string,
+  serverId: string,
+): Promise<string | null> {
+  const [row] = await db
+    .select({ id: ip.id })
+    .from(ip)
+    .where(
+      and(
+        eq(ip.organizationId, organizationId),
+        eq(ip.serverId, serverId),
+        eq(ip.scope, 'public'),
+      ),
+    )
+    .orderBy(asc(ip.createdAt))
+    .limit(1)
+  return row?.id ?? null
 }
 
 function parseCreateOptionalEndpoint(
@@ -421,14 +463,15 @@ async function sealCreatePresharedKey(
 
 type PeerCreateFields = {
   serverId: string
-  publicKey: string
+  /** Null until the daemon reports a key after Apply. */
+  publicKey: string | null
   endpointIpId: string | null | undefined
   /** Explicit overlay row; omit for auto-allocation. `null` is rejected. */
   tunnelIpId: string | undefined
   /** Explicit overlay address; mutually exclusive with `tunnelIpId`. */
   tunnelAddress: string | undefined
   role: string
-  listenPort: number | null
+  listenPort: number
   endpoint: string | null
   presharedKeySealed: string | null
   metadata: Record<string, unknown> | null
@@ -487,7 +530,7 @@ async function parsePeerCreateFields(
   const serverId = await validateOrgServerId(c, db, organizationId, body.serverId)
   if (serverId instanceof Response) return serverId
 
-  const publicKey = parseRequiredPublicKey(c, body.publicKey)
+  const publicKey = parseOptionalPublicKey(c, body.publicKey)
   if (publicKey instanceof Response) return publicKey
 
   const endpointIpId = await validatePeerEndpointIpId(
@@ -525,10 +568,14 @@ async function parsePeerCreateFields(
   const presharedKeySealed = await sealCreatePresharedKey(c, body.presharedKey)
   if (presharedKeySealed instanceof Response) return presharedKeySealed
 
+  const resolvedEndpointIpId = endpointIpId === undefined
+    ? await resolveDefaultEndpointIpId(db, organizationId, serverId)
+    : endpointIpId
+
   return {
     serverId,
     publicKey,
-    endpointIpId,
+    endpointIpId: resolvedEndpointIpId,
     tunnelIpId: tunnel.tunnelIpId,
     tunnelAddress: tunnel.tunnelAddress,
     role: role ?? 'member',
@@ -858,13 +905,13 @@ async function insertPeerRow(
       .values({
         vpnId,
         serverId: fields.serverId,
-        publicKey: fields.publicKey,
         role: fields.role,
+        listenPort: fields.listenPort,
+        ...(fields.publicKey !== null ? { publicKey: fields.publicKey } : {}),
         ...(fields.endpointIpId !== undefined
           ? { endpointIpId: fields.endpointIpId }
           : {}),
         tunnelIpId: tunnel.tunnelIpId,
-        ...(fields.listenPort !== null ? { listenPort: fields.listenPort } : {}),
         ...(fields.endpoint !== null ? { endpoint: fields.endpoint } : {}),
         ...(fields.presharedKeySealed !== null
           ? { presharedKey: fields.presharedKeySealed }
@@ -1330,7 +1377,14 @@ export function registerVpnRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
     const denied = await assertCanOr403(c, 'organization:manage', 'vpn', vpnId)
     if (denied) return denied
 
-    const prepared = await prepareVpnApplyPayloads(c, db, vpnId)
+    const secretsConfig = c.get('secretsConfig')
+    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+    const resealDeps: VpnApplyResealDeps | undefined =
+      secretsConfig && dataEncryptionSecrets
+        ? { secretsConfig, dataEncryptionSecrets }
+        : undefined
+
+    const prepared = await prepareVpnApplyPayloads(db, vpnId, resealDeps)
     if ('kind' in prepared) {
       const err = prepared as VpnApplyPrepareError
       return c.json({ error: err.kind }, 422)
@@ -1339,61 +1393,13 @@ export function registerVpnRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
     const commandQueue = assertDispatchInfrastructure(c)
     if (commandQueue instanceof Response) return commandQueue
 
-    const expiresAt = new Date(Date.now() + 300_000).toISOString()
-    const results = await Promise.all(
-      prepared.payloads.map(async ({ serverId: targetServerId, payload }) => {
-        const peerId = payload.peerId
-
-        try {
-          const record = await createCommandRecord(db, {
-            serverId: targetServerId,
-            actorType: 'user',
-            actorId: session.userId,
-            type: 'server.wireguard.apply',
-            payload,
-            expiresAt,
-          })
-
-          const envelope: CommandEnvelope = {
-            commandId: record.id,
-            serverId: targetServerId,
-            type: 'server.wireguard.apply',
-            attempt: 1,
-            queuedAt: record.queuedAt ?? record.createdAt,
-          }
-
-          const enqueueError = await enqueueCommandOrCompensate(
-            db,
-            commandQueue,
-            record,
-            envelope,
-            c,
-          )
-          if (enqueueError) {
-            return {
-              peerId,
-              serverId: targetServerId,
-              status: 'failed' as const,
-              error: 'Command queue unavailable',
-            }
-          }
-
-          return {
-            peerId,
-            serverId: targetServerId,
-            commandId: record.id,
-            status: 'queued' as const,
-          }
-        } catch {
-          return {
-            peerId,
-            serverId: targetServerId,
-            status: 'failed' as const,
-            error: 'enqueue_failed',
-          }
-        }
-      }),
-    )
+    const results = await enqueuePreparedVpnApply({
+      db,
+      commandQueue,
+      actorType: 'user',
+      actorId: session.userId,
+      prepared,
+    })
 
     return c.json({
       ok: true as const,

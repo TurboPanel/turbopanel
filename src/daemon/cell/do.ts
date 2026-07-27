@@ -2464,6 +2464,58 @@ export class DaemonCellObject {
     return this.#readRequestRow(serverId, inbound.requestId) ?? existing;
   }
 
+  #deriveInboundOutcome(
+    inbound: DaemonInboundEnvelope,
+  ): { status: PendingRequestStatus; result?: unknown; error?: string } | null {
+    switch (inbound.kind) {
+      case "addresses-result":
+        return { status: "done", result: { addresses: inbound.addresses } };
+      case "managed-logs-result":
+        return {
+          status: inbound.error ? "failed" : "done",
+          result: { logs: inbound.logs },
+          error: inbound.error ? inbound.error : undefined,
+        };
+      case "command-outcome":
+        return {
+          status: inbound.ok ? "done" : "failed",
+          result: inbound.result === undefined
+            ? { ok: inbound.ok, error: inbound.error }
+            : inbound.result,
+          error: inbound.ok ? undefined : inbound.error,
+        };
+      case "public-urls-update-result":
+      case "dev-sync-result":
+      case "tunnel-token-result":
+      case "update-result":
+        return {
+          status: inbound.ok ? "done" : "failed",
+          result: { ok: inbound.ok, error: inbound.error },
+          error: inbound.ok ? undefined : inbound.error,
+        };
+      default:
+        return null;
+    }
+  }
+
+  #deriveCommandOutcomeTimestamps(
+    inbound: DaemonInboundEnvelope,
+    row: Record<string, SqlStorageValue>,
+  ): {
+    daemonReceivedAt: string | null;
+    daemonRespondedAt: string | null;
+    ackAt: string | null;
+  } {
+    if (inbound.kind !== "command-outcome") {
+      return { daemonReceivedAt: null, daemonRespondedAt: null, ackAt: null };
+    }
+    return {
+      daemonReceivedAt: inbound.daemonReceivedAt ?? null,
+      daemonRespondedAt: inbound.daemonRespondedAt ?? null,
+      ackAt: row.ack_at ? null : (inbound.daemonReceivedAt ?? inbound.at),
+    };
+  }
+
   #resolveInboundCompletion(
     inbound: DaemonInboundEnvelope,
     row: Record<string, SqlStorageValue>,
@@ -2476,53 +2528,13 @@ export class DaemonCellObject {
     daemonRespondedAt: string | null;
     ackAt: string | null;
   } | null {
-    let status: PendingRequestStatus;
-    let result: unknown;
-    let error: string | undefined;
-
-    switch (inbound.kind) {
-      case "addresses-result":
-        status = "done";
-        result = { addresses: inbound.addresses };
-        break;
-      case "public-urls-update-result":
-      case "dev-sync-result":
-      case "tunnel-token-result":
-      case "update-result":
-      case "command-outcome":
-        status = inbound.ok ? "done" : "failed";
-        if (inbound.kind === "command-outcome") {
-          result = inbound.result === undefined
-            ? { ok: inbound.ok, error: inbound.error }
-            : inbound.result;
-        } else {
-          result = { ok: inbound.ok, error: inbound.error };
-        }
-        if (!inbound.ok) error = inbound.error;
-        break;
-      default:
-        return null;
-    }
-
-    const finishedAt = inbound.at;
-    const daemonReceivedAt = inbound.kind === "command-outcome"
-      ? inbound.daemonReceivedAt ?? null
-      : null;
-    const daemonRespondedAt = inbound.kind === "command-outcome"
-      ? inbound.daemonRespondedAt ?? null
-      : null;
-    const ackAt = inbound.kind === "command-outcome" && !row.ack_at
-      ? (inbound.daemonReceivedAt ?? inbound.at)
-      : null;
+    const outcome = this.#deriveInboundOutcome(inbound);
+    if (!outcome) return null;
 
     return {
-      status,
-      result,
-      error,
-      finishedAt,
-      daemonReceivedAt,
-      daemonRespondedAt,
-      ackAt,
+      ...outcome,
+      finishedAt: inbound.at,
+      ...this.#deriveCommandOutcomeTimestamps(inbound, row),
     };
   }
 

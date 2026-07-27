@@ -645,8 +645,9 @@ export const ip = pgTable(
  * One server's membership in a VPN mesh.
  *
  * **WireGuard private keys are never stored in Postgres** — the daemon generates
- * and holds the keypair on the host and reports only the public key back.
- * Overlay addresses live as `ip(scope='vpn')` rows referenced by `tunnel_ip_id`.
+ * and holds the keypair on the host and reports only the public key back
+ * (`public_key` stays null until the first successful Apply). Overlay addresses
+ * live as `ip(scope='vpn')` rows referenced by `tunnel_ip_id`.
  */
 export const peer = pgTable(
   'peer',
@@ -672,7 +673,11 @@ export const peer = pgTable(
      * `member` is host-route only.
      */
     role: text().notNull().default('member'),
-    publicKey: text('public_key').notNull(),
+    /**
+     * Daemon-reported WireGuard public key. Null until the first successful
+     * `server.wireguard.apply` reconciles the host keypair.
+     */
+    publicKey: text('public_key'),
     listenPort: integer('listen_port'),
     endpoint: varchar({ length: 255 }),
     /** Sealed `tpsecret` envelope — write-only, same handling as `principal.password`. */
@@ -850,10 +855,16 @@ export const managed = pgTable(
       .notNull(),
     /** Environment-scoped managed engine service (1:1 with environment). */
     environmentId: uuid('environment_id').notNull(),
+    /**
+     * Placement pin for the managed service host. Mirrors
+     * `environment.server_id` at provision time so managed engines can move
+     * independently of the environment's deploy placement later.
+     */
+    serverId: uuid('server_id'),
     displayName: varchar('display_name', { length: 255 }),
     /** Catalog engine code (e.g. `postgres`, `redis`). */
     engine: text(),
-    /** `provisioning` | `ready` | `failed` */
+    /** `provisioning` | `applying` | `ready` | `stopped` | `failed` */
     status: text(),
     metadata: jsonb(),
     options: jsonb(),
@@ -862,6 +873,10 @@ export const managed = pgTable(
     index('idx_managed_environment_id').using(
       'btree',
       table.environmentId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_managed_server_id').using(
+      'btree',
+      table.serverId.asc().nullsLast().op('uuid_ops')
     ),
     index('idx_managed_engine').using(
       'btree',
@@ -872,10 +887,19 @@ export const managed = pgTable(
       foreignColumns: [environment.id],
       name: 'managed_environment_id_environment_id_fk',
     }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'managed_server_id_server_id_fk',
+    }).onDelete('restrict'),
     uniqueIndex('managed_environment_id_unique').on(table.environmentId),
     check(
       'managed_display_name_format_check',
       sql`(${table.displayName} IS NULL) OR (((char_length((${table.displayName})::text) >= 1) AND (char_length((${table.displayName})::text) <= 255)) AND ((${table.displayName})::text ~ '^[A-Za-z0-9 ._-]+$'::text))`,
+    ),
+    check(
+      'managed_status_check',
+      sql`status IS NULL OR status IN ('provisioning','applying','ready','stopped','failed')`,
     ),
   ]
 )
@@ -1170,7 +1194,7 @@ export const principal = pgTable(
       .notNull(),
     /** `system` (host/PAM account) | `database` (engine account) */
     kind: text().notNull(),
-    /** `pam` | `postgres` | `mysql` | `redis` */
+    /** `pam` | `postgres` | `mysql` | `redis` | `clickhouse` */
     provider: text().notNull(),
     /**
      * Account name. Allowlist mirrors POSIX/database account naming: starts
@@ -1186,6 +1210,8 @@ export const principal = pgTable(
     password: text(),
     /** Optional project scope for hosting principals. */
     projectId: uuid('project_id'),
+    /** Optional managed-engine scope (cascade-deletes with the managed row). */
+    managedId: uuid('managed_id'),
     /** Holds `uid` / `gid` / `home`. */
     metadata: jsonb(),
     options: jsonb(),
@@ -1195,15 +1221,24 @@ export const principal = pgTable(
       'btree',
       table.projectId.asc().nullsLast().op('uuid_ops'),
     ),
+    index('idx_principal_managed_id').using(
+      'btree',
+      table.managedId.asc().nullsLast().op('uuid_ops'),
+    ),
     foreignKey({
       columns: [table.projectId],
       foreignColumns: [project.id],
       name: 'principal_project_id_project_id_fk',
     }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.managedId],
+      foreignColumns: [managed.id],
+      name: 'principal_managed_id_managed_id_fk',
+    }).onDelete('cascade'),
     check('principal_kind_check', sql`kind IN ('system', 'database')`),
     check(
       'principal_provider_check',
-      sql`provider IN ('pam', 'postgres', 'mysql', 'redis')`
+      sql`provider IN ('pam', 'postgres', 'mysql', 'redis', 'clickhouse')`
     ),
     check(
       'principal_username_format_check',

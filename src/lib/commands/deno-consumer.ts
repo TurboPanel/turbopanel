@@ -6,8 +6,14 @@ import {
   assertCommandAmqpTopology,
   COMMAND_AMQP_QUEUE,
 } from './command-amqp-topology.ts'
-import { isTransientError, processCommandEnvelope } from './consumer.ts'
+import type { VpnApplyResealDeps } from '../../client/vpns/apply-prepare.ts'
+import {
+  isTransientError,
+  processCommandEnvelope,
+  type CommandConsumerDeps,
+} from './consumer.ts'
 import { parseCommandEnvelope } from './envelope.ts'
+import type { CommandQueue } from './queue.ts'
 
 type AmqpConnection = Awaited<ReturnType<typeof amqplib.connect>>
 type AmqpChannel = Awaited<ReturnType<AmqpConnection['createConfirmChannel']>>
@@ -39,11 +45,18 @@ export async function startCommandConsumer(opts: {
   db: Db
   registry: DaemonCellRegistry
   amqpUrl: string
+  commandQueue?: CommandQueue
+  resealDeps?: VpnApplyResealDeps
 }): Promise<{ close(): Promise<void> }> {
   const connection = await connectAmqp(opts.amqpUrl)
   const channel = await connection.createConfirmChannel()
   await assertCommandAmqpTopology(channel)
   await channel.prefetch(1)
+
+  const consumerDeps: CommandConsumerDeps | undefined =
+    opts.commandQueue || opts.resealDeps
+      ? { commandQueue: opts.commandQueue, resealDeps: opts.resealDeps }
+      : undefined
 
   const { consumerTag } = await channel.consume(
     COMMAND_AMQP_QUEUE,
@@ -57,7 +70,12 @@ export async function startCommandConsumer(opts: {
 
     try {
       const envelope = parseCommandEnvelope(msg.content.toString())
-      await processCommandEnvelope(opts.db, opts.registry, envelope)
+      await processCommandEnvelope(
+        opts.db,
+        opts.registry,
+        envelope,
+        consumerDeps,
+      )
       channel.ack(msg)
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error)

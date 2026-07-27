@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, asc, eq, inArray } from 'drizzle-orm'
 import {
   encryptSecret,
   generateSealedSecret,
@@ -8,7 +8,13 @@ import type { Db } from '../../db.ts'
 import { assignment, principal } from '../../lib/db/schema.ts'
 
 export const PRINCIPAL_KINDS = new Set(['system', 'database'])
-export const PRINCIPAL_PROVIDERS = new Set(['pam', 'postgres', 'mysql', 'redis'])
+export const PRINCIPAL_PROVIDERS = new Set([
+  'pam',
+  'postgres',
+  'mysql',
+  'redis',
+  'clickhouse',
+])
 export const USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -144,4 +150,100 @@ export async function setPrincipalPassword(
   await persistPrincipalPassword(db, principalId, sealed)
 
   return {}
+}
+
+export type CreateManagedPrincipalInput = {
+  managedId: string
+  provider: string
+  username: string
+  kind?: string
+  metadata?: Record<string, unknown> | null
+}
+
+/**
+ * Insert a managed-engine principal with a freshly generated sealed password
+ * in a single statement. Returns the show-once plaintext; no subsequent code
+ * path returns a stored password.
+ */
+export async function createManagedPrincipal(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  input: CreateManagedPrincipalInput,
+): Promise<{ principalId: string; password: string }> {
+  if (!USERNAME_RE.test(input.username)) {
+    throw new TypeError('invalid username')
+  }
+  if (!PRINCIPAL_PROVIDERS.has(input.provider)) {
+    throw new TypeError('invalid provider')
+  }
+
+  const { plaintext, sealed } = await generateSealedSecret(dataEncryptionSecrets)
+  const [inserted] = await db
+    .insert(principal)
+    .values({
+      kind: input.kind ?? 'database',
+      provider: input.provider,
+      username: input.username,
+      managedId: input.managedId,
+      password: sealed,
+      ...(input.metadata != null ? { metadata: input.metadata } : {}),
+    })
+    .returning({ id: principal.id })
+
+  return { principalId: inserted.id, password: plaintext }
+}
+
+/**
+ * Rotate a principal password (generate + seal). Returns show-once plaintext.
+ * Propagates `Principal not found` from {@link setPrincipalPassword}.
+ */
+export async function rotatePrincipalPassword(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  principalId: string,
+): Promise<{ plaintext: string }> {
+  const result = await setPrincipalPassword(
+    db,
+    dataEncryptionSecrets,
+    principalId,
+    { generate: true },
+  )
+  if (result.plaintext === undefined) {
+    throw new TypeError('expected generated plaintext')
+  }
+  return { plaintext: result.plaintext }
+}
+
+/** Managed principals for listing — never selects `password`. */
+export type ManagedPrincipalListRow = {
+  id: string
+  kind: string
+  provider: string
+  username: string
+  managedId: string | null
+  metadata: unknown
+  options: unknown
+  createdAt: string
+  updatedAt: string
+}
+
+export async function listManagedPrincipals(
+  db: Db,
+  managedId: string,
+): Promise<ManagedPrincipalListRow[]> {
+  return await db
+    .select({
+      id: principal.id,
+      kind: principal.kind,
+      provider: principal.provider,
+      username: principal.username,
+      managedId: principal.managedId,
+      metadata: principal.metadata,
+      options: principal.options,
+      createdAt: principal.createdAt,
+      updatedAt: principal.updatedAt,
+    })
+    .from(principal)
+    .where(eq(principal.managedId, managedId))
+    .orderBy(asc(principal.username))
 }

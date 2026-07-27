@@ -59,6 +59,22 @@ it("wireMessageToInboundEnvelope maps inbound wire types", () => {
 
   assertEquals(
     wireMessageToInboundEnvelope({
+      type: "managed-logs-result",
+      id: "r3",
+      at,
+      logs: "line1\n",
+    }),
+    {
+      kind: "managed-logs-result",
+      requestId: "r3",
+      at,
+      logs: "line1\n",
+      error: undefined,
+    },
+  );
+
+  assertEquals(
+    wireMessageToInboundEnvelope({
       type: "dev-sync-result",
       id: "r4",
       at,
@@ -224,6 +240,22 @@ it("outboundEnvelopeToWireMessage maps outbound kinds", () => {
   assertEquals(
     outboundEnvelopeToWireMessage({ ...base, kind: "addresses-request" }),
     { type: "addresses-request", id: "req-1", at: base.at },
+  );
+
+  assertEquals(
+    outboundEnvelopeToWireMessage({
+      ...base,
+      kind: "managed-logs-request",
+      managedId: "00000000-0000-4000-8000-000000000001",
+      tail: 200,
+    }),
+    {
+      type: "managed-logs-request",
+      id: "req-1",
+      managedId: "00000000-0000-4000-8000-000000000001",
+      tail: 200,
+      at: base.at,
+    },
   );
 
   assertEquals(

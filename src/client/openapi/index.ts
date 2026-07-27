@@ -78,7 +78,7 @@ export function getClientOpenApiSpec(
     ],
     'x-tagGroups': [
       { name: 'Authentication & Authorization', tags: ['Authentication', 'Authorization'] },
-      { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Variables', 'Storage', 'Principals', 'Resource limits', 'Services', 'Hostings', 'Containers', 'TLS'] },
+      { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Managed services', 'Variables', 'Storage', 'Principals', 'Resource limits', 'Services', 'Hostings', 'Containers', 'TLS'] },
       { name: 'Infrastructure', tags: ['Servers', 'Networks', 'Datacenters', 'IPs', 'VPNs', 'Licenses'] },
       { name: 'Platform', tags: ['Health', ...(includeInstall ? ['Install'] : [])] },
     ],

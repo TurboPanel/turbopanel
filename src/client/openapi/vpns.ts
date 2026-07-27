@@ -28,7 +28,6 @@ export const vpnSchemas = {
       'id',
       'vpnId',
       'serverId',
-      'publicKey',
       'role',
       'createdAt',
       'updatedAt',
@@ -52,7 +51,11 @@ export const vpnSchemas = {
         enum: ['gateway', 'member'],
         description: 'Gateway peers advertise their datacenter site routes; members do not.',
       },
-      publicKey: { type: 'string' },
+      publicKey: {
+        type: ['string', 'null'],
+        description:
+          'Daemon-reported WireGuard public key. Null until the first successful Apply reconciles the host keypair.',
+      },
       listenPort: { type: ['integer', 'null'] },
       endpoint: { type: ['string', 'null'] },
       metadata: { type: ['object', 'null'] },
@@ -109,12 +112,21 @@ export const vpnSchemas = {
   },
   CreatePeerRequest: {
     type: 'object',
-    required: ['serverId', 'publicKey'],
+    required: ['serverId'],
     properties: {
       serverId: { type: 'string', format: 'uuid' },
-      publicKey: { type: 'string' },
+      publicKey: {
+        type: 'string',
+        description:
+          'Optional. Omit so the daemon generates the keypair on Apply; reconciled onto the peer row afterward.',
+      },
       role: { type: 'string', enum: ['gateway', 'member'] },
-      endpointIpId: { type: ['string', 'null'], format: 'uuid' },
+      endpointIpId: {
+        type: ['string', 'null'],
+        format: 'uuid',
+        description:
+          'Optional public `ip` row used as the WireGuard endpoint. When omitted, the server’s oldest public IP is selected automatically (null when the server has none).',
+      },
       tunnelIpId: {
         type: ['string', 'null'],
         format: 'uuid',
@@ -126,7 +138,10 @@ export const vpnSchemas = {
         description:
           'Explicit overlay address to allocate under vpn.cidr. Mutually exclusive with tunnelIpId. When both tunnelIpId and tunnelAddress are omitted, an address is auto-allocated from vpn.cidr.',
       },
-      listenPort: { type: 'integer' },
+      listenPort: {
+        type: 'integer',
+        description: 'Optional UDP listen port. Defaults to 51820 when omitted.',
+      },
       endpoint: { type: 'string' },
       presharedKey: { type: 'string', description: 'Write-only; sealed at rest' },
       metadata: { type: 'object' },

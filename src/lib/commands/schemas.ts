@@ -1,5 +1,18 @@
 import { isValidHostname, HOSTNAME_MAX_LENGTH } from './hostname.ts'
 import { isValidIpAddress } from '../ip-address.ts'
+import {
+  isManagedBackupArtifactExtension,
+  isManagedEngineCode,
+  type ManagedBackupArtifactExtension,
+  type ManagedEngineCode,
+} from '../managed/types.ts'
+import {
+  getManagedReservedEnvKeys,
+  parseManagedDockerOptions,
+  RESERVED_PUBLISHED_PORTS,
+  type ManagedDockerOptions,
+} from '../managed/settings.ts'
+import type { ServiceOptions } from '../service-options.ts'
 import { isValidTimezone } from '../timezones.ts'
 import {
   assertValidWireguardInterfaceName,
@@ -1183,6 +1196,862 @@ export function parseEnvironmentStopResult(value: unknown): EnvironmentStopComma
   return result
 }
 
+/** Docker Compose project name charset (daemon `COMPOSE_PROJECT_RE` parity). */
+const COMPOSE_PROJECT_RE = /^[a-z0-9][a-z0-9_-]*$/
+const SAFE_IDENTIFIER_RE = /^[A-Za-z_]\w*$/
+const SAFE_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
+const MAX_IDENTIFIER_LENGTH = 63
+const MAX_MANAGED_CONFIG_FILES = 32
+const MAX_MANAGED_CONFIG_CONTENTS_BYTES = 64 * 1024
+const MAX_MANAGED_VOLUMES = 16
+const MAX_MANAGED_CREDENTIALS = 32
+const MAX_MANAGED_DATABASES = 64
+const MAX_MANAGED_DROP_USERS = 32
+const MAX_MANAGED_IMAGE_LENGTH = 256
+const TPDAEMON_ENVELOPE_PREFIX = 'tpdaemon.'
+const MANAGED_CONFIG_MODES = new Set(['0640', '0600'])
+const MANAGED_LIFECYCLE_ACTIONS = new Set(['start', 'stop', 'restart'])
+const MANAGED_EXPOSURE_PROTOCOLS = new Set(['tcp', 'udp', 'http'])
+const MANAGED_CREDENTIAL_ROLES = new Set(['root', 'user'])
+const MANAGED_DATABASE_ACTIONS = new Set(['create', 'drop'])
+
+function isSafeIdentifier(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= MAX_IDENTIFIER_LENGTH &&
+    SAFE_IDENTIFIER_RE.test(value) &&
+    !SHELL_METACHAR_RE.test(value)
+  )
+}
+
+function isSafeUsername(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= MAX_IDENTIFIER_LENGTH &&
+    SAFE_USERNAME_RE.test(value) &&
+    !SHELL_METACHAR_RE.test(value)
+  )
+}
+
+function isComposeProjectName(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= 64 &&
+    COMPOSE_PROJECT_RE.test(value) &&
+    !SHELL_METACHAR_RE.test(value)
+  )
+}
+
+/** Light OCI-ref charset check (mirrors managed/settings.ts syntax rules). */
+function isValidManagedImageRef(value: string): boolean {
+  if (value.length === 0 || value.length > MAX_MANAGED_IMAGE_LENGTH) return false
+  if (/\s/.test(value)) return false
+  if (SHELL_METACHAR_RE.test(value)) return false
+  return true
+}
+
+function isValidPortNumber(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= 65_535
+  )
+}
+
+function isValidPublishedManagedPort(value: unknown): value is number {
+  return isValidPortNumber(value) && !RESERVED_PUBLISHED_PORTS.has(value)
+}
+
+/**
+ * Relative paths the platform may materialize under managed state.
+ * Keep in sync with generated engine specs (e.g. postgres `postgresql.conf`
+ * + TLS material) and the daemon twin allowlist.
+ */
+const MANAGED_CONFIG_PATH_ALLOWLIST = new Set([
+  'postgresql.conf',
+  'tls/server.crt',
+  'tls/server.key',
+])
+
+/** Relative-only allowlist for managed `configFiles[].path`. */
+function isAllowedManagedConfigPath(value: string): boolean {
+  if (value.length === 0 || value.length > 255) return false
+  if (value.startsWith('/') || value.includes('\\')) return false
+  if (value.includes('..')) return false
+  if (SHELL_METACHAR_RE.test(value)) return false
+  return MANAGED_CONFIG_PATH_ALLOWLIST.has(value)
+}
+
+function isAbsoluteContainerPath(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= 255 &&
+    value.startsWith('/') &&
+    !value.includes('..') &&
+    !SHELL_METACHAR_RE.test(value)
+  )
+}
+
+export type ManagedApplyConfigFile = {
+  path: string
+  contents: string
+  mode: '0640' | '0600'
+}
+
+export type ManagedApplyVolume = {
+  name: string
+  target: string
+}
+
+export type ManagedApplyExposure = {
+  enabled: boolean
+  protocol: 'tcp' | 'udp' | 'http'
+  publishedPort?: number
+  bindAddress?: string
+  sni?: { hostnames: string[] }
+}
+
+export type ManagedApplyCredential = {
+  principalId: string
+  username: string
+  role: 'root' | 'user'
+  databases: string[]
+  privileges?: string[]
+  /** Daemon-recipient sealed password (`tpdaemon.…`). */
+  password: string
+}
+
+export type ManagedApplyDatabaseOp = {
+  name: string
+  action: 'create' | 'drop'
+}
+
+/** Mirror of `ManagedTlsMaterialRequest` — daemon generates key material on host. */
+export type ManagedApplyTlsMaterial = {
+  selfSigned: true
+  commonName: string
+  certPath: string
+  keyPath: string
+}
+
+export type ManagedApplyCommandPayload = {
+  managedId: string
+  environmentId: string
+  engine: ManagedEngineCode
+  projectName: string
+  image: string
+  containerPort: number
+  composeYaml: string
+  configFiles: ManagedApplyConfigFile[]
+  volumes: ManagedApplyVolume[]
+  resources?: NonNullable<ServiceOptions['resources']>
+  dockerOptions?: ManagedDockerOptions
+  exposure: ManagedApplyExposure
+  credentials: ManagedApplyCredential[]
+  databases?: ManagedApplyDatabaseOp[]
+  /** Transient usernames to drop after credentials are applied (never root). */
+  dropUsers?: string[]
+  /** When set, daemon generates a self-signed cert under managed state `tls/`. */
+  tlsMaterial?: ManagedApplyTlsMaterial
+}
+
+export type ManagedApplyCommandResult = {
+  host: string
+  port: number
+  containers?: EnvironmentDeployContainer[]
+  appliedUsers?: string[]
+  appliedDatabases?: string[]
+  engineVersion?: string
+  summary?: string
+}
+
+export type ManagedLifecycleCommandPayload = {
+  managedId: string
+  action: 'start' | 'stop' | 'restart'
+}
+
+export type ManagedLifecycleCommandResult = {
+  status: string
+  summary?: string
+}
+
+export type ManagedDestroyCommandPayload = {
+  managedId: string
+  removeVolumes: boolean
+  /**
+   * Instance-only marker (never read by the daemon) distinguishing an API
+   * hard-delete request from a future "destroy runtime only" action. When
+   * true, `applyManagedDestroySideEffect` deletes the `managed` row after a
+   * successful destroy so `principal.managed_id` cascades.
+   */
+  deleteAfterDestroy?: boolean
+}
+
+export type ManagedDestroyCommandResult = {
+  /** Daemon-observed managed status after destroy (e.g. `stopped`). */
+  status: string
+  /** Always present — destroy returns `[]` so Postgres clears pins. */
+  containers: EnvironmentDeployContainer[]
+  summary?: string
+}
+
+function parseManagedApplyConfigFiles(value: unknown): ManagedApplyConfigFile[] {
+  if (!Array.isArray(value)) {
+    throw new TypeError('Invalid managed.apply configFiles')
+  }
+  if (value.length > MAX_MANAGED_CONFIG_FILES) {
+    throw new Error('Invalid managed.apply configFiles: too many entries')
+  }
+  const files: ManagedApplyConfigFile[] = []
+  for (const entry of value) {
+    if (!isRecord(entry)) {
+      throw new Error('Invalid managed.apply configFiles entry')
+    }
+    if (
+      !isString(entry.path) ||
+      !isAllowedManagedConfigPath(entry.path) ||
+      !isString(entry.contents) ||
+      entry.contents.length > MAX_MANAGED_CONFIG_CONTENTS_BYTES ||
+      !isString(entry.mode) ||
+      !MANAGED_CONFIG_MODES.has(entry.mode)
+    ) {
+      throw new Error('Invalid managed.apply configFiles entry')
+    }
+    files.push({
+      path: entry.path,
+      contents: entry.contents,
+      mode: entry.mode as '0640' | '0600',
+    })
+  }
+  return files
+}
+
+function parseManagedApplyVolumes(value: unknown): ManagedApplyVolume[] {
+  if (!Array.isArray(value)) {
+    throw new TypeError('Invalid managed.apply volumes')
+  }
+  if (value.length > MAX_MANAGED_VOLUMES) {
+    throw new Error('Invalid managed.apply volumes: too many entries')
+  }
+  const volumes: ManagedApplyVolume[] = []
+  for (const entry of value) {
+    if (!isRecord(entry)) {
+      throw new Error('Invalid managed.apply volumes entry')
+    }
+    if (
+      !isString(entry.name) ||
+      !isSafeIdentifier(entry.name) ||
+      !isString(entry.target) ||
+      !isAbsoluteContainerPath(entry.target)
+    ) {
+      throw new Error('Invalid managed.apply volumes entry')
+    }
+    volumes.push({ name: entry.name, target: entry.target })
+  }
+  return volumes
+}
+
+function parseManagedApplyResources(
+  value: unknown,
+): NonNullable<ServiceOptions['resources']> | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) {
+    throw new Error('Invalid managed.apply resources')
+  }
+  const resources: NonNullable<ServiceOptions['resources']> = {}
+  if (value.cpus !== undefined) {
+    if (typeof value.cpus !== 'number' || !Number.isFinite(value.cpus) || value.cpus < 0) {
+      throw new Error('Invalid managed.apply resources.cpus')
+    }
+    resources.cpus = value.cpus
+  }
+  if (value.memoryBytes !== undefined) {
+    if (
+      typeof value.memoryBytes !== 'number' ||
+      !Number.isInteger(value.memoryBytes) ||
+      value.memoryBytes <= 0
+    ) {
+      throw new Error('Invalid managed.apply resources.memoryBytes')
+    }
+    resources.memoryBytes = value.memoryBytes
+  }
+  if (value.memoryReservationBytes !== undefined) {
+    if (
+      typeof value.memoryReservationBytes !== 'number' ||
+      !Number.isInteger(value.memoryReservationBytes) ||
+      value.memoryReservationBytes <= 0
+    ) {
+      throw new Error('Invalid managed.apply resources.memoryReservationBytes')
+    }
+    resources.memoryReservationBytes = value.memoryReservationBytes
+  }
+  return Object.keys(resources).length > 0 ? resources : undefined
+}
+
+function parseManagedApplyExposureBindAddress(value: unknown): string {
+  if (
+    !isString(value) ||
+    value.length === 0 ||
+    (!isValidIpv4Literal(value) && !isValidIpv6Literal(value))
+  ) {
+    throw new Error('Invalid managed.apply exposure.bindAddress')
+  }
+  return value
+}
+
+function parseManagedApplyExposureSni(
+  value: unknown,
+): NonNullable<ManagedApplyExposure['sni']> {
+  if (!isRecord(value)) {
+    throw new Error('Invalid managed.apply exposure.sni')
+  }
+  if (!Array.isArray(value.hostnames)) {
+    throw new TypeError('Invalid managed.apply exposure.sni')
+  }
+  const hostnames: string[] = []
+  for (const hostname of value.hostnames) {
+    if (!isString(hostname) || !isValidHostname(hostname)) {
+      throw new Error('Invalid managed.apply exposure.sni.hostnames')
+    }
+    hostnames.push(hostname)
+  }
+  return { hostnames }
+}
+
+function parseManagedApplyExposure(value: unknown): ManagedApplyExposure {
+  if (!isRecord(value) || typeof value.enabled !== 'boolean') {
+    throw new Error('Invalid managed.apply exposure')
+  }
+  if (
+    !isString(value.protocol) ||
+    !MANAGED_EXPOSURE_PROTOCOLS.has(value.protocol)
+  ) {
+    throw new Error('Invalid managed.apply exposure.protocol')
+  }
+  const exposure: ManagedApplyExposure = {
+    enabled: value.enabled,
+    protocol: value.protocol as ManagedApplyExposure['protocol'],
+  }
+  if (value.publishedPort !== undefined) {
+    if (!isValidPublishedManagedPort(value.publishedPort)) {
+      throw new Error('Invalid managed.apply exposure.publishedPort')
+    }
+    exposure.publishedPort = value.publishedPort
+  }
+  if (value.bindAddress !== undefined) {
+    exposure.bindAddress = parseManagedApplyExposureBindAddress(value.bindAddress)
+  }
+  if (value.sni !== undefined) {
+    exposure.sni = parseManagedApplyExposureSni(value.sni)
+  }
+  // Mirror managed/settings.ts: enabled exposure requires a published port.
+  if (exposure.enabled && exposure.publishedPort === undefined) {
+    throw new Error('Invalid managed.apply exposure')
+  }
+  return exposure
+}
+
+function parseManagedApplyCredentialDatabases(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw new TypeError('Invalid managed.apply credentials entry')
+  }
+  const databases: string[] = []
+  for (const name of value) {
+    if (!isString(name) || !isSafeIdentifier(name)) {
+      throw new Error('Invalid managed.apply credentials.databases')
+    }
+    databases.push(name)
+  }
+  return databases
+}
+
+function parseManagedApplyCredentialPrivileges(
+  value: unknown,
+): string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) {
+    throw new TypeError('Invalid managed.apply credentials.privileges')
+  }
+  if (!value.every(isString)) {
+    throw new Error('Invalid managed.apply credentials.privileges')
+  }
+  return value as string[]
+}
+
+function parseManagedApplyCredentialEntry(entry: unknown): ManagedApplyCredential {
+  if (!isRecord(entry)) {
+    throw new Error('Invalid managed.apply credentials entry')
+  }
+  if (
+    !isString(entry.principalId) ||
+    entry.principalId.length === 0 ||
+    !isString(entry.username) ||
+    !isSafeUsername(entry.username) ||
+    !isString(entry.role) ||
+    !MANAGED_CREDENTIAL_ROLES.has(entry.role) ||
+    !isString(entry.password) ||
+    !entry.password.startsWith(TPDAEMON_ENVELOPE_PREFIX)
+  ) {
+    throw new Error('Invalid managed.apply credentials entry')
+  }
+  const credential: ManagedApplyCredential = {
+    principalId: entry.principalId,
+    username: entry.username,
+    role: entry.role as ManagedApplyCredential['role'],
+    databases: parseManagedApplyCredentialDatabases(entry.databases),
+    password: entry.password,
+  }
+  const privileges = parseManagedApplyCredentialPrivileges(entry.privileges)
+  if (privileges !== undefined) credential.privileges = privileges
+  return credential
+}
+
+function parseManagedApplyCredentials(value: unknown): ManagedApplyCredential[] {
+  if (!Array.isArray(value)) {
+    throw new TypeError('Invalid managed.apply credentials')
+  }
+  if (value.length === 0) {
+    throw new Error('Invalid managed.apply credentials')
+  }
+  if (value.length > MAX_MANAGED_CREDENTIALS) {
+    throw new Error('Invalid managed.apply credentials: too many entries')
+  }
+  return value.map(parseManagedApplyCredentialEntry)
+}
+
+function parseManagedApplyDatabases(
+  value: unknown,
+): ManagedApplyDatabaseOp[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) {
+    throw new TypeError('Invalid managed.apply databases')
+  }
+  if (value.length > MAX_MANAGED_DATABASES) {
+    throw new Error('Invalid managed.apply databases: too many entries')
+  }
+  const databases: ManagedApplyDatabaseOp[] = []
+  for (const entry of value) {
+    if (
+      !isRecord(entry) ||
+      !isString(entry.name) ||
+      !isSafeIdentifier(entry.name) ||
+      !isString(entry.action) ||
+      !MANAGED_DATABASE_ACTIONS.has(entry.action)
+    ) {
+      throw new Error('Invalid managed.apply databases entry')
+    }
+    databases.push({
+      name: entry.name,
+      action: entry.action as ManagedApplyDatabaseOp['action'],
+    })
+  }
+  return databases
+}
+
+function parseManagedApplyDropUsers(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) {
+    throw new TypeError('Invalid managed.apply dropUsers')
+  }
+  if (value.length > MAX_MANAGED_DROP_USERS) {
+    throw new Error('Invalid managed.apply dropUsers: too many entries')
+  }
+  const dropUsers: string[] = []
+  for (const entry of value) {
+    if (!isString(entry) || !isSafeUsername(entry)) {
+      throw new Error('Invalid managed.apply dropUsers entry')
+    }
+    dropUsers.push(entry)
+  }
+  return dropUsers
+}
+
+function parseManagedApplyTlsMaterial(
+  value: unknown,
+): ManagedApplyTlsMaterial | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) {
+    throw new Error('Invalid managed.apply tlsMaterial')
+  }
+  if (
+    value.selfSigned !== true ||
+    !isString(value.commonName) ||
+    !isValidHostname(value.commonName) ||
+    !isString(value.certPath) ||
+    !isAllowedManagedConfigPath(value.certPath) ||
+    !isString(value.keyPath) ||
+    !isAllowedManagedConfigPath(value.keyPath)
+  ) {
+    throw new Error('Invalid managed.apply tlsMaterial')
+  }
+  return {
+    selfSigned: true,
+    commonName: value.commonName,
+    certPath: value.certPath,
+    keyPath: value.keyPath,
+  }
+}
+
+export function parseManagedApplyPayload(value: unknown): ManagedApplyCommandPayload {
+  if (!isRecord(value)) {
+    throw new Error('Invalid managed.apply payload')
+  }
+  if (
+    !isString(value.managedId) ||
+    value.managedId.length === 0 ||
+    !isString(value.environmentId) ||
+    value.environmentId.length === 0 ||
+    !isString(value.engine) ||
+    !isManagedEngineCode(value.engine) ||
+    !isString(value.projectName) ||
+    !isComposeProjectName(value.projectName) ||
+    !isString(value.image) ||
+    !isValidManagedImageRef(value.image) ||
+    !isValidPortNumber(value.containerPort) ||
+    !isString(value.composeYaml) ||
+    value.composeYaml.length === 0
+  ) {
+    throw new Error('Invalid managed.apply payload')
+  }
+
+  const dockerOptions = parseManagedDockerOptions(
+    value.dockerOptions,
+    getManagedReservedEnvKeys(value.engine),
+  )
+  if (dockerOptions === null) {
+    throw new Error('Invalid managed.apply dockerOptions')
+  }
+
+  const resources = parseManagedApplyResources(value.resources)
+  const databases = parseManagedApplyDatabases(value.databases)
+  const dropUsers = parseManagedApplyDropUsers(value.dropUsers)
+  const tlsMaterial = parseManagedApplyTlsMaterial(value.tlsMaterial)
+
+  return {
+    managedId: value.managedId,
+    environmentId: value.environmentId,
+    engine: value.engine,
+    projectName: value.projectName,
+    image: value.image,
+    containerPort: value.containerPort,
+    composeYaml: value.composeYaml,
+    configFiles: parseManagedApplyConfigFiles(value.configFiles),
+    volumes: parseManagedApplyVolumes(value.volumes),
+    ...(resources === undefined ? {} : { resources }),
+    ...(dockerOptions === undefined ? {} : { dockerOptions }),
+    exposure: parseManagedApplyExposure(value.exposure),
+    credentials: parseManagedApplyCredentials(value.credentials),
+    ...(databases === undefined ? {} : { databases }),
+    ...(dropUsers === undefined ? {} : { dropUsers }),
+    ...(tlsMaterial === undefined ? {} : { tlsMaterial }),
+  }
+}
+
+export function parseManagedApplyResult(value: unknown): ManagedApplyCommandResult {
+  if (!isRecord(value)) {
+    return { host: '', port: 0 }
+  }
+  const result: ManagedApplyCommandResult = {
+    host: isString(value.host) ? value.host : '',
+    port: isValidPortNumber(value.port) ? value.port : 0,
+  }
+  const containers = parseDeployContainers(value.containers)
+  if (containers !== undefined) result.containers = containers
+  if (Array.isArray(value.appliedUsers) && value.appliedUsers.every(isString)) {
+    result.appliedUsers = value.appliedUsers as string[]
+  }
+  if (
+    Array.isArray(value.appliedDatabases) &&
+    value.appliedDatabases.every(isString)
+  ) {
+    result.appliedDatabases = value.appliedDatabases as string[]
+  }
+  if (isString(value.engineVersion)) result.engineVersion = value.engineVersion
+  if (isString(value.summary)) result.summary = value.summary
+  return result
+}
+
+export function parseManagedLifecyclePayload(
+  value: unknown,
+): ManagedLifecycleCommandPayload {
+  if (!isRecord(value)) {
+    throw new Error('Invalid managed.lifecycle payload')
+  }
+  if (
+    !isString(value.managedId) ||
+    value.managedId.length === 0 ||
+    !isString(value.action) ||
+    !MANAGED_LIFECYCLE_ACTIONS.has(value.action)
+  ) {
+    throw new Error('Invalid managed.lifecycle payload')
+  }
+  return {
+    managedId: value.managedId,
+    action: value.action as ManagedLifecycleCommandPayload['action'],
+  }
+}
+
+export function parseManagedLifecycleResult(
+  value: unknown,
+): ManagedLifecycleCommandResult {
+  if (!isRecord(value)) {
+    return { status: '' }
+  }
+  const result: ManagedLifecycleCommandResult = {
+    status: isString(value.status) ? value.status : '',
+  }
+  if (isString(value.summary)) result.summary = value.summary
+  return result
+}
+
+export function parseManagedDestroyPayload(
+  value: unknown,
+): ManagedDestroyCommandPayload {
+  if (!isRecord(value)) {
+    throw new Error('Invalid managed.destroy payload')
+  }
+  if (
+    !isString(value.managedId) ||
+    value.managedId.length === 0 ||
+    typeof value.removeVolumes !== 'boolean'
+  ) {
+    throw new Error('Invalid managed.destroy payload')
+  }
+  if (
+    value.deleteAfterDestroy !== undefined &&
+    typeof value.deleteAfterDestroy !== 'boolean'
+  ) {
+    throw new Error('Invalid managed.destroy payload')
+  }
+  const payload: ManagedDestroyCommandPayload = {
+    managedId: value.managedId,
+    removeVolumes: value.removeVolumes,
+  }
+  if (typeof value.deleteAfterDestroy === 'boolean') {
+    payload.deleteAfterDestroy = value.deleteAfterDestroy
+  }
+  return payload
+}
+
+export function parseManagedDestroyResult(
+  value: unknown,
+): ManagedDestroyCommandResult {
+  if (!isRecord(value)) {
+    return { status: '', containers: [] }
+  }
+  const containers = parseDeployContainers(value.containers) ?? []
+  const result: ManagedDestroyCommandResult = {
+    status: isString(value.status) ? value.status : '',
+    containers,
+  }
+  if (isString(value.summary)) result.summary = value.summary
+  return result
+}
+
+/** Mirrors the daemon `SAFE_MANAGED_ID_RE` (`daemon/src/managed/paths.ts`) — backupId becomes a filename. */
+const SAFE_BACKUP_ID_RE = /^[A-Za-z0-9_-]+$/
+const MAX_BACKUP_ID_LENGTH = 64
+const CHECKSUM_SHA256_RE = /^[a-f0-9]{64}$/
+const MANAGED_BACKUP_ACTIONS = new Set(['create', 'delete'])
+const MANAGED_BACKUP_SCOPES = new Set(['database', 'instance'])
+/** Bound on `managed.backup` payload `retentionKeep` — mirrors managed/settings.ts. */
+const MAX_BACKUP_RETENTION_KEEP_BOUND = 100
+const MAX_PRUNED_BACKUP_IDS = 200
+
+function isSafeBackupId(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= MAX_BACKUP_ID_LENGTH &&
+    SAFE_BACKUP_ID_RE.test(value) &&
+    !SHELL_METACHAR_RE.test(value)
+  )
+}
+
+export type ManagedBackupCommandPayload = {
+  managedId: string
+  engine: ManagedEngineCode
+  action: 'create' | 'delete'
+  backupId: string
+  artifactExtension: ManagedBackupArtifactExtension
+  scope: 'database' | 'instance'
+  database?: string
+  retentionKeep?: number
+}
+
+export type ManagedBackupCommandResult = {
+  backupId: string
+  deleted?: boolean
+  path?: string
+  sizeBytes?: number
+  checksum?: string
+  completedAt?: string
+  database?: string
+  pruned?: string[]
+  summary?: string
+}
+
+export type ManagedRestoreCommandPayload = {
+  managedId: string
+  engine: ManagedEngineCode
+  backupId: string
+  artifactExtension: ManagedBackupArtifactExtension
+  database?: string
+  checksum: string
+  sizeBytes?: number
+}
+
+export type ManagedRestoreCommandResult = {
+  backupId: string
+  status?: string
+  restoredAt?: string
+  database?: string
+  summary?: string
+}
+
+export function parseManagedBackupPayload(
+  value: unknown,
+): ManagedBackupCommandPayload {
+  if (!isRecord(value)) {
+    throw new Error('Invalid managed.backup payload')
+  }
+  if (
+    !isString(value.managedId) ||
+    value.managedId.length === 0 ||
+    !isString(value.engine) ||
+    !isManagedEngineCode(value.engine) ||
+    !isString(value.action) ||
+    !MANAGED_BACKUP_ACTIONS.has(value.action) ||
+    !isString(value.backupId) ||
+    !isSafeBackupId(value.backupId) ||
+    !isString(value.artifactExtension) ||
+    !isManagedBackupArtifactExtension(value.artifactExtension) ||
+    !isString(value.scope) ||
+    !MANAGED_BACKUP_SCOPES.has(value.scope)
+  ) {
+    throw new Error('Invalid managed.backup payload')
+  }
+  const payload: ManagedBackupCommandPayload = {
+    managedId: value.managedId,
+    engine: value.engine,
+    action: value.action as ManagedBackupCommandPayload['action'],
+    backupId: value.backupId,
+    artifactExtension: value.artifactExtension,
+    scope: value.scope as ManagedBackupCommandPayload['scope'],
+  }
+  if (value.database !== undefined) {
+    if (!isString(value.database) || !isSafeIdentifier(value.database)) {
+      throw new Error('Invalid managed.backup payload database')
+    }
+    payload.database = value.database
+  }
+  if (payload.scope === 'database' && payload.database === undefined) {
+    throw new Error('Invalid managed.backup payload: scope database requires database')
+  }
+  if (value.retentionKeep !== undefined) {
+    if (
+      typeof value.retentionKeep !== 'number' ||
+      !Number.isInteger(value.retentionKeep) ||
+      value.retentionKeep < 1 ||
+      value.retentionKeep > MAX_BACKUP_RETENTION_KEEP_BOUND
+    ) {
+      throw new Error('Invalid managed.backup payload retentionKeep')
+    }
+    payload.retentionKeep = value.retentionKeep
+  }
+  return payload
+}
+
+/** Lenient result parser (like other managed results): missing → omitted. Never carries dump contents. */
+export function parseManagedBackupResult(
+  value: unknown,
+): ManagedBackupCommandResult {
+  if (!isRecord(value) || !isString(value.backupId) || value.backupId.length === 0) {
+    return { backupId: '' }
+  }
+  const result: ManagedBackupCommandResult = { backupId: value.backupId }
+  if (typeof value.deleted === 'boolean') result.deleted = value.deleted
+  if (isString(value.path)) result.path = value.path
+  if (
+    typeof value.sizeBytes === 'number' &&
+    Number.isFinite(value.sizeBytes) &&
+    value.sizeBytes >= 0
+  ) {
+    result.sizeBytes = value.sizeBytes
+  }
+  if (isString(value.checksum) && CHECKSUM_SHA256_RE.test(value.checksum)) {
+    result.checksum = value.checksum
+  }
+  if (isString(value.completedAt)) result.completedAt = value.completedAt
+  if (isString(value.database)) result.database = value.database
+  if (Array.isArray(value.pruned) && value.pruned.every(isString)) {
+    result.pruned = (value.pruned as string[]).slice(0, MAX_PRUNED_BACKUP_IDS)
+  }
+  if (isString(value.summary)) result.summary = value.summary
+  return result
+}
+
+export function parseManagedRestorePayload(
+  value: unknown,
+): ManagedRestoreCommandPayload {
+  if (!isRecord(value)) {
+    throw new Error('Invalid managed.restore payload')
+  }
+  if (
+    !isString(value.managedId) ||
+    value.managedId.length === 0 ||
+    !isString(value.engine) ||
+    !isManagedEngineCode(value.engine) ||
+    !isString(value.backupId) ||
+    !isSafeBackupId(value.backupId) ||
+    !isString(value.artifactExtension) ||
+    !isManagedBackupArtifactExtension(value.artifactExtension) ||
+    !isString(value.checksum) ||
+    !CHECKSUM_SHA256_RE.test(value.checksum)
+  ) {
+    throw new Error('Invalid managed.restore payload')
+  }
+  const payload: ManagedRestoreCommandPayload = {
+    managedId: value.managedId,
+    engine: value.engine,
+    backupId: value.backupId,
+    artifactExtension: value.artifactExtension,
+    checksum: value.checksum,
+  }
+  if (value.database !== undefined) {
+    if (!isString(value.database) || !isSafeIdentifier(value.database)) {
+      throw new Error('Invalid managed.restore payload database')
+    }
+    payload.database = value.database
+  }
+  if (value.sizeBytes !== undefined) {
+    if (
+      typeof value.sizeBytes !== 'number' ||
+      !Number.isInteger(value.sizeBytes) ||
+      value.sizeBytes < 0
+    ) {
+      throw new Error('Invalid managed.restore payload sizeBytes')
+    }
+    payload.sizeBytes = value.sizeBytes
+  }
+  return payload
+}
+
+/** Lenient result parser. Never carries dump contents. */
+export function parseManagedRestoreResult(
+  value: unknown,
+): ManagedRestoreCommandResult {
+  if (!isRecord(value) || !isString(value.backupId) || value.backupId.length === 0) {
+    return { backupId: '' }
+  }
+  const result: ManagedRestoreCommandResult = { backupId: value.backupId }
+  if (isString(value.status)) result.status = value.status
+  if (isString(value.restoredAt)) result.restoredAt = value.restoredAt
+  if (isString(value.database)) result.database = value.database
+  if (isString(value.summary)) result.summary = value.summary
+  return result
+}
+
 export function parseCommandPayload(
   type: CommandType,
   value: unknown,
@@ -1194,7 +2063,12 @@ export function parseCommandPayload(
   | RebootCommandPayload
   | WireguardApplyCommandPayload
   | EnvironmentDeployCommandPayload
-  | EnvironmentStopCommandPayload {
+  | EnvironmentStopCommandPayload
+  | ManagedApplyCommandPayload
+  | ManagedLifecycleCommandPayload
+  | ManagedDestroyCommandPayload
+  | ManagedBackupCommandPayload
+  | ManagedRestoreCommandPayload {
   switch (type) {
     case 'daemon.ping':
       return parsePingPayload(value)
@@ -1212,6 +2086,16 @@ export function parseCommandPayload(
       return parseEnvironmentDeployPayload(value)
     case 'environment.stop':
       return parseEnvironmentStopPayload(value)
+    case 'managed.apply':
+      return parseManagedApplyPayload(value)
+    case 'managed.lifecycle':
+      return parseManagedLifecyclePayload(value)
+    case 'managed.destroy':
+      return parseManagedDestroyPayload(value)
+    case 'managed.backup':
+      return parseManagedBackupPayload(value)
+    case 'managed.restore':
+      return parseManagedRestorePayload(value)
   }
 }
 
@@ -1226,7 +2110,12 @@ export function parseCommandResult(
   | RebootCommandResult
   | WireguardApplyCommandResult
   | EnvironmentDeployCommandResult
-  | EnvironmentStopCommandResult {
+  | EnvironmentStopCommandResult
+  | ManagedApplyCommandResult
+  | ManagedLifecycleCommandResult
+  | ManagedDestroyCommandResult
+  | ManagedBackupCommandResult
+  | ManagedRestoreCommandResult {
   switch (type) {
     case 'daemon.ping':
       return parsePingResult(value)
@@ -1244,5 +2133,15 @@ export function parseCommandResult(
       return parseEnvironmentDeployResult(value)
     case 'environment.stop':
       return parseEnvironmentStopResult(value)
+    case 'managed.apply':
+      return parseManagedApplyResult(value)
+    case 'managed.lifecycle':
+      return parseManagedLifecycleResult(value)
+    case 'managed.destroy':
+      return parseManagedDestroyResult(value)
+    case 'managed.backup':
+      return parseManagedBackupResult(value)
+    case 'managed.restore':
+      return parseManagedRestoreResult(value)
   }
 }

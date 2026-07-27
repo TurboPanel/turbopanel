@@ -8,13 +8,16 @@ export type Db = PostgresJsDatabase<typeof schema>
 const PG_OPTS_DENO = {
   prepare: false as const,
   max: 10,
-  backoff: 0,
+  backoff: () => 0,
 }
 
 export function createMailerDb(): Db | undefined {
   const url = getDatabaseUrl()
   if (!url) return undefined
 
-  const client = postgres(resolvePostgresConnection(url), PG_OPTS_DENO)
+  const connection = resolvePostgresConnection(url)
+  const client = typeof connection === 'string'
+    ? postgres(connection, PG_OPTS_DENO)
+    : postgres({ ...connection, ...PG_OPTS_DENO })
   return drizzle(client, { schema })
 }

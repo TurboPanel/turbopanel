@@ -8,6 +8,13 @@
       "when": 1785096744388,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1785159864312,
+      "tag": "0001_managed_service_principals_and_placement",
+      "breakpoints": true
     }
   ]
 }

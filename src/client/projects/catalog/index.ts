@@ -1,5 +1,12 @@
 import { generatePassword } from '../../../generate-secret.ts'
 import type { ComposeDocument } from '../../../lib/compose/index.ts'
+import {
+  getManagedEngineSpec,
+  MANAGED_ENGINE_CODES,
+  type ManagedEngineCode,
+} from '../../../lib/managed/index.ts'
+
+export { MANAGED_ENGINE_CODES, type ManagedEngineCode }
 
 export const CREATE_PROJECT_TYPES = ['docker-compose', 'template', 'managed'] as const
 export type CreateProjectType = (typeof CREATE_PROJECT_TYPES)[number]
@@ -47,17 +54,6 @@ export type CatalogSummary = {
   description: string
 }
 
-/** Managed engine codes — environment-scoped services, not project-scoped catalog apps. */
-export const MANAGED_ENGINE_CODES = [
-  'postgres',
-  'mysql',
-  'mariadb',
-  'redis',
-  'clickhouse',
-] as const
-
-export type ManagedEngineCode = (typeof MANAGED_ENGINE_CODES)[number]
-
 function composeDocument(data: Record<string, unknown>): ComposeDocument {
   return {
     version: 1,
@@ -87,9 +83,7 @@ export function isManagedEngineCatalogEntry(
  * Engine metadata stored on managed-engine catalog `options`.
  *
  * `provider` is the `principal.provider` CHECK value (`pam` \| `postgres` \|
- * `mysql` \| `redis`) — not necessarily the same string as `engine`. ClickHouse
- * uses `provider: 'postgres'` because `principal_provider_check` has no
- * clickhouse variant; engine ≠ provider by design.
+ * `mysql` \| `redis` \| `clickhouse`).
  */
 export type ManagedEngineOptions = {
   engine: ManagedEngineCode
@@ -98,7 +92,13 @@ export type ManagedEngineOptions = {
   port: number
 }
 
-const PRINCIPAL_PROVIDERS = new Set(['pam', 'postgres', 'mysql', 'redis'])
+const PRINCIPAL_PROVIDERS = new Set([
+  'pam',
+  'postgres',
+  'mysql',
+  'redis',
+  'clickhouse',
+])
 
 /**
  * Validate and return managed-engine options from a catalog entry, or `null`
@@ -126,6 +126,35 @@ export function readManagedEngineOptions(
   }
 
   return { engine, rootUsername, provider, port }
+}
+
+function postgresCatalogEntry(): CatalogEntry {
+  const spec = getManagedEngineSpec('postgres')
+  if (!spec) throw new TypeError('postgres managed engine spec missing')
+  return {
+    code: 'postgres',
+    kind: 'managed',
+    displayName: 'PostgreSQL',
+    description: 'Managed PostgreSQL database',
+    compose: composeDocument({
+      services: {
+        postgres: { image: spec.defaultImage },
+      },
+    }),
+    options: {
+      engine: spec.engine,
+      rootUsername: spec.rootUsername,
+      provider: spec.principalProvider,
+      port: spec.defaultPort,
+    },
+    environments: [
+      {
+        displayName: 'Production',
+        description: 'Production environment',
+        variables: [{ key: 'POSTGRES_PASSWORD', isSecret: true }],
+      },
+    ],
+  }
 }
 
 const CATALOG: CatalogEntry[] = [
@@ -169,30 +198,7 @@ const CATALOG: CatalogEntry[] = [
       },
     ],
   },
-  {
-    code: 'postgres',
-    kind: 'managed',
-    displayName: 'PostgreSQL',
-    description: 'Managed PostgreSQL database',
-    compose: composeDocument({
-      services: {
-        postgres: { image: 'postgres:16' },
-      },
-    }),
-    options: {
-      engine: 'postgres',
-      rootUsername: 'postgres',
-      provider: 'postgres',
-      port: 5432,
-    },
-    environments: [
-      {
-        displayName: 'production',
-        description: 'Production environment',
-        variables: [{ key: 'POSTGRES_PASSWORD', isSecret: true }],
-      },
-    ],
-  },
+  postgresCatalogEntry(),
   {
     code: 'mysql',
     kind: 'managed',
@@ -211,7 +217,7 @@ const CATALOG: CatalogEntry[] = [
     },
     environments: [
       {
-        displayName: 'production',
+        displayName: 'Production',
         description: 'Production environment',
         variables: [{ key: 'MYSQL_ROOT_PASSWORD', isSecret: true }],
       },
@@ -235,7 +241,7 @@ const CATALOG: CatalogEntry[] = [
     },
     environments: [
       {
-        displayName: 'production',
+        displayName: 'Production',
         description: 'Production environment',
         variables: [{ key: 'MYSQL_ROOT_PASSWORD', isSecret: true }],
       },
@@ -259,7 +265,7 @@ const CATALOG: CatalogEntry[] = [
     },
     environments: [
       {
-        displayName: 'production',
+        displayName: 'Production',
         description: 'Production environment',
         variables: [{ key: 'REDIS_PASSWORD', isSecret: true }],
       },
@@ -275,17 +281,15 @@ const CATALOG: CatalogEntry[] = [
         clickhouse: { image: 'clickhouse/clickhouse-server:24' },
       },
     }),
-    // provider is 'postgres' (not 'clickhouse'): principal_provider_check only
-    // permits pam|postgres|mysql|redis — engine ≠ provider by design.
     options: {
       engine: 'clickhouse',
       rootUsername: 'default',
-      provider: 'postgres',
+      provider: 'clickhouse',
       port: 8123,
     },
     environments: [
       {
-        displayName: 'production',
+        displayName: 'Production',
         description: 'Production environment',
         variables: [{ key: 'CLICKHOUSE_PASSWORD', isSecret: true }],
       },

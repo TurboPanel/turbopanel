@@ -39,6 +39,7 @@ import {
   deleteProjectCascade,
   PROJECT_HAS_RUNNING_SERVICES_ERROR,
 } from '../../lib/db/project-delete.ts'
+import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
 
 type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
@@ -47,6 +48,7 @@ export async function scaffoldCatalogEnvironments(
   projectId: string,
   entry: CatalogEntry,
   dataEncryptionSecrets: DerivedSecretsConfig,
+  serverId?: string | null,
 ) {
   for (const env of entry.environments) {
     const [insertedEnv] = await tx
@@ -55,6 +57,7 @@ export async function scaffoldCatalogEnvironments(
         projectId,
         displayName: env.displayName,
         description: env.description ?? null,
+        ...(serverId ? { serverId } : {}),
         options: env.compose ? { compose: env.compose } : null,
       })
       .returning({ id: environment.id })
@@ -137,6 +140,7 @@ async function runCreateProjectTransaction(
     options: Record<string, unknown> | null
     catalogEntry: CatalogEntry | undefined
     dataEncryptionSecrets: DerivedSecretsConfig | undefined
+    serverId: string | null
   },
 ): Promise<string> {
   return db.transaction(async (tx) => {
@@ -147,6 +151,7 @@ async function runCreateProjectTransaction(
         workspaceId: input.workspaceId,
         metadata: input.metadata,
         options: input.options,
+        serverId: input.serverId,
       })
     }
 
@@ -166,6 +171,7 @@ async function runCreateProjectTransaction(
       options: input.options,
       entry: input.catalogEntry,
       dataEncryptionSecrets: input.dataEncryptionSecrets,
+      serverId: input.serverId,
     })
   })
 }
@@ -179,6 +185,7 @@ type CreateProjectInput = {
   catalogEntry: CatalogEntry | undefined
   options: Record<string, unknown> | null
   metadata: Record<string, unknown> | null
+  serverId: string | null
 }
 
 async function parseCreateProjectInput(
@@ -238,6 +245,17 @@ async function parseCreateProjectInput(
   const metadataResult = parseJsonbObject(c, body, 'metadata')
   if (metadataResult instanceof Response) return metadataResult
 
+  let serverId: string | null = null
+  if (body.serverId !== undefined && body.serverId !== null) {
+    if (typeof body.serverId !== 'string' || body.serverId.length === 0) {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+    if (!(await verifyServerInOrg(db, body.serverId, organizationId))) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+    serverId = body.serverId
+  }
+
   return {
     displayName,
     description,
@@ -247,6 +265,7 @@ async function parseCreateProjectInput(
     catalogEntry,
     options: optionsResult,
     metadata: metadataResult,
+    serverId,
   }
 }
 
@@ -289,6 +308,7 @@ async function insertDockerComposeProject(
     workspaceId: string
     metadata: Record<string, unknown> | null
     options: Record<string, unknown> | null
+    serverId: string | null
   },
 ): Promise<string> {
   const compose =
@@ -309,6 +329,7 @@ async function insertDockerComposeProject(
     projectId: inserted.id,
     displayName: 'production',
     description: 'Default environment',
+    ...(fields.serverId ? { serverId: fields.serverId } : {}),
     options: { compose: emptyComposeDocument() },
   })
   return inserted.id
@@ -339,6 +360,7 @@ async function insertCatalogProject(
     options: Record<string, unknown> | null
     entry: CatalogEntry
     dataEncryptionSecrets: DerivedSecretsConfig
+    serverId: string | null
   },
 ): Promise<string> {
   const isEngine =
@@ -365,6 +387,7 @@ async function insertCatalogProject(
     inserted.id,
     fields.entry,
     fields.dataEncryptionSecrets,
+    fields.serverId,
   )
   return inserted.id
 }

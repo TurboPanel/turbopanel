@@ -8,6 +8,7 @@ export type SerializedProjectPrincipal = {
   provider: string
   username: string
   projectId: string | null
+  managedId: string | null
   metadata: unknown
   options: unknown
   /** Services this principal runs as / owns storage for (via `assignment`). */
@@ -26,6 +27,7 @@ export function serializeProjectPrincipal(
     provider: row.provider,
     username: row.username,
     projectId: row.projectId,
+    managedId: row.managedId,
     metadata: row.metadata,
     options: row.options,
     serviceIds: [...serviceIds].sort((a, b) => a.localeCompare(b)),

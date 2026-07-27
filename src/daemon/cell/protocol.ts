@@ -68,6 +68,20 @@ export type DaemonMessage =
     at: string;
   }
   | {
+    type: "managed-logs-request";
+    id: string;
+    managedId: string;
+    tail: number;
+    at: string;
+  }
+  | {
+    type: "managed-logs-result";
+    id: string;
+    logs: string;
+    error?: string;
+    at: string;
+  }
+  | {
     type: "dev-sync-begin";
     id: string;
     totalChunks: number;
@@ -158,6 +172,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set(
     "hello",
     "heartbeat",
     "addresses-result",
+    "managed-logs-result",
     "dev-sync-result",
     "tunnel-token-result",
     "public-urls-update-result",
@@ -189,6 +204,11 @@ type OutboundEnvelopeBase = {
 /** Cell-internal outbound envelope (normalized form, distinct from wire `DaemonMessage`). */
 export type DaemonOutboundEnvelope =
   | (OutboundEnvelopeBase & { kind: "addresses-request" })
+  | (OutboundEnvelopeBase & {
+    kind: "managed-logs-request";
+    managedId: string;
+    tail: number;
+  })
   | (OutboundEnvelopeBase & {
     kind: "dev-sync";
     phase: "begin";
@@ -225,6 +245,13 @@ export type DaemonInboundEnvelope =
     requestId: string;
     at: string;
     addresses: ServerAddresses;
+  }
+  | {
+    kind: "managed-logs-result";
+    requestId: string;
+    at: string;
+    logs: string;
+    error?: string;
   }
   | {
     kind: "dev-sync-result";
@@ -294,6 +321,14 @@ export function wireMessageToInboundEnvelope(
         at: msg.at,
         addresses: msg.addresses,
       };
+    case "managed-logs-result":
+      return {
+        kind: "managed-logs-result",
+        requestId: msg.id,
+        at: msg.at,
+        logs: msg.logs,
+        error: msg.error,
+      };
     case "dev-sync-result":
       return {
         kind: "dev-sync-result",
@@ -355,6 +390,14 @@ export function outboundEnvelopeToWireMessage(
   switch (env.kind) {
     case "addresses-request":
       return { type: "addresses-request", id: env.requestId, at: env.at };
+    case "managed-logs-request":
+      return {
+        type: "managed-logs-request",
+        id: env.requestId,
+        managedId: env.managedId,
+        tail: env.tail,
+        at: env.at,
+      };
     case "dev-sync":
       if (env.phase === "begin") {
         return {

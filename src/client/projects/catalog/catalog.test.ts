@@ -1,4 +1,5 @@
 import { assertEquals } from 'jsr:@std/assert'
+import { getManagedEngineSpec } from '../../../lib/managed/index.ts'
 import {
   getCatalogEntry,
   isManagedEngineCatalogEntry,
@@ -15,7 +16,13 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
-const PRINCIPAL_PROVIDERS = new Set(['pam', 'postgres', 'mysql', 'redis'])
+const PRINCIPAL_PROVIDERS = new Set([
+  'pam',
+  'postgres',
+  'mysql',
+  'redis',
+  'clickhouse',
+])
 
 test('listCatalog includes all managed engine codes as kind managed', () => {
   const byCode = new Map(listCatalog().map((entry) => [entry.code, entry]))
@@ -75,4 +82,22 @@ test('each managed engine declares one environment with one secret and no plaint
     assertEquals(variable.isSecret, true)
     assertEquals(variable.value, undefined)
   }
+})
+
+test('PRINCIPAL_PROVIDERS includes clickhouse and ClickHouse catalog uses it', () => {
+  assertEquals(PRINCIPAL_PROVIDERS.has('clickhouse'), true)
+  const entry = getCatalogEntry('clickhouse')
+  if (!entry) throw new TypeError('missing clickhouse')
+  const options = readManagedEngineOptions(entry)
+  if (!options) throw new TypeError('expected clickhouse options')
+  assertEquals(options.provider, 'clickhouse')
+})
+
+test('postgres catalog image equals managed engine spec default', () => {
+  const spec = getManagedEngineSpec('postgres')
+  if (!spec) throw new TypeError('postgres spec missing')
+  const entry = getCatalogEntry('postgres')
+  if (!entry) throw new TypeError('missing postgres')
+  const services = entry.compose.data.services as Record<string, { image?: string }>
+  assertEquals(services.postgres?.image, spec.defaultImage)
 })

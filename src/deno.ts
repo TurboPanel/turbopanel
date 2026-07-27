@@ -189,6 +189,11 @@ if (isNoopCommandQueue(commandQueue)) {
         db,
         registry: daemonCellRegistry,
         amqpUrl,
+        commandQueue,
+        resealDeps: {
+          secretsConfig,
+          dataEncryptionSecrets,
+        },
       })
     } catch (err) {
       logWarn(

@@ -65,6 +65,31 @@ const dbUrl = getDatabaseUrl()
  */
 const test = Deno.test.bind(Deno)
 
+type ErrorJson = {
+  error: string
+  code?: string
+  blockers?: Array<{ kind: string; count: number }>
+}
+
+type ServersListJson = {
+  servers: Array<{
+    id: string
+    connected: boolean
+    geo: unknown
+    os: unknown
+    osDisplay: unknown
+    osLogo: unknown
+  }>
+}
+
+type ServersStatusListJson = {
+  servers: Record<string, unknown>[]
+}
+
+async function readJson<T>(res: Response): Promise<T> {
+  return await res.json() as T
+}
+
 function createMockCell(
   serverId: string,
   purgedIds: string[],
@@ -126,7 +151,7 @@ function createMockCell(
     releaseDeliveryLease: noopAsync,
     readOutboxBatch: async () => [],
     ackOutbox: noopAsync,
-    prune: async () => false,
+    prune: async () => [],
     clearUpdateStatus: async () => ({ cleared: 0 }),
     purge: async () => {
       if (failPurge) {
@@ -150,24 +175,26 @@ function createTrackingRegistry(options?: {
   const cells = new Map<string, DaemonCell>()
   const onlineIds = options?.onlineIds ?? []
 
+  const getCell = (serverId: string): DaemonCell => {
+    if (options?.getCellThrows) {
+      throw new Error('getCell must not be called')
+    }
+    let cell = cells.get(serverId)
+    if (!cell) {
+      cell = createMockCell(
+        serverId,
+        purgedIds,
+        failPurgeIds.has(serverId),
+        { listRequestsThrows: options?.listRequestsThrows },
+      )
+      cells.set(serverId, cell)
+    }
+    return cell
+  }
+
   return {
     purgedIds,
-    getCell(serverId: string): DaemonCell {
-      if (options?.getCellThrows) {
-        throw new Error('getCell must not be called')
-      }
-      let cell = cells.get(serverId)
-      if (!cell) {
-        cell = createMockCell(
-          serverId,
-          purgedIds,
-          failPurgeIds.has(serverId),
-          { listRequestsThrows: options?.listRequestsThrows },
-        )
-        cells.set(serverId, cell)
-      }
-      return cell
-    },
+    getCell,
     listOnlineServerIds: options?.listOnlineServerIdsThrows
       ? async () => {
         throw new Error('listOnlineServerIds must not be called')
@@ -179,7 +206,7 @@ function createTrackingRegistry(options?: {
       }
       : async () => new Map(),
     purge: async (serverId: string) => {
-      await this.getCell(serverId).purge()
+      await getCell(serverId).purge()
     },
   }
 }
@@ -202,7 +229,7 @@ async function createServerRoutesTestApp(
     }
     return next()
   })
-  registerServerRoutes(app, { secrets, runtime: 'deno' })
+  registerServerRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
   return { app, secrets }
 }
 
@@ -290,7 +317,7 @@ test('createListRowsOnlyReadDb default-denies non-select database access', () =>
     'session',
   ] as const) {
     assertThrows(
-      () => readDb[method],
+      () => Reflect.get(readDb, method),
       Error,
       'readDb must not access',
     )
@@ -589,7 +616,7 @@ test('DELETE /servers/:id returns 403 for the co-located control plane server', 
       })
 
       assertEquals(res.status, 403)
-      const body = await res.json()
+      const body = await readJson<ErrorJson>(res)
       assertEquals(body.error, colocatedServerDeleteBlockedReason())
       assertEquals(registry.purgedIds.length, 0)
     } finally {
@@ -631,7 +658,7 @@ test('DELETE /servers/:id returns 409 when networks block deletion', async () =>
       })
 
       assertEquals(res.status, 409)
-      const body = await res.json()
+      const body = await readJson<ErrorJson>(res)
       assertEquals(body.error, SERVER_HAS_BLOCKERS_ERROR)
       assertEquals(body.code, SERVER_HAS_BLOCKERS_CODE)
       assertEquals(body.blockers, [{ kind: 'network', count: 1 }])
@@ -697,7 +724,7 @@ test('DELETE /servers/:id invalidates the bound license on Workers runtime', asy
     c.set('daemonCellRegistry', registry)
     return next()
   })
-  registerServerRoutes(app, { secrets, runtime: 'workers' })
+  registerServerRoutes(app, { secrets, runtime: 'workers', signupEnvOverride: undefined })
 
   const email = `server-delete-workers-${crypto.randomUUID()}@example.com`
   const [insertedOrg] = await db
@@ -802,7 +829,7 @@ test('DELETE /servers/:id returns 409 when child resources block deletion', asyn
       })
 
       assertEquals(res.status, 409)
-      const body = await res.json()
+      const body = await readJson<ErrorJson>(res)
       assertEquals(body.error, hierarchyDelete.HIERARCHY_DELETE_HAS_CHILDREN_ERROR)
       assertEquals(registry.purgedIds.length, 0)
 
@@ -872,7 +899,7 @@ test('DELETE /servers/:id returns 503 when daemon cell registry is unavailable',
     })
 
     assertEquals(res.status, 503)
-    const body = await res.json()
+    const body = await readJson<ErrorJson>(res)
     assertEquals(body.error, 'Daemon cell registry unavailable')
 
     const remaining = await db
@@ -954,7 +981,12 @@ test('DELETE /servers/:id returns 500 when purge fails after row delete', async 
     })
 
     assertEquals(res.status, 500)
-    const body = await res.json()
+    const body = await readJson<{
+      ok: boolean
+      serverId: string
+      deleted: boolean
+      error: string
+    }>(res)
     assertEquals(body.ok, false)
     assertEquals(body.serverId, serverId)
     assertEquals(body.deleted, true)
@@ -1062,7 +1094,10 @@ test('GET /servers/updates does not call listRequests on the cell', async () => 
     })
 
     assertEquals(res.status, 200)
-    const body = await res.json()
+    const body = await readJson<{
+      ok: boolean
+      servers: Array<{ serverId: string; status: string }>
+    }>(res)
     assertEquals(body.ok, true)
     assertEquals(body.servers.length, 1)
     assertEquals(body.servers[0].serverId, serverId)
@@ -1136,7 +1171,7 @@ test('GET /servers returns Postgres data without calling getSnapshots', async ()
     })
 
     assertEquals(res.status, 200)
-    const body = await res.json()
+    const body = await readJson<ServersListJson>(res)
     assertEquals(body.servers.length, 1)
     assertEquals(body.servers[0].id, serverId)
     assertEquals(body.servers[0].connected, true)
@@ -1198,7 +1233,7 @@ test('GET /servers includes os, osDisplay, and osLogo from metadata without cach
     })
 
     assertEquals(res.status, 200)
-    const body = await res.json()
+    const body = await readJson<ServersListJson>(res)
     assertEquals(body.servers.length, 1)
     assertEquals(body.servers[0].os, {
       family: 'linux',
@@ -1247,7 +1282,7 @@ test('GET /servers/status returns Postgres data without calling getSnapshots', a
 
     assertEquals(res.status, 200)
     assertEquals(res.headers.get('Cache-Control'), 'private, max-age=5')
-    const body = await res.json()
+    const body = await readJson<ServersStatusListJson>(res)
     assertEquals(body.servers.length, 1)
     assertEquals(body.servers[0].serverId, serverId)
     assertEquals(body.servers[0].connected, true)
@@ -1285,7 +1320,7 @@ test('GET /servers/:id/status returns Postgres data without calling getSnapshots
 
     assertEquals(res.status, 200)
     assertEquals(res.headers.get('Cache-Control'), 'private, max-age=5')
-    const body = await res.json()
+    const body = await readJson<Record<string, unknown>>(res)
     assertEquals(body.serverId, serverId)
     assertEquals(body.connected, true)
     assertServerStatusRecordShape(body)
@@ -1360,7 +1395,10 @@ test('GET /servers/:id/cell returns data for an admin user', async () => {
     })
 
     assertEquals(res.status, 200)
-    const body = await res.json()
+    const body = await readJson<{
+      ok: boolean
+      snapshot: { serverId: string }
+    }>(res)
     assertEquals(body.ok, true)
     assertEquals(body.snapshot.serverId, serverId)
   } finally {
@@ -1434,7 +1472,7 @@ test('GET /servers — cached payload is list rows only (presence comes from pri
     })
 
     assertEquals(res.status, 200)
-    const body = await res.json()
+    const body = await readJson<ServersListJson>(res)
     assertEquals(body.servers.length, 1)
     assertEquals(recordingCache.store.size, 1)
     assertEquals(recordingCache.loadCallCount, 1)
@@ -1498,7 +1536,7 @@ test('GET /servers — empty visibleIds short-circuits before cache', async () =
     })
 
     assertEquals(res.status, 200)
-    const body = await res.json()
+    const body = await readJson<ServersListJson>(res)
     assertEquals(body.servers, [])
     assertEquals(recordingCache.readModels.length, 0)
   } finally {
@@ -1553,7 +1591,7 @@ test('GET /servers — differing visibleIds produce different cache keys', async
 
     const second = await app.request('/servers', { headers })
     assertEquals(second.status, 200)
-    const secondBody = await second.json()
+    const secondBody = await readJson<ServersListJson>(second)
     assertEquals(secondBody.servers.length, 2)
     assertEquals(recordingCache.store.size, 2)
     assertEquals(recordingCache.loadCallCount, 2)
@@ -1587,7 +1625,7 @@ test('GET /servers — presence reflects live data, not cached value', async () 
 
     const first = await app.request('/servers', { headers })
     assertEquals(first.status, 200)
-    const firstBody = await first.json()
+    const firstBody = await readJson<ServersListJson>(first)
     assertEquals(firstBody.servers[0].connected, false)
     assertEquals(recordingCache.loadCallCount, 1)
 
@@ -1595,7 +1633,7 @@ test('GET /servers — presence reflects live data, not cached value', async () 
 
     const second = await app.request('/servers', { headers })
     assertEquals(second.status, 200)
-    const secondBody = await second.json()
+    const secondBody = await readJson<ServersListJson>(second)
     assertEquals(secondBody.servers[0].connected, true)
     assertEquals(recordingCache.store.size, 1)
     assertEquals(recordingCache.loadCallCount, 1)
@@ -1627,7 +1665,7 @@ test('GET /servers does not return stale servers after organization grant revoca
 
     const first = await app.request('/servers', { headers })
     assertEquals(first.status, 200)
-    const firstBody = await first.json()
+    const firstBody = await readJson<ServersListJson>(first)
     assertEquals(firstBody.servers.length, 1)
     assertEquals(firstBody.servers[0].id, serverId)
     assertEquals(recordingCache.store.size, 1)
@@ -1641,7 +1679,7 @@ test('GET /servers does not return stale servers after organization grant revoca
 
     const second = await app.request('/servers', { headers })
     assertEquals(second.status, 200)
-    const secondBody = await second.json()
+    const secondBody = await readJson<ServersListJson>(second)
     assertEquals(secondBody.servers, [])
     assertEquals(recordingCache.loadCallCount, 1)
   })

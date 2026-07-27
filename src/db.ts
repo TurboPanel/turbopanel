@@ -41,15 +41,17 @@ export type WorkersDbOptions = {
  * Self-hosted Deno: up to 10 concurrent connections.
  * No idle_timeout — let connections live for the process lifetime so postgres.js
  * never has to recreate them mid-request. Tilt restarts the process anyway.
- * backoff: 0 — disable exponential reconnect delay; options.shared.retries can
- * accumulate to 6+ on any connection error and backoff(6)*1000 ≈ 7300ms, causing
- * the entire pool to pause for ~7s waiting to reconnect. With 0, reconnect is
- * immediate after any close event regardless of retry count.
+ * backoff: () => 0 — disable exponential reconnect delay; options.shared.retries
+ * can accumulate to 6+ on any connection error and the default backoff(6)*1000 ≈
+ * 7300ms, causing the entire pool to pause for ~7s waiting to reconnect. With a
+ * zero delay, reconnect is immediate after any close event regardless of retry
+ * count. (Runtime also accepts a bare `0`, but postgres.js types only allow
+ * boolean | (attempt) => number.)
  */
 const PG_OPTS_DENO = {
   prepare: false as const,
   max: 10,
-  backoff: 0,
+  backoff: () => 0,
 }
 
 /**
@@ -81,9 +83,8 @@ export function createWorkersDb(
       ? { idle_timeout: options.idleTimeoutSeconds }
       : {}),
     connection: {
-      statement_timeout: String(
+      statement_timeout:
         options.statementTimeoutMs ?? DEFAULT_WORKERS_STATEMENT_TIMEOUT_MS,
-      ),
     },
   })
   return drizzle(client, { schema })
@@ -91,12 +92,24 @@ export function createWorkersDb(
 
 const DATABASE_URL_REQUIRED = 'TURBOPANEL_DATABASE_URL is required'
 
+/** Open a postgres.js client from a URL that may be TCP or Unix-socket form. */
+function createPostgresJsClient(
+  url: string,
+  options: typeof PG_OPTS_DENO,
+): ReturnType<typeof postgres> {
+  const connection = resolvePostgresConnection(url)
+  if (typeof connection === 'string') {
+    return postgres(connection, options)
+  }
+  return postgres({ ...connection, ...options })
+}
+
 export function createDenoDb(): Db {
   const url = getDatabaseUrl()
   if (!url) {
     throw new Error(DATABASE_URL_REQUIRED)
   }
-  const client = postgres(resolvePostgresConnection(url), PG_OPTS_DENO)
+  const client = createPostgresJsClient(url, PG_OPTS_DENO)
   return drizzle(client, { schema })
 }
 
@@ -205,7 +218,7 @@ export async function withToolingDb<T>(fn: (db: Db) => Promise<T>): Promise<T> {
   if (!url) {
     throw new Error(DATABASE_URL_REQUIRED)
   }
-  const client = postgres(resolvePostgresConnection(url), PG_OPTS_DENO)
+  const client = createPostgresJsClient(url, PG_OPTS_DENO)
   const db = drizzle(client, { schema })
   try {
     return await fn(db)

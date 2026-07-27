@@ -6,11 +6,16 @@ import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../..
 import { attachDaemonStateToServer } from '../../daemon/authn/server-identity-db.ts'
 import {
   command,
+  environment,
   ip,
+  managed,
   organization,
   peer,
+  principal,
+  project,
   server,
   vpn,
+  workspace,
 } from '../db/schema.ts'
 import {
   createCommandRecord,
@@ -630,6 +635,176 @@ test('processCommandEnvelope wireguard reconcile preserves tunnel_ip_id', async 
     await db.delete(peer).where(eq(peer.id, peerRow!.id))
     await db.delete(ip).where(eq(ip.id, tunnel!.id))
     await db.delete(vpn).where(eq(vpn.id, vpnRow!.id))
+  })
+})
+
+/**
+ * Full workspace → project → environment → managed → principal chain, plus a
+ * connected daemon on `serverId` — the minimal fixture that satisfies the FK
+ * requirements to exercise `applyManagedDestroySideEffect`.
+ */
+async function withManagedDestroyFixtures(
+  fn: (ctx: {
+    db: ReturnType<typeof createDenoDb>
+    serverId: string
+    managedId: string
+    rootPrincipalId: string
+  }) => Promise<void>,
+): Promise<void> {
+  await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+
+    const [workspaceRow] = await db
+      .insert(workspace)
+      .values({ organizationId, displayName: 'Managed Destroy Test Workspace' })
+      .returning({ id: workspace.id })
+    const [projectRow] = await db
+      .insert(project)
+      .values({
+        workspaceId: workspaceRow!.id,
+        displayName: 'Managed Destroy Test Project',
+        metadata: { type: 'managed' },
+      })
+      .returning({ id: project.id })
+    const [environmentRow] = await db
+      .insert(environment)
+      .values({
+        projectId: projectRow!.id,
+        serverId,
+        displayName: 'Production',
+      })
+      .returning({ id: environment.id })
+    const [managedRow] = await db
+      .insert(managed)
+      .values({
+        environmentId: environmentRow!.id,
+        serverId,
+        displayName: 'Managed Destroy Test Postgres',
+        engine: 'postgres',
+        status: 'ready',
+        metadata: {},
+        options: { settings: {}, databases: ['postgres'] },
+      })
+      .returning({ id: managed.id })
+    const managedId = managedRow!.id
+    const [principalRow] = await db
+      .insert(principal)
+      .values({
+        kind: 'database',
+        provider: 'postgres',
+        username: 'postgres',
+        managedId,
+        metadata: { managedRoot: true },
+      })
+      .returning({ id: principal.id })
+
+    try {
+      await fn({
+        db,
+        serverId,
+        managedId,
+        rootPrincipalId: principalRow!.id,
+      })
+    } finally {
+      await db.delete(principal).where(eq(principal.managedId, managedId))
+      await db.delete(managed).where(eq(managed.id, managedId))
+      await db.delete(environment).where(eq(environment.id, environmentRow!.id))
+      await db.delete(project).where(eq(project.id, projectRow!.id))
+      await db.delete(workspace).where(eq(workspace.id, workspaceRow!.id))
+    }
+  })
+}
+
+test('processCommandEnvelope deletes the managed row and cascades principals when deleteAfterDestroy succeeds', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId, rootPrincipalId }) => {
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.destroy',
+      payload: { managedId, removeVolumes: true, deleteAfterDestroy: true },
+    })
+
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: { status: 'stopped', containers: [] },
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.status, 'succeeded')
+
+    // Single-click delete: a successful destroy with the deleteAfterDestroy
+    // marker removes the managed row, which cascades to its principals via
+    // `principal.managed_id ON DELETE CASCADE`.
+    const [managedAfter] = await db
+      .select({ id: managed.id })
+      .from(managed)
+      .where(eq(managed.id, managedId))
+      .limit(1)
+    assertEquals(managedAfter, undefined)
+
+    const [principalAfter] = await db
+      .select({ id: principal.id })
+      .from(principal)
+      .where(eq(principal.id, rootPrincipalId))
+      .limit(1)
+    assertEquals(principalAfter, undefined)
+  })
+})
+
+test('processCommandEnvelope leaves the managed row and principals in place without deleteAfterDestroy', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId, rootPrincipalId }) => {
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.destroy',
+      payload: { managedId, removeVolumes: true },
+    })
+
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: { status: 'stopped', containers: [] },
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.status, 'succeeded')
+
+    // No marker → this is not (yet) an API hard-delete completion, so the row
+    // and its principal must survive a successful destroy — this is the seam
+    // reserved for a future "destroy runtime only" action.
+    const [managedAfter] = await db
+      .select({ id: managed.id, status: managed.status })
+      .from(managed)
+      .where(eq(managed.id, managedId))
+      .limit(1)
+    assertEquals(managedAfter?.id, managedId)
+    assertEquals(managedAfter?.status, 'stopped')
+
+    const [principalAfter] = await db
+      .select({ id: principal.id })
+      .from(principal)
+      .where(eq(principal.id, rootPrincipalId))
+      .limit(1)
+    assertEquals(principalAfter?.id, rootPrincipalId)
   })
 })
 

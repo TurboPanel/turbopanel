@@ -14,6 +14,7 @@ describe('serializeProjectPrincipal', () => {
       username: 'app',
       password: 'tpsecret.must-not-leak',
       projectId: '00000000-0000-4000-8000-000000000002',
+      managedId: null,
       metadata: { uid: 10001, gid: 10001 },
       options: null,
       createdAt: '2026-01-01T00:00:00.000Z',
@@ -24,6 +25,7 @@ describe('serializeProjectPrincipal', () => {
     assertEquals('password' in serialized, false)
     assertEquals(serialized.username, 'app')
     assertEquals(serialized.projectId, row.projectId)
+    assertEquals(serialized.managedId, null)
     assertEquals(serialized.serviceIds, ['b-id', 'a-id'])
   })
 })

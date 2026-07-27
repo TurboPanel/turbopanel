@@ -65,7 +65,12 @@ export function collectHealthCheckWarnings(
   return warnings
 }
 
-function applyResources(
+/**
+ * Map Coolify-style resource limits onto a Compose service fragment.
+ * Shared by tenant deploy and managed-engine runtime specs so `cpus` /
+ * `mem_limit` / `mem_reservation` / `deploy.resources.limits` never drift.
+ */
+export function applyResourcesToComposeService(
   service: Record<string, unknown>,
   resources: NonNullable<ServiceOptions['resources']>,
 ): void {
@@ -137,7 +142,7 @@ function applyParsedOptionsToService(
   }
 
   if (parsed.resources) {
-    applyResources(service, parsed.resources)
+    applyResourcesToComposeService(service, parsed.resources)
   }
 
   applyRestartPolicy(service, resolveMaxRestartAttempts(parsed))

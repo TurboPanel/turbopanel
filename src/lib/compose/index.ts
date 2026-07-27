@@ -66,6 +66,7 @@ export {
   type DeployVariableMaterial,
 } from './apply-variables.ts'
 export {
+  applyResourcesToComposeService,
   applyServiceOptionsToComposeDocument,
   buildServiceOptionsMap,
   collectHealthCheckWarnings,

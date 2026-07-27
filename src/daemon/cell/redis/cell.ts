@@ -1017,6 +1017,11 @@ export class RedisDaemonCell implements DaemonCell {
         status = "done";
         result = { addresses: inbound.addresses };
         break;
+      case "managed-logs-result":
+        status = inbound.error ? "failed" : "done";
+        result = { logs: inbound.logs };
+        if (inbound.error) error = inbound.error;
+        break;
       case "public-urls-update-result":
       case "dev-sync-result":
       case "tunnel-token-result":
