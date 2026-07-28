@@ -672,6 +672,70 @@ function applyProjectionTrigger(
   }
 }
 
+/** `daemon` jsonb + dedicated status columns — the non-metadata half of the projection patch. */
+function buildDaemonAndStatusColumnPatch(
+  existing: ServerDaemonState,
+  nextProjection: ServerDaemonProjection | undefined,
+  writeProjection: boolean,
+  nextStatus: ServerDaemonStatus,
+  writeStatus: boolean,
+): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+
+  if (writeProjection || writeStatus) {
+    // Preserve key; rewrite projection when identity/agent/update changes.
+    // Status is never stored in jsonb — only dedicated columns.
+    patch.daemon = buildMergedDaemonState(
+      existing,
+      writeProjection ? nextProjection : existing.projection,
+    );
+  }
+
+  if (writeStatus) {
+    Object.assign(patch, statusColumnPatch(nextStatus));
+  }
+
+  return patch;
+}
+
+/** Dedicated identity columns + metadata jsonb delta — the `touchMetadata` half of the patch. */
+function buildIdentityAndMetadataPatch(
+  trigger: ProjectionTrigger,
+  existing: ServerDaemonStateWithMetadata,
+  nextProjection: ServerDaemonProjection | undefined,
+  geoDue: boolean,
+  incomingGeo: ServerGeo | undefined,
+): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+
+  const projectionIdentity =
+    trigger.kind === "online" || trigger.kind === "identity"
+      ? trigger.identity
+      : undefined;
+  const identityColumns = buildIdentityColumnPatch(
+    { hostname: existing.hostname, machineId: existing.machineId },
+    nextProjection,
+  );
+  if (identityColumns) {
+    Object.assign(patch, identityColumns);
+  }
+
+  const mergedMetadata = buildMetadataPatch(
+    existing.metadata,
+    geoDue ? incomingGeo : undefined,
+    projectionIdentity,
+  );
+  if (mergedMetadata) {
+    // jsonb || keeps keys that exist only in the live column (e.g. os written
+    // by a concurrent hello) so a stale full-object replace cannot wipe them.
+    patch.metadata = sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${
+      JSON.stringify(mergedMetadata)
+    }::jsonb`;
+  }
+
+  return patch;
+}
+
 /**
  * Sparse projection into `server.daemon` (`key` + `projection`) and dedicated
  * status / identity columns — never clobbers `server.daemon.key`.
@@ -708,45 +772,20 @@ export async function projectServerDaemon(
 
   const patch: Record<string, unknown> = {
     updatedAt: now,
+    ...buildDaemonAndStatusColumnPatch(
+      existing,
+      nextProjection,
+      writeProjection,
+      nextStatus,
+      writeStatus,
+    ),
   };
 
-  if (writeProjection || writeStatus) {
-    // Preserve key; rewrite projection when identity/agent/update changes.
-    // Status is never stored in jsonb — only dedicated columns.
-    patch.daemon = buildMergedDaemonState(
-      existing,
-      writeProjection ? nextProjection : existing.projection,
-    );
-  }
-
-  if (writeStatus) {
-    Object.assign(patch, statusColumnPatch(nextStatus));
-  }
-
   if (touchMetadata) {
-    const projectionIdentity =
-      trigger.kind === "online" || trigger.kind === "identity"
-        ? trigger.identity
-        : undefined;
-    const identityColumns = buildIdentityColumnPatch(
-      { hostname: existing.hostname, machineId: existing.machineId },
-      nextProjection,
+    Object.assign(
+      patch,
+      buildIdentityAndMetadataPatch(trigger, existing, nextProjection, geoDue, incomingGeo),
     );
-    if (identityColumns) {
-      Object.assign(patch, identityColumns);
-    }
-    const mergedMetadata = buildMetadataPatch(
-      existing.metadata,
-      geoDue ? incomingGeo : undefined,
-      projectionIdentity,
-    );
-    if (mergedMetadata) {
-      // jsonb || keeps keys that exist only in the live column (e.g. os written
-      // by a concurrent hello) so a stale full-object replace cannot wipe them.
-      patch.metadata = sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${
-        JSON.stringify(mergedMetadata)
-      }::jsonb`;
-    }
   }
 
   await db.update(server).set(patch).where(eq(server.id, serverId));

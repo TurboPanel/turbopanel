@@ -40,7 +40,7 @@ const DATA_VOLUME_TARGET = '/var/lib/postgresql'
 const INCLUDE_DIRECTIVE_RE =
   /^\s*(include|include_if_exists|include_dir)\b/i
 /** Non-comment, non-blank postgresql.conf setting line. */
-const CONF_SETTING_LINE_RE = /^\s*[A-Za-z_]\w*\s*=\s*.+$/
+const CONF_SETTING_LINE_RE = /^\s*[A-Za-z_]\w*\s*=.+$/
 /** Captures the setting name from a `CONF_SETTING_LINE_RE`-matched line. */
 const CONF_SETTING_KEY_RE = /^\s*([A-Za-z_]\w*)\s*=/
 

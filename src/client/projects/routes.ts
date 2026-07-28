@@ -188,17 +188,16 @@ type CreateProjectInput = {
   serverId: string | null
 }
 
-async function parseCreateProjectInput(
+/**
+ * Confirms `workspaceId` belongs to `organizationId` and the caller may
+ * create resources within it. Shared by create and move-target validation.
+ */
+async function resolveWorkspaceTarget(
   c: Context<AppEnv>,
   db: Db,
+  workspaceId: string,
   organizationId: string,
-): Promise<CreateProjectInput | Response> {
-  const body = await parseJsonBody(c)
-  if (body instanceof Response) return body
-
-  const workspaceId = requireStringField(c, body, 'workspaceId')
-  if (workspaceId instanceof Response) return workspaceId
-
+): Promise<string | Response> {
   const workspaceRows = await db
     .select({ id: workspace.id })
     .from(workspace)
@@ -212,14 +211,65 @@ async function parseCreateProjectInput(
   const denied = await assertCanCreateOr403(c, 'workspace', workspaceId)
   if (denied) return denied
 
-  let displayName: string | null
-  let description: string | null
+  return workspaceId
+}
+
+async function resolveWorkspaceIdForCreate(
+  c: Context<AppEnv>,
+  db: Db,
+  body: Record<string, unknown>,
+  organizationId: string,
+): Promise<string | Response> {
+  const workspaceId = requireStringField(c, body, 'workspaceId')
+  if (workspaceId instanceof Response) return workspaceId
+
+  return resolveWorkspaceTarget(c, db, workspaceId, organizationId)
+}
+
+function parseDisplayNameAndDescription(
+  c: Context<AppEnv>,
+  body: Record<string, unknown>,
+): { displayName: string | null; description: string | null } | Response {
   try {
-    displayName = parseDisplayName(body)
-    description = parseDescription(body)
+    return {
+      displayName: parseDisplayName(body),
+      description: parseDescription(body),
+    }
   } catch {
     return c.json({ error: 'Invalid request' }, 400)
   }
+}
+
+async function resolveServerIdForCreate(
+  c: Context<AppEnv>,
+  db: Db,
+  body: Record<string, unknown>,
+  organizationId: string,
+): Promise<string | null | Response> {
+  if (body.serverId === undefined || body.serverId === null) return null
+  if (typeof body.serverId !== 'string' || body.serverId.length === 0) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  if (!(await verifyServerInOrg(db, body.serverId, organizationId))) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+  return body.serverId
+}
+
+async function parseCreateProjectInput(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+): Promise<CreateProjectInput | Response> {
+  const body = await parseJsonBody(c)
+  if (body instanceof Response) return body
+
+  const workspaceId = await resolveWorkspaceIdForCreate(c, db, body, organizationId)
+  if (workspaceId instanceof Response) return workspaceId
+
+  const nameFields = parseDisplayNameAndDescription(c, body)
+  if (nameFields instanceof Response) return nameFields
+  const { displayName, description } = nameFields
 
   const projectType = resolveCreateProjectType(body)
   if (projectType === 'invalid') {
@@ -245,16 +295,8 @@ async function parseCreateProjectInput(
   const metadataResult = parseJsonbObject(c, body, 'metadata')
   if (metadataResult instanceof Response) return metadataResult
 
-  let serverId: string | null = null
-  if (body.serverId !== undefined && body.serverId !== null) {
-    if (typeof body.serverId !== 'string' || body.serverId.length === 0) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-    if (!(await verifyServerInOrg(db, body.serverId, organizationId))) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-    serverId = body.serverId
-  }
+  const serverId = await resolveServerIdForCreate(c, db, body, organizationId)
+  if (serverId instanceof Response) return serverId
 
   return {
     displayName,
@@ -284,20 +326,7 @@ async function parseProjectMoveTarget(
   const workspaceId = requireStringField(c, body, 'workspaceId')
   if (workspaceId instanceof Response) return workspaceId
 
-  const workspaceRows = await db
-    .select({ id: workspace.id })
-    .from(workspace)
-    .where(and(eq(workspace.id, workspaceId), eq(workspace.organizationId, organizationId)))
-    .limit(1)
-
-  if (!workspaceRows[0]) {
-    return c.json({ error: 'Not found' }, 404)
-  }
-
-  const denied = await assertCanCreateOr403(c, 'workspace', workspaceId)
-  if (denied) return denied
-
-  return workspaceId
+  return resolveWorkspaceTarget(c, db, workspaceId, organizationId)
 }
 
 async function insertDockerComposeProject(

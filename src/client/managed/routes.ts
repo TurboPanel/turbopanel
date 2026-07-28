@@ -597,17 +597,15 @@ async function prepareApplyForManaged(
 async function runApplyForManaged(
   c: Context<AppEnv>,
   db: NonNullable<ReturnType<typeof getDb>>,
-  auth: { userId: string },
-  ctx: ManagedContext,
-  managedRow: NonNullable<Awaited<ReturnType<typeof findManagedForEnvironment>>>,
-  options: ManagedRowOptions,
-  targetServerId: string,
-  extra?: {
-    dropUsers?: string[]
-    dropDatabases?: string[]
-    omitPrincipalIds?: string[]
+  params: {
+    userId: string
+    ctx: ManagedContext
+    managedRow: ManagedRow
+    options: ManagedRowOptions
+    targetServerId: string
   },
 ): Promise<Response> {
+  const { userId, ctx, managedRow, options, targetServerId } = params
   const prepared = await prepareApplyForManaged(
     c,
     db,
@@ -615,18 +613,83 @@ async function runApplyForManaged(
     managedRow,
     options,
     targetServerId,
-    extra,
   )
   if (prepared instanceof Response) return prepared
 
   const enqueued = await enqueueManagedApply(c, db, prepared.commandQueue, {
     serverId: targetServerId,
-    userId: auth.userId,
+    userId,
     managedId: managedRow.id,
     payload: prepared.payload,
   })
   if (enqueued instanceof Response) return enqueued
   return c.json(enqueued)
+}
+
+async function createManagedAndEnqueueApply(
+  c: Context<AppEnv>,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  params: {
+    environmentId: string
+    ctx: ManagedContext
+    createServerId: string
+    userId: string
+    plan: {
+      displayName: string
+      rowOptions: ReturnType<typeof writeManagedRowOptions>
+      initialDatabase: string
+    }
+    dataEncryptionSecrets: DerivedSecretsConfig
+    commandQueue: CommandQueue
+  },
+): Promise<Response> {
+  const {
+    environmentId,
+    ctx,
+    createServerId,
+    userId,
+    plan,
+    dataEncryptionSecrets,
+    commandQueue,
+  } = params
+
+  let created: Awaited<ReturnType<typeof insertManagedCreateTransaction>>
+  try {
+    created = await db.transaction(async (tx) =>
+      insertManagedCreateTransaction(c, tx, {
+        environmentId,
+        ctx,
+        serverId: createServerId,
+        displayName: plan.displayName,
+        rowOptions: plan.rowOptions,
+        initialDatabase: plan.initialDatabase,
+        dataEncryptionSecrets,
+      }))
+  } catch (error) {
+    if (error instanceof ManagedPrepareRollbackError) {
+      return mapManagedApplyPrepareError(c, error.prepareError)
+    }
+    throw error
+  }
+
+  const enqueued = await enqueueManagedApply(c, db, commandQueue, {
+    serverId: createServerId,
+    userId,
+    managedId: created.row.id,
+    payload: created.payload,
+  })
+  if (enqueued instanceof Response) {
+    await deleteManagedCompensation(db, created.row.id)
+    return enqueued
+  }
+
+  return c.json({
+    ok: true as const,
+    managed: serializeManagedRow(created.row, createServerId),
+    commandId: enqueued.commandId,
+    serverId: enqueued.serverId,
+    rootPassword: created.rootPassword,
+  })
 }
 
 export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -695,42 +758,14 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     )
     if (plan instanceof Response) return plan
 
-    let created: Awaited<ReturnType<typeof insertManagedCreateTransaction>>
-    try {
-      created = await db.transaction(async (tx) =>
-        insertManagedCreateTransaction(c, tx, {
-          environmentId,
-          ctx,
-          serverId: createServerId,
-          displayName: plan.displayName,
-          rowOptions: plan.rowOptions,
-          initialDatabase: plan.initialDatabase,
-          dataEncryptionSecrets,
-        }))
-    } catch (error) {
-      if (error instanceof ManagedPrepareRollbackError) {
-        return mapManagedApplyPrepareError(c, error.prepareError)
-      }
-      throw error
-    }
-
-    const enqueued = await enqueueManagedApply(c, db, commandQueue, {
-      serverId: createServerId,
+    return createManagedAndEnqueueApply(c, db, {
+      environmentId,
+      ctx,
+      createServerId,
       userId: auth.userId,
-      managedId: created.row.id,
-      payload: created.payload,
-    })
-    if (enqueued instanceof Response) {
-      await deleteManagedCompensation(db, created.row.id)
-      return enqueued
-    }
-
-    return c.json({
-      ok: true as const,
-      managed: serializeManagedRow(created.row, createServerId),
-      commandId: enqueued.commandId,
-      serverId: enqueued.serverId,
-      rootPassword: created.rootPassword,
+      plan,
+      dataEncryptionSecrets,
+      commandQueue,
     })
   })
 
@@ -890,8 +925,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId, ctx.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const result = await runApplyForManaged(c, db, auth, ctx, row, options, targetServerId)
-    return result
+    return runApplyForManaged(c, db, {
+      userId: auth.userId,
+      ctx,
+      managedRow: row,
+      options,
+      targetServerId,
+    })
   })
 
   router.post('/environments/:id/managed/lifecycle', async (c) => {

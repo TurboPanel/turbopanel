@@ -187,6 +187,23 @@ type VpnPatchFields = {
   updatedAt: string
 }
 
+/** Parses `metadata`/`options` from a PATCH body directly onto `patchFields`. */
+function applyVpnJsonbPatchFields(
+  c: Context,
+  body: Record<string, unknown>,
+  patchFields: VpnPatchFields,
+): Response | null {
+  const metadataResult = parseJsonbObject(c, body, 'metadata')
+  if (metadataResult instanceof Response) return metadataResult
+  if (metadataResult !== null) patchFields.metadata = metadataResult
+
+  const optionsResult = parseJsonbObject(c, body, 'options')
+  if (optionsResult instanceof Response) return optionsResult
+  if (optionsResult !== null) patchFields.options = optionsResult
+
+  return null
+}
+
 async function resolveVpnCidrPatch(
   c: Context,
   db: Db,
@@ -217,6 +234,23 @@ async function resolveVpnCidrPatch(
   const unfit = await assertVpnOverlayAddressesFitCidr(c, db, vpnId, cidr)
   if (unfit) return unfit
   return cidr
+}
+
+async function updateVpnRow(
+  c: Context,
+  db: Db,
+  id: string,
+  patchFields: VpnPatchFields,
+): Promise<Response | null> {
+  try {
+    await db.update(vpn).set(patchFields).where(eq(vpn.id, id))
+    return null
+  } catch (err) {
+    if (isVpnCidrUniqueViolation(err)) {
+      return c.json({ error: 'vpn_cidr_in_use' }, 409)
+    }
+    throw err
+  }
 }
 
 async function applyPeerPatchReleasingTunnel(
@@ -1143,26 +1177,15 @@ export function registerVpnRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       return c.json({ error: 'Invalid request' }, 400)
     }
 
-    const metadataResult = parseJsonbObject(c, body, 'metadata')
-    if (metadataResult instanceof Response) return metadataResult
-    if (metadataResult !== null) patchFields.metadata = metadataResult
-
-    const optionsResult = parseJsonbObject(c, body, 'options')
-    if (optionsResult instanceof Response) return optionsResult
-    if (optionsResult !== null) patchFields.options = optionsResult
+    const jsonbErr = applyVpnJsonbPatchFields(c, body, patchFields)
+    if (jsonbErr) return jsonbErr
 
     const cidr = await resolveVpnCidrPatch(c, db, organizationId, id, body)
     if (cidr instanceof Response) return cidr
     if (cidr !== undefined) patchFields.cidr = cidr
 
-    try {
-      await db.update(vpn).set(patchFields).where(eq(vpn.id, id))
-    } catch (err) {
-      if (isVpnCidrUniqueViolation(err)) {
-        return c.json({ error: 'vpn_cidr_in_use' }, 409)
-      }
-      throw err
-    }
+    const updateErr = await updateVpnRow(c, db, id, patchFields)
+    if (updateErr) return updateErr
 
     return c.json({ ok: true as const })
   })
