@@ -618,7 +618,7 @@ export type EnvironmentDeployCommandPayload = {
   projectName: string
   /** Runtime docker-compose YAML (presentation stripped). May be `services: {}` when all sites are traditional-web. */
   composeYaml: string
-  /** Public hosting routes to wire through Traefik + edge Caddy. */
+  /** Public hosting routes to wire through Traefik + hosting Caddy. */
   hostings: EnvironmentDeployHosting[]
   /**
    * Host-native web sites (nginx MVP). Compose services with
@@ -665,7 +665,7 @@ export type EnvironmentDeployHosting = {
    */
   bindAddress?: string
   /**
-   * `http` (default/omitted) routes `hostnames` through Traefik + edge Caddy.
+   * `http` (default/omitted) routes `hostnames` through Traefik + hosting Caddy.
    * `tcp` / `udp` publish `ports[]` straight through Traefik — no hostname/TLS
    * routing.
    */

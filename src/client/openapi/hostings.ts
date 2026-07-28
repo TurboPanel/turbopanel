@@ -84,7 +84,7 @@ export const hostingSchemas = {
         type: 'string',
         enum: ['http', 'tcp', 'udp'],
         description:
-          'http (default) routes hostnames via Traefik + edge Caddy. tcp/udp publish raw ports through Traefik with no hostname/TLS routing.',
+          'http (default) routes hostnames via Traefik + hosting Caddy. tcp/udp publish raw ports through Traefik with no hostname/TLS routing.',
       },
       ports: {
         type: 'array',

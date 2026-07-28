@@ -10,7 +10,7 @@ export type HostingProxyOptions = {
 export type HostingBindScope = 'public' | 'datacenter' | 'local'
 
 /**
- * `http` (default) routes hostnames through Traefik + edge Caddy. `tcp` / `udp`
+ * `http` (default) routes hostnames through Traefik + hosting Caddy. `tcp` / `udp`
  * publish raw port(s) straight through Traefik — no hostname/TLS routing,
  * used for non-HTTP docker services (e.g. Postgres, a game server, a UDP
  * relay) that need a public/datacenter/local port rather than a hostname.
