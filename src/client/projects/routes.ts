@@ -40,6 +40,7 @@ import {
   PROJECT_HAS_RUNNING_SERVICES_ERROR,
 } from '../../lib/db/project-delete.ts'
 import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
+import { parseContainerNamingInput } from '../../lib/project-options.ts'
 
 type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
@@ -329,6 +330,69 @@ async function parseProjectMoveTarget(
   return resolveWorkspaceTarget(c, db, workspaceId, organizationId)
 }
 
+/**
+ * Validates optional `options` on PATCH — compose lint + containerNaming.
+ * Returns `null` when options were omitted; otherwise the normalized object
+ * or an error Response.
+ */
+function parseProjectPatchOptions(
+  c: Context<AppEnv>,
+  body: Record<string, unknown>,
+): Record<string, unknown> | null | Response {
+  const optionsResult = parseJsonbObject(c, body, 'options')
+  if (optionsResult instanceof Response) return optionsResult
+  if (optionsResult === null) return null
+
+  const composeOption = applyValidatedComposeOption(optionsResult)
+  if (!composeOption.ok) {
+    return c.json({ error: 'compose_invalid', issues: composeOption.issues }, 400)
+  }
+
+  if ('containerNaming' in optionsResult) {
+    const naming = parseContainerNamingInput(optionsResult.containerNaming)
+    if (!naming.ok) {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+    optionsResult.containerNaming = naming.value
+  }
+
+  stripProjectComposePlacementOption(optionsResult)
+  return optionsResult
+}
+
+type ProjectPatchFields = {
+  displayName?: string | null
+  description?: string | null
+  options?: Record<string, unknown> | null
+  workspaceId?: string
+  updatedAt: string
+}
+
+function buildProjectPatchFields(
+  c: Context<AppEnv>,
+  body: Record<string, unknown>,
+  moveTarget: string | undefined,
+): ProjectPatchFields | Response {
+  let patchFields: ProjectPatchFields
+  try {
+    patchFields = buildPatchUpdateFields(body)
+  } catch {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
+  const optionsResult = parseProjectPatchOptions(c, body)
+  if (optionsResult instanceof Response) return optionsResult
+  if (optionsResult !== null) {
+    patchFields.options = optionsResult
+  }
+
+  if (moveTarget !== undefined) {
+    patchFields.workspaceId = moveTarget
+  }
+
+  return patchFields
+}
+
 async function insertDockerComposeProject(
   tx: DbTx,
   fields: {
@@ -579,33 +643,8 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const moveTarget = await parseProjectMoveTarget(c, db, body, organizationId)
     if (moveTarget instanceof Response) return moveTarget
 
-    let patchFields: {
-      displayName?: string | null
-      description?: string | null
-      options?: Record<string, unknown> | null
-      workspaceId?: string
-      updatedAt: string
-    }
-    try {
-      patchFields = buildPatchUpdateFields(body)
-    } catch {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-
-    const optionsResult = parseJsonbObject(c, body, 'options')
-    if (optionsResult instanceof Response) return optionsResult
-    if (optionsResult !== null) {
-      const composeOption = applyValidatedComposeOption(optionsResult)
-      if (!composeOption.ok) {
-        return c.json({ error: 'compose_invalid', issues: composeOption.issues }, 400)
-      }
-      stripProjectComposePlacementOption(optionsResult)
-      patchFields.options = optionsResult
-    }
-
-    if (moveTarget !== undefined) {
-      patchFields.workspaceId = moveTarget
-    }
+    const patchFields = buildProjectPatchFields(c, body, moveTarget)
+    if (patchFields instanceof Response) return patchFields
 
     await db
       .update(project)

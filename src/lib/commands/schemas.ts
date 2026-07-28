@@ -12,6 +12,7 @@ import {
   RESERVED_PUBLISHED_PORTS,
   type ManagedDockerOptions,
 } from '../managed/settings.ts'
+import { isValidDockerResourceName } from '../naming.ts'
 import type { ServiceOptions } from '../service-options.ts'
 import { isValidTimezone } from '../timezones.ts'
 import {
@@ -553,7 +554,17 @@ export type EnvironmentDeployStorageMaterial = {
   kind: 'docker_volume' | 'bind_mount' | 'file' | 'directory'
   name: string
   sourcePath?: string
-  destinationPath: string
+  /**
+   * Mount target inside the container. Required for bind/file/directory;
+   * optional for `docker_volume` when the volume is only declared in compose
+   * (compose-declared named volumes have no destinationPath).
+   */
+  destinationPath?: string
+  /**
+   * On-host Docker volume name. Instance-owned — UUID for new rows, legacy
+   * `tp-<org8>-<name>` for unstamped rows. Daemon must not derive names when set.
+   */
+  volumeName?: string
   principalId?: string
   serviceId?: string
   composeServiceName?: string
@@ -567,6 +578,11 @@ export type EnvironmentDeployPrincipalMaterial = {
   uid: number
   gid: number
   home?: string
+  /**
+   * Absolute shell path (default `/usr/sbin/nologin`), applied by the daemon
+   * via `useradd -s` / `usermod -s`.
+   */
+  shell?: string
 }
 
 export type EnvironmentDeployServiceHook = {
@@ -902,24 +918,37 @@ function parseDeployStorageMaterialEntry(entry: unknown): EnvironmentDeployStora
     !isString(entry.storageId) ||
     !isString(entry.kind) ||
     !isString(entry.name) ||
-    !isString(entry.destinationPath) ||
     !isString(entry.serverId)
   ) {
     throw new Error('Invalid environment.deploy payload')
   }
+  const kind = entry.kind as EnvironmentDeployStorageMaterial['kind']
+  if (kind !== 'docker_volume' && !isString(entry.destinationPath)) {
+    throw new Error('Invalid environment.deploy payload')
+  }
   const material: EnvironmentDeployStorageMaterial = {
     storageId: entry.storageId,
-    kind: entry.kind as EnvironmentDeployStorageMaterial['kind'],
+    kind,
     name: entry.name,
-    destinationPath: entry.destinationPath,
     serverId: entry.serverId,
   }
+  if (isString(entry.destinationPath)) material.destinationPath = entry.destinationPath
+  if (isString(entry.volumeName)) material.volumeName = entry.volumeName
   if (isString(entry.sourcePath)) material.sourcePath = entry.sourcePath
   if (isString(entry.principalId)) material.principalId = entry.principalId
   if (isString(entry.serviceId)) material.serviceId = entry.serviceId
   if (isString(entry.composeServiceName)) material.composeServiceName = entry.composeServiceName
   if (isString(entry.contentEnvelope)) material.contentEnvelope = entry.contentEnvelope
   return material
+}
+
+/** Absolute path: leading `/`, no whitespace/newline/NUL (mirrors principal-options). */
+const PRINCIPAL_SHELL_RE = /^\/[A-Za-z0-9._+/-]{0,254}$/
+
+function isValidPrincipalShellPath(value: string): boolean {
+  if (value.length === 0 || value.length > 255) return false
+  if (/\s/.test(value) || value.includes('\0') || value.includes('\n')) return false
+  return PRINCIPAL_SHELL_RE.test(value)
 }
 
 function parseDeployPrincipalMaterialEntry(entry: unknown): EnvironmentDeployPrincipalMaterial {
@@ -939,6 +968,12 @@ function parseDeployPrincipalMaterialEntry(entry: unknown): EnvironmentDeployPri
     gid: entry.gid,
   }
   if (isString(entry.home)) material.home = entry.home
+  if (entry.shell !== undefined) {
+    if (!isString(entry.shell) || !isValidPrincipalShellPath(entry.shell)) {
+      throw new Error('Invalid environment.deploy payload')
+    }
+    material.shell = entry.shell
+  }
   return material
 }
 
@@ -1340,6 +1375,8 @@ export type ManagedApplyCommandPayload = {
   environmentId: string
   engine: ManagedEngineCode
   projectName: string
+  /** Compose `container_name` — `<container.id>-1` from managed pre-allocation. */
+  containerName: string
   image: string
   containerPort: number
   composeYaml: string
@@ -1706,6 +1743,8 @@ export function parseManagedApplyPayload(value: unknown): ManagedApplyCommandPay
     !isManagedEngineCode(value.engine) ||
     !isString(value.projectName) ||
     !isComposeProjectName(value.projectName) ||
+    !isString(value.containerName) ||
+    !isValidDockerResourceName(value.containerName) ||
     !isString(value.image) ||
     !isValidManagedImageRef(value.image) ||
     !isValidPortNumber(value.containerPort) ||
@@ -1733,6 +1772,7 @@ export function parseManagedApplyPayload(value: unknown): ManagedApplyCommandPay
     environmentId: value.environmentId,
     engine: value.engine,
     projectName: value.projectName,
+    containerName: value.containerName,
     image: value.image,
     containerPort: value.containerPort,
     composeYaml: value.composeYaml,

@@ -1,3 +1,4 @@
+import { DOCKER_RESOURCE_NAME_RE } from '../naming.ts'
 import { isValidHostname } from './hostname.ts'
 import type {
   EnvironmentDeployHosting,
@@ -182,7 +183,7 @@ export function validateDeployStorageMaterial(
   if (!STORAGE_KINDS.has(entry.kind)) {
     return `invalid storage kind: ${entry.kind}`
   }
-  if (!entry.destinationPath) {
+  if (entry.kind !== 'docker_volume' && !entry.destinationPath) {
     return `storage ${entry.storageId} missing destinationPath`
   }
   if (
@@ -190,6 +191,12 @@ export function validateDeployStorageMaterial(
     !entry.composeServiceName
   ) {
     return `storage ${entry.storageId} missing composeServiceName for mount`
+  }
+  if (
+    typeof entry.volumeName === 'string' &&
+    !DOCKER_RESOURCE_NAME_RE.test(entry.volumeName)
+  ) {
+    return `storage ${entry.storageId} has invalid volumeName`
   }
   return null
 }

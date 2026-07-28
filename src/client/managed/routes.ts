@@ -1,4 +1,4 @@
-import { and, desc, eq } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm'
 import type { Context } from 'hono'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -248,10 +248,37 @@ class ManagedPrepareRollbackError extends Error {
   }
 }
 
+/**
+ * Clear never-applied pending container rows for an environment so
+ * deleteProjectCascade does not treat them as active after the managed row is
+ * removed. Same predicate as the hard-delete path on DELETE …/managed.
+ */
+async function clearPendingNullIdContainersForEnvironment(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  environmentId: string,
+): Promise<void> {
+  const envServices = await db
+    .select({ id: service.id })
+    .from(service)
+    .where(eq(service.environmentId, environmentId))
+  const serviceIds = envServices.map((s) => s.id)
+  if (serviceIds.length > 0) {
+    await db.delete(container).where(
+      and(
+        inArray(container.serviceId, serviceIds),
+        isNull(container.containerId),
+        eq(container.status, 'pending'),
+      ),
+    )
+  }
+}
+
 async function deleteManagedCompensation(
   db: NonNullable<ReturnType<typeof getDb>>,
   managedId: string,
+  environmentId: string,
 ): Promise<void> {
+  await clearPendingNullIdContainersForEnvironment(db, environmentId)
   await db.delete(managed).where(eq(managed.id, managedId))
 }
 
@@ -277,7 +304,7 @@ async function clearIncompleteManagedCreate(
   fallbackServerId: string | null,
 ): Promise<Response | null> {
   if (existing.status === 'provisioning') {
-    await deleteManagedCompensation(db, existing.id)
+    await deleteManagedCompensation(db, existing.id, existing.environmentId)
     return null
   }
   const serverId = resolveManagedServerId(existing, fallbackServerId)
@@ -496,7 +523,7 @@ function serializeContainerRow(row: {
   id: string
   serviceId: string
   serverId: string
-  containerId: string
+  containerId: string | null
   containerName: string
   status: string
   composeServiceName: string
@@ -679,7 +706,7 @@ async function createManagedAndEnqueueApply(
     payload: created.payload,
   })
   if (enqueued instanceof Response) {
-    await deleteManagedCompensation(db, created.row.id)
+    await deleteManagedCompensation(db, created.row.id, environmentId)
     return enqueued
   }
 
@@ -1001,6 +1028,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       !row.serverId
 
     if (canHardDelete) {
+      // Clear never-applied pending container rows so deleteProjectCascade does
+      // not treat them as active (`isActiveContainerStatus('pending')` is true).
+      await clearPendingNullIdContainersForEnvironment(db, environmentId)
       await db.delete(managed).where(eq(managed.id, row.id))
       return c.json({ ok: true as const, deleted: true as const })
     }

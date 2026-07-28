@@ -9,6 +9,7 @@
 import { sql } from 'drizzle-orm'
 import {
   pgTable,
+  pgSequence,
   index,
   uniqueIndex,
   foreignKey,
@@ -1140,11 +1141,20 @@ export const container = pgTable(
       .notNull(),
     serviceId: uuid('service_id').notNull(),
     serverId: uuid('server_id').notNull(),
-    /** Docker container id reported by the daemon after deploy. */
-    containerId: text('container_id').notNull(),
+    /**
+     * Docker container id reported by the daemon after deploy. Null between
+     * pre-allocation and the daemon's post-`compose up` report.
+     */
+    containerId: text('container_id'),
     containerName: text('container_name').notNull(),
-    status: text('status').notNull(),
+    status: text('status').default('pending').notNull(),
     composeServiceName: text('compose_service_name').notNull(),
+    /**
+     * 1-based instance index of this container within its service; managed
+     * engines always carry an ordinal. Unique with `service_id` so placement
+     * changes re-home the same allocation rather than minting a second row.
+     */
+    ordinal: integer('ordinal').default(1).notNull(),
     metadata: jsonb(),
     options: jsonb(),
   },
@@ -1161,7 +1171,14 @@ export const container = pgTable(
       'btree',
       table.status.asc().nullsLast().op('text_ops')
     ),
-    uniqueIndex('uniq_container_server_container_id').on(table.serverId, table.containerId),
+    uniqueIndex('uniq_container_server_container_id')
+      .on(table.serverId, table.containerId)
+      .where(sql`container_id IS NOT NULL`),
+    uniqueIndex('uniq_container_service_ordinal').on(
+      table.serviceId,
+      table.ordinal,
+    ),
+    check('container_ordinal_positive_check', sql`ordinal >= 1`),
     foreignKey({
       columns: [table.serviceId],
       foreignColumns: [service.id],
@@ -1174,6 +1191,18 @@ export const container = pgTable(
     }).onDelete('restrict'),
   ]
 )
+/**
+ * Instance-wide principal UID/GID allocator (starts at 10001). Not per-org so
+ * two orgs on the same host cannot both hand out 10001. A sequence rather than
+ * an advisory lock because Hyperdrive forbids advisory locks; `nextval` gaps
+ * on rollback are acceptable for UIDs.
+ */
+export const principalUidSeq = pgSequence('principal_uid_seq', {
+  startWith: 10001,
+  minValue: 10001,
+  increment: 1,
+  cache: 1,
+})
 /**
  * A principal is an account identity that can be attached to services — a host
  * (PAM) user or a database engine user. Org is derived through `assignment` →
@@ -1380,6 +1409,21 @@ export const storage = pgTable(
         (environment_id IS NOT NULL)::int +
         (service_id IS NOT NULL)::int) = 1`,
     ),
+    /**
+     * Compose auto-register idempotency: one `docker_volume` row per
+     * `(environment_id, metadata.composeVolumeKey)` when the key is stamped.
+     */
+    uniqueIndex('uniq_storage_environment_compose_volume_key')
+      .using(
+        'btree',
+        table.environmentId.asc().nullsLast().op('uuid_ops'),
+        sql`(${table.metadata} ->> 'composeVolumeKey')`,
+      )
+      .where(
+        sql`kind = 'docker_volume'
+          AND environment_id IS NOT NULL
+          AND COALESCE(metadata->>'composeVolumeKey', '') <> ''`,
+      ),
   ],
 )
 export const grant = pgTable(

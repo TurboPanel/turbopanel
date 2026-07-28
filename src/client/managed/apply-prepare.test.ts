@@ -1,19 +1,19 @@
 import { assertEquals } from 'jsr:@std/assert'
-import { parse as parseYaml } from 'jsr:@std/yaml'
-import { Hono } from 'hono'
-import type { Context } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import { ManagedSecretPlaceholder } from '../../lib/managed/index.ts'
-import { postgresEngineSpec } from '../../lib/managed/postgres.ts'
-import { DEFAULT_MANAGED_SETTINGS } from '../../lib/managed/settings.ts'
-import { parseManagedApplyPayload } from '../../lib/commands/schemas.ts'
-import { composeDocumentToYaml } from '../../lib/compose/convert.ts'
-import type { ComposeDocument } from '../../lib/compose/types.ts'
+import { and, eq } from 'drizzle-orm'
+import { getDatabaseUrl } from '../../db-url.ts'
+import { createDenoDb } from '../../db.ts'
 import {
-  buildManagedApplyPayload,
-  isPrepareError,
-  preflightManagedApplyInfrastructure,
-} from './apply-prepare.ts'
+  container,
+  environment,
+  organization,
+  project,
+  server,
+  service,
+  workspace,
+} from '../../lib/db/schema.ts'
+import { ensureManagedContainerAllocation } from './allocate-managed-container.ts'
+
+const dbUrl = getDatabaseUrl()
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -23,109 +23,240 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
-function fakeContext(): Context<AppEnv> {
-  const app = new Hono<AppEnv>()
-  let captured: Context<AppEnv> | undefined
-  app.get('/', (c) => {
-    captured = c
-    return c.json({})
-  })
-  // Trigger handler synchronously via mock is awkward; build a minimal stub.
-  return {
-    get: () => undefined,
-    json: (body: unknown, status?: number) =>
-      Response.json(body, { status: status ?? 200 }),
-  } as unknown as Context<AppEnv>
+async function withManagedAllocationFixtures(
+  fn: (ctx: {
+    db: ReturnType<typeof createDenoDb>
+    serverId: string
+    otherServerId: string
+    environmentId: string
+  }) => Promise<void>,
+): Promise<void> {
+  if (!dbUrl) {
+    console.warn('Skipping apply-prepare allocation tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+
+  const [insertedOrg] = await db
+    .insert(organization)
+    .values({ displayName: 'Managed Allocate Org' })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg!.id
+
+  const [insertedWorkspace] = await db
+    .insert(workspace)
+    .values({ displayName: 'Managed Allocate Workspace', organizationId })
+    .returning({ id: workspace.id })
+  const workspaceId = insertedWorkspace!.id
+
+  const now = new Date().toISOString()
+  const [insertedServer] = await db
+    .insert(server)
+    .values({
+      organizationId,
+      displayName: 'Managed Allocate Server',
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
+
+  const [insertedOtherServer] = await db
+    .insert(server)
+    .values({
+      organizationId,
+      displayName: 'Managed Allocate Other Server',
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: server.id })
+  const otherServerId = insertedOtherServer!.id
+
+  const [insertedProject] = await db
+    .insert(project)
+    .values({
+      displayName: 'Managed Allocate Project',
+      workspaceId,
+    })
+    .returning({ id: project.id })
+  const projectId = insertedProject!.id
+
+  const [insertedEnvironment] = await db
+    .insert(environment)
+    .values({
+      displayName: 'Managed Allocate Env',
+      projectId,
+    })
+    .returning({ id: environment.id })
+  const environmentId = insertedEnvironment!.id
+
+  try {
+    await fn({ db, serverId, otherServerId, environmentId })
+  } finally {
+    await db.delete(container).where(eq(container.serverId, serverId))
+    await db.delete(container).where(eq(container.serverId, otherServerId))
+    await db.delete(service).where(eq(service.environmentId, environmentId))
+    await db.delete(environment).where(eq(environment.id, environmentId))
+    await db.delete(project).where(eq(project.id, projectId))
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(server).where(eq(server.id, otherServerId))
+    await db.delete(workspace).where(eq(workspace.id, workspaceId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
 }
 
-test('buildManagedApplyPayload returns daemon_key_unavailable without encryption context', async () => {
-  const c = fakeContext()
-  const managedId = '00000000-0000-4000-8000-000000000099'
-  const payload = await buildManagedApplyPayload(c, {} as never, {
-    managedRow: { id: managedId },
-    spec: postgresEngineSpec,
-    settings: {
-      ...DEFAULT_MANAGED_SETTINGS,
-      ssl: { enabled: false },
-      exposure: { enabled: false },
-    },
-    databases: ['postgres'],
-    serverId: '00000000-0000-4000-8000-000000000001',
-    environmentId: '00000000-0000-4000-8000-000000000002',
-  })
+test('ensureManagedContainerAllocation creates service + ordinal-1 container named <id>-1', async () => {
+  await withManagedAllocationFixtures(async ({ db, serverId, environmentId }) => {
+    const allocation = await ensureManagedContainerAllocation(db, {
+      environmentId,
+      serverId,
+      composeServiceName: 'postgres',
+    })
 
-  assertEquals(isPrepareError(payload), true)
-  if (!isPrepareError(payload)) {
-    throw new TypeError('expected prepare error without encryption context')
-  }
-  assertEquals(payload.kind, 'daemon_key_unavailable')
+    assertEquals(allocation.containerName, `${allocation.containerRowId}-1`)
+
+    const services = await db
+      .select({
+        id: service.id,
+        composeServiceName: service.composeServiceName,
+        displayName: service.displayName,
+      })
+      .from(service)
+      .where(eq(service.environmentId, environmentId))
+    assertEquals(services.length, 1)
+    assertEquals(services[0]!.id, allocation.serviceId)
+    assertEquals(services[0]!.composeServiceName, 'postgres')
+    assertEquals(services[0]!.displayName, 'postgres')
+
+    const rows = await db
+      .select({
+        id: container.id,
+        containerName: container.containerName,
+        status: container.status,
+        ordinal: container.ordinal,
+        containerId: container.containerId,
+      })
+      .from(container)
+      .where(
+        and(
+          eq(container.serviceId, allocation.serviceId),
+          eq(container.serverId, serverId),
+        ),
+      )
+    assertEquals(rows.length, 1)
+    assertEquals(rows[0]!.id, allocation.containerRowId)
+    assertEquals(rows[0]!.containerName, `${allocation.containerRowId}-1`)
+    assertEquals(rows[0]!.status, 'pending')
+    assertEquals(rows[0]!.ordinal, 1)
+    assertEquals(rows[0]!.containerId, null)
+  })
 })
 
-test('preflightManagedApplyInfrastructure returns daemon_key_unavailable without encryption context', async () => {
-  const c = fakeContext()
-  const error = await preflightManagedApplyInfrastructure(c, {} as never, {
-    serverId: '00000000-0000-4000-8000-000000000001',
-    bind: 'local',
+test('ensureManagedContainerAllocation is idempotent on re-apply', async () => {
+  await withManagedAllocationFixtures(async ({ db, serverId, environmentId }) => {
+    const first = await ensureManagedContainerAllocation(db, {
+      environmentId,
+      serverId,
+      composeServiceName: 'postgres',
+    })
+    const second = await ensureManagedContainerAllocation(db, {
+      environmentId,
+      serverId,
+      composeServiceName: 'postgres',
+    })
+
+    assertEquals(second.serviceId, first.serviceId)
+    assertEquals(second.containerRowId, first.containerRowId)
+    assertEquals(second.containerName, first.containerName)
+
+    const rows = await db
+      .select({ id: container.id })
+      .from(container)
+      .where(eq(container.serviceId, first.serviceId))
+    assertEquals(rows.length, 1)
   })
-  assertEquals(error?.kind, 'daemon_key_unavailable')
 })
 
-test('runtime compose YAML has one service, no ports, placeholder, hyphen-free volume', () => {
-  const managedId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
-  const settings = {
-    ...DEFAULT_MANAGED_SETTINGS,
-    ssl: { enabled: false },
-    exposure: { enabled: false },
-  }
-  const runtime = postgresEngineSpec.buildRuntimeSpec({
-    managedId,
-    settings,
-    rootUsername: postgresEngineSpec.rootUsername,
+test('ensureManagedContainerAllocation prunes stray pending rows on another server', async () => {
+  await withManagedAllocationFixtures(async ({
+    db,
+    serverId,
+    otherServerId,
+    environmentId,
+  }) => {
+    const first = await ensureManagedContainerAllocation(db, {
+      environmentId,
+      serverId: otherServerId,
+      composeServiceName: 'postgres',
+    })
+
+    const rePin = await ensureManagedContainerAllocation(db, {
+      environmentId,
+      serverId,
+      composeServiceName: 'postgres',
+    })
+
+    assertEquals(rePin.serviceId, first.serviceId)
+    assertEquals(rePin.containerRowId, first.containerRowId)
+    assertEquals(rePin.containerName, first.containerName)
+    assertEquals(rePin.containerName, `${rePin.containerRowId}-1`)
+
+    const rows = await db
+      .select({
+        id: container.id,
+        serverId: container.serverId,
+        status: container.status,
+      })
+      .from(container)
+      .where(eq(container.serviceId, first.serviceId))
+
+    assertEquals(rows.length, 1)
+    assertEquals(rows[0]!.id, first.containerRowId)
+    assertEquals(rows[0]!.serverId, serverId)
+    assertEquals(rows[0]!.status, 'pending')
   })
+})
 
-  assertEquals(runtime.env.POSTGRES_PASSWORD, ManagedSecretPlaceholder)
-  assertEquals('ports' in runtime.service, false)
-  assertEquals(runtime.volumes[0]?.name.includes('-'), false)
+test('ensureManagedContainerAllocation restores exited null-id ordinal-1 row to pending', async () => {
+  await withManagedAllocationFixtures(async ({ db, serverId, environmentId }) => {
+    const first = await ensureManagedContainerAllocation(db, {
+      environmentId,
+      serverId,
+      composeServiceName: 'postgres',
+    })
 
-  const volumes: Record<string, Record<string, never>> = {}
-  for (const volume of runtime.volumes) {
-    volumes[volume.name] = {}
-  }
-  const document: ComposeDocument = {
-    version: 1,
-    data: {
-      services: { [runtime.composeServiceName]: runtime.service },
-      volumes,
-    },
-    presentation: { keyOrder: ['services', 'volumes'], comments: {} },
-  }
-  const yaml = composeDocumentToYaml(document)
-  const parsed = parseYaml(yaml) as Record<string, unknown>
-  const services = parsed.services as Record<string, unknown>
-  assertEquals(Object.keys(services).length, 1)
-  assertEquals('ports' in (services.postgres as object), false)
+    await db
+      .update(container)
+      .set({ status: 'exited', containerId: null })
+      .where(eq(container.id, first.containerRowId))
 
-  const accepted = parseManagedApplyPayload({
-    managedId,
-    environmentId: '00000000-0000-4000-8000-000000000002',
-    engine: 'postgres',
-    projectName: `turbopanel-managed-${managedId}`,
-    image: postgresEngineSpec.defaultImage,
-    containerPort: 5432,
-    composeYaml: yaml,
-    configFiles: runtime.configFiles,
-    volumes: runtime.volumes,
-    exposure: { enabled: false, protocol: 'tcp' },
-    credentials: [
-      {
-        principalId: '00000000-0000-4000-8000-000000000003',
-        username: 'postgres',
-        role: 'root',
-        databases: ['postgres'],
-        password: 'tpdaemon.v1.server.key.1.iv.ciphertext',
-      },
-    ],
+    const second = await ensureManagedContainerAllocation(db, {
+      environmentId,
+      serverId,
+      composeServiceName: 'postgres',
+    })
+
+    assertEquals(second.containerRowId, first.containerRowId)
+    assertEquals(second.containerName, first.containerName)
+    assertEquals(second.serviceId, first.serviceId)
+
+    const [row] = await db
+      .select({
+        id: container.id,
+        status: container.status,
+        containerId: container.containerId,
+        containerName: container.containerName,
+        composeServiceName: container.composeServiceName,
+      })
+      .from(container)
+      .where(eq(container.id, first.containerRowId))
+      .limit(1)
+
+    assertEquals(row!.id, first.containerRowId)
+    assertEquals(row!.status, 'pending')
+    assertEquals(row!.containerId, null)
+    assertEquals(row!.containerName, `${first.containerRowId}-1`)
+    assertEquals(row!.composeServiceName, 'postgres')
   })
-  assertEquals(accepted.managedId, managedId)
-  assertEquals(accepted.volumes[0]?.name.includes('-'), false)
 })

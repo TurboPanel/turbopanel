@@ -29,16 +29,18 @@ const CONTAINER_PROMOTED_METADATA_KEYS = [
   'containerName',
   'status',
   'composeServiceName',
+  'ordinal',
 ] as const
 
 type ContainerRow = {
   id: string
   serviceId: string
   serverId: string
-  containerId: string
+  containerId: string | null
   containerName: string
   status: string
   composeServiceName: string
+  ordinal: number
   metadata: unknown
   options: unknown
   createdAt: string
@@ -54,11 +56,22 @@ function serializeContainer(row: ContainerRow) {
     containerName: row.containerName,
     status: row.status,
     composeServiceName: row.composeServiceName,
+    ordinal: row.ordinal,
     metadata: row.metadata,
     options: row.options,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }
+}
+
+function readOptionalPositiveInt(
+  body: Record<string, unknown>,
+  key: string,
+): number | undefined {
+  const value = body[key]
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
+  const rounded = Math.floor(value)
+  return rounded > 0 ? rounded : undefined
 }
 
 function readOptionalTopLevelString(
@@ -76,6 +89,7 @@ type CreateContainerFields = {
   containerName: string
   status: string
   composeServiceName: string
+  ordinal: number
   metadata: Record<string, unknown> | null
   options: Record<string, unknown> | null
 }
@@ -102,6 +116,8 @@ function parseCreateContainerFields(
   const composeServiceName = requireStringField(c, body, 'composeServiceName')
   if (composeServiceName instanceof Response) return composeServiceName
 
+  const ordinal = readOptionalPositiveInt(body, 'ordinal') ?? 1
+
   const metadataResult = parseJsonbObject(c, body, 'metadata')
   if (metadataResult instanceof Response) return metadataResult
   const optionsResult = parseJsonbObject(c, body, 'options')
@@ -118,6 +134,7 @@ function parseCreateContainerFields(
     containerName,
     status,
     composeServiceName,
+    ordinal,
     metadata,
     options: optionsResult,
   }
@@ -131,6 +148,7 @@ const CONTAINER_SELECT = {
   containerName: container.containerName,
   status: container.status,
   composeServiceName: container.composeServiceName,
+  ordinal: container.ordinal,
   metadata: container.metadata,
   options: container.options,
   createdAt: container.createdAt,
@@ -266,6 +284,7 @@ export function registerContainerRoutes(router: Hono, opts: AuthRouteOpts) {
           containerName: fields.containerName,
           status: fields.status,
           composeServiceName: fields.composeServiceName,
+          ordinal: fields.ordinal,
           ...(fields.metadata !== null ? { metadata: fields.metadata } : {}),
           ...(fields.options !== null ? { options: fields.options } : {}),
         })

@@ -2,7 +2,9 @@ import { describe, it } from '@std/testing/bdd'
 import { assertEquals } from '@std/assert'
 import {
   applyVariablesToComposeDocument,
+  DEPLOY_PREVIEW_SECRET_PLACEHOLDER,
   escapeLiteralComposeValue,
+  injectSecretPlaceholdersIntoComposeDocument,
   trimVariableValue,
 } from './apply-variables.ts'
 import { emptyComposeDocument } from './types.ts'
@@ -58,5 +60,32 @@ describe('apply-variables', () => {
     const services = result.document.data.services as Record<string, Record<string, unknown>>
     assertEquals(services.api.environment, undefined)
     assertEquals(result.secretMaterial.length, 1)
+  })
+
+  it('injects masked placeholders for secret material in preview YAML', () => {
+    const doc = emptyComposeDocument()
+    doc.data.services = { api: { image: 'node:22' } }
+
+    const applied = applyVariablesToComposeDocument(doc, {
+      globalEntries: [{
+        key: 'SECRET',
+        value: 'tpsecret.v1.test',
+        isSecret: true,
+        isLiteral: false,
+        forBuild: true,
+        forRuntime: true,
+      }],
+      perServiceEntries: new Map(),
+    })
+
+    const preview = injectSecretPlaceholdersIntoComposeDocument(
+      applied.document,
+      applied.secretMaterial,
+    )
+    const services = preview.data.services as Record<string, Record<string, unknown>>
+    const env = services.api.environment as Record<string, string>
+    const build = services.api.build as { args: Record<string, string> }
+    assertEquals(env.SECRET, DEPLOY_PREVIEW_SECRET_PLACEHOLDER)
+    assertEquals(build.args.SECRET, DEPLOY_PREVIEW_SECRET_PLACEHOLDER)
   })
 })

@@ -22,6 +22,11 @@ export const storageSchemas = {
       sourcePath: { type: ['string', 'null'] },
       destinationPath: { type: ['string', 'null'] },
       principalId: { type: ['string', 'null'] },
+      resolvedSourcePath: {
+        type: ['string', 'null'],
+        description:
+          'Server-derived host path; principal-owned bind mounts resolve to /srv/users/<principalId>/volumes/<storageId>',
+      },
       metadata: { type: 'object', nullable: true },
       options: { type: 'object', nullable: true },
       createdAt: { type: 'string', format: 'date-time' },
@@ -55,7 +60,11 @@ export const storageSchemas = {
       kind: { $ref: '#/components/schemas/StorageKind' },
       name: { type: 'string' },
       serverId: { type: 'string' },
-      sourcePath: { type: 'string' },
+      sourcePath: {
+        type: 'string',
+        description:
+          'Optional for principal-owned bind mounts (instance derives /srv/users/<principalId>/volumes/<storageId>)',
+      },
       destinationPath: { type: 'string' },
       principalId: { type: 'string' },
       content: {

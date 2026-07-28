@@ -145,3 +145,46 @@ export function applyVariablesToComposeDocument(
     secretMaterial,
   }
 }
+
+/** Masked placeholder for secret-backed values in deploy-preview YAML. */
+export const DEPLOY_PREVIEW_SECRET_PLACEHOLDER = '••••••••'
+
+/**
+ * Inject masked placeholders for secret material keys into compose YAML so a
+ * deploy preview can show which secret env/build keys exist without revealing
+ * values (write-only secret rule).
+ */
+export function injectSecretPlaceholdersIntoComposeDocument(
+  document: ComposeDocument,
+  secretMaterial: readonly DeployVariableMaterial[],
+  placeholder: string = DEPLOY_PREVIEW_SECRET_PLACEHOLDER,
+): ComposeDocument {
+  if (secretMaterial.length === 0) return document
+
+  const data = { ...document.data }
+  const services = isRecord(data.services) ? { ...data.services } : {}
+
+  for (const entry of secretMaterial) {
+    if (!entry.composeServiceName) continue
+    const rawService = services[entry.composeServiceName]
+    if (!isRecord(rawService)) continue
+
+    const service = { ...rawService }
+    if (entry.forRuntime) {
+      const runtimeEnv = readStringEnvMap(service.environment)
+      runtimeEnv[entry.key] = placeholder
+      writeStringEnvMap(service, runtimeEnv)
+    }
+    if (entry.forBuild) {
+      mergeBuildArgs(service, { [entry.key]: placeholder })
+    }
+    services[entry.composeServiceName] = service
+  }
+
+  data.services = services
+  return {
+    version: 1,
+    data,
+    presentation: document.presentation,
+  }
+}

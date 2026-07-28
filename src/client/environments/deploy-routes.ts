@@ -707,6 +707,31 @@ async function enqueueDeployCommand(
   })
 }
 
+/**
+ * Expand each hosting onto multi-instance clone compose keys.
+ * Keeps the same `hostingId` / `serviceId` so Traefik merges labels.
+ */
+export function expandHostingsForComposeInstances(
+  hostings: readonly DeployHostingPayload[],
+  expansion: Readonly<Record<string, string[]>>,
+): DeployHostingPayload[] {
+  const out: DeployHostingPayload[] = []
+  for (const entry of hostings) {
+    const clones = expansion[entry.composeServiceName]
+    if (!clones || clones.length === 0) {
+      out.push(entry)
+      continue
+    }
+    for (const cloneName of clones) {
+      out.push({
+        ...entry,
+        composeServiceName: cloneName,
+      })
+    }
+  }
+  return out
+}
+
 function preferredListenPortsFromHostings(
   hostings: readonly DeployHostingPayload[],
 ): Map<string, number> {
@@ -759,6 +784,103 @@ function validateDeployMaterials(
  * Register `POST /environments/:id/deploy` — single-server compose deploy.
  * Status is polled via existing `GET /servers/:serverId/commands/:commandId`.
  */
+async function authorizeEnvironmentManage(
+  c: Context<AppEnv>,
+  db: Db,
+  environmentId: string,
+): Promise<{ userId: string; organizationId: string } | Response> {
+  const denied = await assertCanManageOr403(c, 'environment', environmentId)
+  if (denied) return denied
+
+  const session = c.get('session')
+  if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+  const orgResult = await getOrgId(c, session.userId)
+  if (orgResult instanceof Response) return orgResult
+
+  const entityOrgId = await resolveEntityOrganizationId(db, 'environment', environmentId)
+  if (!entityOrgId || entityOrgId !== orgResult) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+
+  return {
+    userId: session.userId,
+    organizationId: orgResult,
+  }
+}
+
+/**
+ * GET /environments/:id/deploy-preview — exact compose YAML the daemon would
+ * receive (same `prepareDeployCompose` path), with secrets redacted.
+ *
+ * Allocation (`(service, ordinal)`) and volume registration
+ * (`(environment, composeVolumeKey)`) are idempotent, so preview may perform
+ * them; deploy reuses the same rows and the previewed UUIDs stay truthful.
+ * Sealing / daemon-key steps are skipped so an online daemon is not required.
+ */
+export function registerEnvironmentDeployPreviewRoutes(
+  router: Hono<AppEnv>,
+  opts: AuthRouteOpts,
+) {
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for environment deploy-preview routes')
+  }
+  router.use('/environments/:id/deploy-preview', createSessionMiddleware(opts.secrets))
+
+  router.get('/environments/:id/deploy-preview', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const environmentId = c.req.param('id')
+    const auth = await authorizeEnvironmentManage(c, db, environmentId)
+    if (auth instanceof Response) return auth
+
+    const loaded = await loadDeployContext(db, environmentId)
+    if (loaded instanceof Response) return loaded
+
+    const target = await resolveDeployTargetServer(
+      c,
+      db,
+      auth.organizationId,
+      loaded.placementServerId,
+    )
+    if (target instanceof Response) return target
+
+    const prepared = await prepareDeployCompose(c, db, {
+      environmentId,
+      serverId: target.serverId,
+      organizationId: auth.organizationId,
+      mode: 'preview',
+    })
+    if (prepared instanceof Response) return prepared
+    // Preview mode softens prepare gates into warnings; hard errors are Responses.
+    if ('kind' in prepared) {
+      return c.json({ error: 'Unexpected prepare error' }, 500)
+    }
+
+    const projectName =
+      `tp-${projectComposeName(loaded.projectRow.displayName, loaded.projectRow.id)}-${environmentId.slice(0, 8)}`
+
+    return c.json({
+      ok: true as const,
+      composeYaml: prepared.composeYaml,
+      projectName,
+      containers: prepared.containers.map((row) => ({
+        serviceId: row.serviceId,
+        composeServiceName: row.cloneComposeServiceName,
+        containerName: row.containerName,
+        ordinal: row.ordinal,
+      })),
+      volumes: prepared.volumes.map((row) => ({
+        storageId: row.storageId,
+        composeKey: row.composeKey,
+        volumeName: row.volumeName,
+      })),
+      warnings: prepared.warnings,
+    })
+  })
+}
+
 export function registerEnvironmentDeployRoutes(
   router: Hono<AppEnv>,
   opts: AuthRouteOpts,
@@ -816,6 +938,14 @@ export function registerEnvironmentDeployRoutes(
     }
     if ('error' in hostingBuilt) return hostingBuilt.error
 
+    // Fan hostings out to multi-instance clone keys so injectHostingLabels
+    // finds every compose service. Same hostingId/serviceId → Traefik merges
+    // identical router/service labels into one load balancer.
+    const hostings = expandHostingsForComposeInstances(
+      hostingBuilt.hostings,
+      prepared.composeServiceExpansion,
+    )
+
     const tlsMaterial = await sealTlsMaterialForDaemon(
       c,
       db,
@@ -828,14 +958,14 @@ export function registerEnvironmentDeployRoutes(
     const projectName = `tp-${projectComposeName(loaded.projectRow.displayName, loaded.projectRow.id)}-${environmentId.slice(0, 8)}`
 
     const materialsError = validateDeployMaterials(
-      hostingBuilt.hostings,
+      hostings,
       prepared.storageMaterial,
     )
     if (materialsError) return materialsError
 
     const traditionalWebSites = buildTraditionalWebSitesForDeploy(
       prepared.traditionalWebSites,
-      hostingBuilt.hostings,
+      hostings,
     )
 
     return enqueueDeployCommand(db, commandQueue, {
@@ -846,7 +976,7 @@ export function registerEnvironmentDeployRoutes(
       organizationId: auth.organizationId,
       projectName,
       composeYaml: prepared.composeYaml,
-      hostings: hostingBuilt.hostings,
+      hostings,
       traditionalWebSites,
       tlsMaterial,
       variableMaterial: prepared.variableMaterial,

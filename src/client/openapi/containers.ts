@@ -7,10 +7,10 @@ export const containerSchemas = {
       'id',
       'serviceId',
       'serverId',
-      'containerId',
       'containerName',
       'status',
       'composeServiceName',
+      'ordinal',
       'createdAt',
       'updatedAt',
     ],
@@ -18,10 +18,22 @@ export const containerSchemas = {
       id: { type: 'string' },
       serviceId: { type: 'string' },
       serverId: { type: 'string' },
-      containerId: { type: 'string' },
+      containerId: {
+        type: 'string',
+        nullable: true,
+        description:
+          'Docker container id; null between pre-allocation and the daemon report.',
+      },
       containerName: { type: 'string' },
       status: { type: 'string' },
       composeServiceName: { type: 'string' },
+      ordinal: {
+        type: 'integer',
+        minimum: 1,
+        default: 1,
+        description:
+          '1-based instance index within the (service, server) pair.',
+      },
       metadata: {
         type: 'object',
         nullable: true,
@@ -60,6 +72,13 @@ export const containerSchemas = {
       containerName: { type: 'string' },
       status: { type: 'string' },
       composeServiceName: { type: 'string' },
+      ordinal: {
+        type: 'integer',
+        minimum: 1,
+        default: 1,
+        description:
+          '1-based instance index within the (service, server) pair.',
+      },
       metadata: { type: 'object', additionalProperties: true },
       options: { type: 'object' },
     },

@@ -67,3 +67,17 @@ Postgres backs up via `pg_dump -Fc` (custom format), per-database only —
 seam. **Scheduled backups are also an explicit future seam** — this pass adds
 on-demand create/delete/restore only; no timers, no cron, no retention sweep
 outside of the retention-keep pruning that runs on every successful backup.
+
+## Container naming
+
+The engine container is named `<container.id>-1` via `managedContainerName`
+(`src/lib/naming.ts`). The compose **project** stays
+`turbopanel-managed-<managedId>`; engine-spec volume keys (`pgdata`, …) are
+deliberately left alone because Compose namespaces them under that project, so
+they are already unique per managed service.
+
+`buildManagedApplyPayload` (`src/client/managed/apply-prepare.ts`) explicitly
+creates the `service` + ordinal-1 `container` row
+(`ensureManagedContainerAllocation`) instead of relying on reconcile
+auto-creation, and stamps `containerName` onto the `managed.apply` payload for
+the daemon to write as compose `container_name`.

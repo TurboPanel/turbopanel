@@ -1,5 +1,5 @@
 import { assertEquals } from 'jsr:@std/assert'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, isNull } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import { getDatabaseUrl } from '../../db-url.ts'
@@ -24,6 +24,7 @@ import type { ComposeDocument } from '../../lib/compose/types.ts'
 import { getManagedEngineSpec } from '../../lib/managed/index.ts'
 import {
   command,
+  container,
   environment,
   grant,
   managed,
@@ -32,6 +33,7 @@ import {
   principal,
   project,
   server,
+  service,
   user,
   workspace,
 } from '../../lib/db/schema.ts'
@@ -353,6 +355,15 @@ async function withManagedFixtures(
     }
     await db.delete(managed).where(eq(managed.environmentId, environmentId))
     await db.delete(principal).where(eq(principal.projectId, projectId))
+    const envServices = await db
+      .select({ id: service.id })
+      .from(service)
+      .where(eq(service.environmentId, environmentId))
+    for (const row of envServices) {
+      await db.delete(container).where(eq(container.serviceId, row.id))
+    }
+    await db.delete(service).where(eq(service.environmentId, environmentId))
+    await db.delete(command).where(eq(command.serverId, serverId))
     await db.delete(environment).where(eq(environment.id, environmentId))
     await db.delete(project).where(eq(project.id, projectId))
     await db.delete(workspace).where(eq(workspace.id, workspaceId))
@@ -440,6 +451,57 @@ test('POST /environments/:id/managed 404s when pinned server is foreign', async 
       body: '{}',
     })
     assertEquals(res.status, 404)
+  })
+})
+
+test('create enqueue failure compensation clears pending null-id containers', async () => {
+  await withManagedFixtures({}, async ({
+    db,
+    app,
+    secrets,
+    commandQueue,
+    userId,
+    organizationId,
+    environmentId,
+  }) => {
+    commandQueue.enqueue = async () => {
+      throw new Error('queue unavailable')
+    }
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/environments/${environmentId}/managed`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    })
+    assertEquals(res.status, 503)
+
+    const managedRows = await db
+      .select({ id: managed.id })
+      .from(managed)
+      .where(eq(managed.environmentId, environmentId))
+    assertEquals(managedRows.length, 0)
+
+    const pending = await db
+      .select({
+        id: container.id,
+        status: container.status,
+        containerId: container.containerId,
+      })
+      .from(container)
+      .innerJoin(service, eq(container.serviceId, service.id))
+      .where(
+        and(
+          eq(service.environmentId, environmentId),
+          isNull(container.containerId),
+          eq(container.status, 'pending'),
+        ),
+      )
+    assertEquals(pending.length, 0)
   })
 })
 

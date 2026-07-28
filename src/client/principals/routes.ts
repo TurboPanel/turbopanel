@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -7,11 +7,12 @@ import { assertCanOr403 } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db.ts'
 import { organization, principal, server } from '../../lib/db/schema.ts'
+import { PRINCIPAL_UID_START, principalHomeDir } from '../../lib/naming.ts'
+import { parsePrincipalOptionsInput } from '../../lib/principal-options.ts'
 import {
   assertCanManageOr403,
   getOrgId,
   parseJsonBody,
-  parseJsonbObject,
   requireStringField,
 } from '../shared.ts'
 import { parseResourceLimits } from '../../lib/resource-limits.ts'
@@ -23,33 +24,25 @@ import {
 import { replaceAssignments } from './store.ts'
 import { serializeProjectPrincipal } from './serialize.ts'
 
-const SYSTEM_PRINCIPAL_UID_START = 10_001
+type PrincipalExecute = NonNullable<ReturnType<typeof getDb>>
 
+/**
+ * Allocate the next instance-wide principal UID/GID from `principal_uid_seq`.
+ *
+ * `nextval` is non-transactional — gaps on rollback are acceptable for UIDs.
+ */
 async function allocatePrincipalUid(
-  db: ReturnType<typeof getDb>,
-  organizationId: string,
+  db: Pick<PrincipalExecute, 'execute'>,
 ): Promise<{ uid: number; gid: number }> {
-  if (!db) throw new Error('Database unavailable')
+  const rows = (await db.execute(sql`
+    SELECT nextval('principal_uid_seq')::int AS uid
+  `)) as unknown as Array<{ uid: number | string }>
 
-  const [orgRow] = await db
-    .select({ options: organization.options })
-    .from(organization)
-    .where(eq(organization.id, organizationId))
-    .limit(1)
-
-  const options = orgRow?.options && typeof orgRow.options === 'object'
-    ? orgRow.options as Record<string, unknown>
-    : {}
-  const nextUid = typeof options.nextPrincipalUid === 'number'
-    ? Math.floor(options.nextPrincipalUid)
-    : SYSTEM_PRINCIPAL_UID_START
-
-  await db.update(organization).set({
-    options: { ...options, nextPrincipalUid: nextUid + 1 },
-    updatedAt: new Date().toISOString(),
-  }).where(eq(organization.id, organizationId))
-
-  return { uid: nextUid, gid: nextUid }
+  const uid = Number(rows[0]?.uid)
+  if (!Number.isFinite(uid) || !Number.isInteger(uid) || uid < PRINCIPAL_UID_START) {
+    throw new Error(`Invalid principal UID allocated: ${String(rows[0]?.uid)}`)
+  }
+  return { uid, gid: uid }
 }
 
 export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -135,29 +128,41 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
       return c.json({ error: 'invalid_service_ids' }, 400)
     }
 
-    const { uid, gid } = await allocatePrincipalUid(db, orgResult)
+    const parsedOptions = parsePrincipalOptionsInput(body.options)
+    if (!parsedOptions.ok) {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+    const options = parsedOptions.value
 
     const inserted = await db.transaction(async (tx) => {
+      // nextval is non-transactional — gaps on rollback are acceptable for UIDs.
+      const { uid, gid } = await allocatePrincipalUid(tx)
+
       const [row] = await tx.insert(principal).values({
         kind: 'system',
         provider: 'pam',
         username,
         projectId,
-        metadata: { uid, gid, home: `/var/lib/turbopanel/principals/${username}` },
-        options: parseJsonbObject(body.options) ?? null,
+        metadata: { uid, gid },
+        options,
       }).returning({ id: principal.id })
+
+      // Linux username stays principal.username — home is derived from the row id.
+      await tx.update(principal).set({
+        metadata: { uid, gid, home: principalHomeDir(row.id) },
+      }).where(eq(principal.id, row.id))
 
       if (serviceIds.length > 0) {
         await replaceAssignments(tx, row.id, serviceIds)
       }
-      return row
+      return { id: row.id, uid, gid }
     })
 
     return c.json({
       ok: true as const,
       id: inserted.id,
-      uid,
-      gid,
+      uid: inserted.uid,
+      gid: inserted.gid,
       serviceIds,
     })
   })

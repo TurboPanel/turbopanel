@@ -175,6 +175,167 @@ test('reconcileEnvironmentContainers drops rows for services absent from the rep
   })
 })
 
+test('reconcileEnvironmentContainers fills pre-allocated row without inserting another', async () => {
+  await withReconcileFixtures(async ({
+    db,
+    serverId,
+    environmentId,
+    webServiceId,
+  }) => {
+    const [preallocated] = await db
+      .insert(container)
+      .values({
+        serviceId: webServiceId,
+        serverId,
+        containerId: null,
+        containerName: '01936b3e-aaaa-bbbb-cccc-123456789abc',
+        status: 'pending',
+        composeServiceName: 'web',
+        ordinal: 1,
+      })
+      .returning({ id: container.id })
+
+    await reconcileEnvironmentContainers(db, {
+      serverId,
+      environmentId,
+      containers: [
+        {
+          composeServiceName: 'web',
+          containerId: 'docker-cid-1',
+          containerName: '01936b3e-aaaa-bbbb-cccc-123456789abc',
+          status: 'running',
+        },
+      ],
+    })
+
+    const rows = await db
+      .select({
+        id: container.id,
+        containerId: container.containerId,
+        status: container.status,
+      })
+      .from(container)
+      .where(eq(container.serverId, serverId))
+
+    assertEquals(rows.length, 1)
+    assertEquals(rows[0]!.id, preallocated!.id)
+    assertEquals(rows[0]!.containerId, 'docker-cid-1')
+    assertEquals(rows[0]!.status, 'running')
+  })
+})
+
+test('reconcileEnvironmentContainers rename/rebuild keeps one row by name match', async () => {
+  await withReconcileFixtures(async ({
+    db,
+    serverId,
+    environmentId,
+    webServiceId,
+  }) => {
+    const [existing] = await db
+      .insert(container)
+      .values({
+        serviceId: webServiceId,
+        serverId,
+        containerId: 'old-cid',
+        containerName: 'stable-name',
+        status: 'running',
+        composeServiceName: 'web',
+        ordinal: 1,
+      })
+      .returning({ id: container.id })
+
+    await reconcileEnvironmentContainers(db, {
+      serverId,
+      environmentId,
+      containers: [
+        {
+          composeServiceName: 'web',
+          containerId: 'new-cid',
+          containerName: 'stable-name',
+          status: 'running',
+        },
+      ],
+    })
+
+    const rows = await db
+      .select({
+        id: container.id,
+        containerId: container.containerId,
+      })
+      .from(container)
+      .where(eq(container.serverId, serverId))
+
+    assertEquals(rows.length, 1)
+    assertEquals(rows[0]!.id, existing!.id)
+    assertEquals(rows[0]!.containerId, 'new-cid')
+  })
+})
+
+test('reconcileEnvironmentContainers maps multi-instance clone reports to ordinals', async () => {
+  await withReconcileFixtures(async ({
+    db,
+    serverId,
+    environmentId,
+    webServiceId,
+  }) => {
+    await db.insert(container).values([
+      {
+        serviceId: webServiceId,
+        serverId,
+        containerId: null,
+        containerName: 'cid-a',
+        status: 'pending',
+        composeServiceName: 'web-1',
+        ordinal: 1,
+      },
+      {
+        serviceId: webServiceId,
+        serverId,
+        containerId: null,
+        containerName: 'cid-b',
+        status: 'pending',
+        composeServiceName: 'web-2',
+        ordinal: 2,
+      },
+    ])
+
+    await reconcileEnvironmentContainers(db, {
+      serverId,
+      environmentId,
+      containers: [
+        {
+          composeServiceName: 'web-2',
+          containerId: 'docker-2',
+          containerName: 'cid-b',
+          status: 'running',
+        },
+        {
+          composeServiceName: 'web-1',
+          containerId: 'docker-1',
+          containerName: 'cid-a',
+          status: 'running',
+        },
+      ],
+    })
+
+    const rows = await db
+      .select({
+        ordinal: container.ordinal,
+        containerId: container.containerId,
+        composeServiceName: container.composeServiceName,
+      })
+      .from(container)
+      .where(eq(container.serverId, serverId))
+
+    assertEquals(rows.length, 2)
+    const byOrdinal = new Map(rows.map((row) => [row.ordinal, row]))
+    assertEquals(byOrdinal.get(1)?.containerId, 'docker-1')
+    assertEquals(byOrdinal.get(1)?.composeServiceName, 'web-1')
+    assertEquals(byOrdinal.get(2)?.containerId, 'docker-2')
+    assertEquals(byOrdinal.get(2)?.composeServiceName, 'web-2')
+  })
+})
+
 test('reconcileEnvironmentContainers creates missing services from the report', async () => {
   if (!dbUrl) {
     console.warn('Skipping container reconcile tests: TURBOPANEL_DATABASE_URL not set')
@@ -274,7 +435,85 @@ test('reconcileEnvironmentContainers creates missing services from the report', 
   }
 })
 
-test('reconcileEnvironmentContainers clears all rows on authoritative empty report', async () => {
+test('reconcileEnvironmentContainers deletes stale pending outside current instances', async () => {
+  await withReconcileFixtures(async ({
+    db,
+    serverId,
+    environmentId,
+    webServiceId,
+  }) => {
+    await db
+      .update(service)
+      .set({ options: { instances: 2 } })
+      .where(eq(service.id, webServiceId))
+
+    // Ordinals 1–2 are current pre-allocations; ordinal 3 is stale after a
+    // scale-down path that skipped allocation cleanup.
+    await db.insert(container).values([
+      {
+        serviceId: webServiceId,
+        serverId,
+        containerId: null,
+        containerName: 'cid-1',
+        status: 'pending',
+        composeServiceName: 'web-1',
+        ordinal: 1,
+      },
+      {
+        serviceId: webServiceId,
+        serverId,
+        containerId: null,
+        containerName: 'cid-2',
+        status: 'pending',
+        composeServiceName: 'web-2',
+        ordinal: 2,
+      },
+      {
+        serviceId: webServiceId,
+        serverId,
+        containerId: null,
+        containerName: 'cid-stale',
+        status: 'pending',
+        composeServiceName: 'web-3',
+        ordinal: 3,
+      },
+    ])
+
+    await reconcileEnvironmentContainers(db, {
+      serverId,
+      environmentId,
+      containers: [
+        {
+          composeServiceName: 'web-1',
+          containerId: 'docker-1',
+          containerName: 'cid-1',
+          status: 'running',
+        },
+      ],
+    })
+
+    const rows = await db
+      .select({
+        ordinal: container.ordinal,
+        containerId: container.containerId,
+        status: container.status,
+        containerName: container.containerName,
+      })
+      .from(container)
+      .where(eq(container.serverId, serverId))
+
+    assertEquals(rows.length, 2)
+    const byOrdinal = new Map(rows.map((row) => [row.ordinal, row]))
+    assertEquals(byOrdinal.get(1)?.containerId, 'docker-1')
+    assertEquals(byOrdinal.get(1)?.status, 'running')
+    assertEquals(byOrdinal.get(2)?.containerId, null)
+    assertEquals(byOrdinal.get(2)?.status, 'pending')
+    assertEquals(byOrdinal.get(2)?.containerName, 'cid-2')
+    assertEquals(byOrdinal.has(3), false)
+  })
+})
+
+test('reconcileEnvironmentContainers resets rather than deletes on empty report', async () => {
   await withReconcileFixtures(async ({
     db,
     serverId,
@@ -308,7 +547,11 @@ test('reconcileEnvironmentContainers clears all rows on authoritative empty repo
     })
 
     const rows = await db
-      .select({ id: container.id })
+      .select({
+        containerId: container.containerId,
+        status: container.status,
+        containerName: container.containerName,
+      })
       .from(container)
       .where(
         and(
@@ -316,6 +559,14 @@ test('reconcileEnvironmentContainers clears all rows on authoritative empty repo
         ),
       )
 
-    assertEquals(rows.length, 0)
+    assertEquals(rows.length, 2)
+    for (const row of rows) {
+      assertEquals(row.containerId, null)
+      assertEquals(row.status, 'exited')
+    }
+    assertEquals(
+      rows.map((r) => r.containerName).sort((a, b) => a.localeCompare(b)),
+      ['proj-web-1', 'proj-worker-1'],
+    )
   })
 })

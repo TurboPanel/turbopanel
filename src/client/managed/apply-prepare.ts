@@ -23,6 +23,7 @@ import { managed, principal } from '../../lib/db/schema.ts'
 import type { Db } from '../../db.ts'
 import { resolveHostingBindAddress } from '../environments/deploy-prepare.ts'
 import { listManagedPrincipals } from '../principals/store.ts'
+import { ensureManagedContainerAllocation } from './allocate-managed-container.ts'
 
 const TPSECRET_PREFIX = 'tpsecret.'
 const APPLY_EXPIRES_MS = 600_000
@@ -245,6 +246,16 @@ export async function buildManagedApplyPayload(
     input.managedRow.id,
   )
 
+  // Pre-allocate service + ordinal-1 container; name is always `<id>-1` so a
+  // future read-replica fan-out can use `-2`, `-3`, … without renaming primary.
+  // Throws on allocation failure — create-path `db.transaction` rolls back;
+  // re-apply surfaces as 500 (no new ManagedApplyPrepareError kind).
+  const allocation = await ensureManagedContainerAllocation(db, {
+    environmentId: input.environmentId,
+    serverId: input.serverId,
+    composeServiceName: runtime.composeServiceName,
+  })
+
   const bindResolved = await resolveHostingBindAddress(db, {
     serverId: input.serverId,
     options: { bind: input.settings.exposure.bind },
@@ -288,6 +299,7 @@ export async function buildManagedApplyPayload(
     environmentId: input.environmentId,
     engine: input.spec.engine,
     projectName: `turbopanel-managed-${input.managedRow.id}`,
+    containerName: allocation.containerName,
     image: input.settings.image ?? input.spec.defaultImage,
     containerPort: input.spec.defaultPort,
     composeYaml,

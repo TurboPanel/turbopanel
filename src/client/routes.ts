@@ -12,6 +12,7 @@ import {
 import { getDb } from '../db.ts'
 import { registerAccessRoutes } from './access/routes.ts'
 import {
+  registerEnvironmentDeployPreviewRoutes,
   registerEnvironmentDeployRoutes,
   registerEnvironmentStopRoutes,
 } from './environments/deploy-routes.ts'
@@ -83,6 +84,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
   registerAccessRoutes(client, opts)
   registerWorkspaceRoutes(client, opts)
   registerEnvironmentRoutes(client, opts)
+  registerEnvironmentDeployPreviewRoutes(client, opts)
   registerEnvironmentDeployRoutes(client, opts)
   registerEnvironmentStopRoutes(client, opts)
   registerManagedRoutes(client, opts)

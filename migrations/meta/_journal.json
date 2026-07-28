@@ -15,6 +15,20 @@
       "when": 1785159864312,
       "tag": "0001_managed_service_principals_and_placement",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785256897830,
+      "tag": "0002_container_ordinal_and_principal_uid_sequence",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1785261078752,
+      "tag": "0003_storage_compose_volume_key_unique",
+      "breakpoints": true
     }
   ]
 }

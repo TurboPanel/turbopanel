@@ -5,6 +5,8 @@ export type HealthCheckPolicy = 'disabled' | 'warn' | 'required'
 export type ServiceOptions = {
   preDeployCommand?: string
   postDeployCommand?: string
+  /** Desired instance count for this service (1 = single container). */
+  instances?: number
   build?: {
     disableCache?: boolean
   }
@@ -28,6 +30,9 @@ export type ServiceOptions = {
 const DEFAULT_STOP_GRACE_SECONDS = 30
 const DEFAULT_MAX_RESTART_ATTEMPTS = 10
 const DEFAULT_HEALTH_POLICY: HealthCheckPolicy = 'warn'
+const DEFAULT_SERVICE_INSTANCES = 1
+/** Drop-invalid ceiling for `service.options.instances`. */
+export const MAX_SERVICE_INSTANCES = 64
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -116,6 +121,11 @@ export function parseServiceOptions(value: unknown): ServiceOptions | null {
   const postDeployCommand = readOptionalString(value.postDeployCommand)
   if (postDeployCommand) options.postDeployCommand = postDeployCommand
 
+  const instances = readOptionalPositiveInt(value.instances)
+  if (instances !== undefined && instances <= MAX_SERVICE_INSTANCES) {
+    options.instances = instances
+  }
+
   const build = parseBuild(value)
   if (build) options.build = build
 
@@ -131,6 +141,13 @@ export function parseServiceOptions(value: unknown): ServiceOptions | null {
   if (resources) options.resources = resources
 
   return options
+}
+
+/** Default instance count when unset. */
+export function resolveServiceInstances(
+  options: ServiceOptions | null | undefined,
+): number {
+  return options?.instances ?? DEFAULT_SERVICE_INSTANCES
 }
 
 export function resolveStopGracePeriodSeconds(options: ServiceOptions | null | undefined): number {

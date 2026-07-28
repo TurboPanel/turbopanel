@@ -11,16 +11,20 @@ import {
   buildServiceOptionsMap,
   collectHealthCheckWarnings,
   type ServiceDeployHook,
+  type ServiceOptionsByComposeName,
 } from '../../lib/compose/apply-service-options.ts'
 import {
   applyVariablesToComposeDocument,
+  injectSecretPlaceholdersIntoComposeDocument,
   type DeployVariableEntry,
   type DeployVariableMaterial,
 } from '../../lib/compose/apply-variables.ts'
+import { expandComposeServiceInstances } from '../../lib/compose/expand-instances.ts'
 import {
   assertComposeDocument,
   composeDocumentToRuntimeYaml,
   emptyContainerComposeYaml,
+  isTraditionalWebComposeService,
   mergeComposeOverlay,
   splitTraditionalWebServices,
   stripComposePlacement,
@@ -28,10 +32,42 @@ import {
   type TraditionalWebSiteSpec,
 } from '../../lib/compose/index.ts'
 import {
+  buildPlatformDeployVariables,
+  stripReservedDeployVariableKeys,
+} from '../../lib/compose/platform-variables.ts'
+import { renameComposeVolumes } from '../../lib/compose/rename-volumes.ts'
+import {
   collectComposeExternalDockerNetworkNames,
   pruneUnreferencedComposeNetworks,
 } from '../../lib/compose/docker-external-networks.ts'
+import {
+  principalHomeDir,
+  principalVolumePath,
+  resolveDockerVolumeName,
+} from '../../lib/naming.ts'
+import {
+  parsePrincipalOptions,
+  resolvePrincipalShell,
+} from '../../lib/principal-options.ts'
+import {
+  parseProjectOptions,
+  resolveContainerNaming,
+} from '../../lib/project-options.ts'
+import {
+  parseServiceOptions,
+  resolveServiceInstances,
+  type ServiceOptions,
+} from '../../lib/service-options.ts'
 import { validateRegisteredExternalDockerNetworks } from './validate-docker-external-networks.ts'
+import {
+  allocateEnvironmentContainers,
+  buildContainerServiceSpecs,
+  type ContainerAllocation,
+} from './allocate-containers.ts'
+import {
+  registerComposeVolumes,
+  type RegisteredComposeVolume,
+} from './register-compose-volumes.ts'
 import type {
   EnvironmentDeployHosting,
   EnvironmentDeployPrincipalMaterial,
@@ -105,16 +141,25 @@ function extractComposeFromOptions(options: unknown): unknown {
   return options.compose ?? null
 }
 
-function readPrincipalMetadata(metadata: unknown): { uid: number; gid: number; home?: string } | null {
+function readPrincipalMetadata(metadata: unknown): { uid: number; gid: number } | null {
   if (!isPlainObject(metadata)) return null
   const uid = metadata.uid
   const gid = metadata.gid
   if (typeof uid !== 'number' || typeof gid !== 'number') return null
-  return {
-    uid,
-    gid,
-    ...(typeof metadata.home === 'string' ? { home: metadata.home } : {}),
-  }
+  return { uid, gid }
+}
+
+export type DeployPrepareWarningCode =
+  | 'empty_compose'
+  | 'resource_limit_exceeded'
+  | 'health_check_missing'
+  | 'docker_external_network_unregistered'
+  | 'traditional_web_principal_ambiguous'
+
+export type DeployPrepareWarning = {
+  code: DeployPrepareWarningCode
+  message: string
+  details?: Record<string, unknown>
 }
 
 export type PreparedDeployCompose = {
@@ -126,6 +171,14 @@ export type PreparedDeployCompose = {
   traditionalWebSites: EnvironmentDeployTraditionalWebSite[]
   /** External Docker network names declared in compose — must be registered on the server. */
   dockerExternalNetworks: string[]
+  /** Pre-allocated container rows for this deploy (uuid / explicit-name paths). */
+  containers: ContainerAllocation[]
+  /** Original compose service key → clone keys after multi-instance expansion. */
+  composeServiceExpansion: Record<string, string[]>
+  /** Auto-registered compose named volumes (storage rows + resolved Docker names). */
+  volumes: RegisteredComposeVolume[]
+  /** Soft prepare issues (preview mode); empty for deploy. */
+  warnings: DeployPrepareWarning[]
 }
 
 export type DeployPrepareError =
@@ -135,6 +188,69 @@ export type DeployPrepareError =
   | { kind: 'datacenter_ip_required'; serverId: string }
   | { kind: 'docker_external_network_unregistered'; names: string[] }
   | { kind: 'traditional_web_principal_ambiguous'; composeServiceName: string }
+
+export type DeployPrepareMode = 'deploy' | 'preview'
+
+function emptyPreparedCompose(
+  warnings: DeployPrepareWarning[],
+): PreparedDeployCompose {
+  return {
+    composeYaml: emptyContainerComposeYaml(),
+    hooks: [],
+    variableMaterial: [],
+    storageMaterial: [],
+    principalMaterial: [],
+    traditionalWebSites: [],
+    dockerExternalNetworks: [],
+    containers: [],
+    composeServiceExpansion: {},
+    volumes: [],
+    warnings,
+  }
+}
+
+function warningFromPrepareError(
+  error: Exclude<DeployPrepareError, { kind: 'datacenter_ip_required' }>,
+): DeployPrepareWarning {
+  switch (error.kind) {
+    case 'empty_compose':
+      return {
+        code: 'empty_compose',
+        message: 'Compose has no services to deploy.',
+      }
+    case 'resource_limit':
+      return {
+        code: 'resource_limit_exceeded',
+        message: 'Requested resources exceed organization or server limits.',
+        details: { violations: error.violations },
+      }
+    case 'health_check':
+      return {
+        code: 'health_check_missing',
+        message: error.required
+          ? 'One or more services require a health check before deploy.'
+          : 'One or more services are missing a health check (warn policy).',
+        details: {
+          required: error.required,
+          services: error.services,
+        },
+      }
+    case 'docker_external_network_unregistered':
+      return {
+        code: 'docker_external_network_unregistered',
+        message:
+          'Compose references external Docker network(s) that are not registered for this server.',
+        details: { names: error.names },
+      }
+    case 'traditional_web_principal_ambiguous':
+      return {
+        code: 'traditional_web_principal_ambiguous',
+        message:
+          `Traditional-web service "${error.composeServiceName}" has more than one project principal assigned.`,
+        details: { composeServiceName: error.composeServiceName },
+      }
+  }
+}
 
 async function sealVariableMaterialForDaemon(
   c: Context<AppEnv>,
@@ -179,14 +295,121 @@ async function sealVariableMaterialForDaemon(
   return sealed
 }
 
-async function loadStorageMaterial(
+function readPinnedDockerVolumeName(metadata: unknown): string | null {
+  if (!isPlainObject(metadata)) return null
+  if (typeof metadata.dockerVolumeName !== 'string') return null
+  return metadata.dockerVolumeName.length > 0 ? metadata.dockerVolumeName : null
+}
+
+function storageRowSurvivesFilter(
+  row: { kind: string; destinationPath: string | null; serverId: string | null },
+  serverId: string,
+): boolean {
+  if (row.serverId !== serverId) return false
+  if (row.kind === 'docker_volume') return true
+  return Boolean(row.destinationPath)
+}
+
+type StorageQueryRow = {
+  id: string
+  kind: string
+  name: string
+  sourcePath: string | null
+  destinationPath: string | null
+  principalId: string | null
+  contentEnvelope: string | null
+  serviceId: string | null
+  serverId: string | null
+  metadata: unknown
+}
+
+/** Principal-owned bind mounts without an explicit source_path use the canonical path. */
+function resolveBindMountSourcePath(row: StorageQueryRow): string | undefined {
+  const sourcePath = row.sourcePath ?? undefined
+  if (sourcePath !== undefined && sourcePath.length > 0) return sourcePath
+  if (
+    row.kind !== 'bind_mount' ||
+    typeof row.principalId !== 'string' ||
+    row.principalId.length === 0
+  ) {
+    return sourcePath
+  }
+  return principalVolumePath(row.principalId, row.id)
+}
+
+function toStorageMaterialEntry(
+  row: StorageQueryRow,
+  organizationId: string,
+  serverId: string,
+): EnvironmentDeployStorageMaterial {
+  const base: EnvironmentDeployStorageMaterial = {
+    storageId: row.id,
+    kind: row.kind as EnvironmentDeployStorageMaterial['kind'],
+    name: row.name,
+    sourcePath: resolveBindMountSourcePath(row),
+    ...(row.destinationPath ? { destinationPath: row.destinationPath } : {}),
+    principalId: row.principalId ?? undefined,
+    serviceId: row.serviceId ?? undefined,
+    serverId,
+    ...(row.contentEnvelope ? { contentEnvelope: row.contentEnvelope } : {}),
+  }
+  if (row.kind === 'docker_volume') {
+    base.volumeName = resolveDockerVolumeName({
+      storageId: row.id,
+      organizationId,
+      name: row.name,
+      pinnedName: readPinnedDockerVolumeName(row.metadata),
+    })
+  }
+  return base
+}
+
+function pushStorageMaterialEntries(
+  material: EnvironmentDeployStorageMaterial[],
+  base: EnvironmentDeployStorageMaterial,
+  cloneNames: string[] | undefined,
+): void {
+  if (!base.serviceId || !cloneNames || cloneNames.length === 0) {
+    material.push(base)
+    return
+  }
+  for (const cloneName of cloneNames) {
+    material.push({
+      ...base,
+      composeServiceName: cloneName,
+    })
+  }
+}
+
+function appendUnseenRegisteredVolumes(
+  material: EnvironmentDeployStorageMaterial[],
+  seenStorageIds: ReadonlySet<string>,
+  registeredVolumes: readonly RegisteredComposeVolume[],
+  serverId: string,
+): void {
+  for (const registered of registeredVolumes) {
+    if (seenStorageIds.has(registered.storageId)) continue
+    material.push({
+      storageId: registered.storageId,
+      kind: 'docker_volume',
+      name: registered.composeKey,
+      serverId,
+      volumeName: registered.volumeName,
+    })
+  }
+}
+
+export async function loadStorageMaterial(
   db: Db,
   params: {
     environmentId: string
     projectId: string
+    organizationId: string
     serverId: string
     serviceIds: string[]
-    composeServiceNameByServiceId: Map<string, string>
+    /** Origin service id → clone compose keys (for service-scoped fan-out). */
+    cloneNamesByServiceId: Map<string, string[]>
+    registeredVolumes: readonly RegisteredComposeVolume[]
   },
 ): Promise<EnvironmentDeployStorageMaterial[]> {
   const scopeConditions = [
@@ -208,26 +431,31 @@ async function loadStorageMaterial(
       contentEnvelope: storage.contentEnvelope,
       serviceId: storage.serviceId,
       serverId: storage.serverId,
+      metadata: storage.metadata,
     })
     .from(storage)
     .where(or(...scopeConditions))
 
-  return rows
-    .filter((row) => row.destinationPath && row.serverId === params.serverId)
-    .map((row) => ({
-      storageId: row.id,
-      kind: row.kind as EnvironmentDeployStorageMaterial['kind'],
-      name: row.name,
-      sourcePath: row.sourcePath ?? undefined,
-      destinationPath: row.destinationPath!,
-      principalId: row.principalId ?? undefined,
-      serviceId: row.serviceId ?? undefined,
-      composeServiceName: row.serviceId
-        ? params.composeServiceNameByServiceId.get(row.serviceId)
-        : undefined,
-      serverId: params.serverId,
-      ...(row.contentEnvelope ? { contentEnvelope: row.contentEnvelope } : {}),
-    }))
+  const material: EnvironmentDeployStorageMaterial[] = []
+  const seenStorageIds = new Set<string>()
+
+  for (const row of rows) {
+    if (!storageRowSurvivesFilter(row, params.serverId)) continue
+    seenStorageIds.add(row.id)
+    const base = toStorageMaterialEntry(row, params.organizationId, params.serverId)
+    const cloneNames = row.serviceId
+      ? params.cloneNamesByServiceId.get(row.serviceId)
+      : undefined
+    pushStorageMaterialEntries(material, base, cloneNames)
+  }
+
+  appendUnseenRegisteredVolumes(
+    material,
+    seenStorageIds,
+    params.registeredVolumes,
+    params.serverId,
+  )
+  return material
 }
 
 async function sealStorageMaterialForDaemon(
@@ -272,7 +500,7 @@ async function sealStorageMaterialForDaemon(
   return sealed
 }
 
-async function loadPrincipalMaterial(
+export async function loadPrincipalMaterial(
   db: Db,
   principalIds: string[],
 ): Promise<EnvironmentDeployPrincipalMaterial[]> {
@@ -284,6 +512,7 @@ async function loadPrincipalMaterial(
       id: principal.id,
       username: principal.username,
       metadata: principal.metadata,
+      options: principal.options,
     })
     .from(principal)
     .where(inArray(principal.id, uniqueIds))
@@ -292,12 +521,15 @@ async function loadPrincipalMaterial(
   for (const row of rows) {
     const meta = readPrincipalMetadata(row.metadata)
     if (!meta) continue
+    // naming.ts is the single source of truth for home; metadata.home is a
+    // mirror for display only (legacy /var/lib/… paths are corrected on deploy).
     material.push({
       principalId: row.id,
       username: row.username,
       uid: meta.uid,
       gid: meta.gid,
-      ...(meta.home ? { home: meta.home } : {}),
+      home: principalHomeDir(row.id),
+      shell: resolvePrincipalShell(parsePrincipalOptions(row.options)),
     })
   }
   return material
@@ -378,8 +610,9 @@ async function resolveDeployVariableBuckets(
   params: {
     environmentId: string
     serverId: string
-    merged: ComposeDocument
-    serviceRows: ServiceRow[]
+    composeServiceNames: readonly string[]
+    /** Clone compose key → origin service row (same row for every clone). */
+    serviceRowByComposeName: Map<string, ServiceRow>
     dataEncryptionSecrets: Parameters<typeof mapResolvedVariablesToDeployEntries>[1]
   },
 ): Promise<{
@@ -394,18 +627,7 @@ async function resolveDeployVariableBuckets(
     params.dataEncryptionSecrets,
   )
 
-  const serviceRowByComposeName = new Map<string, ServiceRow>()
-  for (const row of params.serviceRows) {
-    serviceRowByComposeName.set(
-      readComposeServiceName(row.composeServiceName, row.id),
-      row,
-    )
-  }
-
-  const composeServices = isPlainObject(params.merged.data.services)
-    ? Object.keys(params.merged.data.services as Record<string, unknown>)
-    : []
-
+  const composeServices = params.composeServiceNames
   const globalEntries: DeployVariableEntry[] = composeServices.length === 0
     ? fallbackEntries
     : []
@@ -414,40 +636,235 @@ async function resolveDeployVariableBuckets(
   if (composeServices.length === 0) {
     return { globalEntries, perServiceEntries }
   }
-  if (params.serviceRows.length === 0) {
+  if (params.serviceRowByComposeName.size === 0) {
     globalEntries.push(...fallbackEntries)
     return { globalEntries, perServiceEntries }
   }
 
+  // Cache user vars per origin service id so clones share one resolve.
+  const userEntriesByServiceId = new Map<string, DeployVariableEntry[]>()
+
   for (const composeServiceName of composeServices) {
-    const row = serviceRowByComposeName.get(composeServiceName)
-    let varMap: ResolvedVariableMap
+    const row = params.serviceRowByComposeName.get(composeServiceName)
+    let userEntries: DeployVariableEntry[]
     if (row) {
-      varMap = await resolveInheritedVariablesForService(db, row.id)
-      // Hostname-scoped vars override service scope for compose injection.
-      await mergeHostingVariablesForService(db, row.id, varMap)
+      let cached = userEntriesByServiceId.get(row.id)
+      if (!cached) {
+        const varMap = await resolveInheritedVariablesForService(db, row.id)
+        await mergeHostingVariablesForService(db, row.id, varMap)
+        const mergedServer = new Map([...varMap, ...serverVars])
+        cached = await mapResolvedVariablesToDeployEntries(
+          mergedServer,
+          params.dataEncryptionSecrets,
+        )
+        userEntriesByServiceId.set(row.id, cached)
+      }
+      userEntries = cached
     } else {
-      varMap = fallbackGlobal
+      userEntries = fallbackEntries
     }
-    const mergedServer = new Map([...varMap, ...serverVars])
-    perServiceEntries.set(
-      composeServiceName,
-      await mapResolvedVariablesToDeployEntries(mergedServer, params.dataEncryptionSecrets),
-    )
+    perServiceEntries.set(composeServiceName, userEntries)
   }
   return { globalEntries, perServiceEntries }
 }
 
-export async function prepareDeployCompose(
-  c: Context<AppEnv>,
-  db: Db,
+function listContainerComposeNames(document: ComposeDocument): Set<string> {
+  const services = isPlainObject(document.data.services)
+    ? (document.data.services as Record<string, unknown>)
+    : {}
+  const names = new Set<string>()
+  for (const [name, raw] of Object.entries(services)) {
+    if (isPlainObject(raw) && isTraditionalWebComposeService(raw)) continue
+    names.add(name)
+  }
+  return names
+}
+
+function buildExpandedServiceOptionsMap(
+  serviceRows: ServiceRow[],
+  expansion: Map<string, string[]>,
+  allocations: readonly ContainerAllocation[],
+): ServiceOptionsByComposeName {
+  const originOptions = buildServiceOptionsMap(
+    serviceRows,
+    readComposeServiceName,
+    'unknown',
+  )
+  const allocationByClone = new Map(
+    allocations.map((row) => [row.cloneComposeServiceName, row]),
+  )
+  const map: ServiceOptionsByComposeName = new Map()
+
+  for (const [originName, clones] of expansion) {
+    const origin = originOptions.get(originName) ?? {}
+    for (const cloneName of clones) {
+      const parsed: ServiceOptions = { ...origin }
+      // Allocation is the single source of truth for container_name — including
+      // explicit options.container.name (with per-ordinal suffixes when N > 1).
+      const allocation = allocationByClone.get(cloneName)
+      if (allocation) {
+        parsed.container = {
+          ...parsed.container,
+          name: allocation.containerName,
+        }
+      }
+      map.set(cloneName, parsed)
+    }
+  }
+  return map
+}
+
+function appendPlatformVariablesToEntries(
+  perServiceEntries: Map<string, DeployVariableEntry[]>,
   params: {
+    projectId: string
     environmentId: string
-    serverId: string
-    organizationId: string
-    acknowledgeHealthCheckWarnings?: boolean
+    serviceRowByCloneName: Map<string, ServiceRow>
+    allocationByClone: Map<string, ContainerAllocation>
   },
-): Promise<PreparedDeployCompose | DeployPrepareError | Response> {
+): Map<string, DeployVariableEntry[]> {
+  const next = new Map<string, DeployVariableEntry[]>()
+  for (const [cloneName, userEntries] of perServiceEntries) {
+    const stripped = stripReservedDeployVariableKeys(userEntries)
+    const row = params.serviceRowByCloneName.get(cloneName)
+    const allocation = params.allocationByClone.get(cloneName)
+    const platform = row
+      ? buildPlatformDeployVariables({
+        projectId: params.projectId,
+        environmentId: params.environmentId,
+        serviceId: row.id,
+        ...(allocation
+          ? {
+            containerId: allocation.containerRowId,
+            containerName: allocation.containerName,
+          }
+          : {}),
+      })
+      : []
+    next.set(cloneName, [...stripped, ...platform])
+  }
+  return next
+}
+
+function expansionToRecord(expansion: Map<string, string[]>): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (const [key, value] of expansion) {
+    out[key] = value
+  }
+  return out
+}
+
+function buildCloneNamesByServiceId(
+  serviceRows: ServiceRow[],
+  expansion: Map<string, string[]>,
+): Map<string, string[]> {
+  const map = new Map<string, string[]>()
+  for (const row of serviceRows) {
+    const originName = readComposeServiceName(row.composeServiceName, row.id)
+    map.set(row.id, expansion.get(originName) ?? [originName])
+  }
+  return map
+}
+
+/** Soft prepare errors that preview can absorb into `warnings`. */
+type SoftDeployPrepareError = Exclude<
+  DeployPrepareError,
+  { kind: 'datacenter_ip_required' }
+>
+
+function absorbSoftPrepareError(
+  mode: DeployPrepareMode,
+  warnings: DeployPrepareWarning[],
+  error: SoftDeployPrepareError | null | undefined,
+): SoftDeployPrepareError | null {
+  if (!error) return null
+  if (mode === 'preview') {
+    warnings.push(warningFromPrepareError(error))
+    return null
+  }
+  return error
+}
+
+function listComposeServiceKeys(document: ComposeDocument): string[] {
+  if (!isPlainObject(document.data.services)) return []
+  return Object.keys(document.data.services as Record<string, unknown>)
+}
+
+function emptyComposePrepareResult(
+  mode: DeployPrepareMode,
+): PreparedDeployCompose | DeployPrepareError {
+  if (mode === 'preview') {
+    return emptyPreparedCompose([warningFromPrepareError({ kind: 'empty_compose' })])
+  }
+  return { kind: 'empty_compose' }
+}
+
+function buildInstancesByComposeName(
+  composeServiceNames: readonly string[],
+  containerServices: ReturnType<typeof buildContainerServiceSpecs>,
+  serviceRows: ServiceRow[],
+): Map<string, number> {
+  const instancesByComposeName = new Map<string, number>()
+  for (const spec of containerServices) {
+    instancesByComposeName.set(spec.composeServiceName, spec.instances)
+  }
+  // Traditional-web keeps count 1 (expansion skips them regardless).
+  for (const name of composeServiceNames) {
+    if (instancesByComposeName.has(name)) continue
+    const row = serviceRows.find(
+      (serviceRow) =>
+        readComposeServiceName(serviceRow.composeServiceName, serviceRow.id) === name,
+    )
+    instancesByComposeName.set(
+      name,
+      resolveServiceInstances(parseServiceOptions(row?.options) ?? {}),
+    )
+  }
+  return instancesByComposeName
+}
+
+function buildServiceRowByCloneName(
+  serviceRows: ServiceRow[],
+  expansion: Map<string, string[]>,
+): Map<string, ServiceRow> {
+  const serviceRowByCloneName = new Map<string, ServiceRow>()
+  for (const row of serviceRows) {
+    const originName = readComposeServiceName(row.composeServiceName, row.id)
+    for (const cloneName of expansion.get(originName) ?? [originName]) {
+      serviceRowByCloneName.set(cloneName, row)
+    }
+  }
+  return serviceRowByCloneName
+}
+
+function resourceLimitPrepareError(
+  optionsByComposeName: ServiceOptionsByComposeName,
+  serviceCount: number,
+  orgOptions: unknown,
+  serverOptions: unknown,
+): SoftDeployPrepareError | null {
+  const orgLimits = parseResourceLimits(
+    isPlainObject(orgOptions) ? orgOptions.resourceLimits : null,
+  ) ?? {}
+  const serverLimits = parseResourceLimits(
+    isPlainObject(serverOptions) ? serverOptions.resourceLimits : null,
+  ) ?? {}
+  const usage = sumServiceResourceUsage(optionsByComposeName, serviceCount)
+  const violations = checkResourceLimits(usage, orgLimits, serverLimits)
+  if (violations.length === 0) return null
+  return { kind: 'resource_limit', violations }
+}
+
+async function loadDeployEnvAndProject(
+  db: Db,
+  environmentId: string,
+): Promise<
+  | {
+    envRow: { id: string; projectId: string; options: unknown }
+    projectRow: { id: string; options: unknown }
+  }
+  | Response
+> {
   const [envRow] = await db
     .select({
       id: environment.id,
@@ -455,7 +872,7 @@ export async function prepareDeployCompose(
       options: environment.options,
     })
     .from(environment)
-    .where(eq(environment.id, params.environmentId))
+    .where(eq(environment.id, environmentId))
     .limit(1)
   if (!envRow) return Response.json({ error: 'Not found' }, { status: 404 })
 
@@ -468,6 +885,219 @@ export async function prepareDeployCompose(
     .where(eq(project.id, envRow.projectId))
     .limit(1)
   if (!projectRow) return Response.json({ error: 'Not found' }, { status: 404 })
+
+  return { envRow, projectRow }
+}
+
+type DeployExpandPipeline = {
+  containers: ContainerAllocation[]
+  registeredVolumes: RegisteredComposeVolume[]
+  expandedDocument: ComposeDocument
+  expansion: Map<string, string[]>
+  expandedServiceNames: string[]
+  optionsByComposeName: ServiceOptionsByComposeName
+}
+
+async function allocateExpandDeployPipeline(
+  db: Db,
+  params: {
+    environmentId: string
+    serverId: string
+    organizationId: string
+    projectOptions: unknown
+    merged: ComposeDocument
+    composeServiceNames: readonly string[]
+    serviceRows: ServiceRow[]
+  },
+): Promise<DeployExpandPipeline> {
+  const containerNaming = resolveContainerNaming(parseProjectOptions(params.projectOptions))
+  const containerComposeNames = listContainerComposeNames(params.merged)
+  const containerServices = buildContainerServiceSpecs(
+    params.serviceRows,
+    containerComposeNames,
+    readComposeServiceName,
+  )
+
+  // Idempotent by (service, ordinal) — preview may allocate; deploy reuses rows.
+  const containers = await allocateEnvironmentContainers(db, {
+    environmentId: params.environmentId,
+    serverId: params.serverId,
+    containerServices,
+    containerNaming,
+    environmentServiceIds: params.serviceRows.map((row) => row.id),
+  })
+
+  // Idempotent by (environment, composeVolumeKey) — preview may register; deploy reuses.
+  const registeredVolumes = await registerComposeVolumes(db, {
+    document: params.merged,
+    organizationId: params.organizationId,
+    environmentId: params.environmentId,
+    serverId: params.serverId,
+  })
+  const volumeRenames = new Map(
+    registeredVolumes.map((row) => [row.composeKey, row.volumeName]),
+  )
+  const withRenamedVolumes = renameComposeVolumes(params.merged, volumeRenames)
+  const instancesByComposeName = buildInstancesByComposeName(
+    params.composeServiceNames,
+    containerServices,
+    params.serviceRows,
+  )
+  const { document: expandedDocument, expansion } = expandComposeServiceInstances(
+    withRenamedVolumes,
+    instancesByComposeName,
+  )
+  return {
+    containers,
+    registeredVolumes,
+    expandedDocument,
+    expansion,
+    expandedServiceNames: listComposeServiceKeys(expandedDocument),
+    optionsByComposeName: buildExpandedServiceOptionsMap(
+      params.serviceRows,
+      expansion,
+      containers,
+    ),
+  }
+}
+
+function documentForServiceOptions(
+  mode: DeployPrepareMode,
+  withVariables: ReturnType<typeof applyVariablesToComposeDocument>,
+): ComposeDocument {
+  if (mode === 'preview') {
+    return injectSecretPlaceholdersIntoComposeDocument(
+      withVariables.document,
+      withVariables.secretMaterial,
+    )
+  }
+  return withVariables.document
+}
+
+async function maybeSealDeployMaterials(
+  mode: DeployPrepareMode,
+  c: Context<AppEnv>,
+  db: Db,
+  serverId: string,
+  secretMaterial: DeployVariableMaterial[],
+  storageMaterialRaw: EnvironmentDeployStorageMaterial[],
+): Promise<
+  | {
+    variableMaterial: EnvironmentDeployVariableMaterial[]
+    storageMaterial: EnvironmentDeployStorageMaterial[]
+  }
+  | Response
+> {
+  // Preview must not require an online daemon — skip sealing / daemon-key steps.
+  if (mode === 'preview') {
+    return { variableMaterial: [], storageMaterial: storageMaterialRaw }
+  }
+  const variableMaterial = await sealVariableMaterialForDaemon(
+    c,
+    db,
+    serverId,
+    secretMaterial,
+  )
+  if (variableMaterial instanceof Response) return variableMaterial
+  const storageMaterial = await sealStorageMaterialForDaemon(
+    c,
+    db,
+    serverId,
+    storageMaterialRaw,
+  )
+  if (storageMaterial instanceof Response) return storageMaterial
+  return { variableMaterial, storageMaterial }
+}
+
+function resolveTraditionalWebSitesForMode(
+  mode: DeployPrepareMode,
+  warnings: DeployPrepareWarning[],
+  sitesOrError:
+    | EnvironmentDeployTraditionalWebSite[]
+    | { kind: 'traditional_web_principal_ambiguous'; composeServiceName: string },
+  fallbackSites: readonly TraditionalWebSiteSpec[],
+): EnvironmentDeployTraditionalWebSite[] | SoftDeployPrepareError {
+  if (!('kind' in sitesOrError)) return sitesOrError
+  if (mode === 'preview') {
+    warnings.push(warningFromPrepareError(sitesOrError))
+    return fallbackSites.map((site) => ({ ...site }))
+  }
+  return sitesOrError
+}
+
+async function externalNetworkPrepareError(
+  db: Db,
+  organizationId: string,
+  serverId: string,
+  dockerExternalNetworks: string[],
+): Promise<SoftDeployPrepareError | null> {
+  const unregistered = await validateRegisteredExternalDockerNetworks(
+    db,
+    organizationId,
+    serverId,
+    dockerExternalNetworks,
+  )
+  if (!unregistered) return null
+  return {
+    kind: 'docker_external_network_unregistered',
+    names: unregistered,
+  }
+}
+
+function toPreparedDeployResult(
+  mode: DeployPrepareMode,
+  parts: {
+    composeYaml: string
+    hooks: ServiceDeployHook[]
+    variableMaterial: EnvironmentDeployVariableMaterial[]
+    storageMaterial: EnvironmentDeployStorageMaterial[]
+    principalMaterial: EnvironmentDeployPrincipalMaterial[]
+    traditionalWebSites: EnvironmentDeployTraditionalWebSite[]
+    dockerExternalNetworks: string[]
+    containers: ContainerAllocation[]
+    expansion: Map<string, string[]>
+    registeredVolumes: RegisteredComposeVolume[]
+    warnings: DeployPrepareWarning[]
+  },
+): PreparedDeployCompose {
+  const omitSecrets = mode === 'preview'
+  return {
+    composeYaml: parts.composeYaml,
+    hooks: parts.hooks,
+    variableMaterial: omitSecrets ? [] : parts.variableMaterial,
+    storageMaterial: omitSecrets ? [] : parts.storageMaterial,
+    principalMaterial: parts.principalMaterial,
+    traditionalWebSites: parts.traditionalWebSites,
+    dockerExternalNetworks: parts.dockerExternalNetworks,
+    containers: parts.containers,
+    composeServiceExpansion: expansionToRecord(parts.expansion),
+    volumes: parts.registeredVolumes,
+    warnings: parts.warnings,
+  }
+}
+
+export async function prepareDeployCompose(
+  c: Context<AppEnv>,
+  db: Db,
+  params: {
+    environmentId: string
+    serverId: string
+    organizationId: string
+    acknowledgeHealthCheckWarnings?: boolean
+    /**
+     * `preview` skips daemon sealing, softens prepare gates into `warnings`,
+     * and redacts secret values in the returned YAML. Allocation + volume
+     * registration still run (idempotent) so previewed UUIDs match deploy.
+     */
+    mode?: DeployPrepareMode
+  },
+): Promise<PreparedDeployCompose | DeployPrepareError | Response> {
+  const mode = params.mode ?? 'deploy'
+  const warnings: DeployPrepareWarning[] = []
+
+  const loaded = await loadDeployEnvAndProject(db, params.environmentId)
+  if (loaded instanceof Response) return loaded
+  const { envRow, projectRow } = loaded
 
   const [orgRow] = await db
     .select({ options: organization.options })
@@ -484,12 +1114,8 @@ export async function prepareDeployCompose(
   const merged = mergeProjectEnvironmentCompose(projectRow.options, envRow.options)
   if (merged instanceof Response) return merged
 
-  const composeServiceNames = isPlainObject(merged.data.services)
-    ? Object.keys(merged.data.services as Record<string, unknown>)
-    : []
-  if (composeServiceNames.length === 0) {
-    return { kind: 'empty_compose' }
-  }
+  const composeServiceNames = listComposeServiceKeys(merged)
+  if (composeServiceNames.length === 0) return emptyComposePrepareResult(mode)
 
   await reconcileServicesFromCompose(db, params.environmentId, merged)
 
@@ -502,81 +1128,90 @@ export async function prepareDeployCompose(
     .from(service)
     .where(eq(service.environmentId, params.environmentId))
 
-  const optionsByComposeName = buildServiceOptionsMap(
-    serviceRows,
-    readComposeServiceName,
-    'unknown',
-  )
-
-  const orgLimits = parseResourceLimits(
-    isPlainObject(orgRow?.options) ? orgRow.options.resourceLimits : null,
-  ) ?? {}
-  const serverLimits = parseResourceLimits(
-    isPlainObject(serverRow?.options) ? serverRow.options.resourceLimits : null,
-  ) ?? {}
-
-  const usage = sumServiceResourceUsage(optionsByComposeName, composeServiceNames.length)
-  const violations = checkResourceLimits(usage, orgLimits, serverLimits)
-  if (violations.length > 0) {
-    return { kind: 'resource_limit', violations }
-  }
-
-  const healthGate = evaluateHealthCheckGates(
-    merged,
-    optionsByComposeName,
-    params.acknowledgeHealthCheckWarnings,
-  )
-  if (healthGate) return healthGate
-
-  const { globalEntries, perServiceEntries } = await resolveDeployVariableBuckets(db, {
+  const pipeline = await allocateExpandDeployPipeline(db, {
     environmentId: params.environmentId,
     serverId: params.serverId,
+    organizationId: params.organizationId,
+    projectOptions: projectRow.options,
     merged,
+    composeServiceNames,
     serviceRows,
-    dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
   })
 
-  const withVariables = applyVariablesToComposeDocument(merged, {
+  const limitErr = absorbSoftPrepareError(
+    mode,
+    warnings,
+    resourceLimitPrepareError(
+      pipeline.optionsByComposeName,
+      pipeline.expandedServiceNames.length,
+      orgRow?.options,
+      serverRow?.options,
+    ),
+  )
+  if (limitErr) return limitErr
+
+  const healthErr = absorbSoftPrepareError(
+    mode,
+    warnings,
+    evaluateHealthCheckGates(
+      pipeline.expandedDocument,
+      pipeline.optionsByComposeName,
+      mode === 'preview' ? false : params.acknowledgeHealthCheckWarnings,
+    ),
+  )
+  if (healthErr) return healthErr
+
+  const serviceRowByCloneName = buildServiceRowByCloneName(
+    serviceRows,
+    pipeline.expansion,
+  )
+  const { globalEntries, perServiceEntries: userPerService } =
+    await resolveDeployVariableBuckets(db, {
+      environmentId: params.environmentId,
+      serverId: params.serverId,
+      composeServiceNames: pipeline.expandedServiceNames,
+      serviceRowByComposeName: serviceRowByCloneName,
+      dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
+    })
+
+  const allocationByClone = new Map(
+    pipeline.containers.map((row) => [row.cloneComposeServiceName, row]),
+  )
+  const perServiceEntries = appendPlatformVariablesToEntries(userPerService, {
+    projectId: envRow.projectId,
+    environmentId: params.environmentId,
+    serviceRowByCloneName,
+    allocationByClone,
+  })
+
+  const withVariables = applyVariablesToComposeDocument(pipeline.expandedDocument, {
     globalEntries,
     perServiceEntries,
   })
-
   const withServiceOptions = applyServiceOptionsToComposeDocument(
-    withVariables.document,
-    optionsByComposeName,
+    documentForServiceOptions(mode, withVariables),
+    pipeline.optionsByComposeName,
   )
-
-  const variableMaterial = await sealVariableMaterialForDaemon(
-    c,
-    db,
-    params.serverId,
-    withVariables.secretMaterial,
-  )
-  if (variableMaterial instanceof Response) return variableMaterial
-
-  const composeServiceNameByServiceId = new Map<string, string>()
-  for (const row of serviceRows) {
-    composeServiceNameByServiceId.set(
-      row.id,
-      readComposeServiceName(row.composeServiceName, row.id),
-    )
-  }
 
   const storageMaterialRaw = await loadStorageMaterial(db, {
     environmentId: params.environmentId,
     projectId: envRow.projectId,
+    organizationId: params.organizationId,
     serverId: params.serverId,
     serviceIds: serviceRows.map((row) => row.id),
-    composeServiceNameByServiceId,
+    cloneNamesByServiceId: buildCloneNamesByServiceId(serviceRows, pipeline.expansion),
+    registeredVolumes: pipeline.registeredVolumes,
   })
-
-  const storageMaterial = await sealStorageMaterialForDaemon(
+  const sealed = await maybeSealDeployMaterials(
+    mode,
     c,
     db,
     params.serverId,
+    withVariables.secretMaterial,
     storageMaterialRaw,
   )
-  if (storageMaterial instanceof Response) return storageMaterial
+  if (sealed instanceof Response) return sealed
+  const { variableMaterial, storageMaterial } = sealed
 
   const assignmentPrincipalIds = await loadPrincipalIdsAssignedToEnvironment(
     db,
@@ -591,7 +1226,6 @@ export async function prepareDeployCompose(
   ])
 
   const split = splitTraditionalWebFromDocument(withServiceOptions.document)
-
   // Drop traditional-web hooks — they are not Docker compose services.
   const traditionalNames = new Set(
     split.sites.map((site) => site.composeServiceName),
@@ -600,40 +1234,48 @@ export async function prepareDeployCompose(
     (hook) => !traditionalNames.has(hook.composeServiceName),
   )
 
-  const traditionalWebSitesOrError = await attachPrincipalsToTraditionalWebSites(
-    db,
-    params.environmentId,
-    serviceRows,
-    principalMaterial,
+  const traditionalResolved = resolveTraditionalWebSitesForMode(
+    mode,
+    warnings,
+    await attachPrincipalsToTraditionalWebSites(
+      db,
+      params.environmentId,
+      serviceRows,
+      principalMaterial,
+      split.sites,
+    ),
     split.sites,
   )
-  if ('kind' in traditionalWebSitesOrError) return traditionalWebSitesOrError
+  if ('kind' in traditionalResolved) return traditionalResolved
 
   const dockerExternalNetworks = collectComposeExternalDockerNetworkNames(
     split.composeYaml,
   )
-  const unregisteredDockerNetworks = await validateRegisteredExternalDockerNetworks(
-    db,
-    params.organizationId,
-    params.serverId,
-    dockerExternalNetworks,
+  const networkErr = absorbSoftPrepareError(
+    mode,
+    warnings,
+    await externalNetworkPrepareError(
+      db,
+      params.organizationId,
+      params.serverId,
+      dockerExternalNetworks,
+    ),
   )
-  if (unregisteredDockerNetworks) {
-    return {
-      kind: 'docker_external_network_unregistered',
-      names: unregisteredDockerNetworks,
-    }
-  }
+  if (networkErr) return networkErr
 
-  return {
+  return toPreparedDeployResult(mode, {
     composeYaml: split.composeYaml,
     hooks,
     variableMaterial,
     storageMaterial,
     principalMaterial,
-    traditionalWebSites: traditionalWebSitesOrError,
+    traditionalWebSites: traditionalResolved,
     dockerExternalNetworks,
-  }
+    containers: pipeline.containers,
+    expansion: pipeline.expansion,
+    registeredVolumes: pipeline.registeredVolumes,
+    warnings,
+  })
 }
 
 /**

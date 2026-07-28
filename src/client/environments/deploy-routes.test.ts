@@ -27,7 +27,11 @@ import {
   workspace,
 } from '../../lib/db/schema.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
-import { registerEnvironmentDeployRoutes } from './deploy-routes.ts'
+import {
+  expandHostingsForComposeInstances,
+  registerEnvironmentDeployPreviewRoutes,
+  registerEnvironmentDeployRoutes,
+} from './deploy-routes.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -39,6 +43,37 @@ const dbUrl = getDatabaseUrl()
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno)
+
+test('expandHostingsForComposeInstances fans hostings onto clone keys', () => {
+  const expanded = expandHostingsForComposeInstances(
+    [
+      {
+        hostingId: 'h1',
+        serviceId: 'svc-web',
+        composeServiceName: 'web',
+        hostnames: ['app.example.com'],
+      },
+      {
+        hostingId: 'h2',
+        serviceId: 'svc-api',
+        composeServiceName: 'api',
+        hostnames: ['api.example.com'],
+      },
+    ],
+    {
+      web: ['web-1', 'web-2'],
+      api: ['api'],
+    },
+  )
+  assertEquals(expanded.length, 3)
+  assertEquals(
+    expanded.map((entry) => entry.composeServiceName).sort((a, b) => a.localeCompare(b)),
+    ['api', 'web-1', 'web-2'],
+  )
+  const webClones = expanded.filter((entry) => entry.hostingId === 'h1')
+  assertEquals(webClones.length, 2)
+  assertEquals(webClones.every((entry) => entry.serviceId === 'svc-web'), true)
+})
 
 function createRecordingCommandQueue(): CommandQueue & { envelopes: CommandEnvelope[] } {
   const envelopes: CommandEnvelope[] = []
@@ -163,6 +198,7 @@ async function createDeployRoutesTestApp(
     c.set('commandQueue', options.commandQueue)
     return next()
   })
+  registerEnvironmentDeployPreviewRoutes(app, { secrets, runtime: 'deno' })
   registerEnvironmentDeployRoutes(app, { secrets, runtime: 'deno' })
   return { app, secrets }
 }
@@ -296,6 +332,109 @@ async function withDeployFixtures(
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
 }
+
+test('GET /environments/:id/deploy-preview returns prepared yaml with warnings for empty compose', async () => {
+  await withDeployFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    projectId,
+    environmentId,
+    serverId,
+  }) => {
+    await db
+      .update(environment)
+      .set({
+        serverId,
+        options: { compose: composeWithEmptyServices() },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(environment.id, environmentId))
+    await db
+      .update(project)
+      .set({
+        options: { compose: emptyComposeDocument() },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(project.id, projectId))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/environments/${environmentId}/deploy-preview`, {
+      method: 'GET',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 200)
+    const body = await res.json() as {
+      ok: boolean
+      composeYaml: string
+      projectName: string
+      containers: unknown[]
+      volumes: unknown[]
+      warnings: Array<{ code: string }>
+    }
+    assertEquals(body.ok, true)
+    assertEquals(typeof body.projectName, 'string')
+    assertEquals(body.containers, [])
+    assertEquals(body.volumes, [])
+    assertEquals(body.warnings.some((w) => w.code === 'empty_compose'), true)
+  })
+})
+
+test('GET /environments/:id/deploy-preview returns containers for a service', async () => {
+  await withDeployFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    environmentId,
+    serverId,
+  }) => {
+    await db
+      .update(environment)
+      .set({
+        serverId,
+        options: { compose: composeWithWebService() },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(environment.id, environmentId))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/environments/${environmentId}/deploy-preview`, {
+      method: 'GET',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 200)
+    const body = await res.json() as {
+      ok: boolean
+      composeYaml: string
+      containers: Array<{
+        serviceId: string
+        composeServiceName: string
+        containerName: string
+        ordinal: number
+      }>
+      volumes: unknown[]
+      warnings: unknown[]
+    }
+    assertEquals(body.ok, true)
+    assertEquals(body.composeYaml.includes('web:'), true)
+    assertEquals(body.containers.length >= 1, true)
+    assertEquals(body.containers[0]!.composeServiceName, 'web')
+    assertEquals(body.containers[0]!.ordinal, 1)
+    assertEquals(body.containers[0]!.containerName.length > 0, true)
+  })
+})
 
 test('POST /environments/:id/deploy rejects empty compose', async () => {
   await withDeployFixtures(async ({

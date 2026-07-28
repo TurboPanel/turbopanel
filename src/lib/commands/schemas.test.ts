@@ -266,6 +266,7 @@ const VALID_MANAGED_APPLY = {
   environmentId: '00000000-0000-4000-8000-000000000002',
   engine: 'postgres',
   projectName: 'tp-managed-pg',
+  containerName: '01936b3e-aaaa-bbbb-cccc-123456789abc-1',
   image: 'docker.io/library/postgres:18-alpine',
   containerPort: 5432,
   composeYaml: 'services:\n  postgres:\n    image: postgres:18-alpine\n',
@@ -525,6 +526,11 @@ test('parseManagedApplyPayload accepts a valid fixture', () => {
 test('parseManagedApplyPayload rejects unsafe or incomplete input', () => {
   assertThrows(
     () => parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, projectName: 'Bad Name!' }),
+    Error,
+    'Invalid managed.apply payload',
+  )
+  assertThrows(
+    () => parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, containerName: '-bad' }),
     Error,
     'Invalid managed.apply payload',
   )

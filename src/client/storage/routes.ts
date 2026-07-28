@@ -18,6 +18,7 @@ import {
   parseJsonbObject,
   requireStringField,
 } from '../shared.ts'
+import { serializeStorage } from './serialize.ts'
 
 const STORAGE_KINDS = ['docker_volume', 'bind_mount', 'file', 'directory'] as const
 type StorageKind = typeof STORAGE_KINDS[number]
@@ -363,6 +364,25 @@ async function createStorageRecord(
     [parent.column]: parent.id,
   }).returning({ id: storage.id })
 
+  // New docker_volume rows pin their on-host name to the storage UUID.
+  if (fields.kind === 'docker_volume') {
+    const existingMeta =
+      typeof fields.metadata === 'object' &&
+      fields.metadata !== null &&
+      !Array.isArray(fields.metadata)
+        ? (fields.metadata as Record<string, unknown>)
+        : {}
+    await db
+      .update(storage)
+      .set({
+        metadata: {
+          ...existingMeta,
+          dockerVolumeName: inserted.id,
+        },
+      })
+      .where(eq(storage.id, inserted.id))
+  }
+
   return c.json({ ok: true as const, id: inserted.id })
 }
 
@@ -435,7 +455,7 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
           eq(storage.organizationId, orgResult),
           eq(storage[parentFilter.column], parentId),
         ))
-      return c.json({ storage: rows })
+      return c.json({ storage: rows.map(serializeStorage) })
     }
 
     const visibleIds = await listVisible(db, {
@@ -453,7 +473,7 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .where(inArray(storage.id, visibleIds))
       .orderBy(storage.createdAt)
 
-    return c.json({ storage: rows })
+    return c.json({ storage: rows.map(serializeStorage) })
   })
 
   router.get('/storage/:id', async (c) => {
@@ -478,7 +498,7 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const [row] = await db.select(STORAGE_SELECT).from(storage).where(eq(storage.id, id)).limit(1)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    return c.json({ storage: row })
+    return c.json({ storage: serializeStorage(row) })
   })
 
   router.post('/storage', async (c) => {
