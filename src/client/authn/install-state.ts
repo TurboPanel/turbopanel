@@ -448,10 +448,15 @@ export async function getInstallStatus(
   }
 }
 
-export type DenoClientPublicStatus = InstallStatus & { ok: true }
+export type DenoClientPublicStatus = InstallStatus & {
+  ok: true
+  /** Control-plane runtime — UI uses this for HA (green) vs self-hosted (blue) auth chrome. */
+  runtime: 'deno'
+}
 
 export type WorkersClientPublicStatus = {
   ok: true
+  runtime: 'workers'
   isSignupEnabled: boolean
   isSignupEmailVerificationEnabled: boolean
 }
@@ -474,6 +479,7 @@ export async function getClientPublicStatus(
     )
     return {
       ok: true,
+      runtime: 'workers',
       isSignupEnabled: await resolveEffectiveSignupEnabled(db, runtime, envOverride),
       isSignupEmailVerificationEnabled: isEmailActiveForRuntime(
         emailSettings,
@@ -487,7 +493,7 @@ export async function getClientPublicStatus(
   }
 
   const status = await getInstallStatus(db, envOverride, platformEnv, dataEncryptionSecrets)
-  return { ok: true, ...status }
+  return { ok: true, runtime: 'deno', ...status }
 }
 
 export function validateOrganizationName(name: string): string | null {

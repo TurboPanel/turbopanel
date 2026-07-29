@@ -1,10 +1,16 @@
 const denoClientStatusSchema = {
   type: 'object',
-  required: ['ok', 'needsInstall', 'isInstallMode', 'isSignupEnabled'],
+  required: ['ok', 'runtime', 'needsInstall', 'isInstallMode', 'isSignupEnabled'],
   description:
     'Public client status on Deno self-hosted. Reflects install wizard and sign-up state.',
   properties: {
     ok: { type: 'boolean', const: true },
+    runtime: {
+      type: 'string',
+      const: 'deno',
+      description:
+        'Control-plane runtime. Self-hosted Deno uses blue auth chrome in the UI.',
+    },
     needsInstall: {
       type: 'boolean',
       description: 'True when org + superadmin do not exist yet.',
@@ -23,11 +29,17 @@ const denoClientStatusSchema = {
 
 const workersClientStatusSchema = {
   type: 'object',
-  required: ['ok', 'isSignupEnabled'],
+  required: ['ok', 'runtime', 'isSignupEnabled'],
   description:
     'Public client status on Cloudflare Workers. Install fields are omitted — Workers bootstraps via public sign-up.',
   properties: {
     ok: { type: 'boolean', const: true },
+    runtime: {
+      type: 'string',
+      const: 'workers',
+      description:
+        'Control-plane runtime. TurboPanel High Availability (Workers) uses green auth chrome in the UI.',
+    },
     isSignupEnabled: {
       type: 'boolean',
       description:
