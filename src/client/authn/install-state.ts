@@ -450,7 +450,7 @@ export async function getInstallStatus(
 
 export type DenoClientPublicStatus = InstallStatus & {
   ok: true
-  /** Control-plane runtime — UI uses this for HA (green) vs self-hosted (blue) auth chrome. */
+  /** Control-plane runtime — UI uses this for self-hosted (green) vs HA (blue) auth chrome. */
   runtime: 'deno'
 }
 

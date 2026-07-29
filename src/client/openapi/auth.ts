@@ -9,7 +9,7 @@ const denoClientStatusSchema = {
       type: 'string',
       const: 'deno',
       description:
-        'Control-plane runtime. Self-hosted Deno uses blue auth chrome in the UI.',
+        'Control-plane runtime. Self-hosted Deno uses green auth chrome in the UI.',
     },
     needsInstall: {
       type: 'boolean',
@@ -38,7 +38,7 @@ const workersClientStatusSchema = {
       type: 'string',
       const: 'workers',
       description:
-        'Control-plane runtime. TurboPanel High Availability (Workers) uses green auth chrome in the UI.',
+        'Control-plane runtime. TurboPanel High Availability (Workers) uses blue auth chrome in the UI.',
     },
     isSignupEnabled: {
       type: 'boolean',
