@@ -151,7 +151,7 @@ async function withServiceFixtures(
   }
 }
 
-test('POST/PATCH /services accept top-level composeServiceName and strip it from metadata', async () => {
+test('POST /services rejects a composeServiceName in the body with 400', async () => {
   await withServiceFixtures(async ({
     db,
     app,
@@ -173,39 +173,103 @@ test('POST/PATCH /services accept top-level composeServiceName and strip it from
         environmentId,
         displayName: 'web',
         composeServiceName: 'web',
-        metadata: { composeServiceName: 'should-not-persist', note: 'keep-me' },
       }),
     })
-    assertEquals(createRes.status, 200)
-    const { id } = await createRes.json() as { ok: true; id: string }
+    assertEquals(createRes.status, 400)
+    const body = await createRes.json() as { error: string }
+    assertEquals(body.error, 'compose_service_name_read_only')
+  })
+})
 
-    const [storedAfterCreate] = await db
-      .select({
-        composeServiceName: service.composeServiceName,
-        metadata: service.metadata,
-      })
-      .from(service)
-      .where(eq(service.id, id))
-      .limit(1)
-    assertEquals(storedAfterCreate?.composeServiceName, 'web')
-    assertEquals(storedAfterCreate?.metadata, { note: 'keep-me' })
+test('POST /services is not supported even without composeServiceName in the body', async () => {
+  await withServiceFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    environmentId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
 
-    const getRes = await app.request(`/services/${id}`, {
+    const createRes = await app.request('/services', {
+      method: 'POST',
       headers: {
         Cookie: cookie,
         [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
       },
+      body: JSON.stringify({ environmentId, displayName: 'web' }),
     })
-    assertEquals(getRes.status, 200)
-    const getBody = await getRes.json() as {
-      service: {
-        composeServiceName?: string | null
-        metadata: { composeServiceName?: string; note?: string }
-      }
-    }
-    assertEquals(getBody.service.composeServiceName, 'web')
-    assertEquals(getBody.service.metadata.composeServiceName, undefined)
-    assertEquals(getBody.service.metadata.note, 'keep-me')
+    assertEquals(createRes.status, 400)
+    const body = await createRes.json() as { error: string }
+    assertEquals(body.error, 'service_create_not_supported')
+  })
+})
+
+test('PATCH /services/:id rejects a composeServiceName in the body and leaves the stored value unchanged', async () => {
+  await withServiceFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    environmentId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+
+    const [inserted] = await db
+      .insert(service)
+      .values({
+        environmentId,
+        displayName: 'web',
+        composeServiceName: 'web',
+      })
+      .returning({ id: service.id })
+    const id = inserted!.id
+
+    const patchRes = await app.request(`/services/${id}`, {
+      method: 'PATCH',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ composeServiceName: 'api' }),
+    })
+    assertEquals(patchRes.status, 400)
+    const body = await patchRes.json() as { error: string }
+    assertEquals(body.error, 'compose_service_name_read_only')
+
+    const [stored] = await db
+      .select({ composeServiceName: service.composeServiceName })
+      .from(service)
+      .where(eq(service.id, id))
+      .limit(1)
+    assertEquals(stored?.composeServiceName, 'web')
+  })
+})
+
+test('PATCH /services/:id still strips metadata.composeServiceName without rejecting the request', async () => {
+  await withServiceFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    environmentId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+
+    const [inserted] = await db
+      .insert(service)
+      .values({
+        environmentId,
+        displayName: 'web',
+        composeServiceName: 'web',
+      })
+      .returning({ id: service.id })
+    const id = inserted!.id
 
     const patchRes = await app.request(`/services/${id}`, {
       method: 'PATCH',
@@ -215,13 +279,12 @@ test('POST/PATCH /services accept top-level composeServiceName and strip it from
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        composeServiceName: 'api',
         metadata: { note: 'patched', composeServiceName: 'ignored' },
       }),
     })
     assertEquals(patchRes.status, 200)
 
-    const [storedAfterPatch] = await db
+    const [stored] = await db
       .select({
         composeServiceName: service.composeServiceName,
         metadata: service.metadata,
@@ -229,7 +292,7 @@ test('POST/PATCH /services accept top-level composeServiceName and strip it from
       .from(service)
       .where(eq(service.id, id))
       .limit(1)
-    assertEquals(storedAfterPatch?.composeServiceName, 'api')
-    assertEquals(storedAfterPatch?.metadata, { note: 'patched' })
+    assertEquals(stored?.composeServiceName, 'web')
+    assertEquals(stored?.metadata, { note: 'patched' })
   })
 })

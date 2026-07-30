@@ -1,8 +1,4 @@
-const errorBody = {
-  type: 'object',
-  required: ['error'],
-  properties: { error: { type: 'string' } },
-}
+import { clientErrorJson } from './shared.ts'
 
 export const networkSchemas = {
   NetworkRow: {
@@ -147,19 +143,19 @@ export const networkPaths: Record<string, unknown> = {
         },
         '400': {
           description: 'Invalid filter',
-          content: { 'application/json': { schema: errorBody } },
+          content: { 'application/json': { schema: clientErrorJson } },
         },
         '401': {
           description: 'Unauthorized',
-          content: { 'application/json': { schema: errorBody } },
+          content: { 'application/json': { schema: clientErrorJson } },
         },
         '403': {
           description: 'Forbidden',
-          content: { 'application/json': { schema: errorBody } },
+          content: { 'application/json': { schema: clientErrorJson } },
         },
         '404': {
           description: 'Filter target not found',
-          content: { 'application/json': { schema: errorBody } },
+          content: { 'application/json': { schema: clientErrorJson } },
         },
       },
     },
@@ -187,19 +183,19 @@ export const networkPaths: Record<string, unknown> = {
         '400': {
           description:
             'Invalid request — `docker_network_name_required` when kind=docker; `network_scope_required` when datacenter lacks datacenterId or server lacks serverId; `network_single_scope_conflict` when docker includes a scope id or a kind carries the wrong scope pair.',
-          content: { 'application/json': { schema: errorBody } },
+          content: { 'application/json': { schema: clientErrorJson } },
         },
         '401': {
           description: 'Unauthorized',
-          content: { 'application/json': { schema: errorBody } },
+          content: { 'application/json': { schema: clientErrorJson } },
         },
         '403': {
           description: 'Forbidden',
-          content: { 'application/json': { schema: errorBody } },
+          content: { 'application/json': { schema: clientErrorJson } },
         },
         '404': {
           description: 'Scope entity not found',
-          content: { 'application/json': { schema: errorBody } },
+          content: { 'application/json': { schema: clientErrorJson } },
         },
       },
     },
@@ -228,15 +224,15 @@ export const networkPaths: Record<string, unknown> = {
         },
         '401': {
           description: 'Unauthorized',
-          content: { 'application/json': { schema: errorBody } },
+          content: { 'application/json': { schema: clientErrorJson } },
         },
         '403': {
           description: 'Forbidden',
-          content: { 'application/json': { schema: errorBody } },
+          content: { 'application/json': { schema: clientErrorJson } },
         },
         '404': {
           description: 'Network not found',
-          content: { 'application/json': { schema: errorBody } },
+          content: { 'application/json': { schema: clientErrorJson } },
         },
       },
     },
@@ -275,19 +271,19 @@ export const networkPaths: Record<string, unknown> = {
         },
         '400': {
           description: 'Invalid request',
-          content: { 'application/json': { schema: errorBody } },
+          content: { 'application/json': { schema: clientErrorJson } },
         },
         '401': {
           description: 'Unauthorized',
-          content: { 'application/json': { schema: errorBody } },
+          content: { 'application/json': { schema: clientErrorJson } },
         },
         '403': {
           description: 'Forbidden',
-          content: { 'application/json': { schema: errorBody } },
+          content: { 'application/json': { schema: clientErrorJson } },
         },
         '404': {
           description: 'Network not found',
-          content: { 'application/json': { schema: errorBody } },
+          content: { 'application/json': { schema: clientErrorJson } },
         },
       },
     },
@@ -318,15 +314,15 @@ export const networkPaths: Record<string, unknown> = {
         },
         '401': {
           description: 'Unauthorized',
-          content: { 'application/json': { schema: errorBody } },
+          content: { 'application/json': { schema: clientErrorJson } },
         },
         '403': {
           description: 'Forbidden',
-          content: { 'application/json': { schema: errorBody } },
+          content: { 'application/json': { schema: clientErrorJson } },
         },
         '404': {
           description: 'Network not found',
-          content: { 'application/json': { schema: errorBody } },
+          content: { 'application/json': { schema: clientErrorJson } },
         },
       },
     },

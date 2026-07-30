@@ -13,7 +13,7 @@ const SERVICE_DISPLAY_NAME_RE = /^[A-Za-z0-9 ._-]+$/
 type ServiceRow = {
   id: string
   displayName: string | null
-  composeServiceName: string | null
+  composeServiceName: string
   options: unknown
 }
 
@@ -27,14 +27,6 @@ type ExistingContainerRow = {
   ordinal: number
 }
 
-/** Prefer the dedicated column; fall back to displayName then id. */
-function resolveServiceComposeName(row: ServiceRow): string {
-  if (typeof row.composeServiceName === 'string' && row.composeServiceName.length > 0) {
-    return row.composeServiceName
-  }
-  return row.displayName ?? row.id
-}
-
 function buildServiceComposeIndex(serviceRows: ServiceRow[]): {
   serviceIds: Set<string>
   serviceIdByComposeName: Map<string, string>
@@ -44,7 +36,7 @@ function buildServiceComposeIndex(serviceRows: ServiceRow[]): {
   const serviceIdByComposeName = new Map<string, string>()
   const maxOrdinalByServiceId = new Map<string, number>()
   for (const row of serviceRows) {
-    serviceIdByComposeName.set(resolveServiceComposeName(row), row.id)
+    serviceIdByComposeName.set(row.composeServiceName, row.id)
     maxOrdinalByServiceId.set(
       row.id,
       resolveServiceInstances(parseServiceOptions(row.options) ?? {}),

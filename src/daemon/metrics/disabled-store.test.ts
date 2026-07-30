@@ -47,6 +47,16 @@ it("DisabledServerMetricsStore writeHostSample is a no-op", () => {
   store.writeHostSample(sample);
 });
 
+it("DisabledServerMetricsStore writeStatusEvent is a no-op", () => {
+  const store = new DisabledServerMetricsStore();
+  store.writeStatusEvent({
+    serverId: "srv-1",
+    connected: true,
+    reason: "connect",
+    at: "2026-01-01T00:00:00.000Z",
+  });
+});
+
 it("DisabledServerMetricsStore queries return available:false", async () => {
   const store = new DisabledServerMetricsStore();
   const series = await store.queryHostSeries({
@@ -70,4 +80,19 @@ it("DisabledServerMetricsStore queries return available:false", async () => {
   assertEquals(summary.kind, "disabled");
   assertEquals(summary.available, false);
   assertEquals(summary.sampleCount, 0);
+
+  const history = await store.queryStatusHistory({
+    serverId: "srv-1",
+    from: "2026-01-01T00:00:00.000Z",
+    to: "2026-01-01T01:00:00.000Z",
+  });
+  assertEquals(history.kind, "disabled");
+  assertEquals(history.available, false);
+  assertEquals(history.initialConnected, null);
+  assertEquals(history.events, []);
+  assertEquals(history.uptimeSeconds, 0);
+  assertEquals(history.downtimeSeconds, 0);
+  assertEquals(history.unknownSeconds, 0);
+  assertEquals(history.uptimePercent, null);
+  assertEquals(history.truncated, false);
 });

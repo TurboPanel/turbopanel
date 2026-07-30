@@ -1,3 +1,4 @@
+import { assertEquals } from 'jsr:@std/assert@1'
 import { and, eq, isNull } from 'drizzle-orm'
 import { it } from '@std/testing/bdd'
 import { getDatabaseUrl } from '../../db-url.ts'
@@ -10,6 +11,7 @@ import {
   INSTANCE_ALREADY_CONFIGURED_ERROR,
   INSTANCE_INSTALL_SENTINEL_KEY,
   isInstanceInstalled,
+  resolveColocatedServerId,
   rotateColocatedLicenseCredentials,
 } from './install-state.ts'
 import { SUPERADMIN_ROLE } from './session-store.ts'
@@ -19,6 +21,7 @@ import {
   license,
   member,
   organization,
+  server,
   setting,
   team,
   teammate,
@@ -212,6 +215,54 @@ it('concurrent install completions create exactly one superadmin bootstrap', asy
     if (winnerOrgId && winnerUserId) {
       await cleanupInstall(db, winnerOrgId, winnerUserId)
     }
+  }
+})
+
+it('resolveColocatedServerId falls back to the server.hostname column', async () => {
+  if (!dbUrl) {
+    console.warn(
+      'Skipping colocated hostname fallback test: TURBOPANEL_DATABASE_URL not set',
+    )
+    return
+  }
+
+  let hostname: string
+  try {
+    hostname = Deno.hostname()
+  } catch {
+    console.warn(
+      'Skipping colocated hostname fallback test: Deno.hostname() unavailable',
+    )
+    return
+  }
+
+  const db = createDenoDb()
+  const now = new Date().toISOString()
+
+  // Two unassigned rows so the single-unassigned fallback cannot rescue this path.
+  const [match] = await db
+    .insert(server)
+    .values({
+      hostname,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: server.id })
+  const [other] = await db
+    .insert(server)
+    .values({
+      hostname: `other-${crypto.randomUUID()}`,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: server.id })
+
+  try {
+    const resolved = await resolveColocatedServerId(db)
+    assertEquals(resolved, match!.id)
+  } finally {
+    await db.delete(server).where(eq(server.id, match!.id))
+    await db.delete(server).where(eq(server.id, other!.id))
   }
 })
 

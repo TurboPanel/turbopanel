@@ -40,6 +40,7 @@ import {
   PROJECT_HAS_RUNNING_SERVICES_ERROR,
 } from '../../lib/db/project-delete.ts'
 import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
+import { reconcileServicesForProject } from '../environments/reconcile-after-compose-save.ts'
 import { parseContainerNamingInput } from '../../lib/project-options.ts'
 
 type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0]
@@ -609,6 +610,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         ...input,
         dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
       })
+      await reconcileServicesForProject(db, id)
       return c.json({ ok: true as const, id })
     } catch (err) {
       const mapped = mapCreateProjectError(err)
@@ -650,6 +652,10 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .update(project)
       .set(patchFields)
       .where(eq(project.id, id))
+
+    if (patchFields.options !== undefined) {
+      await reconcileServicesForProject(db, id)
+    }
 
     return c.json({ ok: true as const })
   })

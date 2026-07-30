@@ -345,9 +345,7 @@ export type ServerStatusRecord = {
   serverId: string
   connected: boolean
   daemonStatus: ServerDaemonStatus['daemonStatus']
-  lastSeenAt: string | null
   connectedAt: string | null
-  disconnectedAt: string | null
   statusChangedAt: string | null
   hostname: string | null
   remoteAddress: string | null
@@ -365,10 +363,6 @@ export async function readDaemonStatusesForServers(
     .select({
       id: server.id,
       connected: server.connected,
-      daemonStatus: server.daemonStatus,
-      lastSeenAt: server.lastSeenAt,
-      connectedAt: server.connectedAt,
-      disconnectedAt: server.disconnectedAt,
       statusChangedAt: server.statusChangedAt,
     })
     .from(server)
@@ -387,13 +381,14 @@ export function buildServerStatusRecord(
   status?: ServerDaemonStatus | null,
 ): ServerStatusRecord {
   const resolved = status ?? buildDefaultDaemonStatus()
+  const connectedAt = presence.connected
+    ? (presence.connectedAt ?? resolved.statusChangedAt)
+    : null
   return {
     serverId: presence.serverId,
     connected: presence.connected,
     daemonStatus: resolved.daemonStatus,
-    lastSeenAt: presence.lastSeenAt ?? resolved.lastSeenAt,
-    connectedAt: presence.connectedAt ?? resolved.connectedAt,
-    disconnectedAt: resolved.disconnectedAt,
+    connectedAt,
     statusChangedAt: resolved.statusChangedAt,
     hostname: presence.hostname,
     remoteAddress: presence.remoteAddress,

@@ -53,10 +53,6 @@ async function attachConnectedDaemonStatus(
   // `server.daemon` jsonb (see `mapServerDaemonStatusFromColumns`).
   await db.update(server).set({
     connected: true,
-    daemonStatus: 'online',
-    lastSeenAt: now,
-    connectedAt: now,
-    disconnectedAt: null,
     statusChangedAt: now,
     updatedAt: now,
   }).where(eq(server.id, serverId))

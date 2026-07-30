@@ -11,6 +11,10 @@ import {
   workspace,
 } from '../../lib/db/schema.ts'
 import { reconcileServicesFromCompose } from './reconcile-services.ts'
+import {
+  reconcileServicesForEnvironment,
+  reconcileServicesForProject,
+} from './reconcile-after-compose-save.ts'
 import { assertComposeDocument } from '../../lib/compose/index.ts'
 
 describe('reconcileServicesFromCompose', () => {
@@ -64,12 +68,120 @@ describe('reconcileServicesFromCompose', () => {
     assertEquals(rows.length, 2)
     const names = rows
       .map((row) => row.composeServiceName)
-      .filter((name): name is string => typeof name === 'string')
       .sort((a, b) => a.localeCompare(b))
     assertEquals(names, ['api', 'web'])
 
     await db.delete(service).where(eq(service.environmentId, envRow.id))
     await db.delete(environment).where(eq(environment.id, envRow.id))
+    await db.delete(project).where(eq(project.id, projectRow.id))
+    await db.delete(workspace).where(eq(workspace.id, workspaceRow.id))
+    await db.delete(organization).where(eq(organization.id, orgRow.id))
+  })
+
+  it('reconcileServicesForEnvironment reconciles from the persisted project + environment compose', async () => {
+    const dbUrl = getDatabaseUrl()
+    if (!dbUrl) {
+      console.warn('Skipping reconcile-services tests: TURBOPANEL_DATABASE_URL not set')
+      return
+    }
+
+    const db = createDenoDb()
+
+    const [orgRow] = await db.insert(organization).values({ displayName: 'Reconcile Org' }).returning({
+      id: organization.id,
+    })
+    const [workspaceRow] = await db.insert(workspace).values({
+      organizationId: orgRow.id,
+      displayName: 'Default',
+    }).returning({ id: workspace.id })
+    const [projectRow] = await db.insert(project).values({
+      workspaceId: workspaceRow.id,
+      displayName: 'App',
+      options: {
+        compose: {
+          version: 1,
+          data: { services: { web: { image: 'nginx:latest' } } },
+          presentation: { keyOrder: ['services'], comments: {} },
+        },
+      },
+    }).returning({ id: project.id })
+    const [envRow] = await db.insert(environment).values({
+      projectId: projectRow.id,
+      displayName: 'Production',
+      options: {
+        compose: {
+          version: 1,
+          data: { services: { api: { image: 'node:22' } } },
+          presentation: { keyOrder: ['services'], comments: {} },
+        },
+      },
+    }).returning({ id: environment.id })
+
+    await reconcileServicesForEnvironment(db, envRow.id)
+
+    const rows = await db
+      .select({ composeServiceName: service.composeServiceName })
+      .from(service)
+      .where(eq(service.environmentId, envRow.id))
+    const names = rows.map((row) => row.composeServiceName).sort((a, b) => a.localeCompare(b))
+    assertEquals(names, ['api', 'web'])
+
+    await db.delete(service).where(eq(service.environmentId, envRow.id))
+    await db.delete(environment).where(eq(environment.id, envRow.id))
+    await db.delete(project).where(eq(project.id, projectRow.id))
+    await db.delete(workspace).where(eq(workspace.id, workspaceRow.id))
+    await db.delete(organization).where(eq(organization.id, orgRow.id))
+  })
+
+  it('reconcileServicesForProject reconciles every environment of the project', async () => {
+    const dbUrl = getDatabaseUrl()
+    if (!dbUrl) {
+      console.warn('Skipping reconcile-services tests: TURBOPANEL_DATABASE_URL not set')
+      return
+    }
+
+    const db = createDenoDb()
+
+    const [orgRow] = await db.insert(organization).values({ displayName: 'Reconcile Org' }).returning({
+      id: organization.id,
+    })
+    const [workspaceRow] = await db.insert(workspace).values({
+      organizationId: orgRow.id,
+      displayName: 'Default',
+    }).returning({ id: workspace.id })
+    const [projectRow] = await db.insert(project).values({
+      workspaceId: workspaceRow.id,
+      displayName: 'App',
+      options: {
+        compose: {
+          version: 1,
+          data: { services: { web: { image: 'nginx:latest' } } },
+          presentation: { keyOrder: ['services'], comments: {} },
+        },
+      },
+    }).returning({ id: project.id })
+    const [envOne] = await db.insert(environment).values({
+      projectId: projectRow.id,
+      displayName: 'Staging',
+    }).returning({ id: environment.id })
+    const [envTwo] = await db.insert(environment).values({
+      projectId: projectRow.id,
+      displayName: 'Production',
+    }).returning({ id: environment.id })
+
+    await reconcileServicesForProject(db, projectRow.id)
+
+    for (const envId of [envOne.id, envTwo.id]) {
+      const rows = await db
+        .select({ composeServiceName: service.composeServiceName })
+        .from(service)
+        .where(eq(service.environmentId, envId))
+      assertEquals(rows.map((row) => row.composeServiceName), ['web'])
+    }
+
+    await db.delete(service).where(eq(service.environmentId, envOne.id))
+    await db.delete(service).where(eq(service.environmentId, envTwo.id))
+    await db.delete(environment).where(eq(environment.projectId, projectRow.id))
     await db.delete(project).where(eq(project.id, projectRow.id))
     await db.delete(workspace).where(eq(workspace.id, workspaceRow.id))
     await db.delete(organization).where(eq(organization.id, orgRow.id))

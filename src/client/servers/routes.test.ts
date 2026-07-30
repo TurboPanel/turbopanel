@@ -45,9 +45,7 @@ const SERVER_STATUS_RECORD_KEYS: (keyof ServerStatusRecord)[] = [
   'serverId',
   'connected',
   'daemonStatus',
-  'lastSeenAt',
   'connectedAt',
-  'disconnectedAt',
   'statusChangedAt',
   'hostname',
   'remoteAddress',
@@ -1130,10 +1128,6 @@ async function attachConnectedDaemonStatus(
   // `server.daemon` jsonb (see `mapServerDaemonStatusFromColumns`).
   await db.update(server).set({
     connected: true,
-    daemonStatus: 'online',
-    lastSeenAt: now,
-    connectedAt: now,
-    disconnectedAt: null,
     statusChangedAt: now,
     updatedAt: now,
   }).where(eq(server.id, serverId))
@@ -1776,6 +1770,57 @@ test('GET /servers/:id returns detail with effective timezone/addresses/timeSync
     assertEquals(cached.id, serverId)
     assertEquals('daemon' in cached, false)
     assertEquals('connected' in cached, false)
+  })
+})
+
+test('GET /servers/:id returns statusChangedAt for offline servers', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const offlineAt = '2020-02-01T12:00:00.000Z'
+    await db
+      .update(server)
+      .set({
+        connected: false,
+        statusChangedAt: offlineAt,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(server.id, serverId))
+
+    const registry = createTrackingRegistry({
+      getCellThrows: true,
+      getSnapshotsThrows: true,
+      listOnlineServerIdsThrows: true,
+    })
+    const readDb = createDetailRowsOnlyReadDb(db)
+    const recordingCache = createRecordingQueryCache(readDb)
+    const { app } = await createServerRoutesTestApp(db, registry, recordingCache)
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/servers/${serverId}`, {
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 200)
+    const body = await res.json() as {
+      ok: boolean
+      server: {
+        connected: boolean
+        connectedAt: string | null
+        statusChangedAt: string | null
+      }
+    }
+    assertEquals(body.ok, true)
+    assertEquals(body.server.connected, false)
+    assertEquals(body.server.connectedAt, null)
+    assertEquals(body.server.statusChangedAt, offlineAt)
   })
 })
 

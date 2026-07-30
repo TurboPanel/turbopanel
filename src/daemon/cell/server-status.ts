@@ -35,13 +35,14 @@ export type ServerFleetPresence = {
   serverId: string;
   connected: boolean;
   hostname: string | null;
-  machineId: string | null;
+  machineKey: string | null;
   remoteAddress: string | null;
   directAttach: boolean;
   keyId: string | null;
   connectedAt: string | null;
+  /** Last `connected` flip (`server.status_changed_at`) — set online and offline. */
+  statusChangedAt: string | null;
   lastInboundAt: string | null;
-  lastSeenAt: string | null;
   keyLastUsedAt: string | null;
   agent?: {
     commit?: string;
@@ -129,12 +130,8 @@ export async function resolveFleetPresence(
           daemon: server.daemon,
           metadata: server.metadata,
           hostname: server.hostname,
-          machineId: server.machineId,
+          machineKey: server.machineKey,
           connected: server.connected,
-          daemonStatus: server.daemonStatus,
-          lastSeenAt: server.lastSeenAt,
-          connectedAt: server.connectedAt,
-          disconnectedAt: server.disconnectedAt,
           statusChangedAt: server.statusChangedAt,
         })
         .from(server)
@@ -158,23 +155,20 @@ export async function resolveFleetPresence(
       ? (projection?.connected ?? row.connected ?? false)
       : isSnapshotConnected(snapshot);
 
-    const lastInboundAt = snapshot
-      ? resolveLastInboundAt(snapshot)
-      : projection?.lastSeenAt ?? row.lastSeenAt ?? null;
+    const lastInboundAt = snapshot ? resolveLastInboundAt(snapshot) : null;
 
     result.set(row.id, {
       serverId: row.id,
       connected,
       hostname: row.hostname ?? null,
-      machineId: row.machineId ?? null,
+      machineKey: row.machineKey ?? null,
       remoteAddress: normalizeRemoteAddress(rawRemote),
       directAttach: rawRemote === "__direct__",
       keyId: projection?.keyId ?? state?.key.id ?? null,
       connectedAt: snapshot?.connectedAt ?? projection?.connectedAt ??
-        row.connectedAt ?? null,
+        (row.connected ? row.statusChangedAt : null),
+      statusChangedAt: row.statusChangedAt ?? null,
       lastInboundAt,
-      lastSeenAt: snapshot?.lastSeenAt ?? projection?.lastSeenAt ??
-        row.lastSeenAt ?? null,
       keyLastUsedAt: snapshot?.keyLastUsedAt ?? null,
       agent: projection?.agent ?? snapshot?.agent ?? undefined,
       geo: parseServerGeo(metadata.geo),

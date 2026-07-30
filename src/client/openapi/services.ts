@@ -9,8 +9,11 @@ export const serviceSchemas = {
       description: { type: ['string', 'null'] },
       environmentId: { type: 'string' },
       composeServiceName: {
-        type: ['string', 'null'],
-        description: 'Compose service name used for deploy reconcile and filters.',
+        type: 'string',
+        description:
+          'Compose service name derived from the compose document (project base + ' +
+          'environment overlay). Read-only — written only by deploy reconcile / ' +
+          'managed allocation / container reconcile, never by a client request.',
       },
       metadata: {
         type: ['object', 'null'],
@@ -38,7 +41,6 @@ export const serviceSchemas = {
       displayName: { type: 'string' },
       description: { type: 'string' },
       environmentId: { type: 'string' },
-      composeServiceName: { type: 'string' },
       metadata: { type: 'object', nullable: true },
       options: {
         type: 'object',
@@ -52,7 +54,6 @@ export const serviceSchemas = {
     properties: {
       displayName: { type: 'string' },
       description: { type: 'string' },
-      composeServiceName: { type: 'string', nullable: true },
       metadata: { type: 'object', nullable: true },
       options: {
         type: 'object',

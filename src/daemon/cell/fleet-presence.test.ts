@@ -14,28 +14,23 @@ const serverId = "srv-fleet-presence";
 
 /**
  * Mock row shape mirrors `resolveFleetPresence`'s select — `daemon` jsonb
- * (`{ key, projection? }`, never `status`) plus dedicated fleet-status /
- * identity columns (`hostname`, `machineId`, `connected`, `daemonStatus`,
- * `lastSeenAt`, `connectedAt`, `disconnectedAt`, `statusChangedAt`).
+ * (`{ key, projection? }`, never `status`) plus stored liveness columns
+ * (`connected`, `statusChangedAt`) and identity columns.
  */
 type MockRow = {
   id: string;
   daemon: ServerDaemonState;
   metadata: ServerMetadata | null;
   hostname: string | null;
-  machineId: string | null;
+  machineKey: string | null;
   connected: boolean;
-  daemonStatus: string;
-  lastSeenAt: string | null;
-  connectedAt: string | null;
-  disconnectedAt: string | null;
   statusChangedAt: string | null;
 };
 
 function buildMockRow(
   daemon: ServerDaemonState,
   statusOverrides: Partial<ServerDaemonStatus> = {},
-  identity: { hostname?: string | null; machineId?: string | null } = {},
+  identity: { hostname?: string | null; machineKey?: string | null } = {},
   metadata: ServerMetadata | null = null,
 ): MockRow {
   const status = { ...buildDefaultDaemonStatus(), ...statusOverrides };
@@ -44,12 +39,8 @@ function buildMockRow(
     daemon,
     metadata,
     hostname: identity.hostname ?? "host-1",
-    machineId: identity.machineId ?? null,
+    machineKey: identity.machineKey ?? null,
     connected: status.connected,
-    daemonStatus: status.daemonStatus ?? "unknown",
-    lastSeenAt: status.lastSeenAt,
-    connectedAt: status.connectedAt,
-    disconnectedAt: status.disconnectedAt,
     statusChangedAt: status.statusChangedAt,
   };
 }
@@ -119,9 +110,7 @@ const baseDaemon: ServerDaemonState = {
 
 const baseConnectedStatus: Partial<ServerDaemonStatus> = {
   connected: true,
-  daemonStatus: "online",
-  connectedAt: "2020-01-01T00:00:00.000Z",
-  lastSeenAt: "2020-01-01T00:00:00.000Z",
+  statusChangedAt: "2020-01-01T00:00:00.000Z",
 };
 
 /**
@@ -141,16 +130,17 @@ test("resolveFleetPresence default path is Postgres-only (never calls getSnapsho
       remoteAddress: "203.0.113.1",
     },
   };
-  const lastSeenAt = new Date().toISOString();
+  const statusChangedAt = new Date().toISOString();
   const db = createMockDb(buildMockRow(projectedDaemon, {
     ...baseConnectedStatus,
-    lastSeenAt,
+    statusChangedAt,
   }));
   const registry = createThrowingSnapshotRegistry({ onlineIds: [serverId] });
 
   const presence = await resolveFleetPresence(db, registry, [serverId]);
   assertEquals(presence.get(serverId)?.connected, true);
-  assertEquals(presence.get(serverId)?.lastInboundAt, lastSeenAt);
+  assertEquals(presence.get(serverId)?.lastInboundAt, null);
+  assertEquals(presence.get(serverId)?.connectedAt, statusChangedAt);
   assertEquals(presence.get(serverId)?.agent?.commit, "proj-commit");
   assertEquals(presence.get(serverId)?.remoteAddress, "203.0.113.1");
 });
@@ -160,22 +150,23 @@ test("resolveFleetPresence default path never consults the online index (Postgre
   // presence comes from `row.connected` / the projection, never from
   // `registry.listOnlineServerIds()`. A registry reporting this server online
   // does not override a Postgres-projected offline status.
+  const offlineAt = "2020-01-01T00:00:00.000Z";
   const db = createMockDb(buildMockRow(baseDaemon, {
     connected: false,
-    daemonStatus: "offline",
-    lastSeenAt: "2020-01-01T00:00:00.000Z",
+    statusChangedAt: offlineAt,
   }));
   const registry = createThrowingSnapshotRegistry({ onlineIds: [serverId] });
 
   const presence = await resolveFleetPresence(db, registry, [serverId]);
   assertEquals(presence.get(serverId)?.connected, false);
+  assertEquals(presence.get(serverId)?.connectedAt, null);
+  assertEquals(presence.get(serverId)?.statusChangedAt, offlineAt);
 });
 
 test("resolveFleetPresence overlays live snapshot when projection marks offline with withSnapshots", async () => {
   const db = createMockDb(buildMockRow(baseDaemon, {
     connected: false,
-    daemonStatus: "offline",
-    lastSeenAt: "2020-01-01T00:00:00.000Z",
+    statusChangedAt: "2020-01-01T00:00:00.000Z",
   }));
   const freshLastSeen = new Date().toISOString();
   const registry = createSnapshotRegistry({
@@ -223,8 +214,7 @@ test("resolveFleetPresence prefers live snapshot.connected over stale projection
 test("resolveFleetPresence reflects the Postgres-projected connected column when snapshot is absent", async () => {
   const db = createMockDb(buildMockRow(baseDaemon, {
     connected: true,
-    daemonStatus: "online",
-    lastSeenAt: "2020-01-01T00:00:00.000Z",
+    statusChangedAt: "2020-01-01T00:00:00.000Z",
   }));
   const registry = createThrowingSnapshotRegistry({ onlineIds: [serverId] });
 
@@ -269,33 +259,35 @@ test("resolveFleetPresence reads __direct__ from projection for connected server
   };
   const db = createMockDb(buildMockRow(projectedDaemon, {
     ...baseConnectedStatus,
-    lastSeenAt: "2020-01-01T00:00:00.000Z",
+    statusChangedAt: "2020-01-01T00:00:00.000Z",
   }));
   const registry = createThrowingSnapshotRegistry({ onlineIds: [serverId] });
 
   const presence = await resolveFleetPresence(db, registry, [serverId]);
   assertEquals(presence.get(serverId)?.directAttach, true);
   assertEquals(presence.get(serverId)?.remoteAddress, null);
+  assertEquals(presence.get(serverId)?.connectedAt, "2020-01-01T00:00:00.000Z");
+  assertEquals(presence.get(serverId)?.lastInboundAt, null);
 });
 
-test("resolveFleetPresence reads hostname and machineId from dedicated columns, ignoring stale projection values", async () => {
+test("resolveFleetPresence reads hostname and machineKey from dedicated columns, ignoring stale projection values", async () => {
   const projectedDaemon: ServerDaemonState = {
     ...baseDaemon,
     projection: {
       hostname: "stale-projection-host",
-      machineId: "stale-projection-mid",
+      machineKey: "stale-projection-mid",
     },
   };
   const db = createMockDb(buildMockRow(
     projectedDaemon,
     baseConnectedStatus,
-    { hostname: "canonical-host", machineId: "canonical-mid" },
+    { hostname: "canonical-host", machineKey: "canonical-mid" },
   ));
   const registry = createThrowingSnapshotRegistry({ onlineIds: [serverId] });
 
   const presence = await resolveFleetPresence(db, registry, [serverId]);
   assertEquals(presence.get(serverId)?.hostname, "canonical-host");
-  assertEquals(presence.get(serverId)?.machineId, "canonical-mid");
+  assertEquals(presence.get(serverId)?.machineKey, "canonical-mid");
 });
 
 test("resolveFleetPresence keeps connected when lastSeenAt is fresh", async () => {

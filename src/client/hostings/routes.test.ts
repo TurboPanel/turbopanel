@@ -99,7 +99,13 @@ test('PATCH /hostings rejects public bind with non-public ip scope', async () =>
     .returning({ id: environment.id })
   const [svc] = await db
     .insert(service)
-    .values({ environmentId: env!.id, displayName: 'S', createdAt: now, updatedAt: now })
+    .values({
+      environmentId: env!.id,
+      displayName: 'S',
+      composeServiceName: 's',
+      createdAt: now,
+      updatedAt: now,
+    })
     .returning({ id: service.id })
 
   const [privateIp] = await db
@@ -205,7 +211,13 @@ test('PATCH /hostings returns 404 when ipId belongs to another org', async () =>
     .returning({ id: environment.id })
   const [svc] = await db
     .insert(service)
-    .values({ environmentId: env!.id, displayName: 'S', createdAt: now, updatedAt: now })
+    .values({
+      environmentId: env!.id,
+      displayName: 'S',
+      composeServiceName: 's',
+      createdAt: now,
+      updatedAt: now,
+    })
     .returning({ id: service.id })
 
   const [host] = await db

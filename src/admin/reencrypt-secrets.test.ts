@@ -133,7 +133,7 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
   `))
 }
 
-test('reencryptAtRestSecrets reseals old tpsecret blobs and skips tpdaemon/current', async () => {
+test('reencryptAtRestSecrets reseals old enc blobs and skips denc/current', async () => {
   if (!dbUrl) {
     console.warn('Skipping reencrypt sweep tests: TURBOPANEL_DATABASE_URL not set')
     return

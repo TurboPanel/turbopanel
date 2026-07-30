@@ -53,6 +53,15 @@ import {
 const dbUrl = getDatabaseUrl();
 const encoder = new TextEncoder();
 
+/** Canonical 64-char lowercase hex HMAC shape used by real daemons. */
+function randomMachineKey(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Raw `/etc/machine-id` shape — must be rejected, never stored as machineKey. */
+const RAW_MACHINE_ID = "0123456789abcdef0123456789abcdef";
+
 type KeyMaterial = {
   privateKey: CryptoKey;
   publicJwk: JsonWebKey;
@@ -69,7 +78,7 @@ type EnrollFixture = {
   keyId: string;
   enrollBody: { serverId: string; keyId: string };
   key: KeyMaterial;
-  machineId: string;
+  machineKey: string;
   hostname: string;
 };
 
@@ -327,7 +336,7 @@ async function withEnrollFixture(
 
   const db = createDenoDb();
   const app = await createTestApp(db);
-  const machineId = `machine-${crypto.randomUUID()}`;
+  const machineKey = randomMachineKey();
   const hostname = `host-${crypto.randomUUID()}`;
   const [orgRow] = await db
     .insert(organization)
@@ -355,7 +364,7 @@ async function withEnrollFixture(
     challengeId: challenge.challengeId,
     nonce: challenge.nonce,
     licenseId,
-    machineId,
+    machineKey,
     hostname,
     publicKeyFingerprint: key.fingerprint,
   });
@@ -367,7 +376,7 @@ async function withEnrollFixture(
     body: JSON.stringify({
       licenseId,
       licenseToken,
-      machineId,
+      machineKey,
       hostname,
       publicJwk: key.publicJwk,
       challengeId: challenge.challengeId,
@@ -391,7 +400,7 @@ async function withEnrollFixture(
       keyId: enrollBody.keyId,
       enrollBody,
       key,
-      machineId,
+      machineKey,
       hostname,
     });
   } finally {
@@ -481,8 +490,56 @@ test("GET /jwks.json returns public OKP keys only", async () => {
   assertEquals(verified, true);
 });
 
+test("POST /enroll rejects a raw machine-id shaped machineKey", async () => {
+  if (!dbUrl) {
+    console.warn(
+      "Skipping daemon API route tests: TURBOPANEL_DATABASE_URL not set",
+    );
+    return;
+  }
+  const db = createDenoDb();
+  const app = await createTestApp(db);
+  const key = await generateKeyMaterial();
+  const response = await app.request("/api/daemon/v1/enroll", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      licenseId: crypto.randomUUID(),
+      licenseToken: "dummy-token",
+      machineKey: RAW_MACHINE_ID,
+      hostname: "host-test",
+      publicJwk: key.publicJwk,
+      challengeId: crypto.randomUUID(),
+      signature: "aa",
+    }),
+  });
+  assertEquals(response.status, 400);
+  const body = await response.json() as { error?: string };
+  assertEquals(body.error, "Invalid machineKey");
+});
+
+test("POST /auth/session rejects a raw machine-id shaped machineKey", async () => {
+  await withEnrollFixture(async ({ app, serverId, keyId, hostname }) => {
+    const response = await app.request("/api/daemon/v1/auth/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        serverId,
+        keyId,
+        challengeId: crypto.randomUUID(),
+        signature: "aa",
+        hostname,
+        machineKey: RAW_MACHINE_ID,
+      }),
+    });
+    assertEquals(response.status, 400);
+    const body = await response.json() as { error?: string };
+    assertEquals(body.error, "Invalid machineKey");
+  });
+});
+
 test("POST /enroll rejects invalid license", async () => {
-  await withEnrollFixture(async ({ app, licenseId, machineId, hostname }) => {
+  await withEnrollFixture(async ({ app, licenseId, machineKey, hostname }) => {
     const challengeResponse = await app.request(
       "/api/daemon/v1/auth/challenge",
       {
@@ -501,7 +558,7 @@ test("POST /enroll rejects invalid license", async () => {
       challengeId: challenge.challengeId,
       nonce: challenge.nonce,
       licenseId,
-      machineId,
+      machineKey,
       hostname,
       publicKeyFingerprint: key.fingerprint,
     });
@@ -513,7 +570,7 @@ test("POST /enroll rejects invalid license", async () => {
       body: JSON.stringify({
         licenseId,
         licenseToken: "invalid-token",
-        machineId,
+        machineKey,
         hostname,
         publicJwk: key.publicJwk,
         challengeId: challenge.challengeId,
@@ -525,7 +582,7 @@ test("POST /enroll rejects invalid license", async () => {
 });
 
 test("POST /enroll rejects request without licenseToken", async () => {
-  await withEnrollFixture(async ({ app, licenseId, machineId, hostname }) => {
+  await withEnrollFixture(async ({ app, licenseId, machineKey, hostname }) => {
     const challengeResponse = await app.request(
       "/api/daemon/v1/auth/challenge",
       {
@@ -544,7 +601,7 @@ test("POST /enroll rejects request without licenseToken", async () => {
       challengeId: challenge.challengeId,
       nonce: challenge.nonce,
       licenseId,
-      machineId,
+      machineKey,
       hostname,
       publicKeyFingerprint: key.fingerprint,
     });
@@ -555,7 +612,7 @@ test("POST /enroll rejects request without licenseToken", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         licenseId,
-        machineId,
+        machineKey,
         hostname,
         publicJwk: key.publicJwk,
         challengeId: challenge.challengeId,
@@ -570,7 +627,7 @@ test("POST /enroll rejects request without licenseToken", async () => {
 
 test("POST /enroll rejects invalid signature", async () => {
   await withEnrollFixture(
-    async ({ app, licenseId, licenseToken, machineId, hostname }) => {
+    async ({ app, licenseId, licenseToken, machineKey, hostname }) => {
       const challengeResponse = await app.request(
         "/api/daemon/v1/auth/challenge",
         {
@@ -592,7 +649,7 @@ test("POST /enroll rejects invalid signature", async () => {
         body: JSON.stringify({
           licenseId,
           licenseToken,
-          machineId,
+          machineKey,
           hostname,
           publicJwk: key.publicJwk,
           challengeId: challenge.challengeId,
@@ -633,7 +690,7 @@ test("POST /enroll re-enrollment replaces daemon key on server row", async () =>
     serverId,
     keyId,
     key,
-    machineId,
+    machineKey,
     hostname,
   }) => {
     const challengeResponse = await app.request(
@@ -654,7 +711,7 @@ test("POST /enroll re-enrollment replaces daemon key on server row", async () =>
       challengeId: challenge.challengeId,
       nonce: challenge.nonce,
       licenseId,
-      machineId,
+      machineKey,
       hostname,
       publicKeyFingerprint: newKey.fingerprint,
     });
@@ -667,7 +724,7 @@ test("POST /enroll re-enrollment replaces daemon key on server row", async () =>
         licenseId,
         licenseToken,
         serverId,
-        machineId,
+        machineKey,
         hostname,
         publicJwk: newKey.publicJwk,
         challengeId: challenge.challengeId,
@@ -696,7 +753,7 @@ test("POST /enroll rejects a second host once the license is latched", async () 
     licenseId,
     licenseToken,
     serverId,
-    machineId,
+    machineKey,
     hostname,
   }) => {
     const challengeResponse = await app.request(
@@ -713,11 +770,12 @@ test("POST /enroll rejects a second host once the license is latched", async () 
       nonce: string;
     };
     const otherKey = await generateKeyMaterial();
+    const otherMachineKey = randomMachineKey();
     const payload = buildEnrollmentPayload({
       challengeId: challenge.challengeId,
       nonce: challenge.nonce,
       licenseId,
-      machineId: `other-${machineId}`,
+      machineKey: otherMachineKey,
       hostname: `other-${hostname}`,
       publicKeyFingerprint: otherKey.fingerprint,
     });
@@ -729,7 +787,7 @@ test("POST /enroll rejects a second host once the license is latched", async () 
       body: JSON.stringify({
         licenseId,
         licenseToken,
-        machineId: `other-${machineId}`,
+        machineKey: otherMachineKey,
         hostname: `other-${hostname}`,
         publicJwk: otherKey.publicJwk,
         challengeId: challenge.challengeId,
@@ -759,7 +817,7 @@ test("POST /enroll rejects a second host once the license is latched", async () 
       challengeId: reChallenge.challengeId,
       nonce: reChallenge.nonce,
       licenseId,
-      machineId,
+      machineKey,
       hostname,
       publicKeyFingerprint: reKey.fingerprint,
     });
@@ -771,7 +829,7 @@ test("POST /enroll rejects a second host once the license is latched", async () 
         licenseId,
         licenseToken,
         serverId,
-        machineId,
+        machineKey,
         hostname,
         publicJwk: reKey.publicJwk,
         challengeId: reChallenge.challengeId,
@@ -791,7 +849,7 @@ test("POST /enroll with a fresh license creates a new server even on the same ho
     organizationId,
     serverId,
     licenseId,
-    machineId,
+    machineKey,
     hostname,
   }) => {
     const { licenseId: freshLicenseId, licenseToken: freshLicenseToken } =
@@ -818,7 +876,7 @@ test("POST /enroll with a fresh license creates a new server even on the same ho
       challengeId: challenge.challengeId,
       nonce: challenge.nonce,
       licenseId: freshLicenseId,
-      machineId,
+      machineKey,
       hostname,
       publicKeyFingerprint: newKey.fingerprint,
     });
@@ -830,7 +888,7 @@ test("POST /enroll with a fresh license creates a new server even on the same ho
       body: JSON.stringify({
         licenseId: freshLicenseId,
         licenseToken: freshLicenseToken,
-        machineId,
+        machineKey,
         hostname,
         publicJwk: newKey.publicJwk,
         challengeId: challenge.challengeId,
@@ -864,7 +922,7 @@ test("POST /enroll re-enrollment with same key clears revocation", async () => {
     serverId,
     keyId,
     key,
-    machineId,
+    machineKey,
     hostname,
   }) => {
     await revokeDaemonKey(db, serverId);
@@ -886,7 +944,7 @@ test("POST /enroll re-enrollment with same key clears revocation", async () => {
       challengeId: challenge.challengeId,
       nonce: challenge.nonce,
       licenseId,
-      machineId,
+      machineKey,
       hostname,
       publicKeyFingerprint: key.fingerprint,
     });
@@ -899,7 +957,7 @@ test("POST /enroll re-enrollment with same key clears revocation", async () => {
         licenseId,
         licenseToken,
         serverId,
-        machineId,
+        machineKey,
         hostname,
         publicJwk: key.publicJwk,
         challengeId: challenge.challengeId,
@@ -1001,7 +1059,7 @@ test("POST /auth/challenge rejects revoked daemon key", async () => {
 
 test("POST /auth/session rejects expired challenge", async () => {
   await withEnrollFixture(
-    async ({ app, serverId, keyId, key, machineId, hostname }) => {
+    async ({ app, serverId, keyId, key, machineKey, hostname }) => {
       const challengeSecrets = await createTestChallengeSecrets();
       const challenge = await issueChallenge(
         challengeSecrets,
@@ -1014,7 +1072,7 @@ test("POST /auth/session rejects expired challenge", async () => {
         nonce: challenge.nonce,
         serverId,
         keyId,
-        machineId,
+        machineKey,
         hostname,
       });
       const signature = await signPayload(key.privateKey, payload);
@@ -1027,7 +1085,7 @@ test("POST /auth/session rejects expired challenge", async () => {
           keyId,
           challengeId: challenge.id,
           signature,
-          machineId,
+          machineKey,
           hostname,
           at: new Date().toISOString(),
         }),
@@ -1039,7 +1097,7 @@ test("POST /auth/session rejects expired challenge", async () => {
 
 test("POST /auth/session rejects invalid signature", async () => {
   await withEnrollFixture(
-    async ({ app, serverId, keyId, machineId, hostname }) => {
+    async ({ app, serverId, keyId, machineKey, hostname }) => {
       const challenge = await issueAuthChallenge(app, serverId, keyId);
       const response = await app.request("/api/daemon/v1/auth/session", {
         method: "POST",
@@ -1049,7 +1107,7 @@ test("POST /auth/session rejects invalid signature", async () => {
           keyId,
           challengeId: challenge.challengeId,
           signature: "invalid-signature",
-          machineId,
+          machineKey,
           hostname,
           at: new Date().toISOString(),
         }),
@@ -1061,7 +1119,7 @@ test("POST /auth/session rejects invalid signature", async () => {
 
 test("POST /auth/session returns a 15-minute JWT", async () => {
   await withEnrollFixture(
-    async ({ db, serverId, keyId, key, machineId, hostname }) => {
+    async ({ db, serverId, keyId, key, machineKey, hostname }) => {
       const tracking = createSnapshotTrackingCell(serverId);
       const registry: DaemonCellRegistry = {
         getCell: () => tracking.cell,
@@ -1077,7 +1135,7 @@ test("POST /auth/session returns a 15-minute JWT", async () => {
         nonce: challenge.nonce,
         serverId,
         keyId,
-        machineId,
+        machineKey,
         hostname,
       });
       const signature = await signPayload(key.privateKey, payload);
@@ -1089,7 +1147,7 @@ test("POST /auth/session returns a 15-minute JWT", async () => {
           keyId,
           challengeId: challenge.challengeId,
           signature,
-          machineId,
+          machineKey,
           hostname,
           at: new Date().toISOString(),
         }),
@@ -1148,7 +1206,7 @@ test("POST /auth/session rejects inactive license", async () => {
       serverId,
       keyId,
       key,
-      machineId,
+      machineKey,
       hostname,
     }) => {
       await revokeLicense(db, licenseId, organizationId);
@@ -1159,7 +1217,7 @@ test("POST /auth/session rejects inactive license", async () => {
         nonce: challenge.nonce,
         serverId,
         keyId,
-        machineId,
+        machineKey,
         hostname,
       });
       const signature = await signPayload(key.privateKey, payload);
@@ -1171,7 +1229,7 @@ test("POST /auth/session rejects inactive license", async () => {
           keyId,
           challengeId: challenge.challengeId,
           signature,
-          machineId,
+          machineKey,
           hostname,
           at: new Date().toISOString(),
         }),
@@ -1399,7 +1457,7 @@ test("POST /secrets/decrypt returns 401 without JWT", async () => {
     const response = await app.request("/api/daemon/v1/secrets/decrypt", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ciphertexts: ["tpsecret.v1.1.x.y"] }),
+      body: JSON.stringify({ ciphertexts: ["enc.1.x"] }),
     });
     assertEquals(response.status, 401);
   });
@@ -1484,7 +1542,7 @@ test("POST /secrets/decrypt rejects envelopes sealed for another daemon", async 
   });
 });
 
-test("POST /secrets/decrypt rejects global tpsecret envelopes (daemon-scoped only)", async () => {
+test("POST /secrets/decrypt rejects global enc envelopes (daemon-scoped only)", async () => {
   await withEnrollFixture(async ({ app, serverId, keyId }) => {
     const daemonToken = await issueDaemonToken(serverId, keyId);
     const response = await app.request("/api/daemon/v1/secrets/decrypt", {
@@ -1493,7 +1551,7 @@ test("POST /secrets/decrypt rejects global tpsecret envelopes (daemon-scoped onl
         Authorization: `Bearer ${daemonToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ ciphertexts: ["tpsecret.v1.1.x.y"] }),
+      body: JSON.stringify({ ciphertexts: ["enc.1.x"] }),
     });
     assertEquals(response.status, 200);
     const body = await response.json() as { plaintexts: (string | null)[] };
@@ -1554,7 +1612,7 @@ test("POST /secrets/decrypt rejects a batch larger than the limit", async () => 
   const app = await createDecryptTestApp();
   const daemonToken = await issueDaemonToken("srv-decrypt-batch", "key-batch");
   const ciphertexts = new Array(MAX_SECRETS_DECRYPT_BATCH + 1).fill(
-    "tpsecret.v1.1.x.y",
+    "enc.1.x",
   );
   const response = await app.request("/api/daemon/v1/secrets/decrypt", {
     method: "POST",
@@ -1602,7 +1660,7 @@ test("POST /secrets/decrypt decrypts a normal TLS-sized daemon envelope", async 
 
 test("Enrolled daemon can auto-refresh JWT", async () => {
   await withEnrollFixture(
-    async ({ app, serverId, keyId, key, machineId, hostname }) => {
+    async ({ app, serverId, keyId, key, machineKey, hostname }) => {
       const secrets = await createTestSecrets();
       const nearExpiryIssued = await issueDaemonJwt(
         { sub: serverId, kid: keyId },
@@ -1623,7 +1681,7 @@ test("Enrolled daemon can auto-refresh JWT", async () => {
         nonce: challenge.nonce,
         serverId,
         keyId,
-        machineId,
+        machineKey,
         hostname,
       });
       const signature = await signPayload(key.privateKey, payload);
@@ -1635,7 +1693,7 @@ test("Enrolled daemon can auto-refresh JWT", async () => {
           keyId,
           challengeId: challenge.challengeId,
           signature,
-          machineId,
+          machineKey,
           hostname,
           at: new Date().toISOString(),
         }),
@@ -1699,6 +1757,9 @@ async function createMetricsTestApp(options: {
     writeHostSample(sample) {
       writes.push(sample);
     },
+    writeStatusEvent() {
+      // no-op
+    },
     queryHostSeries(input) {
       return Promise.resolve({
         kind: "disabled",
@@ -1718,6 +1779,20 @@ async function createMetricsTestApp(options: {
         serverId: input.serverId,
         sampleCount: 0,
         latestAt: null,
+      });
+    },
+    queryStatusHistory(input) {
+      return Promise.resolve({
+        kind: "disabled",
+        available: false,
+        serverId: input.serverId,
+        initialConnected: null,
+        events: [],
+        uptimeSeconds: 0,
+        downtimeSeconds: 0,
+        unknownSeconds: 0,
+        uptimePercent: null,
+        truncated: false,
       });
     },
   };

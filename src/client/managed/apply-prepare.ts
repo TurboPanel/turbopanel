@@ -1,7 +1,10 @@
 import { eq } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
-import { resealSecretForDaemon } from '../authn/data-encryption.ts'
+import {
+  ENVELOPE_MAGIC,
+  resealSecretForDaemon,
+} from '../authn/data-encryption.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../authn/secrets.ts'
 import {
   getServerDaemonStateByServerId,
@@ -25,7 +28,7 @@ import { resolveHostingBindAddress } from '../environments/deploy-prepare.ts'
 import { listManagedPrincipals } from '../principals/store.ts'
 import { ensureManagedContainerAllocation } from './allocate-managed-container.ts'
 
-const TPSECRET_PREFIX = 'tpsecret.'
+const AT_REST_ENVELOPE_PREFIX = `${ENVELOPE_MAGIC}.`
 const APPLY_EXPIRES_MS = 600_000
 
 export type ManagedApplyPrepareError =
@@ -202,7 +205,7 @@ async function buildCredentials(
       .where(eq(principal.id, row.id))
       .limit(1)
     const sealed = passwordRow?.password
-    if (typeof sealed !== 'string' || !sealed.startsWith(TPSECRET_PREFIX)) {
+    if (typeof sealed !== 'string' || !sealed.startsWith(AT_REST_ENVELOPE_PREFIX)) {
       return { kind: 'managed_credential_not_sealed' }
     }
 

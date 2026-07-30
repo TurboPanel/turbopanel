@@ -26,8 +26,13 @@ import type {
   HostSeriesResult,
   HostSummaryQuery,
   HostSummaryResult,
+  ServerStatusTransitionReason,
+  StatusHistoryEvent,
+  StatusHistoryQuery,
+  StatusHistoryResult,
 } from "../types.ts";
 import { finalizeHostSeriesResult } from "../query/series-response.ts";
+import { computeStatusUptime } from "../query/uptime.ts";
 import {
   AE_BLOB_EVENT_TYPE_INDEX,
   AE_BLOB_SCHEMA_VERSION_INDEX,
@@ -35,9 +40,12 @@ import {
   AE_HOST_EVENT_TYPE,
   AE_INDEX_SERVER_ID_COLUMN,
   AE_MISSING_METRIC_SENTINEL,
+  AE_STATUS_EVENT_TYPE,
   AE_TIMESTAMP_COLUMN,
   blobColumn,
   doubleColumnForMetric,
+  statusConnectedColumn,
+  statusReasonColumn,
 } from "./field-map.ts";
 
 const ALLOWED_METRIC_KEYS = new Set<string>(HOST_METRIC_KEYS);
@@ -181,10 +189,10 @@ function assertRange(
 }
 
 /**
- * Host-event + schema-version discriminators for the shared AE dataset.
+ * Event-type + schema-version discriminators for the shared AE dataset.
  * Values come from the write-path field map / wire contract — never literals.
  */
-export function hostEventDiscriminatorPredicates(): string[] {
+export function eventDiscriminatorPredicates(eventType: string): string[] {
   const eventTypeCol = blobColumn(AE_BLOB_EVENT_TYPE_INDEX);
   const schemaVersionCol = blobColumn(AE_BLOB_SCHEMA_VERSION_INDEX);
   const schemaVersions = AE_SUPPORTED_HOST_SCHEMA_VERSIONS.map((v) =>
@@ -194,10 +202,33 @@ export function hostEventDiscriminatorPredicates(): string[] {
     ? `${schemaVersionCol} = ${schemaVersions[0]}`
     : `${schemaVersionCol} IN (${schemaVersions.join(", ")})`;
   return [
-    `${eventTypeCol} = ${quoteSqlString(AE_HOST_EVENT_TYPE)}`,
+    `${eventTypeCol} = ${quoteSqlString(eventType)}`,
     schemaPredicate,
   ];
 }
+
+/** Host-row discriminators — thin wrapper; keep host SQL byte-identical. */
+export function hostEventDiscriminatorPredicates(): string[] {
+  return eventDiscriminatorPredicates(AE_HOST_EVENT_TYPE);
+}
+
+/** Status-row discriminators (`blob1 = 'status'`). */
+export function statusEventDiscriminatorPredicates(): string[] {
+  return eventDiscriminatorPredicates(AE_STATUS_EVENT_TYPE);
+}
+
+/**
+ * Cap on status-history rows returned to the client. Builders request
+ * `MAX_STATUS_EVENTS + 1` so the route can set `truncated`.
+ */
+export const MAX_STATUS_EVENTS = 1000;
+
+const STATUS_TRANSITION_REASONS = new Set<string>([
+  "connect",
+  "disconnect",
+  "sweep_stale",
+  "self_heal",
+]);
 
 /**
  * AE SQL literal matching write-path `AE_MISSING_METRIC_SENTINEL` (`-1e308`).
@@ -435,8 +466,20 @@ export function buildRecentlyActiveServerIdsSql(opts: {
 }
 
 /**
+ * Backend DateTime without timezone: `YYYY-MM-DD HH:MM:SS` or
+ * `YYYY-MM-DD HH:MM:SS.SSS`. Must be treated as UTC — engines may otherwise
+ * parse the space-separated form as local time.
+ */
+const BACKEND_UTC_DATETIME_RE =
+  /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)$/;
+
+/**
  * Parse AE `latest_at` (ISO or space-separated DateTime) to epoch ms.
  * Returns null when the value is missing or unparseable.
+ *
+ * Space-separated backend timestamps are normalized to an explicit UTC ISO
+ * form before `Date.parse`. ISO strings with `Z` or an offset are left
+ * unchanged.
  */
 export function parseAeLatestAtMs(raw: unknown): number | null {
   if (raw === null || raw === undefined) return null;
@@ -445,10 +488,11 @@ export function parseAeLatestAtMs(raw: unknown): number | null {
     return raw > 1e12 ? raw : raw * 1000;
   }
   if (typeof raw !== "string" || raw.length === 0) return null;
-  let ms = Date.parse(raw);
-  if (Number.isFinite(ms)) return ms;
-  // ClickHouse / AE DateTime often renders as "YYYY-MM-DD HH:MM:SS".
-  ms = Date.parse(raw.replaceAll(" ", "T") + "Z");
+  const match = BACKEND_UTC_DATETIME_RE.exec(raw);
+  const normalized = match === null
+    ? raw
+    : `${match[1]}T${match[2]}Z`;
+  const ms = Date.parse(normalized);
   return Number.isFinite(ms) ? ms : null;
 }
 
@@ -742,5 +786,253 @@ export async function queryHostSummaryViaSqlApi(
     serverId: input.serverId,
     sampleCount: Number.isFinite(sampleCount) ? sampleCount : 0,
     latestAt,
+  };
+}
+
+export function buildStatusEventsSql(
+  input: StatusHistoryQuery,
+  opts: {
+    dataset: string;
+    maxRangeSeconds: number;
+  },
+): string {
+  const serverId = assertSafeServerId(input.serverId);
+  const from = assertIsoTimestamp("from", input.from);
+  const to = assertIsoTimestamp("to", input.to);
+  assertRange(from, to, opts.maxRangeSeconds);
+  assertSafeDatasetName(opts.dataset);
+
+  const fromUnix = Math.floor(from.getTime() / 1000);
+  const toUnix = Math.floor(to.getTime() / 1000);
+  const discriminators = statusEventDiscriminatorPredicates();
+  const connectedCol = statusConnectedColumn();
+  const reasonCol = statusReasonColumn();
+  const limit = MAX_STATUS_EVENTS + 1;
+
+  return [
+    "SELECT",
+    `  ${AE_TIMESTAMP_COLUMN} AS timestamp,`,
+    `  ${connectedCol} AS connected,`,
+    `  ${reasonCol} AS reason`,
+    `FROM ${opts.dataset}`,
+    `WHERE ${AE_INDEX_SERVER_ID_COLUMN} = ${quoteSqlString(serverId)}`,
+    `  AND ${discriminators[0]}`,
+    `  AND ${discriminators[1]}`,
+    `  AND ${AE_TIMESTAMP_COLUMN} >= toDateTime(${fromUnix})`,
+    `  AND ${AE_TIMESTAMP_COLUMN} <= toDateTime(${toUnix})`,
+    `ORDER BY ${AE_TIMESTAMP_COLUMN} ASC`,
+    `LIMIT ${limit}`,
+  ].join("\n");
+}
+
+/**
+ * State just before `from` — deliberately `ORDER BY … DESC LIMIT 1` rather
+ * than `argMax`, which Cloudflare AE SQL does not document.
+ */
+export function buildStatusPriorStateSql(
+  input: StatusHistoryQuery,
+  opts: {
+    dataset: string;
+    maxRangeSeconds: number;
+  },
+): string {
+  const serverId = assertSafeServerId(input.serverId);
+  const from = assertIsoTimestamp("from", input.from);
+  const to = assertIsoTimestamp("to", input.to);
+  assertRange(from, to, opts.maxRangeSeconds);
+  assertSafeDatasetName(opts.dataset);
+
+  const fromUnix = Math.floor(from.getTime() / 1000);
+  const discriminators = statusEventDiscriminatorPredicates();
+  const connectedCol = statusConnectedColumn();
+  const reasonCol = statusReasonColumn();
+
+  return [
+    "SELECT",
+    `  ${AE_TIMESTAMP_COLUMN} AS timestamp,`,
+    `  ${connectedCol} AS connected,`,
+    `  ${reasonCol} AS reason`,
+    `FROM ${opts.dataset}`,
+    `WHERE ${AE_INDEX_SERVER_ID_COLUMN} = ${quoteSqlString(serverId)}`,
+    `  AND ${discriminators[0]}`,
+    `  AND ${discriminators[1]}`,
+    `  AND ${AE_TIMESTAMP_COLUMN} < toDateTime(${fromUnix})`,
+    `ORDER BY ${AE_TIMESTAMP_COLUMN} DESC`,
+    `LIMIT 1`,
+  ].join("\n");
+}
+
+export function buildStatusEventsClickHouseSql(
+  input: StatusHistoryQuery,
+  opts: {
+    table: string;
+    maxRangeSeconds: number;
+  },
+): string {
+  assertSafeServerId(input.serverId);
+  const from = assertIsoTimestamp("from", input.from);
+  const to = assertIsoTimestamp("to", input.to);
+  assertRange(from, to, opts.maxRangeSeconds);
+  assertSafeDatasetName(opts.table);
+
+  const discriminators = statusEventDiscriminatorPredicates();
+  const connectedCol = statusConnectedColumn();
+  const reasonCol = statusReasonColumn();
+  const limit = MAX_STATUS_EVENTS + 1;
+
+  return [
+    "SELECT",
+    `  ${AE_TIMESTAMP_COLUMN} AS timestamp,`,
+    `  ${connectedCol} AS connected,`,
+    `  ${reasonCol} AS reason`,
+    `FROM ${opts.table}`,
+    `WHERE ${AE_INDEX_SERVER_ID_COLUMN} = {index1:UUID}`,
+    `  AND ${discriminators[0]}`,
+    `  AND ${discriminators[1]}`,
+    `  AND ${AE_TIMESTAMP_COLUMN} >= {from:DateTime64(3, 'UTC')}`,
+    `  AND ${AE_TIMESTAMP_COLUMN} <= {to:DateTime64(3, 'UTC')}`,
+    `ORDER BY ${AE_TIMESTAMP_COLUMN} ASC`,
+    `LIMIT ${limit}`,
+  ].join("\n");
+}
+
+export function buildStatusPriorStateClickHouseSql(
+  input: StatusHistoryQuery,
+  opts: {
+    table: string;
+    maxRangeSeconds: number;
+  },
+): string {
+  assertSafeServerId(input.serverId);
+  const from = assertIsoTimestamp("from", input.from);
+  const to = assertIsoTimestamp("to", input.to);
+  assertRange(from, to, opts.maxRangeSeconds);
+  assertSafeDatasetName(opts.table);
+
+  const discriminators = statusEventDiscriminatorPredicates();
+  const connectedCol = statusConnectedColumn();
+  const reasonCol = statusReasonColumn();
+
+  return [
+    "SELECT",
+    `  ${AE_TIMESTAMP_COLUMN} AS timestamp,`,
+    `  ${connectedCol} AS connected,`,
+    `  ${reasonCol} AS reason`,
+    `FROM ${opts.table}`,
+    `WHERE ${AE_INDEX_SERVER_ID_COLUMN} = {index1:UUID}`,
+    `  AND ${discriminators[0]}`,
+    `  AND ${discriminators[1]}`,
+    `  AND ${AE_TIMESTAMP_COLUMN} < {from:DateTime64(3, 'UTC')}`,
+    `ORDER BY ${AE_TIMESTAMP_COLUMN} DESC`,
+    `LIMIT 1`,
+  ].join("\n");
+}
+
+export function parseStatusEventRows(
+  rows: Array<Record<string, unknown>>,
+): StatusHistoryEvent[] {
+  const events: StatusHistoryEvent[] = [];
+  for (const row of rows) {
+    const atMs = parseAeLatestAtMs(row.timestamp);
+    if (atMs === null) continue;
+    const connected = parseStatusConnected(row.connected);
+    if (connected === null) continue;
+    events.push({
+      at: new Date(atMs).toISOString(),
+      connected,
+      reason: parseStatusReason(row.reason, connected),
+    });
+  }
+  return events;
+}
+
+/**
+ * Detect truncation from the raw backend row count (before parsing), slice to
+ * {@link MAX_STATUS_EVENTS}, and derive `knownUntilMs` so uptime math does not
+ * extend the last retained state through `to` when later transitions exist.
+ */
+export function resolveTruncatedStatusEvents(
+  rawRows: Array<Record<string, unknown>>,
+  fromMs: number,
+): {
+  events: StatusHistoryEvent[];
+  truncated: boolean;
+  knownUntilMs: number | undefined;
+} {
+  const truncated = rawRows.length > MAX_STATUS_EVENTS;
+  const rows = truncated ? rawRows.slice(0, MAX_STATUS_EVENTS) : rawRows;
+  const events = parseStatusEventRows(rows);
+  if (!truncated) {
+    return { events, truncated: false, knownUntilMs: undefined };
+  }
+  const lastAt = events.length > 0 ? Date.parse(events.at(-1)!.at) : Number.NaN;
+  const knownUntilMs = Number.isFinite(lastAt) ? lastAt : fromMs;
+  return { events, truncated: true, knownUntilMs };
+}
+
+function parseStatusConnected(raw: unknown): boolean | null {
+  if (typeof raw === "boolean") return raw;
+  const num = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(num)) return null;
+  return num >= 0.5;
+}
+
+function parseStatusReason(
+  raw: unknown,
+  connected: boolean,
+): ServerStatusTransitionReason {
+  if (typeof raw === "string" && STATUS_TRANSITION_REASONS.has(raw)) {
+    return raw as ServerStatusTransitionReason;
+  }
+  return connected ? "connect" : "disconnect";
+}
+
+export async function queryStatusHistoryViaSqlApi(
+  config: AnalyticsEngineSqlConfig,
+  input: StatusHistoryQuery,
+): Promise<StatusHistoryResult> {
+  const dataset = config.dataset ?? AE_DATASET_NAME;
+  const maxRangeSeconds = config.maxRangeSeconds ??
+    AE_DEFAULT_MAX_RANGE_SECONDS;
+  const priorSql = buildStatusPriorStateSql(input, {
+    dataset,
+    maxRangeSeconds,
+  });
+  const eventsSql = buildStatusEventsSql(input, {
+    dataset,
+    maxRangeSeconds,
+  });
+
+  const [priorResult, eventsResult] = await Promise.all([
+    executeSql(config, priorSql),
+    executeSql(config, eventsSql),
+  ]);
+
+  const priorConnected = parseStatusConnected(priorResult.data[0]?.connected);
+  const fromMs = Date.parse(input.from);
+  const toMs = Date.parse(input.to);
+  const { events, truncated, knownUntilMs } = resolveTruncatedStatusEvents(
+    eventsResult.data,
+    fromMs,
+  );
+  const uptime = computeStatusUptime({
+    fromMs,
+    toMs,
+    initialConnected: priorConnected,
+    events,
+    knownUntilMs,
+  });
+
+  return {
+    kind: "analytics-engine",
+    available: true,
+    serverId: input.serverId,
+    initialConnected: priorConnected,
+    events,
+    uptimeSeconds: uptime.uptimeSeconds,
+    downtimeSeconds: uptime.downtimeSeconds,
+    unknownSeconds: uptime.unknownSeconds,
+    uptimePercent: uptime.uptimePercent,
+    truncated,
   };
 }

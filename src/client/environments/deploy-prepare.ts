@@ -1,7 +1,11 @@
 import type { Context } from 'hono'
 import { and, eq, inArray, or } from 'drizzle-orm'
 import type { AppEnv } from '../../app.ts'
-import { decryptSecret, resealSecretForDaemon } from '../authn/data-encryption.ts'
+import {
+  decryptSecret,
+  ENVELOPE_MAGIC,
+  resealSecretForDaemon,
+} from '../authn/data-encryption.ts'
 import {
   getServerDaemonStateByServerId,
   isDaemonKeyActive,
@@ -124,16 +128,6 @@ export async function verifyServerInOrg(
     .where(and(eq(server.id, serverId), eq(server.organizationId, organizationId)))
     .limit(1)
   return Boolean(row)
-}
-
-function readComposeServiceName(
-  composeServiceName: string | null | undefined,
-  fallback: string,
-): string {
-  if (typeof composeServiceName === 'string' && composeServiceName.length > 0) {
-    return composeServiceName
-  }
-  return fallback
 }
 
 function extractComposeFromOptions(options: unknown): unknown {
@@ -275,7 +269,7 @@ async function sealVariableMaterialForDaemon(
   const sealed: EnvironmentDeployVariableMaterial[] = []
   for (const entry of material) {
     let envelope = entry.valueEnvelope
-    if (entry.valueEnvelope.startsWith('tpsecret.')) {
+    if (entry.valueEnvelope.startsWith(`${ENVELOPE_MAGIC}.`)) {
       envelope = await resealSecretForDaemon(
         secretsConfig,
         dataEncryptionSecrets,
@@ -468,7 +462,9 @@ async function sealStorageMaterialForDaemon(
 
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
   const secretsConfig = c.get('secretsConfig')
-  const needsReseal = material.some((entry) => entry.contentEnvelope?.startsWith('tpsecret.'))
+  const needsReseal = material.some((entry) =>
+    entry.contentEnvelope?.startsWith(`${ENVELOPE_MAGIC}.`),
+  )
   if (!needsReseal) return material
 
   if (!dataEncryptionSecrets || !secretsConfig) {
@@ -484,7 +480,7 @@ async function sealStorageMaterialForDaemon(
   const sealed: EnvironmentDeployStorageMaterial[] = []
   for (const entry of material) {
     let contentEnvelope = entry.contentEnvelope
-    if (contentEnvelope?.startsWith('tpsecret.')) {
+    if (contentEnvelope?.startsWith(`${ENVELOPE_MAGIC}.`)) {
       contentEnvelope = await resealSecretForDaemon(
         secretsConfig,
         dataEncryptionSecrets,
@@ -601,7 +597,7 @@ async function mapResolvedVariablesToDeployEntries(
 
 type ServiceRow = {
   id: string
-  composeServiceName: string | null
+  composeServiceName: string
   options: unknown
 }
 
@@ -685,11 +681,7 @@ function buildExpandedServiceOptionsMap(
   expansion: Map<string, string[]>,
   allocations: readonly ContainerAllocation[],
 ): ServiceOptionsByComposeName {
-  const originOptions = buildServiceOptionsMap(
-    serviceRows,
-    readComposeServiceName,
-    'unknown',
-  )
+  const originOptions = buildServiceOptionsMap(serviceRows)
   const allocationByClone = new Map(
     allocations.map((row) => [row.cloneComposeServiceName, row]),
   )
@@ -760,8 +752,7 @@ function buildCloneNamesByServiceId(
 ): Map<string, string[]> {
   const map = new Map<string, string[]>()
   for (const row of serviceRows) {
-    const originName = readComposeServiceName(row.composeServiceName, row.id)
-    map.set(row.id, expansion.get(originName) ?? [originName])
+    map.set(row.id, expansion.get(row.composeServiceName) ?? [row.composeServiceName])
   }
   return map
 }
@@ -811,10 +802,7 @@ function buildInstancesByComposeName(
   // Traditional-web keeps count 1 (expansion skips them regardless).
   for (const name of composeServiceNames) {
     if (instancesByComposeName.has(name)) continue
-    const row = serviceRows.find(
-      (serviceRow) =>
-        readComposeServiceName(serviceRow.composeServiceName, serviceRow.id) === name,
-    )
+    const row = serviceRows.find((serviceRow) => serviceRow.composeServiceName === name)
     instancesByComposeName.set(
       name,
       resolveServiceInstances(parseServiceOptions(row?.options) ?? {}),
@@ -829,8 +817,7 @@ function buildServiceRowByCloneName(
 ): Map<string, ServiceRow> {
   const serviceRowByCloneName = new Map<string, ServiceRow>()
   for (const row of serviceRows) {
-    const originName = readComposeServiceName(row.composeServiceName, row.id)
-    for (const cloneName of expansion.get(originName) ?? [originName]) {
+    for (const cloneName of expansion.get(row.composeServiceName) ?? [row.composeServiceName]) {
       serviceRowByCloneName.set(cloneName, row)
     }
   }
@@ -915,7 +902,6 @@ async function allocateExpandDeployPipeline(
   const containerServices = buildContainerServiceSpecs(
     params.serviceRows,
     containerComposeNames,
-    readComposeServiceName,
   )
 
   // Idempotent by (service, ordinal) — preview may allocate; deploy reuses rows.
@@ -1285,7 +1271,7 @@ export async function prepareDeployCompose(
 export async function attachPrincipalsToTraditionalWebSites(
   db: Db,
   environmentId: string,
-  serviceRows: ReadonlyArray<{ id: string; composeServiceName: string | null }>,
+  serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>,
   principalMaterial: readonly EnvironmentDeployPrincipalMaterial[],
   sites: readonly TraditionalWebSiteSpec[],
 ): Promise<
@@ -1303,10 +1289,7 @@ export async function attachPrincipalsToTraditionalWebSites(
   )
   const serviceIdByComposeName = new Map<string, string>()
   for (const row of serviceRows) {
-    serviceIdByComposeName.set(
-      readComposeServiceName(row.composeServiceName, row.id),
-      row.id,
-    )
+    serviceIdByComposeName.set(row.composeServiceName, row.id)
   }
 
   const out: EnvironmentDeployTraditionalWebSite[] = []

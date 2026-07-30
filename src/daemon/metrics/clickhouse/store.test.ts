@@ -1,7 +1,12 @@
 import { assertEquals, assertRejects } from "jsr:@std/assert";
 import { METRICS_SCHEMA_VERSION } from "../contract.ts";
 import { HOST_METRIC_KEYS } from "../contract.ts";
-import { AE_DATASET_NAME } from "../analytics-engine/field-map.ts";
+import {
+  AE_DATASET_NAME,
+  AE_MISSING_METRIC_SENTINEL,
+  AE_STATUS_EVENT_TYPE,
+} from "../analytics-engine/field-map.ts";
+import { MAX_STATUS_EVENTS } from "../analytics-engine/sql-api.ts";
 import type { AuthenticatedHostMetricsSample } from "../types.ts";
 import {
   ClickHouseHttpClient,
@@ -11,6 +16,7 @@ import { it } from "@std/testing/bdd";
 import { HOST_METRICS_TABLE } from "./schema.ts";
 import {
   buildHostMetricsRow,
+  buildStatusEventRow,
   ClickHouseServerMetricsStore,
   type ClickHouseStoreOptions,
 } from "./store.ts";
@@ -136,6 +142,103 @@ it("writeHostSample enqueues a single row without immediate insert", async () =>
   assertEquals(fake.insertCalls[0]!.table, HOST_METRICS_TABLE);
   assertEquals(fake.insertCalls[0]!.rows.length, 1);
   assertEquals(fake.insertCalls[0]!.rows[0]!.double1, 12.5);
+});
+
+it("buildStatusEventRow uses status discriminator and sentinel doubles", () => {
+  const row = buildStatusEventRow({
+    serverId: "11111111-1111-4111-8111-111111111111",
+    connected: true,
+    reason: "connect",
+    at: "2026-01-01T00:00:00.000Z",
+  });
+  assertEquals(row.blob1, AE_STATUS_EVENT_TYPE);
+  assertEquals(row.double1, 1);
+  assertEquals(row.double2, AE_MISSING_METRIC_SENTINEL);
+  assertEquals(row.blob7, "connect");
+  assertEquals(row.index1, "11111111-1111-4111-8111-111111111111");
+});
+
+it("writeStatusEvent batches into the same pending buffer as host samples", async () => {
+  const fake = new FakeClickHouseHttpClient();
+  const store = storeWithFake(fake, { writeBatchMaxRows: 10 });
+  await store.writeHostSample(sample());
+  await store.writeStatusEvent({
+    serverId: "11111111-1111-4111-8111-111111111111",
+    connected: false,
+    reason: "disconnect",
+    at: "2026-01-01T00:01:00.000Z",
+  });
+  assertEquals(fake.insertCalls.length, 0);
+  await store.flushWrites();
+  assertEquals(fake.insertCalls.length, 1);
+  assertEquals(fake.insertCalls[0]!.rows.length, 2);
+  assertEquals(fake.insertCalls[0]!.rows[0]!.blob1, "host");
+  assertEquals(fake.insertCalls[0]!.rows[1]!.blob1, AE_STATUS_EVENT_TYPE);
+});
+
+it("queryStatusHistory force-flushes pending status writes before querying", async () => {
+  const fake = new FakeClickHouseHttpClient();
+  fake.queryImpl = () => Promise.resolve([]);
+  const store = storeWithFake(fake, { writeBatchMaxRows: 10 });
+  await store.writeStatusEvent({
+    serverId: "11111111-1111-4111-8111-111111111111",
+    connected: true,
+    reason: "connect",
+    at: "2026-01-01T00:00:00.000Z",
+  });
+  assertEquals(fake.insertCalls.length, 0);
+  await store.queryStatusHistory({
+    serverId: "11111111-1111-4111-8111-111111111111",
+    from: "2026-01-01T00:00:00.000Z",
+    to: "2026-01-01T00:30:00.000Z",
+  });
+  assertEquals(fake.insertCalls.length, 1);
+  assertEquals(fake.queryCalls.length >= 1, true);
+});
+
+it("queryStatusHistory: truncated tail accrues to unknownSeconds", async () => {
+  const from = "2026-01-01T00:00:00.000Z";
+  const to = "2026-01-01T02:00:00.000Z";
+  const fromMs = Date.parse(from);
+  const toMs = Date.parse(to);
+  const rows: Array<Record<string, unknown>> = [];
+  for (let i = 0; i < MAX_STATUS_EVENTS + 1; i++) {
+    const connected = i % 2 === 0;
+    rows.push({
+      timestamp: new Date(fromMs + i * 1000).toISOString(),
+      connected: connected ? 1 : 0,
+      reason: connected ? "connect" : "disconnect",
+    });
+  }
+  const lastRetainedMs = fromMs + (MAX_STATUS_EVENTS - 1) * 1000;
+  const expectedUnknownTail = (toMs - lastRetainedMs) / 1000;
+
+  const fake = new FakeClickHouseHttpClient();
+  fake.queryImpl = (sql) => {
+    if (sql.includes("ORDER BY timestamp DESC")) {
+      return Promise.resolve([{
+        timestamp: "2025-12-31T23:00:00.000Z",
+        connected: 0,
+        reason: "disconnect",
+      }]);
+    }
+    return Promise.resolve(rows);
+  };
+  const store = storeWithFake(fake);
+  const result = await store.queryStatusHistory({
+    serverId: "11111111-1111-4111-8111-111111111111",
+    from,
+    to,
+  });
+
+  assertEquals(result.truncated, true);
+  assertEquals(result.events.length, MAX_STATUS_EVENTS);
+  assertEquals(result.unknownSeconds, expectedUnknownTail);
+  assertEquals(result.events[MAX_STATUS_EVENTS - 1]!.connected, false);
+  assertEquals(
+    result.downtimeSeconds + result.uptimeSeconds,
+    (lastRetainedMs - fromMs) / 1000,
+  );
 });
 
 it("writeHostSample flushes a multi-row batch when max rows is reached", async () => {

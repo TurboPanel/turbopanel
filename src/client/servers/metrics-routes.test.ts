@@ -25,6 +25,8 @@ import type {
   HostSummaryQuery,
   HostSummaryResult,
   ServerMetricsStore,
+  StatusHistoryQuery,
+  StatusHistoryResult,
 } from '../../daemon/metrics/types.ts'
 import { registerServerMetricsRoutes } from './metrics-routes.ts'
 import { resetDenoMetricsChartCacheForTests } from '../../daemon/metrics/query/cache.ts'
@@ -41,19 +43,26 @@ function createFakeMetricsStore(
   handlers?: {
     queryHostSeries?: (input: HostSeriesQuery) => Promise<HostSeriesResult>
     queryHostSummary?: (input: HostSummaryQuery) => Promise<HostSummaryResult>
+    queryStatusHistory?: (
+      input: StatusHistoryQuery,
+    ) => Promise<StatusHistoryResult>
   },
 ): ServerMetricsStore & {
   seriesCalls: HostSeriesQuery[]
   summaryCalls: HostSummaryQuery[]
+  connectionCalls: StatusHistoryQuery[]
 } {
   const seriesCalls: HostSeriesQuery[] = []
   const summaryCalls: HostSummaryQuery[] = []
+  const connectionCalls: StatusHistoryQuery[] = []
   const disabled = new DisabledServerMetricsStore()
 
   return {
     seriesCalls,
     summaryCalls,
+    connectionCalls,
     writeHostSample: () => {},
+    writeStatusEvent: () => {},
     queryHostSeries: async (input) => {
       seriesCalls.push(input)
       if (handlers?.queryHostSeries) {
@@ -67,6 +76,13 @@ function createFakeMetricsStore(
         return handlers.queryHostSummary(input)
       }
       return disabled.queryHostSummary(input)
+    },
+    queryStatusHistory: async (input) => {
+      connectionCalls.push(input)
+      if (handlers?.queryStatusHistory) {
+        return handlers.queryStatusHistory(input)
+      }
+      return disabled.queryStatusHistory(input)
     },
   }
 }
@@ -561,4 +577,135 @@ it('GET /servers/:id/metrics/summary returns 403 without read access', async () 
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
+})
+
+it('GET /servers/:id/metrics/connection returns 401 without session', async () => {
+  await withMetricsFixtures(async ({ app, serverId }) => {
+    const res = await app.request(
+      `/servers/${serverId}/metrics/connection?from=${FROM}&to=${TO}`,
+    )
+    assertEquals(res.status, 401)
+  })
+})
+
+it('GET /servers/:id/metrics/connection returns 403 without read access', async () => {
+  if (!dbUrl) return
+
+  resetDenoMetricsChartCacheForTests()
+  const db = createDenoDb()
+  const { app, secrets } = await createMetricsRoutesTestApp(db)
+
+  const email = `metrics-conn-deny-${crypto.randomUUID()}@example.com`
+  const [insertedOrg] = await db
+    .insert(organization)
+    .values({ displayName: 'Metrics Connection Deny Org' })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg!.id
+
+  const [insertedUser] = await db
+    .insert(user)
+    .values({ email, isEmailVerified: true, role: 'user' })
+    .returning({ id: user.id })
+  const userId = insertedUser!.id
+
+  await db.insert(member).values({ organizationId, userId })
+
+  const [insertedServer] = await db
+    .insert(server)
+    .values({ organizationId, displayName: 'Denied Connection Server' })
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
+
+  const cookie = await sessionCookie(db, secrets, userId)
+
+  try {
+    const res = await app.request(
+      `/servers/${serverId}/metrics/connection?from=${FROM}&to=${TO}`,
+      { headers: { Cookie: cookie } },
+    )
+    assertEquals(res.status, 403)
+  } finally {
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(member).where(and(
+      eq(member.organizationId, organizationId),
+      eq(member.userId, userId),
+    ))
+    await db.delete(user).where(eq(user.id, userId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+})
+
+it('GET /servers/:id/metrics/connection rejects invalid range', async () => {
+  await withMetricsFixtures(async ({ app, serverId, cookie }) => {
+    const res = await app.request(
+      `/servers/${serverId}/metrics/connection?from=${TO}&to=${FROM}`,
+      { headers: { Cookie: cookie } },
+    )
+    assertEquals(res.status, 400)
+  })
+})
+
+it('GET /servers/:id/metrics/connection maps backend failures to 503', async () => {
+  const fakeStore = createFakeMetricsStore({
+    queryStatusHistory: async () => {
+      throw new Error('ClickHouse unavailable')
+    },
+  })
+
+  await withMetricsFixtures(async ({ app, serverId, cookie }) => {
+    const res = await app.request(
+      `/servers/${serverId}/metrics/connection?from=${FROM}&to=${TO}`,
+      { headers: { Cookie: cookie } },
+    )
+    assertEquals(res.status, 503)
+    const body = await res.json()
+    assertEquals(body.ok, false)
+    assertEquals(body.error, 'metrics_backend_unavailable')
+    assertEquals(body.backend, 'clickhouse')
+  }, fakeStore)
+})
+
+it('GET /servers/:id/metrics/connection returns payload and caches on repeat', async () => {
+  const fakeStore = createFakeMetricsStore({
+    queryStatusHistory: async (input) => ({
+      kind: 'clickhouse',
+      available: true,
+      serverId: input.serverId,
+      initialConnected: false,
+      events: [{
+        at: '2026-01-01T00:15:00.000Z',
+        connected: true,
+        reason: 'connect',
+      }],
+      uptimeSeconds: 2700,
+      downtimeSeconds: 900,
+      unknownSeconds: 0,
+      uptimePercent: 0.75,
+      truncated: false,
+    }),
+  })
+
+  await withMetricsFixtures(async ({ app, serverId, cookie }) => {
+    const url =
+      `/servers/${serverId}/metrics/connection?from=${FROM}&to=${TO}`
+    const res = await app.request(url, { headers: { Cookie: cookie } })
+    assertEquals(res.status, 200)
+    const body = await res.json()
+    assertEquals(body.ok, true)
+    assertEquals(body.serverId, serverId)
+    assertEquals(body.available, true)
+    assertEquals(body.initialConnected, false)
+    assertEquals(body.uptimeSeconds, 2700)
+    assertEquals(body.downtimeSeconds, 900)
+    assertEquals(body.unknownSeconds, 0)
+    assertEquals(body.uptimePercent, 0.75)
+    assertEquals(body.truncated, false)
+    assertEquals(body.events.length, 1)
+    assertEquals(body.events[0].reason, 'connect')
+    assertEquals(fakeStore.connectionCalls.length, 1)
+
+    const cached = await app.request(url, { headers: { Cookie: cookie } })
+    assertEquals(cached.status, 200)
+    assertEquals(fakeStore.connectionCalls.length, 1)
+  }, fakeStore)
 })

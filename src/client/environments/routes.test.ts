@@ -17,6 +17,7 @@ import {
   organization,
   project,
   server,
+  service,
   user,
   workspace,
 } from '../../lib/db/schema.ts'
@@ -238,5 +239,60 @@ test('POST/PATCH /environments strip metadata.serverId from stored JSONB', async
       .limit(1)
     assertEquals(storedAfterPatch?.serverId, serverId)
     assertEquals(storedAfterPatch?.metadata, { note: 'patched' })
+  })
+})
+
+test('POST /environments reconciles service rows from the project base compose when created without options', async () => {
+  await withEnvironmentFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    projectId,
+  }) => {
+    await db
+      .update(project)
+      .set({
+        options: {
+          compose: {
+            version: 1,
+            data: {
+              services: {
+                web: { image: 'nginx:latest' },
+                api: { image: 'node:22' },
+              },
+            },
+            presentation: { keyOrder: ['services'], comments: {} },
+          },
+        },
+      })
+      .where(eq(project.id, projectId))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+
+    const createRes = await app.request('/environments', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        projectId,
+        displayName: 'Env Base Compose Reconcile',
+      }),
+    })
+    assertEquals(createRes.status, 200)
+    const { id } = await createRes.json() as { ok: true; id: string }
+
+    const rows = await db
+      .select({ composeServiceName: service.composeServiceName })
+      .from(service)
+      .where(eq(service.environmentId, id))
+    const names = rows.map((row) => row.composeServiceName).sort((a, b) => a.localeCompare(b))
+    assertEquals(names, ['api', 'web'])
+
+    await db.delete(service).where(eq(service.environmentId, id))
   })
 })

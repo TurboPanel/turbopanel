@@ -96,6 +96,11 @@ change. Future agents read `AGENTS.md` first.
   `sonar-project.properties`).
 - Drizzle-generated SQL under **`migrations/`** must stay excluded
   (`**/migrations/**`) — never “fix” smells in those files.
+- Hand-authored OpenAPI under `src/client/openapi/**` and
+  `src/daemon/openapi/**` is excluded from **duplication (CPD)** via
+  `sonar.cpd.exclusions` (keep both property files in sync). Schema/path
+  blocks are intentionally repetitive across resources; refactor route/runtime
+  code instead of twisting OpenAPI to please CPD.
 - **SonarLint Connected Mode** does **not** honor
   `sonarlint.analysisExcludesStandalone` or local `.sonarcloud.properties` /
   `sonar-project.properties`. It only applies exclusions synced from the
@@ -607,14 +612,14 @@ orientation; the detail moved to:
 
 | Subsystem                         | Read before editing            | Covers                                                                                                                                            |
 | --------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Daemon Cell** (`/ws/daemon/v1`) | `src/daemon/cell/AGENTS.md`    | Presence, outbox + request correlation, Redis vs Durable Object backends, and the **canonical Durable Object cost / hibernation / billing rules** |
-| **Server metrics**                | `src/daemon/metrics/AGENTS.md` | Host-metrics ingestion, Analytics Engine (Workers) / ClickHouse (Deno) storage, query + chart caching                                             |
+| **Daemon Cell** (`/ws/daemon/v1`) | `src/daemon/cell/AGENTS.md`    | Presence, outbox + request correlation, Redis vs Durable Object backends, the **canonical Durable Object cost / hibernation / billing rules**, and the Postgres liveness read model (`server.connected` + `server.status_changed_at` only — no stored tri-state `daemon_status` column) |
+| **Server metrics**                | `src/daemon/metrics/AGENTS.md` | Host-metrics ingestion, Analytics Engine (Workers) / ClickHouse (Deno) storage, query + chart caching; also carries a history-only connection-status event stream (`blob1 = "status"`) — never authoritative for current liveness |
 | **Command Pipeline**              | `src/lib/commands/AGENTS.md`   | Typed commands, queue transport, and correlated dev-sync / tunnel-token / public-URL-apply requests                                               |
 | **Compose documents**             | `src/lib/compose/AGENTS.md`    | `ComposeDocument` model, `x-turbopanel` extension, linter, overlay merge; **placement pin is `environment.server_id`** (compose placement stripped on save) |
 | **Managed engines**               | `src/lib/managed/AGENTS.md` + `src/client/managed/` | Engine registry + client API (`POST …/managed`, apply/lifecycle/users/databases/status/logs, `GET /organizations/:id/managed`); all status reads are Postgres-backed; logs use cell `managed-logs-request` |
 | **Authentication**                | `src/client/authn/AGENTS.md`   | Argon2id, sessions, PAM install gate, secret keyring + data encryption, daemon key JWT, auth routes                                               |
 | **Email**                         | `src/lib/email/AGENTS.md`      | Queue abstraction, RabbitMQ→mailer (Deno) / Mailgun (Workers), settings, OTP surface                                                              |
-| **Database & schema**             | `src/lib/db/AGENTS.md`         | Drizzle schema, tables, migrations; deploy-tree columns (`container_*`, `service.compose_service_name`, `environment.server_id`)                   |
+| **Database & schema**             | `src/lib/db/AGENTS.md`         | Drizzle schema, tables, migrations; deploy-tree columns (`container_*`, `service.compose_service_name` — `NOT NULL`, derived-only, non-partial unique per environment, `environment.server_id`)                   |
 | **Query cache**                   | `src/query-cache/AGENTS.md`    | Approved read-only cached `SELECT` models (Hyperdrive cached / Redis read-through)                                                                |
 
 ## OpenAPI & Scalar
@@ -728,7 +733,7 @@ sequenceDiagram
   `GET/PUT /instance/public-urls` persists `TURBOPANEL_PUBLIC_URLS` in the
   `setting` table; `GET/PUT /settings/signup` toggles public sign-up via
   `IS_SIGNUP_ENABLED`; superadmin `POST /secrets/reencrypt` sweeps at-rest
-  `tpsecret` blobs onto the current data-encryption key version
+  `enc` blobs onto the current data-encryption key version
   (`src/admin/reencrypt-secrets.ts`).
 - `src/resource-routes.ts` — workspace/environment/project/service/hosting CRUD
 - `src/server-paths.ts` / `src/server-registry.ts` — Unix socket path + daemon

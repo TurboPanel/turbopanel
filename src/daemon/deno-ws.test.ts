@@ -16,6 +16,7 @@ import {
   parseServerDaemonState,
   type ServerDaemonState,
   type ServerDaemonStatus,
+  type ServerDaemonStatusColumns,
 } from "./authn/daemon-state.ts";
 import type {
   DaemonCell,
@@ -86,7 +87,11 @@ function createProjectionTrackingDb(
   getUpdateCallCount: () => number;
 } {
   let daemon: ServerDaemonState = { ...initialDaemon };
-  const columns = { ...buildDefaultDaemonStatus(), ...statusOverrides };
+  const defaults = buildDefaultDaemonStatus();
+  const columns: ServerDaemonStatusColumns = {
+    connected: statusOverrides.connected ?? defaults.connected,
+    statusChangedAt: statusOverrides.statusChangedAt ?? defaults.statusChangedAt,
+  };
   let updateCalls = 0;
 
   const db = {
@@ -95,8 +100,9 @@ function createProjectionTrackingDb(
         daemon,
         metadata: null,
         hostname: null,
-        machineId: null,
-        ...columns,
+        machineKey: null,
+        connected: columns.connected,
+        statusChangedAt: columns.statusChangedAt,
       }]),
     update: () => ({
       set: (patch: Record<string, unknown>) => {
@@ -106,19 +112,6 @@ function createProjectionTrackingDb(
         }
         if ("connected" in patch) {
           columns.connected = patch.connected as boolean;
-        }
-        if ("daemonStatus" in patch) {
-          columns.daemonStatus = patch
-            .daemonStatus as ServerDaemonStatus["daemonStatus"];
-        }
-        if ("lastSeenAt" in patch) {
-          columns.lastSeenAt = patch.lastSeenAt as string | null;
-        }
-        if ("connectedAt" in patch) {
-          columns.connectedAt = patch.connectedAt as string | null;
-        }
-        if ("disconnectedAt" in patch) {
-          columns.disconnectedAt = patch.disconnectedAt as string | null;
         }
         if ("statusChangedAt" in patch) {
           columns.statusChangedAt = patch.statusChangedAt as string | null;
@@ -715,9 +708,7 @@ it("cell ping over WS sends pong, refreshes cell liveness, skips Postgres", asyn
     projection: { hostname: "host-1" },
   }, {
     connected: true,
-    daemonStatus: "online",
-    lastSeenAt: recentAt,
-    connectedAt: recentAt,
+    statusChangedAt: recentAt,
   });
   const tracking = createTrackingDaemonCell(serverId);
   tracking.cell.getSnapshot = async () => ({
@@ -779,9 +770,7 @@ it("hello over WS with agent projects commit for update status", async () => {
     projection: { hostname: "host-1" },
   }, {
     connected: true,
-    daemonStatus: "online",
-    lastSeenAt: "2020-01-01T00:00:00.000Z",
-    connectedAt: "2020-01-01T00:00:00.000Z",
+    statusChangedAt: "2020-01-01T00:00:00.000Z",
   });
   const tracking = createTrackingDaemonCell(serverId);
   const app = new Hono();
@@ -828,18 +817,16 @@ it("hello over WS with agent projects commit for update status", async () => {
   ws.close(1000, "done");
 });
 
-it("heartbeat over WS without agent advances status.lastSeenAt in Postgres", async () => {
+it("heartbeat over WS without agent does not write Postgres status", async () => {
   const secrets = await createDaemonJwtSecrets();
   const serverId = "srv-heartbeat-no-agent-ws";
   const stale = new Date(Date.now() - 61_000).toISOString();
-  const { db, getStatus } = createProjectionTrackingDb(serverId, {
+  const { db, getStatus, getUpdateCallCount } = createProjectionTrackingDb(serverId, {
     key: baseDaemonKey,
     projection: { hostname: "host-1", agent: { commit: "abc", buildId: "1" } },
   }, {
     connected: true,
-    daemonStatus: "online",
-    lastSeenAt: stale,
-    connectedAt: "2020-01-01T00:00:00.000Z",
+    statusChangedAt: stale,
   });
   const tracking = createTrackingDaemonCell(serverId);
   const app = new Hono();
@@ -870,15 +857,17 @@ it("heartbeat over WS without agent advances status.lastSeenAt in Postgres", asy
   ws.accept();
   await new Promise((resolve) => setTimeout(resolve, 50));
 
+  const updatesBefore = getUpdateCallCount();
+
   ws.send(JSON.stringify({
     type: "heartbeat",
     at: new Date().toISOString(),
   }));
   await new Promise((resolve) => setTimeout(resolve, 50));
 
+  assertEquals(getUpdateCallCount(), updatesBefore);
   const status = getStatus();
-  assert(status.lastSeenAt);
-  assertEquals(status.lastSeenAt !== stale, true);
+  assertEquals(status.statusChangedAt, stale);
   assertEquals(status.connected, true);
   ws.close(1000, "done");
 });
@@ -892,9 +881,7 @@ it("coalesced heartbeat over WS performs no Postgres update", async () => {
     projection: { hostname: "host-1" },
   }, {
     connected: true,
-    daemonStatus: "online",
-    lastSeenAt: recentAt,
-    connectedAt: recentAt,
+    statusChangedAt: recentAt,
   });
   const tracking = createTrackingDaemonCell(serverId);
   tracking.cell.getSnapshot = async () => ({
@@ -953,9 +940,7 @@ it("WS close projects disconnected to Postgres", async () => {
     projection: { hostname: "host-1" },
   }, {
     connected: true,
-    daemonStatus: "online",
-    lastSeenAt: "2020-01-01T00:00:00.000Z",
-    connectedAt: "2020-01-01T00:00:00.000Z",
+    statusChangedAt: "2020-01-01T00:00:00.000Z",
   });
   const tracking = createTrackingDaemonCell(serverId);
   const app = new Hono();
@@ -1008,9 +993,7 @@ it("update-result over WS projects update summary to Postgres", async () => {
     },
   }, {
     connected: true,
-    daemonStatus: "online",
-    lastSeenAt: "2020-01-01T00:00:00.000Z",
-    connectedAt: "2020-01-01T00:00:00.000Z",
+    statusChangedAt: "2020-01-01T00:00:00.000Z",
   });
   const tracking = createTrackingDaemonCell(serverId);
   tracking.cell.handleInbound = async () => ({
@@ -1095,9 +1078,7 @@ it("hello over WS clears stale updating when agent matches trunk", async () => {
     },
   }, {
     connected: true,
-    daemonStatus: "online",
-    lastSeenAt: "2020-01-01T00:00:00.000Z",
-    connectedAt: "2020-01-01T00:00:00.000Z",
+    statusChangedAt: "2020-01-01T00:00:00.000Z",
   });
   const tracking = createTrackingDaemonCell(serverId);
   tracking.cell.getSnapshot = async () => ({

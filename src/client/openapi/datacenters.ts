@@ -1,8 +1,4 @@
-const errorBody = {
-  type: "object",
-  required: ["error"],
-  properties: { error: { type: "string" } },
-};
+import { clientErrorJson } from './shared.ts'
 
 export const datacenterSchemas = {
   DatacenterRow: {
@@ -134,15 +130,15 @@ export const datacenterPaths: Record<string, unknown> = {
         },
         "400": {
           description: "Invalid request",
-          content: { "application/json": { schema: errorBody } },
+          content: { "application/json": { schema: clientErrorJson } },
         },
         "401": {
           description: "Unauthorized",
-          content: { "application/json": { schema: errorBody } },
+          content: { "application/json": { schema: clientErrorJson } },
         },
         "403": {
           description: "Forbidden",
-          content: { "application/json": { schema: errorBody } },
+          content: { "application/json": { schema: clientErrorJson } },
         },
       },
     },
@@ -163,11 +159,11 @@ export const datacenterPaths: Record<string, unknown> = {
         },
         "401": {
           description: "Unauthorized",
-          content: { "application/json": { schema: errorBody } },
+          content: { "application/json": { schema: clientErrorJson } },
         },
         "403": {
           description: "Forbidden",
-          content: { "application/json": { schema: errorBody } },
+          content: { "application/json": { schema: clientErrorJson } },
         },
       },
     },
@@ -201,24 +197,24 @@ export const datacenterPaths: Record<string, unknown> = {
         },
         "400": {
           description: "Invalid request",
-          content: { "application/json": { schema: errorBody } },
+          content: { "application/json": { schema: clientErrorJson } },
         },
         "401": {
           description: "Unauthorized",
-          content: { "application/json": { schema: errorBody } },
+          content: { "application/json": { schema: clientErrorJson } },
         },
         "403": {
           description: "Forbidden",
-          content: { "application/json": { schema: errorBody } },
+          content: { "application/json": { schema: clientErrorJson } },
         },
         "404": {
           description: "A requested source or member server is not visible",
-          content: { "application/json": { schema: errorBody } },
+          content: { "application/json": { schema: clientErrorJson } },
         },
         "409": {
           description:
             "A requested member server already belongs to a datacenter",
-          content: { "application/json": { schema: errorBody } },
+          content: { "application/json": { schema: clientErrorJson } },
         },
       },
     },
@@ -247,15 +243,15 @@ export const datacenterPaths: Record<string, unknown> = {
         },
         "401": {
           description: "Unauthorized",
-          content: { "application/json": { schema: errorBody } },
+          content: { "application/json": { schema: clientErrorJson } },
         },
         "403": {
           description: "Forbidden",
-          content: { "application/json": { schema: errorBody } },
+          content: { "application/json": { schema: clientErrorJson } },
         },
         "404": {
           description: "Not found",
-          content: { "application/json": { schema: errorBody } },
+          content: { "application/json": { schema: clientErrorJson } },
         },
       },
     },
@@ -294,19 +290,19 @@ export const datacenterPaths: Record<string, unknown> = {
         },
         "400": {
           description: "Invalid request",
-          content: { "application/json": { schema: errorBody } },
+          content: { "application/json": { schema: clientErrorJson } },
         },
         "401": {
           description: "Unauthorized",
-          content: { "application/json": { schema: errorBody } },
+          content: { "application/json": { schema: clientErrorJson } },
         },
         "403": {
           description: "Forbidden",
-          content: { "application/json": { schema: errorBody } },
+          content: { "application/json": { schema: clientErrorJson } },
         },
         "404": {
           description: "Not found",
-          content: { "application/json": { schema: errorBody } },
+          content: { "application/json": { schema: clientErrorJson } },
         },
       },
     },
@@ -337,20 +333,20 @@ export const datacenterPaths: Record<string, unknown> = {
         },
         "401": {
           description: "Unauthorized",
-          content: { "application/json": { schema: errorBody } },
+          content: { "application/json": { schema: clientErrorJson } },
         },
         "403": {
           description: "Forbidden",
-          content: { "application/json": { schema: errorBody } },
+          content: { "application/json": { schema: clientErrorJson } },
         },
         "404": {
           description: "Not found",
-          content: { "application/json": { schema: errorBody } },
+          content: { "application/json": { schema: clientErrorJson } },
         },
         "409": {
           description:
             "`datacenter_has_networks` — remove or reassign scoped networks first. Datacenter-kind network CIDRs are what mesh gateways advertise as site routes.",
-          content: { "application/json": { schema: errorBody } },
+          content: { "application/json": { schema: clientErrorJson } },
         },
       },
     },

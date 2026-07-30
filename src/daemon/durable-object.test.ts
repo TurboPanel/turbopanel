@@ -23,7 +23,7 @@ import { createDurableObjectDaemonCellRegistry } from "./cell/do-registry.ts";
 import { TERMINAL_UPDATE_RETENTION_MS } from "../lib/update/constants.ts";
 import { generateDeliveryId, generateRequestId, DAEMON_CELL_PING, DAEMON_CELL_PONG } from "./cell/protocol.ts";
 
-const HEARTBEAT_COALESCE_MS = 60_000;
+const INBOUND_PROJECTION_COALESCE_MS = 60_000;
 
 // `hostname` here models stray pre-migration jsonb content — `hostname` is a
 // dedicated `server` column now and `buildMetadataPatch` never reads/writes it,
@@ -188,7 +188,7 @@ function createProjectionRecordingDb(
     projection: { hostname: "host-1" },
   };
   let hostname: string | null = null;
-  let machineId: string | null = null;
+  let machineKey: string | null = null;
   const columns = { ...buildDefaultDaemonStatus(), ...statusOverrides };
 
   const selectLimit = () => {
@@ -197,8 +197,9 @@ function createProjectionRecordingDb(
       daemon,
       metadata,
       hostname,
-      machineId,
-      ...columns,
+      machineKey,
+      connected: columns.connected,
+      statusChangedAt: columns.statusChangedAt,
     }]);
   };
 
@@ -220,24 +221,11 @@ function createProjectionRecordingDb(
           daemon = patch.daemon as ServerDaemonState;
         }
         if ("hostname" in patch) hostname = patch.hostname as string | null;
-        if ("machineId" in patch) {
-          machineId = patch.machineId as string | null;
+        if ("machineKey" in patch) {
+          machineKey = patch.machineKey as string | null;
         }
         if ("connected" in patch) {
           columns.connected = patch.connected as boolean;
-        }
-        if ("daemonStatus" in patch) {
-          columns.daemonStatus = patch
-            .daemonStatus as ServerDaemonStatus["daemonStatus"];
-        }
-        if ("lastSeenAt" in patch) {
-          columns.lastSeenAt = patch.lastSeenAt as string | null;
-        }
-        if ("connectedAt" in patch) {
-          columns.connectedAt = patch.connectedAt as string | null;
-        }
-        if ("disconnectedAt" in patch) {
-          columns.disconnectedAt = patch.disconnectedAt as string | null;
         }
         if ("statusChangedAt" in patch) {
           columns.statusChangedAt = patch.statusChangedAt as string | null;
@@ -280,14 +268,7 @@ function statusFromPatch(
   patch: Record<string, unknown> | undefined,
 ): Partial<ServerDaemonStatus> | undefined {
   if (!patch) return undefined;
-  const keys = [
-    "connected",
-    "daemonStatus",
-    "lastSeenAt",
-    "connectedAt",
-    "disconnectedAt",
-    "statusChangedAt",
-  ] as const;
+  const keys = ["connected", "statusChangedAt"] as const;
   if (!keys.some((key) => key in patch)) return undefined;
   const result: Partial<Record<string, unknown>> = {};
   for (const key of keys) {
@@ -434,7 +415,6 @@ describe("DaemonCellObject diagnostics", () => {
       getEndCallCount,
     } = createProjectionRecordingDb({
       connected: false,
-      daemonStatus: "offline",
     });
 
     setDaemonCellProjectionDbFactoryForTests(() => db);
@@ -800,7 +780,6 @@ describe("DaemonCellObject", () => {
     const serverId = "test-srv-proj-connect";
     const { db, updateCalls } = createProjectionRecordingDb({
       connected: false,
-      daemonStatus: "offline",
     });
     setDaemonCellProjectionDbFactoryForTests(() => db);
 
@@ -813,9 +792,7 @@ describe("DaemonCellObject", () => {
       );
       expect(connectedPatch).toBeDefined();
       const status = statusFromPatch(connectedPatch);
-      expect(status?.connectedAt).toEqual(expect.any(String));
-      expect(status?.statusChangedAt).toEqual(expect.any(String));
-      expect(status?.lastSeenAt).toEqual(expect.any(String));
+      expect(typeof status?.statusChangedAt).toEqual(expect.any(String));
     });
 
     ws.close(1000, "test done");
@@ -830,7 +807,6 @@ describe("DaemonCellObject", () => {
     };
     const { db, updateCalls } = createProjectionRecordingDb({
       connected: false,
-      daemonStatus: "offline",
     });
     setDaemonCellProjectionDbFactoryForTests(() => db);
 
@@ -857,9 +833,7 @@ describe("DaemonCellObject", () => {
     const serverId = "test-srv-proj-disconnect";
     const { db, updateCalls } = createProjectionRecordingDb({
       connected: true,
-      daemonStatus: "online",
-      connectedAt: new Date().toISOString(),
-      lastSeenAt: new Date().toISOString(),
+      statusChangedAt: new Date().toISOString(),
     });
     setDaemonCellProjectionDbFactoryForTests(() => db);
 
@@ -879,20 +853,27 @@ describe("DaemonCellObject", () => {
         statusFromPatch(patch)?.connected === false
       );
       expect(disconnectedPatch).toBeDefined();
-      expect(statusFromPatch(disconnectedPatch)?.disconnectedAt).toEqual(
-        expect.any(String),
-      );
+      expect(statusFromPatch(disconnectedPatch)?.connected).toBe(false);
+      expect(typeof statusFromPatch(disconnectedPatch)?.statusChangedAt)
+        .toEqual(expect.any(String));
     });
   });
 
-  it("debounces heartbeat projection writes to at most once per 60s", async () => {
-    const serverId = "test-srv-proj-heartbeat-debounce";
-    const staleAt = new Date(Date.now() - 61_000).toISOString();
+  it("projects agent change on heartbeat when commit changes", async () => {
+    const serverId = "test-srv-proj-heartbeat-agent";
+    const priorAgent = {
+      commit: "abc123",
+      buildId: "build-1",
+      channel: "trunk" as const,
+    };
+    const nextAgent = {
+      commit: "def456",
+      buildId: "build-2",
+      channel: "trunk" as const,
+    };
     const { db, updateCalls, setDaemonStatus } = createProjectionRecordingDb({
       connected: true,
-      daemonStatus: "online",
-      connectedAt: staleAt,
-      lastSeenAt: staleAt,
+      statusChangedAt: new Date().toISOString(),
     });
     setDaemonCellProjectionDbFactoryForTests(() => db);
 
@@ -903,32 +884,45 @@ describe("DaemonCellObject", () => {
       expect(updateCalls.length).toBeGreaterThan(0);
     });
 
-    setDaemonStatus({
-      connected: true,
-      daemonStatus: "online",
-      lastSeenAt: staleAt,
-    });
-
     const countBeforeHeartbeat = updateCalls.length;
 
     ws.send(JSON.stringify({
       type: "heartbeat",
-      at: new Date(Date.now() + 61_000).toISOString(),
+      at: new Date().toISOString(),
+      agent: priorAgent,
     }));
 
     await waitFor(() => {
       expect(updateCalls.length).toBeGreaterThan(countBeforeHeartbeat);
     });
 
+    setDaemonStatus({
+      connected: true,
+      statusChangedAt: new Date().toISOString(),
+    });
+
     const countAfterFirstHeartbeat = updateCalls.length;
 
     ws.send(JSON.stringify({
       type: "heartbeat",
-      at: new Date(Date.now() + 1000).toISOString(),
+      at: new Date(Date.now() + INBOUND_PROJECTION_COALESCE_MS + 1000)
+        .toISOString(),
+      agent: priorAgent,
     }));
 
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(updateCalls).toHaveLength(countAfterFirstHeartbeat);
+
+    ws.send(JSON.stringify({
+      type: "heartbeat",
+      at: new Date(Date.now() + INBOUND_PROJECTION_COALESCE_MS + 2000)
+        .toISOString(),
+      agent: nextAgent,
+    }));
+
+    await waitFor(() => {
+      expect(updateCalls.length).toBeGreaterThan(countAfterFirstHeartbeat);
+    });
 
     ws.close(1000, "test done");
   }, 10_000);
@@ -944,7 +938,6 @@ describe("DaemonCellObject", () => {
       setDaemonStatus,
     } = createProjectionRecordingDb({
       connected: false,
-      daemonStatus: "offline",
     });
 
     let factoryCalls = 0;
@@ -967,8 +960,7 @@ describe("DaemonCellObject", () => {
 
     setDaemonStatus({
       connected: true,
-      daemonStatus: "online",
-      lastSeenAt: recentAt,
+      statusChangedAt: recentAt,
     });
 
     ws.send(JSON.stringify({
@@ -989,7 +981,6 @@ describe("DaemonCellObject", () => {
     const serverId = "test-srv-proj-db-dispose";
     const { db, updateCalls, getEndCallCount } = createProjectionRecordingDb({
       connected: false,
-      daemonStatus: "offline",
     });
     setDaemonCellProjectionDbFactoryForTests(() => db);
 
@@ -1009,7 +1000,6 @@ describe("DaemonCellObject", () => {
     const recentAt = new Date().toISOString();
     const { db, updateCalls } = createProjectionRecordingDb({
       connected: false,
-      daemonStatus: "offline",
     });
 
     let factoryCalls = 0;
@@ -1038,19 +1028,10 @@ describe("DaemonCellObject", () => {
     ws.close(1000, "test done");
   }, 10_000);
 
-  it("heartbeat after debounce window opens and closes DB", async () => {
-    const serverId = "test-srv-heartbeat-debounce-db-lifecycle";
-    const staleAt = new Date(Date.now() - 61_000).toISOString();
-    const {
-      db,
-      updateCalls,
-      getEndCallCount,
-      setDaemonStatus,
-    } = createProjectionRecordingDb({
-      connected: true,
-      daemonStatus: "online",
-      connectedAt: staleAt,
-      lastSeenAt: staleAt,
+  it("heartbeat-only after coalesce window skips projection DB open", async () => {
+    const serverId = "test-srv-heartbeat-after-coalesce-skip-db";
+    const { db, updateCalls } = createProjectionRecordingDb({
+      connected: false,
     });
 
     let factoryCalls = 0;
@@ -1066,26 +1047,18 @@ describe("DaemonCellObject", () => {
       expect(updateCalls.length).toBeGreaterThan(0);
     });
 
-    setDaemonStatus({
-      connected: true,
-      daemonStatus: "online",
-      lastSeenAt: staleAt,
-    });
-
-    const factoryBeforeHeartbeat = factoryCalls;
-    const endBeforeHeartbeat = getEndCallCount();
+    const factoryAfterConnect = factoryCalls;
+    const updatesAfterConnect = updateCalls.length;
 
     ws.send(JSON.stringify({
       type: "heartbeat",
-      // Advance past HEARTBEAT_DEBOUNCE_MS — cell last_seen_at was dropped, so
-      // projection due is gated only on in-memory #lastProjectedAtMs.
-      at: new Date(Date.now() + 61_000).toISOString(),
+      at: new Date(Date.now() + INBOUND_PROJECTION_COALESCE_MS + 1000)
+        .toISOString(),
     }));
 
-    await waitFor(() => {
-      expect(factoryCalls).toBe(factoryBeforeHeartbeat + 1);
-      expect(getEndCallCount()).toBe(endBeforeHeartbeat + 1);
-    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(factoryCalls).toBe(factoryAfterConnect);
+    expect(updateCalls).toHaveLength(updatesAfterConnect);
 
     ws.close(1000, "test done");
   }, 10_000);
@@ -1095,9 +1068,7 @@ describe("DaemonCellObject", () => {
     const recentAt = new Date().toISOString();
     const { db, updateCalls } = createProjectionRecordingDb({
       connected: true,
-      daemonStatus: "online",
-      connectedAt: recentAt,
-      lastSeenAt: recentAt,
+      statusChangedAt: recentAt,
     });
 
     let factoryCalls = 0;
@@ -1131,9 +1102,7 @@ describe("DaemonCellObject", () => {
       getEndCallCount,
     } = createProjectionRecordingDb({
       connected: true,
-      daemonStatus: "online",
-      connectedAt: new Date().toISOString(),
-      lastSeenAt: new Date().toISOString(),
+      statusChangedAt: new Date().toISOString(),
     });
 
     let factoryCalls = 0;
@@ -1460,11 +1429,10 @@ describe("DaemonCellObject", () => {
     expect(stubWithHint).toBeDefined();
   });
 
-  it("hello message updates lastSeenAt on the snapshot (from projection)", async () => {
+  it("hello message updates lastSeenAt on the snapshot (runtime projection marker)", async () => {
     const serverId = "test-srv-hello";
     const { db, updateCalls, getStatus } = createProjectionRecordingDb({
       connected: false,
-      daemonStatus: "offline",
     });
     setDaemonCellProjectionDbFactoryForTests(() => db);
 
@@ -1474,6 +1442,8 @@ describe("DaemonCellObject", () => {
     await waitFor(() => {
       expect(updateCalls.length).toBeGreaterThan(0);
     });
+
+    const connectedStatusChangedAt = getStatus().statusChangedAt;
 
     ws.send(JSON.stringify({
       type: "hello",
@@ -1482,8 +1452,7 @@ describe("DaemonCellObject", () => {
     }));
 
     await waitFor(async () => {
-      const status = getStatus();
-      expect(status.lastSeenAt).toBeTruthy();
+      expect(getStatus().statusChangedAt).toBe(connectedStatusChangedAt);
       const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
         method: "GET",
       });
@@ -1491,7 +1460,7 @@ describe("DaemonCellObject", () => {
         lastSeenAt?: string;
         agent?: { commit: string; buildId: string };
       };
-      expect(snapshot.lastSeenAt).toBe(status.lastSeenAt);
+      expect(snapshot.lastSeenAt).toBeTruthy();
       expect(snapshot.agent?.commit).toBe("abc");
       expect(snapshot.agent?.buildId).toBe("1");
     });
@@ -1499,11 +1468,10 @@ describe("DaemonCellObject", () => {
     ws.close(1000, "test done");
   });
 
-  it("heartbeat without agent does not update lastSeenAt on the snapshot (from projection)", async () => {
+  it("heartbeat without agent does not update Postgres status or snapshot lastSeenAt", async () => {
     const serverId = "test-srv-heartbeat-no-agent";
     const { db, updateCalls, getStatus } = createProjectionRecordingDb({
       connected: false,
-      daemonStatus: "offline",
     });
     setDaemonCellProjectionDbFactoryForTests(() => db);
 
@@ -1512,9 +1480,9 @@ describe("DaemonCellObject", () => {
 
     await waitFor(() => {
       expect(updateCalls.length).toBeGreaterThan(0);
-      expect(getStatus().lastSeenAt).toBeTruthy();
+      expect(getStatus().statusChangedAt).toBeTruthy();
     });
-    const connectedLastSeen = getStatus().lastSeenAt!;
+    const connectedStatusChangedAt = getStatus().statusChangedAt!;
 
     await new Promise((resolve) => setTimeout(resolve, 25));
 
@@ -1531,8 +1499,8 @@ describe("DaemonCellObject", () => {
     const snapshot = await snapshotResponse.json() as {
       lastSeenAt?: string;
     };
-    expect(snapshot.lastSeenAt).toBe(connectedLastSeen);
-    expect(getStatus().lastSeenAt).toBe(connectedLastSeen);
+    expect(getStatus().statusChangedAt).toBe(connectedStatusChangedAt);
+    expect(snapshot.lastSeenAt).toBeUndefined();
 
     ws.close(1000, "test done");
   });
@@ -1575,11 +1543,10 @@ describe("DaemonCellObject", () => {
     });
   });
 
-  it("websocket close advances lastSeenAt on the snapshot (from projection)", async () => {
+  it("websocket close marks Postgres offline and snapshot disconnected", async () => {
     const serverId = "test-srv-ws-last-seen";
     const { db, updateCalls, getStatus } = createProjectionRecordingDb({
       connected: false,
-      daemonStatus: "offline",
     });
     setDaemonCellProjectionDbFactoryForTests(() => db);
 
@@ -1589,19 +1556,20 @@ describe("DaemonCellObject", () => {
     await waitFor(() => {
       expect(updateCalls.length).toBeGreaterThan(0);
       expect(getStatus().connected).toBe(true);
-      expect(getStatus().lastSeenAt).toBeTruthy();
+      expect(getStatus().statusChangedAt).toBeTruthy();
     });
-    const connectedLastSeenMs = Date.parse(getStatus().lastSeenAt!);
-    expect(Number.isNaN(connectedLastSeenMs)).toBe(false);
+    const connectedStatusChangedAt = getStatus().statusChangedAt!;
 
     await new Promise((resolve) => setTimeout(resolve, 25));
 
     ws.close(1000, "test done");
     await waitFor(async () => {
       expect(getStatus().connected).toBe(false);
-      expect(getStatus().lastSeenAt).toBeTruthy();
-      const disconnectedLastSeenMs = Date.parse(getStatus().lastSeenAt!);
-      expect(disconnectedLastSeenMs).toBeGreaterThanOrEqual(connectedLastSeenMs);
+      expect(getStatus().statusChangedAt).toBeTruthy();
+      expect(
+        Date.parse(getStatus().statusChangedAt!) >=
+          Date.parse(connectedStatusChangedAt),
+      ).toBe(true);
 
       const snapshotResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
         method: "GET",
@@ -1611,7 +1579,6 @@ describe("DaemonCellObject", () => {
         lastSeenAt?: string;
       };
       expect(snapshot.connected).toBe(false);
-      expect(snapshot.lastSeenAt).toBe(getStatus().lastSeenAt);
     });
   });
 
@@ -1881,9 +1848,7 @@ describe("DaemonCellObject", () => {
     const serverId = "test-srv-alarm-stale";
     const { db, updateCalls } = createProjectionRecordingDb({
       connected: true,
-      daemonStatus: "online",
-      connectedAt: new Date().toISOString(),
-      lastSeenAt: new Date().toISOString(),
+      statusChangedAt: new Date().toISOString(),
     });
     setDaemonCellProjectionDbFactoryForTests(() => db);
 
@@ -2540,9 +2505,7 @@ describe("command-dispatch correlation", () => {
     const staleLastSeen = new Date(Date.now() - 120_000).toISOString();
     const { db, updateCalls } = createProjectionRecordingDb({
       connected: true,
-      daemonStatus: "online",
-      connectedAt: staleLastSeen,
-      lastSeenAt: staleLastSeen,
+      statusChangedAt: staleLastSeen,
     });
 
     let factoryCalls = 0;
@@ -2608,9 +2571,7 @@ describe("command-dispatch correlation", () => {
       const staleLastSeen = new Date(Date.now() - 120_000).toISOString();
       const { db, updateCalls } = createProjectionRecordingDb({
         connected: true,
-        daemonStatus: "online",
-        connectedAt: staleLastSeen,
-        lastSeenAt: staleLastSeen,
+        statusChangedAt: staleLastSeen,
       });
 
       let factoryCalls = 0;

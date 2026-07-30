@@ -21,7 +21,7 @@ export type UpdateProjection = {
 /** sparse Postgres projection of daemon identity (never full resource graph). */
 export type ServerDaemonProjection = {
   hostname?: string;
-  machineId?: string;
+  machineKey?: string;
   remoteAddress?: string;
   keyId?: string;
   agent?: {
@@ -36,10 +36,8 @@ export type ServerDaemonProjection = {
 /** Fleet liveness — stored on dedicated `server` columns, not `server.daemon`. */
 export type ServerDaemonStatus = {
   connected: boolean;
+  /** Derived from `connected` + `statusChangedAt` — never stored. */
   daemonStatus: "online" | "offline" | "unknown" | null;
-  lastSeenAt: string | null;
-  connectedAt: string | null;
-  disconnectedAt: string | null;
   statusChangedAt: string | null;
 };
 
@@ -52,10 +50,6 @@ export type ServerDaemonState = {
 /** Column row shape used by {@link mapServerDaemonStatusFromColumns}. */
 export type ServerDaemonStatusColumns = {
   connected: boolean | null | undefined;
-  daemonStatus: string | null | undefined;
-  lastSeenAt: string | null | undefined;
-  connectedAt: string | null | undefined;
-  disconnectedAt: string | null | undefined;
   statusChangedAt: string | null | undefined;
 };
 
@@ -76,12 +70,6 @@ function isPublicJwk(value: unknown): value is JsonWebKey {
   const jwk = value as JsonWebKey;
   return isNonEmptyString(jwk.kty) && isNonEmptyString(jwk.crv) &&
     isNonEmptyString(jwk.x);
-}
-
-function isDaemonStatusValue(
-  value: unknown,
-): value is NonNullable<ServerDaemonStatus["daemonStatus"]> {
-  return value === "online" || value === "offline" || value === "unknown";
 }
 
 const UPDATE_PROJECTION_STATUSES = new Set<UpdateProjection["status"]>([
@@ -144,8 +132,8 @@ function parseServerDaemonProjection(
     hostname: isNonEmptyString(projection.hostname)
       ? projection.hostname
       : undefined,
-    machineId: isNonEmptyString(projection.machineId)
-      ? projection.machineId
+    machineKey: isNonEmptyString(projection.machineKey)
+      ? projection.machineKey
       : undefined,
     remoteAddress: isNonEmptyString(projection.remoteAddress)
       ? projection.remoteAddress
@@ -157,7 +145,7 @@ function parseServerDaemonProjection(
 
   if (
     parsed.hostname === undefined &&
-    parsed.machineId === undefined &&
+    parsed.machineKey === undefined &&
     parsed.remoteAddress === undefined &&
     parsed.keyId === undefined &&
     parsed.agent === undefined &&
@@ -202,9 +190,6 @@ export function buildDefaultDaemonStatus(): ServerDaemonStatus {
   return {
     connected: false,
     daemonStatus: "unknown",
-    lastSeenAt: null,
-    connectedAt: null,
-    disconnectedAt: null,
     statusChangedAt: null,
   };
 }
@@ -213,16 +198,16 @@ export function buildDefaultDaemonStatus(): ServerDaemonStatus {
 export function mapServerDaemonStatusFromColumns(
   columns: ServerDaemonStatusColumns,
 ): ServerDaemonStatus {
-  const daemonStatus = isDaemonStatusValue(columns.daemonStatus)
-    ? columns.daemonStatus
-    : "unknown";
+  const statusChangedAt = columns.statusChangedAt ?? null;
+  const connected = columns.connected === true;
+  let daemonStatus: ServerDaemonStatus["daemonStatus"] = "unknown";
+  if (statusChangedAt != null && String(statusChangedAt).trim() !== "") {
+    daemonStatus = connected ? "online" : "offline";
+  }
   return {
-    connected: columns.connected === true,
+    connected,
     daemonStatus,
-    lastSeenAt: columns.lastSeenAt ?? null,
-    connectedAt: columns.connectedAt ?? null,
-    disconnectedAt: columns.disconnectedAt ?? null,
-    statusChangedAt: columns.statusChangedAt ?? null,
+    statusChangedAt,
   };
 }
 

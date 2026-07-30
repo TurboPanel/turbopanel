@@ -49,13 +49,33 @@ The **primary** write path is the authenticated `POST /api/daemon/v1/metrics` HT
 | Slot | Content |
 |---|---|
 | `indexes[0]` / `index1` | Authenticated `serverId` UUID only — never org/account/hostname/composite/metric/timestamp |
-| `double1..double20` | `HOST_METRIC_KEYS` order (`cpuUsagePercent` … `uptimeSeconds`) |
-| `blob1` | event type `"host"` |
+| `double1..double20` | `HOST_METRIC_KEYS` order (`cpuUsagePercent` … `uptimeSeconds`) — host rows (`blob1 = "host"`) only |
+| `blob1` | event type discriminator — `"host"` (host-metrics sample) or `"status"` (connection-status transition; see below) |
 | `blob2` | schema version (string) |
-| `blob3`..`blob6` | daemonVersion, operatingSystem, architecture, kernelRelease |
-| `blob7`..`blob20` | reserved empty strings until schema v2 |
+| `blob3`..`blob6` | host rows only: daemonVersion, operatingSystem, architecture, kernelRelease |
+| `blob7`..`blob20` | reserved empty strings on host rows; on status rows `blob7` carries the transition reason (rest stay reserved) |
 
 **Missing metrics:** AE doubles have no null. Missing values are stored as `AE_MISSING_METRIC_SENTINEL` (`-1e308`) — never coerced to `0`. All host metrics are ≥ 0, so the sentinel cannot collide. Query aggregates exclude it via `if(doubleN = sentinel, 0, …)` around the documented `_sample_interval`-weighted average (`SUM(_sample_interval * doubleN) / SUM(_sample_interval)`). On the **AE SQL** path, compare against `-pow(10, 308)` (`aeMissingMetricSentinelSql()`) — AE docs do not list scientific-notation literals or `NULLIF`, and embedding `-1e308` / `NULLIF` fails chart queries with 503. Local vitest does not bind AE (unsupported in the local runner); unit tests use fakes only.
+
+#### Status event stream (`blob1 = "status"`)
+
+Every genuine `connected` flip on the `server` row (never a heartbeat/identity/agent-only touch) also fires a fire-and-forget **status event** into the same AE dataset / ClickHouse table as host samples — one row per transition, discriminated from host rows by `blob1`. Source: `emitServerStatusEvent` (`src/daemon/metrics/status-events.ts`), called from `projectServerDaemon` (`src/daemon/cell/postgres-projection.ts`) on every `existingStatus.connected !== nextStatus.connected` write, and registered per-runtime (request isolate, DO isolate, cron-only offline-sweep isolate, Deno process) via `setServerStatusEventSink` / `getServerStatusEventSink` — there is no shared request context across those four runtimes.
+
+**Slot layout for `blob1 = "status"` rows** (`field-map.ts`; the host reserved-blob count is unchanged so existing host shape tests stay green):
+
+| Slot | Content |
+|---|---|
+| `blob1` | `AE_STATUS_EVENT_TYPE` = `"status"` |
+| `blob2` | schema version (string) — same slot as host rows |
+| `blob7` | `AE_BLOB_STATUS_REASON_INDEX` — `ServerStatusTransitionReason`: `"connect"` \| `"disconnect"` \| `"sweep_stale"` \| `"self_heal"` (closed enum, `src/daemon/metrics/types.ts`) |
+| `double1` | `AE_DOUBLE_STATUS_CONNECTED_INDEX` — `1` (connected) or `0` (disconnected) |
+| all other `double`/`blob` slots | `AE_MISSING_METRIC_SENTINEL` / empty string — a status row carries no host metrics |
+
+AE stamps its own ingestion `timestamp` for status rows (`event.at` is not sent — the same host-vs-ClickHouse asymmetry host samples already have); ClickHouse stores `event.at` directly as `timestamp`, batched onto the same `#pendingRows` buffer/flush timer as host samples (same table, same TTL — durability window is ≤ the batch max-age unless a query force-flushes; status history is disposable like host metrics).
+
+**Query path (AE + ClickHouse parity):** `queryStatusHistory` (`ServerMetricsStore`) resolves `{ from, to }` into two SQL reads — `buildStatusPriorStateSql` / `buildStatusPriorStateClickHouseSql` (last known `connected` strictly before `from`, for the leading span) and `buildStatusEventsSql` / `buildStatusEventsClickHouseSql` (`blob1 = 'status'` transitions inside the range, capped at `MAX_STATUS_EVENTS`, `resolveTruncatedStatusEvents` marks `truncated: true` + a `knownUntilMs` when the cap is hit). Both backends hand their rows to the shared, backend-neutral `computeStatusUptime` (`src/daemon/metrics/query/uptime.ts`) so AE and ClickHouse produce identical `uptimeSeconds` / `downtimeSeconds` / `unknownSeconds` / `uptimePercent` for the same range — the same parity-seam pattern as `finalizeHostSeriesResult` / `computeSeriesGapCount` for host series. A `null` prior state (nothing before `from`) or the truncated suffix after `knownUntilMs` accrues to `unknownSeconds`, never uptime/downtime. Exposed via `GET /api/client/v1/servers/:id/metrics/connection` (`src/client/servers/metrics-routes.ts`), cached the same way as `/metrics/series` (see below).
+
+**History-only — never authoritative for liveness.** This event stream (and everything derived from it: uptime/downtime charts, the `/metrics/connection` endpoint) exists purely for historical reporting. It is asynchronous, best-effort, sampled/disposable like all server metrics, and **must never be read to determine whether a server is currently online**. The Postgres `server.connected` / `server.status_changed_at` columns (via `src/daemon/cell/server-status.ts`) are the sole source of truth for current liveness — see `src/lib/db/AGENTS.md` (`server` table) and `src/daemon/cell/AGENTS.md` (Postgres status read model). Do not add a code path that gates any online/offline decision on AE/ClickHouse status history.
 
 #### Server metrics (ClickHouse — self-hosted Deno)
 
@@ -89,6 +109,7 @@ Endpoints (`src/client/servers/metrics-routes.ts`):
 |---|---|---|
 | `GET` | `/api/client/v1/servers/:id/metrics/series` | session + `assertCanReadOr403('server', id)` |
 | `GET` | `/api/client/v1/servers/:id/metrics/summary` | session + `assertCanReadOr403('server', id)` |
+| `GET` | `/api/client/v1/servers/:id/metrics/connection` | session + `assertCanReadOr403('server', id)`; status-event history (uptime/downtime) — see "Status event stream" above |
 
 Never authorize by bare UUID possession — session middleware + resource read grant required.
 

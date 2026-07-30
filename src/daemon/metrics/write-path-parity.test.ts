@@ -8,7 +8,10 @@ import type { AuthenticatedHostMetricsSample } from "./types.ts";
 import {
   AE_MISSING_METRIC_SENTINEL,
   buildAnalyticsEngineDataPoint,
+  buildStatusAnalyticsEngineDataPoint,
+  doubleColumn,
   doubleColumnForMetric,
+  blobColumn,
 } from "./analytics-engine/field-map.ts";
 import {
   buildHostSeriesClickHouseSql,
@@ -16,7 +19,10 @@ import {
   clickhouseAvgExpression,
   weightedAvgExpression,
 } from "./analytics-engine/sql-api.ts";
-import { buildHostMetricsRow } from "./clickhouse/store.ts";
+import {
+  buildHostMetricsRow,
+  buildStatusEventRow,
+} from "./clickhouse/store.ts";
 
 const SERVER_ID = "11111111-2222-4333-8444-555555555555";
 
@@ -62,6 +68,25 @@ it("buildHostMetricsRow matches buildAnalyticsEngineDataPoint for the same sampl
   }
   for (let i = 0; i < aePoint.blobs.length; i++) {
     assertEquals(chRow[`blob${i + 1}`], aePoint.blobs[i]);
+  }
+});
+
+it("buildStatusEventRow matches buildStatusAnalyticsEngineDataPoint slot-for-slot", () => {
+  const event = {
+    serverId: SERVER_ID,
+    connected: false,
+    reason: "sweep_stale" as const,
+    at: "2026-01-01T00:00:00.000Z",
+  };
+  const aePoint = buildStatusAnalyticsEngineDataPoint(event);
+  const chRow = buildStatusEventRow(event);
+
+  assertEquals(chRow.index1, aePoint.indexes[0]);
+  for (let i = 0; i < aePoint.doubles.length; i++) {
+    assertEquals(chRow[doubleColumn(i)], aePoint.doubles[i]);
+  }
+  for (let i = 0; i < aePoint.blobs.length; i++) {
+    assertEquals(chRow[blobColumn(i)], aePoint.blobs[i]);
   }
 });
 

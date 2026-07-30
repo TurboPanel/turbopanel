@@ -1,13 +1,14 @@
 import type { Context } from 'hono'
-import { getDaemonCellRegistry } from '../../db.ts'
+import { getDaemonCellRegistry, type Db } from '../../db.ts'
 import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
 import { isNoopCommandQueue } from '../../lib/commands/noop-command-queue.ts'
 import { getCommandQueue, type CommandQueue } from '../../lib/commands/queue.ts'
+import type { CommandType } from '../../lib/commands/types.ts'
 import {
+  createCommandRecord,
   transitionCommand,
   type CommandRecord,
 } from '../../lib/db/command-records.ts'
-import type { Db } from '../../db.ts'
 
 export function assertDispatchInfrastructure(c: Context): CommandQueue | Response {
   const registry = getDaemonCellRegistry(c)
@@ -40,4 +41,48 @@ export async function enqueueCommandOrCompensate(
     })
     return c.json({ error: 'Command queue unavailable' }, 503)
   }
+}
+
+/** Create a user-actor command row, enqueue it, and return the standard queued response. */
+export async function createAndEnqueueUserCommand(
+  c: Context,
+  db: Db,
+  params: Readonly<{
+    serverId: string
+    actorId: string
+    type: CommandType
+    payload: unknown
+    ttlMs: number
+  }>,
+): Promise<Response> {
+  const commandQueue = assertDispatchInfrastructure(c)
+  if (commandQueue instanceof Response) return commandQueue
+
+  const expiresAt = new Date(Date.now() + params.ttlMs).toISOString()
+  const record = await createCommandRecord(db, {
+    serverId: params.serverId,
+    actorType: 'user',
+    actorId: params.actorId,
+    type: params.type,
+    payload: params.payload,
+    expiresAt,
+  })
+
+  const envelope: CommandEnvelope = {
+    commandId: record.id,
+    serverId: params.serverId,
+    type: params.type,
+    attempt: 1,
+    queuedAt: record.queuedAt ?? record.createdAt,
+  }
+  const enqueueError = await enqueueCommandOrCompensate(
+    db,
+    commandQueue,
+    record,
+    envelope,
+    c,
+  )
+  if (enqueueError) return enqueueError
+
+  return c.json({ ok: true, commandId: record.id, status: 'queued' })
 }

@@ -21,7 +21,7 @@ export function buildEnrollmentPayload(params: {
   challengeId: string;
   nonce: string;
   licenseId: string;
-  machineId: string;
+  machineKey: string;
   hostname: string;
   publicKeyFingerprint: string;
 }): string {
@@ -30,7 +30,7 @@ export function buildEnrollmentPayload(params: {
     params.challengeId,
     params.nonce,
     params.licenseId,
-    params.machineId,
+    params.machineKey,
     params.hostname,
     params.publicKeyFingerprint,
   ].join("\n");
@@ -41,7 +41,7 @@ export function buildAuthPayload(params: {
   nonce: string;
   serverId: string;
   keyId: string;
-  machineId: string;
+  machineKey: string;
   hostname: string;
 }): string {
   return [
@@ -50,7 +50,7 @@ export function buildAuthPayload(params: {
     params.nonce,
     params.serverId,
     params.keyId,
-    params.machineId,
+    params.machineKey,
     params.hostname,
   ].join("\n");
 }

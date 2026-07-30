@@ -85,13 +85,19 @@ export const serverSchemas = {
         type: ['string', 'null'],
         format: 'date-time',
         description:
-          'Last inbound WebSocket activity from the promoted `server.last_inbound_at` column. Servers with no activity for 60s are treated as offline. Null when the daemon has never connected.',
+          'Last inbound WebSocket activity from a live cell snapshot (admin/diagnostics only). Null on the default Postgres status path — there is no `last_inbound_at` column.',
       },
       connectedAt: {
         type: ['string', 'null'],
         format: 'date-time',
         description:
-          'Time the current daemon WebSocket connection was established (promoted `server.connected_at`; resets on reconnect). Null when offline.',
+          'Last status transition (`server.status_changed_at`) while connected. Null when offline. There is no `connected_at` column.',
+      },
+      statusChangedAt: {
+        type: ['string', 'null'],
+        format: 'date-time',
+        description:
+          'Last online/offline transition (`server.status_changed_at`). Set for both connected and offline rows.',
       },
       geo: {
         type: ['object', 'null'],
@@ -220,7 +226,13 @@ export const serverSchemas = {
   },
   ServerStatusResponse: {
     type: 'object',
-    required: ['serverId', 'connected', 'daemonStatus', 'lastSeenAt', 'connectedAt'],
+    required: [
+      'serverId',
+      'connected',
+      'daemonStatus',
+      'connectedAt',
+      'statusChangedAt',
+    ],
     description:
       'Postgres-backed status row for `GET /servers/{id}/status` (`ServerStatusRecord`).',
     properties: {
@@ -229,10 +241,10 @@ export const serverSchemas = {
       daemonStatus: {
         type: ['string', 'null'],
         enum: ['online', 'offline', 'unknown', null],
+        description:
+          'Derived from `connected` + `statusChangedAt` — not stored.',
       },
-      lastSeenAt: { type: ['string', 'null'], format: 'date-time' },
       connectedAt: { type: ['string', 'null'], format: 'date-time' },
-      disconnectedAt: { type: ['string', 'null'], format: 'date-time' },
       statusChangedAt: { type: ['string', 'null'], format: 'date-time' },
       hostname: { type: ['string', 'null'] },
       remoteAddress: { type: ['string', 'null'] },
@@ -420,7 +432,7 @@ export const serverPaths: Record<string, unknown> = {
       tags: ['Servers'],
       summary: 'Get Postgres-backed connection status for a visible server',
       description:
-        'Returns `ServerStatusRecord` (connected, daemonStatus, lastSeenAt, connectedAt, …). Prefer this over the admin/debug cell snapshot.',
+        'Returns `ServerStatusRecord` (connected, daemonStatus, connectedAt, statusChangedAt, …). Prefer this over the admin/debug cell snapshot.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {

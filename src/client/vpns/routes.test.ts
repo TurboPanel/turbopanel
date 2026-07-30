@@ -1143,26 +1143,27 @@ test('POST /vpns/:id/apply emits site CIDR only for primary remote gateway', asy
     displayName: 'West LAN',
   })
 
+  const statusChangedAt = new Date().toISOString()
   const [memberSrv] = await db.insert(server).values({
     organizationId: seeded.organizationId,
     datacenterId: dcWest!.id,
     displayName: 'Member',
     connected: true,
-    daemonStatus: 'online',
+    statusChangedAt,
   }).returning({ id: server.id })
   const [gwPrimary] = await db.insert(server).values({
     organizationId: seeded.organizationId,
     datacenterId: dcEast!.id,
     displayName: 'GwPrimary',
     connected: true,
-    daemonStatus: 'online',
+    statusChangedAt,
   }).returning({ id: server.id })
   const [gwStandby] = await db.insert(server).values({
     organizationId: seeded.organizationId,
     datacenterId: dcEast!.id,
     displayName: 'GwStandby',
     connected: true,
-    daemonStatus: 'online',
+    statusChangedAt,
   }).returning({ id: server.id })
 
   const [ipMember] = await db.insert(ip).values({
@@ -1292,7 +1293,7 @@ test('POST /vpns/:id/apply returns 422 for gateway without datacenter or CIDR', 
     organizationId: seeded.organizationId,
     displayName: 'NoDcGw',
     connected: true,
-    daemonStatus: 'online',
+    statusChangedAt: new Date().toISOString(),
   }).returning({ id: server.id })
   const [tunnel] = await db.insert(ip).values({
     organizationId: seeded.organizationId,

@@ -97,7 +97,7 @@ export const organization = pgTable(
 )
 /**
  * Organization TLS certificate library (upload / Let's Encrypt / self-signed).
- * Private keys are sealed `tpsecret` envelopes — never returned on client GET.
+ * Private keys are sealed `enc` envelopes — never returned on client GET.
  * Hosting pins via `hosting.tls_id`; unset uses Caddy `tls internal` (self-signed).
  */
 export const tls = pgTable(
@@ -119,7 +119,7 @@ export const tls = pgTable(
     source: text().notNull(),
     /** Leaf + intermediate chain PEM; null while LE `pending`. */
     certificatePem: text('certificate_pem'),
-    /** Sealed `tpsecret` private key PEM; null while LE `pending` before keygen. */
+    /** Sealed `enc` private key PEM; null while LE `pending` before keygen. */
     privateKeyPem: text('private_key_pem'),
     /** `ready` | `pending` | `expired` | `failed` | `revoked` */
     status: text().default('ready').notNull(),
@@ -290,25 +290,22 @@ export const server = pgTable(
     datacenterId: uuid('datacenter_id'),
     displayName: varchar('display_name', { length: 255 }),
     hostname: varchar('hostname', { length: 255 }),
-    machineId: varchar('machine_id', { length: 255 }),
+    /**
+     * Derived HMAC of the host machine-id (not the raw value, not a sealed
+     * secret). Deterministic so it can be equality-matched and echoed into
+     * signed enroll/auth payloads.
+     */
+    machineKey: text('machine_key'),
+    /**
+     * Fleet liveness flag. Tri-state `online|offline|unknown` is derived from
+     * `connected` + `status_changed_at` (never stored).
+     */
     connected: boolean().default(false).notNull(),
-    /** `online` | `offline` | `unknown` — projected fleet liveness. */
-    daemonStatus: text('daemon_status').default('unknown').notNull(),
-    lastSeenAt: timestamp('last_seen_at', {
-      precision: 3,
-      withTimezone: true,
-      mode: 'string',
-    }),
-    connectedAt: timestamp('connected_at', {
-      precision: 3,
-      withTimezone: true,
-      mode: 'string',
-    }),
-    disconnectedAt: timestamp('disconnected_at', {
-      precision: 3,
-      withTimezone: true,
-      mode: 'string',
-    }),
+    /**
+     * Last status transition (`connected` flip). Feeds derived `connectedAt`
+     * (when connected) / `offlineAt` (when not). `online|offline|unknown` is
+     * derived, never stored.
+     */
     statusChangedAt: timestamp('status_changed_at', {
       precision: 3,
       withTimezone: true,
@@ -328,18 +325,17 @@ export const server = pgTable(
       'btree',
       table.datacenterId.asc().nullsLast().op('uuid_ops')
     ),
-    index('idx_server_machine_id').using(
+    index('idx_server_machine_key').using(
       'btree',
-      table.machineId.asc().nullsLast().op('text_ops')
+      table.machineKey.asc().nullsLast().op('text_ops')
     ),
     index('idx_server_hostname').using(
       'btree',
       table.hostname.asc().nullsLast().op('text_ops')
     ),
-    index('idx_server_daemon_status').using(
-      'btree',
-      table.daemonStatus.asc().nullsLast().op('text_ops')
-    ),
+    index('idx_server_connected')
+      .on(table.id)
+      .where(sql`${table.connected}`),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -350,10 +346,6 @@ export const server = pgTable(
       foreignColumns: [datacenter.id],
       name: 'server_datacenter_id_datacenter_id_fk',
     }).onDelete('set null'),
-    check(
-      'server_daemon_status_check',
-      sql`${table.daemonStatus} IN ('online', 'offline', 'unknown')`
-    ),
   ]
 )
 /**
@@ -681,7 +673,7 @@ export const peer = pgTable(
     publicKey: text('public_key'),
     listenPort: integer('listen_port'),
     endpoint: varchar({ length: 255 }),
-    /** Sealed `tpsecret` envelope — write-only, same handling as `principal.password`. */
+    /** Sealed `enc` envelope — write-only, same handling as `principal.password`. */
     presharedKey: text('preshared_key'),
     metadata: jsonb(),
     options: jsonb(),
@@ -1047,11 +1039,14 @@ export const service = pgTable(
     displayName: varchar('display_name', { length: 255 }),
     description: varchar('description', { length: 255 }),
     /**
-     * Compose service key — preferred over displayName for reconcile/deploy matching.
-     * Unique per environment when non-null (`uniq_service_environment_compose_name`);
+     * Compose service key — derived from the compose document (project base +
+     * environment overlay). Written only by reconcile (`reconcileServicesFromCompose`),
+     * managed container allocation, and daemon-report container reconcile
+     * (`ensureServicesForReportedContainers`) — never by a client request.
+     * Unique per environment (`uniq_service_environment_compose_name`);
      * displayName itself is not unique and must not be assumed so.
      */
-    composeServiceName: varchar('compose_service_name', { length: 255 }),
+    composeServiceName: varchar('compose_service_name', { length: 255 }).notNull(),
     metadata: jsonb(),
     options: jsonb(),
   },
@@ -1060,10 +1055,11 @@ export const service = pgTable(
       'btree',
       table.environmentId.asc().nullsLast().op('uuid_ops')
     ),
-    /** Partial unique: multiple NULL compose names allowed; non-null must be unique per environment. */
-    uniqueIndex('uniq_service_environment_compose_name')
-      .on(table.environmentId, table.composeServiceName)
-      .where(sql`${table.composeServiceName} IS NOT NULL`),
+    /** Unique per environment. */
+    uniqueIndex('uniq_service_environment_compose_name').on(
+      table.environmentId,
+      table.composeServiceName,
+    ),
     foreignKey({
       columns: [table.environmentId],
       foreignColumns: [environment.id],
@@ -1232,8 +1228,8 @@ export const principal = pgTable(
      */
     username: varchar({ length: 255 }).notNull(),
     /**
-     * Write-only credential. Stored as a `tpsecret.v1…` envelope (instance
-     * at-rest seal). Never returned on GET; delivery re-seals to `tpdaemon`
+     * Write-only credential. Stored as an `enc.<keyVersion>.…` envelope (instance
+     * at-rest seal). Never returned on GET; delivery re-seals to `denc`
      * for the target daemon.
      */
     password: text(),
@@ -1343,7 +1339,7 @@ export const storage = pgTable(
     sourcePath: text('source_path'),
     destinationPath: text('destination_path'),
     principalId: uuid('principal_id'),
-    /** Sealed file content (`tpsecret` or `tpdaemon`) for `kind=file` entries. */
+    /** Sealed file content (`enc` or `denc`) for `kind=file` entries. */
     contentEnvelope: text('content_envelope'),
     metadata: jsonb(),
     options: jsonb(),

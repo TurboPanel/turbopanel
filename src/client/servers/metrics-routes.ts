@@ -26,7 +26,24 @@ import {
 import type {
   ServerMetricsStore,
   MetricsBackendKind,
+  StatusHistoryResult,
 } from '../../daemon/metrics/types.ts'
+
+type ConnectionHistoryChartResponse = {
+  ok: true
+  serverId: string
+  from: string
+  to: string
+  backend: MetricsBackendKind
+  available: boolean
+  initialConnected: boolean | null
+  uptimeSeconds: number
+  downtimeSeconds: number
+  unknownSeconds: number
+  uptimePercent: number | null
+  truncated: boolean
+  events: StatusHistoryResult['events']
+}
 
 function resolveStoreBackendKind(
   store: ServerMetricsStore | undefined,
@@ -277,6 +294,105 @@ export function registerServerMetricsRoutes(
       resolutionSeconds: summaryResolutionSeconds,
     })
     await cache.set(cacheKey, payload, ttlSeconds)
+    return c.json(payload)
+  })
+
+  router.get('/servers/:id/metrics/connection', async (c) => {
+    const serverId = c.req.param('id')
+    const denied = await authorizeServerRead(c, serverId)
+    if (denied) return denied
+
+    const fromParsed = parseIsoTimestampQuery(c.req.query('from'), 'from')
+    if (!fromParsed.ok) {
+      return c.json({ ok: false, error: fromParsed.message }, 400)
+    }
+    const toParsed = parseIsoTimestampQuery(c.req.query('to'), 'to')
+    if (!toParsed.ok) {
+      return c.json({ ok: false, error: toParsed.message }, 400)
+    }
+
+    const rangeCheck = validateMetricsRange(fromParsed.ms, toParsed.ms)
+    if (!rangeCheck.ok) {
+      return c.json({ ok: false, error: rangeCheck.message }, 400)
+    }
+
+    const store = getServerMetricsStore(c) ??
+      new DisabledServerMetricsStore()
+    const backend = resolveStoreBackendKind(store, opts.runtime)
+
+    // Same resolution ladder as /series so cache keys round identically.
+    const resolutionSeconds = selectResolutionSeconds({
+      fromMs: fromParsed.ms,
+      toMs: toParsed.ms,
+    })
+    const queryRange = canonicalizeMetricsRange(
+      fromParsed.ms,
+      toParsed.ms,
+      resolutionSeconds,
+    )
+
+    const cacheKey = metricsChartCacheKey({
+      serverId,
+      fromBucketMs: queryRange.fromMs,
+      toBucketMs: queryRange.toMs,
+      metrics: [],
+      resolutionSeconds,
+      backend,
+      kind: 'connection',
+    })
+
+    const cached = await cache.get<ConnectionHistoryChartResponse>(cacheKey)
+    if (cached) {
+      return c.json(cached)
+    }
+
+    let result: StatusHistoryResult
+    try {
+      result = await store.queryStatusHistory({
+        serverId,
+        from: queryRange.fromIso,
+        to: queryRange.toIso,
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(
+        `metrics queryStatusHistory failed backend=${backend} serverId=${serverId}: ${message}`,
+      )
+      return c.json(
+        metricsBackendUnavailableResponse(backend),
+        503,
+      )
+    }
+
+    const payload: ConnectionHistoryChartResponse = {
+      ok: true,
+      serverId,
+      from: queryRange.fromIso,
+      to: queryRange.toIso,
+      backend: result.kind,
+      available: result.available,
+      initialConnected: result.initialConnected,
+      uptimeSeconds: result.uptimeSeconds,
+      downtimeSeconds: result.downtimeSeconds,
+      unknownSeconds: result.unknownSeconds,
+      uptimePercent: result.uptimePercent,
+      truncated: result.truncated,
+      events: result.events,
+    }
+
+    // Skip caching empty live ranges — same guard as series (no sampleCount;
+    // treat zero known up/down + empty events as empty).
+    const hasHistory = result.events.length > 0 ||
+      result.uptimeSeconds > 0 ||
+      result.downtimeSeconds > 0
+    if (hasHistory) {
+      const ttlSeconds = resolveChartCacheTtlSeconds({
+        toMs: queryRange.toMs,
+        nowMs: Date.now(),
+        resolutionSeconds,
+      })
+      await cache.set(cacheKey, payload, ttlSeconds)
+    }
     return c.json(payload)
   })
 }

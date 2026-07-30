@@ -46,7 +46,7 @@ test("buildEnrollmentPayload renders exact enrollment canonical payload", () => 
     challengeId: "challenge-123",
     nonce: "nonce-456",
     licenseId: "license-789",
-    machineId: "machine-abc",
+    machineKey: "machine-abc",
     hostname: "host.local",
     publicKeyFingerprint: "fingerprint-xyz",
   });
@@ -62,7 +62,7 @@ test("buildAuthPayload renders exact auth canonical payload", () => {
     nonce: "nonce-456",
     serverId: "server-789",
     keyId: "key-321",
-    machineId: "machine-abc",
+    machineKey: "machine-abc",
     hostname: "host.local",
   });
   assertEquals(
@@ -87,7 +87,7 @@ test("verifyDaemonSignature accepts valid signature", async () => {
     nonce: "nonce-1",
     serverId: "server-1",
     keyId: "key-1",
-    machineId: "machine-1",
+    machineKey: "machine-1",
     hostname: "host-1",
   });
   const signature = await signPayload(keyPair.privateKey, payload);
@@ -103,7 +103,7 @@ test("verifyDaemonSignature rejects tampered payload", async () => {
     nonce: "nonce-2",
     serverId: "server-2",
     keyId: "key-2",
-    machineId: "machine-2",
+    machineKey: "machine-2",
     hostname: "host-2",
   });
   const signature = await signPayload(keyPair.privateKey, payload);
@@ -121,7 +121,7 @@ test("verifyDaemonSignature rejects signature from different keypair", async () 
     nonce: "nonce-3",
     serverId: "server-3",
     keyId: "key-3",
-    machineId: "machine-3",
+    machineKey: "machine-3",
     hostname: "host-3",
   });
   const signature = await signPayload(signer.privateKey, payload);

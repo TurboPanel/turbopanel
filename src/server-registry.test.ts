@@ -4,9 +4,18 @@ import { getDatabaseUrl } from './db-url.ts'
 import { createDenoDb } from './db.ts'
 import { createLicense } from './client/authn/license.ts'
 import { organization, server } from './lib/db/schema.ts'
-import { resolveServerId } from './server-registry.ts'
+import { resolveServerId, touchServerMetadata } from './server-registry.ts'
 
 const dbUrl = getDatabaseUrl()
+
+/** Canonical 64-char lowercase hex HMAC shape used by real daemons. */
+function randomMachineKey(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32))
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+/** Raw `/etc/machine-id` shape — must never be persisted as machineKey. */
+const RAW_MACHINE_ID = '0123456789abcdef0123456789abcdef'
 
 async function withTestDb(fn: (db: ReturnType<typeof createDenoDb>) => Promise<void>) {
   if (!dbUrl) {
@@ -29,7 +38,7 @@ test('resolveServerId blocks unauthenticated server creation', async () => {
   await withTestDb(async (db) => {
     const resolved = await resolveServerId(db, {
       hostname: `server-registry-${crypto.randomUUID()}`,
-      machineId: `machine-${crypto.randomUUID()}`,
+      machineKey: randomMachineKey(),
     })
     assertEquals(resolved, null)
   })
@@ -43,10 +52,8 @@ test('resolveServerId still resolves existing server by serverId', async () => {
       .values({
         createdAt: now,
         updatedAt: now,
-        metadata: {
-          hostname: `existing-${crypto.randomUUID()}`,
-          machineId: `machine-${crypto.randomUUID()}`,
-        },
+        hostname: `existing-${crypto.randomUUID()}`,
+        machineKey: randomMachineKey(),
       })
       .returning({ id: server.id })
 
@@ -74,10 +81,10 @@ test('resolveServerId creates row for licensed enrollment', async () => {
     })
 
     const hostname = `licensed-${crypto.randomUUID()}`
-    const machineId = `machine-${crypto.randomUUID()}`
+    const machineKey = randomMachineKey()
     const resolved = await resolveServerId(db, {
       hostname,
-      machineId,
+      machineKey,
       licenseId,
       licenseToken,
     })
@@ -86,11 +93,50 @@ test('resolveServerId creates row for licensed enrollment', async () => {
       if (!resolved) {
         throw new Error('expected resolveServerId to return server id for valid license')
       }
+      const [row] = await db
+        .select({ machineKey: server.machineKey })
+        .from(server)
+        .where(eq(server.id, resolved))
+        .limit(1)
+      assertEquals(row?.machineKey, machineKey)
     } finally {
       if (resolved) {
         await db.delete(server).where(eq(server.id, resolved))
       }
       await db.delete(organization).where(eq(organization.id, organizationId))
+    }
+  })
+})
+
+test('touchServerMetadata ignores a raw machine-id shaped machineKey', async () => {
+  await withTestDb(async (db) => {
+    const now = new Date().toISOString()
+    const validKey = randomMachineKey()
+    const [inserted] = await db
+      .insert(server)
+      .values({
+        createdAt: now,
+        updatedAt: now,
+        hostname: `ignore-raw-${crypto.randomUUID()}`,
+        machineKey: validKey,
+      })
+      .returning({ id: server.id })
+
+    const serverId = inserted!.id
+    try {
+      await touchServerMetadata(db, serverId, {
+        machineKey: RAW_MACHINE_ID,
+        hostname: `ignore-raw-host-${crypto.randomUUID()}`,
+      })
+      const [row] = await db
+        .select({ machineKey: server.machineKey, hostname: server.hostname })
+        .from(server)
+        .where(eq(server.id, serverId))
+        .limit(1)
+      assertEquals(row?.machineKey, validKey)
+      assertEquals(row?.hostname?.startsWith('ignore-raw-host-'), true)
+    } finally {
+      await db.delete(server).where(eq(server.id, serverId))
     }
   })
 })
@@ -110,7 +156,7 @@ test('resolveServerId rejects a second host once the license is latched', async 
 
     const first = await resolveServerId(db, {
       hostname: `first-${crypto.randomUUID()}`,
-      machineId: `machine-${crypto.randomUUID()}`,
+      machineKey: randomMachineKey(),
       licenseId,
       licenseToken,
     })
@@ -122,7 +168,7 @@ test('resolveServerId rejects a second host once the license is latched', async 
 
       const second = await resolveServerId(db, {
         hostname: `second-${crypto.randomUUID()}`,
-        machineId: `machine-${crypto.randomUUID()}`,
+        machineKey: randomMachineKey(),
         licenseId,
         licenseToken,
       })
@@ -131,7 +177,7 @@ test('resolveServerId rejects a second host once the license is latched', async 
       const reenroll = await resolveServerId(db, {
         serverId: first,
         hostname: `first-again-${crypto.randomUUID()}`,
-        machineId: `machine-${crypto.randomUUID()}`,
+        machineKey: randomMachineKey(),
         licenseId,
         licenseToken,
       })

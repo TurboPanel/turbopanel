@@ -22,6 +22,7 @@ import {
   isValidWireguardListenPort,
   isValidWireguardPublicKey,
 } from './wireguard.ts'
+import { DAEMON_ENVELOPE_MAGIC } from '../../client/authn/data-encryption.ts'
 import type { CommandType } from './types.ts'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -529,7 +530,7 @@ export type EnvironmentDeployTlsMaterial = {
   tlsId: string
   /** Public leaf + intermediate chain PEM. */
   certificatePem: string
-  /** Daemon-recipient sealed private key (`tpdaemon.v1…`). */
+  /** Daemon-recipient sealed private key (`denc.…`). */
   privateKeyEnvelope: string
 }
 
@@ -1243,7 +1244,7 @@ const MAX_MANAGED_CREDENTIALS = 32
 const MAX_MANAGED_DATABASES = 64
 const MAX_MANAGED_DROP_USERS = 32
 const MAX_MANAGED_IMAGE_LENGTH = 256
-const TPDAEMON_ENVELOPE_PREFIX = 'tpdaemon.'
+const DAEMON_ENVELOPE_PREFIX = `${DAEMON_ENVELOPE_MAGIC}.`
 const MANAGED_CONFIG_MODES = new Set(['0640', '0600'])
 const MANAGED_LIFECYCLE_ACTIONS = new Set(['start', 'stop', 'restart'])
 const MANAGED_EXPOSURE_PROTOCOLS = new Set(['tcp', 'udp', 'http'])
@@ -1353,7 +1354,7 @@ export type ManagedApplyCredential = {
   role: 'root' | 'user'
   databases: string[]
   privileges?: string[]
-  /** Daemon-recipient sealed password (`tpdaemon.…`). */
+  /** Daemon-recipient sealed password (`denc.…`). */
   password: string
 }
 
@@ -1628,7 +1629,7 @@ function parseManagedApplyCredentialEntry(entry: unknown): ManagedApplyCredentia
     !isString(entry.role) ||
     !MANAGED_CREDENTIAL_ROLES.has(entry.role) ||
     !isString(entry.password) ||
-    !entry.password.startsWith(TPDAEMON_ENVELOPE_PREFIX)
+    !entry.password.startsWith(DAEMON_ENVELOPE_PREFIX)
   ) {
     throw new Error('Invalid managed.apply credentials entry')
   }

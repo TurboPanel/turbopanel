@@ -1,6 +1,7 @@
 import { eq, sql } from "drizzle-orm";
 import type { Db } from "../../db.ts";
 import type { ServerMetadata } from "../../lib/db/server-metadata.ts";
+import { normalizeMachineKey } from "../../lib/machine-key.ts";
 import { server } from "../../lib/db/schema.ts";
 import {
   buildDefaultDaemonStatus,
@@ -26,16 +27,12 @@ export {
 export type ServerDaemonStateWithMetadata = ServerDaemonState & {
   status: ServerDaemonStatus;
   hostname: string | null;
-  machineId: string | null;
+  machineKey: string | null;
   metadata: ServerMetadata | null;
 };
 
 const STATUS_COLUMNS = {
   connected: server.connected,
-  daemonStatus: server.daemonStatus,
-  lastSeenAt: server.lastSeenAt,
-  connectedAt: server.connectedAt,
-  disconnectedAt: server.disconnectedAt,
   statusChangedAt: server.statusChangedAt,
 } as const;
 
@@ -48,7 +45,7 @@ export async function getServerDaemonStateByServerId(
       daemon: server.daemon,
       metadata: server.metadata,
       hostname: server.hostname,
-      machineId: server.machineId,
+      machineKey: server.machineKey,
       ...STATUS_COLUMNS,
     })
     .from(server)
@@ -62,7 +59,7 @@ export async function getServerDaemonStateByServerId(
     ...state,
     status: mapServerDaemonStatusFromColumns(row),
     hostname: row.hostname ?? null,
-    machineId: row.machineId ?? null,
+    machineKey: row.machineKey ?? null,
     metadata: (row.metadata ?? null) as ServerMetadata | null,
   };
 }
@@ -99,26 +96,22 @@ export async function attachDaemonStateToServer(
     fingerprint: string;
     algorithm?: "Ed25519";
     hostname?: string | null;
-    machineId?: string | null;
+    machineKey?: string | null;
   },
 ): Promise<{ keyId: string }> {
   const now = nowTs();
   const daemonState = buildServerDaemonState(params);
   const defaultStatus = buildDefaultDaemonStatus();
   const hostname = params.hostname?.trim() || null;
-  const machineId = params.machineId?.trim() || null;
+  const machineKey = normalizeMachineKey(params.machineKey) ?? null;
 
   const updated = await db
     .update(server)
     .set({
       daemon: daemonState,
       ...(hostname ? { hostname } : {}),
-      ...(machineId ? { machineId } : {}),
+      ...(machineKey ? { machineKey } : {}),
       connected: defaultStatus.connected,
-      daemonStatus: defaultStatus.daemonStatus ?? "unknown",
-      lastSeenAt: defaultStatus.lastSeenAt,
-      connectedAt: defaultStatus.connectedAt,
-      disconnectedAt: defaultStatus.disconnectedAt,
       statusChangedAt: defaultStatus.statusChangedAt,
       updatedAt: now,
     })
@@ -194,10 +187,6 @@ export async function clearServerDaemonState(
     .set({
       daemon: null,
       connected: defaultStatus.connected,
-      daemonStatus: defaultStatus.daemonStatus ?? "unknown",
-      lastSeenAt: defaultStatus.lastSeenAt,
-      connectedAt: defaultStatus.connectedAt,
-      disconnectedAt: defaultStatus.disconnectedAt,
       statusChangedAt: defaultStatus.statusChangedAt,
       updatedAt: now,
     })

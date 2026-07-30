@@ -170,6 +170,7 @@ async function withVariableFixtures(
     .values({
       displayName: 'Variable Route Service',
       environmentId,
+      composeServiceName: 'variable-route-service',
     })
     .returning({ id: service.id })
   const serviceId = insertedService!.id
@@ -291,7 +292,7 @@ test('PATCH /variables/:id seals plaintext when isSecret toggles true without va
 
     const row = rows[0]!
     assertEquals(row.isSecret, true)
-    assertEquals(row.value?.startsWith('tpsecret.v1.'), true)
+    assertEquals(row.value?.startsWith('enc.'), true)
 
     const decrypted = await decryptSecret(dataEncryptionSecrets, row.value!)
     assertEquals(decrypted, 'plain-secret')
@@ -683,7 +684,7 @@ test('PATCH /variables/:id preserves empty-string when toggling to secret', asyn
 
     const row = rows[0]!
     assertEquals(row.isSecret, true)
-    assertEquals(row.value.startsWith('tpsecret.v1.'), true)
+    assertEquals(row.value.startsWith('enc.'), true)
 
     const decrypted = await decryptSecret(dataEncryptionSecrets, row.value)
     assertEquals(decrypted, '')

@@ -5,14 +5,19 @@ import type {
   HostSummaryQuery,
   HostSummaryResult,
   ServerMetricsStore,
+  ServerStatusEvent,
+  StatusHistoryQuery,
+  StatusHistoryResult,
 } from "../types.ts";
 import {
   buildAnalyticsEngineDataPoint,
+  buildStatusAnalyticsEngineDataPoint,
   type AnalyticsEngineDataPointLike,
 } from "./field-map.ts";
 import {
   queryHostSeriesViaSqlApi,
   queryHostSummaryViaSqlApi,
+  queryStatusHistoryViaSqlApi,
   type AnalyticsEngineSqlConfig,
 } from "./sql-api.ts";
 
@@ -63,6 +68,19 @@ export class AnalyticsEngineServerMetricsStore
     this.#dataset.writeDataPoint(point);
   }
 
+  /**
+   * Exactly one `writeDataPoint` for a connection-status transition —
+   * synchronous, fire-and-forget (same discipline as {@link writeHostSample}).
+   *
+   * AE stamps its own ingestion `timestamp`; `event.at` is not sent (same
+   * asymmetry host samples already have vs ClickHouse).
+   */
+  writeStatusEvent(input: ServerStatusEvent): void {
+    const point: AnalyticsEngineDataPointLike =
+      buildStatusAnalyticsEngineDataPoint(input);
+    this.#dataset.writeDataPoint(point);
+  }
+
   queryHostSeries(input: HostSeriesQuery): Promise<HostSeriesResult> {
     if (!this.#sql) {
       return Promise.resolve({
@@ -90,5 +108,23 @@ export class AnalyticsEngineServerMetricsStore
       });
     }
     return queryHostSummaryViaSqlApi(this.#sql, input);
+  }
+
+  queryStatusHistory(input: StatusHistoryQuery): Promise<StatusHistoryResult> {
+    if (!this.#sql) {
+      return Promise.resolve({
+        kind: "analytics-engine",
+        available: false,
+        serverId: input.serverId,
+        initialConnected: null,
+        events: [],
+        uptimeSeconds: 0,
+        downtimeSeconds: 0,
+        unknownSeconds: 0,
+        uptimePercent: null,
+        truncated: false,
+      });
+    }
+    return queryStatusHistoryViaSqlApi(this.#sql, input);
   }
 }

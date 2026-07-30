@@ -49,7 +49,7 @@ export const authSchemas = {
       ciphertexts: {
         type: "array",
         items: { type: "string" },
-        description: "Sealed tpdaemon.v1 recipient-bound envelopes to decrypt (max 100)",
+        description: "Sealed denc recipient-bound envelopes to decrypt (max 100)",
       },
     },
   },
@@ -196,7 +196,7 @@ export const authPaths: Record<string, unknown> = {
       tags: ["Daemon"],
       summary: "Decrypt sealed secret envelopes (batch)",
       description:
-        "Decrypts tpdaemon.v1 recipient-bound envelopes using per-daemon keys derived from the platform root secret. The daemon JWT sub/kid must match the envelope serverId/keyId. Returns null per index on failure without leaking error details.",
+        "Decrypts denc recipient-bound envelopes using per-daemon keys derived from the platform root secret. The daemon JWT sub/kid must match the envelope serverId/keyId. Returns null per index on failure without leaking error details.",
       security: [{ bearerAuth: [] }],
       requestBody: {
         required: true,

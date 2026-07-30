@@ -516,7 +516,7 @@ export function getAdminOpenApiSpec(
           summary: 'Re-encrypt at-rest secrets to the current key version',
           description:
             'Sweeps secret variables, TLS private keys, and principal passwords. ' +
-            'Re-seals only non-current `tpsecret` envelopes; skips `tpdaemon` and already-current blobs.',
+            'Re-seals only non-current `enc` envelopes; skips `denc` and already-current blobs.',
           security: [...cookieSecurity],
           responses: {
             '200': {

@@ -42,7 +42,7 @@ export type DaemonCellSnapshot = {
   /** Postgres-canonical; no longer populated by cell storage. */
   hostname?: string;
   /** Postgres-canonical; no longer populated by cell storage. */
-  machineId?: string;
+  machineKey?: string;
   remoteAddress?: string;
   connected: boolean;
   connectedAt?: string;

@@ -198,7 +198,7 @@ export async function assertTargetServerOnline(
   const registry = getDaemonCellRegistry(c)
   const records = await loadServerStatusRecords(db, registry, [serverId])
   const live = records[0]
-  if (!live?.connected || live.daemonStatus !== 'online') {
+  if (!live?.connected) {
     return c.json({ error: 'server_offline' }, 409)
   }
   return null

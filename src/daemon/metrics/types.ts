@@ -77,11 +77,64 @@ export type HostSummaryResult = {
   latestAt: string | null;
 };
 
-/** Backend-neutral store for host metrics writes and (phase 7) queries. */
+/** Why a `connected` boolean flipped — closed enum for status-stream rows. */
+export type ServerStatusTransitionReason =
+  | "connect"
+  | "disconnect"
+  | "sweep_stale"
+  | "self_heal";
+
+/** Validated connection-status transition written to AE / ClickHouse. */
+export type ServerStatusEvent = {
+  serverId: string;
+  connected: boolean;
+  reason: ServerStatusTransitionReason;
+  at: string;
+};
+
+export type StatusHistoryQuery = {
+  serverId: string;
+  from: string;
+  to: string;
+};
+
+export type StatusHistoryEvent = {
+  at: string;
+  connected: boolean;
+  reason: ServerStatusTransitionReason;
+};
+
+/**
+ * Connection history + uptime totals for a range.
+ *
+ * `initialConnected === null` means state before `from` is unknown — that span
+ * accrues to `unknownSeconds`, never to uptime or downtime.
+ */
+export type StatusHistoryResult = {
+  kind: MetricsBackendKind;
+  available: boolean;
+  serverId: string;
+  initialConnected: boolean | null;
+  events: StatusHistoryEvent[];
+  uptimeSeconds: number;
+  downtimeSeconds: number;
+  unknownSeconds: number;
+  uptimePercent: number | null;
+  truncated: boolean;
+};
+
+/**
+ * Backend-neutral store for host metrics and connection-status events.
+ *
+ * `writeHostSample` / `writeStatusEvent` are fire-and-forget — callers must
+ * not await them into WS / request handlers (same discipline as host writes).
+ */
 export interface ServerMetricsStore {
   writeHostSample(
     input: AuthenticatedHostMetricsSample,
   ): void | Promise<void>;
+  writeStatusEvent(input: ServerStatusEvent): void | Promise<void>;
   queryHostSeries(input: HostSeriesQuery): Promise<HostSeriesResult>;
   queryHostSummary(input: HostSummaryQuery): Promise<HostSummaryResult>;
+  queryStatusHistory(input: StatusHistoryQuery): Promise<StatusHistoryResult>;
 }

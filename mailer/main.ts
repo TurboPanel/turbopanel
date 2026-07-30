@@ -170,7 +170,7 @@ const db = createMailerDb()
 
 /**
  * Derive the data-encryption keyring from the root secret so DB-backed email
- * secrets (`MAILGUN_API_KEY` / `SMTP_PASS`, sealed as `tpsecret`) can be
+ * secrets (`MAILGUN_API_KEY` / `SMTP_PASS`, sealed as `enc`) can be
  * decrypted. Best-effort: without a configured root secret (or on a derive
  * failure) DB-backed secrets simply resolve as unset, while env-var settings
  * (which the mailer unit also receives) keep working.

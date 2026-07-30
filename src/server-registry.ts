@@ -16,13 +16,14 @@ import {
   type ServerTimeSync,
 } from './lib/db/server-metadata.ts'
 import { license, server } from './lib/db/schema.ts'
+import { normalizeMachineKey } from './lib/machine-key.ts'
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export type ServerHelloIdentity = {
   serverId?: string
-  machineId?: string
+  machineKey?: string
   hostname?: string
   licenseId?: string
   licenseToken?: string
@@ -52,26 +53,26 @@ function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
 
 function identityColumnPatch(identity: ServerHelloIdentity): {
   hostname?: string
-  machineId?: string
+  machineKey?: string
 } {
-  const patch: { hostname?: string; machineId?: string } = {}
-  const machineId = identity.machineId?.trim()
+  const patch: { hostname?: string; machineKey?: string } = {}
+  const machineKey = normalizeMachineKey(identity.machineKey)
   const hostname = identity.hostname?.trim()
-  if (machineId) patch.machineId = machineId
+  if (machineKey) patch.machineKey = machineKey
   if (hostname) patch.hostname = hostname
   return patch
 }
 
 /**
  * Pure merge of os/timeSync/addresses into `server.metadata` — no DB I/O.
- * Hostname / machineId are dedicated columns (see {@link touchServerMetadata}).
+ * Hostname / machineKey are dedicated columns (see {@link touchServerMetadata}).
  * Returns null when nothing would change (idempotent skip).
  */
 export function mergeServerMetadataIdentity(
   current: ServerMetadata | null | undefined,
   identity: Pick<
     ServerHelloIdentity,
-    'hostname' | 'machineId' | 'os' | 'timeSync' | 'addresses'
+    'hostname' | 'machineKey' | 'os' | 'timeSync' | 'addresses'
   >,
 ): ServerMetadata | null {
   const patch = metadataPatch(identity)
@@ -125,7 +126,7 @@ export async function touchServerMetadata(
     .select({
       metadata: server.metadata,
       hostname: server.hostname,
-      machineId: server.machineId,
+      machineKey: server.machineKey,
     })
     .from(server)
     .where(eq(server.id, serverId))
@@ -139,10 +140,10 @@ export async function touchServerMetadata(
   const hostnameChanged = Boolean(
     columns.hostname && columns.hostname !== row.hostname,
   )
-  const machineIdChanged = Boolean(
-    columns.machineId && columns.machineId !== row.machineId,
+  const machineKeyChanged = Boolean(
+    columns.machineKey && columns.machineKey !== row.machineKey,
   )
-  if (!metadataChanged && !hostnameChanged && !machineIdChanged) return
+  if (!metadataChanged && !hostnameChanged && !machineKeyChanged) return
 
   // Patch only changed metadata keys via jsonb || so a concurrent connect
   // projection that wrote metadata.geo cannot be wiped by this hello update.
@@ -171,7 +172,7 @@ export async function touchServerMetadata(
 
   const update: Record<string, unknown> = { updatedAt: nowTs() }
   if (hostnameChanged) update.hostname = columns.hostname
-  if (machineIdChanged) update.machineId = columns.machineId
+  if (machineKeyChanged) update.machineKey = columns.machineKey
   if (Object.keys(delta).length > 0) {
     update.metadata = sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${
       JSON.stringify(delta)
@@ -195,12 +196,12 @@ async function findExistingServerId(
     if (existing.length > 0) return existing[0].id
   }
 
-  const machineId = identity.machineId?.trim()
-  if (machineId) {
+  const machineKey = identity.machineKey?.trim()
+  if (machineKey) {
     const byMachine = await db
       .select({ id: server.id })
       .from(server)
-      .where(eq(server.machineId, machineId))
+      .where(eq(server.machineKey, machineKey))
       .limit(1)
     if (byMachine.length > 0) return byMachine[0].id
   }
@@ -242,8 +243,8 @@ async function findServerBoundToLicense(
  *    `serverId` and that row is already bound to *this* license.
  *  - A brand-new host with a already-bound license is rejected (caller gets
  *    null) — mint a new registration key via Add Server instead.
- *  - `machineId` / `hostname` are never used for reuse: cloned VMs share
- *    `/etc/machine-id` (and often hostnames).
+ *  - `machineKey` / `hostname` are never used for reuse: cloned VMs share
+ *    `/etc/machine-id` (and the derived key) and often hostnames.
  */
 async function findReusableLicensedServerId(
   db: Db,
@@ -373,7 +374,7 @@ async function insertLicensedServer(
       createdAt: now,
       updatedAt: now,
       ...(columns.hostname ? { hostname: columns.hostname } : {}),
-      ...(columns.machineId ? { machineId: columns.machineId } : {}),
+      ...(columns.machineKey ? { machineKey: columns.machineKey } : {}),
       metadata: Object.keys(patch).length > 0 ? patch : null,
     })
     .returning({ id: server.id })
@@ -451,7 +452,7 @@ async function resolveLicensedServerId(
 
 /**
  * Resolve the canonical server.id (uuidv7) for a connecting daemon.
- * Reuses by serverId, `machine_id`, or `hostname` columns. Creates a row only
+ * Reuses by serverId, `machine_key`, or `hostname` columns. Creates a row only
  * when a valid license is presented. Returns null for unknown servers without
  * a license.
  */

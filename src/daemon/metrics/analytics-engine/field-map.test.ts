@@ -17,14 +17,18 @@ import {
   AE_BLOB_KERNEL_INDEX,
   AE_BLOB_OS_INDEX,
   AE_BLOB_SCHEMA_VERSION_INDEX,
+  AE_BLOB_STATUS_REASON_INDEX,
   AE_DOUBLE_COUNT,
+  AE_DOUBLE_STATUS_CONNECTED_INDEX,
   AE_HOST_EVENT_TYPE,
   AE_INDEX_SERVER_ID_COLUMN,
   AE_MISSING_METRIC_SENTINEL,
   AE_RESERVED_BLOB_COUNT,
+  AE_STATUS_EVENT_TYPE,
   AE_TIMESTAMP_COLUMN,
   assertAnalyticsEngineDataPointShape,
   buildAnalyticsEngineDataPoint,
+  buildStatusAnalyticsEngineDataPoint,
   doubleColumnForMetric,
   mapHostDimensionsToBlobs,
   mapHostMetricsToDoubles,
@@ -155,4 +159,39 @@ it("buildAnalyticsEngineDataPoint: missing sentinel round-trips", () => {
   for (let i = 1; i < 19; i++) {
     assertEquals(point.doubles[i], AE_MISSING_METRIC_SENTINEL);
   }
+});
+
+it("buildStatusAnalyticsEngineDataPoint: status shape + sentinel doubles", () => {
+  const serverId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const point = buildStatusAnalyticsEngineDataPoint({
+    serverId,
+    connected: true,
+    reason: "self_heal",
+    at: "2026-01-01T00:00:00.000Z",
+  });
+  assertEquals(point.indexes, [serverId]);
+  assertEquals(point.doubles[AE_DOUBLE_STATUS_CONNECTED_INDEX], 1);
+  for (let i = 1; i < AE_DOUBLE_COUNT; i++) {
+    assertEquals(point.doubles[i], AE_MISSING_METRIC_SENTINEL);
+  }
+  assertEquals(point.blobs[AE_BLOB_EVENT_TYPE_INDEX], AE_STATUS_EVENT_TYPE);
+  assertEquals(
+    point.blobs[AE_BLOB_SCHEMA_VERSION_INDEX],
+    String(METRICS_SCHEMA_VERSION),
+  );
+  assertEquals(point.blobs[AE_BLOB_STATUS_REASON_INDEX], "self_heal");
+  for (let i = 2; i < AE_BLOB_COUNT; i++) {
+    if (i === AE_BLOB_STATUS_REASON_INDEX) continue;
+    assertEquals(point.blobs[i], "");
+  }
+  assertEquals(AE_RESERVED_BLOB_COUNT, 14);
+
+  const offline = buildStatusAnalyticsEngineDataPoint({
+    serverId,
+    connected: false,
+    reason: "sweep_stale",
+    at: "2026-01-01T00:00:00.000Z",
+  });
+  assertEquals(offline.doubles[AE_DOUBLE_STATUS_CONNECTED_INDEX], 0);
+  assertEquals(offline.blobs[AE_BLOB_STATUS_REASON_INDEX], "sweep_stale");
 });

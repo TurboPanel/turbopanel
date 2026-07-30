@@ -28,6 +28,7 @@ import {
   parseMetricsRetentionDays,
   resolveServerMetricsStore,
 } from './daemon/metrics/store-selection.ts'
+import { setServerStatusEventSink } from './daemon/metrics/status-events.ts'
 import {
   createRedisRateLimiter,
   resolveDaemonConnectRateLimit,
@@ -154,6 +155,7 @@ const serverMetricsStore = resolveServerMetricsStore({
     ),
   },
 })
+setServerStatusEventSink(serverMetricsStore)
 const connectRate = resolveDaemonConnectRateLimit()
 const restRate = resolveDaemonRestRateLimit()
 const inboundLimits = resolveDaemonWsInboundLimits()

@@ -265,6 +265,24 @@ export function registerDaemonWebSocket(
         raw: string,
         ws: WebSocket,
       ): Promise<void> => {
+        // Exception boundary — mirrors DO webSocketMessage (log + swallow) so a
+        // transient DB/cell error cannot tear down the daemon WebSocket.
+        try {
+          await handleInboundMessageBody(raw, ws);
+        } catch (err) {
+          compatLogError(
+            "ws",
+            `inbound message error serverId=${payload.sub} conn=${
+              connectionId ?? "unknown"
+            }: ${String(err)}`,
+          );
+        }
+      };
+
+      const handleInboundMessageBody = async (
+        raw: string,
+        ws: WebSocket,
+      ): Promise<void> => {
         if (raw === DAEMON_CELL_PING) {
           await handleDaemonCellPing({
             cell: registry.getCell(payload.sub),
@@ -308,7 +326,7 @@ export function registerDaemonWebSocket(
         if (message.type === "hello") {
           await touchServerMetadata(db, payload.sub, {
             hostname: message.hostname,
-            machineId: message.machineId,
+            machineKey: message.machineKey,
             os: message.os,
             timeSync: message.timeSync,
             addresses: message.addresses,

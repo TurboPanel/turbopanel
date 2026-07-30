@@ -10,7 +10,7 @@ import { mergeServerMetadataIdentity } from './server-registry.ts'
 const test = Deno.test.bind(Deno)
 
 // `mergeServerMetadataIdentity` is a pure merge over `server.metadata` jsonb
-// (os / timeSync / addresses / geo) — hostname and machineId are dedicated
+// (os / timeSync / addresses / geo) — hostname and machineKey are dedicated
 // `server` columns now (see `identityColumnPatch` / `touchServerMetadata` in
 // server-registry.ts) and are never read or written by this function.
 
@@ -111,12 +111,12 @@ test('mergeServerMetadataIdentity replaces stale addresses with empty daemon rep
   assertEquals(merged?.addresses, emptyReport)
 })
 
-test('mergeServerMetadataIdentity ignores hostname/machineId on the identity payload', () => {
-  // Passing hostname/machineId (dedicated columns) alongside no metadata-worthy
+test('mergeServerMetadataIdentity ignores hostname/machineKey on the identity payload', () => {
+  // Passing hostname/machineKey (dedicated columns) alongside no metadata-worthy
   // change must not produce a patch — those fields never reach `server.metadata`.
   const merged = mergeServerMetadataIdentity(
     {},
-    { hostname: 'new-host', machineId: 'mid-1' },
+    { hostname: 'new-host', machineKey: 'mid-1' },
   )
   assertEquals(merged, null)
 })

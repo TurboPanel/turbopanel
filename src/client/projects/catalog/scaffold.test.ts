@@ -93,7 +93,7 @@ test('resolveCatalogVariablePlaintext rejects non-secret variables without value
   )
 })
 
-test('scaffoldCatalogEnvironments seals managed secrets as tpsecret without placeholders', async () => {
+test('scaffoldCatalogEnvironments seals managed secrets as enc without placeholders', async () => {
   if (!dbUrl) {
     console.warn('Skipping catalog scaffold tests: TURBOPANEL_DATABASE_URL not set')
     return
@@ -166,7 +166,7 @@ test('scaffoldCatalogEnvironments seals managed secrets as tpsecret without plac
     const plaintexts: string[] = []
     for (const row of secretRows) {
       assertEquals(parseSecretEnvelope(row.value)?.keyVersion !== undefined, true)
-      assertEquals(row.value.startsWith('tpsecret.'), true)
+      assertEquals(row.value.startsWith('enc.'), true)
 
       const plaintext = await decryptSecret(dataEncryptionSecrets, row.value)
       plaintexts.push(plaintext)
@@ -285,8 +285,8 @@ test('scaffoldCatalogEnvironments reuses sharedCredentialId when sealing', async
       throw new TypeError('expected shared secret variable rows')
     }
 
-    assertEquals(dbPassword.startsWith('tpsecret.'), true)
-    assertEquals(appPassword.startsWith('tpsecret.'), true)
+    assertEquals(dbPassword.startsWith('enc.'), true)
+    assertEquals(appPassword.startsWith('enc.'), true)
     assertEquals(
       await decryptSecret(dataEncryptionSecrets, dbPassword),
       await decryptSecret(dataEncryptionSecrets, appPassword),

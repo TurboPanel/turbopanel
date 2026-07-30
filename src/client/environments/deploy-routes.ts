@@ -3,7 +3,10 @@ import type { Context } from 'hono'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
-import { resealSecretForDaemon } from '../authn/data-encryption.ts'
+import {
+  ENVELOPE_MAGIC,
+  resealSecretForDaemon,
+} from '../authn/data-encryption.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import {
@@ -121,16 +124,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function readComposeServiceName(
-  composeServiceName: string | null | undefined,
-  fallback: string,
-): string {
-  if (typeof composeServiceName === 'string' && composeServiceName.length > 0) {
-    return composeServiceName
-  }
-  return fallback
-}
-
 function readHostnames(options: unknown): string[] {
   if (!isPlainObject(options)) return []
   const hostnames = options.hostnames
@@ -208,8 +201,7 @@ type OrgTlsCandidate = TlsCandidate & {
 
 type ServiceRow = {
   id: string
-  displayName: string | null
-  composeServiceName: string | null
+  composeServiceName: string
 }
 
 type HostingRow = {
@@ -400,10 +392,7 @@ async function buildHostingsForService(
   | { error: Response }
   | { prepareError: DeployPrepareError }
 > {
-  const composeServiceName = readComposeServiceName(
-    svc.composeServiceName,
-    svc.displayName ?? svc.id,
-  )
+  const composeServiceName = svc.composeServiceName
   const hostingRows = await db
     .select({
       id: hosting.id,
@@ -444,7 +433,6 @@ async function buildHostingPayload(
   const serviceRows = await db
     .select({
       id: service.id,
-      displayName: service.displayName,
       composeServiceName: service.composeServiceName,
     })
     .from(service)
@@ -510,9 +498,9 @@ async function sealTlsMaterialForDaemon(
     if (!row?.certificatePem || !row.privateKeyPem) {
       return c.json({ error: 'tls_material_missing', tlsId }, 400)
     }
-    // Refuse plaintext / non-tpsecret rows — keys must be sealed at rest.
+    // Refuse plaintext / non-enc rows — keys must be sealed at rest.
     if (
-      !row.privateKeyPem.startsWith('tpsecret.') ||
+      !row.privateKeyPem.startsWith(`${ENVELOPE_MAGIC}.`) ||
       row.privateKeyPem.includes('BEGIN')
     ) {
       return c.json({ error: 'tls_key_not_sealed', tlsId }, 500)

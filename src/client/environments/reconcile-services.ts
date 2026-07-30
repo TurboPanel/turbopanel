@@ -13,17 +13,6 @@ function listComposeServiceNames(document: ComposeDocument): string[] {
   return Object.keys(services).sort((a, b) => a.localeCompare(b))
 }
 
-function resolveServiceComposeName(row: {
-  id: string
-  displayName: string | null
-  composeServiceName: string | null
-}): string {
-  if (typeof row.composeServiceName === 'string' && row.composeServiceName.length > 0) {
-    return row.composeServiceName
-  }
-  return row.displayName ?? row.id
-}
-
 export type ReconcileServicesResult = {
   created: string[]
   orphans: string[]
@@ -42,7 +31,6 @@ export async function reconcileServicesFromCompose(
   const existingRows = await db
     .select({
       id: service.id,
-      displayName: service.displayName,
       composeServiceName: service.composeServiceName,
     })
     .from(service)
@@ -50,7 +38,7 @@ export async function reconcileServicesFromCompose(
 
   const existingByComposeName = new Map<string, typeof existingRows[number]>()
   for (const row of existingRows) {
-    existingByComposeName.set(resolveServiceComposeName(row), row)
+    existingByComposeName.set(row.composeServiceName, row)
   }
 
   const created: string[] = []
@@ -66,14 +54,13 @@ export async function reconcileServicesFromCompose(
     created.push(inserted.id)
     existingByComposeName.set(composeServiceName, {
       id: inserted.id,
-      displayName: composeServiceName,
       composeServiceName,
     })
   }
 
   const composeNameSet = new Set(composeNames)
   const orphans = existingRows
-    .map((row) => resolveServiceComposeName(row))
+    .map((row) => row.composeServiceName)
     .filter((name) => !composeNameSet.has(name))
 
   return { created, orphans }

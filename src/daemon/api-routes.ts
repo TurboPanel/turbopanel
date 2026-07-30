@@ -14,6 +14,7 @@ import {
   isDaemonSealedEnvelope,
   parseDaemonSecretEnvelope,
 } from "../client/authn/data-encryption.ts";
+import type { Db } from "../db.ts";
 import { getDb, getServerMetricsStore } from "../db.ts";
 import { license } from "../lib/db/schema.ts";
 import {
@@ -29,9 +30,11 @@ import { getDaemonOpenApiSpec } from "./openapi/index.ts";
 import { buildDaemonScalarHtml } from "../scalar-html.ts";
 import { resolveInstanceTlsCaPath } from "../server-paths.ts";
 import { DAEMON_API_PREFIX } from "../surfaces.ts";
+import { normalizeMachineKey } from "../lib/machine-key.ts";
 import { resolveServerId, touchServerMetadata } from "../server-registry.ts";
 import { verifyDaemonLicense } from "./authn/license.ts";
 import { issueDaemonJwt, verifyDaemonJwt } from "./authn/daemon-jwt.ts";
+import type { ServerDaemonStateWithMetadata } from "./authn/server-identity-db.ts";
 import {
   attachDaemonStateToServer,
   getServerDaemonStateByFingerprint,
@@ -158,6 +161,222 @@ function challengeExpiresAt(at: string, ttlMs: number): string {
   return new Date(atMs + ttlMs).toISOString();
 }
 
+/** Shared shape for helpers that either succeed with a value or fail with an HTTP status + message. */
+type FieldResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; status: 400 | 401; error: string };
+
+/** Normalizes `body.machineKey`, distinguishing "absent" from "present but invalid". */
+function parseOptionalMachineKey(
+  machineKeyRaw: string | null,
+): FieldResult<string | undefined> {
+  if (machineKeyRaw === null) {
+    return { ok: true, value: undefined };
+  }
+  const machineKey = normalizeMachineKey(machineKeyRaw);
+  if (machineKey === undefined) {
+    return { ok: false, status: 400, error: "Invalid machineKey" };
+  }
+  return { ok: true, value: machineKey };
+}
+
+type EnrollFields = {
+  licenseId: string;
+  licenseToken: string;
+  hostname: string;
+  challengeId: string;
+  signature: string;
+  publicJwk: JsonWebKey;
+  machineKey: string | undefined;
+  serverIdBody: string | undefined;
+};
+
+/** Parses and validates the `POST /enroll` body, keeping every field check in one place. */
+function parseEnrollFields(
+  body: Record<string, unknown>,
+): FieldResult<EnrollFields> {
+  const licenseId = normalizeRequiredString(body.licenseId);
+  const licenseToken = normalizeRequiredString(body.licenseToken);
+  const machineKeyRaw = normalizeRequiredString(body.machineKey);
+  const hostname = normalizeRequiredString(body.hostname);
+  const challengeId = normalizeRequiredString(body.challengeId);
+  const signature = normalizeRequiredString(body.signature);
+  const publicJwk = isObjectRecord(body.publicJwk)
+    ? body.publicJwk as JsonWebKey
+    : null;
+
+  // Keep malformed or omitted auth credentials on the same unauthorized path.
+  if (!licenseId || !licenseToken) {
+    return { ok: false, status: 401, error: "Invalid license" };
+  }
+  if (!hostname || !challengeId || !signature || !publicJwk) {
+    return { ok: false, status: 400, error: "Missing required enroll fields" };
+  }
+  const machineKeyResult = parseOptionalMachineKey(machineKeyRaw);
+  if (!machineKeyResult.ok) return machineKeyResult;
+
+  return {
+    ok: true,
+    value: {
+      licenseId,
+      licenseToken,
+      hostname,
+      challengeId,
+      signature,
+      publicJwk,
+      machineKey: machineKeyResult.value,
+      serverIdBody: normalizeRequiredString(body.serverId) ?? undefined,
+    },
+  };
+}
+
+/**
+ * Resolves the server row, guards against a fingerprint collision, and attaches
+ * the daemon key — the final leg of `POST /enroll` once the signature is verified.
+ */
+async function finalizeDaemonEnrollment(
+  db: Db,
+  params: {
+    serverIdBody: string | undefined;
+    machineKey: string | undefined;
+    hostname: string;
+    licenseId: string;
+    licenseToken: string;
+    fingerprint: string;
+    publicJwk: JsonWebKey;
+  },
+): Promise<
+  | { ok: true; serverId: string; keyId: string }
+  | { ok: false; status: 400 | 409 | 500; error: string }
+> {
+  const {
+    serverIdBody,
+    machineKey,
+    hostname,
+    licenseId,
+    licenseToken,
+    fingerprint,
+    publicJwk,
+  } = params;
+
+  const serverId = await resolveServerId(db, {
+    serverId: serverIdBody,
+    machineKey,
+    hostname,
+    licenseId,
+    licenseToken,
+  });
+  if (!serverId) {
+    return {
+      ok: false,
+      status: 400,
+      error: "License already consumed or invalid",
+    };
+  }
+
+  const existing = await getServerDaemonStateByFingerprint(db, fingerprint);
+  if (existing && existing.serverId !== serverId) {
+    return { ok: false, status: 409, error: "Fingerprint already exists" };
+  }
+
+  try {
+    const result = await attachDaemonStateToServer(db, serverId, {
+      publicJwk,
+      fingerprint,
+      hostname,
+      machineKey,
+    });
+    return { ok: true, serverId, keyId: result.keyId };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, status: 500, error: message };
+  }
+}
+
+type AuthSessionFields = {
+  serverId: string;
+  keyId: string;
+  challengeId: string;
+  signature: string;
+  hostname: string;
+  machineKey: string | undefined;
+};
+
+/** Parses and validates the `POST /auth/session` body, keeping every field check in one place. */
+function parseAuthSessionFields(
+  body: Record<string, unknown>,
+): FieldResult<AuthSessionFields> {
+  const serverId = normalizeRequiredString(body.serverId);
+  const keyId = normalizeRequiredString(body.keyId);
+  const challengeId = normalizeRequiredString(body.challengeId);
+  const signature = normalizeRequiredString(body.signature);
+  const hostname = normalizeRequiredString(body.hostname);
+  const machineKeyRaw = normalizeRequiredString(body.machineKey);
+
+  if (!serverId || !keyId || !challengeId || !signature || !hostname) {
+    return {
+      ok: false,
+      status: 400,
+      error: "Missing required session fields",
+    };
+  }
+  const machineKeyResult = parseOptionalMachineKey(machineKeyRaw);
+  if (!machineKeyResult.ok) return machineKeyResult;
+
+  return {
+    ok: true,
+    value: {
+      serverId,
+      keyId,
+      challengeId,
+      signature,
+      hostname,
+      machineKey: machineKeyResult.value,
+    },
+  };
+}
+
+/** Loads the server's daemon key and confirms it matches `keyId` and is active. */
+async function loadActiveDaemonKeyState(
+  db: Db,
+  serverId: string,
+  keyId: string,
+): Promise<
+  | { ok: true; daemonState: ServerDaemonStateWithMetadata }
+  | { ok: false; status: 400 | 404; error: string }
+> {
+  const daemonState = await getServerDaemonStateByServerId(db, serverId);
+  if (!daemonState) {
+    return { ok: false, status: 404, error: "Server key not found" };
+  }
+  if (daemonState.key.id !== keyId) {
+    return { ok: false, status: 400, error: "Server key mismatch" };
+  }
+  if (!isDaemonKeyActive(daemonState.key)) {
+    return { ok: false, status: 400, error: "Server key is inactive" };
+  }
+  return { ok: true, daemonState };
+}
+
+/** Confirms the server's license (if any) is still active. */
+async function checkServerLicenseActive(
+  db: Db,
+  serverId: string,
+): Promise<{ ok: true } | { ok: false; status: 400; error: string }> {
+  const [licenseRow] = await db
+    .select({ licenseId: license.id })
+    .from(license)
+    .where(eq(license.serverId, serverId))
+    .limit(1);
+  if (licenseRow?.licenseId) {
+    const activeLicense = await lookupActiveLicense(db, licenseRow.licenseId);
+    if (!activeLicense) {
+      return { ok: false, status: 400, error: "License is inactive" };
+    }
+  }
+  return { ok: true };
+}
+
 /**
  * Daemon-facing surface: endpoints remote daemons and the node installer call.
  * Mounted under {@link DAEMON_API_PREFIX} (`/api/daemon/v1`).
@@ -221,15 +440,9 @@ export function registerDaemonApiRoutes(
       return c.json({ ok: false, error: "Database unavailable" }, 503);
     }
 
-    const daemonState = await getServerDaemonStateByServerId(db, serverId);
-    if (!daemonState) {
-      return c.json({ ok: false, error: "Server key not found" }, 404);
-    }
-    if (daemonState.key.id !== keyId) {
-      return c.json({ ok: false, error: "Server key mismatch" }, 400);
-    }
-    if (!isDaemonKeyActive(daemonState.key)) {
-      return c.json({ ok: false, error: "Server key is inactive" }, 400);
+    const keyState = await loadActiveDaemonKeyState(db, serverId, keyId);
+    if (!keyState.ok) {
+      return c.json({ ok: false, error: keyState.error }, keyState.status);
     }
 
     if (!authStore) {
@@ -366,26 +579,23 @@ export function registerDaemonApiRoutes(
     const body = await c.req
       .json<Record<string, unknown>>()
       .catch(() => ({} as Record<string, unknown>));
-    const licenseId = normalizeRequiredString(body.licenseId);
-    const licenseToken = normalizeRequiredString(body.licenseToken);
-    const machineId = normalizeRequiredString(body.machineId) ?? undefined;
-    const hostname = normalizeRequiredString(body.hostname);
-    const challengeId = normalizeRequiredString(body.challengeId);
-    const signature = normalizeRequiredString(body.signature);
-    const publicJwk = isObjectRecord(body.publicJwk)
-      ? body.publicJwk as JsonWebKey
-      : null;
-
-    // Keep malformed or omitted auth credentials on the same unauthorized path.
-    if (!licenseId || !licenseToken) {
-      return c.json({ ok: false, error: "Invalid license" }, 401);
-    }
-    if (!hostname || !challengeId || !signature || !publicJwk) {
+    const parsedFields = parseEnrollFields(body);
+    if (!parsedFields.ok) {
       return c.json(
-        { ok: false, error: "Missing required enroll fields" },
-        400,
+        { ok: false, error: parsedFields.error },
+        parsedFields.status,
       );
     }
+    const {
+      licenseId,
+      licenseToken,
+      hostname,
+      challengeId,
+      signature,
+      publicJwk,
+      machineKey,
+      serverIdBody,
+    } = parsedFields.value;
 
     const enrollLimited = await enforceDaemonRestLimit(
       c,
@@ -415,7 +625,7 @@ export function registerDaemonApiRoutes(
       challengeId,
       nonce: challenge.nonce,
       licenseId,
-      machineId: machineId ?? "",
+      machineKey: machineKey ?? "",
       hostname,
       publicKeyFingerprint: fingerprint,
     });
@@ -424,37 +634,20 @@ export function registerDaemonApiRoutes(
       return c.json({ ok: false, error: "Invalid signature" }, 403);
     }
 
-    const serverIdBody = normalizeRequiredString(body.serverId) ?? undefined;
-    const serverId = await resolveServerId(db, {
-      serverId: serverIdBody,
-      machineId,
+    const enrolled = await finalizeDaemonEnrollment(db, {
+      serverIdBody,
+      machineKey,
       hostname,
       licenseId,
       licenseToken,
+      fingerprint,
+      publicJwk,
     });
-    if (!serverId) {
-      return c.json({ ok: false, error: "License already consumed or invalid" }, 400);
+    if (!enrolled.ok) {
+      return c.json({ ok: false, error: enrolled.error }, enrolled.status);
     }
 
-    const existing = await getServerDaemonStateByFingerprint(db, fingerprint);
-    if (existing && existing.serverId !== serverId) {
-      return c.json({ ok: false, error: "Fingerprint already exists" }, 409);
-    }
-
-    let result: { keyId: string };
-    try {
-      result = await attachDaemonStateToServer(db, serverId, {
-        publicJwk,
-        fingerprint,
-        hostname,
-        machineId,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return c.json({ ok: false, error: message }, 500);
-    }
-
-    return c.json({ serverId, keyId: result.keyId }, 200);
+    return c.json({ serverId: enrolled.serverId, keyId: enrolled.keyId }, 200);
   });
 
   daemon.post("/auth/session", async (c) => {
@@ -469,19 +662,15 @@ export function registerDaemonApiRoutes(
     const body = await c.req
       .json<Record<string, unknown>>()
       .catch(() => ({} as Record<string, unknown>));
-    const serverId = normalizeRequiredString(body.serverId);
-    const keyId = normalizeRequiredString(body.keyId);
-    const challengeId = normalizeRequiredString(body.challengeId);
-    const signature = normalizeRequiredString(body.signature);
-    const hostname = normalizeRequiredString(body.hostname);
-    const machineId = normalizeRequiredString(body.machineId) ?? undefined;
-
-    if (!serverId || !keyId || !challengeId || !signature || !hostname) {
+    const parsedFields = parseAuthSessionFields(body);
+    if (!parsedFields.ok) {
       return c.json(
-        { ok: false, error: "Missing required session fields" },
-        400,
+        { ok: false, error: parsedFields.error },
+        parsedFields.status,
       );
     }
+    const { serverId, keyId, challengeId, signature, hostname, machineKey } =
+      parsedFields.value;
 
     const sessionLimited = await enforceDaemonRestLimit(
       c,
@@ -489,27 +678,17 @@ export function registerDaemonApiRoutes(
     );
     if (sessionLimited) return sessionLimited;
 
-    const daemonState = await getServerDaemonStateByServerId(db, serverId);
-    if (!daemonState) {
-      return c.json({ ok: false, error: "Server key not found" }, 404);
-    }
-    if (daemonState.key.id !== keyId) {
-      return c.json({ ok: false, error: "Server key mismatch" }, 400);
-    }
-    if (!isDaemonKeyActive(daemonState.key)) {
-      return c.json({ ok: false, error: "Server key is inactive" }, 400);
+    const keyState = await loadActiveDaemonKeyState(db, serverId, keyId);
+    if (!keyState.ok) {
+      return c.json({ ok: false, error: keyState.error }, keyState.status);
     }
 
-    const [licenseRow] = await db
-      .select({ licenseId: license.id })
-      .from(license)
-      .where(eq(license.serverId, serverId))
-      .limit(1);
-    if (licenseRow?.licenseId) {
-      const activeLicense = await lookupActiveLicense(db, licenseRow.licenseId);
-      if (!activeLicense) {
-        return c.json({ ok: false, error: "License is inactive" }, 400);
-      }
+    const licenseState = await checkServerLicenseActive(db, serverId);
+    if (!licenseState.ok) {
+      return c.json(
+        { ok: false, error: licenseState.error },
+        licenseState.status,
+      );
     }
 
     if (!authStore) {
@@ -529,11 +708,11 @@ export function registerDaemonApiRoutes(
       nonce: challenge.nonce,
       serverId,
       keyId,
-      machineId: machineId ?? "",
+      machineKey: machineKey ?? "",
       hostname,
     });
     const verified = await verifyDaemonSignature(
-      daemonState.key.publicJwk,
+      keyState.daemonState.key.publicJwk,
       payload,
       signature,
     );
@@ -542,7 +721,7 @@ export function registerDaemonApiRoutes(
     }
 
     await touchDaemonKeyLastUsed(db, serverId);
-    await touchServerMetadata(db, serverId, { machineId, hostname });
+    await touchServerMetadata(db, serverId, { machineKey, hostname });
 
     const issued = await issueDaemonJwt(
       { sub: serverId, kid: keyId },

@@ -31,6 +31,7 @@ import {
   resolveServerMetricsStore,
   type AnalyticsEngineDatasetLike,
 } from './daemon/metrics/store-selection.ts'
+import { setServerStatusEventSink } from './daemon/metrics/status-events.ts'
 import type { ServerMetricsStore } from './daemon/metrics/types.ts'
 import {
   closeWorkersRequestDb,
@@ -93,6 +94,7 @@ async function initWorkerApp(env: CloudflareBindings) {
       .SERVER_METRICS,
     analyticsEngineSql: resolveAnalyticsEngineSqlConfig(env),
   })
+  setServerStatusEventSink(cachedServerMetricsStore)
   // Email queue + signup force are resolved per request from current env/DB —
   // do not bake them into createApp() so dashboard/panel changes apply without
   // waiting for an isolate recycle. signupEnvOverride here is only a fallback

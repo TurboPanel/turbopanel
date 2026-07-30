@@ -7,17 +7,14 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db.ts'
-import { environment, project } from '../../lib/db/schema.ts'
+import { environment } from '../../lib/db/schema.ts'
 import {
   applyValidatedComposeOption,
   isPlacementServerId,
   stripComposePlacementOption,
 } from '../../lib/compose/index.ts'
-import {
-  mergeProjectEnvironmentCompose,
-  verifyServerInOrg,
-} from './deploy-prepare.ts'
-import { reconcileServicesFromCompose } from './reconcile-services.ts'
+import { verifyServerInOrg } from './deploy-prepare.ts'
+import { reconcileServicesForEnvironment } from './reconcile-after-compose-save.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -107,37 +104,11 @@ function buildEnvironmentPatchFields(
   return patchFields
 }
 
-async function reconcileServicesAfterOptionsPatch(
-  db: Db,
-  environmentId: string,
-  optionsResult: Record<string, unknown>,
-): Promise<void> {
-  const [envRow] = await db
-    .select({ projectId: environment.projectId, options: environment.options })
-    .from(environment)
-    .where(eq(environment.id, environmentId))
-    .limit(1)
-  if (!envRow) return
-
-  const [projectRow] = await db
-    .select({ options: project.options })
-    .from(project)
-    .where(eq(project.id, envRow.projectId))
-    .limit(1)
-  if (!projectRow) return
-
-  const merged = mergeProjectEnvironmentCompose(projectRow.options, { ...optionsResult })
-  if (merged instanceof Response) return
-  await reconcileServicesFromCompose(db, environmentId, merged)
-}
-
-async function applyEnvironmentOptionsPatch(
+function applyEnvironmentOptionsPatch(
   c: Context<AppEnv>,
-  db: Db,
-  environmentId: string,
   body: Record<string, unknown>,
   patchFields: EnvironmentPatchFields,
-): Promise<Response | undefined> {
+): Response | undefined {
   const optionsResult = parseJsonbObject(c, body, 'options')
   if (optionsResult instanceof Response) return optionsResult
   if (optionsResult === null) return
@@ -148,7 +119,6 @@ async function applyEnvironmentOptionsPatch(
   }
   stripComposePlacementOption(optionsResult)
   patchFields.options = optionsResult
-  await reconcileServicesAfterOptionsPatch(db, environmentId, optionsResult)
 }
 
 /**
@@ -382,6 +352,8 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
       return inserted.id
     })
 
+    await reconcileServicesForEnvironment(db, id)
+
     return c.json({ ok: true as const, id })
   })
 
@@ -420,13 +392,17 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     )
     if (serverIdError) return serverIdError
 
-    const optionsError = await applyEnvironmentOptionsPatch(c, db, id, body, patchFields)
+    const optionsError = applyEnvironmentOptionsPatch(c, body, patchFields)
     if (optionsError) return optionsError
 
     await db
       .update(environment)
       .set(patchFields)
       .where(eq(environment.id, id))
+
+    if (patchFields.options !== undefined) {
+      await reconcileServicesForEnvironment(db, id)
+    }
 
     return c.json({ ok: true as const })
   })

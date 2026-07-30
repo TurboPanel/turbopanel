@@ -6,7 +6,7 @@
  * `db`; wrapping again would nest transactions incorrectly.
  */
 
-import { and, eq, isNull, ne, sql } from 'drizzle-orm'
+import { and, eq, isNull, ne } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import { managedContainerName } from '../../lib/naming.ts'
 import { container, service } from '../../lib/db/schema.ts'
@@ -43,8 +43,6 @@ export async function ensureManagedContainerAllocation(
     })
     .onConflictDoNothing({
       target: [service.environmentId, service.composeServiceName],
-      // Matches partial unique `uniq_service_environment_compose_name`.
-      where: sql`${service.composeServiceName} IS NOT NULL`,
     })
 
   const [serviceRow] = await db

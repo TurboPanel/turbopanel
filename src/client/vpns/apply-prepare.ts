@@ -151,7 +151,6 @@ type ServerRow = {
   id: string
   datacenterId: string | null
   connected: boolean
-  daemonStatus: string
 }
 
 async function loadPeerServers(
@@ -167,7 +166,6 @@ async function loadPeerServers(
       id: server.id,
       datacenterId: server.datacenterId,
       connected: server.connected,
-      daemonStatus: server.daemonStatus,
     })
     .from(server)
     .where(inArray(server.id, serverIds))
@@ -222,7 +220,7 @@ export function resolvePrimaryGatewayByDatacenter(
     if (row.role !== 'gateway') continue
     const srv = serversById.get(row.serverId)
     if (!srv?.datacenterId) continue
-    const online = srv.connected === true && srv.daemonStatus === 'online'
+    const online = srv.connected === true
     const list = byDc.get(srv.datacenterId) ?? []
     list.push({ peerId: row.id, createdAt: row.createdAt, online })
     byDc.set(srv.datacenterId, list)

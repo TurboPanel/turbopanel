@@ -41,7 +41,7 @@ export type DaemonMessage =
     at: string;
     agent: DaemonAgentInfo;
     hostname?: string;
-    machineId?: string;
+    machineKey?: string;
     /** Host OS from `/etc/os-release` (+ Deno build); persisted to `server.metadata.os`. */
     os?: ServerOsMetadata;
     /** Host timezone + NTP state; persisted to `server.metadata.timeSync`. */

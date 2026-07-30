@@ -7,8 +7,11 @@ import {
   AE_DATASET_NAME,
   AE_HOST_EVENT_TYPE,
   AE_MISSING_METRIC_SENTINEL,
+  AE_STATUS_EVENT_TYPE,
   blobColumn,
   doubleColumnForMetric,
+  statusConnectedColumn,
+  statusReasonColumn,
 } from "./field-map.ts";
 import {
   AE_DEFAULT_MAX_RANGE_SECONDS,
@@ -17,13 +20,19 @@ import {
   buildHostSeriesSql,
   buildHostSummarySql,
   buildRecentlyActiveServerIdsSql,
+  buildStatusEventsSql,
+  buildStatusPriorStateSql,
   clickhouseAvgExpression,
   hostEventDiscriminatorPredicates,
+  MAX_STATUS_EVENTS,
   parseCloudflareV4SqlResponse,
+  parseStatusEventRows,
   queryHostSeriesViaSqlApi,
   queryHostSummaryViaSqlApi,
   queryRecentlyActiveServerIds,
+  queryStatusHistoryViaSqlApi,
   quoteSqlString,
+  statusEventDiscriminatorPredicates,
   weightedAvgExpression,
 } from "./sql-api.ts";
 
@@ -252,12 +261,68 @@ it("buildRecentlyActiveServerIdsSql: fleet-wide host discriminators, no doubles"
   for (const predicate of predicates) {
     assertEquals(sql.includes(predicate), true);
   }
+  assertEquals(sql.includes(`blob1 = ${quoteSqlString(AE_HOST_EVENT_TYPE)}`), true);
+  assertEquals(sql.includes(`blob1 = ${quoteSqlString(AE_STATUS_EVENT_TYPE)}`), false);
   assertEquals(sql.includes("index1 AS server_id"), true);
   assertEquals(sql.includes("max(timestamp) AS latest_at"), true);
   assertEquals(sql.includes("GROUP BY"), true);
   assertEquals(sql.includes("toDateTime("), true);
   assertEquals(sql.includes("double"), false);
   assertEquals(sql.includes("FORMAT JSON"), false);
+});
+
+it("buildStatusEventsSql: status discriminators, ORDER BY ASC, LIMIT", () => {
+  const sql = buildStatusEventsSql(
+    {
+      serverId: SERVER_ID,
+      from: "2026-01-01T00:00:00.000Z",
+      to: "2026-01-01T01:00:00.000Z",
+    },
+    { dataset: AE_DATASET_NAME, maxRangeSeconds: AE_DEFAULT_MAX_RANGE_SECONDS },
+  );
+  for (const predicate of statusEventDiscriminatorPredicates()) {
+    assertEquals(sql.includes(`AND ${predicate}`), true);
+  }
+  assertEquals(sql.includes(`blob1 = ${quoteSqlString(AE_STATUS_EVENT_TYPE)}`), true);
+  assertEquals(
+    sql.includes(`blob2 = ${quoteSqlString(String(METRICS_SCHEMA_VERSION))}`),
+    true,
+  );
+  assertEquals(sql.includes(`${statusConnectedColumn()} AS connected`), true);
+  assertEquals(sql.includes(`${statusReasonColumn()} AS reason`), true);
+  assertEquals(sql.includes("ORDER BY timestamp ASC"), true);
+  assertEquals(sql.includes(`LIMIT ${MAX_STATUS_EVENTS + 1}`), true);
+  assertEquals(sql.includes(`blob1 = ${quoteSqlString(AE_HOST_EVENT_TYPE)}`), false);
+});
+
+it("buildStatusPriorStateSql: timestamp < from, ORDER BY DESC LIMIT 1", () => {
+  const sql = buildStatusPriorStateSql(
+    {
+      serverId: SERVER_ID,
+      from: "2026-01-01T00:00:00.000Z",
+      to: "2026-01-01T01:00:00.000Z",
+    },
+    { dataset: AE_DATASET_NAME, maxRangeSeconds: AE_DEFAULT_MAX_RANGE_SECONDS },
+  );
+  assertEquals(sql.includes(`blob1 = ${quoteSqlString(AE_STATUS_EVENT_TYPE)}`), true);
+  assertEquals(sql.includes("timestamp < toDateTime("), true);
+  assertEquals(sql.includes("ORDER BY timestamp DESC"), true);
+  assertEquals(sql.includes("LIMIT 1"), true);
+  assertEquals(sql.includes("argMax"), false);
+});
+
+it("host series SQL still filters blob1 = host after discriminator refactor", () => {
+  const { sql } = buildHostSeriesSql(
+    {
+      serverId: SERVER_ID,
+      metrics: ["cpuUsagePercent"],
+      from: "2026-01-01T00:00:00.000Z",
+      to: "2026-01-01T01:00:00.000Z",
+    },
+    { dataset: AE_DATASET_NAME, maxRangeSeconds: AE_DEFAULT_MAX_RANGE_SECONDS },
+  );
+  assertEquals(sql.includes(`blob1 = ${quoteSqlString(AE_HOST_EVENT_TYPE)}`), true);
+  assertEquals(sql.includes(`blob1 = ${quoteSqlString(AE_STATUS_EVENT_TYPE)}`), false);
 });
 
 it("queryRecentlyActiveServerIds: maps enveloped rows to serverId → latestAtMs", async () => {
@@ -472,4 +537,97 @@ it("queryHostSeriesViaSqlApi: maxRangeSeconds override is enforced", () => {
     TypeError,
     "exceeds maxRangeSeconds",
   );
+});
+
+it("parseStatusEventRows: space-separated DateTime is UTC regardless of local TZ", () => {
+  const events = parseStatusEventRows([
+    {
+      timestamp: "2026-06-15 12:30:45.123",
+      connected: 1,
+      reason: "connect",
+    },
+  ]);
+  assertEquals(events.length, 1);
+  assertEquals(events[0]!.at, "2026-06-15T12:30:45.123Z");
+});
+
+it("queryStatusHistoryViaSqlApi: truncated tail accrues to unknownSeconds", async () => {
+  const from = "2026-01-01T00:00:00.000Z";
+  const to = "2026-01-01T02:00:00.000Z";
+  const fromMs = Date.parse(from);
+  const toMs = Date.parse(to);
+  const rows: Array<Record<string, unknown>> = [];
+  for (let i = 0; i < MAX_STATUS_EVENTS + 1; i++) {
+    const connected = i % 2 === 0;
+    rows.push({
+      timestamp: new Date(fromMs + i * 1000).toISOString(),
+      connected: connected ? 1 : 0,
+      reason: connected ? "connect" : "disconnect",
+    });
+  }
+  const lastRetainedMs = fromMs + (MAX_STATUS_EVENTS - 1) * 1000;
+  const expectedUnknownTail = (toMs - lastRetainedMs) / 1000;
+
+  const result = await queryStatusHistoryViaSqlApi(
+    {
+      accountId: "acct123",
+      apiToken: "token-xyz",
+      fetch: async (_url, init) => {
+        const body = String(init?.body ?? "");
+        if (body.includes("ORDER BY timestamp DESC")) {
+          return new Response(
+            envelopedSqlResponse([{
+              timestamp: "2025-12-31T23:00:00.000Z",
+              connected: 0,
+              reason: "disconnect",
+            }]),
+            { status: 200 },
+          );
+        }
+        return new Response(envelopedSqlResponse(rows), { status: 200 });
+      },
+    },
+    { serverId: SERVER_ID, from, to },
+  );
+
+  assertEquals(result.truncated, true);
+  assertEquals(result.events.length, MAX_STATUS_EVENTS);
+  assertEquals(result.unknownSeconds, expectedUnknownTail);
+  // Last retained state is offline (odd index) — without the fix that suffix
+  // would have been counted as downtime instead of unknown.
+  assertEquals(result.events[MAX_STATUS_EVENTS - 1]!.connected, false);
+  assertEquals(result.downtimeSeconds + result.uptimeSeconds, (lastRetainedMs - fromMs) / 1000);
+});
+
+it("queryStatusHistoryViaSqlApi: truncation follows raw row count, not parsed length", async () => {
+  const from = "2026-01-01T00:00:00.000Z";
+  const to = "2026-01-01T01:00:00.000Z";
+  const rows: Array<Record<string, unknown>> = [];
+  for (let i = 0; i < MAX_STATUS_EVENTS; i++) {
+    rows.push({
+      timestamp: new Date(Date.parse(from) + i * 1000).toISOString(),
+      connected: 1,
+      reason: "connect",
+    });
+  }
+  // Sentinel overflow row that fails to parse — must still mark truncated.
+  rows.push({ timestamp: "not-a-timestamp", connected: 1, reason: "connect" });
+
+  const result = await queryStatusHistoryViaSqlApi(
+    {
+      accountId: "acct123",
+      apiToken: "token-xyz",
+      fetch: async (_url, init) => {
+        const body = String(init?.body ?? "");
+        if (body.includes("ORDER BY timestamp DESC")) {
+          return new Response(envelopedSqlResponse([]), { status: 200 });
+        }
+        return new Response(envelopedSqlResponse(rows), { status: 200 });
+      },
+    },
+    { serverId: SERVER_ID, from, to },
+  );
+
+  assertEquals(result.truncated, true);
+  assertEquals(result.events.length, MAX_STATUS_EVENTS);
 });

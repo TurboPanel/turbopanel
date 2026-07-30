@@ -17,12 +17,14 @@ import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
 import type { CommandQueue } from '../../lib/commands/queue.ts'
 import {
   command,
+  container,
   environment,
   grant,
   member,
   organization,
   project,
   server,
+  service,
   user,
   workspace,
 } from '../../lib/db/schema.ts'
@@ -316,6 +318,8 @@ async function withDeployFixtures(
     })
   } finally {
     await db.delete(command).where(eq(command.serverId, serverId))
+    await db.delete(container).where(eq(container.serverId, serverId))
+    await db.delete(service).where(eq(service.environmentId, environmentId))
     await db.delete(environment).where(eq(environment.id, environmentId))
     await db.delete(project).where(eq(project.id, projectId))
     await db.delete(server).where(eq(server.id, serverId))

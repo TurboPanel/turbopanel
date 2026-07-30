@@ -32,7 +32,7 @@ type ServiceRow = {
   displayName: string | null
   description: string | null
   environmentId: string
-  composeServiceName: string | null
+  composeServiceName: string
   metadata: unknown
   options: unknown
   createdAt: string
@@ -84,44 +84,29 @@ function parseOptionalServiceOptions(
   return { kind: 'value', value: parsed }
 }
 
-function resolveCreateComposeServiceName(
-  body: Record<string, unknown>,
-  displayName: string | null,
-): string | null {
-  if (
-    typeof body.composeServiceName === 'string' &&
-    body.composeServiceName.length > 0
-  ) {
-    return body.composeServiceName
-  }
-  if (displayName) return displayName
-  return null
-}
-
-type ComposeServiceNamePatchResult =
-  | { kind: 'absent' }
-  | { kind: 'value'; value: string | null }
-  | { kind: 'error'; response: Response }
-
-function parseComposeServiceNamePatch(
+/**
+ * `composeServiceName` is derived from the compose document (reconcile /
+ * managed allocation / container reconcile) — reject any client-supplied
+ * value (including explicit `null`) rather than silently ignoring it.
+ */
+function rejectComposeServiceNameInBody(
   c: Context,
   body: Record<string, unknown>,
-): ComposeServiceNamePatchResult {
-  if (body.composeServiceName === undefined) return { kind: 'absent' }
-  if (body.composeServiceName === null) return { kind: 'value', value: null }
-  if (typeof body.composeServiceName === 'string') {
-    return {
-      kind: 'value',
-      value: body.composeServiceName.length > 0 ? body.composeServiceName : null,
-    }
-  }
-  return { kind: 'error', response: c.json({ error: 'Invalid request' }, 400) }
+): Response | null {
+  if (body.composeServiceName === undefined) return null
+  return c.json(
+    {
+      error: 'compose_service_name_read_only',
+      message:
+        'compose_service_name is derived from the compose document and cannot be set directly — edit the compose document instead.',
+    },
+    400,
+  )
 }
 
 type ServicePatchFields = {
   displayName?: string | null
   description?: string | null
-  composeServiceName?: string | null
   metadata?: Record<string, unknown> | null
   options?: Record<string, unknown> | null
   updatedAt: string
@@ -131,17 +116,14 @@ function buildServicePatchFields(
   c: Context,
   body: Record<string, unknown>,
 ): ServicePatchFields | Response {
+  const composeNameRejected = rejectComposeServiceNameInBody(c, body)
+  if (composeNameRejected) return composeNameRejected
+
   let patchFields: ServicePatchFields
   try {
     patchFields = buildPatchUpdateFields(body)
   } catch {
     return c.json({ error: 'Invalid request' }, 400)
-  }
-
-  const composeName = parseComposeServiceNamePatch(c, body)
-  if (composeName.kind === 'error') return composeName.response
-  if (composeName.kind === 'value') {
-    patchFields.composeServiceName = composeName.value
   }
 
   const metadataResult = parseJsonbObject(c, body, 'metadata')
@@ -165,7 +147,6 @@ type ServiceCreateFieldsResult =
     kind: 'ok'
     displayName: string | null
     description: string | null
-    composeServiceName: string | null
     metadata: Record<string, unknown> | null
     options: Record<string, unknown> | null
   }
@@ -175,6 +156,9 @@ function parseServiceCreateFields(
   c: Context,
   body: Record<string, unknown>,
 ): ServiceCreateFieldsResult {
+  const composeNameRejected = rejectComposeServiceNameInBody(c, body)
+  if (composeNameRejected) return { kind: 'error', response: composeNameRejected }
+
   let displayName: string | null
   let description: string | null
   try {
@@ -202,7 +186,6 @@ function parseServiceCreateFields(
     kind: 'ok',
     displayName,
     description,
-    composeServiceName: resolveCreateComposeServiceName(body, displayName),
     metadata,
     options: optionsResult.kind === 'value' ? optionsResult.value : null,
   }
@@ -315,24 +298,17 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
     const fields = parseServiceCreateFields(c, body)
     if (fields.kind === 'error') return fields.response
 
-    const id = await db.transaction(async (tx) => {
-      const [inserted] = await tx
-        .insert(service)
-        .values({
-          displayName: fields.displayName,
-          description: fields.description,
-          environmentId,
-          ...(fields.composeServiceName !== null
-            ? { composeServiceName: fields.composeServiceName }
-            : {}),
-          ...(fields.metadata !== null ? { metadata: fields.metadata } : {}),
-          ...(fields.options !== null ? { options: fields.options } : {}),
-        })
-        .returning({ id: service.id })
-      return inserted.id
-    })
-
-    return c.json({ ok: true as const, id })
+    // `compose_service_name` is NOT NULL and derived only from the compose
+    // document via reconcile — there is no client-suppliable value that can
+    // satisfy it here, so this route can never create a valid row.
+    return c.json(
+      {
+        error: 'service_create_not_supported',
+        message:
+          'Services are created automatically from the compose document (save the project/environment compose, or create the environment) — POST /services is not supported.',
+      },
+      400,
+    )
   })
 
   router.patch('/services/:id', async (c) => {

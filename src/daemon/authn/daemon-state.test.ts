@@ -70,71 +70,48 @@ test("buildDefaultDaemonStatus returns unknown/disconnected defaults", () => {
   const status = buildDefaultDaemonStatus();
   assertEquals(status.connected, false);
   assertEquals(status.daemonStatus, "unknown");
-  assertEquals(status.lastSeenAt, null);
-  assertEquals(status.connectedAt, null);
-  assertEquals(status.disconnectedAt, null);
   assertEquals(status.statusChangedAt, null);
 });
 
-test("mapServerDaemonStatusFromColumns maps connected/online columns", () => {
+test("mapServerDaemonStatusFromColumns derives online when connected + statusChangedAt", () => {
   const status = mapServerDaemonStatusFromColumns({
     connected: true,
-    daemonStatus: "online",
-    lastSeenAt: "2020-02-01T00:00:00.000Z",
-    connectedAt: "2020-01-15T00:00:00.000Z",
-    disconnectedAt: null,
     statusChangedAt: "2020-01-15T00:00:00.000Z",
   });
 
   assertEquals(status.connected, true);
   assertEquals(status.daemonStatus, "online");
-  assertEquals(status.lastSeenAt, "2020-02-01T00:00:00.000Z");
-  assertEquals(status.connectedAt, "2020-01-15T00:00:00.000Z");
-  assertEquals(status.disconnectedAt, null);
   assertEquals(status.statusChangedAt, "2020-01-15T00:00:00.000Z");
 });
 
-test("mapServerDaemonStatusFromColumns maps disconnected/offline columns", () => {
+test("mapServerDaemonStatusFromColumns derives offline when !connected + statusChangedAt", () => {
   const status = mapServerDaemonStatusFromColumns({
     connected: false,
-    daemonStatus: "offline",
-    lastSeenAt: "2020-02-01T00:00:00.000Z",
-    connectedAt: null,
-    disconnectedAt: "2020-02-01T00:00:00.000Z",
     statusChangedAt: "2020-02-01T00:00:00.000Z",
   });
 
   assertEquals(status.connected, false);
   assertEquals(status.daemonStatus, "offline");
-  assertEquals(status.disconnectedAt, "2020-02-01T00:00:00.000Z");
+  assertEquals(status.statusChangedAt, "2020-02-01T00:00:00.000Z");
 });
 
-test("mapServerDaemonStatusFromColumns falls back to unknown for invalid daemonStatus", () => {
+test("mapServerDaemonStatusFromColumns derives unknown when statusChangedAt is null", () => {
   const status = mapServerDaemonStatusFromColumns({
     connected: false,
-    daemonStatus: "bogus",
-    lastSeenAt: null,
-    connectedAt: null,
-    disconnectedAt: null,
     statusChangedAt: null,
   });
 
   assertEquals(status.daemonStatus, "unknown");
+  assertEquals(status.statusChangedAt, null);
 });
 
 test("mapServerDaemonStatusFromColumns coerces null/undefined connected to false", () => {
   const status = mapServerDaemonStatusFromColumns({
     connected: null,
-    daemonStatus: "unknown",
-    lastSeenAt: undefined,
-    connectedAt: undefined,
-    disconnectedAt: undefined,
     statusChangedAt: undefined,
   });
 
   assertEquals(status.connected, false);
-  assertEquals(status.lastSeenAt, null);
-  assertEquals(status.connectedAt, null);
-  assertEquals(status.disconnectedAt, null);
+  assertEquals(status.daemonStatus, "unknown");
   assertEquals(status.statusChangedAt, null);
 });

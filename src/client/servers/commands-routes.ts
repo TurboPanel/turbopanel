@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm'
+import type { Context } from 'hono'
 import { Hono } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -8,26 +8,21 @@ import {
   getOrgId,
   parseJsonBody,
 } from '../shared.ts'
-import { getDb } from '../../db.ts'
+import { getDb, type Db } from '../../db.ts'
 import { assertValidHostname } from '../../lib/commands/hostname.ts'
 import {
   parseNtpSetPayload,
   parsePingResult,
   parseTimezoneSetPayload,
 } from '../../lib/commands/schemas.ts'
-import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
 import {
-  createCommandRecord,
   getCommandRecord,
   listServerCommands,
   type CommandRecord,
 } from '../../lib/db/command-records.ts'
 import { isAllowedTimezone } from '../../lib/timezones.ts'
-import { server } from '../../lib/db/schema.ts'
-import {
-  assertDispatchInfrastructure,
-  enqueueCommandOrCompensate,
-} from './command-dispatch.ts'
+import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
+import { createAndEnqueueUserCommand } from './command-dispatch.ts'
 
 type PingLatencyBreakdown = {
   apiToConsumerMs: number | null
@@ -36,6 +31,12 @@ type PingLatencyBreakdown = {
   daemonProcessingMs: number | null
   daemonToRecordedMs: number | null
   totalRoundTripMs: number | null
+}
+
+type ServerCommandAccess = {
+  db: Db
+  serverId: string
+  userId: string
 }
 
 function diffMs(
@@ -60,7 +61,7 @@ function computePingLatency(record: CommandRecord): PingLatencyBreakdown {
   const pingResult = parsePingResult(record.result)
   const cellDispatchedAt = pingResult.cellDispatchedAt ?? record.sentAt
   const cellAckAt = record.ackedAt ?? record.finishedAt
-  const latency = {
+  return {
     apiToConsumerMs: diffMs(record.queuedAt, record.dispatchStartedAt),
     consumerToCellMs: diffMs(record.dispatchStartedAt, cellDispatchedAt),
     cellToDaemonMs: nonNegativeDiffMs(cellDispatchedAt, cellAckAt),
@@ -73,20 +74,33 @@ function computePingLatency(record: CommandRecord): PingLatencyBreakdown {
       : nonNegativeDiffMs(cellDispatchedAt, record.finishedAt),
     totalRoundTripMs: diffMs(record.queuedAt, record.finishedAt),
   }
-  return latency
 }
 
-async function verifyServerInOrg(
-  db: NonNullable<ReturnType<typeof getDb>>,
+async function resolveServerCommandAccess(
+  c: Context,
   serverId: string,
-  organizationId: string,
-): Promise<boolean> {
-  const [row] = await db
-    .select({ id: server.id })
-    .from(server)
-    .where(and(eq(server.id, serverId), eq(server.organizationId, organizationId)))
-    .limit(1)
-  return Boolean(row)
+  access: 'read' | 'manage',
+): Promise<ServerCommandAccess | Response> {
+  const db = getDb(c)
+  if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+  const denied =
+    access === 'manage'
+      ? await assertCanManageOr403(c, 'server', serverId)
+      : await assertCanReadOr403(c, 'server', serverId)
+  if (denied) return denied
+
+  const session = c.get('session')
+  if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+  const orgResult = await getOrgId(c, session.userId)
+  if (orgResult instanceof Response) return orgResult
+
+  if (!(await verifyServerInOrg(db, serverId, orgResult))) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+
+  return { db, serverId, userId: session.userId }
 }
 
 export function registerServerCommandRoutes(router: Hono, opts: AuthRouteOpts) {
@@ -96,117 +110,34 @@ export function registerServerCommandRoutes(router: Hono, opts: AuthRouteOpts) {
   router.use('/servers/:id/ntp', createSessionMiddleware(opts.secrets))
 
   router.post('/servers/:id/commands/ping', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+    const access = await resolveServerCommandAccess(c, c.req.param('id'), 'read')
+    if (access instanceof Response) return access
 
-    const id = c.req.param('id')
-    const denied = await assertCanReadOr403(c, 'server', id)
-    if (denied) return denied
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
-    if (!(await verifyServerInOrg(db, id, organizationId))) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const commandQueue = assertDispatchInfrastructure(c)
-    if (commandQueue instanceof Response) return commandQueue
-
-    const expiresAt = new Date(Date.now() + 60_000).toISOString()
-    const record = await createCommandRecord(db, {
-      serverId: id,
-      actorType: 'user',
-      actorId: session.userId,
+    return createAndEnqueueUserCommand(c, access.db, {
+      serverId: access.serverId,
+      actorId: access.userId,
       type: 'daemon.ping',
       payload: {},
-      expiresAt,
+      ttlMs: 60_000,
     })
-
-    const envelope: CommandEnvelope = {
-      commandId: record.id,
-      serverId: id,
-      type: 'daemon.ping',
-      attempt: 1,
-      queuedAt: record.queuedAt ?? record.createdAt,
-    }
-    const enqueueError = await enqueueCommandOrCompensate(
-      db,
-      commandQueue,
-      record,
-      envelope,
-      c,
-    )
-    if (enqueueError) return enqueueError
-
-    return c.json({ ok: true, commandId: record.id, status: 'queued' })
   })
 
   router.post('/servers/:id/commands/reboot', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+    const access = await resolveServerCommandAccess(c, c.req.param('id'), 'manage')
+    if (access instanceof Response) return access
 
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'server', id)
-    if (denied) return denied
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
-    if (!(await verifyServerInOrg(db, id, organizationId))) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const commandQueue = assertDispatchInfrastructure(c)
-    if (commandQueue instanceof Response) return commandQueue
-
-    const expiresAt = new Date(Date.now() + 120_000).toISOString()
-    const record = await createCommandRecord(db, {
-      serverId: id,
-      actorType: 'user',
-      actorId: session.userId,
+    return createAndEnqueueUserCommand(c, access.db, {
+      serverId: access.serverId,
+      actorId: access.userId,
       type: 'server.reboot',
       payload: {},
-      expiresAt,
+      ttlMs: 120_000,
     })
-
-    const envelope: CommandEnvelope = {
-      commandId: record.id,
-      serverId: id,
-      type: 'server.reboot',
-      attempt: 1,
-      queuedAt: record.queuedAt ?? record.createdAt,
-    }
-    const enqueueError = await enqueueCommandOrCompensate(
-      db,
-      commandQueue,
-      record,
-      envelope,
-      c,
-    )
-    if (enqueueError) return enqueueError
-
-    return c.json({ ok: true, commandId: record.id, status: 'queued' })
   })
 
   router.post('/servers/:id/hostname', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'server', id)
-    if (denied) return denied
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+    const access = await resolveServerCommandAccess(c, c.req.param('id'), 'manage')
+    if (access instanceof Response) return access
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -222,56 +153,18 @@ export function registerServerCommandRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Invalid hostname' }, 400)
     }
 
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
-    if (!(await verifyServerInOrg(db, id, organizationId))) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const commandQueue = assertDispatchInfrastructure(c)
-    if (commandQueue instanceof Response) return commandQueue
-
-    const expiresAt = new Date(Date.now() + 300_000).toISOString()
-    const record = await createCommandRecord(db, {
-      serverId: id,
-      actorType: 'user',
-      actorId: session.userId,
+    return createAndEnqueueUserCommand(c, access.db, {
+      serverId: access.serverId,
+      actorId: access.userId,
       type: 'server.hostname.set',
       payload: { hostname },
-      expiresAt,
+      ttlMs: 300_000,
     })
-
-    const envelope: CommandEnvelope = {
-      commandId: record.id,
-      serverId: id,
-      type: 'server.hostname.set',
-      attempt: 1,
-      queuedAt: record.queuedAt ?? record.createdAt,
-    }
-    const enqueueError = await enqueueCommandOrCompensate(
-      db,
-      commandQueue,
-      record,
-      envelope,
-      c,
-    )
-    if (enqueueError) return enqueueError
-
-    return c.json({ ok: true, commandId: record.id, status: 'queued' })
   })
 
   router.post('/servers/:id/timezone', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'server', id)
-    if (denied) return denied
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+    const access = await resolveServerCommandAccess(c, c.req.param('id'), 'manage')
+    if (access instanceof Response) return access
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -286,56 +179,18 @@ export function registerServerCommandRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Invalid timezone' }, 400)
     }
 
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
-    if (!(await verifyServerInOrg(db, id, organizationId))) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const commandQueue = assertDispatchInfrastructure(c)
-    if (commandQueue instanceof Response) return commandQueue
-
-    const expiresAt = new Date(Date.now() + 300_000).toISOString()
-    const record = await createCommandRecord(db, {
-      serverId: id,
-      actorType: 'user',
-      actorId: session.userId,
+    return createAndEnqueueUserCommand(c, access.db, {
+      serverId: access.serverId,
+      actorId: access.userId,
       type: 'server.timezone.set',
       payload,
-      expiresAt,
+      ttlMs: 300_000,
     })
-
-    const envelope: CommandEnvelope = {
-      commandId: record.id,
-      serverId: id,
-      type: 'server.timezone.set',
-      attempt: 1,
-      queuedAt: record.queuedAt ?? record.createdAt,
-    }
-    const enqueueError = await enqueueCommandOrCompensate(
-      db,
-      commandQueue,
-      record,
-      envelope,
-      c,
-    )
-    if (enqueueError) return enqueueError
-
-    return c.json({ ok: true, commandId: record.id, status: 'queued' })
   })
 
   router.post('/servers/:id/ntp', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'server', id)
-    if (denied) return denied
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+    const access = await resolveServerCommandAccess(c, c.req.param('id'), 'manage')
+    if (access instanceof Response) return access
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -347,72 +202,22 @@ export function registerServerCommandRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Invalid ntp payload' }, 400)
     }
 
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
-    if (!(await verifyServerInOrg(db, id, organizationId))) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const commandQueue = assertDispatchInfrastructure(c)
-    if (commandQueue instanceof Response) return commandQueue
-
-    const expiresAt = new Date(Date.now() + 300_000).toISOString()
-    const record = await createCommandRecord(db, {
-      serverId: id,
-      actorType: 'user',
-      actorId: session.userId,
+    return createAndEnqueueUserCommand(c, access.db, {
+      serverId: access.serverId,
+      actorId: access.userId,
       type: 'server.ntp.set',
       payload,
-      expiresAt,
+      ttlMs: 300_000,
     })
-
-    const envelope: CommandEnvelope = {
-      commandId: record.id,
-      serverId: id,
-      type: 'server.ntp.set',
-      attempt: 1,
-      queuedAt: record.queuedAt ?? record.createdAt,
-    }
-    const enqueueError = await enqueueCommandOrCompensate(
-      db,
-      commandQueue,
-      record,
-      envelope,
-      c,
-    )
-    if (enqueueError) return enqueueError
-
-    return c.json({ ok: true, commandId: record.id, status: 'queued' })
   })
 
   router.get('/servers/:id/commands/:commandId', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+    const access = await resolveServerCommandAccess(c, c.req.param('id'), 'read')
+    if (access instanceof Response) return access
 
-    const id = c.req.param('id')
     const commandId = c.req.param('commandId')
-    const denied = await assertCanReadOr403(c, 'server', id)
-    if (denied) return denied
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
-    const record = await getCommandRecord(db, commandId)
-    if (!record) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    if (record.serverId !== id) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    if (!(await verifyServerInOrg(db, id, organizationId))) {
+    const record = await getCommandRecord(access.db, commandId)
+    if (record?.serverId !== access.serverId) {
       return c.json({ error: 'Not found' }, 404)
     }
 
@@ -424,26 +229,11 @@ export function registerServerCommandRoutes(router: Hono, opts: AuthRouteOpts) {
   })
 
   router.get('/servers/:id/commands', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+    const access = await resolveServerCommandAccess(c, c.req.param('id'), 'read')
+    if (access instanceof Response) return access
 
-    const id = c.req.param('id')
-    const denied = await assertCanReadOr403(c, 'server', id)
-    if (denied) return denied
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
-    if (!(await verifyServerInOrg(db, id, organizationId))) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const commands = await listServerCommands(db, {
-      serverId: id,
+    const commands = await listServerCommands(access.db, {
+      serverId: access.serverId,
       limit: 20,
     })
 

@@ -1,5 +1,5 @@
 {
-  "id": "f3a2a273-9d52-40a1-a4a3-912fd091b3b4",
+  "id": "fe0257d8-1b44-41a5-85cc-c30f2ed3a37c",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -426,7 +426,7 @@
           "name": "container_id",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "container_name": {
           "name": "container_name",
@@ -438,13 +438,21 @@
           "name": "status",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": true,
+          "default": "'pending'"
         },
         "compose_service_name": {
           "name": "compose_service_name",
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "ordinal": {
+          "name": "ordinal",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         },
         "metadata": {
           "name": "metadata",
@@ -525,6 +533,28 @@
             }
           ],
           "isUnique": true,
+          "where": "container_id IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_container_service_ordinal": {
+          "name": "uniq_container_service_ordinal",
+          "columns": [
+            {
+              "expression": "service_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "ordinal",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -561,7 +591,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "container_ordinal_positive_check": {
+          "name": "container_ordinal_positive_check",
+          "value": "ordinal >= 1"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.datacenter": {
@@ -1694,6 +1729,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "server_id": {
+          "name": "server_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "display_name": {
           "name": "display_name",
           "type": "varchar(255)",
@@ -1731,6 +1772,22 @@
           "columns": [
             {
               "expression": "environment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_managed_server_id": {
+          "name": "idx_managed_server_id",
+          "columns": [
+            {
+              "expression": "server_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last",
@@ -1787,6 +1844,19 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "managed_server_id_server_id_fk": {
+          "name": "managed_server_id_server_id_fk",
+          "tableFrom": "managed",
+          "tableTo": "server",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1796,6 +1866,10 @@
         "managed_display_name_format_check": {
           "name": "managed_display_name_format_check",
           "value": "(\"managed\".\"display_name\" IS NULL) OR (((char_length((\"managed\".\"display_name\")::text) >= 1) AND (char_length((\"managed\".\"display_name\")::text) <= 255)) AND ((\"managed\".\"display_name\")::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
+        },
+        "managed_status_check": {
+          "name": "managed_status_check",
+          "value": "status IS NULL OR status IN ('provisioning','applying','ready','stopped','failed')"
         }
       },
       "isRLSEnabled": false
@@ -2352,7 +2426,7 @@
           "name": "public_key",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "listen_port": {
           "name": "listen_port",
@@ -2610,6 +2684,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "managed_id": {
+          "name": "managed_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "metadata": {
           "name": "metadata",
           "type": "jsonb",
@@ -2639,6 +2719,22 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "idx_principal_managed_id": {
+          "name": "idx_principal_managed_id",
+          "columns": [
+            {
+              "expression": "managed_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -2648,6 +2744,19 @@
           "tableTo": "project",
           "columnsFrom": [
             "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "principal_managed_id_managed_id_fk": {
+          "name": "principal_managed_id_managed_id_fk",
+          "tableFrom": "principal",
+          "tableTo": "managed",
+          "columnsFrom": [
+            "managed_id"
           ],
           "columnsTo": [
             "id"
@@ -2666,7 +2775,7 @@
         },
         "principal_provider_check": {
           "name": "principal_provider_check",
-          "value": "provider IN ('pam', 'postgres', 'mysql', 'redis')"
+          "value": "provider IN ('pam', 'postgres', 'mysql', 'redis', 'clickhouse')"
         },
         "principal_username_format_check": {
           "name": "principal_username_format_check",
@@ -2824,9 +2933,9 @@
           "primaryKey": false,
           "notNull": false
         },
-        "machine_id": {
-          "name": "machine_id",
-          "type": "varchar(255)",
+        "machine_key": {
+          "name": "machine_key",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
@@ -2836,31 +2945,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
-        },
-        "daemon_status": {
-          "name": "daemon_status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'unknown'"
-        },
-        "last_seen_at": {
-          "name": "last_seen_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "connected_at": {
-          "name": "connected_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "disconnected_at": {
-          "name": "disconnected_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": false
         },
         "status_changed_at": {
           "name": "status_changed_at",
@@ -2920,11 +3004,11 @@
           "method": "btree",
           "with": {}
         },
-        "idx_server_machine_id": {
-          "name": "idx_server_machine_id",
+        "idx_server_machine_key": {
+          "name": "idx_server_machine_key",
           "columns": [
             {
-              "expression": "machine_id",
+              "expression": "machine_key",
               "isExpression": false,
               "asc": true,
               "nulls": "last",
@@ -2952,18 +3036,18 @@
           "method": "btree",
           "with": {}
         },
-        "idx_server_daemon_status": {
-          "name": "idx_server_daemon_status",
+        "idx_server_connected": {
+          "name": "idx_server_connected",
           "columns": [
             {
-              "expression": "daemon_status",
+              "expression": "id",
               "isExpression": false,
               "asc": true,
-              "nulls": "last",
-              "opclass": "text_ops"
+              "nulls": "last"
             }
           ],
           "isUnique": false,
+          "where": "\"server\".\"connected\"",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -3000,12 +3084,7 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {
-        "server_daemon_status_check": {
-          "name": "server_daemon_status_check",
-          "value": "\"server\".\"daemon_status\" IN ('online', 'offline', 'unknown')"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.service": {
@@ -3055,7 +3134,7 @@
           "name": "compose_service_name",
           "type": "varchar(255)",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "metadata": {
           "name": "metadata",
@@ -3104,7 +3183,6 @@
             }
           ],
           "isUnique": true,
-          "where": "\"service\".\"compose_service_name\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -3474,6 +3552,29 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_storage_environment_compose_volume_key": {
+          "name": "uniq_storage_environment_compose_volume_key",
+          "columns": [
+            {
+              "expression": "environment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            },
+            {
+              "expression": "(\"metadata\" ->> 'composeVolumeKey')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "kind = 'docker_volume'\n          AND environment_id IS NOT NULL\n          AND COALESCE(metadata->>'composeVolumeKey', '') <> ''",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -4921,7 +5022,18 @@
   },
   "enums": {},
   "schemas": {},
-  "sequences": {},
+  "sequences": {
+    "public.principal_uid_seq": {
+      "name": "principal_uid_seq",
+      "schema": "public",
+      "increment": "1",
+      "startWith": "10001",
+      "minValue": "10001",
+      "maxValue": "9223372036854775807",
+      "cache": "1",
+      "cycle": false
+    }
+  },
   "roles": {},
   "policies": {},
   "views": {},

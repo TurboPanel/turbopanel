@@ -24,6 +24,7 @@ import {
   isEmailActiveForRuntime,
   resolveEmailSettings,
 } from '../../lib/settings/email-settings.ts'
+import { deriveMachineKey } from '../../lib/machine-key.ts'
 
 const ORG_NAME_RE = /^[A-Za-z0-9 ._-]+$/
 
@@ -563,12 +564,11 @@ export function validateSuperadminPassword(password: string): string | null {
   return null
 }
 
-export async function readLocalMachineId(): Promise<string | undefined> {
+export async function readLocalMachineKey(): Promise<string | undefined> {
   if (typeof Deno === 'undefined') return undefined
   try {
     const id = await Deno.readTextFile('/etc/machine-id')
-    const trimmed = id.trim()
-    return trimmed.length > 0 ? trimmed : undefined
+    return await deriveMachineKey(id)
   } catch {
     return undefined
   }
@@ -619,8 +619,8 @@ async function findColocatedServerIdFromRegistry(
 }
 
 /**
- * Resolve the co-located server row id from persisted daemon metadata
- * (machineId / hostname). Used when no daemon is connected during install or
+ * Resolve the co-located server row id from dedicated identity columns
+ * (machineKey / hostname). Used when no daemon is connected during install or
  * right after an instance restart.
  */
 export async function resolveColocatedServerId(
@@ -629,7 +629,7 @@ export async function resolveColocatedServerId(
 ): Promise<string | null> {
   return (
     (await resolveColocatedServerIdFromRegistry(db, registry)) ??
-    (await resolveColocatedServerIdByMachineId(db)) ??
+    (await resolveColocatedServerIdByMachineKey(db)) ??
     (await resolveColocatedServerIdByHostname(db)) ??
     (await resolveColocatedServerIdFromSingleUnassigned(db))
   )
@@ -650,17 +650,17 @@ async function resolveColocatedServerIdFromRegistry(
   return rows[0]?.id ?? null
 }
 
-async function resolveColocatedServerIdByMachineId(
+async function resolveColocatedServerIdByMachineKey(
   db: Db,
 ): Promise<string | null> {
-  const machineId = await readLocalMachineId()
-  if (!machineId) return null
+  const machineKey = await readLocalMachineKey()
+  if (!machineKey) return null
   const byMachine = await db
     .select({ id: server.id })
     .from(server)
     .where(and(
       isNull(server.organizationId),
-      sql`${server.metadata}->>'machineId' = ${machineId}`,
+      eq(server.machineKey, machineKey),
     ))
     .limit(1)
   return byMachine[0]?.id ?? null
@@ -686,7 +686,7 @@ async function resolveColocatedServerIdByHostname(
     .from(server)
     .where(and(
       isNull(server.organizationId),
-      sql`${server.metadata}->>'hostname' = ${hostname}`,
+      eq(server.hostname, hostname),
     ))
     .limit(1)
   return byHostname[0]?.id ?? null

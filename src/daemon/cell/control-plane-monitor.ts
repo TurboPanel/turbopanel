@@ -13,7 +13,6 @@ import type { UpdateProjection } from "../authn/daemon-state.ts";
 import type { DaemonCell } from "./contracts.ts";
 import {
   agentChanged,
-  heartbeatDebounceElapsed,
   identityFromSnapshot,
   projectServerDaemon,
   steadyStateInboundSkipsDbRead,
@@ -61,6 +60,7 @@ export async function onDaemonConnectedFromEvidence(
   await projectServerDaemon(db, serverId, {
     kind: "online",
     identity: {},
+    reason: "self_heal",
     ...(connectedAt ? { connectedAt } : {}),
   });
 }
@@ -135,8 +135,14 @@ export async function onDaemonDisconnected(
   db: Db,
   serverId: string,
   cell?: DaemonCell,
+  reason: "disconnect" | "sweep_stale" = "disconnect",
 ): Promise<void> {
-  await projectServerDaemon(db, serverId, { kind: "disconnected" }, { cell });
+  await projectServerDaemon(
+    db,
+    serverId,
+    { kind: "disconnected", reason },
+    { cell },
+  );
 }
 
 export async function onDaemonUpdateQueued(
@@ -272,6 +278,10 @@ export async function onDaemonHeartbeat(
   agent?: ProjectionAgent,
   inboundAt?: string,
 ): Promise<void> {
+  // Heartbeat-only frames never open Postgres without an agent that may have
+  // changed — elapsed coalesce time alone is not a projection trigger.
+  if (!agent?.commit || !agent?.buildId) return;
+
   const snapshot = await cell.getSnapshot();
   // Skip Postgres SELECT when the cell snapshot shows steady-state heartbeats.
   if (steadyStateInboundSkipsDbRead(snapshot, { at: inboundAt, agent })) {
@@ -281,16 +291,7 @@ export async function onDaemonHeartbeat(
   const existing = await getServerDaemonStateByServerId(db, serverId);
   if (!existing) return;
 
-  const lastSeenDue = inboundAt
-    ? heartbeatDebounceElapsed(
-      existing.status?.lastSeenAt ?? null,
-      Date.parse(inboundAt),
-    )
-    : heartbeatDebounceElapsed(existing.status?.lastSeenAt ?? null);
-  const agentDue = agent?.commit && agent?.buildId &&
-    agentChanged(existing.projection, agent);
-
-  if (!lastSeenDue && !agentDue) return;
+  if (!agentChanged(existing.projection, agent)) return;
 
   await projectServerDaemon(db, serverId, { kind: "heartbeat", agent });
 }
@@ -305,7 +306,7 @@ export async function sweepStalePresence(
       const cell = registry.getCell(serverId) as RedisDaemonCell;
       const demoted = await cell.reconcileStalePresence();
       if (demoted) {
-        await onDaemonDisconnected(db, serverId, cell);
+        await onDaemonDisconnected(db, serverId, cell, "sweep_stale");
       }
     }),
   );

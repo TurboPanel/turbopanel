@@ -61,7 +61,7 @@ export type ServerTimeSync = {
 
 /**
  * JSON stored in `server.metadata`. Nested fields are optional.
- * Hostname / machineId live on dedicated `server` columns (not here).
+ * Hostname / machineKey live on dedicated `server` columns (not here).
  */
 export type ServerMetadata = {
   os?: ServerOsMetadata

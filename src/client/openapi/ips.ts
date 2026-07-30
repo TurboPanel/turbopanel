@@ -1,8 +1,4 @@
-const errorBody = {
-  type: 'object',
-  required: ['error'],
-  properties: { error: { type: 'string' } },
-}
+import { clientErrorJson } from './shared.ts'
 
 export const ipSchemas = {
   IpRow: {
@@ -112,10 +108,10 @@ export const ipPaths: Record<string, unknown> = {
           description: 'IPs',
           content: { 'application/json': { schema: { $ref: '#/components/schemas/IpsResponse' } } },
         },
-        '400': { description: 'Invalid request', content: { 'application/json': { schema: errorBody } } },
-        '401': { description: 'Unauthorized', content: { 'application/json': { schema: errorBody } } },
-        '403': { description: 'Forbidden', content: { 'application/json': { schema: errorBody } } },
-        '404': { description: 'Not found', content: { 'application/json': { schema: errorBody } } },
+        '400': { description: 'Invalid request', content: { 'application/json': { schema: clientErrorJson } } },
+        '401': { description: 'Unauthorized', content: { 'application/json': { schema: clientErrorJson } } },
+        '403': { description: 'Forbidden', content: { 'application/json': { schema: clientErrorJson } } },
+        '404': { description: 'Not found', content: { 'application/json': { schema: clientErrorJson } } },
       },
     },
     post: {
@@ -144,12 +140,12 @@ export const ipPaths: Record<string, unknown> = {
             },
           },
         },
-        '400': { description: 'Invalid request', content: { 'application/json': { schema: errorBody } } },
-        '401': { description: 'Unauthorized', content: { 'application/json': { schema: errorBody } } },
-        '403': { description: 'Forbidden', content: { 'application/json': { schema: errorBody } } },
+        '400': { description: 'Invalid request', content: { 'application/json': { schema: clientErrorJson } } },
+        '401': { description: 'Unauthorized', content: { 'application/json': { schema: clientErrorJson } } },
+        '403': { description: 'Forbidden', content: { 'application/json': { schema: clientErrorJson } } },
         '409': {
           description: 'Conflict — `ip_address_in_use` when the address is already registered.',
-          content: { 'application/json': { schema: errorBody } },
+          content: { 'application/json': { schema: clientErrorJson } },
         },
       },
     },
@@ -167,9 +163,9 @@ export const ipPaths: Record<string, unknown> = {
           description: 'IP',
           content: { 'application/json': { schema: { $ref: '#/components/schemas/IpResponse' } } },
         },
-        '401': { description: 'Unauthorized', content: { 'application/json': { schema: errorBody } } },
-        '403': { description: 'Forbidden', content: { 'application/json': { schema: errorBody } } },
-        '404': { description: 'Not found', content: { 'application/json': { schema: errorBody } } },
+        '401': { description: 'Unauthorized', content: { 'application/json': { schema: clientErrorJson } } },
+        '403': { description: 'Forbidden', content: { 'application/json': { schema: clientErrorJson } } },
+        '404': { description: 'Not found', content: { 'application/json': { schema: clientErrorJson } } },
       },
     },
     patch: {
@@ -198,10 +194,10 @@ export const ipPaths: Record<string, unknown> = {
             },
           },
         },
-        '400': { description: 'Invalid request', content: { 'application/json': { schema: errorBody } } },
-        '401': { description: 'Unauthorized', content: { 'application/json': { schema: errorBody } } },
-        '403': { description: 'Forbidden', content: { 'application/json': { schema: errorBody } } },
-        '404': { description: 'Not found', content: { 'application/json': { schema: errorBody } } },
+        '400': { description: 'Invalid request', content: { 'application/json': { schema: clientErrorJson } } },
+        '401': { description: 'Unauthorized', content: { 'application/json': { schema: clientErrorJson } } },
+        '403': { description: 'Forbidden', content: { 'application/json': { schema: clientErrorJson } } },
+        '404': { description: 'Not found', content: { 'application/json': { schema: clientErrorJson } } },
       },
     },
     delete: {
@@ -224,12 +220,12 @@ export const ipPaths: Record<string, unknown> = {
             },
           },
         },
-        '401': { description: 'Unauthorized', content: { 'application/json': { schema: errorBody } } },
-        '403': { description: 'Forbidden', content: { 'application/json': { schema: errorBody } } },
-        '404': { description: 'Not found', content: { 'application/json': { schema: errorBody } } },
+        '401': { description: 'Unauthorized', content: { 'application/json': { schema: clientErrorJson } } },
+        '403': { description: 'Forbidden', content: { 'application/json': { schema: clientErrorJson } } },
+        '404': { description: 'Not found', content: { 'application/json': { schema: clientErrorJson } } },
         '409': {
           description: 'Conflict — `ip_in_use` when the address is pinned to a hosting.',
-          content: { 'application/json': { schema: errorBody } },
+          content: { 'application/json': { schema: clientErrorJson } },
         },
       },
     },

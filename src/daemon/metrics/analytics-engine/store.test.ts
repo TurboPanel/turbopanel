@@ -5,7 +5,10 @@ import {
   METRICS_SCHEMA_VERSION,
 } from "../contract.ts";
 import type { AuthenticatedHostMetricsSample } from "../types.ts";
-import { buildAnalyticsEngineDataPoint } from "./field-map.ts";
+import {
+  buildAnalyticsEngineDataPoint,
+  buildStatusAnalyticsEngineDataPoint,
+} from "./field-map.ts";
 import {
   AnalyticsEngineServerMetricsStore,
   type AnalyticsEngineDatasetLike,
@@ -85,6 +88,35 @@ it("queryHostSeries without sql config returns available:false", async () => {
   assertEquals(result.available, false);
   assertEquals(result.kind, "analytics-engine");
   assertEquals(result.points, []);
+});
+
+it("writeStatusEvent: exactly one writeDataPoint", () => {
+  const fake = createFakeDataset();
+  const store = new AnalyticsEngineServerMetricsStore(fake.dataset);
+  const event = {
+    serverId: "11111111-2222-4333-8444-555555555555",
+    connected: true,
+    reason: "connect" as const,
+    at: "2026-01-01T00:00:00.000Z",
+  };
+  store.writeStatusEvent(event);
+  assertEquals(fake.calls.length, 1);
+  assertEquals(fake.calls[0], buildStatusAnalyticsEngineDataPoint(event));
+});
+
+it("queryStatusHistory without sql config returns available:false", async () => {
+  const fake = createFakeDataset();
+  const store = new AnalyticsEngineServerMetricsStore(fake.dataset);
+  const result = await store.queryStatusHistory({
+    serverId: "11111111-2222-4333-8444-555555555555",
+    from: "2026-01-01T00:00:00.000Z",
+    to: "2026-01-01T01:00:00.000Z",
+  });
+  assertEquals(result.available, false);
+  assertEquals(result.kind, "analytics-engine");
+  assertEquals(result.initialConnected, null);
+  assertEquals(result.events, []);
+  assertEquals(result.uptimePercent, null);
 });
 
 it("queryHostSeries with sql config delegates and maps rows", async () => {

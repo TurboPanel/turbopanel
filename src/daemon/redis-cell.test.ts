@@ -648,7 +648,7 @@ function createProjectionTrackingDb(serverId: string): {
     daemon,
     metadata: null,
     hostname: null,
-    machineId: null,
+    machineKey: null,
     ...status,
   });
 
@@ -690,7 +690,7 @@ function createSweepMockDb(init: {
   projection?: ServerDaemonProjection;
   status?: Partial<ServerDaemonStatus>;
   hostname?: string | null;
-  machineId?: string | null;
+  machineKey?: string | null;
 }): {
   db: Db;
   updateCalls: Array<Record<string, unknown>>;
@@ -702,7 +702,7 @@ function createSweepMockDb(init: {
     ...(init.projection ? { projection: init.projection } : {}),
   };
   let hostname = init.hostname ?? null;
-  let machineId = init.machineId ?? null;
+  let machineKey = init.machineKey ?? null;
   const columns = { ...buildDefaultDaemonStatus(), ...init.status };
 
   const selectLimit = () =>
@@ -710,8 +710,9 @@ function createSweepMockDb(init: {
       daemon,
       metadata: null,
       hostname,
-      machineId,
-      ...columns,
+      machineKey,
+      connected: columns.connected,
+      statusChangedAt: columns.statusChangedAt,
     }]);
 
   const db = {
@@ -727,22 +728,9 @@ function createSweepMockDb(init: {
           daemon = patch.daemon as ServerDaemonState;
         }
         if ("hostname" in patch) hostname = patch.hostname as string | null;
-        if ("machineId" in patch) machineId = patch.machineId as string | null;
+        if ("machineKey" in patch) machineKey = patch.machineKey as string | null;
         if ("connected" in patch) {
           columns.connected = patch.connected as boolean;
-        }
-        if ("daemonStatus" in patch) {
-          columns.daemonStatus = patch
-            .daemonStatus as ServerDaemonStatus["daemonStatus"];
-        }
-        if ("lastSeenAt" in patch) {
-          columns.lastSeenAt = patch.lastSeenAt as string | null;
-        }
-        if ("connectedAt" in patch) {
-          columns.connectedAt = patch.connectedAt as string | null;
-        }
-        if ("disconnectedAt" in patch) {
-          columns.disconnectedAt = patch.disconnectedAt as string | null;
         }
         if ("statusChangedAt" in patch) {
           columns.statusChangedAt = patch.statusChangedAt as string | null;
@@ -1107,7 +1095,6 @@ test(
       status: {
         ...buildDefaultDaemonStatus(),
         connected: false,
-        daemonStatus: "offline",
       },
     });
 
@@ -1115,17 +1102,27 @@ test(
 
     assertEquals(updateCalls.length, 1);
     assertEquals(updateCalls[0]?.connected, true);
-    assertEquals(updateCalls[0]?.connectedAt, connectedAt);
+    assertEquals(updateCalls[0]?.statusChangedAt, connectedAt);
   }),
 );
 
 test(
-  "onDaemonHeartbeat debounces postgres lastSeenAt to at most once per 60s",
+  "onDaemonHeartbeat is a no-op unless agent changed",
   withRedisCell(async ({ cell, serverId }) => {
-    const staleAt = new Date(Date.now() - 61_000).toISOString();
     await cell.attachDaemonSocket({
       keyId: crypto.randomUUID(),
     });
+
+    const priorAgent = {
+      commit: "abc123",
+      buildId: "build-1",
+      channel: "trunk" as const,
+    };
+    const nextAgent = {
+      commit: "def456",
+      buildId: "build-2",
+      channel: "trunk" as const,
+    };
 
     const { db, updateCalls } = createSweepMockDb({
       key: {
@@ -1135,20 +1132,18 @@ test(
         fingerprint: "fp-1",
         createdAt: "2020-01-01T00:00:00.000Z",
       },
-      projection: { hostname: "host-1" },
+      projection: { hostname: "host-1", agent: priorAgent },
       status: {
         ...buildDefaultDaemonStatus(),
         connected: true,
-        daemonStatus: "online",
-        lastSeenAt: staleAt,
-        connectedAt: staleAt,
+        statusChangedAt: new Date().toISOString(),
       },
     });
 
-    await onDaemonHeartbeat(db, serverId, cell);
-    assertEquals(updateCalls.length, 1);
+    await onDaemonHeartbeat(db, serverId, cell, priorAgent);
+    assertEquals(updateCalls.length, 0);
 
-    await onDaemonHeartbeat(db, serverId, cell);
+    await onDaemonHeartbeat(db, serverId, cell, nextAgent);
     assertEquals(updateCalls.length, 1);
   }),
 );
@@ -1180,8 +1175,7 @@ test(
       status: {
         ...buildDefaultDaemonStatus(),
         connected: true,
-        daemonStatus: "online",
-        lastSeenAt: staleAt,
+        statusChangedAt: staleAt,
       },
     });
 
@@ -1215,112 +1209,6 @@ test(
   }),
 );
 
-
-test(
-  "attach and onDaemonConnected projects online status to postgres",
-  withRedisCell(async ({ cell, serverId }) => {
-    const connectedAt = new Date().toISOString();
-    await cell.attachDaemonSocket({
-      keyId: crypto.randomUUID(),
-    });
-
-    const { db, updateCalls } = createSweepMockDb({
-      key: {
-        id: "key-1",
-        algorithm: "Ed25519",
-        publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
-        fingerprint: "fp-1",
-        createdAt: "2020-01-01T00:00:00.000Z",
-      },
-      projection: { hostname: "host-1" },
-      status: {
-        ...buildDefaultDaemonStatus(),
-        connected: false,
-        daemonStatus: "offline",
-      },
-    });
-
-    await onDaemonConnected(db, serverId, cell, connectedAt);
-
-    assertEquals(updateCalls.length, 1);
-    assertEquals(updateCalls[0]?.connected, true);
-    assertEquals(updateCalls[0]?.connectedAt, connectedAt);
-  }),
-);
-
-test(
-  "onDaemonHeartbeat debounces postgres lastSeenAt to at most once per 60s",
-  withRedisCell(async ({ cell, serverId }) => {
-    const staleAt = new Date(Date.now() - 61_000).toISOString();
-    await cell.attachDaemonSocket({
-      keyId: crypto.randomUUID(),
-    });
-
-    const { db, updateCalls } = createSweepMockDb({
-      key: {
-        id: "key-1",
-        algorithm: "Ed25519",
-        publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
-        fingerprint: "fp-1",
-        createdAt: "2020-01-01T00:00:00.000Z",
-      },
-      projection: { hostname: "host-1" },
-      status: {
-        ...buildDefaultDaemonStatus(),
-        connected: true,
-        daemonStatus: "online",
-        lastSeenAt: staleAt,
-        connectedAt: staleAt,
-      },
-    });
-
-    await onDaemonHeartbeat(db, serverId, cell);
-    assertEquals(updateCalls.length, 1);
-
-    await onDaemonHeartbeat(db, serverId, cell);
-    assertEquals(updateCalls.length, 1);
-  }),
-);
-
-test(
-  "sweepStalePresence projects offline when reconcileStalePresence demotes",
-  withRedisCell(async ({ cell, client, registry, serverId }) => {
-    await cell.attachDaemonSocket({
-      keyId: crypto.randomUUID(),
-    });
-
-    const staleAt = new Date(Date.now() - DAEMON_OFFLINE_SWEEP_MS - 1000)
-      .toISOString();
-    await client.hset(metaKey(serverId), {
-      lastInboundAt: staleAt,
-      lastSeenAt: staleAt,
-    });
-    await client.del(leaseKey(serverId));
-
-    const { db, updateCalls } = createSweepMockDb({
-      key: {
-        id: "key-1",
-        algorithm: "Ed25519",
-        publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
-        fingerprint: "fp-1",
-        createdAt: "2020-01-01T00:00:00.000Z",
-      },
-      projection: { hostname: "host-1" },
-      status: {
-        ...buildDefaultDaemonStatus(),
-        connected: true,
-        daemonStatus: "online",
-        lastSeenAt: staleAt,
-      },
-    });
-
-    await sweepStalePresence(db, registry);
-
-    assertEquals(updateCalls.length, 1);
-    assertEquals(updateCalls[0]?.connected, false);
-  }),
-);
-
 test(
   "inbound after stale sweep restores postgres online status",
   withRedisCell(async ({ cell, client, registry, serverId }) => {
@@ -1348,9 +1236,7 @@ test(
       status: {
         ...buildDefaultDaemonStatus(),
         connected: false,
-        daemonStatus: "offline",
-        lastSeenAt: staleAt,
-        disconnectedAt: staleAt,
+        statusChangedAt: staleAt,
       },
     });
 
@@ -1377,7 +1263,7 @@ test(
     assertEquals(updateCalls.length, 2);
     const last = updateCalls.at(-1);
     assertEquals(last?.connected, true);
-    assertEquals(last?.daemonStatus, "online");
+    assertEquals(typeof last?.statusChangedAt, "string");
   }),
 );
 
@@ -1495,9 +1381,7 @@ test(
       status: {
         ...buildDefaultDaemonStatus(),
         connected: true,
-        daemonStatus: "online",
-        lastSeenAt: recentAt,
-        connectedAt: recentAt,
+        statusChangedAt: recentAt,
       },
     });
 

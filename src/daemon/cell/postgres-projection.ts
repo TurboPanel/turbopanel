@@ -20,6 +20,7 @@ import {
   type ServerDaemonStateWithMetadata,
 } from "../authn/server-identity-db.ts";
 import { server } from "../../lib/db/schema.ts";
+import { normalizeMachineKey } from "../../lib/machine-key.ts";
 import {
   parseServerTimeSync,
   serverTimeSyncEquals,
@@ -37,10 +38,15 @@ import {
   type ServerGeo,
 } from "../../lib/geo/server-geo.ts";
 import type { DaemonCell, DaemonCellSnapshot } from "./contracts.ts";
+import type { ServerStatusTransitionReason } from "../metrics/types.ts";
+import {
+  emitServerStatusEvent,
+  type ServerStatusEventSink,
+} from "../metrics/status-events.ts";
 
 export type ProjectionIdentity = {
   hostname?: string;
-  machineId?: string;
+  machineKey?: string;
   remoteAddress?: string;
   keyId?: string;
   geo?: ServerGeo;
@@ -56,9 +62,14 @@ export type ProjectionAgent = {
 };
 
 export type ProjectionTrigger =
-  | { kind: "online"; identity: ProjectionIdentity; connectedAt?: string }
-  | { kind: "offline" }
-  | { kind: "disconnected" }
+  | {
+    kind: "online";
+    identity: ProjectionIdentity;
+    connectedAt?: string;
+    reason?: ServerStatusTransitionReason;
+  }
+  | { kind: "offline"; reason?: ServerStatusTransitionReason }
+  | { kind: "disconnected"; reason?: ServerStatusTransitionReason }
   | { kind: "heartbeat"; agent?: ProjectionAgent }
   | { kind: "identity"; identity: ProjectionIdentity }
   | {
@@ -91,20 +102,24 @@ export type ProjectionTrigger =
   }
   | { kind: "update-reset" };
 
-/** Status-backed read model for fleet presence — excludes hostname/machineId (metadata). */
+/** Status-backed read model for fleet presence — excludes hostname/machineKey (metadata). */
 export type ServerDaemonProjectionRead = Omit<
   ServerDaemonProjection,
-  "hostname" | "machineId"
+  "hostname" | "machineKey"
 > & {
   update?: UpdateProjection;
   connected: boolean;
   connectedAt?: string | null;
   daemonConnected: boolean;
   daemonConnectedAt?: string | null;
-  lastSeenAt?: string | null;
 };
 
-export const HEARTBEAT_DEBOUNCE_MS = 60_000;
+/**
+ * Cell-side coalesce window for inbound hello/heartbeat projection decisions.
+ * Uses the cell's in-memory/Redis inbound marker (`cellLastSeenAt`) — never a
+ * Postgres column. Survives independently of the removed Postgres debounce.
+ */
+export const INBOUND_PROJECTION_COALESCE_MS = 60_000;
 
 function nowTs(): string {
   return new Date().toISOString();
@@ -116,8 +131,8 @@ function identityChanged(
 ): boolean {
   return (identity.hostname !== undefined &&
     identity.hostname !== current?.hostname) ||
-    (identity.machineId !== undefined &&
-      identity.machineId !== current?.machineId) ||
+    (identity.machineKey !== undefined &&
+      identity.machineKey !== current?.machineKey) ||
     (identity.remoteAddress !== undefined &&
       identity.remoteAddress !== current?.remoteAddress) ||
     (identity.keyId !== undefined && identity.keyId !== current?.keyId);
@@ -129,7 +144,7 @@ function mergeIdentity(
 ): ProjectionIdentity {
   return {
     hostname: identity.hostname ?? current?.hostname,
-    machineId: identity.machineId ?? current?.machineId,
+    machineKey: identity.machineKey ?? current?.machineKey,
     remoteAddress: identity.remoteAddress ?? current?.remoteAddress,
     keyId: identity.keyId ?? current?.keyId,
   };
@@ -243,19 +258,19 @@ function buildMetadataPatch(
   return Object.keys(delta).length > 0 ? delta : null;
 }
 
-/** Dedicated identity columns — hostname / machine_id (not metadata jsonb). */
+/** Dedicated identity columns — hostname / machine_key (not metadata jsonb). */
 function buildIdentityColumnPatch(
-  existing: { hostname: string | null; machineId: string | null },
+  existing: { hostname: string | null; machineKey: string | null },
   projection: ServerDaemonProjection | undefined,
-): { hostname?: string; machineId?: string } | null {
-  const patch: { hostname?: string; machineId?: string } = {};
+): { hostname?: string; machineKey?: string } | null {
+  const patch: { hostname?: string; machineKey?: string } = {};
   const hostname = projection?.hostname?.trim();
   if (hostname && hostname !== existing.hostname) {
     patch.hostname = hostname;
   }
-  const machineId = projection?.machineId?.trim();
-  if (machineId && machineId !== existing.machineId) {
-    patch.machineId = machineId;
+  const machineKey = normalizeMachineKey(projection?.machineKey);
+  if (machineKey && machineKey !== existing.machineKey) {
+    patch.machineKey = machineKey;
   }
   return Object.keys(patch).length > 0 ? patch : null;
 }
@@ -266,7 +281,7 @@ function buildIdentityProjection(
 ): ServerDaemonProjection {
   return {
     hostname: identity.hostname,
-    machineId: identity.machineId,
+    machineKey: identity.machineKey,
     remoteAddress: identity.remoteAddress,
     keyId: identity.keyId,
     ...(current?.agent ? { agent: current.agent } : {}),
@@ -274,19 +289,17 @@ function buildIdentityProjection(
   };
 }
 
-export function heartbeatDebounceElapsed(
-  lastSeenAt: string | null,
-  nowMs: number = Date.now(),
-): boolean {
-  if (!lastSeenAt) return true;
-  const lastSeenMs = Date.parse(lastSeenAt);
-  if (Number.isNaN(lastSeenMs)) return true;
-  return nowMs - lastSeenMs >= HEARTBEAT_DEBOUNCE_MS;
-}
-
-/** True when an inbound hello/heartbeat should touch Postgres (mirrors cell coalesce). */
+/**
+ * True when an inbound hello/heartbeat should open the Postgres projection path.
+ *
+ * Elapsed time alone never makes a heartbeat due — `last_seen_at` projection was
+ * removed, so heartbeat-only traffic after {@link INBOUND_PROJECTION_COALESCE_MS}
+ * must not open Hyperdrive. Due only for offline/runtime repair or agent change.
+ * `cellLastSeenAt` / `inboundAt` remain for call-site compatibility.
+ */
 export function inboundHeartbeatProjectionDue(params: {
   runtimeConnected: boolean;
+  /** Cell in-memory/Redis inbound marker — not a Postgres column. */
   cellLastSeenAt?: string | null;
   inboundAt: string;
   storedAgent?: ProjectionAgent;
@@ -307,16 +320,7 @@ export function inboundHeartbeatProjectionDue(params: {
     return true;
   }
 
-  if (params.cellLastSeenAt === params.inboundAt) {
-    return true;
-  }
-
-  const atMs = Date.parse(params.inboundAt);
-  const lastSeenMs = params.cellLastSeenAt
-    ? Date.parse(params.cellLastSeenAt)
-    : Number.NaN;
-  if (Number.isNaN(atMs) || Number.isNaN(lastSeenMs)) return true;
-  return atMs - lastSeenMs >= HEARTBEAT_DEBOUNCE_MS;
+  return false;
 }
 
 /** Skip Postgres reads/writes for steady-state heartbeats (cell already coalesced). */
@@ -346,18 +350,10 @@ function buildMergedDaemonState(
 
 function statusColumnPatch(status: ServerDaemonStatus): {
   connected: boolean;
-  daemonStatus: string;
-  lastSeenAt: string | null;
-  connectedAt: string | null;
-  disconnectedAt: string | null;
   statusChangedAt: string | null;
 } {
   return {
     connected: status.connected,
-    daemonStatus: status.daemonStatus ?? "unknown",
-    lastSeenAt: status.lastSeenAt,
-    connectedAt: status.connectedAt,
-    disconnectedAt: status.disconnectedAt,
     statusChangedAt: status.statusChangedAt,
   };
 }
@@ -386,11 +382,9 @@ function applyOnlineTrigger(
   trigger: Extract<ProjectionTrigger, { kind: "online" }>,
   ctx: ProjectionTriggerContext,
 ): ProjectionOutcome {
-  const { currentProjection, existingStatus, now, nowMs, existing, agentHint } = ctx;
+  const { currentProjection, existingStatus, now, existing, agentHint } = ctx;
   const identity = mergeIdentity(currentProjection, trigger.identity);
   const isOfflineToOnline = !existingStatus.connected;
-  const lastSeenDue = isOfflineToOnline ||
-    heartbeatDebounceElapsed(existingStatus.lastSeenAt, nowMs);
   const incomingGeo = trigger.identity.geo;
   const geoDue = geoRefreshDue(existing.metadata, currentProjection, trigger.identity);
   const identityDue = identityChanged(currentProjection, identity);
@@ -415,7 +409,7 @@ function applyOnlineTrigger(
     writeProjection = true;
   }
 
-  if (!isOfflineToOnline && !lastSeenDue && !writeProjection && !geoDue) {
+  if (!isOfflineToOnline && !writeProjection && !geoDue) {
     return null;
   }
 
@@ -425,15 +419,8 @@ function applyOnlineTrigger(
     nextStatus = {
       ...nextStatus,
       connected: true,
-      daemonStatus: "online",
-      connectedAt: trigger.connectedAt ?? now,
-      statusChangedAt: now,
+      statusChangedAt: trigger.connectedAt ?? now,
     };
-    writeStatus = true;
-  }
-
-  if (lastSeenDue) {
-    nextStatus = { ...nextStatus, lastSeenAt: now };
     writeStatus = true;
   }
 
@@ -445,8 +432,6 @@ function applyOfflineTrigger(ctx: ProjectionTriggerContext): ProjectionOutcome {
   const nextStatus: ServerDaemonStatus = {
     ...existingStatus,
     connected: false,
-    daemonStatus: "offline",
-    disconnectedAt: now,
     statusChangedAt: now,
   };
   return {
@@ -463,22 +448,14 @@ function applyHeartbeatTrigger(
   trigger: Extract<ProjectionTrigger, { kind: "heartbeat" }>,
   ctx: ProjectionTriggerContext,
 ): ProjectionOutcome {
-  const { currentProjection, existingStatus, now, nowMs, agentHint } = ctx;
+  const { currentProjection, existingStatus, agentHint } = ctx;
   const agent = trigger.agent ?? agentHint;
-  const lastSeenDue = heartbeatDebounceElapsed(existingStatus.lastSeenAt, nowMs);
   const agentDue = Boolean(
     agent?.commit && agent?.buildId && agentChanged(currentProjection, agent),
   );
 
-  if (!lastSeenDue && !agentDue) {
+  if (!agentDue) {
     return null;
-  }
-
-  let nextStatus: ServerDaemonStatus = { ...existingStatus };
-  let writeStatus = false;
-  if (lastSeenDue) {
-    nextStatus = { ...nextStatus, lastSeenAt: now };
-    writeStatus = true;
   }
 
   let nextProjection = currentProjection;
@@ -491,7 +468,14 @@ function applyHeartbeatTrigger(
     writeProjection = true;
   }
 
-  return { touchMetadata: false, nextProjection, writeProjection, nextStatus, writeStatus, geoDue: false };
+  return {
+    touchMetadata: false,
+    nextProjection,
+    writeProjection,
+    nextStatus: { ...existingStatus },
+    writeStatus: false,
+    geoDue: false,
+  };
 }
 
 function applyIdentityTrigger(
@@ -713,7 +697,7 @@ function buildIdentityAndMetadataPatch(
       ? trigger.identity
       : undefined;
   const identityColumns = buildIdentityColumnPatch(
-    { hostname: existing.hostname, machineId: existing.machineId },
+    { hostname: existing.hostname, machineKey: existing.machineKey },
     nextProjection,
   );
   if (identityColumns) {
@@ -747,16 +731,19 @@ export async function projectServerDaemon(
   context: {
     cell?: DaemonCell;
     agent?: ProjectionAgent;
+    /** Explicit override for tests; production uses the per-runtime registry. */
+    metrics?: ServerStatusEventSink;
   } = {},
 ): Promise<boolean> {
   const existing = await getServerDaemonStateByServerId(db, serverId);
   if (!existing) return false;
 
   const now = nowTs();
+  const existingStatus = existing.status ?? buildDefaultDaemonStatus();
   const outcome = applyProjectionTrigger(trigger, {
     existing,
     currentProjection: existing.projection,
-    existingStatus: existing.status ?? buildDefaultDaemonStatus(),
+    existingStatus,
     now,
     nowMs: Date.parse(now),
     agentHint: context.agent,
@@ -790,7 +777,37 @@ export async function projectServerDaemon(
 
   await db.update(server).set(patch).where(eq(server.id, serverId));
 
+  // Emit only on a genuine connected flip, after Postgres succeeds.
+  // `applyOfflineTrigger` sets writeStatus even for already-offline rows;
+  // heartbeat / identity / agent / update triggers never flip connected.
+  if (existingStatus.connected !== nextStatus.connected) {
+    emitServerStatusEvent(
+      {
+        serverId,
+        connected: nextStatus.connected,
+        reason: resolveStatusTransitionReason(trigger, nextStatus.connected),
+        at: nextStatus.statusChangedAt ?? now,
+      },
+      context.metrics,
+    );
+  }
+
   return true;
+}
+
+function resolveStatusTransitionReason(
+  trigger: ProjectionTrigger,
+  connected: boolean,
+): ServerStatusTransitionReason {
+  if (
+    trigger.kind === "online" ||
+    trigger.kind === "offline" ||
+    trigger.kind === "disconnected"
+  ) {
+    if (trigger.reason) return trigger.reason;
+  }
+  if (connected) return "connect";
+  return "disconnect";
 }
 
 export function identityFromSnapshot(
@@ -798,7 +815,7 @@ export function identityFromSnapshot(
 ): ProjectionIdentity {
   return {
     hostname: snapshot.hostname,
-    machineId: snapshot.machineId,
+    machineKey: snapshot.machineKey,
     remoteAddress: snapshot.remoteAddress,
   };
 }
@@ -831,7 +848,7 @@ export async function listConnectedServersForSweep(
   const rows = await db
     .select({
       id: server.id,
-      connectedAt: server.connectedAt,
+      connectedAt: server.statusChangedAt,
     })
     .from(server)
     .where(eq(server.connected, true))
@@ -847,9 +864,8 @@ export type RecentlyOfflineServerForSweep = {
   id: string;
   connectedAt: string | null;
   /**
-   * Offline transition timestamp — `disconnectedAt` when set, else
-   * `statusChangedAt`. Used by the AE-direct self-heal path to reject stale
-   * pre-disconnect metrics samples.
+   * Offline transition timestamp (`status_changed_at`). Used by the AE-direct
+   * self-heal path to reject stale pre-disconnect metrics samples.
    */
   offlineAt: string;
 };
@@ -873,34 +889,26 @@ export async function listRecentlyOfflineServersForSweep(
   const rows = await db
     .select({
       id: server.id,
-      connectedAt: server.connectedAt,
-      disconnectedAt: server.disconnectedAt,
       statusChangedAt: server.statusChangedAt,
     })
     .from(server)
     .where(sql`(
       ${server.connected} = false
-      AND COALESCE(
-        ${server.disconnectedAt},
-        ${server.statusChangedAt}
-      ) >= ${cutoffIso}
+      AND ${server.statusChangedAt} >= ${cutoffIso}
     )`)
     .orderBy(
-      sql`COALESCE(
-        ${server.disconnectedAt},
-        ${server.statusChangedAt}
-      ) DESC`,
+      sql`${server.statusChangedAt} DESC`,
       server.id,
     );
 
   const candidates: RecentlyOfflineServerForSweep[] = [];
   for (const row of rows) {
-    const offlineAt = row.disconnectedAt ?? row.statusChangedAt;
+    const offlineAt = row.statusChangedAt;
     if (!offlineAt) continue;
 
     candidates.push({
       id: row.id,
-      connectedAt: row.connectedAt ?? null,
+      connectedAt: offlineAt,
       offlineAt,
     });
   }
@@ -949,12 +957,8 @@ export type ServerFleetPresenceRow = {
   daemon: unknown;
   metadata: unknown;
   hostname: string | null;
-  machineId: string | null;
+  machineKey: string | null;
   connected: boolean;
-  daemonStatus: string;
-  lastSeenAt: string | null;
-  connectedAt: string | null;
-  disconnectedAt: string | null;
   statusChangedAt: string | null;
 };
 
@@ -971,12 +975,8 @@ export async function loadServerRowsForFleetPresence(
       daemon: server.daemon,
       metadata: server.metadata,
       hostname: server.hostname,
-      machineId: server.machineId,
+      machineKey: server.machineKey,
       connected: server.connected,
-      daemonStatus: server.daemonStatus,
-      lastSeenAt: server.lastSeenAt,
-      connectedAt: server.connectedAt,
-      disconnectedAt: server.disconnectedAt,
       statusChangedAt: server.statusChangedAt,
     })
     .from(server)
@@ -987,8 +987,7 @@ export type ProjectionDaemonRow = {
   id: string;
   daemon: unknown;
   connected: boolean;
-  lastSeenAt: string | null;
-  connectedAt: string | null;
+  statusChangedAt: string | null;
 };
 
 export function buildProjectionsFromDaemonRows(
@@ -1007,16 +1006,16 @@ export function buildProjectionsFromDaemonRows(
 function toProjectionRead(row: ProjectionDaemonRow): ServerDaemonProjectionRead | null {
   const state = parseServerDaemonState(row.daemon);
   const connected = row.connected === true;
-  const lastSeenAt = row.lastSeenAt ?? null;
-  const connectedAt = row.connectedAt ?? null;
-  if (!state?.projection && !connected && !lastSeenAt) {
+  const statusChangedAt = row.statusChangedAt ?? null;
+  if (!state?.projection && !connected && !statusChangedAt) {
     return null;
   }
 
+  const connectedAt = connected ? statusChangedAt : null;
   const projection = state?.projection ?? {};
   const {
     hostname: _hostname,
-    machineId: _machineId,
+    machineKey: _machineKey,
     ...presenceProjection
   } = projection;
   return {
@@ -1025,7 +1024,6 @@ function toProjectionRead(row: ProjectionDaemonRow): ServerDaemonProjectionRead 
     connectedAt,
     daemonConnected: connected,
     daemonConnectedAt: connectedAt,
-    lastSeenAt,
   };
 }
 
@@ -1040,8 +1038,7 @@ export async function readProjectionsForServers(
       id: server.id,
       daemon: server.daemon,
       connected: server.connected,
-      lastSeenAt: server.lastSeenAt,
-      connectedAt: server.connectedAt,
+      statusChangedAt: server.statusChangedAt,
     })
     .from(server)
     .where(inArray(server.id, serverIds));

@@ -102,7 +102,7 @@ async function withDriftedPlacement(
       createdAt: now,
       updatedAt: now,
       connected: false,
-      daemonStatus: 'offline',
+      statusChangedAt: now,
     })
     .returning({ id: server.id })
   const driftedServerId = driftedServer!.id
@@ -269,7 +269,7 @@ async function withManagedFixtures(
       createdAt: now,
       updatedAt: now,
       connected: online,
-      daemonStatus: online ? 'online' : 'offline',
+      statusChangedAt: now,
     })
     .returning({ id: server.id })
   const serverId = insertedServer!.id
@@ -282,9 +282,7 @@ async function withManagedFixtures(
     if (online) {
       await db.update(server).set({
         connected: true,
-        daemonStatus: 'online',
-        lastSeenAt: now,
-        connectedAt: now,
+        statusChangedAt: now,
         updatedAt: now,
       }).where(eq(server.id, serverId))
     }
@@ -565,7 +563,7 @@ test('managed create returns rootPassword once, seals principal, is idempotent',
       .from(principal)
       .where(eq(principal.managedId, managedRow!.id))
     assertEquals(principals.length, 1)
-    assertEquals(principals[0]!.password?.startsWith('tpsecret.'), true)
+    assertEquals(principals[0]!.password?.startsWith('enc.'), true)
 
     const second = await app.request(`/environments/${environmentId}/managed`, {
       method: 'POST',
@@ -590,7 +588,7 @@ test('managed create returns rootPassword once, seals principal, is idempotent',
     assertEquals(getRes.status, 200)
     const getBody = await getRes.json() as Record<string, unknown>
     assertEquals(JSON.stringify(getBody).includes('password'), false)
-    assertEquals(JSON.stringify(getBody).includes('tpsecret.'), false)
+    assertEquals(JSON.stringify(getBody).includes('enc.'), false)
   })
 })
 
@@ -1180,7 +1178,7 @@ test('backup create/delete/restore target managed.server_id when environment pla
         createdAt: now,
         updatedAt: now,
         connected: false,
-        daemonStatus: 'offline',
+        statusChangedAt: now,
       })
       .returning({ id: server.id })
     const driftedServerId = driftedServer!.id

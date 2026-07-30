@@ -105,6 +105,7 @@ async function withPrincipalFixtures(
     .values({
       displayName: 'Principal Store Service',
       environmentId,
+      composeServiceName: 'principal-store-service',
     })
     .returning({ id: service.id })
   const serviceId = insertedService!.id
@@ -159,7 +160,7 @@ async function withPrincipalFixtures(
  */
 const test = Deno.test.bind(Deno)
 
-test('setPrincipalPassword with password seals as tpsecret and never stores plaintext', async () => {
+test('setPrincipalPassword with password seals as enc and never stores plaintext', async () => {
   await withPrincipalFixtures(async ({
     db,
     dataEncryptionSecrets,
@@ -181,13 +182,13 @@ test('setPrincipalPassword with password seals as tpsecret and never stores plai
       .limit(1)
     const stored = rows[0]!.password
     assertEquals(typeof stored, 'string')
-    assertEquals(stored!.startsWith('tpsecret.v1.'), true)
+    assertEquals(stored!.startsWith('enc.'), true)
     assertEquals(stored!.includes(plaintext), false)
     assertEquals(await decryptSecret(dataEncryptionSecrets, stored!), plaintext)
   })
 })
 
-test('setPrincipalPassword generate:true returns plaintext once and stores tpsecret', async () => {
+test('setPrincipalPassword generate:true returns plaintext once and stores enc', async () => {
   await withPrincipalFixtures(async ({
     db,
     dataEncryptionSecrets,
@@ -209,7 +210,7 @@ test('setPrincipalPassword generate:true returns plaintext once and stores tpsec
       .limit(1)
     const stored = rows[0]!.password
     assertEquals(typeof stored, 'string')
-    assertEquals(stored!.startsWith('tpsecret.v1.'), true)
+    assertEquals(stored!.startsWith('enc.'), true)
     assertEquals(stored!.includes(result.plaintext!), false)
     assertEquals(
       await decryptSecret(dataEncryptionSecrets, stored!),
@@ -255,6 +256,7 @@ test('createPrincipal and replaceAssignments write expected assignment edges', a
             .where(eq(service.id, serviceId))
             .limit(1)
         )[0]!.environmentId,
+        composeServiceName: 'principal-store-service-2',
       })
       .returning({ id: service.id })
     const secondServiceId = secondService!.id

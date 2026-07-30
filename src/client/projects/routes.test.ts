@@ -21,6 +21,7 @@ import {
   member,
   organization,
   project,
+  service,
   user,
   variable,
   workspace,
@@ -141,6 +142,7 @@ async function withProjectFixtures(
       await db.delete(variable).where(eq(variable.projectId, row.id))
       for (const env of envRows) {
         await db.delete(managed).where(eq(managed.environmentId, env.id))
+        await db.delete(service).where(eq(service.environmentId, env.id))
       }
       await db.delete(environment).where(eq(environment.projectId, row.id))
       await db.delete(project).where(eq(project.id, row.id))
@@ -219,7 +221,7 @@ test('POST /projects managed postgres scaffolds env without managed row', async 
       .where(eq(variable.environmentId, envs[0]!.id))
     assertEquals(vars.length, 1)
     assertEquals(vars[0]!.isSecret, true)
-    assertEquals(vars[0]!.value?.startsWith('tpsecret.'), true)
+    assertEquals(vars[0]!.value?.startsWith('enc.'), true)
   })
 })
 

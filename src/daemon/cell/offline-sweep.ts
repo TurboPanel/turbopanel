@@ -44,6 +44,11 @@
  */
 import { type Db, endDbConnection } from "../../db.ts";
 import { resolveWorkersDb } from "../../workers-bindings.ts";
+import {
+  resolveServerMetricsStore,
+  type AnalyticsEngineDatasetLike,
+} from "../metrics/store-selection.ts";
+import { setServerStatusEventSink } from "../metrics/status-events.ts";
 import { createDurableObjectDaemonCellRegistry } from "./do-registry.ts";
 import {
   onDaemonConnected,
@@ -548,7 +553,11 @@ export async function sweepOnce(
   const onConnected = deps.onConnected ?? onDaemonConnected;
   const onConnectedFromEvidence = deps.onConnectedFromEvidence ??
     onDaemonConnectedFromEvidence;
-  const onDisconnected = deps.onDisconnected ?? onDaemonDisconnected;
+  // Default demotion path tags ungraceful power-off / partition as sweep_stale
+  // so it is distinguishable from a clean webSocketClose (`disconnect`).
+  const onDisconnected = deps.onDisconnected ??
+    ((dbArg: Db, serverId: string) =>
+      onDaemonDisconnected(dbArg, serverId, undefined, "sweep_stale"));
 
   const resolvedDeps: SweepResolvedDeps = {
     registry,
@@ -578,6 +587,16 @@ export async function sweepOnce(
 
 /** Cron Trigger entry point (`workers.ts` `scheduled()`). */
 export async function runOfflineSweep(env: CloudflareBindings): Promise<void> {
+  // Cron-only isolate never ran `initWorkerApp` — register a write-only AE
+  // sink so demotions / self-heal emit status rows (no SQL config needed).
+  setServerStatusEventSink(
+    resolveServerMetricsStore({
+      runtime: "workers",
+      analyticsEngine: (env as { SERVER_METRICS?: AnalyticsEngineDatasetLike })
+        .SERVER_METRICS,
+    }),
+  );
+
   // Fresh per-invocation Hyperdrive client (Workers cannot reuse a DB socket
   // across requests/cron invocations). Always end it — leaving postgres.js
   // pools open stacks memory until the isolate hits the 128 MB limit.

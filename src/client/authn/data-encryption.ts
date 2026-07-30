@@ -1,15 +1,17 @@
 /**
  * Symmetric data encryption keyed off the root secret via HKDF (`info: "data-encryption"`).
  *
- * Envelope format: `tpsecret.v1.<keyVersion>.<ivB64u>.<ciphertextWithTagB64u>`
+ * At-rest envelope: `enc.<keyVersion>.<payloadB64u>`
+ * - `payload` = IV (12 bytes) ‖ ciphertext+tag (AES-GCM), single base64url blob.
  * - `keyVersion` embeds the secret version for direct key lookup (rotation fallbacks, no trial decrypt).
  * - All stored secret values must use this sealed envelope; non-envelope input is rejected at decrypt time.
  *
- * Daemon-recipient envelopes (`tpdaemon.v1.<serverId>.<keyId>.<keyVersion>.<iv>.<ciphertext>`)
+ * Daemon-recipient envelopes (`denc.<serverId>.<keyId>.<keyVersion>.<payloadB64u>`)
  * derive per-recipient AES-GCM keys via HKDF info `daemon-secret-encryption:<serverId>:<keyId>`.
+ * Format version is implied by the magic (`enc` / `denc`); bump the magic if the layout changes.
  *
  * Boundary: client/UI code imports only `encryptSecret` / `generateSealedSecret` for at-rest
- * sealing. Delivery paths use `resealSecretForDaemon` (decrypt tpsecret → encrypt tpdaemon).
+ * sealing. Delivery paths use `resealSecretForDaemon` (decrypt enc → encrypt denc).
  * Daemon decrypt remains solely via `POST /api/daemon/v1/secrets/decrypt` (JWT, recipient-scoped).
  */
 
@@ -20,9 +22,8 @@ import { deriveEncryptionSecretsConfig } from "./secrets.ts";
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
-export const ENVELOPE_MAGIC = "tpsecret";
-export const DAEMON_ENVELOPE_MAGIC = "tpdaemon";
-export const ENVELOPE_FORMAT_VERSION = "v1";
+export const ENVELOPE_MAGIC = "enc";
+export const DAEMON_ENVELOPE_MAGIC = "denc";
 const GCM_IV_BYTES = 12;
 
 export type DaemonSecretRecipient = {
@@ -59,6 +60,32 @@ function base64urlDecode(input: string): Uint8Array {
   return bytes;
 }
 
+function packPayload(iv: Uint8Array, ciphertext: Uint8Array): string {
+  const packed = new Uint8Array(iv.length + ciphertext.length);
+  packed.set(iv, 0);
+  packed.set(ciphertext, iv.length);
+  return base64urlEncode(packed);
+}
+
+function unpackPayload(payloadB64u: string): { iv: Uint8Array; ciphertext: Uint8Array } {
+  const packed = base64urlDecode(payloadB64u);
+  if (packed.length <= GCM_IV_BYTES) {
+    throw new DataEncryptionError("invalid payload length");
+  }
+  return {
+    iv: packed.subarray(0, GCM_IV_BYTES),
+    ciphertext: packed.subarray(GCM_IV_BYTES),
+  };
+}
+
+function parseKeyVersion(keyVersionStr: string): number | null {
+  const keyVersion = Number.parseInt(keyVersionStr, 10);
+  if (!Number.isInteger(keyVersion) || keyVersionStr.length === 0) {
+    return null;
+  }
+  return keyVersion;
+}
+
 function resolveKeyForVersion(
   secrets: DerivedSecretsConfig,
   version: number,
@@ -91,8 +118,8 @@ export type ParsedSecretEnvelope = {
 };
 
 /**
- * Cheap structural parse of a `tpsecret` envelope (version only).
- * Returns `null` for `tpdaemon`, plaintext, or malformed values — never trial-decrypts.
+ * Cheap structural parse of an at-rest `enc` envelope (version only).
+ * Returns `null` for `denc`, plaintext, or malformed values — never trial-decrypts.
  */
 export function parseSecretEnvelope(envelope: string): ParsedSecretEnvelope | null {
   if (!envelope.startsWith(`${ENVELOPE_MAGIC}.`)) {
@@ -100,17 +127,17 @@ export function parseSecretEnvelope(envelope: string): ParsedSecretEnvelope | nu
   }
 
   const parts = envelope.split(".");
-  if (parts.length !== 5) {
+  if (parts.length !== 3) {
     return null;
   }
 
-  const [magic, formatVersion, keyVersionStr] = parts;
-  if (magic !== ENVELOPE_MAGIC || formatVersion !== ENVELOPE_FORMAT_VERSION) {
+  const [magic, keyVersionStr, payloadB64u] = parts;
+  if (magic !== ENVELOPE_MAGIC || !payloadB64u) {
     return null;
   }
 
-  const keyVersion = Number.parseInt(keyVersionStr, 10);
-  if (!Number.isInteger(keyVersion) || keyVersionStr.length === 0) {
+  const keyVersion = parseKeyVersion(keyVersionStr);
+  if (keyVersion === null) {
     return null;
   }
 
@@ -123,20 +150,17 @@ export function parseDaemonSecretEnvelope(envelope: string): ParsedDaemonSecretE
   }
 
   const parts = envelope.split(".");
-  if (parts.length !== 7) {
+  if (parts.length !== 5) {
     return null;
   }
 
-  const [magic, formatVersion, serverId, keyId, keyVersionStr] = parts;
-  if (magic !== DAEMON_ENVELOPE_MAGIC || formatVersion !== ENVELOPE_FORMAT_VERSION) {
-    return null;
-  }
-  if (!serverId || !keyId) {
+  const [magic, serverId, keyId, keyVersionStr, payloadB64u] = parts;
+  if (magic !== DAEMON_ENVELOPE_MAGIC || !serverId || !keyId || !payloadB64u) {
     return null;
   }
 
-  const keyVersion = Number.parseInt(keyVersionStr, 10);
-  if (!Number.isInteger(keyVersion) || keyVersionStr.length === 0) {
+  const keyVersion = parseKeyVersion(keyVersionStr);
+  if (keyVersion === null) {
     return null;
   }
 
@@ -166,10 +190,8 @@ export async function encryptSecret(
   );
   return [
     ENVELOPE_MAGIC,
-    ENVELOPE_FORMAT_VERSION,
     String(secrets.current.version),
-    base64urlEncode(iv),
-    base64urlEncode(new Uint8Array(ciphertext)),
+    packPayload(iv, new Uint8Array(ciphertext)),
   ].join(".");
 }
 
@@ -182,20 +204,17 @@ export async function decryptSecret(
   }
 
   const parts = envelope.split(".");
-  if (parts.length !== 5) {
+  if (parts.length !== 3) {
     throw new DataEncryptionError("malformed envelope");
   }
 
-  const [magic, formatVersion, keyVersionStr, ivB64u, ciphertextB64u] = parts;
+  const [magic, keyVersionStr, payloadB64u] = parts;
   if (magic !== ENVELOPE_MAGIC) {
     throw new DataEncryptionError("invalid envelope magic");
   }
-  if (formatVersion !== ENVELOPE_FORMAT_VERSION) {
-    throw new DataEncryptionError("unsupported envelope format version");
-  }
 
-  const keyVersion = Number.parseInt(keyVersionStr, 10);
-  if (!Number.isInteger(keyVersion) || keyVersionStr.length === 0) {
+  const keyVersion = parseKeyVersion(keyVersionStr);
+  if (keyVersion === null) {
     throw new DataEncryptionError("invalid key version");
   }
 
@@ -207,14 +226,12 @@ export async function decryptSecret(
   let iv: Uint8Array;
   let ciphertext: Uint8Array;
   try {
-    iv = base64urlDecode(ivB64u);
-    ciphertext = base64urlDecode(ciphertextB64u);
-  } catch {
+    ({ iv, ciphertext } = unpackPayload(payloadB64u));
+  } catch (error) {
+    if (error instanceof DataEncryptionError) {
+      throw error;
+    }
     throw new DataEncryptionError("malformed envelope encoding");
-  }
-
-  if (iv.length !== GCM_IV_BYTES) {
-    throw new DataEncryptionError("invalid IV length");
   }
 
   try {
@@ -244,12 +261,10 @@ export async function encryptSecretForDaemon(
   );
   return [
     DAEMON_ENVELOPE_MAGIC,
-    ENVELOPE_FORMAT_VERSION,
     recipient.serverId,
     recipient.keyId,
     String(derived.current.version),
-    base64urlEncode(iv),
-    base64urlEncode(new Uint8Array(ciphertext)),
+    packPayload(iv, new Uint8Array(ciphertext)),
   ].join(".");
 }
 
@@ -273,19 +288,17 @@ export async function decryptSecretForDaemon(
   }
 
   const parts = envelope.split(".");
-  const [, , , , , ivB64u, ciphertextB64u] = parts;
+  const payloadB64u = parts[4]!;
 
   let iv: Uint8Array;
   let ciphertext: Uint8Array;
   try {
-    iv = base64urlDecode(ivB64u);
-    ciphertext = base64urlDecode(ciphertextB64u);
-  } catch {
+    ({ iv, ciphertext } = unpackPayload(payloadB64u));
+  } catch (error) {
+    if (error instanceof DataEncryptionError) {
+      throw error;
+    }
     throw new DataEncryptionError("malformed envelope encoding");
-  }
-
-  if (iv.length !== GCM_IV_BYTES) {
-    throw new DataEncryptionError("invalid IV length");
   }
 
   try {
@@ -301,21 +314,21 @@ export async function decryptSecretForDaemon(
 }
 
 /**
- * Decrypt an at-rest `tpsecret` envelope and re-seal it as a recipient-bound
- * `tpdaemon` envelope for daemon delivery.
+ * Decrypt an at-rest `enc` envelope and re-seal it as a recipient-bound
+ * `denc` envelope for daemon delivery.
  */
 export async function resealSecretForDaemon(
   secretsConfig: SecretsConfig,
   dataEncryptionSecrets: DerivedSecretsConfig,
   recipient: DaemonSecretRecipient,
-  tpsecretEnvelope: string,
+  sealedEnvelope: string,
 ): Promise<string> {
-  const plaintext = await decryptSecret(dataEncryptionSecrets, tpsecretEnvelope);
+  const plaintext = await decryptSecret(dataEncryptionSecrets, sealedEnvelope);
   return encryptSecretForDaemon(secretsConfig, recipient, plaintext);
 }
 
 /**
- * Generate a random password, seal it as `tpsecret`, and return the plaintext
+ * Generate a random password, seal it as `enc`, and return the plaintext
  * once for show-once UX. The helper never persists either value.
  */
 export async function generateSealedSecret(

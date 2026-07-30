@@ -30,6 +30,11 @@ import {
   onDaemonUpdateExpired,
   onDaemonUpdateResult,
 } from "./control-plane-monitor.ts";
+import {
+  resolveServerMetricsStore,
+  type AnalyticsEngineDatasetLike,
+} from "../metrics/store-selection.ts";
+import { setServerStatusEventSink } from "../metrics/status-events.ts";
 import type {
   CellDiagnostics,
   ClearUpdateStatusOptions,
@@ -332,6 +337,15 @@ export class DaemonCellObject {
     if (this.#isDaemonDebug()) {
       console.debug("daemon cell diagnostics: constructor");
     }
+    // Write-only status sink for connect/disconnect projection — pure
+    // construction, zero I/O, zero SQLite, no alarm (hibernation-safe).
+    setServerStatusEventSink(
+      resolveServerMetricsStore({
+        runtime: "workers",
+        analyticsEngine: (env as { SERVER_METRICS?: AnalyticsEngineDatasetLike })
+          .SERVER_METRICS,
+      }),
+    );
     this.#ctx.setWebSocketAutoResponse(
       new WebSocketRequestResponsePair(DAEMON_CELL_PING, DAEMON_CELL_PONG),
     );
@@ -1059,18 +1073,20 @@ export class DaemonCellObject {
     });
   }
 
-  // COST RULE: #projectInbound is only called when #shouldProjectInbound returns
-  // true (i.e., the HEARTBEAT_COALESCE_MS window has elapsed or agent changed).
-  // Steady-state idle traffic performs no SQLite cell writes and never opens a
-  // Hyperdrive connection. Every #withProjectionDb call closes the connection in
-  // its finally block — no outbound socket lingers.
+  // COST RULE: #projectInbound for heartbeats runs only on agent change,
+  // timeSync/addresses presence facts, or runtime/offline repair evidence —
+  // never because INBOUND_PROJECTION_COALESCE_MS elapsed alone. Hello keeps
+  // identity/geo handling. Steady-state idle traffic performs no SQLite cell
+  // writes and never opens a Hyperdrive connection. Every #withProjectionDb
+  // call closes the connection in its finally block — no outbound socket
+  // lingers.
   async #projectInbound(
     serverId: string,
     at?: string,
     agent?: DaemonAgentInfo,
     hostIdentity?: {
       hostname?: string;
-      machineId?: string;
+      machineKey?: string;
       os?: ServerOsMetadata;
       timeSync?: ServerTimeSync;
       addresses?: ServerAddresses;
@@ -1080,14 +1096,14 @@ export class DaemonCellObject {
     await this.#withProjectionDb("inbound", serverId, async (db) => {
       if (
         hostIdentity?.hostname ||
-        hostIdentity?.machineId ||
+        hostIdentity?.machineKey ||
         hostIdentity?.os ||
         hostIdentity?.timeSync ||
         hostIdentity?.addresses
       ) {
         await touchServerMetadata(db, serverId, {
           hostname: hostIdentity.hostname,
-          machineId: hostIdentity.machineId,
+          machineKey: hostIdentity.machineKey,
           os: hostIdentity.os,
           timeSync: hostIdentity.timeSync,
           addresses: hostIdentity.addresses,
@@ -1587,7 +1603,7 @@ export class DaemonCellObject {
       at?: string;
       agent?: DaemonAgentInfo;
       hostname?: string;
-      machineId?: string;
+      machineKey?: string;
       os?: ServerOsMetadata;
       timeSync?: ServerTimeSync;
       addresses?: ServerAddresses;
@@ -1595,10 +1611,13 @@ export class DaemonCellObject {
   ): Promise<void> {
     this.#bumpDiag("heartbeatCount");
     const at = parsed.at ?? nowIso();
-    const shouldProject = this.#shouldProjectInbound(
+    // Capture offline/runtime repair evidence before #recordInbound clears it.
+    const needsOfflineRepair = !this.#runtimeConnected ||
+      this.#sweptOffline.has(attachment.serverId);
+    const agentOrOfflineDue = this.#shouldProjectInbound(
       at,
       parsed.agent,
-    );
+    ) || needsOfflineRepair;
     this.#recordInbound(
       attachment.serverId,
       at,
@@ -1617,7 +1636,7 @@ export class DaemonCellObject {
     let hostIdentity:
       | {
         hostname?: string;
-        machineId?: string;
+        machineKey?: string;
         os?: ServerOsMetadata;
         timeSync?: ServerTimeSync;
         addresses?: ServerAddresses;
@@ -1626,7 +1645,7 @@ export class DaemonCellObject {
     if (parsed.type === "hello") {
       hostIdentity = {
         hostname: parsed.hostname,
-        machineId: parsed.machineId,
+        machineKey: parsed.machineKey,
         os: parsed.os,
         ...presenceFacts,
       };
@@ -1635,18 +1654,20 @@ export class DaemonCellObject {
     }
     const hasHostIdentity = Boolean(
       hostIdentity?.hostname ||
-        hostIdentity?.machineId ||
+        hostIdentity?.machineKey ||
         hostIdentity?.os ||
         hostIdentity?.timeSync ||
         hostIdentity?.addresses,
     );
     const attachGeo = parseServerGeo(attachment.geo) ?? undefined;
+    // Heartbeats: agent change, presence facts, or offline repair only — never
+    // elapsed coalesce time alone. Hello keeps identity/geo handling separate.
     const shouldProjectInbound = parsed.type === "hello"
-      ? shouldProject ||
+      ? agentOrOfflineDue ||
         Boolean(parsed.agent?.commit && parsed.agent?.buildId) ||
         hasHostIdentity ||
         Boolean(attachGeo)
-      : shouldProject || hasPresenceFacts;
+      : agentOrOfflineDue || hasPresenceFacts;
     if (shouldProjectInbound) {
       await this.#projectInbound(
         attachment.serverId,
@@ -1686,21 +1707,30 @@ export class DaemonCellObject {
       type: parsed.type,
     });
 
-    this.#ensureSchema();
+    try {
+      this.#ensureSchema();
 
-    if (parsed.type === "hello" || parsed.type === "heartbeat") {
-      await this.#handlePresenceMessage(attachment, parsed);
-      return;
+      if (parsed.type === "hello" || parsed.type === "heartbeat") {
+        await this.#handlePresenceMessage(attachment, parsed);
+        return;
+      }
+
+      this.#recordInbound(
+        attachment.serverId,
+        parsed.at,
+        undefined,
+        attachment.connectionId,
+      );
+      await this.#handleInboundMessage(attachment.serverId, parsed);
+      await this.#scheduleNearestAlarm();
+    } catch (err) {
+      // Swallow — a bad/unexpected message must not terminate the DO instance.
+      console.error(
+        `daemon-cell event=ws-message-error serverId=${attachment.serverId} conn=${attachment.connectionId} type=${parsed.type}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     }
-
-    this.#recordInbound(
-      attachment.serverId,
-      parsed.at,
-      undefined,
-      attachment.connectionId,
-    );
-    await this.#handleInboundMessage(attachment.serverId, parsed);
-    await this.#scheduleNearestAlarm();
   }
 
   /**
@@ -1729,13 +1759,29 @@ export class DaemonCellObject {
     code: number,
     reason: string,
   ): Promise<void> {
-    this.#ensureSchema();
-    await this.#cleanupWebSocket(ws, code, reason);
+    try {
+      this.#ensureSchema();
+      await this.#cleanupWebSocket(ws, code, reason);
+    } catch (err) {
+      console.error(
+        `daemon-cell event=ws-close-error code=${code} reason=${reason}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
   async webSocketError(ws: WebSocket, _error: unknown): Promise<void> {
-    this.#ensureSchema();
-    await this.#cleanupWebSocket(ws, 1011, "error");
+    try {
+      this.#ensureSchema();
+      await this.#cleanupWebSocket(ws, 1011, "error");
+    } catch (err) {
+      console.error(
+        `daemon-cell event=ws-error-cleanup-failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
   async #cleanupWebSocket(
@@ -1856,36 +1902,50 @@ export class DaemonCellObject {
   async alarm(): Promise<void> {
     this.#scheduledAlarmMs = null;
     this.#bumpDiag("alarmInvocations");
-    this.#ensureSchema();
-    const nowMs = Date.now();
-    const now = nowIso(nowMs);
-    const serverId = this.#resolveServerId(new Request("https://do.internal/"));
-
-    const expiringUpdates = this.#runAlarmCleanup(nowMs, now);
-    const staleDemotions = this.#collectStaleDemotions(nowMs);
-
-    if (serverId && expiringUpdates.length > 0) {
-      await this.#withProjectionDb(
-        "alarm-update-expired",
-        serverId,
-        async (db) => {
-          for (const { requestId } of expiringUpdates) {
-            await onDaemonUpdateExpired(db, serverId, requestId, now);
-          }
-        },
+    let alarmServerId = "unknown";
+    try {
+      this.#ensureSchema();
+      const nowMs = Date.now();
+      const now = nowIso(nowMs);
+      const serverId = this.#resolveServerId(
+        new Request("https://do.internal/"),
       );
-    }
+      if (serverId) alarmServerId = serverId;
 
-    for (const staleServerId of staleDemotions) {
-      await this.#projectDisconnected(staleServerId);
-    }
+      const expiringUpdates = this.#runAlarmCleanup(nowMs, now);
+      const staleDemotions = this.#collectStaleDemotions(nowMs);
 
-    if (serverId) {
-      this.#requeueExpiredInflightOutbox(nowMs);
-      await this.#pumpOutboxToDaemonSockets(serverId);
-    }
+      if (serverId && expiringUpdates.length > 0) {
+        await this.#withProjectionDb(
+          "alarm-update-expired",
+          serverId,
+          async (db) => {
+            for (const { requestId } of expiringUpdates) {
+              await onDaemonUpdateExpired(db, serverId, requestId, now);
+            }
+          },
+        );
+      }
 
-    await this.#scheduleNearestAlarm();
+      for (const staleServerId of staleDemotions) {
+        await this.#projectDisconnected(staleServerId);
+      }
+
+      if (serverId) {
+        this.#requeueExpiredInflightOutbox(nowMs);
+        await this.#pumpOutboxToDaemonSockets(serverId);
+      }
+
+      await this.#scheduleNearestAlarm();
+    } catch (err) {
+      // Log then rethrow so Cloudflare's alarm retry/backoff still runs.
+      console.error(
+        `daemon-cell event=alarm-error serverId=${alarmServerId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      throw err;
+    }
   }
 
   async purge(): Promise<void> {
@@ -2191,12 +2251,15 @@ export class DaemonCellObject {
             : {}),
         };
       }
+      const runtime = this.#buildRuntimeSnapshot(serverId);
       return {
         ...base,
         connected: status?.connected ?? base.connected,
-        connectedAt: status?.connectedAt ?? undefined,
-        lastInboundAt: status?.lastSeenAt ?? undefined,
-        lastSeenAt: status?.lastSeenAt ?? undefined,
+        connectedAt: status?.connected
+          ? (status.statusChangedAt ?? undefined)
+          : undefined,
+        lastInboundAt: runtime.lastInboundAt,
+        lastSeenAt: runtime.lastSeenAt,
         agent,
         remoteAddress: base.remoteAddress ??
           daemonState.projection?.remoteAddress,

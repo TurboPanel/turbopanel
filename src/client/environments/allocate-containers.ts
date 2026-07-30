@@ -253,25 +253,20 @@ export async function allocateEnvironmentContainers(
 export function buildContainerServiceSpecs(
   serviceRows: ReadonlyArray<{
     id: string
-    composeServiceName: string | null
+    composeServiceName: string
     options: unknown
   }>,
   containerComposeNames: ReadonlySet<string>,
-  readComposeServiceName: (
-    composeServiceName: string | null | undefined,
-    fallback: string,
-  ) => string,
 ): ContainerServiceSpec[] {
   const specs: ContainerServiceSpec[] = []
   for (const row of serviceRows) {
-    const composeServiceName = readComposeServiceName(row.composeServiceName, row.id)
-    if (!containerComposeNames.has(composeServiceName)) continue
+    if (!containerComposeNames.has(row.composeServiceName)) continue
     const parsed = parseServiceOptions(row.options) ?? {}
     const instances = parsed.instances ?? 1
     const explicitContainerName = parsed.container?.name
     specs.push({
       serviceId: row.id,
-      composeServiceName,
+      composeServiceName: row.composeServiceName,
       instances,
       ...(explicitContainerName ? { explicitContainerName } : {}),
     })
