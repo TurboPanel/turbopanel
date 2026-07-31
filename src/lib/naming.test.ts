@@ -3,12 +3,13 @@ import {
   PRINCIPAL_HOME_ROOT,
   PRINCIPAL_UID_START,
   RESERVED_DEPLOY_VARIABLE_KEYS,
-  containerNameFromRow,
+  containerNameFromService,
   dockerVolumeNameFromStorageId,
   isReservedDeployVariableKey,
   isValidDockerResourceName,
   legacyNamespacedDockerVolumeName,
   managedContainerName,
+  managedIngressComposeServiceName,
   principalHomeDir,
   principalSshDir,
   principalVolumePath,
@@ -35,30 +36,34 @@ test('isValidDockerResourceName matches Docker Engine allowlist', () => {
   assertEquals(isValidDockerResourceName('has space'), false)
 })
 
-test('containerNameFromRow uses bare id for single instance', () => {
+test('containerNameFromService uses bare service id for single instance', () => {
   assertEquals(
-    containerNameFromRow({
-      containerId: 'cid-1',
+    containerNameFromService({
+      serviceId: 'sid-1',
       ordinal: 1,
       instanceCount: 1,
     }),
-    'cid-1',
+    'sid-1',
   )
 })
 
-test('containerNameFromRow suffixes ordinal when multi-instance', () => {
+test('containerNameFromService suffixes ordinal when multi-instance', () => {
   assertEquals(
-    containerNameFromRow({
-      containerId: 'cid-1',
+    containerNameFromService({
+      serviceId: 'sid-1',
       ordinal: 2,
       instanceCount: 3,
     }),
-    'cid-1-2',
+    'sid-1-2',
   )
 })
 
-test('managedContainerName always carries ordinal suffix', () => {
-  assertEquals(managedContainerName('cid-1'), 'cid-1-1')
+test('managedContainerName always carries ordinal suffix on service id', () => {
+  assertEquals(managedContainerName('sid-1'), 'sid-1-1')
+})
+
+test('managedIngressComposeServiceName appends -ingress to the engine compose key', () => {
+  assertEquals(managedIngressComposeServiceName('postgres'), 'postgres-ingress')
 })
 
 test('dockerVolumeNameFromStorageId returns the storage UUID', () => {

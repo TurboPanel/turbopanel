@@ -30,7 +30,7 @@ test('resolveAllocatedContainerName prefers explicit name in every naming mode',
   assertEquals(
     resolveAllocatedContainerName({
       explicitContainerName: 'my-app',
-      rowId: '01936b3e-aaaa-bbbb-cccc-123456789abc',
+      serviceId: '01936b3e-aaaa-bbbb-cccc-123456789abc',
       ordinal: 1,
       instances: 1,
     }),
@@ -42,7 +42,7 @@ test('resolveAllocatedContainerName suffixes ordinal for multi-instance explicit
   assertEquals(
     resolveAllocatedContainerName({
       explicitContainerName: 'my-app',
-      rowId: '01936b3e-aaaa-bbbb-cccc-123456789abc',
+      serviceId: '01936b3e-aaaa-bbbb-cccc-123456789abc',
       ordinal: 2,
       instances: 3,
     }),
@@ -50,25 +50,25 @@ test('resolveAllocatedContainerName suffixes ordinal for multi-instance explicit
   )
 })
 
-test('resolveAllocatedContainerName falls back to row id when no explicit name', () => {
-  const rowId = '01936b3e-aaaa-bbbb-cccc-123456789abc'
+test('resolveAllocatedContainerName falls back to service id when no explicit name', () => {
+  const serviceId = '01936b3e-aaaa-bbbb-cccc-123456789abc'
   assertEquals(
     resolveAllocatedContainerName({
       explicitContainerName: undefined,
-      rowId,
+      serviceId,
       ordinal: 1,
       instances: 1,
     }),
-    rowId,
+    serviceId,
   )
   assertEquals(
     resolveAllocatedContainerName({
       explicitContainerName: undefined,
-      rowId,
+      serviceId,
       ordinal: 2,
       instances: 2,
     }),
-    `${rowId}-2`,
+    `${serviceId}-2`,
   )
 })
 
@@ -323,6 +323,7 @@ test('allocateEnvironmentContainers re-homes rows when placement server changes'
     assertEquals(first.length, 1)
     const firstRowId = first[0]!.containerRowId
     const firstName = first[0]!.containerName
+    assertEquals(firstName, webServiceId)
 
     const second = await allocateEnvironmentContainers(db, {
       environmentId,

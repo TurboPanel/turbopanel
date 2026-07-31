@@ -20,9 +20,9 @@ export type ManagedContainerAllocation = {
 /**
  * Idempotently ensure a `service` row for `composeServiceName` and an
  * ordinal-1 `container` row pinned to `serverId`, named
- * {@link managedContainerName}. Upserts on `(service, ordinal)` so a
- * placement change re-homes the same row; prunes other pending null-id rows
- * for that service (stale ordinals).
+ * {@link managedContainerName} (`<service.id>-1`). Upserts on
+ * `(service, ordinal)` so a placement change re-homes the same row; prunes
+ * other pending null-id rows for that service (stale ordinals).
  */
 export async function ensureManagedContainerAllocation(
   db: Db,
@@ -101,7 +101,7 @@ export async function ensureManagedContainerAllocation(
     )
   }
 
-  const nextName = managedContainerName(row.id)
+  const nextName = managedContainerName(serviceRow.id)
   // Reused null-id rows (e.g. after destroy left `exited`, or a placement
   // change) must become `pending` on the target server so project-delete
   // treats the new apply as active. Do not clear or downgrade rows that

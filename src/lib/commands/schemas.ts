@@ -1371,12 +1371,22 @@ export type ManagedApplyTlsMaterial = {
   keyPath: string
 }
 
+/**
+ * Per-service managed Traefik identity allocated by the instance when
+ * `exposure.enabled` — own `service` + ordinal-1 `container` rows.
+ */
+export type ManagedApplyIngress = {
+  serviceId: string
+  composeServiceName: string
+  containerName: string
+}
+
 export type ManagedApplyCommandPayload = {
   managedId: string
   environmentId: string
   engine: ManagedEngineCode
   projectName: string
-  /** Compose `container_name` — `<container.id>-1` from managed pre-allocation. */
+  /** Compose `container_name` — `<service.id>-1` from managed pre-allocation. */
   containerName: string
   image: string
   containerPort: number
@@ -1386,6 +1396,11 @@ export type ManagedApplyCommandPayload = {
   resources?: NonNullable<ServiceOptions['resources']>
   dockerOptions?: ManagedDockerOptions
   exposure: ManagedApplyExposure
+  /**
+   * Required when `exposure.enabled`; omitted when exposure is disabled.
+   * Identity for the dedicated per-service Traefik ingress container.
+   */
+  ingress?: ManagedApplyIngress
   credentials: ManagedApplyCredential[]
   databases?: ManagedApplyDatabaseOp[]
   /** Transient usernames to drop after credentials are applied (never root). */
@@ -1590,6 +1605,36 @@ function parseManagedApplyExposure(value: unknown): ManagedApplyExposure {
   return exposure
 }
 
+/** Matches `service_display_name_format_check` / compose-service-name charset. */
+function isValidComposeServiceName(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= 255 &&
+    /^[A-Za-z0-9 ._-]+$/.test(value)
+  )
+}
+
+function parseManagedApplyIngress(value: unknown): ManagedApplyIngress {
+  if (!isRecord(value)) {
+    throw new Error('Invalid managed.apply ingress')
+  }
+  if (
+    !isString(value.serviceId) ||
+    !UUID_RE.test(value.serviceId) ||
+    !isString(value.composeServiceName) ||
+    !isValidComposeServiceName(value.composeServiceName) ||
+    !isString(value.containerName) ||
+    !isValidDockerResourceName(value.containerName)
+  ) {
+    throw new Error('Invalid managed.apply ingress')
+  }
+  return {
+    serviceId: value.serviceId,
+    composeServiceName: value.composeServiceName,
+    containerName: value.containerName,
+  }
+}
+
 function parseManagedApplyCredentialDatabases(value: unknown): string[] {
   if (!Array.isArray(value)) {
     throw new TypeError('Invalid managed.apply credentials entry')
@@ -1767,6 +1812,18 @@ export function parseManagedApplyPayload(value: unknown): ManagedApplyCommandPay
   const databases = parseManagedApplyDatabases(value.databases)
   const dropUsers = parseManagedApplyDropUsers(value.dropUsers)
   const tlsMaterial = parseManagedApplyTlsMaterial(value.tlsMaterial)
+  const exposure = parseManagedApplyExposure(value.exposure)
+
+  let ingress: ManagedApplyIngress | undefined
+  if (value.ingress !== undefined) {
+    ingress = parseManagedApplyIngress(value.ingress)
+  }
+  if (exposure.enabled && ingress === undefined) {
+    throw new Error('Invalid managed.apply ingress: required when exposure.enabled')
+  }
+  if (!exposure.enabled && ingress !== undefined) {
+    throw new Error('Invalid managed.apply ingress: must be omitted when exposure is disabled')
+  }
 
   return {
     managedId: value.managedId,
@@ -1781,7 +1838,8 @@ export function parseManagedApplyPayload(value: unknown): ManagedApplyCommandPay
     volumes: parseManagedApplyVolumes(value.volumes),
     ...(resources === undefined ? {} : { resources }),
     ...(dockerOptions === undefined ? {} : { dockerOptions }),
-    exposure: parseManagedApplyExposure(value.exposure),
+    exposure,
+    ...(ingress === undefined ? {} : { ingress }),
     credentials: parseManagedApplyCredentials(value.credentials),
     ...(databases === undefined ? {} : { databases }),
     ...(dropUsers === undefined ? {} : { dropUsers }),

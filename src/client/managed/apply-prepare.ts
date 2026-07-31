@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { and, eq, isNull } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import {
@@ -22,7 +22,8 @@ import { composeDocumentToYaml } from '../../lib/compose/convert.ts'
 import type { ComposeDocument } from '../../lib/compose/types.ts'
 import type { ManagedEngineSpec } from '../../lib/managed/index.ts'
 import type { ManagedSettings } from '../../lib/managed/settings.ts'
-import { managed, principal } from '../../lib/db/schema.ts'
+import { managedIngressComposeServiceName } from '../../lib/naming.ts'
+import { container, managed, principal, service } from '../../lib/db/schema.ts'
 import type { Db } from '../../db.ts'
 import { resolveHostingBindAddress } from '../environments/deploy-prepare.ts'
 import { listManagedPrincipals } from '../principals/store.ts'
@@ -259,6 +260,29 @@ export async function buildManagedApplyPayload(
     composeServiceName: runtime.composeServiceName,
   })
 
+  const ingressComposeServiceName = managedIngressComposeServiceName(
+    runtime.composeServiceName,
+  )
+  let ingress: ManagedApplyCommandPayload['ingress']
+  if (input.settings.exposure.enabled) {
+    const ingressAllocation = await ensureManagedContainerAllocation(db, {
+      environmentId: input.environmentId,
+      serverId: input.serverId,
+      composeServiceName: ingressComposeServiceName,
+    })
+    ingress = {
+      serviceId: ingressAllocation.serviceId,
+      composeServiceName: ingressComposeServiceName,
+      containerName: ingressAllocation.containerName,
+    }
+  } else {
+    await prunePendingIngressContainers(
+      db,
+      input.environmentId,
+      ingressComposeServiceName,
+    )
+  }
+
   const bindResolved = await resolveHostingBindAddress(db, {
     serverId: input.serverId,
     options: { bind: input.settings.exposure.bind },
@@ -311,6 +335,7 @@ export async function buildManagedApplyPayload(
     exposure,
     credentials,
   }
+  if (ingress !== undefined) payload.ingress = ingress
 
   if (input.settings.resources) payload.resources = input.settings.resources
   if (input.settings.dockerOptions) payload.dockerOptions = input.settings.dockerOptions
@@ -321,6 +346,36 @@ export async function buildManagedApplyPayload(
   if (runtime.tlsMaterial) payload.tlsMaterial = runtime.tlsMaterial
 
   return payload
+}
+
+/**
+ * Drop pending null-id ingress container rows when exposure is turned off.
+ * Leaves the `service` row for idempotent reuse on a later expose.
+ */
+async function prunePendingIngressContainers(
+  db: Db,
+  environmentId: string,
+  composeServiceName: string,
+): Promise<void> {
+  const [serviceRow] = await db
+    .select({ id: service.id })
+    .from(service)
+    .where(
+      and(
+        eq(service.environmentId, environmentId),
+        eq(service.composeServiceName, composeServiceName),
+      ),
+    )
+    .limit(1)
+  if (!serviceRow) return
+
+  await db.delete(container).where(
+    and(
+      eq(container.serviceId, serviceRow.id),
+      isNull(container.containerId),
+      eq(container.status, 'pending'),
+    ),
+  )
 }
 
 /**

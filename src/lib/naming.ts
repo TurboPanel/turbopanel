@@ -14,24 +14,49 @@ export function isValidDockerResourceName(value: string): boolean {
 }
 
 /**
- * Compose `container_name` from a container row identity. Single-instance
- * services use the bare id; multi-instance appends `-<ordinal>`.
+ * Compose `container_name` from a **service** identity. Single-instance
+ * services use the bare service id; multi-instance appends `-<ordinal>`.
+ *
+ * Identity is the `service` row (not the `container` row) so names stay
+ * stable across container-row reallocation and match
+ * `uniq_container_service_ordinal`.
  */
-export function containerNameFromRow(input: {
-  containerId: string
+export function containerNameFromService(input: {
+  serviceId: string
   ordinal: number
   instanceCount: number
 }): string {
-  if (input.instanceCount === 1) return input.containerId
-  return `${input.containerId}-${input.ordinal}`
+  if (input.instanceCount === 1) return input.serviceId
+  return `${input.serviceId}-${input.ordinal}`
 }
 
 /**
  * Managed engines always carry the ordinal so a future read-replica fan-out
  * is `-2`, `-3`, … with no rename of the primary.
  */
-export function managedContainerName(containerId: string): string {
-  return `${containerId}-1`
+export function managedContainerName(serviceId: string): string {
+  return `${serviceId}-1`
+}
+
+/**
+ * Compose service key for a managed service's dedicated Traefik ingress.
+ * Must satisfy `service_display_name_format_check` (`[A-Za-z0-9 ._-]+`, ≤255).
+ */
+export function managedIngressComposeServiceName(
+  engineComposeServiceName: string,
+): string {
+  const name = `${engineComposeServiceName}-ingress`
+  if (name.length === 0 || name.length > 255) {
+    throw new TypeError(
+      `Invalid managed ingress compose service name length: ${name.length}`,
+    )
+  }
+  if (!/^[A-Za-z0-9 ._-]+$/.test(name)) {
+    throw new TypeError(
+      `Invalid managed ingress compose service name: ${engineComposeServiceName}`,
+    )
+  }
+  return name
 }
 
 /** Docker volume name for a `docker_volume` storage row is the row UUID. */

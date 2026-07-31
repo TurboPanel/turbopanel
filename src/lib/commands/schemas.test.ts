@@ -621,13 +621,62 @@ test('parseManagedApplyPayload rejects nested dockerOptions and enabled exposure
     Error,
     'Invalid managed.apply exposure',
   )
+  const VALID_INGRESS = {
+    serviceId: '00000000-0000-4000-8000-000000000099',
+    composeServiceName: 'postgres-ingress',
+    containerName: '00000000-0000-4000-8000-000000000099-1',
+  }
   assertEquals(
     parseManagedApplyPayload({
       ...VALID_MANAGED_APPLY,
       exposure: { enabled: true, protocol: 'tcp', publishedPort: 15432 },
+      ingress: VALID_INGRESS,
     }).exposure.publishedPort,
     15432,
   )
+})
+
+test('parseManagedApplyPayload requires ingress iff exposure.enabled', () => {
+  const VALID_INGRESS = {
+    serviceId: '00000000-0000-4000-8000-000000000099',
+    composeServiceName: 'postgres-ingress',
+    containerName: '00000000-0000-4000-8000-000000000099-1',
+  }
+  assertThrows(
+    () =>
+      parseManagedApplyPayload({
+        ...VALID_MANAGED_APPLY,
+        exposure: { enabled: true, protocol: 'tcp', publishedPort: 15432 },
+      }),
+    Error,
+    'Invalid managed.apply ingress',
+  )
+  assertThrows(
+    () =>
+      parseManagedApplyPayload({
+        ...VALID_MANAGED_APPLY,
+        exposure: { enabled: false, protocol: 'tcp' },
+        ingress: VALID_INGRESS,
+      }),
+    Error,
+    'Invalid managed.apply ingress',
+  )
+  assertThrows(
+    () =>
+      parseManagedApplyPayload({
+        ...VALID_MANAGED_APPLY,
+        exposure: { enabled: true, protocol: 'tcp', publishedPort: 15432 },
+        ingress: { ...VALID_INGRESS, containerName: '-bad' },
+      }),
+    Error,
+    'Invalid managed.apply ingress',
+  )
+  const accepted = parseManagedApplyPayload({
+    ...VALID_MANAGED_APPLY,
+    exposure: { enabled: true, protocol: 'tcp', publishedPort: 15432 },
+    ingress: VALID_INGRESS,
+  })
+  assertEquals(accepted.ingress, VALID_INGRESS)
 })
 
 test('parseManagedApplyPayload rejects dockerOptions.extraEnv overriding postgres-reserved env keys', () => {

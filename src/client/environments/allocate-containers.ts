@@ -5,14 +5,14 @@
  * (`(service, ordinal)`). Placement changes re-home the same row (update
  * `server_id`) so previewed UUID names stay stable and stale pending rows
  * on a previous server are not left behind.
- * Names come from {@link containerNameFromRow} (row UUID) or an explicit
- * `service.options.container.name` — applied in every project naming mode,
- * with `-<ordinal>` suffixes when `instances > 1`.
+ * Names come from {@link containerNameFromService} (service UUID) or an
+ * explicit `service.options.container.name` — applied in every project naming
+ * mode, with `-<ordinal>` suffixes when `instances > 1`.
  */
 
 import { and, eq, gt, inArray, isNull, notInArray } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
-import { containerNameFromRow } from '../../lib/naming.ts'
+import { containerNameFromService } from '../../lib/naming.ts'
 import type { ContainerNamingMode } from '../../lib/project-options.ts'
 import { parseServiceOptions } from '../../lib/service-options.ts'
 import { container } from '../../lib/db/schema.ts'
@@ -57,21 +57,25 @@ function shouldAllocateService(
  * Resolve the compose `container_name` stored on the allocation row.
  *
  * Explicit `service.options.container.name` wins in every project naming mode.
- * Multi-instance services append `-<ordinal>` so clones never share a name.
+ * Otherwise the name is derived from the **service** id (not the container
+ * row). Multi-instance services append `-<ordinal>` so clones never share a
+ * name.
  */
 export function resolveAllocatedContainerName(input: {
   explicitContainerName: string | undefined
-  rowId: string
+  serviceId: string
   ordinal: number
   instances: number
 }): string {
-  const base =
+  if (
     typeof input.explicitContainerName === 'string' &&
-      input.explicitContainerName.length > 0
-      ? input.explicitContainerName
-      : input.rowId
-  return containerNameFromRow({
-    containerId: base,
+    input.explicitContainerName.length > 0
+  ) {
+    if (input.instances === 1) return input.explicitContainerName
+    return `${input.explicitContainerName}-${input.ordinal}`
+  }
+  return containerNameFromService({
+    serviceId: input.serviceId,
     ordinal: input.ordinal,
     instanceCount: input.instances,
   })
@@ -157,7 +161,7 @@ async function allocateServiceContainers(
 
       const nextName = resolveAllocatedContainerName({
         explicitContainerName: svc.explicitContainerName,
-        rowId: row.id,
+        serviceId: svc.serviceId,
         ordinal,
         instances,
       })

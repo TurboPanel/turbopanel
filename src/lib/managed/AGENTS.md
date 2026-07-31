@@ -70,14 +70,22 @@ outside of the retention-keep pruning that runs on every successful backup.
 
 ## Container naming
 
-The engine container is named `<container.id>-1` via `managedContainerName`
-(`src/lib/naming.ts`). The compose **project** stays
-`turbopanel-managed-<managedId>`; engine-spec volume keys (`pgdata`, …) are
-deliberately left alone because Compose namespaces them under that project, so
-they are already unique per managed service.
+The engine container is named `<service.id>-1` via `managedContainerName`
+(`src/lib/naming.ts`). When `exposure.enabled`, apply-prepare also allocates a
+second `service` + ordinal-1 `container` for the dedicated Traefik ingress
+(`composeServiceName` = `managedIngressComposeServiceName(engine)` →
+`<engine>-ingress`; container name again `<ingressServiceId>-1`). The engine
+compose **project** stays `turbopanel-managed-<managedId>`; the ingress
+project is `turbopanel-managed-<managedId>-ingress`. Engine-spec volume keys
+(`pgdata`, …) are deliberately left alone because Compose namespaces them
+under the engine project, so they are already unique per managed service.
 
 `buildManagedApplyPayload` (`src/client/managed/apply-prepare.ts`) explicitly
-creates the `service` + ordinal-1 `container` row
-(`ensureManagedContainerAllocation`) instead of relying on reconcile
-auto-creation, and stamps `containerName` onto the `managed.apply` payload for
-the daemon to write as compose `container_name`.
+creates those rows via `ensureManagedContainerAllocation` (instead of relying
+on reconcile auto-creation), stamps engine `containerName` and optional
+`ingress: { serviceId, composeServiceName, containerName }` onto the
+`managed.apply` payload, and prunes pending null-id ingress container rows
+when exposure is disabled (leaving the `service` row for idempotent reuse).
+Coverage: `src/client/managed/apply-prepare.test.ts` calls
+`buildManagedApplyPayload` for both exposure-enabled and exposure-disabled
+paths (not only the lower-level allocator).
