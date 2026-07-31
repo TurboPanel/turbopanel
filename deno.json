@@ -9,7 +9,6 @@
     "@std/assert": "jsr:@std/assert@1",
     "@std/encoding/base64": "jsr:@std/encoding@1/base64",
     "@std/encoding/base64url": "jsr:@std/encoding@1/base64url",
-    "@std/encoding/hex": "jsr:@std/encoding@1/hex",
     "@std/path": "jsr:@std/path@1",
     "drizzle-orm": "npm:drizzle-orm@^0.43.1",
     "drizzle-orm/postgres-js": "npm:drizzle-orm@^0.43.1/postgres-js",

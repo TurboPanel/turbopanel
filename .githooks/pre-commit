@@ -3,3 +3,4 @@ set -eu
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 "$ROOT/scripts/scan-secrets.sh"
 node "$ROOT/scripts/check-durable-object-hibernation.mjs"
+node "$ROOT/scripts/check-workers-bundle.mjs"

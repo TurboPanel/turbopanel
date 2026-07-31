@@ -74,3 +74,11 @@ test('normalizeMachineKey rejects empty, short, and raw machine-id shapes', () =
     undefined,
   )
 })
+
+test('machine-key module has no Deno-only @std/jsr imports (Workers-bundlable)', async () => {
+  // Shared with install-state / workers.ts — Wrangler cannot resolve Deno
+  // import-map targets. Full-graph guard: `pnpm check:workers-bundle`.
+  const source = await Deno.readTextFile(new URL('./machine-key.ts', import.meta.url))
+  assertEquals(/from\s+['"]@std\//.test(source), false)
+  assertEquals(/from\s+['"]jsr:/.test(source), false)
+})

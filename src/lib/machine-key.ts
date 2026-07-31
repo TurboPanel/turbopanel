@@ -9,10 +9,10 @@
  * Argument ordering matches systemd `sd_id128_get_machine_app_specific`:
  * key = raw machine id, message = namespace.
  *
- * Web Crypto + hex only (no Deno-only APIs) so this stays Workers-safe.
+ * Web Crypto + local hex only — no `@std/*` / `jsr:` imports so Wrangler can
+ * bundle this module (Deno import maps are not available to the Workers
+ * esbuild step).
  */
-
-import { encodeHex } from '@std/encoding/hex'
 
 /**
  * Fixed application-id UUID for machine-key derivation.
@@ -25,6 +25,13 @@ export const TURBOPANEL_MACHINE_ID_NAMESPACE =
 const MACHINE_KEY_HEX_RE = /^[0-9a-f]{64}$/
 
 const textEncoder = new TextEncoder()
+
+/** Lowercase hex — matches `@std/encoding/hex` `encodeHex` output. */
+function encodeHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join(
+    '',
+  )
+}
 
 /**
  * Normalize a client-supplied machine key to the canonical 64-char lowercase

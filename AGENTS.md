@@ -159,6 +159,16 @@ change. Future agents read `AGENTS.md` first.
   instead of `Deno.test(...)`. When adding a new Deno test file, add this alias
   from the start.
 
+### Workers-reachable imports
+
+Modules imported (transitively) from `src/workers.ts` must bundle under
+Wrangler/esbuild. **Do not** use Deno import-map-only specifiers there —
+`@std/*`, bare `jsr:…`, or other Deno-only APIs — unless there is a matching
+`wrangler.jsonc` `alias` (see the SMTP shims). Prefer Web Crypto and small
+local helpers (e.g. hex in `src/lib/machine-key.ts` / `src/daemon/authn/server-key.ts`).
+Deno-only entrypoints (`src/deno.ts`, developer drizzle studio, Redis cell)
+may keep `@std/*`. Guard: `pnpm check:workers-bundle`.
+
 ### Ansible style (SonarQube)
 
 - Prefer **`mode: "0640"`** / **`0750"`** with explicit **`owner`** /
@@ -210,6 +220,12 @@ fixture lines in `.secretscan-allowlist` — do not add broad exclusions.
   production. Requires **Node** only (`pnpm migrate` runs `drizzle-kit migrate`;
   no Deno prerequisite). Equivalent to
   `pnpm migrate && wrangler deploy --env $CLOUDFLARE_ENV --minify`.
+- **`pnpm check:workers-bundle`** — `wrangler deploy --dry-run` of
+  `src/workers.ts` (no upload). Catches unresolved imports the Workers
+  bundler cannot resolve (e.g. `@std/*` / `jsr:`). Wired into
+  `.githooks/pre-commit`. **`pnpm test:do` is not enough** — vitest bundles
+  `src/workers-vitest.ts` with a narrow include list and can tree-shake away
+  modules only the full deploy graph pulls in.
 - `pnpm cf-typegen` — regenerate `worker-configuration.d.ts`
 - The Ansible `instance-certs` / `caddy` / `node-runtime` roles supersede the
   standalone `pnpm cert:generate` / `pnpm caddy:install` scripts for managed
@@ -675,6 +691,10 @@ sequenceDiagram
   daemon WS
 - `src/workers.ts` — Workers entry (`wrangler.jsonc` main); registers
   `developer/routes-core` once per isolate
+- `scripts/check-workers-bundle.mjs` — Wrangler dry-run of the deploy
+  entrypoint (pre-commit / `pnpm check:workers-bundle`)
+- `src/lib/machine-key.ts` — machine-key derive/normalize (Workers + Deno;
+  no `@std` imports)
 - `src/surfaces.ts` — versioned API/WS prefix constants
 - `src/openapi.ts` / `src/scalar-html.ts` — hand-authored OpenAPI 3.1 specs +
   Scalar embed HTML
