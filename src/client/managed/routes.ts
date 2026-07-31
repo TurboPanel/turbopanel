@@ -526,6 +526,7 @@ function serializeContainerRow(row: {
   containerId: string | null
   containerName: string
   status: string
+  role: string
   composeServiceName: string
   metadata: unknown
   options: unknown
@@ -539,6 +540,7 @@ function serializeContainerRow(row: {
     containerId: row.containerId,
     containerName: row.containerName,
     status: row.status,
+    role: row.role,
     composeServiceName: row.composeServiceName,
     metadata: row.metadata,
     options: row.options,
@@ -1564,6 +1566,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         containerId: container.containerId,
         containerName: container.containerName,
         status: container.status,
+        role: container.role,
         composeServiceName: container.composeServiceName,
         metadata: container.metadata,
         options: container.options,

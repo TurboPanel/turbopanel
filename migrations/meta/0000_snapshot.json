@@ -1,5 +1,5 @@
 {
-  "id": "fe0257d8-1b44-41a5-85cc-c30f2ed3a37c",
+  "id": "dab7a919-e0c6-418f-acf4-6abc8628d751",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -441,6 +441,13 @@
           "notNull": true,
           "default": "'pending'"
         },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'app'"
+        },
         "compose_service_name": {
           "name": "compose_service_name",
           "type": "text",
@@ -538,11 +545,17 @@
           "method": "btree",
           "with": {}
         },
-        "uniq_container_service_ordinal": {
-          "name": "uniq_container_service_ordinal",
+        "uniq_container_service_role_ordinal": {
+          "name": "uniq_container_service_role_ordinal",
           "columns": [
             {
               "expression": "service_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "role",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -595,6 +608,10 @@
         "container_ordinal_positive_check": {
           "name": "container_ordinal_positive_check",
           "value": "ordinal >= 1"
+        },
+        "container_role_check": {
+          "name": "container_role_check",
+          "value": "role IN ('app', 'ingress')"
         }
       },
       "isRLSEnabled": false

@@ -1,10 +1,12 @@
 import { assertEquals, assertThrows } from 'jsr:@std/assert'
 import {
+  INGRESS_CONTAINER_NAME_SUFFIX,
   PRINCIPAL_HOME_ROOT,
   PRINCIPAL_UID_START,
   RESERVED_DEPLOY_VARIABLE_KEYS,
   containerNameFromService,
   dockerVolumeNameFromStorageId,
+  ingressContainerNameFromService,
   isReservedDeployVariableKey,
   isValidDockerResourceName,
   legacyNamespacedDockerVolumeName,
@@ -60,6 +62,28 @@ test('containerNameFromService suffixes ordinal when multi-instance', () => {
 
 test('managedContainerName always carries ordinal suffix on service id', () => {
   assertEquals(managedContainerName('sid-1'), 'sid-1-1')
+})
+
+test('INGRESS_CONTAINER_NAME_SUFFIX is -ingress', () => {
+  assertEquals(INGRESS_CONTAINER_NAME_SUFFIX, '-ingress')
+})
+
+test('ingressContainerNameFromService appends -ingress to a valid service id', () => {
+  const id = '01936b3e-8c7a-7b2d-a1f0-123456789abc'
+  assertEquals(ingressContainerNameFromService(id), `${id}-ingress`)
+})
+
+test('ingressContainerNameFromService rejects invalid service ids', () => {
+  assertThrows(
+    () => ingressContainerNameFromService('has space'),
+    TypeError,
+    'Invalid ingress container name for service id',
+  )
+  assertThrows(
+    () => ingressContainerNameFromService('-bad'),
+    TypeError,
+    'Invalid ingress container name for service id',
+  )
 })
 
 test('managedIngressComposeServiceName appends -ingress to the engine compose key', () => {

@@ -1,18 +1,21 @@
 /**
  * Pre-allocate `container` rows for an environment deploy (uuid naming).
  *
- * Idempotent via atomic upsert on `uniq_container_service_ordinal`
- * (`(service, ordinal)`). Placement changes re-home the same row (update
- * `server_id`) so previewed UUID names stay stable and stale pending rows
- * on a previous server are not left behind.
+ * Idempotent via atomic upsert on `uniq_container_service_role_ordinal`
+ * (`(service, role, ordinal)`). Placement changes re-home the same app row
+ * (update `server_id`) so previewed UUID names stay stable and stale pending
+ * rows on a previous server are not left behind.
  * Names come from {@link containerNameFromService} (service UUID) or an
  * explicit `service.options.container.name` — applied in every project naming
  * mode, with `-<ordinal>` suffixes when `instances > 1`.
  */
 
-import { and, eq, gt, inArray, isNull, notInArray } from 'drizzle-orm'
+import { and, eq, gt, inArray, isNull, ne, notInArray } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
-import { containerNameFromService } from '../../lib/naming.ts'
+import {
+  containerNameFromService,
+  ingressContainerNameFromService,
+} from '../../lib/naming.ts'
 import type { ContainerNamingMode } from '../../lib/project-options.ts'
 import { parseServiceOptions } from '../../lib/service-options.ts'
 import { container } from '../../lib/db/schema.ts'
@@ -33,6 +36,13 @@ export type ContainerAllocation = {
   containerName: string
   ordinal: number
   instances: number
+}
+
+export type ServiceIngressAllocation = {
+  serviceId: string
+  containerRowId: string
+  containerName: string
+  composeServiceName: string
 }
 
 function cloneComposeServiceName(
@@ -130,11 +140,12 @@ async function allocateServiceContainers(
           containerId: null,
           containerName: 'pending',
           status: 'pending',
+          role: 'app',
           composeServiceName: cloneName,
           ordinal,
         })
         .onConflictDoNothing({
-          target: [container.serviceId, container.ordinal],
+          target: [container.serviceId, container.role, container.ordinal],
         })
 
       const [row] = await tx
@@ -148,6 +159,7 @@ async function allocateServiceContainers(
         .where(
           and(
             eq(container.serviceId, svc.serviceId),
+            eq(container.role, 'app'),
             eq(container.ordinal, ordinal),
           ),
         )
@@ -176,6 +188,7 @@ async function allocateServiceContainers(
             serverId,
             containerName: nextName,
             composeServiceName: cloneName,
+            role: 'app',
           })
           .where(eq(container.id, row.id))
       }
@@ -196,12 +209,118 @@ async function allocateServiceContainers(
       .where(
         and(
           eq(container.serviceId, svc.serviceId),
+          eq(container.role, 'app'),
           gt(container.ordinal, instances),
         ),
       )
   })
 
   return allocations
+}
+
+/**
+ * Idempotently ensure a `role='ingress'` ordinal-1 `container` row on an
+ * already-allocated `serviceId`, named
+ * {@link ingressContainerNameFromService} (`<service.id>-ingress`). Does
+ * **not** insert or select a `service` row — ingress lives on the app /
+ * engine service. Re-homes / renames / cleans stray pending rows scoped to
+ * `role='ingress'` so sibling `role='app'` rows are untouched.
+ */
+export async function ensureServiceIngressContainerAllocation(
+  db: Db,
+  params: {
+    serviceId: string
+    serverId: string
+    composeServiceName: string
+  },
+): Promise<ServiceIngressAllocation> {
+  const { serviceId, serverId, composeServiceName } = params
+
+  await db
+    .insert(container)
+    .values({
+      serviceId,
+      serverId,
+      containerId: null,
+      containerName: 'pending',
+      status: 'pending',
+      role: 'ingress',
+      composeServiceName,
+      ordinal: 1,
+    })
+    .onConflictDoNothing({
+      target: [container.serviceId, container.role, container.ordinal],
+    })
+
+  const [row] = await db
+    .select({
+      id: container.id,
+      serverId: container.serverId,
+      containerName: container.containerName,
+      status: container.status,
+      containerId: container.containerId,
+      composeServiceName: container.composeServiceName,
+    })
+    .from(container)
+    .where(
+      and(
+        eq(container.serviceId, serviceId),
+        eq(container.role, 'ingress'),
+        eq(container.ordinal, 1),
+      ),
+    )
+    .limit(1)
+
+  if (!row) {
+    throw new Error(
+      `service ingress container allocation missing after upsert (service=${serviceId})`,
+    )
+  }
+
+  const nextName = ingressContainerNameFromService(serviceId)
+  if (row.containerId === null) {
+    if (
+      row.status !== 'pending' ||
+      row.containerName !== nextName ||
+      row.composeServiceName !== composeServiceName ||
+      row.serverId !== serverId
+    ) {
+      await db
+        .update(container)
+        .set({
+          serverId,
+          status: 'pending',
+          containerName: nextName,
+          composeServiceName,
+          role: 'ingress',
+        })
+        .where(eq(container.id, row.id))
+    }
+  } else if (row.containerName !== nextName) {
+    await db
+      .update(container)
+      .set({ containerName: nextName, role: 'ingress' })
+      .where(eq(container.id, row.id))
+  }
+
+  await db
+    .delete(container)
+    .where(
+      and(
+        eq(container.serviceId, serviceId),
+        eq(container.role, 'ingress'),
+        isNull(container.containerId),
+        eq(container.status, 'pending'),
+        ne(container.id, row.id),
+      ),
+    )
+
+  return {
+    serviceId,
+    containerRowId: row.id,
+    containerName: nextName,
+    composeServiceName,
+  }
 }
 
 /**
@@ -228,6 +347,11 @@ export async function allocateEnvironmentContainers(
      * treat them as survivable pre-allocations.
      */
     environmentServiceIds?: readonly string[]
+    /**
+     * Extra container row ids to retain during pending prune (e.g. per-service
+     * tcp/udp ingress allocations that must survive alongside app rows).
+     */
+    extraKeepIds?: ReadonlySet<string>
   },
 ): Promise<ContainerAllocation[]> {
   const allocations: ContainerAllocation[] = []
@@ -245,9 +369,13 @@ export async function allocateEnvironmentContainers(
 
   const pruneServiceIds = params.environmentServiceIds ??
     params.containerServices.map((svc) => svc.serviceId)
+  const keepIds = new Set(allocations.map((row) => row.containerRowId))
+  if (params.extraKeepIds) {
+    for (const id of params.extraKeepIds) keepIds.add(id)
+  }
   await pruneUnexpectedPendingContainers(db, {
     serviceIds: pruneServiceIds,
-    keepIds: new Set(allocations.map((row) => row.containerRowId)),
+    keepIds,
   })
 
   return allocations

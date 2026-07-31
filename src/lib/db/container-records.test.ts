@@ -513,6 +513,310 @@ test('reconcileEnvironmentContainers deletes stale pending outside current insta
   })
 })
 
+test('reconcileEnvironmentContainers keeps app + ingress rows under one service', async () => {
+  await withReconcileFixtures(async ({
+    db,
+    serverId,
+    environmentId,
+    webServiceId,
+  }) => {
+    await db.insert(container).values([
+      {
+        serviceId: webServiceId,
+        serverId,
+        containerId: null,
+        containerName: `${webServiceId}-1`,
+        status: 'pending',
+        role: 'app',
+        composeServiceName: 'web',
+        ordinal: 1,
+      },
+      {
+        serviceId: webServiceId,
+        serverId,
+        containerId: null,
+        containerName: `${webServiceId}-ingress`,
+        status: 'pending',
+        role: 'ingress',
+        composeServiceName: 'web-ingress',
+        ordinal: 1,
+      },
+    ])
+
+    await reconcileEnvironmentContainers(db, {
+      serverId,
+      environmentId,
+      containers: [
+        {
+          serviceId: webServiceId,
+          composeServiceName: 'web',
+          containerId: 'cid-app',
+          containerName: `${webServiceId}-1`,
+          status: 'running',
+        },
+        {
+          serviceId: webServiceId,
+          composeServiceName: 'web-ingress',
+          containerId: 'cid-ingress',
+          containerName: `${webServiceId}-ingress`,
+          status: 'running',
+          role: 'ingress',
+        },
+      ],
+    })
+
+    const rows = await db
+      .select({
+        role: container.role,
+        containerId: container.containerId,
+        status: container.status,
+        ordinal: container.ordinal,
+      })
+      .from(container)
+      .where(eq(container.serverId, serverId))
+
+    assertEquals(rows.length, 2)
+    const byRole = new Map(rows.map((row) => [row.role, row]))
+    assertEquals(byRole.get('app')?.containerId, 'cid-app')
+    assertEquals(byRole.get('app')?.status, 'running')
+    assertEquals(byRole.get('app')?.ordinal, 1)
+    assertEquals(byRole.get('ingress')?.containerId, 'cid-ingress')
+    assertEquals(byRole.get('ingress')?.status, 'running')
+    assertEquals(byRole.get('ingress')?.ordinal, 1)
+  })
+})
+
+test('reconcileEnvironmentContainers classifies ingress by containerName when role omitted', async () => {
+  await withReconcileFixtures(async ({
+    db,
+    serverId,
+    environmentId,
+    webServiceId,
+  }) => {
+    await db.insert(container).values([
+      {
+        serviceId: webServiceId,
+        serverId,
+        containerId: null,
+        containerName: `${webServiceId}-1`,
+        status: 'pending',
+        role: 'app',
+        composeServiceName: 'web',
+        ordinal: 1,
+      },
+      {
+        serviceId: webServiceId,
+        serverId,
+        containerId: null,
+        containerName: `${webServiceId}-ingress`,
+        status: 'pending',
+        role: 'ingress',
+        composeServiceName: 'web-ingress',
+        ordinal: 1,
+      },
+    ])
+
+    const existing = await db
+      .select({
+        id: container.id,
+        role: container.role,
+        containerName: container.containerName,
+      })
+      .from(container)
+      .where(eq(container.serverId, serverId))
+    const appId = existing.find((row) => row.role === 'app')!.id
+    const ingressId = existing.find((row) => row.role === 'ingress')!.id
+
+    // Omit role; composeServiceName does not end with -ingress — only the
+    // containerName suffix must classify this report as ingress. Use a name
+    // that does not match the pre-allocated ingress row so matching goes
+    // through (service, role, ordinal) rather than container_name.
+    await reconcileEnvironmentContainers(db, {
+      serverId,
+      environmentId,
+      containers: [
+        {
+          serviceId: webServiceId,
+          composeServiceName: 'web',
+          containerId: 'cid-ingress-by-name',
+          containerName: `host-${webServiceId}-ingress`,
+          status: 'running',
+        },
+      ],
+    })
+
+    const rows = await db
+      .select({
+        id: container.id,
+        role: container.role,
+        containerId: container.containerId,
+        containerName: container.containerName,
+        status: container.status,
+        ordinal: container.ordinal,
+      })
+      .from(container)
+      .where(eq(container.serverId, serverId))
+
+    assertEquals(rows.length, 2)
+    const byRole = new Map(rows.map((row) => [row.role, row]))
+    assertEquals(byRole.get('app')?.id, appId)
+    assertEquals(byRole.get('app')?.containerId, null)
+    assertEquals(byRole.get('app')?.status, 'pending')
+    assertEquals(byRole.get('app')?.containerName, `${webServiceId}-1`)
+    assertEquals(byRole.get('ingress')?.id, ingressId)
+    assertEquals(byRole.get('ingress')?.containerId, 'cid-ingress-by-name')
+    assertEquals(byRole.get('ingress')?.status, 'running')
+    assertEquals(byRole.get('ingress')?.ordinal, 1)
+    assertEquals(
+      byRole.get('ingress')?.containerName,
+      `host-${webServiceId}-ingress`,
+    )
+  })
+})
+
+test('reconcileEnvironmentContainers leaves pending ingress intact on app-only report', async () => {
+  await withReconcileFixtures(async ({
+    db,
+    serverId,
+    environmentId,
+    webServiceId,
+  }) => {
+    await db.insert(container).values([
+      {
+        serviceId: webServiceId,
+        serverId,
+        containerId: null,
+        containerName: `${webServiceId}-1`,
+        status: 'pending',
+        role: 'app',
+        composeServiceName: 'web',
+        ordinal: 1,
+      },
+      {
+        serviceId: webServiceId,
+        serverId,
+        containerId: null,
+        containerName: `${webServiceId}-ingress`,
+        status: 'pending',
+        role: 'ingress',
+        composeServiceName: 'web-ingress',
+        ordinal: 1,
+      },
+    ])
+
+    const ingressId = (await db
+      .select({ id: container.id })
+      .from(container)
+      .where(
+        and(
+          eq(container.serverId, serverId),
+          eq(container.role, 'ingress'),
+        ),
+      ))[0]!.id
+
+    await reconcileEnvironmentContainers(db, {
+      serverId,
+      environmentId,
+      containers: [
+        {
+          serviceId: webServiceId,
+          composeServiceName: 'web',
+          containerId: 'cid-app-only',
+          containerName: `${webServiceId}-1`,
+          status: 'running',
+        },
+      ],
+    })
+
+    const rows = await db
+      .select({
+        id: container.id,
+        role: container.role,
+        containerId: container.containerId,
+        status: container.status,
+      })
+      .from(container)
+      .where(eq(container.serverId, serverId))
+
+    assertEquals(rows.length, 2)
+    const byRole = new Map(rows.map((row) => [row.role, row]))
+    assertEquals(byRole.get('app')?.containerId, 'cid-app-only')
+    assertEquals(byRole.get('app')?.status, 'running')
+    assertEquals(byRole.get('ingress')?.id, ingressId)
+    assertEquals(byRole.get('ingress')?.containerId, null)
+    assertEquals(byRole.get('ingress')?.status, 'pending')
+  })
+})
+
+test('reconcileEnvironmentContainers app+ingress report is idempotent', async () => {
+  await withReconcileFixtures(async ({
+    db,
+    serverId,
+    environmentId,
+    webServiceId,
+  }) => {
+    const report = [
+      {
+        serviceId: webServiceId,
+        composeServiceName: 'web',
+        containerId: 'cid-app',
+        containerName: `${webServiceId}-1`,
+        status: 'running' as const,
+      },
+      {
+        serviceId: webServiceId,
+        composeServiceName: 'web-ingress',
+        containerId: 'cid-ingress',
+        containerName: `${webServiceId}-ingress`,
+        status: 'running' as const,
+        role: 'ingress' as const,
+      },
+    ]
+
+    await reconcileEnvironmentContainers(db, {
+      serverId,
+      environmentId,
+      containers: report,
+    })
+
+    const first = await db
+      .select({
+        id: container.id,
+        role: container.role,
+        containerId: container.containerId,
+      })
+      .from(container)
+      .where(eq(container.serverId, serverId))
+
+    assertEquals(first.length, 2)
+    const firstIds = first.map((row) => row.id).sort((a, b) => a.localeCompare(b))
+
+    await reconcileEnvironmentContainers(db, {
+      serverId,
+      environmentId,
+      containers: report,
+    })
+
+    const second = await db
+      .select({
+        id: container.id,
+        role: container.role,
+        containerId: container.containerId,
+      })
+      .from(container)
+      .where(eq(container.serverId, serverId))
+
+    assertEquals(second.length, 2)
+    assertEquals(
+      second.map((row) => row.id).sort((a, b) => a.localeCompare(b)),
+      firstIds,
+    )
+    const byRole = new Map(second.map((row) => [row.role, row]))
+    assertEquals(byRole.get('app')?.containerId, 'cid-app')
+    assertEquals(byRole.get('ingress')?.containerId, 'cid-ingress')
+  })
+})
+
 test('reconcileEnvironmentContainers resets rather than deletes on empty report', async () => {
   await withReconcileFixtures(async ({
     db,

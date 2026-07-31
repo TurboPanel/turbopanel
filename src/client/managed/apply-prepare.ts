@@ -23,11 +23,14 @@ import type { ComposeDocument } from '../../lib/compose/types.ts'
 import type { ManagedEngineSpec } from '../../lib/managed/index.ts'
 import type { ManagedSettings } from '../../lib/managed/settings.ts'
 import { managedIngressComposeServiceName } from '../../lib/naming.ts'
-import { container, managed, principal, service } from '../../lib/db/schema.ts'
+import { container, managed, principal } from '../../lib/db/schema.ts'
 import type { Db } from '../../db.ts'
 import { resolveHostingBindAddress } from '../environments/deploy-prepare.ts'
 import { listManagedPrincipals } from '../principals/store.ts'
-import { ensureManagedContainerAllocation } from './allocate-managed-container.ts'
+import {
+  ensureManagedContainerAllocation,
+  ensureManagedIngressContainerAllocation,
+} from './allocate-managed-container.ts'
 
 const AT_REST_ENVELOPE_PREFIX = `${ENVELOPE_MAGIC}.`
 const APPLY_EXPIRES_MS = 600_000
@@ -265,22 +268,18 @@ export async function buildManagedApplyPayload(
   )
   let ingress: ManagedApplyCommandPayload['ingress']
   if (input.settings.exposure.enabled) {
-    const ingressAllocation = await ensureManagedContainerAllocation(db, {
-      environmentId: input.environmentId,
+    const ingressAllocation = await ensureManagedIngressContainerAllocation(db, {
+      serviceId: allocation.serviceId,
       serverId: input.serverId,
       composeServiceName: ingressComposeServiceName,
     })
     ingress = {
-      serviceId: ingressAllocation.serviceId,
+      serviceId: allocation.serviceId,
       composeServiceName: ingressComposeServiceName,
       containerName: ingressAllocation.containerName,
     }
   } else {
-    await prunePendingIngressContainers(
-      db,
-      input.environmentId,
-      ingressComposeServiceName,
-    )
+    await prunePendingIngressContainers(db, allocation.serviceId)
   }
 
   const bindResolved = await resolveHostingBindAddress(db, {
@@ -349,29 +348,18 @@ export async function buildManagedApplyPayload(
 }
 
 /**
- * Drop pending null-id ingress container rows when exposure is turned off.
- * Leaves the `service` row for idempotent reuse on a later expose.
+ * Drop pending null-id `role='ingress'` container rows on the engine service
+ * when exposure is turned off. Leaves the engine `service` + `role='app'`
+ * rows untouched for idempotent reuse on a later expose.
  */
 async function prunePendingIngressContainers(
   db: Db,
-  environmentId: string,
-  composeServiceName: string,
+  serviceId: string,
 ): Promise<void> {
-  const [serviceRow] = await db
-    .select({ id: service.id })
-    .from(service)
-    .where(
-      and(
-        eq(service.environmentId, environmentId),
-        eq(service.composeServiceName, composeServiceName),
-      ),
-    )
-    .limit(1)
-  if (!serviceRow) return
-
   await db.delete(container).where(
     and(
-      eq(container.serviceId, serviceRow.id),
+      eq(container.serviceId, serviceId),
+      eq(container.role, 'ingress'),
       isNull(container.containerId),
       eq(container.status, 'pending'),
     ),

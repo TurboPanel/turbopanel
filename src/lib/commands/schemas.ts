@@ -628,6 +628,16 @@ export type EnvironmentDeployTraditionalWebSite = {
   principal?: EnvironmentDeployTraditionalWebPrincipal
 }
 
+/**
+ * Per-service Traefik ingress for tenant `tcp`/`udp` hostings.
+ * `containerName` must equal `${serviceId}-ingress` (same rule as managed ingress).
+ */
+export type EnvironmentDeployIngressService = {
+  serviceId: string
+  composeServiceName: string
+  containerName: string
+}
+
 export type EnvironmentDeployCommandPayload = {
   environmentId: string
   projectId: string
@@ -643,6 +653,12 @@ export type EnvironmentDeployCommandPayload = {
    * and listed here instead.
    */
   traditionalWebSites?: EnvironmentDeployTraditionalWebSite[]
+  /**
+   * Per-service Traefik projects for services that publish at least one
+   * `tcp`/`udp` port. One entry per service (not per hosting) — that Traefik
+   * hosts every `ports[]` for the service. HTTP hostings never appear here.
+   */
+  ingressServices?: EnvironmentDeployIngressService[]
   /** External Docker networks referenced in compose — ensured on the host before compose up. */
   dockerExternalNetworks?: string[]
   /** Unique TLS material referenced by `hostings[].tlsId` (deduped). */
@@ -700,6 +716,8 @@ export type EnvironmentDeployContainer = {
   containerId: string
   containerName: string
   status: string
+  /** Workload replica vs Traefik ingress; omitted by older daemons (defaults to `'app'`). */
+  role?: 'app' | 'ingress'
 }
 
 export type EnvironmentDeployCommandResult = {
@@ -1127,6 +1145,9 @@ function parseDeployContainerEntry(entry: unknown): EnvironmentDeployContainer |
     status: entry.status,
   }
   if (isString(entry.serviceId)) container.serviceId = entry.serviceId
+  if (entry.role === 'app' || entry.role === 'ingress') {
+    container.role = entry.role
+  }
   return container
 }
 
@@ -1144,6 +1165,40 @@ function parseDeployContainers(value: unknown): EnvironmentDeployContainer[] | u
   return containers
 }
 
+function parseDeployIngressServiceEntry(entry: unknown): EnvironmentDeployIngressService {
+  if (!isRecord(entry)) {
+    throw new Error('Invalid environment.deploy ingressServices entry')
+  }
+  if (
+    !isString(entry.serviceId) ||
+    !UUID_RE.test(entry.serviceId) ||
+    !isString(entry.composeServiceName) ||
+    !isValidComposeServiceName(entry.composeServiceName) ||
+    !isString(entry.containerName) ||
+    !isValidDockerResourceName(entry.containerName)
+  ) {
+    throw new Error('Invalid environment.deploy ingressServices entry')
+  }
+  if (entry.containerName !== `${entry.serviceId}-ingress`) {
+    throw new Error('Invalid environment.deploy ingressServices entry')
+  }
+  return {
+    serviceId: entry.serviceId,
+    composeServiceName: entry.composeServiceName,
+    containerName: entry.containerName,
+  }
+}
+
+function parseDeployIngressServices(
+  value: unknown,
+): EnvironmentDeployIngressService[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) {
+    throw new TypeError('ingressServices must be an array')
+  }
+  return value.map(parseDeployIngressServiceEntry)
+}
+
 export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeployCommandPayload {
   if (!isRecord(value)) {
     throw new Error('Invalid environment.deploy payload')
@@ -1156,11 +1211,13 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
   const principalMaterial = parseDeployPrincipalMaterial(value.principalMaterial)
   const serviceHooks = parseDeployServiceHooks(value.serviceHooks)
   const traditionalWebSites = parseDeployTraditionalWebSites(value.traditionalWebSites)
+  const ingressServices = parseDeployIngressServices(value.ingressServices)
   const dockerExternalNetworks = parseDeployDockerExternalNetworks(value.dockerExternalNetworks)
   return {
     ...strings,
     hostings,
     ...(traditionalWebSites !== undefined ? { traditionalWebSites } : {}),
+    ...(ingressServices !== undefined ? { ingressServices } : {}),
     ...(dockerExternalNetworks !== undefined ? { dockerExternalNetworks } : {}),
     ...(tlsMaterial !== undefined ? { tlsMaterial } : {}),
     ...(variableMaterial !== undefined ? { variableMaterial } : {}),
@@ -1190,6 +1247,11 @@ export type EnvironmentStopCommandPayload = {
   environmentId: string
   projectId: string
   projectName: string
+  /**
+   * Service ids that had per-service tcp/udp Traefik projects — daemon tears
+   * those down on stop. Omitted/empty when the environment had none.
+   */
+  ingressServices?: Array<{ serviceId: string }>
 }
 
 export type EnvironmentStopCommandResult = {
@@ -1197,6 +1259,23 @@ export type EnvironmentStopCommandResult = {
   summary?: string
   /** Authoritative report — stop always returns `[]` on success so Postgres clears pins. */
   containers?: EnvironmentDeployContainer[]
+}
+
+function parseStopIngressServices(
+  value: unknown,
+): Array<{ serviceId: string }> | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) {
+    throw new TypeError('ingressServices must be an array')
+  }
+  const out: Array<{ serviceId: string }> = []
+  for (const entry of value) {
+    if (!isRecord(entry) || !isString(entry.serviceId) || !UUID_RE.test(entry.serviceId)) {
+      throw new Error('Invalid environment.stop ingressServices entry')
+    }
+    out.push({ serviceId: entry.serviceId })
+  }
+  return out
 }
 
 export function parseEnvironmentStopPayload(value: unknown): EnvironmentStopCommandPayload {
@@ -1216,7 +1295,13 @@ export function parseEnvironmentStopPayload(value: unknown): EnvironmentStopComm
   ) {
     throw new Error('Invalid environment.stop payload')
   }
-  return { environmentId, projectId, projectName }
+  const ingressServices = parseStopIngressServices(value.ingressServices)
+  return {
+    environmentId,
+    projectId,
+    projectName,
+    ...(ingressServices !== undefined ? { ingressServices } : {}),
+  }
 }
 
 export function parseEnvironmentStopResult(value: unknown): EnvironmentStopCommandResult {
@@ -1626,6 +1711,9 @@ function parseManagedApplyIngress(value: unknown): ManagedApplyIngress {
     !isString(value.containerName) ||
     !isValidDockerResourceName(value.containerName)
   ) {
+    throw new Error('Invalid managed.apply ingress')
+  }
+  if (value.containerName !== `${value.serviceId}-ingress`) {
     throw new Error('Invalid managed.apply ingress')
   }
   return {

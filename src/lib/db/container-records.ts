@@ -23,6 +23,7 @@ type ExistingContainerRow = {
   containerId: string | null
   containerName: string
   status: string
+  role: string
   composeServiceName: string
   ordinal: number
 }
@@ -58,13 +59,30 @@ function parseCloneOrdinal(composeServiceName: string): number | null {
 }
 
 /**
+ * Resolve the container role from a daemon report. Prefer the explicit wire
+ * field; fall back to the `-ingress` container-name convention, then the
+ * compose-service naming convention, so older daemons that omit `role` still
+ * map Traefik sidecars correctly.
+ */
+function resolveReportedRole(
+  reported: EnvironmentDeployContainer,
+): 'app' | 'ingress' {
+  if (reported.role === 'app' || reported.role === 'ingress') {
+    return reported.role
+  }
+  if (reported.containerName.endsWith('-ingress')) return 'ingress'
+  return reported.composeServiceName.endsWith('-ingress') ? 'ingress' : 'app'
+}
+
+/**
  * Deploy creates containers before hostings/services are configured in the UI.
  * Upsert missing `service` rows for reported compose names so container FKs can
  * resolve without requiring a prior hostname save.
  *
  * Only creates rows for reported names that match neither an existing service
  * nor a known base compose name (so pre-allocated `web-2` never spawns a
- * bogus `web-2` service when `web` already exists).
+ * bogus `web-2` service when `web` already exists). Ingress reports never mint
+ * a service row — they attach to the engine/app service.
  */
 async function ensureServicesForReportedContainers(
   db: Db,
@@ -76,6 +94,7 @@ async function ensureServicesForReportedContainers(
 
   const missingNames = new Set<string>()
   for (const reported of containers) {
+    if (resolveReportedRole(reported) === 'ingress') continue
     if (
       reported.serviceId !== undefined &&
       serviceIds.has(reported.serviceId)
@@ -129,15 +148,17 @@ function resolveReportedServiceId(
 }
 
 /**
- * True when a pending null-id row is still within the service's current
- * instance count — i.e. a pre-allocation expected for this deploy shape.
- * Stale ordinals (after a scale-down) and pending for unknown services are not.
+ * True when a pending null-id row is still expected for this deploy shape.
+ * Ingress rows are always expected (not bounded by `options.instances`); app
+ * rows must sit within the service's current instance count. Stale ordinals
+ * (after a scale-down) and pending for unknown services are not.
  */
 function isExpectedPendingAllocation(
   row: ExistingContainerRow,
   maxOrdinalByServiceId: Map<string, number>,
 ): boolean {
   if (row.status !== 'pending' || row.containerId !== null) return false
+  if (row.role === 'ingress') return true
   const maxOrdinal = maxOrdinalByServiceId.get(row.serviceId)
   if (maxOrdinal === undefined) return false
   return row.ordinal >= 1 && row.ordinal <= maxOrdinal
@@ -152,15 +173,15 @@ export type ReconcileEnvironmentContainersParams = {
 /**
  * Identity-based upsert of container rows after an authoritative daemon report.
  *
- * Matches by `container_name` first, then by compose service (+ ordinal for
- * multi-instance clones). Updates matched rows in place; inserts only unmatched
- * reported containers (custom-naming projects). Pre-allocated pending rows
- * (`status = 'pending'`, `container_id IS NULL`) survive a partial report only
- * when their ordinal is still within the service's current `options.instances`
- * (current-deploy expected replicas). Stale pending rows outside that set are
- * deleted. An empty report (stop / destroy) resets rows to `exited` / null
- * `container_id` instead of deleting, so pre-allocated identity survives
- * stop → start.
+ * Matches by `container_name` first, then by compose service + `(role, ordinal)`
+ * for multi-instance clones. Updates matched rows in place; inserts only
+ * unmatched reported containers (custom-naming projects). Pre-allocated app
+ * pending rows (`status = 'pending'`, `container_id IS NULL`) survive a partial
+ * report only when their ordinal is still within the service's current
+ * `options.instances`; ingress pending rows always survive (not bounded by
+ * instances). Stale pending rows outside that set are deleted. An empty report
+ * (stop / destroy) resets rows to `exited` / null `container_id` instead of
+ * deleting, so pre-allocated identity survives stop → start.
  */
 export async function reconcileEnvironmentContainers(
   db: Db,
@@ -202,6 +223,7 @@ export async function reconcileEnvironmentContainers(
       containerId: container.containerId,
       containerName: container.containerName,
       status: container.status,
+      role: container.role,
       composeServiceName: container.composeServiceName,
       ordinal: container.ordinal,
     })
@@ -250,26 +272,29 @@ async function resetContainersOnEmptyReport(
 /**
  * Resolve an unmatched existing row for a reported container.
  *
- * Prefer `container_name`, then compose clone ordinal, then ordinal 1. When the
- * name match was already claimed, fall back to an unmatched (service, ordinal)
- * row instead of inserting a duplicate.
+ * Prefer `container_name`, then compose clone ordinal, then ordinal 1 — always
+ * scoped by `(service, role, ordinal)` so an ingress report cannot claim an
+ * app row and vice versa. When the name match was already claimed, fall back
+ * to an unmatched (service, role, ordinal) row instead of inserting a duplicate.
  */
 function matchUnmatchedExistingContainer(params: {
   reported: EnvironmentDeployContainer
   serviceId: string
+  role: 'app' | 'ingress'
   byName: Map<string, ExistingContainerRow>
   byServiceOrdinal: Map<string, ExistingContainerRow>
   matchedIds: Set<string>
 }): ExistingContainerRow | undefined {
-  const { reported, serviceId, byName, byServiceOrdinal, matchedIds } = params
+  const { reported, serviceId, role, byName, byServiceOrdinal, matchedIds } =
+    params
   const cloneOrdinal = parseCloneOrdinal(reported.composeServiceName)
   const cloneRow = cloneOrdinal === null
     ? undefined
-    : byServiceOrdinal.get(`${serviceId}:${cloneOrdinal}`)
+    : byServiceOrdinal.get(`${serviceId}:${role}:${cloneOrdinal}`)
   const primary =
     byName.get(reported.containerName) ??
     cloneRow ??
-    byServiceOrdinal.get(`${serviceId}:1`)
+    byServiceOrdinal.get(`${serviceId}:${role}:1`)
 
   if (!primary) return undefined
   if (!matchedIds.has(primary.id)) return primary
@@ -306,12 +331,17 @@ async function upsertReportedContainers(
 ): Promise<void> {
   const byName = new Map(params.existingRows.map((row) => [row.containerName, row]))
   const byServiceOrdinal = new Map(
-    params.existingRows.map((row) => [`${row.serviceId}:${row.ordinal}`, row]),
+    params.existingRows.map((row) => [
+      `${row.serviceId}:${row.role}:${row.ordinal}`,
+      row,
+    ]),
   )
   const matchedIds = new Set<string>()
   const nextOrdinalByService = new Map<string, number>()
 
   for (const row of params.existingRows) {
+    // Ingress always sits at ordinal 1 and must not consume the app counter.
+    if (row.role === 'ingress') continue
     const current = nextOrdinalByService.get(row.serviceId) ?? 0
     if (row.ordinal > current) nextOrdinalByService.set(row.serviceId, row.ordinal)
   }
@@ -331,9 +361,11 @@ async function upsertReportedContainers(
       )
       if (serviceId === undefined) continue
 
+      const role = resolveReportedRole(reported)
       const existing = matchUnmatchedExistingContainer({
         reported,
         serviceId,
+        role,
         byName,
         byServiceOrdinal,
         matchedIds,
@@ -353,8 +385,13 @@ async function upsertReportedContainers(
         continue
       }
 
-      const ordinal = (nextOrdinalByService.get(serviceId) ?? 0) + 1
-      nextOrdinalByService.set(serviceId, ordinal)
+      let ordinal: number
+      if (role === 'ingress') {
+        ordinal = 1
+      } else {
+        ordinal = (nextOrdinalByService.get(serviceId) ?? 0) + 1
+        nextOrdinalByService.set(serviceId, ordinal)
+      }
       const [inserted] = await tx
         .insert(container)
         .values({
@@ -363,6 +400,7 @@ async function upsertReportedContainers(
           containerId: reported.containerId,
           containerName: reported.containerName,
           status: reported.status,
+          role,
           composeServiceName: reported.composeServiceName,
           ordinal,
         })

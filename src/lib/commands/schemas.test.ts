@@ -624,7 +624,7 @@ test('parseManagedApplyPayload rejects nested dockerOptions and enabled exposure
   const VALID_INGRESS = {
     serviceId: '00000000-0000-4000-8000-000000000099',
     composeServiceName: 'postgres-ingress',
-    containerName: '00000000-0000-4000-8000-000000000099-1',
+    containerName: '00000000-0000-4000-8000-000000000099-ingress',
   }
   assertEquals(
     parseManagedApplyPayload({
@@ -640,7 +640,7 @@ test('parseManagedApplyPayload requires ingress iff exposure.enabled', () => {
   const VALID_INGRESS = {
     serviceId: '00000000-0000-4000-8000-000000000099',
     composeServiceName: 'postgres-ingress',
-    containerName: '00000000-0000-4000-8000-000000000099-1',
+    containerName: '00000000-0000-4000-8000-000000000099-ingress',
   }
   assertThrows(
     () =>

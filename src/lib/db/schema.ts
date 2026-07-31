@@ -1144,6 +1144,12 @@ export const container = pgTable(
     containerId: text('container_id'),
     containerName: text('container_name').notNull(),
     status: text('status').default('pending').notNull(),
+    /**
+     * `role='ingress'` rows always use `ordinal = 1`, are named via
+     * `ingressContainerNameFromService`, and a service may hold N app
+     * replicas plus exactly one ingress row.
+     */
+    role: text().default('app').notNull(),
     composeServiceName: text('compose_service_name').notNull(),
     /**
      * 1-based instance index of this container within its service; managed
@@ -1170,11 +1176,13 @@ export const container = pgTable(
     uniqueIndex('uniq_container_server_container_id')
       .on(table.serverId, table.containerId)
       .where(sql`container_id IS NOT NULL`),
-    uniqueIndex('uniq_container_service_ordinal').on(
+    uniqueIndex('uniq_container_service_role_ordinal').on(
       table.serviceId,
+      table.role,
       table.ordinal,
     ),
     check('container_ordinal_positive_check', sql`ordinal >= 1`),
+    check('container_role_check', sql`role IN ('app', 'ingress')`),
     foreignKey({
       columns: [table.serviceId],
       foreignColumns: [service.id],

@@ -413,7 +413,7 @@ test('ensureManagedContainerAllocation restores exited null-id ordinal-1 row to 
   })
 })
 
-test('buildManagedApplyPayload with exposure enabled allocates distinct engine and ingress', async () => {
+test('buildManagedApplyPayload with exposure enabled allocates ingress on the engine service', async () => {
   await withManagedApplyPrepareFixtures(async ({
     db,
     c,
@@ -435,12 +435,14 @@ test('buildManagedApplyPayload with exposure enabled allocates distinct engine a
 
     assertEquals(payload.exposure.enabled, true)
     assertEquals(payload.ingress !== undefined, true)
-    assertEquals(payload.ingress?.composeServiceName, 'postgres-ingress')
     assertEquals(
       payload.ingress?.composeServiceName,
       managedIngressComposeServiceName('postgres'),
     )
-    assertEquals(payload.ingress?.containerName, `${payload.ingress!.serviceId}-1`)
+    assertEquals(
+      payload.ingress?.containerName,
+      `${payload.ingress!.serviceId}-ingress`,
+    )
 
     const services = await db
       .select({
@@ -449,22 +451,30 @@ test('buildManagedApplyPayload with exposure enabled allocates distinct engine a
       })
       .from(service)
       .where(eq(service.environmentId, environmentId))
-    const names = services
-      .map((row) => row.composeServiceName)
-      .sort((a, b) => a.localeCompare(b))
-    assertEquals(names, ['postgres', 'postgres-ingress'])
+    assertEquals(services.length, 1)
+    assertEquals(services[0]?.composeServiceName, 'postgres')
 
-    const engineService = services.find((row) => row.composeServiceName === 'postgres')
-    const ingressService = services.find(
-      (row) => row.composeServiceName === 'postgres-ingress',
+    const serviceId = services[0]!.id
+    assertEquals(payload.ingress?.serviceId, serviceId)
+    assertEquals(payload.containerName, `${serviceId}-1`)
+    assertEquals(payload.ingress?.containerName, `${serviceId}-ingress`)
+
+    const containers = await db
+      .select({
+        role: container.role,
+        ordinal: container.ordinal,
+        containerName: container.containerName,
+      })
+      .from(container)
+      .where(eq(container.serviceId, serviceId))
+    const byRole = Object.fromEntries(
+      containers.map((row) => [row.role, row]),
     )
-    if (!engineService || !ingressService) {
-      throw new TypeError('expected engine and ingress service rows')
-    }
-    assertEquals(engineService.id === ingressService.id, false)
-    assertEquals(payload.ingress?.serviceId, ingressService.id)
-    assertEquals(payload.containerName, `${engineService.id}-1`)
-    assertEquals(payload.ingress?.containerName, `${ingressService.id}-1`)
+    assertEquals(containers.length, 2)
+    assertEquals(byRole.app?.ordinal, 1)
+    assertEquals(byRole.app?.containerName, `${serviceId}-1`)
+    assertEquals(byRole.ingress?.ordinal, 1)
+    assertEquals(byRole.ingress?.containerName, `${serviceId}-ingress`)
   })
 })
 
@@ -487,20 +497,38 @@ test('buildManagedApplyPayload with exposure disabled prunes pending ingress con
     if (isPrepareError(enabled)) {
       throw new TypeError(`unexpected prepare error: ${enabled.kind}`)
     }
-    const ingressServiceId = enabled.ingress!.serviceId
-    const ingressName = enabled.ingress!.composeServiceName
+    const engineServiceId = enabled.ingress!.serviceId
 
-    const pendingBefore = await db
+    const ingressPendingBefore = await db
       .select({ id: container.id })
       .from(container)
       .where(
         and(
-          eq(container.serviceId, ingressServiceId),
+          eq(container.serviceId, engineServiceId),
+          eq(container.role, 'ingress'),
           isNull(container.containerId),
           eq(container.status, 'pending'),
         ),
       )
-    assertEquals(pendingBefore.length, 1)
+    assertEquals(ingressPendingBefore.length, 1)
+
+    const [appBefore] = await db
+      .select({
+        id: container.id,
+        status: container.status,
+        containerName: container.containerName,
+      })
+      .from(container)
+      .where(
+        and(
+          eq(container.serviceId, engineServiceId),
+          eq(container.role, 'app'),
+        ),
+      )
+      .limit(1)
+    if (!appBefore) {
+      throw new TypeError('expected role=app container on engine service')
+    }
 
     const disabled = await buildManagedApplyPayload(c, db, {
       managedRow: { id: managedId, engine: 'postgres' },
@@ -517,29 +545,35 @@ test('buildManagedApplyPayload with exposure disabled prunes pending ingress con
     assertEquals(disabled.exposure.enabled, false)
     assertEquals(disabled.ingress, undefined)
 
-    const pendingAfter = await db
+    const ingressPendingAfter = await db
       .select({ id: container.id })
       .from(container)
       .where(
         and(
-          eq(container.serviceId, ingressServiceId),
+          eq(container.serviceId, engineServiceId),
+          eq(container.role, 'ingress'),
           isNull(container.containerId),
           eq(container.status, 'pending'),
         ),
       )
-    assertEquals(pendingAfter.length, 0)
+    assertEquals(ingressPendingAfter.length, 0)
 
-    const [serviceRow] = await db
-      .select({ id: service.id, composeServiceName: service.composeServiceName })
-      .from(service)
+    const [appAfter] = await db
+      .select({
+        id: container.id,
+        status: container.status,
+        containerName: container.containerName,
+      })
+      .from(container)
       .where(
         and(
-          eq(service.environmentId, environmentId),
-          eq(service.composeServiceName, ingressName),
+          eq(container.serviceId, engineServiceId),
+          eq(container.role, 'app'),
         ),
       )
       .limit(1)
-    assertEquals(serviceRow?.id, ingressServiceId)
-    assertEquals(serviceRow?.composeServiceName, 'postgres-ingress')
+    assertEquals(appAfter?.id, appBefore.id)
+    assertEquals(appAfter?.status, appBefore.status)
+    assertEquals(appAfter?.containerName, appBefore.containerName)
   })
 })

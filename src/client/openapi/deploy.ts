@@ -54,12 +54,24 @@ export const deploySchemas = {
         type: 'array',
         items: {
           type: 'object',
-          required: ['serviceId', 'composeServiceName', 'containerName', 'ordinal'],
+          required: [
+            'serviceId',
+            'composeServiceName',
+            'containerName',
+            'ordinal',
+            'role',
+          ],
           properties: {
             serviceId: { type: 'string' },
             composeServiceName: { type: 'string' },
             containerName: { type: 'string' },
             ordinal: { type: 'integer', minimum: 1 },
+            role: {
+              type: 'string',
+              enum: ['app', 'ingress'],
+              description:
+                "Workload replica (`app`) or per-service Traefik container (`ingress`). Ingress rows are named `<serviceId>-ingress` with ordinal 1.",
+            },
           },
         },
       },

@@ -48,11 +48,13 @@ CREATE TABLE "container" (
 	"container_id" text,
 	"container_name" text NOT NULL,
 	"status" text DEFAULT 'pending' NOT NULL,
+	"role" text DEFAULT 'app' NOT NULL,
 	"compose_service_name" text NOT NULL,
 	"ordinal" integer DEFAULT 1 NOT NULL,
 	"metadata" jsonb,
 	"options" jsonb,
-	CONSTRAINT "container_ordinal_positive_check" CHECK (ordinal >= 1)
+	CONSTRAINT "container_ordinal_positive_check" CHECK (ordinal >= 1),
+	CONSTRAINT "container_role_check" CHECK (role IN ('app', 'ingress'))
 );
 --> statement-breakpoint
 CREATE TABLE "datacenter" (
@@ -538,7 +540,7 @@ CREATE INDEX "idx_container_service_id" ON "container" USING btree ("service_id"
 CREATE INDEX "idx_container_server_id" ON "container" USING btree ("server_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_container_status" ON "container" USING btree ("status" text_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_container_server_container_id" ON "container" USING btree ("server_id","container_id") WHERE container_id IS NOT NULL;--> statement-breakpoint
-CREATE UNIQUE INDEX "uniq_container_service_ordinal" ON "container" USING btree ("service_id","ordinal");--> statement-breakpoint
+CREATE UNIQUE INDEX "uniq_container_service_role_ordinal" ON "container" USING btree ("service_id","role","ordinal");--> statement-breakpoint
 CREATE INDEX "idx_datacenter_organization_id" ON "datacenter" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_environment_project_id" ON "environment" USING btree ("project_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_environment_server_id" ON "environment" USING btree ("server_id" uuid_ops);--> statement-breakpoint

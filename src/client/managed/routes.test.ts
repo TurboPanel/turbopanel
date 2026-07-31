@@ -772,12 +772,16 @@ test('GET /environments/:id/managed/status returns status host port containers',
       status: string | null
       host: string | null
       port: number | null
-      containers: unknown[]
+      containers: Array<{ role: string }>
     }
     assertEquals(body.status, 'ready')
     assertEquals(body.host, '203.0.113.50')
     assertEquals(body.port, 5432)
     assertEquals(Array.isArray(body.containers), true)
+    for (const row of body.containers) {
+      assertEquals(typeof row.role, 'string')
+      assertEquals(row.role === 'app' || row.role === 'ingress', true)
+    }
   })
 })
 

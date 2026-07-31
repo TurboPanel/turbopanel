@@ -209,6 +209,7 @@ test('POST/PATCH /containers strip promoted keys from stored JSONB', async () =>
         metadata: {
           note: 'keep-me',
           containerId: 'should-not-persist',
+          role: 'ingress',
         },
       }),
     })
@@ -244,16 +245,19 @@ test('POST/PATCH /containers strip promoted keys from stored JSONB', async () =>
         containerId: string
         containerName: string
         status: string
+        role: string
         composeServiceName: string
-        metadata: { note?: string; containerId?: string }
+        metadata: { note?: string; containerId?: string; role?: string }
       }
     }
     assertEquals(getBody.container.containerId, dockerId)
     assertEquals(getBody.container.containerName, 'web-1')
     assertEquals(getBody.container.status, 'running')
+    assertEquals(getBody.container.role, 'app')
     assertEquals(getBody.container.composeServiceName, 'web')
     assertEquals(getBody.container.metadata.note, 'keep-me')
     assertEquals(getBody.container.metadata.containerId, undefined)
+    assertEquals(getBody.container.metadata.role, undefined)
 
     const patchRes = await app.request(`/containers/${id}`, {
       method: 'PATCH',

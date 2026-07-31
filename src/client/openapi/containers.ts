@@ -9,6 +9,7 @@ export const containerSchemas = {
       'serverId',
       'containerName',
       'status',
+      'role',
       'composeServiceName',
       'ordinal',
       'createdAt',
@@ -26,6 +27,13 @@ export const containerSchemas = {
       },
       containerName: { type: 'string' },
       status: { type: 'string' },
+      role: {
+        type: 'string',
+        enum: ['app', 'ingress'],
+        default: 'app',
+        description:
+          'Allocator-owned; ingress rows are the per-service Traefik container named `<service.id>-ingress` and always sit at ordinal 1.',
+      },
       composeServiceName: { type: 'string' },
       ordinal: {
         type: 'integer',

@@ -30,6 +30,7 @@ const CONTAINER_PROMOTED_METADATA_KEYS = [
   'status',
   'composeServiceName',
   'ordinal',
+  'role',
 ] as const
 
 type ContainerRow = {
@@ -39,6 +40,7 @@ type ContainerRow = {
   containerId: string | null
   containerName: string
   status: string
+  role: string
   composeServiceName: string
   ordinal: number
   metadata: unknown
@@ -55,6 +57,7 @@ function serializeContainer(row: ContainerRow) {
     containerId: row.containerId,
     containerName: row.containerName,
     status: row.status,
+    role: row.role,
     composeServiceName: row.composeServiceName,
     ordinal: row.ordinal,
     metadata: row.metadata,
@@ -147,6 +150,7 @@ const CONTAINER_SELECT = {
   containerId: container.containerId,
   containerName: container.containerName,
   status: container.status,
+  role: container.role,
   composeServiceName: container.composeServiceName,
   ordinal: container.ordinal,
   metadata: container.metadata,

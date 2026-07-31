@@ -38,6 +38,21 @@ export function managedContainerName(serviceId: string): string {
   return `${serviceId}-1`
 }
 
+/** Suffix for Traefik ingress container names (`<serviceId>-ingress`). */
+export const INGRESS_CONTAINER_NAME_SUFFIX = '-ingress'
+
+/**
+ * Docker `container_name` for a service's dedicated Traefik ingress row
+ * (`role='ingress'`, always `ordinal = 1`).
+ */
+export function ingressContainerNameFromService(serviceId: string): string {
+  const name = `${serviceId}${INGRESS_CONTAINER_NAME_SUFFIX}`
+  if (!isValidDockerResourceName(name)) {
+    throw new TypeError(`Invalid ingress container name for service id: ${serviceId}`)
+  }
+  return name
+}
+
 /**
  * Compose service key for a managed service's dedicated Traefik ingress.
  * Must satisfy `service_display_name_format_check` (`[A-Za-z0-9 ._-]+`, ≤255).

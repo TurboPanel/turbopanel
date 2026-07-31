@@ -29,6 +29,7 @@ import type { DerivedSecretsConfig } from '../authn/secrets.ts'
 import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
 import type {
   EnvironmentDeployHosting,
+  EnvironmentDeployIngressService,
   EnvironmentDeployPrincipalMaterial,
   EnvironmentDeployServiceHook,
   EnvironmentDeployStorageMaterial,
@@ -36,6 +37,7 @@ import type {
   EnvironmentDeployTraditionalWebSite,
   EnvironmentDeployVariableMaterial,
 } from '../../lib/commands/schemas.ts'
+import { resolveTcpUdpIngressServices } from './tcp-udp-ingress.ts'
 import { isNoopCommandQueue } from '../../lib/commands/noop-command-queue.ts'
 import { getCommandQueue, type CommandQueue } from '../../lib/commands/queue.ts'
 import {
@@ -634,6 +636,7 @@ async function enqueueDeployCommand(
     composeYaml: string
     hostings: DeployHostingPayload[]
     traditionalWebSites: EnvironmentDeployTraditionalWebSite[]
+    ingressServices: EnvironmentDeployIngressService[]
     tlsMaterial: EnvironmentDeployTlsMaterial[]
     variableMaterial: EnvironmentDeployVariableMaterial[]
     storageMaterial: EnvironmentDeployStorageMaterial[]
@@ -657,6 +660,9 @@ async function enqueueDeployCommand(
       hostings: params.hostings,
       ...(params.traditionalWebSites.length > 0
         ? { traditionalWebSites: params.traditionalWebSites }
+        : {}),
+      ...(params.ingressServices.length > 0
+        ? { ingressServices: params.ingressServices }
         : {}),
       ...(params.tlsMaterial.length > 0 ? { tlsMaterial: params.tlsMaterial } : {}),
       ...(params.variableMaterial.length > 0 ? { variableMaterial: params.variableMaterial } : {}),
@@ -849,16 +855,26 @@ export function registerEnvironmentDeployPreviewRoutes(
     const projectName =
       `tp-${projectComposeName(loaded.projectRow.displayName, loaded.projectRow.id)}-${environmentId.slice(0, 8)}`
 
+    const appContainers = prepared.containers.map((row) => ({
+      serviceId: row.serviceId,
+      composeServiceName: row.cloneComposeServiceName,
+      containerName: row.containerName,
+      ordinal: row.ordinal,
+      role: 'app' as const,
+    }))
+    const ingressContainers = prepared.ingressServices.map((row) => ({
+      serviceId: row.serviceId,
+      composeServiceName: row.composeServiceName,
+      containerName: row.containerName,
+      ordinal: 1,
+      role: 'ingress' as const,
+    }))
+
     return c.json({
       ok: true as const,
       composeYaml: prepared.composeYaml,
       projectName,
-      containers: prepared.containers.map((row) => ({
-        serviceId: row.serviceId,
-        composeServiceName: row.cloneComposeServiceName,
-        containerName: row.containerName,
-        ordinal: row.ordinal,
-      })),
+      containers: [...appContainers, ...ingressContainers],
       volumes: prepared.volumes.map((row) => ({
         storageId: row.storageId,
         composeKey: row.composeKey,
@@ -966,6 +982,7 @@ export function registerEnvironmentDeployRoutes(
       composeYaml: prepared.composeYaml,
       hostings,
       traditionalWebSites,
+      ingressServices: prepared.ingressServices,
       tlsMaterial,
       variableMaterial: prepared.variableMaterial,
       storageMaterial: prepared.storageMaterial,
@@ -1025,6 +1042,7 @@ async function enqueueStopCommand(
     environmentId: string
     projectId: string
     projectName: string
+    ingressServices: Array<{ serviceId: string }>
   },
 ): Promise<Response> {
   const expiresAt = new Date(Date.now() + 120_000).toISOString()
@@ -1037,6 +1055,9 @@ async function enqueueStopCommand(
       environmentId: params.environmentId,
       projectId: params.projectId,
       projectName: params.projectName,
+      ...(params.ingressServices.length > 0
+        ? { ingressServices: params.ingressServices }
+        : {}),
     },
     expiresAt,
   })
@@ -1113,12 +1134,14 @@ export function registerEnvironmentStopRoutes(
     )
     if (target instanceof Response) return target
 
+    const tcpUdpServices = await resolveTcpUdpIngressServices(db, environmentId)
     return enqueueStopCommand(db, commandQueue, {
       serverId: target.serverId,
       userId: session.userId,
       environmentId,
       projectId: loaded.projectId,
       projectName: loaded.projectName,
+      ingressServices: tcpUdpServices.map((svc) => ({ serviceId: svc.serviceId })),
     })
   })
 }

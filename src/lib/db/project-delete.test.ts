@@ -124,6 +124,117 @@ test('deleteProjectCascade rejects when containers are still active', async () =
   }
 })
 
+test('deleteProjectCascade rejects when an ingress container is still running', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping project cascade tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+  const now = new Date().toISOString()
+
+  const [org] = await db
+    .insert(organization)
+    .values({ displayName: 'Ingress Active Org' })
+    .returning({ id: organization.id })
+  const organizationId = org!.id
+
+  const [ws] = await db
+    .insert(workspace)
+    .values({ displayName: 'Ingress Active Workspace', organizationId })
+    .returning({ id: workspace.id })
+  const workspaceId = ws!.id
+
+  const [srv] = await db
+    .insert(server)
+    .values({
+      organizationId,
+      displayName: 'Ingress Active Server',
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: server.id })
+  const serverId = srv!.id
+
+  const [proj] = await db
+    .insert(project)
+    .values({ displayName: 'Ingress Running Project', workspaceId })
+    .returning({ id: project.id })
+  const projectId = proj!.id
+
+  const [env] = await db
+    .insert(environment)
+    .values({ displayName: 'Production', projectId })
+    .returning({ id: environment.id })
+  const environmentId = env!.id
+
+  const [svc] = await db
+    .insert(service)
+    .values({ displayName: 'web', environmentId, composeServiceName: 'web' })
+    .returning({ id: service.id })
+  const serviceId = svc!.id
+
+  await db.insert(container).values([
+    {
+      serviceId,
+      serverId,
+      containerId: 'cid-app-exited',
+      containerName: `${serviceId}-1`,
+      status: 'exited',
+      role: 'app',
+      composeServiceName: 'web',
+      ordinal: 1,
+    },
+    {
+      serviceId,
+      serverId,
+      containerId: 'cid-ingress-running',
+      containerName: `${serviceId}-ingress`,
+      status: 'running',
+      role: 'ingress',
+      composeServiceName: 'web-ingress',
+      ordinal: 1,
+    },
+  ])
+
+  try {
+    const blocked = await deleteProjectCascade(db, projectId)
+    assertEquals(blocked, {
+      ok: false,
+      error: PROJECT_HAS_RUNNING_SERVICES_ERROR,
+    })
+
+    await db
+      .update(container)
+      .set({ status: 'exited' })
+      .where(eq(container.serviceId, serviceId))
+
+    const result = await deleteProjectCascade(db, projectId)
+    assertEquals(result, { ok: true })
+
+    const remainingContainers = await db
+      .select({ id: container.id })
+      .from(container)
+      .where(eq(container.serviceId, serviceId))
+    assertEquals(remainingContainers.length, 0)
+
+    const [goneProject] = await db
+      .select({ id: project.id })
+      .from(project)
+      .where(eq(project.id, projectId))
+      .limit(1)
+    assertEquals(goneProject, undefined)
+  } finally {
+    await db.delete(container).where(eq(container.serviceId, serviceId))
+    await db.delete(service).where(eq(service.id, serviceId))
+    await db.delete(environment).where(eq(environment.id, environmentId))
+    await db.delete(project).where(eq(project.id, projectId))
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(workspace).where(eq(workspace.id, workspaceId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+})
+
 test('deleteProjectCascade removes children when containers are stopped', async () => {
   if (!dbUrl) {
     console.warn('Skipping project cascade tests: TURBOPANEL_DATABASE_URL not set')

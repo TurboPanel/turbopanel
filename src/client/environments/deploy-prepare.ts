@@ -66,14 +66,17 @@ import { validateRegisteredExternalDockerNetworks } from './validate-docker-exte
 import {
   allocateEnvironmentContainers,
   buildContainerServiceSpecs,
+  ensureServiceIngressContainerAllocation,
   type ContainerAllocation,
 } from './allocate-containers.ts'
+import { resolveTcpUdpIngressServices } from './tcp-udp-ingress.ts'
 import {
   registerComposeVolumes,
   type RegisteredComposeVolume,
 } from './register-compose-volumes.ts'
 import type {
   EnvironmentDeployHosting,
+  EnvironmentDeployIngressService,
   EnvironmentDeployPrincipalMaterial,
   EnvironmentDeployStorageMaterial,
   EnvironmentDeployTraditionalWebPrincipal,
@@ -167,6 +170,11 @@ export type PreparedDeployCompose = {
   dockerExternalNetworks: string[]
   /** Pre-allocated container rows for this deploy (uuid / explicit-name paths). */
   containers: ContainerAllocation[]
+  /**
+   * Per-service tcp/udp Traefik ingress allocations (`<service.id>-ingress`).
+   * Empty when no service publishes raw ports.
+   */
+  ingressServices: EnvironmentDeployIngressService[]
   /** Original compose service key → clone keys after multi-instance expansion. */
   composeServiceExpansion: Record<string, string[]>
   /** Auto-registered compose named volumes (storage rows + resolved Docker names). */
@@ -197,6 +205,7 @@ function emptyPreparedCompose(
     traditionalWebSites: [],
     dockerExternalNetworks: [],
     containers: [],
+    ingressServices: [],
     composeServiceExpansion: {},
     volumes: [],
     warnings,
@@ -878,6 +887,7 @@ async function loadDeployEnvAndProject(
 
 type DeployExpandPipeline = {
   containers: ContainerAllocation[]
+  ingressServices: EnvironmentDeployIngressService[]
   registeredVolumes: RegisteredComposeVolume[]
   expandedDocument: ComposeDocument
   expansion: Map<string, string[]>
@@ -904,6 +914,26 @@ async function allocateExpandDeployPipeline(
     containerComposeNames,
   )
 
+  // Per-service tcp/udp Traefik rows — allocated before app prune so their
+  // containerRowIds stay in keepIds; HTTP-only services drop out of resolve
+  // and their stale pending ingress rows are swept.
+  const tcpUdpServices = await resolveTcpUdpIngressServices(db, params.environmentId)
+  const ingressServices: EnvironmentDeployIngressService[] = []
+  const ingressKeepIds = new Set<string>()
+  for (const svc of tcpUdpServices) {
+    const alloc = await ensureServiceIngressContainerAllocation(db, {
+      serviceId: svc.serviceId,
+      serverId: params.serverId,
+      composeServiceName: svc.composeServiceName,
+    })
+    ingressKeepIds.add(alloc.containerRowId)
+    ingressServices.push({
+      serviceId: alloc.serviceId,
+      composeServiceName: alloc.composeServiceName,
+      containerName: alloc.containerName,
+    })
+  }
+
   // Idempotent by (service, ordinal) — preview may allocate; deploy reuses rows.
   const containers = await allocateEnvironmentContainers(db, {
     environmentId: params.environmentId,
@@ -911,6 +941,7 @@ async function allocateExpandDeployPipeline(
     containerServices,
     containerNaming,
     environmentServiceIds: params.serviceRows.map((row) => row.id),
+    extraKeepIds: ingressKeepIds,
   })
 
   // Idempotent by (environment, composeVolumeKey) — preview may register; deploy reuses.
@@ -935,6 +966,7 @@ async function allocateExpandDeployPipeline(
   )
   return {
     containers,
+    ingressServices,
     registeredVolumes,
     expandedDocument,
     expansion,
@@ -1041,6 +1073,7 @@ function toPreparedDeployResult(
     traditionalWebSites: EnvironmentDeployTraditionalWebSite[]
     dockerExternalNetworks: string[]
     containers: ContainerAllocation[]
+    ingressServices: EnvironmentDeployIngressService[]
     expansion: Map<string, string[]>
     registeredVolumes: RegisteredComposeVolume[]
     warnings: DeployPrepareWarning[]
@@ -1056,6 +1089,7 @@ function toPreparedDeployResult(
     traditionalWebSites: parts.traditionalWebSites,
     dockerExternalNetworks: parts.dockerExternalNetworks,
     containers: parts.containers,
+    ingressServices: parts.ingressServices,
     composeServiceExpansion: expansionToRecord(parts.expansion),
     volumes: parts.registeredVolumes,
     warnings: parts.warnings,
@@ -1258,6 +1292,7 @@ export async function prepareDeployCompose(
     traditionalWebSites: traditionalResolved,
     dockerExternalNetworks,
     containers: pipeline.containers,
+    ingressServices: pipeline.ingressServices,
     expansion: pipeline.expansion,
     registeredVolumes: pipeline.registeredVolumes,
     warnings,
