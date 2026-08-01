@@ -9,7 +9,6 @@ import {
   ingressContainerNameFromService,
   isReservedDeployVariableKey,
   isValidDockerResourceName,
-  legacyNamespacedDockerVolumeName,
   managedContainerName,
   managedIngressComposeServiceName,
   principalHomeDir,
@@ -103,34 +102,22 @@ test('dockerVolumeNameFromStorageId rejects invalid ids', () => {
   )
 })
 
-test('legacyNamespacedDockerVolumeName mirrors daemon tp-<org8>-<name>', () => {
-  assertEquals(
-    legacyNamespacedDockerVolumeName('01936b3e-8c7a-7b2d-a1f0-123456789abc', 'cache'),
-    'tp-01936b3e-cache',
-  )
-})
-
 test('resolveDockerVolumeName prefers pinnedName', () => {
   const storageId = '01936b3e-8c7a-7b2d-a1f0-123456789abc'
   assertEquals(
     resolveDockerVolumeName({
       storageId,
-      organizationId: 'org-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
-      name: 'cache',
       pinnedName: storageId,
     }),
     storageId,
   )
 })
 
-test('resolveDockerVolumeName falls back to legacy when unpinned', () => {
+test('resolveDockerVolumeName uses storage UUID when unpinned', () => {
+  const storageId = '01936b3e-8c7a-7b2d-a1f0-123456789abc'
   assertEquals(
-    resolveDockerVolumeName({
-      storageId: '01936b3e-8c7a-7b2d-a1f0-123456789abc',
-      organizationId: '01936b3e-8c7a-7b2d-a1f0-abcdef012345',
-      name: 'data',
-    }),
-    'tp-01936b3e-data',
+    resolveDockerVolumeName({ storageId }),
+    storageId,
   )
 })
 

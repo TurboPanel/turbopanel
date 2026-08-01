@@ -562,8 +562,7 @@ export type EnvironmentDeployStorageMaterial = {
    */
   destinationPath?: string
   /**
-   * On-host Docker volume name. Instance-owned — UUID for new rows, legacy
-   * `tp-<org8>-<name>` for unstamped rows. Daemon must not derive names when set.
+   * On-host Docker volume name. Required for `docker_volume` rows.
    */
   volumeName?: string
   principalId?: string
@@ -951,8 +950,13 @@ function parseDeployStorageMaterialEntry(entry: unknown): EnvironmentDeployStora
     name: entry.name,
     serverId: entry.serverId,
   }
+  if (kind === 'docker_volume') {
+    if (!isString(entry.volumeName)) {
+      throw new Error('Invalid environment.deploy payload')
+    }
+    material.volumeName = entry.volumeName
+  }
   if (isString(entry.destinationPath)) material.destinationPath = entry.destinationPath
-  if (isString(entry.volumeName)) material.volumeName = entry.volumeName
   if (isString(entry.sourcePath)) material.sourcePath = entry.sourcePath
   if (isString(entry.principalId)) material.principalId = entry.principalId
   if (isString(entry.serviceId)) material.serviceId = entry.serviceId

@@ -158,26 +158,17 @@ export function requireManagedCreateServerId(
 
 /**
  * Resolve the host that actually owns an **existing** managed service.
- * `managed.server_id` (the host `managed.apply` last targeted) is the source
- * of truth; the environment's current placement (`ctx.serverId`) is only a
- * fallback for legacy rows created before `managed.server_id` was populated.
- * Environment placement can drift independently of the managed engine after
- * creation (e.g. the environment's compose service is later moved to a
- * different server) — every route acting on an existing managed row must
- * resolve its dispatch target through here rather than reading `ctx.serverId`
- * directly. Returns a 409 `server_placement_required` response when neither
- * is available.
+ * `managed.server_id` (the host `managed.apply` last targeted) is required;
+ * environment placement is not a fallback once a managed row exists.
  */
 export function resolveManagedTargetServerId(
   c: Context<AppEnv>,
   managedServerId: string | null,
-  fallbackServerId: string | null,
 ): string | Response {
-  const serverId = managedServerId ?? fallbackServerId
-  if (!serverId) {
+  if (!managedServerId) {
     return c.json({ error: 'server_placement_required' }, 409)
   }
-  return serverId
+  return managedServerId
 }
 
 export function assertManagedNotBusy(

@@ -186,17 +186,22 @@ export function validateDeployStorageMaterial(
   if (entry.kind !== 'docker_volume' && !entry.destinationPath) {
     return `storage ${entry.storageId} missing destinationPath`
   }
+  if (entry.kind === 'docker_volume') {
+    if (
+      typeof entry.volumeName !== 'string' ||
+      entry.volumeName.length === 0
+    ) {
+      return `storage ${entry.storageId} missing volumeName`
+    }
+    if (!DOCKER_RESOURCE_NAME_RE.test(entry.volumeName)) {
+      return `storage ${entry.storageId} has invalid volumeName`
+    }
+  }
   if (
     entry.kind !== 'docker_volume' &&
     !entry.composeServiceName
   ) {
     return `storage ${entry.storageId} missing composeServiceName for mount`
-  }
-  if (
-    typeof entry.volumeName === 'string' &&
-    !DOCKER_RESOURCE_NAME_RE.test(entry.volumeName)
-  ) {
-    return `storage ${entry.storageId} has invalid volumeName`
   }
   return null
 }

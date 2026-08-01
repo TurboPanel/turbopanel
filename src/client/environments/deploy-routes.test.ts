@@ -702,7 +702,7 @@ test('POST /environments/:id/deploy stale environment pin returns 404', async ()
   })
 })
 
-test('POST /environments/:id/deploy ignores stale project compose placement (hard cut)', async () => {
+test('POST /environments/:id/deploy rejects stored compose placement', async () => {
   await withDeployFixtures(async ({
     db,
     app,
@@ -711,9 +711,10 @@ test('POST /environments/:id/deploy ignores stale project compose placement (har
     organizationId,
     projectId,
     environmentId,
+    serverId,
     commandQueue,
   }) => {
-    // Legacy project compose placement must never become a deploy target.
+    // Stored compose placement must fail deploy — placement lives on environment.server_id.
     await db
       .update(project)
       .set({
@@ -733,14 +734,14 @@ test('POST /environments/:id/deploy ignores stale project compose placement (har
     await db
       .update(environment)
       .set({
-        serverId: null,
-        options: { compose: composeWithWebService() },
+        serverId,
+        options: composeWithWebService(),
         updatedAt: new Date().toISOString(),
       })
       .where(eq(environment.id, environmentId))
 
     const cookie = await sessionCookie(db, secrets, userId)
-    const missingRes = await app.request(`/environments/${environmentId}/deploy`, {
+    const res = await app.request(`/environments/${environmentId}/deploy`, {
       method: 'POST',
       headers: {
         Cookie: cookie,
@@ -749,13 +750,13 @@ test('POST /environments/:id/deploy ignores stale project compose placement (har
       },
       body: '{}',
     })
-    assertEquals(missingRes.status, 409)
-    assertEquals(await missingRes.json(), { error: 'server_placement_required' })
+    assertEquals(res.status, 400)
+    assertEquals(await res.json(), { error: 'Invalid compose document' })
     assertEquals(commandQueue.envelopes.length, 0)
   })
 })
 
-test('POST /environments/:id/deploy environment.server_id wins over legacy compose pins', async () => {
+test('POST /environments/:id/deploy rejects environment overlay compose placement', async () => {
   await withDeployFixtures(async ({
     db,
     app,
@@ -767,22 +768,6 @@ test('POST /environments/:id/deploy environment.server_id wins over legacy compo
     serverId,
     commandQueue,
   }) => {
-    await db
-      .update(project)
-      .set({
-        options: {
-          compose: {
-            version: 1,
-            data: {
-              services: { web: { image: 'nginx:alpine' } },
-              'x-turbopanel': { placement: { server_id: crypto.randomUUID() } },
-            },
-            presentation: { keyOrder: ['services', 'x-turbopanel'], comments: {} },
-          },
-        },
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(project.id, projectId))
     await db
       .update(environment)
       .set({
@@ -811,9 +796,8 @@ test('POST /environments/:id/deploy environment.server_id wins over legacy compo
       },
       body: '{}',
     })
-
-    assertEquals(res.status, 200)
-    assertEquals(commandQueue.envelopes.length, 1)
-    assertEquals(commandQueue.envelopes[0]!.serverId, serverId)
+    assertEquals(res.status, 400)
+    assertEquals(await res.json(), { error: 'Invalid compose document' })
+    assertEquals(commandQueue.envelopes.length, 0)
   })
 })

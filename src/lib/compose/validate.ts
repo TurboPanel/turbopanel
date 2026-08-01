@@ -114,7 +114,7 @@ function validateTurbopanelExtension(
   }
 
   // Placement is not a stored compose shape — pin lives on environment.server_id.
-  // Reject any embedded placement; deploy/save boundaries also strip defensively.
+  // Reject any embedded placement; create/PATCH validation is the write boundary.
   if ('placement' in extension) {
     issues.push({
       path: 'x-turbopanel.placement',

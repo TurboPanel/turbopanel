@@ -31,7 +31,6 @@ import {
   isTraditionalWebComposeService,
   mergeComposeOverlay,
   splitTraditionalWebServices,
-  stripComposePlacement,
   type ComposeDocument,
   type TraditionalWebSiteSpec,
 } from '../../lib/compose/index.ts'
@@ -359,8 +358,6 @@ function toStorageMaterialEntry(
   if (row.kind === 'docker_volume') {
     base.volumeName = resolveDockerVolumeName({
       storageId: row.id,
-      organizationId,
-      name: row.name,
       pinnedName: readPinnedDockerVolumeName(row.metadata),
     })
   }
@@ -547,11 +544,7 @@ export function mergeProjectEnvironmentCompose(
   try {
     const baseCompose = assertComposeDocument(extractComposeFromOptions(projectOptions))
     const overlayCompose = assertComposeDocument(extractComposeFromOptions(environmentOptions))
-    // Placement is never stored in compose — strip both sides before merge.
-    return mergeComposeOverlay(
-      stripComposePlacement(baseCompose),
-      stripComposePlacement(overlayCompose),
-    )
+    return mergeComposeOverlay(baseCompose, overlayCompose)
   } catch {
     return Response.json({ error: 'Invalid compose document' }, { status: 400 })
   }

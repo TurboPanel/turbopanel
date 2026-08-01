@@ -83,30 +83,13 @@ export function dockerVolumeNameFromStorageId(storageId: string): string {
 }
 
 /**
- * Legacy daemon-era Docker volume name (`tp-<org8>-<name>`).
- *
- * **Back-compat only** — mirrors the daemon's `namespaceDockerVolumeName`.
- * Never used for new `storage` rows; those stamp `metadata.dockerVolumeName`
- * to the storage UUID via {@link resolveDockerVolumeName}.
- */
-export function legacyNamespacedDockerVolumeName(
-  organizationId: string,
-  name: string,
-): string {
-  return `tp-${organizationId.slice(0, 8)}-${name}`
-}
-
-/**
  * Resolve the on-host Docker volume name for a `docker_volume` storage row.
  *
- * Prefers `pinnedName` (typically `metadata.dockerVolumeName` — the storage
- * UUID for new rows). Unstamped legacy rows fall back to
- * {@link legacyNamespacedDockerVolumeName}.
+ * Uses `pinnedName` when present (typically `metadata.dockerVolumeName`);
+ * otherwise the storage UUID.
  */
 export function resolveDockerVolumeName(input: {
   storageId: string
-  organizationId: string
-  name: string
   pinnedName?: string | null
 }): string {
   if (typeof input.pinnedName === 'string' && input.pinnedName.length > 0) {
@@ -115,7 +98,7 @@ export function resolveDockerVolumeName(input: {
     }
     return input.pinnedName
   }
-  return legacyNamespacedDockerVolumeName(input.organizationId, input.name)
+  return dockerVolumeNameFromStorageId(input.storageId)
 }
 
 /**

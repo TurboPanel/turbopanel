@@ -116,7 +116,7 @@ describe('deploy-validation', () => {
     assertEquals(error, 'storage st1 missing composeServiceName for mount')
   })
 
-  it('allows docker_volume without destinationPath and validates volumeName', () => {
+  it('requires docker_volume volumeName and validates shape', () => {
     assertEquals(
       validateDeployStorageMaterialList([{
         storageId: 'st-vol',
@@ -126,6 +126,15 @@ describe('deploy-validation', () => {
         volumeName: '01936b3e-8c7a-7b2d-a1f0-123456789abc',
       }]),
       null,
+    )
+    assertEquals(
+      validateDeployStorageMaterialList([{
+        storageId: 'st-vol',
+        kind: 'docker_volume',
+        name: 'data',
+        serverId: 'srv1',
+      }]),
+      'storage st-vol missing volumeName',
     )
     assertEquals(
       validateDeployStorageMaterialList([{

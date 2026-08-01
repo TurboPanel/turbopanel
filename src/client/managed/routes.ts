@@ -880,7 +880,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     // Resource limits are server-specific — clamp against the host that
     // actually runs the engine (`managed.server_id`), not the (possibly
     // drifted) environment placement.
-    const targetServerId = resolveManagedTargetServerId(c, row.serverId, ctx.serverId)
+    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
     const current = parseManagedRowOptions(ctx.spec, row.options)
@@ -951,7 +951,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const options = parseManagedRowOptions(ctx.spec, row.options)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
-    const targetServerId = resolveManagedTargetServerId(c, row.serverId, ctx.serverId)
+    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
     return runApplyForManaged(c, db, {
@@ -980,7 +980,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const busy = assertManagedNotBusy(c, row.status)
     if (busy) return busy
 
-    const targetServerId = resolveManagedTargetServerId(c, row.serverId, ctx.serverId)
+    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
     const offline = await assertTargetServerOnline(c, db, targetServerId)
@@ -1040,7 +1040,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     // `canHardDelete` already covers `!row.serverId`, so `managed.server_id`
     // is guaranteed here — resolve through the shared helper anyway for
     // consistency with every other existing-row route.
-    const targetServerId = resolveManagedTargetServerId(c, row.serverId, ctx.serverId)
+    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
     const offline = await assertTargetServerOnline(c, db, targetServerId)
@@ -1100,7 +1100,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const options = parseManagedRowOptions(ctx.spec, row.options)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
-    const targetServerId = resolveManagedTargetServerId(c, row.serverId, ctx.serverId)
+    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
     const commandQueue = await assertManagedApplyReady(
@@ -1222,7 +1222,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: 'Encryption unavailable' }, 503)
     }
 
-    const targetServerId = resolveManagedTargetServerId(c, row.serverId, ctx.serverId)
+    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
     const commandQueue = await assertManagedApplyReady(
@@ -1336,7 +1336,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const options = parseManagedRowOptions(ctx.spec, row.options)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
-    const targetServerId = resolveManagedTargetServerId(c, row.serverId, ctx.serverId)
+    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
     const prepared = await prepareApplyForManaged(c, db, ctx, row, options, targetServerId, {
@@ -1425,7 +1425,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: 'database_exists' }, 409)
     }
 
-    const targetServerId = resolveManagedTargetServerId(c, row.serverId, ctx.serverId)
+    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
     const nextDatabases = [...options.databases, name].sort((a, b) => a.localeCompare(b))
@@ -1499,7 +1499,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: 'cannot_drop_initial_database' }, 409)
     }
 
-    const targetServerId = resolveManagedTargetServerId(c, row.serverId, ctx.serverId)
+    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
     const nextDatabases = options.databases.filter((entry) => entry !== databaseName)
@@ -1651,7 +1651,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     // Backup artifacts live on the host that actually ran the engine —
     // `managed.server_id`, not the (possibly drifted) environment placement.
-    const targetServerId = resolveManagedTargetServerId(c, row.serverId, ctx.serverId)
+    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
     const busy = assertManagedNotBusy(c, row.status)
@@ -1714,7 +1714,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     // Backup artifacts live on the host that actually ran the engine —
     // `managed.server_id`, not the (possibly drifted) environment placement.
-    const targetServerId = resolveManagedTargetServerId(c, row.serverId, ctx.serverId)
+    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
     const busy = assertManagedNotBusy(c, row.status)
@@ -1768,7 +1768,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     // Restore must run on the host that actually owns the engine —
     // `managed.server_id`, not the (possibly drifted) environment placement.
-    const targetServerId = resolveManagedTargetServerId(c, row.serverId, ctx.serverId)
+    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
     const busy = assertManagedNotBusy(c, row.status)

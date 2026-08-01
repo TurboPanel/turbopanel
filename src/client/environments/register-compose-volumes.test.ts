@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals, assertNotEquals } from 'jsr:@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'
@@ -107,7 +107,7 @@ async function withVolumeFixtures(
   }
 }
 
-test('registerComposeVolumes reuses untagged legacy rows by name', async () => {
+test('registerComposeVolumes creates a new row when no composeVolumeKey match exists', async () => {
   await withVolumeFixtures(async ({
     db,
     organizationId,
@@ -122,10 +122,9 @@ test('registerComposeVolumes reuses untagged legacy rows by name', async () => {
         serverId,
         kind: 'docker_volume',
         name: 'data',
-        // No composeVolumeKey — legacy / manually created row.
         metadata: { dockerVolumeName: 'legacy-pinned-volume' },
       })
-      .returning({ id: storage.id, metadata: storage.metadata })
+      .returning({ id: storage.id })
 
     const registered = await registerComposeVolumes(db, {
       document: composeWithVolume('data'),
@@ -135,9 +134,9 @@ test('registerComposeVolumes reuses untagged legacy rows by name', async () => {
     })
 
     assertEquals(registered.length, 1)
-    assertEquals(registered[0]!.storageId, legacy!.id)
+    assertNotEquals(registered[0]!.storageId, legacy!.id)
     assertEquals(registered[0]!.composeKey, 'data')
-    assertEquals(registered[0]!.volumeName, 'legacy-pinned-volume')
+    assertEquals(registered[0]!.volumeName, registered[0]!.storageId)
 
     const rows = await db
       .select({
@@ -152,11 +151,9 @@ test('registerComposeVolumes reuses untagged legacy rows by name', async () => {
         ),
       )
 
-    assertEquals(rows.length, 1)
-    assertEquals(rows[0]!.id, legacy!.id)
-    const metadata = rows[0]!.metadata as Record<string, unknown>
-    assertEquals(metadata.composeVolumeKey, 'data')
-    assertEquals(metadata.dockerVolumeName, 'legacy-pinned-volume')
+    assertEquals(rows.length, 2)
+    const tagged = rows.find((row) => row.id === registered[0]!.storageId)
+    assertEquals((tagged!.metadata as Record<string, unknown>).composeVolumeKey, 'data')
   })
 })
 
