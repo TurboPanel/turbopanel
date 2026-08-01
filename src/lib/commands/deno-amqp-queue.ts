@@ -1,5 +1,5 @@
-import { Buffer } from 'node:buffer'
 import amqplib from 'amqplib'
+import { DEFAULT_AMQP_URL } from '../../amqp-default-url.ts'
 import {
   assertCommandAmqpTopology,
   COMMAND_AMQP_EXCHANGE,
@@ -10,7 +10,7 @@ import type { CommandEnvelope } from './envelope.ts'
 import { encodeCommandEnvelope } from './envelope.ts'
 import { compatLogWarn } from '../../log-compat.ts'
 
-export const DEFAULT_AMQP_URL = 'amqp://guest:guest@localhost:19828'
+export { DEFAULT_AMQP_URL } from '../../amqp-default-url.ts'
 
 type DenoAmqpCommandQueueOptions = {
   amqpUrl: string
@@ -49,7 +49,7 @@ class DenoAmqpCommandQueue implements CommandQueue {
     if (!connected || !this.channel) {
       throw new Error('Command queue unavailable')
     }
-    const content = Buffer.from(this.encoder.encode(encodeCommandEnvelope(envelope)))
+    const content = this.encoder.encode(encodeCommandEnvelope(envelope))
     try {
       await new Promise<void>((resolve, reject) => {
         this.channel!.publish(

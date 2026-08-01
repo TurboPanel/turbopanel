@@ -1,5 +1,5 @@
-import { Buffer } from 'node:buffer'
 import amqplib from 'amqplib'
+import { DEFAULT_AMQP_URL } from '../../amqp-default-url.ts'
 import {
   assertEmailAmqpTopology,
   EMAIL_AMQP_EXCHANGE,
@@ -8,7 +8,7 @@ import {
 import type { EmailJob, EmailQueue } from '../types.ts'
 import { compatLogWarn } from '../../../log-compat.ts'
 
-export const DEFAULT_AMQP_URL = 'amqp://guest:guest@localhost:19828'
+export { DEFAULT_AMQP_URL } from '../../amqp-default-url.ts'
 
 type DenoAmqpQueueOptions = {
   amqpUrl: string
@@ -50,7 +50,7 @@ class DenoAmqpQueue implements EmailQueue {
         this.channel!.publish(
           EMAIL_AMQP_EXCHANGE,
           EMAIL_AMQP_ROUTING_KEY,
-          Buffer.from(this.encoder.encode(JSON.stringify(job))),
+          this.encoder.encode(JSON.stringify(job)),
           { persistent: true, mandatory: true },
           (error: Error | null) => {
             if (error) reject(error)
