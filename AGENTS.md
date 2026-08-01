@@ -3,6 +3,16 @@
 Minimal Hono app with dual runtimes: **Cloudflare Workers** (Wrangler) and
 **Deno**.
 
+## Project metadata / public naming
+
+| Public name | GitHub | Internal term (this repo) |
+| --- | --- | --- |
+| TurboPanel Control Plane | [turbopanel/turbopanel](https://github.com/turbopanel/turbopanel) | `instance` (runtime/architecture only) |
+
+- **License:** AGPL-3.0-only ([`LICENSE`](./LICENSE), `package.json` / `deno.json`).
+- **Maturity label:** **Public beta** (README, roadmap, site banner — keep identical).
+- **README** is product-facing; **AGENTS.md** is maintainer-facing. Do not use `turbopanel/instance` as a public repo slug.
+
 ## Speed doctrine (turbo)
 
 TurboPanel is named for speed; keep it fast on every path.
@@ -188,7 +198,7 @@ fixture lines in `.secretscan-allowlist` — do not add broad exclusions.
 - **pnpm** — <https://pnpm.io/installation>
 - **Node.js** and **openssl** — required for cert generation (`scripts/*.mjs`);
   Node.js also used for Caddy download
-- Run `./console` from the `turbopanel-dev` checkout. The console installs Deno,
+- Run `./console` from the [TurboPanel Development Environment](https://github.com/turbopanel/dev) checkout. The console installs Deno,
   clones the daemon, and drives the full dev stack via
   `scripts/bootstrap-orchestration.ts` + `scripts/install-daemon-systemd.sh`
   (shared orchestration under `/opt/turbopanel/vendor/` — not
@@ -590,7 +600,7 @@ deliberately-unversioned probe.
   (admin/superadmin session required). Workers-safe developer REST lives in
   `src/developer/routes-core.ts` (`workers.ts`); full Deno developer surface in
   `src/developer/routes.ts`.
-- The turbopanel-dev console calls developer routes via `src/instance-client.ts`
+- The TurboPanel Development Environment calls developer routes via `src/instance-client.ts`
   (Unix socket + HTTPS fallback).
 - Hard cutover: daemon, UI, Caddy (`/ws/*`), and Workers routes
   (`wrangler.jsonc`) moved together. The external CDN node installer must fetch
