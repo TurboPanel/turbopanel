@@ -4,8 +4,6 @@
  * Runtime import: src/generate-secret.ts re-exports this module.
  */
 
-import { fileURLToPath } from 'node:url'
-
 const getRandomValues = globalThis.crypto.getRandomValues.bind(globalThis.crypto)
 
 /** Allowed characters for generated secrets — not a credential. */
@@ -83,8 +81,10 @@ export function generateSecret() {
 
 export const generatePassword = generateSecret
 
-const isMain = typeof import.meta.url === 'string' &&
-  process.argv[1] === fileURLToPath(import.meta.url)
+const isMain =
+  typeof process !== 'undefined' &&
+  typeof process.argv[1] === 'string' &&
+  process.argv[1].endsWith('generate-secret.mjs')
 if (isMain) {
   const count = Math.max(1, Number.parseInt(process.argv[2] ?? '1', 10) || 1)
   for (let i = 0; i < count; i++) {

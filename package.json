@@ -17,7 +17,7 @@
     "check:do-hibernation": "node scripts/check-durable-object-hibernation.mjs",
     "check:do-hibernation:fixtures": "node scripts/check-durable-object-hibernation.mjs --fixtures",
     "check:workers-bundle": "node scripts/check-workers-bundle.mjs",
-    "test:hook": "pnpm run check:do-hibernation && pnpm run check:workers-bundle && pnpm test:do && deno task test:permissions && deno task test:authz && deno task test:paths && deno task test:compose && deno task test:managed"
+    "test:hook": "pnpm run check:do-hibernation && pnpm run check:workers-bundle && pnpm test:do && deno task test:authn && deno task test:permissions && deno task test:authz && deno task test:paths && deno task test:compose && deno task test:managed"
   },
   "dependencies": {
     "@noble/hashes": "1.8.0",
@@ -30,10 +30,10 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.8.38",
+    "@cloudflare/vitest-pool-workers": "^0.18.0",
     "@cloudflare/workers-types": "^5.20260704.1",
     "drizzle-kit": "^0.31.1",
-    "vitest": "~3.0.5",
+    "vitest": "^4.1.0",
     "wrangler": "^4.109.0"
   },
   "packageManager": "pnpm@11.18.0+sha512.33d83c77da82f49fba836925c6f1b841181ec3132b670639bd012f7075f5c7cf634c5f870147c19aae7478fac01df09d8892e880454896edd23ee9b33757563c"

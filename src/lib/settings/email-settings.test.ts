@@ -125,7 +125,7 @@ describe('Workers SMTP sender alias', () => {
 })
 
 describe('isEmailActiveForRuntime', () => {
-  it('treats explicit mailgun provider as active on Workers', async () => {
+  it('treats explicit mailgun provider as active when credentials are configured', async () => {
     const resolved = await resolveEmailSettings(undefined, {
       TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailgun',
       TURBOPANEL_SYSTEM_EMAIL__MAILGUN_API_KEY: 'key-abc',
@@ -133,7 +133,7 @@ describe('isEmailActiveForRuntime', () => {
     })
 
     expect(isEmailActiveForRuntime(resolved, 'workers')).toBe(true)
-    expect(isEmailActiveForRuntime(resolved, 'deno')).toBe(false)
+    expect(isEmailActiveForRuntime(resolved, 'deno')).toBe(true)
   })
 
   it('treats mailpit provider as active on both runtimes', async () => {

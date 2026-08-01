@@ -23,6 +23,7 @@ import { touchServerMetadata } from "../../server-registry.ts";
 import { verifyDaemonJwt } from "../authn/daemon-jwt.ts";
 import { getServerDaemonStateByServerId } from "../authn/server-identity-db.ts";
 import { inboundHeartbeatProjectionDue } from "./postgres-projection.ts";
+import { mergeSnapshotPresence } from "./snapshot-merge.ts";
 import {
   onDaemonConnected,
   onDaemonDisconnected,
@@ -1188,10 +1189,6 @@ export class DaemonCellObject {
     this.#runtimeConnected = true;
     this.#lastRemoteAddress = meta.remoteAddress;
     this.#lastConnectedAt = connectedAt;
-    const connectedAtMs = Date.parse(connectedAt);
-    this.#lastProjectedAtMs = Number.isNaN(connectedAtMs)
-      ? Date.now()
-      : connectedAtMs;
 
     this.#ctx.storage.transactionSync(() => {
       this.#ensureServerId(serverId);
@@ -2252,7 +2249,7 @@ export class DaemonCellObject {
         };
       }
       const runtime = this.#buildRuntimeSnapshot(serverId);
-      return {
+      const projected: DaemonCellSnapshot = {
         ...base,
         connected: status?.connected ?? base.connected,
         connectedAt: status?.connected
@@ -2264,6 +2261,7 @@ export class DaemonCellObject {
         remoteAddress: base.remoteAddress ??
           daemonState.projection?.remoteAddress,
       };
+      return mergeSnapshotPresence(projected, runtime);
     }
 
     // Fall back to in-memory presence + cell-row identity fields.

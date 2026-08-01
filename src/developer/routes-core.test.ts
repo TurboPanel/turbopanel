@@ -1,4 +1,4 @@
-/// <reference types="@cloudflare/vitest-pool-workers" />
+/// <reference types="@cloudflare/vitest-pool-workers/types" />
 import { describe, expect, it } from "vitest";
 import { Hono } from "hono";
 import type { AppEnv } from "../app.ts";

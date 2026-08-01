@@ -69,7 +69,12 @@ function parseInvitationGrantEntry(
   const target = parseGrantTarget(record)
   if (!target) return 'invalid'
 
-  if (record.allowed !== undefined && typeof record.allowed !== 'boolean') {
+  let allowed: boolean | undefined
+  if (typeof record.allowed === 'boolean') {
+    allowed = record.allowed
+  } else if (typeof record.allow === 'boolean') {
+    allowed = record.allow
+  } else if (record.allowed !== undefined || record.allow !== undefined) {
     return 'invalid'
   }
 
@@ -77,7 +82,7 @@ function parseInvitationGrantEntry(
     entityType,
     entityId,
     permissionKey: target.permissionKey,
-    ...(typeof record.allowed === 'boolean' ? { allowed: record.allowed } : {}),
+    ...(allowed !== undefined ? { allowed } : {}),
   }
 }
 
@@ -130,7 +135,7 @@ export async function materializeInvitationGrants(
       throw new InvitationGrantValidationError(permissionCompat.error, 400)
     }
 
-    const allow = grantSpec.allow ?? grantSpec.allowed ?? true
+    const allow = grantSpec.allowed ?? true
 
     await db
       .insert(grant)

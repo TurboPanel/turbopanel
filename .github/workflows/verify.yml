@@ -17,6 +17,22 @@ jobs:
     concurrency:
       group: instance-verify-${{ github.event_name }}-${{ github.ref }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: turbopanel
+          POSTGRES_PASSWORD: turbopanel_ci_test
+          POSTGRES_DB: turbopanel
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U turbopanel -d turbopanel"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TURBOPANEL_DATABASE_URL: postgresql://turbopanel:turbopanel_ci_test@127.0.0.1:5432/turbopanel
     steps:
       - name: Check out repository
         uses: actions/checkout@v5

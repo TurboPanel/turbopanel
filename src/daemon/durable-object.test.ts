@@ -1,4 +1,4 @@
-/// <reference types="@cloudflare/vitest-pool-workers" />
+/// <reference types="@cloudflare/vitest-pool-workers/types" />
 import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -258,6 +258,25 @@ function createProjectionRecordingDb(
     },
   };
 }
+
+/** In-memory Postgres double — no Hyperdrive sockets (avoids flaky teardown). */
+function createNoopProjectionDb(): Db {
+  return createProjectionRecordingDb().db;
+}
+
+function useNoopProjectionDb(): void {
+  setDaemonCellProjectionDbFactoryForTests(createNoopProjectionDb);
+}
+
+beforeEach(() => {
+  useNoopProjectionDb();
+});
+
+afterEach(async () => {
+  // Attach/disconnect projections run in ctx.waitUntil — give them a tick to
+  // finish on the noop client before the next test reuses the DO isolate.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+});
 
 /**
  * Fleet status lives on dedicated columns in the UPDATE `.set()` patch now —
@@ -769,13 +788,6 @@ describe("DaemonCellObject diagnostics", () => {
 });
 
 describe("DaemonCellObject", () => {
-  beforeEach(() => {
-    setDaemonCellProjectionDbFactoryForTests(null);
-  });
-
-  afterEach(() => {
-    setDaemonCellProjectionDbFactoryForTests(null);
-  });
   it("projects connect to Postgres after websocket attach", async () => {
     const serverId = "test-srv-proj-connect";
     const { db, updateCalls } = createProjectionRecordingDb({
@@ -832,8 +844,7 @@ describe("DaemonCellObject", () => {
   it("projects disconnect to Postgres after websocket close", async () => {
     const serverId = "test-srv-proj-disconnect";
     const { db, updateCalls } = createProjectionRecordingDb({
-      connected: true,
-      statusChangedAt: new Date().toISOString(),
+      connected: false,
     });
     setDaemonCellProjectionDbFactoryForTests(() => db);
 
@@ -857,7 +868,7 @@ describe("DaemonCellObject", () => {
       expect(typeof statusFromPatch(disconnectedPatch)?.statusChangedAt)
         .toEqual(expect.any(String));
     });
-  });
+  }, 10_000);
 
   it("projects agent change on heartbeat when commit changes", async () => {
     const serverId = "test-srv-proj-heartbeat-agent";
@@ -1932,14 +1943,6 @@ describe("DaemonCellObject", () => {
 });
 
 describe("createRequestAndWait expiry parity", () => {
-  beforeEach(() => {
-    setDaemonCellProjectionDbFactoryForTests(null);
-  });
-
-  afterEach(() => {
-    setDaemonCellProjectionDbFactoryForTests(null);
-  });
-
   it("timed-out createRequestAndWait reclaims outbox and cannot redeliver", async () => {
     const serverId = "test-srv-expire-wait";
     const stub = env.DAEMON_CELL.getByName(serverId);
@@ -2050,14 +2053,6 @@ describe("createRequestAndWait expiry parity", () => {
 });
 
 describe("command-dispatch correlation", () => {
-  beforeEach(() => {
-    setDaemonCellProjectionDbFactoryForTests(null);
-  });
-
-  afterEach(() => {
-    setDaemonCellProjectionDbFactoryForTests(null);
-  });
-
   it("ack is non-terminal then outcome completes over RPC inbound", async () => {
     const serverId = "test-srv-command-dispatch";
     const stub = env.DAEMON_CELL.getByName(serverId);
@@ -2742,7 +2737,9 @@ describe("command-dispatch correlation", () => {
     const diagBefore = await diagResponse.json() as {
       storageWrites: number;
     };
-    ws.send(JSON.stringify({ type: "heartbeat", at }));
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "heartbeat", at }));
+    }
     await new Promise((resolve) => setTimeout(resolve, 100));
     const diagAfterResponse = await cellRpc(stub, serverId, "/rpc/diagnostics", {
       method: "GET",

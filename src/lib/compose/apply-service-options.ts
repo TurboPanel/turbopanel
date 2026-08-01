@@ -107,7 +107,7 @@ function applyRestartPolicy(
   maxAttempts: number,
 ): void {
   const deploy = isRecord(service.deploy) ? { ...service.deploy } : {}
-  const restartPolicy = isRecord(deploy.restart_policy)
+  const restartPolicy: Record<string, unknown> = isRecord(deploy.restart_policy)
     ? { ...deploy.restart_policy }
     : { condition: 'on-failure' }
   restartPolicy.max_attempts = maxAttempts

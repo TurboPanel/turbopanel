@@ -125,7 +125,7 @@ export function readManagedEngineOptions(
     return null
   }
 
-  return { engine, rootUsername, provider, port }
+  return { engine: entry.code, rootUsername, provider, port }
 }
 
 function postgresCatalogEntry(): CatalogEntry {

@@ -18,14 +18,11 @@ export const CDN_INSTALL_HOST = 'turbopanel.sh'
  */
 export function formatInstallScriptCurlUrl(origin: string): string {
   const trimmed = origin.replace(/\/$/, '')
-  if (
-    trimmed === 'https://turbopanel.sh' ||
-    trimmed === 'http://turbopanel.sh'
-  ) {
-    return CDN_INSTALL_HOST
-  }
   try {
     const url = new URL(trimmed)
+    if (url.hostname === CDN_INSTALL_HOST && !url.port) {
+      return CDN_INSTALL_HOST
+    }
     if (url.protocol === 'https:') {
       if (!url.port || url.port === '443') {
         return url.hostname
