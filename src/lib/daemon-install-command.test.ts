@@ -116,6 +116,7 @@ describe('buildLicenseInstallCommand', () => {
     expect(command).toBe(
       `curl -fsSL ${CDN_RUN_SCRIPT_DISPLAY} | TURBOPANEL_LICENSE=${encoded} sh`,
     )
+    expect(command).toContain('turbopanel.sh/run.sh')
     expect(command).not.toContain('https://trbp.nl')
     expect(command).not.toContain('TURBOPANEL_INSTALL_SCRIPT_URL')
     expect(command).not.toContain('raw.githubusercontent.com')

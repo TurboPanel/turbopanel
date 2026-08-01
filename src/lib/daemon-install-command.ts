@@ -11,7 +11,7 @@ export function encodeLicenseArg(
 }
 
 /** CDN bootstrap URL shown in production install commands (HTTP→HTTPS via CF 301). */
-export const CDN_RUN_SCRIPT_DISPLAY = 'trbp.nl/run.sh'
+export const CDN_RUN_SCRIPT_DISPLAY = 'turbopanel.sh/run.sh'
 
 /**
  * Build the install pipeline. Callers must pass a validated origin / host and a
