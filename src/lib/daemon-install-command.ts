@@ -10,8 +10,39 @@ export function encodeLicenseArg(
     .replaceAll('=', '')
 }
 
-/** CDN bootstrap URL shown in production install commands (HTTP→HTTPS via CF 301). */
-export const CDN_RUN_SCRIPT_DISPLAY = 'turbopanel.sh/run.sh'
+/** CDN bootstrap host shown in production install commands (HTTP→HTTPS via CF). */
+export const CDN_INSTALL_HOST = 'turbopanel.sh'
+
+/**
+ * Bare host[:port] or scheme+host for curl; never includes an install script path.
+ */
+export function formatInstallScriptCurlUrl(origin: string): string {
+  const trimmed = origin.replace(/\/$/, '')
+  if (
+    trimmed === 'https://turbopanel.sh' ||
+    trimmed === 'http://turbopanel.sh'
+  ) {
+    return CDN_INSTALL_HOST
+  }
+  try {
+    const url = new URL(trimmed)
+    if (url.protocol === 'https:') {
+      if (!url.port || url.port === '443') {
+        return url.hostname
+      }
+      return `https://${url.host}`
+    }
+    if (url.protocol === 'http:') {
+      if (!url.port || url.port === '80') {
+        return url.hostname
+      }
+      return url.host
+    }
+  } catch {
+    // fall through
+  }
+  return trimmed
+}
 
 /**
  * Build the install pipeline. Callers must pass a validated origin / host and a
@@ -58,7 +89,7 @@ export function buildLicenseInstallCommand(opts: {
 
   if (runtime === 'deno') {
     return buildInstallPipeline({
-      curlUrl: `${scriptBase}/run.sh`,
+      curlUrl: formatInstallScriptCurlUrl(scriptBase),
       licenseArg,
       host,
       insecureTls,
@@ -67,7 +98,7 @@ export function buildLicenseInstallCommand(opts: {
   }
 
   return buildInstallPipeline({
-    curlUrl: CDN_RUN_SCRIPT_DISPLAY,
+    curlUrl: CDN_INSTALL_HOST,
     licenseArg,
     host,
   })

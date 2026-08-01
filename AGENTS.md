@@ -492,7 +492,7 @@ the proxy).
 **Co-located development** does not use this file. When `turbopanel_dev_user` is
 set, `turbopanel-caddy.service` loads `~/dev/orchestration/Caddyfile` instead
 (Expo proxy, plaintext `:8880`, optional wrangler upstream,
-`/downloads/daemon` + `/run.sh`). See **`../dev/AGENTS.md`** (Ansible overlay /
+`/downloads/daemon` + install script at `/`). See **`../dev/AGENTS.md`** (Ansible overlay /
 Caddyfile).
 
 ### Production

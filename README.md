@@ -9,7 +9,7 @@ GitHub: [turbopanel/instance](https://github.com/turbopanel/instance). Local che
 Do **not** bootstrap this repo on its own. The co-located stack is owned by **[turbopanel/dev](https://github.com/turbopanel/dev)**.
 
 ```sh
-curl -fsSL trbp.nl/develop.sh | sh
+curl -fsSL dev.turbopanel.sh | sh
 ```
 
 That installs/updates `~/dev`, launches the developer console, and (after **Converge**) brings up the instance (`turbopanel-instance.service` on the Unix socket), Caddy (`https://localhost:8443` / `http://localhost:8880`), and supporting Docker services. The instance never installs itself — the daemon owns orchestration.

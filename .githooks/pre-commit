@@ -1,6 +1,26 @@
 #!/usr/bin/env sh
 set -eu
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+
+# Secret scan is never skippable.
 "$ROOT/scripts/scan-secrets.sh"
-node "$ROOT/scripts/check-durable-object-hibernation.mjs"
-node "$ROOT/scripts/check-workers-bundle.mjs"
+
+if [ -n "${TURBOPANEL_SKIP_HOOK_TESTS:-}" ]; then
+  echo "pre-commit: TURBOPANEL_SKIP_HOOK_TESTS set — skipping validation" >&2
+  exit 0
+fi
+
+_dev_hook_lib="${TURBOPANEL_DEV_ROOT:-$HOME}/dev/scripts/lib/hook-toolchain.sh"
+if [ ! -f "$_dev_hook_lib" ]; then
+  echo "pre-commit: dev checkout hook-toolchain missing at ${_dev_hook_lib} — clone turbopanel/dev and run ./console" >&2
+  echo "pre-commit: or set TURBOPANEL_SKIP_HOOK_TESTS=1 to bypass validation (secret scan still runs)" >&2
+  exit 1
+fi
+# shellcheck source=/dev/null
+. "$_dev_hook_lib"
+tp_hook_ensure_pnpm_toolchain "$ROOT"
+tp_hook_ensure_deno_toolchain
+
+cd "$ROOT"
+export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+"$PNPM_BIN" run test:hook
