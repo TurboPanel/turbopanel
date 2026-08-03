@@ -1,5 +1,6 @@
 import { eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
@@ -18,8 +19,12 @@ import {
   hierarchyDeleteHasChildrenResponse,
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
+import {
+  isWorkspaceDisplayNameTaken,
+  WORKSPACE_NAME_IN_USE_ERROR,
+} from '../display-name-uniqueness.ts'
 
-export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
+export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   router.use('/workspaces', createSessionMiddleware(opts.secrets))
   router.use('/workspaces/:id', createSessionMiddleware(opts.secrets))
 
@@ -122,6 +127,10 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
     const denied = await assertCanCreateOr403(c, 'organization', organizationId)
     if (denied) return denied
 
+    if (await isWorkspaceDisplayNameTaken(db, organizationId, displayName)) {
+      return c.json({ error: WORKSPACE_NAME_IN_USE_ERROR }, 409)
+    }
+
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(workspace)
@@ -167,6 +176,18 @@ export function registerWorkspaceRoutes(router: Hono, opts: AuthRouteOpts) {
       patchFields = buildPatchUpdateFields(body)
     } catch {
       return c.json({ error: 'Invalid request' }, 400)
+    }
+
+    if (
+      patchFields.displayName !== undefined &&
+      (await isWorkspaceDisplayNameTaken(
+        db,
+        organizationId,
+        patchFields.displayName,
+        id,
+      ))
+    ) {
+      return c.json({ error: WORKSPACE_NAME_IN_USE_ERROR }, 409)
     }
 
     await db

@@ -818,3 +818,101 @@ test('POST /projects/:id/configure managed postgres reuses Production', async ()
     assertEquals(managedForEnv.length, 0)
   })
 })
+
+test('POST /projects rejects duplicate display names case-insensitively within the org', async () => {
+  await withProjectFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    workspaceId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const first = await app.request('/projects', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        type: 'empty',
+        workspaceId,
+        displayName: 'Alpha App',
+      }),
+    })
+    assertEquals(first.status, 200)
+
+    const duplicate = await app.request('/projects', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        type: 'empty',
+        workspaceId,
+        displayName: '  alpha app  ',
+      }),
+    })
+    assertEquals(duplicate.status, 409)
+    assertEquals(await duplicate.json(), { error: 'project_name_in_use' })
+  })
+})
+
+test('PATCH /projects/:id rejects renaming onto another project name in the org', async () => {
+  await withProjectFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    workspaceId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const createA = await app.request('/projects', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        type: 'empty',
+        workspaceId,
+        displayName: 'Project A',
+      }),
+    })
+    assertEquals(createA.status, 200)
+
+    const createB = await app.request('/projects', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        type: 'empty',
+        workspaceId,
+        displayName: 'Project B',
+      }),
+    })
+    assertEquals(createB.status, 200)
+    const { id: projectBId } = await createB.json() as { id: string }
+
+    const rename = await app.request(`/projects/${projectBId}`, {
+      method: 'PATCH',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ displayName: 'project a' }),
+    })
+    assertEquals(rename.status, 409)
+    assertEquals(await rename.json(), { error: 'project_name_in_use' })
+  })
+})

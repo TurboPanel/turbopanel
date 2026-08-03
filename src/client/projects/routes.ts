@@ -54,6 +54,10 @@ import {
   isProductionEnvironmentName,
   loadDefaultEnvironmentName,
 } from './empty-setup.ts'
+import {
+  isProjectDisplayNameTaken,
+  PROJECT_NAME_IN_USE_ERROR,
+} from '../display-name-uniqueness.ts'
 
 type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
@@ -682,6 +686,16 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const input = await parseCreateProjectInput(c, db, orgResult)
     if (input instanceof Response) return input
 
+    if (
+      await isProjectDisplayNameTaken(
+        db,
+        input.organizationId,
+        input.displayName,
+      )
+    ) {
+      return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
+    }
+
     try {
       const id = await runCreateProjectTransaction(db, {
         ...input,
@@ -791,6 +805,18 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const patchFields = buildProjectPatchFields(c, body, moveTarget)
     if (patchFields instanceof Response) return patchFields
+
+    if (
+      patchFields.displayName !== undefined &&
+      (await isProjectDisplayNameTaken(
+        db,
+        organizationId,
+        patchFields.displayName,
+        id,
+      ))
+    ) {
+      return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
+    }
 
     const defaultServerError = await assertDefaultServerIdInOrg(
       c,

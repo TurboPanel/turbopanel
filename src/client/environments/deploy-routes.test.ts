@@ -385,7 +385,7 @@ test('GET /environments/:id/deploy-preview returns prepared yaml with warnings f
       warnings: Array<{ code: string }>
     }
     assertEquals(body.ok, true)
-    assertEquals(typeof body.projectName, 'string')
+    assertEquals(body.projectName, projectId)
     assertEquals(body.containers, [])
     assertEquals(body.volumes, [])
     assertEquals(body.warnings.some((w) => w.code === 'empty_compose'), true)
@@ -399,6 +399,7 @@ test('GET /environments/:id/deploy-preview returns containers for a service', as
     secrets,
     userId,
     organizationId,
+    projectId,
     environmentId,
     serverId,
   }) => {
@@ -424,6 +425,7 @@ test('GET /environments/:id/deploy-preview returns containers for a service', as
     const body = await res.json() as {
       ok: boolean
       composeYaml: string
+      projectName: string
       containers: Array<{
         serviceId: string
         composeServiceName: string
@@ -434,11 +436,14 @@ test('GET /environments/:id/deploy-preview returns containers for a service', as
       warnings: unknown[]
     }
     assertEquals(body.ok, true)
+    assertEquals(body.projectName, projectId)
     assertEquals(body.composeYaml.includes('web:'), true)
     assertEquals(body.containers.length >= 1, true)
     assertEquals(body.containers[0]!.composeServiceName, 'web')
     assertEquals(body.containers[0]!.ordinal, 1)
-    assertEquals(body.containers[0]!.containerName.length > 0, true)
+    // uuid naming: docker container_name is the service UUID (obfuscated)
+    assertEquals(body.containers[0]!.containerName, body.containers[0]!.serviceId)
+    assertEquals(body.composeYaml.includes(`container_name: ${body.containers[0]!.serviceId}`), true)
   })
 })
 

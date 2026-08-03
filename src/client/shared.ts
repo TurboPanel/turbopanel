@@ -18,7 +18,7 @@ export function parseDisplayName(body: Record<string, unknown>): string | null {
   if (typeof body.displayName !== 'string') {
     throw new BadRequestError('Invalid request')
   }
-  const name = body.displayName
+  const name = body.displayName.trim()
   if (name.length < 1 || name.length > 255 || !DISPLAY_NAME_RE.test(name)) {
     throw new BadRequestError('Invalid request')
   }
@@ -32,10 +32,11 @@ export function parseDescription(body: Record<string, unknown>): string | null {
   if (typeof body.description !== 'string') {
     throw new BadRequestError('Invalid request')
   }
-  if (body.description.length > 255) {
+  const description = body.description.trim()
+  if (description.length > 255) {
     throw new BadRequestError('Invalid request')
   }
-  return body.description
+  return description.length === 0 ? null : description
 }
 
 export function parseJsonbObject(
@@ -84,7 +85,7 @@ export function buildPatchUpdateFields(
     if (typeof body.displayName !== 'string') {
       throw new BadRequestError('Invalid request')
     }
-    const name = body.displayName
+    const name = body.displayName.trim()
     if (name.length < 1 || name.length > 255 || !DISPLAY_NAME_RE.test(name)) {
       throw new BadRequestError('Invalid request')
     }
@@ -95,10 +96,11 @@ export function buildPatchUpdateFields(
     if (typeof body.description !== 'string') {
       throw new BadRequestError('Invalid request')
     }
-    if (body.description.length > 255) {
+    const description = body.description.trim()
+    if (description.length > 255) {
       throw new BadRequestError('Invalid request')
     }
-    result.description = body.description
+    result.description = description.length === 0 ? null : description
   }
 
   return result

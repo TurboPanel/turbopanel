@@ -179,18 +179,15 @@ import {
   validateDeployStorageMaterialList,
 } from '../../lib/commands/deploy-validation.ts'
 
-function trimEdgeDashes(value: string): string {
-  let start = 0
-  let end = value.length
-  while (start < end && value[start] === '-') start++
-  while (end > start && value[end - 1] === '-') end--
-  return value.slice(start, end)
-}
-
-function projectComposeName(displayName: string | null, projectId: string): string {
-  const raw = (displayName ?? projectId).toLowerCase().replaceAll(/[^a-z0-9]+/g, '-')
-  const trimmed = trimEdgeDashes(raw).slice(0, 40)
-  return trimmed.length > 0 ? trimmed : `project-${projectId.slice(0, 8)}`
+/**
+ * Docker Compose `-p` project name for an environment deploy.
+ *
+ * Uses the TurboPanel **project** UUID — never the operator display name.
+ * Container names are separately obfuscated via service-UUID allocation
+ * (`containerNaming: uuid`).
+ */
+function composeProjectName(projectId: string): string {
+  return projectId
 }
 
 type BuildHostingResult =
@@ -535,7 +532,7 @@ async function sealTlsMaterialForDaemon(
 
 type LoadedDeployCompose = {
   envRow: { id: string; projectId: string; options: unknown; metadata: unknown }
-  projectRow: { id: string; displayName: string | null; options: unknown }
+  projectRow: { id: string; options: unknown }
   placementServerId: string | null
 }
 
@@ -559,7 +556,6 @@ async function loadDeployContext(
   const [projectRow] = await db
     .select({
       id: project.id,
-      displayName: project.displayName,
       options: project.options,
     })
     .from(project)
@@ -861,8 +857,7 @@ export function registerEnvironmentDeployPreviewRoutes(
       return c.json({ error: 'Unexpected prepare error' }, 500)
     }
 
-    const projectName =
-      `tp-${projectComposeName(loaded.projectRow.displayName, loaded.projectRow.id)}-${environmentId.slice(0, 8)}`
+    const projectName = composeProjectName(loaded.projectRow.id)
 
     const appContainers = prepared.containers.map((row) => ({
       serviceId: row.serviceId,
@@ -968,7 +963,7 @@ export function registerEnvironmentDeployRoutes(
     )
     if (tlsMaterial instanceof Response) return tlsMaterial
 
-    const projectName = `tp-${projectComposeName(loaded.projectRow.displayName, loaded.projectRow.id)}-${environmentId.slice(0, 8)}`
+    const projectName = composeProjectName(loaded.projectRow.id)
 
     const materialsError = validateDeployMaterials(
       hostings,
@@ -1027,7 +1022,6 @@ async function loadStopTarget(
   const [projectRow] = await db
     .select({
       id: project.id,
-      displayName: project.displayName,
       options: project.options,
     })
     .from(project)
@@ -1037,8 +1031,7 @@ async function loadStopTarget(
 
   return {
     projectId: projectRow.id,
-    projectName:
-      `tp-${projectComposeName(projectRow.displayName, projectRow.id)}-${environmentId.slice(0, 8)}`,
+    projectName: composeProjectName(projectRow.id),
     placementServerId: resolveEffectivePlacementServerId(
       envRow.serverId,
       parseProjectOptions(projectRow.options),

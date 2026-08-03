@@ -49,7 +49,11 @@ export const deploySchemas = {
         description:
           'Exact runtime compose YAML prepare would send the daemon; secret values redacted',
       },
-      projectName: { type: 'string' },
+      projectName: {
+        type: 'string',
+        description:
+          'Docker Compose project name (`-p`) — the TurboPanel project UUID (never a display-name slug)',
+      },
       containers: {
         type: 'array',
         items: {
