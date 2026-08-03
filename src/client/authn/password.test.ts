@@ -11,9 +11,10 @@ import {
  * Workers constraint (documented + exercised here under workerd):
  *
  * Argon2id at m=19456 (~19 MiB) stays well under the default 128 MiB isolate
- * limit and verifies comfortably under ~1s (OWASP interactive target). The
- * hasher is pure-JS `@noble/hashes` with no WASM loader, so there is no
- * `nodejs_compat` or native-addon dependency for password hashing.
+ * limit. Pure-JS `@noble/hashes` (no WASM) typically finishes a hash+verify
+ * pair in ~1–2s locally; under a contended workerd pool (full `test:do` on
+ * CI) one hash + two verifies can exceed vitest's 5s default — keep a raised
+ * timeout so the OWASP floor check stays green without weakening params.
  *
  * Anti-PBKDF2 / anti-weak-params regression check for the Workers vitest pool
  * (workerd). Deno coverage (floor, NFKC, fail-closed tags) is in
@@ -35,17 +36,24 @@ function phcWorkParams(encoded: string): { m: number; t: number; p: number } {
   }
 }
 
+/** One hash + two verifies at OWASP m=19456 under workerd; CI needs headroom. */
+const ARGON2ID_WORKERS_ROUNDTRIP_TIMEOUT_MS = 30_000
+
 describe('password hasher (Workers workerd parity)', () => {
-  it('round-trips Argon2id at/above the OWASP floor and rejects wrong passwords', async () => {
-    const encoded = await hashPassword('correct horse')
-    expect(encoded.startsWith('$argon2id$')).toBe(true)
+  it(
+    'round-trips Argon2id at/above the OWASP floor and rejects wrong passwords',
+    async () => {
+      const encoded = await hashPassword('correct horse')
+      expect(encoded.startsWith('$argon2id$')).toBe(true)
 
-    const params = phcWorkParams(encoded)
-    expect(params.m).toBeGreaterThanOrEqual(ARGON2ID_MEMORY_KIB)
-    expect(params.t).toBeGreaterThanOrEqual(ARGON2ID_ITERATIONS)
-    expect(params.p).toBeGreaterThanOrEqual(ARGON2ID_PARALLELISM)
+      const params = phcWorkParams(encoded)
+      expect(params.m).toBeGreaterThanOrEqual(ARGON2ID_MEMORY_KIB)
+      expect(params.t).toBeGreaterThanOrEqual(ARGON2ID_ITERATIONS)
+      expect(params.p).toBeGreaterThanOrEqual(ARGON2ID_PARALLELISM)
 
-    expect(await verifyPassword('correct horse', encoded)).toBe(true)
-    expect(await verifyPassword('wrong', encoded)).toBe(false)
-  })
+      expect(await verifyPassword('correct horse', encoded)).toBe(true)
+      expect(await verifyPassword('wrong', encoded)).toBe(false)
+    },
+    ARGON2ID_WORKERS_ROUNDTRIP_TIMEOUT_MS,
+  )
 })
