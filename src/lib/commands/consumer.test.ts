@@ -6,6 +6,7 @@ import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../..
 import { attachDaemonStateToServer } from '../../daemon/authn/server-identity-db.ts'
 import {
   command,
+  container,
   environment,
   ip,
   managed,
@@ -14,6 +15,7 @@ import {
   principal,
   project,
   server,
+  service,
   vpn,
   workspace,
 } from '../db/schema.ts'
@@ -844,5 +846,207 @@ test('processCommandEnvelope no-ops for terminal or expired commands', async () 
     const expiredUpdated = await getCommandRecord(db, expired.id)
     assertEquals(expiredUpdated?.status, 'timed_out')
     assertEquals(expiredRegistry.enqueueCalled, false)
+  })
+})
+
+test('processCommandEnvelope reconciles containers on environment.lifecycle success', async () => {
+  await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+
+    const [workspaceRow] = await db
+      .insert(workspace)
+      .values({ organizationId, displayName: 'Lifecycle Reconcile Workspace' })
+      .returning({ id: workspace.id })
+    const [projectRow] = await db
+      .insert(project)
+      .values({
+        workspaceId: workspaceRow!.id,
+        displayName: 'Lifecycle Reconcile Project',
+        metadata: { type: 'docker-compose' },
+      })
+      .returning({ id: project.id })
+    const [environmentRow] = await db
+      .insert(environment)
+      .values({
+        projectId: projectRow!.id,
+        serverId,
+        displayName: 'Production',
+      })
+      .returning({ id: environment.id })
+    const environmentId = environmentRow!.id
+    const [serviceRow] = await db
+      .insert(service)
+      .values({
+        environmentId,
+        displayName: 'web',
+        composeServiceName: 'web',
+      })
+      .returning({ id: service.id })
+    await db.insert(container).values({
+      serviceId: serviceRow!.id,
+      serverId,
+      containerId: 'old-cid',
+      containerName: 'proj-web-1',
+      status: 'running',
+      composeServiceName: 'web',
+      ordinal: 1,
+    })
+
+    try {
+      const record = await createCommandRecord(db, {
+        serverId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'environment.lifecycle',
+        payload: {
+          environmentId,
+          projectId: projectRow!.id,
+          projectName: 'tp-demo-lifecycle',
+          action: 'stop',
+        },
+      })
+
+      const registry = createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'done',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          result: {
+            projectName: 'tp-demo-lifecycle',
+            summary: 'Lifecycle stop',
+            containers: [
+              {
+                composeServiceName: 'web',
+                containerId: 'new-cid',
+                containerName: 'proj-web-1',
+                status: 'exited',
+              },
+            ],
+          },
+        },
+      })
+
+      await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+      const updated = await getCommandRecord(db, record.id)
+      assertEquals(updated?.status, 'succeeded')
+
+      const [row] = await db
+        .select({
+          containerId: container.containerId,
+          status: container.status,
+        })
+        .from(container)
+        .where(eq(container.serverId, serverId))
+        .limit(1)
+      assertEquals(row?.containerId, 'new-cid')
+      assertEquals(row?.status, 'exited')
+    } finally {
+      await db.delete(container).where(eq(container.serverId, serverId))
+      await db.delete(service).where(eq(service.environmentId, environmentId))
+      await db.delete(environment).where(eq(environment.id, environmentId))
+      await db.delete(project).where(eq(project.id, projectRow!.id))
+      await db.delete(workspace).where(eq(workspace.id, workspaceRow!.id))
+    }
+  })
+})
+
+test('processCommandEnvelope skips reconcile when environment.lifecycle omits containers', async () => {
+  await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+
+    const [workspaceRow] = await db
+      .insert(workspace)
+      .values({ organizationId, displayName: 'Lifecycle Skip Workspace' })
+      .returning({ id: workspace.id })
+    const [projectRow] = await db
+      .insert(project)
+      .values({
+        workspaceId: workspaceRow!.id,
+        displayName: 'Lifecycle Skip Project',
+        metadata: { type: 'docker-compose' },
+      })
+      .returning({ id: project.id })
+    const [environmentRow] = await db
+      .insert(environment)
+      .values({
+        projectId: projectRow!.id,
+        serverId,
+        displayName: 'Production',
+      })
+      .returning({ id: environment.id })
+    const environmentId = environmentRow!.id
+    const [serviceRow] = await db
+      .insert(service)
+      .values({
+        environmentId,
+        displayName: 'web',
+        composeServiceName: 'web',
+      })
+      .returning({ id: service.id })
+    await db.insert(container).values({
+      serviceId: serviceRow!.id,
+      serverId,
+      containerId: 'keep-cid',
+      containerName: 'proj-web-1',
+      status: 'running',
+      composeServiceName: 'web',
+      ordinal: 1,
+    })
+
+    try {
+      const record = await createCommandRecord(db, {
+        serverId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'environment.lifecycle',
+        payload: {
+          environmentId,
+          projectId: projectRow!.id,
+          projectName: 'tp-demo-lifecycle',
+          action: 'restart',
+        },
+      })
+
+      const registry = createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'done',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          result: {
+            projectName: 'tp-demo-lifecycle',
+            summary: 'Lifecycle restart',
+          },
+        },
+      })
+
+      await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+      const updated = await getCommandRecord(db, record.id)
+      assertEquals(updated?.status, 'succeeded')
+
+      const [row] = await db
+        .select({
+          containerId: container.containerId,
+          status: container.status,
+        })
+        .from(container)
+        .where(eq(container.serverId, serverId))
+        .limit(1)
+      assertEquals(row?.containerId, 'keep-cid')
+      assertEquals(row?.status, 'running')
+    } finally {
+      await db.delete(container).where(eq(container.serverId, serverId))
+      await db.delete(service).where(eq(service.environmentId, environmentId))
+      await db.delete(environment).where(eq(environment.id, environmentId))
+      await db.delete(project).where(eq(project.id, projectRow!.id))
+      await db.delete(workspace).where(eq(workspace.id, workspaceRow!.id))
+    }
   })
 })

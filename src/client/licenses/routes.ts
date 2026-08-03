@@ -218,12 +218,15 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
     // surface (self-signed platform CA). A production HTTPS installBaseUrl
     // override must not force insecure TLS.
     const insecureTls = Boolean(devSurface)
+    // Instance-host `/run.sh` is served only by the dev overlay Caddyfile.
+    // Production / self-hosted Deno installs curl the CDN and pass TURBOPANEL_HOST.
     const installCommand = buildLicenseInstallCommand({
       runtime: opts.runtime,
       instanceUrl,
       licenseId,
       licenseToken,
       insecureTls,
+      useInstanceRunScript: Boolean(devSurface),
     })
 
     compatLogInfo('auth', 'license created; licenseToken is shown once and not stored in plaintext')

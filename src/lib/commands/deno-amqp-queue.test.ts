@@ -115,6 +115,13 @@ test('createDenoAmqpCommandQueue publishes persistent mandatory envelopes', asyn
 
     const decoded = JSON.parse(new TextDecoder().decode(publishCall?.args[2] as Uint8Array))
     assertEquals(decoded, envelope)
+    // Production path wraps with Buffer.from for amqplib; recording channel
+    // still receives a byte view we can decode.
+    assertEquals(
+      typeof Buffer !== 'undefined' &&
+        Buffer.isBuffer(publishCall?.args[2]),
+      true,
+    )
   } finally {
     connectStub.restore()
   }

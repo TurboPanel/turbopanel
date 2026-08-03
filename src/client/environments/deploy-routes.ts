@@ -36,6 +36,7 @@ import type {
   EnvironmentDeployTlsMaterial,
   EnvironmentDeployTraditionalWebSite,
   EnvironmentDeployVariableMaterial,
+  EnvironmentLifecycleAction,
 } from '../../lib/commands/schemas.ts'
 import { resolveTcpUdpIngressServices } from './tcp-udp-ingress.ts'
 import { isNoopCommandQueue } from '../../lib/commands/noop-command-queue.ts'
@@ -63,6 +64,10 @@ import {
   getOrgId,
   parseJsonBody,
 } from '../shared.ts'
+import {
+  parseProjectOptions,
+  resolveEffectivePlacementServerId,
+} from '../../lib/project-options.ts'
 
 type DeployHostingPayload = EnvironmentDeployHosting
 
@@ -565,7 +570,10 @@ async function loadDeployContext(
   return {
     envRow,
     projectRow,
-    placementServerId: envRow.serverId,
+    placementServerId: resolveEffectivePlacementServerId(
+      envRow.serverId,
+      parseProjectOptions(projectRow.options),
+    ),
   }
 }
 
@@ -603,8 +611,9 @@ async function authorizeDeployRequest(
 }
 
 /**
- * Resolve deploy/stop target from `environment.server_id` only — body/compose
- * placement is never a fallback.
+ * Resolve deploy/stop target from `environment.server_id`, falling back to
+ * `project.options.defaultServerId`. Body/compose placement is never a
+ * fallback.
  */
 async function resolveDeployTargetServer(
   c: Context<AppEnv>,
@@ -1019,6 +1028,7 @@ async function loadStopTarget(
     .select({
       id: project.id,
       displayName: project.displayName,
+      options: project.options,
     })
     .from(project)
     .where(eq(project.id, envRow.projectId))
@@ -1029,7 +1039,10 @@ async function loadStopTarget(
     projectId: projectRow.id,
     projectName:
       `tp-${projectComposeName(projectRow.displayName, projectRow.id)}-${environmentId.slice(0, 8)}`,
-    placementServerId: envRow.serverId,
+    placementServerId: resolveEffectivePlacementServerId(
+      envRow.serverId,
+      parseProjectOptions(projectRow.options),
+    ),
   }
 }
 
@@ -1142,6 +1155,124 @@ export function registerEnvironmentStopRoutes(
       projectId: loaded.projectId,
       projectName: loaded.projectName,
       ingressServices: tcpUdpServices.map((svc) => ({ serviceId: svc.serviceId })),
+    })
+  })
+}
+
+async function enqueueLifecycleCommand(
+  db: Db,
+  commandQueue: CommandQueue,
+  params: {
+    serverId: string
+    userId: string
+    environmentId: string
+    projectId: string
+    projectName: string
+    action: EnvironmentLifecycleAction
+  },
+): Promise<Response> {
+  const expiresAt = new Date(Date.now() + 120_000).toISOString()
+  const record = await createCommandRecord(db, {
+    serverId: params.serverId,
+    actorType: 'user',
+    actorId: params.userId,
+    type: 'environment.lifecycle',
+    payload: {
+      environmentId: params.environmentId,
+      projectId: params.projectId,
+      projectName: params.projectName,
+      action: params.action,
+    },
+    expiresAt,
+  })
+
+  const envelope: CommandEnvelope = {
+    commandId: record.id,
+    serverId: params.serverId,
+    type: 'environment.lifecycle',
+    attempt: 1,
+    queuedAt: record.queuedAt ?? record.createdAt,
+  }
+
+  try {
+    await commandQueue.enqueue(envelope)
+  } catch {
+    await transitionCommand(db, record.id, {
+      status: 'failed',
+      error: 'Command queue unavailable',
+    })
+    return Response.json({ error: 'Command queue unavailable' }, { status: 503 })
+  }
+
+  return Response.json({
+    ok: true as const,
+    commandId: record.id,
+    status: 'queued' as const,
+    serverId: params.serverId,
+  })
+}
+
+/**
+ * Register `POST /environments/:id/lifecycle` — non-destructive compose
+ * start|stop|restart. Status is polled via existing command GET.
+ */
+export function registerEnvironmentLifecycleRoutes(
+  router: Hono<AppEnv>,
+  opts: AuthRouteOpts,
+) {
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for environment lifecycle routes')
+  }
+  router.use('/environments/:id/lifecycle', createSessionMiddleware(opts.secrets))
+
+  router.post('/environments/:id/lifecycle', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const environmentId = c.req.param('id')
+    const denied = await assertCanManageOr403(c, 'environment', environmentId)
+    if (denied) return denied
+
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+
+    const entityOrgId = await resolveEntityOrganizationId(db, 'environment', environmentId)
+    if (!entityOrgId || entityOrgId !== orgResult) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+
+    const action = body.action
+    if (action !== 'start' && action !== 'stop' && action !== 'restart') {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+
+    const commandQueue = assertDispatchInfrastructure(c)
+    if (commandQueue instanceof Response) return commandQueue
+
+    const loaded = await loadStopTarget(db, environmentId)
+    if (loaded instanceof Response) return loaded
+
+    const target = await resolveDeployTargetServer(
+      c,
+      db,
+      orgResult,
+      loaded.placementServerId,
+    )
+    if (target instanceof Response) return target
+
+    return enqueueLifecycleCommand(db, commandQueue, {
+      serverId: target.serverId,
+      userId: session.userId,
+      environmentId,
+      projectId: loaded.projectId,
+      projectName: loaded.projectName,
+      action,
     })
   })
 }

@@ -2,6 +2,7 @@ import type { ComposeDocument } from './types.ts'
 import {
   formatStopGracePeriod,
   parseServiceOptions,
+  resolveHealthCheckPolicy,
   resolveMaxRestartAttempts,
   resolveStopGracePeriodSeconds,
   type ServiceOptions,
@@ -47,7 +48,7 @@ export function collectHealthCheckWarnings(
   for (const composeServiceName of listComposeServiceNames(document)) {
     const options = optionsByComposeName.get(composeServiceName) ?? {}
     const parsed = parseServiceOptions(options) ?? {}
-    const policy = parsed.healthCheck?.policy ?? 'warn'
+    const policy = resolveHealthCheckPolicy(parsed)
     if (policy === 'disabled') continue
     const services = document.data.services
     const rawService = isRecord(services) ? services[composeServiceName] : undefined
@@ -55,6 +56,9 @@ export function collectHealthCheckWarnings(
     if (isRecord(rawService) && isTraditionalWebComposeService(rawService)) {
       continue
     }
+    // Compose `healthcheck:` (or an image HEALTHCHECK once Docker reports it)
+    // is enough — we only gate when the operator opted into warn/required and
+    // the compose service has no healthcheck block.
     if (isRecord(rawService) && hasHealthCheck(rawService)) {
       continue
     }

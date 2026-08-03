@@ -6,6 +6,8 @@ import {
 import {
   parseCommandPayload,
   parseCommandResult,
+  parseEnvironmentLifecyclePayload,
+  parseEnvironmentLifecycleResult,
   parseHostnameSetPayload,
   parseHostnameSetResult,
   parseManagedApplyPayload,
@@ -147,6 +149,7 @@ const DAEMON_COMMAND_TYPES = [
   'server.timezone.set',
   'server.wireguard.apply',
   'environment.deploy',
+  'environment.lifecycle',
   'environment.stop',
   'managed.apply',
   'managed.lifecycle',
@@ -157,6 +160,84 @@ const DAEMON_COMMAND_TYPES = [
 
 test('COMMAND_TYPES matches daemon contracts canonical order', () => {
   assertEquals([...COMMAND_TYPES], [...DAEMON_COMMAND_TYPES])
+})
+
+test('parseEnvironmentLifecyclePayload round-trips and rejects invalid shapes', () => {
+  assertEquals(
+    parseEnvironmentLifecyclePayload({
+      environmentId: 'env-1',
+      projectId: 'proj-1',
+      projectName: 'tp-demo',
+      action: 'restart',
+    }),
+    {
+      environmentId: 'env-1',
+      projectId: 'proj-1',
+      projectName: 'tp-demo',
+      action: 'restart',
+    },
+  )
+  assertThrows(
+    () =>
+      parseEnvironmentLifecyclePayload({
+        environmentId: 'env-1',
+        projectId: 'proj-1',
+        projectName: 'tp-demo',
+        action: 'down',
+      }),
+    Error,
+    'Invalid environment.lifecycle payload',
+  )
+  assertThrows(
+    () => parseEnvironmentLifecyclePayload(null),
+    Error,
+    'Invalid environment.lifecycle payload',
+  )
+  assertThrows(
+    () =>
+      parseEnvironmentLifecyclePayload({
+        environmentId: '',
+        projectId: 'proj-1',
+        projectName: 'tp-demo',
+        action: 'start',
+      }),
+    Error,
+    'Invalid environment.lifecycle payload',
+  )
+})
+
+test('parseEnvironmentLifecycleResult is lenient and passes containers through', () => {
+  assertEquals(parseEnvironmentLifecycleResult(null), { projectName: '' })
+  assertEquals(
+    parseEnvironmentLifecycleResult({
+      projectName: 'tp-demo',
+      summary: 'ok',
+      containers: [
+        {
+          composeServiceName: 'web',
+          containerId: 'cid-1',
+          containerName: 'proj-web-1',
+          status: 'running',
+        },
+      ],
+    }),
+    {
+      projectName: 'tp-demo',
+      summary: 'ok',
+      containers: [
+        {
+          composeServiceName: 'web',
+          containerId: 'cid-1',
+          containerName: 'proj-web-1',
+          status: 'running',
+        },
+      ],
+    },
+  )
+  assertEquals(
+    parseEnvironmentLifecycleResult({ projectName: 'tp-demo' }).containers,
+    undefined,
+  )
 })
 
 test('parseTimezoneSetPayload accepts valid IANA shapes', () => {
@@ -333,6 +414,20 @@ test('parseCommandPayload and parseCommandResult dispatch by type', () => {
       projectName: 'tp-demo',
     },
   )
+  assertEquals(
+    parseCommandPayload('environment.lifecycle' as CommandType, {
+      environmentId: 'env-1',
+      projectId: 'proj-1',
+      projectName: 'tp-demo',
+      action: 'stop',
+    }),
+    {
+      environmentId: 'env-1',
+      projectId: 'proj-1',
+      projectName: 'tp-demo',
+      action: 'stop',
+    },
+  )
   assertEquals(parseCommandResult('daemon.ping' as CommandType, { daemonHostname: 'x' }), {
     daemonHostname: 'x',
   })
@@ -400,6 +495,32 @@ test('parseCommandPayload and parseCommandResult dispatch by type', () => {
       containers: [],
     }),
     { projectName: 'tp-demo', summary: 'stopped', containers: [] },
+  )
+  assertEquals(
+    parseCommandResult('environment.lifecycle' as CommandType, {
+      projectName: 'tp-demo',
+      summary: 'Lifecycle stop',
+      containers: [
+        {
+          composeServiceName: 'web',
+          containerId: 'abc',
+          containerName: 'proj-web-1',
+          status: 'exited',
+        },
+      ],
+    }),
+    {
+      projectName: 'tp-demo',
+      summary: 'Lifecycle stop',
+      containers: [
+        {
+          composeServiceName: 'web',
+          containerId: 'abc',
+          containerName: 'proj-web-1',
+          status: 'exited',
+        },
+      ],
+    },
   )
   assertEquals(
     parseCommandPayload('managed.apply' as CommandType, VALID_MANAGED_APPLY),

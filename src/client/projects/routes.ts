@@ -41,7 +41,19 @@ import {
 } from '../../lib/db/project-delete.ts'
 import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
 import { reconcileServicesForProject } from '../environments/reconcile-after-compose-save.ts'
-import { parseContainerNamingInput } from '../../lib/project-options.ts'
+import {
+  parseContainerNamingInput,
+  parseDefaultServerIdInput,
+} from '../../lib/project-options.ts'
+import { isPlacementServerId } from '../../lib/compose/placement.ts'
+import {
+  configureProjectType,
+  DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
+  insertEmptyProject,
+  isConfiguredProjectType,
+  isProductionEnvironmentName,
+  loadDefaultEnvironmentName,
+} from './empty-setup.ts'
 
 type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
@@ -51,13 +63,17 @@ export async function scaffoldCatalogEnvironments(
   entry: CatalogEntry,
   dataEncryptionSecrets: DerivedSecretsConfig,
   serverId?: string | null,
+  defaultEnvironmentName?: string,
 ) {
   for (const env of entry.environments) {
+    const displayName = isProductionEnvironmentName(env.displayName)
+      ? (defaultEnvironmentName ?? env.displayName)
+      : env.displayName
     const [insertedEnv] = await tx
       .insert(environment)
       .values({
         projectId,
-        displayName: env.displayName,
+        displayName,
         description: env.description ?? null,
         ...(serverId ? { serverId } : {}),
         options: env.compose ? { compose: env.compose } : null,
@@ -84,10 +100,17 @@ export async function scaffoldCatalogEnvironments(
   }
 }
 
+type ResolvedCreateProjectType = CreateProjectType | 'empty'
+
 function resolveCreateProjectType(
   body: Record<string, unknown>,
-): CreateProjectType | 'invalid' {
+): ResolvedCreateProjectType | 'invalid' {
   const rawType = body.type
+  // Explicit empty — name + workspace only; type chosen later via configure.
+  if (rawType === 'empty') {
+    return 'empty'
+  }
+  // Omit type still means docker-compose for backward compatibility.
   if (
     rawType === undefined ||
     rawType === null ||
@@ -103,7 +126,7 @@ function resolveCreateProjectType(
 }
 
 function resolveCatalogEntryForCreate(
-  projectType: CreateProjectType,
+  projectType: ResolvedCreateProjectType,
   body: Record<string, unknown>,
 ): CatalogEntry | 'missing_code' | 'unknown_code' | undefined {
   if (projectType !== 'template' && projectType !== 'managed') {
@@ -134,7 +157,7 @@ function mapCreateProjectError(err: unknown): {
 async function runCreateProjectTransaction(
   db: Db,
   input: {
-    projectType: CreateProjectType
+    projectType: ResolvedCreateProjectType
     displayName: string | null
     description: string | null
     workspaceId: string
@@ -143,9 +166,20 @@ async function runCreateProjectTransaction(
     catalogEntry: CatalogEntry | undefined
     dataEncryptionSecrets: DerivedSecretsConfig | undefined
     serverId: string | null
+    defaultEnvironmentName: string
   },
 ): Promise<string> {
   return db.transaction(async (tx) => {
+    if (input.projectType === 'empty') {
+      return insertEmptyProject(tx, {
+        displayName: input.displayName,
+        description: input.description,
+        workspaceId: input.workspaceId,
+        serverId: input.serverId,
+        defaultEnvironmentName: input.defaultEnvironmentName,
+      })
+    }
+
     if (input.projectType === 'docker-compose') {
       return insertDockerComposeProject(tx, {
         displayName: input.displayName,
@@ -154,6 +188,7 @@ async function runCreateProjectTransaction(
         metadata: input.metadata,
         options: input.options,
         serverId: input.serverId,
+        defaultEnvironmentName: input.defaultEnvironmentName,
       })
     }
 
@@ -174,6 +209,7 @@ async function runCreateProjectTransaction(
       entry: input.catalogEntry,
       dataEncryptionSecrets: input.dataEncryptionSecrets,
       serverId: input.serverId,
+      defaultEnvironmentName: input.defaultEnvironmentName,
     })
   })
 }
@@ -183,11 +219,12 @@ type CreateProjectInput = {
   description: string | null
   workspaceId: string
   organizationId: string
-  projectType: CreateProjectType
+  projectType: ResolvedCreateProjectType
   catalogEntry: CatalogEntry | undefined
   options: Record<string, unknown> | null
   metadata: Record<string, unknown> | null
   serverId: string | null
+  defaultEnvironmentName: string
 }
 
 /**
@@ -300,6 +337,11 @@ async function parseCreateProjectInput(
   const serverId = await resolveServerIdForCreate(c, db, body, organizationId)
   if (serverId instanceof Response) return serverId
 
+  const defaultEnvironmentName = await loadDefaultEnvironmentName(
+    db,
+    organizationId,
+  )
+
   return {
     displayName,
     description,
@@ -310,6 +352,7 @@ async function parseCreateProjectInput(
     options: optionsResult,
     metadata: metadataResult,
     serverId,
+    defaultEnvironmentName,
   }
 }
 
@@ -332,9 +375,10 @@ async function parseProjectMoveTarget(
 }
 
 /**
- * Validates optional `options` on PATCH — compose lint + containerNaming.
- * Returns `null` when options were omitted; otherwise the normalized object
- * or an error Response.
+ * Validates optional `options` on PATCH — compose lint + containerNaming +
+ * defaultServerId shape. Org membership for defaultServerId is checked in the
+ * PATCH handler (async). Returns `null` when options were omitted; otherwise
+ * the normalized object or an error Response.
  */
 function parseProjectPatchOptions(
   c: Context<AppEnv>,
@@ -355,6 +399,18 @@ function parseProjectPatchOptions(
       return c.json({ error: 'Invalid request' }, 400)
     }
     optionsResult.containerNaming = naming.value
+  }
+
+  if ('defaultServerId' in optionsResult) {
+    const parsed = parseDefaultServerIdInput(optionsResult.defaultServerId)
+    if (!parsed.ok) {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+    if (parsed.value === null) {
+      delete optionsResult.defaultServerId
+    } else {
+      optionsResult.defaultServerId = parsed.value
+    }
   }
 
   stripProjectComposePlacementOption(optionsResult)
@@ -394,6 +450,23 @@ function buildProjectPatchFields(
   return patchFields
 }
 
+async function assertDefaultServerIdInOrg(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  options: Record<string, unknown> | null | undefined,
+): Promise<Response | undefined> {
+  if (!options || !('defaultServerId' in options)) return
+  const serverId = options.defaultServerId
+  if (serverId === undefined || serverId === null) return
+  if (!isPlacementServerId(serverId)) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  if (!(await verifyServerInOrg(db, serverId, organizationId))) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+}
+
 async function insertDockerComposeProject(
   tx: DbTx,
   fields: {
@@ -403,6 +476,7 @@ async function insertDockerComposeProject(
     metadata: Record<string, unknown> | null
     options: Record<string, unknown> | null
     serverId: string | null
+    defaultEnvironmentName: string
   },
 ): Promise<string> {
   const compose =
@@ -421,8 +495,8 @@ async function insertDockerComposeProject(
     .returning({ id: project.id })
   await tx.insert(environment).values({
     projectId: inserted.id,
-    displayName: 'production',
-    description: 'Default environment',
+    displayName: fields.defaultEnvironmentName,
+    description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
     ...(fields.serverId ? { serverId: fields.serverId } : {}),
     options: { compose: emptyComposeDocument() },
   })
@@ -455,6 +529,7 @@ async function insertCatalogProject(
     entry: CatalogEntry
     dataEncryptionSecrets: DerivedSecretsConfig
     serverId: string | null
+    defaultEnvironmentName: string
   },
 ): Promise<string> {
   const isEngine =
@@ -482,6 +557,7 @@ async function insertCatalogProject(
     fields.entry,
     fields.dataEncryptionSecrets,
     fields.serverId,
+    fields.defaultEnvironmentName,
   )
   return inserted.id
 }
@@ -494,6 +570,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
   router.use('/projects', createSessionMiddleware(secrets))
   router.use('/projects/:id', createSessionMiddleware(secrets))
+  router.use('/projects/:id/configure', createSessionMiddleware(secrets))
   router.use('/project-catalog', createSessionMiddleware(secrets))
 
   router.get('/project-catalog', async (c) => {
@@ -619,6 +696,73 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     }
   })
 
+  /**
+   * Apply type / catalog selection to an empty project (resumable setup).
+   * Idempotent when already configured with the same type (+ code).
+   */
+  router.post('/projects/:id/configure', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
+
+    const id = c.req.param('id')
+    const entityOrgId = await resolveEntityOrganizationId(db, 'project', id)
+    if (!entityOrgId || entityOrgId !== organizationId) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
+    const denied = await assertCanOr403(c, 'organization:manage', 'project', id)
+    if (denied) return denied
+
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+
+    const rawType = body.type
+    if (typeof rawType !== 'string' || !isConfiguredProjectType(rawType)) {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+
+    let catalogCode: string | undefined
+    if (rawType === 'template' || rawType === 'managed') {
+      if (typeof body.code !== 'string' || !body.code) {
+        return c.json({ error: 'Invalid request' }, 400)
+      }
+      catalogCode = body.code
+    }
+
+    const serverId = await resolveServerIdForCreate(c, db, body, organizationId)
+    if (serverId instanceof Response) return serverId
+
+    const defaultEnvironmentName = await loadDefaultEnvironmentName(
+      db,
+      organizationId,
+    )
+
+    const result = await configureProjectType(db, {
+      projectId: id,
+      projectType: rawType,
+      catalogCode,
+      dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
+      serverId,
+      defaultEnvironmentName,
+    })
+    if (!result.ok) {
+      return c.json({ error: result.error }, result.status)
+    }
+
+    await reconcileServicesForProject(db, id)
+    return c.json({
+      ok: true as const,
+      alreadyConfigured: result.alreadyConfigured,
+    })
+  })
+
   router.patch('/projects/:id', async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
@@ -647,6 +791,14 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const patchFields = buildProjectPatchFields(c, body, moveTarget)
     if (patchFields instanceof Response) return patchFields
+
+    const defaultServerError = await assertDefaultServerIdInOrg(
+      c,
+      db,
+      organizationId,
+      patchFields.options,
+    )
+    if (defaultServerError) return defaultServerError
 
     await db
       .update(project)

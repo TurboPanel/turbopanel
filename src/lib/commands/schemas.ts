@@ -1321,6 +1321,73 @@ export function parseEnvironmentStopResult(value: unknown): EnvironmentStopComma
   return result
 }
 
+export const ENVIRONMENT_LIFECYCLE_ACTIONS = new Set(['start', 'stop', 'restart'])
+
+export type EnvironmentLifecycleAction = 'start' | 'stop' | 'restart'
+
+export type EnvironmentLifecycleCommandPayload = {
+  environmentId: string
+  projectId: string
+  projectName: string
+  action: EnvironmentLifecycleAction
+}
+
+export type EnvironmentLifecycleCommandResult = {
+  projectName: string
+  summary?: string
+  /**
+   * Authoritative `compose ps` report. Unlike stop, this carries real rows so
+   * pins are updated rather than cleared. `undefined` means collection failed
+   * — skip reconcile.
+   */
+  containers?: EnvironmentDeployContainer[]
+}
+
+export function parseEnvironmentLifecyclePayload(
+  value: unknown,
+): EnvironmentLifecycleCommandPayload {
+  if (!isRecord(value)) {
+    throw new Error('Invalid environment.lifecycle payload')
+  }
+  const environmentId = value.environmentId
+  const projectId = value.projectId
+  const projectName = value.projectName
+  const action = value.action
+  if (
+    !isString(environmentId) ||
+    !isString(projectId) ||
+    !isString(projectName) ||
+    environmentId.length === 0 ||
+    projectId.length === 0 ||
+    projectName.length === 0 ||
+    !isString(action) ||
+    !ENVIRONMENT_LIFECYCLE_ACTIONS.has(action)
+  ) {
+    throw new Error('Invalid environment.lifecycle payload')
+  }
+  return {
+    environmentId,
+    projectId,
+    projectName,
+    action: action as EnvironmentLifecycleAction,
+  }
+}
+
+export function parseEnvironmentLifecycleResult(
+  value: unknown,
+): EnvironmentLifecycleCommandResult {
+  if (!isRecord(value)) {
+    return { projectName: '' }
+  }
+  const result: EnvironmentLifecycleCommandResult = {
+    projectName: isString(value.projectName) ? value.projectName : '',
+  }
+  if (isString(value.summary)) result.summary = value.summary
+  const containers = parseDeployContainers(value.containers)
+  if (containers !== undefined) result.containers = containers
+  return result
+}
+
 /** Docker Compose project name charset (daemon `COMPOSE_PROJECT_RE` parity). */
 const COMPOSE_PROJECT_RE = /^[a-z0-9][a-z0-9_-]*$/
 const SAFE_IDENTIFIER_RE = /^[A-Za-z_]\w*$/
@@ -2254,6 +2321,7 @@ export function parseCommandPayload(
   | RebootCommandPayload
   | WireguardApplyCommandPayload
   | EnvironmentDeployCommandPayload
+  | EnvironmentLifecycleCommandPayload
   | EnvironmentStopCommandPayload
   | ManagedApplyCommandPayload
   | ManagedLifecycleCommandPayload
@@ -2275,6 +2343,8 @@ export function parseCommandPayload(
       return parseWireguardApplyPayload(value)
     case 'environment.deploy':
       return parseEnvironmentDeployPayload(value)
+    case 'environment.lifecycle':
+      return parseEnvironmentLifecyclePayload(value)
     case 'environment.stop':
       return parseEnvironmentStopPayload(value)
     case 'managed.apply':
@@ -2301,6 +2371,7 @@ export function parseCommandResult(
   | RebootCommandResult
   | WireguardApplyCommandResult
   | EnvironmentDeployCommandResult
+  | EnvironmentLifecycleCommandResult
   | EnvironmentStopCommandResult
   | ManagedApplyCommandResult
   | ManagedLifecycleCommandResult
@@ -2322,6 +2393,8 @@ export function parseCommandResult(
       return parseWireguardApplyResult(value)
     case 'environment.deploy':
       return parseEnvironmentDeployResult(value)
+    case 'environment.lifecycle':
+      return parseEnvironmentLifecycleResult(value)
     case 'environment.stop':
       return parseEnvironmentStopResult(value)
     case 'managed.apply':

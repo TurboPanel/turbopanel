@@ -129,3 +129,10 @@ listGet.get.parameters.push({
   schema: { type: 'string' },
   description: 'Filter containers hosted on a server',
 })
+listGet.get.parameters.push({
+  name: 'environmentId',
+  in: 'query',
+  required: false,
+  schema: { type: 'string' },
+  description: 'Filter containers linked to an environment',
+})

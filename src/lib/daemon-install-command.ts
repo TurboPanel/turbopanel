@@ -14,31 +14,26 @@ export function encodeLicenseArg(
 export const CDN_INSTALL_HOST = 'turbopanel.sh'
 
 /**
- * Bare host[:port] or scheme+host for curl; never includes an install script path.
+ * Curl target for the installer script: bare `turbopanel.sh` on the CDN, otherwise
+ * the validated origin with `/run.sh` appended (dev overlay only).
  */
 export function formatInstallScriptCurlUrl(origin: string): string {
   const trimmed = origin.replace(/\/$/, '')
+  // Bare CDN host must stay bare — `new URL('turbopanel.sh')` throws and the
+  // catch path would otherwise append `/run.sh` (invalid CDN contract).
+  if (trimmed === CDN_INSTALL_HOST) {
+    return CDN_INSTALL_HOST
+  }
   try {
     const url = new URL(trimmed)
     if (url.hostname === CDN_INSTALL_HOST && !url.port) {
       return CDN_INSTALL_HOST
     }
-    if (url.protocol === 'https:') {
-      if (!url.port || url.port === '443') {
-        return url.hostname
-      }
-      return `https://${url.host}`
-    }
-    if (url.protocol === 'http:') {
-      if (!url.port || url.port === '80') {
-        return url.hostname
-      }
-      return url.host
-    }
+    return `${trimmed}/run.sh`
   } catch {
     // fall through
   }
-  return trimmed
+  return `${trimmed}/run.sh`
 }
 
 /**
@@ -69,6 +64,13 @@ export function buildLicenseInstallCommand(opts: {
    * run.sh. Callers must not set this for production HTTPS origins.
    */
   insecureTls?: boolean
+  /**
+   * Dev overlay only: fetch the installer from the instance host `/run.sh`
+   * (served by the dev Caddyfile). Production / self-hosted Deno installs must
+   * leave this unset so the command curls `CDN_INSTALL_HOST` and passes
+   * `TURBOPANEL_HOST`.
+   */
+  useInstanceRunScript?: boolean
 }): string {
   const {
     runtime,
@@ -76,17 +78,21 @@ export function buildLicenseInstallCommand(opts: {
     licenseId,
     licenseToken,
     insecureTls: insecureTlsOpt = false,
+    useInstanceRunScript = false,
   } = opts
   const insecureTls =
     instanceUrl.startsWith('http://') ? false : insecureTlsOpt
   const licenseArg = encodeLicenseArg(licenseId, licenseToken)
   const includeHost = instanceUrl !== 'https://turbopanel.app'
-  const scriptBase = instanceUrl.replace(/\/$/, '')
+  const scriptBase = instanceUrl.replace(/\/$/, '') // origin for curl URL + TURBOPANEL_HOST
   const host = includeHost ? instanceUrl : undefined
 
   if (runtime === 'deno') {
+    const curlUrl = useInstanceRunScript
+      ? formatInstallScriptCurlUrl(scriptBase)
+      : CDN_INSTALL_HOST
     return buildInstallPipeline({
-      curlUrl: formatInstallScriptCurlUrl(scriptBase),
+      curlUrl,
       licenseArg,
       host,
       insecureTls,

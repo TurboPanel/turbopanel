@@ -21,6 +21,7 @@ import {
   member,
   organization,
   project,
+  server,
   service,
   user,
   variable,
@@ -252,5 +253,568 @@ test('POST /projects managed rejects unknown catalog code', async () => {
 
     assertEquals(res.status, 400)
     assertEquals(await res.json(), { error: 'Unknown catalog code' })
+  })
+})
+
+test('POST /projects empty scaffolds Production once without type', async () => {
+  await withProjectFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    workspaceId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request('/projects', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        type: 'empty',
+        workspaceId,
+        displayName: 'Empty Project',
+      }),
+    })
+
+    assertEquals(res.status, 200)
+    const body = await res.json() as { ok: boolean; id: string }
+    assertEquals(body.ok, true)
+
+    const [projectRow] = await db
+      .select({ metadata: project.metadata, options: project.options })
+      .from(project)
+      .where(eq(project.id, body.id))
+      .limit(1)
+    assertEquals(projectRow?.metadata, null)
+    assertEquals(projectRow?.options, null)
+
+    const envs = await db
+      .select({ displayName: environment.displayName })
+      .from(environment)
+      .where(eq(environment.projectId, body.id))
+    assertEquals(envs.length, 1)
+    assertEquals(envs[0]!.displayName, 'Production')
+  })
+})
+
+test('POST /projects empty uses org defaultEnvironmentName when set', async () => {
+  await withProjectFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    workspaceId,
+  }) => {
+    await db
+      .update(organization)
+      .set({ options: { defaultEnvironmentName: 'Staging' } })
+      .where(eq(organization.id, organizationId))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request('/projects', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        type: 'empty',
+        workspaceId,
+        displayName: 'Custom Env Project',
+      }),
+    })
+
+    assertEquals(res.status, 200)
+    const body = await res.json() as { ok: boolean; id: string }
+    assertEquals(body.ok, true)
+
+    const envs = await db
+      .select({ displayName: environment.displayName })
+      .from(environment)
+      .where(eq(environment.projectId, body.id))
+    assertEquals(envs.length, 1)
+    assertEquals(envs[0]!.displayName, 'Staging')
+  })
+})
+
+test('POST /projects docker-compose uses org defaultEnvironmentName when set', async () => {
+  await withProjectFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    workspaceId,
+  }) => {
+    await db
+      .update(organization)
+      .set({ options: { defaultEnvironmentName: 'Live' } })
+      .where(eq(organization.id, organizationId))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request('/projects', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        type: 'docker-compose',
+        workspaceId,
+        displayName: 'Compose Custom Env',
+      }),
+    })
+
+    assertEquals(res.status, 200)
+    const body = await res.json() as { ok: boolean; id: string }
+
+    const envs = await db
+      .select({ displayName: environment.displayName })
+      .from(environment)
+      .where(eq(environment.projectId, body.id))
+    assertEquals(envs.length, 1)
+    assertEquals(envs[0]!.displayName, 'Live')
+  })
+})
+
+test('POST /projects/:id/configure reuses custom-named default environment', async () => {
+  await withProjectFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    workspaceId,
+  }) => {
+    await db
+      .update(organization)
+      .set({ options: { defaultEnvironmentName: 'Staging' } })
+      .where(eq(organization.id, organizationId))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const createRes = await app.request('/projects', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        type: 'empty',
+        workspaceId,
+        displayName: 'Configure Custom Env',
+      }),
+    })
+    assertEquals(createRes.status, 200)
+    const { id } = await createRes.json() as { id: string }
+
+    const configureRes = await app.request(`/projects/${id}/configure`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ type: 'docker-compose' }),
+    })
+    assertEquals(configureRes.status, 200)
+
+    const envs = await db
+      .select({ displayName: environment.displayName })
+      .from(environment)
+      .where(eq(environment.projectId, id))
+    assertEquals(envs.length, 1)
+    assertEquals(envs[0]!.displayName, 'Staging')
+  })
+})
+
+test('POST /projects/:id/configure reuses scaffolded env when org default changed', async () => {
+  await withProjectFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    workspaceId,
+  }) => {
+    await db
+      .update(organization)
+      .set({ options: { defaultEnvironmentName: 'Staging' } })
+      .where(eq(organization.id, organizationId))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const createRes = await app.request('/projects', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        type: 'empty',
+        workspaceId,
+        displayName: 'Stale Default Project',
+      }),
+    })
+    assertEquals(createRes.status, 200)
+    const { id } = await createRes.json() as { id: string }
+
+    const [scaffolded] = await db
+      .select({
+        id: environment.id,
+        displayName: environment.displayName,
+      })
+      .from(environment)
+      .where(eq(environment.projectId, id))
+    assertEquals(scaffolded?.displayName, 'Staging')
+
+    await db
+      .update(organization)
+      .set({ options: { defaultEnvironmentName: 'Live' } })
+      .where(eq(organization.id, organizationId))
+
+    const configureRes = await app.request(`/projects/${id}/configure`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ type: 'managed', code: 'postgres' }),
+    })
+    assertEquals(configureRes.status, 200)
+
+    const envs = await db
+      .select({
+        id: environment.id,
+        displayName: environment.displayName,
+      })
+      .from(environment)
+      .where(eq(environment.projectId, id))
+    assertEquals(envs.length, 1)
+    assertEquals(envs[0]!.id, scaffolded!.id)
+    assertEquals(envs[0]!.displayName, 'Staging')
+
+    const [projectRow] = await db
+      .select({ metadata: project.metadata })
+      .from(project)
+      .where(eq(project.id, id))
+      .limit(1)
+    assertEquals(projectRow?.metadata, { type: 'managed', code: 'postgres' })
+
+    const vars = await db
+      .select({ key: variable.key })
+      .from(variable)
+      .where(eq(variable.environmentId, scaffolded!.id))
+    assertEquals(vars.map((row) => row.key), ['POSTGRES_PASSWORD'])
+  })
+})
+
+test('POST /projects/:id/configure prefers literal Production over org default match', async () => {
+  await withProjectFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    workspaceId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const createRes = await app.request('/projects', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        type: 'empty',
+        workspaceId,
+        displayName: 'Both Envs Project',
+      }),
+    })
+    assertEquals(createRes.status, 200)
+    const { id } = await createRes.json() as { id: string }
+
+    await db.insert(environment).values({
+      projectId: id,
+      displayName: 'Staging',
+      description: 'Custom default sibling',
+    })
+
+    await db
+      .update(organization)
+      .set({ options: { defaultEnvironmentName: 'Staging' } })
+      .where(eq(organization.id, organizationId))
+
+    const configureRes = await app.request(`/projects/${id}/configure`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ type: 'managed', code: 'postgres' }),
+    })
+    assertEquals(configureRes.status, 200)
+
+    const envs = await db
+      .select({
+        id: environment.id,
+        displayName: environment.displayName,
+        description: environment.description,
+      })
+      .from(environment)
+      .where(eq(environment.projectId, id))
+    assertEquals(envs.length, 2)
+
+    const production = envs.find((row) => row.displayName === 'Production')
+    const staging = envs.find((row) => row.displayName === 'Staging')
+    assertEquals(production != null, true)
+    assertEquals(staging != null, true)
+    assertEquals(staging!.description, 'Custom default sibling')
+
+    const productionVars = await db
+      .select({ key: variable.key })
+      .from(variable)
+      .where(eq(variable.environmentId, production!.id))
+    assertEquals(productionVars.map((row) => row.key), ['POSTGRES_PASSWORD'])
+
+    const stagingVars = await db
+      .select({ key: variable.key })
+      .from(variable)
+      .where(eq(variable.environmentId, staging!.id))
+    assertEquals(stagingVars.length, 0)
+  })
+})
+
+test('POST /projects/:id/configure pins serverId on existing default environment', async () => {
+  await withProjectFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    workspaceId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const createRes = await app.request('/projects', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        type: 'empty',
+        workspaceId,
+        displayName: 'Pin Server On Configure',
+      }),
+    })
+    assertEquals(createRes.status, 200)
+    const { id } = await createRes.json() as { id: string }
+
+    const [before] = await db
+      .select({ serverId: environment.serverId })
+      .from(environment)
+      .where(eq(environment.projectId, id))
+      .limit(1)
+    assertEquals(before?.serverId ?? null, null)
+
+    const now = new Date().toISOString()
+    const [insertedServer] = await db
+      .insert(server)
+      .values({
+        organizationId,
+        displayName: 'Configure Pin Server',
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: server.id })
+    const serverId = insertedServer!.id
+
+    try {
+      const configureRes = await app.request(`/projects/${id}/configure`, {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          type: 'docker-compose',
+          serverId,
+        }),
+      })
+      assertEquals(configureRes.status, 200)
+
+      const [after] = await db
+        .select({
+          displayName: environment.displayName,
+          serverId: environment.serverId,
+        })
+        .from(environment)
+        .where(eq(environment.projectId, id))
+        .limit(1)
+      assertEquals(after?.displayName, 'Production')
+      assertEquals(after?.serverId, serverId)
+    } finally {
+      await db
+        .update(environment)
+        .set({ serverId: null })
+        .where(eq(environment.projectId, id))
+      await db.delete(server).where(eq(server.id, serverId))
+    }
+  })
+})
+
+test('POST /projects/:id/configure sets docker-compose idempotently', async () => {
+  await withProjectFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    workspaceId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const createRes = await app.request('/projects', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        type: 'empty',
+        workspaceId,
+        displayName: 'Configure Me',
+      }),
+    })
+    assertEquals(createRes.status, 200)
+    const { id } = await createRes.json() as { id: string }
+
+    const configureRes = await app.request(`/projects/${id}/configure`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ type: 'docker-compose' }),
+    })
+    assertEquals(configureRes.status, 200)
+    assertEquals(await configureRes.json(), {
+      ok: true,
+      alreadyConfigured: false,
+    })
+
+    const [after] = await db
+      .select({ metadata: project.metadata })
+      .from(project)
+      .where(eq(project.id, id))
+      .limit(1)
+    const metadata = after?.metadata as { type?: string } | null
+    assertEquals(metadata?.type, 'docker-compose')
+
+    const again = await app.request(`/projects/${id}/configure`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ type: 'docker-compose' }),
+    })
+    assertEquals(again.status, 200)
+    assertEquals(await again.json(), { ok: true, alreadyConfigured: true })
+
+    const conflict = await app.request(`/projects/${id}/configure`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ type: 'managed', code: 'postgres' }),
+    })
+    assertEquals(conflict.status, 409)
+
+    const envs = await db
+      .select({ id: environment.id })
+      .from(environment)
+      .where(eq(environment.projectId, id))
+    assertEquals(envs.length, 1)
+  })
+})
+
+test('POST /projects/:id/configure managed postgres reuses Production', async () => {
+  await withProjectFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    workspaceId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const createRes = await app.request('/projects', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        type: 'empty',
+        workspaceId,
+        displayName: 'Managed Later',
+      }),
+    })
+    assertEquals(createRes.status, 200)
+    const { id } = await createRes.json() as { id: string }
+
+    const configureRes = await app.request(`/projects/${id}/configure`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ type: 'managed', code: 'postgres' }),
+    })
+    assertEquals(configureRes.status, 200)
+
+    const [projectRow] = await db
+      .select({ metadata: project.metadata })
+      .from(project)
+      .where(eq(project.id, id))
+      .limit(1)
+    const metadata = projectRow?.metadata as {
+      type?: string
+      code?: string
+    } | null
+    assertEquals(metadata?.type, 'managed')
+    assertEquals(metadata?.code, 'postgres')
+
+    const envs = await db
+      .select({ id: environment.id, displayName: environment.displayName })
+      .from(environment)
+      .where(eq(environment.projectId, id))
+    assertEquals(envs.length, 1)
+    assertEquals(envs[0]!.displayName, 'Production')
+
+    const managedForEnv = await db
+      .select({ id: managed.id })
+      .from(managed)
+      .where(eq(managed.environmentId, envs[0]!.id))
+    assertEquals(managedForEnv.length, 0)
   })
 })

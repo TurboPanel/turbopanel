@@ -9,6 +9,7 @@ import { assertCanManageOr403, parseJsonBody } from '../shared.ts'
 import { getDb } from '../../db.ts'
 import { organization } from '../../lib/db/schema.ts'
 import {
+  parseDefaultEnvironmentNameInput,
   parseMaxServersInput,
   parseOrganizationOptions,
 } from '../../lib/organization-options.ts'
@@ -18,6 +19,7 @@ import { isAllowedTimezone, listTimezones } from '../../lib/timezones.ts'
 export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   router.use('/organizations', createSessionMiddleware(opts.secrets))
   router.use('/organizations/:id/default-timezone', createSessionMiddleware(opts.secrets))
+  router.use('/organizations/:id/default-environment', createSessionMiddleware(opts.secrets))
   router.use('/organizations/:id/server-capacity', createSessionMiddleware(opts.secrets))
   router.use('/timezones', createSessionMiddleware(opts.secrets))
 
@@ -119,6 +121,80 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
       ok: true as const,
       defaultServerTimezone: options.defaultServerTimezone ?? null,
       enforceServerTimezone: options.enforceServerTimezone ?? false,
+    })
+  })
+
+  router.get('/organizations/:id/default-environment', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const id = c.req.param('id')
+    const denied = await assertCanManageOr403(c, 'organization', id)
+    if (denied) return denied
+
+    const [orgRow] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1)
+    if (!orgRow) return c.json({ error: 'Not found' }, 404)
+
+    const options = parseOrganizationOptions(orgRow.options)
+    return c.json({
+      defaultEnvironmentName: options.defaultEnvironmentName ?? null,
+    })
+  })
+
+  router.put('/organizations/:id/default-environment', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const id = c.req.param('id')
+    const denied = await assertCanManageOr403(c, 'organization', id)
+    if (denied) return denied
+
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+
+    if (!('defaultEnvironmentName' in body)) {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+
+    const parsed = parseDefaultEnvironmentNameInput(body.defaultEnvironmentName)
+    if (!parsed.ok) {
+      return c.json(
+        {
+          error:
+            'defaultEnvironmentName must be null or a non-empty name of at most 255 characters using letters, numbers, spaces, dots, underscores, or hyphens',
+        },
+        400,
+      )
+    }
+
+    const [orgRow] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1)
+    if (!orgRow) return c.json({ error: 'Not found' }, 404)
+
+    await db.update(organization).set({
+      options: sql`COALESCE(${organization.options}, '{}'::jsonb) || ${
+        JSON.stringify({ defaultEnvironmentName: parsed.value })
+      }::jsonb`,
+      updatedAt: new Date().toISOString(),
+    }).where(eq(organization.id, id))
+
+    const [updated] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1)
+    const options = parseOrganizationOptions(updated?.options)
+
+    return c.json({
+      ok: true as const,
+      defaultEnvironmentName: options.defaultEnvironmentName ?? null,
     })
   })
 

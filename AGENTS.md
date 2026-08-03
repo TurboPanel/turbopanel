@@ -502,7 +502,7 @@ the proxy).
 **Co-located development** does not use this file. When `turbopanel_dev_user` is
 set, `turbopanel-caddy.service` loads `~/dev/orchestration/Caddyfile` instead
 (Expo proxy, plaintext `:8880`, optional wrangler upstream,
-`/downloads/daemon` + install script at `/`). See **`../dev/AGENTS.md`** (Ansible overlay /
+`/downloads/daemon` + installer at `/run.sh`). See **`../dev/AGENTS.md`** (Ansible overlay /
 Caddyfile).
 
 ### Production
@@ -586,7 +586,7 @@ deliberately-unversioned probe.
 
 | Surface                      | REST                  | WS                        | Notes                                                                                                                                                      |
 | ---------------------------- | --------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Client (end-user UI)         | `/api/client/v1/*`    | `/ws/client/v1`           | servers list/detail (+ addresses/timeSync/effective timezone), timezone/NTP commands, org default-timezone + server-capacity + `/timezones`                |
+| Client (end-user UI)         | `/api/client/v1/*`    | `/ws/client/v1`           | servers list/detail (+ addresses/timeSync/effective timezone), timezone/NTP commands, org default-timezone + default-environment + server-capacity + `/timezones` |
 | Install (self-hosted wizard) | `/api/install/v1/*`   | —                         | Deno only for POST endpoints; PAM-gated; no session/cookie on bootstrap                                                                                    |
 | Developer (dev console)      | `/api/developer/v1/*` | `/ws/developer/v1` (stub) | fleet, diagnostics, shell, addresses, `system/upgrade`, `instance/tunnel-token`, `daemon/(:id/)sync-dev`                                                   |
 | Admin                        | `/api/admin/v1/*`     | —                         | Mounted on both Deno and Workers; `superadmin` or `admin` role required; OpenAPI/Scalar at `/api/admin/v1/openapi.json` + `/reference` in development only |
@@ -621,6 +621,23 @@ deliberately-unversioned probe.
   `POST /licenses` returns **409** `server_capacity_exceeded` when enrolled
   servers + unconsumed keys fill the cap. Self-hosted operators set the cap;
   Workers/Stripe billing will write the same field later.
+- **Org default environment name:** `organization.options.defaultEnvironmentName`
+  (unset = `Production`). `GET`/`PUT /organizations/:id/default-environment`
+  (manage-gated) names the environment scaffolded by project create /
+  configure. Matching for existing literal "production" catalog environments
+  is unchanged.
+- **Project default server:** `project.options.defaultServerId` (optional UUID).
+  Environments without their own `server_id` inherit it at deploy / lifecycle /
+  stop (`resolveEffectivePlacementServerId`). Overview Base shows an inline
+  picker; env-level pins still override.
+- **Environment lifecycle:** `POST /environments/:id/lifecycle`
+  (`start` / `stop` / `restart`) is non-destructive (`environment.lifecycle`);
+  `POST /environments/:id/stop` tears down compose including volumes
+  (`environment.stop`). Canonical detail: `src/lib/commands/AGENTS.md`.
+- **Containers list filter:** `GET /api/client/v1/containers?environmentId=`
+  narrows already-visible rows to containers whose `service.environmentId`
+  matches (AND with `serviceId` / `serverId` / `status`); does not widen
+  `listVisible`.
 - **Datacenter name suggestions:** `GET /datacenters/name-suggestions` groups
   projected geolocation and ASN metadata from unassigned servers into
   operator-editable, display-name-safe suggestions. `POST /datacenters` accepts
@@ -641,7 +658,7 @@ orientation; the detail moved to:
 | **Daemon Cell** (`/ws/daemon/v1`) | `src/daemon/cell/AGENTS.md`    | Presence, outbox + request correlation, Redis vs Durable Object backends, the **canonical Durable Object cost / hibernation / billing rules**, and the Postgres liveness read model (`server.connected` + `server.status_changed_at` only — no stored tri-state `daemon_status` column) |
 | **Server metrics**                | `src/daemon/metrics/AGENTS.md` | Host-metrics ingestion, Analytics Engine (Workers) / ClickHouse (Deno) storage, query + chart caching; also carries a history-only connection-status event stream (`blob1 = "status"`) — never authoritative for current liveness |
 | **Command Pipeline**              | `src/lib/commands/AGENTS.md`   | Typed commands, queue transport, and correlated dev-sync / tunnel-token / public-URL-apply requests                                               |
-| **Compose documents**             | `src/lib/compose/AGENTS.md`    | `ComposeDocument` model, `x-turbopanel` extension, linter, overlay merge; **placement pin is `environment.server_id`** (compose placement stripped on save) |
+| **Compose documents**             | `src/lib/compose/AGENTS.md`    | `ComposeDocument` model, `x-turbopanel` extension, linter, overlay merge; **placement = `environment.server_id` ?? `project.options.defaultServerId`** (compose placement stripped on save) |
 | **Managed engines**               | `src/lib/managed/AGENTS.md` + `src/client/managed/` | Engine registry + client API (`POST …/managed`, apply/lifecycle/users/databases/status/logs, `GET /organizations/:id/managed`); all status reads are Postgres-backed; logs use cell `managed-logs-request` |
 | **Authentication**                | `src/client/authn/AGENTS.md`   | Argon2id, sessions, PAM install gate, secret keyring + data encryption, daemon key JWT, auth routes                                               |
 | **Email**                         | `src/lib/email/AGENTS.md`      | Queue abstraction, RabbitMQ→mailer (Deno) / Mailgun (Workers), settings, OTP surface                                                              |

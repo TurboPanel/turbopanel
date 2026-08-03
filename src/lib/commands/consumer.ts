@@ -45,6 +45,8 @@ import type { CommandQueue } from './queue.ts'
 import {
   parseEnvironmentDeployPayload,
   parseEnvironmentDeployResult,
+  parseEnvironmentLifecyclePayload,
+  parseEnvironmentLifecycleResult,
   parseEnvironmentStopPayload,
   parseEnvironmentStopResult,
   parseHostnameSetResult,
@@ -81,6 +83,7 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'server.timezone.set': 300_000,
   'server.wireguard.apply': 300_000,
   'environment.deploy': 600_000,
+  'environment.lifecycle': 120_000,
   'environment.stop': 120_000,
   'managed.apply': 600_000,
   'managed.lifecycle': 120_000,
@@ -100,6 +103,7 @@ function commandTimeoutMs(type: string): number {
     type === 'server.timezone.set' ||
     type === 'server.wireguard.apply' ||
     type === 'environment.deploy' ||
+    type === 'environment.lifecycle' ||
     type === 'environment.stop' ||
     type === 'managed.apply' ||
     type === 'managed.lifecycle' ||
@@ -555,6 +559,41 @@ async function applyEnvironmentStopSideEffect(
   }
 }
 
+async function applyEnvironmentLifecycleSideEffect(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown,
+): Promise<void> {
+  if (record.type !== 'environment.lifecycle') return
+  try {
+    const { environmentId } = parseEnvironmentLifecyclePayload(record.payload)
+    const lifecycleResult = parseEnvironmentLifecycleResult(result)
+    // Live `compose ps` rows update pins; omitted field means collection failed.
+    if (lifecycleResult.containers === undefined) return
+    await reconcileContainersSafely(
+      db,
+      record,
+      envelope,
+      environmentId,
+      lifecycleResult.containers,
+    )
+  } catch (err) {
+    const message = errorMessage(err)
+    commandConsumerTrace('dispatch-result', {
+      commandId: record.id,
+      commandType: record.type,
+      serverId: envelope.serverId,
+      resultStatus: 'succeeded',
+      containerReconcileError: message,
+    })
+    compatLogWarn(
+      'command-consumer',
+      `container reconcile failed for command ${record.id}: ${message}`,
+    )
+  }
+}
+
 async function applyManagedApplySideEffect(
   db: Db,
   record: CommandRecord,
@@ -870,6 +909,7 @@ async function applySucceededSideEffects(
   await applyWireguardSideEffect(db, record, envelope, result, deps)
   await applyEnvironmentDeploySideEffect(db, record, envelope, result)
   await applyEnvironmentStopSideEffect(db, record, envelope, result)
+  await applyEnvironmentLifecycleSideEffect(db, record, envelope, result)
   await applyManagedApplySideEffect(db, record, envelope, result)
   await applyManagedLifecycleSideEffect(db, record, envelope, result)
   await applyManagedDestroySideEffect(db, record, envelope, result)

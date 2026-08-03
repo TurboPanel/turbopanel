@@ -43,6 +43,28 @@ export const organizationSchemas = {
       enforceServerTimezone: { type: 'boolean' },
     },
   },
+  OrganizationDefaultEnvironment: {
+    type: 'object',
+    required: ['defaultEnvironmentName'],
+    properties: {
+      defaultEnvironmentName: {
+        type: ['string', 'null'],
+        description:
+          'Org-wide name for the environment scaffolded with every new project. null/unset falls back to Production.',
+      },
+    },
+  },
+  OrganizationDefaultEnvironmentUpdate: {
+    type: 'object',
+    required: ['defaultEnvironmentName'],
+    properties: {
+      defaultEnvironmentName: {
+        type: ['string', 'null'],
+        description:
+          'Non-empty display name (≤255; letters, numbers, spaces, dots, underscores, hyphens), or null to reset to the platform default (Production).',
+      },
+    },
+  },
   OrganizationServerCapacity: {
     type: 'object',
     required: [
@@ -231,6 +253,117 @@ export const organizationPaths: Record<string, unknown> = {
         },
         '403': {
           description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/default-environment': {
+    get: {
+      tags: ['Organizations'],
+      summary: 'Get organization default environment name',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Org default environment name',
+          content: {
+            'application/json': {
+              schema: {
+                $ref: '#/components/schemas/OrganizationDefaultEnvironment',
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'Organization not found',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+    put: {
+      tags: ['Organizations'],
+      summary: 'Update organization default environment name',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              $ref: '#/components/schemas/OrganizationDefaultEnvironmentUpdate',
+            },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Updated org default environment name',
+          content: {
+            'application/json': {
+              schema: {
+                allOf: [
+                  {
+                    $ref: '#/components/schemas/OrganizationDefaultEnvironment',
+                  },
+                  {
+                    type: 'object',
+                    required: ['ok'],
+                    properties: { ok: { type: 'boolean', const: true } },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid defaultEnvironmentName or body',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'Organization not found',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },

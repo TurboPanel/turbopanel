@@ -194,8 +194,8 @@ test('emptyComposeDocument validates as a blank draft', () => {
   assertEquals(empty.presentation.keyOrder, [])
   const result = validateComposeDocument(empty)
   assertEquals(result.ok, true)
-  assertEquals(composeDocumentToYaml(empty), '\n')
-  assertEquals(composeDocumentToRuntimeYaml(empty), '\n')
+  assertEquals(composeDocumentToYaml(empty), '')
+  assertEquals(composeDocumentToRuntimeYaml(empty), '')
 })
 
 test('validateComposeDocument accepts blank data without services', () => {
@@ -233,7 +233,7 @@ test('yamlToComposeDocument treats services: {} as an empty draft', () => {
     version: 1,
     data: { services: {} },
     presentation: { keyOrder: ['services'], comments: {} },
-  }), '\n')
+  }), '')
 })
 
 test('mergeComposeOverlay deep-merges services', () => {

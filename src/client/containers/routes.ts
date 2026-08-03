@@ -7,7 +7,7 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db.ts'
-import { container, server } from '../../lib/db/schema.ts'
+import { container, server, service } from '../../lib/db/schema.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -177,6 +177,7 @@ export function registerContainerRoutes(router: Hono, opts: AuthRouteOpts) {
     const serviceId = c.req.query('serviceId')
     const serverId = c.req.query('serverId')
     const status = c.req.query('status')
+    const environmentId = c.req.query('environmentId')
 
     const visibleIds = await listVisible(db, {
       kind: 'container',
@@ -197,6 +198,16 @@ export function registerContainerRoutes(router: Hono, opts: AuthRouteOpts) {
     }
     if (status) {
       conditions.push(eq(container.status, status))
+    }
+    if (environmentId) {
+      conditions.push(
+        inArray(
+          container.serviceId,
+          db.select({ id: service.id }).from(service).where(
+            eq(service.environmentId, environmentId),
+          ),
+        ),
+      )
     }
 
     const rows = await db

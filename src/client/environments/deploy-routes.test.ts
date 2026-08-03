@@ -33,6 +33,7 @@ import {
   expandHostingsForComposeInstances,
   registerEnvironmentDeployPreviewRoutes,
   registerEnvironmentDeployRoutes,
+  registerEnvironmentLifecycleRoutes,
 } from './deploy-routes.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 
@@ -202,6 +203,7 @@ async function createDeployRoutesTestApp(
   })
   registerEnvironmentDeployPreviewRoutes(app, { secrets, runtime: 'deno' })
   registerEnvironmentDeployRoutes(app, { secrets, runtime: 'deno' })
+  registerEnvironmentLifecycleRoutes(app, { secrets, runtime: 'deno' })
   return { app, secrets }
 }
 
@@ -799,5 +801,219 @@ test('POST /environments/:id/deploy rejects environment overlay compose placemen
     assertEquals(res.status, 400)
     assertEquals(await res.json(), { error: 'Invalid compose document' })
     assertEquals(commandQueue.envelopes.length, 0)
+  })
+})
+
+test('POST /environments/:id/lifecycle enqueues environment.lifecycle', async () => {
+  await withDeployFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    environmentId,
+    serverId,
+    commandQueue,
+  }) => {
+    await db
+      .update(environment)
+      .set({
+        serverId,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(environment.id, environmentId))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/environments/${environmentId}/lifecycle`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ action: 'stop' }),
+    })
+    assertEquals(res.status, 200)
+    const body = await res.json() as {
+      ok: boolean
+      commandId: string
+      status: string
+      serverId: string
+    }
+    assertEquals(body.ok, true)
+    assertEquals(body.status, 'queued')
+    assertEquals(body.serverId, serverId)
+    assertEquals(commandQueue.envelopes.length, 1)
+    assertEquals(commandQueue.envelopes[0]!.type, 'environment.lifecycle')
+    assertEquals(commandQueue.envelopes[0]!.serverId, serverId)
+  })
+})
+
+test('POST /environments/:id/lifecycle rejects unknown action', async () => {
+  await withDeployFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    environmentId,
+    serverId,
+    commandQueue,
+  }) => {
+    await db
+      .update(environment)
+      .set({
+        serverId,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(environment.id, environmentId))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/environments/${environmentId}/lifecycle`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ action: 'down' }),
+    })
+    assertEquals(res.status, 400)
+    assertEquals(await res.json(), { error: 'Invalid request' })
+    assertEquals(commandQueue.envelopes.length, 0)
+  })
+})
+
+test('POST /environments/:id/lifecycle requires persisted environment.server_id', async () => {
+  await withDeployFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    environmentId,
+    commandQueue,
+  }) => {
+    await db
+      .update(environment)
+      .set({
+        serverId: null,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(environment.id, environmentId))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/environments/${environmentId}/lifecycle`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ action: 'start' }),
+    })
+    assertEquals(res.status, 409)
+    assertEquals(await res.json(), { error: 'server_placement_required' })
+    assertEquals(commandQueue.envelopes.length, 0)
+  })
+})
+
+test('POST /environments/:id/lifecycle returns 403 for non-manager', async () => {
+  await withDeployFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    environmentId,
+    serverId,
+    commandQueue,
+  }) => {
+    await db
+      .update(environment)
+      .set({
+        serverId,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(environment.id, environmentId))
+    await db.delete(grant).where(and(
+      eq(grant.actorId, userId),
+      eq(grant.entityId, organizationId),
+    ))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/environments/${environmentId}/lifecycle`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ action: 'start' }),
+    })
+    assertEquals(res.status, 403)
+    assertEquals(commandQueue.envelopes.length, 0)
+  })
+})
+
+test('POST /environments/:id/lifecycle returns 404 for cross-org environment', async () => {
+  await withDeployFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+    commandQueue,
+  }) => {
+    const [foreignOrg] = await db
+      .insert(organization)
+      .values({ displayName: 'Lifecycle Foreign Org' })
+      .returning({ id: organization.id })
+    const foreignOrgId = foreignOrg!.id
+    const [foreignWorkspace] = await db
+      .insert(workspace)
+      .values({ displayName: 'Foreign Workspace', organizationId: foreignOrgId })
+      .returning({ id: workspace.id })
+    const [foreignProject] = await db
+      .insert(project)
+      .values({
+        displayName: 'Foreign Project',
+        workspaceId: foreignWorkspace!.id,
+        options: { compose: emptyComposeDocument() },
+      })
+      .returning({ id: project.id })
+    const [foreignEnvironment] = await db
+      .insert(environment)
+      .values({
+        displayName: 'Foreign Env',
+        projectId: foreignProject!.id,
+        serverId,
+        options: { compose: emptyComposeDocument() },
+      })
+      .returning({ id: environment.id })
+
+    try {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(
+        `/environments/${foreignEnvironment!.id}/lifecycle`,
+        {
+          method: 'POST',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ action: 'start' }),
+        },
+      )
+      assertEquals(res.status, 404)
+      assertEquals(commandQueue.envelopes.length, 0)
+    } finally {
+      await db.delete(environment).where(eq(environment.id, foreignEnvironment!.id))
+      await db.delete(project).where(eq(project.id, foreignProject!.id))
+      await db.delete(workspace).where(eq(workspace.id, foreignWorkspace!.id))
+      await db.delete(organization).where(eq(organization.id, foreignOrgId))
+    }
   })
 })

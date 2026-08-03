@@ -347,9 +347,10 @@ function composeDataToYaml(
   presentation?: ComposePresentation,
 ): string {
   const payload = pruneBlankComposeData(data)
-  // Blank drafts should look blank in the editor — not `{}` / `services: {}`.
+  // Blank drafts should look blank in the editor — not `{}` / `services: {}`
+  // and not a lone newline (that shows as an empty first line in the textarea).
   if (isBlankComposeData(payload)) {
-    return '\n'
+    return ''
   }
 
   const yamlDoc = new Document(payload)

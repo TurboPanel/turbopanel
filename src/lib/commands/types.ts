@@ -6,6 +6,7 @@ export const COMMAND_TYPES = [
   'server.timezone.set',
   'server.wireguard.apply',
   'environment.deploy',
+  'environment.lifecycle',
   'environment.stop',
   'managed.apply',
   'managed.lifecycle',

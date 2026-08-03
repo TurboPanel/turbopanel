@@ -29,7 +29,7 @@ export type ServiceOptions = {
 
 const DEFAULT_STOP_GRACE_SECONDS = 30
 const DEFAULT_MAX_RESTART_ATTEMPTS = 10
-const DEFAULT_HEALTH_POLICY: HealthCheckPolicy = 'warn'
+const DEFAULT_HEALTH_POLICY: HealthCheckPolicy = 'disabled'
 const DEFAULT_SERVICE_INSTANCES = 1
 /** Drop-invalid ceiling for `service.options.instances`. */
 export const MAX_SERVICE_INSTANCES = 64

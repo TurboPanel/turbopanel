@@ -29,14 +29,14 @@ describe('deploy-prepare helpers', () => {
     })
 
     const composeNames = Object.keys(merged.data.services as Record<string, unknown>)
-    const optionsByComposeName = buildServiceOptionsMap([], () => 'unused', 'unused')
+    const optionsByComposeName = buildServiceOptionsMap([])
     const usage = sumServiceResourceUsage(optionsByComposeName, composeNames.length)
 
     assertEquals(usage.serviceCount, 2)
     assertEquals(usage.cpus, 0)
   })
 
-  it('evaluates health-check warnings for every compose service', () => {
+  it('does not warn by default when compose has no healthcheck', () => {
     const merged = assertComposeDocument({
       version: 1,
       data: {
@@ -48,9 +48,51 @@ describe('deploy-prepare helpers', () => {
     })
 
     const warnings = collectHealthCheckWarnings(merged, new Map())
+    assertEquals(warnings.length, 0)
+  })
+
+  it('warns only when the operator sets healthCheck.policy to warn', () => {
+    const merged = assertComposeDocument({
+      version: 1,
+      data: {
+        services: {
+          web: { image: 'nginx:latest' },
+        },
+      },
+      presentation: { keyOrder: ['services'], comments: {} },
+    })
+
+    const optionsByComposeName = buildServiceOptionsMap([
+      { composeServiceName: 'web', options: { healthCheck: { policy: 'warn' } } },
+    ])
+    const warnings = collectHealthCheckWarnings(merged, optionsByComposeName)
     assertEquals(warnings.length, 1)
     assertEquals(warnings[0]?.composeServiceName, 'web')
     assertEquals(warnings[0]?.policy, 'warn')
+  })
+
+  it('skips services that already declare a compose healthcheck', () => {
+    const merged = assertComposeDocument({
+      version: 1,
+      data: {
+        services: {
+          web: {
+            image: 'nginx:latest',
+            healthcheck: { test: ['CMD', 'curl', '-f', 'http://localhost'] },
+          },
+        },
+      },
+      presentation: { keyOrder: ['services'], comments: {} },
+    })
+
+    const optionsByComposeName = buildServiceOptionsMap([
+      {
+        composeServiceName: 'web',
+        options: { healthCheck: { policy: 'required' } },
+      },
+    ])
+    const warnings = collectHealthCheckWarnings(merged, optionsByComposeName)
+    assertEquals(warnings.length, 0)
   })
 })
 

@@ -1,8 +1,10 @@
 import { assertEquals } from '@std/assert'
 import {
   isUnlimitedMaxServers,
+  parseDefaultEnvironmentNameInput,
   parseMaxServersInput,
   parseOrganizationOptions,
+  resolveDefaultEnvironmentName,
 } from './organization-options.ts'
 
 /**
@@ -36,10 +38,64 @@ test('parseOrganizationOptions ignores invalid maxServers', () => {
   assertEquals(parseOrganizationOptions({ maxServers: '3' }).maxServers, undefined)
 })
 
+test('parseOrganizationOptions trims defaultEnvironmentName and omits blank', () => {
+  assertEquals(
+    parseOrganizationOptions({ defaultEnvironmentName: ' Staging ' })
+      .defaultEnvironmentName,
+    'Staging',
+  )
+  assertEquals(
+    parseOrganizationOptions({ defaultEnvironmentName: '   ' })
+      .defaultEnvironmentName,
+    undefined,
+  )
+  assertEquals(
+    parseOrganizationOptions({ defaultEnvironmentName: 12 })
+      .defaultEnvironmentName,
+    undefined,
+  )
+  assertEquals(
+    parseOrganizationOptions({ defaultEnvironmentName: null })
+      .defaultEnvironmentName,
+    undefined,
+  )
+})
+
 test('parseMaxServersInput accepts zero and rejects negatives', () => {
   assertEquals(parseMaxServersInput(0), { ok: true, value: 0 })
   assertEquals(parseMaxServersInput(null), { ok: true, value: null })
   assertEquals(parseMaxServersInput(-1).ok, false)
+})
+
+test('parseDefaultEnvironmentNameInput accepts valid names and resets', () => {
+  assertEquals(parseDefaultEnvironmentNameInput('Staging'), {
+    ok: true,
+    value: 'Staging',
+  })
+  assertEquals(parseDefaultEnvironmentNameInput(' Live Env '), {
+    ok: true,
+    value: 'Live Env',
+  })
+  assertEquals(parseDefaultEnvironmentNameInput(null), {
+    ok: true,
+    value: null,
+  })
+})
+
+test('parseDefaultEnvironmentNameInput rejects invalid values', () => {
+  assertEquals(parseDefaultEnvironmentNameInput(12).ok, false)
+  assertEquals(parseDefaultEnvironmentNameInput('').ok, false)
+  assertEquals(parseDefaultEnvironmentNameInput('   ').ok, false)
+  assertEquals(parseDefaultEnvironmentNameInput('bad/name').ok, false)
+  assertEquals(parseDefaultEnvironmentNameInput('a'.repeat(256)).ok, false)
+})
+
+test('resolveDefaultEnvironmentName uses option or Production fallback', () => {
+  assertEquals(
+    resolveDefaultEnvironmentName({ defaultEnvironmentName: 'Staging' }),
+    'Staging',
+  )
+  assertEquals(resolveDefaultEnvironmentName({}), 'Production')
 })
 
 test('isUnlimitedMaxServers for omitted and null', () => {
