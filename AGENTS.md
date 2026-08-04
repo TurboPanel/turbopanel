@@ -98,19 +98,27 @@ change. Future agents read `AGENTS.md` first.
 - Do not record secrets, tokens, or machine-specific credentials.
 - Remove or correct notes that prove wrong.
 
-### SonarQube (Automatic Analysis)
+### SonarQube (CI-based analysis)
 
-- While SonarCloud **Automatic Analysis** is on, exclusions in
-  `sonar-project.properties` are **ignored**. Put Automatic Analysis scope in
-  **`.sonarcloud.properties`** (CI scanners still use
-  `sonar-project.properties`).
+- Analysis runs in GitHub Actions (`.github/workflows/build.yml` **SonarQube**
+  job — SonarCloud wizard layout) with `SONAR_TOKEN` and
+  `sonar-project.properties` (`sonar.projectKey=turbopanel_turbopanel`,
+  `sonar.organization=turbopanel`). The SonarQube job is a **separate check**
+  that runs **before** Verify (`needs: sonarqube`). If Sonar fails, Verify is
+  skipped and nothing else in the workflow continues. The scan waits on the
+  quality gate (`sonar.qualitygate.wait=true`).
+- **Automatic Analysis must stay off** for `turbopanel_turbopanel`
+  (SonarCloud → project **Administration → Analysis Method**). CI and Automatic
+  Analysis cannot run together — Automatic Analysis enabled makes the CI
+  scanner fail.
 - Drizzle-generated SQL under **`migrations/`** must stay excluded
   (`**/migrations/**`) — never “fix” smells in those files.
 - Hand-authored OpenAPI under `src/client/openapi/**` and
   `src/daemon/openapi/**` is excluded from **duplication (CPD)** via
-  `sonar.cpd.exclusions` (keep both property files in sync). Schema/path
-  blocks are intentionally repetitive across resources; refactor route/runtime
-  code instead of twisting OpenAPI to please CPD.
+  `sonar.cpd.exclusions` (keep `sonar-project.properties` and the vestigial
+  `.sonarcloud.properties` in sync). Schema/path blocks are intentionally
+  repetitive across resources; refactor route/runtime code instead of twisting
+  OpenAPI to please CPD.
 - **SonarLint Connected Mode** does **not** honor
   `sonarlint.analysisExcludesStandalone` or local `.sonarcloud.properties` /
   `sonar-project.properties`. It only applies exclusions synced from the
