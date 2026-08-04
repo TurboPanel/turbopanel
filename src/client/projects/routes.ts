@@ -112,18 +112,13 @@ function resolveCreateProjectType(
   body: Record<string, unknown>,
 ): ResolvedCreateProjectType | 'invalid' {
   const rawType = body.type
+  // Missing / blank type is rejected — callers must send an explicit value.
+  if (rawType === undefined || rawType === null || rawType === '') {
+    return 'invalid'
+  }
   // Explicit empty — name + workspace only; type chosen later via configure.
   if (rawType === 'empty') {
     return 'empty'
-  }
-  // Omit type still means docker-compose for backward compatibility.
-  if (
-    rawType === undefined ||
-    rawType === null ||
-    rawType === '' ||
-    rawType === 'docker-compose'
-  ) {
-    return 'docker-compose'
   }
   if (typeof rawType !== 'string' || !isCreateProjectType(rawType)) {
     return 'invalid'

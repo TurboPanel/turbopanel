@@ -321,7 +321,7 @@ test('POST /projects managed rejects unknown catalog code', async () => {
   })
 })
 
-test('POST /projects empty scaffolds Production once without type', async () => {
+test('POST /projects empty scaffolds Production once with type empty', async () => {
   await withProjectFixtures(async ({
     db,
     app,
@@ -363,6 +363,63 @@ test('POST /projects empty scaffolds Production once without type', async () => 
       .where(eq(environment.projectId, body.id))
     assertEquals(envs.length, 1)
     assertEquals(envs[0]!.displayName, 'Production')
+  })
+})
+
+test('POST /projects rejects missing type', async () => {
+  await withProjectFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    workspaceId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request('/projects', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        workspaceId,
+        displayName: 'No Type Project',
+      }),
+    })
+
+    assertEquals(res.status, 400)
+    assertEquals(await res.json(), { error: 'Invalid request' })
+  })
+})
+
+test('POST /projects rejects empty string type', async () => {
+  await withProjectFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    workspaceId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request('/projects', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        type: '',
+        workspaceId,
+        displayName: 'Blank Type Project',
+      }),
+    })
+
+    assertEquals(res.status, 400)
+    assertEquals(await res.json(), { error: 'Invalid request' })
   })
 })
 
