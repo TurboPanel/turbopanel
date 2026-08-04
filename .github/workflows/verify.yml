@@ -55,5 +55,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
 
+      - name: Apply database migrations
+        run: pnpm migrate
+
       - name: Pre-commit validation suite
         run: pnpm run test:hook
