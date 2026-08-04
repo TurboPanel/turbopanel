@@ -62,6 +62,8 @@ import {
   parseManagedRestoreResult,
   parseNtpSetResult,
   parsePingResult,
+  parseSystemReconcilePayload,
+  parseSystemReconcileResult,
   parseTimezoneSetResult,
   parseWireguardApplyPayload,
   parseWireguardApplyResult,
@@ -90,6 +92,7 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'managed.destroy': 300_000,
   'managed.backup': 1_800_000,
   'managed.restore': 1_800_000,
+  'system.reconcile': 300_000,
 }
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 60_000
@@ -109,7 +112,8 @@ function commandTimeoutMs(type: string): number {
     type === 'managed.lifecycle' ||
     type === 'managed.destroy' ||
     type === 'managed.backup' ||
-    type === 'managed.restore'
+    type === 'managed.restore' ||
+    type === 'system.reconcile'
   ) {
     return COMMAND_TIMEOUT_MS[type]
   }
@@ -466,12 +470,16 @@ async function reconcileContainersSafely(
   envelope: CommandEnvelope,
   environmentId: string,
   containers: Parameters<typeof reconcileEnvironmentContainers>[1]['containers'],
+  expectedAllocations?: Parameters<
+    typeof reconcileEnvironmentContainers
+  >[1]['expectedAllocations'],
 ): Promise<void> {
   try {
     await reconcileEnvironmentContainers(db, {
       serverId: envelope.serverId,
       environmentId,
       containers,
+      ...(expectedAllocations ? { expectedAllocations } : {}),
     })
   } catch (err) {
     const message = errorMessage(err)
@@ -577,6 +585,50 @@ async function applyEnvironmentLifecycleSideEffect(
       envelope,
       environmentId,
       lifecycleResult.containers,
+    )
+  } catch (err) {
+    const message = errorMessage(err)
+    commandConsumerTrace('dispatch-result', {
+      commandId: record.id,
+      commandType: record.type,
+      serverId: envelope.serverId,
+      resultStatus: 'succeeded',
+      containerReconcileError: message,
+    })
+    compatLogWarn(
+      'command-consumer',
+      `container reconcile failed for command ${record.id}: ${message}`,
+    )
+  }
+}
+
+async function applySystemReconcileSideEffect(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown,
+): Promise<void> {
+  if (record.type !== 'system.reconcile') return
+  try {
+    const payload = parseSystemReconcilePayload(record.payload)
+    const reconcileResult = parseSystemReconcileResult(result)
+    // Omitted containers = collection failed — skip reconcile. Trust only
+    // the payload's environmentId (never a daemon-supplied one).
+    if (reconcileResult.containers === undefined) return
+    // Pass expected (serviceId, role, ordinal) so a partial self-host report
+    // resets missing component rows instead of deleting preallocated identity.
+    const expectedAllocations = payload.components.map((component) => ({
+      serviceId: component.serviceId,
+      role: component.role,
+      ordinal: 1,
+    }))
+    await reconcileContainersSafely(
+      db,
+      record,
+      envelope,
+      payload.environmentId,
+      reconcileResult.containers,
+      expectedAllocations,
     )
   } catch (err) {
     const message = errorMessage(err)
@@ -910,6 +962,7 @@ async function applySucceededSideEffects(
   await applyEnvironmentDeploySideEffect(db, record, envelope, result)
   await applyEnvironmentStopSideEffect(db, record, envelope, result)
   await applyEnvironmentLifecycleSideEffect(db, record, envelope, result)
+  await applySystemReconcileSideEffect(db, record, envelope, result)
   await applyManagedApplySideEffect(db, record, envelope, result)
   await applyManagedLifecycleSideEffect(db, record, envelope, result)
   await applyManagedDestroySideEffect(db, record, envelope, result)

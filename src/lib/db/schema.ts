@@ -733,6 +733,7 @@ export const workspace = pgTable(
     organizationId: uuid('organization_id').notNull(),
     displayName: varchar('display_name', { length: 255 }),
     description: varchar('description', { length: 255 }),
+    kind: varchar({ length: 32 }).notNull().default('user'),
   },
   (table) => [
     index('idx_workspace_organization_id').using(
@@ -748,6 +749,10 @@ export const workspace = pgTable(
       'workspace_display_name_format_check',
       sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
     ),
+    check('workspace_kind_check', sql`kind IN ('user', 'system')`),
+    uniqueIndex('uniq_workspace_organization_system')
+      .on(table.organizationId)
+      .where(sql`kind = 'system'`),
   ]
 )
 export const project = pgTable(
@@ -783,6 +788,13 @@ export const project = pgTable(
       'project_display_name_format_check',
       sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
     ),
+    /**
+     * One project per system component per workspace (system hierarchy).
+     * Partial — user projects omit `metadata.component`.
+     */
+    uniqueIndex('uniq_project_workspace_system_component')
+      .on(table.workspaceId, sql`(metadata->>'component')`)
+      .where(sql`(metadata->>'component') IS NOT NULL`),
   ]
 )
 

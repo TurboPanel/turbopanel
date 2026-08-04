@@ -44,6 +44,8 @@
  */
 import { type Db, endDbConnection } from "../../db.ts";
 import { resolveWorkersDb } from "../../workers-bindings.ts";
+import { runSystemReconcileSweep } from "../../client/system/reconcile.ts";
+import { createWorkersCommandQueue } from "../../lib/commands/workers-queue.ts";
 import {
   resolveServerMetricsStore,
   type AnalyticsEngineDatasetLike,
@@ -604,11 +606,29 @@ export async function runOfflineSweep(env: CloudflareBindings): Promise<void> {
   if (!db) return;
 
   try {
-    await sweepOnce(env, db);
-  } catch (err) {
-    sweepTrace("sweep-failed", {
-      error: err instanceof Error ? err.message : String(err),
-    });
+    try {
+      await sweepOnce(env, db);
+    } catch (err) {
+      sweepTrace("sweep-failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    // System-reconcile drift sweep reuses this cron's already-open db — never
+    // open a second Hyperdrive client per tick. Skip when the queue binding
+    // is absent.
+    if (env.TURBOPANEL_COMMAND_QUEUE) {
+      try {
+        const commandQueue = createWorkersCommandQueue(
+          env.TURBOPANEL_COMMAND_QUEUE,
+        );
+        await runSystemReconcileSweep(db, commandQueue);
+      } catch (err) {
+        sweepTrace("system-reconcile-sweep-failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
   } finally {
     await endDbConnection(db).catch(() => {});
   }

@@ -9,6 +9,7 @@ import { service } from '../../lib/db/schema.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
+  assertNotSystemOwnedOr403,
   buildPatchUpdateFields,
   getOrgId,
   parseDisplayName,
@@ -331,6 +332,9 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
     const denied = await assertCanOr403(c, 'organization:manage', 'service', id)
     if (denied) return denied
 
+    const immutable = await assertNotSystemOwnedOr403(c, 'service', id)
+    if (immutable) return immutable
+
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
@@ -364,6 +368,9 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const denied = await assertCanOr403(c, 'organization:manage', 'service', id)
     if (denied) return denied
+
+    const immutable = await assertNotSystemOwnedOr403(c, 'service', id)
+    if (immutable) return immutable
 
     const result = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(service).where(eq(service.id, id))

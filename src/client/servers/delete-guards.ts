@@ -1,7 +1,8 @@
-import { and, count, eq } from 'drizzle-orm'
+import { and, count, eq, sql } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { Db } from '../../db.ts'
-import { container, ip, network, peer, server } from '../../lib/db/schema.ts'
+import { ip, network, peer, server } from '../../lib/db/schema.ts'
+import { WORKSPACE_KIND_SYSTEM } from '../../lib/db/workspace-kind.ts'
 
 export type ServerDeleteBlockerKind = 'network' | 'container' | 'peer' | 'ip'
 
@@ -38,9 +39,12 @@ export async function listServerDeleteBlockers(
     .limit(1)
   if (!serverRow) return []
 
+  // System-workspace ingress rows are torn down by
+  // `deleteSystemEnvironmentSubtree` during DELETE — exclude them from the
+  // generic blocker scan so stopped system inventory does not 409 the delete.
   const [
     [networkCountRow],
-    [containerCountRow],
+    containerCountRows,
     [peerCountRow],
     [ipCountRow],
   ] = await Promise.all([
@@ -48,10 +52,20 @@ export async function listServerDeleteBlockers(
       .select({ value: count() })
       .from(network)
       .where(eq(network.serverId, serverId)),
-    db
-      .select({ value: count() })
-      .from(container)
-      .where(eq(container.serverId, serverId)),
+    db.execute<{ value: number | string }>(sql`
+      SELECT count(*)::int AS value
+      FROM container c
+      WHERE c.server_id = ${serverId}::uuid
+        AND NOT EXISTS (
+          SELECT 1
+          FROM service s
+          JOIN environment e ON e.id = s.environment_id
+          JOIN project p ON p.id = e.project_id
+          JOIN workspace w ON w.id = p.workspace_id
+          WHERE s.id = c.service_id
+            AND w.kind = ${WORKSPACE_KIND_SYSTEM}
+        )
+    `),
     db
       .select({ value: count() })
       .from(peer)
@@ -61,6 +75,7 @@ export async function listServerDeleteBlockers(
       .from(ip)
       .where(eq(ip.serverId, serverId)),
   ])
+  const containerCountRow = containerCountRows[0]
 
   const blockers: ServerDeleteBlocker[] = []
   const networkCount = Number(networkCountRow?.value ?? 0)

@@ -10,6 +10,7 @@ import { hosting, ip } from '../../lib/db/schema.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
+  assertNotSystemOwnedOr403,
   buildPatchUpdateFields,
   getOrgId,
   parseDisplayName,
@@ -330,6 +331,9 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const denied = await assertCanCreateOr403(c, 'service', serviceId)
     if (denied) return denied
 
+    const immutable = await assertNotSystemOwnedOr403(c, 'service', serviceId)
+    if (immutable) return immutable
+
     let displayName: string | null
     let description: string | null
     try {
@@ -396,6 +400,9 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const denied = await assertCanOr403(c, 'organization:manage', 'hosting', id)
     if (denied) return denied
 
+    const immutable = await assertNotSystemOwnedOr403(c, 'hosting', id)
+    if (immutable) return immutable
+
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
@@ -444,6 +451,9 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const denied = await assertCanOr403(c, 'organization:manage', 'hosting', id)
     if (denied) return denied
+
+    const immutable = await assertNotSystemOwnedOr403(c, 'hosting', id)
+    if (immutable) return immutable
 
     const result = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(hosting).where(eq(hosting.id, id))

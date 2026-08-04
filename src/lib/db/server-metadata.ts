@@ -113,6 +113,11 @@ export type ServerOptions = {
    * unless the org enforces its default (`enforceServerTimezone`).
    */
   timezone?: string
+  /**
+   * Desired state for Docker-hosting provisioning; consumed by later phases to
+   * choose self-heal vs report-only.
+   */
+  hosting?: { enabled: boolean }
 }
 
 const OS_FAMILIES = new Set<ServerOsFamily>([
@@ -329,6 +334,9 @@ export function parseServerOptions(value: unknown): ServerOptions | null {
     Number.isInteger(value.cellGeneration)
   ) {
     options.cellGeneration = value.cellGeneration
+  }
+  if (isRecord(value.hosting) && typeof value.hosting.enabled === 'boolean') {
+    options.hosting = { enabled: value.hosting.enabled }
   }
   return Object.keys(options).length > 0 ? options : {}
 }

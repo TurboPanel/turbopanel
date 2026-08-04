@@ -18,6 +18,7 @@ import { reconcileServicesForEnvironment } from './reconcile-after-compose-save.
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
+  assertNotSystemOwnedOr403,
   buildPatchUpdateFields,
   getOrgId,
   parseDisplayName,
@@ -28,8 +29,10 @@ import {
   stripPromotedMetadataKeys,
 } from '../shared.ts'
 
-/** Placement lives on `environment.server_id` — never persist it into metadata. */
-const ENVIRONMENT_PROMOTED_METADATA_KEYS = ['serverId'] as const
+/** Placement lives on `environment.server_id` — never persist it into metadata.
+ * `component` is reserved for system project identity — never accept it on
+ * public environment create/patch. */
+const ENVIRONMENT_PROMOTED_METADATA_KEYS = ['serverId', 'component'] as const
 import {
   hierarchyDeleteHasChildrenResponse,
   runHierarchyDelete,
@@ -225,6 +228,9 @@ async function parseCreateEnvironmentInput(
   const denied = await assertCanCreateOr403(c, 'project', projectId)
   if (denied) return denied
 
+  const immutable = await assertNotSystemOwnedOr403(c, 'project', projectId)
+  if (immutable) return immutable
+
   const names = parseCreateEnvironmentNames(c, body)
   if (names instanceof Response) return names
 
@@ -377,6 +383,9 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     const denied = await assertCanOr403(c, 'organization:manage', 'environment', id)
     if (denied) return denied
 
+    const immutable = await assertNotSystemOwnedOr403(c, 'environment', id)
+    if (immutable) return immutable
+
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
@@ -426,6 +435,9 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
 
     const denied = await assertCanOr403(c, 'organization:manage', 'environment', id)
     if (denied) return denied
+
+    const immutable = await assertNotSystemOwnedOr403(c, 'environment', id)
+    if (immutable) return immutable
 
     const result = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(environment).where(eq(environment.id, id))

@@ -1,6 +1,7 @@
 import { and, eq, ne, sql } from 'drizzle-orm'
 import type { Db } from '../db.ts'
 import { project, workspace } from '../lib/db/schema.ts'
+import { WORKSPACE_KIND_USER } from '../lib/db/workspace-kind.ts'
 
 /** Trim + lowercase key used for org-scoped display-name uniqueness. */
 export function normalizeDisplayNameKey(name: string): string {
@@ -58,6 +59,7 @@ export async function isWorkspaceDisplayNameTaken(
 
   const conditions = [
     eq(workspace.organizationId, organizationId),
+    eq(workspace.kind, WORKSPACE_KIND_USER),
     sql`lower(btrim(${workspace.displayName})) = ${key}`,
   ]
   if (excludeWorkspaceId) {

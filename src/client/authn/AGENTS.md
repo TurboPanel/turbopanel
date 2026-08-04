@@ -10,7 +10,7 @@ The instance uses a **custom PAM-style auth model** built entirely on the **Web 
 
 **`nodejs_compat` is enabled** in `wrangler.jsonc` as a toolchain compatibility shim (required for drizzle-kit and postgres.js during the migration step). **Rarely use Node.js APIs in application code** — always prefer Cloudflare-native APIs: Web Crypto API (`crypto.subtle`, `crypto.getRandomValues`), Cloudflare Cache API, etc. Do not use `nodejs_compat` as justification for pulling in Node.js-specific libraries in application routes.
 
-#### Password hashing
+### Password hashing
 
 Credential-account passwords use **Argon2id** via `@noble/hashes` (`src/client/authn/password.ts`) — pure TypeScript, no WASM loader, runs on both Deno and Cloudflare Workers. Stored PHC format: `$argon2id$v=19$m=<m>,t=<t>,p=<p>$<b64-salt>$<b64-hash>`. New hashes use the OWASP 2026 minimum baseline **`m=19456,t=2,p=1`** (~19 MiB working set, well under the default 128 MiB Workers isolate limit). Verification re-derives the digest as bytes and compares with XOR-accumulation constant-time equality — do **not** delegate final equality to library `argon2Verify` helpers. Do not use plain SHA-256 or PBKDF2 for new passwords.
 
@@ -21,6 +21,7 @@ Credential-account passwords use **Argon2id** via `@noble/hashes` (`src/client/a
 **Boot behavior + raise-only override:** both `src/workers.ts` (per-isolate `initWorkerApp`) and `src/deno.ts` (before `Deno.serve`) call `assertPasswordHasherAvailable()` and fail fast rather than degrading. Optional raise-only override via `configureArgon2idWorkFactor` — `TURBOPANEL_ARGON2ID_MEMORY_KIB` / `TURBOPANEL_ARGON2ID_TIME_COST` may only raise `m`/`t` above the OWASP floor (values below the floor are ignored with a warning).
 
 **Daemon key authentication:** daemon auth now starts with HTTP-first enrollment/session issuance, then uses a short-lived stateless daemon JWT for protected daemon REST and daemon WebSocket upgrade authentication.
+
 - **Enrollment challenge + proof**: daemon requests `POST /api/daemon/v1/auth/challenge` (no credentials), signs `buildEnrollmentPayload()` (`turbopanel-daemon-enroll-v1` canonical format), then calls `POST /api/daemon/v1/enroll` with `{ licenseId, licenseToken, publicJwk, challengeId, signature, serverId? }`. The instance verifies license + proof-of-possession, resolves/creates `server`, and stores the daemon public key on the server row. Licenses are one-shot: after a server latches, re-enroll requires the persisted `serverId`; a fresh license always creates a new server.
 - **Auth challenge + session token**: enrolled daemon requests `POST /api/daemon/v1/auth/challenge` with `{ serverId, keyId }`, signs `buildAuthPayload()` (`turbopanel-daemon-auth-v1` canonical format), then calls `POST /api/daemon/v1/auth/session` to receive a **15-minute stateless JWT**. Session issuance records key use in Postgres (`touchDaemonKeyLastUsed` on `server.daemon.key.lastUsedAt`) only — it does **not** call `DaemonCell.putSnapshot()` or wake the cell.
 - **JWT enforcement**: protected daemon REST routes use `requireDaemonJwt` middleware (`Authorization: Bearer <token>`) on `/commands/lease`, `/secrets/decrypt`, and `/metrics`; exempt routes include `GET /readiness`, `GET /instance/ca`, `GET /jwks.json`, `GET /openapi.json`, `GET /reference`, `POST /auth/challenge`, `POST /enroll`, and `POST /auth/session`. JWT verification checks signature, expiry, and claims only — no session row lookup.
@@ -36,7 +37,7 @@ Credential-account passwords use **Argon2id** via `@noble/hashes` (`src/client/a
 Do-not-retry-soon mapping for enroll/session responses (daemon intent):
 
 | Status + message (`/enroll`, `/auth/session`) | Daemon action |
-|---|---|
+| --- | --- |
 | `401 Invalid license` | permanent → daemon parks (5 min–1 h backoff) |
 | `400 License already consumed or invalid` | permanent → daemon parks |
 | `400 License is inactive` | permanent → daemon parks |
@@ -63,7 +64,7 @@ sequenceDiagram
     Daemon-->>Instance: pong
 ```
 
-#### Session model
+### Session model
 
 Sessions are **opaque DB-backed tokens** with a signed cookie:
 
@@ -73,7 +74,7 @@ Sessions are **opaque DB-backed tokens** with a signed cookie:
 - Cookie name: `turbopanel.session_token` on HTTP, `__Secure-turbopanel.session_token` on HTTPS (resolved from the request URL in `src/client/authn/crypto.ts`).
 - Cookie attributes: `HttpOnly; SameSite=Lax; Path=/; Max-Age=604800` (7 days). `Secure` is added automatically when the request URL is HTTPS.
 
-#### Host PAM install gate (Deno only, install wizard)
+### Host PAM install gate (Deno only, install wizard)
 
 On the **Deno runtime**, initial setup is gated by host PAM — **`root`** or any user in the **`sudo` / `wheel` / `admin`** groups. Host auth **never** receives a session or cookie. In **production** the instance process runs as **`tpctrl`**; in **development** it runs as the dev user. It spawns **`sudo -n /usr/bin/pamtester login <username> authenticate`** directly and writes the password on **stdin** (never via a child-env var or `/bin/sh` pipeline — see `src/client/authn/credentials.ts`). **`pamtester`** must be installed on managed hosts (the daemon `daemon-prereqs` role). Sudoers: **`tpctrl`** gets `NOPASSWD: /usr/bin/pamtester login * authenticate` in `instance-launch` `upgrade-sudoers.yml` (production). The instance systemd unit must grant **`--allow-run=/bin/sh,sudo,/usr/bin/sudo,pamtester,/usr/bin/pamtester`**.
 
@@ -83,7 +84,7 @@ On the **Deno runtime**, initial setup is gated by host PAM — **`root`** or an
 
 Superadmin-only routes (`createRootOnlyMiddleware`, `resolveRootSession`) authorize by **`user.role === 'superadmin'`**, not PAM root. `user.role` ∈ `superadmin | admin | user` is **instance authority only** and is distinct from resource access profiles. **`superadmin` and `admin`** both bypass resource authorization checks — `can()` and `listVisible()` short-circuit in SQL without requiring any `grant` rows. Future superadmin-only platform operations (developer reset-dev, etc.) remain restricted to `superadmin` via middleware, not `admin`.
 
-#### Session secret configuration
+### Session secret configuration
 
 Both runtimes read the same root secret env vars. **`TURBOPANEL_SECRET`** = single-key mode (normalized to `v1` when `TURBOPANEL_SECRETS` is unset). **`TURBOPANEL_SECRETS`** = plural keyring (`2:secret,1:secret`; highest version is current signing key). **First key signs / all keys verify.** Every key yields a stable `kid`; JWT headers include the active `kid`.
 
@@ -94,12 +95,12 @@ Both runtimes read the same root secret env vars. **`TURBOPANEL_SECRET`** = sing
 **Rotation:** add a new active key at the highest version, deploy, old tokens verify during their ≤15-min window, then drop the old key from the keyring/JWKS.
 
 | Variable | Behaviour when missing |
-|---|---|
+| --- | --- |
 | `TURBOPANEL_SECRET` | Single 48-char root key (`src/generate-secret.ts`); normalized to `v1` when `TURBOPANEL_SECRETS` is unset |
 | `TURBOPANEL_SECRETS` | Versioned list `2:secret,1:secret`; highest version is current signing key |
 
 | Runtime | Source |
-|---|---|
+| --- | --- |
 | Deno | `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` env vars (`instance-launch` injects them on managed hosts) |
 | Workers | Same names as Wrangler bindings / `.dev.vars` (Tilt `sync-env.sh` writes them from `dev/.env`) |
 
@@ -109,7 +110,7 @@ At least one of `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` must be set in produc
 
 Add a `TURBOPANEL_SECRET` to `dev/.env` before running `pnpm dev` (Tilt syncs it to `instance/.dev.vars` — see `dev/.env.example`).
 
-#### Data encryption
+### Data encryption
 
 `enc` is the **universal at-rest format** for all persisted secrets (secret variables, TLS private keys, principal passwords). Shared symmetric encryption is keyed off the same root secret via HKDF (`info: "data-encryption"` → AES-256-GCM). Envelope format: `enc.<keyVersion>.<payloadB64u>` where `payload` = IV (12 bytes) ‖ ciphertext+tag. The embedded `keyVersion` enables direct lookup against `DerivedSecretsConfig.current` / `.fallbacks` during rotation — no trial decryption. Format version is implied by the magic (`enc` / `denc`); bump the magic if the layout changes. There are **no per-server at-rest keys**: a single `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` root of trust yields a rollable data-encryption keyring. A credential sealed as `enc` is server-agnostic at rest and can be delivered to any authorized daemon.
 
@@ -125,12 +126,12 @@ Add a `TURBOPANEL_SECRET` to `dev/.env` before running `pnpm dev` (Tilt syncs it
 
 **Live (Worker `instance`):** do **not** commit `TURBOPANEL_IS_SIGNUP_ENABLED` under `env.live.vars` — Wrangler treats committed vars as source of truth and overwrites dashboard edits on every `wrangler deploy`. Live uses top-level `keep_vars: true` so dashboard-only plaintext vars survive deploys. To open production sign-up: Cloudflare dashboard → Worker **`instance`** → Settings → Variables and Secrets → set `TURBOPANEL_IS_SIGNUP_ENABLED` = `1` → **Deploy** (editing alone is not enough; confirm the new version is 100% of production traffic). Verify with `GET https://turbopanel.app/api/client/v1/status` → `isSignupEnabled: true`. Never commit `"1"`/`"true"` on `env.live` (config regression guard). While the env force is set, the DB/panel toggle cannot override it. Testing keeps `"1"` in `env.testing.vars` as a permanent force-enable. Local Tilt may still set `TURBOPANEL_IS_SIGNUP_ENABLED=1` in `.env.example` / `.dev.vars` as a force-enable for dev.
 
-#### Auth routes
+### Auth routes
 
 Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 
 | Method | Path | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `POST` | `/api/client/v1/auth/sign-in` | Verify DB user credentials, create session (rejects root; use install wizard) |
 | `POST` | `/api/client/v1/auth/sign-out` | Delete session, clear cookie |
 | `POST` | `/api/client/v1/auth/sign-up` | Create a regular user account when signup is enabled (`IS_SIGNUP_ENABLED` DB setting, or `TURBOPANEL_IS_SIGNUP_ENABLED` force override); no session returned — user must sign in. Generates a 24h email verification token and enqueues a `signup-verification` email job (Deno → RabbitMQ → mailer → SMTP/Mailpit; Workers → Mailgun directly). Also logs the token and verify URL to console in dev |
@@ -172,12 +173,12 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 
 **Principals** are not a public client API. The `principal` / `assignment` tables are a behind-the-scenes store created by hosting/database-user flows (`src/client/principals/store.ts`); passwords are sealed as `enc` at rest, never returned on read, and re-sealed to `denc` only at delivery.
 
-**Install mode (Deno self-hosted):** `isInstanceInstalled()` is false on a fresh DB. The UI `/install` page first verifies host PAM (`POST /api/install/v1/bootstrap`, client-side gate only), then collects superadmin email/password. Org/team/workspace names are fixed defaults (**Default Organization**, **Default Team**, **Default Workspace**). `completeInstanceInstall` inserts exactly one `organization:own` grant on the org and one `team:own` grant on the default team for the superadmin user. After install, sign-in uses superadmin email/password only. The co-located daemon's `server.organization_id` is assigned to **Default Organization** on install (`assignColocatedDaemonToOrganization` in `install-state.ts`, resolving the server row from the live hub or by `metadata.machineId` / hostname) and again when the Unix-socket daemon sends `hello` if still unassigned.
+**Install mode (Deno self-hosted):** `isInstanceInstalled()` is false on a fresh DB. The UI `/install` page first verifies host PAM (`POST /api/install/v1/bootstrap`, client-side gate only), then collects superadmin email/password. Org/team/workspace names are fixed defaults (**Default Organization**, **Default Team**, **Default Workspace**). `completeInstanceInstall` inserts exactly one `organization:own` grant on the org and one `team:own` grant on the default team for the superadmin user. After install, sign-in uses superadmin email/password only. The co-located daemon's `server.organization_id` is assigned to **Default Organization** on install (`assignColocatedDaemonToOrganization` in `install-state.ts`, resolving the server row from the live hub or by `metadata.machineId` / hostname) and again when the Unix-socket daemon sends `hello` if still unassigned. When assignment returns a `serverId`, install completion calls `ensureSelfHostSystemHierarchy(db, { organizationId, serverId })` with that id directly — post-assignment `resolveColocatedServerId` filters on `organization_id IS NULL` and cannot re-find the row. Boot/timer still runs `ensureSelfHostSystemHierarchyBestEffort` for idempotent repair when the daemon enrolls later.
 
-#### New files
+### New files
 
 | File | Purpose |
-|---|---|
+| --- | --- |
 | `src/client/authn/crypto.ts` | Web Crypto primitives: session cookie signing |
 | `src/client/authn/session-store.ts` | `createSession`, `getSession`, `deleteSession`; `SessionData` type (`role` included) |
 | `src/client/authn/credentials.ts` | `verifyCredentials`, `verifyInstallHostCredentials`; PAM host install gate + DB credential users |
@@ -187,4 +188,3 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `src/lib/install/routes.ts` | `registerInstallRoutes` — self-hosted install wizard (`/api/install/v1/*`; Deno entry only) |
 | `src/client/authn/install-state.ts` | Install detection, validation, `completeInstanceInstall`, colocated server assignment |
 | `src/client/authn/middleware.ts` | Session + superadmin middleware helpers |
-

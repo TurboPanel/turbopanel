@@ -441,3 +441,138 @@ test('organization grant allows can() on managed and variable entities', async (
     }
   })
 })
+
+test('organization:manage grant does not satisfy system permissions; explicit and role bypasses do', async () => {
+  await withTestFixtures(async ({ db, userId, organizationId }) => {
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId: userId,
+      permission: 'organization:manage',
+      allow: true,
+    })
+
+    const manageOperate = await can(
+      db,
+      userId,
+      'system:operate',
+      'organization',
+      organizationId,
+    )
+    const manageRead = await can(
+      db,
+      userId,
+      'system:read',
+      'organization',
+      organizationId,
+    )
+    if (manageOperate) {
+      throw new TypeError('organization:manage must not satisfy system:operate')
+    }
+    if (manageRead) {
+      throw new TypeError('organization:manage must not satisfy system:read')
+    }
+
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId: userId,
+      permission: 'system:operate',
+      allow: true,
+    })
+
+    const explicitOperate = await can(
+      db,
+      userId,
+      'system:operate',
+      'organization',
+      organizationId,
+    )
+    if (!explicitOperate) {
+      throw new TypeError('explicit system:operate grant should satisfy')
+    }
+
+    const [adminUser] = await db
+      .insert(user)
+      .values({
+        email: `evaluator-admin-${crypto.randomUUID()}@example.com`,
+        isEmailVerified: true,
+        role: 'admin',
+      })
+      .returning({ id: user.id })
+    const adminId = adminUser!.id
+
+    const [superUser] = await db
+      .insert(user)
+      .values({
+        email: `evaluator-super-${crypto.randomUUID()}@example.com`,
+        isEmailVerified: true,
+        role: 'superadmin',
+      })
+      .returning({ id: user.id })
+    const superId = superUser!.id
+
+    try {
+      const adminRead = await can(
+        db,
+        adminId,
+        'system:read',
+        'organization',
+        organizationId,
+      )
+      const adminOperate = await can(
+        db,
+        adminId,
+        'system:operate',
+        'organization',
+        organizationId,
+      )
+      const adminManage = await can(
+        db,
+        adminId,
+        'system:manage',
+        'organization',
+        organizationId,
+      )
+      if (!adminRead) {
+        throw new TypeError('admin should satisfy system:read')
+      }
+      if (!adminOperate) {
+        throw new TypeError('admin should satisfy system:operate')
+      }
+      if (adminManage) {
+        throw new TypeError('admin must not satisfy system:manage')
+      }
+
+      const superRead = await can(
+        db,
+        superId,
+        'system:read',
+        'organization',
+        organizationId,
+      )
+      const superOperate = await can(
+        db,
+        superId,
+        'system:operate',
+        'organization',
+        organizationId,
+      )
+      const superManage = await can(
+        db,
+        superId,
+        'system:manage',
+        'organization',
+        organizationId,
+      )
+      if (!superRead || !superOperate || !superManage) {
+        throw new TypeError('superadmin should satisfy all system permissions')
+      }
+    } finally {
+      await db.delete(user).where(eq(user.id, adminId))
+      await db.delete(user).where(eq(user.id, superId))
+    }
+  })
+})

@@ -11,6 +11,7 @@ import { PRINCIPAL_UID_START, principalHomeDir } from '../../lib/naming.ts'
 import { parsePrincipalOptionsInput } from '../../lib/principal-options.ts'
 import {
   assertCanManageOr403,
+  assertNotSystemOwnedOr403,
   getOrgId,
   parseJsonBody,
   requireStringField,
@@ -114,6 +115,9 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const denied = await assertCanManageOr403(c, 'project', projectId)
     if (denied) return denied
 
+    const immutable = await assertNotSystemOwnedOr403(c, 'project', projectId)
+    if (immutable) return immutable
+
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
@@ -188,6 +192,9 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const denied = await assertCanManageOr403(c, 'project', projectId)
     if (denied) return denied
 
+    const immutable = await assertNotSystemOwnedOr403(c, 'project', projectId)
+    if (immutable) return immutable
+
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
@@ -233,6 +240,9 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
 
     const denied = await assertCanManageOr403(c, 'project', projectId)
     if (denied) return denied
+
+    const immutable = await assertNotSystemOwnedOr403(c, 'project', projectId)
+    if (immutable) return immutable
 
     await db.delete(principal).where(eq(principal.id, id))
     return c.json({ ok: true as const })

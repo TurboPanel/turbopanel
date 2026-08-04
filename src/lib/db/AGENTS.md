@@ -17,7 +17,7 @@ The co-located dev server has live data — treat every database change as produ
 > it must not be treated as install mode / `needsInstall`.
 
 | Direction | You changed | Command | drizzle-kit |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **Pull** (DB → code) | Live Postgres (Studio / SQL) | `dev/scripts/introspect.sh` | `introspect` |
 | **Push** (code → DB, Deno dev only) | `schema.ts` | `dev/scripts/sync.sh` | `push` |
 | **Generate migration** | `schema.ts` | `pnpm drizzle-kit generate --name <summary>` | `generate` |
@@ -103,7 +103,7 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `dev/
 `schema.ts` mirrors the old monorepo database layout (Better Auth–compatible tables, no auth runtime yet). Grouped by concern:
 
 | Group | Tables |
-|---|---|
+| --- | --- |
 | **Identity** | `user`, `account`, `session`, `verification`, `passkey`, `2fa` |
 | **Organizations** | `organization`, `member`, `team`, `teammate`, `invitation` (no `organization_id`; `team_id NOT NULL`), `license`, `tls` |
 | **Networking** | `datacenter`, `network` (no VPN kind), `ip` (incl. `scope='vpn'`), `vpn` (owns `cidr`), `peer` |
@@ -118,11 +118,13 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `dev/
 
 **Legacy resource tree** (workspace → project → … → hosting/container): organization scope is derived via parent FK joins — not stored on those child rows (except `workspace`, which roots the tree with `organization_id`).
 
+**Ownership vs placement:** ownership fields live only at the nearest canonical parent and are otherwise derived by ancestry join. Do not denormalize `organization_id`, `workspace.kind`, or similar ownership facts onto `project` / `environment` / `service` / `container`. Fields that express a *different* fact may legitimately repeat a reference at multiple levels — e.g. `environment.server_id` (desired placement) vs `container.server_id` (observed placement) — and are not ownership duplication. **`storage`**, **`network`**, **`ip`**, **`vpn`**, and **`datacenter`** carrying direct `organization_id` are an intentional exception (org-owned registries) and must not be used as precedent for adding `organization_id` / `is_system` (or any ownership column) to the workspace → project → environment → service → container tree.
+
 **Org-owned networking tables** (`datacenter`, `network`, `ip`, `vpn`) persist **`organization_id` directly** on each row. Authz and domain logic for those entities should use that column (alongside optional `datacenter_id` / `server_id` / `network_id` / `vpn_id` links), not only join-derived ancestry from the compose tree. VPN overlay addresses are first-class `ip` rows (`scope = 'vpn'`, `vpn_id` set) — there is no redundant `network.kind = 'vpn'` layer.
 
 Canonical order:
 
-```
+```text
 organization → workspace → project → environment → service → hosting
 organization → workspace → project → environment → service → assignment ← principal (M:N)
 organization → workspace → project → environment → service → container (1:N)
@@ -143,10 +145,10 @@ organization → server → variable (1:N, server-scoped; excluded from inherita
 ```
 
 | Entity | Parent FK | Notes |
-|---|---|---|
-| `workspace` | `organization_id` | Root of the resource tree. **`display_name` uniqueness** is app-enforced per organization (trim + case-insensitive; **409** `workspace_name_in_use`) — no DB unique index. |
-| `project` | `workspace_id` | Docker Compose / catalog project. **`display_name` uniqueness** is app-enforced per organization via workspace join (trim + case-insensitive; **409** `project_name_in_use`) — no DB unique index. **`metadata`**: `type` (`"docker-compose"` \| `"managed"` \| `"template"`), optional `code` (managed engine catalog code). **`options.compose`**: base **ComposeDocument** (versioned JSON with presentation for YAML comments/order) — see `src/lib/compose/`. **`options.containerNaming`**: `uuid` (default) \| `custom` — controls deploy container_name allocation. Project compose does **not** own server placement (sanitized on save). |
-| `environment` | `project_id`; optional `server_id` → `server.id` (`ON DELETE RESTRICT`, `idx_environment_server_id`) | Staging/production/etc. within a project. **`server_id`** is the **single** whole-server placement pin (not compose / not `metadata.serverId`). **`options.compose`**: per-environment ComposeDocument overlay merged onto the project base at deploy — placement is stripped on save. |
+| --- | --- | --- |
+| `workspace` | `organization_id` | Root of the resource tree. **`kind`** (`'user'` \| `'system'`, default `'user'`, CHECK `workspace_kind_check`) discriminates operator-created workspaces from the single system workspace per org — partial unique `uniq_workspace_organization_system` on `(organization_id) WHERE kind = 'system'`. System status of `project` / `environment` / `service` / `container` is **derived** by joining up to `workspace.kind` — never a stored column on those tables. Helpers: `src/lib/db/workspace-kind.ts`, `src/client/authz/workspace-kind-ancestry.ts` (`resolveWorkspaceKindForEntity` is the single ancestry resolver for authorization — mutation routes call `assertNotSystemOwnedOr403` rather than re-deriving joins). **`display_name` uniqueness** is app-enforced per organization (trim + case-insensitive; **409** `workspace_name_in_use`) — no DB unique index. |
+| `project` | `workspace_id` | Docker Compose / catalog project. **`display_name` uniqueness** is app-enforced per organization via workspace join (trim + case-insensitive; **409** `project_name_in_use`) — no DB unique index. **`metadata`**: `type` (`"docker-compose"` \| `"managed"` \| `"template"`), optional `code` (managed engine catalog code), optional **`component`** (a `SystemComponentKey` — `"hosting-ingress"`, `"database"`, `"queue"`, or `"analytics"` — for platform-managed system projects — partial unique `uniq_project_workspace_system_component` on `(workspace_id, (metadata->>'component')) WHERE (metadata->>'component') IS NOT NULL`). **`options.compose`**: base **ComposeDocument** (versioned JSON with presentation for YAML comments/order) — see `src/lib/compose/`. **`options.containerNaming`**: `uuid` (default) \| `custom` — controls deploy container_name allocation. Project compose does **not** own server placement (sanitized on save). |
+| `environment` | `project_id`; optional `server_id` → `server.id` (`ON DELETE RESTRICT`, `idx_environment_server_id`) | Staging/production/etc. within a project. **`server_id`** is the **single** whole-server placement pin (not compose / not `metadata.serverId`). System environments are keyed by their parent **`project.metadata.component`** (`hosting-ingress` / `turbopanel`) plus `server_id` — never stamp or unique on `environment.metadata.component` (reserved/stripped on public create/patch). **`options.compose`**: per-environment ComposeDocument overlay merged onto the project base at deploy — placement is stripped on save. |
 | `service` | `environment_id` | Deployable unit within an environment. **`compose_service_name`** (`varchar(255) NOT NULL`) is the Compose service key — **derived only**, written by reconcile (`reconcileServicesFromCompose`), managed container allocation, and daemon-report container reconcile (`ensureServicesForReportedContainers`); never accepted from a client request/body. Unique (non-partial) `uniq_service_environment_compose_name` on `(environment_id, compose_service_name)`. `display_name` is separate and not unique. **`metadata`**: reserved for future non-indexed facts. **`options`**: reserved (future per-service placement). |
 | `hosting` | `service_id NOT NULL` | Public routing for a service (Traefik + hosting Caddy). Optional **`tls_id`** → `tls.id` (`ON DELETE SET NULL`) pins an org certificate; null = basic self-signed (Caddy `tls internal`) at deploy — library certs must be pinned explicitly. Optional **`ip_id`** → `ip.id` (`ON DELETE SET NULL`) pins a managed ingress address. **`options`**: `{ hostnames[], pathPrefix?, targetPort? }`. **`metadata`**: deploy status fields. Org derived via service chain. |
 | `tls` | `organization_id NOT NULL` | Org TLS certificate library (`upload` / `lets_encrypt` / `self_signed`). **`certificate_pem`**: public chain (nullable while LE pending). **`private_key_pem`**: sealed `enc` only — never returned on client GET. Dedicated columns: **`status`** (`text NOT NULL DEFAULT 'ready'`), **`not_after`** (`timestamptz(3)`), **`fingerprint_sha256`** (`text`); indexes `idx_tls_not_after` and partial unique `uniq_tls_organization_fingerprint_sha256` on `(organization_id, fingerprint_sha256) WHERE fingerprint_sha256 IS NOT NULL`. Residual **`metadata`**: `{ dnsNames, hasWildcard, notBefore, subject, issuer, acme? }` — client GET still assembles a full metadata DTO including status/notAfter/fingerprint. **`options`**: `{ prefer?, autoRenew?, requestedHostnames? }`. `ON DELETE CASCADE` from org; hosting pins clear on cert delete. |
@@ -187,7 +189,7 @@ Drizzle relations are defined for future Better Auth adapter use. `IS_SIGNUP_ENA
 ### Client API (authz integration)
 
 | Method | Path | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `POST` | `/api/client/v1/invitations/{id}/accept` | Accept a pending invitation; creates `member`/`teammate` rows, materializes `invitation.grants` into `grant` rows, updates session `organizationId` |
 | `GET` | `/api/client/v1/permissions` | Permission catalog — static, no DB query (any authenticated user) |
 | `GET` | `/api/client/v1/access?resourceId=<uuid>` | List access grants for a resource; returns `{ access: AccessRecord[] }` with `subjectKind`, `subjectId`, `resourceId`, `effect`, and `permissionKey` |
@@ -201,7 +203,7 @@ Drizzle relations are defined for future Better Auth adapter use. `IS_SIGNUP_ENA
 List and get enforce visibility via `listVisible` / org-level grant checks in SQL — never client-side. Create, update, and delete require `organization:own` or `organization:manage` on the entity's org (via `can()`). All create/delete operations run entity insert/delete in a single transaction.
 
 | Method | Path | Permission |
-|---|---|---|
+| --- | --- | --- |
 | `GET` | `/api/client/v1/organizations/{id}/default-timezone` | org manager |
 | `PUT` | `/api/client/v1/organizations/{id}/default-timezone` | org manager |
 | `GET` | `/api/client/v1/organizations/{id}/server-capacity` | org manager |
@@ -286,7 +288,7 @@ Implemented in `src/client/*/routes.ts`, registered from `registerClientRoutes`.
 
 ### Catalog
 
-Permissions are **static code constants** in `../../client/authz/catalog.ts` — there is nothing to seed. Four permissions exist: `organization:own`, `organization:manage`, `team:own`, and `team:manage`. Never edit permissions in Studio — they do not exist as DB rows. **`ENTITY_TYPES`** and **`SUBJECT_TYPES`** are also exported from `catalog.ts` for route/body validation (`isEntityType`, `isSubjectType`).
+Permissions are **static code constants** in `../../client/authz/catalog.ts` — there is nothing to seed. Seven permissions exist: `organization:own`, `organization:manage`, `team:own`, `team:manage`, `system:read`, `system:operate`, and `system:manage`. Never edit permissions in Studio — they do not exist as DB rows. **`ENTITY_TYPES`** and **`SUBJECT_TYPES`** are also exported from `catalog.ts` for route/body validation (`isEntityType`, `isSubjectType`).
 
 ### `license` table
 
@@ -309,7 +311,7 @@ Canonical column order: `id`, `created_at`, `updated_at`, `organization_id`, `da
 **Cell metadata fields** (stored in `server.metadata` and/or `server.options` JSONB):
 
 | Field | Column | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `cellLocationHint` | `options` (preferred) or `metadata` | Cloudflare Durable Object `locationHint` chosen at enrollment time. |
 
 `options` takes precedence over `metadata` when both define a value (see `src/daemon/cell/location.ts`). Residual `metadata` also holds `os`, `cpu`, `geo`, `addresses`, `timeSync`, and cell generation fields — not hostname/machineKey.
@@ -337,7 +339,7 @@ Canonical column order: `id`, `created_at`, `updated_at`, `organization_id`, `da
 ```
 
 | Field | Purpose |
-|---|---|
+| --- | --- |
 | `key.id` | Logical key identifier returned to the daemon as `keyId` on enrollment |
 | `key.publicJwk` | Raw Ed25519 public JWK `{ crv, kty, x }` |
 | `key.fingerprint` | SHA-256 hex over the canonical public JWK — duplicate-checked at enrollment (no DB unique constraint for MVP) |
@@ -360,7 +362,7 @@ Re-enrollment with a valid license token replaces `server.daemon` atomically (an
 Canonical command/job history — source of truth for UI status and history. Do not read command history from the Daemon Cell — the cell holds only hot pending-request correlation state. The `command` table is the canonical record.
 
 | Column | Type | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `id` | uuid (uuidv7) | Primary key |
 | `created_at` | timestamptz(3) NOT NULL `now()` | Real column; index/order source |
 | `updated_at` | timestamptz(3) NOT NULL `now()` | Bumped by `transitionCommand` |
@@ -375,7 +377,7 @@ Canonical command/job history — source of truth for UI status and history. Do 
 | `metadata` | jsonb NOT NULL | Remaining lifecycle blob — see fields below |
 
 | Metadata key | Type | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `error` | string \| null | Terminal error message |
 | `queuedAt` | ISO-UTC \| null | Set when status → `queued` |
 | `dispatchStartedAt` | ISO-UTC \| null | Set when status → `dispatching` |
@@ -390,7 +392,7 @@ Canonical command/job history — source of truth for UI status and history. Do 
 **Status values:**
 
 | Status | Meaning |
-|---|---|
+| --- | --- |
 | `queued` | Accepted by API; waiting for queue consumer |
 | `dispatching` | Consumer picked up the job |
 | `sent` | Enqueued to daemon cell outbox |
@@ -402,6 +404,7 @@ Canonical command/job history — source of truth for UI status and history. Do 
 | `cancelled` | Cancelled before completion (terminal) |
 
 **Indexes:**
+
 - `idx_command_server_id_created_at` — btree on `(server_id, created_at DESC)` — backs `listServerCommands` ordering
 - `idx_command_status` — btree on `status` — supports status-filtered queries
 
@@ -414,7 +417,7 @@ Server delete cascades to command rows (`ON DELETE CASCADE` on `server_id`).
 ## Layout
 
 | File | Purpose |
-|---|---|
+| --- | --- |
 | `schema.ts` | Drizzle table definitions — sync with dev DB via `dev/scripts/introspect.sh` or `dev/scripts/sync.sh` |
 | `../../db.ts` | Connection factories (`createDenoDb`, `createToolingDb`, `createWorkersDb`) |
 | `../../drizzle.config.mjs` | drizzle-kit config (`TURBOPANEL_DATABASE_URL`; introspect, push, generate, migrate, studio) |
@@ -430,11 +433,11 @@ Server delete cascades to command rows (`ON DELETE CASCADE` on `server_id`).
 Runtime authorization lives in `../../client/authz/` (pure TypeScript, safe for both Deno and Workers — no Deno-only imports). Permissions are static code constants in `catalog.ts`. The modules below evaluate access at request time against `grant`.
 
 | File | Purpose |
-|---|---|
+| --- | --- |
 | `../../client/authz/catalog.ts` | Static `PERMISSIONS`, `ENTITY_TYPES`, `SUBJECT_TYPES`, `isPermissionKey`, `isEntityType`, `isSubjectType`, `getPermissionCatalog` — no DB access |
 | `../../client/authz/service.ts` | `isPlatformAdmin`, `isSuperAdmin`, `canManageOrganization`, `canOwnOrganization`, `canManageTeam`, `canOwnTeam`, `canInviteToOrganization`, `canInviteToTeam`, `assertNotLastOrgOwner` — higher-level org/team management checks built on `can()` |
 | `../../client/authz/evaluator.ts` | `getSubjects`, `can`, `assertCan`, `listVisible`, `ForbiddenError` — org-level grant checks via domain-FK ancestry; superadmin and admin bypass in SQL |
-| `../../client/authz/http.ts` | `assertCanOr403` Hono helper (503 / 401 / 403 short-circuit, `null` to continue) |
+| `../../client/authz/http.ts` | `assertCanOr403` / `assertOrgOwnerOr403` Hono helpers; `assertNotSystemOwnedOr403` secondary guard (`403` `system_resource_immutable`) via `resolveWorkspaceKindForEntity` |
 
 `can()` resolves org-level access in a **single CTE query** (`subjectset` → `ancestry` → org grant `hits`) — one round-trip. **Organization permission evaluation respects the requested permission:** an `organization:own` check requires an `organization:own` grant (owner only — a manager grant is NOT sufficient), while an `organization:manage` check accepts either an `organization:own` or `organization:manage` grant (owner or manager). A platform-admin bypass (`EXISTS … WHERE role IN ('superadmin', 'admin')`) is OR'd into the final result. Superadmin-only platform operations (e.g. developer reset-dev) remain gated separately by `user.role === 'superadmin'`. `listVisible()` returns all leaf ids in the org when the user has org-level access (owner or manager) — **never rely on client-side filtering** for visibility.
 

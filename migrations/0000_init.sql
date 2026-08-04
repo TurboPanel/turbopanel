@@ -468,7 +468,9 @@ CREATE TABLE "workspace" (
 	"organization_id" uuid NOT NULL,
 	"display_name" varchar(255),
 	"description" varchar(255),
-	CONSTRAINT "workspace_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
+	"kind" varchar(32) DEFAULT 'user' NOT NULL,
+	CONSTRAINT "workspace_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))),
+	CONSTRAINT "workspace_kind_check" CHECK (kind IN ('user', 'system'))
 );
 --> statement-breakpoint
 ALTER TABLE "account" ADD CONSTRAINT "account_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -580,6 +582,7 @@ CREATE UNIQUE INDEX "uniq_peer_vpn_tunnel_ip" ON "peer" USING btree ("vpn_id","t
 CREATE INDEX "idx_principal_project_id" ON "principal" USING btree ("project_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_principal_managed_id" ON "principal" USING btree ("managed_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_project_workspace_id" ON "project" USING btree ("workspace_id" uuid_ops);--> statement-breakpoint
+CREATE UNIQUE INDEX "uniq_project_workspace_system_component" ON "project" USING btree ("workspace_id",(metadata->>'component')) WHERE (metadata->>'component') IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "idx_server_organization_id" ON "server" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_server_datacenter_id" ON "server" USING btree ("datacenter_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_server_machine_key" ON "server" USING btree ("machine_key" text_ops);--> statement-breakpoint
@@ -619,4 +622,5 @@ CREATE UNIQUE INDEX "uniq_var_hosting" ON "variable" USING btree ("key","hosting
 CREATE UNIQUE INDEX "uniq_var_server" ON "variable" USING btree ("key","server_id") WHERE "variable"."server_id" IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "idx_vpn_organization_id" ON "vpn" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_vpn_organization_id_cidr" ON "vpn" USING btree ("organization_id","cidr");--> statement-breakpoint
-CREATE INDEX "idx_workspace_organization_id" ON "workspace" USING btree ("organization_id" uuid_ops);
+CREATE INDEX "idx_workspace_organization_id" ON "workspace" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
+CREATE UNIQUE INDEX "uniq_workspace_organization_system" ON "workspace" USING btree ("organization_id") WHERE kind = 'system';

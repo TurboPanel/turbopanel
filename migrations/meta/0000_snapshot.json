@@ -1,5 +1,5 @@
 {
-  "id": "dab7a919-e0c6-418f-acf4-6abc8628d751",
+  "id": "3b55fb5d-69d2-4a8a-8da5-6168dc8c99aa",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -2873,6 +2873,28 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "uniq_project_workspace_system_component": {
+          "name": "uniq_project_workspace_system_component",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(metadata->>'component')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "(metadata->>'component') IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -4990,6 +5012,13 @@
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'user'"
         }
       },
       "indexes": {
@@ -5005,6 +5034,22 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_workspace_organization_system": {
+          "name": "uniq_workspace_organization_system",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "kind = 'system'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -5032,6 +5077,10 @@
         "workspace_display_name_format_check": {
           "name": "workspace_display_name_format_check",
           "value": "(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
+        },
+        "workspace_kind_check": {
+          "name": "workspace_kind_check",
+          "value": "kind IN ('user', 'system')"
         }
       },
       "isRLSEnabled": false

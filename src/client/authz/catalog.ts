@@ -10,6 +10,9 @@ export const PERMISSIONS = [
   'organization:manage',
   'team:own',
   'team:manage',
+  'system:read',
+  'system:operate',
+  'system:manage',
 ] as const
 
 export type PermissionKey = (typeof PERMISSIONS)[number]
@@ -72,6 +75,9 @@ export const PERMISSION_DISPLAY_NAMES: Record<PermissionKey, string> = {
   'organization:manage': 'Organization manager',
   'team:own': 'Team owner',
   'team:manage': 'Team manager',
+  'system:read': 'System inspect',
+  'system:operate': 'System operate',
+  'system:manage': 'System administer',
 }
 
 const PERMISSION_KEY_SET = new Set<string>(PERMISSIONS)
@@ -81,6 +87,11 @@ const SUBJECT_TYPE_SET = new Set<string>(SUBJECT_TYPES)
 
 export function isPermissionKey(value: string): value is PermissionKey {
   return PERMISSION_KEY_SET.has(value)
+}
+
+/** True when the key is a platform `system:*` permission (exact-match grants). */
+export function isSystemPermissionKey(value: PermissionKey): boolean {
+  return value.startsWith('system:')
 }
 
 export function isEntityType(value: string): value is EntityType {

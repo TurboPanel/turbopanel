@@ -1,6 +1,11 @@
 import type { Context } from 'hono'
 import { getDb } from '../../db.ts'
 import { can, type PermissionKey } from './evaluator.ts'
+import { resolveWorkspaceKindForEntity } from './workspace-kind-ancestry.ts'
+import { WORKSPACE_KIND_SYSTEM } from '../../lib/db/workspace-kind.ts'
+
+/** Typed 403 body when a mutation targets a system-workspace descendant. */
+export const SYSTEM_RESOURCE_IMMUTABLE_ERROR = 'system_resource_immutable'
 
 /**
  * Hono guard around {@link can}. Returns a `Response` to short-circuit the
@@ -52,4 +57,38 @@ export async function assertOrgOwnerOr403(
   entityId: string,
 ): Promise<Response | null> {
   return assertCanOr403(c, 'organization:own', entityType, entityId)
+}
+
+/**
+ * Secondary immutability guard for system-owned resource-tree entities.
+ *
+ * Run **after** the route's normal org-access check so a non-member still gets
+ * the usual Forbidden response and never learns that a system resource exists.
+ *
+ * Returns `null` when the entity has no workspace ancestor (`null` from
+ * {@link resolveWorkspaceKindForEntity}) or when `kind === 'user'`. Org-owned
+ * registries with no workspace ancestry — `tls`, `network`, `datacenter`,
+ * `ip`, `vpn`, `peer`, `team`, `organization`, `license`, and server-scoped
+ * variables — intentionally need no guard; do not "fix" that omission by
+ * inventing joins.
+ *
+ * When `kind === 'system'`, returns `403` with
+ * `{ error: 'system_resource_immutable' }`.
+ */
+export async function assertNotSystemOwnedOr403(
+  c: Context,
+  entityType: string,
+  entityId: string,
+): Promise<Response | null> {
+  const db = getDb(c)
+  if (!db) {
+    return c.json({ error: 'Database unavailable' }, 503)
+  }
+
+  const kind = await resolveWorkspaceKindForEntity(db, entityType, entityId)
+  if (kind === WORKSPACE_KIND_SYSTEM) {
+    return c.json({ error: SYSTEM_RESOURCE_IMMUTABLE_ERROR }, 403)
+  }
+
+  return null
 }

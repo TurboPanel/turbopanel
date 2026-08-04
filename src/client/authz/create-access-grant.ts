@@ -26,6 +26,7 @@ import {
 import {
   isGrantEntityType,
   isPermissionKey,
+  isSystemPermissionKey,
   type PermissionKey,
 } from './catalog.ts'
 
@@ -65,6 +66,13 @@ export function validatePermissionEntityCompatibility(
     (permissionKey === 'organization:own' || permissionKey === 'organization:manage') &&
     entityType !== 'organization'
   ) {
+    return {
+      ok: false,
+      error: `${permissionKey} may only be granted on organization entities`,
+    }
+  }
+
+  if (isSystemPermissionKey(permissionKey) && entityType !== 'organization') {
     return {
       ok: false,
       error: `${permissionKey} may only be granted on organization entities`,

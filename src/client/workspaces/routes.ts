@@ -6,9 +6,11 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { getDb } from '../../db.ts'
 import { workspace } from '../../lib/db/schema.ts'
+import { WORKSPACE_KIND_USER } from '../../lib/db/workspace-kind.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
+  assertNotSystemOwnedOr403,
   buildPatchUpdateFields,
   getOrgId,
   parseDisplayName,
@@ -54,6 +56,7 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
         id: workspace.id,
         displayName: workspace.displayName,
         description: workspace.description,
+        kind: workspace.kind,
         organizationId: workspace.organizationId,
         createdAt: workspace.createdAt,
         updatedAt: workspace.updatedAt,
@@ -82,6 +85,7 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
         id: workspace.id,
         displayName: workspace.displayName,
         description: workspace.description,
+        kind: workspace.kind,
         organizationId: workspace.organizationId,
         createdAt: workspace.createdAt,
         updatedAt: workspace.updatedAt,
@@ -134,7 +138,9 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(workspace)
-        .values({ displayName, description, organizationId })
+        // Public create is always `user`. `kind='system'` is reachable only from
+        // ensureSystemWorkspace in src/client/system/hierarchy.ts.
+        .values({ displayName, description, organizationId, kind: WORKSPACE_KIND_USER })
         .returning({ id: workspace.id })
       return inserted.id
     })
@@ -167,6 +173,9 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
 
     const denied = await assertCanOr403(c, 'organization:manage', 'workspace', id)
     if (denied) return denied
+
+    const immutable = await assertNotSystemOwnedOr403(c, 'workspace', id)
+    if (immutable) return immutable
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -223,6 +232,9 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
 
     const denied = await assertCanOr403(c, 'organization:manage', 'workspace', id)
     if (denied) return denied
+
+    const immutable = await assertNotSystemOwnedOr403(c, 'workspace', id)
+    if (immutable) return immutable
 
     const result = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(workspace).where(eq(workspace.id, id))

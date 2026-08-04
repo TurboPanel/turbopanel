@@ -12,6 +12,7 @@ import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import {
   assertCanManageOr403,
   assertCanReadOr403,
+  assertNotSystemOwnedOr403,
   getOrgId,
 } from '../shared.ts'
 import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
@@ -40,6 +41,11 @@ export async function authorizeManagedRequest(
     ? await assertCanReadOr403(c, 'environment', environmentId)
     : await assertCanManageOr403(c, 'environment', environmentId)
   if (denied) return denied
+
+  if (mode === 'manage') {
+    const immutable = await assertNotSystemOwnedOr403(c, 'environment', environmentId)
+    if (immutable) return immutable
+  }
 
   return { userId: session.userId, organizationId: orgResult }
 }

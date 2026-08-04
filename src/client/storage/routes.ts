@@ -13,6 +13,7 @@ import {
   assertCanCreateOr403,
   assertCanManageOr403,
   assertCanReadOr403,
+  assertNotSystemOwnedOr403,
   getOrgId,
   parseJsonBody,
   parseJsonbObject,
@@ -260,6 +261,9 @@ async function authorizeStorageMutation(
   const denied = await assertCanManageOr403(c, parent.entityKind, parent.parentId)
   if (denied) return denied
 
+  const immutable = await assertNotSystemOwnedOr403(c, 'storage', existing.id)
+  if (immutable) return immutable
+
   return parent
 }
 
@@ -331,6 +335,9 @@ async function createStorageRecord(
 
   const denied = await assertCanCreateOr403(c, parent.entityKind, parent.id)
   if (denied) return denied
+
+  const immutable = await assertNotSystemOwnedOr403(c, parent.entityKind, parent.id)
+  if (immutable) return immutable
 
   const fields = parseCreateStorageFields(c, body)
   if (fields instanceof Response) return fields

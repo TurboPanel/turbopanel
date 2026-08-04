@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { Hono, type Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -21,7 +21,9 @@ import {
   resolveEffectiveServerTimezone,
   resolveServerResponseTimezone,
   resolveServerOsLogoKey,
+  type ServerOptions,
 } from '../../lib/db/server-metadata.ts'
+import { isActiveContainerStatus } from '../../lib/db/project-delete.ts'
 import { cachedServerDetailReadModel } from '../../query-cache/read-models/server-detail.ts'
 import {
   fetchDaemonServerCell,
@@ -43,7 +45,14 @@ import {
   type DaemonOutboundEnvelope,
 } from '../../daemon/cell/protocol.ts'
 import { clearServerDaemonState } from '../../daemon/authn/server-identity-db.ts'
-import { organization, server, license, datacenter } from '../../lib/db/schema.ts'
+import {
+  container,
+  organization,
+  server,
+  license,
+  datacenter,
+  service,
+} from '../../lib/db/schema.ts'
 import { resolveTrunkManifest } from '../../lib/update/manifest.ts'
 import { revokeLicense } from '../authn/license.ts'
 import { compatLogWarn } from '../../log-compat.ts'
@@ -51,6 +60,10 @@ import {
   hierarchyDeleteHasChildrenResponse,
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
+import * as systemHierarchy from '../system/hierarchy.ts'
+import { enqueueSystemReconcile } from '../system/reconcile.ts'
+import type { SystemReconcileAction } from '../../lib/commands/schemas.ts'
+import { assertDispatchInfrastructure } from './command-dispatch.ts'
 import {
   colocatedServerDeleteBlockedReason,
   listServerDeleteBlockers,
@@ -282,6 +295,7 @@ async function loadDatacenterDisplayNamesMap(
 type ServerPatchFields = {
   displayName?: string | null
   datacenterId?: string | null
+  options?: ServerOptions
   updatedAt: string
 }
 
@@ -329,11 +343,231 @@ async function parseServerPatchBody(
     patch.datacenterId = datacenterId
   }
 
-  if (patch.displayName === undefined && patch.datacenterId === undefined) {
+  if (body.options !== undefined) {
+    const options = parseServerOptions(body.options)
+    if (options === null) {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+    patch.options = options
+  }
+
+  if (
+    patch.displayName === undefined &&
+    patch.datacenterId === undefined &&
+    patch.options === undefined
+  ) {
     return c.json({ error: 'Invalid request' }, 400)
   }
 
   return patch
+}
+
+function buildServerUpdateFields(patch: ServerPatchFields): Record<string, unknown> {
+  const update: Record<string, unknown> = { updatedAt: patch.updatedAt }
+  if (patch.displayName !== undefined) update.displayName = patch.displayName
+  if (patch.datacenterId !== undefined) update.datacenterId = patch.datacenterId
+  if (patch.options !== undefined) {
+    update.options = sql`COALESCE(${server.options}, '{}'::jsonb) || ${
+      JSON.stringify(patch.options)
+    }::jsonb`
+  }
+  return update
+}
+
+function isHostingEnableTransition(
+  previousOptions: ServerOptions | null,
+  patch: ServerPatchFields,
+): boolean {
+  const wasHostingEnabled = previousOptions?.hosting?.enabled === true
+  return patch.options?.hosting?.enabled === true && !wasHostingEnabled
+}
+
+function isHostingDisableTransition(
+  previousOptions: ServerOptions | null,
+  patch: ServerPatchFields,
+): boolean {
+  const wasHostingEnabled = previousOptions?.hosting?.enabled === true
+  return patch.options?.hosting?.enabled === false && wasHostingEnabled
+}
+
+/**
+ * Persist a hosting-enable PATCH only when hierarchy provisioning succeeds.
+ * Returns an error Response when provisioning fails so the enabled flag is
+ * not left committed without inventory. Daemon enrollment keeps best-effort
+ * hierarchy in `server-registry` (must not block enroll).
+ */
+async function applyServerPatchWithHostingEnable(
+  c: Context,
+  db: Db,
+  params: Readonly<{
+    serverId: string
+    organizationId: string
+    patch: ServerPatchFields
+  }>,
+): Promise<Response | null> {
+  const update = buildServerUpdateFields(params.patch)
+  try {
+    await db.transaction(async (tx) => {
+      await tx.update(server).set(update).where(eq(server.id, params.serverId))
+      await systemHierarchy.ensureSystemHierarchy(tx, {
+        organizationId: params.organizationId,
+        serverId: params.serverId,
+      })
+    })
+    return null
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    compatLogWarn(
+      'servers',
+      `ensureSystemHierarchy failed for server ${params.serverId}: ${message}`,
+    )
+    return c.json({
+      error: 'Failed to provision hosting hierarchy',
+      code: 'hosting_hierarchy_failed',
+    }, 500)
+  }
+}
+
+/**
+ * Persist a server PATCH. Hosting-enable commits only when hierarchy
+ * provisioning succeeds; other patches (including hosting-disable) update
+ * in place and leave inventory rows alone.
+ */
+async function applyServerPatchUpdate(
+  c: Context,
+  db: Db,
+  params: Readonly<{
+    serverId: string
+    organizationId: string
+    patch: ServerPatchFields
+    previousOptions: ServerOptions | null
+  }>,
+): Promise<Response | null> {
+  if (isHostingEnableTransition(params.previousOptions, params.patch)) {
+    return applyServerPatchWithHostingEnable(c, db, {
+      serverId: params.serverId,
+      organizationId: params.organizationId,
+      patch: params.patch,
+    })
+  }
+  await db
+    .update(server)
+    .set(buildServerUpdateFields(params.patch))
+    .where(eq(server.id, params.serverId))
+  return null
+}
+
+/**
+ * Best-effort `system.reconcile` after a hosting enable/disable transition.
+ * Enqueues after the PATCH transaction commits — never inside it. Sweep
+ * retries on failure; missing dispatch infra is a no-op.
+ *
+ * Enable uses `action: 'reconcile'` (self-heal). Disable uses `action: 'stop'`
+ * scoped to the hosting-ingress environment so the shared proxy is torn
+ * down intentionally — ordinary desired:'absent' drift stays report-only.
+ */
+async function enqueueHostingReconcileBestEffort(
+  c: Context,
+  db: Db,
+  params: Readonly<{
+    serverId: string
+    actorId: string
+    action: SystemReconcileAction
+    environmentId?: string
+  }>,
+): Promise<void> {
+  const commandQueue = assertDispatchInfrastructure(c)
+  if (commandQueue instanceof Response) return
+
+  try {
+    const enqueued = await enqueueSystemReconcile(db, commandQueue, {
+      serverId: params.serverId,
+      actorType: 'user',
+      actorId: params.actorId,
+      action: params.action,
+      ...(params.environmentId ? { environmentId: params.environmentId } : {}),
+    })
+    if (!enqueued.ok && enqueued.reason !== 'not_provisioned') {
+      compatLogWarn(
+        'servers',
+        `system.reconcile enqueue failed for server ${params.serverId}: ${enqueued.reason}`,
+      )
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    compatLogWarn(
+      'servers',
+      `system.reconcile enqueue failed for server ${params.serverId}: ${message}`,
+    )
+  }
+}
+
+async function systemEnvironmentHasActiveContainers(
+  db: Db,
+  systemEnvironmentId: string,
+): Promise<boolean> {
+  const serviceRows = await db
+    .select({ id: service.id })
+    .from(service)
+    .where(eq(service.environmentId, systemEnvironmentId))
+  const serviceIds = serviceRows.map((svc) => svc.id)
+  if (serviceIds.length === 0) return false
+
+  const containerRows = await db
+    .select({ status: container.status })
+    .from(container)
+    .where(inArray(container.serviceId, serviceIds))
+  return containerRows.some((row) => isActiveContainerStatus(row.status))
+}
+
+/**
+ * Blocks delete while system hosting-ingress containers are still active.
+ * Operator must let hosting-disable reconciliation stop ingress first.
+ */
+async function assertSystemEnvironmentIdleOrBlocked(
+  c: Context,
+  db: Db,
+  serverId: string,
+): Promise<{ systemEnvironmentId: string | null } | Response> {
+  const systemEnvironmentId = await systemHierarchy.findSystemEnvironmentForServer(
+    db,
+    serverId,
+  )
+  if (!systemEnvironmentId) return { systemEnvironmentId: null }
+
+  if (await systemEnvironmentHasActiveContainers(db, systemEnvironmentId)) {
+    return hierarchyDeleteHasChildrenResponse(c)
+  }
+  return { systemEnvironmentId }
+}
+
+async function deleteServerWithSystemSubtree(
+  db: Db,
+  serverId: string,
+  systemEnvironmentId: string | null,
+): Promise<'ok' | 'has_children'> {
+  return runHierarchyDelete(db, async (tx) => {
+    if (systemEnvironmentId) {
+      await systemHierarchy.deleteSystemEnvironmentSubtree(tx, systemEnvironmentId)
+    }
+    await tx.delete(server).where(eq(server.id, serverId))
+  })
+}
+
+function serverDeletedResponse(
+  c: Context,
+  serverId: string,
+  purgeError: string | null,
+): Response {
+  if (purgeError) {
+    return c.json({
+      ok: false,
+      serverId,
+      deleted: true,
+      error: `Server deleted but daemon cell purge failed: ${purgeError}`,
+    }, 500)
+  }
+  return c.json({ ok: true, serverId })
 }
 
 export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -877,7 +1111,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const organizationId = orgResult
 
     const [existing] = await db
-      .select({ id: server.id })
+      .select({ id: server.id, options: server.options })
       .from(server)
       .where(and(eq(server.id, id), eq(server.organizationId, organizationId)))
       .limit(1)
@@ -892,7 +1126,40 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const patch = await parseServerPatchBody(c, db, organizationId, body)
     if (patch instanceof Response) return patch
 
-    await db.update(server).set(patch).where(eq(server.id, id))
+    const previousOptions = parseServerOptions(existing.options)
+    const hostingEnable = isHostingEnableTransition(previousOptions, patch)
+    const hostingDisable = isHostingDisableTransition(previousOptions, patch)
+
+    const failed = await applyServerPatchUpdate(c, db, {
+      serverId: id,
+      organizationId,
+      patch,
+      previousOptions,
+    })
+    if (failed) return failed
+
+    if (hostingEnable) {
+      await enqueueHostingReconcileBestEffort(c, db, {
+        serverId: id,
+        actorId: session.userId,
+        action: 'reconcile',
+      })
+    } else if (hostingDisable) {
+      const hostingEnvironmentId = await systemHierarchy
+        .findSystemEnvironmentForServer(
+          db,
+          id,
+          systemHierarchy.SYSTEM_HOSTING_INGRESS_COMPONENT,
+        )
+      await enqueueHostingReconcileBestEffort(c, db, {
+        serverId: id,
+        actorId: session.userId,
+        action: 'stop',
+        ...(hostingEnvironmentId
+          ? { environmentId: hostingEnvironmentId }
+          : {}),
+      })
+    }
 
     return c.json({ ok: true as const })
   })
@@ -935,9 +1202,14 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       .where(eq(license.serverId, id))
       .limit(1)
 
-    const result = await runHierarchyDelete(db, async (tx) => {
-      await tx.delete(server).where(eq(server.id, id))
-    })
+    const idleOrBlocked = await assertSystemEnvironmentIdleOrBlocked(c, db, id)
+    if (idleOrBlocked instanceof Response) return idleOrBlocked
+
+    const result = await deleteServerWithSystemSubtree(
+      db,
+      id,
+      idleOrBlocked.systemEnvironmentId,
+    )
     if (result === 'has_children') {
       return hierarchyDeleteHasChildrenResponse(c)
     }
@@ -952,16 +1224,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       organizationId,
     )
 
-    if (purgeError) {
-      return c.json({
-        ok: false,
-        serverId: id,
-        deleted: true,
-        error: `Server deleted but daemon cell purge failed: ${purgeError}`,
-      }, 500)
-    }
-
-    return c.json({ ok: true, serverId: id })
+    return serverDeletedResponse(c, id, purgeError)
   })
 
   registerServerCommandRoutes(router, opts)

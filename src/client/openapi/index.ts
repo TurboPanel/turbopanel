@@ -22,6 +22,7 @@ import { storagePaths, storageSchemas } from './storage.ts'
 import { principalPaths, principalSchemas } from './principals.ts'
 import { deployPaths, deploySchemas } from './deploy.ts'
 import { managedPaths, managedSchemas } from './managed.ts'
+import { systemPaths, systemSchemas } from './system.ts'
 
 /** Hand-authored OpenAPI 3.1 spec for documented client/install/health routes. */
 export type ClientOpenApiOptions = {
@@ -72,6 +73,7 @@ export function getClientOpenApiSpec(
       { name: 'IPs', description: 'Managed IP address registry' },
       { name: 'VPNs', description: 'WireGuard VPN meshes and peers' },
       { name: 'Licenses', description: 'License lifecycle' },
+      { name: 'System', description: 'Platform-managed system components' },
       ...(includeInstall
         ? [{ name: 'Install', description: 'Self-hosted install wizard (Deno only)' }]
         : []),
@@ -80,7 +82,7 @@ export function getClientOpenApiSpec(
       { name: 'Authentication & Authorization', tags: ['Authentication', 'Authorization'] },
       { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Managed services', 'Variables', 'Storage', 'Principals', 'Resource limits', 'Services', 'Hostings', 'Containers', 'TLS'] },
       { name: 'Infrastructure', tags: ['Servers', 'Networks', 'Datacenters', 'IPs', 'VPNs', 'Licenses'] },
-      { name: 'Platform', tags: ['Health', ...(includeInstall ? ['Install'] : [])] },
+      { name: 'Platform', tags: ['Health', 'System', ...(includeInstall ? ['Install'] : [])] },
     ],
     components: {
       securitySchemes: {
@@ -109,6 +111,7 @@ export function getClientOpenApiSpec(
         ...principalSchemas,
         ...deploySchemas,
         ...managedSchemas,
+        ...systemSchemas,
         ...serviceSchemas,
         ...hostingSchemas,
         ...containerSchemas,
@@ -134,6 +137,7 @@ export function getClientOpenApiSpec(
       ...principalPaths,
       ...deployPaths,
       ...managedPaths,
+      ...systemPaths,
       ...servicePaths,
       ...hostingPaths,
       ...containerPaths,

@@ -25,6 +25,7 @@ import {
   resolveEmailSettings,
 } from '../../lib/settings/email-settings.ts'
 import { deriveMachineKey } from '../../lib/machine-key.ts'
+import { ensureSelfHostSystemHierarchy } from '../system/hierarchy.ts'
 
 const ORG_NAME_RE = /^[A-Za-z0-9 ._-]+$/
 
@@ -575,7 +576,7 @@ export async function readLocalMachineKey(): Promise<string | undefined> {
 }
 
 /** Default org created by the self-hosted install wizard (superadmin's org). */
-async function findDefaultInstalledOrganizationId(
+export async function findDefaultInstalledOrganizationId(
   db: Db,
 ): Promise<string | null> {
   const byName = await db
@@ -803,18 +804,29 @@ export async function tryAssignColocatedDaemonToInstalledOrganization(
   await assignColocatedDaemonToOrganization(db, organizationId, registry)
 }
 
+/**
+ * Assign the co-located daemon server row to `organizationId`.
+ *
+ * Returns the resolved colocated `serverId` when the row was found (newly
+ * assigned or already belonging to an org). Callers that must provision the
+ * self-host system hierarchy after install should use this id directly —
+ * {@link resolveColocatedServerId} filters on `organization_id IS NULL` and
+ * cannot re-find a server that was just assigned.
+ *
+ * Returns `null` when no colocated server row exists yet (daemon not enrolled).
+ */
 export async function assignColocatedDaemonToOrganization(
   db: Db,
   organizationId: string,
   registry?: DaemonCellRegistry,
-): Promise<boolean> {
+): Promise<string | null> {
   const serverId = await resolveColocatedServerId(db, registry)
   if (!serverId) {
     compatLogInfo(
       'install',
       'colocated server not found yet — will assign on daemon connect',
     )
-    return false
+    return null
   }
 
   const now = nowTs()
@@ -845,10 +857,40 @@ export async function assignColocatedDaemonToOrganization(
       'install',
       `assigned colocated server ${serverId} to organization ${organizationId}`,
     )
-    return true
+    return serverId
   }
 
-  return assignedOrgId != null
+  return assignedOrgId != null ? serverId : null
+}
+
+/**
+ * Best-effort self-host system hierarchy bootstrap: resolves the colocated
+ * server + default installed organization and provisions the `turbopanel`
+ * workspace/project/environment/services tree (see
+ * `system/hierarchy.ts`). No-op on Workers/HA (both resolve to `null` there)
+ * and whenever the colocated daemon has not enrolled yet — callers re-run
+ * this on a maintenance timer so a host whose daemon enrolls after install
+ * still converges. Logs and swallows failures so it can never block install
+ * completion or the boot path that calls it.
+ */
+export async function ensureSelfHostSystemHierarchyBestEffort(
+  db: Db,
+  registry?: DaemonCellRegistry,
+): Promise<void> {
+  try {
+    const serverId = await resolveColocatedServerId(db, registry)
+    if (!serverId) return
+
+    const organizationId = await findDefaultInstalledOrganizationId(db)
+    if (!organizationId) return
+
+    await ensureSelfHostSystemHierarchy(db, { organizationId, serverId })
+  } catch (err) {
+    compatLogWarn(
+      'install',
+      `failed to ensure self-host system hierarchy: ${err}`,
+    )
+  }
 }
 
 export type CompleteInstallInput = {
@@ -1179,7 +1221,27 @@ export async function completeInstanceInstall(
     result.licenseToken,
   )
 
-  await assignColocatedDaemonToOrganization(db, result.organizationId)
+  // Resolve + assign before hierarchy provision. After assignment,
+  // resolveColocatedServerId filters on organization_id IS NULL and cannot
+  // re-find this server — pass the returned id directly.
+  const colocatedServerId = await assignColocatedDaemonToOrganization(
+    db,
+    result.organizationId,
+  )
+
+  if (colocatedServerId) {
+    try {
+      await ensureSelfHostSystemHierarchy(db, {
+        organizationId: result.organizationId,
+        serverId: colocatedServerId,
+      })
+    } catch (err) {
+      compatLogWarn(
+        'install',
+        `failed to ensure self-host system hierarchy: ${err}`,
+      )
+    }
+  }
 
   return {
     organizationId: result.organizationId,

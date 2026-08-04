@@ -27,6 +27,7 @@ import {
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
+  assertNotSystemOwnedOr403,
   buildPatchUpdateFields,
   getOrgId,
   parseDisplayName,
@@ -34,6 +35,7 @@ import {
   parseJsonBody,
   parseJsonbObject,
   requireStringField,
+  stripPromotedMetadataKeys,
 } from '../shared.ts'
 import {
   deleteProjectCascade,
@@ -254,6 +256,9 @@ async function resolveWorkspaceTarget(
   const denied = await assertCanCreateOr403(c, 'workspace', workspaceId)
   if (denied) return denied
 
+  const immutable = await assertNotSystemOwnedOr403(c, 'workspace', workspaceId)
+  if (immutable) return immutable
+
   return workspaceId
 }
 
@@ -337,6 +342,11 @@ async function parseCreateProjectInput(
 
   const metadataResult = parseJsonbObject(c, body, 'metadata')
   if (metadataResult instanceof Response) return metadataResult
+  // `metadata.component` is reserved for system project identity — public
+  // create must never stamp it (system hierarchy provisions it internally).
+  const metadata = metadataResult === null
+    ? null
+    : stripPromotedMetadataKeys(metadataResult, ['component'])
 
   const serverId = await resolveServerIdForCreate(c, db, body, organizationId)
   if (serverId instanceof Response) return serverId
@@ -354,7 +364,7 @@ async function parseCreateProjectInput(
     projectType,
     catalogEntry,
     options: optionsResult,
-    metadata: metadataResult,
+    metadata,
     serverId,
     defaultEnvironmentName,
   }
@@ -734,6 +744,9 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const denied = await assertCanOr403(c, 'organization:manage', 'project', id)
     if (denied) return denied
 
+    const immutable = await assertNotSystemOwnedOr403(c, 'project', id)
+    if (immutable) return immutable
+
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
@@ -797,6 +810,9 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const denied = await assertCanOr403(c, 'organization:manage', 'project', id)
     if (denied) return denied
 
+    const immutable = await assertNotSystemOwnedOr403(c, 'project', id)
+    if (immutable) return immutable
+
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
@@ -857,6 +873,9 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const denied = await assertCanOr403(c, 'organization:manage', 'project', id)
     if (denied) return denied
+
+    const immutable = await assertNotSystemOwnedOr403(c, 'project', id)
+    if (immutable) return immutable
 
     const result = await deleteProjectCascade(db, id)
     if (!result.ok) {

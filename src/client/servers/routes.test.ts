@@ -13,16 +13,23 @@ import {
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
 import {
+  container,
+  command,
   datacenter,
+  environment,
   grant,
   license,
   member,
   network,
   organization,
+  project,
   server,
+  service,
   user,
+  workspace,
 } from '../../lib/db/schema.ts'
 import * as hierarchyDelete from '../hierarchy-delete.ts'
+import * as systemHierarchy from '../system/hierarchy.ts'
 import * as colocated from './colocated.ts'
 import {
   colocatedServerDeleteBlockedReason,
@@ -213,6 +220,7 @@ async function createServerRoutesTestApp(
   db: ReturnType<typeof createDenoDb>,
   registry?: DaemonCellRegistry,
   queryCache?: QueryCache,
+  commandQueue?: import('../../lib/commands/queue.ts').CommandQueue,
 ) {
   const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
@@ -224,6 +232,9 @@ async function createServerRoutesTestApp(
     }
     if (queryCache) {
       c.set('queryCache', queryCache)
+    }
+    if (commandQueue) {
+      c.set('commandQueue', commandQueue)
     }
     return next()
   })
@@ -666,6 +677,69 @@ test('DELETE /servers/:id returns 409 when networks block deletion', async () =>
         await db.delete(network).where(eq(network.id, insertedNetwork.id))
       }
     }
+  })
+})
+
+test('DELETE /servers/:id succeeds with stopped system ingress inventory', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+    registry,
+  }) => {
+    const hierarchy = await systemHierarchy.ensureSystemHierarchy(db, {
+      organizationId,
+      serverId,
+    })
+    await db
+      .update(container)
+      .set({ status: 'exited' })
+      .where(eq(container.id, hierarchy.containerRowId))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/servers/${serverId}`, {
+      method: 'DELETE',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 200)
+    const body = await res.json()
+    assertEquals(body, { ok: true, serverId })
+    assertEquals(registry.purgedIds, [serverId])
+
+    const remainingServers = await db
+      .select({ id: server.id })
+      .from(server)
+      .where(eq(server.id, serverId))
+    assertEquals(remainingServers.length, 0)
+
+    const remainingEnvs = await db
+      .select({ id: environment.id })
+      .from(environment)
+      .where(eq(environment.id, hierarchy.environmentId))
+    assertEquals(remainingEnvs.length, 0)
+
+    const remainingServices = await db
+      .select({ id: service.id })
+      .from(service)
+      .where(eq(service.id, hierarchy.serviceId))
+    assertEquals(remainingServices.length, 0)
+
+    const remainingContainers = await db
+      .select({ id: container.id })
+      .from(container)
+      .where(eq(container.id, hierarchy.containerRowId))
+    assertEquals(remainingContainers.length, 0)
+
+    // Shared project/workspace remain for other servers — clean for fixtures.
+    await db.delete(project).where(eq(project.id, hierarchy.projectId))
+    await db.delete(workspace).where(eq(workspace.id, hierarchy.workspaceId))
   })
 })
 
@@ -1990,4 +2064,185 @@ test('PATCH /servers/:id pins datacenterId and rejects cross-org datacenter', as
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, orgA!.id))
   await db.delete(organization).where(eq(organization.id, orgB!.id))
+})
+
+test('PATCH /servers/:id does not commit hosting.enabled when hierarchy fails', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const originalEnsure = systemHierarchy.systemHierarchyProvision.ensure
+    systemHierarchy.systemHierarchyProvision.ensure = () =>
+      Promise.reject(new Error('forced hierarchy failure'))
+
+    try {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}`, {
+        method: 'PATCH',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ options: { hosting: { enabled: true } } }),
+      })
+
+      assertEquals(res.status, 500)
+      const body = await readJson<ErrorJson>(res)
+      assertEquals(body.code, 'hosting_hierarchy_failed')
+
+      const [row] = await db
+        .select({ options: server.options })
+        .from(server)
+        .where(eq(server.id, serverId))
+        .limit(1)
+      const options = row?.options as { hosting?: { enabled?: boolean } } | null
+      assertEquals(options?.hosting?.enabled === true, false)
+    } finally {
+      systemHierarchy.systemHierarchyProvision.ensure = originalEnsure
+    }
+  })
+})
+
+test('DELETE /servers/:id succeeds after enable → disable → reconcile lifecycle', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+    registry,
+  }) => {
+    const envelopes: Array<{ type: string; commandId: string }> = []
+    const commandQueue = {
+      envelopes,
+      enqueue: async (envelope: { type: string; commandId: string }) => {
+        envelopes.push({ type: envelope.type, commandId: envelope.commandId })
+      },
+    }
+    const { app } = await createServerRoutesTestApp(
+      db,
+      registry,
+      undefined,
+      commandQueue,
+    )
+    const cookie = await sessionCookie(db, secrets, userId)
+
+    // 1. Enable hosting → provisions hierarchy + reconcile enqueue.
+    const enableRes = await app.request(`/servers/${serverId}`, {
+      method: 'PATCH',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ options: { hosting: { enabled: true } } }),
+    })
+    assertEquals(enableRes.status, 200)
+
+    const hierarchyEnvId = await systemHierarchy.findSystemEnvironmentForServer(
+      db,
+      serverId,
+      systemHierarchy.SYSTEM_HOSTING_INGRESS_COMPONENT,
+    )
+    assertExists(hierarchyEnvId)
+
+    const [containerRow] = await db
+      .select({
+        id: container.id,
+        status: container.status,
+      })
+      .from(container)
+      .innerJoin(service, eq(service.id, container.serviceId))
+      .where(eq(service.environmentId, hierarchyEnvId))
+      .limit(1)
+    assertExists(containerRow)
+
+    // Simulate a successful enable reconcile (proxy running).
+    await db
+      .update(container)
+      .set({ status: 'running', containerId: 'ingress-cid-live' })
+      .where(eq(container.id, containerRow.id))
+
+    // Running ingress blocks delete.
+    const blockedRes = await app.request(`/servers/${serverId}`, {
+      method: 'DELETE',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+    assertEquals(blockedRes.status, 409)
+
+    envelopes.length = 0
+
+    // 2. Disable hosting → enqueues action: stop for hosting-ingress.
+    const disableRes = await app.request(`/servers/${serverId}`, {
+      method: 'PATCH',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ options: { hosting: { enabled: false } } }),
+    })
+    assertEquals(disableRes.status, 200)
+    assertEquals(envelopes.length >= 1, true)
+    assertEquals(envelopes[0]?.type, 'system.reconcile')
+
+    const [stopCommand] = await db
+      .select({
+        id: command.id,
+        payload: command.payload,
+      })
+      .from(command)
+      .where(eq(command.id, envelopes[0]!.commandId))
+      .limit(1)
+    const stopPayload = stopCommand?.payload as {
+      action?: string
+      environmentId?: string
+    } | null
+    assertEquals(stopPayload?.action, 'stop')
+    assertEquals(stopPayload?.environmentId, hierarchyEnvId)
+
+    // 3. Simulate stop reconcile settling the row.
+    await db
+      .update(container)
+      .set({ status: 'exited', containerId: null })
+      .where(eq(container.id, containerRow.id))
+
+    // 4. Delete succeeds once ingress is idle.
+    const deleteRes = await app.request(`/servers/${serverId}`, {
+      method: 'DELETE',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+    assertEquals(deleteRes.status, 200)
+    const body = await deleteRes.json()
+    assertEquals(body, { ok: true, serverId })
+
+    const remainingEnvs = await db
+      .select({ id: environment.id })
+      .from(environment)
+      .where(eq(environment.id, hierarchyEnvId))
+    assertEquals(remainingEnvs.length, 0)
+
+    // Clean shared project/workspace left by hierarchy.
+    const remainingProjects = await db
+      .select({ id: project.id, workspaceId: project.workspaceId })
+      .from(project)
+      .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+      .where(eq(workspace.organizationId, organizationId))
+    for (const row of remainingProjects) {
+      await db.delete(project).where(eq(project.id, row.id))
+      await db.delete(workspace).where(eq(workspace.id, row.workspaceId))
+    }
+    await db.delete(command).where(eq(command.serverId, serverId))
+  })
 })

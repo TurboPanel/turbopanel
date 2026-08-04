@@ -505,7 +505,7 @@ set, `turbopanel-caddy.service` loads `~/dev/orchestration/Caddyfile` instead
 `/downloads/daemon` + installer at `/run.sh`). See **`../dev/AGENTS.md`** (Ansible overlay /
 Caddyfile).
 
-### Production
+### Certs and entrypoint
 
 Caddy/cert installs are handled by the daemon's `caddy` and `instance-certs`
 Ansible roles; `turbopanel-caddy.service` runs as `tpcaddy:tp` in production.
@@ -584,13 +584,13 @@ Four versioned surfaces each have REST + WS namespaces (where applicable).
 Prefixes live in `src/surfaces.ts`; `GET /api/health` is the single
 deliberately-unversioned probe.
 
-| Surface                      | REST                  | WS                        | Notes                                                                                                                                                      |
-| ---------------------------- | --------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Surface                      | REST                  | WS                        | Notes                                                                                                                                                             |
+| ---------------------------- | --------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Client (end-user UI)         | `/api/client/v1/*`    | `/ws/client/v1`           | servers list/detail (+ addresses/timeSync/effective timezone), timezone/NTP commands, org default-timezone + default-environment + server-capacity + `/timezones` |
-| Install (self-hosted wizard) | `/api/install/v1/*`   | —                         | Deno only for POST endpoints; PAM-gated; no session/cookie on bootstrap                                                                                    |
-| Developer (dev console)      | `/api/developer/v1/*` | `/ws/developer/v1` (stub) | fleet, diagnostics, shell, addresses, `system/upgrade`, `instance/tunnel-token`, `daemon/(:id/)sync-dev`                                                   |
-| Admin                        | `/api/admin/v1/*`     | —                         | Mounted on both Deno and Workers; `superadmin` or `admin` role required; OpenAPI/Scalar at `/api/admin/v1/openapi.json` + `/reference` in development only |
-| Daemon                       | `/api/daemon/v1/*`    | `/ws/daemon/v1`           | `version`, `instance/ca`; daemons connect on the WS path                                                                                                   |
+| Install (self-hosted wizard) | `/api/install/v1/*`   | —                         | Deno only for POST endpoints; PAM-gated; no session/cookie on bootstrap                                                                                           |
+| Developer (dev console)      | `/api/developer/v1/*` | `/ws/developer/v1` (stub) | fleet, diagnostics, shell, addresses, `system/upgrade`, `instance/tunnel-token`, `daemon/(:id/)sync-dev`                                                          |
+| Admin                        | `/api/admin/v1/*`     | —                         | Mounted on both Deno and Workers; `superadmin` or `admin` role required; OpenAPI/Scalar at `/api/admin/v1/openapi.json` + `/reference` in development only        |
+| Daemon                       | `/api/daemon/v1/*`    | `/ws/daemon/v1`           | `version`, `instance/ca`; daemons connect on the WS path                                                                                                          |
 
 - Route modules: `src/daemon/api-routes.ts`, `src/client/routes.ts`,
   `src/lib/install/routes.ts` (registered from `deno.ts` only); Deno-only routes
@@ -653,17 +653,82 @@ loads the nearest one automatically when you work in that directory. **Read the
 matching file before editing that area.** This root keeps only cross-cutting
 orientation; the detail moved to:
 
-| Subsystem                         | Read before editing            | Covers                                                                                                                                            |
-| --------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Daemon Cell** (`/ws/daemon/v1`) | `src/daemon/cell/AGENTS.md`    | Presence, outbox + request correlation, Redis vs Durable Object backends, the **canonical Durable Object cost / hibernation / billing rules**, and the Postgres liveness read model (`server.connected` + `server.status_changed_at` only — no stored tri-state `daemon_status` column) |
-| **Server metrics**                | `src/daemon/metrics/AGENTS.md` | Host-metrics ingestion, Analytics Engine (Workers) / ClickHouse (Deno) storage, query + chart caching; also carries a history-only connection-status event stream (`blob1 = "status"`) — never authoritative for current liveness |
-| **Command Pipeline**              | `src/lib/commands/AGENTS.md`   | Typed commands, queue transport, and correlated dev-sync / tunnel-token / public-URL-apply requests                                               |
-| **Compose documents**             | `src/lib/compose/AGENTS.md`    | `ComposeDocument` model, `x-turbopanel` extension, linter, overlay merge; **placement = `environment.server_id` ?? `project.options.defaultServerId`** (compose placement stripped on save) |
-| **Managed engines**               | `src/lib/managed/AGENTS.md` + `src/client/managed/` | Engine registry + client API (`POST …/managed`, apply/lifecycle/users/databases/status/logs, `GET /organizations/:id/managed`); all status reads are Postgres-backed; logs use cell `managed-logs-request` |
-| **Authentication**                | `src/client/authn/AGENTS.md`   | Argon2id, sessions, PAM install gate, secret keyring + data encryption, daemon key JWT, auth routes                                               |
-| **Email**                         | `src/lib/email/AGENTS.md`      | Queue abstraction, RabbitMQ→mailer (Deno) / Mailgun (Workers), settings, OTP surface                                                              |
-| **Database & schema**             | `src/lib/db/AGENTS.md`         | Drizzle schema, tables, migrations; deploy-tree columns (`container_*`, `service.compose_service_name` — `NOT NULL`, derived-only, non-partial unique per environment, `environment.server_id`)                   |
-| **Query cache**                   | `src/query-cache/AGENTS.md`    | Approved read-only cached `SELECT` models (Hyperdrive cached / Redis read-through)                                                                |
+| Subsystem                         | Read before editing                                 | Covers                                                                                                                                                                                                                                                                                  |
+| --------------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Daemon Cell** (`/ws/daemon/v1`) | `src/daemon/cell/AGENTS.md`                         | Presence, outbox + request correlation, Redis vs Durable Object backends, the **canonical Durable Object cost / hibernation / billing rules**, and the Postgres liveness read model (`server.connected` + `server.status_changed_at` only — no stored tri-state `daemon_status` column) |
+| **Server metrics**                | `src/daemon/metrics/AGENTS.md`                      | Host-metrics ingestion, Analytics Engine (Workers) / ClickHouse (Deno) storage, query + chart caching; also carries a history-only connection-status event stream (`blob1 = "status"`) — never authoritative for current liveness                                                       |
+| **Command Pipeline**              | `src/lib/commands/AGENTS.md`                        | Typed commands, queue transport, and correlated dev-sync / tunnel-token / public-URL-apply requests                                                                                                                                                                                     |
+| **Compose documents**             | `src/lib/compose/AGENTS.md`                         | `ComposeDocument` model, `x-turbopanel` extension, linter, overlay merge; **placement = `environment.server_id` ?? `project.options.defaultServerId`** (compose placement stripped on save)                                                                                             |
+| **Managed engines**               | `src/lib/managed/AGENTS.md` + `src/client/managed/` | Engine registry + client API (`POST …/managed`, apply/lifecycle/users/databases/status/logs, `GET /organizations/:id/managed`); all status reads are Postgres-backed; logs use cell `managed-logs-request`                                                                              |
+| **Authentication**                | `src/client/authn/AGENTS.md`                        | Argon2id, sessions, PAM install gate, secret keyring + data encryption, daemon key JWT, auth routes                                                                                                                                                                                     |
+| **Email**                         | `src/lib/email/AGENTS.md`                           | Queue abstraction, RabbitMQ→mailer (Deno) / Mailgun (Workers), settings, OTP surface                                                                                                                                                                                                    |
+| **Database & schema**             | `src/lib/db/AGENTS.md`                              | Drizzle schema, tables, migrations; deploy-tree columns (`container_*`, `service.compose_service_name` — `NOT NULL`, derived-only, non-partial unique per environment, `environment.server_id`)                                                                                         |
+| **Query cache**                   | `src/query-cache/AGENTS.md`                         | Approved read-only cached `SELECT` models (Hyperdrive cached / Redis read-through)                                                                                                                                                                                                      |
+
+## Self-host system inventory
+
+Co-located (self-hosted) installs run a fixed set of platform components on
+the same host as the instance. Some of them are Postgres/`container`-tracked
+inventory managed by the daemon; the rest stay host-native and are never
+represented as `container` rows.
+
+| Component                                                             | Today                            | Decision                    | Inventory              |
+| ---------------------------------------------------------------------- | --------------------------------- | ---------------------------- | ----------------------- |
+| PostgreSQL                                                             | `docker run turbopanel-database`  | Compose service `database`   | service + container row |
+| RabbitMQ                                                               | `docker run turbopanel-queue`     | Compose service `queue`      | service + container row |
+| ClickHouse                                                             | `docker run turbopanel-analytics` | Compose service `analytics`  | service + container row |
+| Control plane (`turbopanel-instance.service`)                          | systemd + Deno                    | stays host-native            | none                    |
+| Control-plane Caddy                                                    | vendored binary                   | stays host-native            | none                    |
+| Hosting Caddy                                                          | vendored binary + systemd         | stays host-native            | none                    |
+| `turbopaneld.service`                                                  | native / Deno JS                  | stays host-native            | none                    |
+| Redis                                                                  | vendored `.deb`, unix socket      | stays host-native            | none                    |
+| Mailer, dbstudio, Expo UI, website, mailpit, tabix, redis-insight      | systemd / dev-only                | excluded                     | none                    |
+
+The three databases/brokers above are provisioned into the `turbopanel-system`
+Compose project (see daemon `src/deploy/AGENTS.md` → **System services Compose
+stack**) so their container identity/status is inspectable through the same
+`container` table and client `GET /api/client/v1/containers` surface as tenant
+deploys — with `role: 'app'` and `service.compose_service_name` in `database` /
+`queue` / `analytics`. They remain **inspect-only**: the daemon reports their
+`docker compose ps` identity for inventory but never starts, stops, or
+self-heals them (no restart-via-`system.reconcile` path — see
+`SYSTEM_OPERATE_COMPONENTS` in `src/client/system/routes.ts`, which only lists
+`hosting-ingress`).
+
+**Why instance/Caddy/daemon/Redis stay host-native rather than joining the
+compose stack:**
+
+- The control plane needs `pamtester`/PAM to gate the self-hosted install
+  wizard, `systemctl`/`git` access to check for and apply trunk updates, and
+  ownership of `/run/turbopanel/instance.sock` at a specific uid/gid so the
+  co-located daemon can connect — none of that is available to a process
+  running inside a container.
+- The daemon itself runs Ansible (which provisions the compose stack) — it
+  cannot be a container the daemon manages, and it needs host-level
+  `systemctl` control over every other unit.
+- Both Caddy units terminate TLS and bind privileged/host ports directly and
+  are simplest to keep as vendored host binaries under systemd, matching the
+  daemon's own vendored-runtime model.
+- Redis is reached over a unix socket (`redis.sock`) with permissions scoped
+  to the dev user / `tpcache` group — a socket-permission model that is
+  simpler to keep host-native than to thread through a container network.
+
+**Bootstrap ordering:** `docker compose up` (with the labels below) runs
+first via the `system-compose` Ansible role → the instance's install
+hierarchy (`ensureSelfHostSystemHierarchy`) allocates the `service` /
+`container` rows and assigns each service a UUID → a `system.reconcile`
+command carries that allocated `serviceId` (as the compose service's
+container name) to the daemon → the daemon inspects `docker compose ps` by
+the `com.turbopanel.system.component` label and reports identity/status back
+by container name. Inventory rows exist before the daemon ever inspects the
+stack; the daemon never invents ids.
+
+**Status / restart surface:** host-native components (Caddy, Redis, the
+instance, `turbopaneld`) have no `container` row and therefore never appear
+in a project/environment container table. Their health/restart affordances
+belong on the server **Control** tab / a system-component control API (e.g.
+`POST /servers/:id/system/:component/restart`, scoped to `hosting-ingress`
+today) — never bolted onto the tenant containers list.
 
 ## OpenAPI & Scalar
 
@@ -729,8 +794,14 @@ sequenceDiagram
   `src/client/authz/*`
 - `src/client/authn/` — session, credentials, PAM install gate, license CRUD,
   HTTP auth handlers
-- `src/client/authz/` — four-value permission catalog, `can`/`listVisible`,
-  grant management
+- `src/client/authz/` — seven-key permission catalog (`organization:own` /
+  `organization:manage`, `team:own` / `team:manage`, `system:read` /
+  `system:operate` / `system:manage`), `can`/`listVisible`, grant management.
+  Org owner/manager grants never satisfy `system:*`; platform-admin bypass
+  covers read/operate but `system:manage` is superadmin-only. Mutation routes
+  on workspace-tree entities call `assertNotSystemOwnedOr403` after the org
+  check (`403` `system_resource_immutable`). Client workspace responses include
+  `workspace.kind` (`user` \| `system`).
 - `src/daemon/api-routes.ts` / `src/daemon/deno-ws.ts` /
   `src/daemon/workers-ws.ts` — daemon REST + WS (cell-backed)
 - `src/daemon/cell/contracts.ts` — `DaemonCell` interface, `DaemonCellRegistry`,

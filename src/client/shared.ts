@@ -3,6 +3,11 @@ import { getDb } from '../db.ts'
 import { can } from './authz/index.ts'
 import { resolveOrgId } from './org-context.ts'
 
+export {
+  assertNotSystemOwnedOr403,
+  SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+} from './authz/http.ts'
+
 export const DISPLAY_NAME_RE = /^[A-Za-z0-9 ._-]+$/
 
 export class BadRequestError extends Error {}

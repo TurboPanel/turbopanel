@@ -1,7 +1,15 @@
 export const accessSchemas = {
   PermissionKey: {
     type: 'string',
-    enum: ['organization:own', 'organization:manage', 'team:own', 'team:manage'],
+    enum: [
+      'organization:own',
+      'organization:manage',
+      'team:own',
+      'team:manage',
+      'system:read',
+      'system:operate',
+      'system:manage',
+    ],
     description: 'Atomic permission key from the fixed catalog.',
   },
   InvitationGrantSpec: {

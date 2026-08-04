@@ -13,6 +13,7 @@ export const COMMAND_TYPES = [
   'managed.destroy',
   'managed.backup',
   'managed.restore',
+  'system.reconcile',
 ] as const
 
 export type CommandType = (typeof COMMAND_TYPES)[number]

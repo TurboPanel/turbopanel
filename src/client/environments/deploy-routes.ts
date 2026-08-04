@@ -61,6 +61,7 @@ import {
 import { getDaemonCellRegistry, getDb, type Db } from '../../db.ts'
 import {
   assertCanManageOr403,
+  assertNotSystemOwnedOr403,
   getOrgId,
   parseJsonBody,
 } from '../shared.ts'
@@ -585,6 +586,9 @@ async function authorizeDeployRequest(
   const denied = await assertCanManageOr403(c, 'environment', environmentId)
   if (denied) return denied
 
+  const immutable = await assertNotSystemOwnedOr403(c, 'environment', environmentId)
+  if (immutable) return immutable
+
   const session = c.get('session')
   if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
@@ -790,6 +794,9 @@ async function authorizeEnvironmentManage(
 ): Promise<{ userId: string; organizationId: string } | Response> {
   const denied = await assertCanManageOr403(c, 'environment', environmentId)
   if (denied) return denied
+
+  const immutable = await assertNotSystemOwnedOr403(c, 'environment', environmentId)
+  if (immutable) return immutable
 
   const session = c.get('session')
   if (!session) return c.json({ error: 'Unauthorized' }, 401)
@@ -1112,19 +1119,8 @@ export function registerEnvironmentStopRoutes(
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
     const environmentId = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'environment', environmentId)
-    if (denied) return denied
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-
-    const entityOrgId = await resolveEntityOrganizationId(db, 'environment', environmentId)
-    if (!entityOrgId || entityOrgId !== orgResult) {
-      return c.json({ error: 'Not found' }, 404)
-    }
+    const auth = await authorizeEnvironmentManage(c, db, environmentId)
+    if (auth instanceof Response) return auth
 
     const commandQueue = assertDispatchInfrastructure(c)
     if (commandQueue instanceof Response) return commandQueue
@@ -1135,7 +1131,7 @@ export function registerEnvironmentStopRoutes(
     const target = await resolveDeployTargetServer(
       c,
       db,
-      orgResult,
+      auth.organizationId,
       loaded.placementServerId,
     )
     if (target instanceof Response) return target
@@ -1143,7 +1139,7 @@ export function registerEnvironmentStopRoutes(
     const tcpUdpServices = await resolveTcpUdpIngressServices(db, environmentId)
     return enqueueStopCommand(db, commandQueue, {
       serverId: target.serverId,
-      userId: session.userId,
+      userId: auth.userId,
       environmentId,
       projectId: loaded.projectId,
       projectName: loaded.projectName,
@@ -1223,19 +1219,8 @@ export function registerEnvironmentLifecycleRoutes(
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
     const environmentId = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'environment', environmentId)
-    if (denied) return denied
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-
-    const entityOrgId = await resolveEntityOrganizationId(db, 'environment', environmentId)
-    if (!entityOrgId || entityOrgId !== orgResult) {
-      return c.json({ error: 'Not found' }, 404)
-    }
+    const auth = await authorizeEnvironmentManage(c, db, environmentId)
+    if (auth instanceof Response) return auth
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -1254,14 +1239,14 @@ export function registerEnvironmentLifecycleRoutes(
     const target = await resolveDeployTargetServer(
       c,
       db,
-      orgResult,
+      auth.organizationId,
       loaded.placementServerId,
     )
     if (target instanceof Response) return target
 
     return enqueueLifecycleCommand(db, commandQueue, {
       serverId: target.serverId,
-      userId: session.userId,
+      userId: auth.userId,
       environmentId,
       projectId: loaded.projectId,
       projectName: loaded.projectName,

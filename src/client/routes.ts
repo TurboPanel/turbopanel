@@ -36,6 +36,7 @@ import { registerIpRoutes } from './ips/routes.ts'
 import { registerVpnRoutes } from './vpns/routes.ts'
 import { registerProjectRoutes } from './projects/routes.ts'
 import { registerServerRoutes } from './servers/routes.ts'
+import { registerSystemRoutes } from './system/routes.ts'
 import { registerServiceRoutes } from './services/routes.ts'
 import { registerTeamRoutes } from './teams/routes.ts'
 import { registerOrganizationRoutes } from './organizations/routes.ts'
@@ -76,6 +77,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
   })
 
   registerServerRoutes(client, opts)
+  registerSystemRoutes(client, opts)
   registerNetworkRoutes(client, opts)
   registerDatacenterRoutes(client, opts)
   registerIpRoutes(client, opts)

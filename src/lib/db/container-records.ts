@@ -164,10 +164,23 @@ function isExpectedPendingAllocation(
   return row.ordinal >= 1 && row.ordinal <= maxOrdinal
 }
 
+export type ExpectedContainerAllocation = {
+  serviceId: string
+  role: 'app' | 'ingress'
+  ordinal: number
+}
+
 export type ReconcileEnvironmentContainersParams = {
   serverId: string
   environmentId: string
   containers: EnvironmentDeployContainer[]
+  /**
+   * System-safe mode (e.g. `system.reconcile`): unmatched rows that match an
+   * expected `(serviceId, role, ordinal)` are reset to `exited` / null Docker
+   * id instead of deleted. Tenant deploy/stop omit this and keep the delete
+   * path for stale unmatched rows.
+   */
+  expectedAllocations?: ReadonlyArray<ExpectedContainerAllocation>
 }
 
 /**
@@ -187,7 +200,7 @@ export async function reconcileEnvironmentContainers(
   db: Db,
   params: ReconcileEnvironmentContainersParams,
 ): Promise<void> {
-  const { serverId, environmentId, containers } = params
+  const { serverId, environmentId, containers, expectedAllocations } = params
 
   let serviceRows = await db
     .select({
@@ -247,6 +260,7 @@ export async function reconcileEnvironmentContainers(
     serviceIds,
     serviceIdByComposeName,
     maxOrdinalByServiceId,
+    expectedAllocations,
   })
 }
 
@@ -308,14 +322,23 @@ function unmatchedStaleExistingIds(
   existingRows: ExistingContainerRow[],
   matchedIds: Set<string>,
   maxOrdinalByServiceId: Map<string, number>,
-): string[] {
-  return existingRows
-    .filter((row) => {
-      if (matchedIds.has(row.id)) return false
-      // Only current-deploy expected pending rows survive a partial report.
-      return !isExpectedPendingAllocation(row, maxOrdinalByServiceId)
-    })
-    .map((row) => row.id)
+  expectedKeys: Set<string> | null,
+): { deleteIds: string[]; resetIds: string[] } {
+  const deleteIds: string[] = []
+  const resetIds: string[] = []
+  for (const row of existingRows) {
+    if (matchedIds.has(row.id)) continue
+    const expectedKey = `${row.serviceId}:${row.role}:${row.ordinal}`
+    if (expectedKeys?.has(expectedKey)) {
+      resetIds.push(row.id)
+      continue
+    }
+    // Only current-deploy expected pending rows survive a partial report.
+    if (!isExpectedPendingAllocation(row, maxOrdinalByServiceId)) {
+      deleteIds.push(row.id)
+    }
+  }
+  return { deleteIds, resetIds }
 }
 
 async function upsertReportedContainers(
@@ -327,6 +350,7 @@ async function upsertReportedContainers(
     serviceIds: Set<string>
     serviceIdByComposeName: Map<string, string>
     maxOrdinalByServiceId: Map<string, number>
+    expectedAllocations?: ReadonlyArray<ExpectedContainerAllocation>
   },
 ): Promise<void> {
   const byName = new Map(params.existingRows.map((row) => [row.containerName, row]))
@@ -351,6 +375,14 @@ async function upsertReportedContainers(
     if (byContainerName !== 0) return byContainerName
     return a.containerId.localeCompare(b.containerId)
   })
+
+  const expectedKeys = params.expectedAllocations
+    ? new Set(
+      params.expectedAllocations.map(
+        (row) => `${row.serviceId}:${row.role}:${row.ordinal}`,
+      ),
+    )
+    : null
 
   await db.transaction(async (tx) => {
     for (const reported of reportedSorted) {
@@ -408,11 +440,21 @@ async function upsertReportedContainers(
       matchedIds.add(inserted!.id)
     }
 
-    const deleteIds = unmatchedStaleExistingIds(
+    const { deleteIds, resetIds } = unmatchedStaleExistingIds(
       params.existingRows,
       matchedIds,
       params.maxOrdinalByServiceId,
+      expectedKeys,
     )
+    if (resetIds.length > 0) {
+      await tx
+        .update(container)
+        .set({
+          status: 'exited',
+          containerId: null,
+        })
+        .where(inArray(container.id, resetIds))
+    }
     if (deleteIds.length > 0) {
       await tx.delete(container).where(inArray(container.id, deleteIds))
     }

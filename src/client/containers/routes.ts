@@ -11,6 +11,7 @@ import { container, server, service } from '../../lib/db/schema.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
+  assertNotSystemOwnedOr403,
   buildPatchUpdateFields,
   getOrgId,
   parseJsonBody,
@@ -141,6 +142,52 @@ function parseCreateContainerFields(
     metadata,
     options: optionsResult,
   }
+}
+
+type PatchContainerFields = {
+  metadata?: Record<string, unknown> | null
+  options?: Record<string, unknown> | null
+  containerId?: string
+  containerName?: string
+  status?: string
+  composeServiceName?: string
+  updatedAt: string
+}
+
+function parsePatchContainerFields(
+  c: Context<AppEnv>,
+  body: Record<string, unknown>,
+): PatchContainerFields | Response {
+  let patchFields: PatchContainerFields
+  try {
+    patchFields = buildPatchUpdateFields(body)
+  } catch {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
+  const nextContainerId = readOptionalTopLevelString(body, 'containerId')
+  const nextContainerName = readOptionalTopLevelString(body, 'containerName')
+  const nextStatus = readOptionalTopLevelString(body, 'status')
+  const nextComposeServiceName = readOptionalTopLevelString(body, 'composeServiceName')
+  if (nextContainerId) patchFields.containerId = nextContainerId
+  if (nextContainerName) patchFields.containerName = nextContainerName
+  if (nextStatus) patchFields.status = nextStatus
+  if (nextComposeServiceName) patchFields.composeServiceName = nextComposeServiceName
+
+  const metadataResult = parseJsonbObject(c, body, 'metadata')
+  if (metadataResult instanceof Response) return metadataResult
+  if (metadataResult !== null) {
+    patchFields.metadata = stripPromotedMetadataKeys(
+      metadataResult,
+      CONTAINER_PROMOTED_METADATA_KEYS,
+    )
+  }
+
+  const optionsResult = parseJsonbObject(c, body, 'options')
+  if (optionsResult instanceof Response) return optionsResult
+  if (optionsResult !== null) patchFields.options = optionsResult
+
+  return patchFields
 }
 
 const CONTAINER_SELECT = {
@@ -289,6 +336,9 @@ export function registerContainerRoutes(router: Hono, opts: AuthRouteOpts) {
     const denied = await assertCanCreateOr403(c, 'service', fields.serviceId)
     if (denied) return denied
 
+    const immutable = await assertNotSystemOwnedOr403(c, 'service', fields.serviceId)
+    if (immutable) return immutable
+
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(container)
@@ -330,45 +380,14 @@ export function registerContainerRoutes(router: Hono, opts: AuthRouteOpts) {
     const denied = await assertCanOr403(c, 'organization:manage', 'container', id)
     if (denied) return denied
 
+    const immutable = await assertNotSystemOwnedOr403(c, 'container', id)
+    if (immutable) return immutable
+
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    let patchFields: {
-      metadata?: Record<string, unknown> | null
-      options?: Record<string, unknown> | null
-      containerId?: string
-      containerName?: string
-      status?: string
-      composeServiceName?: string
-      updatedAt: string
-    }
-    try {
-      patchFields = buildPatchUpdateFields(body)
-    } catch {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-
-    const nextContainerId = readOptionalTopLevelString(body, 'containerId')
-    const nextContainerName = readOptionalTopLevelString(body, 'containerName')
-    const nextStatus = readOptionalTopLevelString(body, 'status')
-    const nextComposeServiceName = readOptionalTopLevelString(body, 'composeServiceName')
-    if (nextContainerId) patchFields.containerId = nextContainerId
-    if (nextContainerName) patchFields.containerName = nextContainerName
-    if (nextStatus) patchFields.status = nextStatus
-    if (nextComposeServiceName) patchFields.composeServiceName = nextComposeServiceName
-
-    const metadataResult = parseJsonbObject(c, body, 'metadata')
-    if (metadataResult instanceof Response) return metadataResult
-    if (metadataResult !== null) {
-      patchFields.metadata = stripPromotedMetadataKeys(
-        metadataResult,
-        CONTAINER_PROMOTED_METADATA_KEYS,
-      )
-    }
-
-    const optionsResult = parseJsonbObject(c, body, 'options')
-    if (optionsResult instanceof Response) return optionsResult
-    if (optionsResult !== null) patchFields.options = optionsResult
+    const patchFields = parsePatchContainerFields(c, body)
+    if (patchFields instanceof Response) return patchFields
 
     await db
       .update(container)
@@ -397,6 +416,9 @@ export function registerContainerRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const denied = await assertCanOr403(c, 'organization:manage', 'container', id)
     if (denied) return denied
+
+    const immutable = await assertNotSystemOwnedOr403(c, 'container', id)
+    if (immutable) return immutable
 
     const result = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(container).where(eq(container.id, id))

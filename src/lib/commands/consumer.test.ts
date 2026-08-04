@@ -1050,3 +1050,742 @@ test('processCommandEnvelope skips reconcile when environment.lifecycle omits co
     }
   })
 })
+
+test('processCommandEnvelope reconciles containers on system.reconcile success', async () => {
+  await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+
+    const [workspaceRow] = await db
+      .insert(workspace)
+      .values({ organizationId, displayName: 'System Reconcile Workspace' })
+      .returning({ id: workspace.id })
+    const [projectRow] = await db
+      .insert(project)
+      .values({
+        workspaceId: workspaceRow!.id,
+        displayName: 'System Reconcile Project',
+        metadata: { type: 'docker-compose', component: 'hosting-ingress' },
+      })
+      .returning({ id: project.id })
+    const [environmentRow] = await db
+      .insert(environment)
+      .values({
+        projectId: projectRow!.id,
+        serverId,
+        displayName: 'Hosting Ingress',
+        metadata: { component: 'hosting-ingress' },
+      })
+      .returning({ id: environment.id })
+    const environmentId = environmentRow!.id
+    const [serviceRow] = await db
+      .insert(service)
+      .values({
+        environmentId,
+        displayName: 'traefik',
+        composeServiceName: 'traefik',
+      })
+      .returning({ id: service.id })
+    const serviceId = serviceRow!.id
+    const containerName = `${serviceId}-ingress`
+    const [containerRow] = await db
+      .insert(container)
+      .values({
+        serviceId,
+        serverId,
+        containerId: null,
+        containerName,
+        status: 'pending',
+        role: 'ingress',
+        composeServiceName: 'traefik',
+        ordinal: 1,
+      })
+      .returning({ id: container.id })
+    const containerRowId = containerRow!.id
+
+    try {
+      const record = await createCommandRecord(db, {
+        serverId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'system.reconcile',
+        payload: {
+          environmentId,
+          action: 'reconcile',
+          components: [
+            {
+              component: 'hosting-ingress',
+              serviceId,
+              composeServiceName: 'traefik',
+              containerName,
+              role: 'ingress',
+              desired: 'present',
+            },
+          ],
+        },
+      })
+
+      const registry = createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'done',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          result: {
+            summary: 'System reconcile',
+            containers: [
+              {
+                serviceId,
+                composeServiceName: 'traefik',
+                containerId: 'ingress-cid-1',
+                containerName,
+                status: 'running',
+                role: 'ingress',
+              },
+            ],
+          },
+        },
+      })
+
+      await processCommandEnvelope(
+        db,
+        registry,
+        buildEnvelope(record, serverId),
+      )
+
+      const updated = await getCommandRecord(db, record.id)
+      assertEquals(updated?.status, 'succeeded')
+
+      const [row] = await db
+        .select({
+          id: container.id,
+          containerId: container.containerId,
+          status: container.status,
+        })
+        .from(container)
+        .where(eq(container.id, containerRowId))
+        .limit(1)
+      assertEquals(row?.id, containerRowId)
+      assertEquals(row?.containerId, 'ingress-cid-1')
+      assertEquals(row?.status, 'running')
+    } finally {
+      await db.delete(container).where(eq(container.serverId, serverId))
+      await db.delete(service).where(eq(service.environmentId, environmentId))
+      await db.delete(environment).where(eq(environment.id, environmentId))
+      await db.delete(project).where(eq(project.id, projectRow!.id))
+      await db.delete(workspace).where(eq(workspace.id, workspaceRow!.id))
+    }
+  })
+})
+
+test('processCommandEnvelope skips reconcile when system.reconcile omits containers', async () => {
+  await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+
+    const [workspaceRow] = await db
+      .insert(workspace)
+      .values({ organizationId, displayName: 'System Skip Workspace' })
+      .returning({ id: workspace.id })
+    const [projectRow] = await db
+      .insert(project)
+      .values({
+        workspaceId: workspaceRow!.id,
+        displayName: 'System Skip Project',
+        metadata: { type: 'docker-compose', component: 'hosting-ingress' },
+      })
+      .returning({ id: project.id })
+    const [environmentRow] = await db
+      .insert(environment)
+      .values({
+        projectId: projectRow!.id,
+        serverId,
+        displayName: 'Hosting Ingress',
+        metadata: { component: 'hosting-ingress' },
+      })
+      .returning({ id: environment.id })
+    const environmentId = environmentRow!.id
+    const [serviceRow] = await db
+      .insert(service)
+      .values({
+        environmentId,
+        displayName: 'traefik',
+        composeServiceName: 'traefik',
+      })
+      .returning({ id: service.id })
+    const serviceId = serviceRow!.id
+    const containerName = `${serviceId}-ingress`
+    await db.insert(container).values({
+      serviceId,
+      serverId,
+      containerId: 'keep-ingress-cid',
+      containerName,
+      status: 'running',
+      role: 'ingress',
+      composeServiceName: 'traefik',
+      ordinal: 1,
+    })
+
+    try {
+      const record = await createCommandRecord(db, {
+        serverId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'system.reconcile',
+        payload: {
+          environmentId,
+          action: 'reconcile',
+          components: [
+            {
+              component: 'hosting-ingress',
+              serviceId,
+              composeServiceName: 'traefik',
+              containerName,
+              role: 'ingress',
+              desired: 'present',
+            },
+          ],
+        },
+      })
+
+      const registry = createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'done',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          result: { summary: 'inspect failed' },
+        },
+      })
+
+      await processCommandEnvelope(
+        db,
+        registry,
+        buildEnvelope(record, serverId),
+      )
+
+      const [row] = await db
+        .select({
+          containerId: container.containerId,
+          status: container.status,
+        })
+        .from(container)
+        .where(eq(container.serverId, serverId))
+        .limit(1)
+      assertEquals(row?.containerId, 'keep-ingress-cid')
+      assertEquals(row?.status, 'running')
+    } finally {
+      await db.delete(container).where(eq(container.serverId, serverId))
+      await db.delete(service).where(eq(service.environmentId, environmentId))
+      await db.delete(environment).where(eq(environment.id, environmentId))
+      await db.delete(project).where(eq(project.id, projectRow!.id))
+      await db.delete(workspace).where(eq(workspace.id, workspaceRow!.id))
+    }
+  })
+})
+
+test('processCommandEnvelope clears pins when system.reconcile reports empty containers', async () => {
+  await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+
+    const [workspaceRow] = await db
+      .insert(workspace)
+      .values({ organizationId, displayName: 'System Empty Workspace' })
+      .returning({ id: workspace.id })
+    const [projectRow] = await db
+      .insert(project)
+      .values({
+        workspaceId: workspaceRow!.id,
+        displayName: 'System Empty Project',
+        metadata: { type: 'docker-compose', component: 'hosting-ingress' },
+      })
+      .returning({ id: project.id })
+    const [environmentRow] = await db
+      .insert(environment)
+      .values({
+        projectId: projectRow!.id,
+        serverId,
+        displayName: 'Hosting Ingress',
+        metadata: { component: 'hosting-ingress' },
+      })
+      .returning({ id: environment.id })
+    const environmentId = environmentRow!.id
+    const [serviceRow] = await db
+      .insert(service)
+      .values({
+        environmentId,
+        displayName: 'traefik',
+        composeServiceName: 'traefik',
+      })
+      .returning({ id: service.id })
+    const serviceId = serviceRow!.id
+    const containerName = `${serviceId}-ingress`
+    const [containerRow] = await db
+      .insert(container)
+      .values({
+        serviceId,
+        serverId,
+        containerId: 'old-ingress-cid',
+        containerName,
+        status: 'running',
+        role: 'ingress',
+        composeServiceName: 'traefik',
+        ordinal: 1,
+      })
+      .returning({ id: container.id })
+    const containerRowId = containerRow!.id
+
+    try {
+      const record = await createCommandRecord(db, {
+        serverId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'system.reconcile',
+        payload: {
+          environmentId,
+          action: 'reconcile',
+          components: [
+            {
+              component: 'hosting-ingress',
+              serviceId,
+              composeServiceName: 'traefik',
+              containerName,
+              role: 'ingress',
+              desired: 'absent',
+            },
+          ],
+        },
+      })
+
+      const registry = createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'done',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          result: { summary: 'absent', containers: [] },
+        },
+      })
+
+      await processCommandEnvelope(
+        db,
+        registry,
+        buildEnvelope(record, serverId),
+      )
+
+      const [row] = await db
+        .select({
+          id: container.id,
+          containerId: container.containerId,
+          status: container.status,
+        })
+        .from(container)
+        .where(eq(container.id, containerRowId))
+        .limit(1)
+      assertEquals(row?.id, containerRowId)
+      assertEquals(row?.containerId, null)
+      assertEquals(row?.status, 'exited')
+    } finally {
+      await db.delete(container).where(eq(container.serverId, serverId))
+      await db.delete(service).where(eq(service.environmentId, environmentId))
+      await db.delete(environment).where(eq(environment.id, environmentId))
+      await db.delete(project).where(eq(project.id, projectRow!.id))
+      await db.delete(workspace).where(eq(workspace.id, workspaceRow!.id))
+    }
+  })
+})
+
+test('processCommandEnvelope maps a labelled self-host system.reconcile report onto the pre-allocated app row by service UUID container name', async () => {
+  await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+
+    const [workspaceRow] = await db
+      .insert(workspace)
+      .values({ organizationId, displayName: 'Self-Host Reconcile Workspace' })
+      .returning({ id: workspace.id })
+    const [projectRow] = await db
+      .insert(project)
+      .values({
+        workspaceId: workspaceRow!.id,
+        displayName: 'TurboPanel',
+        metadata: { type: 'docker-compose', component: 'turbopanel' },
+      })
+      .returning({ id: project.id })
+    const [environmentRow] = await db
+      .insert(environment)
+      .values({
+        projectId: projectRow!.id,
+        serverId,
+        displayName: 'Production',
+        metadata: { component: 'turbopanel' },
+      })
+      .returning({ id: environment.id })
+    const environmentId = environmentRow!.id
+    const [serviceRow] = await db
+      .insert(service)
+      .values({
+        environmentId,
+        displayName: 'database',
+        composeServiceName: 'database',
+      })
+      .returning({ id: service.id })
+    const serviceId = serviceRow!.id
+    // Self-host app containers use bare uuid naming — the service id itself,
+    // never the `<serviceId>-ingress` shape used by hosting-ingress.
+    const containerName = serviceId
+    const [containerRow] = await db
+      .insert(container)
+      .values({
+        serviceId,
+        serverId,
+        containerId: null,
+        containerName,
+        status: 'pending',
+        role: 'app',
+        composeServiceName: 'database',
+        ordinal: 1,
+      })
+      .returning({ id: container.id })
+    const containerRowId = containerRow!.id
+
+    try {
+      const record = await createCommandRecord(db, {
+        serverId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'system.reconcile',
+        payload: {
+          environmentId,
+          action: 'reconcile',
+          components: [
+            {
+              component: 'database',
+              serviceId,
+              composeServiceName: 'database',
+              containerName,
+              role: 'app',
+              desired: 'present',
+            },
+          ],
+        },
+      })
+
+      const registry = createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'done',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          result: {
+            summary: 'System reconcile',
+            containers: [
+              {
+                serviceId,
+                composeServiceName: 'database',
+                containerId: 'db-cid-1',
+                containerName,
+                status: 'running',
+                role: 'app',
+              },
+            ],
+          },
+        },
+      })
+
+      await processCommandEnvelope(
+        db,
+        registry,
+        buildEnvelope(record, serverId),
+      )
+
+      const updated = await getCommandRecord(db, record.id)
+      assertEquals(updated?.status, 'succeeded')
+
+      const [row] = await db
+        .select({
+          id: container.id,
+          containerId: container.containerId,
+          containerName: container.containerName,
+          status: container.status,
+          role: container.role,
+        })
+        .from(container)
+        .where(eq(container.id, containerRowId))
+        .limit(1)
+      assertEquals(row?.id, containerRowId)
+      assertEquals(row?.containerId, 'db-cid-1')
+      assertEquals(row?.containerName, serviceId)
+      assertEquals(row?.status, 'running')
+      assertEquals(row?.role, 'app')
+    } finally {
+      await db.delete(container).where(eq(container.serverId, serverId))
+      await db.delete(service).where(eq(service.environmentId, environmentId))
+      await db.delete(environment).where(eq(environment.id, environmentId))
+      await db.delete(project).where(eq(project.id, projectRow!.id))
+      await db.delete(workspace).where(eq(workspace.id, workspaceRow!.id))
+    }
+  })
+})
+
+test('processCommandEnvelope leaves a missing self-host app container exited with null Docker id and preserves the row id', async () => {
+  await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+
+    const [workspaceRow] = await db
+      .insert(workspace)
+      .values({ organizationId, displayName: 'Self-Host Missing Workspace' })
+      .returning({ id: workspace.id })
+    const [projectRow] = await db
+      .insert(project)
+      .values({
+        workspaceId: workspaceRow!.id,
+        displayName: 'TurboPanel',
+        metadata: { type: 'docker-compose', component: 'turbopanel' },
+      })
+      .returning({ id: project.id })
+    const [environmentRow] = await db
+      .insert(environment)
+      .values({
+        projectId: projectRow!.id,
+        serverId,
+        displayName: 'Production',
+        metadata: { component: 'turbopanel' },
+      })
+      .returning({ id: environment.id })
+    const environmentId = environmentRow!.id
+    const [serviceRow] = await db
+      .insert(service)
+      .values({
+        environmentId,
+        displayName: 'queue',
+        composeServiceName: 'queue',
+      })
+      .returning({ id: service.id })
+    const serviceId = serviceRow!.id
+    const containerName = serviceId
+    const [containerRow] = await db
+      .insert(container)
+      .values({
+        serviceId,
+        serverId,
+        containerId: 'stale-queue-cid',
+        containerName,
+        status: 'running',
+        role: 'app',
+        composeServiceName: 'queue',
+        ordinal: 1,
+      })
+      .returning({ id: container.id })
+    const containerRowId = containerRow!.id
+
+    try {
+      const record = await createCommandRecord(db, {
+        serverId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'system.reconcile',
+        payload: {
+          environmentId,
+          action: 'reconcile',
+          components: [
+            {
+              component: 'queue',
+              serviceId,
+              composeServiceName: 'queue',
+              containerName,
+              role: 'app',
+              desired: 'present',
+            },
+          ],
+        },
+      })
+
+      // Authoritative empty report: the daemon compose-ps'd the project and
+      // found no matching row (container missing / crashed) — never a
+      // collection failure, which would omit `containers` entirely instead.
+      const registry = createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'done',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          result: { summary: 'not observed', containers: [] },
+        },
+      })
+
+      await processCommandEnvelope(
+        db,
+        registry,
+        buildEnvelope(record, serverId),
+      )
+
+      const [row] = await db
+        .select({
+          id: container.id,
+          containerId: container.containerId,
+          containerName: container.containerName,
+          status: container.status,
+        })
+        .from(container)
+        .where(eq(container.id, containerRowId))
+        .limit(1)
+      assertEquals(row?.id, containerRowId)
+      assertEquals(row?.containerId, null)
+      assertEquals(row?.containerName, serviceId)
+      assertEquals(row?.status, 'exited')
+    } finally {
+      await db.delete(container).where(eq(container.serverId, serverId))
+      await db.delete(service).where(eq(service.environmentId, environmentId))
+      await db.delete(environment).where(eq(environment.id, environmentId))
+      await db.delete(project).where(eq(project.id, projectRow!.id))
+      await db.delete(workspace).where(eq(workspace.id, workspaceRow!.id))
+    }
+  })
+})
+
+test('processCommandEnvelope keeps unmatched self-host expected rows on partial system.reconcile report', async () => {
+  await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+
+    const [workspaceRow] = await db
+      .insert(workspace)
+      .values({ organizationId, displayName: 'Self-Host Partial Workspace' })
+      .returning({ id: workspace.id })
+    const [projectRow] = await db
+      .insert(project)
+      .values({
+        workspaceId: workspaceRow!.id,
+        displayName: 'TurboPanel',
+        metadata: { type: 'docker-compose', component: 'turbopanel' },
+      })
+      .returning({ id: project.id })
+    const [environmentRow] = await db
+      .insert(environment)
+      .values({
+        projectId: projectRow!.id,
+        serverId,
+        displayName: 'Production',
+      })
+      .returning({ id: environment.id })
+    const environmentId = environmentRow!.id
+
+    const composeNames = ['database', 'queue', 'analytics'] as const
+    const serviceIds: string[] = []
+    const containerRowIds: string[] = []
+    for (const composeServiceName of composeNames) {
+      const [serviceRow] = await db
+        .insert(service)
+        .values({
+          environmentId,
+          displayName: composeServiceName,
+          composeServiceName,
+        })
+        .returning({ id: service.id })
+      const serviceId = serviceRow!.id
+      serviceIds.push(serviceId)
+      const [containerRow] = await db
+        .insert(container)
+        .values({
+          serviceId,
+          serverId,
+          containerId: `stale-${composeServiceName}`,
+          containerName: serviceId,
+          status: 'running',
+          role: 'app',
+          composeServiceName,
+          ordinal: 1,
+        })
+        .returning({ id: container.id })
+      containerRowIds.push(containerRow!.id)
+    }
+
+    try {
+      const record = await createCommandRecord(db, {
+        serverId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'system.reconcile',
+        payload: {
+          environmentId,
+          action: 'reconcile',
+          components: composeNames.map((composeServiceName, index) => ({
+            component: composeServiceName,
+            serviceId: serviceIds[index]!,
+            composeServiceName,
+            containerName: serviceIds[index]!,
+            role: 'app' as const,
+            desired: 'present' as const,
+          })),
+        },
+      })
+
+      // Daemon reports only database running — queue/analytics must remain
+      // with the same row ids and null Docker ids (not deleted).
+      const registry = createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'done',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          result: {
+            summary: 'partial',
+            containers: [
+              {
+                serviceId: serviceIds[0]!,
+                composeServiceName: 'database',
+                containerId: 'db-only-cid',
+                containerName: serviceIds[0]!,
+                status: 'running',
+                role: 'app',
+              },
+            ],
+          },
+        },
+      })
+
+      await processCommandEnvelope(
+        db,
+        registry,
+        buildEnvelope(record, serverId),
+      )
+
+      const rows = await db
+        .select({
+          id: container.id,
+          serviceId: container.serviceId,
+          containerId: container.containerId,
+          status: container.status,
+        })
+        .from(container)
+        .where(eq(container.serverId, serverId))
+
+      assertEquals(rows.length, 3)
+      const byService = new Map(rows.map((row) => [row.serviceId, row]))
+      assertEquals(byService.get(serviceIds[0]!)?.id, containerRowIds[0])
+      assertEquals(byService.get(serviceIds[0]!)?.containerId, 'db-only-cid')
+      assertEquals(byService.get(serviceIds[0]!)?.status, 'running')
+      assertEquals(byService.get(serviceIds[1]!)?.id, containerRowIds[1])
+      assertEquals(byService.get(serviceIds[1]!)?.containerId, null)
+      assertEquals(byService.get(serviceIds[1]!)?.status, 'exited')
+      assertEquals(byService.get(serviceIds[2]!)?.id, containerRowIds[2])
+      assertEquals(byService.get(serviceIds[2]!)?.containerId, null)
+      assertEquals(byService.get(serviceIds[2]!)?.status, 'exited')
+    } finally {
+      await db.delete(container).where(eq(container.serverId, serverId))
+      await db.delete(service).where(eq(service.environmentId, environmentId))
+      await db.delete(environment).where(eq(environment.id, environmentId))
+      await db.delete(project).where(eq(project.id, projectRow!.id))
+      await db.delete(workspace).where(eq(workspace.id, workspaceRow!.id))
+    }
+  })
+})

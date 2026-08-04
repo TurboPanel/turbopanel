@@ -1,7 +1,7 @@
 import { eq, sql, type SQL } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import { grant, member, teammate } from '../../lib/db/schema.ts'
-import { type PermissionKey } from './catalog.ts'
+import { type PermissionKey, isSystemPermissionKey } from './catalog.ts'
 
 export type { PermissionKey }
 
@@ -706,12 +706,18 @@ export async function can(
 
   // Respect the requested organization permission: an `organization:own` check
   // must require an owner grant, while `organization:manage` accepts owner or
-  // manager grants. Team-scoped requests keep the prior org-delegation
-  // behavior (an org owner/manager may act on any team in the org).
-  const orgPermissionFilter =
-    permissionKey === 'organization:own'
-      ? sql`ag.permission = 'organization:own'`
-      : sql`ag.permission IN ('organization:own', 'organization:manage')`
+  // manager grants. System permissions require an exact grant of that key —
+  // broad org access must not silently confer platform-administration rights
+  // over system-owned infrastructure. Team-scoped requests keep the prior
+  // org-delegation behavior (an org owner/manager may act on any team in the org).
+  let orgPermissionFilter: SQL
+  if (isSystemPermissionKey(permissionKey)) {
+    orgPermissionFilter = sql`ag.permission = ${permissionKey}`
+  } else if (permissionKey === 'organization:own') {
+    orgPermissionFilter = sql`ag.permission = 'organization:own'`
+  } else {
+    orgPermissionFilter = sql`ag.permission IN ('organization:own', 'organization:manage')`
+  }
 
   const isTeamScopedCheck =
     entityType === 'team' &&
@@ -724,6 +730,12 @@ export async function can(
         ? sql`ag.permission = 'team:own'`
         : sql`ag.permission IN ('team:own', 'team:manage')`
   }
+
+  // `system:manage` is superadmin-only; other keys (including system:read /
+  // system:operate) keep the broad platform-admin bypass.
+  const platformAdminRoleFilter = permissionKey === 'system:manage'
+    ? sql`role = 'superadmin'`
+    : sql`role IN ('superadmin', 'admin')`
 
   const rows = (await db.execute(sql`
     WITH
@@ -759,7 +771,7 @@ export async function can(
       LIMIT 1
     )
     SELECT (
-      EXISTS(SELECT 1 FROM "user" WHERE id = ${userId}::uuid AND role IN ('superadmin', 'admin'))
+      EXISTS(SELECT 1 FROM "user" WHERE id = ${userId}::uuid AND ${platformAdminRoleFilter})
       OR EXISTS(SELECT 1 FROM org_hits)
       OR EXISTS(SELECT 1 FROM team_hits)
     ) AS allowed

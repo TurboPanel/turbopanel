@@ -1388,6 +1388,162 @@ export function parseEnvironmentLifecycleResult(
   return result
 }
 
+/** Allowlisted system component keys — never a free-form wire string. */
+export type SystemComponentKey = 'hosting-ingress' | 'database' | 'queue' | 'analytics'
+
+export type SystemReconcileAction = 'reconcile' | 'restart' | 'stop'
+
+/** Container-name rule / role per system component — never a free-form wire value. */
+export const SYSTEM_COMPONENT_ROLES: Record<SystemComponentKey, 'app' | 'ingress'> = {
+  'hosting-ingress': 'ingress',
+  database: 'app',
+  queue: 'app',
+  analytics: 'app',
+}
+
+export type SystemReconcileComponent = {
+  component: SystemComponentKey
+  serviceId: string
+  composeServiceName: string
+  containerName: string
+  role: 'app' | 'ingress'
+  desired: 'present' | 'absent'
+}
+
+/**
+ * Bounded reconcile payload. `environmentId` is owned by the instance —
+ * the daemon result must never carry a competing environment id.
+ */
+export type SystemReconcileCommandPayload = {
+  environmentId: string
+  action: SystemReconcileAction
+  components: SystemReconcileComponent[]
+}
+
+/**
+ * Observed containers only. No `environmentId` — the consumer trusts only
+ * the payload's environment id.
+ */
+export type SystemReconcileCommandResult = {
+  summary?: string
+  containers?: EnvironmentDeployContainer[]
+}
+
+const SYSTEM_COMPONENT_KEYS = new Set<string>([
+  'hosting-ingress',
+  'database',
+  'queue',
+  'analytics',
+])
+const SYSTEM_RECONCILE_ACTIONS = new Set(['reconcile', 'restart', 'stop'])
+const SYSTEM_RECONCILE_DESIRED = new Set(['present', 'absent'])
+/** Room for a later self-host phase without reopening the schema. */
+const MAX_SYSTEM_RECONCILE_COMPONENTS = 8
+
+export function isSystemComponentKey(value: unknown): value is SystemComponentKey {
+  return typeof value === 'string' && SYSTEM_COMPONENT_KEYS.has(value)
+}
+
+function parseSystemReconcileComponent(
+  value: unknown,
+  seen: Set<string>,
+): SystemReconcileComponent {
+  if (!isRecord(value)) {
+    throw new Error('Invalid system.reconcile payload')
+  }
+  const component = value.component
+  if (!isSystemComponentKey(component)) {
+    throw new Error('Invalid system.reconcile payload')
+  }
+  if (seen.has(component)) {
+    throw new Error('Invalid system.reconcile payload')
+  }
+  seen.add(component)
+
+  const serviceId = value.serviceId
+  if (!isString(serviceId) || !UUID_RE.test(serviceId)) {
+    throw new Error('Invalid system.reconcile payload')
+  }
+  const composeServiceName = value.composeServiceName
+  if (!isString(composeServiceName) || composeServiceName.length === 0) {
+    throw new Error('Invalid system.reconcile payload')
+  }
+  const expectedRole = SYSTEM_COMPONENT_ROLES[component]
+  const role = value.role
+  if (role !== expectedRole) {
+    throw new Error('Invalid system.reconcile payload')
+  }
+  const containerName = value.containerName
+  const expectedContainerName = role === 'ingress' ? `${serviceId}-ingress` : serviceId
+  if (!isString(containerName) || containerName !== expectedContainerName) {
+    throw new Error('Invalid system.reconcile payload')
+  }
+  const desired = value.desired
+  if (!isString(desired) || !SYSTEM_RECONCILE_DESIRED.has(desired)) {
+    throw new Error('Invalid system.reconcile payload')
+  }
+  return {
+    component,
+    serviceId,
+    composeServiceName,
+    containerName,
+    role: role as 'app' | 'ingress',
+    desired: desired as 'present' | 'absent',
+  }
+}
+
+export function parseSystemReconcilePayload(
+  value: unknown,
+): SystemReconcileCommandPayload {
+  if (!isRecord(value)) {
+    throw new Error('Invalid system.reconcile payload')
+  }
+  const environmentId = value.environmentId
+  if (
+    !isString(environmentId) ||
+    environmentId.length === 0 ||
+    !UUID_RE.test(environmentId)
+  ) {
+    throw new Error('Invalid system.reconcile payload')
+  }
+
+  let action: SystemReconcileAction = 'reconcile'
+  if (value.action !== undefined) {
+    if (!isString(value.action) || !SYSTEM_RECONCILE_ACTIONS.has(value.action)) {
+      throw new Error('Invalid system.reconcile payload')
+    }
+    action = value.action as SystemReconcileAction
+  }
+
+  if (!Array.isArray(value.components) || value.components.length === 0) {
+    throw new Error('Invalid system.reconcile payload')
+  }
+  if (value.components.length > MAX_SYSTEM_RECONCILE_COMPONENTS) {
+    throw new Error('Invalid system.reconcile payload')
+  }
+
+  const seen = new Set<string>()
+  const components: SystemReconcileComponent[] = []
+  for (const entry of value.components) {
+    components.push(parseSystemReconcileComponent(entry, seen))
+  }
+
+  return { environmentId, action, components }
+}
+
+export function parseSystemReconcileResult(
+  value: unknown,
+): SystemReconcileCommandResult {
+  if (!isRecord(value)) {
+    return {}
+  }
+  const result: SystemReconcileCommandResult = {}
+  if (isString(value.summary)) result.summary = value.summary
+  const containers = parseDeployContainers(value.containers)
+  if (containers !== undefined) result.containers = containers
+  return result
+}
+
 /** Docker Compose project name charset (daemon `COMPOSE_PROJECT_RE` parity). */
 const COMPOSE_PROJECT_RE = /^[a-z0-9][a-z0-9_-]*$/
 const SAFE_IDENTIFIER_RE = /^[A-Za-z_]\w*$/
@@ -2327,7 +2483,8 @@ export function parseCommandPayload(
   | ManagedLifecycleCommandPayload
   | ManagedDestroyCommandPayload
   | ManagedBackupCommandPayload
-  | ManagedRestoreCommandPayload {
+  | ManagedRestoreCommandPayload
+  | SystemReconcileCommandPayload {
   switch (type) {
     case 'daemon.ping':
       return parsePingPayload(value)
@@ -2357,6 +2514,8 @@ export function parseCommandPayload(
       return parseManagedBackupPayload(value)
     case 'managed.restore':
       return parseManagedRestorePayload(value)
+    case 'system.reconcile':
+      return parseSystemReconcilePayload(value)
   }
 }
 
@@ -2377,7 +2536,8 @@ export function parseCommandResult(
   | ManagedLifecycleCommandResult
   | ManagedDestroyCommandResult
   | ManagedBackupCommandResult
-  | ManagedRestoreCommandResult {
+  | ManagedRestoreCommandResult
+  | SystemReconcileCommandResult {
   switch (type) {
     case 'daemon.ping':
       return parsePingResult(value)
@@ -2407,5 +2567,7 @@ export function parseCommandResult(
       return parseManagedBackupResult(value)
     case 'managed.restore':
       return parseManagedRestoreResult(value)
+    case 'system.reconcile':
+      return parseSystemReconcileResult(value)
   }
 }

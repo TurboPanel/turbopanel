@@ -13,8 +13,10 @@ import { logInfo, logWarn } from './logger.ts'
 import { createRedisDaemonCellRegistry } from './daemon/cell/redis/registry.ts'
 import { sweepStalePresence } from './daemon/cell/control-plane-monitor.ts'
 import { DAEMON_CELL_MAINTAIN_MS } from './daemon/cell/protocol.ts'
+import { runSystemReconcileSweep } from './client/system/reconcile.ts'
 import {
   ensureColocatedLicenseCredentialsOnDisk,
+  ensureSelfHostSystemHierarchyBestEffort,
 } from './client/authn/install-state.ts'
 import {
   assertPasswordHasherAvailable,
@@ -285,6 +287,17 @@ const maintenanceTimer = setInterval(() => {
   void sweepStalePresence(db, daemonCellRegistry).catch((err) => {
     logWarn('daemon-cell', `stale presence sweep error: ${String(err)}`)
   })
+  // Idempotent — cheap to re-run every tick so a colocated daemon that
+  // enrolls after boot (or after install) still converges to the
+  // self-host `turbopanel` hierarchy without a restart.
+  void ensureSelfHostSystemHierarchyBestEffort(db, daemonCellRegistry).catch((err) => {
+    logWarn('daemon-cell', `self-host hierarchy bootstrap error: ${String(err)}`)
+  })
+  if (!isNoopCommandQueue(commandQueue)) {
+    void runSystemReconcileSweep(db, commandQueue).catch((err) => {
+      logWarn('daemon-cell', `system reconcile sweep error: ${String(err)}`)
+    })
+  }
 }, DAEMON_CELL_MAINTAIN_MS)
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
@@ -307,6 +320,8 @@ try {
 } catch (err) {
   logInfo('install', `license credential recovery skipped: ${String(err)}`)
 }
+
+await ensureSelfHostSystemHierarchyBestEffort(db, daemonCellRegistry)
 
 Deno.serve({
   path: socketPath,

@@ -12,6 +12,7 @@ import { variable } from '../../lib/db/schema.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
+  assertNotSystemOwnedOr403,
   getOrgId,
   parseJsonBody,
 } from '../shared.ts'
@@ -485,6 +486,9 @@ async function parseVariableCreateFields(
   const denied = await assertCanCreateOr403(c, parent.entityKind, parent.id)
   if (denied) return denied
 
+  const immutable = await assertNotSystemOwnedOr403(c, parent.entityKind, parent.id)
+  if (immutable) return immutable
+
   const key = parseVariableKey(c, body.key)
   if (key instanceof Response) return key
 
@@ -731,6 +735,9 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
     const denied = await assertCanOr403(c, 'organization:manage', 'variable', id)
     if (denied) return denied
 
+    const immutable = await assertNotSystemOwnedOr403(c, 'variable', id)
+    if (immutable) return immutable
+
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
@@ -792,6 +799,9 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
 
     const denied = await assertCanOr403(c, 'organization:manage', 'variable', id)
     if (denied) return denied
+
+    const immutable = await assertNotSystemOwnedOr403(c, 'variable', id)
+    if (immutable) return immutable
 
     await db.delete(variable).where(eq(variable.id, id))
 

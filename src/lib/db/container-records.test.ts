@@ -874,3 +874,78 @@ test('reconcileEnvironmentContainers resets rather than deletes on empty report'
     )
   })
 })
+
+test('reconcileEnvironmentContainers resets unmatched expected allocations instead of deleting', async () => {
+  await withReconcileFixtures(async ({
+    db,
+    serverId,
+    environmentId,
+    webServiceId,
+    workerServiceId,
+  }) => {
+    const [webRow] = await db
+      .insert(container)
+      .values({
+        serviceId: webServiceId,
+        serverId,
+        containerId: 'cid-web',
+        containerName: webServiceId,
+        status: 'running',
+        role: 'app',
+        composeServiceName: 'web',
+        ordinal: 1,
+      })
+      .returning({ id: container.id })
+    const [workerRow] = await db
+      .insert(container)
+      .values({
+        serviceId: workerServiceId,
+        serverId,
+        containerId: 'cid-worker',
+        containerName: workerServiceId,
+        status: 'running',
+        role: 'app',
+        composeServiceName: 'worker',
+        ordinal: 1,
+      })
+      .returning({ id: container.id })
+
+    await reconcileEnvironmentContainers(db, {
+      serverId,
+      environmentId,
+      containers: [
+        {
+          serviceId: webServiceId,
+          composeServiceName: 'web',
+          containerId: 'cid-web-new',
+          containerName: webServiceId,
+          status: 'running',
+          role: 'app',
+        },
+      ],
+      expectedAllocations: [
+        { serviceId: webServiceId, role: 'app', ordinal: 1 },
+        { serviceId: workerServiceId, role: 'app', ordinal: 1 },
+      ],
+    })
+
+    const rows = await db
+      .select({
+        id: container.id,
+        serviceId: container.serviceId,
+        containerId: container.containerId,
+        status: container.status,
+      })
+      .from(container)
+      .where(eq(container.serverId, serverId))
+
+    assertEquals(rows.length, 2)
+    const byService = new Map(rows.map((row) => [row.serviceId, row]))
+    assertEquals(byService.get(webServiceId)?.id, webRow!.id)
+    assertEquals(byService.get(webServiceId)?.containerId, 'cid-web-new')
+    assertEquals(byService.get(webServiceId)?.status, 'running')
+    assertEquals(byService.get(workerServiceId)?.id, workerRow!.id)
+    assertEquals(byService.get(workerServiceId)?.containerId, null)
+    assertEquals(byService.get(workerServiceId)?.status, 'exited')
+  })
+})

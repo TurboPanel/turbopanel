@@ -7,6 +7,12 @@ export const workspaceSchemas = {
       id: { type: 'string' },
       displayName: { type: ['string', 'null'] },
       description: { type: ['string', 'null'] },
+      kind: {
+        type: 'string',
+        enum: ['user', 'system'],
+        description:
+          'Authorization-sensitive discriminator. System workspaces are platform-managed and immutable through the public API.',
+      },
       organizationId: { type: 'string' },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
@@ -24,6 +30,7 @@ export const workspaceSchemas = {
   },
   CreateWorkspaceRequest: {
     type: 'object',
+    description: 'New workspaces are always created with kind=user; a caller-supplied kind is ignored.',
     properties: {
       displayName: { type: 'string' },
       description: { type: 'string' },

@@ -17,6 +17,8 @@ import {
 } from './lib/db/server-metadata.ts'
 import { license, server } from './lib/db/schema.ts'
 import { normalizeMachineKey } from './lib/machine-key.ts'
+import { ensureSystemHierarchy } from './client/system/hierarchy.ts'
+import { compatLogWarn } from './log-compat.ts'
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -428,12 +430,26 @@ async function resolveLicensedServerId(
   }
 
   try {
-    return await insertLicensedServer(
+    const serverId = await insertLicensedServer(
       db,
       identity,
       licenseId,
       verified.organizationId,
     )
+    // Best-effort: hierarchy failure must never block daemon enrollment.
+    try {
+      await ensureSystemHierarchy(db, {
+        organizationId: verified.organizationId,
+        serverId,
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      compatLogWarn(
+        'server-registry',
+        `ensureSystemHierarchy failed for server ${serverId}: ${message}`,
+      )
+    }
+    return serverId
   } catch (err) {
     if (!isUniqueViolation(err)) throw err
     // Concurrent first enroll: the winner owns the license; only that server
