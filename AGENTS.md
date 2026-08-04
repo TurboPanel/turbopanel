@@ -10,7 +10,7 @@ Minimal Hono app with dual runtimes: **Cloudflare Workers** (Wrangler) and
 | TurboPanel Control Plane | [turbopanel/turbopanel](https://github.com/turbopanel/turbopanel) | `instance` (runtime/architecture only) |
 
 - **License:** AGPL-3.0-only ([`LICENSE`](./LICENSE), `package.json` / `deno.json`).
-- **Maturity label:** **Public beta** (README, roadmap, site banner — keep identical).
+- **Maturity label:** **Private alpha** (README, roadmap, site banner — keep identical).
 - **README** is product-facing; **AGENTS.md** is maintainer-facing. Do not use `turbopanel/instance` as a public repo slug.
 
 ## Speed doctrine (turbo)

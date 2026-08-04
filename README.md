@@ -6,13 +6,13 @@
 [![License: AGPL-3.0-only](https://img.shields.io/badge/License-AGPL--3.0--only-blue.svg)](./LICENSE)
 [![Docs](https://img.shields.io/badge/docs-turbopanel.io-3366cc)](https://turbopanel.io/docs)
 [![Discussions](https://img.shields.io/github/discussions/turbopanel/turbopanel)](https://github.com/turbopanel/turbopanel/discussions)
-[![Status: Public beta](https://img.shields.io/badge/status-public%20beta-3dd68c)](https://turbopanel.io/roadmap)
+[![Status: Private alpha](https://img.shields.io/badge/status-private%20alpha-3dd68c)](https://turbopanel.io/roadmap)
 
 **[Use TurboPanel Managed](https://turbopanel.io/pricing?utm_source=github-main-readme)** · **[Self-host TurboPanel](https://turbopanel.io/docs/deployment/self-hosted?utm_source=github-main-readme)** · **[Documentation](https://turbopanel.io/docs?utm_source=github-main-readme)**
 
 ![TurboPanel servers overview](https://turbopanel.io/screenshots/servers-overview.png)
 
-> **Public beta** — Foundation and fleet operations are shipped; apps and deploy are actively improving. See the [roadmap](https://turbopanel.io/roadmap) and [releases](https://github.com/turbopanel/turbopanel/releases). Check the [compatibility matrix](https://turbopanel.io/docs/deployment/compatibility) before upgrading.
+> **Private alpha** — Foundation and fleet operations are shipped; apps and deploy are actively improving. See the [roadmap](https://turbopanel.io/roadmap) and [releases](https://github.com/turbopanel/turbopanel/releases). Check the [compatibility matrix](https://turbopanel.io/docs/deployment/compatibility) before upgrading.
 
 ## What TurboPanel does
 
