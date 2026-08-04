@@ -14,6 +14,7 @@
     "generate": "drizzle-kit generate --config drizzle.config.mjs",
     "migrate": "drizzle-kit migrate --config drizzle.config.mjs",
     "test:do": "vitest run --config vitest.config.ts",
+    "test:coverage": "sh scripts/test-coverage.sh",
     "check:do-hibernation": "node scripts/check-durable-object-hibernation.mjs",
     "check:do-hibernation:fixtures": "node scripts/check-durable-object-hibernation.mjs --fixtures",
     "check:workers-bundle": "node scripts/check-workers-bundle.mjs",

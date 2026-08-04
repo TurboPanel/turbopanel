@@ -49,6 +49,9 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# test coverage (Vitest / Deno LCOV for SonarCloud)
+coverage/
+
 # misc
 .DS_Store
 

@@ -103,14 +103,19 @@ change. Future agents read `AGENTS.md` first.
 - Analysis runs in GitHub Actions (`.github/workflows/build.yml` **SonarQube**
   job — SonarCloud wizard layout) with `SONAR_TOKEN` and
   `sonar-project.properties` (`sonar.projectKey=turbopanel_turbopanel`,
-  `sonar.organization=turbopanel`). The SonarQube job is a **separate check**
-  that runs **before** Verify (`needs: sonarqube`). If Sonar fails, Verify is
-  skipped and nothing else in the workflow continues. The scan waits on the
-  quality gate (`sonar.qualitygate.wait=true`).
+  `sonar.organization=turbopanel`). The job runs checks + **`pnpm test:coverage`**
+  (Vitest under the workers pool, then Deno LCOV via `scripts/test-coverage.sh`;
+  Vitest has no V8 inspector in workerd so LCOV is Deno-only), then the scan with
+  `sonar.javascript.lcov.reportPaths=coverage/deno.lcov` and
+  `sonar.qualitygate.wait=true`. If the quality gate fails, the workflow stops.
 - **Automatic Analysis must stay off** for `turbopanel_turbopanel`
   (SonarCloud → project **Administration → Analysis Method**). CI and Automatic
   Analysis cannot run together — Automatic Analysis enabled makes the CI
   scanner fail.
+- Sonar-way **Coverage on New Code ≥ 80%** needs LCOV on CI. After switching
+  from Automatic Analysis, reset **New Code** (Administration → New Code) so
+  the baseline is not months of uncovered history, or the gate will fail even
+  with fresh coverage reports.
 - Drizzle-generated SQL under **`migrations/`** must stay excluded
   (`**/migrations/**`) — never “fix” smells in those files.
 - Hand-authored OpenAPI under `src/client/openapi/**` and

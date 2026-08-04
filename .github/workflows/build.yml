@@ -11,35 +11,14 @@ permissions:
   contents: read
 
 jobs:
-  # SonarCloud wizard config — quality gate first. If this job fails, Verify does
-  # not run. Automatic Analysis must be off (Administration → Analysis Method).
+  # Tests + LCOV first, then Sonar quality gate. If Sonar fails, the workflow
+  # stops (no further jobs). Automatic Analysis must stay off
+  # (Administration → Analysis Method).
   sonarqube:
     name: SonarQube
     runs-on: ubuntu-latest
     concurrency:
       group: instance-sonar-${{ github.event_name }}-${{ github.ref }}
-      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          fetch-depth: 0 # Shallow clones should be disabled for a better relevancy of analysis
-
-      - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995 # v8.1.0
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          args: >
-            -Dsonar.qualitygate.wait=true
-
-  # Only after SonarQube succeeds — do not continue on gate failure.
-  verify:
-    name: Verify
-    needs: sonarqube
-    runs-on: ubuntu-latest
-    concurrency:
-      group: instance-verify-${{ github.event_name }}-${{ github.ref }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     services:
       postgres:
@@ -57,9 +36,18 @@ jobs:
           --health-retries 5
     env:
       TURBOPANEL_DATABASE_URL: postgresql://turbopanel:turbopanel_ci_test@127.0.0.1:5432/turbopanel
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0 # Shallow clones should be disabled for a better relevancy of analysis
+
+      - name: Require SONAR_TOKEN
+        run: |
+          if [ -z "$SONAR_TOKEN" ]; then
+            echo "::error::SONAR_TOKEN is missing — add the secret on turbopanel/turbopanel (or org)."
+            exit 1
+          fi
 
       - name: Install pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
@@ -82,5 +70,27 @@ jobs:
       - name: Apply database migrations
         run: pnpm migrate
 
-      - name: Pre-commit validation suite
-        run: pnpm run test:hook
+      - name: Durable Object hibernation guard
+        run: pnpm run check:do-hibernation
+
+      - name: Workers bundle check
+        run: pnpm run check:workers-bundle
+
+      - name: Test with coverage
+        run: pnpm test:coverage
+
+      - name: Upload coverage LCOV
+        uses: actions/upload-artifact@v7
+        with:
+          name: instance-coverage-lcov
+          path: coverage/deno.lcov
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995 # v8.1.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: >
+            -Dsonar.qualitygate.wait=true
