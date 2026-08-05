@@ -89,7 +89,7 @@ async function cleanupOrgHierarchy(
   await db.delete(organization).where(eq(organization.id, organizationId))
 }
 
-test('isWorkspaceDisplayNameTaken ignores system workspace named System', async () => {
+test('isWorkspaceDisplayNameTaken treats system workspace named System as taken', async () => {
   if (!dbUrl) {
     console.warn(
       'Skipping workspace display-name uniqueness DB test: TURBOPANEL_DATABASE_URL not set',
@@ -121,17 +121,10 @@ test('isWorkspaceDisplayNameTaken ignores system workspace named System', async 
 
     assertEquals(
       await isWorkspaceDisplayNameTaken(db, organizationId, 'System'),
-      false,
+      true,
     )
-
-    await db.insert(workspace).values({
-      organizationId,
-      displayName: 'System',
-      kind: 'user',
-    })
-
     assertEquals(
-      await isWorkspaceDisplayNameTaken(db, organizationId, 'System'),
+      await isWorkspaceDisplayNameTaken(db, organizationId, '  system  '),
       true,
     )
   } finally {

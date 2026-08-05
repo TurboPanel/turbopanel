@@ -25,7 +25,9 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/authz/ \
   src/server-paths.deno.test.ts \
   src/lib/compose/ \
-  src/lib/managed/
+  src/lib/managed/ \
+  src/admin/reencrypt-secrets.test.ts \
+  src/admin/routes.test.ts
 
 echo "==> Deno LCOV"
 deno coverage coverage/deno-profile --lcov --output=coverage/deno.lcov

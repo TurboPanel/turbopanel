@@ -726,15 +726,22 @@ compose stack:**
   to the dev user / `tpcache` group — a socket-permission model that is
   simpler to keep host-native than to thread through a container network.
 
-**Bootstrap ordering:** `docker compose up` (with the labels below) runs
-first via the `system-compose` Ansible role → the instance's install
-hierarchy (`ensureSelfHostSystemHierarchy`) allocates the `service` /
-`container` rows and assigns each service a UUID → a `system.reconcile`
-command carries that allocated `serviceId` (as the compose service's
-container name) to the daemon → the daemon inspects `docker compose ps` by
-the `com.turbopanel.system.component` label and reports identity/status back
-by container name. Inventory rows exist before the daemon ever inspects the
-stack; the daemon never invents ids.
+**Bootstrap ordering:** Self-hosted install creates the **System** workspace
+(`kind='system'`) inside the install transaction — before any daemon enrolls.
+Self-host project/environment/services still wait on the colocated server
+(`ensureSelfHostSystemHierarchy`). Then `docker compose up` (with the labels
+below) runs via the `system-compose` Ansible role → the hierarchy allocates
+the `service` / `container` rows and assigns each service a UUID → a
+`system.reconcile` command carries that allocated `serviceId` (as the compose
+service's container name) to the daemon → the daemon inspects
+`docker compose ps` by the `com.turbopanel.system.component` label and reports
+identity/status back by container name. Inventory rows exist before the
+daemon ever inspects the stack; the daemon never invents ids.
+
+**Co-located delete / license revoke:** Server delete and license revoke are
+guarded by the durable self-host environment pin (the server that owns the
+`turbopanel` system environment), not only live registry / machine-id probes —
+so neither succeeds while the daemon is offline or the registry is unavailable.
 
 **Status / restart surface:** host-native components (Caddy, Redis, the
 instance, `turbopaneld`) have no `container` row and therefore never appear
@@ -863,9 +870,9 @@ sequenceDiagram
   `createAdminAccessMiddleware`; dev-only OpenAPI/Scalar;
   `GET/PUT /instance/public-urls` persists `TURBOPANEL_PUBLIC_URLS` in the
   `setting` table; `GET/PUT /settings/signup` toggles public sign-up via
-  `IS_SIGNUP_ENABLED`; superadmin `POST /secrets/reencrypt` sweeps at-rest
-  `enc` blobs onto the current data-encryption key version
-  (`src/admin/reencrypt-secrets.ts`).
+  `IS_SIGNUP_ENABLED`; superadmin `POST /secrets/reencrypt` runs a bounded
+  at-rest re-encrypt sweep onto the current data-encryption key version
+  (`src/admin/reencrypt-secrets.ts` — resume via `cursor` until `completed`).
 - `src/resource-routes.ts` — workspace/environment/project/service/hosting CRUD
 - `src/server-paths.ts` / `src/server-registry.ts` — Unix socket path + daemon
   server row resolution

@@ -280,6 +280,81 @@ function validateResultEnvelopeFields(
   return null;
 }
 
+function validateOptionalIsoTimestamp(
+  value: unknown,
+  field: string,
+): string | null {
+  if (value === undefined) return null;
+  if (!isIsoTimestamp(value)) return `invalid ${field}`;
+  return null;
+}
+
+function validateHelloFields(record: Record<string, unknown>): string | null {
+  if (!parseDaemonAgentInfo(record.agent)) return "invalid agent";
+  return validatePresenceFields(record);
+}
+
+function validateAddressesResultFields(
+  record: Record<string, unknown>,
+): string | null {
+  const base = validateResultEnvelopeFields(record);
+  if (base) return base;
+  if (!isRecord(record.addresses)) return "invalid addresses";
+  return null;
+}
+
+function validateManagedLogsResultFields(
+  record: Record<string, unknown>,
+): string | null {
+  const base = validateResultEnvelopeFields(record);
+  if (base) return base;
+  if (typeof record.logs !== "string") return "invalid logs";
+  if (record.logs.length > MAX_DAEMON_WS_LOGS_CHARS) {
+    return "logs exceed max length";
+  }
+  return null;
+}
+
+function validateOkResultFields(
+  record: Record<string, unknown>,
+): string | null {
+  const base = validateResultEnvelopeFields(record);
+  if (base) return base;
+  if (typeof record.ok !== "boolean") return "invalid ok";
+  return null;
+}
+
+function validateCommandAckFields(
+  record: Record<string, unknown>,
+): string | null {
+  if (!isBoundedId(record.id)) return "invalid id";
+  if (!isIsoTimestamp(record.at)) return "invalid at timestamp";
+  if (!isIsoTimestamp(record.daemonReceivedAt)) {
+    return "invalid daemonReceivedAt";
+  }
+  return null;
+}
+
+function validateCommandOutcomeFields(
+  record: Record<string, unknown>,
+): string | null {
+  if (!isBoundedId(record.id)) return "invalid id";
+  if (!isIsoTimestamp(record.at)) return "invalid at timestamp";
+  if (typeof record.ok !== "boolean") return "invalid ok";
+  const errorIssue = validateOptionalError(record.error);
+  if (errorIssue) return errorIssue;
+  const resultIssue = validateCommandResult(record.result);
+  if (resultIssue) return resultIssue;
+  return validateOptionalIsoTimestamp(
+    record.daemonReceivedAt,
+    "daemonReceivedAt",
+  ) ??
+    validateOptionalIsoTimestamp(
+      record.daemonRespondedAt,
+      "daemonRespondedAt",
+    );
+}
+
 /**
  * Strict inbound WebSocket frame validator. Checks frame size, message type,
  * required fields, timestamp format, identifier lengths, and per-field caps
@@ -316,66 +391,23 @@ function validateInboundMessageFields(
   record: Record<string, unknown>,
 ): string | null {
   switch (record.type) {
-    case "hello": {
-      if (!parseDaemonAgentInfo(record.agent)) return "invalid agent";
-      return validatePresenceFields(record);
-    }
+    case "hello":
+      return validateHelloFields(record);
     case "heartbeat":
       return validatePresenceFields(record);
-    case "addresses-result": {
-      const base = validateResultEnvelopeFields(record);
-      if (base) return base;
-      if (!isRecord(record.addresses)) return "invalid addresses";
-      return null;
-    }
-    case "managed-logs-result": {
-      const base = validateResultEnvelopeFields(record);
-      if (base) return base;
-      if (typeof record.logs !== "string") return "invalid logs";
-      if (record.logs.length > MAX_DAEMON_WS_LOGS_CHARS) {
-        return "logs exceed max length";
-      }
-      return null;
-    }
+    case "addresses-result":
+      return validateAddressesResultFields(record);
+    case "managed-logs-result":
+      return validateManagedLogsResultFields(record);
     case "dev-sync-result":
     case "tunnel-token-result":
     case "public-urls-update-result":
-    case "update-result": {
-      const base = validateResultEnvelopeFields(record);
-      if (base) return base;
-      if (typeof record.ok !== "boolean") return "invalid ok";
-      return null;
-    }
-    case "command-ack": {
-      if (!isBoundedId(record.id)) return "invalid id";
-      if (!isIsoTimestamp(record.at)) return "invalid at timestamp";
-      if (!isIsoTimestamp(record.daemonReceivedAt)) {
-        return "invalid daemonReceivedAt";
-      }
-      return null;
-    }
-    case "command-outcome": {
-      if (!isBoundedId(record.id)) return "invalid id";
-      if (!isIsoTimestamp(record.at)) return "invalid at timestamp";
-      if (typeof record.ok !== "boolean") return "invalid ok";
-      const errorIssue = validateOptionalError(record.error);
-      if (errorIssue) return errorIssue;
-      const resultIssue = validateCommandResult(record.result);
-      if (resultIssue) return resultIssue;
-      if (
-        record.daemonReceivedAt !== undefined &&
-        !isIsoTimestamp(record.daemonReceivedAt)
-      ) {
-        return "invalid daemonReceivedAt";
-      }
-      if (
-        record.daemonRespondedAt !== undefined &&
-        !isIsoTimestamp(record.daemonRespondedAt)
-      ) {
-        return "invalid daemonRespondedAt";
-      }
-      return null;
-    }
+    case "update-result":
+      return validateOkResultFields(record);
+    case "command-ack":
+      return validateCommandAckFields(record);
+    case "command-outcome":
+      return validateCommandOutcomeFields(record);
     default:
       return `disallowed type ${String(record.type)}`;
   }

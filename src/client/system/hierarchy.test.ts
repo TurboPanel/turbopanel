@@ -15,6 +15,7 @@ import { WORKSPACE_KIND_SYSTEM } from '../../lib/db/workspace-kind.ts'
 import {
   ensureSelfHostSystemHierarchy,
   ensureSystemHierarchy,
+  ensureSystemWorkspace,
   SYSTEM_SELF_HOST_COMPONENT,
   SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES,
 } from './hierarchy.ts'
@@ -129,6 +130,31 @@ test('ensureSystemHierarchy is idempotent for the same org/server', async () => 
     assertEquals(second.serviceId, first.serviceId)
     assertEquals(second.containerRowId, first.containerRowId)
     assertEquals(second.containerName, first.containerName)
+  })
+})
+
+test('hierarchy ensure reuses an install-created System workspace', async () => {
+  await withHierarchyFixtures(async ({ db, organizationId, serverId }) => {
+    const installWorkspaceId = await ensureSystemWorkspace(db, organizationId)
+
+    const ingress = await ensureSystemHierarchy(db, { organizationId, serverId })
+    const selfHost = await ensureSelfHostSystemHierarchy(db, {
+      organizationId,
+      serverId,
+    })
+
+    assertEquals(ingress.workspaceId, installWorkspaceId)
+    assertEquals(selfHost.workspaceId, installWorkspaceId)
+
+    const systemRows = await db
+      .select({ id: workspace.id })
+      .from(workspace)
+      .where(and(
+        eq(workspace.organizationId, organizationId),
+        eq(workspace.kind, WORKSPACE_KIND_SYSTEM),
+      ))
+    assertEquals(systemRows.length, 1)
+    assertEquals(systemRows[0]?.id, installWorkspaceId)
   })
 })
 

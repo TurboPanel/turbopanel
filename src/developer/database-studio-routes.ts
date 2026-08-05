@@ -15,7 +15,8 @@ export function registerDatabaseStudioRoutes(developer: Hono): void {
 
     const started = await startDrizzleStudio()
     if (!started.ok) {
-      return c.json({ ok: false, error: started.error }, 500)
+      const status = started.error.includes('loopback') ? 400 : 500
+      return c.json({ ok: false, error: started.error }, status)
     }
     return c.json({
       ok: true,

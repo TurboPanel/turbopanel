@@ -44,6 +44,15 @@ import { verifyLocalConsoleAuthorization } from "../developer/local-console-auth
 /** Max idle block for outbox pump reads — keep low so new commands aren't stuck behind a long sleep. */
 const OUTBOX_PUMP_BLOCK_MS = 250;
 
+/** Decode a Hono/Deno WS frame (`string | Blob | ArrayBufferLike`) to UTF-8 text. */
+async function wsMessageDataToString(
+  data: string | Blob | ArrayBufferLike,
+): Promise<string> {
+  if (typeof data === "string") return data;
+  if (data instanceof Blob) return await data.text();
+  return new TextDecoder().decode(data);
+}
+
 function isClosedConnectionError(err: unknown): boolean {
   return /connection is closed/i.test(String(err));
 }
@@ -75,8 +84,7 @@ async function assertDaemonKeyStillActive(
 ): Promise<boolean> {
   const daemonRow = await getServerDaemonStateByServerId(db, serverId);
   if (
-    !daemonRow ||
-    daemonRow.key.id !== keyId ||
+    daemonRow?.key.id !== keyId ||
     !isDaemonKeyActive(daemonRow.key)
   ) {
     cellTrace("inbound-key-revoked", { serverId, keyId });
@@ -502,9 +510,7 @@ export function registerDaemonWebSocket(
           }
         },
         async onMessage(event, ws) {
-          const raw = typeof event.data === "string"
-            ? event.data
-            : String(event.data);
+          const raw = await wsMessageDataToString(event.data);
           const gateKey = connectionId ?? identityAddress;
           if (!inboundGate.allow(gateKey)) {
             cellTrace("inbound-rate-limited", {

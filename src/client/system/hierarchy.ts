@@ -21,10 +21,13 @@
  * - `service.compose_service_name` in `database` / `queue` / `analytics`
  * - `container` via `allocateEnvironmentContainers` (`role='app'`, uuid naming)
  *
- * Called only from server enrollment / enable-hosting paths
- * (`server-registry`, `PATCH /servers/:id`) and self-host bootstrap
- * (`authn/install-state.ts`, Deno maintenance timer). Must never be reached
- * from public workspace/project routes.
+ * The system workspace (`kind='system'`) is provisioned at self-hosted install
+ * time (`completeInstanceInstall`), before any server enrolls. Hierarchy
+ * functions below only *ensure* it (race-safe upsert) for Workers/HA orgs and
+ * pre-existing installs. Full project/environment/service rows still wait on
+ * server enrollment / enable-hosting (`server-registry`, `PATCH /servers/:id`)
+ * and self-host bootstrap (`authn/install-state.ts`, Deno maintenance timer).
+ * Must never be reached from public workspace/project routes.
  */
 
 import { and, eq, inArray, sql } from 'drizzle-orm'
@@ -136,7 +139,11 @@ export async function findSystemEnvironmentForServer(
   return rows[0]?.id ?? null
 }
 
-async function ensureSystemWorkspace(
+/**
+ * Race-safe upsert of the single system workspace per organization.
+ * Shared by install (`completeInstanceInstall`) and hierarchy ensure paths.
+ */
+export async function ensureSystemWorkspace(
   tx: Db,
   organizationId: string,
 ): Promise<string> {

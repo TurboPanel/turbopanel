@@ -70,6 +70,7 @@ import {
   serverDeleteBlockersResponse,
 } from './delete-guards.ts'
 import {
+  hasActiveColocatedLicenseBinding,
   resolveColocatedServerIdSet,
 } from './colocated.ts'
 import {
@@ -197,12 +198,22 @@ async function repairProjectedUpdateIfStale(
 async function assertServerDeletable(
   c: Context,
   db: Db,
-  registry: DaemonCellRegistry,
+  registry: DaemonCellRegistry | undefined,
   serverId: string,
   organizationId: string,
 ): Promise<Response | null> {
-  const colocatedIds = await resolveColocatedServerIdSet(db, registry, [serverId])
+  const colocatedIds = await resolveColocatedServerIdSet(
+    db,
+    registry,
+    [serverId],
+    { includeSelfHostPin: true },
+  )
   if (colocatedIds.has(serverId)) {
+    return c.json({ error: colocatedServerDeleteBlockedReason() }, 403)
+  }
+
+  // Fallback until the self-host environment pin exists: active reserved license.
+  if (await hasActiveColocatedLicenseBinding(db, organizationId, serverId)) {
     return c.json({ error: colocatedServerDeleteBlockedReason() }, 403)
   }
 
@@ -1188,13 +1199,15 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const denied = await assertCanManageOr403(c, 'server', id)
     if (denied) return denied
 
+    // Co-located guard before the registry 503 so an unavailable registry can
+    // never turn a self-host-pinned (or probe-matched) host into a deletable one.
     const registry = getDaemonCellRegistry(c)
+    const blocked = await assertServerDeletable(c, db, registry, id, organizationId)
+    if (blocked) return blocked
+
     if (!registry) {
       return c.json({ error: 'Daemon cell registry unavailable' }, 503)
     }
-
-    const blocked = await assertServerDeletable(c, db, registry, id, organizationId)
-    if (blocked) return blocked
 
     const [boundLicense] = await db
       .select({ id: license.id })

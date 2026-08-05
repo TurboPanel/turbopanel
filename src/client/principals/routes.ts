@@ -1,18 +1,22 @@
 import { eq } from 'drizzle-orm'
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403 } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { getDb } from '../../db.ts'
+import { getDb, type Db } from '../../db.ts'
 import { organization, principal, server } from '../../lib/db/schema.ts'
 import {
   assertSafePrincipalUsername,
   isReservedPrincipalUsername,
   principalHomeDir,
 } from '../../lib/naming.ts'
-import { parsePrincipalOptionsInput } from '../../lib/principal-options.ts'
+import {
+  parsePrincipalOptionsInput,
+  resolvePrincipalIdOverride,
+  type PrincipalOptionsPersisted,
+} from '../../lib/principal-options.ts'
 import {
   assertCanManageOr403,
   assertNotSystemOwnedOr403,
@@ -38,6 +42,161 @@ class UsernameInUseError extends Error {
   constructor() {
     super(USERNAME_IN_USE_ERROR)
     this.name = 'UsernameInUseError'
+  }
+}
+
+type ParsedCreateProjectPrincipal = {
+  username: string
+  options: PrincipalOptionsPersisted
+  override: { uid: number; gid: number } | null
+  serviceIds: string[]
+}
+
+type InsertedProjectPrincipal = {
+  id: string
+  uid?: number
+  gid?: number
+}
+
+/**
+ * Accept top-level `uid`/`gid` as a shorthand for `options.uid`/`options.gid`.
+ * Non-object `options` are left as-is so strict parse rejects them.
+ */
+function mergeTopLevelPrincipalIdsIntoOptions(
+  body: Record<string, unknown>,
+): unknown {
+  if (body.uid === undefined && body.gid === undefined) {
+    return body.options
+  }
+  if (body.options === undefined || body.options === null) {
+    return { uid: body.uid, gid: body.gid }
+  }
+  if (typeof body.options === 'object' && !Array.isArray(body.options)) {
+    return {
+      ...(body.options as Record<string, unknown>),
+      ...(body.uid !== undefined ? { uid: body.uid } : {}),
+      ...(body.gid !== undefined ? { gid: body.gid } : {}),
+    }
+  }
+  return body.options
+}
+
+function parseCreatePrincipalUsername(
+  c: Context,
+  body: Record<string, unknown>,
+): string | Response {
+  const usernameRaw = requireStringField(c, body, 'username')
+  if (usernameRaw instanceof Response) return usernameRaw
+  const username = usernameRaw.trim()
+  try {
+    assertSafePrincipalUsername(username)
+  } catch {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  if (isReservedPrincipalUsername(username)) {
+    return c.json({ error: 'username_reserved' }, 400)
+  }
+  return username
+}
+
+async function parseCreateProjectPrincipalRequest(
+  c: Context,
+  db: Db,
+  projectId: string,
+  body: Record<string, unknown>,
+): Promise<ParsedCreateProjectPrincipal | Response> {
+  const username = parseCreatePrincipalUsername(c, body)
+  if (username instanceof Response) return username
+
+  const serviceIds = parseServiceIdsField(body)
+  if (serviceIds === null) {
+    return c.json({ error: 'invalid_service_ids' }, 400)
+  }
+  if (!(await servicesBelongToProject(db, projectId, serviceIds))) {
+    return c.json({ error: 'invalid_service_ids' }, 400)
+  }
+
+  const parsedOptions = parsePrincipalOptionsInput(
+    mergeTopLevelPrincipalIdsIntoOptions(body),
+  )
+  if (!parsedOptions.ok) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
+  return {
+    username,
+    options: parsedOptions.value,
+    override: resolvePrincipalIdOverride(parsedOptions.value),
+    serviceIds,
+  }
+}
+
+async function insertProjectPrincipal(
+  db: Db,
+  organizationId: string,
+  projectId: string,
+  input: ParsedCreateProjectPrincipal,
+): Promise<InsertedProjectPrincipal> {
+  return await db.transaction(async (tx) => {
+    // Serialize concurrent creates for this org so the uniqueness check
+    // cannot race two inserts past each other (case/whitespace variants).
+    await tx
+      .select({ id: organization.id })
+      .from(organization)
+      .where(eq(organization.id, organizationId))
+      .for('update')
+      .limit(1)
+
+    if (await isServerPrincipalUsernameTaken(tx, organizationId, input.username)) {
+      throw new UsernameInUseError()
+    }
+
+    const metadata: Record<string, unknown> = {
+      home: principalHomeDir(input.username),
+    }
+    if (input.override) {
+      metadata.uid = input.override.uid
+      metadata.gid = input.override.gid
+    }
+
+    const [row] = await tx.insert(principal).values({
+      kind: 'system',
+      provider: SERVER_PRINCIPAL_PROVIDER,
+      username: input.username,
+      projectId,
+      metadata,
+      options: input.options,
+    }).returning({ id: principal.id })
+
+    if (input.serviceIds.length > 0) {
+      await replaceAssignments(tx, row.id, input.serviceIds)
+    }
+    return {
+      id: row.id,
+      ...(input.override
+        ? { uid: input.override.uid, gid: input.override.gid }
+        : {}),
+    }
+  })
+}
+
+function projectPrincipalCreateResponse(
+  inserted: InsertedProjectPrincipal,
+  serviceIds: string[],
+) {
+  if (inserted.uid !== undefined && inserted.gid !== undefined) {
+    return {
+      ok: true as const,
+      id: inserted.id,
+      uid: inserted.uid,
+      gid: inserted.gid,
+      serviceIds,
+    }
+  }
+  return {
+    ok: true as const,
+    id: inserted.id,
+    serviceIds,
   }
 }
 
@@ -116,107 +275,23 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const usernameRaw = requireStringField(c, body, 'username')
-    if (usernameRaw instanceof Response) return usernameRaw
-    const username = usernameRaw.trim()
+    const parsed = await parseCreateProjectPrincipalRequest(c, db, projectId, body)
+    if (parsed instanceof Response) return parsed
+
     try {
-      assertSafePrincipalUsername(username)
-    } catch {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-    if (isReservedPrincipalUsername(username)) {
-      return c.json({ error: 'username_reserved' }, 400)
-    }
-
-    const serviceIds = parseServiceIdsField(body)
-    if (serviceIds === null) {
-      return c.json({ error: 'invalid_service_ids' }, 400)
-    }
-    if (!(await servicesBelongToProject(db, projectId, serviceIds))) {
-      return c.json({ error: 'invalid_service_ids' }, 400)
-    }
-
-    const hasTopLevelIds = body.uid !== undefined || body.gid !== undefined
-    let optionsInput: unknown = body.options
-    if (hasTopLevelIds) {
-      if (body.options === undefined || body.options === null) {
-        optionsInput = { uid: body.uid, gid: body.gid }
-      } else if (
-        typeof body.options === 'object' && !Array.isArray(body.options)
-      ) {
-        optionsInput = {
-          ...(body.options as Record<string, unknown>),
-          ...(body.uid !== undefined ? { uid: body.uid } : {}),
-          ...(body.gid !== undefined ? { gid: body.gid } : {}),
-        }
-      }
-      // else leave non-object options as-is so strict parse rejects them
-    }
-    const parsedOptions = parsePrincipalOptionsInput(optionsInput)
-    if (!parsedOptions.ok) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-    const options = parsedOptions.value
-    const override = options.uid !== undefined && options.gid !== undefined
-      ? { uid: options.uid, gid: options.gid }
-      : null
-
-    let inserted: { id: string; uid?: number; gid?: number }
-    try {
-      inserted = await db.transaction(async (tx) => {
-        // Serialize concurrent creates for this org so the uniqueness check
-        // cannot race two inserts past each other (case/whitespace variants).
-        await tx
-          .select({ id: organization.id })
-          .from(organization)
-          .where(eq(organization.id, orgResult))
-          .for('update')
-          .limit(1)
-
-        if (await isServerPrincipalUsernameTaken(tx, orgResult, username)) {
-          throw new UsernameInUseError()
-        }
-
-        const metadata: Record<string, unknown> = {
-          home: principalHomeDir(username),
-        }
-        if (override) {
-          metadata.uid = override.uid
-          metadata.gid = override.gid
-        }
-
-        const [row] = await tx.insert(principal).values({
-          kind: 'system',
-          provider: SERVER_PRINCIPAL_PROVIDER,
-          username,
-          projectId,
-          metadata,
-          options,
-        }).returning({ id: principal.id })
-
-        if (serviceIds.length > 0) {
-          await replaceAssignments(tx, row.id, serviceIds)
-        }
-        return {
-          id: row.id,
-          ...(override ? { uid: override.uid, gid: override.gid } : {}),
-        }
-      })
+      const inserted = await insertProjectPrincipal(
+        db,
+        orgResult,
+        projectId,
+        parsed,
+      )
+      return c.json(projectPrincipalCreateResponse(inserted, parsed.serviceIds))
     } catch (err) {
       if (err instanceof UsernameInUseError) {
         return c.json({ error: USERNAME_IN_USE_ERROR }, 409)
       }
       throw err
     }
-
-    return c.json({
-      ok: true as const,
-      id: inserted.id,
-      ...(inserted.uid !== undefined && inserted.gid !== undefined
-        ? { uid: inserted.uid, gid: inserted.gid }
-        : {}),
-      serviceIds,
-    })
   })
 
   router.patch('/projects/:projectId/principals/:id', async (c) => {

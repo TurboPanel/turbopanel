@@ -25,10 +25,17 @@ import {
   user,
   workspace,
 } from '../../lib/db/schema.ts'
-import { WORKSPACE_KIND_SYSTEM } from '../../lib/db/workspace-kind.ts'
+import {
+  WORKSPACE_KIND_SYSTEM,
+  WORKSPACE_KIND_USER,
+} from '../../lib/db/workspace-kind.ts'
 import { SYSTEM_RESOURCE_IMMUTABLE_ERROR } from '../authz/http.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
-import { ensureSystemHierarchy } from '../system/hierarchy.ts'
+import {
+  ensureSystemHierarchy,
+  ensureSystemWorkspace,
+  SYSTEM_WORKSPACE_DISPLAY_NAME,
+} from '../system/hierarchy.ts'
 import { registerWorkspaceRoutes } from './routes.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 
@@ -197,6 +204,83 @@ async function withWorkspaceFixtures(
   }
 }
 
+test('GET /workspaces returns System before Default for same-transaction install order', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping workspace route tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+  const { app, secrets } = await createWorkspaceRoutesTestApp(db)
+
+  const [insertedOrg] = await db
+    .insert(organization)
+    .values({ displayName: 'Workspace Install Order Org' })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg!.id
+
+  const [insertedUser] = await db
+    .insert(user)
+    .values({
+      email: `workspace-install-order-${crypto.randomUUID()}@example.com`,
+      isEmailVerified: true,
+      role: 'user',
+    })
+    .returning({ id: user.id })
+  const userId = insertedUser!.id
+
+  await db.insert(member).values({ organizationId, userId })
+  await db.insert(grant).values({
+    entityType: 'organization',
+    entityId: organizationId,
+    actorType: 'user',
+    actorId: userId,
+    permission: 'organization:manage',
+    allow: true,
+  })
+
+  // Mirror install transaction insert order: System then Default Workspace.
+  await db.transaction(async (tx) => {
+    await ensureSystemWorkspace(tx, organizationId)
+    await tx.insert(workspace).values({
+      organizationId,
+      displayName: 'Default Workspace',
+      kind: WORKSPACE_KIND_USER,
+    })
+  })
+
+  try {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const list = await app.request('/workspaces', {
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+    assertEquals(list.status, 200)
+    const body = await list.json() as {
+      workspaces: Array<{ displayName: string; kind: string }>
+    }
+    assertEquals(body.workspaces.length, 2)
+    assertEquals(body.workspaces[0]?.displayName, SYSTEM_WORKSPACE_DISPLAY_NAME)
+    assertEquals(body.workspaces[0]?.kind, WORKSPACE_KIND_SYSTEM)
+    assertEquals(body.workspaces[1]?.displayName, 'Default Workspace')
+    assertEquals(body.workspaces[1]?.kind, WORKSPACE_KIND_USER)
+  } finally {
+    await db.delete(workspace).where(eq(workspace.organizationId, organizationId))
+    await db.delete(grant).where(and(
+      eq(grant.actorId, userId),
+      eq(grant.entityId, organizationId),
+    ))
+    await db.delete(member).where(and(
+      eq(member.userId, userId),
+      eq(member.organizationId, organizationId),
+    ))
+    await db.delete(user).where(eq(user.id, userId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+})
+
 test('POST /workspaces rejects duplicate display names case-insensitively', async () => {
   await withWorkspaceFixtures(async ({
     db,
@@ -339,7 +423,20 @@ test('workspace reads expose kind and system workspace is immutable', async () =
       },
       body: JSON.stringify({ displayName: 'System' }),
     })
-    assertEquals(namedSystem.status, 200)
+    assertEquals(namedSystem.status, 409)
+    assertEquals(await namedSystem.json(), { error: 'workspace_name_in_use' })
+
+    const renameOntoSystem = await app.request(`/workspaces/${createdId}`, {
+      method: 'PATCH',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ displayName: 'System' }),
+    })
+    assertEquals(renameOntoSystem.status, 409)
+    assertEquals(await renameOntoSystem.json(), { error: 'workspace_name_in_use' })
 
     const patch = await app.request(`/workspaces/${systemWorkspaceId}`, {
       method: 'PATCH',

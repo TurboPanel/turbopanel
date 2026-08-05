@@ -43,7 +43,15 @@ import {
   resolveEmailSettings,
   updateEmailSettings,
 } from '../lib/settings/email-settings.ts'
-import { reencryptAtRestSecrets } from './reencrypt-secrets.ts'
+import {
+  endReencryptSweep,
+  REENCRYPT_BATCH_SIZE,
+  REENCRYPT_STAGES,
+  reencryptAtRestSecrets,
+  tryBeginReencryptSweep,
+  type ReencryptCursor,
+  type ReencryptStage,
+} from './reencrypt-secrets.ts'
 
 const COMMAND_TIMEOUT_MS = 30_000
 const ADDRESSES_TIMEOUT_MS = 10_000
@@ -184,6 +192,56 @@ async function waitForPublicUrlsApply(
     })
     return { kind: 'error', error: errMessage }
   }
+}
+
+type ReencryptRequestParse =
+  | { ok: true; cursor: ReencryptCursor | null; limit: number }
+  | { ok: false; error: string }
+
+function isReencryptStage(value: unknown): value is ReencryptStage {
+  return typeof value === 'string' &&
+    (REENCRYPT_STAGES as readonly string[]).includes(value)
+}
+
+function parseReencryptRequestBody(body: unknown): ReencryptRequestParse {
+  if (body === null || body === undefined) {
+    return { ok: true, cursor: null, limit: REENCRYPT_BATCH_SIZE }
+  }
+  if (typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'expected { cursor?, limit? }' }
+  }
+
+  const record = body as Record<string, unknown>
+  let limit = REENCRYPT_BATCH_SIZE
+  if (record.limit !== undefined) {
+    if (typeof record.limit !== 'number' || !Number.isInteger(record.limit) || record.limit < 1) {
+      return { ok: false, error: 'limit must be a positive integer' }
+    }
+    // Cap to the server batch size so clients cannot request unbounded work.
+    limit = Math.min(record.limit, REENCRYPT_BATCH_SIZE)
+  }
+
+  if (record.cursor === undefined || record.cursor === null) {
+    return { ok: true, cursor: null, limit }
+  }
+  if (typeof record.cursor !== 'object' || Array.isArray(record.cursor)) {
+    return { ok: false, error: 'cursor must be an object' }
+  }
+
+  const cursorObj = record.cursor as Record<string, unknown>
+  if (!isReencryptStage(cursorObj.stage)) {
+    return { ok: false, error: 'cursor.stage is required' }
+  }
+
+  const cursor: ReencryptCursor = { stage: cursorObj.stage }
+  if (cursorObj.afterId !== undefined) {
+    if (typeof cursorObj.afterId !== 'string' || cursorObj.afterId.length === 0) {
+      return { ok: false, error: 'cursor.afterId must be a non-empty string' }
+    }
+    cursor.afterId = cursorObj.afterId
+  }
+
+  return { ok: true, cursor, limit }
 }
 
 /**
@@ -702,8 +760,32 @@ export function registerAdminRoutes(app: Hono, opts: {
       )
     }
 
-    const summary = await reencryptAtRestSecrets(db, dataEncryptionSecrets)
-    return c.json({ ok: true, ...summary })
+    const body = await c.req.json().catch(() => null)
+    const parsed = parseReencryptRequestBody(body)
+    if (!parsed.ok) {
+      return c.json({ ok: false, error: parsed.error }, 400)
+    }
+
+    if (!tryBeginReencryptSweep()) {
+      return c.json(
+        {
+          ok: false,
+          error: 'reencrypt_in_progress',
+          message: 'Another secret re-encryption sweep is already running',
+        },
+        409,
+      )
+    }
+
+    try {
+      const result = await reencryptAtRestSecrets(db, dataEncryptionSecrets, {
+        cursor: parsed.cursor,
+        limit: parsed.limit,
+      })
+      return c.json({ ok: true, ...result })
+    } finally {
+      endReencryptSweep()
+    }
   })
 
   if (opts.devSurface) {

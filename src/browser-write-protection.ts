@@ -6,7 +6,7 @@
  * routes stay outside this gate.
  *
  * A write under `CLIENT_API_PREFIX` / `ADMIN_API_PREFIX` / `INSTALL_API_PREFIX`
- * is allowed when:
+ * / `DEVELOPER_API_PREFIX` is allowed when:
  * 1. `Origin` matches the expected browser origin (same-site browser), or
  * 2. `Origin` is absent and `Referer` matches the expected origin, or
  * 3. both `Origin` and `Referer` are absent (non-browser clients: curl, scripts).
@@ -21,6 +21,7 @@ import type { Context, MiddlewareHandler, Next } from 'hono'
 import {
   ADMIN_API_PREFIX,
   CLIENT_API_PREFIX,
+  DEVELOPER_API_PREFIX,
   INSTALL_API_PREFIX,
 } from './surfaces.ts'
 
@@ -30,6 +31,7 @@ const PROTECTED_PREFIXES = [
   CLIENT_API_PREFIX,
   ADMIN_API_PREFIX,
   INSTALL_API_PREFIX,
+  DEVELOPER_API_PREFIX,
 ] as const
 
 function isProtectedWritePath(pathname: string): boolean {

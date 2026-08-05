@@ -7,13 +7,26 @@ import { deriveSecretsConfig } from "../client/authn/secrets.ts";
 import { deriveDaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
 import { encryptSecretForDaemon } from "../client/authn/data-encryption.ts";
 import {
+  COLOCATED_SERVER_DISPLAY_NAME,
+  rotateColocatedLicenseCredentials,
+} from "../client/authn/install-state.ts";
+import {
   createLicense,
   invalidateLicense,
   revokeLicense,
 } from "../client/authn/license.ts";
 import { getDatabaseUrl } from "../db-url.ts";
 import { createDenoDb } from "../db.ts";
-import { organization, license, server } from "../lib/db/schema.ts";
+import {
+  container,
+  environment,
+  license,
+  organization,
+  project,
+  server,
+  service,
+  workspace,
+} from "../lib/db/schema.ts";
 import {
   MAX_AUTH_CHALLENGE_BODY_BYTES,
   MAX_AUTH_SESSION_BODY_BYTES,
@@ -408,9 +421,55 @@ async function withEnrollFixture(
       hostname,
     });
   } finally {
-    await db.delete(server).where(eq(server.id, enrollBody.serverId));
+    // Enroll runs ensureSystemHierarchy — tear down before RESTRICT FKs fire.
+    await deleteOrganizationServerTree(
+      db,
+      organizationId,
+      enrollBody.serverId,
+    );
+    await db.delete(license).where(eq(license.id, licenseId));
     await db.delete(organization).where(eq(organization.id, organizationId));
   }
+}
+
+/** Remove system hierarchy + server so ON DELETE RESTRICT FKs do not block cleanup. */
+async function deleteOrganizationServerTree(
+  db: ReturnType<typeof createDenoDb>,
+  organizationId: string,
+  serverId: string,
+): Promise<void> {
+  const workspaceRows = await db
+    .select({ id: workspace.id })
+    .from(workspace)
+    .where(eq(workspace.organizationId, organizationId));
+  for (const ws of workspaceRows) {
+    const projectRows = await db
+      .select({ id: project.id })
+      .from(project)
+      .where(eq(project.workspaceId, ws.id));
+    for (const p of projectRows) {
+      const envRows = await db
+        .select({ id: environment.id })
+        .from(environment)
+        .where(eq(environment.projectId, p.id));
+      for (const env of envRows) {
+        const serviceRows = await db
+          .select({ id: service.id })
+          .from(service)
+          .where(eq(service.environmentId, env.id));
+        for (const svc of serviceRows) {
+          await db.delete(container).where(eq(container.serviceId, svc.id));
+        }
+        await db.delete(service).where(eq(service.environmentId, env.id));
+        await db.delete(environment).where(eq(environment.id, env.id));
+      }
+      await db.delete(project).where(eq(project.id, p.id));
+    }
+    await db.delete(workspace).where(eq(workspace.id, ws.id));
+  }
+  await db.delete(container).where(eq(container.serverId, serverId));
+  await db.delete(license).where(eq(license.serverId, serverId));
+  await db.delete(server).where(eq(server.id, serverId));
 }
 
 /**
@@ -912,7 +971,7 @@ test("POST /enroll with a fresh license creates a new server even on the same ho
       .where(eq(license.id, licenseId));
     assertEquals(original?.serverId, serverId);
 
-    await db.delete(server).where(eq(server.id, body.serverId));
+    await deleteOrganizationServerTree(db, organizationId, body.serverId);
     await db.delete(license).where(eq(license.id, freshLicenseId));
   });
 });
@@ -1245,6 +1304,66 @@ test("POST /auth/session rejects inactive license", async () => {
       assertEquals(response.status, 400);
       const body = await response.json() as { error: string };
       assertEquals(body.error, "License is inactive");
+    },
+  );
+});
+
+test("POST /auth/session survives colocated disk-credential recovery for enrolled server", async () => {
+  await withEnrollFixture(
+    async ({
+      db,
+      app,
+      organizationId,
+      licenseId,
+      serverId,
+      keyId,
+      key,
+      machineKey,
+      hostname,
+    }) => {
+      // Disk-loss recovery path: rename to the colocated seat label, then rotate
+      // credentials in place (preserves server_id + daemon key).
+      await db
+        .update(license)
+        .set({
+          displayName: COLOCATED_SERVER_DISPLAY_NAME,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(license.id, licenseId));
+
+      const rotated = await rotateColocatedLicenseCredentials(
+        db,
+        organizationId,
+      );
+      assertEquals(rotated.licenseId, licenseId);
+
+      const challenge = await issueAuthChallenge(app, serverId, keyId);
+      const payload = buildAuthPayload({
+        challengeId: challenge.challengeId,
+        nonce: challenge.nonce,
+        serverId,
+        keyId,
+        machineKey,
+        hostname,
+      });
+      const signature = await signPayload(key.privateKey, payload);
+      const response = await app.request("/api/daemon/v1/auth/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          serverId,
+          keyId,
+          challengeId: challenge.challengeId,
+          signature,
+          machineKey,
+          hostname,
+          at: new Date().toISOString(),
+        }),
+      });
+
+      assertEquals(response.status, 200);
+      const body = await response.json() as { token: string };
+      assertExists(body.token);
     },
   );
 });

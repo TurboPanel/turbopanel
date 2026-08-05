@@ -110,6 +110,31 @@ At least one of `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` must be set in produc
 
 Add a `TURBOPANEL_SECRET` to `dev/.env` before running `pnpm dev` (Tilt syncs it to `instance/.dev.vars` — see `dev/.env.example`).
 
+### Local-Console HMAC (co-located dev terminal)
+
+When the developer surface is enabled (`TURBOPANEL_DEV_SURFACE=1` or `TURBOPANEL_MODE=development` + `TURBOPANEL_UI_MODE=dev`), `createDeveloperAccessMiddleware` accepts either a superadmin session cookie **or** an HMAC `Authorization: Local-Console …` credential from the Ink console over the Unix socket (`src/developer/local-console-auth.ts`; client: `~/dev/src/lib/developer-client.ts`).
+
+**Canonical request (NUL-separated UTF-8 payload):**
+
+```text
+local-console-v1\0<timestamp>\0<METHOD>\0<requestTarget>\0<contentSha256>
+```
+
+| Field | Meaning |
+| --- | --- |
+| `timestamp` | ISO-8601 issue time (also base64url-encoded as the first token segment); max skew **60s** |
+| `METHOD` | Uppercased HTTP method |
+| `requestTarget` | Pathname **plus query string** (e.g. `/api/developer/v1/daemon/sync-dev?force=1`) — not path alone |
+| `contentSha256` | base64url(SHA-256(raw body bytes)); empty body uses the empty-string digest |
+
+**Wire format:**
+
+- `Authorization: Local-Console <timestampB64url>.<hmacSha256B64url>`
+- `X-Local-Console-Content-SHA256: <contentSha256>` — digest is part of the signed payload so captured headers cannot be replayed against a different body/query/method/path
+- For `POST`/`PUT`/`PATCH`/`DELETE`, the instance verifies the digest against a **cloned** request body so route handlers can still read the original stream
+
+Local-Console auth is Deno + developer-surface only; it never applies on Workers production.
+
 ### Data encryption
 
 `enc` is the **universal at-rest format** for all persisted secrets (secret variables, TLS private keys, principal passwords). Shared symmetric encryption is keyed off the same root secret via HKDF (`info: "data-encryption"` → AES-256-GCM). Envelope format: `enc.<keyVersion>.<payloadB64u>` where `payload` = IV (12 bytes) ‖ ciphertext+tag. The embedded `keyVersion` enables direct lookup against `DerivedSecretsConfig.current` / `.fallbacks` during rotation — no trial decryption. Format version is implied by the magic (`enc` / `denc`); bump the magic if the layout changes. There are **no per-server at-rest keys**: a single `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` root of trust yields a rollable data-encryption keyring. A credential sealed as `enc` is server-agnostic at rest and can be delivered to any authorized daemon.
@@ -118,9 +143,16 @@ Add a `TURBOPANEL_SECRET` to `dev/.env` before running `pnpm dev` (Tilt syncs it
 
 **Boundary:** client/UI code imports only `encryptSecret` / `generateSealedSecret` for at-rest sealing (can generate a secret and show plaintext once); decryption is not exposed on the client surface. The symmetric key never leaves the instance.
 
-**Rotation:** writing or updating a secret always seals under the current key version (**lazy re-seal-on-write**). After rotating the keyring (`TURBOPANEL_SECRETS`), new writes use the new version immediately; existing rows sealed under older versions remain decryptable via fallbacks until rewritten. Superadmin `POST /api/admin/v1/secrets/reencrypt` runs a batched sweep over `variable.value`, `tls.privateKeyPem`, and `principal.password`, re-sealing only non-current `enc` envelopes (skips already-current blobs and any `denc` material). Each write is conditional on the original envelope still being present (id + secret-column compare-and-swap) so a concurrent update during rotation is left untouched and counted as `skipped`. Returns `{ ok, scanned, reencrypted, skipped, failed }`.
+**Rotation:** writing or updating a secret always seals under the current key version (**lazy re-seal-on-write**). After rotating the keyring (`TURBOPANEL_SECRETS`), new writes use the new version immediately; existing rows sealed under older versions remain decryptable via fallbacks until rewritten.
 
-**CORS (Scalar / docs site):** when `TURBOPANEL_UI_CORS_ORIGINS` is set (comma-separated browser origins), `src/cors.ts` reflects matching `Origin` headers on API responses and always emits `Vary: Origin` when an `Origin` is present (credentials / allow-origin still restricted to the allowlist). Allowed CORS methods are **read-oriented** (`GET`, `HEAD`, `OPTIONS`) — credentialed cross-origin writes from the docs site are not permitted; cookie-authenticated mutations must be same-origin (console UI) and are additionally gated by `createBrowserWriteProtectionMiddleware` in `src/app.ts` (same-origin `Origin`/`Referer` check on `POST`/`PUT`/`PATCH`/`DELETE` under client/admin/install prefixes; daemon JWT routes excluded). On Deno the expected origin is reconstructed from trusted Caddy `X-Forwarded-Proto` + `Host` (Unix-socket URL is not compared); Workers uses the URL-derived origin only. Co-located dev (`turbopanel_dev_user` set) injects `http://localhost:{WEBSITE_PORT}` and `http://127.0.0.1:{WEBSITE_PORT}` via `instance-launch` on the Deno instance unit (and Workers `.dev.vars` when `turbopanel_instance_runtime=workers`) so the docs site can fetch OpenAPI through Caddy cross-origin — never emitted on managed/production hosts. Cloudflare Workers production/testing set matching website origins in `wrangler.jsonc` (`live`: `https://turbopanel.io`; `testing`: `https://testing.turbopanel.io`).
+**Superadmin re-encrypt sweep** (`POST /api/admin/v1/secrets/reencrypt`, `src/admin/reencrypt-secrets.ts`):
+
+- **Bounded batches:** each request scans at most `limit` blobs (default/cap 200) across stages `variables` → `tls` → `principals` → `email`. Response includes per-batch `{ scanned, reencrypted, skipped, failed, completed, cursor }`. When `completed` is false, resume with the returned `cursor` until `completed` is true. A process-local in-progress guard returns **409** `reencrypt_in_progress` if a second sweep overlaps.
+- **`variable.value` / `tls.privateKeyPem` / `principal.password`:** re-seal older-version `enc` and **plaintext** (column semantics mark these as secrets) under the current key; **skip** already-current `enc` and **valid** daemon-bound `denc`; **fail** malformed `enc`/`denc` and decrypt errors. Valid `denc` is left untouched on purpose (delivery envelopes, not at-rest rotation targets).
+- **`SYSTEM_EMAIL` secret keys** (`MAILGUN_API_KEY` / `SMTP_PASS`): re-seal older-version `enc` only; plaintext / non-`enc` material is **failed** (not auto-migrated).
+- Each write is conditional on the original value still being present (id + secret-column compare-and-swap) so a concurrent update during rotation is left untouched and counted as `skipped`.
+
+**CORS (Scalar / docs site):** when `TURBOPANEL_UI_CORS_ORIGINS` is set (comma-separated browser origins), `src/cors.ts` reflects matching `Origin` headers on API responses and always emits `Vary: Origin` when an `Origin` is present (credentials / allow-origin still restricted to the allowlist). Allowed CORS methods are **read-oriented** (`GET`, `HEAD`, `OPTIONS`) — credentialed cross-origin writes from the docs site are not permitted; cookie-authenticated mutations must be same-origin (console UI) and are additionally gated by `createBrowserWriteProtectionMiddleware` in `src/app.ts` (same-origin `Origin`/`Referer` check on `POST`/`PUT`/`PATCH`/`DELETE` under client/admin/install/**developer** prefixes; daemon JWT routes excluded). On Deno the expected origin is reconstructed from trusted Caddy `X-Forwarded-Proto` + `Host` (Unix-socket URL is not compared); Workers uses the URL-derived origin only. Co-located dev (`turbopanel_dev_user` set) injects `http://localhost:{WEBSITE_PORT}` and `http://127.0.0.1:{WEBSITE_PORT}` via `instance-launch` on the Deno instance unit (and Workers `.dev.vars` when `turbopanel_instance_runtime=workers`) so the docs site can fetch OpenAPI through Caddy cross-origin — never emitted on managed/production hosts. Cloudflare Workers production/testing set matching website origins in `wrangler.jsonc` (`live`: `https://turbopanel.io`; `testing`: `https://testing.turbopanel.io`).
 
 **Public sign-up:** `IS_SIGNUP_ENABLED` in the `setting` table is the panel-controlled toggle (default disabled when unset). `TURBOPANEL_IS_SIGNUP_ENABLED=1`/`true` or `0`/`false` is an optional **force** override that wins over the database.
 

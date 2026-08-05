@@ -2,9 +2,13 @@ import type { Context } from 'hono'
 import { isDeveloperSurfaceEnabled } from '../dev-mode.ts'
 import { parseSecretsEnv } from '../client/authn/secrets.ts'
 
-const LOCAL_CONSOLE_SCHEME = 'Local-Console'
-const LOCAL_CONSOLE_MAX_SKEW_MS = 60_000
-const LOCAL_CONSOLE_INFO = 'local-console-v1'
+export const LOCAL_CONSOLE_SCHEME = 'Local-Console'
+export const LOCAL_CONSOLE_MAX_SKEW_MS = 60_000
+export const LOCAL_CONSOLE_INFO = 'local-console-v1'
+/** SHA-256 (base64url) of the request body; included in the HMAC payload. */
+export const LOCAL_CONSOLE_CONTENT_SHA256_HEADER = 'X-Local-Console-Content-SHA256'
+
+const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
 function isLocalConsoleAuthEnabled(): boolean {
   return typeof Deno !== 'undefined' && isDeveloperSurfaceEnabled()
@@ -43,6 +47,14 @@ function decodeBase64Url(value: string): Uint8Array | null {
   }
 }
 
+function encodeBase64Url(bytes: Uint8Array): string {
+  let binary = ''
+  for (const byte of bytes) {
+    binary += String.fromCodePoint(byte)
+  }
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
+}
+
 function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false
   let diff = 0
@@ -68,18 +80,81 @@ async function hmacSha256(keyMaterial: string, payload: string): Promise<Uint8Ar
   return new Uint8Array(signature)
 }
 
-function buildLocalConsolePayload(
+async function sha256Base64Url(data: Uint8Array): Promise<string> {
+  // Copy into a fresh ArrayBuffer-backed view for SubtleCrypto typing.
+  const copy = new Uint8Array(data.byteLength)
+  copy.set(data)
+  const digest = await crypto.subtle.digest('SHA-256', copy)
+  return encodeBase64Url(new Uint8Array(digest))
+}
+
+/**
+ * Canonical Local-Console HMAC payload.
+ *
+ * Format (NUL-separated):
+ * `local-console-v1\0<timestamp>\0<METHOD>\0<requestTarget>\0<contentSha256>`
+ *
+ * `requestTarget` is pathname + query string (e.g. `/api/developer/v1/x?y=1`).
+ * `contentSha256` is base64url(SHA-256(body bytes)); empty body uses the empty digest.
+ */
+export function buildLocalConsoleCanonicalPayload(
   timestamp: string,
   method: string,
-  path: string,
+  requestTarget: string,
+  contentSha256: string,
 ): string {
-  return `${LOCAL_CONSOLE_INFO}\0${timestamp}\0${method.toUpperCase()}\0${path}`
+  return `${LOCAL_CONSOLE_INFO}\0${timestamp}\0${method.toUpperCase()}\0${requestTarget}\0${contentSha256}`
+}
+
+/** Pathname + search from a request URL (query included; hash excluded). */
+export function localConsoleRequestTarget(url: string | URL): string {
+  const parsed = typeof url === 'string' ? new URL(url) : url
+  return `${parsed.pathname}${parsed.search}`
+}
+
+export async function hashLocalConsoleContent(
+  body: Uint8Array | string,
+): Promise<string> {
+  const bytes = typeof body === 'string' ? new TextEncoder().encode(body) : body
+  return sha256Base64Url(bytes)
+}
+
+/** Build `Authorization: Local-Console …` for the co-located dev console. */
+export async function buildLocalConsoleAuthorization(
+  method: string,
+  requestTarget: string,
+  secret: string,
+  contentSha256: string,
+  timestamp: string = new Date().toISOString(),
+): Promise<string> {
+  const payload = buildLocalConsoleCanonicalPayload(
+    timestamp,
+    method,
+    requestTarget,
+    contentSha256,
+  )
+  const signature = await hmacSha256(secret, payload)
+  const timestampPart = encodeBase64Url(new TextEncoder().encode(timestamp))
+  return `${LOCAL_CONSOLE_SCHEME} ${timestampPart}.${encodeBase64Url(signature)}`
+}
+
+async function bodyMatchesContentDigest(
+  c: Context,
+  expectedDigest: string,
+): Promise<boolean> {
+  // Clone so route handlers can still read the original body stream.
+  const bytes = new Uint8Array(await c.req.raw.clone().arrayBuffer())
+  const actual = await sha256Base64Url(bytes)
+  const expectedBytes = new TextEncoder().encode(expectedDigest)
+  const actualBytes = new TextEncoder().encode(actual)
+  return constantTimeEqual(expectedBytes, actualBytes)
 }
 
 /** Verify HMAC local-console auth presented by the co-located dev terminal console. */
 export async function verifyLocalConsoleAuthorization(
   c: Context,
   rootSecret?: string,
+  nowMs: number = Date.now(),
 ): Promise<boolean> {
   if (!isLocalConsoleAuthEnabled()) return false
   const secret = rootSecret ?? resolveLocalConsoleRootSecret()
@@ -99,10 +174,31 @@ export async function verifyLocalConsoleAuthorization(
   const timestamp = new TextDecoder().decode(timestampBytes)
   const issuedAt = Date.parse(timestamp)
   if (!Number.isFinite(issuedAt)) return false
-  const skew = Math.abs(Date.now() - issuedAt)
+  const skew = Math.abs(nowMs - issuedAt)
   if (skew > LOCAL_CONSOLE_MAX_SKEW_MS) return false
 
-  const payload = buildLocalConsolePayload(timestamp, c.req.method, c.req.path)
+  const contentSha256 = c.req.header(LOCAL_CONSOLE_CONTENT_SHA256_HEADER)?.trim()
+  if (!contentSha256) return false
+
+  let requestTarget: string
+  try {
+    requestTarget = localConsoleRequestTarget(c.req.url)
+  } catch {
+    return false
+  }
+
+  const payload = buildLocalConsoleCanonicalPayload(
+    timestamp,
+    c.req.method,
+    requestTarget,
+    contentSha256,
+  )
   const expected = await hmacSha256(secret, payload)
-  return constantTimeEqual(expected, signatureBytes)
+  if (!constantTimeEqual(expected, signatureBytes)) return false
+
+  if (WRITE_METHODS.has(c.req.method.toUpperCase())) {
+    return bodyMatchesContentDigest(c, contentSha256)
+  }
+
+  return true
 }

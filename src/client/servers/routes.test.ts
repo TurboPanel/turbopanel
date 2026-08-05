@@ -36,6 +36,7 @@ import {
   SERVER_HAS_BLOCKERS_CODE,
   SERVER_HAS_BLOCKERS_ERROR,
 } from './delete-guards.ts'
+import { COLOCATED_SERVER_DISPLAY_NAME } from '../authn/install-state.ts'
 import { createLicense } from '../authn/license.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { buildServerDaemonState } from '../../daemon/authn/daemon-state.ts'
@@ -632,6 +633,210 @@ test('DELETE /servers/:id returns 403 for the co-located control plane server', 
       colocatedStub.restore()
     }
   })
+})
+
+async function cleanupOrgSystemSubtree(
+  db: ReturnType<typeof createDenoDb>,
+  organizationId: string,
+): Promise<void> {
+  const workspaceRows = await db
+    .select({ id: workspace.id })
+    .from(workspace)
+    .where(eq(workspace.organizationId, organizationId))
+  for (const ws of workspaceRows) {
+    const projectRows = await db
+      .select({ id: project.id })
+      .from(project)
+      .where(eq(project.workspaceId, ws.id))
+    for (const p of projectRows) {
+      const envRows = await db
+        .select({ id: environment.id })
+        .from(environment)
+        .where(eq(environment.projectId, p.id))
+      for (const env of envRows) {
+        const serviceRows = await db
+          .select({ id: service.id })
+          .from(service)
+          .where(eq(service.environmentId, env.id))
+        for (const svc of serviceRows) {
+          await db.delete(container).where(eq(container.serviceId, svc.id))
+        }
+        await db.delete(service).where(eq(service.environmentId, env.id))
+        await db.delete(environment).where(eq(environment.id, env.id))
+      }
+      await db.delete(project).where(eq(project.id, p.id))
+    }
+    await db.delete(workspace).where(eq(workspace.id, ws.id))
+  }
+}
+
+test('DELETE /servers/:id returns 403 via durable self-host pin when probes miss', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+    registry,
+  }) => {
+    // Server has no machineKey / __direct__ projection; registry tracking cell
+    // is not the live colocated probe — only the turbopanel environment pin.
+    await systemHierarchy.ensureSelfHostSystemHierarchy(db, {
+      organizationId,
+      serverId,
+    })
+
+    try {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}`, {
+        method: 'DELETE',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+        },
+      })
+
+      assertEquals(res.status, 403)
+      const body = await readJson<ErrorJson>(res)
+      assertEquals(body.error, colocatedServerDeleteBlockedReason())
+      assertEquals(registry.purgedIds.length, 0)
+    } finally {
+      await cleanupOrgSystemSubtree(db, organizationId)
+    }
+  })
+})
+
+test('DELETE /servers/:id returns 403 via reserved colocated license when pin and probes miss', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+    registry,
+  }) => {
+    // Fresh server has no machineKey / __direct__ projection / self-host pin —
+    // only the active reserved install license bound to this server.
+    const { licenseId } = await createLicense(db, {
+      organizationId,
+      displayName: COLOCATED_SERVER_DISPLAY_NAME,
+    })
+    await db
+      .update(license)
+      .set({ serverId, updatedAt: new Date().toISOString() })
+      .where(eq(license.id, licenseId))
+
+    try {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}`, {
+        method: 'DELETE',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+        },
+      })
+
+      assertEquals(res.status, 403)
+      const body = await readJson<ErrorJson>(res)
+      assertEquals(body.error, colocatedServerDeleteBlockedReason())
+      assertEquals(registry.purgedIds.length, 0)
+
+      const [licenseRow] = await db
+        .select({ revokedAt: license.revokedAt })
+        .from(license)
+        .where(eq(license.id, licenseId))
+        .limit(1)
+      assertEquals(licenseRow?.revokedAt ?? null, null)
+
+      const remaining = await db
+        .select({ id: server.id })
+        .from(server)
+        .where(eq(server.id, serverId))
+      assertEquals(remaining.length, 1)
+    } finally {
+      await db.delete(license).where(eq(license.id, licenseId))
+    }
+  })
+})
+
+test('DELETE /servers/:id returns 403 not 503 for self-host-pinned server without registry', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping server route tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+  const { app, secrets } = await createServerRoutesTestApp(db)
+
+  const email = `server-delete-pin-no-registry-${crypto.randomUUID()}@example.com`
+  const [insertedOrg] = await db
+    .insert(organization)
+    .values({ displayName: 'Server Delete Pin No Registry Org' })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg!.id
+
+  const [insertedUser] = await db
+    .insert(user)
+    .values({ email, isEmailVerified: true, role: 'user' })
+    .returning({ id: user.id })
+  const userId = insertedUser!.id
+
+  await db.insert(member).values({ organizationId, userId })
+  await db.insert(grant).values({
+    entityType: 'organization',
+    entityId: organizationId,
+    actorType: 'user',
+    actorId: userId,
+    permission: 'organization:manage',
+    allow: true,
+  })
+
+  const now = new Date().toISOString()
+  const [insertedServer] = await db
+    .insert(server)
+    .values({
+      createdAt: now,
+      updatedAt: now,
+      organizationId,
+      displayName: 'Pinned No Registry',
+    })
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
+
+  await systemHierarchy.ensureSelfHostSystemHierarchy(db, {
+    organizationId,
+    serverId,
+  })
+
+  try {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/servers/${serverId}`, {
+      method: 'DELETE',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 403)
+    const body = await readJson<ErrorJson>(res)
+    assertEquals(body.error, colocatedServerDeleteBlockedReason())
+  } finally {
+    await cleanupOrgSystemSubtree(db, organizationId)
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(grant).where(and(
+      eq(grant.actorId, userId),
+      eq(grant.entityId, organizationId),
+    ))
+    await db.delete(member).where(and(
+      eq(member.userId, userId),
+      eq(member.organizationId, organizationId),
+    ))
+    await db.delete(user).where(eq(user.id, userId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
 })
 
 test('DELETE /servers/:id returns 409 when networks block deletion', async () => {

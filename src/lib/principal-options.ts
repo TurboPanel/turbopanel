@@ -37,6 +37,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isValidPrincipalShell(value: string): boolean {
   if (value.length === 0 || value.length > MAX_SHELL_PATH_LENGTH) return false
   if (/\s/.test(value) || value.includes('\0') || value.includes('\n')) return false
+  // Match daemon `assertSafeAbsolutePath`: reject parent-directory segments.
+  if (value.split('/').includes('..')) return false
   return PRINCIPAL_SHELL_RE.test(value)
 }
 
@@ -63,6 +65,41 @@ function readIdOverridePair(
     return null
   }
   return { uid: value.uid, gid: value.gid }
+}
+
+/**
+ * Strict shell parse for create input.
+ * Omitted/`undefined` → default; malformed → fail.
+ */
+function parsePrincipalShellInput(
+  value: Record<string, unknown>,
+): { ok: true; shell: string } | { ok: false } {
+  if (!('shell' in value) || value.shell === undefined) {
+    return { ok: true, shell: DEFAULT_PRINCIPAL_SHELL }
+  }
+  if (typeof value.shell !== 'string') return { ok: false }
+  // Reject newline/NUL before trim so they cannot be silently stripped.
+  if (value.shell.includes('\0') || value.shell.includes('\n')) return { ok: false }
+  const trimmed = value.shell.trim()
+  if (!isValidPrincipalShell(trimmed)) return { ok: false }
+  return { ok: true, shell: trimmed }
+}
+
+/**
+ * Strict uid/gid pair for create input.
+ * Both omitted → host allocates (`null`); one-of-two or invalid → fail.
+ */
+function parsePrincipalIdOverrideInput(
+  value: Record<string, unknown>,
+): { ok: true; override: { uid: number; gid: number } | null } | { ok: false } {
+  const hasUid = 'uid' in value && value.uid !== undefined
+  const hasGid = 'gid' in value && value.gid !== undefined
+  if (hasUid !== hasGid) return { ok: false }
+  if (!hasUid) return { ok: true, override: null }
+  if (!isValidPrincipalIdOverride(value.uid) || !isValidPrincipalIdOverride(value.gid)) {
+    return { ok: false }
+  }
+  return { ok: true, override: { uid: value.uid, gid: value.gid } }
 }
 
 /** Parse principal.options jsonb (missing/invalid keys → omitted). */
@@ -102,27 +139,23 @@ export function parsePrincipalOptionsInput(
   }
   if (!isRecord(value)) return { ok: false }
 
-  let shell = DEFAULT_PRINCIPAL_SHELL
-  if ('shell' in value && value.shell !== undefined) {
-    if (typeof value.shell !== 'string') return { ok: false }
-    // Reject newline/NUL before trim so they cannot be silently stripped.
-    if (value.shell.includes('\0') || value.shell.includes('\n')) return { ok: false }
-    const trimmed = value.shell.trim()
-    if (!isValidPrincipalShell(trimmed)) return { ok: false }
-    shell = trimmed
-  }
+  const shellResult = parsePrincipalShellInput(value)
+  if (!shellResult.ok) return { ok: false }
 
-  const hasUid = 'uid' in value && value.uid !== undefined
-  const hasGid = 'gid' in value && value.gid !== undefined
-  if (hasUid !== hasGid) return { ok: false }
-  if (hasUid && hasGid) {
-    if (!isValidPrincipalIdOverride(value.uid) || !isValidPrincipalIdOverride(value.gid)) {
-      return { ok: false }
+  const idsResult = parsePrincipalIdOverrideInput(value)
+  if (!idsResult.ok) return { ok: false }
+
+  if (idsResult.override) {
+    return {
+      ok: true,
+      value: {
+        shell: shellResult.shell,
+        uid: idsResult.override.uid,
+        gid: idsResult.override.gid,
+      },
     }
-    return { ok: true, value: { shell, uid: value.uid, gid: value.gid } }
   }
-
-  return { ok: true, value: { shell } }
+  return { ok: true, value: { shell: shellResult.shell } }
 }
 
 /** Default shell when absent/invalid. */

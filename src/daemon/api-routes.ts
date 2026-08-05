@@ -1,4 +1,3 @@
-import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { Context, Next } from "hono";
 import { isInstanceInstalled } from "../client/authn/install-state.ts";
@@ -16,7 +15,6 @@ import {
 } from "../client/authn/data-encryption.ts";
 import type { Db } from "../db.ts";
 import { getDb, getServerMetricsStore } from "../db.ts";
-import { license } from "../lib/db/schema.ts";
 import {
   MAX_METRICS_PAYLOAD_BYTES,
   metricsPayloadByteLength,
@@ -32,7 +30,11 @@ import { buildDaemonScalarHtml } from "../scalar-html.ts";
 import { resolveInstanceTlsCaPath } from "../server-paths.ts";
 import { DAEMON_API_PREFIX } from "../surfaces.ts";
 import { normalizeMachineKey } from "../lib/machine-key.ts";
-import { resolveServerId, touchServerMetadata } from "../server-registry.ts";
+import {
+  getServerLicenseBinding,
+  resolveServerId,
+  touchServerMetadata,
+} from "../server-registry.ts";
 import { verifyDaemonLicense } from "./authn/license.ts";
 import { issueDaemonJwt, verifyDaemonJwt } from "./authn/daemon-jwt.ts";
 import type { ServerDaemonStateWithMetadata } from "./authn/server-identity-db.ts";
@@ -404,18 +406,14 @@ async function loadActiveDaemonKeyState(
   return { ok: true, daemonState };
 }
 
-/** Confirms the server's license (if any) is still active. */
+/** Confirms the server's bound license (if any) is still active. */
 async function checkServerLicenseActive(
   db: Db,
   serverId: string,
 ): Promise<{ ok: true } | { ok: false; status: 400; error: string }> {
-  const [licenseRow] = await db
-    .select({ licenseId: license.id })
-    .from(license)
-    .where(eq(license.serverId, serverId))
-    .limit(1);
-  if (licenseRow?.licenseId) {
-    const activeLicense = await lookupActiveLicense(db, licenseRow.licenseId);
+  const binding = await getServerLicenseBinding(db, serverId);
+  if (binding?.licenseId) {
+    const activeLicense = await lookupActiveLicense(db, binding.licenseId);
     if (!activeLicense) {
       return { ok: false, status: 400, error: "License is inactive" };
     }

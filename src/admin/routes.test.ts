@@ -1,12 +1,14 @@
 import { assertEquals } from 'jsr:@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../app.ts'
+import { createBrowserWriteProtectionMiddleware } from '../browser-write-protection.ts'
 import { getDatabaseUrl } from '../db-url.ts'
 import { createDenoDb } from '../db.ts'
 import type { DaemonCell, DaemonCellRegistry } from '../daemon/cell/contracts.ts'
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
+  HTTPS_SESSION_COOKIE_NAME,
 } from '../client/authn/crypto.ts'
 import { createSession } from '../client/authn/session-store.ts'
 import {
@@ -17,6 +19,7 @@ import {
 import { user } from '../lib/db/schema.ts'
 import { eq } from 'drizzle-orm'
 import { ADMIN_API_PREFIX } from '../surfaces.ts'
+import { resetReencryptSweepLockForTests } from './reencrypt-secrets.ts'
 import { registerAdminRoutes } from './routes.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -116,18 +119,28 @@ function createTrackingRegistry(failIds: Set<string> = new Set()): {
   return { registry, purgedIds }
 }
 
-async function createAdminTestApp(registry: DaemonCellRegistry) {
+async function createAdminTestApp(
+  registry: DaemonCellRegistry,
+  options: Readonly<{
+    withDataEncryption?: boolean
+    withBrowserWriteProtection?: boolean
+  }> = {},
+) {
   const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
-  const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
-    secretsConfig,
-    'data-encryption',
-  )
+  const dataEncryptionSecrets = options.withDataEncryption === false
+    ? undefined
+    : await deriveEncryptionSecretsConfig(secretsConfig, 'data-encryption')
   const app = new Hono<AppEnv>()
+  if (options.withBrowserWriteProtection) {
+    app.use('*', createBrowserWriteProtectionMiddleware('workers'))
+  }
   app.use('*', (c, next) => {
     c.set('db', createDenoDb())
     c.set('daemonCellRegistry', registry)
-    c.set('dataEncryptionSecrets', dataEncryptionSecrets)
+    if (dataEncryptionSecrets) {
+      c.set('dataEncryptionSecrets', dataEncryptionSecrets)
+    }
     return next()
   })
   registerAdminRoutes(app, {
@@ -154,12 +167,17 @@ async function withRoleUser(
     app: Hono<AppEnv>
     cookie: string
   }) => Promise<void>,
+  options: Readonly<{
+    withDataEncryption?: boolean
+    withBrowserWriteProtection?: boolean
+  }> = {},
 ): Promise<void> {
   if (!dbUrl) {
     console.warn('Skipping admin route tests: TURBOPANEL_DATABASE_URL not set')
     return
   }
 
+  resetReencryptSweepLockForTests()
   const db = createDenoDb()
   const email = `admin-cell-purge-${role}-${crypto.randomUUID()}@example.com`
   const [insertedUser] = await db
@@ -169,13 +187,14 @@ async function withRoleUser(
   const userId = insertedUser!.id
 
   const { registry } = createTrackingRegistry()
-  const { app, secrets } = await createAdminTestApp(registry)
+  const { app, secrets } = await createAdminTestApp(registry, options)
   const cookie = await adminSessionCookie(db, secrets, userId)
 
   try {
     await fn({ app, cookie })
   } finally {
     await db.delete(user).where(eq(user.id, userId))
+    resetReencryptSweepLockForTests()
   }
 }
 
@@ -290,7 +309,11 @@ test('POST /api/admin/v1/secrets/reencrypt returns summary for superadmin', asyn
   await withRoleUser('superadmin', async ({ app, cookie }) => {
     const res = await app.request(`${ADMIN_API_PREFIX}/secrets/reencrypt`, {
       method: 'POST',
-      headers: { Cookie: cookie },
+      headers: {
+        Cookie: cookie,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({}),
     })
 
     assertEquals(res.status, 200)
@@ -300,5 +323,88 @@ test('POST /api/admin/v1/secrets/reencrypt returns summary for superadmin', asyn
     assertEquals(typeof body.reencrypted, 'number')
     assertEquals(typeof body.skipped, 'number')
     assertEquals(typeof body.failed, 'number')
+    assertEquals(typeof body.completed, 'boolean')
+    assertEquals(body.completed, true)
+    assertEquals(body.cursor, null)
   })
+})
+
+test('POST /api/admin/v1/secrets/reencrypt returns 503 when encryption key is missing', async () => {
+  await withRoleUser(
+    'superadmin',
+    async ({ app, cookie }) => {
+      const res = await app.request(`${ADMIN_API_PREFIX}/secrets/reencrypt`, {
+        method: 'POST',
+        headers: { Cookie: cookie },
+      })
+
+      assertEquals(res.status, 503)
+      const body = await res.json()
+      assertEquals(body.ok, false)
+      assertEquals(
+        body.error,
+        'Encryption unavailable — no encryption key configured',
+      )
+    },
+    { withDataEncryption: false },
+  )
+})
+
+test('POST /api/admin/v1/secrets/reencrypt rejects cross-origin browser writes', async () => {
+  await withRoleUser(
+    'superadmin',
+    async ({ app, cookie }) => {
+      // HTTPS requests resolve the `__Host-` cookie name; reuse the signed token.
+      const httpsCookie = cookie.replace(
+        `${HTTP_SESSION_COOKIE_NAME}=`,
+        `${HTTPS_SESSION_COOKIE_NAME}=`,
+      )
+      const res = await app.request(
+        new Request(`https://panel.example.com${ADMIN_API_PREFIX}/secrets/reencrypt`, {
+          method: 'POST',
+          headers: {
+            Cookie: httpsCookie,
+            Origin: 'https://docs.example.com',
+            'content-type': 'application/json',
+          },
+          body: '{}',
+        }),
+      )
+
+      assertEquals(res.status, 403)
+      const body = await res.json()
+      assertEquals(body.ok, false)
+      assertEquals(body.error, 'Forbidden')
+    },
+    { withBrowserWriteProtection: true },
+  )
+})
+
+test('POST /api/admin/v1/secrets/reencrypt allows same-origin browser writes', async () => {
+  await withRoleUser(
+    'superadmin',
+    async ({ app, cookie }) => {
+      const httpsCookie = cookie.replace(
+        `${HTTP_SESSION_COOKIE_NAME}=`,
+        `${HTTPS_SESSION_COOKIE_NAME}=`,
+      )
+      const res = await app.request(
+        new Request(`https://panel.example.com${ADMIN_API_PREFIX}/secrets/reencrypt`, {
+          method: 'POST',
+          headers: {
+            Cookie: httpsCookie,
+            Origin: 'https://panel.example.com',
+            'content-type': 'application/json',
+          },
+          body: '{}',
+        }),
+      )
+
+      assertEquals(res.status, 200)
+      const body = await res.json()
+      assertEquals(body.ok, true)
+      assertEquals(body.completed, true)
+    },
+    { withBrowserWriteProtection: true },
+  )
 })

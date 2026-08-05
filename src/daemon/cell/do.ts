@@ -110,6 +110,21 @@ function rpcString(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+/**
+ * Coerce a DO SQLite cell to string without Object's default `[object Object]`
+ * / `[object ArrayBuffer]` stringification (`typescript:S6551`). TEXT columns
+ * are strings; INTEGER may arrive as number; BLOB is unexpected for the text
+ * fields we read and falls back.
+ */
+function sqlString(
+  value: SqlStorageValue | undefined,
+  fallback = "",
+): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number") return `${value}`;
+  return fallback;
+}
+
 /** Serialize a trace detail value without Object's default `[object Object]`. */
 function serializeTraceValue(value: unknown): string {
   if (
@@ -209,15 +224,15 @@ function snapshotFromMetaRow(
   row: Record<string, SqlStorageValue>,
   connected: boolean,
 ): DaemonCellSnapshot {
+  const remoteAddress = sqlString(row.remote_address);
+  const keyLastUsedAt = sqlString(row.key_last_used_at);
   return {
     serverId,
     version: 0,
-    updatedAt: String(row.updated_at ?? nowIso()),
-    remoteAddress: row.remote_address ? String(row.remote_address) : undefined,
+    updatedAt: sqlString(row.updated_at, nowIso()),
+    remoteAddress: remoteAddress || undefined,
     connected,
-    keyLastUsedAt: row.key_last_used_at
-      ? String(row.key_last_used_at)
-      : undefined,
+    keyLastUsedAt: keyLastUsedAt || undefined,
   };
 }
 
@@ -227,28 +242,32 @@ function parseRequestRow(
 ): PendingRequestRecord {
   const record: PendingRequestRecord = {
     serverId,
-    requestId: String(row.request_id),
-    requestKind: String(row.request_kind ?? ""),
-    status: String(row.status ?? "queued") as PendingRequestStatus,
-    createdAt: String(row.created_at ?? nowIso()),
-    expiresAt: String(row.expires_at ?? nowIso()),
+    requestId: sqlString(row.request_id),
+    requestKind: sqlString(row.request_kind),
+    status: sqlString(row.status, "queued") as PendingRequestStatus,
+    createdAt: sqlString(row.created_at, nowIso()),
+    expiresAt: sqlString(row.expires_at, nowIso()),
   };
-  if (row.sent_at) record.sentAt = String(row.sent_at);
-  if (row.ack_at) record.ackAt = String(row.ack_at);
-  if (row.finished_at) record.finishedAt = String(row.finished_at);
-  if (row.daemon_received_at) {
-    record.daemonReceivedAt = String(row.daemon_received_at);
-  }
-  if (row.daemon_responded_at) {
-    record.daemonRespondedAt = String(row.daemon_responded_at);
-  }
-  if (row.error) record.error = String(row.error);
-  if (row.command_text) record.command = String(row.command_text);
-  if (row.result_json) {
+  const sentAt = sqlString(row.sent_at);
+  if (sentAt) record.sentAt = sentAt;
+  const ackAt = sqlString(row.ack_at);
+  if (ackAt) record.ackAt = ackAt;
+  const finishedAt = sqlString(row.finished_at);
+  if (finishedAt) record.finishedAt = finishedAt;
+  const daemonReceivedAt = sqlString(row.daemon_received_at);
+  if (daemonReceivedAt) record.daemonReceivedAt = daemonReceivedAt;
+  const daemonRespondedAt = sqlString(row.daemon_responded_at);
+  if (daemonRespondedAt) record.daemonRespondedAt = daemonRespondedAt;
+  const error = sqlString(row.error);
+  if (error) record.error = error;
+  const command = sqlString(row.command_text);
+  if (command) record.command = command;
+  const resultJson = sqlString(row.result_json);
+  if (resultJson) {
     try {
-      record.result = JSON.parse(String(row.result_json));
+      record.result = JSON.parse(resultJson);
     } catch {
-      record.result = String(row.result_json);
+      record.result = resultJson;
     }
   }
   return record;
@@ -861,9 +880,8 @@ export class DaemonCellObject {
         "SELECT server_id FROM cell LIMIT 1",
       );
       for (const row of cursor) {
-        const id = row.server_id;
-        if (id) {
-          const serverId = String(id);
+        const serverId = sqlString(row.server_id);
+        if (serverId) {
           this.#serverId = serverId;
           return serverId;
         }
@@ -1297,8 +1315,8 @@ export class DaemonCellObject {
       }
 
       // expires_at already scheduled via `#applyOutboxRowToAlarmSchedule`.
-      const status = String(row.status ?? "");
-      const finishedAt = row.finished_at ? String(row.finished_at) : null;
+      const status = sqlString(row.status);
+      const finishedAt = sqlString(row.finished_at) || null;
       const finishedMs = safeParseMs(finishedAt);
       if (
         finishedMs !== null &&
@@ -1318,10 +1336,10 @@ export class DaemonCellObject {
     bumpPump: (ms: number) => void,
     bumpCleanup: (ms: number) => void,
   ): boolean {
-    const deliveryStatus = String(row.delivery_status ?? "");
-    const retryAt = row.retry_at ? String(row.retry_at) : null;
-    const sentAt = row.sent_at ? String(row.sent_at) : null;
-    const expiresAt = row.expires_at ? String(row.expires_at) : null;
+    const deliveryStatus = sqlString(row.delivery_status);
+    const retryAt = sqlString(row.retry_at) || null;
+    const sentAt = sqlString(row.sent_at) || null;
+    const expiresAt = sqlString(row.expires_at) || null;
 
     let deliverable = false;
     if (deliveryStatus === "queued" && (!retryAt || retryAt <= now)) {
@@ -1840,7 +1858,7 @@ export class DaemonCellObject {
       now,
     );
     for (const row of expiringCursor) {
-      expiringUpdates.push({ requestId: String(row.request_id ?? "") });
+      expiringUpdates.push({ requestId: sqlString(row.request_id) });
     }
 
     // Non-terminal rows only — terminal/acked-with-finished_at rows are owned by
@@ -2337,9 +2355,7 @@ export class DaemonCellObject {
       ),
     );
     if (existingRow) {
-      const existingDeliveryId = existingRow.delivery_id
-        ? String(existingRow.delivery_id)
-        : "";
+      const existingDeliveryId = sqlString(existingRow.delivery_id);
       if (existingDeliveryId === outbound.deliveryId) {
         return parseRequestRow(serverId, existingRow);
       }
@@ -2457,7 +2473,7 @@ export class DaemonCellObject {
         deliveryId,
       ),
     );
-    const requestId = row ? String(row.request_id) : undefined;
+    const requestId = row ? sqlString(row.request_id) : undefined;
     this.#trace("mark-sent", { serverId, requestId, deliveryId });
   }
 
@@ -2884,8 +2900,8 @@ export class DaemonCellObject {
     let cleared = 0;
     const staleRequestIds: string[] = [];
     for (const row of inFlightCursor) {
-      const requestId = String(row.request_id ?? "");
-      const createdAt = String(row.created_at ?? "");
+      const requestId = sqlString(row.request_id);
+      const createdAt = sqlString(row.created_at);
       const stale = opts?.allowStale && this.#isStaleInFlightUpdate(
         createdAt,
         opts,
@@ -2920,7 +2936,7 @@ export class DaemonCellObject {
     );
     const requestIds: string[] = [];
     for (const row of terminalCursor) {
-      requestIds.push(String(row.request_id ?? ""));
+      requestIds.push(sqlString(row.request_id));
     }
 
     this.#ctx.storage.transactionSync(() => {
@@ -3121,7 +3137,7 @@ export class DaemonCellObject {
         params.count,
       );
       for (const row of cursor) {
-        const payload = row.payload_json ? String(row.payload_json) : null;
+        const payload = sqlString(row.payload_json) || null;
         if (!payload) continue;
         try {
           envelopes.push(JSON.parse(payload) as DaemonOutboundEnvelope);

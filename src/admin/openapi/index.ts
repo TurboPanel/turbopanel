@@ -175,15 +175,47 @@ export function getAdminOpenApiSpec(
             },
           },
         },
+        SecretsReencryptCursor: {
+          type: 'object',
+          required: ['stage'],
+          properties: {
+            stage: {
+              type: 'string',
+              enum: ['variables', 'tls', 'principals', 'email'],
+            },
+            afterId: {
+              type: 'string',
+              description: 'Last processed row id within the stage (resume exclusive lower bound)',
+            },
+          },
+        },
         SecretsReencryptResponse: {
           type: 'object',
-          required: ['ok', 'scanned', 'reencrypted', 'skipped', 'failed'],
+          required: [
+            'ok',
+            'scanned',
+            'reencrypted',
+            'skipped',
+            'failed',
+            'completed',
+            'cursor',
+          ],
           properties: {
             ok: { type: 'boolean', const: true },
             scanned: { type: 'integer' },
             reencrypted: { type: 'integer' },
             skipped: { type: 'integer' },
             failed: { type: 'integer' },
+            completed: {
+              type: 'boolean',
+              description: 'True when the sweep finished; otherwise resume with `cursor`',
+            },
+            cursor: {
+              oneOf: [
+                { $ref: '#/components/schemas/SecretsReencryptCursor' },
+                { type: 'null' },
+              ],
+            },
           },
         },
       },
@@ -515,20 +547,43 @@ export function getAdminOpenApiSpec(
           tags: ['Instance'],
           summary: 'Re-encrypt at-rest secrets to the current key version',
           description:
-            'Sweeps secret variables, TLS private keys, and principal passwords. ' +
-            'Re-seals only non-current `enc` envelopes; skips `denc` and already-current blobs.',
+            'Bounded sweep over secret variables, TLS private keys, principal passwords, ' +
+            'and SYSTEM_EMAIL secret keys. Re-seals older `enc` and plaintext secret columns; ' +
+            'skips valid `denc` and current-version `enc`; fails malformed envelopes. ' +
+            'Pass the previous `cursor` to resume until `completed` is true. Concurrent ' +
+            'sweeps return 409 `reencrypt_in_progress`.',
           security: [...cookieSecurity],
+          requestBody: {
+            required: false,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    cursor: { $ref: '#/components/schemas/SecretsReencryptCursor' },
+                    limit: {
+                      type: 'integer',
+                      minimum: 1,
+                      description: 'Max blobs to scan this call (capped server-side)',
+                    },
+                  },
+                },
+              },
+            },
+          },
           responses: {
             '200': {
-              description: 'Sweep completed',
+              description: 'Sweep batch finished (check `completed` / `cursor` for resume)',
               content: {
                 'application/json': {
                   schema: { $ref: '#/components/schemas/SecretsReencryptResponse' },
                 },
               },
             },
+            '400': { description: 'Invalid cursor or limit' },
             '401': { description: 'Unauthorized' },
             '403': { description: 'Superadmin access required' },
+            '409': { description: 'Another re-encryption sweep is already in progress' },
             '503': { description: 'Database or encryption unavailable' },
           },
         },

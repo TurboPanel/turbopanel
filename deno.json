@@ -40,6 +40,7 @@
     "test:authn": "deno test --no-check --allow-env --allow-net --allow-read src/client/authn/workers-onboarding.test.ts src/client/authn/install-state.test.ts",
     "test:paths": "deno test --allow-read src/server-paths.deno.test.ts",
     "test:compose": "deno test --allow-read --allow-env src/lib/compose/",
-    "test:managed": "deno test --allow-read --allow-env src/lib/managed/"
+    "test:managed": "deno test --allow-read --allow-env src/lib/managed/",
+    "test:admin": "deno test --no-check --allow-env --allow-net --allow-read --allow-write=/run/turbopanel,/var/run/turbopanel src/admin/reencrypt-secrets.test.ts src/admin/routes.test.ts"
   }
 }

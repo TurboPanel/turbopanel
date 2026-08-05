@@ -16,7 +16,12 @@ import {
   user,
   workspace,
 } from '../../lib/db/schema.ts'
-import { createLicense, invalidateLicense } from './license.ts'
+import {
+  createLicense,
+  generateLicenseToken,
+  invalidateLicense,
+} from './license.ts'
+import { clearServerDaemonState } from '../../daemon/authn/server-identity-db.ts'
 import { hashPassword } from './password.ts'
 import { SUPERADMIN_ROLE } from './session-store.ts'
 import { compatLogInfo, compatLogWarn } from '../../log-compat.ts'
@@ -25,7 +30,13 @@ import {
   resolveEmailSettings,
 } from '../../lib/settings/email-settings.ts'
 import { deriveMachineKey } from '../../lib/machine-key.ts'
-import { ensureSelfHostSystemHierarchy } from '../system/hierarchy.ts'
+import {
+  ensureSelfHostSystemHierarchy,
+  ensureSystemWorkspace,
+  findSystemEnvironmentForServer,
+  SYSTEM_SELF_HOST_COMPONENT,
+} from '../system/hierarchy.ts'
+import { WORKSPACE_KIND_USER } from '../../lib/db/workspace-kind.ts'
 
 const ORG_NAME_RE = /^[A-Za-z0-9 ._-]+$/
 
@@ -230,7 +241,7 @@ export async function insertOwnerGrants(
     })
 }
 
-/** Insert the org's initial workspace. Call inside the same transaction as org create. */
+/** Insert the org's initial user workspace. Call inside the same transaction as org create. */
 export async function insertDefaultWorkspace(
   db: Db,
   organizationId: string,
@@ -240,6 +251,7 @@ export async function insertDefaultWorkspace(
     .values({
       organizationId,
       displayName: DEFAULT_WORKSPACE_NAME,
+      kind: WORKSPACE_KIND_USER,
     })
     .returning({ id: workspace.id })
 
@@ -728,9 +740,82 @@ async function readColocatedDiskLicenseId(): Promise<string | null> {
   return null
 }
 
+/** Live registry: active license latched to the Unix-socket co-located server, if any. */
+async function resolveLicenseIdFromColocatedRegistry(
+  db: Db,
+  registry: DaemonCellRegistry,
+  organizationId?: string,
+): Promise<string | null> {
+  const colocatedServerId = await findColocatedServerIdFromRegistry(db, registry)
+  if (!colocatedServerId) return null
+  const filter = organizationId
+    ? and(
+      eq(license.serverId, colocatedServerId),
+      eq(license.organizationId, organizationId),
+      isNull(license.revokedAt),
+    )
+    : and(eq(license.serverId, colocatedServerId), isNull(license.revokedAt))
+  const rows = await db
+    .select({ id: license.id })
+    .from(license)
+    .where(filter)
+    .limit(1)
+  return rows[0]?.id ?? null
+}
+
+/** Install-wizard license named {@link COLOCATED_SERVER_DISPLAY_NAME}, if still active. */
+async function resolveInstallDisplayNameLicenseId(
+  db: Db,
+  organizationId: string,
+): Promise<string | null> {
+  const installLicense = await db
+    .select({ id: license.id })
+    .from(license)
+    .where(and(
+      eq(license.organizationId, organizationId),
+      eq(license.displayName, COLOCATED_SERVER_DISPLAY_NAME),
+      isNull(license.revokedAt),
+    ))
+    .limit(1)
+  return installLicense[0]?.id ?? null
+}
+
+/**
+ * Durable pin: licenses bound to the server that owns the `turbopanel` self-host
+ * environment stay protected even when the daemon is offline.
+ */
+async function addSelfHostBoundLicenseIds(
+  db: Db,
+  ids: Set<string>,
+  organizationId?: string,
+): Promise<void> {
+  const boundFilter = organizationId
+    ? and(eq(license.organizationId, organizationId), isNotNull(license.serverId))
+    : isNotNull(license.serverId)
+  const boundRows = await db
+    .select({ id: license.id, serverId: license.serverId })
+    .from(license)
+    .where(boundFilter)
+  for (const row of boundRows) {
+    if (!row.serverId || ids.has(row.id)) continue
+    const envId = await findSystemEnvironmentForServer(
+      db,
+      row.serverId,
+      SYSTEM_SELF_HOST_COMPONENT,
+    )
+    if (envId) ids.add(row.id)
+  }
+}
+
 /**
  * Licenses tied to the Unix-socket co-located daemon are not revocable — revoking
  * would break the local control plane and dev stack.
+ *
+ * Protection sources (any one is enough): live registry probe, on-disk
+ * `license.id`, install display-name match, and the durable self-host
+ * environment pin (`license.server_id` owns the `turbopanel` system
+ * environment) so revoke stays blocked when the daemon is offline and disk
+ * credentials are missing.
  */
 export async function resolveProtectedColocatedLicenseIds(
   db: Db,
@@ -740,38 +825,26 @@ export async function resolveProtectedColocatedLicenseIds(
   const ids = new Set<string>()
   if (typeof Deno === 'undefined') return ids
 
+  // Accumulate every protection source — a registry hit must not skip disk,
+  // reserved display-name, or durable self-host pin fallbacks.
   if (registry) {
-    const colocatedServerId = await findColocatedServerIdFromRegistry(db, registry)
-    if (colocatedServerId) {
-      const rows = await db
-        .select({ id: license.id })
-        .from(license)
-        .where(eq(license.serverId, colocatedServerId))
-        .limit(1)
-      const licenseId = rows[0]?.id
-      if (licenseId != null) {
-        ids.add(licenseId)
-        return ids
-      }
-    }
+    const registryLicenseId = await resolveLicenseIdFromColocatedRegistry(
+      db,
+      registry,
+      organizationId,
+    )
+    if (registryLicenseId != null) ids.add(registryLicenseId)
   }
 
   const diskId = await readColocatedDiskLicenseId()
   if (diskId) ids.add(diskId)
 
   if (organizationId) {
-    const installLicense = await db
-      .select({ id: license.id })
-      .from(license)
-      .where(and(
-        eq(license.organizationId, organizationId),
-        eq(license.displayName, COLOCATED_SERVER_DISPLAY_NAME),
-        isNull(license.revokedAt),
-      ))
-      .limit(1)
-    if (installLicense[0]?.id) ids.add(installLicense[0].id)
+    const installId = await resolveInstallDisplayNameLicenseId(db, organizationId)
+    if (installId) ids.add(installId)
   }
 
+  await addSelfHostBoundLicenseIds(db, ids, organizationId)
   return ids
 }
 
@@ -864,25 +937,29 @@ export async function assignColocatedDaemonToOrganization(
 }
 
 /**
- * Best-effort self-host system hierarchy bootstrap: resolves the colocated
- * server + default installed organization and provisions the `turbopanel`
- * workspace/project/environment/services tree (see
- * `system/hierarchy.ts`). No-op on Workers/HA (both resolve to `null` there)
- * and whenever the colocated daemon has not enrolled yet — callers re-run
- * this on a maintenance timer so a host whose daemon enrolls after install
- * still converges. Logs and swallows failures so it can never block install
- * completion or the boot path that calls it.
+ * Best-effort System workspace + self-host hierarchy bootstrap. Resolves the
+ * default installed organization first and ensures the System workspace
+ * (backfill for pre-existing installs — no daemon required), then when a
+ * colocated server is resolvable provisions the full `turbopanel`
+ * project/environment/services tree (see `system/hierarchy.ts`). Callers
+ * re-run this on a maintenance timer so a host whose daemon enrolls after
+ * install still converges. Logs and swallows failures so it can never block
+ * install completion or the boot path that calls it.
  */
 export async function ensureSelfHostSystemHierarchyBestEffort(
   db: Db,
   registry?: DaemonCellRegistry,
 ): Promise<void> {
   try {
-    const serverId = await resolveColocatedServerId(db, registry)
-    if (!serverId) return
-
     const organizationId = await findDefaultInstalledOrganizationId(db)
     if (!organizationId) return
+
+    // Backfill System workspace for installs that predate install-time
+    // provisioning — does not require a colocated server.
+    await ensureSystemWorkspace(db, organizationId)
+
+    const serverId = await resolveColocatedServerId(db, registry)
+    if (!serverId) return
 
     await ensureSelfHostSystemHierarchy(db, { organizationId, serverId })
   } catch (err) {
@@ -929,9 +1006,12 @@ export async function persistColocatedLicenseCredentials(
  * colocated license and persist credentials so the daemon can enroll.
  *
  * The plaintext token is unrecoverable once disk files are gone (DB stores only
- * an Argon2id hash). Recovery therefore revokes every active
- * {@link COLOCATED_SERVER_DISPLAY_NAME} license for the default org, then mints
- * exactly one fresh license — at most one active colocated license per org.
+ * an Argon2id hash). When a co-located server is already enrolled (active bound
+ * license), recovery **updates that row's token in place** so the `server_id`
+ * latch and daemon identity stay intact. Otherwise it revokes active unbound
+ * colocated licenses, mints one fresh seat, and — when a prior binding still
+ * holds `server_id` — rebinds the new credential and clears daemon state in the
+ * same transaction so re-enroll targets the same server.
  */
 export async function ensureColocatedLicenseCredentialsOnDisk(
   db: Db,
@@ -965,18 +1045,101 @@ export async function ensureColocatedLicenseCredentialsOnDisk(
 }
 
 /**
- * Revoke every active colocated (`this server`) license for an org, then mint
- * exactly one fresh license. Used by disk-credential recovery and tests.
+ * Restore colocated disk credentials for an org.
+ *
+ * Prefer in-place token rotation on an already-bound active seat. Fall back to
+ * revoke-then-mint, rebinding any prior `server_id` and clearing daemon identity
+ * so the new credential can re-enroll the same server.
  */
 export async function rotateColocatedLicenseCredentials(
   db: Db,
   organizationId: string,
 ): Promise<{ licenseId: string; licenseToken: string }> {
-  await revokeActiveColocatedLicenses(db, organizationId)
-  return createLicense(db, {
-    organizationId,
-    displayName: COLOCATED_SERVER_DISPLAY_NAME,
+  const boundActive = await findActiveBoundColocatedLicense(db, organizationId)
+  if (boundActive) {
+    return rotateLicenseTokenInPlace(db, boundActive.id)
+  }
+
+  return db.transaction(async (tx) => {
+    const priorServerId = await findColocatedBoundServerId(tx, organizationId)
+    await revokeActiveColocatedLicenses(tx, organizationId)
+    const created = await createLicense(tx, {
+      organizationId,
+      displayName: COLOCATED_SERVER_DISPLAY_NAME,
+    })
+
+    if (priorServerId) {
+      // Free the unique-index slot held by revoked rows, then latch the new seat.
+      await tx
+        .update(license)
+        .set({ serverId: null, updatedAt: nowTs() })
+        .where(eq(license.serverId, priorServerId))
+      await tx
+        .update(license)
+        .set({ serverId: priorServerId, updatedAt: nowTs() })
+        .where(eq(license.id, created.licenseId))
+      await clearServerDaemonState(tx, priorServerId)
+    }
+
+    return created
   })
+}
+
+/** Active colocated license already latched to a server, if any. */
+async function findActiveBoundColocatedLicense(
+  db: Db,
+  organizationId: string,
+): Promise<{ id: string; serverId: string } | null> {
+  const rows = await db
+    .select({ id: license.id, serverId: license.serverId })
+    .from(license)
+    .where(and(
+      eq(license.organizationId, organizationId),
+      eq(license.displayName, COLOCATED_SERVER_DISPLAY_NAME),
+      isNull(license.revokedAt),
+      isNotNull(license.serverId),
+    ))
+    .limit(1)
+  const row = rows[0]
+  if (!row?.serverId) return null
+  return { id: row.id, serverId: row.serverId }
+}
+
+/**
+ * Server id still held by any colocated license row (including revoked), so
+ * replacement recovery can rebind the same host.
+ */
+async function findColocatedBoundServerId(
+  db: Db,
+  organizationId: string,
+): Promise<string | null> {
+  const rows = await db
+    .select({ serverId: license.serverId })
+    .from(license)
+    .where(and(
+      eq(license.organizationId, organizationId),
+      eq(license.displayName, COLOCATED_SERVER_DISPLAY_NAME),
+      isNotNull(license.serverId),
+    ))
+    .limit(1)
+  return rows[0]?.serverId ?? null
+}
+
+/** Mint a new plaintext token on an existing active license row. */
+async function rotateLicenseTokenInPlace(
+  db: Db,
+  licenseId: string,
+): Promise<{ licenseId: string; licenseToken: string }> {
+  const { plaintext, hashed } = await generateLicenseToken()
+  const updated = await db
+    .update(license)
+    .set({ token: hashed, updatedAt: nowTs() })
+    .where(and(eq(license.id, licenseId), isNull(license.revokedAt)))
+    .returning({ id: license.id })
+  if (!updated[0]?.id) {
+    throw new Error('Colocated license token rotation failed')
+  }
+  return { licenseId, licenseToken: plaintext }
 }
 
 /** Soft-invalidate every active colocated (`this server`) license for an org. */
@@ -1137,6 +1300,10 @@ export async function completeInstanceInstall(
     if (!organizationId) {
       throw new Error('Organization creation failed')
     }
+
+    // System workspace first so uuidv7 / created_at ordering puts it ahead of
+    // Default Workspace in GET /workspaces.
+    await ensureSystemWorkspace(tx, organizationId)
 
     const insertedTeam = await tx
       .insert(team)

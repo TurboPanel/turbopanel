@@ -1,22 +1,34 @@
+import { assertEquals } from 'jsr:@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'
+import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
-import { COLOCATED_SERVER_DISPLAY_NAME } from '../authn/install-state.ts'
 import {
+  COLOCATED_SERVER_DISPLAY_NAME,
+  colocatedLicenseRevokeError,
+} from '../authn/install-state.ts'
+import {
+  container,
+  environment,
   grant,
   license,
   member,
   organization,
+  project,
+  server,
+  service,
   user,
+  workspace,
 } from '../../lib/db/schema.ts'
+import { ensureSelfHostSystemHierarchy } from '../system/hierarchy.ts'
 import { registerLicenseRoutes } from './routes.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 
@@ -24,12 +36,27 @@ import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
 
-async function createLicenseTestApp(db: ReturnType<typeof createDenoDb>) {
+function createOnlineRegistry(serverIds: string[]): DaemonCellRegistry {
+  return {
+    getCell: () => {
+      throw new Error('getCell must not be called from license revoke tests')
+    },
+    listOnlineServerIds: async () => serverIds,
+    getSnapshots: async () => new Map(),
+    purge: async () => {},
+  }
+}
+
+async function createLicenseTestApp(
+  db: ReturnType<typeof createDenoDb>,
+  registry?: DaemonCellRegistry,
+) {
   const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
+    if (registry) c.set('daemonCellRegistry', registry)
     return next()
   })
   registerLicenseRoutes(app, { secrets, runtime: 'deno' })
@@ -120,6 +147,7 @@ async function withOwnerFixtures(
     ownerId: string
     organizationId: string
   }) => Promise<void>,
+  options?: { registry?: DaemonCellRegistry },
 ): Promise<void> {
   if (!dbUrl) {
     console.warn('Skipping license route tests: TURBOPANEL_DATABASE_URL not set')
@@ -127,7 +155,7 @@ async function withOwnerFixtures(
   }
 
   const db = createDenoDb()
-  const { app, secrets } = await createLicenseTestApp(db)
+  const { app, secrets } = await createLicenseTestApp(db, options?.registry)
 
   const ownerEmail = `license-route-owner-${crypto.randomUUID()}@example.com`
 
@@ -230,6 +258,312 @@ test('DELETE /licenses/:id is forbidden for an organization manager', async () =
       throw new Error('org manager must not be able to revoke a license')
     }
   })
+})
+
+test('DELETE /licenses/:id returns 403 for license bound to self-host-pinned server', async () => {
+  await withOwnerFixtures(async ({ db, app, secrets, ownerId, organizationId }) => {
+    const now = new Date().toISOString()
+    const [insertedServer] = await db
+      .insert(server)
+      .values({
+        createdAt: now,
+        updatedAt: now,
+        organizationId,
+        displayName: 'Self-host pinned',
+      })
+      .returning({ id: server.id })
+    const serverId = insertedServer!.id
+
+    await ensureSelfHostSystemHierarchy(db, { organizationId, serverId })
+
+    // Distinct display name so protection comes only from the durable pin
+    // (no registry, no disk credentials, not the reserved "this server" name).
+    const [insertedLicense] = await db
+      .insert(license)
+      .values({
+        organizationId,
+        serverId,
+        displayName: 'bound-to-self-host',
+        token: `pin-hash-${crypto.randomUUID()}`,
+      })
+      .returning({ id: license.id })
+    const licenseId = insertedLicense!.id
+
+    try {
+      const cookie = await sessionCookie(db, secrets, ownerId)
+      const res = await app.request(`/licenses/${licenseId}`, {
+        method: 'DELETE',
+        headers: orgRequestHeaders(cookie, organizationId),
+      })
+
+      assertEquals(res.status, 403)
+      const body = await res.json() as { error?: string }
+      assertEquals(body.error, colocatedLicenseRevokeError())
+
+      const rows = await db
+        .select({ revokedAt: license.revokedAt })
+        .from(license)
+        .where(eq(license.id, licenseId))
+        .limit(1)
+      assertEquals(rows[0]?.revokedAt ?? null, null)
+    } finally {
+      await db.delete(license).where(eq(license.id, licenseId))
+      const workspaceRows = await db
+        .select({ id: workspace.id })
+        .from(workspace)
+        .where(eq(workspace.organizationId, organizationId))
+      for (const ws of workspaceRows) {
+        const projectRows = await db
+          .select({ id: project.id })
+          .from(project)
+          .where(eq(project.workspaceId, ws.id))
+        for (const p of projectRows) {
+          const envRows = await db
+            .select({ id: environment.id })
+            .from(environment)
+            .where(eq(environment.projectId, p.id))
+          for (const env of envRows) {
+            const serviceRows = await db
+              .select({ id: service.id })
+              .from(service)
+              .where(eq(service.environmentId, env.id))
+            for (const svc of serviceRows) {
+              await db.delete(container).where(eq(container.serviceId, svc.id))
+            }
+            await db.delete(service).where(eq(service.environmentId, env.id))
+            await db.delete(environment).where(eq(environment.id, env.id))
+          }
+          await db.delete(project).where(eq(project.id, p.id))
+        }
+        await db.delete(workspace).where(eq(workspace.id, ws.id))
+      }
+      await db.delete(server).where(eq(server.id, serverId))
+    }
+  })
+})
+
+test('DELETE /licenses/:id still 403 for reserved display-name when registry is present', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping license route tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+  const now = new Date().toISOString()
+  const insertedOrg = await db
+    .insert(organization)
+    .values({ displayName: 'Registry and Display-Name Protect Org' })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg[0]!.id
+
+  const [insertedServer] = await db
+    .insert(server)
+    .values({
+      createdAt: now,
+      updatedAt: now,
+      organizationId,
+      displayName: 'Colocated via registry',
+      connected: true,
+      statusChangedAt: now,
+      daemon: {
+        key: {
+          id: crypto.randomUUID(),
+          algorithm: 'Ed25519',
+          publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'registry-test' },
+          fingerprint: `fp-${crypto.randomUUID()}`,
+          createdAt: now,
+        },
+        projection: { remoteAddress: '__direct__' },
+      },
+    })
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
+
+  // Active registry-bound license (different display name) — without the
+  // accumulate-all-sources fix, resolving this id would short-circuit and leave
+  // the reserved "this server" seat revocable.
+  const [registryBound] = await db
+    .insert(license)
+    .values({
+      organizationId,
+      serverId,
+      displayName: 'registry-bound',
+      token: `registry-hash-${crypto.randomUUID()}`,
+    })
+    .returning({ id: license.id })
+
+  const [reserved] = await db
+    .insert(license)
+    .values({
+      organizationId,
+      displayName: COLOCATED_SERVER_DISPLAY_NAME,
+      token: `reserved-hash-${crypto.randomUUID()}`,
+    })
+    .returning({ id: license.id })
+  const reservedId = reserved!.id
+
+  const insertedOwner = await db
+    .insert(user)
+    .values({
+      email: `license-registry-display-${crypto.randomUUID()}@example.com`,
+      isEmailVerified: true,
+      role: 'user',
+    })
+    .returning({ id: user.id })
+  const ownerId = insertedOwner[0]!.id
+  await db.insert(member).values({ organizationId, userId: ownerId })
+  await db.insert(grant).values({
+    entityType: 'organization',
+    entityId: organizationId,
+    actorType: 'user',
+    actorId: ownerId,
+    permission: 'organization:own',
+    allow: true,
+  })
+
+  const { app, secrets } = await createLicenseTestApp(
+    db,
+    createOnlineRegistry([serverId]),
+  )
+
+  try {
+    const cookie = await sessionCookie(db, secrets, ownerId)
+    const res = await app.request(`/licenses/${reservedId}`, {
+      method: 'DELETE',
+      headers: orgRequestHeaders(cookie, organizationId),
+    })
+
+    assertEquals(res.status, 403)
+    const body = await res.json() as { error?: string }
+    assertEquals(body.error, colocatedLicenseRevokeError())
+
+    const rows = await db
+      .select({ revokedAt: license.revokedAt })
+      .from(license)
+      .where(eq(license.id, reservedId))
+      .limit(1)
+    assertEquals(rows[0]?.revokedAt ?? null, null)
+  } finally {
+    await db.delete(license).where(eq(license.id, reservedId))
+    await db.delete(license).where(eq(license.id, registryBound!.id))
+    await db.delete(grant).where(eq(grant.entityId, organizationId))
+    await db.delete(member).where(eq(member.organizationId, organizationId))
+    await db.delete(user).where(eq(user.id, ownerId))
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+})
+
+test('DELETE /licenses/:id still 403 via fallbacks when registry binding is revoked', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping license route tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+  const now = new Date().toISOString()
+  const insertedOrg = await db
+    .insert(organization)
+    .values({ displayName: 'Stale Registry Binding Protect Org' })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg[0]!.id
+
+  const [insertedServer] = await db
+    .insert(server)
+    .values({
+      createdAt: now,
+      updatedAt: now,
+      organizationId,
+      displayName: 'Colocated stale registry',
+      connected: true,
+      statusChangedAt: now,
+      daemon: {
+        key: {
+          id: crypto.randomUUID(),
+          algorithm: 'Ed25519',
+          publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'stale-registry' },
+          fingerprint: `fp-${crypto.randomUUID()}`,
+          createdAt: now,
+        },
+        projection: { remoteAddress: '__direct__' },
+      },
+    })
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
+
+  // Revoked latch on the colocated server — registry must ignore it so
+  // display-name / self-host fallbacks still protect the active seat.
+  const [staleBound] = await db
+    .insert(license)
+    .values({
+      organizationId,
+      serverId,
+      displayName: 'stale-registry-bound',
+      token: `stale-registry-${crypto.randomUUID()}`,
+      revokedAt: now,
+    })
+    .returning({ id: license.id })
+
+  const [reserved] = await db
+    .insert(license)
+    .values({
+      organizationId,
+      displayName: COLOCATED_SERVER_DISPLAY_NAME,
+      token: `reserved-fallback-${crypto.randomUUID()}`,
+    })
+    .returning({ id: license.id })
+  const reservedId = reserved!.id
+
+  const insertedOwner = await db
+    .insert(user)
+    .values({
+      email: `license-stale-registry-${crypto.randomUUID()}@example.com`,
+      isEmailVerified: true,
+      role: 'user',
+    })
+    .returning({ id: user.id })
+  const ownerId = insertedOwner[0]!.id
+  await db.insert(member).values({ organizationId, userId: ownerId })
+  await db.insert(grant).values({
+    entityType: 'organization',
+    entityId: organizationId,
+    actorType: 'user',
+    actorId: ownerId,
+    permission: 'organization:own',
+    allow: true,
+  })
+
+  const { app, secrets } = await createLicenseTestApp(
+    db,
+    createOnlineRegistry([serverId]),
+  )
+
+  try {
+    const cookie = await sessionCookie(db, secrets, ownerId)
+    const res = await app.request(`/licenses/${reservedId}`, {
+      method: 'DELETE',
+      headers: orgRequestHeaders(cookie, organizationId),
+    })
+
+    assertEquals(res.status, 403)
+    const body = await res.json() as { error?: string }
+    assertEquals(body.error, colocatedLicenseRevokeError())
+
+    const rows = await db
+      .select({ revokedAt: license.revokedAt })
+      .from(license)
+      .where(eq(license.id, reservedId))
+      .limit(1)
+    assertEquals(rows[0]?.revokedAt ?? null, null)
+  } finally {
+    await db.delete(license).where(eq(license.id, reservedId))
+    await db.delete(license).where(eq(license.id, staleBound!.id))
+    await db.delete(grant).where(eq(grant.entityId, organizationId))
+    await db.delete(member).where(eq(member.organizationId, organizationId))
+    await db.delete(user).where(eq(user.id, ownerId))
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
 })
 
 test('POST /licenses rejects reserved colocated displayName', async () => {

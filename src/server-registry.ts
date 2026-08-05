@@ -281,14 +281,28 @@ export async function getServerLicenseBinding(
     .limit(1)
   if (!serverRow) return null
 
-  const [licenseRow] = await db
+  // Prefer an active bound license. When only a revoked latch remains, surface
+  // that id so callers can fail closed with a clear inactive-license state.
+  const [activeLicense] = await db
+    .select({ id: license.id })
+    .from(license)
+    .where(and(eq(license.serverId, serverId), isNull(license.revokedAt)))
+    .limit(1)
+  if (activeLicense) {
+    return {
+      licenseId: activeLicense.id,
+      organizationId: serverRow.organizationId,
+    }
+  }
+
+  const [revokedLicense] = await db
     .select({ id: license.id })
     .from(license)
     .where(eq(license.serverId, serverId))
     .limit(1)
 
   return {
-    licenseId: licenseRow?.id ?? null,
+    licenseId: revokedLicense?.id ?? null,
     organizationId: serverRow.organizationId,
   }
 }

@@ -13,6 +13,7 @@ import {
   ADMIN_API_PREFIX,
   CLIENT_API_PREFIX,
   DAEMON_API_PREFIX,
+  DEVELOPER_API_PREFIX,
   INSTALL_API_PREFIX,
 } from '../../surfaces.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from './secrets.ts'
@@ -121,6 +122,45 @@ describe('browser write protection middleware', () => {
       }),
     )
     assertEquals(installCross.status, 403)
+  })
+
+  it('rejects cross-origin developer writes; allows same-origin and non-browser', async () => {
+    const app = new Hono()
+    app.use('*', createBrowserWriteProtectionMiddleware('workers'))
+    app.post(`${DEVELOPER_API_PREFIX}/daemon/sync-dev`, (c) => c.json({ ok: true }))
+
+    const cross = await app.request(
+      new Request('https://panel.example.com/api/developer/v1/daemon/sync-dev', {
+        method: 'POST',
+        headers: {
+          Origin: 'https://docs.evil.example',
+          'content-type': 'application/json',
+        },
+        body: '{}',
+      }),
+    )
+    assertEquals(cross.status, 403)
+
+    const same = await app.request(
+      new Request('https://panel.example.com/api/developer/v1/daemon/sync-dev', {
+        method: 'POST',
+        headers: {
+          Origin: 'https://panel.example.com',
+          'content-type': 'application/json',
+        },
+        body: '{}',
+      }),
+    )
+    assertEquals(same.status, 200)
+
+    const nonBrowser = await app.request(
+      new Request('https://panel.example.com/api/developer/v1/daemon/sync-dev', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      }),
+    )
+    assertEquals(nonBrowser.status, 200)
   })
 
   it('does not gate daemon bearer routes', async () => {

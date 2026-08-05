@@ -122,17 +122,19 @@ const listGet = containerPaths['/api/client/v1/containers'] as {
   get: { parameters?: unknown[] }
 }
 listGet.get.parameters ??= []
-listGet.get.parameters.push({
-  name: 'serverId',
-  in: 'query',
-  required: false,
-  schema: { type: 'string' },
-  description: 'Filter containers hosted on a server',
-})
-listGet.get.parameters.push({
-  name: 'environmentId',
-  in: 'query',
-  required: false,
-  schema: { type: 'string' },
-  description: 'Filter containers linked to an environment',
-})
+listGet.get.parameters.push(
+  {
+    name: 'serverId',
+    in: 'query',
+    required: false,
+    schema: { type: 'string' },
+    description: 'Filter containers hosted on a server',
+  },
+  {
+    name: 'environmentId',
+    in: 'query',
+    required: false,
+    schema: { type: 'string' },
+    description: 'Filter containers linked to an environment',
+  },
+)

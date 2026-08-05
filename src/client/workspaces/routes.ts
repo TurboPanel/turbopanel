@@ -1,4 +1,4 @@
-import { eq, inArray } from 'drizzle-orm'
+import { asc, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -63,7 +63,9 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
       })
       .from(workspace)
       .where(inArray(workspace.id, visibleIds))
-      .orderBy(workspace.createdAt)
+      // Secondary `id` break ties when same-transaction inserts share `created_at`
+      // (defaultNow() = transaction time) so System precedes Default Workspace.
+      .orderBy(asc(workspace.createdAt), asc(workspace.id))
 
     return c.json({ workspaces: rows })
   })

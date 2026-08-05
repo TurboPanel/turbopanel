@@ -1,5 +1,4 @@
 import amqplib from 'amqplib'
-import { DEFAULT_AMQP_URL } from '../../amqp-default-url.ts'
 import {
   assertEmailAmqpTopology,
   EMAIL_AMQP_EXCHANGE,

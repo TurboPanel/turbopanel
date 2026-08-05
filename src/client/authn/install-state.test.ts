@@ -1,5 +1,5 @@
 import { assertEquals } from 'jsr:@std/assert@1'
-import { and, eq, isNull } from 'drizzle-orm'
+import { asc, and, eq, isNull } from 'drizzle-orm'
 import { it } from '@std/testing/bdd'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb, type Db } from '../../db.ts'
@@ -7,10 +7,12 @@ import {
   COLOCATED_SERVER_DISPLAY_NAME,
   completeInstanceInstall,
   DEFAULT_ORGANIZATION_NAME,
+  DEFAULT_WORKSPACE_NAME,
   getInstallStatus,
   INSTANCE_ALREADY_CONFIGURED_ERROR,
   INSTANCE_INSTALL_SENTINEL_KEY,
   isInstanceInstalled,
+  persistColocatedLicenseCredentials,
   resolveColocatedServerId,
   rotateColocatedLicenseCredentials,
 } from './install-state.ts'
@@ -28,6 +30,8 @@ import {
   user,
   workspace,
 } from '../../lib/db/schema.ts'
+import { WORKSPACE_KIND_SYSTEM, WORKSPACE_KIND_USER } from '../../lib/db/workspace-kind.ts'
+import { SYSTEM_WORKSPACE_DISPLAY_NAME } from '../system/hierarchy.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -211,9 +215,73 @@ it('concurrent install completions create exactly one superadmin bootstrap', asy
         `expected exactly one install sentinel, got ${sentinelRows.length}`,
       )
     }
+
+    // Concurrent installs still yield exactly one System workspace.
+    const systemRows = await db
+      .select({ id: workspace.id, kind: workspace.kind })
+      .from(workspace)
+      .where(and(
+        eq(workspace.organizationId, winnerOrgId),
+        eq(workspace.kind, WORKSPACE_KIND_SYSTEM),
+      ))
+    if (systemRows.length !== 1) {
+      throw new Error(
+        `expected exactly one System workspace, got ${systemRows.length}`,
+      )
+    }
   } finally {
     if (winnerOrgId && winnerUserId) {
       await cleanupInstall(db, winnerOrgId, winnerUserId)
+    }
+  }
+})
+
+it('install produces System workspace then Default Workspace', async () => {
+  if (!dbUrl) {
+    console.warn(
+      'Skipping install workspace order test: TURBOPANEL_DATABASE_URL not set',
+    )
+    return
+  }
+
+  const db = createDenoDb()
+  if (await isInstanceInstalled(db)) {
+    console.warn(
+      'Skipping install workspace order test: instance already installed',
+    )
+    return
+  }
+
+  const suffix = crypto.randomUUID()
+  let organizationId: string | null = null
+  let userId: string | null = null
+
+  try {
+    const result = await completeInstanceInstall(db, {
+      superadminEmail: `install-ws-order-${suffix}@example.com`,
+      superadminPassword: 'password1!',
+    })
+    organizationId = result.organizationId
+    userId = result.userId
+
+    const rows = await db
+      .select({
+        id: workspace.id,
+        displayName: workspace.displayName,
+        kind: workspace.kind,
+      })
+      .from(workspace)
+      .where(eq(workspace.organizationId, organizationId))
+      .orderBy(asc(workspace.createdAt), asc(workspace.id))
+
+    assertEquals(rows.length, 2)
+    assertEquals(rows[0]?.displayName, SYSTEM_WORKSPACE_DISPLAY_NAME)
+    assertEquals(rows[0]?.kind, WORKSPACE_KIND_SYSTEM)
+    assertEquals(rows[1]?.displayName, DEFAULT_WORKSPACE_NAME)
+    assertEquals(rows[1]?.kind, WORKSPACE_KIND_USER)
+  } finally {
+    if (organizationId && userId) {
+      await cleanupInstall(db, organizationId, userId)
     }
   }
 })
@@ -330,6 +398,174 @@ it('rotateColocatedLicenseCredentials revokes stale this-server licenses then mi
     }
   } finally {
     await db.delete(license).where(eq(license.organizationId, organizationId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+})
+
+it('rotateColocatedLicenseCredentials preserves an already-bound colocated seat', async () => {
+  if (!dbUrl) {
+    console.warn(
+      'Skipping bound colocated license rotate test: TURBOPANEL_DATABASE_URL not set',
+    )
+    return
+  }
+
+  const db = createDenoDb()
+  const now = new Date().toISOString()
+  const insertedOrg = await db
+    .insert(organization)
+    .values({ displayName: `Bound Colocated Rotate ${crypto.randomUUID()}` })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg[0]!.id
+
+  const [insertedServer] = await db
+    .insert(server)
+    .values({
+      createdAt: now,
+      updatedAt: now,
+      organizationId,
+      displayName: COLOCATED_SERVER_DISPLAY_NAME,
+      daemon: {
+        key: {
+          id: crypto.randomUUID(),
+          algorithm: 'Ed25519',
+          publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'bound-rotate' },
+          fingerprint: `fp-${crypto.randomUUID()}`,
+          createdAt: now,
+        },
+      },
+    })
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
+
+  const priorToken = `bound-hash-${crypto.randomUUID()}`
+  const [bound] = await db
+    .insert(license)
+    .values({
+      organizationId,
+      serverId,
+      displayName: COLOCATED_SERVER_DISPLAY_NAME,
+      token: priorToken,
+    })
+    .returning({ id: license.id })
+  const boundId = bound!.id
+
+  try {
+    const rotated = await rotateColocatedLicenseCredentials(db, organizationId)
+    assertEquals(rotated.licenseId, boundId)
+    if (!rotated.licenseToken || rotated.licenseToken.length < 8) {
+      throw new Error('in-place rotate must return a plaintext token once')
+    }
+
+    const [row] = await db
+      .select({
+        id: license.id,
+        serverId: license.serverId,
+        revokedAt: license.revokedAt,
+        token: license.token,
+      })
+      .from(license)
+      .where(eq(license.id, boundId))
+      .limit(1)
+    assertEquals(row?.serverId, serverId)
+    assertEquals(row?.revokedAt ?? null, null)
+    if (row?.token === priorToken) {
+      throw new Error('token hash must change on in-place rotate')
+    }
+
+    const [daemonRow] = await db
+      .select({ daemon: server.daemon })
+      .from(server)
+      .where(eq(server.id, serverId))
+      .limit(1)
+    if (daemonRow?.daemon == null) {
+      throw new Error('in-place rotate must not clear daemon identity')
+    }
+  } finally {
+    await db.delete(license).where(eq(license.organizationId, organizationId))
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+})
+
+it('disk-credential recovery rewrites license files for an enrolled colocated server', async () => {
+  if (!dbUrl) {
+    console.warn(
+      'Skipping colocated disk restore test: TURBOPANEL_DATABASE_URL not set',
+    )
+    return
+  }
+
+  const db = createDenoDb()
+  const now = new Date().toISOString()
+  const tempDir = await Deno.makeTempDir({ prefix: 'tp-colocated-license-' })
+  const previousStateDir = Deno.env.get('TURBOPANEL_DAEMON_STATE_DIR')
+  Deno.env.set('TURBOPANEL_DAEMON_STATE_DIR', tempDir)
+
+  const insertedOrg = await db
+    .insert(organization)
+    .values({ displayName: `Disk Restore Org ${crypto.randomUUID()}` })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg[0]!.id
+
+  const [insertedServer] = await db
+    .insert(server)
+    .values({
+      createdAt: now,
+      updatedAt: now,
+      organizationId,
+      displayName: COLOCATED_SERVER_DISPLAY_NAME,
+    })
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
+
+  const [bound] = await db
+    .insert(license)
+    .values({
+      organizationId,
+      serverId,
+      displayName: COLOCATED_SERVER_DISPLAY_NAME,
+      token: `enrolled-hash-${crypto.randomUUID()}`,
+    })
+    .returning({ id: license.id })
+  const boundId = bound!.id
+
+  try {
+    // Same recovery steps as ensureColocatedLicenseCredentialsOnDisk after the
+    // org is resolved — isolate the org so we do not touch a live Default
+    // Organization seat on an installed host.
+    const rotated = await rotateColocatedLicenseCredentials(db, organizationId)
+    const wrote = await persistColocatedLicenseCredentials(
+      rotated.licenseId,
+      rotated.licenseToken,
+    )
+    assertEquals(wrote, true)
+    assertEquals(rotated.licenseId, boundId)
+
+    const diskId = (await Deno.readTextFile(`${tempDir}/license.id`)).trim()
+    const diskToken = (await Deno.readTextFile(`${tempDir}/license.token`)).trim()
+    assertEquals(diskId, boundId)
+    assertEquals(diskToken, rotated.licenseToken)
+
+    const [row] = await db
+      .select({
+        serverId: license.serverId,
+        revokedAt: license.revokedAt,
+      })
+      .from(license)
+      .where(eq(license.id, boundId))
+      .limit(1)
+    assertEquals(row?.serverId, serverId)
+    assertEquals(row?.revokedAt ?? null, null)
+  } finally {
+    if (previousStateDir === undefined) {
+      Deno.env.delete('TURBOPANEL_DAEMON_STATE_DIR')
+    } else {
+      Deno.env.set('TURBOPANEL_DAEMON_STATE_DIR', previousStateDir)
+    }
+    await Deno.remove(tempDir, { recursive: true }).catch(() => {})
+    await db.delete(license).where(eq(license.id, boundId))
+    await db.delete(server).where(eq(server.id, serverId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
 })

@@ -27,6 +27,8 @@ test('parsePrincipalOptions drops invalid shells', () => {
   assertEquals(parsePrincipalOptions({ shell: '/bin/bash extra' }), {})
   assertEquals(parsePrincipalOptions({ shell: '/bin/bash\n' }), {})
   assertEquals(parsePrincipalOptions({ shell: '' }), {})
+  assertEquals(parsePrincipalOptions({ shell: '/usr/bin/../bin/bash' }), {})
+  assertEquals(parsePrincipalOptions({ shell: '/../bin/bash' }), {})
   assertEquals(parsePrincipalOptions(null), {})
 })
 
@@ -94,6 +96,12 @@ test('parsePrincipalOptionsInput rejects non-object options and malformed shells
   assertEquals(parsePrincipalOptionsInput({ shell: '/bin/bash\n' }), { ok: false })
   assertEquals(parsePrincipalOptionsInput({ shell: '' }), { ok: false })
   assertEquals(parsePrincipalOptionsInput({ shell: 1 }), { ok: false })
+  assertEquals(parsePrincipalOptionsInput({ shell: '/usr/bin/../bin/bash' }), {
+    ok: false,
+  })
+  assertEquals(parsePrincipalOptionsInput({ shell: '/../etc/passwd' }), {
+    ok: false,
+  })
 })
 
 test('resolvePrincipalShell defaults to nologin', () => {

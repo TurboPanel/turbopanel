@@ -5,9 +5,11 @@ import {
   writeDrizzleKitConfig,
 } from '../drizzle-kit-config.ts'
 import {
+  configuredDrizzleStudioHost,
   drizzleStudioBrowserUrl,
   DRIZZLE_STUDIO_PORT,
   probeDrizzleStudioPort,
+  resolveDrizzleStudioBindHost,
 } from '../drizzle-studio-probe.ts'
 import { resolveNodePath } from '../node-path.ts'
 import { logInfo, logWarn } from '../logger.ts'
@@ -24,12 +26,13 @@ function drizzleKitPath(): string {
   return join(INSTANCE_REPO_ROOT, 'node_modules', 'drizzle-kit', 'bin.cjs')
 }
 
-function studioBindHost(): string {
-  const host = Deno.env.get('TURBOPANEL_DRIZZLE_STUDIO_HOST')?.trim() || 'localhost'
-  return host === 'localhost' ? '127.0.0.1' : host
+function resolveStudioBindHost():
+  | { ok: true; bindHost: string; configuredHost: string }
+  | { ok: false; error: string } {
+  return resolveDrizzleStudioBindHost(configuredDrizzleStudioHost())
 }
 
-async function isStudioPortListening(host = studioBindHost()): Promise<boolean> {
+async function isStudioPortListening(host: string): Promise<boolean> {
   return probeDrizzleStudioPort(host, DRIZZLE_STUDIO_PORT)
 }
 
@@ -46,8 +49,20 @@ export async function drizzleStudioStatus(): Promise<{
   running: boolean
   port: number
   browserUrl: string
+  error?: string
 }> {
-  const portOpen = await isStudioPortListening()
+  const resolved = resolveStudioBindHost()
+  if (!resolved.ok) {
+    studioRunning = false
+    return {
+      running: false,
+      port: DRIZZLE_STUDIO_PORT,
+      browserUrl: drizzleStudioBrowserUrl(DRIZZLE_STUDIO_PORT, 'localhost'),
+      error: resolved.error,
+    }
+  }
+
+  const portOpen = await isStudioPortListening(resolved.bindHost)
   if (portOpen) {
     studioRunning = true
   } else if (!studioChild) {
@@ -56,7 +71,10 @@ export async function drizzleStudioStatus(): Promise<{
   return {
     running: portOpen || studioRunning,
     port: DRIZZLE_STUDIO_PORT,
-    browserUrl: drizzleStudioBrowserUrl(),
+    browserUrl: drizzleStudioBrowserUrl(
+      DRIZZLE_STUDIO_PORT,
+      resolved.configuredHost,
+    ),
   }
 }
 
@@ -73,17 +91,25 @@ export async function ensureDrizzleStudioInDev(): Promise<void> {
 export async function startDrizzleStudio(): Promise<
   { ok: true; browserUrl: string; port: number } | { ok: false; error: string }
 > {
-  const bindHost = studioBindHost()
+  const resolved = resolveStudioBindHost()
+  if (!resolved.ok) {
+    return { ok: false, error: resolved.error }
+  }
+  const bindHost = resolved.bindHost
+  const browserUrl = drizzleStudioBrowserUrl(
+    DRIZZLE_STUDIO_PORT,
+    resolved.configuredHost,
+  )
 
   if (await isStudioPortListening(bindHost)) {
     studioRunning = true
-    return { ok: true, browserUrl: drizzleStudioBrowserUrl(), port: DRIZZLE_STUDIO_PORT }
+    return { ok: true, browserUrl, port: DRIZZLE_STUDIO_PORT }
   }
 
   if (studioRunning && await isStudioChildAlive()) {
     return {
       ok: true,
-      browserUrl: drizzleStudioBrowserUrl(),
+      browserUrl,
       port: DRIZZLE_STUDIO_PORT,
     }
   }
@@ -141,7 +167,7 @@ export async function startDrizzleStudio(): Promise<
       }
     }
 
-    return { ok: true, browserUrl: drizzleStudioBrowserUrl(), port: DRIZZLE_STUDIO_PORT }
+    return { ok: true, browserUrl, port: DRIZZLE_STUDIO_PORT }
   } catch (err) {
     studioRunning = false
     studioChild = null
@@ -182,7 +208,7 @@ async function waitForStudioPort(host: string, timeoutMs: number): Promise<boole
     if (await isStudioPortListening(host)) {
       return true
     }
-    await new Promise((resolve) => setTimeout(resolve, 200))
+    await new Promise((resolve) => setTimeout(() => resolve(null), 200))
   }
   return false
 }
