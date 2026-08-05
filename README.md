@@ -8,6 +8,10 @@
 [![Discussions](https://img.shields.io/github/discussions/turbopanel/turbopanel)](https://github.com/turbopanel/turbopanel/discussions)
 [![Status: Private alpha](https://img.shields.io/badge/status-private%20alpha-3dd68c)](https://turbopanel.io/roadmap)
 
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=turbopanel_turbopanel&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=turbopanel_turbopanel)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=turbopanel_turbopanel&metric=coverage)](https://sonarcloud.io/component_measures?id=turbopanel_turbopanel&metric=coverage)
+[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=turbopanel_turbopanel&metric=code_smells)](https://sonarcloud.io/project/issues?id=turbopanel_turbopanel&resolved=false&types=CODE_SMELL)
+
 **[Use TurboPanel Managed](https://turbopanel.io/pricing?utm_source=github-main-readme)** · **[Self-host TurboPanel](https://turbopanel.io/docs/deployment/self-hosted?utm_source=github-main-readme)** · **[Documentation](https://turbopanel.io/docs?utm_source=github-main-readme)**
 
 ![TurboPanel servers overview](https://turbopanel.io/screenshots/servers-overview.png)
