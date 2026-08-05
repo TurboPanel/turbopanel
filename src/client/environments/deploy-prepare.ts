@@ -50,6 +50,7 @@ import {
 } from '../../lib/naming.ts'
 import {
   parsePrincipalOptions,
+  resolvePrincipalIdOverride,
   resolvePrincipalShell,
 } from '../../lib/principal-options.ts'
 import {
@@ -135,14 +136,6 @@ export async function verifyServerInOrg(
 function extractComposeFromOptions(options: unknown): unknown {
   if (!isPlainObject(options)) return null
   return options.compose ?? null
-}
-
-function readPrincipalMetadata(metadata: unknown): { uid: number; gid: number } | null {
-  if (!isPlainObject(metadata)) return null
-  const uid = metadata.uid
-  const gid = metadata.gid
-  if (typeof uid !== 'number' || typeof gid !== 'number') return null
-  return { uid, gid }
 }
 
 export type DeployPrepareWarningCode =
@@ -319,6 +312,7 @@ type StorageQueryRow = {
   sourcePath: string | null
   destinationPath: string | null
   principalId: string | null
+  principalUsername: string | null
   contentEnvelope: string | null
   serviceId: string | null
   serverId: string | null
@@ -336,7 +330,13 @@ function resolveBindMountSourcePath(row: StorageQueryRow): string | undefined {
   ) {
     return sourcePath
   }
-  return principalVolumePath(row.principalId, row.id)
+  if (
+    typeof row.principalUsername !== 'string' ||
+    row.principalUsername.length === 0
+  ) {
+    return undefined
+  }
+  return principalVolumePath(row.principalUsername, row.id)
 }
 
 function toStorageMaterialEntry(
@@ -428,12 +428,14 @@ export async function loadStorageMaterial(
       sourcePath: storage.sourcePath,
       destinationPath: storage.destinationPath,
       principalId: storage.principalId,
+      principalUsername: principal.username,
       contentEnvelope: storage.contentEnvelope,
       serviceId: storage.serviceId,
       serverId: storage.serverId,
       metadata: storage.metadata,
     })
     .from(storage)
+    .leftJoin(principal, eq(storage.principalId, principal.id))
     .where(or(...scopeConditions))
 
   const material: EnvironmentDeployStorageMaterial[] = []
@@ -513,7 +515,6 @@ export async function loadPrincipalMaterial(
     .select({
       id: principal.id,
       username: principal.username,
-      metadata: principal.metadata,
       options: principal.options,
     })
     .from(principal)
@@ -521,17 +522,16 @@ export async function loadPrincipalMaterial(
 
   const material: EnvironmentDeployPrincipalMaterial[] = []
   for (const row of rows) {
-    const meta = readPrincipalMetadata(row.metadata)
-    if (!meta) continue
+    const options = parsePrincipalOptions(row.options)
+    const override = resolvePrincipalIdOverride(options)
     // naming.ts is the single source of truth for home; metadata.home is a
-    // mirror for display only (legacy /var/lib/… paths are corrected on deploy).
+    // mirror for display only.
     material.push({
       principalId: row.id,
       username: row.username,
-      uid: meta.uid,
-      gid: meta.gid,
-      home: principalHomeDir(row.id),
-      shell: resolvePrincipalShell(parsePrincipalOptions(row.options)),
+      home: principalHomeDir(row.username),
+      shell: resolvePrincipalShell(options),
+      ...(override ? { uid: override.uid, gid: override.gid } : {}),
     })
   }
   return material
@@ -1353,8 +1353,8 @@ function toTraditionalWebPrincipal(
   return {
     principalId: material.principalId,
     username: material.username,
-    uid: material.uid,
-    gid: material.gid,
+    ...(material.uid !== undefined ? { uid: material.uid } : {}),
+    ...(material.gid !== undefined ? { gid: material.gid } : {}),
   }
 }
 

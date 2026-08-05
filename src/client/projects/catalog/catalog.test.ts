@@ -17,7 +17,7 @@ import {
 const test = Deno.test.bind(Deno)
 
 const PRINCIPAL_PROVIDERS = new Set([
-  'pam',
+  'server',
   'postgres',
   'mysql',
   'redis',

@@ -18,7 +18,18 @@ function base64urlEncode(bytes: Uint8Array): string {
 
 export const HTTP_SESSION_COOKIE_NAME = "turbopanel.session_token";
 
-export const HTTPS_SESSION_COOKIE_NAME = "__Secure-turbopanel.session_token";
+/**
+ * HTTPS session cookie. `__Host-` requires `Secure`, `Path=/`, and no `Domain`
+ * attribute — stronger than `__Secure-` against subdomain cookie shadowing.
+ */
+export const HTTPS_SESSION_COOKIE_NAME = "__Host-turbopanel.session_token";
+
+/**
+ * Pre-`__Host-` HTTPS cookie name. Cleared on sign-out during the pre-MVP
+ * transition so stale `__Secure-` cookies cannot shadow the new name.
+ */
+export const LEGACY_HTTPS_SESSION_COOKIE_NAME =
+  "__Secure-turbopanel.session_token";
 
 export type RequestTls = {
   isHttps: boolean;

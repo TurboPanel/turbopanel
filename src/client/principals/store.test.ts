@@ -21,7 +21,10 @@ import {
 } from '../../lib/db/schema.ts'
 import {
   createPrincipal,
+  isServerPrincipalUsernameTaken,
+  PRINCIPAL_PROVIDERS,
   replaceAssignments,
+  SERVER_PRINCIPAL_PROVIDER,
   setPrincipalPassword,
 } from './store.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
@@ -36,6 +39,8 @@ async function withPrincipalFixtures(
     >
     serviceId: string
     principalId: string
+    organizationId: string
+    projectId: string
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
@@ -131,6 +136,8 @@ async function withPrincipalFixtures(
       dataEncryptionSecrets,
       serviceId,
       principalId,
+      organizationId,
+      projectId,
     })
   } finally {
     await db.delete(assignment).where(eq(assignment.principalId, principalId))
@@ -240,6 +247,54 @@ test('setPrincipalPassword throws when principal id is missing', async () => {
       Error,
       'Principal not found',
     )
+  })
+})
+
+test('PRINCIPAL_PROVIDERS contains server not pam', () => {
+  assertEquals(PRINCIPAL_PROVIDERS.has('server'), true)
+  assertEquals(PRINCIPAL_PROVIDERS.has('pam'), false)
+  assertEquals(SERVER_PRINCIPAL_PROVIDER, 'server')
+})
+
+test('isServerPrincipalUsernameTaken is org-scoped and case-insensitive', async () => {
+  await withPrincipalFixtures(async ({ db, organizationId, projectId }) => {
+    const [inserted] = await db
+      .insert(principal)
+      .values({
+        kind: 'system',
+        provider: SERVER_PRINCIPAL_PROVIDER,
+        username: 'AppUser',
+        projectId,
+        metadata: { home: '/srv/users/AppUser' },
+      })
+      .returning({ id: principal.id })
+    const createdId = inserted!.id
+
+    try {
+      assertEquals(
+        await isServerPrincipalUsernameTaken(db, organizationId, 'appuser'),
+        true,
+      )
+      assertEquals(
+        await isServerPrincipalUsernameTaken(db, organizationId, '  APPUSER  '),
+        true,
+      )
+      assertEquals(
+        await isServerPrincipalUsernameTaken(db, organizationId, 'otheruser'),
+        false,
+      )
+      assertEquals(
+        await isServerPrincipalUsernameTaken(
+          db,
+          organizationId,
+          'appuser',
+          createdId,
+        ),
+        false,
+      )
+    } finally {
+      await db.delete(principal).where(eq(principal.id, createdId))
+    }
   })
 })
 

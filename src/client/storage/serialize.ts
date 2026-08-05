@@ -21,9 +21,12 @@ export type StorageSelectRow = Pick<
   | 'options'
   | 'createdAt'
   | 'updatedAt'
->
+> & {
+  /** Owning principal username (join input only — never in the JSON body). */
+  principalUsername: string | null
+}
 
-export type SerializedStorage = StorageSelectRow & {
+export type SerializedStorage = Omit<StorageSelectRow, 'principalUsername'> & {
   /**
    * Read-only host path: explicit `sourcePath` when set, else the canonical
    * principal volume path for principal-owned bind mounts, else null.
@@ -36,8 +39,14 @@ function resolveSourcePath(row: StorageSelectRow): string | null {
   if (typeof row.sourcePath === 'string' && row.sourcePath.length > 0) {
     return row.sourcePath
   }
-  if (row.kind === 'bind_mount' && typeof row.principalId === 'string' && row.principalId.length > 0) {
-    return principalVolumePath(row.principalId, row.id)
+  if (
+    row.kind === 'bind_mount' &&
+    typeof row.principalId === 'string' &&
+    row.principalId.length > 0 &&
+    typeof row.principalUsername === 'string' &&
+    row.principalUsername.length > 0
+  ) {
+    return principalVolumePath(row.principalUsername, row.id)
   }
   return null
 }

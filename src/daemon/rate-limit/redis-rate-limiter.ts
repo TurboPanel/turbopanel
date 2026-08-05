@@ -78,6 +78,14 @@ export function createRedisRateLimiter(opts: {
   client: RedisCellClient
   limit: number
   periodSeconds: number
+  /**
+   * Behaviour when Redis `eval` throws.
+   * - `'open'` (default): allow the request — used for daemon connect/REST so a
+   *   broker hiccup never locks out enrolled daemons.
+   * - `'closed'`: deny (`success: false`) — required for client-auth throttling
+   *   so Redis failure cannot fail open into unthrottled login/OTP/install.
+   */
+  onError?: 'open' | 'closed'
 }): RateLimiter {
   const capacity = opts.limit
   const msPerToken = (opts.periodSeconds * 1000) / opts.limit
@@ -86,6 +94,7 @@ export function createRedisRateLimiter(opts: {
     MIN_BUCKET_TTL_MS,
   )
   const { client } = opts
+  const onError = opts.onError ?? 'open'
 
   return {
     async limit(args: { key: string }): Promise<{ success: boolean }> {
@@ -105,7 +114,7 @@ export function createRedisRateLimiter(opts: {
           'daemon-rate-limit',
           `eval failed for ${args.key}: ${String(err)}`,
         )
-        return { success: true }
+        return { success: onError === 'open' }
       }
     },
   }

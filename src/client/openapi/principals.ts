@@ -13,7 +13,7 @@ export const principalSchemas = {
       serviceIds: {
         type: 'array',
         items: { type: 'string', format: 'uuid' },
-        description: 'Services this principal is bound to (Linux user / storage owner)',
+        description: 'Services this Linux (server) user is bound to (storage owner)',
       },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
@@ -90,7 +90,7 @@ export const principalPaths = {
     },
     post: {
       tags: ['Principals'],
-      summary: 'Create a project principal',
+      summary: 'Create a Linux (server) user for the project',
       parameters: [
         {
           name: 'projectId',
@@ -107,27 +107,51 @@ export const principalPaths = {
               type: 'object',
               required: ['username'],
               properties: {
-                username: { type: 'string' },
+                username: {
+                  type: 'string',
+                  description:
+                    'Linux username (≤ 28 chars, POSIX allowlist). Host home is /srv/users/<username>. Cap leaves room for `<username>-grp`.',
+                },
                 serviceIds: {
                   type: 'array',
                   items: { type: 'string', format: 'uuid' },
+                  description: 'Services this Linux (server) user is bound to',
                 },
-                options: { type: 'object' },
+                options: {
+                  type: 'object',
+                  description: 'Optional shell and other principal options',
+                },
+                uid: {
+                  type: 'integer',
+                  description:
+                    'Optional operator uid override (both uid and gid required together; omit for host allocation)',
+                },
+                gid: {
+                  type: 'integer',
+                  description:
+                    'Optional operator gid override (both uid and gid required together; omit for host allocation)',
+                },
               },
             },
           },
         },
       },
       responses: {
-        200: { description: 'Created principal' },
-        400: { description: 'invalid_service_ids' },
+        200: {
+          description:
+            'Created Linux (server) user. uid/gid are echoed only when an explicit override was supplied.',
+        },
+        400: {
+          description: 'invalid_service_ids | username_reserved | Invalid request',
+        },
+        409: { description: 'username_in_use' },
       },
     },
   },
   '/api/client/v1/projects/{projectId}/principals/{id}': {
     patch: {
       tags: ['Principals'],
-      summary: 'Replace service assignments for a project principal',
+      summary: 'Replace service assignments for a Linux (server) user',
       parameters: [
         { name: 'projectId', in: 'path', required: true, schema: { type: 'string' } },
         { name: 'id', in: 'path', required: true, schema: { type: 'string' } },

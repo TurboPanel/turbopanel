@@ -1,4 +1,3 @@
-CREATE SEQUENCE "public"."principal_uid_seq" INCREMENT BY 1 MINVALUE 10001 MAXVALUE 9223372036854775807 START WITH 10001 CACHE 1;--> statement-breakpoint
 CREATE TABLE "account" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
@@ -255,7 +254,7 @@ CREATE TABLE "principal" (
 	"metadata" jsonb,
 	"options" jsonb,
 	CONSTRAINT "principal_kind_check" CHECK (kind IN ('system', 'database')),
-	CONSTRAINT "principal_provider_check" CHECK (provider IN ('pam', 'postgres', 'mysql', 'redis', 'clickhouse')),
+	CONSTRAINT "principal_provider_check" CHECK (provider IN ('server', 'postgres', 'mysql', 'redis', 'clickhouse')),
 	CONSTRAINT "principal_username_format_check" CHECK ((char_length((username)::text) >= 1) AND (char_length((username)::text) <= 255) AND ((username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text))
 );
 --> statement-breakpoint

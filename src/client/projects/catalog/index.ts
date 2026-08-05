@@ -82,7 +82,7 @@ export function isManagedEngineCatalogEntry(
 /**
  * Engine metadata stored on managed-engine catalog `options`.
  *
- * `provider` is the `principal.provider` CHECK value (`pam` \| `postgres` \|
+ * `provider` is the `principal.provider` CHECK value (`server` \| `postgres` \|
  * `mysql` \| `redis` \| `clickhouse`).
  */
 export type ManagedEngineOptions = {
@@ -93,7 +93,7 @@ export type ManagedEngineOptions = {
 }
 
 const PRINCIPAL_PROVIDERS = new Set([
-  'pam',
+  'server',
   'postgres',
   'mysql',
   'redis',

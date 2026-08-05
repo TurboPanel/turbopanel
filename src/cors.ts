@@ -1,6 +1,12 @@
 import type { Hono } from 'hono'
 
-const CORS_METHODS = 'GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD'
+/**
+ * Docs / Scalar CORS is read-oriented. Cookie-authenticated writes must go
+ * same-origin (console UI behind Caddy) and are gated by
+ * {@link createBrowserWriteProtectionMiddleware}; credentialed cross-origin
+ * writes from configured website origins must not pass preflight.
+ */
+const CORS_METHODS = 'GET, HEAD, OPTIONS'
 const CORS_HEADERS = 'Content-Type, Authorization, Cookie, Accept'
 
 function parseCorsOrigins(raw: string | undefined): Set<string> {
@@ -23,12 +29,17 @@ export function registerCorsMiddleware(
 
   app.use('*', async (c, next) => {
     const origin = c.req.header('Origin')
+    // Always emit Vary when Origin is present so shared caches cannot mix
+    // allowlisted and disallowed origin responses. Credentials headers stay
+    // restricted to allowlisted origins only.
+    if (origin !== undefined) {
+      c.header('Vary', 'Origin')
+    }
     const allowOrigin = origin !== undefined && allowed.has(origin)
 
     if (allowOrigin) {
       c.header('Access-Control-Allow-Origin', origin)
       c.header('Access-Control-Allow-Credentials', 'true')
-      c.header('Vary', 'Origin')
     }
 
     if (c.req.method === 'OPTIONS') {

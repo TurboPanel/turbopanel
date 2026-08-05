@@ -3,6 +3,7 @@ import type { SessionData } from './client/authn/session-store.ts'
 import type { AuthRateLimiter } from './client/authn/auth-rate-limit.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from './client/authn/secrets.ts'
 import { registerClientRoutes } from './client/routes.ts'
+import { createBrowserWriteProtectionMiddleware } from './browser-write-protection.ts'
 import { registerCorsMiddleware } from './cors.ts'
 import type { DaemonCellRegistry } from './daemon/cell/contracts.ts'
 import type { ServerMetricsStore } from './daemon/metrics/types.ts'
@@ -98,15 +99,22 @@ export function createApp(
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>()
   registerCorsMiddleware(app, corsOrigins)
-  // Publish the runtime so session-cookie TLS resolution knows whether the
-  // Deno trusted-proxy path (honors X-Forwarded-Proto) or the Workers
-  // URL-derived path applies. Registered before routes so every downstream
-  // handler and middleware sees it.
+  // Publish the runtime before write protection and routes so session-cookie
+  // TLS resolution and same-origin browser checks know whether the Deno
+  // trusted-proxy path (honors X-Forwarded-Proto + Host) or the Workers
+  // URL-derived path applies.
   const resolvedRuntime = runtime ?? 'workers'
   app.use('*', (c, next) => {
     c.set('runtime', resolvedRuntime)
     return next()
   })
+  // Reject cross-origin credentialed writes on client/admin/install before any
+  // cookie-authenticated route runs. Daemon JWT routes are outside these
+  // prefixes and stay excluded. Mounted here so Deno/Workers registrations of
+  // admin + install on the same app instance are covered. Passes the resolved
+  // runtime so Deno proxy-style requests compare against the browser origin
+  // (not the internal Unix-socket URL).
+  app.use('*', createBrowserWriteProtectionMiddleware(resolvedRuntime))
   if (db) {
     app.use('*', (c, next) => {
       c.set('db', db)

@@ -137,7 +137,7 @@ test(
   }),
 )
 
-test('createRedisRateLimiter fails open when eval throws', async () => {
+test('createRedisRateLimiter fails open when eval throws (daemon default)', async () => {
   const badClient = {
     eval: () => Promise.reject(new Error('redis down')),
   } as unknown as RedisCellClient
@@ -147,6 +147,19 @@ test('createRedisRateLimiter fails open when eval throws', async () => {
     periodSeconds: 60,
   })
   assertEquals(await limiter.limit({ key: 'any' }), { success: true })
+})
+
+test('createRedisRateLimiter fails closed when onError is closed', async () => {
+  const badClient = {
+    eval: () => Promise.reject(new Error('redis down')),
+  } as unknown as RedisCellClient
+  const limiter = createRedisRateLimiter({
+    client: badClient,
+    limit: 1,
+    periodSeconds: 60,
+    onError: 'closed',
+  })
+  assertEquals(await limiter.limit({ key: 'auth-key' }), { success: false })
 })
 
 test('createRedisRateLimiter satisfies RateLimiter with shared keys', async () => {

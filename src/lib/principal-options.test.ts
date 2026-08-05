@@ -3,6 +3,7 @@ import {
   DEFAULT_PRINCIPAL_SHELL,
   parsePrincipalOptions,
   parsePrincipalOptionsInput,
+  resolvePrincipalIdOverride,
   resolvePrincipalShell,
 } from './principal-options.ts'
 
@@ -27,6 +28,20 @@ test('parsePrincipalOptions drops invalid shells', () => {
   assertEquals(parsePrincipalOptions({ shell: '/bin/bash\n' }), {})
   assertEquals(parsePrincipalOptions({ shell: '' }), {})
   assertEquals(parsePrincipalOptions(null), {})
+})
+
+test('parsePrincipalOptions accepts a valid uid/gid override pair', () => {
+  assertEquals(
+    parsePrincipalOptions({ shell: '/bin/bash', uid: 10001, gid: 10001 }),
+    { shell: '/bin/bash', uid: 10001, gid: 10001 },
+  )
+})
+
+test('parsePrincipalOptions drops a partial or invalid uid/gid pair', () => {
+  assertEquals(parsePrincipalOptions({ uid: 10001 }), {})
+  assertEquals(parsePrincipalOptions({ uid: 10001, gid: 9999 }), {})
+  assertEquals(parsePrincipalOptions({ uid: 5000, gid: 5000 }), {})
+  assertEquals(parsePrincipalOptions({ uid: 1.5, gid: 10001 }), {})
 })
 
 test('parsePrincipalOptionsInput defaults omitted/null/empty options to nologin', () => {
@@ -55,6 +70,22 @@ test('parsePrincipalOptionsInput accepts a valid shell', () => {
   })
 })
 
+test('parsePrincipalOptionsInput accepts uid/gid at or above the override floor', () => {
+  assertEquals(
+    parsePrincipalOptionsInput({ uid: 10001, gid: 10002 }),
+    { ok: true, value: { shell: DEFAULT_PRINCIPAL_SHELL, uid: 10001, gid: 10002 } },
+  )
+})
+
+test('parsePrincipalOptionsInput rejects invalid or one-of-two uid/gid overrides', () => {
+  assertEquals(parsePrincipalOptionsInput({ uid: 10001 }), { ok: false })
+  assertEquals(parsePrincipalOptionsInput({ gid: 10001 }), { ok: false })
+  assertEquals(parsePrincipalOptionsInput({ uid: 9999, gid: 9999 }), { ok: false })
+  assertEquals(parsePrincipalOptionsInput({ uid: 5000, gid: 5000 }), { ok: false })
+  assertEquals(parsePrincipalOptionsInput({ uid: 1.5, gid: 10001 }), { ok: false })
+  assertEquals(parsePrincipalOptionsInput({ uid: '10001', gid: 10001 }), { ok: false })
+})
+
 test('parsePrincipalOptionsInput rejects non-object options and malformed shells', () => {
   assertEquals(parsePrincipalOptionsInput('bash'), { ok: false })
   assertEquals(parsePrincipalOptionsInput(['/bin/bash']), { ok: false })
@@ -69,4 +100,13 @@ test('resolvePrincipalShell defaults to nologin', () => {
   assertEquals(resolvePrincipalShell(undefined), DEFAULT_PRINCIPAL_SHELL)
   assertEquals(resolvePrincipalShell({}), DEFAULT_PRINCIPAL_SHELL)
   assertEquals(resolvePrincipalShell({ shell: '/bin/bash' }), '/bin/bash')
+})
+
+test('resolvePrincipalIdOverride returns a pair or null', () => {
+  assertEquals(resolvePrincipalIdOverride({ uid: 10001, gid: 10001 }), {
+    uid: 10001,
+    gid: 10001,
+  })
+  assertEquals(resolvePrincipalIdOverride({ uid: 10001 }), null)
+  assertEquals(resolvePrincipalIdOverride({}), null)
 })

@@ -9,7 +9,6 @@
 import { sql } from 'drizzle-orm'
 import {
   pgTable,
-  pgSequence,
   index,
   uniqueIndex,
   foreignKey,
@@ -1208,21 +1207,11 @@ export const container = pgTable(
   ]
 )
 /**
- * Instance-wide principal UID/GID allocator (starts at 10001). Not per-org so
- * two orgs on the same host cannot both hand out 10001. A sequence rather than
- * an advisory lock because Hyperdrive forbids advisory locks; `nextval` gaps
- * on rollback are acceptable for UIDs.
- */
-export const principalUidSeq = pgSequence('principal_uid_seq', {
-  startWith: 10001,
-  minValue: 10001,
-  increment: 1,
-  cache: 1,
-})
-/**
- * A principal is an account identity that can be attached to services — a host
- * (PAM) user or a database engine user. Org is derived through `assignment` →
- * `service`; there is deliberately no `organization_id` column here.
+ * A principal is an account identity that can be attached to services — a
+ * Linux (server) host account or a database engine user. Org is derived through
+ * `assignment` → `service` (or `project` → `workspace` for project principals);
+ * there is deliberately no `organization_id` column here. Host-account username
+ * uniqueness is app-enforced per organization (trim + case-insensitive).
  */
 export const principal = pgTable(
   'principal',
@@ -1237,14 +1226,15 @@ export const principal = pgTable(
     updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
-    /** `system` (host/PAM account) | `database` (engine account) */
+    /** `system` (Linux/server host account) | `database` (engine account) */
     kind: text().notNull(),
-    /** `pam` | `postgres` | `mysql` | `redis` | `clickhouse` */
+    /** `server` | `postgres` | `mysql` | `redis` | `clickhouse` */
     provider: text().notNull(),
     /**
      * Account name. Allowlist mirrors POSIX/database account naming: starts
      * with a letter or underscore, then letters/digits/underscore/hyphen
-     * (`^[A-Za-z_][A-Za-z0-9_-]*$`), 1–255 chars.
+     * (`^[A-Za-z_][A-Za-z0-9_-]*$`), 1–255 chars. Server principals additionally
+     * enforce ≤ 32 at the API layer (daemon username limit).
      */
     username: varchar({ length: 255 }).notNull(),
     /**
@@ -1257,7 +1247,10 @@ export const principal = pgTable(
     projectId: uuid('project_id'),
     /** Optional managed-engine scope (cascade-deletes with the managed row). */
     managedId: uuid('managed_id'),
-    /** Holds `uid` / `gid` / `home`. */
+    /**
+     * Holds `home` (`/srv/users/<username>`) plus a mirror of an optional
+     * operator `uid`/`gid` override when set — never an instance-allocated id.
+     */
     metadata: jsonb(),
     options: jsonb(),
   },
@@ -1283,7 +1276,7 @@ export const principal = pgTable(
     check('principal_kind_check', sql`kind IN ('system', 'database')`),
     check(
       'principal_provider_check',
-      sql`provider IN ('pam', 'postgres', 'mysql', 'redis', 'clickhouse')`
+      sql`provider IN ('server', 'postgres', 'mysql', 'redis', 'clickhouse')`
     ),
     check(
       'principal_username_format_check',
@@ -1291,6 +1284,7 @@ export const principal = pgTable(
     ),
     // No global unique on `username`: the same account name (e.g. `postgres`,
     // `www-data`) legitimately recurs across different systems/services.
+    // Server-provider host accounts are uniqueness-checked per org in app code.
   ]
 )
 /**

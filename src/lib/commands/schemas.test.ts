@@ -1523,6 +1523,242 @@ test('parseCommandPayload accepts traditionalWebSites and dockerExternalNetworks
   )
 })
 
+test('parseCommandPayload accepts principalMaterial with and without uid/gid', () => {
+  assertEquals(
+    parseCommandPayload('environment.deploy' as CommandType, {
+      environmentId: 'env-1',
+      projectId: 'proj-1',
+      organizationId: 'org-1',
+      projectName: 'tp-demo',
+      composeYaml: 'services: {}\n',
+      hostings: [],
+      principalMaterial: [
+        {
+          principalId: '00000000-0000-4000-8000-000000000001',
+          username: 'appuser',
+          home: '/srv/users/appuser',
+          shell: '/usr/sbin/nologin',
+        },
+        {
+          principalId: '00000000-0000-4000-8000-000000000002',
+          username: 'webuser',
+          uid: 10001,
+          gid: 10001,
+          home: '/srv/users/webuser',
+        },
+      ],
+    }),
+    {
+      environmentId: 'env-1',
+      projectId: 'proj-1',
+      organizationId: 'org-1',
+      projectName: 'tp-demo',
+      composeYaml: 'services: {}\n',
+      hostings: [],
+      principalMaterial: [
+        {
+          principalId: '00000000-0000-4000-8000-000000000001',
+          username: 'appuser',
+          home: '/srv/users/appuser',
+          shell: '/usr/sbin/nologin',
+        },
+        {
+          principalId: '00000000-0000-4000-8000-000000000002',
+          username: 'webuser',
+          uid: 10001,
+          gid: 10001,
+          home: '/srv/users/webuser',
+        },
+      ],
+    },
+  )
+})
+
+test('parseCommandPayload rejects negative or non-integer principal ids', () => {
+  assertThrows(
+    () =>
+      parseCommandPayload('environment.deploy' as CommandType, {
+        environmentId: 'env-1',
+        projectId: 'proj-1',
+        organizationId: 'org-1',
+        projectName: 'tp-demo',
+        composeYaml: 'services: {}\n',
+        hostings: [],
+        principalMaterial: [
+          {
+            principalId: '00000000-0000-4000-8000-000000000001',
+            username: 'appuser',
+            uid: -1,
+            gid: 10001,
+          },
+        ],
+      }),
+    Error,
+    'Invalid environment.deploy payload',
+  )
+  assertThrows(
+    () =>
+      parseCommandPayload('environment.deploy' as CommandType, {
+        environmentId: 'env-1',
+        projectId: 'proj-1',
+        organizationId: 'org-1',
+        projectName: 'tp-demo',
+        composeYaml: 'services: {}\n',
+        hostings: [],
+        traditionalWebSites: [
+          {
+            composeServiceName: 'web',
+            engine: 'nginx',
+            root: 'public',
+            listenPort: 18080,
+            principal: {
+              principalId: '00000000-0000-4000-8000-000000000099',
+              username: 'site_user',
+              uid: 1.5,
+              gid: 10001,
+            },
+          },
+        ],
+      }),
+    Error,
+    'Invalid traditionalWebSites.principal entry',
+  )
+})
+
+test('parseCommandPayload rejects overlong, unsafe, or empty principal material fields', () => {
+  const baseDeploy = {
+    environmentId: 'env-1',
+    projectId: 'proj-1',
+    organizationId: 'org-1',
+    projectName: 'tp-demo',
+    composeYaml: 'services: {}\n',
+    hostings: [] as unknown[],
+  }
+  const overlongUsername = `u${'x'.repeat(32)}` // 33 chars
+  assertEquals(overlongUsername.length, 33)
+
+  assertThrows(
+    () =>
+      parseCommandPayload('environment.deploy' as CommandType, {
+        ...baseDeploy,
+        principalMaterial: [
+          {
+            principalId: '00000000-0000-4000-8000-000000000001',
+            username: overlongUsername,
+          },
+        ],
+      }),
+    Error,
+    'Invalid environment.deploy payload',
+  )
+  assertThrows(
+    () =>
+      parseCommandPayload('environment.deploy' as CommandType, {
+        ...baseDeploy,
+        principalMaterial: [
+          {
+            principalId: '00000000-0000-4000-8000-000000000001',
+            username: 'bad user',
+          },
+        ],
+      }),
+    Error,
+    'Invalid environment.deploy payload',
+  )
+  assertThrows(
+    () =>
+      parseCommandPayload('environment.deploy' as CommandType, {
+        ...baseDeploy,
+        principalMaterial: [
+          {
+            principalId: '',
+            username: 'appuser',
+          },
+        ],
+      }),
+    Error,
+    'Invalid environment.deploy payload',
+  )
+  for (const home of ['relative/path', '/tmp/../etc/passwd', '/home/with space', '/bad\0path']) {
+    assertThrows(
+      () =>
+        parseCommandPayload('environment.deploy' as CommandType, {
+          ...baseDeploy,
+          principalMaterial: [
+            {
+              principalId: '00000000-0000-4000-8000-000000000001',
+              username: 'appuser',
+              home,
+            },
+          ],
+        }),
+      Error,
+      'Invalid environment.deploy payload',
+    )
+  }
+
+  assertThrows(
+    () =>
+      parseCommandPayload('environment.deploy' as CommandType, {
+        ...baseDeploy,
+        traditionalWebSites: [
+          {
+            composeServiceName: 'web',
+            engine: 'nginx',
+            root: 'public',
+            listenPort: 18080,
+            principal: {
+              principalId: '00000000-0000-4000-8000-000000000099',
+              username: overlongUsername,
+            },
+          },
+        ],
+      }),
+    Error,
+    'Invalid traditionalWebSites.principal entry',
+  )
+  assertThrows(
+    () =>
+      parseCommandPayload('environment.deploy' as CommandType, {
+        ...baseDeploy,
+        traditionalWebSites: [
+          {
+            composeServiceName: 'web',
+            engine: 'nginx',
+            root: 'public',
+            listenPort: 18080,
+            principal: {
+              principalId: '00000000-0000-4000-8000-000000000099',
+              username: 'bad;user',
+            },
+          },
+        ],
+      }),
+    Error,
+    'Invalid traditionalWebSites.principal entry',
+  )
+  assertThrows(
+    () =>
+      parseCommandPayload('environment.deploy' as CommandType, {
+        ...baseDeploy,
+        traditionalWebSites: [
+          {
+            composeServiceName: 'web',
+            engine: 'nginx',
+            root: 'public',
+            listenPort: 18080,
+            principal: {
+              principalId: '',
+              username: 'site_user',
+            },
+          },
+        ],
+      }),
+    Error,
+    'Invalid traditionalWebSites.principal entry',
+  )
+})
+
 test('parseCommandPayload rejects invalid dockerExternalNetworks names', () => {
   assertThrows(
     () =>

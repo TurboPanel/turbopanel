@@ -102,40 +102,103 @@ export function resolveDockerVolumeName(input: {
 }
 
 /**
- * Principal home root on managed hosts. 10001 clears the `tp*` service
- * accounts at 9989–9999 and normal `useradd` ranges.
+ * Principal home root on managed hosts. The host allocates uid/gid; when an
+ * operator supplies an explicit override it must be ≥ {@link PRINCIPAL_UID_START}
+ * and outside the reserved `tp*` service band
+ * [{@link PRINCIPAL_RESERVED_UID_MIN}, {@link PRINCIPAL_RESERVED_UID_MAX}].
  */
 export const PRINCIPAL_HOME_ROOT = '/srv/users'
+/** Floor for an optional operator uid/gid override (host allocates when omitted). */
 export const PRINCIPAL_UID_START = 10001
+/** Inclusive low end of the reserved TurboPanel service-account UID band. */
+export const PRINCIPAL_RESERVED_UID_MIN = 9989
+/** Inclusive high end of the reserved TurboPanel service-account UID band. */
+export const PRINCIPAL_RESERVED_UID_MAX = 9999
 
-function assertSafePrincipalId(principalId: string): string {
+/**
+ * Max Linux username length so `<username>-grp` still fits the host group-name
+ * limit (32). Keep in sync with daemon `MAX_PRINCIPAL_USERNAME_LENGTH` and
+ * command-schema validators.
+ */
+export const MAX_PRINCIPAL_USERNAME_LENGTH = 28
+
+/** Suffix appended by daemon `principalUnixGroupName` (`${username}-grp`). */
+export const PRINCIPAL_UNIX_GROUP_SUFFIX = '-grp'
+
+/** POSIX-shaped username used for home paths — mirrors the daemon allowlist. */
+const PRINCIPAL_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
+
+/**
+ * Reserved Linux / TurboPanel account names (lowercased). Rejected on create
+ * so tenant principals cannot collide with host or service accounts.
+ */
+export const RESERVED_PRINCIPAL_USERNAMES: ReadonlySet<string> = new Set([
+  'root',
+  'daemon',
+  'bin',
+  'sys',
+  'sync',
+  'games',
+  'man',
+  'mail',
+  'news',
+  'www-data',
+  'nobody',
+  'sshd',
+  'postgres',
+  'redis',
+  'docker',
+  'tp',
+  'tpctrl',
+  'tpcache',
+  'tpdata',
+  'tpqueue',
+  'tpmetrics',
+  'tpcaddy',
+  'tpnginx',
+  'tpapache',
+  'tpols',
+  'tplsws',
+])
+
+export function isReservedPrincipalUsername(value: string): boolean {
+  const key = value.trim().toLowerCase()
+  if (RESERVED_PRINCIPAL_USERNAMES.has(key)) return true
+  return key.startsWith('systemd-')
+}
+
+/**
+ * Validate a principal username for home/SSH/volume path segments.
+ * Rejects non-strings, empty, length > {@link MAX_PRINCIPAL_USERNAME_LENGTH},
+ * or names outside the POSIX allowlist
+ * (`^[A-Za-z_][A-Za-z0-9_-]*$` — also excludes `/`, `\`, NUL, `.`, `..`).
+ * Length is capped so `<username>-grp` fits the Linux group-name limit.
+ */
+export function assertSafePrincipalUsername(username: string): string {
   if (
-    typeof principalId !== 'string' ||
-    principalId.length === 0 ||
-    principalId.includes('/') ||
-    principalId.includes('\\') ||
-    principalId.includes('\0') ||
-    principalId === '.' ||
-    principalId === '..'
+    typeof username !== 'string' ||
+    username.length === 0 ||
+    username.length > MAX_PRINCIPAL_USERNAME_LENGTH ||
+    !PRINCIPAL_USERNAME_RE.test(username)
   ) {
-    throw new TypeError(`Invalid principal id for home path: ${principalId}`)
+    throw new TypeError(`Invalid principal username for home path: ${username}`)
   }
-  return principalId
+  return username
 }
 
-export function principalHomeDir(principalId: string): string {
-  return `${PRINCIPAL_HOME_ROOT}/${assertSafePrincipalId(principalId)}`
+export function principalHomeDir(username: string): string {
+  return `${PRINCIPAL_HOME_ROOT}/${assertSafePrincipalUsername(username)}`
 }
 
-export function principalSshDir(principalId: string): string {
-  return `${principalHomeDir(principalId)}/.ssh`
+export function principalSshDir(username: string): string {
+  return `${principalHomeDir(username)}/.ssh`
 }
 
-export function principalVolumesDir(principalId: string): string {
-  return `${principalHomeDir(principalId)}/volumes`
+export function principalVolumesDir(username: string): string {
+  return `${principalHomeDir(username)}/volumes`
 }
 
-export function principalVolumePath(principalId: string, storageId: string): string {
+export function principalVolumePath(username: string, storageId: string): string {
   if (
     typeof storageId !== 'string' ||
     storageId.length === 0 ||
@@ -147,7 +210,7 @@ export function principalVolumePath(principalId: string, storageId: string): str
   ) {
     throw new TypeError(`Invalid storage id for principal volume path: ${storageId}`)
   }
-  return `${principalVolumesDir(principalId)}/${storageId}`
+  return `${principalVolumesDir(username)}/${storageId}`
 }
 
 /**

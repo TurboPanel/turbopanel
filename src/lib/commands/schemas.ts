@@ -575,8 +575,10 @@ export type EnvironmentDeployStorageMaterial = {
 export type EnvironmentDeployPrincipalMaterial = {
   principalId: string
   username: string
-  uid: number
-  gid: number
+  /** Optional operator override — omitted when the host allocates. */
+  uid?: number
+  /** Optional operator override — omitted when the host allocates. */
+  gid?: number
   home?: string
   /**
    * Absolute shell path (default `/usr/sbin/nologin`), applied by the daemon
@@ -606,8 +608,10 @@ export type EnvironmentDeployHostingPhp = {
 export type EnvironmentDeployTraditionalWebPrincipal = {
   principalId: string
   username: string
-  uid: number
-  gid: number
+  /** Optional operator override — omitted when the host allocates. */
+  uid?: number
+  /** Optional operator override — omitted when the host allocates. */
+  gid?: number
 }
 
 export type EnvironmentDeployTraditionalWebSite = {
@@ -965,32 +969,79 @@ function parseDeployStorageMaterialEntry(entry: unknown): EnvironmentDeployStora
   return material
 }
 
-/** Absolute path: leading `/`, no whitespace/newline/NUL (mirrors principal-options). */
+/**
+ * Absolute path rules for principal `home` / `shell` — must stay in sync with
+ * the daemon `isValidAbsolutePrincipalPath` in
+ * `daemon/src/instance/commands/contracts.ts`.
+ */
+function isValidAbsolutePrincipalPath(value: string): boolean {
+  if (value.length === 0 || value.length > 255) return false
+  if (!value.startsWith('/')) return false
+  if (/\s/.test(value) || value.includes('\0') || value.includes('\n')) {
+    return false
+  }
+  if (value.split('/').includes('..')) return false
+  return true
+}
+
+/** Absolute shell path charset — mirrors the daemon `PRINCIPAL_SHELL_RE`. */
 const PRINCIPAL_SHELL_RE = /^\/[A-Za-z0-9._+/-]{0,254}$/
 
 function isValidPrincipalShellPath(value: string): boolean {
-  if (value.length === 0 || value.length > 255) return false
-  if (/\s/.test(value) || value.includes('\0') || value.includes('\n')) return false
+  if (!isValidAbsolutePrincipalPath(value)) return false
   return PRINCIPAL_SHELL_RE.test(value)
+}
+
+/** Must stay in sync with the daemon `PRINCIPAL_USERNAME_RE` / max length. */
+const PRINCIPAL_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
+/** Cap so `<username>-grp` fits the Linux 32-char group-name limit. */
+const MAX_PRINCIPAL_USERNAME_LENGTH = 28
+
+function isValidPrincipalUsername(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= MAX_PRINCIPAL_USERNAME_LENGTH &&
+    PRINCIPAL_USERNAME_RE.test(value)
+  )
+}
+
+/**
+ * Optional principal uid/gid on the wire — mirrors the daemon's
+ * `parseOptionalPrincipalId` / `parseTraditionalWebOptionalId`
+ * (undefined OK; otherwise integer ≥ 0).
+ */
+function parseOptionalPrincipalId(value: unknown, field: string): number | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new Error(`Invalid environment.deploy payload: ${field}`)
+  }
+  return value
 }
 
 function parseDeployPrincipalMaterialEntry(entry: unknown): EnvironmentDeployPrincipalMaterial {
   if (!isRecord(entry)) throw new Error('Invalid environment.deploy payload')
   if (
     !isString(entry.principalId) ||
-    !isString(entry.username) ||
-    typeof entry.uid !== 'number' ||
-    typeof entry.gid !== 'number'
+    entry.principalId.length === 0 ||
+    !isValidPrincipalUsername(entry.username)
   ) {
     throw new Error('Invalid environment.deploy payload')
   }
+  const uid = parseOptionalPrincipalId(entry.uid, 'uid')
+  const gid = parseOptionalPrincipalId(entry.gid, 'gid')
   const material: EnvironmentDeployPrincipalMaterial = {
     principalId: entry.principalId,
     username: entry.username,
-    uid: entry.uid,
-    gid: entry.gid,
+    ...(uid !== undefined ? { uid } : {}),
+    ...(gid !== undefined ? { gid } : {}),
   }
-  if (isString(entry.home)) material.home = entry.home
+  if (entry.home !== undefined) {
+    if (!isString(entry.home) || !isValidAbsolutePrincipalPath(entry.home)) {
+      throw new Error('Invalid environment.deploy payload')
+    }
+    material.home = entry.home
+  }
   if (entry.shell !== undefined) {
     if (!isString(entry.shell) || !isValidPrincipalShellPath(entry.shell)) {
       throw new Error('Invalid environment.deploy payload')
@@ -1070,8 +1121,6 @@ function parseDeployTraditionalWebSiteEntry(
   return site
 }
 
-const PRINCIPAL_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
-
 function parseDeployTraditionalWebPrincipal(
   value: unknown,
 ): EnvironmentDeployTraditionalWebPrincipal | undefined {
@@ -1082,22 +1131,23 @@ function parseDeployTraditionalWebPrincipal(
   if (
     !isString(value.principalId) ||
     value.principalId.length === 0 ||
-    !isString(value.username) ||
-    !PRINCIPAL_USERNAME_RE.test(value.username) ||
-    typeof value.uid !== 'number' ||
-    !Number.isInteger(value.uid) ||
-    value.uid < 0 ||
-    typeof value.gid !== 'number' ||
-    !Number.isInteger(value.gid) ||
-    value.gid < 0
+    !isValidPrincipalUsername(value.username)
   ) {
+    throw new Error('Invalid traditionalWebSites.principal entry')
+  }
+  let uid: number | undefined
+  let gid: number | undefined
+  try {
+    uid = parseOptionalPrincipalId(value.uid, 'uid')
+    gid = parseOptionalPrincipalId(value.gid, 'gid')
+  } catch {
     throw new Error('Invalid traditionalWebSites.principal entry')
   }
   return {
     principalId: value.principalId,
     username: value.username,
-    uid: value.uid,
-    gid: value.gid,
+    ...(uid !== undefined ? { uid } : {}),
+    ...(gid !== undefined ? { gid } : {}),
   }
 }
 

@@ -3,6 +3,7 @@ import { getCookie } from 'hono/cookie'
 import { Hono, type Context } from 'hono'
 import {
   buildSignedCookie,
+  LEGACY_HTTPS_SESSION_COOKIE_NAME,
   resolveRequestTls,
   resolveSessionCookieName,
   SESSION_EXPIRES_IN_MS,
@@ -44,6 +45,7 @@ import {
   createFailClosedAuthRateLimiter,
   getSharedAuthRateLimiter,
 } from './auth-rate-limit.ts'
+import { isExplicitDevelopmentMode } from '../../dev-mode.ts'
 
 export type AuthRouteOpts = {
   secrets?: DerivedSecretsConfig
@@ -210,10 +212,17 @@ function isUserEmailUniqueViolation(err: unknown): boolean {
   return message.includes('user_email_unique')
 }
 
-function isVerificationDevLoggingEnabled(opts: AuthRouteOpts): boolean {
-  if (opts.runtime !== 'deno' || typeof Deno === 'undefined') return false
-  const mode = Deno.env.get('TURBOPANEL_UI_MODE')?.trim().toLowerCase()
-  return mode !== 'static'
+/**
+ * Whether Deno may emit a sanitized "verification email queued" log line.
+ *
+ * Gated on {@link isExplicitDevelopmentMode} only — never on
+ * `TURBOPANEL_UI_MODE !== 'static'` alone (that failed open whenever the var
+ * was unset). Never logs the verification token or token-bearing URL; Mailpit
+ * / the configured email sink remains the source for the actual link.
+ */
+export function isVerificationDevLoggingEnabled(opts: AuthRouteOpts): boolean {
+  if (opts.runtime !== 'deno') return false
+  return isExplicitDevelopmentMode()
 }
 
 function resolveVerificationBaseUrl(
@@ -396,8 +405,7 @@ async function enqueueSignupVerification(
     })
     await provisionWorkersOrganization(db, opts, userId)
     if (isVerificationDevLoggingEnabled(opts)) {
-      compatLogInfo('dev', `verification email queued for ${trimmedEmail}`)
-      compatLogInfo('dev', `verify URL: ${verificationUrl}`)
+      compatLogInfo('dev', 'verification email queued')
     }
     return null
   } catch (err) {
@@ -640,17 +648,27 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
     }
 
     const tls = requestTls(c, opts.runtime)
-    let clearCookie =
-      `${tls.cookieName}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`
+    const clearAttrs = 'HttpOnly; SameSite=Lax; Path=/; Max-Age=0'
+    const clearPrimary =
+      `${tls.cookieName}=; ${clearAttrs}${tls.isHttps ? '; Secure' : ''}`
+
+    // Pre-MVP: also expire the retired __Secure- name so it cannot shadow
+    // __Host- on HTTPS after cutover.
     if (tls.isHttps) {
-      clearCookie += '; Secure'
+      c.header('Set-Cookie', clearPrimary)
+      c.header(
+        'Set-Cookie',
+        `${LEGACY_HTTPS_SESSION_COOKIE_NAME}=; ${clearAttrs}; Secure`,
+        { append: true },
+      )
+      return c.json({ ok: true }, 200)
     }
 
     return c.json(
       { ok: true },
       200,
       {
-        'Set-Cookie': clearCookie,
+        'Set-Cookie': clearPrimary,
       },
     )
   })

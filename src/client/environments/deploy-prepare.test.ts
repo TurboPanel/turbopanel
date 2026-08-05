@@ -216,6 +216,7 @@ type StorageFixtureRow = {
   sourcePath: string | null
   destinationPath: string | null
   principalId: string | null
+  principalUsername: string | null
   contentEnvelope: string | null
   serviceId: string | null
   serverId: string | null
@@ -228,6 +229,13 @@ function createSelectWhereDb<T>(rows: T[]): Db {
       return {
         from() {
           return {
+            leftJoin() {
+              return {
+                where() {
+                  return Promise.resolve(rows)
+                },
+              }
+            },
             where() {
               return Promise.resolve(rows)
             },
@@ -240,6 +248,7 @@ function createSelectWhereDb<T>(rows: T[]): Db {
 
 describe('loadStorageMaterial principal bind mounts', () => {
   const principalId = '01936b3e-aaaa-bbbb-cccc-123456789abc'
+  const username = 'appuser'
   const storageId = '01936b3e-dddd-eeee-ffff-123456789abc'
 
   const baseParams = {
@@ -260,6 +269,7 @@ describe('loadStorageMaterial principal bind mounts', () => {
       sourcePath: null,
       destinationPath: '/app/data',
       principalId,
+      principalUsername: username,
       contentEnvelope: null,
       serviceId: null,
       serverId: 'srv-1',
@@ -267,7 +277,7 @@ describe('loadStorageMaterial principal bind mounts', () => {
     }])
     const material = await loadStorageMaterial(db, baseParams)
     assertEquals(material.length, 1)
-    assertEquals(material[0]?.sourcePath, principalVolumePath(principalId, storageId))
+    assertEquals(material[0]?.sourcePath, principalVolumePath(username, storageId))
   })
 
   it('keeps an explicit sourcePath override', async () => {
@@ -278,6 +288,7 @@ describe('loadStorageMaterial principal bind mounts', () => {
       sourcePath: '/custom/mount',
       destinationPath: '/app/data',
       principalId,
+      principalUsername: username,
       contentEnvelope: null,
       serviceId: null,
       serverId: 'srv-1',
@@ -295,6 +306,25 @@ describe('loadStorageMaterial principal bind mounts', () => {
       sourcePath: null,
       destinationPath: '/app/data',
       principalId: null,
+      principalUsername: null,
+      contentEnvelope: null,
+      serviceId: null,
+      serverId: 'srv-1',
+      metadata: null,
+    }])
+    const material = await loadStorageMaterial(db, baseParams)
+    assertEquals(material[0]?.sourcePath, undefined)
+  })
+
+  it('leaves principal-owned bind mounts without username unresolved', async () => {
+    const db = createSelectWhereDb<StorageFixtureRow>([{
+      id: storageId,
+      kind: 'bind_mount',
+      name: 'data',
+      sourcePath: null,
+      destinationPath: '/app/data',
+      principalId,
+      principalUsername: null,
       contentEnvelope: null,
       serviceId: null,
       serverId: 'srv-1',
@@ -307,31 +337,44 @@ describe('loadStorageMaterial principal bind mounts', () => {
 
 describe('loadPrincipalMaterial home and shell', () => {
   const principalId = '01936b3e-aaaa-bbbb-cccc-123456789abc'
+  const username = 'appuser'
 
-  it('emits canonical home and resolved shell', async () => {
+  it('emits rows without uid/gid when no override is stored', async () => {
     const db = createSelectWhereDb([{
       id: principalId,
-      username: 'appuser',
-      metadata: { uid: 10001, gid: 10001, home: '/var/lib/turbopanel/principals/appuser' },
+      username,
       options: { shell: '/bin/bash' },
     }])
     const material = await loadPrincipalMaterial(db, [principalId])
     assertEquals(material.length, 1)
-    assertEquals(material[0]?.home, principalHomeDir(principalId))
+    assertEquals(material[0]?.home, principalHomeDir(username))
     assertEquals(material[0]?.shell, '/bin/bash')
-    assertEquals(material[0]?.uid, 10001)
-    assertEquals(material[0]?.gid, 10001)
+    assertEquals(material[0]?.uid, undefined)
+    assertEquals(material[0]?.gid, undefined)
+    assertEquals('uid' in (material[0] ?? {}), false)
+    assertEquals('gid' in (material[0] ?? {}), false)
   })
 
   it('defaults shell when options omit it', async () => {
     const db = createSelectWhereDb([{
       id: principalId,
-      username: 'appuser',
-      metadata: { uid: 10001, gid: 10001 },
+      username,
       options: null,
     }])
     const material = await loadPrincipalMaterial(db, [principalId])
     assertEquals(material[0]?.shell, DEFAULT_PRINCIPAL_SHELL)
-    assertEquals(material[0]?.home, principalHomeDir(principalId))
+    assertEquals(material[0]?.home, principalHomeDir(username))
+  })
+
+  it('echoes an operator uid/gid override when set', async () => {
+    const db = createSelectWhereDb([{
+      id: principalId,
+      username,
+      options: { shell: '/bin/bash', uid: 10001, gid: 10001 },
+    }])
+    const material = await loadPrincipalMaterial(db, [principalId])
+    assertEquals(material[0]?.uid, 10001)
+    assertEquals(material[0]?.gid, 10001)
+    assertEquals(material[0]?.home, principalHomeDir(username))
   })
 })

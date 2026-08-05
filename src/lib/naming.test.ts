@@ -2,12 +2,19 @@ import { assertEquals, assertThrows } from 'jsr:@std/assert'
 import {
   INGRESS_CONTAINER_NAME_SUFFIX,
   PRINCIPAL_HOME_ROOT,
+  PRINCIPAL_RESERVED_UID_MAX,
+  PRINCIPAL_RESERVED_UID_MIN,
   PRINCIPAL_UID_START,
+  PRINCIPAL_UNIX_GROUP_SUFFIX,
+  MAX_PRINCIPAL_USERNAME_LENGTH,
   RESERVED_DEPLOY_VARIABLE_KEYS,
+  RESERVED_PRINCIPAL_USERNAMES,
+  assertSafePrincipalUsername,
   containerNameFromService,
   dockerVolumeNameFromStorageId,
   ingressContainerNameFromService,
   isReservedDeployVariableKey,
+  isReservedPrincipalUsername,
   isValidDockerResourceName,
   managedContainerName,
   managedIngressComposeServiceName,
@@ -121,24 +128,57 @@ test('resolveDockerVolumeName uses storage UUID when unpinned', () => {
   )
 })
 
-test('principal path helpers nest under PRINCIPAL_HOME_ROOT', () => {
-  const id = '01936b3e-8c7a-7b2d-a1f0-123456789abc'
+test('principal path helpers nest under PRINCIPAL_HOME_ROOT by username', () => {
+  const username = 'appuser'
   const storageId = '01936b3e-8c7a-7b2d-a1f0-abcdef012345'
   assertEquals(PRINCIPAL_UID_START, 10001)
-  assertEquals(principalHomeDir(id), `${PRINCIPAL_HOME_ROOT}/${id}`)
-  assertEquals(principalSshDir(id), `${PRINCIPAL_HOME_ROOT}/${id}/.ssh`)
-  assertEquals(principalVolumesDir(id), `${PRINCIPAL_HOME_ROOT}/${id}/volumes`)
+  assertEquals(PRINCIPAL_RESERVED_UID_MIN, 9989)
+  assertEquals(PRINCIPAL_RESERVED_UID_MAX, 9999)
+  assertEquals(principalHomeDir(username), `${PRINCIPAL_HOME_ROOT}/${username}`)
+  assertEquals(principalSshDir(username), `${PRINCIPAL_HOME_ROOT}/${username}/.ssh`)
+  assertEquals(principalVolumesDir(username), `${PRINCIPAL_HOME_ROOT}/${username}/volumes`)
   assertEquals(
-    principalVolumePath(id, storageId),
-    `${PRINCIPAL_HOME_ROOT}/${id}/volumes/${storageId}`,
+    principalVolumePath(username, storageId),
+    `${PRINCIPAL_HOME_ROOT}/${username}/volumes/${storageId}`,
   )
 })
 
-test('principal path helpers reject path-escaping ids', () => {
+test('principal path helpers reject invalid usernames', () => {
   assertThrows(() => principalHomeDir(''), TypeError)
   assertThrows(() => principalHomeDir('../etc'), TypeError)
   assertThrows(() => principalHomeDir('a/b'), TypeError)
-  assertThrows(() => principalVolumePath('ok-id', '../x'), TypeError)
+  assertThrows(
+    () => assertSafePrincipalUsername('a'.repeat(MAX_PRINCIPAL_USERNAME_LENGTH + 1)),
+    TypeError,
+  )
+  assertThrows(() => principalVolumePath('ok_user', '../x'), TypeError)
+})
+
+test('assertSafePrincipalUsername accepts max length that fits username-grp', () => {
+  assertEquals(
+    MAX_PRINCIPAL_USERNAME_LENGTH + PRINCIPAL_UNIX_GROUP_SUFFIX.length,
+    32,
+  )
+  const longest = `u${'a'.repeat(MAX_PRINCIPAL_USERNAME_LENGTH - 1)}`
+  assertEquals(longest.length, MAX_PRINCIPAL_USERNAME_LENGTH)
+  assertEquals(assertSafePrincipalUsername(longest), longest)
+  assertEquals(
+    `${longest}${PRINCIPAL_UNIX_GROUP_SUFFIX}`.length,
+    32,
+  )
+
+  const overlong = `u${'a'.repeat(MAX_PRINCIPAL_USERNAME_LENGTH)}`
+  assertEquals(overlong.length, MAX_PRINCIPAL_USERNAME_LENGTH + 1)
+  assertThrows(() => assertSafePrincipalUsername(overlong), TypeError)
+})
+
+test('isReservedPrincipalUsername covers denylist and systemd- prefix', () => {
+  assertEquals(RESERVED_PRINCIPAL_USERNAMES.has('root'), true)
+  assertEquals(isReservedPrincipalUsername('root'), true)
+  assertEquals(isReservedPrincipalUsername(' www-data '), true)
+  assertEquals(isReservedPrincipalUsername('TPCTRL'), true)
+  assertEquals(isReservedPrincipalUsername('systemd-network'), true)
+  assertEquals(isReservedPrincipalUsername('appuser'), false)
 })
 
 test('serviceDnsName is most-specific-first (container then project)', () => {

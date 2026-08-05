@@ -89,6 +89,7 @@ const STORAGE_SELECT = {
   sourcePath: storage.sourcePath,
   destinationPath: storage.destinationPath,
   principalId: storage.principalId,
+  principalUsername: principal.username,
   metadata: storage.metadata,
   options: storage.options,
   createdAt: storage.createdAt,
@@ -458,6 +459,7 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       const rows = await db
         .select(STORAGE_SELECT)
         .from(storage)
+        .leftJoin(principal, eq(storage.principalId, principal.id))
         .where(and(
           eq(storage.organizationId, orgResult),
           eq(storage[parentFilter.column], parentId),
@@ -477,6 +479,7 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const rows = await db
       .select(STORAGE_SELECT)
       .from(storage)
+      .leftJoin(principal, eq(storage.principalId, principal.id))
       .where(inArray(storage.id, visibleIds))
       .orderBy(storage.createdAt)
 
@@ -502,7 +505,12 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const denied = await assertCanReadOr403(c, 'storage', id)
     if (denied) return denied
 
-    const [row] = await db.select(STORAGE_SELECT).from(storage).where(eq(storage.id, id)).limit(1)
+    const [row] = await db
+      .select(STORAGE_SELECT)
+      .from(storage)
+      .leftJoin(principal, eq(storage.principalId, principal.id))
+      .where(eq(storage.id, id))
+      .limit(1)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
     return c.json({ storage: serializeStorage(row) })

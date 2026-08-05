@@ -172,13 +172,15 @@ const daemonRestLimiter = createRedisRateLimiter({
   periodSeconds: restRate.periodSeconds,
 })
 // Durable, globally-shared client-auth throttle over Redis (same infrastructure
-// as the daemon limiters). Redis errors fail open inside createRedisRateLimiter,
-// so a broker hiccup never locks legitimate users out.
+// as the daemon limiters). Auth uses onError: 'closed' so a Redis hiccup cannot
+// fail open into unthrottled login/OTP/install; daemon limiters keep the
+// default fail-open behaviour.
 const authRateLimiter = createDurableAuthRateLimiter(
   createRedisRateLimiter({
     client: daemonCellRegistry.client,
     limit: 10,
     periodSeconds: 60,
+    onError: 'closed',
   }),
 )
 

@@ -25,7 +25,7 @@ export const storageSchemas = {
       resolvedSourcePath: {
         type: ['string', 'null'],
         description:
-          'Server-derived host path; principal-owned bind mounts resolve to /srv/users/<principalId>/volumes/<storageId>',
+          'Server-derived host path; principal-owned bind mounts resolve to /srv/users/<username>/volumes/<storageId>',
       },
       metadata: { type: 'object', nullable: true },
       options: { type: 'object', nullable: true },
@@ -63,7 +63,7 @@ export const storageSchemas = {
       sourcePath: {
         type: 'string',
         description:
-          'Optional for principal-owned bind mounts (instance derives /srv/users/<principalId>/volumes/<storageId>)',
+          'Optional for principal-owned bind mounts (instance derives /srv/users/<username>/volumes/<storageId>)',
       },
       destinationPath: { type: 'string' },
       principalId: { type: 'string' },

@@ -8,8 +8,11 @@ import { registerAuthRoutes, resolveClientIp } from './http.ts'
 import {
   type AuthRateLimiter,
   createAuthRateLimiter,
+  createDurableAuthRateLimiter,
   createFailClosedAuthRateLimiter,
 } from './auth-rate-limit.ts'
+import { createRedisRateLimiter } from '../../daemon/rate-limit/redis-rate-limiter.ts'
+import type { RedisCellClient } from '../../daemon/cell/redis/client.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from './secrets.ts'
 
 /**
@@ -226,6 +229,54 @@ it('Deno createApp injects authRateLimiter before client routes (deny-all → 42
     headers: {
       'content-type': 'application/json',
       'X-Real-IP': '203.0.113.77',
+      Origin: 'http://localhost',
+    },
+    body: JSON.stringify({ username: 'someone@example.com', password: 'x' }),
+  })
+  assertEquals(res.status, 429)
+  assertEquals(res.headers.get('Retry-After') !== null, true)
+})
+
+it('Deno auth stays throttled when Redis-backed limiter fails closed', async () => {
+  // Mirrors deno.ts wiring: durable auth limiter over Redis with onError:'closed'.
+  // When Redis eval throws, every check must deny (429) — never fail open.
+  const badClient = {
+    eval: () => Promise.reject(new Error('redis down')),
+  } as unknown as RedisCellClient
+
+  const authRateLimiter = createDurableAuthRateLimiter(
+    createRedisRateLimiter({
+      client: badClient,
+      limit: 10,
+      periodSeconds: 60,
+      onError: 'closed',
+    }),
+  )
+
+  const secretsConfig = parseSecretsEnv(
+    TEST_ONLY_TURBOPANEL_SECRET,
+    undefined,
+    'deno',
+  )
+  const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+  const otpVerifierSecrets = await deriveSecretsConfig(
+    secretsConfig,
+    'email-otp-verifier',
+  )
+  const app = createApp({
+    secrets,
+    otpVerifierSecrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+    authRateLimiter,
+  })
+
+  const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-in`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'X-Real-IP': '203.0.113.88',
+      Origin: 'http://localhost',
     },
     body: JSON.stringify({ username: 'someone@example.com', password: 'x' }),
   })

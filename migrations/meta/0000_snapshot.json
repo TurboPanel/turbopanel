@@ -1,5 +1,5 @@
 {
-  "id": "3b55fb5d-69d2-4a8a-8da5-6168dc8c99aa",
+  "id": "5f56f4a4-d68b-4eae-b96a-dd9143bf72f1",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -2792,7 +2792,7 @@
         },
         "principal_provider_check": {
           "name": "principal_provider_check",
-          "value": "provider IN ('pam', 'postgres', 'mysql', 'redis', 'clickhouse')"
+          "value": "provider IN ('server', 'postgres', 'mysql', 'redis', 'clickhouse')"
         },
         "principal_username_format_check": {
           "name": "principal_username_format_check",
@@ -5088,18 +5088,7 @@
   },
   "enums": {},
   "schemas": {},
-  "sequences": {
-    "public.principal_uid_seq": {
-      "name": "principal_uid_seq",
-      "schema": "public",
-      "increment": "1",
-      "startWith": "10001",
-      "minValue": "10001",
-      "maxValue": "9223372036854775807",
-      "cache": "1",
-      "cycle": false
-    }
-  },
+  "sequences": {},
   "roles": {},
   "policies": {},
   "views": {},

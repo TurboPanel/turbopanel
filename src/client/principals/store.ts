@@ -1,26 +1,62 @@
-import { and, asc, eq, inArray } from 'drizzle-orm'
+import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm'
 import {
   encryptSecret,
   generateSealedSecret,
 } from '../authn/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../authn/secrets.ts'
 import type { Db } from '../../db.ts'
-import { assignment, principal } from '../../lib/db/schema.ts'
+import { assignment, principal, project, workspace } from '../../lib/db/schema.ts'
 
 export const PRINCIPAL_KINDS = new Set(['system', 'database'])
 export const PRINCIPAL_PROVIDERS = new Set([
-  'pam',
+  'server',
   'postgres',
   'mysql',
   'redis',
   'clickhouse',
 ])
+export const SERVER_PRINCIPAL_PROVIDER = 'server'
+export const USERNAME_IN_USE_ERROR = 'username_in_use'
 export const USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export function isUuid(value: string): boolean {
   return UUID_RE.test(value)
+}
+
+/**
+ * True when another server-provider principal in the organization already uses
+ * this username (trimmed, case-insensitive). Managed-engine rows
+ * (`managed_id` set, `project_id` null) are excluded by the project join.
+ */
+export async function isServerPrincipalUsernameTaken(
+  db: Db,
+  organizationId: string,
+  username: string,
+  excludePrincipalId?: string,
+): Promise<boolean> {
+  const key = username.trim().toLowerCase()
+  if (!key) return false
+
+  const conditions = [
+    eq(workspace.organizationId, organizationId),
+    eq(principal.provider, SERVER_PRINCIPAL_PROVIDER),
+    sql`lower(btrim(${principal.username})) = ${key}`,
+  ]
+  if (excludePrincipalId) {
+    conditions.push(ne(principal.id, excludePrincipalId))
+  }
+
+  const rows = await db
+    .select({ id: principal.id })
+    .from(principal)
+    .innerJoin(project, eq(principal.projectId, project.id))
+    .innerJoin(workspace, eq(project.workspaceId, workspace.id))
+    .where(and(...conditions))
+    .limit(1)
+
+  return rows.length > 0
 }
 
 export async function replaceAssignments(

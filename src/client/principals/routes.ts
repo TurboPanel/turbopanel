@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -7,7 +7,11 @@ import { assertCanOr403 } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db.ts'
 import { organization, principal, server } from '../../lib/db/schema.ts'
-import { PRINCIPAL_UID_START, principalHomeDir } from '../../lib/naming.ts'
+import {
+  assertSafePrincipalUsername,
+  isReservedPrincipalUsername,
+  principalHomeDir,
+} from '../../lib/naming.ts'
 import { parsePrincipalOptionsInput } from '../../lib/principal-options.ts'
 import {
   assertCanManageOr403,
@@ -22,28 +26,19 @@ import {
   parseServiceIdsField,
   servicesBelongToProject,
 } from './assignments.ts'
-import { replaceAssignments } from './store.ts'
+import {
+  isServerPrincipalUsernameTaken,
+  replaceAssignments,
+  SERVER_PRINCIPAL_PROVIDER,
+  USERNAME_IN_USE_ERROR,
+} from './store.ts'
 import { serializeProjectPrincipal } from './serialize.ts'
 
-type PrincipalExecute = NonNullable<ReturnType<typeof getDb>>
-
-/**
- * Allocate the next instance-wide principal UID/GID from `principal_uid_seq`.
- *
- * `nextval` is non-transactional — gaps on rollback are acceptable for UIDs.
- */
-async function allocatePrincipalUid(
-  db: Pick<PrincipalExecute, 'execute'>,
-): Promise<{ uid: number; gid: number }> {
-  const rows = (await db.execute(sql`
-    SELECT nextval('principal_uid_seq')::int AS uid
-  `)) as unknown as Array<{ uid: number | string }>
-
-  const uid = Number(rows[0]?.uid)
-  if (!Number.isFinite(uid) || !Number.isInteger(uid) || uid < PRINCIPAL_UID_START) {
-    throw new Error(`Invalid principal UID allocated: ${String(rows[0]?.uid)}`)
+class UsernameInUseError extends Error {
+  constructor() {
+    super(USERNAME_IN_USE_ERROR)
+    this.name = 'UsernameInUseError'
   }
-  return { uid, gid: uid }
 }
 
 export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -121,8 +116,17 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const username = requireStringField(c, body, 'username')
-    if (username instanceof Response) return username
+    const usernameRaw = requireStringField(c, body, 'username')
+    if (usernameRaw instanceof Response) return usernameRaw
+    const username = usernameRaw.trim()
+    try {
+      assertSafePrincipalUsername(username)
+    } catch {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+    if (isReservedPrincipalUsername(username)) {
+      return c.json({ error: 'username_reserved' }, 400)
+    }
 
     const serviceIds = parseServiceIdsField(body)
     if (serviceIds === null) {
@@ -132,41 +136,85 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
       return c.json({ error: 'invalid_service_ids' }, 400)
     }
 
-    const parsedOptions = parsePrincipalOptionsInput(body.options)
+    const hasTopLevelIds = body.uid !== undefined || body.gid !== undefined
+    let optionsInput: unknown = body.options
+    if (hasTopLevelIds) {
+      if (body.options === undefined || body.options === null) {
+        optionsInput = { uid: body.uid, gid: body.gid }
+      } else if (
+        typeof body.options === 'object' && !Array.isArray(body.options)
+      ) {
+        optionsInput = {
+          ...(body.options as Record<string, unknown>),
+          ...(body.uid !== undefined ? { uid: body.uid } : {}),
+          ...(body.gid !== undefined ? { gid: body.gid } : {}),
+        }
+      }
+      // else leave non-object options as-is so strict parse rejects them
+    }
+    const parsedOptions = parsePrincipalOptionsInput(optionsInput)
     if (!parsedOptions.ok) {
       return c.json({ error: 'Invalid request' }, 400)
     }
     const options = parsedOptions.value
+    const override = options.uid !== undefined && options.gid !== undefined
+      ? { uid: options.uid, gid: options.gid }
+      : null
 
-    const inserted = await db.transaction(async (tx) => {
-      // nextval is non-transactional — gaps on rollback are acceptable for UIDs.
-      const { uid, gid } = await allocatePrincipalUid(tx)
+    let inserted: { id: string; uid?: number; gid?: number }
+    try {
+      inserted = await db.transaction(async (tx) => {
+        // Serialize concurrent creates for this org so the uniqueness check
+        // cannot race two inserts past each other (case/whitespace variants).
+        await tx
+          .select({ id: organization.id })
+          .from(organization)
+          .where(eq(organization.id, orgResult))
+          .for('update')
+          .limit(1)
 
-      const [row] = await tx.insert(principal).values({
-        kind: 'system',
-        provider: 'pam',
-        username,
-        projectId,
-        metadata: { uid, gid },
-        options,
-      }).returning({ id: principal.id })
+        if (await isServerPrincipalUsernameTaken(tx, orgResult, username)) {
+          throw new UsernameInUseError()
+        }
 
-      // Linux username stays principal.username — home is derived from the row id.
-      await tx.update(principal).set({
-        metadata: { uid, gid, home: principalHomeDir(row.id) },
-      }).where(eq(principal.id, row.id))
+        const metadata: Record<string, unknown> = {
+          home: principalHomeDir(username),
+        }
+        if (override) {
+          metadata.uid = override.uid
+          metadata.gid = override.gid
+        }
 
-      if (serviceIds.length > 0) {
-        await replaceAssignments(tx, row.id, serviceIds)
+        const [row] = await tx.insert(principal).values({
+          kind: 'system',
+          provider: SERVER_PRINCIPAL_PROVIDER,
+          username,
+          projectId,
+          metadata,
+          options,
+        }).returning({ id: principal.id })
+
+        if (serviceIds.length > 0) {
+          await replaceAssignments(tx, row.id, serviceIds)
+        }
+        return {
+          id: row.id,
+          ...(override ? { uid: override.uid, gid: override.gid } : {}),
+        }
+      })
+    } catch (err) {
+      if (err instanceof UsernameInUseError) {
+        return c.json({ error: USERNAME_IN_USE_ERROR }, 409)
       }
-      return { id: row.id, uid, gid }
-    })
+      throw err
+    }
 
     return c.json({
       ok: true as const,
       id: inserted.id,
-      uid: inserted.uid,
-      gid: inserted.gid,
+      ...(inserted.uid !== undefined && inserted.gid !== undefined
+        ? { uid: inserted.uid, gid: inserted.gid }
+        : {}),
       serviceIds,
     })
   })
