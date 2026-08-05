@@ -34,6 +34,7 @@ import { setServerStatusEventSink } from './daemon/metrics/status-events.ts'
 import {
   createRedisRateLimiter,
   resolveDaemonConnectRateLimit,
+  resolveDaemonMetricsRateLimit,
   resolveDaemonRestRateLimit,
   resolveDaemonWsInboundLimits,
 } from './daemon/rate-limit/redis-rate-limiter.ts'
@@ -160,6 +161,7 @@ const serverMetricsStore = resolveServerMetricsStore({
 setServerStatusEventSink(serverMetricsStore)
 const connectRate = resolveDaemonConnectRateLimit()
 const restRate = resolveDaemonRestRateLimit()
+const metricsRate = resolveDaemonMetricsRateLimit()
 const inboundLimits = resolveDaemonWsInboundLimits()
 const daemonConnectLimiter = createRedisRateLimiter({
   client: daemonCellRegistry.client,
@@ -170,6 +172,11 @@ const daemonRestLimiter = createRedisRateLimiter({
   client: daemonCellRegistry.client,
   limit: restRate.limit,
   periodSeconds: restRate.periodSeconds,
+})
+const daemonMetricsLimiter = createRedisRateLimiter({
+  client: daemonCellRegistry.client,
+  limit: metricsRate.limit,
+  periodSeconds: metricsRate.periodSeconds,
 })
 // Durable, globally-shared client-auth throttle over Redis (same infrastructure
 // as the daemon limiters). Auth uses onError: 'closed' so a Redis hiccup cannot
@@ -252,6 +259,7 @@ registerDaemonApiRoutes(routes, {
   challengeSigningSecrets,
   secretsConfig,
   restLimiter: daemonRestLimiter,
+  metricsLimiter: daemonMetricsLimiter,
 })
 registerVersionRoute(routes)
 if (developerSurface) {

@@ -119,6 +119,7 @@ async function initWorkerApp(env: CloudflareBindings) {
     challengeSigningSecrets: cachedChallengeSigningSecrets ?? undefined,
     secretsConfig: cachedSecretsConfig ?? undefined,
     restLimiter: rateLimiters.rest,
+    metricsLimiter: rateLimiters.metrics,
   })
   registerWorkersDaemonWebSocket(cachedApp, {
     secrets: cachedDaemonJwtKeyring ?? undefined,

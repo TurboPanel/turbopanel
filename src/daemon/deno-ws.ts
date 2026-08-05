@@ -4,9 +4,9 @@ import type { DaemonCellRegistry } from "./cell/contracts.ts";
 import {
   DAEMON_CELL_PING,
   DAEMON_CELL_PONG,
-  DAEMON_INBOUND_ALLOWED,
+  DAEMON_WS_POLICY_VIOLATION_CLOSE,
   outboundEnvelopeToWireMessage,
-  parseDaemonMessage,
+  validateDaemonInboundFrame,
   wireMessageToInboundEnvelope,
 } from "./cell/protocol.ts";
 import type { DaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
@@ -29,7 +29,10 @@ import {
 import { resolveSelfHostedGeo } from "../lib/geo/self-hosted-geo-provider.ts";
 import { touchServerMetadata } from "../server-registry.ts";
 import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
-import { getServerDaemonStateByServerId } from "./authn/server-identity-db.ts";
+import {
+  getServerDaemonStateByServerId,
+  isDaemonKeyActive,
+} from "./authn/server-identity-db.ts";
 import type { RateLimiter } from "./rate-limit/contracts.ts";
 import { createInboundWindowGate } from "./rate-limit/inbound-window.ts";
 import { daemonConnectRateLimitKey } from "./rate-limit/keys.ts";
@@ -58,6 +61,29 @@ function assignColocatedDaemonOnConnect(
       );
     },
   );
+}
+
+/**
+ * After license invalidation, Redis purge cannot close the live socket — reject
+ * the next inbound frame when the JWT kid no longer matches an active key.
+ */
+async function assertDaemonKeyStillActive(
+  db: Db,
+  serverId: string,
+  keyId: string,
+  ws: WebSocket,
+): Promise<boolean> {
+  const daemonRow = await getServerDaemonStateByServerId(db, serverId);
+  if (
+    !daemonRow ||
+    daemonRow.key.id !== keyId ||
+    !isDaemonKeyActive(daemonRow.key)
+  ) {
+    cellTrace("inbound-key-revoked", { serverId, keyId });
+    ws.close(DAEMON_WS_POLICY_VIOLATION_CLOSE, "key_revoked");
+    return false;
+  }
+  return true;
 }
 
 function startDaemonOutboxPump(params: {
@@ -284,6 +310,13 @@ export function registerDaemonWebSocket(
         ws: WebSocket,
       ): Promise<void> => {
         if (raw === DAEMON_CELL_PING) {
+          const keyStillActive = await assertDaemonKeyStillActive(
+            db,
+            payload.sub,
+            payload.kid,
+            ws,
+          );
+          if (!keyStillActive) return;
           await handleDaemonCellPing({
             cell: registry.getCell(payload.sub),
             db,
@@ -294,32 +327,35 @@ export function registerDaemonWebSocket(
           return;
         }
 
-        const message = parseDaemonMessage(raw);
-        if (!message) {
-          compatLogWarn("ws", "ignored non-JSON message from daemon");
+        const validated = validateDaemonInboundFrame(raw);
+        if (!validated.ok) {
+          cellTrace("inbound-rejected", {
+            serverId: payload.sub,
+            conn: connectionId,
+            reason: validated.reason,
+          });
+          compatLogWarn(
+            "ws",
+            `rejected inbound frame from ${connectionId ?? "unknown"}: ${validated.reason}`,
+          );
+          ws.close(DAEMON_WS_POLICY_VIOLATION_CLOSE, "policy_violation");
           return;
         }
+        const message = validated.message;
+
+        const keyStillActive = await assertDaemonKeyStillActive(
+          db,
+          payload.sub,
+          payload.kid,
+          ws,
+        );
+        if (!keyStillActive) return;
 
         cellTrace("inbound", {
           serverId: payload.sub,
           conn: connectionId,
           type: message.type,
         });
-
-        if (!DAEMON_INBOUND_ALLOWED.has(message.type)) {
-          cellTrace("inbound-disallowed", {
-            serverId: payload.sub,
-            conn: connectionId,
-            type: message.type,
-          });
-          compatLogWarn(
-            "ws",
-            `ignored disallowed message type ${message.type} from ${
-              connectionId ?? "unknown"
-            }`,
-          );
-          return;
-        }
 
         const cell = registry.getCell(payload.sub);
 

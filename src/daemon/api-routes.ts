@@ -18,6 +18,7 @@ import type { Db } from "../db.ts";
 import { getDb, getServerMetricsStore } from "../db.ts";
 import { license } from "../lib/db/schema.ts";
 import {
+  MAX_METRICS_PAYLOAD_BYTES,
   metricsPayloadByteLength,
   rateLimitedMetricsLog,
   validateHostMetricsSample,
@@ -52,6 +53,7 @@ import type { RateLimiter } from "./rate-limit/contracts.ts";
 import { createNoopRateLimiter } from "./rate-limit/contracts.ts";
 import {
   daemonEnrollChallengeRateLimitKey,
+  daemonMetricsRateLimitKey,
   daemonRestRateLimitKey,
   type DaemonRestRateLimitRoute,
 } from "./rate-limit/keys.ts";
@@ -122,6 +124,50 @@ export const MAX_SECRETS_DECRYPT_CIPHERTEXT_CHARS = 16 * 1024;
  * the batch cap × per-ciphertext cap plus JSON array/quoting overhead.
  */
 export const MAX_SECRETS_DECRYPT_BODY_BYTES = 2 * 1024 * 1024;
+
+/** `POST /auth/challenge` — optional serverId/keyId only. */
+export const MAX_AUTH_CHALLENGE_BODY_BYTES = 4 * 1024;
+
+/** `POST /enroll` — includes publicJwk + license fields. */
+export const MAX_ENROLL_BODY_BYTES = 32 * 1024;
+
+/** `POST /auth/session` — signed session proof fields. */
+export const MAX_AUTH_SESSION_BODY_BYTES = 8 * 1024;
+
+/**
+ * Reject when `Content-Length` declares a body larger than `maxBytes`.
+ * Returns a 413 response, or `null` when the header is absent/ok.
+ */
+function rejectIfContentLengthTooLarge(
+  c: Context,
+  maxBytes: number,
+): Response | null {
+  const declaredLength = Number(c.req.header("content-length") ?? "");
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    return c.json({ ok: false, error: "request body too large" }, 413);
+  }
+  return null;
+}
+
+/**
+ * Content-Length precheck + streaming byte budget. Returns the body text or a
+ * 413 Response when the upload exceeds `maxBytes`.
+ */
+async function readBoundedJsonBody(
+  c: Context,
+  maxBytes: number,
+): Promise<{ ok: true; text: string } | { ok: false; response: Response }> {
+  const tooLarge = rejectIfContentLengthTooLarge(c, maxBytes);
+  if (tooLarge) return { ok: false, response: tooLarge };
+  const bodyRead = await readRequestBodyWithLimit(c, maxBytes);
+  if (!bodyRead.ok) {
+    return {
+      ok: false,
+      response: c.json({ ok: false, error: "request body too large" }, 413),
+    };
+  }
+  return { ok: true, text: bodyRead.text };
+}
 
 /**
  * Decrypt a single recipient-bound daemon envelope. Returns the plaintext, or
@@ -388,11 +434,13 @@ export function registerDaemonApiRoutes(
     challengeSigningSecrets?: DerivedSecretsConfig;
     secretsConfig?: SecretsConfig;
     restLimiter?: RateLimiter;
+    metricsLimiter?: RateLimiter;
   } = {},
 ) {
   const daemon = new Hono();
   const { secrets, challengeSigningSecrets, secretsConfig } = options;
   const restLimiter = options.restLimiter ?? createNoopRateLimiter();
+  const metricsLimiter = options.metricsLimiter ?? createNoopRateLimiter();
   const enrollStore = challengeSigningSecrets
     ? createStatelessChallengeStore(
       challengeSigningSecrets,
@@ -411,6 +459,19 @@ export function registerDaemonApiRoutes(
     key: string,
   ): Promise<Response | null> {
     const { success } = await restLimiter.limit({ key });
+    if (!success) {
+      return c.json({ ok: false, error: "rate_limited" }, 429);
+    }
+    return null;
+  }
+
+  async function enforceDaemonMetricsLimit(
+    c: Context,
+    serverId: string,
+  ): Promise<Response | null> {
+    const { success } = await metricsLimiter.limit({
+      key: daemonMetricsRateLimitKey(serverId),
+    });
     if (!success) {
       return c.json({ ok: false, error: "rate_limited" }, 429);
     }
@@ -475,6 +536,26 @@ export function registerDaemonApiRoutes(
     (c as Context<any>).set("daemonServerId", payload.sub);
     (c as Context<any>).set("daemonKeyId", payload.kid);
     (c as Context<any>).set("daemonTokenId", payload.jti);
+    return next();
+  };
+
+  /**
+   * Reject JWTs whose sub/kid no longer match an active daemon key (e.g. after
+   * license invalidation). Applied to cost-sensitive routes after JWT verify
+   * and rate limiting so limiter tests can still exercise 429 without a DB.
+   * When no DB is bound (unit tests), JWT signature/expiry alone gate the route.
+   */
+  const requireActiveDaemonKey = async (c: Context, next: Next) => {
+    const db = getDb(c);
+    if (db === undefined) {
+      return next();
+    }
+    const serverId = c.get("daemonServerId") as string;
+    const keyId = c.get("daemonKeyId") as string;
+    const keyState = await loadActiveDaemonKeyState(db, serverId, keyId);
+    if (!keyState.ok) {
+      return c.json({ ok: false, error: "unauthorized" }, 401);
+    }
     return next();
   };
 
@@ -544,19 +625,52 @@ export function registerDaemonApiRoutes(
   });
 
   daemon.post("/auth/challenge", async (c) => {
-    const body = await c.req.json<{
-      serverId?: string;
-      keyId?: string;
-    }>().catch(() => ({}));
+    const lengthReject = rejectIfContentLengthTooLarge(
+      c,
+      MAX_AUTH_CHALLENGE_BODY_BYTES,
+    );
+    if (lengthReject) return lengthReject;
+
+    // Anonymous enrollment challenges have empty/near-empty bodies — rate-limit
+    // before reading so an oversized flood still hits the enroll-challenge bucket.
+    const declaredLength = Number(c.req.header("content-length") ?? "");
+    const bodyAbsent = !c.req.raw.body;
+    const looksAnonymous = bodyAbsent ||
+      (Number.isFinite(declaredLength) && declaredLength <= 2);
+    if (looksAnonymous) {
+      const enrollChallengeLimited = await enforceDaemonRestLimit(
+        c,
+        daemonEnrollChallengeRateLimitKey(),
+      );
+      if (enrollChallengeLimited) return enrollChallengeLimited;
+    }
+
+    const bodyRead = await readBoundedJsonBody(c, MAX_AUTH_CHALLENGE_BODY_BYTES);
+    if (!bodyRead.ok) return bodyRead.response;
+
+    let body: { serverId?: string; keyId?: string } = {};
+    if (bodyRead.text.trim()) {
+      try {
+        body = JSON.parse(bodyRead.text) as {
+          serverId?: string;
+          keyId?: string;
+        };
+      } catch {
+        body = {};
+      }
+    }
+
     if (body.keyId || body.serverId) {
       return issueServerKeyAuthChallenge(c, body.serverId, body.keyId);
     }
 
-    const enrollChallengeLimited = await enforceDaemonRestLimit(
-      c,
-      daemonEnrollChallengeRateLimitKey(),
-    );
-    if (enrollChallengeLimited) return enrollChallengeLimited;
+    if (!looksAnonymous) {
+      const enrollChallengeLimited = await enforceDaemonRestLimit(
+        c,
+        daemonEnrollChallengeRateLimitKey(),
+      );
+      if (enrollChallengeLimited) return enrollChallengeLimited;
+    }
 
     if (!enrollStore) {
       return c.json({ ok: false, error: "Challenge unavailable" }, 503);
@@ -576,9 +690,15 @@ export function registerDaemonApiRoutes(
       return c.json({ ok: false, error: "Database unavailable" }, 503);
     }
 
-    const body = await c.req
-      .json<Record<string, unknown>>()
-      .catch(() => ({} as Record<string, unknown>));
+    const bodyRead = await readBoundedJsonBody(c, MAX_ENROLL_BODY_BYTES);
+    if (!bodyRead.ok) return bodyRead.response;
+
+    let body: Record<string, unknown> = {};
+    try {
+      body = JSON.parse(bodyRead.text || "{}") as Record<string, unknown>;
+    } catch {
+      body = {};
+    }
     const parsedFields = parseEnrollFields(body);
     if (!parsedFields.ok) {
       return c.json(
@@ -659,9 +779,15 @@ export function registerDaemonApiRoutes(
       return c.json({ ok: false, error: "Daemon auth unavailable" }, 503);
     }
 
-    const body = await c.req
-      .json<Record<string, unknown>>()
-      .catch(() => ({} as Record<string, unknown>));
+    const bodyRead = await readBoundedJsonBody(c, MAX_AUTH_SESSION_BODY_BYTES);
+    if (!bodyRead.ok) return bodyRead.response;
+
+    let body: Record<string, unknown> = {};
+    try {
+      body = JSON.parse(bodyRead.text || "{}") as Record<string, unknown>;
+    } catch {
+      body = {};
+    }
     const parsedFields = parseAuthSessionFields(body);
     if (!parsedFields.ok) {
       return c.json(
@@ -744,6 +870,13 @@ export function registerDaemonApiRoutes(
       return next();
     };
 
+  const enforceJwtMetricsLimit = async (c: Context, next: Next) => {
+    const daemonServerId = c.get("daemonServerId") as string;
+    const limited = await enforceDaemonMetricsLimit(c, daemonServerId);
+    if (limited) return limited;
+    return next();
+  };
+
   daemon.post(
     "/commands/lease",
     requireDaemonJwt,
@@ -758,10 +891,25 @@ export function registerDaemonApiRoutes(
   daemon.post(
     "/metrics",
     requireDaemonJwt,
-    enforceJwtRestLimit("metrics"),
+    enforceJwtMetricsLimit,
+    requireActiveDaemonKey,
     async (c) => {
       const serverId = c.get("daemonServerId") as string;
-      const raw = await c.req.text().catch(() => "");
+
+      const lengthReject = rejectIfContentLengthTooLarge(
+        c,
+        MAX_METRICS_PAYLOAD_BYTES,
+      );
+      if (lengthReject) return lengthReject;
+
+      const bodyRead = await readRequestBodyWithLimit(
+        c,
+        MAX_METRICS_PAYLOAD_BYTES,
+      );
+      if (!bodyRead.ok) {
+        return c.json({ ok: false, error: "request body too large" }, 413);
+      }
+      const raw = bodyRead.text;
       const payloadBytes = metricsPayloadByteLength(raw);
 
       let parsed: unknown;
@@ -818,6 +966,7 @@ export function registerDaemonApiRoutes(
     "/secrets/decrypt",
     requireDaemonJwt,
     enforceJwtRestLimit("secrets-decrypt"),
+    requireActiveDaemonKey,
     async (c) => {
       if (!secretsConfig) {
         return c.json({ ok: false, error: "decryption unavailable" }, 503);
@@ -826,22 +975,11 @@ export function registerDaemonApiRoutes(
       const daemonServerId = c.get("daemonServerId") as string;
       const daemonKeyId = c.get("daemonKeyId") as string;
 
-      // Reject oversized uploads before buffering / parsing. Cheap Content-Length
-      // gate first, then a hard byte budget enforced while streaming the body.
-      const declaredLength = Number(c.req.header("content-length") ?? "");
-      if (
-        Number.isFinite(declaredLength) &&
-        declaredLength > MAX_SECRETS_DECRYPT_BODY_BYTES
-      ) {
-        return c.json({ ok: false, error: "request body too large" }, 413);
-      }
-      const bodyRead = await readRequestBodyWithLimit(
+      const bodyRead = await readBoundedJsonBody(
         c,
         MAX_SECRETS_DECRYPT_BODY_BYTES,
       );
-      if (!bodyRead.ok) {
-        return c.json({ ok: false, error: "request body too large" }, 413);
-      }
+      if (!bodyRead.ok) return bodyRead.response;
 
       let body: { ciphertexts?: unknown };
       try {

@@ -7,6 +7,7 @@ import { rateLimitKey } from '../cell/redis/keys.ts'
 import {
   createRedisRateLimiter,
   resolveDaemonConnectRateLimit,
+  resolveDaemonMetricsRateLimit,
   resolveDaemonRestRateLimit,
 } from './redis-rate-limiter.ts'
 import {
@@ -190,7 +191,7 @@ test('createRedisRateLimiter satisfies RateLimiter with shared keys', async () =
   ])
 })
 
-test('resolveDaemonConnectRateLimit / REST defaults match Workers wrangler', () => {
+test('resolveDaemonConnectRateLimit / REST / metrics defaults match Workers wrangler', () => {
   const empty = { get: () => undefined }
   assertEquals(resolveDaemonConnectRateLimit(empty), {
     limit: 6,
@@ -198,6 +199,10 @@ test('resolveDaemonConnectRateLimit / REST defaults match Workers wrangler', () 
   })
   assertEquals(resolveDaemonRestRateLimit(empty), {
     limit: 30,
+    periodSeconds: 60,
+  })
+  assertEquals(resolveDaemonMetricsRateLimit(empty), {
+    limit: 3,
     periodSeconds: 60,
   })
 })

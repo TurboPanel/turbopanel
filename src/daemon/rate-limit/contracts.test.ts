@@ -1,10 +1,11 @@
 import { assertEquals } from 'jsr:@std/assert'
-import { createNoopRateLimiter } from './contracts.ts'
+import { createNoopRateLimiter, createFailClosedRateLimiter } from './contracts.ts'
 import { createWorkersRateLimiter } from './workers-rate-limiter.ts'
 import {
   DAEMON_ENROLL_CHALLENGE_RATE_LIMIT_ID,
   daemonConnectRateLimitKey,
   daemonEnrollChallengeRateLimitKey,
+  daemonMetricsRateLimitKey,
   daemonRestRateLimitKey,
 } from './keys.ts'
 
@@ -22,6 +23,12 @@ test('createNoopRateLimiter always returns success', async () => {
   const second = await limiter.limit({ key: 'other' })
   assertEquals(first, { success: true })
   assertEquals(second, { success: true })
+})
+
+test('createFailClosedRateLimiter always returns failure', async () => {
+  const limiter = createFailClosedRateLimiter()
+  assertEquals(await limiter.limit({ key: 'any' }), { success: false })
+  assertEquals(await limiter.limit({ key: 'other' }), { success: false })
 })
 
 test('createWorkersRateLimiter delegates to binding.limit with key', async () => {
@@ -55,5 +62,9 @@ test('daemon rate-limit keys are stable and include id + route', () => {
   assertEquals(
     daemonEnrollChallengeRateLimitKey(),
     `daemon:rest:auth-challenge:${DAEMON_ENROLL_CHALLENGE_RATE_LIMIT_ID}`,
+  )
+  assertEquals(
+    daemonMetricsRateLimitKey('srv-1'),
+    'daemon:metrics:srv-1',
   )
 })

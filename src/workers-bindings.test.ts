@@ -266,16 +266,26 @@ test('workers.ts and offline-sweep.ts always close per-invocation DB clients', a
   )
 })
 
-test('resolveWorkersDaemonRateLimiters returns noop adapters when bindings absent', async () => {
-  const env = {} as CloudflareBindings
-  const { connect, rest } = resolveWorkersDaemonRateLimiters(env)
+test('resolveWorkersDaemonRateLimiters returns noop adapters on dev surface when bindings absent', async () => {
+  const env = { TURBOPANEL_DEV_SURFACE: '1' } as CloudflareBindings
+  const { connect, rest, metrics } = resolveWorkersDaemonRateLimiters(env)
   assertEquals(await connect.limit({ key: 'k' }), { success: true })
   assertEquals(await rest.limit({ key: 'k' }), { success: true })
+  assertEquals(await metrics.limit({ key: 'k' }), { success: true })
+})
+
+test('resolveWorkersDaemonRateLimiters fails closed in production when bindings absent', async () => {
+  const env = {} as CloudflareBindings
+  const { connect, rest, metrics } = resolveWorkersDaemonRateLimiters(env)
+  assertEquals(await connect.limit({ key: 'k' }), { success: false })
+  assertEquals(await rest.limit({ key: 'k' }), { success: false })
+  assertEquals(await metrics.limit({ key: 'k' }), { success: false })
 })
 
 test('resolveWorkersDaemonRateLimiters wraps present RateLimit bindings', async () => {
   const connectKeys: string[] = []
   const restKeys: string[] = []
+  const metricsKeys: string[] = []
   const env = {
     DAEMON_CONNECT_RATE_LIMITER: {
       limit: (options: { key: string }) => {
@@ -289,13 +299,36 @@ test('resolveWorkersDaemonRateLimiters wraps present RateLimit bindings', async 
         return Promise.resolve({ success: false })
       },
     },
+    DAEMON_METRICS_RATE_LIMITER: {
+      limit: (options: { key: string }) => {
+        metricsKeys.push(options.key)
+        return Promise.resolve({ success: true })
+      },
+    },
   } as unknown as CloudflareBindings
 
-  const { connect, rest } = resolveWorkersDaemonRateLimiters(env)
+  const { connect, rest, metrics } = resolveWorkersDaemonRateLimiters(env)
   assertEquals(await connect.limit({ key: 'connect-a' }), { success: true })
   assertEquals(await rest.limit({ key: 'rest-b' }), { success: false })
+  assertEquals(await metrics.limit({ key: 'metrics-c' }), { success: true })
   assertEquals(connectKeys, ['connect-a'])
   assertEquals(restKeys, ['rest-b'])
+  assertEquals(metricsKeys, ['metrics-c'])
+})
+
+test('resolveWorkersDaemonRateLimiters fails closed for metrics independently', async () => {
+  const env = {
+    DAEMON_CONNECT_RATE_LIMITER: {
+      limit: () => Promise.resolve({ success: true }),
+    },
+    DAEMON_REST_RATE_LIMITER: {
+      limit: () => Promise.resolve({ success: true }),
+    },
+  } as unknown as CloudflareBindings
+  const { connect, rest, metrics } = resolveWorkersDaemonRateLimiters(env)
+  assertEquals(await connect.limit({ key: 'k' }), { success: true })
+  assertEquals(await rest.limit({ key: 'k' }), { success: true })
+  assertEquals(await metrics.limit({ key: 'k' }), { success: false })
 })
 
 test('resolveWorkersClientAuthRateLimiter wraps the binding into a durable limiter', async () => {

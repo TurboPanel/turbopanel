@@ -80,7 +80,7 @@ export async function disconnectServersBoundToLicense(
   db: Db,
   licenseId: string,
   organizationId: string,
-): Promise<void> {
+): Promise<string[]> {
   const rows = await db
     .select({ id: server.id })
     .from(license)
@@ -90,21 +90,32 @@ export async function disconnectServersBoundToLicense(
       eq(license.organizationId, organizationId),
     ))
 
+  const serverIds: string[] = []
   for (const row of rows) {
+    serverIds.push(row.id)
     await revokeDaemonKey(db, row.id)
   }
+  return serverIds
 }
+
+export type InvalidateLicenseResult =
+  | { ok: false }
+  | { ok: true; serverIds: string[] }
 
 /** Soft-invalidates a license and revokes daemon keys on bound servers. */
 export async function invalidateLicense(
   db: Db,
   licenseId: string,
   organizationId: string,
-): Promise<boolean> {
+): Promise<InvalidateLicenseResult> {
   const revoked = await revokeLicense(db, licenseId, organizationId)
-  if (!revoked) return false
-  await disconnectServersBoundToLicense(db, licenseId, organizationId)
-  return true
+  if (!revoked) return { ok: false }
+  const serverIds = await disconnectServersBoundToLicense(
+    db,
+    licenseId,
+    organizationId,
+  )
+  return { ok: true, serverIds }
 }
 
 export type LicenseBoundServer = {

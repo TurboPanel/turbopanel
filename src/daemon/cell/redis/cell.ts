@@ -17,6 +17,7 @@ import {
   DAEMON_CELL_MAINTAIN_MS,
   DAEMON_OFFLINE_SWEEP_MS,
   DAEMON_STALE_MS,
+  validateDaemonInboundEnvelope,
 } from "../protocol.ts";
 import { TERMINAL_UPDATE_RETENTION_MS } from "../../../lib/update/constants.ts";
 import { cellTrace, isDaemonDebugEnabled, logDebug, logInfo } from "../../../logger.ts";
@@ -1119,6 +1120,15 @@ export class RedisDaemonCell implements DaemonCell {
     inbound: DaemonInboundEnvelope,
   ): Promise<PendingRequestRecord | null> {
     this.#bumpMethodRoute("handleInbound");
+    const envelopeOk = validateDaemonInboundEnvelope(inbound);
+    if (!envelopeOk.ok) {
+      cellTrace("inbound-envelope-rejected", {
+        serverId: this.#serverId,
+        reason: envelopeOk.reason,
+        kind: inbound.kind,
+      });
+      return null;
+    }
     const redis = this.#redis("handleInbound");
     const reqKey = requestKey(this.#serverId, inbound.requestId);
     const fields = await redis.hgetall(reqKey);

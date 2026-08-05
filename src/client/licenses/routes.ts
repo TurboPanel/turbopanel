@@ -258,8 +258,21 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
     if (billingDenied) return billingDenied
 
     const invalidated = await invalidateLicense(db, id, organizationId)
-    if (!invalidated) {
+    if (!invalidated.ok) {
       return c.json({ error: 'Not found' }, 404)
+    }
+
+    // Actively disconnect bound daemons — revoke alone leaves live sockets and
+    // unexpired JWTs usable until they naturally expire.
+    for (const serverId of invalidated.serverIds) {
+      try {
+        await registry.getCell(serverId).purge()
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.error(
+          `Failed to purge daemon cell after license invalidate for server ${serverId}: ${message}`,
+        )
+      }
     }
 
     return c.json({ ok: true as const })

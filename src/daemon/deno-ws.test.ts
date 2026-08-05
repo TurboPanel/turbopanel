@@ -52,9 +52,19 @@ function createSelectChain<T>(getRows: () => T[]) {
   return { from };
 }
 
-function createMockDb(): Db {
+function createMockDb(keyId = "key-test"): Db {
   return {
-    select: () => createSelectChain(() => []),
+    select: () =>
+      createSelectChain(() => [{
+        daemon: {
+          key: { ...baseDaemonKey, id: keyId },
+        },
+        metadata: null,
+        hostname: null,
+        machineKey: null,
+        connected: true,
+        statusChangedAt: "2020-01-01T00:00:00.000Z",
+      }]),
     update: () => ({
       set: () => ({
         where: () => Promise.resolve(undefined),
@@ -64,7 +74,7 @@ function createMockDb(): Db {
 }
 
 const baseDaemonKey = {
-  id: "key-1",
+  id: "key-test",
   algorithm: "Ed25519" as const,
   publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
   fingerprint: "fp-1",
@@ -471,6 +481,59 @@ it("over-limit inbound messages close websocket before unbounded queuing", async
   const inboundBefore = tracking.calls.recordInbound;
   ws.send(JSON.stringify({ type: "heartbeat", at }));
   await new Promise((resolve) => setTimeout(resolve, 50));
+  assertEquals(tracking.calls.recordInbound, inboundBefore);
+});
+
+it("oversized inbound frames close websocket with policy violation", async () => {
+  const app = new Hono();
+  const secrets = await createDaemonJwtSecrets();
+  const tracking = createTrackingDaemonCell("srv-oversize");
+  registerDaemonWebSocket(app, {
+    secrets,
+    db: createMockDb(),
+    daemonCellRegistry: createTrackingRegistry(tracking.cell),
+  });
+
+  const issued = await issueDaemonJwt(
+    { sub: "srv-oversize", kid: "key-test" },
+    secrets,
+  );
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${issued.token}`,
+      ...WS_UPGRADE_HEADERS,
+    },
+  });
+  if (response.status !== 101 || !response.webSocket) {
+    console.warn("Skipping oversize frame test: response.webSocket unavailable");
+    return;
+  }
+
+  const ws = response.webSocket;
+  ws.accept();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  let closeCode: number | undefined;
+  let closeReason: string | undefined;
+  ws.addEventListener("close", (event) => {
+    closeCode = event.code;
+    closeReason = event.reason;
+  });
+
+  const inboundBefore = tracking.calls.recordInbound;
+  const padding = "x".repeat(260 * 1024);
+  ws.send(
+    JSON.stringify({
+      type: "heartbeat",
+      at: new Date().toISOString(),
+      pad: padding,
+    }),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assertEquals(closeCode, 1008);
+  assertEquals(closeReason, "policy_violation");
   assertEquals(tracking.calls.recordInbound, inboundBefore);
 });
 

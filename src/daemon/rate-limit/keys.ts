@@ -4,6 +4,7 @@
  * Anonymous enrollment challenges (`POST /auth/challenge` with no serverId/keyId)
  * use {@link DAEMON_ENROLL_CHALLENGE_RATE_LIMIT_ID} via
  * {@link daemonEnrollChallengeRateLimitKey}.
+ * Metrics uses a dedicated limiter + {@link daemonMetricsRateLimitKey}.
  */
 
 export type DaemonRestRateLimitRoute =
@@ -11,8 +12,7 @@ export type DaemonRestRateLimitRoute =
   | "enroll"
   | "auth-session"
   | "commands-lease"
-  | "secrets-decrypt"
-  | "metrics";
+  | "secrets-decrypt";
 
 /** Sentinel id for anonymous enrollment-challenge REST limiting (no serverId). */
 export const DAEMON_ENROLL_CHALLENGE_RATE_LIMIT_ID = "enroll-challenge";
@@ -26,6 +26,11 @@ export function daemonRestRateLimitKey(
   route: DaemonRestRateLimitRoute,
 ): string {
   return `daemon:rest:${route}:${id}`;
+}
+
+/** Per-server key for `POST /metrics` (dedicated metrics limiter). */
+export function daemonMetricsRateLimitKey(serverId: string): string {
+  return `daemon:metrics:${serverId}`;
 }
 
 /** Global key for empty-body / enrollment-style `POST /auth/challenge`. */

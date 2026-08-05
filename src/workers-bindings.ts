@@ -8,7 +8,10 @@ import { createHyperdriveQueryCache } from './query-cache/hyperdrive-query-cache
 import { createPassthroughQueryCache } from './query-cache/passthrough-query-cache.ts'
 import type { QueryCache } from './query-cache/contracts.ts'
 import type { RateLimiter } from './daemon/rate-limit/contracts.ts'
-import { createNoopRateLimiter } from './daemon/rate-limit/contracts.ts'
+import {
+  createFailClosedRateLimiter,
+  createNoopRateLimiter,
+} from './daemon/rate-limit/contracts.ts'
 import { createWorkersRateLimiter } from './daemon/rate-limit/workers-rate-limiter.ts'
 import {
   type AuthRateLimiter,
@@ -146,20 +149,36 @@ export async function closeWorkersRequestDb(
 }
 
 /**
- * Resolve Workers Rate Limit bindings for daemon WS-upgrade and REST surfaces.
- * Missing bindings yield noops so route code stays runtime-agnostic (Deno/tests).
+ * Resolve Workers Rate Limit bindings for daemon WS-upgrade, REST, and metrics.
+ *
+ * - Binding present → durable limiter over the Cloudflare `RateLimit` binding.
+ * - Binding absent on a **dev** surface / tests → noop (routes stay usable).
+ * - Binding absent on **production-like** Workers → fail-closed (429) so a
+ *   misconfigured deploy cannot silently run unrestricted.
  */
 export function resolveWorkersDaemonRateLimiters(
   env: CloudflareBindings,
-): { connect: RateLimiter; rest: RateLimiter } {
+): { connect: RateLimiter; rest: RateLimiter; metrics: RateLimiter } {
+  const allowNoop = isWorkersDevSurface(env)
   return {
-    connect: env.DAEMON_CONNECT_RATE_LIMITER
-      ? createWorkersRateLimiter(env.DAEMON_CONNECT_RATE_LIMITER)
-      : createNoopRateLimiter(),
-    rest: env.DAEMON_REST_RATE_LIMITER
-      ? createWorkersRateLimiter(env.DAEMON_REST_RATE_LIMITER)
-      : createNoopRateLimiter(),
+    connect: resolveDaemonLimiterBinding(
+      env.DAEMON_CONNECT_RATE_LIMITER,
+      allowNoop,
+    ),
+    rest: resolveDaemonLimiterBinding(env.DAEMON_REST_RATE_LIMITER, allowNoop),
+    metrics: resolveDaemonLimiterBinding(
+      env.DAEMON_METRICS_RATE_LIMITER,
+      allowNoop,
+    ),
   }
+}
+
+function resolveDaemonLimiterBinding(
+  binding: { limit(options: { key: string }): Promise<{ success: boolean }> } | undefined,
+  allowNoop: boolean,
+): RateLimiter {
+  if (binding) return createWorkersRateLimiter(binding)
+  return allowNoop ? createNoopRateLimiter() : createFailClosedRateLimiter()
 }
 
 /**
@@ -210,15 +229,22 @@ export function warnIfCachedHyperdriveMissing(env: CloudflareBindings): void {
 
 /**
  * Warn once when production-like Workers env is missing daemon rate-limit bindings.
+ * Missing bindings fail closed (429); the warning explains why traffic is denied.
  */
 export function warnIfDaemonRateLimitersMissing(env: CloudflareBindings): void {
   if (daemonRateLimiterWarningLogged) return
-  if (env.DAEMON_CONNECT_RATE_LIMITER && env.DAEMON_REST_RATE_LIMITER) return
+  if (
+    env.DAEMON_CONNECT_RATE_LIMITER &&
+    env.DAEMON_REST_RATE_LIMITER &&
+    env.DAEMON_METRICS_RATE_LIMITER
+  ) {
+    return
+  }
   if (isWorkersDevSurface(env)) return
 
   daemonRateLimiterWarningLogged = true
   console.warn(
-    'DAEMON_CONNECT_RATE_LIMITER / DAEMON_REST_RATE_LIMITER binding(s) missing; daemon rate limits are noops.',
+    'DAEMON_CONNECT_RATE_LIMITER / DAEMON_REST_RATE_LIMITER / DAEMON_METRICS_RATE_LIMITER binding(s) missing; daemon rate limits fail closed (429) until bound.',
   )
 }
 

@@ -2749,6 +2749,46 @@ describe("command-dispatch correlation", () => {
     };
     expect(diagAfter.storageWrites).toBe(diagBefore.storageWrites);
   }, 15_000);
+
+  it("closes websocket on oversized inbound frames before storage work", async () => {
+    const serverId = "test-srv-inbound-oversize-frame";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const { ws } = await openDaemonWebSocket(stub, serverId);
+
+    const closePromise = new Promise<{ code: number; reason: string }>(
+      (resolve) => {
+        ws.addEventListener("close", (event) => {
+          resolve({ code: event.code, reason: event.reason });
+        });
+      },
+    );
+
+    const diagBeforeResponse = await cellRpc(stub, serverId, "/rpc/diagnostics", {
+      method: "GET",
+    });
+    const diagBefore = await diagBeforeResponse.json() as {
+      storageWrites: number;
+    };
+
+    const padding = "x".repeat(260 * 1024);
+    ws.send(JSON.stringify({
+      type: "heartbeat",
+      at: new Date().toISOString(),
+      pad: padding,
+    }));
+
+    const closed = await closePromise;
+    expect(closed.code).toBe(1008);
+    expect(closed.reason).toBe("policy_violation");
+
+    const diagAfterResponse = await cellRpc(stub, serverId, "/rpc/diagnostics", {
+      method: "GET",
+    });
+    const diagAfter = await diagAfterResponse.json() as {
+      storageWrites: number;
+    };
+    expect(diagAfter.storageWrites).toBe(diagBefore.storageWrites);
+  }, 15_000);
 });
 
 function wsSendCommandOutcome(ws: WebSocket, requestId: string): void {

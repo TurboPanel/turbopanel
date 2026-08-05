@@ -56,8 +56,11 @@ import {
   DAEMON_CELL_PING,
   DAEMON_CELL_PONG,
   DAEMON_OFFLINE_SWEEP_MS,
+  DAEMON_WS_POLICY_VIOLATION_CLOSE,
   outboundEnvelopeToWireMessage,
   parseDaemonMessage,
+  validateDaemonInboundEnvelope,
+  validateDaemonInboundFrame,
   wireMessageToInboundEnvelope,
 } from "./protocol.ts";
 
@@ -1695,8 +1698,17 @@ export class DaemonCellObject {
       ? message
       : new TextDecoder().decode(message);
 
-    const parsed = parseDaemonMessage(raw);
-    if (!parsed) return;
+    const validated = validateDaemonInboundFrame(raw);
+    if (!validated.ok) {
+      this.#trace("inbound-rejected", {
+        serverId: attachment.serverId,
+        conn: attachment.connectionId,
+        reason: validated.reason,
+      });
+      ws.close(DAEMON_WS_POLICY_VIOLATION_CLOSE, "policy_violation");
+      return;
+    }
+    const parsed = validated.message;
 
     this.#trace("inbound", {
       serverId: attachment.serverId,
@@ -2456,6 +2468,15 @@ export class DaemonCellObject {
     if (!msg) return;
     const inbound = wireMessageToInboundEnvelope(msg);
     if (!inbound) return;
+    const envelopeOk = validateDaemonInboundEnvelope(inbound);
+    if (!envelopeOk.ok) {
+      this.#trace("inbound-envelope-rejected", {
+        serverId,
+        reason: envelopeOk.reason,
+        kind: inbound.kind,
+      });
+      return;
+    }
     await this.#handleInbound(serverId, inbound);
   }
 

@@ -17,6 +17,13 @@ export const DEFAULT_DAEMON_CONNECT_RATE_PERIOD_SECONDS = 60
 export const DEFAULT_DAEMON_REST_RATE_LIMIT = 30
 export const DEFAULT_DAEMON_REST_RATE_PERIOD_SECONDS = 60
 
+/**
+ * Defaults match Wrangler `DAEMON_METRICS_RATE_LIMITER` (`{ limit: 3, period: 60 }`).
+ * Daemons send ~1 sample/min; the small burst covers reconnect/retry jitter.
+ */
+export const DEFAULT_DAEMON_METRICS_RATE_LIMIT = 3
+export const DEFAULT_DAEMON_METRICS_RATE_PERIOD_SECONDS = 60
+
 const MIN_BUCKET_TTL_MS = 1_000
 
 function parsePositiveIntEnv(
@@ -55,6 +62,21 @@ export function resolveDaemonRestRateLimit(env: {
     periodSeconds: parsePositiveIntEnv(
       env.get('TURBOPANEL_DAEMON_REST_RATE_PERIOD'),
       DEFAULT_DAEMON_REST_RATE_PERIOD_SECONDS,
+    ),
+  }
+}
+
+export function resolveDaemonMetricsRateLimit(env: {
+  get(key: string): string | undefined
+} = Deno.env): { limit: number; periodSeconds: number } {
+  return {
+    limit: parsePositiveIntEnv(
+      env.get('TURBOPANEL_DAEMON_METRICS_RATE_LIMIT'),
+      DEFAULT_DAEMON_METRICS_RATE_LIMIT,
+    ),
+    periodSeconds: parsePositiveIntEnv(
+      env.get('TURBOPANEL_DAEMON_METRICS_RATE_PERIOD'),
+      DEFAULT_DAEMON_METRICS_RATE_PERIOD_SECONDS,
     ),
   }
 }

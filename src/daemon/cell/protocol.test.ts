@@ -5,8 +5,12 @@ import {
   DAEMON_INBOUND_ALLOWED,
   generateDeliveryId,
   generateRequestId,
+  MAX_DAEMON_WS_FRAME_BYTES,
+  MAX_DAEMON_WS_LOGS_CHARS,
   outboundEnvelopeToWireMessage,
   parseDaemonMessage,
+  validateDaemonInboundEnvelope,
+  validateDaemonInboundFrame,
   wireMessageToInboundEnvelope,
 } from "./protocol.ts";
 
@@ -27,6 +31,73 @@ it('parseDaemonMessage round-trips valid JSON', () => {
 
 it("parseDaemonMessage returns null for invalid JSON", () => {
   assertEquals(parseDaemonMessage("not-json"), null);
+});
+
+it("validateDaemonInboundFrame accepts a valid heartbeat", () => {
+  const raw = JSON.stringify({
+    type: "heartbeat",
+    at: "2020-01-01T00:00:00.000Z",
+  });
+  const result = validateDaemonInboundFrame(raw);
+  assertEquals(result.ok, true);
+});
+
+it("validateDaemonInboundFrame rejects oversized frames", () => {
+  const padding = "x".repeat(MAX_DAEMON_WS_FRAME_BYTES);
+  const raw = `{"type":"heartbeat","at":"2020-01-01T00:00:00.000Z","pad":"${padding}"}`;
+  const result = validateDaemonInboundFrame(raw);
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.reason, "frame exceeds max size");
+  }
+});
+
+it("validateDaemonInboundFrame rejects disallowed types", () => {
+  const result = validateDaemonInboundFrame(
+    JSON.stringify({ type: "echo", at: "2020-01-01T00:00:00.000Z", payload: 1 }),
+  );
+  assertEquals(result.ok, false);
+});
+
+it("validateDaemonInboundFrame rejects oversized managed logs", () => {
+  const result = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: "managed-logs-result",
+      id: "req-1",
+      at: "2020-01-01T00:00:00.000Z",
+      logs: "x".repeat(MAX_DAEMON_WS_LOGS_CHARS + 1),
+    }),
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.reason, "logs exceed max length");
+  }
+});
+
+it("validateDaemonInboundEnvelope rejects oversized command results", () => {
+  const result = validateDaemonInboundEnvelope({
+    kind: "command-outcome",
+    requestId: "req-1",
+    at: "2020-01-01T00:00:00.000Z",
+    ok: true,
+    result: { blob: "x".repeat(70 * 1024) },
+  });
+  assertEquals(result.ok, false);
+});
+
+it("validateDaemonInboundEnvelope accepts a valid addresses result", () => {
+  const result = validateDaemonInboundEnvelope({
+    kind: "addresses-result",
+    requestId: "req-1",
+    at: "2020-01-01T00:00:00.000Z",
+    addresses: {
+      privateIpv4: [],
+      privateIpv6: [],
+      publicIpv4: [TEST_PUBLIC_IPV4],
+      publicIpv6: [],
+    },
+  });
+  assertEquals(result, { ok: true });
 });
 
 it("wireMessageToInboundEnvelope maps inbound wire types", () => {

@@ -1525,6 +1525,19 @@ test(
 );
 
 test(
+  "handleInbound rejects oversized envelopes before Redis persistence",
+  withRedisCell(async ({ cell }) => {
+    const record = await cell.handleInbound({
+      kind: "managed-logs-result",
+      requestId: "req-oversize-logs",
+      at: new Date().toISOString(),
+      logs: "x".repeat(200 * 1024 + 1),
+    });
+    assertEquals(record, null);
+  }),
+);
+
+test(
   "purge deletes historical connection hashes after reconnect",
   withRedisCell(async ({ cell, client, serverId }) => {
     const first = await cell.attachDaemonSocket({

@@ -15,11 +15,15 @@ import { getDatabaseUrl } from "../db-url.ts";
 import { createDenoDb } from "../db.ts";
 import { organization, license, server } from "../lib/db/schema.ts";
 import {
+  MAX_AUTH_CHALLENGE_BODY_BYTES,
+  MAX_AUTH_SESSION_BODY_BYTES,
+  MAX_ENROLL_BODY_BYTES,
   MAX_SECRETS_DECRYPT_BATCH,
   MAX_SECRETS_DECRYPT_BODY_BYTES,
   MAX_SECRETS_DECRYPT_CIPHERTEXT_CHARS,
   registerDaemonApiRoutes,
 } from "./api-routes.ts";
+import { MAX_METRICS_PAYLOAD_BYTES } from "./metrics/validation.ts";
 import type {
   DaemonCell,
   DaemonCellRegistry,
@@ -1183,7 +1187,10 @@ test("invalidateLicense revokes daemon keys on bound servers", async () => {
         licenseId,
         organizationId,
       );
-      assertEquals(invalidated, true);
+      assertEquals(invalidated.ok, true);
+      if (invalidated.ok) {
+        assertEquals(invalidated.serverIds, [serverId]);
+      }
 
       const [row] = await db
         .select({ daemon: server.daemon })
@@ -1748,6 +1755,9 @@ async function createMetricsTestApp(options: {
   restLimiter?: {
     limit: (input: { key: string }) => Promise<{ success: boolean }>;
   };
+  metricsLimiter?: {
+    limit: (input: { key: string }) => Promise<{ success: boolean }>;
+  };
 } = {}): Promise<{
   app: Hono<AppEnv>;
   writes: AuthenticatedHostMetricsSample[];
@@ -1810,6 +1820,7 @@ async function createMetricsTestApp(options: {
     challengeSigningSecrets,
     secretsConfig,
     restLimiter: options.restLimiter,
+    metricsLimiter: options.metricsLimiter,
   });
   return { app, writes };
 }
@@ -1864,9 +1875,9 @@ test("POST /metrics returns 401 without JWT", async () => {
   assertEquals(writes.length, 0);
 });
 
-test("POST /metrics returns 429 when restLimiter denies with valid JWT", async () => {
+test("POST /metrics returns 429 when metricsLimiter denies with valid JWT", async () => {
   const { app, writes } = await createMetricsTestApp({
-    restLimiter: {
+    metricsLimiter: {
       limit: async () => ({ success: false }),
     },
   });
@@ -1902,4 +1913,138 @@ test("POST /metrics ignores body-supplied serverId", async () => {
   assertEquals(response.status, 202);
   assertEquals(writes.length, 1);
   assertEquals(writes[0]?.serverId, serverId);
+});
+
+test("POST /metrics rejects an oversized request body", async () => {
+  const { app, writes } = await createMetricsTestApp();
+  const daemonToken = await issueDaemonToken(
+    "srv-metrics-big",
+    "key-metrics-big",
+  );
+  const oversized = "x".repeat(MAX_METRICS_PAYLOAD_BYTES + 64);
+  const response = await app.request("/api/daemon/v1/metrics", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${daemonToken}`,
+      "Content-Type": "application/json",
+      "Content-Length": String(oversized.length),
+    },
+    body: oversized,
+  });
+  assertEquals(response.status, 413);
+  assertEquals(writes.length, 0);
+});
+
+test("POST /auth/challenge rejects an oversized request body", async () => {
+  const app = await createDecryptTestApp();
+  const oversized = "x".repeat(MAX_AUTH_CHALLENGE_BODY_BYTES + 64);
+  const response = await app.request("/api/daemon/v1/auth/challenge", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Content-Length": String(oversized.length),
+    },
+    body: oversized,
+  });
+  assertEquals(response.status, 413);
+});
+
+test("POST /enroll rejects an oversized request body", async () => {
+  await withEnrollFixture(async ({ app }) => {
+    const oversized = "x".repeat(MAX_ENROLL_BODY_BYTES + 64);
+    const response = await app.request("/api/daemon/v1/enroll", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": String(oversized.length),
+      },
+      body: oversized,
+    });
+    assertEquals(response.status, 413);
+  });
+});
+
+test("POST /auth/session rejects an oversized request body", async () => {
+  await withEnrollFixture(async ({ app }) => {
+    const oversized = "x".repeat(MAX_AUTH_SESSION_BODY_BYTES + 64);
+    const response = await app.request("/api/daemon/v1/auth/session", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": String(oversized.length),
+      },
+      body: oversized,
+    });
+    assertEquals(response.status, 413);
+  });
+});
+
+test("POST /metrics rejects JWT after license invalidation", async () => {
+  await withEnrollFixture(
+    async ({ app, db, organizationId, licenseId, serverId, keyId }) => {
+      const daemonToken = await issueDaemonToken(serverId, keyId);
+      const before = await app.request("/api/daemon/v1/metrics", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${daemonToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(buildValidMetricsFrame()),
+      });
+      assertEquals(before.status, 202);
+
+      const invalidated = await invalidateLicense(
+        db,
+        licenseId,
+        organizationId,
+      );
+      assertEquals(invalidated.ok, true);
+
+      const after = await app.request("/api/daemon/v1/metrics", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${daemonToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(buildValidMetricsFrame()),
+      });
+      assertEquals(after.status, 401);
+    },
+  );
+});
+
+test("POST /secrets/decrypt rejects JWT after license invalidation", async () => {
+  await withEnrollFixture(
+    async ({ app, db, organizationId, licenseId, serverId, keyId }) => {
+      const secretsConfig = createTestSecretsConfig();
+      const sealed = await encryptSecretForDaemon(
+        secretsConfig,
+        { serverId, keyId },
+        "post-revoke-secret",
+      );
+      const daemonToken = await issueDaemonToken(serverId, keyId);
+
+      const before = await app.request("/api/daemon/v1/secrets/decrypt", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${daemonToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ ciphertexts: [sealed] }),
+      });
+      assertEquals(before.status, 200);
+
+      await invalidateLicense(db, licenseId, organizationId);
+
+      const after = await app.request("/api/daemon/v1/secrets/decrypt", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${daemonToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ ciphertexts: [sealed] }),
+      });
+      assertEquals(after.status, 401);
+    },
+  );
 });

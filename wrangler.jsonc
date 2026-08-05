@@ -55,7 +55,7 @@
       }
     ]
   },
-  // Daemon WS-upgrade / REST rate limits — distinct namespace_ids per env (account-global counters).
+  // Daemon WS-upgrade / REST / metrics rate limits — distinct namespace_ids per env (account-global counters).
   "ratelimits": [
     {
       "name": "DAEMON_CONNECT_RATE_LIMITER",
@@ -72,6 +72,12 @@
       "name": "CLIENT_AUTH_RATE_LIMITER",
       "namespace_id": "1003",
       "simple": { "limit": 10, "period": 60 }
+    },
+    {
+      // Host-metrics ingest (~1 sample/min/server) with small reconnect burst.
+      "name": "DAEMON_METRICS_RATE_LIMITER",
+      "namespace_id": "1004",
+      "simple": { "limit": 3, "period": 60 }
     }
   ],
   // Offline sweep (see src/daemon/cell/offline-sweep.ts) — 1 minute is Cloudflare's
@@ -137,6 +143,11 @@
           "name": "CLIENT_AUTH_RATE_LIMITER",
           "namespace_id": "2003",
           "simple": { "limit": 10, "period": 60 }
+        },
+        {
+          "name": "DAEMON_METRICS_RATE_LIMITER",
+          "namespace_id": "2004",
+          "simple": { "limit": 3, "period": 60 }
         }
       ],
       "triggers": { "crons": ["* * * * *"] },
@@ -212,6 +223,11 @@
           "name": "CLIENT_AUTH_RATE_LIMITER",
           "namespace_id": "3003",
           "simple": { "limit": 10, "period": 60 }
+        },
+        {
+          "name": "DAEMON_METRICS_RATE_LIMITER",
+          "namespace_id": "3004",
+          "simple": { "limit": 3, "period": 60 }
         }
       ],
       "triggers": { "crons": ["* * * * *"] },

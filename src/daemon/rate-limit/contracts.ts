@@ -15,3 +15,16 @@ export function createNoopRateLimiter(): RateLimiter {
     },
   }
 }
+
+/**
+ * Always denies. Used as the Workers production safety net when a daemon
+ * `RateLimit` binding is missing — requests fail closed (429) rather than
+ * silently degrading to an unrestricted noop.
+ */
+export function createFailClosedRateLimiter(): RateLimiter {
+  return {
+    async limit(_args: { key: string }): Promise<{ success: boolean }> {
+      return { success: false }
+    },
+  }
+}
