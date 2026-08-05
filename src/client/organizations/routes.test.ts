@@ -303,3 +303,48 @@ test('PUT /organizations/:id/default-environment forbids non-managers', async ()
     { withManageGrant: false },
   )
 })
+
+test('POST /organizations creates an org owned by the signed-in user', async () => {
+  await withOrgFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request('/organizations', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ displayName: 'Second Organization' }),
+    })
+    assertEquals(res.status, 200)
+    const body = await res.json() as { ok: true; id: string }
+    assertEquals(body.ok, true)
+    assertEquals(typeof body.id, 'string')
+
+    const listRes = await app.request('/organizations', {
+      headers: { Cookie: cookie },
+    })
+    assertEquals(listRes.status, 200)
+    const listBody = await listRes.json() as {
+      organizations: Array<{ id: string; displayName: string | null }>
+    }
+    const ids = listBody.organizations.map((org) => org.id)
+    assertEquals(ids.includes(organizationId), true)
+    assertEquals(ids.includes(body.id), true)
+
+    const ownerGrant = await db
+      .select({ id: grant.id })
+      .from(grant)
+      .where(
+        and(
+          eq(grant.entityType, 'organization'),
+          eq(grant.entityId, body.id),
+          eq(grant.actorType, 'user'),
+          eq(grant.actorId, userId),
+          eq(grant.permission, 'organization:own'),
+          eq(grant.allow, true),
+        ),
+      )
+      .limit(1)
+    assertEquals(ownerGrant.length, 1)
+  })
+})

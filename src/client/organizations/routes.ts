@@ -3,9 +3,15 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
+import { createOrganizationForUser } from '../authn/install-state.ts'
 import { assertOrgOwnerOr403 } from '../authz/index.ts'
 import { listAccessibleOrganizations } from '../org-context.ts'
-import { assertCanManageOr403, parseJsonBody } from '../shared.ts'
+import {
+  assertCanManageOr403,
+  BadRequestError,
+  parseDisplayName,
+  parseJsonBody,
+} from '../shared.ts'
 import { getDb } from '../../db.ts'
 import { organization } from '../../lib/db/schema.ts'
 import {
@@ -32,6 +38,41 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
 
     const organizations = await listAccessibleOrganizations(db, session.userId)
     return c.json({ organizations })
+  })
+
+  router.post('/organizations', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+
+    let displayName: string
+    try {
+      const parsed = parseDisplayName({
+        displayName:
+          typeof body.displayName === 'string'
+            ? body.displayName
+            : 'New Organization',
+      })
+      displayName = parsed ?? 'New Organization'
+    } catch (error) {
+      if (error instanceof BadRequestError) {
+        return c.json({ error: 'Invalid request' }, 400)
+      }
+      throw error
+    }
+
+    const { organizationId } = await createOrganizationForUser(
+      db,
+      session.userId,
+      displayName,
+    )
+
+    return c.json({ ok: true as const, id: organizationId })
   })
 
   router.get('/organizations/:id/default-timezone', async (c) => {
