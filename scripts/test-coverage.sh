@@ -1,6 +1,6 @@
 #!/bin/sh
 # Run Vitest (workers pool, Istanbul coverage) + Deno suites (V8 coverage),
-# then write two LCOV reports for SonarCloud to merge.
+# then merge into coverage/lcov.info for SonarCloud.
 #
 # Vitest runs under @cloudflare/vitest-pool-workers, which has no
 # `node:inspector` (so the default `v8` coverage provider cannot run inside
@@ -10,12 +10,13 @@
 # Durable-Object / Workers-only code that only these suites exercise (daemon
 # cell, admin routes, etc). That report is entirely separate from — and
 # covers largely different files than — the Deno LCOV below, so both paths
-# are passed to `sonar.javascript.lcov.reportPaths` (comma-separated) in
-# sonar-project.properties; Sonar merges per-file hit counts across reports
-# rather than us hand-merging LCOV text.
+# are merged into coverage/lcov.info for `sonar.javascript.lcov.reportPaths` in
+# sonar-project.properties (single repo-relative report — SonarCloud was only
+# reflecting Deno hits when two comma-separated paths were used).
 #
 # Usage: sh scripts/test-coverage.sh
-# Output: coverage/vitest/lcov.info, coverage/deno.lcov
+# Output: coverage/lcov.info (Vitest + Deno merged for SonarCloud), plus
+# coverage/vitest/lcov.info and coverage/deno.lcov for debugging.
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
@@ -32,6 +33,52 @@ if ! grep -q '^SF:' coverage/vitest/lcov.info; then
   exit 1
 fi
 
+workspace="${GITHUB_WORKSPACE:-$ROOT}"
+workspace="${workspace%/}"
+
+echo "==> Normalize Vitest LCOV SF paths"
+export LCOV_FILE=coverage/vitest/lcov.info
+export LCOV_WORKSPACE="$workspace"
+python3 - <<'PY'
+from pathlib import Path
+import os
+
+path = Path(os.environ["LCOV_FILE"])
+text = path.read_text()
+workspace = os.environ["LCOV_WORKSPACE"].rstrip("/")
+for prefix in (f"file://{workspace}/", f"{workspace}/"):
+    text = text.replace(f"SF:{prefix}", "SF:")
+path.write_text(text)
+PY
+
+if bad="$(grep -E '^SF:(/|file:)' coverage/vitest/lcov.info || true)" && [ -n "$bad" ]; then
+  echo "Vitest LCOV SF paths must be repo-relative after normalization" >&2
+  printf '%s\n' "$bad" | head -n 20
+  exit 1
+fi
+
+echo "==> Assert Workers/DO coverage in Vitest LCOV"
+python3 - <<'PY'
+import re
+import sys
+from pathlib import Path
+
+text = Path("coverage/vitest/lcov.info").read_text()
+checks = (
+    (r"SF:src/daemon/cell/do\.ts\n(?:.*\n)*?LH:(\d+)", 50, "do.ts"),
+    (r"SF:src/daemon/workers-ws\.ts\n(?:.*\n)*?LH:(\d+)", 10, "workers-ws.ts"),
+)
+for pattern, minimum, label in checks:
+    match = re.search(pattern, text)
+    hits = int(match.group(1)) if match else 0
+    if hits < minimum:
+        print(
+            f"Vitest LCOV missing expected {label} coverage (LH:{hits}, need >={minimum})",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+PY
+
 echo "==> Deno coverage profile"
 # Host-free Deno suites that feed Sonar LCOV (Vitest/workerd cannot emit V8
 # coverage). Keep this list lean: pure unit suites + the existing hook set.
@@ -41,7 +88,10 @@ deno test -A --coverage=coverage/deno-profile \
   --no-check \
   src/admin/reencrypt-secrets.test.ts \
   src/admin/routes.test.ts \
+  src/client/authn/auth-rate-limit-http.test.ts \
+  src/client/authn/auth-rate-limit.test.ts \
   src/client/authn/browser-write-protection.test.ts \
+  src/client/authn/credentials-pam.test.ts \
   src/client/authn/crypto.test.ts \
   src/client/authn/data-encryption.deno.test.ts \
   src/client/authn/email-otp.deno.test.ts \
@@ -50,18 +100,25 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/authn/password.deno.test.ts \
   src/client/authn/secrets.deno.test.ts \
   src/client/authn/signup-validation.deno.test.ts \
+  src/client/authn/verification-dev-logging.deno.test.ts \
   src/client/authn/workers-onboarding.test.ts \
   src/client/authz/ \
   src/client/display-name-uniqueness.test.ts \
+  src/client/environments/deploy-prepare.test.ts \
   src/client/environments/tcp-udp-ingress.test.ts \
   src/client/environments/validate-docker-external-networks.test.ts \
   src/client/hierarchy-delete.test.ts \
+  src/client/managed/allocate-managed-container.test.ts \
   src/client/managed/apply-prepare-pure.test.ts \
+  src/client/vpns/apply-prepare-pure.test.ts \
   src/client/managed/backups.test.ts \
   src/client/managed/context.test.ts \
   src/client/managed/logs.test.ts \
   src/client/managed/options.test.ts \
   src/client/managed/serialize.test.ts \
+  src/client/openapi/hostings.test.ts \
+  src/client/openapi/servers.test.ts \
+  src/client/openapi/system.test.ts \
   src/client/org-context-parse.test.ts \
   src/client/principals/assignments.test.ts \
   src/client/principals/serialize.test.ts \
@@ -69,6 +126,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/projects/catalog/scaffold.test.ts \
   src/client/projects/empty-setup.test.ts \
   src/client/servers/delete-guards.test.ts \
+  src/client/servers/update-status.test.ts \
   src/client/shared.test.ts \
   src/client/storage/serialize.test.ts \
   src/client/system/hierarchy.test.ts \
@@ -82,6 +140,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/authn/daemon-state.test.ts \
   src/daemon/authn/server-key.test.ts \
   src/daemon/cell/contracts.test.ts \
+  src/daemon/deno-ws.test.ts \
   src/daemon/cell/control-plane-monitor.test.ts \
   src/daemon/cell/fleet-presence.test.ts \
   src/daemon/cell/location.test.ts \
@@ -117,16 +176,19 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/rate-limit/redis-rate-limiter.test.ts \
   src/db-timeout.test.ts \
   src/db-url.test.ts \
+  src/db.test.ts \
   src/deno-compile-permissions.test.ts \
   src/dev-mode.deno.test.ts \
   src/developer/database-routes-shared.test.ts \
   src/developer/dev-sync-archive.deno.test.ts \
   src/developer/drizzle-studio-bind.test.ts \
   src/developer/local-console-auth.test.ts \
+  src/developer/system-routes.test.ts \
   src/drizzle-kit-config.test.ts \
   src/drizzle-studio-probe.test.ts \
   src/lib/amqp-default-url.test.ts \
   src/lib/commands/command-amqp-topology.test.ts \
+  src/lib/commands/deno-amqp-queue.test.ts \
   src/lib/commands/deploy-validation.test.ts \
   src/lib/commands/hostname.test.ts \
   src/lib/commands/ids.test.ts \
@@ -188,8 +250,7 @@ echo "==> Deno LCOV"
 deno coverage coverage/deno-profile --lcov --output=coverage/deno.lcov
 
 # Deno on Linux CI often emits absolute SF: paths; Sonar needs repo-relative.
-workspace="${GITHUB_WORKSPACE:-$ROOT}"
-workspace="${workspace%/}"
+echo "==> Normalize Deno LCOV SF paths"
 export LCOV_FILE=coverage/deno.lcov
 export LCOV_WORKSPACE="$workspace"
 python3 - <<'PY'
@@ -209,4 +270,127 @@ if ! grep -q '^SF:src/' coverage/deno.lcov; then
   exit 1
 fi
 
-echo "Coverage LCOV ready: coverage/vitest/lcov.info, coverage/deno.lcov"
+if bad="$(grep -E '^SF:(/|file:)' coverage/deno.lcov || true)" && [ -n "$bad" ]; then
+  echo "Deno LCOV SF paths must be repo-relative after normalization" >&2
+  printf '%s\n' "$bad" | head -n 20
+  exit 1
+fi
+
+echo "==> Merge Vitest + Deno LCOV for SonarCloud"
+python3 - <<'PY'
+from __future__ import annotations
+
+from collections import defaultdict
+from pathlib import Path
+
+
+def parse_records(path: Path) -> dict[str, list[str]]:
+    records: dict[str, list[str]] = {}
+    current_sf: str | None = None
+    current_lines: list[str] = []
+
+    def flush() -> None:
+        nonlocal current_sf, current_lines
+        if current_sf is None:
+            return
+        records[current_sf] = current_lines
+        current_sf = None
+        current_lines = []
+
+    for line in path.read_text().splitlines():
+        if line.startswith("SF:"):
+            flush()
+            current_sf = line[3:]
+            current_lines = [line]
+        elif current_sf is not None:
+            current_lines.append(line)
+            if line == "end_of_record":
+                flush()
+
+    flush()
+    return records
+
+
+def line_hits(record_lines: list[str]) -> dict[int, int]:
+    hits: dict[int, int] = {}
+    for line in record_lines:
+        if not line.startswith("DA:"):
+            continue
+        line_no, count = line[3:].split(",", 1)
+        hits[int(line_no)] = max(hits.get(int(line_no), 0), int(count))
+    return hits
+
+
+def branch_hits(record_lines: list[str]) -> dict[str, int]:
+    hits: dict[str, int] = {}
+    for line in record_lines:
+        if not line.startswith("BRDA:"):
+            continue
+        hits[line[5:]] = max(hits.get(line[5:], 0), int(line.rsplit(",", 1)[-1]))
+    return hits
+
+
+def merge_records(all_records: list[dict[str, list[str]]]) -> dict[str, list[str]]:
+    merged_lines: dict[str, list[str]] = defaultdict(list)
+    for records in all_records:
+        for sf, lines in records.items():
+            merged_lines[sf].append(lines)
+
+    output: dict[str, list[str]] = {}
+    for sf, record_groups in merged_lines.items():
+        line_hits_merged: dict[int, int] = {}
+        branch_hits_merged: dict[str, int] = {}
+        for lines in record_groups:
+            for line_no, count in line_hits(lines).items():
+                line_hits_merged[line_no] = max(line_hits_merged.get(line_no, 0), count)
+            for key, count in branch_hits(lines).items():
+                branch_hits_merged[key] = max(branch_hits_merged.get(key, 0), count)
+
+        body: list[str] = [f"SF:{sf}"]
+        for line in record_groups[0]:
+            if line.startswith(("SF:", "DA:", "LH:", "LF:", "BRDA:", "BRF:", "BRH:", "end_of_record")):
+                continue
+            body.append(line)
+
+        for line_no in sorted(line_hits_merged):
+            body.append(f"DA:{line_no},{line_hits_merged[line_no]}")
+        body.append(f"LF:{len(line_hits_merged)}")
+        body.append(f"LH:{sum(1 for count in line_hits_merged.values() if count > 0)}")
+
+        if branch_hits_merged:
+            for key in sorted(branch_hits_merged):
+                body.append(f"BRDA:{key},{branch_hits_merged[key]}")
+            body.append(f"BRF:{len(branch_hits_merged)}")
+            body.append(
+                f"BRH:{sum(1 for count in branch_hits_merged.values() if count > 0)}"
+            )
+
+        body.append("end_of_record")
+        output[sf] = body
+
+    return output
+
+
+sources = [
+    parse_records(Path("coverage/vitest/lcov.info")),
+    parse_records(Path("coverage/deno.lcov")),
+]
+merged = merge_records(sources)
+out_lines: list[str] = []
+for sf in sorted(merged):
+    out_lines.extend(merged[sf])
+Path("coverage/lcov.info").write_text("\n".join(out_lines) + "\n")
+PY
+
+if ! grep -q '^SF:src/daemon/cell/do.ts' coverage/lcov.info; then
+  echo "Merged LCOV expected SF:src/daemon/cell/do.ts" >&2
+  exit 1
+fi
+
+if bad="$(grep -E '^SF:(/|file:)' coverage/lcov.info || true)" && [ -n "$bad" ]; then
+  echo "Merged LCOV SF paths must be repo-relative" >&2
+  printf '%s\n' "$bad" | head -n 20
+  exit 1
+fi
+
+echo "Coverage LCOV ready: coverage/lcov.info (+ coverage/vitest/lcov.info, coverage/deno.lcov)"

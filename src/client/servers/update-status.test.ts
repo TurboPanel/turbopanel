@@ -1,7 +1,15 @@
 import { assertEquals } from "@std/assert";
 import { it } from "@std/testing/bdd";
 import type { PendingRequestRecord } from "../../daemon/cell/contracts.ts";
-import { resolveServerUpdateStatus } from "./update-status.ts";
+import type { ServerFleetPresence } from "../../daemon/cell/fleet-presence.ts";
+import { UPDATE_REQUEST_TTL_MS } from "../../lib/update/constants.ts";
+import {
+  buildServerStatusRecord,
+  colocatedServerUpdateBlockedReason,
+  COLOCATED_SERVER_UPDATE_BLOCKED_REASON,
+  isStaleProjectedUpdating,
+  resolveServerUpdateStatus,
+} from "./update-status.ts";
 
 function request(
   partial: Partial<PendingRequestRecord> & Pick<PendingRequestRecord, "status">,
@@ -308,4 +316,121 @@ it("resolveServerUpdateStatus ignores stale projected updating when daemon match
   assertEquals(resolved.status, "idle");
   assertEquals(resolved.updateAvailable, false);
   assertEquals(resolved.canResetUpdateStatus, true);
+});
+
+it("colocatedServerUpdateBlockedReason returns the stable operator copy", () => {
+  assertEquals(
+    colocatedServerUpdateBlockedReason(),
+    COLOCATED_SERVER_UPDATE_BLOCKED_REASON,
+  );
+});
+
+it("isStaleProjectedUpdating is false when projection is not updating", () => {
+  assertEquals(
+    isStaleProjectedUpdating({
+      projectedUpdate: { status: "idle" },
+      currentCommit: "aaa",
+      targetCommit: "bbb",
+    }),
+    false,
+  );
+  assertEquals(isStaleProjectedUpdating({}), false);
+});
+
+it("isStaleProjectedUpdating is true when current already matches target", () => {
+  assertEquals(
+    isStaleProjectedUpdating({
+      projectedUpdate: { status: "updating" },
+      currentCommit: "same",
+      targetCommit: "same",
+    }),
+    true,
+  );
+});
+
+it("isStaleProjectedUpdating is true when queuedAt exceeds TTL", () => {
+  const queuedAt = new Date(Date.now() - UPDATE_REQUEST_TTL_MS - 1_000)
+    .toISOString();
+  assertEquals(
+    isStaleProjectedUpdating({
+      projectedUpdate: { status: "updating", queuedAt },
+      updateTtlMs: UPDATE_REQUEST_TTL_MS,
+    }),
+    true,
+  );
+});
+
+it("isStaleProjectedUpdating stays false for a fresh in-flight update", () => {
+  assertEquals(
+    isStaleProjectedUpdating({
+      projectedUpdate: {
+        status: "updating",
+        queuedAt: new Date().toISOString(),
+      },
+      currentCommit: "aaa",
+      targetCommit: "bbb",
+      updateTtlMs: UPDATE_REQUEST_TTL_MS,
+    }),
+    false,
+  );
+});
+
+it("buildServerStatusRecord uses presence connectedAt while online", () => {
+  const presence: ServerFleetPresence = {
+    serverId: "srv-1",
+    connected: true,
+    hostname: "host.example",
+    machineKey: null,
+    remoteAddress: "203.0.113.10",
+    directAttach: false,
+    keyId: null,
+    connectedAt: "2026-01-01T00:00:00.000Z",
+    statusChangedAt: "2026-01-01T00:00:00.000Z",
+    lastInboundAt: null,
+    keyLastUsedAt: null,
+    geo: null,
+    os: null,
+    timeSync: null,
+    addresses: null,
+  };
+  const record = buildServerStatusRecord(presence, true, {
+    connected: true,
+    daemonStatus: "online",
+    statusChangedAt: "2026-01-01T00:00:00.000Z",
+  });
+
+  assertEquals(record.serverId, "srv-1");
+  assertEquals(record.connected, true);
+  assertEquals(record.daemonStatus, "online");
+  assertEquals(record.connectedAt, "2026-01-01T00:00:00.000Z");
+  assertEquals(record.hostname, "host.example");
+  assertEquals(record.remoteAddress, "203.0.113.10");
+  assertEquals(record.colocatedWithInstance, true);
+});
+
+it("buildServerStatusRecord clears connectedAt when offline and defaults status", () => {
+  const presence: ServerFleetPresence = {
+    serverId: "srv-2",
+    connected: false,
+    hostname: null,
+    machineKey: null,
+    remoteAddress: null,
+    directAttach: false,
+    keyId: null,
+    connectedAt: null,
+    statusChangedAt: "2026-02-01T00:00:00.000Z",
+    lastInboundAt: null,
+    keyLastUsedAt: null,
+    geo: null,
+    os: null,
+    timeSync: null,
+    addresses: null,
+  };
+  const record = buildServerStatusRecord(presence, false);
+
+  assertEquals(record.connected, false);
+  assertEquals(record.connectedAt, null);
+  assertEquals(record.daemonStatus, "unknown");
+  assertEquals(record.statusChangedAt, null);
+  assertEquals(record.colocatedWithInstance, false);
 });

@@ -133,7 +133,13 @@ async function createTestApp(env: CloudflareBindings) {
 
 describe("isDaemonDebugEnabled", () => {
   it("returns false for log-level debug alone", () => {
-    expect(isDaemonDebugEnabled({ TURBOPANEL_LOG_LEVEL: "debug" } as never)).toBe(false);
+    // Explicit empty daemon-debug binding — vitest miniflare defaults TURBOPANEL_DAEMON_DEBUG=1.
+    expect(
+      isDaemonDebugEnabled({
+        TURBOPANEL_LOG_LEVEL: "debug",
+        TURBOPANEL_DAEMON_DEBUG: "",
+      }),
+    ).toBe(false);
   });
 
   it("returns true only for TURBOPANEL_DAEMON_DEBUG", () => {
@@ -147,12 +153,16 @@ describe("developer diagnostics routes", () => {
   it("returns 404 for fleet diagnostics when only TURBOPANEL_LOG_LEVEL=debug is set", async () => {
     const app = await createTestApp(testEnv({
       TURBOPANEL_LOG_LEVEL: "debug",
+      TURBOPANEL_DAEMON_DEBUG: "0",
     }));
 
     const response = await app.request(
       `${DEVELOPER_API_PREFIX}/daemon/diagnostics`,
       {},
-      testEnv({ TURBOPANEL_LOG_LEVEL: "debug" }),
+      testEnv({
+        TURBOPANEL_LOG_LEVEL: "debug",
+        TURBOPANEL_DAEMON_DEBUG: "0",
+      }),
     );
 
     expect(response.status).toBe(404);
@@ -180,13 +190,17 @@ describe("developer diagnostics routes", () => {
   it("returns 404 for per-server diagnostics when only log level debug is set", async () => {
     const app = await createTestApp(testEnv({
       TURBOPANEL_LOG_LEVEL: "debug",
+      TURBOPANEL_DAEMON_DEBUG: "0",
     }));
     const serverId = "test-srv-diagnostics-gate";
 
     const response = await app.request(
       `${DEVELOPER_API_PREFIX}/daemon/${serverId}/cell/diagnostics`,
       {},
-      testEnv({ TURBOPANEL_LOG_LEVEL: "debug" }),
+      testEnv({
+        TURBOPANEL_LOG_LEVEL: "debug",
+        TURBOPANEL_DAEMON_DEBUG: "0",
+      }),
     );
 
     expect(response.status).toBe(404);

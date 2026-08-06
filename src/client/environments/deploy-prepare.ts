@@ -1472,3 +1472,24 @@ export async function resolveHostingBindAddress(
 }
 
 export { extractComposeFromOptions }
+
+/** Pure helpers exported for host-free unit coverage of prepare gates. */
+export {
+  absorbSoftPrepareError,
+  appendPlatformVariablesToEntries,
+  buildCloneNamesByServiceId,
+  buildExpandedServiceOptionsMap,
+  buildInstancesByComposeName,
+  buildServiceRowByCloneName,
+  documentForServiceOptions,
+  emptyComposePrepareResult,
+  evaluateHealthCheckGates,
+  expansionToRecord,
+  listComposeServiceKeys,
+  listContainerComposeNames,
+  resolveTraditionalWebSitesForMode,
+  resourceLimitPrepareError,
+  splitTraditionalWebFromDocument,
+  toPreparedDeployResult,
+  warningFromPrepareError,
+}

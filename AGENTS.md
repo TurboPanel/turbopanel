@@ -104,22 +104,24 @@ change. Future agents read `AGENTS.md` first.
   job — SonarCloud wizard layout) with `SONAR_TOKEN` and
   `sonar-project.properties` (`sonar.projectKey=turbopanel_turbopanel`,
   `sonar.organization=turbopanel`). The job runs checks + **`pnpm test:coverage`**
-  (`scripts/test-coverage.sh`), which produces **two** LCOV reports that Sonar
-  merges (comma-separated `sonar.javascript.lcov.reportPaths`, combined
-  per-file rather than one overwriting the other):
-  - `coverage/vitest/lcov.info` — the Workers-pool Vitest suites
-    (`vitest.config.ts` `test.include`), coverage provider **`istanbul`**.
-    The default `v8` provider cannot run inside workerd (no `node:inspector`),
-    but `@cloudflare/vitest-pool-workers` bridges Istanbul's instrumented
-    counters back out to the Node.js process after each test file, so
-    `vitest run --coverage` here is a real, non-zero report — **do not**
-    assume Vitest coverage is unavailable and skip wiring it in. This is the
-    *only* LCOV source for Durable-Object / admin / other Workers-only code
-    that no Deno suite ever imports (`src/daemon/cell/do.ts`,
-    `src/daemon/workers-ws.ts`, `src/admin/public-urls.ts`, …) — before this
-    was wired in, that code silently sat at 0% forever, no matter how much
-    Vitest test coverage it actually had.
-  - `coverage/deno.lcov` — the host-free Deno suites listed in
+  (`scripts/test-coverage.sh`), which merges Vitest Istanbul + Deno V8 LCOV into
+  a single **`coverage/lcov.info`** (`sonar.javascript.lcov.reportPaths=coverage/lcov.info`
+  in `sonar-project.properties` — **not** comma-separated dual paths; SonarCloud
+  effectively only imported Deno hits that way, so Workers/DO files showed 0%
+  despite real Istanbul coverage). Merge takes the **max** per-line DA hit count;
+  Vitest `SF:` paths are normalized repo-relative like Deno. The script asserts
+  non-zero Vitest hits for `src/daemon/cell/do.ts` and `src/daemon/workers-ws.ts`
+  before merge. Intermediate reports remain at `coverage/vitest/lcov.info` and
+  `coverage/deno.lcov` for debugging:
+  - **Vitest** (`coverage/vitest/lcov.info`) — Workers-pool suites
+    (`vitest.config.ts` `test.include`), provider **`istanbul`**. The default
+    `v8` provider cannot run inside workerd (no `node:inspector`), but
+    `@cloudflare/vitest-pool-workers` bridges Istanbul counters back to Node, so
+    `vitest run --coverage` is a real, non-zero report — **do not** assume Vitest
+    coverage is unavailable. This is the *only* LCOV source for Durable-Object /
+    admin / other Workers-only code that no Deno suite imports
+    (`src/daemon/cell/do.ts`, `src/daemon/workers-ws.ts`, `src/admin/public-urls.ts`, …).
+  - **Deno** (`coverage/deno.lcov`) — host-free Deno suites listed in
     `scripts/test-coverage.sh`, via `deno coverage --lcov` (native V8).
   Then the scan runs with `sonar.qualitygate.wait=true`; if the quality gate
   fails, the workflow stops.

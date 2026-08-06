@@ -40,6 +40,7 @@ export default defineConfig({
     include: [
       'src/daemon/workers-ws.test.ts',
       'src/daemon/durable-object.test.ts',
+      'src/developer/routes-core.test.ts',
       'src/developer/dev-sync-archive.test.ts',
       'src/lib/daemon-install-command.test.ts',
       'src/admin/public-urls.test.ts',
@@ -49,6 +50,9 @@ export default defineConfig({
       'src/client/authn/password.test.ts',
       'src/daemon/metrics/validation.test.ts',
       'mailer/rate-limiter.test.ts',
+      // Hyperdrive fresh-per-request / close guards (Istanbul covers workers-bindings.ts).
+      // Keep out of scripts/test-coverage.sh Deno LCOV — Workers-pool only.
+      'src/workers-bindings.test.ts',
     ],
     coverage: {
       // Istanbul instruments source at build time, so — unlike the default

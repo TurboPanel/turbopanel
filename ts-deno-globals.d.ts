@@ -170,3 +170,9 @@ declare module 'node:buffer' {
     static from(data: Uint8Array | readonly number[] | string): Buffer
   }
 }
+
+/** Vite/Vitest `?raw` imports — source text inlined for workerd scan guards. */
+declare module '*?raw' {
+  const source: string
+  export default source
+}

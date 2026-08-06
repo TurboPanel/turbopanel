@@ -84,6 +84,7 @@ jobs:
         with:
           name: instance-coverage-lcov
           path: |
+            coverage/lcov.info
             coverage/vitest/lcov.info
             coverage/deno.lcov
           if-no-files-found: error
