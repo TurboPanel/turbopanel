@@ -5,6 +5,7 @@ import {
   readManagedEngineOptions,
 } from '../../client/projects/catalog/index.ts'
 import {
+  getManagedBackupDescriptor,
   getManagedEngineSpec,
   isManagedEngineAvailable,
   listManagedEngineSpecs,
@@ -51,7 +52,16 @@ test('getManagedEngineSpec returns null for coming-soon codes', () => {
     }
   }
   assertEquals(getManagedEngineSpec('postgres')?.engine, 'postgres')
+  assertEquals(getManagedEngineSpec('not-an-engine'), null)
   assertEquals(listManagedEngineSpecs().map((s) => s.engine), ['postgres'])
+})
+
+test('getManagedBackupDescriptor returns postgres dump descriptor or null', () => {
+  const backup = getManagedBackupDescriptor('postgres')
+  if (!backup) throw new TypeError('expected postgres backup descriptor')
+  assertEquals(backup.artifactExtension, 'dump')
+  assertEquals(getManagedBackupDescriptor('mysql'), null)
+  assertEquals(getManagedBackupDescriptor('nope'), null)
 })
 
 test('catalog and spec agree for every code that has a spec', () => {

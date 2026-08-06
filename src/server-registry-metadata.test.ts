@@ -120,3 +120,47 @@ test('mergeServerMetadataIdentity ignores hostname/machineKey on the identity pa
   )
   assertEquals(merged, null)
 })
+
+test('mergeServerMetadataIdentity treats null/undefined current as empty base', () => {
+  const os = {
+    family: 'linux' as const,
+    id: 'debian',
+    version: '13',
+  }
+  assertEquals(mergeServerMetadataIdentity(null, { os }), { os })
+  assertEquals(mergeServerMetadataIdentity(undefined, { os }), { os })
+})
+
+test('mergeServerMetadataIdentity ignores invalid os and empty patches', () => {
+  assertEquals(
+    mergeServerMetadataIdentity(
+      { os: { family: 'linux', id: 'debian', version: '13' } },
+      { os: { family: 'not-a-family' } as never },
+    ),
+    null,
+  )
+  assertEquals(mergeServerMetadataIdentity({ geo: { country: 'US' } }, {}), null)
+})
+
+test('mergeServerMetadataIdentity deep-merges timeSync NTP fields', () => {
+  const merged = mergeServerMetadataIdentity(
+    {
+      timeSync: {
+        timezone: 'UTC',
+        ntpEnabled: true,
+        ntpServers: ['a.example'],
+        fallbackServers: ['b.example'],
+      },
+    },
+    {
+      timeSync: {
+        timezone: 'America/Chicago',
+        ntpEnabled: false,
+      },
+    },
+  )
+  assertEquals(merged?.timeSync?.timezone, 'America/Chicago')
+  assertEquals(merged?.timeSync?.ntpEnabled, false)
+  assertEquals(merged?.timeSync?.ntpServers, ['a.example'])
+  assertEquals(merged?.timeSync?.fallbackServers, ['b.example'])
+})

@@ -26,6 +26,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/authn/browser-write-protection.test.ts \
   src/client/authn/crypto.test.ts \
   src/client/authn/data-encryption.deno.test.ts \
+  src/client/authn/email-otp.deno.test.ts \
   src/client/authn/install-state.test.ts \
   src/client/authn/license-lifecycle.test.ts \
   src/client/authn/password.deno.test.ts \
@@ -34,8 +35,13 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/authn/workers-onboarding.test.ts \
   src/client/authz/ \
   src/client/display-name-uniqueness.test.ts \
+  src/client/environments/tcp-udp-ingress.test.ts \
   src/client/environments/validate-docker-external-networks.test.ts \
+  src/client/hierarchy-delete.test.ts \
+  src/client/managed/apply-prepare-pure.test.ts \
   src/client/managed/backups.test.ts \
+  src/client/managed/context.test.ts \
+  src/client/managed/logs.test.ts \
   src/client/managed/options.test.ts \
   src/client/managed/serialize.test.ts \
   src/client/org-context-parse.test.ts \
@@ -48,8 +54,13 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/shared.test.ts \
   src/client/storage/serialize.test.ts \
   src/client/system/hierarchy.test.ts \
+  src/client/system/operate.test.ts \
+  src/client/system/reconcile.test.ts \
   src/client/variables/resolve-inherited.test.ts \
+  src/cors.test.ts \
+  src/daemon/authn/challenge.test.ts \
   src/daemon/authn/daemon-jwt.test.ts \
+  src/daemon/authn/daemon-jwt-keyring.test.ts \
   src/daemon/authn/daemon-state.test.ts \
   src/daemon/authn/server-key.test.ts \
   src/daemon/cell/contracts.test.ts \
@@ -79,10 +90,15 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/metrics/query/uptime.test.ts \
   src/daemon/metrics/store-selection.test.ts \
   src/daemon/metrics/write-path-parity.test.ts \
+  src/daemon/openapi/ca.test.ts \
+  src/daemon/openapi/readiness.test.ts \
+  src/daemon/openapi/version.test.ts \
   src/daemon/rate-limit/contracts.test.ts \
   src/daemon/rate-limit/inbound-window.test.ts \
   src/daemon/rate-limit/keys.test.ts \
+  src/daemon/rate-limit/redis-rate-limiter.test.ts \
   src/db-timeout.test.ts \
+  src/db-url.test.ts \
   src/deno-compile-permissions.test.ts \
   src/dev-mode.deno.test.ts \
   src/developer/database-routes-shared.test.ts \
@@ -97,15 +113,19 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/commands/hostname.test.ts \
   src/lib/commands/ids.test.ts \
   src/lib/commands/noop-command-queue.test.ts \
+  src/lib/commands/queue.test.ts \
   src/lib/commands/schemas.test.ts \
   src/lib/commands/types.test.ts \
   src/lib/commands/wireguard.test.ts \
+  src/lib/commands/workers-queue.test.ts \
   src/lib/compose/ \
   src/lib/datacenter-metadata.test.ts \
   src/lib/datacenter-name-suggestions.test.ts \
   src/lib/datacenter-options.test.ts \
   src/lib/daemon-install-command.deno.test.ts \
+  src/lib/db/net-types.test.ts \
   src/lib/db/server-metadata.test.ts \
+  src/lib/db/workspace-kind.test.ts \
   src/lib/docker-network-name.test.ts \
   src/lib/email/noop-queue.test.ts \
   src/lib/email/smtp/amqp-topology.test.ts \
@@ -128,16 +148,22 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/resource-limits.test.ts \
   src/lib/server-capacity.test.ts \
   src/lib/service-options-instances.test.ts \
+  src/lib/settings/email-settings.deno.test.ts \
+  src/lib/settings/resolver.deno.test.ts \
   src/lib/timezones.test.ts \
   src/lib/tls/ \
   src/lib/update/manifest.test.ts \
   src/node-path.test.ts \
   src/query-cache/passthrough-query-cache.test.ts \
+  src/query-cache/read-models/server-detail.test.ts \
+  src/query-cache/read-models/servers-list.test.ts \
+  src/query-cache/redis-query-cache.test.ts \
   src/runtime-paths.test.ts \
   src/scalar-html.test.ts \
   src/server-paths.deno.test.ts \
   src/server-registry-metadata.test.ts \
   src/server-registry.test.ts \
+  src/surfaces.test.ts \
   src/wrangler-hyperdrive-bindings.test.ts
 
 echo "==> Deno LCOV"

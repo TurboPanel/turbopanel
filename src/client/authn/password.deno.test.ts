@@ -4,6 +4,8 @@ import {
   ARGON2ID_MEMORY_KIB,
   ARGON2ID_PARALLELISM,
   ARGON2ID_VERSION,
+  assertPasswordHasherAvailable,
+  configureArgon2idWorkFactor,
   getArgon2idPolicy,
   hashPassword,
   verifyPassword,
@@ -143,6 +145,90 @@ test("verifyPassword rejects wrong-algorithm tags and malformed hashes", async (
     await verifyPassword(
       "pw",
       `$argon2id$v=19$m=999999,t=2,p=1$${PHC_SALT_B64}$${PHC_DIGEST_B64}`,
+    ),
+    false,
+  );
+});
+
+test("configureArgon2idWorkFactor is raise-only and clamps to verification caps", () => {
+  configureArgon2idWorkFactor({ memoryKib: null, timeCost: null });
+  assertEquals(getArgon2idPolicy(), {
+    memoryKib: ARGON2ID_MEMORY_KIB,
+    iterations: ARGON2ID_ITERATIONS,
+    parallelism: ARGON2ID_PARALLELISM,
+    version: ARGON2ID_VERSION,
+  });
+
+  configureArgon2idWorkFactor({ memoryKib: "abc", timeCost: "1" });
+  assertEquals(getArgon2idPolicy().memoryKib, ARGON2ID_MEMORY_KIB);
+  assertEquals(getArgon2idPolicy().iterations, ARGON2ID_ITERATIONS);
+
+  configureArgon2idWorkFactor({
+    memoryKib: String(ARGON2ID_MEMORY_KIB + 1024),
+    timeCost: "4",
+  });
+  assertEquals(getArgon2idPolicy().memoryKib, ARGON2ID_MEMORY_KIB + 1024);
+  assertEquals(getArgon2idPolicy().iterations, 4);
+
+  configureArgon2idWorkFactor({ memoryKib: "999999", timeCost: "99" });
+  assertEquals(getArgon2idPolicy().memoryKib, 65_536);
+  assertEquals(getArgon2idPolicy().iterations, 16);
+
+  configureArgon2idWorkFactor({ memoryKib: null, timeCost: null });
+});
+
+test("assertPasswordHasherAvailable completes the hash+verify self-test", async () => {
+  configureArgon2idWorkFactor({ memoryKib: null, timeCost: null });
+  await assertPasswordHasherAvailable();
+});
+
+test("verifyPassword rejects additional malformed PHC branches", async () => {
+  assertEquals(
+    await verifyPassword(
+      "pw",
+      `$argon2id$v=18$m=19456,t=2,p=1$${PHC_SALT_B64}$${PHC_DIGEST_B64}`,
+    ),
+    false,
+  );
+  assertEquals(
+    await verifyPassword(
+      "pw",
+      `$argon2id$v=19$m=19456,t=17,p=1$${PHC_SALT_B64}$${PHC_DIGEST_B64}`,
+    ),
+    false,
+  );
+  assertEquals(
+    await verifyPassword(
+      "pw",
+      `$argon2id$v=19$m=19456,t=2,p=5$${PHC_SALT_B64}$${PHC_DIGEST_B64}`,
+    ),
+    false,
+  );
+  assertEquals(
+    await verifyPassword(
+      "pw",
+      `$argon2id$v=19$m=19456,t=2,p=1$${PHC_SALT_B64}$invalid-chars!`,
+    ),
+    false,
+  );
+  assertEquals(
+    await verifyPassword(
+      "pw",
+      `$argon2id$v=19$m=19456,t=2,p=1$${PHC_SALT_B64}$not-valid-base64!!!`,
+    ),
+    false,
+  );
+  assertEquals(
+    await verifyPassword(
+      "pw",
+      `$argon2id$v=19$m=19456,t=2,p=1$${PHC_SALT_B64}$c2FsdHNhbHRzYWx0c2FsdA`,
+    ),
+    false,
+  );
+  assertEquals(
+    await verifyPassword(
+      "pw",
+      `$argon2id$v=19$=19456,t=2,p=1$${PHC_SALT_B64}$${PHC_DIGEST_B64}`,
     ),
     false,
   );

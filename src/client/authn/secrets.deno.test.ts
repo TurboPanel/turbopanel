@@ -1,5 +1,11 @@
-import { assertEquals, assertThrows } from "jsr:@std/assert";
-import { MIN_SECRET_LENGTH, parseSecretsEnv } from "./secrets.ts";
+import { assertEquals, assertRejects, assertThrows } from "jsr:@std/assert";
+import {
+  deriveEncryptionSecretsConfig,
+  deriveKey,
+  deriveSecretsConfig,
+  MIN_SECRET_LENGTH,
+  parseSecretsEnv,
+} from "./secrets.ts";
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../../test-fixtures/secrets.ts";
 
 const STRONG_A = TEST_ONLY_TURBOPANEL_SECRET;
@@ -165,5 +171,58 @@ test("allows an ephemeral secret under strict development mode pair", () => {
       const config = parseSecretsEnv(undefined, undefined, "deno");
       assertEquals(config.versioned.length, 1);
     },
+  );
+});
+
+test("rejects a plural entry without a version separator", () => {
+  assertThrows(
+    () => parseSecretsEnv(undefined, STRONG_A, "deno"),
+    Error,
+    'expected "version:secret"',
+  );
+});
+
+test("deriveKey produces an HMAC key that signs and verifies", async () => {
+  const mac = await deriveKey(STRONG_A, "test-purpose");
+  const data = new TextEncoder().encode("payload");
+  const sig = await crypto.subtle.sign("HMAC", mac, data);
+  assertEquals(await crypto.subtle.verify("HMAC", mac, sig, data), true);
+});
+
+test("deriveSecretsConfig orders current and fallbacks by version", async () => {
+  const config = parseSecretsEnv(
+    undefined,
+    `2:${STRONG_B},1:${STRONG_A}`,
+    "deno",
+  );
+  const derived = await deriveSecretsConfig(config, "session-signing");
+  assertEquals(derived.current.version, 2);
+  assertEquals(derived.fallbacks.length, 1);
+  assertEquals(derived.fallbacks[0]?.version, 1);
+});
+
+test("deriveEncryptionSecretsConfig derives AES-GCM keys", async () => {
+  const config = parseSecretsEnv(STRONG_A, undefined, "deno");
+  const derived = await deriveEncryptionSecretsConfig(config, "data-encryption");
+  assertEquals(derived.current.version, 1);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    derived.current.key,
+    new TextEncoder().encode("secret"),
+  );
+  const plaintext = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv },
+    derived.current.key,
+    ciphertext,
+  );
+  assertEquals(new TextDecoder().decode(plaintext), "secret");
+});
+
+test("deriveSecretsConfig rejects an empty versioned list", async () => {
+  await assertRejects(
+    () => deriveSecretsConfig({ versioned: [] }, "session-signing"),
+    Error,
+    "No signing secret available",
   );
 });

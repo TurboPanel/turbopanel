@@ -1,13 +1,16 @@
 import { assertEquals, assertRejects } from '@std/assert'
 import { describe, it } from '@std/testing/bdd'
 import {
+  coversAllHostnames,
   coversHostname,
   metadataFromParsed,
   mintSelfSignedCertificate,
+  normalizeHostname,
   parseCertificatePem,
   parseTlsOptions,
   privateKeyMatchesCertificate,
   resolveTlsForHosting,
+  TlsKeyError,
   type TlsCandidate,
 } from './index.ts'
 
@@ -18,6 +21,13 @@ import {
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno)
+
+describe('normalizeHostname', () => {
+  it('lowercases, trims, and strips a trailing dot', () => {
+    assertEquals(normalizeHostname('  API.Example.COM.  '), 'api.example.com')
+    assertEquals(normalizeHostname('host.example.com.'), 'host.example.com')
+  })
+})
 
 describe('coversHostname', () => {
   it('matches exact names case-insensitively', () => {
@@ -35,6 +45,26 @@ describe('coversHostname', () => {
       coversHostname(['a.example.com', 'b.example.com'], 'b.example.com'),
       true,
     )
+  })
+
+  it('rejects empty hostnames and blank labels under wildcards', () => {
+    assertEquals(coversHostname(['*.example.com'], ''), false)
+    assertEquals(coversHostname(['*.example.com'], '   '), false)
+    assertEquals(coversHostname(['*.example.com'], '.example.com'), false)
+  })
+})
+
+describe('coversAllHostnames', () => {
+  it('requires every hostname to match and rejects empty lists', () => {
+    assertEquals(
+      coversAllHostnames(['*.example.com'], ['api.example.com', 'www.example.com']),
+      true,
+    )
+    assertEquals(
+      coversAllHostnames(['*.example.com'], ['api.example.com', 'other.test']),
+      false,
+    )
+    assertEquals(coversAllHostnames(['*.example.com'], []), false)
   })
 })
 
@@ -159,6 +189,61 @@ describe('resolveTlsForHosting', () => {
     })
     assertEquals(result, { ok: false, error: 'pin_not_found' })
   })
+
+  it('fails when pin is expired or outside the validity window', () => {
+    const expired = resolveTlsForHosting({
+      pinId: 'pin-1',
+      hostnames: ['api.example.com'],
+      candidates: [{
+        ...candidate('pin-1', ['*.example.com']),
+        metadata: {
+          ...candidate('pin-1', ['*.example.com']).metadata,
+          notAfter: '2025-01-01T00:00:00.000Z',
+        },
+      }],
+      now,
+    })
+    assertEquals(expired, { ok: false, error: 'pin_not_ready' })
+
+    const notYetValid = resolveTlsForHosting({
+      pinId: 'pin-1',
+      hostnames: ['api.example.com'],
+      candidates: [{
+        ...candidate('pin-1', ['*.example.com']),
+        metadata: {
+          ...candidate('pin-1', ['*.example.com']).metadata,
+          notBefore: '2027-01-01T00:00:00.000Z',
+        },
+      }],
+      now,
+    })
+    assertEquals(notYetValid, { ok: false, error: 'pin_not_ready' })
+
+    const badDates = resolveTlsForHosting({
+      pinId: 'pin-1',
+      hostnames: ['api.example.com'],
+      candidates: [{
+        ...candidate('pin-1', ['*.example.com']),
+        metadata: {
+          ...candidate('pin-1', ['*.example.com']).metadata,
+          notBefore: 'not-a-date',
+          notAfter: 'also-not-a-date',
+        },
+      }],
+      now,
+    })
+    assertEquals(badDates, { ok: false, error: 'pin_not_ready' })
+  })
+
+  it('normalizes hostnames before matching pins', () => {
+    const result = resolveTlsForHosting({
+      pinId: 'pin-1',
+      hostnames: ['  API.Example.COM.  '],
+      candidates: [candidate('pin-1', ['api.example.com'])],
+      now,
+    })
+    assertEquals(result, { ok: true, tlsId: 'pin-1', reason: 'pin' })
+  })
 })
 
 describe('parseTlsOptions', () => {
@@ -186,6 +271,54 @@ describe('parseTlsOptions', () => {
     assertEquals(
       parseTlsOptions({ prefer: Number.NaN, requestedHostnames: [1] }),
       {},
+    )
+  })
+
+  it('returns an empty object for records with no recognized fields', () => {
+    assertEquals(parseTlsOptions({}), {})
+    assertEquals(parseTlsOptions({ autoRenew: 'yes' }), {})
+  })
+})
+
+describe('mintSelfSignedCertificate', () => {
+  it('rejects empty DNS name lists', async () => {
+    await assertRejects(
+      () => mintSelfSignedCertificate([]),
+      TypeError,
+      'at least one DNS name is required',
+    )
+    await assertRejects(
+      () => mintSelfSignedCertificate(['  ', '']),
+      TypeError,
+      'at least one DNS name is required',
+    )
+  })
+
+  it('honors custom validity and common name options', async () => {
+    const material = await mintSelfSignedCertificate(
+      ['svc.example.com'],
+      { validDays: 30, commonName: 'custom.example.com' },
+    )
+    assertEquals(material.parsed.dnsNames.includes('svc.example.com'), true)
+    assertEquals(material.parsed.subject.includes('CN=custom.example.com'), true)
+  })
+})
+
+describe('privateKeyMatchesCertificate', () => {
+  it('returns false for a mismatched private key', async () => {
+    const first = await mintSelfSignedCertificate(['one.example.com'])
+    const second = await mintSelfSignedCertificate(['two.example.com'])
+    assertEquals(
+      await privateKeyMatchesCertificate(second.privateKeyPem, first.parsed),
+      false,
+    )
+  })
+
+  it('wraps PEM decode failures as TlsKeyError', async () => {
+    const material = await mintSelfSignedCertificate(['solo.example.com'])
+    await assertRejects(
+      () => privateKeyMatchesCertificate('not-a-key', material.parsed),
+      TlsKeyError,
     )
   })
 })

@@ -21,22 +21,39 @@ test('createEmailVerificationLinkEmail escapes HTML in verify URL', () => {
   assertEquals(subject, 'Verify your TurboPanel email')
   assertEquals(html.includes('<script>'), false)
   assertEquals(html.includes('&lt;script&gt;'), true)
+  assertEquals(html.includes('&quot;'), false)
   assertEquals(text.includes(malicious), true)
 })
 
+test('createEmailVerificationLinkEmail escapes quotes and ampersands in URLs', () => {
+  const tricky = 'https://example.com/verify?a=1&b="2"'
+  const { html } = createEmailVerificationLinkEmail('ops@example.com', tricky)
+  assertEquals(html.includes('&amp;'), true)
+  assertEquals(html.includes('&quot;'), true)
+  assertEquals(html.includes('href="https://example.com/verify?a=1&amp;b=&quot;2&quot;"'), true)
+})
+
 test('createEmailOtpEmail covers otp types and escapes otp in HTML', () => {
+  const subjects = {
+    'sign-in': 'Your TurboPanel sign-in code',
+    'email-verification': 'Verify your TurboPanel email',
+    'forget-password': 'Reset your TurboPanel password',
+  } as const
+
   for (const otpType of ['sign-in', 'email-verification', 'forget-password'] as const) {
     const { subject, html, text } = createEmailOtpEmail(
       'user@example.com',
       '123456',
       otpType,
     )
-    assertEquals(subject.length > 0, true)
+    assertEquals(subject, subjects[otpType])
     assertEquals(html.includes('123456'), true)
     assertEquals(text.includes('123456'), true)
+    assertEquals(html.includes(subject), true)
   }
 
   const xss = createEmailOtpEmail('user@example.com', '<script>', 'sign-in')
   assertEquals(xss.html.includes('<script>'), false)
   assertEquals(xss.html.includes('&lt;script&gt;'), true)
+  assertEquals(xss.text.includes('<script>'), true)
 })

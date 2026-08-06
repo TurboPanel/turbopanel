@@ -6,9 +6,16 @@ import {
 import { rateLimitKey } from '../cell/redis/keys.ts'
 import {
   createRedisRateLimiter,
+  DEFAULT_DAEMON_CONNECT_RATE_LIMIT,
+  DEFAULT_DAEMON_CONNECT_RATE_PERIOD_SECONDS,
+  DEFAULT_DAEMON_METRICS_RATE_LIMIT,
+  DEFAULT_DAEMON_METRICS_RATE_PERIOD_SECONDS,
+  DEFAULT_DAEMON_REST_RATE_LIMIT,
+  DEFAULT_DAEMON_REST_RATE_PERIOD_SECONDS,
   resolveDaemonConnectRateLimit,
   resolveDaemonMetricsRateLimit,
   resolveDaemonRestRateLimit,
+  resolveDaemonWsInboundLimits,
 } from './redis-rate-limiter.ts'
 import {
   daemonConnectRateLimitKey,
@@ -194,15 +201,69 @@ test('createRedisRateLimiter satisfies RateLimiter with shared keys', async () =
 test('resolveDaemonConnectRateLimit / REST / metrics defaults match Workers wrangler', () => {
   const empty = { get: () => undefined }
   assertEquals(resolveDaemonConnectRateLimit(empty), {
-    limit: 6,
-    periodSeconds: 60,
+    limit: DEFAULT_DAEMON_CONNECT_RATE_LIMIT,
+    periodSeconds: DEFAULT_DAEMON_CONNECT_RATE_PERIOD_SECONDS,
   })
   assertEquals(resolveDaemonRestRateLimit(empty), {
-    limit: 30,
-    periodSeconds: 60,
+    limit: DEFAULT_DAEMON_REST_RATE_LIMIT,
+    periodSeconds: DEFAULT_DAEMON_REST_RATE_PERIOD_SECONDS,
   })
   assertEquals(resolveDaemonMetricsRateLimit(empty), {
-    limit: 3,
+    limit: DEFAULT_DAEMON_METRICS_RATE_LIMIT,
+    periodSeconds: DEFAULT_DAEMON_METRICS_RATE_PERIOD_SECONDS,
+  })
+})
+
+test('resolveDaemon*RateLimit reads env overrides and ignores invalid values', () => {
+  const env = {
+    get: (key: string) => {
+      const values: Record<string, string> = {
+        TURBOPANEL_DAEMON_CONNECT_RATE_LIMIT: '12',
+        TURBOPANEL_DAEMON_CONNECT_RATE_PERIOD: '120',
+        TURBOPANEL_DAEMON_REST_RATE_LIMIT: '0',
+        TURBOPANEL_DAEMON_REST_RATE_PERIOD: 'not-a-number',
+        TURBOPANEL_DAEMON_METRICS_RATE_LIMIT: '-3',
+        TURBOPANEL_DAEMON_METRICS_RATE_PERIOD: '',
+      }
+      return values[key]
+    },
+  }
+  assertEquals(resolveDaemonConnectRateLimit(env), {
+    limit: 12,
+    periodSeconds: 120,
+  })
+  assertEquals(resolveDaemonRestRateLimit(env), {
+    limit: DEFAULT_DAEMON_REST_RATE_LIMIT,
+    periodSeconds: DEFAULT_DAEMON_REST_RATE_PERIOD_SECONDS,
+  })
+  assertEquals(resolveDaemonMetricsRateLimit(env), {
+    limit: DEFAULT_DAEMON_METRICS_RATE_LIMIT,
+    periodSeconds: DEFAULT_DAEMON_METRICS_RATE_PERIOD_SECONDS,
+  })
+})
+
+test('resolveDaemonWsInboundLimits defaults and env overrides', () => {
+  assertEquals(resolveDaemonWsInboundLimits({ get: () => undefined }), {
+    limit: 120,
+    windowMs: 60_000,
+  })
+  assertEquals(
+    resolveDaemonWsInboundLimits({
+      get: (key) =>
+        key === 'TURBOPANEL_DAEMON_WS_INBOUND_LIMIT' ? '90' : '45000',
+    }),
+    { limit: 90, windowMs: 45_000 },
+  )
+})
+
+test('createRedisRateLimiter denies when eval returns non-one', async () => {
+  const client = {
+    eval: () => Promise.resolve(0),
+  } as unknown as RedisCellClient
+  const limiter = createRedisRateLimiter({
+    client,
+    limit: 2,
     periodSeconds: 60,
   })
+  assertEquals(await limiter.limit({ key: 'deny' }), { success: false })
 })

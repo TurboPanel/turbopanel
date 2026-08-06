@@ -4,10 +4,13 @@ import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'
 import {
   environment,
+  hosting,
   managed,
   organization,
   principal,
   project,
+  service,
+  variable,
   workspace,
 } from '../../lib/db/schema.ts'
 import {
@@ -153,6 +156,145 @@ test('resolveWorkspaceKindForEntity returns kind for managed-scoped principals',
       await db.delete(environment).where(eq(environment.id, systemEnvironmentId))
       await db.delete(project).where(eq(project.id, userProjectId))
       await db.delete(project).where(eq(project.id, systemProjectId))
+    }
+  })
+})
+
+test('resolveWorkspaceKindForEntity walks workspace, project, and environment ancestry', async () => {
+  await withAncestryFixtures(async ({ db, userWorkspaceId, systemWorkspaceId }) => {
+    const [userProject] = await db
+      .insert(project)
+      .values({ displayName: 'User Project', workspaceId: userWorkspaceId })
+      .returning({ id: project.id })
+    const userProjectId = userProject!.id
+
+    const [userEnv] = await db
+      .insert(environment)
+      .values({ displayName: 'User Env', projectId: userProjectId })
+      .returning({ id: environment.id })
+    const userEnvironmentId = userEnv!.id
+
+    const [systemProject] = await db
+      .insert(project)
+      .values({ displayName: 'System Project', workspaceId: systemWorkspaceId })
+      .returning({ id: project.id })
+    const systemProjectId = systemProject!.id
+
+    try {
+      assertEquals(
+        await resolveWorkspaceKindForEntity(db, 'workspace', userWorkspaceId),
+        WORKSPACE_KIND_USER,
+      )
+      assertEquals(
+        await resolveWorkspaceKindForEntity(db, 'project', userProjectId),
+        WORKSPACE_KIND_USER,
+      )
+      assertEquals(
+        await resolveWorkspaceKindForEntity(db, 'environment', userEnvironmentId),
+        WORKSPACE_KIND_USER,
+      )
+      assertEquals(
+        await resolveWorkspaceKindForEntity(db, 'project', systemProjectId),
+        WORKSPACE_KIND_SYSTEM,
+      )
+    } finally {
+      await db.delete(environment).where(eq(environment.id, userEnvironmentId))
+      await db.delete(project).where(eq(project.id, userProjectId))
+      await db.delete(project).where(eq(project.id, systemProjectId))
+    }
+  })
+})
+
+test('resolveWorkspaceKindForEntity returns null for unknown entity types', async () => {
+  await withAncestryFixtures(async ({ db }) => {
+    assertEquals(
+      await resolveWorkspaceKindForEntity(db, 'organization', crypto.randomUUID()),
+      null,
+    )
+    assertEquals(
+      await resolveWorkspaceKindForEntity(db, 'server', crypto.randomUUID()),
+      null,
+    )
+  })
+})
+
+test('resolveWorkspaceKindForEntity resolves service and hosting descendants', async () => {
+  await withAncestryFixtures(async ({ db, systemWorkspaceId }) => {
+    const [systemProject] = await db
+      .insert(project)
+      .values({ displayName: 'System Service Project', workspaceId: systemWorkspaceId })
+      .returning({ id: project.id })
+    const systemProjectId = systemProject!.id
+
+    const [systemEnv] = await db
+      .insert(environment)
+      .values({ displayName: 'System Service Env', projectId: systemProjectId })
+      .returning({ id: environment.id })
+    const systemEnvironmentId = systemEnv!.id
+
+    const [systemService] = await db
+      .insert(service)
+      .values({
+        environmentId: systemEnvironmentId,
+        displayName: 'web',
+        composeServiceName: 'web',
+      })
+      .returning({ id: service.id })
+    const systemServiceId = systemService!.id
+
+    const [systemHosting] = await db
+      .insert(hosting)
+      .values({ serviceId: systemServiceId, hostnames: ['app.example.test'] })
+      .returning({ id: hosting.id })
+    const systemHostingId = systemHosting!.id
+
+    try {
+      assertEquals(
+        await resolveWorkspaceKindForEntity(db, 'service', systemServiceId),
+        WORKSPACE_KIND_SYSTEM,
+      )
+      assertEquals(
+        await resolveWorkspaceKindForEntity(db, 'hosting', systemHostingId),
+        WORKSPACE_KIND_SYSTEM,
+      )
+    } finally {
+      await db.delete(hosting).where(eq(hosting.id, systemHostingId))
+      await db.delete(service).where(eq(service.id, systemServiceId))
+      await db.delete(environment).where(eq(environment.id, systemEnvironmentId))
+      await db.delete(project).where(eq(project.id, systemProjectId))
+    }
+  })
+})
+
+test('resolveWorkspaceKindForEntity resolves environment-scoped variables', async () => {
+  await withAncestryFixtures(async ({ db, userWorkspaceId }) => {
+    const [userProject] = await db
+      .insert(project)
+      .values({ displayName: 'Variable Project', workspaceId: userWorkspaceId })
+      .returning({ id: project.id })
+    const userProjectId = userProject!.id
+
+    const [userEnv] = await db
+      .insert(environment)
+      .values({ displayName: 'Variable Env', projectId: userProjectId })
+      .returning({ id: environment.id })
+    const userEnvironmentId = userEnv!.id
+
+    const [userVariable] = await db
+      .insert(variable)
+      .values({ environmentId: userEnvironmentId, key: 'KIND_VAR', value: '1' })
+      .returning({ id: variable.id })
+    const userVariableId = userVariable!.id
+
+    try {
+      assertEquals(
+        await resolveWorkspaceKindForEntity(db, 'variable', userVariableId),
+        WORKSPACE_KIND_USER,
+      )
+    } finally {
+      await db.delete(variable).where(eq(variable.id, userVariableId))
+      await db.delete(environment).where(eq(environment.id, userEnvironmentId))
+      await db.delete(project).where(eq(project.id, userProjectId))
     }
   })
 })

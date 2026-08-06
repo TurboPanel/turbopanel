@@ -342,3 +342,109 @@ test('runSystemReconcileSweep enqueues for self-host containers missing a Docker
     assertEquals(queue.envelopes.length, 2)
   })
 })
+
+test('buildSystemReconcilePayload returns empty when no system hierarchy exists', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping reconcile empty-payload test: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+  const [insertedOrg] = await db
+    .insert(organization)
+    .values({ displayName: 'Reconcile Empty Org' })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg!.id
+
+  const now = new Date().toISOString()
+  const [insertedServer] = await db
+    .insert(server)
+    .values({
+      organizationId,
+      displayName: 'Reconcile Empty Server',
+      connected: true,
+      statusChangedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
+
+  try {
+    const payloads = await buildSystemReconcilePayload(db, { serverId })
+    assertEquals(payloads, [])
+  } finally {
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+})
+
+test('enqueueSystemReconcile returns not_provisioned without hierarchy', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping reconcile not_provisioned test: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+  const queue = createRecordingCommandQueue()
+  const [insertedOrg] = await db
+    .insert(organization)
+    .values({ displayName: 'Reconcile Not Provisioned Org' })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg!.id
+
+  const now = new Date().toISOString()
+  const [insertedServer] = await db
+    .insert(server)
+    .values({
+      organizationId,
+      displayName: 'Reconcile Not Provisioned Server',
+      connected: true,
+      statusChangedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
+
+  try {
+    const result = await enqueueSystemReconcile(db, queue, {
+      serverId,
+      actorType: 'user',
+      actorId: serverId,
+    })
+    assertEquals(result, { ok: false, reason: 'not_provisioned' })
+    assertEquals(queue.envelopes.length, 0)
+  } finally {
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+})
+
+test('enqueueSystemReconcile passes restart action into the command payload', async () => {
+  await withReconcileFixtures({}, async ({ db, serverId, queue }) => {
+    const payloads = await buildSystemReconcilePayload(db, { serverId })
+    const environmentId = payloads[0]?.environmentId
+    assertEquals(typeof environmentId, 'string')
+
+    const result = await enqueueSystemReconcile(db, queue, {
+      serverId,
+      actorType: 'user',
+      actorId: serverId,
+      environmentId,
+      action: 'restart',
+    })
+
+    assertEquals(result.ok, true)
+    if (!result.ok) return
+    assertEquals(result.commandIds.length, 1)
+
+    const [record] = await db
+      .select({ payload: command.payload })
+      .from(command)
+      .where(eq(command.id, result.commandId))
+      .limit(1)
+    const payload = record?.payload as { action?: string } | null
+    assertEquals(payload?.action, 'restart')
+  })
+})

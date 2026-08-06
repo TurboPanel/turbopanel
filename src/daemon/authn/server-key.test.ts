@@ -128,3 +128,33 @@ test("verifyDaemonSignature rejects signature from different keypair", async () 
   const ok = await verifyDaemonSignature(verifierPublicJwk, payload, signature);
   assertEquals(ok, false);
 });
+
+test("verifyDaemonSignature rejects malformed signature and JWK", async () => {
+  const keyPair = await generateEd25519KeyPair();
+  const publicJwk = await exportPublicJwk(keyPair.publicKey);
+  const payload = buildAuthPayload({
+    challengeId: "challenge-4",
+    nonce: "nonce-4",
+    serverId: "server-4",
+    keyId: "key-4",
+    machineKey: "machine-4",
+    hostname: "host-4",
+  });
+  assertEquals(await verifyDaemonSignature(publicJwk, payload, "!!!"), false);
+  assertEquals(
+    await verifyDaemonSignature({ kty: "RSA" }, payload, "abc"),
+    false,
+  );
+});
+
+test("computePublicKeyFingerprint changes when public JWK changes", async () => {
+  const first = await generateEd25519KeyPair();
+  const second = await generateEd25519KeyPair();
+  const firstFp = await computePublicKeyFingerprint(
+    await exportPublicJwk(first.publicKey),
+  );
+  const secondFp = await computePublicKeyFingerprint(
+    await exportPublicJwk(second.publicKey),
+  );
+  assertEquals(firstFp === secondFp, false);
+});

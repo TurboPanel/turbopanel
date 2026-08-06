@@ -11,9 +11,11 @@ import {
   variable,
   workspace,
   team,
+  teammate,
+  server,
   user,
 } from '../../lib/db/schema.ts'
-import { can, listVisible } from './evaluator.ts'
+import { can, assertCan, ForbiddenError, getSubjects, listVisible } from './evaluator.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -75,6 +77,7 @@ async function withTestFixtures(
     })
   } finally {
     await db.delete(grant).where(eq(grant.actorId, userId))
+    await db.delete(teammate).where(eq(teammate.userId, userId))
     await db.delete(member).where(and(
       eq(member.userId, userId),
       eq(member.organizationId, organizationId),
@@ -93,6 +96,19 @@ async function withTestFixtures(
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno)
+
+test('ForbiddenError carries the permission key', () => {
+  const error = new ForbiddenError('organization:own')
+  if (error.name !== 'ForbiddenError') {
+    throw new TypeError('ForbiddenError should set name')
+  }
+  if (error.permissionKey !== 'organization:own') {
+    throw new TypeError('ForbiddenError should expose permissionKey')
+  }
+  if (!error.message.includes('organization:own')) {
+    throw new TypeError('ForbiddenError message should include permission key')
+  }
+})
 
 test('organization:own grant allows full org access', async () => {
   await withTestFixtures(async ({ db, userId, organizationId, workspaceId }) => {
@@ -573,6 +589,148 @@ test('organization:manage grant does not satisfy system permissions; explicit an
     } finally {
       await db.delete(user).where(eq(user.id, adminId))
       await db.delete(user).where(eq(user.id, superId))
+    }
+  })
+})
+
+test('assertCan throws ForbiddenError when access is denied', async () => {
+  await withTestFixtures(async ({ db, userId, workspaceId }) => {
+    let threw = false
+    try {
+      await assertCan(db, userId, 'organization:own', 'workspace', workspaceId)
+    } catch (error) {
+      threw = true
+      if (!(error instanceof ForbiddenError)) {
+        throw error
+      }
+      if (error.permissionKey !== 'organization:own') {
+        throw new TypeError('assertCan should throw ForbiddenError with permission key')
+      }
+    }
+    if (!threw) {
+      throw new TypeError('assertCan should throw when user lacks grants')
+    }
+  })
+})
+
+test('getSubjects includes team and organization memberships', async () => {
+  await withTestFixtures(async ({ db, userId, organizationId, teamId }) => {
+    await db.insert(teammate).values({ teamId, userId })
+
+    const subjects = await getSubjects(db, userId)
+    const kinds = subjects.map((subject) => subject.subjectKind)
+
+    if (!kinds.includes('user')) {
+      throw new TypeError('getSubjects should always include the user subject')
+    }
+    if (!kinds.includes('team')) {
+      throw new TypeError('getSubjects should include team memberships')
+    }
+    if (!kinds.includes('organization')) {
+      throw new TypeError('getSubjects should include organization memberships')
+    }
+  })
+})
+
+test('can honors pre-fetched subjects without re-querying membership', async () => {
+  await withTestFixtures(async ({ db, userId, organizationId, workspaceId }) => {
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId: userId,
+      permission: 'organization:manage',
+      allow: true,
+    })
+
+    const allowed = await can(
+      db,
+      userId,
+      'organization:manage',
+      'workspace',
+      workspaceId,
+      {
+        subjects: [{ subjectKind: 'user', subjectId: userId }],
+      },
+    )
+    if (!allowed) {
+      throw new TypeError('can should honor pre-fetched subjects for grant lookup')
+    }
+  })
+})
+
+test('listVisible returns server ids for org owner', async () => {
+  await withTestFixtures(async ({ db, userId, organizationId }) => {
+    const now = new Date().toISOString()
+    const [insertedServer] = await db
+      .insert(server)
+      .values({
+        organizationId,
+        displayName: 'Evaluator Visible Server',
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: server.id })
+    const serverId = insertedServer!.id
+
+    try {
+      await db.insert(grant).values({
+        entityType: 'organization',
+        entityId: organizationId,
+        actorType: 'user',
+        actorId: userId,
+        permission: 'organization:own',
+        allow: true,
+      })
+
+      const visible = await listVisible(db, {
+        kind: 'server',
+        userId,
+        organizationId,
+      })
+      if (!visible.includes(serverId)) {
+        throw new TypeError('org owner listVisible should include servers in org')
+      }
+    } finally {
+      await db.delete(server).where(eq(server.id, serverId))
+    }
+  })
+})
+
+test('can rejects unknown entity types', async () => {
+  await withTestFixtures(async ({ db, userId }) => {
+    let threw = false
+    try {
+      await can(db, userId, 'organization:own', 'license', crypto.randomUUID())
+    } catch (error) {
+      threw = true
+      if (!(error instanceof Error) || !error.message.includes('Unknown entity type')) {
+        throw error
+      }
+    }
+    if (!threw) {
+      throw new TypeError('unknown entity type should throw from ancestry builder')
+    }
+  })
+})
+
+test('listVisible rejects unknown entity kinds', async () => {
+  await withTestFixtures(async ({ db, userId, organizationId }) => {
+    let threw = false
+    try {
+      await listVisible(db, {
+        kind: 'license',
+        userId,
+        organizationId,
+      })
+    } catch (error) {
+      threw = true
+      if (!(error instanceof Error) || !error.message.includes('Unknown entity kind')) {
+        throw error
+      }
+    }
+    if (!threw) {
+      throw new TypeError('unknown listVisible kind should throw')
     }
   })
 })

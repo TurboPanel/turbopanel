@@ -111,4 +111,39 @@ test('buildConnectionPayload delegates to the engine spec', () => {
   assertEquals(info.port, 5432)
   assertEquals(info.database, 'app')
   assertEquals(info.username, 'app_user')
+  assertEquals(info.dsn.includes('***'), true)
+  assertEquals(info.dsn.includes('sslmode=prefer'), true)
+})
+
+test('parseManagedResidual ignores wrong-typed residual fields', () => {
+  assertEquals(
+    parseManagedResidual({
+      rootPrincipalId: 12,
+      host: null,
+      port: '5432',
+      error: false,
+    }),
+    {},
+  )
+})
+
+test('serializeManagedRow keeps rootPrincipalId without host when only that residual exists', () => {
+  const serialized = serializeManagedRow(
+    {
+      id: 'managed-3',
+      environmentId: 'env-3',
+      displayName: 'Postgres',
+      engine: 'postgres',
+      status: 'stopped',
+      metadata: { rootPrincipalId: 'prin-only' },
+      options: {},
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    },
+    'server-3',
+  )
+  assertEquals(serialized.status, 'stopped')
+  assertEquals(serialized.host, null)
+  assertEquals(serialized.port, null)
+  assertEquals(serialized.metadata, { rootPrincipalId: 'prin-only' })
 })

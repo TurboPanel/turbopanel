@@ -56,6 +56,19 @@ test('validateEmailAddress rejects display-name with malformed inner address', (
   )
 })
 
+test('validateEmailAddress rejects domains without a dot', () => {
+  assertThrows(
+    () => validateEmailAddress('user@localhost', 'from'),
+    PermanentSendError,
+    'malformed from address',
+  )
+})
+
+test('validateEmailAddress accepts subdomains and plus tags', () => {
+  validateEmailAddress('ops+alerts@mail.example.com', 'to')
+  validateEmailAddress('Team <ops+alerts@mail.example.com>', 'to')
+})
+
 test('PermanentSendError is an Error subclass', () => {
   const err = new PermanentSendError('boom')
   assertEquals(err instanceof Error, true)

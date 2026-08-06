@@ -41,3 +41,17 @@ test('inbound window resets after windowMs', async () => {
   await new Promise((resolve) => setTimeout(resolve, 25))
   assertEquals(gate.allow('c1'), true)
 })
+
+test('inbound window release on unknown connection is a no-op', () => {
+  const gate = createInboundWindowGate(2, 60_000)
+  gate.release('missing')
+  assertEquals(gate.allow('fresh'), true)
+})
+
+test('inbound window starts a new window exactly at windowMs boundary', async () => {
+  const gate = createInboundWindowGate(1, 30)
+  assertEquals(gate.allow('c1'), true)
+  assertEquals(gate.allow('c1'), false)
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  assertEquals(gate.allow('c1'), true)
+})

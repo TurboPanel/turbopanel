@@ -51,3 +51,12 @@ test('expandComposeServiceInstances skips traditional-web services', () => {
   assertEquals(Object.keys(result.document.data.services as object), ['site'])
   assertEquals(result.expansion.get('site'), ['site'])
 })
+
+test('expandComposeServiceInstances passes through non-record services', () => {
+  const result = expandComposeServiceInstances(
+    doc({ broken: 'not-a-map' }),
+    new Map([['broken', 3]]),
+  )
+  assertEquals((result.document.data.services as Record<string, unknown>).broken, 'not-a-map')
+  assertEquals(result.expansion.get('broken'), ['broken'])
+})

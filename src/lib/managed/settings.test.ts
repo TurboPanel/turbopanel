@@ -2,9 +2,12 @@ import { assertEquals } from 'jsr:@std/assert'
 import {
   clampManagedResources,
   DEFAULT_MANAGED_SETTINGS,
+  getManagedReservedEnvKeys,
   MANAGED_DOCKER_OPTION_DENYLIST,
   parseBackupSettings,
+  parseManagedDockerOptions,
   parseManagedSettingsBase,
+  POSTGRES_RESERVED_ENV_KEYS,
   RESERVED_PUBLISHED_PORTS,
 } from './settings.ts'
 
@@ -203,4 +206,215 @@ test('parseManagedSettingsBase wires backups through', () => {
   assertEquals(parsed?.backups, { retentionKeep: 14 })
   assertEquals(parseManagedSettingsBase({ backups: { retentionKeep: 0 } }), null)
   assertEquals(parseManagedSettingsBase(undefined)?.backups, undefined)
+})
+
+test('getManagedReservedEnvKeys returns postgres set or empty', () => {
+  assertEquals(getManagedReservedEnvKeys('postgres'), POSTGRES_RESERVED_ENV_KEYS)
+  assertEquals(getManagedReservedEnvKeys('mysql').size, 0)
+  assertEquals(getManagedReservedEnvKeys('unknown').size, 0)
+})
+
+test('image digest and tag edge cases', () => {
+  assertEquals(
+    parseManagedSettingsBase({
+      image: 'postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    })?.image,
+    'postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  )
+  assertEquals(
+    parseManagedSettingsBase({ image: 'postgres@sha256:deadbeef' }),
+    null,
+  )
+  assertEquals(parseManagedSettingsBase({ image: 'postgres:bad tag!' }), null)
+  assertEquals(
+    parseManagedSettingsBase({ image: 'a'.repeat(257) }),
+    null,
+  )
+})
+
+test('ssl / resources / engineConfig / exposure reject malformed input', () => {
+  assertEquals(parseManagedSettingsBase({ ssl: 'on' }), null)
+  assertEquals(parseManagedSettingsBase({ ssl: { enabled: 'yes' } }), null)
+  assertEquals(parseManagedSettingsBase({ resources: [] }), null)
+  assertEquals(parseManagedSettingsBase({ resources: { cpus: -1 } }), null)
+  assertEquals(parseManagedSettingsBase({ resources: { memoryBytes: 0 } }), null)
+  assertEquals(
+    parseManagedSettingsBase({ resources: { memoryReservationBytes: -5 } }),
+    null,
+  )
+  assertEquals(parseManagedSettingsBase({ engineConfig: 12 }), null)
+  assertEquals(parseManagedSettingsBase({ exposure: 'public' }), null)
+  assertEquals(parseManagedSettingsBase({ exposure: { enabled: 1 } }), null)
+  assertEquals(
+    parseManagedSettingsBase({
+      exposure: { enabled: false, bind: 'internet' },
+    }),
+    null,
+  )
+  assertEquals(parseManagedSettingsBase([]), null)
+  assertEquals(parseManagedSettingsBase('nope'), null)
+})
+
+test('resources accept valid optional fields', () => {
+  const parsed = parseManagedSettingsBase({
+    resources: {
+      cpus: 0,
+      memoryBytes: 128 * 1024 * 1024,
+      memoryReservationBytes: 64 * 1024 * 1024,
+    },
+  })
+  assertEquals(parsed?.resources, {
+    cpus: 0,
+    memoryBytes: 128 * 1024 * 1024,
+    memoryReservationBytes: 64 * 1024 * 1024,
+  })
+  assertEquals(parseManagedSettingsBase({ resources: {} })?.resources, undefined)
+})
+
+test('dockerOptions labels and extraEnv reject malformed / reserved', () => {
+  assertEquals(
+    parseManagedSettingsBase({
+      dockerOptions: { labels: { 'traefik.http': '1' } },
+    }),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase({
+      dockerOptions: { labels: { 'com.docker.compose.project': 'x' } },
+    }),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase({
+      dockerOptions: { labels: { '': 'x' } },
+    }),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase({
+      dockerOptions: { labels: { ok: 'x'.repeat(257) } },
+    }),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase({
+      dockerOptions: {
+        labels: Object.fromEntries(
+          Array.from({ length: 33 }, (_, i) => [`k${i}`, 'v']),
+        ),
+      },
+    }),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase(
+      { dockerOptions: { extraEnv: { POSTGRES_PASSWORD: 'x' } } },
+      POSTGRES_RESERVED_ENV_KEYS,
+    ),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase({
+      dockerOptions: { extraEnv: { '1BAD': 'x' } },
+    }),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase({
+      dockerOptions: { extraEnv: { OK: 'x\u0000y' } },
+    }),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase({
+      dockerOptions: { extraEnv: { OK: 'x'.repeat(4097) } },
+    }),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase({
+      dockerOptions: {
+        extraEnv: Object.fromEntries(
+          Array.from({ length: 33 }, (_, i) => [`K${i}`, 'v']),
+        ),
+      },
+    }),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase({ dockerOptions: { labels: [] } }),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase({ dockerOptions: { extraEnv: [] } }),
+    null,
+  )
+})
+
+test('dockerOptions field value rejects and empty object collapses', () => {
+  assertEquals(
+    parseManagedSettingsBase({ dockerOptions: { restart: 'sometimes' } }),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase({ dockerOptions: { stopGracePeriodSeconds: 0 } }),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase({ dockerOptions: { shmSizeBytes: -1 } }),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase({
+      dockerOptions: { ulimits: { nofile: { soft: 2048, hard: 1024 } } },
+    }),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase({
+      dockerOptions: { ulimits: { nofile: { soft: 1 } } },
+    }),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase({
+      dockerOptions: { ulimits: { nofile: 'x' } },
+    }),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase({ dockerOptions: { ulimits: { memlock: {} } } }),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase({ dockerOptions: { ulimits: [] } }),
+    null,
+  )
+  assertEquals(
+    parseManagedDockerOptions(undefined),
+    undefined,
+  )
+  assertEquals(parseManagedDockerOptions([]), null)
+  assertEquals(parseManagedDockerOptions({}), undefined)
+  assertEquals(
+    parseManagedDockerOptions({ ulimits: {} })?.ulimits,
+    {},
+  )
+})
+
+test('image tag-only rejects and non-finite resource numbers', () => {
+  assertEquals(parseManagedSettingsBase({ image: 'postgres:' }), null)
+  assertEquals(parseManagedSettingsBase({ image: 'postgres:!bad' }), null)
+  assertEquals(
+    parseManagedSettingsBase({ resources: { cpus: Number.NEGATIVE_INFINITY } }),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase({ resources: { cpus: -2.5 } }),
+    null,
+  )
+})
+
+test('parseBackupSettings empty object collapses to undefined', () => {
+  assertEquals(parseBackupSettings({}), undefined)
 })

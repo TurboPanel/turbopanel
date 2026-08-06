@@ -75,3 +75,36 @@ test('renameComposeVolumes leaves bind mounts and unlisted keys alone', () => {
     ['/host/path:/data', '../rel:/rel', 'keep:/keep'],
   )
 })
+
+test('renameComposeVolumes is a no-op for empty rename map', () => {
+  const document: ComposeDocument = {
+    version: 1,
+    data: { services: { web: { volumes: ['data:/data'] } }, volumes: { data: {} } },
+    presentation: { keyOrder: ['services', 'volumes'], comments: {} },
+  }
+  assertEquals(renameComposeVolumes(document, new Map()), document)
+})
+
+test('renameComposeVolumes leaves non-volume long mounts unchanged', () => {
+  const document: ComposeDocument = {
+    version: 1,
+    data: {
+      services: {
+        web: {
+          volumes: [
+            { type: 'bind', source: '/host', target: '/data' },
+            { type: 'volume', source: 'data', target: '/data' },
+          ],
+        },
+      },
+      volumes: { data: {} },
+    },
+    presentation: { keyOrder: ['services', 'volumes'], comments: {} },
+  }
+  const renamed = '01936b3e-aaaa-bbbb-cccc-123456789abc'
+  const result = renameComposeVolumes(document, new Map([['data', renamed]]))
+  const volumes = (result.data.services as Record<string, Record<string, unknown>>).web!
+    .volumes as Array<Record<string, unknown> | string>
+  assertEquals(volumes[0], { type: 'bind', source: '/host', target: '/data' })
+  assertEquals(volumes[1], { type: 'volume', source: renamed, target: '/data' })
+})

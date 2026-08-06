@@ -11,6 +11,13 @@ import {
   validateComposeDocument,
   yamlToComposeDocument,
 } from './index.ts'
+import { isPlacementServerId } from './placement.ts'
+import {
+  applyValidatedComposeOption,
+  assertComposeDocument,
+  stripComposePlacementOption,
+  stripProjectComposePlacementOption,
+} from './validate.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -373,4 +380,114 @@ test('mergeComposeOverlay after stripComposePlacement ignores project pin', () =
   const merged = mergeComposeOverlay(stripComposePlacement(base), overlay)
   assertEquals(placementServerId(merged), envPin)
   assertEquals(composeDocumentToRuntimeYaml(merged).includes(projectPin), false)
+})
+
+test('mergeComposeOverlay merges presentation metadata from overlay', () => {
+  const base = emptyComposeDocument()
+  base.data = { services: { web: { image: 'nginx' } } }
+  base.presentation = {
+    keyOrder: ['services'],
+    comments: { services: { keyBefore: 'base comment' } },
+    documentCommentBefore: 'base before',
+    documentComment: 'base after',
+    editorView: 'editor',
+  }
+
+  const overlay = emptyComposeDocument()
+  overlay.data = { networks: { front: {} } }
+  overlay.presentation = {
+    keyOrder: ['networks'],
+    comments: { networks: { keyBefore: 'overlay comment' } },
+    blankLines: { networks: 1 },
+    editorView: 'visual',
+  }
+
+  const merged = mergeComposeOverlay(base, overlay)
+  assertEquals(merged.presentation.comments.services?.keyBefore, 'base comment')
+  assertEquals(merged.presentation.comments.networks?.keyBefore, 'overlay comment')
+  assertEquals(merged.presentation.documentCommentBefore, 'base before')
+  assertEquals(merged.presentation.documentComment, 'base after')
+  assertEquals(merged.presentation.blankLines, { networks: 1 })
+  assertEquals(merged.presentation.editorView, 'visual')
+})
+
+test('mergeComposeOverlay with null overlay returns base unchanged', () => {
+  const base = emptyComposeDocument()
+  base.data = { services: { web: { image: 'nginx' } } }
+  assertEquals(mergeComposeOverlay(base, null), base)
+})
+
+test('mergeComposeOverlay deepMerge skips undefined overlay values', () => {
+  const base = emptyComposeDocument()
+  base.data = { services: { web: { image: 'nginx', ports: ['80:80'] } } }
+  const overlay = emptyComposeDocument()
+  overlay.data = { services: { web: { image: undefined, restart: 'always' } } }
+  const merged = mergeComposeOverlay(base, overlay)
+  const web = (merged.data.services as Record<string, Record<string, unknown>>).web!
+  assertEquals(web.image, 'nginx')
+  assertEquals(web.restart, 'always')
+})
+
+test('isPlacementServerId accepts UUID-shaped server ids', () => {
+  assertEquals(isPlacementServerId(PLACEMENT_UUID), true)
+  assertEquals(isPlacementServerId('not-a-uuid'), false)
+  assertEquals(isPlacementServerId(''), false)
+})
+
+test('validateComposeDocument rejects non-mapping services', () => {
+  const result = validateComposeDocument({
+    version: 1,
+    data: { services: ['bad'] },
+    presentation: { keyOrder: ['services'], comments: {} },
+  })
+  assertEquals(result.ok, false)
+  if (!result.ok) {
+    assertEquals(result.issues[0]?.path, 'services')
+  }
+})
+
+test('validateComposeDocument rejects non-mapping x-turbopanel extension', () => {
+  const result = validateComposeDocument({
+    version: 1,
+    data: {
+      services: { api: { image: 'node:22' } },
+      [TURBOPANEL_EXTENSION_KEY]: 'bad',
+    },
+    presentation: { keyOrder: ['services', TURBOPANEL_EXTENSION_KEY], comments: {} },
+  })
+  assertEquals(result.ok, false)
+  if (!result.ok) {
+    assertEquals(result.issues.some((issue) => issue.path === 'x-turbopanel'), true)
+  }
+})
+
+test('assertComposeDocument throws with joined issue messages', () => {
+  assertThrows(
+    () => assertComposeDocument({ version: 2 }),
+    TypeError,
+    'must be a ComposeDocument',
+  )
+})
+
+test('applyValidatedComposeOption normalizes compose in options', () => {
+  const options: Record<string, unknown> = {
+    compose: {
+      version: 1,
+      data: { services: { api: { image: 'node:22' } } },
+      presentation: { keyOrder: ['services'], comments: {} },
+    },
+  }
+  const result = applyValidatedComposeOption(options)
+  assertEquals(result.ok, true)
+  assertEquals((options.compose as { version: number }).version, 1)
+})
+
+test('stripComposePlacementOption removes placement from options.compose', () => {
+  const options: Record<string, unknown> = {
+    compose: documentWithPlacement(PLACEMENT_UUID),
+  }
+  stripComposePlacementOption(options)
+  assertEquals(placementServerId(options.compose as ReturnType<typeof emptyComposeDocument>), undefined)
+  stripProjectComposePlacementOption(null)
+  stripComposePlacementOption({ other: true })
 })

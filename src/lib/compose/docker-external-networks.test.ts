@@ -1,5 +1,11 @@
 import { assertEquals } from '@std/assert'
 import {
+  buildNetworkDockerOptions,
+  isValidDockerNetworkName,
+  normalizeDockerNetworkOptions,
+  readNetworkDockerNetworkName,
+} from '../docker-network-name.ts'
+import {
   collectComposeExternalDockerNetworkNames,
   collectServiceComposeNetworkKeys,
   pruneUnreferencedComposeNetworks,
@@ -104,5 +110,47 @@ test('pruneUnreferencedComposeNetworks returns undefined when none remain', () =
       { orphan: { driver: 'bridge' } },
     ),
     undefined,
+  )
+})
+
+test('collectComposeExternalDockerNetworkNames ignores invalid external names', () => {
+  const yaml = `
+networks:
+  bad name:
+    external: true
+`
+  assertEquals(collectComposeExternalDockerNetworkNames(yaml), [])
+})
+
+test('collectServiceComposeNetworkKeys supports string and object list entries', () => {
+  assertEquals(collectServiceComposeNetworkKeys({ networks: ' solo ' }), ['solo'])
+  assertEquals(
+    collectServiceComposeNetworkKeys({ networks: [{ backend: {} }, 'edge'] }),
+    ['backend', 'edge'],
+  )
+  assertEquals(collectServiceComposeNetworkKeys({ image: 'node:22' }), [])
+})
+
+test('collectComposeExternalDockerNetworkNames returns empty for blank yaml', () => {
+  assertEquals(collectComposeExternalDockerNetworkNames(''), [])
+})
+
+test('docker-network-name helpers validate and normalize names', () => {
+  assertEquals(isValidDockerNetworkName('turbopanel-shared'), true)
+  assertEquals(isValidDockerNetworkName('-bad'), false)
+  assertEquals(readNetworkDockerNetworkName({ dockerNetworkName: '  net-a  ' }, null), 'net-a')
+  assertEquals(readNetworkDockerNetworkName(null, { dockerNetworkName: 'meta-net' }), 'meta-net')
+  assertEquals(buildNetworkDockerOptions(' net-b '), { dockerNetworkName: 'net-b' })
+  assertEquals(normalizeDockerNetworkOptions({ dockerNetworkName: 'valid-net', extra: true }), {
+    extra: true,
+    dockerNetworkName: 'valid-net',
+  })
+  assertEquals(normalizeDockerNetworkOptions({ dockerNetworkName: ' bad name' }), null)
+})
+
+test('readComposeExternalDockerNetworkName rejects invalid mapping keys', () => {
+  assertEquals(
+    readComposeExternalDockerNetworkName('bad name', { external: {} }),
+    null,
   )
 })

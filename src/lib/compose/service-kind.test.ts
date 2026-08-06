@@ -3,6 +3,7 @@ import {
   collectServiceTurbopanelValidationIssues,
   isTraditionalWebComposeService,
   parseServiceTurbopanelExtension,
+  readServiceTurbopanelExtension,
 } from './service-kind.ts'
 import { validateComposeDocument } from './validate.ts'
 import { lintComposeYaml } from './lint.ts'
@@ -112,4 +113,67 @@ test('lintComposeYaml allows traditional-web service without image', () => {
     issues.some((issue) => issue.message.includes('must define "image" or "build"')),
     false,
   )
+})
+
+test('parseServiceTurbopanelExtension rejects non-mapping values', () => {
+  assertEquals(parseServiceTurbopanelExtension('bad'), null)
+  assertEquals(parseServiceTurbopanelExtension(null), {})
+})
+
+test('readServiceTurbopanelExtension returns empty when extension absent', () => {
+  assertEquals(readServiceTurbopanelExtension({ image: 'nginx' }), {})
+})
+
+test('collectServiceTurbopanelValidationIssues rejects invalid serviceKind and engine', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    site: {
+      'x-turbopanel': { serviceKind: 'vm', engine: 'caddy' },
+    },
+  })
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.site.x-turbopanel.serviceKind'),
+    true,
+  )
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.site.x-turbopanel.engine'),
+    true,
+  )
+})
+
+test('collectServiceTurbopanelValidationIssues rejects root without traditional-web', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    api: {
+      image: 'node:22',
+      'x-turbopanel': { root: 'public' },
+    },
+  })
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.api.x-turbopanel.root'),
+    true,
+  )
+})
+
+test('collectServiceTurbopanelValidationIssues rejects non-mapping x-turbopanel', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    api: {
+      image: 'node:22',
+      'x-turbopanel': 'bad',
+    },
+  })
+  assertEquals(issues[0]?.message.includes('must be a mapping'), true)
+})
+
+test('validateComposeDocument surfaces service extension validation issues', () => {
+  const result = validateComposeDocument({
+    version: 1,
+    data: {
+      services: {
+        site: {
+          'x-turbopanel': { serviceKind: 'traditional-web', engine: 'bad-engine' },
+        },
+      },
+    },
+    presentation: { keyOrder: ['services'], comments: {} },
+  })
+  assertEquals(result.ok, false)
 })

@@ -1,6 +1,8 @@
 import { assertEquals } from "jsr:@std/assert";
 import {
   buildDefaultDaemonStatus,
+  buildServerDaemonState,
+  isDaemonKeyActive,
   mapServerDaemonStatusFromColumns,
   parseServerDaemonState,
 } from "./daemon-state.ts";
@@ -114,4 +116,93 @@ test("mapServerDaemonStatusFromColumns coerces null/undefined connected to false
   assertEquals(status.connected, false);
   assertEquals(status.daemonStatus, "unknown");
   assertEquals(status.statusChangedAt, null);
+});
+
+test("mapServerDaemonStatusFromColumns treats blank statusChangedAt as unknown", () => {
+  const status = mapServerDaemonStatusFromColumns({
+    connected: true,
+    statusChangedAt: "   ",
+  });
+  assertEquals(status.daemonStatus, "unknown");
+});
+
+test("parseServerDaemonState rejects invalid shapes", () => {
+  assertEquals(parseServerDaemonState(null), null);
+  assertEquals(parseServerDaemonState([]), null);
+  assertEquals(parseServerDaemonState({}), null);
+  assertEquals(parseServerDaemonState({ key: { id: "" } }), null);
+  assertEquals(parseServerDaemonState({
+    key: { ...baseKey, algorithm: "RSA" },
+  }), null);
+  assertEquals(parseServerDaemonState({
+    key: { ...baseKey, publicJwk: { kty: "RSA" } },
+  }), null);
+});
+
+test("parseServerDaemonState parses agent and update projection fields", () => {
+  const parsed = parseServerDaemonState({
+    key: baseKey,
+    projection: {
+      hostname: "host-1",
+      machineKey: "mk-1",
+      remoteAddress: "203.0.113.1",
+      keyId: "key-1",
+      agent: {
+        commit: "abc123",
+        buildId: "build-1",
+        builtAt: "2020-01-01T00:00:00.000Z",
+        channel: "trunk",
+      },
+      update: {
+        status: "updating",
+        channel: "trunk",
+        requestId: "req-1",
+        queuedAt: "2020-01-01T00:00:00.000Z",
+        finishedAt: "2020-01-02T00:00:00.000Z",
+        error: "boom",
+      },
+    },
+  });
+
+  assertEquals(parsed?.projection?.hostname, "host-1");
+  assertEquals(parsed?.projection?.agent?.commit, "abc123");
+  assertEquals(parsed?.projection?.update?.status, "updating");
+  assertEquals(parsed?.projection?.update?.error, "boom");
+});
+
+test("parseServerDaemonState drops empty projection objects", () => {
+  const parsed = parseServerDaemonState({
+    key: baseKey,
+    projection: {
+      hostname: "   ",
+      agent: {},
+      update: { status: "not-a-status" },
+    },
+  });
+  assertEquals(parsed?.projection, undefined);
+});
+
+test("isDaemonKeyActive reflects revokedAt", () => {
+  assertEquals(isDaemonKeyActive({ ...baseKey, revokedAt: null }), true);
+  assertEquals(isDaemonKeyActive({ ...baseKey, revokedAt: undefined }), true);
+  assertEquals(
+    isDaemonKeyActive({
+      ...baseKey,
+      revokedAt: "2020-01-01T00:00:00.000Z",
+    }),
+    false,
+  );
+});
+
+test("buildServerDaemonState mints an active Ed25519 key row", () => {
+  const state = buildServerDaemonState({
+    publicJwk: baseKey.publicJwk,
+    fingerprint: "fp-new",
+  });
+  assertEquals(state.key.algorithm, "Ed25519");
+  assertEquals(state.key.fingerprint, "fp-new");
+  assertEquals(state.key.revokedAt, null);
+  assertEquals(state.key.id.length > 0, true);
+  assertEquals(state.key.createdAt.length > 0, true);
+  assertEquals(state.projection, undefined);
 });

@@ -88,4 +88,44 @@ describe('apply-variables', () => {
     assertEquals(env.SECRET, DEPLOY_PREVIEW_SECRET_PLACEHOLDER)
     assertEquals(build.args.SECRET, DEPLOY_PREVIEW_SECRET_PLACEHOLDER)
   })
+
+  it('merges per-service entries over globals and preserves existing env', () => {
+    const doc = emptyComposeDocument()
+    doc.data.services = {
+      api: { image: 'node:22', environment: { EXISTING: 'keep' } },
+      worker: { image: 'busybox' },
+    }
+
+    const result = applyVariablesToComposeDocument(doc, {
+      globalEntries: [{
+        key: 'GLOBAL',
+        value: 'all',
+        isSecret: false,
+        isLiteral: false,
+        forBuild: false,
+        forRuntime: true,
+      }],
+      perServiceEntries: new Map([
+        ['api', [{
+          key: 'API_ONLY',
+          value: 'api',
+          isSecret: false,
+          isLiteral: false,
+          forBuild: false,
+          forRuntime: true,
+        }]],
+      ]),
+    })
+
+    const api = (result.document.data.services as Record<string, Record<string, unknown>>).api!
+    assertEquals(api.environment, { EXISTING: 'keep', GLOBAL: 'all', API_ONLY: 'api' })
+    const worker = (result.document.data.services as Record<string, Record<string, unknown>>).worker!
+    assertEquals(worker.environment, { GLOBAL: 'all' })
+  })
+
+  it('injectSecretPlaceholdersIntoComposeDocument is a no-op without secrets', () => {
+    const doc = emptyComposeDocument()
+    doc.data.services = { api: { image: 'node:22' } }
+    assertEquals(injectSecretPlaceholdersIntoComposeDocument(doc, []), doc)
+  })
 })

@@ -9,6 +9,7 @@ import {
   generateSealedSecret,
   isDaemonSealedEnvelope,
   isSealedEnvelope,
+  parseDaemonSecretEnvelope,
   parseSecretEnvelope,
   resealSecretForDaemon,
 } from "./data-encryption.ts";
@@ -197,4 +198,101 @@ test("isSealedEnvelope detects sealed values only", async () => {
   assertEquals(isSealedEnvelope(envelope), true);
   assertEquals(isSealedEnvelope("plain-password"), false);
   assertEquals(isSealedEnvelope(""), false);
+});
+
+test("parseSecretEnvelope returns null for malformed enc values", async () => {
+  const secrets = await createCurrentSecrets();
+  const envelope = await encryptSecret(secrets, "x");
+  assertEquals(parseSecretEnvelope(envelope)?.keyVersion, 1);
+  assertEquals(parseSecretEnvelope("denc.1.payload"), null);
+  assertEquals(parseSecretEnvelope("enc"), null);
+  assertEquals(parseSecretEnvelope("enc..payload"), null);
+  assertEquals(parseSecretEnvelope("enc.not-a-version.payload"), null);
+});
+
+test("parseDaemonSecretEnvelope validates denc structure", async () => {
+  const secretsConfig = await createSecretsConfig();
+  const recipient = {
+    serverId: "11111111-1111-4111-8111-111111111111",
+    keyId: "22222222-2222-4222-8222-222222222222",
+  };
+  const envelope = await encryptSecretForDaemon(
+    secretsConfig,
+    recipient,
+    "daemon-bound",
+  );
+  assertEquals(parseDaemonSecretEnvelope(envelope), {
+    ...recipient,
+    keyVersion: 1,
+  });
+  assertEquals(isDaemonSealedEnvelope(envelope), true);
+  assertEquals(parseDaemonSecretEnvelope("denc.only.four.parts"), null);
+  assertEquals(
+    parseDaemonSecretEnvelope(
+      "denc.server.key.not-a-version.payload",
+    ),
+    null,
+  );
+});
+
+test("decryptSecret rejects daemon envelopes and invalid versions", async () => {
+  const secrets = await createCurrentSecrets();
+  const secretsConfig = await createSecretsConfig();
+  const recipient = {
+    serverId: "11111111-1111-4111-8111-111111111111",
+    keyId: "22222222-2222-4222-8222-222222222222",
+  };
+  const denc = await encryptSecretForDaemon(
+    secretsConfig,
+    recipient,
+    "daemon-only",
+  );
+  await assertRejects(
+    () => decryptSecret(secrets, denc),
+    DataEncryptionError,
+    "malformed envelope",
+  );
+  await assertRejects(
+    () => decryptSecret(secrets, "enc.not-a-version.payload"),
+    DataEncryptionError,
+    "invalid key version",
+  );
+  await assertRejects(
+    () => decryptSecret(secrets, "enc.1."),
+    DataEncryptionError,
+    "invalid payload length",
+  );
+});
+
+test("decryptSecretForDaemon rejects malformed and unknown-version envelopes", async () => {
+  const secretsConfig = await createSecretsConfig();
+  const recipient = {
+    serverId: "11111111-1111-4111-8111-111111111111",
+    keyId: "22222222-2222-4222-8222-222222222222",
+  };
+  await assertRejects(
+    () => decryptSecretForDaemon(secretsConfig, recipient, "enc.1.payload"),
+    DataEncryptionError,
+    "not a daemon sealed envelope",
+  );
+
+  const envelope = await encryptSecretForDaemon(
+    secretsConfig,
+    recipient,
+    "daemon-bound",
+  );
+  const tampered = envelope.replace(/\.1\./, ".99.");
+  await assertRejects(
+    () => decryptSecretForDaemon(secretsConfig, recipient, tampered),
+    DataEncryptionError,
+    "unknown key version",
+  );
+
+  const parts = envelope.split(".");
+  parts[4] = "YQ";
+  await assertRejects(
+    () => decryptSecretForDaemon(secretsConfig, recipient, parts.join(".")),
+    DataEncryptionError,
+    "invalid payload length",
+  );
 });

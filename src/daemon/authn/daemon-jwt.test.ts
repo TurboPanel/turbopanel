@@ -4,6 +4,7 @@ import {
 } from "./daemon-jwt-keyring.ts";
 import {
   DAEMON_JWT_AUD,
+  DAEMON_JWT_ISS,
   DAEMON_JWT_TYP,
   issueDaemonJwt,
   verifyDaemonJwt,
@@ -156,7 +157,7 @@ test("verifyDaemonJwt rejects wrong typ", async () => {
     sub: "server-1",
     jti: crypto.randomUUID(),
     kid: "key-1",
-    iss: "turbopanel",
+    iss: DAEMON_JWT_ISS,
     aud: DAEMON_JWT_AUD,
     typ: "user",
     iat: nowSeconds,
@@ -165,4 +166,76 @@ test("verifyDaemonJwt rejects wrong typ", async () => {
   const keyring = await createKeyring();
   const verified = await verifyDaemonJwt(token, keyring);
   assertEquals(verified, null);
+});
+
+test("verifyDaemonJwt rejects wrong iss", async () => {
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const token = await buildTokenWithPayload({
+    sub: "server-1",
+    jti: crypto.randomUUID(),
+    kid: "key-1",
+    iss: "other-issuer",
+    aud: DAEMON_JWT_AUD,
+    typ: DAEMON_JWT_TYP,
+    iat: nowSeconds,
+    exp: nowSeconds + 900,
+  });
+  const keyring = await createKeyring();
+  assertEquals(await verifyDaemonJwt(token, keyring), null);
+});
+
+test("verifyDaemonJwt rejects malformed tokens", async () => {
+  const keyring = await createKeyring();
+  assertEquals(await verifyDaemonJwt("", keyring), null);
+  assertEquals(await verifyDaemonJwt("not-a-jwt", keyring), null);
+  assertEquals(await verifyDaemonJwt("a.b", keyring), null);
+  assertEquals(await verifyDaemonJwt("a.b.c.d", keyring), null);
+});
+
+test("verifyDaemonJwt rejects unknown kid and wrong alg header", async () => {
+  const keyring = await createKeyring();
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const unknownKid = await buildTokenWithPayload({
+    sub: "server-1",
+    jti: crypto.randomUUID(),
+    kid: "key-1",
+    iss: DAEMON_JWT_ISS,
+    aud: DAEMON_JWT_AUD,
+    typ: DAEMON_JWT_TYP,
+    iat: nowSeconds,
+    exp: nowSeconds + 900,
+  });
+  const [header, payload, signature] = unknownKid.split(".");
+  const headerJson = decodeJson<{ alg: string; kid: string }>(header);
+  headerJson.kid = "unknown-kid";
+  const badKidToken = `${base64urlEncode(encoder.encode(JSON.stringify(headerJson)))}.${payload}.${signature}`;
+  assertEquals(await verifyDaemonJwt(badKidToken, keyring), null);
+
+  const wrongAlgHeader = { ...headerJson, alg: "HS256" };
+  const wrongAlgToken =
+    `${base64urlEncode(encoder.encode(JSON.stringify(wrongAlgHeader)))}.${payload}.${signature}`;
+  assertEquals(await verifyDaemonJwt(wrongAlgToken, keyring), null);
+});
+
+test("verifyDaemonJwt rejects invalid signature", async () => {
+  const keyring = await createKeyring();
+  const issued = await issueDaemonJwt(
+    { sub: "server-1", kid: "key-1" },
+    keyring,
+  );
+  const [header, payload] = issued.token.split(".");
+  const badSig = base64urlEncode(encoder.encode("not-a-signature"));
+  assertEquals(await verifyDaemonJwt(`${header}.${payload}.${badSig}`, keyring), null);
+});
+
+test("issueDaemonJwt expiresAt matches exp claim", async () => {
+  const keyring = await createKeyring();
+  const nowMs = Date.parse("2026-08-05T12:00:00.000Z");
+  const issued = await issueDaemonJwt(
+    { sub: "server-1", kid: "key-1" },
+    keyring,
+    nowMs,
+  );
+  const payload = decodeJson<{ exp: number }>(issued.token.split(".")[1]);
+  assertEquals(issued.expiresAt, new Date(payload.exp * 1000).toISOString());
 });

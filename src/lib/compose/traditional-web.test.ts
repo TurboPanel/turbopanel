@@ -100,3 +100,22 @@ test('allocateTraditionalWebListenPort throws when the range is exhausted', () =
     'No free traditional-web listen port',
   )
 })
+
+test('splitTraditionalWebServices skips services missing engine and defaults unsafe root', () => {
+  const result = splitTraditionalWebServices({
+    broken: {
+      'x-turbopanel': { serviceKind: 'traditional-web' },
+    },
+    unsafe: {
+      'x-turbopanel': {
+        serviceKind: 'traditional-web',
+        engine: 'nginx',
+        root: '../etc',
+      },
+    },
+  })
+  assertEquals(Object.keys(result.containerServices), [])
+  assertEquals(result.sites.length, 1)
+  assertEquals(result.sites[0]?.composeServiceName, 'unsafe')
+  assertEquals(result.sites[0]?.root, 'public')
+})

@@ -14,6 +14,8 @@ import {
   canManageTeam,
   canOwnOrganization,
   canOwnTeam,
+  isPlatformAdmin,
+  isSuperAdmin,
 } from './index.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -87,6 +89,24 @@ async function withTestFixtures(
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
 }
+
+it('isSuperAdmin and isPlatformAdmin classify platform roles', () => {
+  if (!isSuperAdmin({ id: 'u1', role: 'superadmin' })) {
+    throw new TypeError('superadmin role should satisfy isSuperAdmin')
+  }
+  if (isSuperAdmin({ id: 'u2', role: 'admin' })) {
+    throw new TypeError('admin role must not satisfy isSuperAdmin')
+  }
+  if (!isPlatformAdmin({ id: 'u3', role: 'admin' })) {
+    throw new TypeError('admin role should satisfy isPlatformAdmin')
+  }
+  if (!isPlatformAdmin({ id: 'u4', role: 'superadmin' })) {
+    throw new TypeError('superadmin role should satisfy isPlatformAdmin')
+  }
+  if (isPlatformAdmin({ id: 'u5', role: 'user' })) {
+    throw new TypeError('user role must not satisfy isPlatformAdmin')
+  }
+})
 
 it('org owner can manage org', async () => {
   await withTestFixtures(async ({ db, userId, organizationId }) => {

@@ -25,11 +25,28 @@ test('daemon rate-limit keys are stable and id-scoped', () => {
     daemonRestRateLimitKey('lic-1', 'enroll'),
     'daemon:rest:enroll:lic-1',
   )
+  assertEquals(
+    daemonRestRateLimitKey('srv-2', 'auth-challenge'),
+    'daemon:rest:auth-challenge:srv-2',
+  )
+  assertEquals(
+    daemonRestRateLimitKey('srv-2', 'auth-session'),
+    'daemon:rest:auth-session:srv-2',
+  )
+  assertEquals(
+    daemonRestRateLimitKey('srv-2', 'commands-lease'),
+    'daemon:rest:commands-lease:srv-2',
+  )
+  assertEquals(
+    daemonRestRateLimitKey('srv-2', 'secrets-decrypt'),
+    'daemon:rest:secrets-decrypt:srv-2',
+  )
   assertEquals(daemonMetricsRateLimitKey('srv-1'), 'daemon:metrics:srv-1')
   assertEquals(
     daemonEnrollChallengeRateLimitKey(),
     `daemon:rest:auth-challenge:${DAEMON_ENROLL_CHALLENGE_RATE_LIMIT_ID}`,
   )
+  assertEquals(DAEMON_ENROLL_CHALLENGE_RATE_LIMIT_ID, 'enroll-challenge')
 })
 
 test('noop limiter always allows and fail-closed always denies', async () => {

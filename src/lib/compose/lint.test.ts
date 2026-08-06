@@ -90,3 +90,63 @@ test('blockingComposeLintIssues allows empty-draft warnings', () => {
 `)
   assertEquals(blockingComposeLintIssues(bad).length > 0, true)
 })
+
+test('lintComposeYaml reports invalid YAML syntax', () => {
+  const issues = lintComposeYaml('services: [\n  - broken')
+  assertEquals(issues.length > 0, true)
+  assertEquals(issues[0]?.level, 'error')
+  assertEquals(issues[0]?.path, '$')
+})
+
+test('lintComposeYaml rejects non-mapping root', () => {
+  const issues = lintComposeYaml('- not-a-map\n')
+  assertEquals(issues[0]?.message.includes('root must be a mapping'), true)
+})
+
+test('lintComposeYaml warns on unknown top-level keys', () => {
+  const issues = lintComposeYaml(`servicess:
+  nginx:
+    image: nginx
+`)
+  const unknown = issues.find((issue) => issue.path === 'servicess')
+  assertEquals(unknown?.level, 'warning')
+  assertEquals(unknown?.message.includes('did you mean "services"'), true)
+})
+
+test('lintComposeYaml errors when services is not a mapping', () => {
+  const issues = lintComposeYaml('services: []\n')
+  assertEquals(
+    issues.some((issue) => issue.path === 'services' && issue.level === 'error'),
+    true,
+  )
+})
+
+test('lintComposeYaml errors when a service entry is not a mapping', () => {
+  const issues = lintComposeYaml(`services:
+  nginx: not-a-map
+`)
+  const serviceIssue = issues.find((issue) => issue.path === 'services.nginx')
+  assertEquals(serviceIssue?.level, 'error')
+  assertEquals(serviceIssue?.message.includes('must be a mapping'), true)
+})
+
+test('lintComposeYaml accepts build without image', () => {
+  const source = `services:
+  api:
+    build: .
+`
+  assertEquals(lintComposeYaml(source), [])
+})
+
+test('lintComposeYaml allows x-turbopanel extension keys on services', () => {
+  const source = `services:
+  site:
+    x-turbopanel:
+      serviceKind: traditional-web
+      engine: nginx
+`
+  assertEquals(
+    lintComposeYaml(source).some((issue) => issue.path.includes('x-turbopanel')),
+    false,
+  )
+})

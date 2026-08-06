@@ -1,6 +1,9 @@
 import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../db.ts'
-import { isApprovedReadModelId } from './approved-read-models.ts'
+import {
+  APPROVED_READ_MODELS,
+  isApprovedReadModelId,
+} from './approved-read-models.ts'
 import { runApprovedCachedReadModel } from './cached-query.ts'
 import {
   clampQueryCacheTtlSeconds,
@@ -20,9 +23,11 @@ import { createPassthroughQueryCache } from './passthrough-query-cache.ts'
 const test = Deno.test.bind(Deno)
 
 test('isApprovedReadModelId accepts only allowlisted ids', () => {
+  assertEquals(APPROVED_READ_MODELS, ['servers-list', 'server-detail'])
   assertEquals(isApprovedReadModelId('servers-list'), true)
   assertEquals(isApprovedReadModelId('server-detail'), true)
   assertEquals(isApprovedReadModelId('daemon-status'), false)
+  assertEquals(isApprovedReadModelId(''), false)
 })
 
 test('passthrough cache loads approved models and rejects others', async () => {
@@ -75,7 +80,18 @@ test('queryCacheKey prefixes namespace and joins parts', () => {
 test('clampQueryCacheTtlSeconds bounds ttl to the approved window', () => {
   assertEquals(clampQueryCacheTtlSeconds(), DEFAULT_QUERY_CACHE_TTL_SECONDS)
   assertEquals(clampQueryCacheTtlSeconds(0), 1)
+  assertEquals(clampQueryCacheTtlSeconds(-5), 1)
+  assertEquals(clampQueryCacheTtlSeconds(30), 30)
+  assertEquals(clampQueryCacheTtlSeconds(60), MAX_QUERY_CACHE_TTL_SECONDS)
   assertEquals(clampQueryCacheTtlSeconds(120), MAX_QUERY_CACHE_TTL_SECONDS)
+})
+
+test('queryCacheKey joins empty trailing parts without dropping namespace', () => {
+  assertEquals(queryCacheKey('servers-list'), 'tp:qcache:servers-list')
+  assertEquals(
+    queryCacheKey('server-detail', 'org', ''),
+    'tp:qcache:server-detail:org:',
+  )
 })
 
 test('runApprovedCachedReadModel bypasses cache when absent', async () => {
@@ -113,6 +129,7 @@ test('hyperdrive cache loads approved models and rejects others', async () => {
   const value = await cache.getReadModel({
     readModel: 'server-detail',
     key: 'k',
+    ttlSeconds: 999,
     load: async (passed) => {
       assertEquals(passed, db)
       return { id: 'srv-1' }
@@ -130,4 +147,16 @@ test('hyperdrive cache loads approved models and rejects others', async () => {
     Error,
     'Unapproved read model for cached database',
   )
+})
+
+test('passthrough cache ignores ttlSeconds and still loads', async () => {
+  const db = { kind: 'db' } as unknown as Db
+  const cache = createPassthroughQueryCache(db)
+  const value = await cache.getReadModel({
+    readModel: 'servers-list',
+    key: 'k',
+    ttlSeconds: 1,
+    load: async () => [{ id: 'ttl-ignored' }],
+  })
+  assertEquals(value, [{ id: 'ttl-ignored' }])
 })

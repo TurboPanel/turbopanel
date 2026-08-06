@@ -193,6 +193,90 @@ test('getReadModel rejects unapproved read models', async () => {
   )
 })
 
+test('host-free stub: miss loads then hit serves cached JSON', async () => {
+  const db = { kind: 'db' } as unknown as Db
+  const store = new Map<string, string>()
+  let loadCount = 0
+  const client = {
+    get: (key: string) => Promise.resolve(store.get(key) ?? null),
+    set: (key: string, value: string, _pxMs?: number) => {
+      store.set(key, value)
+      return Promise.resolve()
+    },
+  } as unknown as RedisCellClient
+
+  const cache = createRedisQueryCache({ client, db })
+  const key = queryCacheKey('servers-list', 'host-free-hit')
+  const payload = [{ id: 'srv-1' }]
+
+  const first = await cache.getReadModel({
+    readModel: 'servers-list',
+    key,
+    ttlSeconds: 30,
+    load: async (passed) => {
+      assertEquals(passed, db)
+      loadCount += 1
+      return payload
+    },
+  })
+  assertEquals(first, payload)
+  assertEquals(loadCount, 1)
+  assertEquals(store.get(key), JSON.stringify(payload))
+
+  const second = await cache.getReadModel({
+    readModel: 'servers-list',
+    key,
+    load: async () => {
+      loadCount += 1
+      return [{ id: 'should-not-load' }]
+    },
+  })
+  assertEquals(second, payload)
+  assertEquals(loadCount, 1)
+})
+
+test('host-free stub: invalid cached JSON falls back to loader', async () => {
+  const db = null as unknown as Db
+  let loadCount = 0
+  const client = {
+    get: () => Promise.resolve('{not-json'),
+    set: () => Promise.resolve(),
+  } as unknown as RedisCellClient
+
+  const cache = createRedisQueryCache({ client, db })
+  const result = await cache.getReadModel({
+    readModel: 'server-detail',
+    key: queryCacheKey('stub', 'bad-json'),
+    load: async () => {
+      loadCount += 1
+      return { recovered: true }
+    },
+  })
+  assertEquals(result, { recovered: true })
+  assertEquals(loadCount, 1)
+})
+
+test('host-free stub: clamps ttlSeconds before set', async () => {
+  const db = null as unknown as Db
+  let seenPx: number | undefined
+  const client = {
+    get: () => Promise.resolve(null),
+    set: (_key: string, _value: string, pxMs?: number) => {
+      seenPx = pxMs
+      return Promise.resolve()
+    },
+  } as unknown as RedisCellClient
+
+  const cache = createRedisQueryCache({ client, db })
+  await cache.getReadModel({
+    readModel: 'servers-list',
+    key: queryCacheKey('stub', 'ttl'),
+    ttlSeconds: 9999,
+    load: async () => ({ ok: true }),
+  })
+  assertEquals(seenPx, 60_000)
+})
+
 test(
   'cached falls back to loader when cached value is invalid JSON',
   withRedisQueryCache(async ({ client, namespace, db }) => {

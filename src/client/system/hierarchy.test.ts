@@ -13,9 +13,13 @@ import {
 } from '../../lib/db/schema.ts'
 import { WORKSPACE_KIND_SYSTEM } from '../../lib/db/workspace-kind.ts'
 import {
+  deleteSystemEnvironmentSubtree,
   ensureSelfHostSystemHierarchy,
   ensureSystemHierarchy,
   ensureSystemWorkspace,
+  findSystemEnvironmentForServer,
+  isSystemSelfHostComposeServiceName,
+  SYSTEM_HOSTING_INGRESS_COMPONENT,
   SYSTEM_SELF_HOST_COMPONENT,
   SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES,
 } from './hierarchy.ts'
@@ -394,5 +398,73 @@ test('concurrent ensureSelfHostSystemHierarchy creates exact hierarchy row count
       .from(container)
       .where(inArray(container.serviceId, serviceIds))
     assertEquals(containerRows.length, SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES.length)
+  })
+})
+
+test('isSystemSelfHostComposeServiceName recognizes self-host compose services', () => {
+  for (const name of SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES) {
+    assertEquals(isSystemSelfHostComposeServiceName(name), true)
+  }
+  assertEquals(isSystemSelfHostComposeServiceName('traefik'), false)
+  assertEquals(isSystemSelfHostComposeServiceName('redis'), false)
+})
+
+test('findSystemEnvironmentForServer filters by project component', async () => {
+  await withHierarchyFixtures(async ({ db, organizationId, serverId }) => {
+    const ingress = await ensureSystemHierarchy(db, { organizationId, serverId })
+    const selfHost = await ensureSelfHostSystemHierarchy(db, { organizationId, serverId })
+
+    assertEquals(
+      await findSystemEnvironmentForServer(db, serverId, SYSTEM_HOSTING_INGRESS_COMPONENT),
+      ingress.environmentId,
+    )
+    assertEquals(
+      await findSystemEnvironmentForServer(db, serverId, SYSTEM_SELF_HOST_COMPONENT),
+      selfHost.environmentId,
+    )
+    assertEquals(
+      await findSystemEnvironmentForServer(db, serverId, 'missing-component'),
+      null,
+    )
+
+    const firstMatch = await findSystemEnvironmentForServer(db, serverId)
+    assertEquals(
+      firstMatch === ingress.environmentId || firstMatch === selfHost.environmentId,
+      true,
+    )
+  })
+})
+
+test('deleteSystemEnvironmentSubtree removes services and containers but keeps shared project', async () => {
+  await withHierarchyFixtures(async ({ db, organizationId, serverId }) => {
+    const ingress = await ensureSystemHierarchy(db, { organizationId, serverId })
+
+    await db.transaction(async (tx) => {
+      await deleteSystemEnvironmentSubtree(tx, ingress.environmentId)
+    })
+
+    const environmentRows = await db
+      .select({ id: environment.id })
+      .from(environment)
+      .where(eq(environment.id, ingress.environmentId))
+    assertEquals(environmentRows.length, 0)
+
+    const serviceRows = await db
+      .select({ id: service.id })
+      .from(service)
+      .where(eq(service.id, ingress.serviceId))
+    assertEquals(serviceRows.length, 0)
+
+    const containerRows = await db
+      .select({ id: container.id })
+      .from(container)
+      .where(eq(container.id, ingress.containerRowId))
+    assertEquals(containerRows.length, 0)
+
+    const projectRows = await db
+      .select({ id: project.id })
+      .from(project)
+      .where(eq(project.id, ingress.projectId))
+    assertEquals(projectRows.length, 1)
   })
 })

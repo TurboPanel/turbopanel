@@ -1,6 +1,8 @@
 import { assertEquals } from '@std/assert'
 import { describe, it } from '@std/testing/bdd'
 import {
+  buildSignedCookie,
+  generateSessionToken,
   HTTP_SESSION_COOKIE_NAME,
   HTTPS_SESSION_COOKIE_NAME,
   LEGACY_HTTPS_SESSION_COOKIE_NAME,
@@ -9,7 +11,21 @@ import {
   resolveSessionCookieName,
   resolveSessionCookieNameFromUrl,
   resolveTrustedProxyRequestTls,
+  verifySignedCookie,
 } from './crypto.ts'
+import { deriveSecretsConfig, parseSecretsEnv } from './secrets.ts'
+import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+
+const V2_SECRET = 'Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2_Mm3Nn4Oo5Pp6Qq7'
+
+async function sessionSigningSecrets() {
+  const config = parseSecretsEnv(
+    undefined,
+    `2:${V2_SECRET},1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    'deno',
+  )
+  return deriveSecretsConfig(config, 'session-signing')
+}
 
 describe('HTTPS session cookie name', () => {
   it('uses the __Host- prefix (not the retired __Secure- name)', () => {
@@ -142,5 +158,86 @@ describe('URL-only helpers (docs / OpenAPI)', () => {
       resolveRequestTlsFromUrl('not a url').cookieName,
       HTTP_SESSION_COOKIE_NAME,
     )
+  })
+})
+
+describe('session cookie signing', () => {
+  it('generateSessionToken returns a non-empty base64url string', () => {
+    const token = generateSessionToken()
+    assertEquals(token.length > 0, true)
+    assertEquals(/^[A-Za-z0-9_-]+$/.test(token), true)
+    assertEquals(generateSessionToken() === token, false)
+  })
+
+  it('buildSignedCookie / verifySignedCookie round-trip with the current key', async () => {
+    const secrets = await sessionSigningSecrets()
+    const token = generateSessionToken()
+    const cookie = await buildSignedCookie(token, secrets)
+    const verified = await verifySignedCookie(cookie, secrets)
+    assertEquals(verified, { token, rotated: false })
+  })
+
+  it('verifySignedCookie accepts a fallback key and marks rotation', async () => {
+    const secrets = await sessionSigningSecrets()
+    const v1Only = parseSecretsEnv(
+      TEST_ONLY_TURBOPANEL_SECRET,
+      undefined,
+      'deno',
+    )
+    const v1Secrets = await deriveSecretsConfig(v1Only, 'session-signing')
+    const token = generateSessionToken()
+    const cookie = await buildSignedCookie(token, v1Secrets)
+    const verified = await verifySignedCookie(cookie, secrets)
+    assertEquals(verified?.token, token)
+    assertEquals(verified?.rotated, true)
+  })
+
+  it('verifySignedCookie rejects malformed and tampered cookies', async () => {
+    const secrets = await sessionSigningSecrets()
+    assertEquals(await verifySignedCookie('', secrets), null)
+    assertEquals(await verifySignedCookie('only-two.parts', secrets), null)
+    assertEquals(
+      await verifySignedCookie('token.vabc.sig', secrets),
+      null,
+    )
+    assertEquals(
+      await verifySignedCookie('token.v99.nope', secrets),
+      null,
+    )
+
+    const token = generateSessionToken()
+    const cookie = await buildSignedCookie(token, secrets)
+    const [, version, sig] = cookie.split('.')
+    assertEquals(
+      await verifySignedCookie(`${token}.${version}.tampered`, secrets),
+      null,
+    )
+    assertEquals(
+      await verifySignedCookie(`${token}.v0.${sig}`, secrets),
+      null,
+    )
+  })
+
+  it('uses the XOR fallback when timingSafeEqual is unavailable', async () => {
+    const secrets = await sessionSigningSecrets()
+    const token = generateSessionToken()
+    const cookie = await buildSignedCookie(token, secrets)
+
+    const subtle = crypto.subtle as SubtleCrypto & {
+      timingSafeEqual?: (a: ArrayBufferView, b: ArrayBufferView) => boolean
+    }
+    const saved = subtle.timingSafeEqual
+    try {
+      subtle.timingSafeEqual = undefined
+      const verified = await verifySignedCookie(cookie, secrets)
+      assertEquals(verified, { token, rotated: false })
+      const [, version, sig] = cookie.split('.')
+      assertEquals(
+        await verifySignedCookie(`${token}.${version}.bad-signature-value`, secrets),
+        null,
+      )
+    } finally {
+      subtle.timingSafeEqual = saved
+    }
   })
 })

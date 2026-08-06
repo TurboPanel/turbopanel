@@ -3,9 +3,16 @@ import { it } from "@std/testing/bdd";
 import {
   DB_OP_TIMEOUT_MS,
   DbOperationTimeoutError,
+  endDbConnection,
+  getDaemonCellRegistry,
+  getDb,
+  getQueryCache,
+  getServerMetricsStore,
+  raceWithTimeout,
   runWithDbTimeout,
   type Db,
 } from "./db.ts";
+import type { Context } from "hono";
 
 // The projection path never inspects the Db shape when fn ignores it, so a cast
 // of a placeholder is sufficient for these timing-focused tests.
@@ -59,4 +66,83 @@ it("runWithDbTimeout swallows a late rejection from the losing race side", async
 it("DB_OP_TIMEOUT_MS is a sane hard bound", () => {
   assert(DB_OP_TIMEOUT_MS > 0);
   assert(DB_OP_TIMEOUT_MS <= 15_000);
+});
+
+it("runWithDbTimeout uses DB_OP_TIMEOUT_MS when timeout omitted", async () => {
+  const result = await runWithDbTimeout(FAKE_DB, () => Promise.resolve("default"));
+  assertEquals(result, "default");
+});
+
+it("raceWithTimeout resolves fast work and rejects hung work", async () => {
+  assertEquals(
+    await raceWithTimeout(Promise.resolve("ok"), 1_000, "too slow"),
+    "ok",
+  );
+
+  const err = await assertRejects(
+    () =>
+      raceWithTimeout(
+        new Promise<void>(() => {}),
+        20,
+        "background exceeded",
+      ),
+    Error,
+    "background exceeded",
+  );
+  assertEquals(err.message, "background exceeded");
+});
+
+it("raceWithTimeout clears its timer and swallows late rejections", async () => {
+  await raceWithTimeout(Promise.resolve(1), 10_000, "unused");
+  await assertRejects(
+    () =>
+      raceWithTimeout(
+        new Promise<void>((_resolve, reject) => {
+          setTimeout(() => reject(new Error("late")), 30);
+        }),
+        5,
+        "deadline",
+      ),
+    Error,
+    "deadline",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 60));
+});
+
+it("endDbConnection is a no-op for clients without $client", async () => {
+  await endDbConnection(FAKE_DB);
+});
+
+it("endDbConnection ends a present $client pool", async () => {
+  let ended = false;
+  const db = {
+    $client: {
+      end: async () => {
+        ended = true;
+      },
+    },
+  } as unknown as Db;
+  await endDbConnection(db);
+  assertEquals(ended, true);
+});
+
+it("context getters read typed Hono variables", () => {
+  const vars = {
+    db: FAKE_DB,
+    daemonCellRegistry: { kind: "registry" },
+    queryCache: { kind: "cache" },
+    serverMetricsStore: { kind: "metrics" },
+  };
+  const c = {
+    get: (key: string) => vars[key as keyof typeof vars],
+  } as unknown as Context;
+
+  assertEquals(getDb(c), FAKE_DB);
+  assertEquals(getDaemonCellRegistry(c), vars.daemonCellRegistry);
+  assertEquals(getQueryCache(c), vars.queryCache);
+  assertEquals(getServerMetricsStore(c), vars.serverMetricsStore);
+
+  const empty = { get: () => undefined } as unknown as Context;
+  assertEquals(getDb(empty), undefined);
+  assertEquals(getQueryCache(empty), undefined);
 });

@@ -302,3 +302,95 @@ test('parseSettings still accepts harmless operator settings and they survive to
   assertEquals(conf.contents.includes("listen_addresses = '*'"), true)
   assertEquals(conf.contents.includes('port = 5432'), true)
 })
+
+test('parseSettings rejects invalid initialDatabase and non-object input', () => {
+  assertEquals(postgresEngineSpec.parseSettings([]), null)
+  assertEquals(postgresEngineSpec.parseSettings('postgres'), null)
+  assertEquals(
+    postgresEngineSpec.parseSettings({ initialDatabase: '' }),
+    null,
+  )
+  assertEquals(
+    postgresEngineSpec.parseSettings({ initialDatabase: 'bad-name' }),
+    null,
+  )
+  assertEquals(
+    postgresEngineSpec.parseSettings({ initialDatabase: 12 }),
+    null,
+  )
+  assertEquals(
+    postgresEngineSpec.parseSettings({ initialDatabase: 'a'.repeat(64) }),
+    null,
+  )
+})
+
+test('parseSettings defaults initialDatabase and rejects blank conf lines that are not settings', () => {
+  const defaults = postgresEngineSpec.parseSettings({}) as PostgresManagedSettings | null
+  if (!defaults) throw new TypeError('expected defaults')
+  assertEquals(defaults.initialDatabase, 'postgres')
+
+  assertEquals(
+    postgresEngineSpec.parseSettings({
+      engineConfig: 'not a setting line\n',
+    }),
+    null,
+  )
+})
+
+test('parseSettings accepts comment-only engineConfig', () => {
+  const settings = postgresEngineSpec.parseSettings({
+    engineConfig: '# tuning notes\n\n',
+  })
+  if (!settings) throw new TypeError('expected settings')
+  assertEquals((settings as PostgresManagedSettings).engineConfig, '# tuning notes\n\n')
+})
+
+test('buildRuntimeSpec applies dockerOptions onto compose service and env', () => {
+  const settings = defaultSettings({
+    dockerOptions: {
+      restart: 'always',
+      stopGracePeriodSeconds: 30,
+      shmSizeBytes: 64 * 1024 * 1024,
+      ulimits: { nofile: { soft: 1024, hard: 2048 } },
+      labels: { 'app.tier': 'db' },
+      extraEnv: { MY_FLAG: '1' },
+    },
+    exposure: { enabled: true, publishedPort: 15432, bind: 'local' },
+    resources: { memoryBytes: 256 * 1024 * 1024 },
+  })
+  const spec = postgresEngineSpec.buildRuntimeSpec({
+    managedId: '11111111-1111-1111-1111-111111111111',
+    settings,
+    rootUsername: 'postgres',
+  })
+  assertEquals(spec.service.restart, 'always')
+  assertEquals(spec.service.stop_grace_period, '30s')
+  assertEquals(spec.service.shm_size, 64 * 1024 * 1024)
+  assertEquals(spec.service.ulimits, {
+    nofile: { soft: 1024, hard: 2048 },
+  })
+  assertEquals(spec.service.labels, { 'app.tier': 'db' })
+  assertEquals(
+    (spec.service.environment as Record<string, string>).MY_FLAG,
+    '1',
+  )
+  assertEquals(spec.env.MY_FLAG, '1')
+  assertEquals(spec.exposure.bind, 'local')
+  assertEquals(
+    spec.configFiles[0]?.contents.includes("shared_buffers = '"),
+    true,
+  )
+})
+
+test('buildConnectionInfo uses sslmode=prefer when ssl disabled', () => {
+  const settings = defaultSettings({ ssl: { enabled: false } }) as ManagedSettings
+  const info = postgresEngineSpec.buildConnectionInfo({
+    host: 'db.example',
+    port: 5432,
+    database: 'appdb',
+    username: 'app_user',
+    settings,
+  })
+  assertEquals(info.dsn.includes('sslmode=prefer'), true)
+  assertEquals(info.dsn.includes(encodeURIComponent('app_user')), true)
+})
