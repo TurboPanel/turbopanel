@@ -118,11 +118,23 @@ test('stateless challenge rejects mismatch, expiry, and tampering', async () => 
   )
 
   const [payload, sig] = issued.id.split('.')
-  const tampered = `${payload}.${sig.slice(0, -1)}${sig.endsWith('A') ? 'B' : 'A'}`
+  // Last base64url char can be padding-equivalent; truncate the signature instead.
+  const tamperedSig = sig.slice(0, Math.max(1, sig.length - 8))
   assertEquals(
     await consumeChallenge(
       secrets,
-      { challengeId: tampered, serverId: 'srv-1', keyId: 'key-1' },
+      { challengeId: `${payload}.${tamperedSig}`, serverId: 'srv-1', keyId: 'key-1' },
+      DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+      now,
+    ),
+    null,
+  )
+  // Payload tampering with an intact signature must also fail verification.
+  const tamperedPayload = `${payload.slice(0, -1)}${payload.endsWith('A') ? 'B' : 'A'}`
+  assertEquals(
+    await consumeChallenge(
+      secrets,
+      { challengeId: `${tamperedPayload}.${sig}`, serverId: 'srv-1', keyId: 'key-1' },
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
       now,
     ),
