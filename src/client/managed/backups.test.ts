@@ -1,4 +1,6 @@
 import { assertEquals } from 'jsr:@std/assert'
+import type { Context } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import { postgresEngineSpec } from '../../lib/managed/postgres.ts'
 import type { ManagedEngineSpec } from '../../lib/managed/types.ts'
 import type { ManagedContext } from './context.ts'
@@ -8,6 +10,7 @@ import {
   buildManagedBackupDeletePayload,
   buildManagedRestorePayload,
   isManagedBackupApiError,
+  mapManagedBackupApiError,
   resolveBackupDatabase,
 } from './backups.ts'
 
@@ -72,6 +75,35 @@ test('resolveBackupDatabase rejects a database not in the configured list', () =
 test('resolveBackupDatabase rejects a non-string requested value', () => {
   const options = buildOptions()
   assertEquals(resolveBackupDatabase(options, 42), null)
+})
+
+test('resolveBackupDatabase returns null when no databases are configured', () => {
+  const options = buildOptions({ databases: [] })
+  assertEquals(resolveBackupDatabase(options, undefined), null)
+})
+
+test('isManagedBackupApiError recognizes error objects and rejects others', () => {
+  assertEquals(isManagedBackupApiError({ kind: 'backup_not_found' }), true)
+  assertEquals(isManagedBackupApiError(null), false)
+  assertEquals(isManagedBackupApiError('backup_not_found'), false)
+})
+
+test('mapManagedBackupApiError maps unsupported to 400 and missing to 404', async () => {
+  const c = {
+    json(body: unknown, status?: number) {
+      return Response.json(body, { status })
+    },
+  } as unknown as Context<AppEnv>
+
+  const unsupported = mapManagedBackupApiError(c, {
+    kind: 'managed_backup_unsupported',
+  })
+  assertEquals(unsupported.status, 400)
+  assertEquals(await unsupported.json(), { error: 'managed_backup_unsupported' })
+
+  const missing = mapManagedBackupApiError(c, { kind: 'backup_not_found' })
+  assertEquals(missing.status, 404)
+  assertEquals(await missing.json(), { error: 'backup_not_found' })
 })
 
 test('buildManagedBackupCreatePayload builds a create payload with clamped retention', () => {
@@ -149,6 +181,19 @@ test('buildManagedBackupDeletePayload rejects engines without backup support', (
   assertEquals(built.kind, 'managed_backup_unsupported')
 })
 
+test('buildManagedBackupDeletePayload uses instance scope when database is absent', () => {
+  const ctx = buildContext(postgresEngineSpec)
+  const record = buildRecord()
+  delete (record as { database?: string }).database
+
+  const built = buildManagedBackupDeletePayload(ctx, 'managed-1', record)
+  if (isManagedBackupApiError(built)) {
+    throw new Error(`expected success, got error kind=${built.kind}`)
+  }
+  assertEquals(built.payload.scope, 'instance')
+  assertEquals('database' in built.payload, false)
+})
+
 test('buildManagedRestorePayload carries the stored checksum and size, never dump bytes', () => {
   const ctx = buildContext(postgresEngineSpec)
   const record = buildRecord()
@@ -175,4 +220,16 @@ test('buildManagedRestorePayload rejects engines without backup support', () => 
     throw new Error('expected managed_backup_unsupported error')
   }
   assertEquals(built.kind, 'managed_backup_unsupported')
+})
+
+test('buildManagedRestorePayload omits database when the record has none', () => {
+  const ctx = buildContext(postgresEngineSpec)
+  const record = buildRecord()
+  delete (record as { database?: string }).database
+
+  const built = buildManagedRestorePayload(ctx, 'managed-1', record)
+  if (isManagedBackupApiError(built)) {
+    throw new Error(`expected success, got error kind=${built.kind}`)
+  }
+  assertEquals('database' in built.payload, false)
 })

@@ -156,3 +156,101 @@ test('createStatelessChallengeStore exposes issue/consume', async () => {
   })
   assertEquals(consumed?.nonce, issued.nonce)
 })
+
+test('stateless challenge honors embedded payload ttl over caller default', async () => {
+  const secrets = await challengeSecrets()
+  const now = Date.parse('2026-08-05T12:00:00.000Z')
+  const shortTtlMs = 5_000
+  const issued = await issueChallenge(
+    secrets,
+    { serverId: 'srv-ttl', keyId: 'key-ttl' },
+    shortTtlMs,
+    now,
+  )
+  const stillValid = await consumeChallenge(
+    secrets,
+    { challengeId: issued.id, serverId: 'srv-ttl', keyId: 'key-ttl' },
+    DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+    now + 1_000,
+  )
+  assertEquals(stillValid?.nonce, issued.nonce)
+
+  assertEquals(
+    await consumeChallenge(
+      secrets,
+      { challengeId: issued.id, serverId: 'srv-ttl', keyId: 'key-ttl' },
+      DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+      now + shortTtlMs + 1,
+    ),
+    null,
+  )
+})
+
+test('stateless challenge rejects malformed ids and empty binding fields', async () => {
+  const secrets = await challengeSecrets()
+  const now = Date.parse('2026-08-05T12:00:00.000Z')
+  const issued = await issueChallenge(secrets, {}, DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS, now)
+
+  assertEquals(
+    await consumeChallenge(
+      secrets,
+      { challengeId: 'only-one-part', serverId: '', keyId: '' },
+      DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+      now,
+    ),
+    null,
+  )
+  assertEquals(
+    await consumeChallenge(
+      secrets,
+      { challengeId: '.missing-payload', serverId: '', keyId: '' },
+      DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+      now,
+    ),
+    null,
+  )
+  assertEquals(
+    await consumeChallenge(
+      secrets,
+      { challengeId: issued.id, serverId: 'unexpected', keyId: '' },
+      DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+      now,
+    ),
+    null,
+  )
+})
+
+test('stateless challenge verifies with fallback signing keys', async () => {
+  const legacySecret =
+    'Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2_Mm3Nn4Oo5Pp6Qq7Rr8Ss9Tt0Uu1'
+  const signing = await deriveSecretsConfig(
+    parseSecretsEnv(legacySecret, undefined, 'workers'),
+    'daemon-challenge-signing',
+  )
+  const verifying = await deriveSecretsConfig(
+    parseSecretsEnv(
+      undefined,
+      `2:${TEST_ONLY_TURBOPANEL_SECRET},1:${legacySecret}`,
+      'workers',
+    ),
+    'daemon-challenge-signing',
+  )
+  const now = Date.parse('2026-08-05T12:00:00.000Z')
+  const issued = await issueChallenge(
+    signing,
+    { serverId: 'srv-fallback', keyId: 'key-fallback' },
+    DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+    now,
+  )
+  const consumed = await consumeChallenge(
+    verifying,
+    {
+      challengeId: issued.id,
+      serverId: 'srv-fallback',
+      keyId: 'key-fallback',
+    },
+    DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+    now,
+  )
+  assertEquals(consumed?.nonce, issued.nonce)
+})

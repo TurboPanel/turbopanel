@@ -43,3 +43,28 @@ test("geoEquals ignores capturedAt", () => {
     true,
   );
 });
+
+test("parseServerGeo preserves capturedAt and numeric asn", () => {
+  assertEquals(
+    parseServerGeo({
+      country: "US",
+      asn: "64500",
+      capturedAt: " 2026-01-01T00:00:00.000Z ",
+    }),
+    {
+      country: "US",
+      asn: 64500,
+      capturedAt: "2026-01-01T00:00:00.000Z",
+    },
+  );
+});
+
+test("extractCloudflareGeo returns null for non-records", () => {
+  assertEquals(extractCloudflareGeo(null), null);
+  assertEquals(extractCloudflareGeo("nope"), null);
+});
+
+test("geoEquals detects field differences", () => {
+  assertEquals(geoEquals({ country: "US" }, { country: "CA" }), false);
+  assertEquals(geoEquals(null, { country: "US" }), false);
+});

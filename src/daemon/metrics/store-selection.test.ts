@@ -6,6 +6,7 @@ import { DisabledServerMetricsStore } from "./disabled-store.ts";
 import { it } from "@std/testing/bdd";
 import {
   parseAnalyticsEngineMaxRangeSeconds,
+  parseMetricsRetentionDays,
   resetMetricsStoreSelectionWarningsForTests,
   resolveAnalyticsEngineSqlConfig,
   resolveServerMetricsStore,
@@ -120,4 +121,42 @@ it("resolveAnalyticsEngineSqlConfig returns null when credentials missing", () =
     }),
     null,
   );
+});
+
+it("parseMetricsRetentionDays accepts positive integers only", () => {
+  assertEquals(parseMetricsRetentionDays("90"), 90);
+  assertEquals(parseMetricsRetentionDays(30), 30);
+  assertEquals(parseMetricsRetentionDays(""), undefined);
+  assertEquals(parseMetricsRetentionDays("bad"), undefined);
+});
+
+it("resolveServerMetricsStore deno ClickHouse honors retentionDays override", () => {
+  resetMetricsStoreSelectionWarningsForTests();
+  const store = resolveServerMetricsStore({
+    runtime: "deno",
+    clickhouse: {
+      url: "http://127.0.0.1:8123",
+      database: "turbopanel",
+      user: "default",
+      password: "secret",
+      retentionDays: 30,
+    },
+  });
+  assertInstanceOf(store, ClickHouseServerMetricsStore);
+});
+
+it("resolveServerMetricsStore warns only once per missing-backend key", () => {
+  resetMetricsStoreSelectionWarningsForTests();
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (msg?: unknown) => {
+    warnings.push(String(msg));
+  };
+  try {
+    resolveServerMetricsStore({ runtime: "workers" });
+    resolveServerMetricsStore({ runtime: "workers" });
+    assertEquals(warnings.length, 1);
+  } finally {
+    console.warn = originalWarn;
+  }
 });

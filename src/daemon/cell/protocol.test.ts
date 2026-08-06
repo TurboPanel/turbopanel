@@ -2,12 +2,21 @@ import { assert, assertEquals, assertNotEquals } from "jsr:@std/assert";
 import { it } from "@std/testing/bdd";
 import {
   type DaemonMessage,
+  DAEMON_CELL_PING,
+  DAEMON_CELL_PONG,
   DAEMON_INBOUND_ALLOWED,
+  DAEMON_OFFLINE_SWEEP_MS,
+  DAEMON_STALE_MS,
   generateDeliveryId,
   generateRequestId,
+  MAX_DAEMON_WS_ERROR_CHARS,
   MAX_DAEMON_WS_FRAME_BYTES,
+  MAX_DAEMON_WS_HOST_FIELD_CHARS,
+  MAX_DAEMON_WS_ID_CHARS,
   MAX_DAEMON_WS_LOGS_CHARS,
+  MAX_DAEMON_WS_RESULT_JSON_BYTES,
   outboundEnvelopeToWireMessage,
+  parseDaemonAgentInfo,
   parseDaemonMessage,
   validateDaemonInboundEnvelope,
   validateDaemonInboundFrame,
@@ -465,4 +474,306 @@ it("deliveryId and requestId are independent UUIDs", () => {
   const requestId = generateRequestId();
   const deliveryId = generateDeliveryId();
   assertNotEquals(requestId, deliveryId);
+});
+
+const VALID_AT = "2020-01-01T00:00:00.000Z";
+const VALID_AGENT = { commit: "abc123def456", buildId: "build-1" };
+
+it("parseDaemonAgentInfo accepts optional builtAt and channel", () => {
+  assertEquals(
+    parseDaemonAgentInfo({
+      commit: "c1",
+      buildId: "b1",
+      builtAt: "2020-01-01T00:00:00.000Z",
+      channel: "trunk",
+    }),
+    {
+      commit: "c1",
+      buildId: "b1",
+      builtAt: "2020-01-01T00:00:00.000Z",
+      channel: "trunk",
+    },
+  );
+});
+
+it("parseDaemonAgentInfo rejects missing or empty commit/buildId", () => {
+  assertEquals(parseDaemonAgentInfo(null), undefined);
+  assertEquals(parseDaemonAgentInfo({ commit: "", buildId: "b" }), undefined);
+  assertEquals(parseDaemonAgentInfo({ commit: "c", buildId: "" }), undefined);
+  assertEquals(parseDaemonAgentInfo({ commit: 1, buildId: "b" }), undefined);
+});
+
+it("validateDaemonInboundFrame rejects invalid json and message shape", () => {
+  assertEquals(validateDaemonInboundFrame("not-json").ok, false);
+  assertEquals(validateDaemonInboundFrame("{}").ok, false);
+  assertEquals(validateDaemonInboundFrame('{"at":"' + VALID_AT + '"}').ok, false);
+});
+
+it("validateDaemonInboundFrame accepts hello with optional fields", () => {
+  const result = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: "hello",
+      at: VALID_AT,
+      agent: VALID_AGENT,
+      hostname: "host-1",
+      machineKey: "a".repeat(64),
+    }),
+  );
+  assertEquals(result.ok, true);
+});
+
+it("validateDaemonInboundFrame rejects hello with invalid agent or hostname", () => {
+  assertEquals(
+    validateDaemonInboundFrame(
+      JSON.stringify({ type: "hello", at: VALID_AT, agent: { commit: "" } }),
+    ).ok,
+    false,
+  );
+  assertEquals(
+    validateDaemonInboundFrame(
+      JSON.stringify({
+        type: "hello",
+        at: VALID_AT,
+        agent: VALID_AGENT,
+        hostname: "x".repeat(MAX_DAEMON_WS_HOST_FIELD_CHARS + 1),
+      }),
+    ).ok,
+    false,
+  );
+});
+
+it("validateDaemonInboundFrame rejects heartbeat with invalid timestamp or agent", () => {
+  assertEquals(
+    validateDaemonInboundFrame(
+      JSON.stringify({ type: "heartbeat", at: "not-a-timestamp" }),
+    ).ok,
+    false,
+  );
+  assertEquals(
+    validateDaemonInboundFrame(
+      JSON.stringify({
+        type: "heartbeat",
+        at: VALID_AT,
+        agent: { buildId: "only-build" },
+      }),
+    ).ok,
+    false,
+  );
+});
+
+it("validateDaemonInboundFrame validates addresses-result envelope fields", () => {
+  const ok = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: "addresses-result",
+      id: "req-1",
+      at: VALID_AT,
+      addresses: { privateIpv4: [], privateIpv6: [], publicIpv4: [], publicIpv6: [] },
+    }),
+  );
+  assertEquals(ok.ok, true);
+
+  assertEquals(
+    validateDaemonInboundFrame(
+      JSON.stringify({
+        type: "addresses-result",
+        id: "",
+        at: VALID_AT,
+        addresses: {},
+      }),
+    ).ok,
+    false,
+  );
+  assertEquals(
+    validateDaemonInboundFrame(
+      JSON.stringify({
+        type: "addresses-result",
+        id: "req-1",
+        at: VALID_AT,
+        addresses: "not-an-object",
+      }),
+    ).ok,
+    false,
+  );
+});
+
+it("validateDaemonInboundFrame validates ok-result and command messages", () => {
+  for (const type of [
+    "dev-sync-result",
+    "tunnel-token-result",
+    "public-urls-update-result",
+    "update-result",
+  ] as const) {
+    assertEquals(
+      validateDaemonInboundFrame(
+        JSON.stringify({ type, id: "req-1", at: VALID_AT, ok: true }),
+      ).ok,
+      true,
+    );
+    assertEquals(
+      validateDaemonInboundFrame(
+        JSON.stringify({
+          type,
+          id: "req-1",
+          at: VALID_AT,
+          ok: "yes",
+          error: "x".repeat(MAX_DAEMON_WS_ERROR_CHARS + 1),
+        }),
+      ).ok,
+      false,
+    );
+  }
+
+  assertEquals(
+    validateDaemonInboundFrame(
+      JSON.stringify({
+        type: "command-ack",
+        id: "req-1",
+        at: VALID_AT,
+        daemonReceivedAt: VALID_AT,
+      }),
+    ).ok,
+    true,
+  );
+  assertEquals(
+    validateDaemonInboundFrame(
+      JSON.stringify({
+        type: "command-ack",
+        id: "req-1",
+        at: VALID_AT,
+        daemonReceivedAt: "bad",
+      }),
+    ).ok,
+    false,
+  );
+
+  assertEquals(
+    validateDaemonInboundFrame(
+      JSON.stringify({
+        type: "command-outcome",
+        id: "req-1",
+        at: VALID_AT,
+        ok: true,
+        result: { pong: true },
+        daemonReceivedAt: VALID_AT,
+        daemonRespondedAt: VALID_AT,
+      }),
+    ).ok,
+    true,
+  );
+  assertEquals(
+    validateDaemonInboundFrame(
+      JSON.stringify({
+        type: "command-outcome",
+        id: "x".repeat(MAX_DAEMON_WS_ID_CHARS + 1),
+        at: VALID_AT,
+        ok: true,
+      }),
+    ).ok,
+    false,
+  );
+  assertEquals(
+    validateDaemonInboundFrame(
+      JSON.stringify({
+        type: "command-outcome",
+        id: "req-1",
+        at: VALID_AT,
+        ok: true,
+        result: { blob: "x".repeat(MAX_DAEMON_WS_RESULT_JSON_BYTES) },
+      }),
+    ).ok,
+    false,
+  );
+});
+
+it("validateDaemonInboundEnvelope rejects invalid requestId and timestamps", () => {
+  assertEquals(
+    validateDaemonInboundEnvelope({
+      kind: "addresses-result",
+      requestId: "",
+      at: VALID_AT,
+      addresses: {
+        privateIpv4: [],
+        privateIpv6: [],
+        publicIpv4: [],
+        publicIpv6: [],
+      },
+    }),
+    { ok: false, reason: "invalid requestId" },
+  );
+  assertEquals(
+    validateDaemonInboundEnvelope({
+      kind: "dev-sync-result",
+      requestId: "req-1",
+      at: "bad",
+      ok: true,
+    }),
+    { ok: false, reason: "invalid at timestamp" },
+  );
+});
+
+it("validateDaemonInboundEnvelope validates managed-logs and command-outcome caps", () => {
+  assertEquals(
+    validateDaemonInboundEnvelope({
+      kind: "managed-logs-result",
+      requestId: "req-1",
+      at: VALID_AT,
+      logs: "x".repeat(MAX_DAEMON_WS_LOGS_CHARS + 1),
+    }),
+    { ok: false, reason: "logs exceed max length" },
+  );
+  assertEquals(
+    validateDaemonInboundEnvelope({
+      kind: "managed-logs-result",
+      requestId: "req-1",
+      at: VALID_AT,
+      logs: "ok",
+      error: "x".repeat(MAX_DAEMON_WS_ERROR_CHARS + 1),
+    }),
+    { ok: false, reason: "error exceeds max length" },
+  );
+  assertEquals(
+    validateDaemonInboundEnvelope({
+      kind: "command-outcome",
+      requestId: "req-1",
+      at: VALID_AT,
+      ok: false,
+      error: "failed",
+    }),
+    { ok: true },
+  );
+  assertEquals(
+    validateDaemonInboundEnvelope({
+      kind: "command-ack",
+      requestId: "req-1",
+      at: VALID_AT,
+      daemonReceivedAt: "bad",
+    }),
+    { ok: false, reason: "invalid daemonReceivedAt" },
+  );
+});
+
+it("wireMessageToInboundEnvelope returns null for hello and heartbeat", () => {
+  assertEquals(
+    wireMessageToInboundEnvelope({
+      type: "hello",
+      at: VALID_AT,
+      agent: VALID_AGENT,
+    }),
+    null,
+  );
+  assertEquals(
+    wireMessageToInboundEnvelope({ type: "heartbeat", at: VALID_AT }),
+    null,
+  );
+});
+
+it("cell ping/pong constants and timing exports are stable", () => {
+  assertEquals(DAEMON_CELL_PING, '{"type":"ping"}');
+  assertEquals(DAEMON_CELL_PONG, '{"type":"pong"}');
+  assertEquals(DAEMON_STALE_MS, 60_000);
+  assertEquals(DAEMON_OFFLINE_SWEEP_MS, 150_000);
+  assertEquals(
+    (DAEMON_INBOUND_ALLOWED as ReadonlySet<string>).has("hello"),
+    true,
+  );
 });

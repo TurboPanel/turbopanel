@@ -27,18 +27,26 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/authn/crypto.test.ts \
   src/client/authn/data-encryption.deno.test.ts \
   src/client/authn/install-state.test.ts \
+  src/client/authn/license-lifecycle.test.ts \
   src/client/authn/password.deno.test.ts \
   src/client/authn/secrets.deno.test.ts \
+  src/client/authn/signup-validation.deno.test.ts \
   src/client/authn/workers-onboarding.test.ts \
   src/client/authz/ \
   src/client/display-name-uniqueness.test.ts \
   src/client/environments/validate-docker-external-networks.test.ts \
   src/client/managed/backups.test.ts \
+  src/client/managed/options.test.ts \
+  src/client/managed/serialize.test.ts \
+  src/client/org-context-parse.test.ts \
   src/client/principals/assignments.test.ts \
   src/client/principals/serialize.test.ts \
   src/client/projects/catalog/catalog.test.ts \
   src/client/projects/catalog/scaffold.test.ts \
   src/client/projects/empty-setup.test.ts \
+  src/client/servers/delete-guards.test.ts \
+  src/client/shared.test.ts \
+  src/client/storage/serialize.test.ts \
   src/client/system/hierarchy.test.ts \
   src/client/variables/resolve-inherited.test.ts \
   src/daemon/authn/daemon-jwt.test.ts \
@@ -47,16 +55,24 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/cell/contracts.test.ts \
   src/daemon/cell/control-plane-monitor.test.ts \
   src/daemon/cell/fleet-presence.test.ts \
+  src/daemon/cell/location.test.ts \
   src/daemon/cell/offline-sweep.test.ts \
   src/daemon/cell/postgres-projection.test.ts \
   src/daemon/cell/protocol.test.ts \
+  src/daemon/cell/redis/keys.test.ts \
+  src/daemon/cell/redis/lua.test.ts \
   src/daemon/cell/socket-health.test.ts \
   src/daemon/cell/stateless-challenge.test.ts \
   src/daemon/metrics/analytics-engine/field-map.test.ts \
+  src/daemon/metrics/analytics-engine/sql-api.test.ts \
   src/daemon/metrics/analytics-engine/store.test.ts \
+  src/daemon/metrics/clickhouse/client.test.ts \
   src/daemon/metrics/clickhouse/schema.test.ts \
+  src/daemon/metrics/clickhouse/store.test.ts \
   src/daemon/metrics/contract.test.ts \
   src/daemon/metrics/disabled-store.test.ts \
+  src/daemon/metrics/metric-descriptors.test.ts \
+  src/daemon/metrics/status-events.test.ts \
   src/daemon/metrics/query/cache.test.ts \
   src/daemon/metrics/query/resolution.test.ts \
   src/daemon/metrics/query/series-response.test.ts \
@@ -69,22 +85,32 @@ deno test -A --coverage=coverage/deno-profile \
   src/db-timeout.test.ts \
   src/deno-compile-permissions.test.ts \
   src/dev-mode.deno.test.ts \
+  src/developer/database-routes-shared.test.ts \
+  src/developer/dev-sync-archive.deno.test.ts \
   src/developer/drizzle-studio-bind.test.ts \
   src/developer/local-console-auth.test.ts \
+  src/drizzle-kit-config.test.ts \
+  src/drizzle-studio-probe.test.ts \
   src/lib/amqp-default-url.test.ts \
   src/lib/commands/command-amqp-topology.test.ts \
   src/lib/commands/deploy-validation.test.ts \
   src/lib/commands/hostname.test.ts \
   src/lib/commands/ids.test.ts \
+  src/lib/commands/noop-command-queue.test.ts \
   src/lib/commands/schemas.test.ts \
+  src/lib/commands/types.test.ts \
   src/lib/commands/wireguard.test.ts \
   src/lib/compose/ \
+  src/lib/datacenter-metadata.test.ts \
   src/lib/datacenter-name-suggestions.test.ts \
   src/lib/datacenter-options.test.ts \
+  src/lib/daemon-install-command.deno.test.ts \
   src/lib/db/server-metadata.test.ts \
   src/lib/docker-network-name.test.ts \
+  src/lib/email/noop-queue.test.ts \
   src/lib/email/smtp/amqp-topology.test.ts \
   src/lib/email/smtp/smtp-resolve.test.ts \
+  src/lib/email/templates.test.ts \
   src/lib/email/validate-address.test.ts \
   src/lib/geo/server-geo.test.ts \
   src/lib/hosting-options.test.ts \
@@ -92,19 +118,27 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/ip-address.test.ts \
   src/lib/machine-key.test.ts \
   src/lib/managed/ \
+  src/lib/net/vpn-address-allocator.pure.test.ts \
   src/lib/net/vpn-address-allocator.test.ts \
   src/lib/naming.test.ts \
   src/lib/organization-options.test.ts \
   src/lib/principal-options.test.ts \
   src/lib/project-options.test.ts \
+  src/lib/resolve-public-base-url.test.ts \
+  src/lib/resource-limits.test.ts \
   src/lib/server-capacity.test.ts \
   src/lib/service-options-instances.test.ts \
+  src/lib/timezones.test.ts \
   src/lib/tls/ \
   src/lib/update/manifest.test.ts \
+  src/node-path.test.ts \
   src/query-cache/passthrough-query-cache.test.ts \
+  src/runtime-paths.test.ts \
+  src/scalar-html.test.ts \
   src/server-paths.deno.test.ts \
   src/server-registry-metadata.test.ts \
-  src/server-registry.test.ts
+  src/server-registry.test.ts \
+  src/wrangler-hyperdrive-bindings.test.ts
 
 echo "==> Deno LCOV"
 deno coverage coverage/deno-profile --lcov --output=coverage/deno.lcov

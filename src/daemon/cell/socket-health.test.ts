@@ -64,3 +64,41 @@ it("evaluateSocketHealth half-open threshold stays above the 60s ping cadence", 
   // Guards against a regression that would reap healthy sockets between pings.
   assertEquals(HALF_OPEN_CLOSE_MS > 60_000, true);
 });
+
+it("evaluateSocketHealth respects custom max-age and half-open thresholds", () => {
+  const customMaxAge = 10_000;
+  const customHalfOpen = 5_000;
+  assertEquals(
+    evaluateSocketHealth(
+      {
+        nowMs: NOW,
+        connectedAtMs: NOW - customMaxAge,
+        lastPingAtMs: NOW - 1_000,
+      },
+      customMaxAge,
+      customHalfOpen,
+    ),
+    { reap: true, reason: "max_age" },
+  );
+  assertEquals(
+    evaluateSocketHealth(
+      {
+        nowMs: NOW,
+        connectedAtMs: NOW - 1_000,
+        lastPingAtMs: NOW - customHalfOpen,
+      },
+      customMaxAge,
+      customHalfOpen,
+    ),
+    { reap: true, reason: "half_open" },
+  );
+});
+
+it("evaluateSocketHealth max-age reaps null-ping sockets once the cap is reached", () => {
+  const decision = evaluateSocketHealth({
+    nowMs: NOW,
+    connectedAtMs: NOW - (MAX_WS_CONNECTION_AGE_MS),
+    lastPingAtMs: null,
+  });
+  assertEquals(decision, { reap: true, reason: "max_age" });
+});

@@ -4,6 +4,8 @@ import {
   parseCommandEnvelope,
 } from './envelope.ts'
 import {
+  isSystemComponentKey,
+  isValidNtpServer,
   parseCommandPayload,
   parseCommandResult,
   parseEnvironmentLifecyclePayload,
@@ -11,6 +13,7 @@ import {
   parseHostnameSetPayload,
   parseHostnameSetResult,
   parseManagedApplyPayload,
+  parseManagedApplyResult,
   parseManagedBackupPayload,
   parseManagedBackupResult,
   parseManagedDestroyPayload,
@@ -1878,4 +1881,59 @@ test('parseCommandEnvelope rejects invalid envelopes', () => {
     Error,
     'Invalid command envelope',
   )
+})
+
+test('parseCommandEnvelope omits empty correlationId', () => {
+  const envelope = parseCommandEnvelope({
+    commandId: 'c',
+    serverId: 's',
+    type: 'daemon.ping',
+    attempt: 1,
+    queuedAt: 't',
+    correlationId: '',
+  })
+  assertEquals(envelope.correlationId, undefined)
+})
+
+test('isValidNtpServer accepts hostnames and literals', () => {
+  assertEquals(isValidNtpServer('time.example.com'), true)
+  assertEquals(isValidNtpServer('203.0.113.10'), true)
+  assertEquals(isValidNtpServer(''), false)
+  assertEquals(isValidNtpServer('bad;host'), false)
+})
+
+test('isSystemComponentKey accepts only system component keys', () => {
+  assertEquals(isSystemComponentKey('hosting-ingress'), true)
+  assertEquals(isSystemComponentKey('database'), true)
+  assertEquals(isSystemComponentKey('not-a-component'), false)
+})
+
+test('parseManagedApplyResult projects host, port, and containers', () => {
+  assertEquals(
+    parseManagedApplyResult({
+      host: '127.0.0.1',
+      port: 5432,
+      containers: [
+        {
+          composeServiceName: 'postgres',
+          containerId: 'abc',
+          containerName: 'proj-postgres-1',
+          status: 'running',
+        },
+      ],
+    }),
+    {
+      host: '127.0.0.1',
+      port: 5432,
+      containers: [
+        {
+          composeServiceName: 'postgres',
+          containerId: 'abc',
+          containerName: 'proj-postgres-1',
+          status: 'running',
+        },
+      ],
+    },
+  )
+  assertEquals(parseManagedApplyResult({}), { host: '', port: 0 })
 })

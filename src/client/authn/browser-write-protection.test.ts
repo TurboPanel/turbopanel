@@ -66,6 +66,68 @@ describe('isSameOriginBrowserWrite', () => {
       true,
     )
   })
+
+  it('rejects when expected origin is null', () => {
+    assertEquals(
+      isSameOriginBrowserWrite('https://panel.example.com', undefined, null),
+      false,
+    )
+  })
+
+  it('rejects malformed Origin / Referer values', () => {
+    assertEquals(
+      isSameOriginBrowserWrite('not a url', undefined, 'https://panel.example.com'),
+      false,
+    )
+    assertEquals(
+      isSameOriginBrowserWrite(
+        undefined,
+        'also not a url',
+        'https://panel.example.com',
+      ),
+      false,
+    )
+  })
+})
+
+describe('browser write protection residual branches', () => {
+  it('passes through non-write methods', async () => {
+    const app = new Hono()
+    app.use('*', createBrowserWriteProtectionMiddleware('workers'))
+    app.get(`${CLIENT_API_PREFIX}/status`, (c) => c.json({ ok: true }))
+
+    const res = await app.request(
+      new Request('https://panel.example.com/api/client/v1/status', {
+        method: 'GET',
+        headers: { Origin: 'https://evil.example' },
+      }),
+    )
+    assertEquals(res.status, 200)
+  })
+
+  it('forbids writes when the request URL cannot be parsed', async () => {
+    const app = new Hono()
+    app.use('*', createBrowserWriteProtectionMiddleware('workers'))
+    app.post(`${CLIENT_API_PREFIX}/auth/sign-in`, (c) => c.json({ ok: true }))
+
+    // Hono normally always has a parseable URL; force the middleware catch by
+    // stubbing c.req.url via a custom request target that throws in URL().
+    const middleware = createBrowserWriteProtectionMiddleware('workers')
+    const fakeContext = {
+      req: {
+        method: 'POST',
+        url: 'http://[',
+        header: () => undefined,
+      },
+      json: (body: unknown, status?: number) =>
+        Response.json(body, { status: status ?? 200 }),
+    }
+    const res = await middleware(
+      fakeContext as never,
+      (() => Promise.resolve()) as never,
+    )
+    assertEquals(res instanceof Response ? res.status : 0, 403)
+  })
 })
 
 describe('browser write protection middleware', () => {
@@ -218,6 +280,16 @@ describe('browser write protection middleware', () => {
       }),
     )
     assertEquals(res.status, 403)
+  })
+
+  it('resolveExpectedBrowserOrigin returns null for unparseable request URLs', () => {
+    const badCtx = {
+      req: {
+        header: () => undefined,
+        url: 'http://[',
+      },
+    } as unknown as Parameters<typeof resolveExpectedBrowserOrigin>[0]
+    assertEquals(resolveExpectedBrowserOrigin(badCtx, 'workers'), null)
   })
 
   it('resolveExpectedBrowserOrigin uses proxy signal on Deno only', () => {

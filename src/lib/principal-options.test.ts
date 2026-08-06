@@ -1,11 +1,17 @@
 import { assertEquals } from 'jsr:@std/assert'
 import {
   DEFAULT_PRINCIPAL_SHELL,
+  isValidPrincipalIdOverride,
   parsePrincipalOptions,
   parsePrincipalOptionsInput,
   resolvePrincipalIdOverride,
   resolvePrincipalShell,
 } from './principal-options.ts'
+import {
+  PRINCIPAL_RESERVED_UID_MAX,
+  PRINCIPAL_RESERVED_UID_MIN,
+  PRINCIPAL_UID_START,
+} from './naming.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -108,6 +114,15 @@ test('resolvePrincipalShell defaults to nologin', () => {
   assertEquals(resolvePrincipalShell(undefined), DEFAULT_PRINCIPAL_SHELL)
   assertEquals(resolvePrincipalShell({}), DEFAULT_PRINCIPAL_SHELL)
   assertEquals(resolvePrincipalShell({ shell: '/bin/bash' }), '/bin/bash')
+})
+
+test('isValidPrincipalIdOverride enforces floor and reserved service band', () => {
+  assertEquals(isValidPrincipalIdOverride(PRINCIPAL_UID_START), true)
+  assertEquals(isValidPrincipalIdOverride(PRINCIPAL_UID_START + 1), true)
+  assertEquals(isValidPrincipalIdOverride(PRINCIPAL_RESERVED_UID_MIN), false)
+  assertEquals(isValidPrincipalIdOverride(PRINCIPAL_RESERVED_UID_MAX), false)
+  assertEquals(isValidPrincipalIdOverride(PRINCIPAL_UID_START - 1), false)
+  assertEquals(isValidPrincipalIdOverride(1.5), false)
 })
 
 test('resolvePrincipalIdOverride returns a pair or null', () => {

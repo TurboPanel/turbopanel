@@ -44,6 +44,18 @@ test('validateEmailAddress rejects empty and malformed', () => {
   )
 })
 
+test('validateEmailAddress trims display-name addresses', () => {
+  validateEmailAddress('  Ops Team <ops@example.com>  ', 'to')
+})
+
+test('validateEmailAddress rejects display-name with malformed inner address', () => {
+  assertThrows(
+    () => validateEmailAddress('Ops <not-an-email>', 'to'),
+    PermanentSendError,
+    'malformed to address',
+  )
+})
+
 test('PermanentSendError is an Error subclass', () => {
   const err = new PermanentSendError('boom')
   assertEquals(err instanceof Error, true)

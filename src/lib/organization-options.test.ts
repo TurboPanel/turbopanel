@@ -15,6 +15,11 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
+test('parseOrganizationOptions returns empty object for non-records', () => {
+  assertEquals(parseOrganizationOptions(null), {})
+  assertEquals(parseOrganizationOptions([]), {})
+})
+
 test('parseOrganizationOptions reads timezone and maxServers', () => {
   const options = parseOrganizationOptions({
     defaultServerTimezone: ' America/Chicago ',

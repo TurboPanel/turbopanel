@@ -1,6 +1,8 @@
 import { assertEquals } from 'jsr:@std/assert'
 import { describe, it } from '@std/testing/bdd'
 import {
+  normalizeDeployPathPrefix,
+  pathPrefixHasUnsupportedCharacters,
   validateDeployHostings,
   validateDeployHostnameRouting,
   validateDeployPathPrefix,
@@ -159,5 +161,83 @@ describe('deploy-validation', () => {
       }]),
       'storage st1 missing destinationPath',
     )
+  })
+
+  it('normalizeDeployPathPrefix treats slash and blank as catch-all', () => {
+    assertEquals(normalizeDeployPathPrefix(undefined), undefined)
+    assertEquals(normalizeDeployPathPrefix('/'), undefined)
+    assertEquals(normalizeDeployPathPrefix('  '), undefined)
+    assertEquals(normalizeDeployPathPrefix('/api'), '/api')
+  })
+
+  it('pathPrefixHasUnsupportedCharacters flags backticks and newlines', () => {
+    assertEquals(pathPrefixHasUnsupportedCharacters('/api'), false)
+    assertEquals(pathPrefixHasUnsupportedCharacters('/`api'), true)
+    assertEquals(pathPrefixHasUnsupportedCharacters('/api\n'), true)
+  })
+
+  it('rejects duplicate pathPrefix on the same hostname', () => {
+    const error = validateDeployHostnameRouting([
+      {
+        hostingId: 'h1',
+        serviceId: 's1',
+        composeServiceName: 'api',
+        hostnames: ['app.example.com'],
+        pathPrefix: '/api',
+      },
+      {
+        hostingId: 'h2',
+        serviceId: 's2',
+        composeServiceName: 'api2',
+        hostnames: ['app.example.com'],
+        pathPrefix: '/api',
+      },
+    ])
+    assertEquals(error, 'duplicate pathPrefix /api for hostname app.example.com')
+  })
+
+  it('rejects conflicting bindAddress on the same hostname', () => {
+    const error = validateDeployHostnameRouting([
+      {
+        hostingId: 'h1',
+        serviceId: 's1',
+        composeServiceName: 'static',
+        hostnames: ['app.example.com'],
+        bindAddress: '203.0.113.10',
+      },
+      {
+        hostingId: 'h2',
+        serviceId: 's2',
+        composeServiceName: 'api',
+        hostnames: ['app.example.com'],
+        bindAddress: '203.0.113.11',
+      },
+    ])
+    assertEquals(error, 'conflicting bindAddress for hostname app.example.com')
+  })
+
+  it('rejects invalid storage kind', () => {
+    assertEquals(
+      validateDeployStorageMaterialList([{
+        storageId: 'st1',
+        kind: 'unknown_kind',
+        name: 'data',
+        composeServiceName: 'web',
+        destinationPath: '/data',
+        serverId: 'srv1',
+      }]),
+      'invalid storage kind: unknown_kind',
+    )
+  })
+
+  it('rejects http hostings with invalid targetPort', () => {
+    const error = validateDeployHostings([{
+      hostingId: 'h1',
+      serviceId: 's1',
+      composeServiceName: 'web',
+      hostnames: ['app.example.com'],
+      targetPort: 0,
+    }])
+    assertEquals(error, 'targetPort must be an integer between 1 and 65535')
   })
 })

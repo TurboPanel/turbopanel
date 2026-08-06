@@ -1,5 +1,8 @@
 import { assertEquals } from "@std/assert";
-import { suggestDatacenterNames } from "./datacenter-name-suggestions.ts";
+import {
+  suggestDatacenterDisplayNameFromGeo,
+  suggestDatacenterNames,
+} from "./datacenter-name-suggestions.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -140,6 +143,60 @@ test("suggestDatacenterNames ignores absent or malformed geo and caps results", 
   assertEquals(suggestions.length, 1);
   assertEquals(suggestions[0]?.displayName, "NL");
   assertEquals(suggestDatacenterNames([], { limit: 0 }), []);
+});
+
+test("suggestDatacenterDisplayNameFromGeo builds location and network labels", () => {
+  assertEquals(
+    suggestDatacenterDisplayNameFromGeo({
+      city: "Dallas",
+      regionCode: "TX",
+      country: "US",
+      asn: 64500,
+      asOrganization: "Example ISP",
+    }),
+    "Dallas TX - Example ISP AS64500",
+  );
+  assertEquals(
+    suggestDatacenterDisplayNameFromGeo({ country: "DE" }),
+    "DE",
+  );
+  assertEquals(suggestDatacenterDisplayNameFromGeo({ city: "" }), null);
+});
+
+test("suggestDatacenterNames prefers displayName and hostname labels", () => {
+  const [suggestion] = suggestDatacenterNames([
+    {
+      id: "srv-1",
+      displayName: " Edge-1 ",
+      hostname: "host-a",
+      datacenterId: null,
+      metadata: { geo: { country: "US", city: "Chicago" } },
+    },
+    {
+      id: "srv-2",
+      displayName: null,
+      hostname: " host-b ",
+      datacenterId: null,
+      metadata: { geo: { country: "US", city: "Chicago" } },
+    },
+  ]);
+
+  assertEquals(suggestion?.serverLabels, ["Edge-1", "host-b"]);
+});
+
+test("suggestDatacenterNames skips non-object metadata", () => {
+  assertEquals(
+    suggestDatacenterNames([
+      {
+        id: "bad",
+        displayName: null,
+        hostname: null,
+        datacenterId: null,
+        metadata: ["not", "geo"],
+      },
+    ]),
+    [],
+  );
 });
 
 test("suggestDatacenterNames can require unassigned hosts only", () => {

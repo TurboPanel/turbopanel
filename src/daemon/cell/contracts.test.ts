@@ -89,3 +89,24 @@ test("DaemonCellSnapshot minimal shape has required fields", () => {
   assertExists(snapshot.updatedAt);
   assertEquals(typeof snapshot.connected, "boolean");
 });
+
+test("mergeSnapshotPresence overlays lastSeenAt and keeps stored updatedAt when meta is older", () => {
+  const stored: DaemonCellSnapshot = {
+    serverId: "srv-1",
+    version: 3,
+    updatedAt: "2020-01-03T00:00:00.000Z",
+    connected: true,
+    lastSeenAt: "2020-01-02T00:00:00.000Z",
+  };
+  const meta: DaemonCellSnapshot = {
+    serverId: "srv-1",
+    version: 3,
+    updatedAt: "2020-01-01T00:00:00.000Z",
+    connected: true,
+    lastSeenAt: "2020-01-04T00:00:00.000Z",
+  };
+
+  const merged = mergeSnapshotPresence(stored, meta);
+  assertEquals(merged.lastSeenAt, "2020-01-04T00:00:00.000Z");
+  assertEquals(merged.updatedAt, "2020-01-03T00:00:00.000Z");
+});

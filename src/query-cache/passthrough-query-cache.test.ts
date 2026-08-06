@@ -1,7 +1,14 @@
 import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../db.ts'
 import { isApprovedReadModelId } from './approved-read-models.ts'
+import { runApprovedCachedReadModel } from './cached-query.ts'
+import {
+  clampQueryCacheTtlSeconds,
+  DEFAULT_QUERY_CACHE_TTL_SECONDS,
+  MAX_QUERY_CACHE_TTL_SECONDS,
+} from './contracts.ts'
 import { createHyperdriveQueryCache } from './hyperdrive-query-cache.ts'
+import { QUERY_CACHE_PREFIX, queryCacheKey } from './keys.ts'
 import { createPassthroughQueryCache } from './passthrough-query-cache.ts'
 
 /**
@@ -55,6 +62,49 @@ test('passthrough cache requires a database', async () => {
     Error,
     'Database unavailable',
   )
+})
+
+test('queryCacheKey prefixes namespace and joins parts', () => {
+  assertEquals(QUERY_CACHE_PREFIX, 'tp:qcache:')
+  assertEquals(
+    queryCacheKey('servers-list', 'org-1', 'a,b'),
+    'tp:qcache:servers-list:org-1:a,b',
+  )
+})
+
+test('clampQueryCacheTtlSeconds bounds ttl to the approved window', () => {
+  assertEquals(clampQueryCacheTtlSeconds(), DEFAULT_QUERY_CACHE_TTL_SECONDS)
+  assertEquals(clampQueryCacheTtlSeconds(0), 1)
+  assertEquals(clampQueryCacheTtlSeconds(120), MAX_QUERY_CACHE_TTL_SECONDS)
+})
+
+test('runApprovedCachedReadModel bypasses cache when absent', async () => {
+  const db = { kind: 'db' } as unknown as Db
+  const loaded = await runApprovedCachedReadModel(
+    undefined,
+    db,
+    'servers-list',
+    ['org-1'],
+    async (passed) => {
+      assertEquals(passed, db)
+      return [{ id: 'srv-1' }]
+    },
+  )
+  assertEquals(loaded, [{ id: 'srv-1' }])
+})
+
+test('runApprovedCachedReadModel delegates to QueryCache when present', async () => {
+  const db = { kind: 'db' } as unknown as Db
+  const cache = createPassthroughQueryCache(db)
+  const loaded = await runApprovedCachedReadModel(
+    cache,
+    db,
+    'server-detail',
+    ['org-1', 'srv-1'],
+    async () => ({ id: 'srv-1' }),
+    30,
+  )
+  assertEquals(loaded, { id: 'srv-1' })
 })
 
 test('hyperdrive cache loads approved models and rejects others', async () => {

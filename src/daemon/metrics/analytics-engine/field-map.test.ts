@@ -32,6 +32,10 @@ import {
   doubleColumnForMetric,
   mapHostDimensionsToBlobs,
   mapHostMetricsToDoubles,
+  blobColumn,
+  doubleColumn,
+  statusConnectedColumn,
+  statusReasonColumn,
 } from "./field-map.ts";
 
 function baseSample(
@@ -127,6 +131,22 @@ it("doubleColumnForMetric: unknown key throws TypeError", () => {
     TypeError,
     "unknown host metrics metric",
   );
+});
+
+it("blobColumn and doubleColumn: map zero-based indices to SQL names", () => {
+  assertEquals(blobColumn(0), "blob1");
+  assertEquals(blobColumn(19), "blob20");
+  assertEquals(doubleColumn(0), "double1");
+  assertEquals(doubleColumn(19), "double20");
+  assertEquals(statusConnectedColumn(), "double1");
+  assertEquals(statusReasonColumn(), "blob7");
+});
+
+it("blobColumn and doubleColumn: reject invalid indices", () => {
+  assertThrows(() => blobColumn(-1), TypeError, "invalid AE blob index");
+  assertThrows(() => blobColumn(20), TypeError, "invalid AE blob index");
+  assertThrows(() => doubleColumn(1.5), TypeError, "invalid AE double index");
+  assertThrows(() => doubleColumn(20), TypeError, "invalid AE double index");
 });
 
 it("assertAnalyticsEngineDataPointShape: rejects malformed lengths", () => {

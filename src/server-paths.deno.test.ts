@@ -1,15 +1,23 @@
 import { assertEquals } from '@std/assert'
+import { join } from '@std/path'
 import {
   DEFAULT_CONFIG_DIR,
   DEFAULT_LOG_DIR,
   DEFAULT_RUN_DIR,
   DEFAULT_SOCKET_DIR,
   DEFAULT_STATE_DIR,
+  DEFAULT_TLS_CA,
+  DEFAULT_TLS_CERT,
   DEFAULT_UI_ROOT,
+  INSTANCE_SOCKET_MODE,
   caddyUnixDialPath,
+  hardenInstanceSocket,
+  prepareInstanceSocket,
   resolveInstanceConfigDir,
   resolveInstanceRuntimeConfigPaths,
   resolveInstanceSocket,
+  resolveInstanceTlsCaPath,
+  resolveInstanceTlsCertPath,
   resolveLogDir,
   resolveRunDir,
   resolveStateDir,
@@ -140,4 +148,48 @@ test('caddyUnixDialPath strips the leading slash for unix// dialing', () => {
     caddyUnixDialPath('/run/turbopanel/instance.sock'),
     'run/turbopanel/instance.sock',
   )
+})
+
+test('TLS cert/CA paths honor overrides and fall back to defaults', () => {
+  assertEquals(resolveInstanceTlsCertPath({}), DEFAULT_TLS_CERT)
+  assertEquals(resolveInstanceTlsCaPath({}), DEFAULT_TLS_CA)
+  assertEquals(
+    resolveInstanceTlsCertPath({ CADDY_TLS_CERT: ' /tmp/leaf.crt ' }),
+    '/tmp/leaf.crt',
+  )
+  assertEquals(
+    resolveInstanceTlsCaPath({ TURBOPANEL_TLS_CA: ' /tmp/ca.crt ' }),
+    '/tmp/ca.crt',
+  )
+})
+
+test('prepareInstanceSocket removes a stale socket file', async () => {
+  const dir = await Deno.makeTempDir({ prefix: 'tp-sock-prep-' })
+  const socketPath = join(dir, 'instance.sock')
+  await Deno.writeTextFile(socketPath, '')
+  try {
+    await prepareInstanceSocket(socketPath)
+    let removed = false
+    try {
+      await Deno.stat(socketPath)
+    } catch (err) {
+      removed = err instanceof Deno.errors.NotFound
+    }
+    assertEquals(removed, true)
+  } finally {
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+test('hardenInstanceSocket sets the instance socket mode', async () => {
+  const dir = await Deno.makeTempDir({ prefix: 'tp-sock-hard-' })
+  const socketPath = join(dir, 'instance.sock')
+  await Deno.writeTextFile(socketPath, '')
+  try {
+    await hardenInstanceSocket(socketPath)
+    const info = await Deno.stat(socketPath)
+    assertEquals(info.mode && (info.mode & 0o777), INSTANCE_SOCKET_MODE)
+  } finally {
+    await Deno.remove(dir, { recursive: true })
+  }
 })

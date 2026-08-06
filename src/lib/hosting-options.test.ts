@@ -3,6 +3,7 @@ import {
   parseHostingOptions,
   resolveHostingBind,
   resolveHostingProtocol,
+  resolveHostingProxy,
 } from './hosting-options.ts'
 
 /**
@@ -67,6 +68,50 @@ test('resolveHostingProtocol defaults to http', () => {
   assertEquals(resolveHostingProtocol(null), 'http')
   assertEquals(resolveHostingProtocol({}), 'http')
   assertEquals(resolveHostingProtocol({ protocol: 'tcp' }), 'tcp')
+})
+
+test('parseHostingOptions accepts hostnames, path prefix, target port, and proxy flags', () => {
+  assertEquals(
+    parseHostingOptions({
+      hostnames: ['app.example.com', ''],
+      pathPrefix: ' /api ',
+      targetPort: 8080,
+      proxy: {
+        forceHttps: false,
+        gzip: false,
+        brotli: true,
+        stripPrefix: '/v1',
+      },
+    }),
+    {
+      hostnames: ['app.example.com'],
+      pathPrefix: '/api',
+      targetPort: 8080,
+      proxy: {
+        forceHttps: false,
+        gzip: false,
+        brotli: true,
+        stripPrefix: '/v1',
+      },
+    },
+  )
+})
+
+test('resolveHostingProxy applies documented defaults', () => {
+  assertEquals(resolveHostingProxy(null), {
+    forceHttps: true,
+    gzip: true,
+    brotli: false,
+    stripPrefix: undefined,
+  })
+  assertEquals(
+    resolveHostingProxy({ proxy: { stripPrefix: '/api' } }).stripPrefix,
+    '/api',
+  )
+})
+
+test('parseHostingOptions rejects non-records', () => {
+  assertEquals(parseHostingOptions('nope'), null)
 })
 
 test('parseHostingOptions accepts web env and php hints', () => {

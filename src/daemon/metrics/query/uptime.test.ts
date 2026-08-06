@@ -189,3 +189,47 @@ it("knownUntilMs stops extending last state; suffix is unknown", () => {
   assertEquals(result.unknownSeconds, 30 * 60);
   assertEquals(result.uptimePercent, 0.5);
 });
+
+it("invalid or inverted ranges return zero totals", () => {
+  const invalid = computeStatusUptime({
+    fromMs: Number.NaN,
+    toMs: TO_MS,
+    initialConnected: true,
+    events: [],
+  });
+  assertEquals(invalid, {
+    uptimeSeconds: 0,
+    downtimeSeconds: 0,
+    unknownSeconds: 0,
+    uptimePercent: null,
+  });
+
+  const inverted = computeStatusUptime({
+    fromMs: TO_MS,
+    toMs: FROM_MS,
+    initialConnected: true,
+    events: [],
+  });
+  assertEquals(inverted.uptimePercent, null);
+});
+
+it("knownUntilMs clamps to the query window", () => {
+  const beforeFrom = computeStatusUptime({
+    fromMs: FROM_MS,
+    toMs: TO_MS,
+    initialConnected: true,
+    events: [],
+    knownUntilMs: FROM_MS - 60_000,
+  });
+  assertEquals(beforeFrom.unknownSeconds, HOUR);
+
+  const afterTo = computeStatusUptime({
+    fromMs: FROM_MS,
+    toMs: TO_MS,
+    initialConnected: true,
+    events: [],
+    knownUntilMs: TO_MS + 60_000,
+  });
+  assertEquals(afterTo.uptimeSeconds, HOUR);
+  assertEquals(afterTo.unknownSeconds, 0);
+});
