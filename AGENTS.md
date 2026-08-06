@@ -104,14 +104,33 @@ change. Future agents read `AGENTS.md` first.
   job — SonarCloud wizard layout) with `SONAR_TOKEN` and
   `sonar-project.properties` (`sonar.projectKey=turbopanel_turbopanel`,
   `sonar.organization=turbopanel`). The job runs checks + **`pnpm test:coverage`**
-  (Vitest under the workers pool, then Deno LCOV via `scripts/test-coverage.sh`;
-  Vitest has no V8 inspector in workerd so LCOV is Deno-only), then the scan with
-  `sonar.javascript.lcov.reportPaths=coverage/deno.lcov` and
-  `sonar.qualitygate.wait=true`. If the quality gate fails, the workflow stops.
-  **Coverage attribution:** only suites listed in `scripts/test-coverage.sh`
-  contribute to Sonar — adding a Deno `*.test.ts` alone does not raise coverage
-  until that path is included in the script. Prefer host-free unit suites there;
-  DB/Redis/integration suites stay out of LCOV.
+  (`scripts/test-coverage.sh`), which produces **two** LCOV reports that Sonar
+  merges (comma-separated `sonar.javascript.lcov.reportPaths`, combined
+  per-file rather than one overwriting the other):
+  - `coverage/vitest/lcov.info` — the Workers-pool Vitest suites
+    (`vitest.config.ts` `test.include`), coverage provider **`istanbul`**.
+    The default `v8` provider cannot run inside workerd (no `node:inspector`),
+    but `@cloudflare/vitest-pool-workers` bridges Istanbul's instrumented
+    counters back out to the Node.js process after each test file, so
+    `vitest run --coverage` here is a real, non-zero report — **do not**
+    assume Vitest coverage is unavailable and skip wiring it in. This is the
+    *only* LCOV source for Durable-Object / admin / other Workers-only code
+    that no Deno suite ever imports (`src/daemon/cell/do.ts`,
+    `src/daemon/workers-ws.ts`, `src/admin/public-urls.ts`, …) — before this
+    was wired in, that code silently sat at 0% forever, no matter how much
+    Vitest test coverage it actually had.
+  - `coverage/deno.lcov` — the host-free Deno suites listed in
+    `scripts/test-coverage.sh`, via `deno coverage --lcov` (native V8).
+  Then the scan runs with `sonar.qualitygate.wait=true`; if the quality gate
+  fails, the workflow stops.
+  **Coverage attribution (two independent traps — check both when new code's
+  coverage doesn't move):** (1) a new Deno `*.test.ts` file must be added to
+  the `deno test` file list in `scripts/test-coverage.sh` — prefer host-free
+  unit suites there; DB/Redis/integration suites stay out of LCOV. (2) a new
+  Workers/DO test file must be added to `vitest.config.ts` `test.include` —
+  that list is an explicit file enumeration, not a glob, because most
+  `*.test.ts` files use Deno-only APIs and cannot run under the Workers pool;
+  a file left off `test.include` never runs at all, coverage or not.
 - **Automatic Analysis must stay off** for `turbopanel_turbopanel`
   (SonarCloud → project **Administration → Analysis Method**). CI and Automatic
   Analysis cannot run together — Automatic Analysis enabled makes the CI

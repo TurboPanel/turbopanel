@@ -50,5 +50,21 @@ export default defineConfig({
       'src/daemon/metrics/validation.test.ts',
       'mailer/rate-limiter.test.ts',
     ],
+    coverage: {
+      // Istanbul instruments source at build time, so — unlike the default
+      // `v8` provider — it works inside workerd (no `node:inspector`). This
+      // pool bridges the instrumented counters back out to the Node.js
+      // process via a loopback request after each test file finishes, so a
+      // plain `lcov` reporter here is a real, non-zero report. Left disabled
+      // by default (no `enabled: true`) so `pnpm test:do` stays fast; `pnpm
+      // test:coverage` (scripts/test-coverage.sh) turns it on with `--coverage`.
+      provider: 'istanbul',
+      reporter: ['text-summary', 'lcov'],
+      reportsDirectory: 'coverage/vitest',
+      // Coverage attribution note: this `include` list above is exhaustive,
+      // not a glob — a new Workers/DO test file must be added there (and,
+      // separately, to scripts/test-coverage.sh for Deno suites) or it will
+      // never contribute to this report.
+    },
   },
 })

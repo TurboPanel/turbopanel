@@ -1,8 +1,21 @@
 #!/bin/sh
-# Run Vitest (no coverage — workers pool has no V8 inspector) + Deno suites with
-# coverage, then write LCOV for SonarCloud.
+# Run Vitest (workers pool, Istanbul coverage) + Deno suites (V8 coverage),
+# then write two LCOV reports for SonarCloud to merge.
+#
+# Vitest runs under @cloudflare/vitest-pool-workers, which has no
+# `node:inspector` (so the default `v8` coverage provider cannot run inside
+# workerd) — but the pool *does* bridge Istanbul's instrumented counters back
+# out to the Node.js process (see `test.coverage` in vitest.config.ts), so
+# `--coverage` there produces a real, non-zero LCOV report for the
+# Durable-Object / Workers-only code that only these suites exercise (daemon
+# cell, admin routes, etc). That report is entirely separate from — and
+# covers largely different files than — the Deno LCOV below, so both paths
+# are passed to `sonar.javascript.lcov.reportPaths` (comma-separated) in
+# sonar-project.properties; Sonar merges per-file hit counts across reports
+# rather than us hand-merging LCOV text.
+#
 # Usage: sh scripts/test-coverage.sh
-# Output: coverage/deno.lcov
+# Output: coverage/vitest/lcov.info, coverage/deno.lcov
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
@@ -11,8 +24,13 @@ cd "$ROOT"
 rm -rf coverage
 mkdir -p coverage
 
-echo "==> Vitest (workers pool — coverage unsupported)"
-pnpm exec vitest run --config vitest.config.ts
+echo "==> Vitest (workers pool, Istanbul coverage)"
+pnpm exec vitest run --config vitest.config.ts --coverage
+
+if ! grep -q '^SF:' coverage/vitest/lcov.info; then
+  echo "Vitest LCOV expected at least one SF: entry" >&2
+  exit 1
+fi
 
 echo "==> Deno coverage profile"
 # Host-free Deno suites that feed Sonar LCOV (Vitest/workerd cannot emit V8
@@ -191,4 +209,4 @@ if ! grep -q '^SF:src/' coverage/deno.lcov; then
   exit 1
 fi
 
-echo "Coverage LCOV ready: coverage/deno.lcov"
+echo "Coverage LCOV ready: coverage/vitest/lcov.info, coverage/deno.lcov"

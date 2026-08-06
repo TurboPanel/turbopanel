@@ -83,7 +83,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: instance-coverage-lcov
-          path: coverage/deno.lcov
+          path: |
+            coverage/vitest/lcov.info
+            coverage/deno.lcov
           if-no-files-found: error
           retention-days: 7
 
