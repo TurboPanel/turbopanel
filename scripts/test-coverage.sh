@@ -15,17 +15,43 @@ echo "==> Vitest (workers pool — coverage unsupported)"
 pnpm exec vitest run --config vitest.config.ts
 
 echo "==> Deno coverage profile"
-# Same suites as test:hook. CI uses -A so every suite shares one profile dir
-# (mirrors the daemon repo's test:coverage grant).
+# Host-free Deno suites that feed Sonar LCOV (Vitest/workerd cannot emit V8
+# coverage). Keep this list lean: pure unit suites + the existing hook set.
+# CI uses -A so every suite shares one profile dir (mirrors the daemon repo's
+# test:coverage grant).
 deno test -A --coverage=coverage/deno-profile \
   --no-check \
   src/client/authn/workers-onboarding.test.ts \
   src/client/authn/install-state.test.ts \
+  src/client/authn/browser-write-protection.test.ts \
   src/deno-compile-permissions.test.ts \
   src/client/authz/ \
+  src/client/principals/serialize.test.ts \
   src/server-paths.deno.test.ts \
   src/lib/compose/ \
   src/lib/managed/ \
+  src/lib/tls/ \
+  src/lib/amqp-default-url.test.ts \
+  src/lib/machine-key.test.ts \
+  src/lib/datacenter-options.test.ts \
+  src/lib/db/server-metadata.test.ts \
+  src/lib/commands/schemas.test.ts \
+  src/lib/commands/ids.test.ts \
+  src/lib/commands/command-amqp-topology.test.ts \
+  src/lib/email/validate-address.test.ts \
+  src/lib/email/smtp/amqp-topology.test.ts \
+  src/lib/email/smtp/smtp-resolve.test.ts \
+  src/query-cache/passthrough-query-cache.test.ts \
+  src/daemon/authn/daemon-jwt.test.ts \
+  src/daemon/authn/server-key.test.ts \
+  src/daemon/authn/daemon-state.test.ts \
+  src/daemon/cell/contracts.test.ts \
+  src/daemon/cell/socket-health.test.ts \
+  src/daemon/cell/stateless-challenge.test.ts \
+  src/daemon/rate-limit/inbound-window.test.ts \
+  src/daemon/rate-limit/keys.test.ts \
+  src/daemon/metrics/store-selection.test.ts \
+  src/daemon/metrics/query/uptime.test.ts \
   src/admin/reencrypt-secrets.test.ts \
   src/admin/routes.test.ts
 

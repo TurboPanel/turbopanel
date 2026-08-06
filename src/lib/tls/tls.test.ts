@@ -5,6 +5,7 @@ import {
   metadataFromParsed,
   mintSelfSignedCertificate,
   parseCertificatePem,
+  parseTlsOptions,
   privateKeyMatchesCertificate,
   resolveTlsForHosting,
   type TlsCandidate,
@@ -147,6 +148,45 @@ describe('resolveTlsForHosting', () => {
     const meta = metadataFromParsed(material.parsed)
     assertEquals(meta.status, 'ready')
     assertEquals(meta.dnsNames.includes('solo.example.com'), true)
+  })
+
+  it('fails when pin id is unknown', () => {
+    const result = resolveTlsForHosting({
+      pinId: 'missing',
+      hostnames: ['api.example.com'],
+      candidates: [candidate('pin-1', ['*.example.com'])],
+      now,
+    })
+    assertEquals(result, { ok: false, error: 'pin_not_found' })
+  })
+})
+
+describe('parseTlsOptions', () => {
+  it('returns null for non-objects', () => {
+    assertEquals(parseTlsOptions(null), null)
+    assertEquals(parseTlsOptions(undefined), null)
+    assertEquals(parseTlsOptions('x'), null)
+    assertEquals(parseTlsOptions([]), null)
+  })
+
+  it('keeps finite prefer, boolean autoRenew, and string hostnames', () => {
+    assertEquals(
+      parseTlsOptions({
+        prefer: 2,
+        autoRenew: true,
+        requestedHostnames: ['a.example.com', 'b.example.com'],
+        ignored: true,
+      }),
+      {
+        prefer: 2,
+        autoRenew: true,
+        requestedHostnames: ['a.example.com', 'b.example.com'],
+      },
+    )
+    assertEquals(
+      parseTlsOptions({ prefer: Number.NaN, requestedHostnames: [1] }),
+      {},
+    )
   })
 })
 

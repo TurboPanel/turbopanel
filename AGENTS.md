@@ -108,6 +108,10 @@ change. Future agents read `AGENTS.md` first.
   Vitest has no V8 inspector in workerd so LCOV is Deno-only), then the scan with
   `sonar.javascript.lcov.reportPaths=coverage/deno.lcov` and
   `sonar.qualitygate.wait=true`. If the quality gate fails, the workflow stops.
+  **Coverage attribution:** only suites listed in `scripts/test-coverage.sh`
+  contribute to Sonar — adding a Deno `*.test.ts` alone does not raise coverage
+  until that path is included in the script. Prefer host-free unit suites there;
+  DB/Redis/integration suites stay out of LCOV.
 - **Automatic Analysis must stay off** for `turbopanel_turbopanel`
   (SonarCloud → project **Administration → Analysis Method**). CI and Automatic
   Analysis cannot run together — Automatic Analysis enabled makes the CI
