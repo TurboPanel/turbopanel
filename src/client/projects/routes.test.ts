@@ -1477,7 +1477,7 @@ test('TurboPanel self-host descendant mutations return system_resource_immutable
       throw new TypeError('expected containers array')
     }
     assertEquals(
-      containerBody.containers.every((row) => row.role === 'app'),
+      containerBody.containers.every((row) => row.role === 'service'),
       true,
     )
     assertEquals(containerBody.containers.length > 0, true)

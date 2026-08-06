@@ -1156,11 +1156,14 @@ export const container = pgTable(
     containerName: text('container_name').notNull(),
     status: text('status').default('pending').notNull(),
     /**
-     * `role='ingress'` rows always use `ordinal = 1`, are named via
-     * `ingressContainerNameFromService`, and a service may hold N app
-     * replicas plus exactly one ingress row.
+     * `role='ingress'` rows always use `ordinal = 1` and are named
+     * `<service.id>-in` via `ingressContainerNameFromService`.
+     * `role='system'` is the platform `turbopanel-system` compose stack
+     * (`database` / `queue` / `analytics`). `role='service'` is the ordinary
+     * workload/engine replica. A service may hold N service replicas plus
+     * exactly one ingress row.
      */
-    role: text().default('app').notNull(),
+    role: text().default('service').notNull(),
     composeServiceName: text('compose_service_name').notNull(),
     /**
      * 1-based instance index of this container within its service; managed
@@ -1193,7 +1196,7 @@ export const container = pgTable(
       table.ordinal,
     ),
     check('container_ordinal_positive_check', sql`ordinal >= 1`),
-    check('container_role_check', sql`role IN ('app', 'ingress')`),
+    check('container_role_check', sql`role IN ('service', 'ingress', 'system')`),
     foreignKey({
       columns: [table.serviceId],
       foreignColumns: [service.id],

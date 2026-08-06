@@ -157,6 +157,7 @@ test('reconcileEnvironmentContainers drops rows for services absent from the rep
           containerId: 'cid-web-new',
           containerName: 'proj-web-2',
           status: 'running',
+          role: 'service',
         },
       ],
     })
@@ -204,6 +205,7 @@ test('reconcileEnvironmentContainers fills pre-allocated row without inserting a
           containerId: 'docker-cid-1',
           containerName: '01936b3e-aaaa-bbbb-cccc-123456789abc',
           status: 'running',
+          role: 'service',
         },
       ],
     })
@@ -253,6 +255,7 @@ test('reconcileEnvironmentContainers rename/rebuild keeps one row by name match'
           containerId: 'new-cid',
           containerName: 'stable-name',
           status: 'running',
+          role: 'service',
         },
       ],
     })
@@ -308,12 +311,14 @@ test('reconcileEnvironmentContainers maps multi-instance clone reports to ordina
           containerId: 'docker-2',
           containerName: 'cid-b',
           status: 'running',
+          role: 'service',
         },
         {
           composeServiceName: 'web-1',
           containerId: 'docker-1',
           containerName: 'cid-a',
           status: 'running',
+          role: 'service',
         },
       ],
     })
@@ -396,6 +401,7 @@ test('reconcileEnvironmentContainers creates missing services from the report', 
           containerId: 'cid-nginx',
           containerName: 'proj-nginx-1',
           status: 'running',
+          role: 'service',
         },
       ],
     })
@@ -488,6 +494,7 @@ test('reconcileEnvironmentContainers deletes stale pending outside current insta
           containerId: 'docker-1',
           containerName: 'cid-1',
           status: 'running',
+          role: 'service',
         },
       ],
     })
@@ -513,7 +520,7 @@ test('reconcileEnvironmentContainers deletes stale pending outside current insta
   })
 })
 
-test('reconcileEnvironmentContainers keeps app + ingress rows under one service', async () => {
+test('reconcileEnvironmentContainers keeps service + ingress rows under one service', async () => {
   await withReconcileFixtures(async ({
     db,
     serverId,
@@ -527,7 +534,7 @@ test('reconcileEnvironmentContainers keeps app + ingress rows under one service'
         containerId: null,
         containerName: `${webServiceId}-1`,
         status: 'pending',
-        role: 'app',
+        role: 'service',
         composeServiceName: 'web',
         ordinal: 1,
       },
@@ -535,7 +542,7 @@ test('reconcileEnvironmentContainers keeps app + ingress rows under one service'
         serviceId: webServiceId,
         serverId,
         containerId: null,
-        containerName: `${webServiceId}-ingress`,
+        containerName: `${webServiceId}-in`,
         status: 'pending',
         role: 'ingress',
         composeServiceName: 'web-ingress',
@@ -553,12 +560,13 @@ test('reconcileEnvironmentContainers keeps app + ingress rows under one service'
           containerId: 'cid-app',
           containerName: `${webServiceId}-1`,
           status: 'running',
+          role: 'service',
         },
         {
           serviceId: webServiceId,
           composeServiceName: 'web-ingress',
           containerId: 'cid-ingress',
-          containerName: `${webServiceId}-ingress`,
+          containerName: `${webServiceId}-in`,
           status: 'running',
           role: 'ingress',
         },
@@ -577,16 +585,16 @@ test('reconcileEnvironmentContainers keeps app + ingress rows under one service'
 
     assertEquals(rows.length, 2)
     const byRole = new Map(rows.map((row) => [row.role, row]))
-    assertEquals(byRole.get('app')?.containerId, 'cid-app')
-    assertEquals(byRole.get('app')?.status, 'running')
-    assertEquals(byRole.get('app')?.ordinal, 1)
+    assertEquals(byRole.get('service')?.containerId, 'cid-app')
+    assertEquals(byRole.get('service')?.status, 'running')
+    assertEquals(byRole.get('service')?.ordinal, 1)
     assertEquals(byRole.get('ingress')?.containerId, 'cid-ingress')
     assertEquals(byRole.get('ingress')?.status, 'running')
     assertEquals(byRole.get('ingress')?.ordinal, 1)
   })
 })
 
-test('reconcileEnvironmentContainers classifies ingress by containerName when role omitted', async () => {
+test('reconcileEnvironmentContainers does not infer ingress from containerName when role omitted', async () => {
   await withReconcileFixtures(async ({
     db,
     serverId,
@@ -600,7 +608,7 @@ test('reconcileEnvironmentContainers classifies ingress by containerName when ro
         containerId: null,
         containerName: `${webServiceId}-1`,
         status: 'pending',
-        role: 'app',
+        role: 'service',
         composeServiceName: 'web',
         ordinal: 1,
       },
@@ -608,7 +616,7 @@ test('reconcileEnvironmentContainers classifies ingress by containerName when ro
         serviceId: webServiceId,
         serverId,
         containerId: null,
-        containerName: `${webServiceId}-ingress`,
+        containerName: `${webServiceId}-in`,
         status: 'pending',
         role: 'ingress',
         composeServiceName: 'web-ingress',
@@ -624,13 +632,11 @@ test('reconcileEnvironmentContainers classifies ingress by containerName when ro
       })
       .from(container)
       .where(eq(container.serverId, serverId))
-    const appId = existing.find((row) => row.role === 'app')!.id
+    const serviceId = existing.find((row) => row.role === 'service')!.id
     const ingressId = existing.find((row) => row.role === 'ingress')!.id
 
-    // Omit role; composeServiceName does not end with -ingress — only the
-    // containerName suffix must classify this report as ingress. Use a name
-    // that does not match the pre-allocated ingress row so matching goes
-    // through (service, role, ordinal) rather than container_name.
+    // Omit role on a `-in`-shaped name: role defaults to `service`, so the
+    // report updates the service row — never the ingress allocation.
     await reconcileEnvironmentContainers(db, {
       serverId,
       environmentId,
@@ -638,9 +644,10 @@ test('reconcileEnvironmentContainers classifies ingress by containerName when ro
         {
           serviceId: webServiceId,
           composeServiceName: 'web',
-          containerId: 'cid-ingress-by-name',
-          containerName: `host-${webServiceId}-ingress`,
+          containerId: 'cid-by-name-default-service',
+          containerName: `host-${webServiceId}-in`,
           status: 'running',
+          role: 'service',
         },
       ],
     })
@@ -659,22 +666,21 @@ test('reconcileEnvironmentContainers classifies ingress by containerName when ro
 
     assertEquals(rows.length, 2)
     const byRole = new Map(rows.map((row) => [row.role, row]))
-    assertEquals(byRole.get('app')?.id, appId)
-    assertEquals(byRole.get('app')?.containerId, null)
-    assertEquals(byRole.get('app')?.status, 'pending')
-    assertEquals(byRole.get('app')?.containerName, `${webServiceId}-1`)
-    assertEquals(byRole.get('ingress')?.id, ingressId)
-    assertEquals(byRole.get('ingress')?.containerId, 'cid-ingress-by-name')
-    assertEquals(byRole.get('ingress')?.status, 'running')
-    assertEquals(byRole.get('ingress')?.ordinal, 1)
+    assertEquals(byRole.get('service')?.id, serviceId)
+    assertEquals(byRole.get('service')?.containerId, 'cid-by-name-default-service')
+    assertEquals(byRole.get('service')?.status, 'running')
     assertEquals(
-      byRole.get('ingress')?.containerName,
-      `host-${webServiceId}-ingress`,
+      byRole.get('service')?.containerName,
+      `host-${webServiceId}-in`,
     )
+    assertEquals(byRole.get('ingress')?.id, ingressId)
+    assertEquals(byRole.get('ingress')?.containerId, null)
+    assertEquals(byRole.get('ingress')?.status, 'pending')
+    assertEquals(byRole.get('ingress')?.containerName, `${webServiceId}-in`)
   })
 })
 
-test('reconcileEnvironmentContainers leaves pending ingress intact on app-only report', async () => {
+test('reconcileEnvironmentContainers leaves pending ingress intact on service-only report', async () => {
   await withReconcileFixtures(async ({
     db,
     serverId,
@@ -688,7 +694,7 @@ test('reconcileEnvironmentContainers leaves pending ingress intact on app-only r
         containerId: null,
         containerName: `${webServiceId}-1`,
         status: 'pending',
-        role: 'app',
+        role: 'service',
         composeServiceName: 'web',
         ordinal: 1,
       },
@@ -696,7 +702,7 @@ test('reconcileEnvironmentContainers leaves pending ingress intact on app-only r
         serviceId: webServiceId,
         serverId,
         containerId: null,
-        containerName: `${webServiceId}-ingress`,
+        containerName: `${webServiceId}-in`,
         status: 'pending',
         role: 'ingress',
         composeServiceName: 'web-ingress',
@@ -724,6 +730,7 @@ test('reconcileEnvironmentContainers leaves pending ingress intact on app-only r
           containerId: 'cid-app-only',
           containerName: `${webServiceId}-1`,
           status: 'running',
+          role: 'service',
         },
       ],
     })
@@ -740,15 +747,15 @@ test('reconcileEnvironmentContainers leaves pending ingress intact on app-only r
 
     assertEquals(rows.length, 2)
     const byRole = new Map(rows.map((row) => [row.role, row]))
-    assertEquals(byRole.get('app')?.containerId, 'cid-app-only')
-    assertEquals(byRole.get('app')?.status, 'running')
+    assertEquals(byRole.get('service')?.containerId, 'cid-app-only')
+    assertEquals(byRole.get('service')?.status, 'running')
     assertEquals(byRole.get('ingress')?.id, ingressId)
     assertEquals(byRole.get('ingress')?.containerId, null)
     assertEquals(byRole.get('ingress')?.status, 'pending')
   })
 })
 
-test('reconcileEnvironmentContainers app+ingress report is idempotent', async () => {
+test('reconcileEnvironmentContainers service+ingress report is idempotent', async () => {
   await withReconcileFixtures(async ({
     db,
     serverId,
@@ -762,12 +769,13 @@ test('reconcileEnvironmentContainers app+ingress report is idempotent', async ()
         containerId: 'cid-app',
         containerName: `${webServiceId}-1`,
         status: 'running' as const,
+        role: 'service' as const,
       },
       {
         serviceId: webServiceId,
         composeServiceName: 'web-ingress',
         containerId: 'cid-ingress',
-        containerName: `${webServiceId}-ingress`,
+        containerName: `${webServiceId}-in`,
         status: 'running' as const,
         role: 'ingress' as const,
       },
@@ -812,7 +820,7 @@ test('reconcileEnvironmentContainers app+ingress report is idempotent', async ()
       firstIds,
     )
     const byRole = new Map(second.map((row) => [row.role, row]))
-    assertEquals(byRole.get('app')?.containerId, 'cid-app')
+    assertEquals(byRole.get('service')?.containerId, 'cid-app')
     assertEquals(byRole.get('ingress')?.containerId, 'cid-ingress')
   })
 })
@@ -891,7 +899,7 @@ test('reconcileEnvironmentContainers resets unmatched expected allocations inste
         containerId: 'cid-web',
         containerName: webServiceId,
         status: 'running',
-        role: 'app',
+        role: 'service',
         composeServiceName: 'web',
         ordinal: 1,
       })
@@ -904,7 +912,7 @@ test('reconcileEnvironmentContainers resets unmatched expected allocations inste
         containerId: 'cid-worker',
         containerName: workerServiceId,
         status: 'running',
-        role: 'app',
+        role: 'service',
         composeServiceName: 'worker',
         ordinal: 1,
       })
@@ -920,12 +928,12 @@ test('reconcileEnvironmentContainers resets unmatched expected allocations inste
           containerId: 'cid-web-new',
           containerName: webServiceId,
           status: 'running',
-          role: 'app',
+          role: 'service',
         },
       ],
       expectedAllocations: [
-        { serviceId: webServiceId, role: 'app', ordinal: 1 },
-        { serviceId: workerServiceId, role: 'app', ordinal: 1 },
+        { serviceId: webServiceId, role: 'service', ordinal: 1 },
+        { serviceId: workerServiceId, role: 'service', ordinal: 1 },
       ],
     })
 

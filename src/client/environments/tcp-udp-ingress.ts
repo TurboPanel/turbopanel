@@ -2,7 +2,7 @@
  * Secrets-free resolution of services that need a per-service Traefik ingress
  * project (at least one `tcp`/`udp` hosting with non-empty `ports`).
  *
- * Shared by deploy-preview and deploy so operators see `<service.id>-ingress`
+ * Shared by deploy-preview and deploy so operators see `<service.id>-in`
  * before the daemon applies it.
  */
 

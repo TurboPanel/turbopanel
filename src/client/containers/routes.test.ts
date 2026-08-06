@@ -257,7 +257,7 @@ test('POST/PATCH /containers strip promoted keys from stored JSONB', async () =>
     assertEquals(getBody.container.containerId, dockerId)
     assertEquals(getBody.container.containerName, 'web-1')
     assertEquals(getBody.container.status, 'running')
-    assertEquals(getBody.container.role, 'app')
+    assertEquals(getBody.container.role, 'service')
     assertEquals(getBody.container.composeServiceName, 'web')
     assertEquals(getBody.container.metadata.note, 'keep-me')
     assertEquals(getBody.container.metadata.containerId, undefined)

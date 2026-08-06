@@ -93,7 +93,7 @@ function buildSystemReconcileComponents(
         serviceId: svc.serviceId,
         composeServiceName: svc.composeServiceName,
         containerName: svc.serviceId,
-        role: 'app',
+        role: 'system',
         desired: 'present',
       })
     }
@@ -312,7 +312,7 @@ export async function runSystemReconcileSweep(
         OR (
           p.metadata->>'component' = ${SYSTEM_SELF_HOST_COMPONENT}
           AND s.compose_service_name IN (${selfHostComposeServiceNameList})
-          AND c.role = 'app'
+          AND c.role = 'system'
           AND (c.status <> 'running' OR c.container_id IS NULL)
         )
       )

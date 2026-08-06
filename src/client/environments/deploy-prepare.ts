@@ -163,7 +163,7 @@ export type PreparedDeployCompose = {
   /** Pre-allocated container rows for this deploy (uuid / explicit-name paths). */
   containers: ContainerAllocation[]
   /**
-   * Per-service tcp/udp Traefik ingress allocations (`<service.id>-ingress`).
+   * Per-service tcp/udp Traefik ingress allocations (`<service.id>-in`).
    * Empty when no service publishes raw ports.
    */
   ingressServices: EnvironmentDeployIngressService[]

@@ -780,7 +780,10 @@ test('GET /environments/:id/managed/status returns status host port containers',
     assertEquals(Array.isArray(body.containers), true)
     for (const row of body.containers) {
       assertEquals(typeof row.role, 'string')
-      assertEquals(row.role === 'app' || row.role === 'ingress', true)
+      assertEquals(
+        row.role === 'service' || row.role === 'ingress' || row.role === 'system',
+        true,
+      )
     }
   })
 })

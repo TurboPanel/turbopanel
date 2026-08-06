@@ -441,7 +441,7 @@ test('buildManagedApplyPayload with exposure enabled allocates ingress on the en
     )
     assertEquals(
       payload.ingress?.containerName,
-      `${payload.ingress!.serviceId}-ingress`,
+      `${payload.ingress!.serviceId}-in`,
     )
 
     const services = await db
@@ -457,7 +457,7 @@ test('buildManagedApplyPayload with exposure enabled allocates ingress on the en
     const serviceId = services[0]!.id
     assertEquals(payload.ingress?.serviceId, serviceId)
     assertEquals(payload.containerName, `${serviceId}-1`)
-    assertEquals(payload.ingress?.containerName, `${serviceId}-ingress`)
+    assertEquals(payload.ingress?.containerName, `${serviceId}-in`)
 
     const containers = await db
       .select({
@@ -471,10 +471,10 @@ test('buildManagedApplyPayload with exposure enabled allocates ingress on the en
       containers.map((row) => [row.role, row]),
     )
     assertEquals(containers.length, 2)
-    assertEquals(byRole.app?.ordinal, 1)
-    assertEquals(byRole.app?.containerName, `${serviceId}-1`)
+    assertEquals(byRole.service?.ordinal, 1)
+    assertEquals(byRole.service?.containerName, `${serviceId}-1`)
     assertEquals(byRole.ingress?.ordinal, 1)
-    assertEquals(byRole.ingress?.containerName, `${serviceId}-ingress`)
+    assertEquals(byRole.ingress?.containerName, `${serviceId}-in`)
   })
 })
 
@@ -522,12 +522,12 @@ test('buildManagedApplyPayload with exposure disabled prunes pending ingress con
       .where(
         and(
           eq(container.serviceId, engineServiceId),
-          eq(container.role, 'app'),
+          eq(container.role, 'service'),
         ),
       )
       .limit(1)
     if (!appBefore) {
-      throw new TypeError('expected role=app container on engine service')
+      throw new TypeError('expected role=service container on engine service')
     }
 
     const disabled = await buildManagedApplyPayload(c, db, {
@@ -568,7 +568,7 @@ test('buildManagedApplyPayload with exposure disabled prunes pending ingress con
       .where(
         and(
           eq(container.serviceId, engineServiceId),
-          eq(container.role, 'app'),
+          eq(container.role, 'service'),
         ),
       )
       .limit(1)

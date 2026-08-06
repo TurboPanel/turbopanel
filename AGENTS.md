@@ -705,7 +705,7 @@ The three databases/brokers above are provisioned into the `turbopanel-system`
 Compose project (see daemon `src/deploy/AGENTS.md` → **System services Compose
 stack**) so their container identity/status is inspectable through the same
 `container` table and client `GET /api/client/v1/containers` surface as tenant
-deploys — with `role: 'app'` and `service.compose_service_name` in `database` /
+deploys — with `role: 'system'` and `service.compose_service_name` in `database` /
 `queue` / `analytics`. They remain **inspect-only**: the daemon reports their
 `docker compose ps` identity for inventory but never starts, stops, or
 self-heals them (no restart-via-`system.reconcile` path — see

@@ -311,7 +311,7 @@ test('ensureSelfHostSystemHierarchy provisions database/queue/analytics with pen
 
       assertEquals(containerRow?.status, 'pending')
       assertEquals(containerRow?.containerId, null)
-      assertEquals(containerRow?.role, 'app')
+      assertEquals(containerRow?.role, 'system')
       assertEquals(containerRow?.serverId, serverId)
       assertEquals(containerRow?.containerName, svc.serviceId)
       assertEquals(

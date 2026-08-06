@@ -349,7 +349,7 @@ export async function buildManagedApplyPayload(
 
 /**
  * Drop pending null-id `role='ingress'` container rows on the engine service
- * when exposure is turned off. Leaves the engine `service` + `role='app'`
+ * when exposure is turned off. Leaves the engine `service` + `role='service'`
  * rows untouched for idempotent reuse on a later expose.
  */
 async function prunePendingIngressContainers(

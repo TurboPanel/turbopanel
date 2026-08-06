@@ -12,7 +12,10 @@ import {
   RESERVED_PUBLISHED_PORTS,
   type ManagedDockerOptions,
 } from '../managed/settings.ts'
-import { isValidDockerResourceName } from '../naming.ts'
+import {
+  ingressContainerNameFromService,
+  isValidDockerResourceName,
+} from '../naming.ts'
 import type { ServiceOptions } from '../service-options.ts'
 import { isValidTimezone } from '../timezones.ts'
 import {
@@ -633,7 +636,7 @@ export type EnvironmentDeployTraditionalWebSite = {
 
 /**
  * Per-service Traefik ingress for tenant `tcp`/`udp` hostings.
- * `containerName` must equal `${serviceId}-ingress` (same rule as managed ingress).
+ * `containerName` must equal `${serviceId}-in` (same rule as managed ingress).
  */
 export type EnvironmentDeployIngressService = {
   serviceId: string
@@ -719,8 +722,11 @@ export type EnvironmentDeployContainer = {
   containerId: string
   containerName: string
   status: string
-  /** Workload replica vs Traefik ingress; omitted by older daemons (defaults to `'app'`). */
-  role?: 'app' | 'ingress'
+  /**
+   * Workload / ingress / platform role — required on the wire.
+   * Must be `'service'`, `'ingress'`, or `'system'`.
+   */
+  role: 'service' | 'ingress' | 'system'
 }
 
 export type EnvironmentDeployCommandResult = {
@@ -1192,16 +1198,23 @@ function parseDeployContainerEntry(entry: unknown): EnvironmentDeployContainer |
   ) {
     return undefined
   }
+  // Role is required — omit or misspell drops the entry rather than defaulting
+  // to 'service' (which would silently mis-classify ingress/system rows).
+  if (
+    entry.role !== 'service' &&
+    entry.role !== 'ingress' &&
+    entry.role !== 'system'
+  ) {
+    return undefined
+  }
   const container: EnvironmentDeployContainer = {
     composeServiceName: entry.composeServiceName,
     containerId: entry.containerId,
     containerName: entry.containerName,
     status: entry.status,
+    role: entry.role,
   }
   if (isString(entry.serviceId)) container.serviceId = entry.serviceId
-  if (entry.role === 'app' || entry.role === 'ingress') {
-    container.role = entry.role
-  }
   return container
 }
 
@@ -1233,7 +1246,7 @@ function parseDeployIngressServiceEntry(entry: unknown): EnvironmentDeployIngres
   ) {
     throw new Error('Invalid environment.deploy ingressServices entry')
   }
-  if (entry.containerName !== `${entry.serviceId}-ingress`) {
+  if (entry.containerName !== ingressContainerNameFromService(entry.serviceId)) {
     throw new Error('Invalid environment.deploy ingressServices entry')
   }
   return {
@@ -1444,11 +1457,14 @@ export type SystemComponentKey = 'hosting-ingress' | 'database' | 'queue' | 'ana
 export type SystemReconcileAction = 'reconcile' | 'restart' | 'stop'
 
 /** Container-name rule / role per system component — never a free-form wire value. */
-export const SYSTEM_COMPONENT_ROLES: Record<SystemComponentKey, 'app' | 'ingress'> = {
+export const SYSTEM_COMPONENT_ROLES: Record<
+  SystemComponentKey,
+  'service' | 'ingress' | 'system'
+> = {
   'hosting-ingress': 'ingress',
-  database: 'app',
-  queue: 'app',
-  analytics: 'app',
+  database: 'system',
+  queue: 'system',
+  analytics: 'system',
 }
 
 export type SystemReconcileComponent = {
@@ -1456,7 +1472,7 @@ export type SystemReconcileComponent = {
   serviceId: string
   composeServiceName: string
   containerName: string
-  role: 'app' | 'ingress'
+  role: 'service' | 'ingress' | 'system'
   desired: 'present' | 'absent'
 }
 
@@ -1524,7 +1540,9 @@ function parseSystemReconcileComponent(
     throw new Error('Invalid system.reconcile payload')
   }
   const containerName = value.containerName
-  const expectedContainerName = role === 'ingress' ? `${serviceId}-ingress` : serviceId
+  const expectedContainerName = role === 'ingress'
+    ? ingressContainerNameFromService(serviceId)
+    : serviceId
   if (!isString(containerName) || containerName !== expectedContainerName) {
     throw new Error('Invalid system.reconcile payload')
   }
@@ -1537,7 +1555,7 @@ function parseSystemReconcileComponent(
     serviceId,
     composeServiceName,
     containerName,
-    role: role as 'app' | 'ingress',
+    role: role as 'service' | 'ingress' | 'system',
     desired: desired as 'present' | 'absent',
   }
 }
@@ -1990,7 +2008,7 @@ function parseManagedApplyIngress(value: unknown): ManagedApplyIngress {
   ) {
     throw new Error('Invalid managed.apply ingress')
   }
-  if (value.containerName !== `${value.serviceId}-ingress`) {
+  if (value.containerName !== ingressContainerNameFromService(value.serviceId)) {
     throw new Error('Invalid managed.apply ingress')
   }
   return {

@@ -2,12 +2,12 @@
  * Pre-allocate managed engine `service` + `container` rows for apply.
  *
  * - {@link ensureManagedContainerAllocation} — engine path: upserts a `service`
- *   row plus a `role='app'` ordinal-1 container named
+ *   row plus a `role='service'` ordinal-1 container named
  *   {@link managedContainerName} (`<service.id>-1`).
  * - {@link ensureManagedIngressContainerAllocation} — ingress path: delegates to
  *   {@link ensureServiceIngressContainerAllocation} on the **engine's**
  *   `service.id` (never a separate ingress `service` row), named
- *   {@link ingressContainerNameFromService} (`<service.id>-ingress`).
+ *   {@link ingressContainerNameFromService} (`<service.id>-in`).
  *
  * Called from {@link buildManagedApplyPayload}. **No nested `db.transaction`**
  * — the create path already runs inside a transaction and passes that `tx` as
@@ -31,10 +31,10 @@ export type ManagedContainerAllocation = {
 
 /**
  * Idempotently ensure a `service` row for `composeServiceName` and an
- * ordinal-1 `role='app'` `container` row pinned to `serverId`, named
+ * ordinal-1 `role='service'` `container` row pinned to `serverId`, named
  * {@link managedContainerName} (`<service.id>-1`). Upserts on
  * `(service, role, ordinal)` so a placement change re-homes the same row;
- * prunes other pending null-id `role='app'` rows for that service (stale
+ * prunes other pending null-id `role='service'` rows for that service (stale
  * ordinals) without touching same-service ingress allocations.
  */
 export async function ensureManagedContainerAllocation(
@@ -83,7 +83,7 @@ export async function ensureManagedContainerAllocation(
       containerId: null,
       containerName: 'pending',
       status: 'pending',
-      role: 'app',
+      role: 'service',
       composeServiceName,
       ordinal: 1,
     })
@@ -104,7 +104,7 @@ export async function ensureManagedContainerAllocation(
     .where(
       and(
         eq(container.serviceId, serviceRow.id),
-        eq(container.role, 'app'),
+        eq(container.role, 'service'),
         eq(container.ordinal, 1),
       ),
     )
@@ -135,14 +135,14 @@ export async function ensureManagedContainerAllocation(
           status: 'pending',
           containerName: nextName,
           composeServiceName,
-          role: 'app',
+          role: 'service',
         })
         .where(eq(container.id, row.id))
     }
   } else if (row.containerName !== nextName) {
     await db
       .update(container)
-      .set({ containerName: nextName, role: 'app' })
+      .set({ containerName: nextName, role: 'service' })
       .where(eq(container.id, row.id))
   }
 
@@ -151,7 +151,7 @@ export async function ensureManagedContainerAllocation(
     .where(
       and(
         eq(container.serviceId, serviceRow.id),
-        eq(container.role, 'app'),
+        eq(container.role, 'service'),
         isNull(container.containerId),
         eq(container.status, 'pending'),
         ne(container.id, row.id),

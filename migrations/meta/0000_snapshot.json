@@ -1,5 +1,5 @@
 {
-  "id": "5f56f4a4-d68b-4eae-b96a-dd9143bf72f1",
+  "id": "6804b713-a38c-4b2b-8fc2-646091df7e5f",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -446,7 +446,7 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'app'"
+          "default": "'service'"
         },
         "compose_service_name": {
           "name": "compose_service_name",
@@ -611,7 +611,7 @@
         },
         "container_role_check": {
           "name": "container_role_check",
-          "value": "role IN ('app', 'ingress')"
+          "value": "role IN ('service', 'ingress', 'system')"
         }
       },
       "isRLSEnabled": false

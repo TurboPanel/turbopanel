@@ -19,7 +19,7 @@
  * - `environment.server_id` under that project — one environment on the
  *   colocated server
  * - `service.compose_service_name` in `database` / `queue` / `analytics`
- * - `container` via `allocateEnvironmentContainers` (`role='app'`, uuid naming)
+ * - `container` via `allocateEnvironmentContainers` (`role='system'`, uuid naming)
  *
  * The system workspace (`kind='system'`) is provisioned at self-hosted install
  * time (`completeInstanceInstall`), before any server enrolls. Hierarchy
@@ -428,7 +428,7 @@ async function ensureSelfHostProject(
 /**
  * Idempotently ensure workspace(kind=system) → project(turbopanel) →
  * environment(colocated server) → service(database/queue/analytics) →
- * container(role=app, uuid naming, 1 instance each).
+ * container(role=system, uuid naming, 1 instance each).
  *
  * Same one-transaction / partial-unique discipline as
  * {@link ensureSystemHierarchyImpl}. No `organizationId` / `serverId` is
@@ -462,6 +462,7 @@ async function ensureSelfHostSystemHierarchyImpl(
         serviceId: composeServiceIds.get(composeServiceName)!,
         composeServiceName,
         instances: 1,
+        role: 'system' as const,
       }))
 
     const allocations = await allocateEnvironmentContainers(tx, {

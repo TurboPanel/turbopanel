@@ -72,9 +72,10 @@ outside of the retention-keep pruning that runs on every successful backup.
 
 The engine container is named `<service.id>-1` via `managedContainerName`
 (`src/lib/naming.ts`). When `exposure.enabled`, apply-prepare also allocates a
-second `service` + ordinal-1 `container` for the dedicated Traefik ingress
-(`composeServiceName` = `managedIngressComposeServiceName(engine)` →
-`<engine>-ingress`; container name again `<ingressServiceId>-1`). The engine
+second ordinal-1 `role='ingress'` `container` on the **same** engine `service`
+row for the dedicated Traefik ingress (`composeServiceName` =
+`managedIngressComposeServiceName(engine)` → `<engine>-ingress`; container
+name `<service.id>-in` via `ingressContainerNameFromService`). The engine
 compose **project** stays `turbopanel-managed-<managedId>`; the ingress
 project is `turbopanel-managed-<managedId>-ingress`. Engine-spec volume keys
 (`pgdata`, …) are deliberately left alone because Compose namespaces them

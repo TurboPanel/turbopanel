@@ -333,6 +333,18 @@ export async function isInstanceInstalled(db: Db): Promise<boolean> {
   return true
 }
 
+/**
+ * Coerce a jsonb `IS_SIGNUP_ENABLED` value to a string. Panel writes store
+ * `'0'`/`'1'`; ignore objects/arrays so they never become `'[object Object]'`.
+ */
+function readSignupSettingString(raw: unknown): string | null {
+  if (typeof raw === 'string') return raw
+  if (typeof raw === 'number' || typeof raw === 'boolean' || typeof raw === 'bigint') {
+    return `${raw}`
+  }
+  return null
+}
+
 export async function isSignupEnabled(
   db: Db,
   envOverride?: SignupEnvOverride,
@@ -344,14 +356,11 @@ export async function isSignupEnabled(
     .where(eq(setting.key, IS_SIGNUP_ENABLED_CONFIG_KEY))
     .limit(1)
 
-  const raw = rows[0]?.value
-  let dbValue: string | null = null
-  if (typeof raw === 'string') {
-    dbValue = raw
-  } else if (raw != null) {
-    dbValue = String(raw)
-  }
-  return resolveIsSignupEnabled(dbValue, envOverride, { runtime })
+  return resolveIsSignupEnabled(
+    readSignupSettingString(rows[0]?.value),
+    envOverride,
+    { runtime },
+  )
 }
 
 /**
@@ -402,13 +411,7 @@ export async function getSignupSettingMeta(
     .from(setting)
     .where(eq(setting.key, IS_SIGNUP_ENABLED_CONFIG_KEY))
     .limit(1)
-  const raw = rows[0]?.value
-  let asString: string | null = null
-  if (typeof raw === 'string') {
-    asString = raw
-  } else if (raw != null) {
-    asString = String(raw)
-  }
+  const asString = readSignupSettingString(rows[0]?.value)
   if (asString === '0' || asString === '1') {
     dbValue = asString
   }

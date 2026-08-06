@@ -923,6 +923,7 @@ test('processCommandEnvelope reconciles containers on environment.lifecycle succ
                 containerId: 'new-cid',
                 containerName: 'proj-web-1',
                 status: 'exited',
+                role: 'service',
               },
             ],
           },
@@ -1086,7 +1087,7 @@ test('processCommandEnvelope reconciles containers on system.reconcile success',
       })
       .returning({ id: service.id })
     const serviceId = serviceRow!.id
-    const containerName = `${serviceId}-ingress`
+    const containerName = `${serviceId}-in`
     const [containerRow] = await db
       .insert(container)
       .values({
@@ -1214,7 +1215,7 @@ test('processCommandEnvelope skips reconcile when system.reconcile omits contain
       })
       .returning({ id: service.id })
     const serviceId = serviceRow!.id
-    const containerName = `${serviceId}-ingress`
+    const containerName = `${serviceId}-in`
     await db.insert(container).values({
       serviceId,
       serverId,
@@ -1321,7 +1322,7 @@ test('processCommandEnvelope clears pins when system.reconcile reports empty con
       })
       .returning({ id: service.id })
     const serviceId = serviceRow!.id
-    const containerName = `${serviceId}-ingress`
+    const containerName = `${serviceId}-in`
     const [containerRow] = await db
       .insert(container)
       .values({
@@ -1399,7 +1400,7 @@ test('processCommandEnvelope clears pins when system.reconcile reports empty con
   })
 })
 
-test('processCommandEnvelope maps a labelled self-host system.reconcile report onto the pre-allocated app row by service UUID container name', async () => {
+test('processCommandEnvelope maps a labelled self-host system.reconcile report onto the pre-allocated system row by service UUID container name', async () => {
   await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)
 
@@ -1434,8 +1435,8 @@ test('processCommandEnvelope maps a labelled self-host system.reconcile report o
       })
       .returning({ id: service.id })
     const serviceId = serviceRow!.id
-    // Self-host app containers use bare uuid naming — the service id itself,
-    // never the `<serviceId>-ingress` shape used by hosting-ingress.
+    // Self-host system containers use bare uuid naming — the service id itself,
+    // never the `<serviceId>-in` shape used by hosting-ingress.
     const containerName = serviceId
     const [containerRow] = await db
       .insert(container)
@@ -1445,7 +1446,7 @@ test('processCommandEnvelope maps a labelled self-host system.reconcile report o
         containerId: null,
         containerName,
         status: 'pending',
-        role: 'app',
+        role: 'system',
         composeServiceName: 'database',
         ordinal: 1,
       })
@@ -1466,7 +1467,7 @@ test('processCommandEnvelope maps a labelled self-host system.reconcile report o
               serviceId,
               composeServiceName: 'database',
               containerName,
-              role: 'app',
+              role: 'system',
               desired: 'present',
             },
           ],
@@ -1491,7 +1492,7 @@ test('processCommandEnvelope maps a labelled self-host system.reconcile report o
                 containerId: 'db-cid-1',
                 containerName,
                 status: 'running',
-                role: 'app',
+                role: 'system',
               },
             ],
           },
@@ -1522,7 +1523,7 @@ test('processCommandEnvelope maps a labelled self-host system.reconcile report o
       assertEquals(row?.containerId, 'db-cid-1')
       assertEquals(row?.containerName, serviceId)
       assertEquals(row?.status, 'running')
-      assertEquals(row?.role, 'app')
+      assertEquals(row?.role, 'system')
     } finally {
       await db.delete(container).where(eq(container.serverId, serverId))
       await db.delete(service).where(eq(service.environmentId, environmentId))
@@ -1533,7 +1534,7 @@ test('processCommandEnvelope maps a labelled self-host system.reconcile report o
   })
 })
 
-test('processCommandEnvelope leaves a missing self-host app container exited with null Docker id and preserves the row id', async () => {
+test('processCommandEnvelope leaves a missing self-host system container exited with null Docker id and preserves the row id', async () => {
   await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)
 
@@ -1577,7 +1578,7 @@ test('processCommandEnvelope leaves a missing self-host app container exited wit
         containerId: 'stale-queue-cid',
         containerName,
         status: 'running',
-        role: 'app',
+        role: 'system',
         composeServiceName: 'queue',
         ordinal: 1,
       })
@@ -1598,7 +1599,7 @@ test('processCommandEnvelope leaves a missing self-host app container exited wit
               serviceId,
               composeServiceName: 'queue',
               containerName,
-              role: 'app',
+              role: 'system',
               desired: 'present',
             },
           ],
@@ -1699,7 +1700,7 @@ test('processCommandEnvelope keeps unmatched self-host expected rows on partial 
           containerId: `stale-${composeServiceName}`,
           containerName: serviceId,
           status: 'running',
-          role: 'app',
+          role: 'system',
           composeServiceName,
           ordinal: 1,
         })
@@ -1720,7 +1721,7 @@ test('processCommandEnvelope keeps unmatched self-host expected rows on partial 
             serviceId: serviceIds[index]!,
             composeServiceName,
             containerName: serviceIds[index]!,
-            role: 'app' as const,
+            role: 'system' as const,
             desired: 'present' as const,
           })),
         },
@@ -1746,7 +1747,7 @@ test('processCommandEnvelope keeps unmatched self-host expected rows on partial 
                 containerId: 'db-only-cid',
                 containerName: serviceIds[0]!,
                 status: 'running',
-                role: 'app',
+                role: 'system',
               },
             ],
           },

@@ -8,6 +8,7 @@ import {
   isValidNtpServer,
   parseCommandPayload,
   parseCommandResult,
+  parseEnvironmentDeployResult,
   parseEnvironmentLifecyclePayload,
   parseEnvironmentLifecycleResult,
   parseHostnameSetPayload,
@@ -224,6 +225,7 @@ test('parseEnvironmentLifecycleResult is lenient and passes containers through',
           containerId: 'cid-1',
           containerName: 'proj-web-1',
           status: 'running',
+          role: 'service',
         },
       ],
     }),
@@ -236,6 +238,7 @@ test('parseEnvironmentLifecycleResult is lenient and passes containers through',
           containerId: 'cid-1',
           containerName: 'proj-web-1',
           status: 'running',
+          role: 'service',
         },
       ],
     },
@@ -244,6 +247,43 @@ test('parseEnvironmentLifecycleResult is lenient and passes containers through',
     parseEnvironmentLifecycleResult({ projectName: 'tp-demo' }).containers,
     undefined,
   )
+})
+
+test('parseEnvironmentDeployResult rejects omitted or invalid container roles', () => {
+  const base = {
+    composeServiceName: 'web',
+    containerId: 'cid-1',
+    containerName: 'proj-web-1',
+    status: 'running',
+  }
+  // Removed legacy 'app', misspellings, and omitted role are contract drift —
+  // drop the entry rather than accepting it as default 'service'.
+  for (const role of ['app', 'workload'] as const) {
+    assertEquals(
+      parseEnvironmentDeployResult({
+        projectName: 'tp-demo',
+        containers: [{ ...base, role }],
+      }).containers,
+      [],
+    )
+  }
+  assertEquals(
+    parseEnvironmentDeployResult({
+      projectName: 'tp-demo',
+      containers: [base],
+    }).containers,
+    [],
+  )
+  // Allowlisted roles round-trip.
+  for (const role of ['service', 'ingress', 'system'] as const) {
+    assertEquals(
+      parseEnvironmentDeployResult({
+        projectName: 'tp-demo',
+        containers: [{ ...base, role }],
+      }).containers,
+      [{ ...base, role }],
+    )
+  }
 })
 
 test('parseSystemReconcilePayload round-trips and rejects invalid shapes', () => {
@@ -258,7 +298,7 @@ test('parseSystemReconcilePayload round-trips and rejects invalid shapes', () =>
           component: 'hosting-ingress',
           serviceId,
           composeServiceName: 'traefik',
-          containerName: `${serviceId}-ingress`,
+          containerName: `${serviceId}-in`,
           role: 'ingress',
           desired: 'present',
         },
@@ -272,7 +312,7 @@ test('parseSystemReconcilePayload round-trips and rejects invalid shapes', () =>
           component: 'hosting-ingress',
           serviceId,
           composeServiceName: 'traefik',
-          containerName: `${serviceId}-ingress`,
+          containerName: `${serviceId}-in`,
           role: 'ingress',
           desired: 'present',
         },
@@ -288,7 +328,7 @@ test('parseSystemReconcilePayload round-trips and rejects invalid shapes', () =>
           component: 'hosting-ingress',
           serviceId,
           composeServiceName: 'traefik',
-          containerName: `${serviceId}-ingress`,
+          containerName: `${serviceId}-in`,
           role: 'ingress',
           desired: 'absent',
         },
@@ -306,7 +346,7 @@ test('parseSystemReconcilePayload round-trips and rejects invalid shapes', () =>
           component: 'hosting-ingress',
           serviceId,
           composeServiceName: 'traefik',
-          containerName: `${serviceId}-ingress`,
+          containerName: `${serviceId}-in`,
           role: 'ingress',
           desired: 'absent',
         },
@@ -324,7 +364,7 @@ test('parseSystemReconcilePayload round-trips and rejects invalid shapes', () =>
             component: 'not-allowlisted',
             serviceId,
             composeServiceName: 'traefik',
-            containerName: `${serviceId}-ingress`,
+            containerName: `${serviceId}-in`,
             role: 'ingress',
             desired: 'present',
           },
@@ -386,7 +426,7 @@ test('parseSystemReconcilePayload round-trips and rejects invalid shapes', () =>
           component: 'hosting-ingress',
           serviceId: `aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee${i}`,
           composeServiceName: 'traefik',
-          containerName: `aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee${i}-ingress`,
+          containerName: `aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee${i}-in`,
           role: 'ingress',
           desired: 'present',
         })),
@@ -403,7 +443,7 @@ test('parseSystemReconcilePayload round-trips and rejects invalid shapes', () =>
             component: 'hosting-ingress',
             serviceId,
             composeServiceName: 'traefik',
-            containerName: `${serviceId}-ingress`,
+            containerName: `${serviceId}-in`,
             role: 'ingress',
             desired: 'maybe',
           },
@@ -414,7 +454,7 @@ test('parseSystemReconcilePayload round-trips and rejects invalid shapes', () =>
   )
 })
 
-test('parseSystemReconcilePayload accepts the widened database/queue/analytics component keys with app role and bare serviceId containerName', () => {
+test('parseSystemReconcilePayload accepts the widened database/queue/analytics component keys with system role and bare serviceId containerName', () => {
   const serviceId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
   const environmentId = '11111111-2222-3333-4444-555555555555'
   for (const component of ['database', 'queue', 'analytics'] as const) {
@@ -427,7 +467,7 @@ test('parseSystemReconcilePayload accepts the widened database/queue/analytics c
             serviceId,
             composeServiceName: component,
             containerName: serviceId,
-            role: 'app',
+            role: 'system',
             desired: 'present',
           },
         ],
@@ -437,17 +477,17 @@ test('parseSystemReconcilePayload accepts the widened database/queue/analytics c
         serviceId,
         composeServiceName: component,
         containerName: serviceId,
-        role: 'app',
+        role: 'system',
         desired: 'present',
       },
     )
   }
 })
 
-test('parseSystemReconcilePayload rejects role/containerName mismatches across the app/ingress split', () => {
+test('parseSystemReconcilePayload rejects role/containerName mismatches across the system/ingress split', () => {
   const serviceId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
   const environmentId = '11111111-2222-3333-4444-555555555555'
-  // hosting-ingress must be role: 'ingress' — declaring 'app' is rejected.
+  // hosting-ingress must be role: 'ingress' — declaring 'service' is rejected.
   assertThrows(
     () =>
       parseSystemReconcilePayload({
@@ -457,8 +497,8 @@ test('parseSystemReconcilePayload rejects role/containerName mismatches across t
             component: 'hosting-ingress',
             serviceId,
             composeServiceName: 'traefik',
-            containerName: `${serviceId}-ingress`,
-            role: 'app',
+            containerName: `${serviceId}-in`,
+            role: 'service',
             desired: 'present',
           },
         ],
@@ -466,7 +506,7 @@ test('parseSystemReconcilePayload rejects role/containerName mismatches across t
     Error,
     'Invalid system.reconcile payload',
   )
-  // database must be role: 'app' — declaring 'ingress' is rejected.
+  // database must be role: 'system' — declaring 'ingress' is rejected.
   assertThrows(
     () =>
       parseSystemReconcilePayload({
@@ -476,7 +516,7 @@ test('parseSystemReconcilePayload rejects role/containerName mismatches across t
             component: 'database',
             serviceId,
             composeServiceName: 'database',
-            containerName: `${serviceId}-ingress`,
+            containerName: `${serviceId}-in`,
             role: 'ingress',
             desired: 'present',
           },
@@ -485,7 +525,7 @@ test('parseSystemReconcilePayload rejects role/containerName mismatches across t
     Error,
     'Invalid system.reconcile payload',
   )
-  // database with role: 'app' but an ingress-shaped containerName is rejected.
+  // database with role: 'system' but an ingress-shaped containerName is rejected.
   assertThrows(
     () =>
       parseSystemReconcilePayload({
@@ -495,8 +535,8 @@ test('parseSystemReconcilePayload rejects role/containerName mismatches across t
             component: 'database',
             serviceId,
             composeServiceName: 'database',
-            containerName: `${serviceId}-ingress`,
-            role: 'app',
+            containerName: `${serviceId}-in`,
+            role: 'system',
             desired: 'present',
           },
         ],
@@ -770,6 +810,7 @@ test('parseCommandPayload and parseCommandResult dispatch by type', () => {
           containerName: 'proj-web-1',
           status: 'running',
           serviceId: '00000000-0000-4000-8000-000000000099',
+          role: 'service',
         },
       ],
     }),
@@ -782,6 +823,7 @@ test('parseCommandPayload and parseCommandResult dispatch by type', () => {
           containerName: 'proj-web-1',
           status: 'running',
           serviceId: '00000000-0000-4000-8000-000000000099',
+          role: 'service',
         },
       ],
     },
@@ -804,6 +846,7 @@ test('parseCommandPayload and parseCommandResult dispatch by type', () => {
           containerId: 'abc',
           containerName: 'proj-web-1',
           status: 'exited',
+          role: 'service',
         },
       ],
     }),
@@ -816,6 +859,7 @@ test('parseCommandPayload and parseCommandResult dispatch by type', () => {
           containerId: 'abc',
           containerName: 'proj-web-1',
           status: 'exited',
+          role: 'service',
         },
       ],
     },
@@ -1043,7 +1087,7 @@ test('parseManagedApplyPayload rejects nested dockerOptions and enabled exposure
   const VALID_INGRESS = {
     serviceId: '00000000-0000-4000-8000-000000000099',
     composeServiceName: 'postgres-ingress',
-    containerName: '00000000-0000-4000-8000-000000000099-ingress',
+    containerName: '00000000-0000-4000-8000-000000000099-in',
   }
   assertEquals(
     parseManagedApplyPayload({
@@ -1059,7 +1103,7 @@ test('parseManagedApplyPayload requires ingress iff exposure.enabled', () => {
   const VALID_INGRESS = {
     serviceId: '00000000-0000-4000-8000-000000000099',
     composeServiceName: 'postgres-ingress',
-    containerName: '00000000-0000-4000-8000-000000000099-ingress',
+    containerName: '00000000-0000-4000-8000-000000000099-in',
   }
   assertThrows(
     () =>
@@ -1919,6 +1963,7 @@ test('parseManagedApplyResult projects host, port, and containers', () => {
           containerId: 'abc',
           containerName: 'proj-postgres-1',
           status: 'running',
+          role: 'service',
         },
       ],
     }),
@@ -1931,6 +1976,7 @@ test('parseManagedApplyResult projects host, port, and containers', () => {
           containerId: 'abc',
           containerName: 'proj-postgres-1',
           status: 'running',
+          role: 'service',
         },
       ],
     },

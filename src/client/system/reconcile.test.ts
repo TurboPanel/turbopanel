@@ -248,14 +248,14 @@ test('buildSystemReconcilePayload returns one payload per system environment', a
     assertEquals(selfHost !== undefined, true)
     assertEquals(hostingIngress?.environmentId === selfHost?.environmentId, false)
 
-    // hosting-ingress: one component, role ingress, containerName `${serviceId}-ingress`.
+    // hosting-ingress: one component, role ingress, containerName `${serviceId}-in`.
     assertEquals(hostingIngress?.components.length, 1)
     const ingressComponent = hostingIngress?.components[0]
     assertEquals(ingressComponent?.role, 'ingress')
     assertEquals(ingressComponent?.desired, 'present')
-    assertEquals(ingressComponent?.containerName, `${ingressComponent?.serviceId}-ingress`)
+    assertEquals(ingressComponent?.containerName, `${ingressComponent?.serviceId}-in`)
 
-    // self-host: three components (database/queue/analytics), role app,
+    // self-host: three components (database/queue/analytics), role system,
     // containerName = serviceId, always desired 'present'.
     assertEquals(selfHost?.components.length, SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES.length)
     assertEquals(
@@ -263,7 +263,7 @@ test('buildSystemReconcilePayload returns one payload per system environment', a
       [...SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES].sort(),
     )
     for (const component of selfHost?.components ?? []) {
-      assertEquals(component.role, 'app')
+      assertEquals(component.role, 'system')
       assertEquals(component.desired, 'present')
       assertEquals(component.containerName, component.serviceId)
       assertEquals(component.composeServiceName, component.component)

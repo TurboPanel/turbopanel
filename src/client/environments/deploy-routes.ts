@@ -871,7 +871,7 @@ export function registerEnvironmentDeployPreviewRoutes(
       composeServiceName: row.cloneComposeServiceName,
       containerName: row.containerName,
       ordinal: row.ordinal,
-      role: 'app' as const,
+      role: 'service' as const,
     }))
     const ingressContainers = prepared.ingressServices.map((row) => ({
       serviceId: row.serviceId,

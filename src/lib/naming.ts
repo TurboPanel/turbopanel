@@ -38,8 +38,8 @@ export function managedContainerName(serviceId: string): string {
   return `${serviceId}-1`
 }
 
-/** Suffix for Traefik ingress container names (`<serviceId>-ingress`). */
-export const INGRESS_CONTAINER_NAME_SUFFIX = '-ingress'
+/** Suffix for Traefik ingress container names (`<serviceId>-in`). */
+export const INGRESS_CONTAINER_NAME_SUFFIX = '-in'
 
 /**
  * Docker `container_name` for a service's dedicated Traefik ingress row

@@ -2,7 +2,7 @@
  * Pre-allocate `container` rows for an environment deploy (uuid naming).
  *
  * Idempotent via atomic upsert on `uniq_container_service_role_ordinal`
- * (`(service, role, ordinal)`). Placement changes re-home the same app row
+ * (`(service, role, ordinal)`). Placement changes re-home the same service row
  * (update `server_id`) so previewed UUID names stay stable and stale pending
  * rows on a previous server are not left behind.
  * Names come from {@link containerNameFromService} (service UUID) or an
@@ -20,12 +20,16 @@ import type { ContainerNamingMode } from '../../lib/project-options.ts'
 import { parseServiceOptions } from '../../lib/service-options.ts'
 import { container } from '../../lib/db/schema.ts'
 
+export type ContainerWorkloadRole = 'service' | 'system'
+
 export type ContainerServiceSpec = {
   serviceId: string
   composeServiceName: string
   instances: number
   /** Explicit `service.options.container.name` when set. */
   explicitContainerName?: string
+  /** Workload role for allocated rows; defaults to `'service'`. */
+  role?: ContainerWorkloadRole
 }
 
 export type ContainerAllocation = {
@@ -126,6 +130,7 @@ async function allocateServiceContainers(
 ): Promise<ContainerAllocation[]> {
   const { serverId, service: svc } = params
   const instances = svc.instances
+  const role: ContainerWorkloadRole = svc.role ?? 'service'
   const allocations: ContainerAllocation[] = []
 
   await db.transaction(async (tx) => {
@@ -140,7 +145,7 @@ async function allocateServiceContainers(
           containerId: null,
           containerName: 'pending',
           status: 'pending',
-          role: 'app',
+          role,
           composeServiceName: cloneName,
           ordinal,
         })
@@ -159,7 +164,7 @@ async function allocateServiceContainers(
         .where(
           and(
             eq(container.serviceId, svc.serviceId),
-            eq(container.role, 'app'),
+            eq(container.role, role),
             eq(container.ordinal, ordinal),
           ),
         )
@@ -188,7 +193,7 @@ async function allocateServiceContainers(
             serverId,
             containerName: nextName,
             composeServiceName: cloneName,
-            role: 'app',
+            role,
           })
           .where(eq(container.id, row.id))
       }
@@ -209,7 +214,7 @@ async function allocateServiceContainers(
       .where(
         and(
           eq(container.serviceId, svc.serviceId),
-          eq(container.role, 'app'),
+          eq(container.role, role),
           gt(container.ordinal, instances),
         ),
       )
@@ -221,10 +226,10 @@ async function allocateServiceContainers(
 /**
  * Idempotently ensure a `role='ingress'` ordinal-1 `container` row on an
  * already-allocated `serviceId`, named
- * {@link ingressContainerNameFromService} (`<service.id>-ingress`). Does
- * **not** insert or select a `service` row — ingress lives on the app /
+ * {@link ingressContainerNameFromService} (`<service.id>-in`). Does
+ * **not** insert or select a `service` row — ingress lives on the service /
  * engine service. Re-homes / renames / cleans stray pending rows scoped to
- * `role='ingress'` so sibling `role='app'` rows are untouched.
+ * `role='ingress'` so sibling `role='service'` rows are untouched.
  */
 export async function ensureServiceIngressContainerAllocation(
   db: Db,
@@ -349,7 +354,7 @@ export async function allocateEnvironmentContainers(
     environmentServiceIds?: readonly string[]
     /**
      * Extra container row ids to retain during pending prune (e.g. per-service
-     * tcp/udp ingress allocations that must survive alongside app rows).
+     * tcp/udp ingress allocations that must survive alongside service rows).
      */
     extraKeepIds?: ReadonlySet<string>
   },

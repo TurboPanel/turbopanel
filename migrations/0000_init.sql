@@ -47,13 +47,13 @@ CREATE TABLE "container" (
 	"container_id" text,
 	"container_name" text NOT NULL,
 	"status" text DEFAULT 'pending' NOT NULL,
-	"role" text DEFAULT 'app' NOT NULL,
+	"role" text DEFAULT 'service' NOT NULL,
 	"compose_service_name" text NOT NULL,
 	"ordinal" integer DEFAULT 1 NOT NULL,
 	"metadata" jsonb,
 	"options" jsonb,
 	CONSTRAINT "container_ordinal_positive_check" CHECK (ordinal >= 1),
-	CONSTRAINT "container_role_check" CHECK (role IN ('app', 'ingress'))
+	CONSTRAINT "container_role_check" CHECK (role IN ('service', 'ingress', 'system'))
 );
 --> statement-breakpoint
 CREATE TABLE "datacenter" (
