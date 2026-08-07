@@ -8,8 +8,11 @@ import {
   isValidNtpServer,
   parseCommandPayload,
   parseCommandResult,
+  parseEnvironmentDeployPayload,
   parseEnvironmentDeployResult,
   parseEnvironmentLifecyclePayload,
+  parseEnvironmentStopPayload,
+  parseEnvironmentStopResult,
   parseEnvironmentLifecycleResult,
   parseHostnameSetPayload,
   parseHostnameSetResult,
@@ -1982,4 +1985,393 @@ test('parseManagedApplyResult projects host, port, and containers', () => {
     },
   )
   assertEquals(parseManagedApplyResult({}), { host: '', port: 0 })
+})
+
+const BASE_ENVIRONMENT_DEPLOY = {
+  environmentId: 'env-1',
+  projectId: 'proj-1',
+  organizationId: 'org-1',
+  projectName: 'tp-demo',
+  composeYaml: 'services: {}\n',
+  hostings: [] as unknown[],
+}
+
+const INGRESS_SERVICE_ID = '00000000-0000-4000-8000-000000000099'
+
+test('isValidNtpServer accepts IPv6 literals and rejects invalid shapes', () => {
+  assertEquals(isValidNtpServer('2001:db8::1'), true)
+  assertEquals(isValidNtpServer('::1'), true)
+  assertEquals(isValidNtpServer('203.0.113.256'), false)
+  assertEquals(isValidNtpServer('time.example.com '), false)
+  assertEquals(isValidNtpServer('a'.repeat(254)), false)
+  assertEquals(isValidNtpServer(123), false)
+})
+
+test('parseTimezoneSetPayload rejects non-object payloads', () => {
+  assertThrows(
+    () => parseTimezoneSetPayload(null),
+    Error,
+    'Invalid timezone set payload',
+  )
+})
+
+test('parseTimezoneSetResult rejects missing timezone', () => {
+  assertThrows(
+    () => parseTimezoneSetResult({}),
+    Error,
+    'Invalid timezone set result',
+  )
+  assertThrows(
+    () => parseTimezoneSetResult(null),
+    Error,
+    'Invalid timezone set result',
+  )
+})
+
+test('parseNtpSetPayload rejects non-boolean enabled', () => {
+  assertThrows(
+    () => parseNtpSetPayload({ enabled: 'yes' }),
+    TypeError,
+    'enabled must be a boolean',
+  )
+})
+
+test('parseNtpSetResult keeps optional summary', () => {
+  assertEquals(
+    parseNtpSetResult({ ntpServers: [], summary: 'applied' }),
+    { ntpServers: [], summary: 'applied' },
+  )
+})
+
+test('parsePingResult keeps lifecycle hop timestamps', () => {
+  assertEquals(
+    parsePingResult({
+      apiAcceptedAt: '2020-01-01T00:00:00.000Z',
+      queuedAt: '2020-01-01T00:00:01.000Z',
+      consumerReceivedAt: '2020-01-01T00:00:02.000Z',
+      cellEnqueuedAt: '2020-01-01T00:00:03.000Z',
+      cellDispatchedAt: '2020-01-01T00:00:04.000Z',
+      daemonReceivedAt: '2020-01-01T00:00:05.000Z',
+      daemonRespondedAt: '2020-01-01T00:00:06.000Z',
+      resultRecordedAt: '2020-01-01T00:00:07.000Z',
+    }),
+    {
+      apiAcceptedAt: '2020-01-01T00:00:00.000Z',
+      queuedAt: '2020-01-01T00:00:01.000Z',
+      consumerReceivedAt: '2020-01-01T00:00:02.000Z',
+      cellEnqueuedAt: '2020-01-01T00:00:03.000Z',
+      cellDispatchedAt: '2020-01-01T00:00:04.000Z',
+      daemonReceivedAt: '2020-01-01T00:00:05.000Z',
+      daemonRespondedAt: '2020-01-01T00:00:06.000Z',
+      resultRecordedAt: '2020-01-01T00:00:07.000Z',
+    },
+  )
+})
+
+test('parseWireguardApplyPayload accepts optional gateway fields', () => {
+  const payload = parseWireguardApplyPayload({
+    vpnId: '550e8400-e29b-41d4-a716-446655440000',
+    peerId: '6ba7b810-9dad-11d1-80b4-00c04fd430c8',
+    interfaceName: 'tpwg550e8400',
+    address: '203.0.113.10/32',
+    enableIpForwarding: true,
+    peers: [
+      {
+        peerId: '6ba7b811-9dad-11d1-80b4-00c04fd430c8',
+        publicKey: WG_PUBKEY,
+        allowedIps: ['203.0.113.11/32'],
+        endpoint: '203.0.113.1:51820',
+        persistentKeepalive: 25,
+        presharedKeyEnvelope: 'enc:psk',
+      },
+    ],
+  })
+  assertEquals(payload.enableIpForwarding, true)
+  assertEquals(payload.peers[0]?.persistentKeepalive, 25)
+  assertEquals(payload.peers[0]?.presharedKeyEnvelope, 'enc:psk')
+})
+
+test('parseWireguardApplyPayload rejects malformed peer collections', () => {
+  const base = {
+    vpnId: '550e8400-e29b-41d4-a716-446655440000',
+    peerId: '6ba7b810-9dad-11d1-80b4-00c04fd430c8',
+    interfaceName: 'tpwg550e8400',
+    address: '203.0.113.10/32',
+    peers: [{
+      peerId: '6ba7b811-9dad-11d1-80b4-00c04fd430c8',
+      publicKey: WG_PUBKEY,
+      allowedIps: ['203.0.113.11/32'],
+    }],
+  }
+  assertThrows(
+    () => parseWireguardApplyPayload(null),
+    Error,
+    'Invalid wireguard apply payload',
+  )
+  assertThrows(
+    () => parseWireguardApplyPayload({ ...base, peers: 'bad' }),
+    TypeError,
+    'Invalid wireguard apply peers',
+  )
+  assertThrows(
+    () => parseWireguardApplyPayload({ ...base, address: 'not-cidr' }),
+    Error,
+    'Invalid wireguard apply address',
+  )
+  assertThrows(
+    () =>
+      parseWireguardApplyPayload({
+        ...base,
+        peers: [{ ...base.peers[0], endpoint: 'bad-endpoint' }],
+      }),
+    Error,
+    'Invalid wireguard peer endpoint',
+  )
+  assertThrows(
+    () => parseWireguardApplyPayload({ ...base, enableIpForwarding: 'yes' }),
+    TypeError,
+    'Invalid wireguard apply enableIpForwarding',
+  )
+  assertThrows(
+    () =>
+      parseWireguardApplyPayload({
+        ...base,
+        peers: [{ ...base.peers[0], persistentKeepalive: 70_000 }],
+      }),
+    Error,
+    'Invalid wireguard peer persistentKeepalive',
+  )
+})
+
+test('parseWireguardApplyResult validates required fields', () => {
+  assertThrows(
+    () => parseWireguardApplyResult(null),
+    Error,
+    'Invalid wireguard apply result',
+  )
+  assertThrows(
+    () => parseWireguardApplyResult({
+      interfaceName: 'tpwg550e8400',
+      applied: true,
+    }),
+    Error,
+    'Invalid wireguard apply result publicKey',
+  )
+  assertThrows(
+    () =>
+      parseWireguardApplyResult({
+        interfaceName: 'tpwg550e8400',
+        publicKey: WG_PUBKEY,
+        applied: 'yes',
+      }),
+    TypeError,
+    'Invalid wireguard apply result applied',
+  )
+  assertThrows(
+    () =>
+      parseWireguardApplyResult({
+        interfaceName: 'tpwg550e8400',
+        publicKey: WG_PUBKEY,
+        applied: true,
+        listenPort: 70_000,
+      }),
+    Error,
+    'Invalid wireguard apply result listenPort',
+  )
+  assertEquals(
+    parseWireguardApplyResult({
+      interfaceName: 'tpwg550e8400',
+      publicKey: WG_PUBKEY,
+      applied: false,
+      summary: 'skipped',
+    }),
+    {
+      interfaceName: 'tpwg550e8400',
+      publicKey: WG_PUBKEY,
+      applied: false,
+      summary: 'skipped',
+    },
+  )
+})
+
+test('parseEnvironmentDeployPayload parses rich hostings and optional material', () => {
+  const result = parseEnvironmentDeployPayload({
+    ...BASE_ENVIRONMENT_DEPLOY,
+    hostings: [
+      {
+        hostingId: 'h1',
+        serviceId: 's1',
+        composeServiceName: 'web',
+        hostnames: ['app.example.com'],
+        pathPrefix: '/api',
+        targetPort: 8080,
+        tlsId: null,
+        bindAddress: '203.0.113.10',
+        proxy: { forceHttps: true, gzip: true, stripPrefix: '/api' },
+        web: { env: { APP_ENV: 'prod', ignored: 1 }, php: { version: '8.4' } },
+      },
+      {
+        hostingId: 'h2',
+        serviceId: 's2',
+        composeServiceName: 'db',
+        hostnames: [],
+        protocol: 'tcp',
+        ports: [{ published: 5432, target: 5432 }],
+      },
+    ],
+    tlsMaterial: [{
+      tlsId: 'tls-1',
+      certificatePem: 'CERT',
+      privateKeyEnvelope: 'enc:key',
+    }],
+    variableMaterial: [{
+      key: 'FOO',
+      valueEnvelope: 'enc:val',
+      forBuild: true,
+      isLiteral: true,
+    }],
+    storageMaterial: [{
+      storageId: 'st1',
+      kind: 'docker_volume',
+      name: 'data',
+      serverId: 'srv1',
+      volumeName: '01936b3e-8c7a-7b2d-a1f0-123456789abc',
+    }],
+    serviceHooks: [{
+      composeServiceName: 'web',
+      preDeployCommand: '/bin/true',
+      buildDisableCache: true,
+    }],
+    ingressServices: [{
+      serviceId: INGRESS_SERVICE_ID,
+      composeServiceName: 'db',
+      containerName: `${INGRESS_SERVICE_ID}-in`,
+    }],
+  })
+  assertEquals(result.hostings[0]?.pathPrefix, '/api')
+  assertEquals(result.hostings[0]?.tlsId, null)
+  assertEquals(result.hostings[0]?.bindAddress, '203.0.113.10')
+  assertEquals(result.hostings[0]?.proxy, {
+    forceHttps: true,
+    gzip: true,
+    stripPrefix: '/api',
+  })
+  assertEquals(result.hostings[0]?.web, { env: { APP_ENV: 'prod' }, php: { version: '8.4' } })
+  assertEquals(result.hostings[1]?.protocol, 'tcp')
+  assertEquals(result.hostings[1]?.ports, [{ published: 5432, target: 5432 }])
+  assertEquals(result.tlsMaterial?.length, 1)
+  assertEquals(result.variableMaterial?.[0]?.forBuild, true)
+  assertEquals(result.storageMaterial?.[0]?.volumeName, '01936b3e-8c7a-7b2d-a1f0-123456789abc')
+  assertEquals(result.serviceHooks?.[0]?.preDeployCommand, '/bin/true')
+  assertEquals(result.ingressServices?.[0]?.containerName, `${INGRESS_SERVICE_ID}-in`)
+})
+
+test('parseEnvironmentDeployPayload rejects invalid hosting protocol and bindAddress', () => {
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...BASE_ENVIRONMENT_DEPLOY,
+        hostings: [{
+          hostingId: 'h1',
+          serviceId: 's1',
+          composeServiceName: 'web',
+          hostnames: [],
+          protocol: 'ftp',
+        }],
+      }),
+    Error,
+    'Invalid environment.deploy payload',
+  )
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...BASE_ENVIRONMENT_DEPLOY,
+        hostings: [{
+          hostingId: 'h1',
+          serviceId: 's1',
+          composeServiceName: 'web',
+          hostnames: ['app.example.com'],
+          bindAddress: 'not-an-ip',
+        }],
+      }),
+    Error,
+    'Invalid environment.deploy payload',
+  )
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...BASE_ENVIRONMENT_DEPLOY,
+        hostings: [{
+          hostingId: 'h1',
+          serviceId: 's1',
+          composeServiceName: 'web',
+          hostnames: [],
+          protocol: 'tcp',
+          ports: [{ published: 0, target: 5432 }],
+        }],
+      }),
+    Error,
+    'Invalid environment.deploy payload',
+  )
+})
+
+test('parseEnvironmentDeployResult keeps services list', () => {
+  assertEquals(
+    parseEnvironmentDeployResult({
+      projectName: 'tp-demo',
+      services: ['web', 'api'],
+    }),
+    { projectName: 'tp-demo', services: ['web', 'api'] },
+  )
+})
+
+test('parseEnvironmentStopPayload accepts and validates ingressServices', () => {
+  assertEquals(
+    parseEnvironmentStopPayload({
+      environmentId: 'env-1',
+      projectId: 'proj-1',
+      projectName: 'tp-demo',
+      ingressServices: [{ serviceId: INGRESS_SERVICE_ID }],
+    }),
+    {
+      environmentId: 'env-1',
+      projectId: 'proj-1',
+      projectName: 'tp-demo',
+      ingressServices: [{ serviceId: INGRESS_SERVICE_ID }],
+    },
+  )
+  assertThrows(
+    () =>
+      parseEnvironmentStopPayload({
+        environmentId: 'env-1',
+        projectId: 'proj-1',
+        projectName: 'tp-demo',
+        ingressServices: [{ serviceId: 'not-a-uuid' }],
+      }),
+    Error,
+    'Invalid environment.stop ingressServices entry',
+  )
+  assertThrows(
+    () =>
+      parseEnvironmentStopPayload({
+        environmentId: 'env-1',
+        projectId: 'proj-1',
+        projectName: 'tp-demo',
+        ingressServices: 'bad',
+      }),
+    TypeError,
+    'ingressServices must be an array',
+  )
+})
+
+test('parseEnvironmentStopResult round-trips summary and containers', () => {
+  assertEquals(
+    parseEnvironmentStopResult({
+      projectName: 'tp-demo',
+      summary: 'stopped',
+      containers: [],
+    }),
+    { projectName: 'tp-demo', summary: 'stopped', containers: [] },
+  )
+  assertEquals(parseEnvironmentStopResult(null), { projectName: '' })
 })

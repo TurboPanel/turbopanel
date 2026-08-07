@@ -81,3 +81,14 @@ test('isValidWireguardAllowedIp accepts CIDR strings', () => {
   assertEquals(isValidWireguardAllowedIp('203.0.113.10/32'), true)
   assertEquals(isValidWireguardAllowedIp('not-a-cidr'), false)
 })
+
+test('isValidWireguardInterfaceName rejects non-string values', () => {
+  assertEquals(isValidWireguardInterfaceName(null), false)
+  assertEquals(isValidWireguardInterfaceName(undefined), false)
+})
+
+test('isValidWireguardEndpoint rejects shell metacharacters and malformed hosts', () => {
+  assertEquals(isValidWireguardEndpoint('host;rm:51820'), false)
+  assertEquals(isValidWireguardEndpoint(':51820'), false)
+  assertEquals(isValidWireguardEndpoint('host:'), false)
+})

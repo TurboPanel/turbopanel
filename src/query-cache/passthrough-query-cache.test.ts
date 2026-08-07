@@ -49,7 +49,7 @@ test('passthrough cache loads approved models and rejects others', async () => {
         readModel: 'not-approved',
         key: 'k',
         load: async () => null,
-      }),
+      } as unknown as Parameters<typeof cache.getReadModel>[0]),
     Error,
     'Unapproved read model',
   )
@@ -143,7 +143,7 @@ test('hyperdrive cache loads approved models and rejects others', async () => {
         readModel: 'secrets',
         key: 'k',
         load: async () => null,
-      }),
+      } as unknown as Parameters<typeof cache.getReadModel>[0]),
     Error,
     'Unapproved read model for cached database',
   )

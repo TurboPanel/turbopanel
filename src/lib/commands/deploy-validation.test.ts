@@ -1,8 +1,10 @@
 import { assertEquals } from 'jsr:@std/assert'
 import { describe, it } from '@std/testing/bdd'
+import type { EnvironmentDeployStorageMaterial } from '../../lib/commands/schemas.ts'
 import {
   normalizeDeployPathPrefix,
   pathPrefixHasUnsupportedCharacters,
+  validateDeployHostingEntry,
   validateDeployHostings,
   validateDeployHostnameRouting,
   validateDeployPathPrefix,
@@ -220,7 +222,7 @@ describe('deploy-validation', () => {
     assertEquals(
       validateDeployStorageMaterialList([{
         storageId: 'st1',
-        kind: 'unknown_kind',
+        kind: 'unknown_kind' as EnvironmentDeployStorageMaterial['kind'],
         name: 'data',
         composeServiceName: 'web',
         destinationPath: '/data',
@@ -228,6 +230,32 @@ describe('deploy-validation', () => {
       }]),
       'invalid storage kind: unknown_kind',
     )
+  })
+
+  it('rejects http hostings with invalid pathPrefix', () => {
+    assertEquals(
+      validateDeployHostingEntry({
+        hostingId: 'h1',
+        serviceId: 's1',
+        composeServiceName: 'web',
+        hostnames: ['app.example.com'],
+        pathPrefix: 'api',
+      }),
+      'pathPrefix must start with /',
+    )
+  })
+
+  it('rejects hostname routing when pathPrefix has unsupported characters', () => {
+    const error = validateDeployHostnameRouting([
+      {
+        hostingId: 'h1',
+        serviceId: 's1',
+        composeServiceName: 'api',
+        hostnames: ['app.example.com'],
+        pathPrefix: '/`api',
+      },
+    ])
+    assertEquals(error, 'pathPrefix contains unsupported characters for hostname app.example.com')
   })
 
   it('rejects http hostings with invalid targetPort', () => {

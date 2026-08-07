@@ -1,5 +1,6 @@
 import { assertEquals } from 'jsr:@std/assert'
-import { mapGrantRows } from './access-grants.ts'
+import type { Db } from '../../db.ts'
+import { mapGrantRows, revokeAccessGrant } from './access-grants.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -83,4 +84,34 @@ test('mapGrantRows preserves subject kinds used by the access API', () => {
   }
   assertEquals(mapped[0].subjectId, 'org-1')
   assertEquals(mapped[0].resourceId, 'org-1')
+})
+
+test('revokeAccessGrant returns true when a row is deleted', async () => {
+  const deleted = await revokeAccessGrant(
+    {
+      delete: () => ({
+        where: () => ({
+          returning: () => Promise.resolve([{ id: 'grant-1' }]),
+        }),
+      }),
+    } as unknown as Db,
+    'grant-1',
+  )
+
+  assertEquals(deleted, true)
+})
+
+test('revokeAccessGrant returns false when no row matches', async () => {
+  const deleted = await revokeAccessGrant(
+    {
+      delete: () => ({
+        where: () => ({
+          returning: () => Promise.resolve([]),
+        }),
+      }),
+    } as unknown as Db,
+    'missing-grant',
+  )
+
+  assertEquals(deleted, false)
 })

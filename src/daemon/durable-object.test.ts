@@ -2750,6 +2750,62 @@ describe("command-dispatch correlation", () => {
     expect(diagAfter.storageWrites).toBe(diagBefore.storageWrites);
   }, 15_000);
 
+  it("returns 404 for unknown RPC routes", async () => {
+    const serverId = "test-srv-unknown-rpc";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+
+    const response = await cellRpc(stub, serverId, "/rpc/unknown-route", {
+      method: "GET",
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it("lists persisted requests and supports snapshot patch", async () => {
+    const serverId = "test-srv-list-and-patch";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const requestId = generateRequestId();
+    const deliveryId = generateDeliveryId();
+    const at = new Date().toISOString();
+
+    await cellRpc(stub, serverId, "/rpc/enqueue", {
+      method: "POST",
+      body: JSON.stringify({
+        outbound: {
+          kind: "command-dispatch",
+          deliveryId,
+          requestId,
+          at,
+          commandId: "cmd-list",
+          commandType: "daemon.ping",
+          payload: {},
+        },
+      }),
+    });
+
+    const listResponse = await cellRpc(
+      stub,
+      serverId,
+      "/rpc/requests?limit=5&requestKind=command-dispatch",
+      { method: "GET" },
+    );
+    const listBody = await listResponse.json() as {
+      records: Array<{ requestId: string }>;
+    };
+    expect(listBody.records.some((row) => row.requestId === requestId)).toBe(
+      true,
+    );
+
+    const patchResponse = await cellRpc(stub, serverId, "/rpc/snapshot", {
+      method: "PATCH",
+      body: JSON.stringify({
+        patch: { connected: false },
+      }),
+    });
+    expect(patchResponse.status).toBe(200);
+    const patched = await patchResponse.json() as { connected: boolean };
+    expect(patched.connected).toBe(false);
+  });
+
   it("closes websocket on oversized inbound frames before storage work", async () => {
     const serverId = "test-srv-inbound-oversize-frame";
     const stub = env.DAEMON_CELL.getByName(serverId);

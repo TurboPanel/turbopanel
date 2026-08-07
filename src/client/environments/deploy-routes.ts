@@ -1254,3 +1254,15 @@ export function registerEnvironmentLifecycleRoutes(
     })
   })
 }
+
+/** Pure helpers exported for host-free unit coverage of hosting assembly. */
+export {
+  buildTraditionalWebSitesForDeploy,
+  preferredListenPortsFromHostings,
+  readHostnames,
+  readHostingPorts,
+  readHostingProtocol,
+  readPathPrefix,
+  readTargetPort,
+  validateDeployMaterials,
+}

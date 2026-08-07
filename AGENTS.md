@@ -108,10 +108,17 @@ change. Future agents read `AGENTS.md` first.
   a single **`coverage/lcov.info`** (`sonar.javascript.lcov.reportPaths=coverage/lcov.info`
   in `sonar-project.properties` — **not** comma-separated dual paths; SonarCloud
   effectively only imported Deno hits that way, so Workers/DO files showed 0%
-  despite real Istanbul coverage). Merge takes the **max** per-line DA hit count;
-  Vitest `SF:` paths are normalized repo-relative like Deno. The script asserts
-  non-zero Vitest hits for `src/daemon/cell/do.ts` and `src/daemon/workers-ws.ts`
-  before merge. Intermediate reports remain at `coverage/vitest/lcov.info` and
+  despite real Istanbul coverage). Merge takes the **max** per-line DA hit count
+  **only across files that appear in both reports**; when Vitest already has an
+  `SF:` record, that file is **dropped from the Deno LCOV before merge**
+  (Vitest-wins). Deno V8 often imports Workers modules transitively with mostly
+  zero-hit lines (e.g. offline-sweep → `do-registry.ts`); unioning those into
+  Vitest's Istanbul record dilutes coverage (Sonar showed ~5% / `LH:18` on
+  `do-registry` from Deno alone while local Vitest was ~83%). Vitest `SF:` paths
+  are normalized repo-relative like Deno. The script asserts non-zero Vitest
+  hits for `src/daemon/cell/do.ts`, `do-registry.ts`, and `workers-ws.ts` before
+  merge, and re-checks those LH floors on the **merged** `coverage/lcov.info`.
+  Intermediate reports remain at `coverage/vitest/lcov.info` and
   `coverage/deno.lcov` for debugging:
   - **Vitest** (`coverage/vitest/lcov.info`) — Workers-pool suites
     (`vitest.config.ts` `test.include`), provider **`istanbul`**. The default
@@ -125,18 +132,23 @@ change. Future agents read `AGENTS.md` first.
     `scripts/test-coverage.sh`, via `deno coverage --lcov` (native V8).
   Then the scan runs with `sonar.qualitygate.wait=true`; if the quality gate
   fails, the workflow stops.
-  **Coverage attribution (two independent traps — check both when new code's
-  coverage doesn't move):** (1) a new Deno `*.test.ts` file must be added to
-  the `deno test` file list in `scripts/test-coverage.sh` — prefer host-free
-  unit suites there; DB/Redis/integration suites stay out of LCOV. (2) a new
-  Workers/DO test file must be added to `vitest.config.ts` `test.include` —
-  that list is an explicit file enumeration, not a glob, because most
-  `*.test.ts` files use Deno-only APIs and cannot run under the Workers pool;
-  a file left off `test.include` never runs at all, coverage or not.
+  **Coverage attribution (three independent traps — check all when Sonar shows
+  0% / low % while local Vitest is healthy):** (1) a new Deno `*.test.ts` file
+  must be added to the `deno test` file list in `scripts/test-coverage.sh` —
+  prefer host-free unit suites there; DB/Redis/integration suites stay out of
+  LCOV. (2) a new Workers/DO test file must be added to `vitest.config.ts`
+  `test.include` — that list is an explicit file enumeration, not a glob,
+  because most `*.test.ts` files use Deno-only APIs and cannot run under the
+  Workers pool; a file left off `test.include` never runs at all, coverage or
+  not. (3) Vitest-wins merge must stay in place — do not re-union Deno `SF:`
+  records for files Vitest already measured. Selective Workers/DO 0% with a
+  healthy overall project coverage % is almost always an LCOV merge/path bug,
+  not Automatic Analysis (AA being on fails the CI scanner entirely).
 - **Automatic Analysis must stay off** for `turbopanel_turbopanel`
   (SonarCloud → project **Administration → Analysis Method**). CI and Automatic
   Analysis cannot run together — Automatic Analysis enabled makes the CI
-  scanner fail.
+  scanner fail. There is no Sonar MCP `toggle_automatic_analysis` tool; change
+  this only in the SonarCloud UI.
 - Sonar-way **Coverage on New Code ≥ 80%** needs LCOV on CI. After switching
   from Automatic Analysis, reset **New Code** (Administration → New Code) so
   the baseline is not months of uncovered history, or the gate will fail even

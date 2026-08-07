@@ -177,3 +177,72 @@ test('validateComposeDocument surfaces service extension validation issues', () 
   })
   assertEquals(result.ok, false)
 })
+
+test('isTraditionalWebComposeService is false for invalid extension mapping', () => {
+  assertEquals(
+    isTraditionalWebComposeService({ 'x-turbopanel': 'bad' }),
+    false,
+  )
+})
+
+test('collectServiceTurbopanelValidationIssues rejects invalid serviceKind types', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    site: {
+      'x-turbopanel': { serviceKind: 42, engine: 'nginx' },
+    },
+  })
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.site.x-turbopanel.serviceKind'),
+    true,
+  )
+})
+
+test('collectServiceTurbopanelValidationIssues accepts safe traditional-web roots', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    site: {
+      'x-turbopanel': {
+        serviceKind: 'traditional-web',
+        engine: 'nginx',
+        root: 'public/www',
+      },
+    },
+  })
+  assertEquals(issues.length, 0)
+})
+
+test('collectServiceTurbopanelValidationIssues rejects absolute and empty roots', () => {
+  const absolute = collectServiceTurbopanelValidationIssues({
+    site: {
+      'x-turbopanel': {
+        serviceKind: 'traditional-web',
+        engine: 'nginx',
+        root: '/etc',
+      },
+    },
+  })
+  assertEquals(
+    absolute.some((issue) => issue.path === 'services.site.x-turbopanel.root'),
+    true,
+  )
+
+  const empty = collectServiceTurbopanelValidationIssues({
+    site: {
+      'x-turbopanel': {
+        serviceKind: 'traditional-web',
+        engine: 'nginx',
+        root: '   ',
+      },
+    },
+  })
+  assertEquals(
+    empty.some((issue) => issue.path === 'services.site.x-turbopanel.engine'),
+    false,
+  )
+})
+
+test('collectServiceTurbopanelValidationIssues skips non-mapping services', () => {
+  assertEquals(
+    collectServiceTurbopanelValidationIssues({ bad: 'raw' }),
+    [],
+  )
+})

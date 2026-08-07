@@ -1,4 +1,4 @@
-import type { Db } from "../../db.ts";
+import type { Db } from "../../../db.ts";
 import type {
   DaemonCell,
   DaemonCellRegistry,
@@ -13,6 +13,8 @@ import { listServerIdsWithUpdatingProjection } from "../postgres-projection.ts";
 
 export type RedisDaemonCellRegistryOptions = RedisClientOptions & {
   db?: Db;
+  /** Host-free tests inject an in-memory client instead of opening Redis. */
+  client?: RedisCellClient;
 };
 
 export type RedisDaemonCellRegistry = DaemonCellRegistry & {
@@ -26,7 +28,7 @@ export type RedisDaemonCellRegistry = DaemonCellRegistry & {
 export function createRedisDaemonCellRegistry(
   opts?: RedisDaemonCellRegistryOptions,
 ): RedisDaemonCellRegistry {
-  const client = createRedisCellClient(opts);
+  const client = opts?.client ?? createRedisCellClient(opts);
   const db = opts?.db;
   const cells = new Map<string, RedisDaemonCell>();
 

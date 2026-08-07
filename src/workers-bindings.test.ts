@@ -1,14 +1,18 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   closeWorkersRequestDb,
+  isPlaceholderHyperdriveCachedId,
   openWorkersRequestDb,
+  resetWorkersBindingWarningsForTests,
   resolveWorkersCachedDb,
   resolveWorkersClientAuthRateLimiter,
   resolveWorkersDaemonRateLimiters,
   resolveWorkersDb,
   resolveWorkersQueryCache,
-  isPlaceholderHyperdriveCachedId,
   setWorkersDbFactoryForTests,
+  warnIfCachedHyperdriveMissing,
+  warnIfClientAuthRateLimiterMissing,
+  warnIfDaemonRateLimitersMissing,
 } from './workers-bindings.ts'
 import type { Db } from './db.ts'
 import type { HyperdriveBinding } from './db.ts'
@@ -62,6 +66,7 @@ function mockDb(label: string): Db {
 
 afterEach(() => {
   setWorkersDbFactoryForTests(null)
+  resetWorkersBindingWarningsForTests()
 })
 
 describe('workers-bindings Hyperdrive resolve / close guards', () => {
@@ -118,6 +123,50 @@ describe('workers-bindings Hyperdrive resolve / close guards', () => {
     expect(first).toBeDefined()
     expect(second).toBeDefined()
     expect(first).not.toBe(second)
+  })
+
+  it('resolveWorkersDb prefers HYPERDRIVE over TURBOPANEL_DATABASE_URL fallback', () => {
+    setWorkersDbFactoryForTests((binding: HyperdriveBinding) =>
+      mockDb(binding.connectionString),
+    )
+
+    const env = {
+      HYPERDRIVE: mockHyperdrive('postgres://hyperdrive'),
+      TURBOPANEL_DATABASE_URL: 'postgres://fallback',
+    } as CloudflareBindings
+
+    const db = resolveWorkersDb(env)
+    expect((db as { label: string }).label).toBe('postgres://hyperdrive')
+  })
+
+  it('resolveWorkersDb uses TURBOPANEL_DATABASE_URL when HYPERDRIVE is absent', () => {
+    setWorkersDbFactoryForTests((binding: HyperdriveBinding) =>
+      mockDb(binding.connectionString),
+    )
+
+    const env = {
+      TURBOPANEL_DATABASE_URL: '  postgres://fallback  ',
+    } as CloudflareBindings
+
+    const db = resolveWorkersDb(env)
+    expect((db as { label: string }).label).toBe('postgres://fallback')
+  })
+
+  it('resolveWorkersDb returns undefined when no database binding or URL is configured', () => {
+    expect(resolveWorkersDb({} as CloudflareBindings)).toBeUndefined()
+    expect(
+      resolveWorkersDb({ TURBOPANEL_DATABASE_URL: '   ' } as CloudflareBindings),
+    ).toBeUndefined()
+  })
+
+  it('resolveWorkersQueryCache returns undefined when neither primary nor cached db is available', () => {
+    expect(resolveWorkersQueryCache({} as CloudflareBindings, undefined)).toBeUndefined()
+  })
+
+  it('closeWorkersRequestDb is a no-op when handles have no clients', async () => {
+    await expect(
+      closeWorkersRequestDb({ db: undefined, cachedDb: undefined, queryCache: undefined }),
+    ).resolves.toBeUndefined()
   })
 
   it('resolveWorkersCachedDb returns undefined when HYPERDRIVE_CACHED is absent', () => {
@@ -375,6 +424,150 @@ describe('workers-bindings Hyperdrive resolve / close guards', () => {
       isPlaceholderHyperdriveCachedId('d9c42999730048e2842dccb61aa05d67'),
     ).toBe(false)
     expect(isPlaceholderHyperdriveCachedId(undefined)).toBe(false)
+    expect(isPlaceholderHyperdriveCachedId('   ')).toBe(false)
+  })
+
+  it('resolveWorkersDaemonRateLimiters treats TURBOPANEL_DEV_SURFACE=true as dev surface', async () => {
+    const env = { TURBOPANEL_DEV_SURFACE: 'true' } as CloudflareBindings
+    const { connect } = resolveWorkersDaemonRateLimiters(env)
+    expect(await connect.limit({ key: 'k' })).toEqual({ success: true })
+  })
+
+  it('warnIfCachedHyperdriveMissing logs once on production-like env without cached binding', () => {
+    const warn = console.warn
+    const messages: string[] = []
+    console.warn = (...args: unknown[]) => {
+      messages.push(String(args[0]))
+    }
+    try {
+      const env = {
+        HYPERDRIVE: mockHyperdrive('postgres://primary'),
+      } as CloudflareBindings
+      warnIfCachedHyperdriveMissing(env)
+      warnIfCachedHyperdriveMissing(env)
+      expect(messages).toHaveLength(1)
+      expect(messages[0]).toContain('HYPERDRIVE_CACHED binding is missing')
+    } finally {
+      console.warn = warn
+    }
+  })
+
+  it('warnIfCachedHyperdriveMissing stays silent on dev surface or when cached binding exists', () => {
+    const warn = console.warn
+    const messages: string[] = []
+    console.warn = (...args: unknown[]) => {
+      messages.push(String(args[0]))
+    }
+    try {
+      warnIfCachedHyperdriveMissing({
+        HYPERDRIVE: mockHyperdrive('postgres://primary'),
+        TURBOPANEL_DEV_SURFACE: '1',
+      } as CloudflareBindings)
+      warnIfCachedHyperdriveMissing({
+        HYPERDRIVE: mockHyperdrive('postgres://primary'),
+        HYPERDRIVE_CACHED: mockHyperdrive('postgres://cached'),
+      } as CloudflareBindings)
+      expect(messages).toHaveLength(0)
+    } finally {
+      console.warn = warn
+    }
+  })
+
+  it('resolveWorkersQueryCache honors explicit null cachedDb (passthrough even when binding exists)', async () => {
+    const primaryDb = mockDb('primary')
+    const env = {
+      HYPERDRIVE: mockHyperdrive('postgres://primary'),
+      HYPERDRIVE_CACHED: mockHyperdrive('postgres://cached'),
+    } as CloudflareBindings
+
+    const cache = resolveWorkersQueryCache(env, primaryDb, null)
+    expect(cache).toBeDefined()
+
+    let loadedWith: Db | undefined
+    await cache!.getReadModel({
+      readModel: 'servers-list',
+      key: 'tp:qcache:servers-list:explicit-null',
+      load: async (readDb) => {
+        loadedWith = readDb
+        return { ok: true }
+      },
+    })
+
+    expect(loadedWith).toBe(primaryDb)
+  })
+
+  it('warnIfDaemonRateLimitersMissing stays silent when all bindings are present', () => {
+    const warn = console.warn
+    const messages: string[] = []
+    console.warn = (...args: unknown[]) => {
+      messages.push(String(args[0]))
+    }
+    try {
+      const noopLimiter = { limit: () => Promise.resolve({ success: true }) }
+      warnIfDaemonRateLimitersMissing({
+        DAEMON_CONNECT_RATE_LIMITER: noopLimiter,
+        DAEMON_REST_RATE_LIMITER: noopLimiter,
+        DAEMON_METRICS_RATE_LIMITER: noopLimiter,
+      } as unknown as CloudflareBindings)
+      expect(messages).toHaveLength(0)
+    } finally {
+      console.warn = warn
+    }
+  })
+
+  it('warnIfDaemonRateLimitersMissing logs once when any daemon limiter binding is absent', () => {
+    const warn = console.warn
+    const messages: string[] = []
+    console.warn = (...args: unknown[]) => {
+      messages.push(String(args[0]))
+    }
+    try {
+      const env = {
+        DAEMON_CONNECT_RATE_LIMITER: {
+          limit: () => Promise.resolve({ success: true }),
+        },
+      } as unknown as CloudflareBindings
+      warnIfDaemonRateLimitersMissing(env)
+      warnIfDaemonRateLimitersMissing(env)
+      expect(messages).toHaveLength(1)
+      expect(messages[0]).toContain('DAEMON_CONNECT_RATE_LIMITER')
+    } finally {
+      console.warn = warn
+    }
+  })
+
+  it('warnIfClientAuthRateLimiterMissing stays silent when binding is present', () => {
+    const warn = console.warn
+    const messages: string[] = []
+    console.warn = (...args: unknown[]) => {
+      messages.push(String(args[0]))
+    }
+    try {
+      warnIfClientAuthRateLimiterMissing({
+        CLIENT_AUTH_RATE_LIMITER: {
+          limit: () => Promise.resolve({ success: true }),
+        },
+      } as unknown as CloudflareBindings)
+      expect(messages).toHaveLength(0)
+    } finally {
+      console.warn = warn
+    }
+  })
+
+  it('warnIfClientAuthRateLimiterMissing logs once when binding is absent on production-like env', () => {
+    const warn = console.warn
+    const messages: string[] = []
+    console.warn = (...args: unknown[]) => {
+      messages.push(String(args[0]))
+    }
+    try {
+      warnIfClientAuthRateLimiterMissing({} as CloudflareBindings)
+      warnIfClientAuthRateLimiterMissing({} as CloudflareBindings)
+      expect(messages).toHaveLength(1)
+      expect(messages[0]).toContain('CLIENT_AUTH_RATE_LIMITER binding missing')
+    } finally {
+      console.warn = warn
+    }
   })
 
   it('wrangler exercised envs must not use HYPERDRIVE_CACHED placeholder', async () => {

@@ -1,7 +1,7 @@
 import { assertEquals } from 'jsr:@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db-url.ts'
-import { createDenoDb } from '../../db.ts'
+import { createDenoDb, endDbConnection } from '../../db.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../daemon/cell/contracts.ts'
 import { attachDaemonStateToServer } from '../../daemon/authn/server-identity-db.ts'
 import {
@@ -24,7 +24,7 @@ import {
   getCommandRecord,
   transitionCommand,
 } from '../db/command-records.ts'
-import { processCommandEnvelope } from './consumer.ts'
+import { processCommandEnvelope, isTransientError } from './consumer.ts'
 import type { CommandEnvelope } from './envelope.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -36,6 +36,19 @@ const dbUrl = getDatabaseUrl()
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno)
+
+test('isTransientError classifies retryable infrastructure failures', () => {
+  assertEquals(isTransientError(new Error('network timeout')), true)
+  assertEquals(isTransientError(new Error('ECONNREFUSED to postgres')), true)
+  assertEquals(isTransientError(new Error('cell unavailable')), true)
+  assertEquals(isTransientError('redis connection reset'), true)
+})
+
+test('isTransientError rejects permanent validation failures', () => {
+  assertEquals(isTransientError(new Error('invalid command envelope')), false)
+  assertEquals(isTransientError(new Error('data integrity violation')), false)
+  assertEquals(isTransientError(new Error('overloaded queue')), false)
+})
 
 const TEST_COMMAND_ACTOR = {
   actorType: 'user',
@@ -191,6 +204,7 @@ async function withConsumerFixtures(
     await db.delete(command).where(eq(command.serverId, serverId))
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(organization).where(eq(organization.id, organizationId))
+    await endDbConnection(db)
   }
 }
 
@@ -376,10 +390,11 @@ test('processCommandEnvelope persists server.options.timezone only after success
       .limit(1)
     const options = row?.options as { timezone?: string } | null
     assertEquals(options?.timezone, 'America/Chicago')
-    assertEquals(
-      (row?.metadata as Record<string, unknown>).timeSync,
-      { timezone: 'America/Chicago' },
-    )
+    const timeSync = (row?.metadata as Record<string, unknown>).timeSync as
+      | Record<string, unknown>
+      | undefined
+    assertEquals(timeSync?.timezone, 'America/Chicago')
+    assertEquals(typeof timeSync?.capturedAt, 'string')
   })
 })
 
@@ -1788,5 +1803,1146 @@ test('processCommandEnvelope keeps unmatched self-host expected rows on partial 
       await db.delete(project).where(eq(project.id, projectRow!.id))
       await db.delete(workspace).where(eq(workspace.id, workspaceRow!.id))
     }
+  })
+})
+
+test('processCommandEnvelope no-ops when command record is missing', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: null,
+    })
+
+    await processCommandEnvelope(db, registry, {
+      commandId: '00000000-0000-4000-8000-000000000099',
+      serverId,
+      type: 'daemon.ping',
+      attempt: 1,
+      queuedAt: new Date().toISOString(),
+    })
+
+    assertEquals(registry.enqueueCalled, false)
+  })
+})
+
+test('processCommandEnvelope no-ops when envelope serverId mismatches record', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'daemon.ping',
+      payload: {},
+    })
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: null,
+    })
+
+    await processCommandEnvelope(db, registry, {
+      ...buildEnvelope(record, serverId),
+      serverId: '00000000-0000-4000-8000-000000000099',
+    })
+
+    assertEquals(registry.enqueueCalled, false)
+    const unchanged = await getCommandRecord(db, record.id)
+    assertEquals(unchanged?.status, 'queued')
+  })
+})
+
+test('processCommandEnvelope merges NTP facts into server.metadata.timeSync on success', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'server.ntp.set',
+      payload: {
+        enabled: true,
+        servers: ['time.cloudflare.com'],
+      },
+    })
+
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: {
+          ntpEnabled: true,
+          ntpSynced: true,
+          ntpServers: ['time.cloudflare.com'],
+          fallbackNtpServers: ['pool.ntp.org'],
+        },
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const [row] = await db
+      .select({ metadata: server.metadata })
+      .from(server)
+      .where(eq(server.id, serverId))
+      .limit(1)
+    const timeSync = (row?.metadata as Record<string, unknown>).timeSync as
+      | Record<string, unknown>
+      | undefined
+    assertEquals(timeSync?.ntpEnabled, true)
+    assertEquals(timeSync?.ntpSynced, true)
+    assertEquals(timeSync?.ntpServers, ['time.cloudflare.com'])
+    assertEquals(timeSync?.fallbackNtpServers, ['pool.ntp.org'])
+    assertEquals(typeof timeSync?.capturedAt, 'string')
+  })
+})
+
+async function withDeployFixtures(
+  fn: (ctx: {
+    db: ReturnType<typeof createDenoDb>
+    organizationId: string
+    serverId: string
+    environmentId: string
+    projectId: string
+    webServiceId: string
+  }) => Promise<void>,
+): Promise<void> {
+  await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
+    const [workspaceRow] = await db
+      .insert(workspace)
+      .values({ organizationId, displayName: 'Deploy Consumer Workspace' })
+      .returning({ id: workspace.id })
+    const [projectRow] = await db
+      .insert(project)
+      .values({
+        workspaceId: workspaceRow!.id,
+        displayName: 'Deploy Consumer Project',
+        metadata: { type: 'docker-compose' },
+      })
+      .returning({ id: project.id })
+    const [environmentRow] = await db
+      .insert(environment)
+      .values({
+        projectId: projectRow!.id,
+        serverId,
+        displayName: 'Production',
+      })
+      .returning({ id: environment.id })
+    const environmentId = environmentRow!.id
+    const [serviceRow] = await db
+      .insert(service)
+      .values({
+        environmentId,
+        displayName: 'web',
+        composeServiceName: 'web',
+      })
+      .returning({ id: service.id })
+
+    try {
+      await fn({
+        db,
+        organizationId,
+        serverId,
+        environmentId,
+        projectId: projectRow!.id,
+        webServiceId: serviceRow!.id,
+      })
+    } finally {
+      await db.delete(container).where(eq(container.serverId, serverId))
+      await db.delete(service).where(eq(service.environmentId, environmentId))
+      await db.delete(environment).where(eq(environment.id, environmentId))
+      await db.delete(project).where(eq(project.id, projectRow!.id))
+      await db.delete(workspace).where(eq(workspace.id, workspaceRow!.id))
+    }
+  })
+}
+
+const MANAGED_APPLY_PAYLOAD = {
+  engine: 'postgres',
+  projectName: 'tp-managed-pg',
+  containerName: '01936b3e-aaaa-bbbb-cccc-123456789abc-1',
+  image: 'docker.io/library/postgres:18-alpine',
+  containerPort: 5432,
+  composeYaml: 'services:\n  postgres:\n    image: postgres:18-alpine\n',
+  configFiles: [
+    { path: 'postgresql.conf', contents: "listen_addresses = '*'\n", mode: '0640' },
+  ],
+  volumes: [{ name: 'pgdata', target: '/var/lib/postgresql' }],
+  exposure: { enabled: false, protocol: 'tcp' },
+  credentials: [
+    {
+      principalId: '00000000-0000-4000-8000-000000000003',
+      username: 'postgres',
+      role: 'root',
+      databases: ['postgres'],
+      password: 'denc.server.key.1.payload',
+    },
+  ],
+} as const
+
+async function withManagedApplyFixtures(
+  fn: (ctx: {
+    db: ReturnType<typeof createDenoDb>
+    serverId: string
+    managedId: string
+    environmentId: string
+    serviceId: string
+  }) => Promise<void>,
+): Promise<void> {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    const [managedRow] = await db
+      .select({ environmentId: managed.environmentId })
+      .from(managed)
+      .where(eq(managed.id, managedId))
+      .limit(1)
+    const environmentId = managedRow!.environmentId
+    const [serviceRow] = await db
+      .insert(service)
+      .values({
+        environmentId,
+        displayName: 'postgres',
+        composeServiceName: 'postgres',
+      })
+      .returning({ id: service.id })
+
+    try {
+      await fn({
+        db,
+        serverId,
+        managedId,
+        environmentId,
+        serviceId: serviceRow!.id,
+      })
+    } finally {
+      await db.delete(container).where(eq(container.serverId, serverId))
+      await db.delete(service).where(eq(service.id, serviceRow!.id))
+    }
+  })
+}
+
+test('processCommandEnvelope reconciles containers on environment.deploy success', async () => {
+  await withDeployFixtures(async ({
+    db,
+    organizationId,
+    serverId,
+    environmentId,
+    projectId,
+    webServiceId,
+  }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    await db.insert(container).values({
+      serviceId: webServiceId,
+      serverId,
+      containerId: null,
+      containerName: 'proj-web-1',
+      status: 'pending',
+      composeServiceName: 'web',
+      ordinal: 1,
+    })
+
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'environment.deploy',
+      payload: {
+        environmentId,
+        projectId,
+        organizationId,
+        projectName: 'tp-deploy-test',
+        composeYaml: 'services:\n  web:\n    image: nginx\n',
+        hostings: [],
+      },
+    })
+
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: {
+          projectName: 'tp-deploy-test',
+          summary: 'deployed',
+          containers: [
+            {
+              composeServiceName: 'web',
+              containerId: 'deploy-cid',
+              containerName: 'proj-web-1',
+              status: 'running',
+              role: 'service',
+            },
+          ],
+        },
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const [row] = await db
+      .select({ containerId: container.containerId, status: container.status })
+      .from(container)
+      .where(eq(container.serviceId, webServiceId))
+      .limit(1)
+    assertEquals(row?.containerId, 'deploy-cid')
+    assertEquals(row?.status, 'running')
+  })
+})
+
+test('processCommandEnvelope clears pins on environment.stop success', async () => {
+  await withDeployFixtures(async ({
+    db,
+    serverId,
+    environmentId,
+    projectId,
+    webServiceId,
+  }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    await db.insert(container).values({
+      serviceId: webServiceId,
+      serverId,
+      containerId: 'running-cid',
+      containerName: 'proj-web-1',
+      status: 'running',
+      composeServiceName: 'web',
+      ordinal: 1,
+    })
+
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'environment.stop',
+      payload: {
+        environmentId,
+        projectId,
+        projectName: 'tp-stop-test',
+      },
+    })
+
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: {
+          projectName: 'tp-stop-test',
+          summary: 'stopped',
+          containers: [],
+        },
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const [row] = await db
+      .select({ containerId: container.containerId, status: container.status })
+      .from(container)
+      .where(eq(container.serviceId, webServiceId))
+      .limit(1)
+    assertEquals(row?.containerId, null)
+    assertEquals(row?.status, 'exited')
+  })
+})
+
+test('processCommandEnvelope projects managed.apply onto managed row and reconciles containers', async () => {
+  await withManagedApplyFixtures(async ({
+    db,
+    serverId,
+    managedId,
+    environmentId,
+    serviceId,
+  }) => {
+    await db.insert(container).values({
+      serviceId,
+      serverId,
+      containerId: null,
+      containerName: MANAGED_APPLY_PAYLOAD.containerName,
+      status: 'pending',
+      composeServiceName: 'postgres',
+      ordinal: 1,
+    })
+
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.apply',
+      payload: {
+        managedId,
+        environmentId,
+        ...MANAGED_APPLY_PAYLOAD,
+      },
+    })
+
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: {
+          host: '203.0.113.10',
+          port: 5432,
+          containers: [
+            {
+              serviceId,
+              composeServiceName: 'postgres',
+              containerId: 'managed-cid',
+              containerName: MANAGED_APPLY_PAYLOAD.containerName,
+              status: 'running',
+              role: 'service',
+            },
+          ],
+        },
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const [managedRow] = await db
+      .select({ status: managed.status, metadata: managed.metadata })
+      .from(managed)
+      .where(eq(managed.id, managedId))
+      .limit(1)
+    assertEquals(managedRow?.status, 'ready')
+    assertEquals(
+      (managedRow?.metadata as { host?: string; port?: number }).host,
+      '203.0.113.10',
+    )
+    assertEquals(
+      (managedRow?.metadata as { host?: string; port?: number }).port,
+      5432,
+    )
+
+    const [containerRow] = await db
+      .select({ containerId: container.containerId, status: container.status })
+      .from(container)
+      .where(eq(container.serviceId, serviceId))
+      .limit(1)
+    assertEquals(containerRow?.containerId, 'managed-cid')
+    assertEquals(containerRow?.status, 'running')
+  })
+})
+
+test('processCommandEnvelope projects managed.lifecycle status from daemon result', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.lifecycle',
+      payload: { managedId, action: 'stop' },
+    })
+
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: { status: 'stopped' },
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const [managedRow] = await db
+      .select({ status: managed.status })
+      .from(managed)
+      .where(eq(managed.id, managedId))
+      .limit(1)
+    assertEquals(managedRow?.status, 'stopped')
+  })
+})
+
+test('processCommandEnvelope appends managed.backup metadata on create success', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    await db
+      .update(managed)
+      .set({
+        options: { settings: {}, databases: ['postgres'], backups: [] },
+      })
+      .where(eq(managed.id, managedId))
+
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.backup',
+      payload: {
+        managedId,
+        engine: 'postgres',
+        action: 'create',
+        backupId: 'bk_1700000000000',
+        artifactExtension: 'dump',
+        scope: 'database',
+        database: 'postgres',
+      },
+    })
+
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: {
+          backupId: 'bk_1700000000000',
+          path: '/var/lib/turbopanel/backups/bk_1700000000000.dump',
+          sizeBytes: 4096,
+          checksum: 'a'.repeat(64),
+          database: 'postgres',
+          completedAt: '2020-01-01T00:00:00.000Z',
+        },
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const [managedRow] = await db
+      .select({ options: managed.options })
+      .from(managed)
+      .where(eq(managed.id, managedId))
+      .limit(1)
+    const backups = (managedRow?.options as { backups?: unknown[] }).backups
+    assertEquals(Array.isArray(backups), true)
+    assertEquals((backups as { id: string }[])[0]?.id, 'bk_1700000000000')
+  })
+})
+
+test('processCommandEnvelope sets managed.status ready on managed.restore success', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    await db
+      .update(managed)
+      .set({ status: 'applying' })
+      .where(eq(managed.id, managedId))
+
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.restore',
+      payload: {
+        managedId,
+        engine: 'postgres',
+        backupId: 'bk_1700000000000',
+        artifactExtension: 'dump',
+        checksum: 'c'.repeat(64),
+      },
+    })
+
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: { summary: 'restored' },
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const [managedRow] = await db
+      .select({ status: managed.status })
+      .from(managed)
+      .where(eq(managed.id, managedId))
+      .limit(1)
+    assertEquals(managedRow?.status, 'ready')
+  })
+})
+
+test('processCommandEnvelope marks managed failed when managed.apply times out', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    await db
+      .update(managed)
+      .set({ status: 'applying' })
+      .where(eq(managed.id, managedId))
+
+    const [managedRow] = await db
+      .select({ environmentId: managed.environmentId })
+      .from(managed)
+      .where(eq(managed.id, managedId))
+      .limit(1)
+
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.apply',
+      payload: {
+        managedId,
+        environmentId: managedRow!.environmentId,
+        ...MANAGED_APPLY_PAYLOAD,
+      },
+    })
+
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: null,
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.status, 'timed_out')
+
+    const [afterManaged] = await db
+      .select({ status: managed.status })
+      .from(managed)
+      .where(eq(managed.id, managedId))
+      .limit(1)
+    assertEquals(afterManaged?.status, 'failed')
+  })
+})
+
+test('processCommandEnvelope leaves managed.status unchanged when managed.backup fails', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    await db
+      .update(managed)
+      .set({ status: 'ready' })
+      .where(eq(managed.id, managedId))
+
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.backup',
+      payload: {
+        managedId,
+        engine: 'postgres',
+        action: 'create',
+        backupId: 'bk_1700000000000',
+        artifactExtension: 'dump',
+        scope: 'database',
+        database: 'postgres',
+      },
+    })
+
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'failed',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        error: 'backup engine unavailable',
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const [managedRow] = await db
+      .select({ status: managed.status })
+      .from(managed)
+      .where(eq(managed.id, managedId))
+      .limit(1)
+    assertEquals(managedRow?.status, 'ready')
+  })
+})
+
+test('isTransientError matches Error names for timeout network connection', () => {
+  assertEquals(
+    isTransientError(Object.assign(new Error('ignored'), { name: 'TimeoutError' })),
+    true,
+  )
+  assertEquals(
+    isTransientError(Object.assign(new Error('ignored'), { name: 'NetworkError' })),
+    true,
+  )
+  assertEquals(
+    isTransientError(Object.assign(new Error('ignored'), { name: 'ConnectionError' })),
+    true,
+  )
+})
+
+test('processCommandEnvelope enriches ping result with cellDispatchedAt', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'daemon.ping',
+      payload: {},
+    })
+    const sentAt = '2020-01-01T00:00:00.000Z'
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        sentAt,
+        result: { ok: true, latencyMs: 12 },
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.status, 'succeeded')
+    assertEquals(
+      (updated?.result as Record<string, unknown>).cellDispatchedAt,
+      sentAt,
+    )
+  })
+})
+
+test('processCommandEnvelope skips hostname metadata when result omits observedHostname', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const now = new Date().toISOString()
+    await db.update(server).set({
+      hostname: 'before-hostname',
+      updatedAt: now,
+    }).where(eq(server.id, serverId))
+
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'server.hostname.set',
+      payload: { hostname: 'after-hostname' },
+    })
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: { summary: 'hostname unchanged' },
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const [row] = await db
+      .select({ hostname: server.hostname })
+      .from(server)
+      .where(eq(server.id, serverId))
+      .limit(1)
+    assertEquals(row?.hostname, 'before-hostname')
+  })
+})
+
+test('processCommandEnvelope leaves timezone options unchanged on malformed timezone success', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const now = new Date().toISOString()
+    await db.update(server).set({
+      options: { timezone: 'UTC' },
+      updatedAt: now,
+    }).where(eq(server.id, serverId))
+
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'server.timezone.set',
+      payload: { timezone: 'America/Chicago' },
+    })
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: { timezone: '' },
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const [row] = await db
+      .select({ options: server.options })
+      .from(server)
+      .where(eq(server.id, serverId))
+      .limit(1)
+    assertEquals((row?.options as { timezone?: string }).timezone, 'UTC')
+  })
+})
+
+test('processCommandEnvelope maps expired pending requests to timed_out', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'daemon.ping',
+      payload: {},
+    })
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'expired',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.status, 'timed_out')
+  })
+})
+
+test('processCommandEnvelope fails on unexpected pending request status', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'daemon.ping',
+      payload: {},
+    })
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'acked',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.status, 'failed')
+    assertEquals(
+      updated?.error,
+      'Unexpected pending request status: acked',
+    )
+  })
+})
+
+test('processCommandEnvelope marks managed failed when lifecycle pending expires', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    await db
+      .update(managed)
+      .set({ status: 'applying' })
+      .where(eq(managed.id, managedId))
+
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.lifecycle',
+      payload: { managedId, action: 'stop' },
+    })
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'expired',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.status, 'timed_out')
+    const [managedRow] = await db
+      .select({ status: managed.status })
+      .from(managed)
+      .where(eq(managed.id, managedId))
+      .limit(1)
+    assertEquals(managedRow?.status, 'failed')
+  })
+})
+
+test('processCommandEnvelope marks managed failed when lifecycle command fails', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    await db
+      .update(managed)
+      .set({ status: 'ready' })
+      .where(eq(managed.id, managedId))
+
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.lifecycle',
+      payload: { managedId, action: 'stop' },
+    })
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'failed',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        error: 'compose stop failed',
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.status, 'failed')
+    const [managedRow] = await db
+      .select({ status: managed.status })
+      .from(managed)
+      .where(eq(managed.id, managedId))
+      .limit(1)
+    assertEquals(managedRow?.status, 'failed')
+  })
+})
+
+test('processCommandEnvelope ignores non-projectable managed lifecycle status', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    await db
+      .update(managed)
+      .set({ status: 'ready' })
+      .where(eq(managed.id, managedId))
+
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.lifecycle',
+      payload: { managedId, action: 'start' },
+    })
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: { status: 'provisioning' },
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const [managedRow] = await db
+      .select({ status: managed.status })
+      .from(managed)
+      .where(eq(managed.id, managedId))
+      .limit(1)
+    assertEquals(managedRow?.status, 'ready')
+  })
+})
+
+test('processCommandEnvelope removes backup metadata on managed.backup delete success', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    await db
+      .update(managed)
+      .set({
+        options: {
+          settings: {},
+          databases: ['postgres'],
+          backups: [{
+            id: 'bk_1700000000000',
+            createdAt: '2020-01-01T00:00:00.000Z',
+            sizeBytes: 1024,
+            checksum: 'a'.repeat(64),
+            path: '/var/lib/turbopanel/backups/bk_1700000000000.dump',
+          }],
+        },
+      })
+      .where(eq(managed.id, managedId))
+
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.backup',
+      payload: {
+        managedId,
+        engine: 'postgres',
+        action: 'delete',
+        backupId: 'bk_1700000000000',
+        artifactExtension: 'dump',
+        scope: 'database',
+        database: 'postgres',
+      },
+    })
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: { backupId: 'bk_1700000000000', deleted: true },
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const [managedRow] = await db
+      .select({ options: managed.options })
+      .from(managed)
+      .where(eq(managed.id, managedId))
+      .limit(1)
+    const backups = (managedRow?.options as { backups?: unknown[] }).backups
+    assertEquals(backups, [])
+  })
+})
+
+test('processCommandEnvelope skips reconcile when environment.deploy omits containers', async () => {
+  await withDeployFixtures(async ({ db, serverId, environmentId, webServiceId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'environment.deploy',
+      payload: { environmentId },
+    })
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: { summary: 'deployed without ps report' },
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const rows = await db
+      .select({ id: container.id })
+      .from(container)
+      .where(eq(container.serviceId, webServiceId))
+    assertEquals(rows.length, 0)
+  })
+})
+
+test('processCommandEnvelope swallows deploy side-effect parse errors after success', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'environment.deploy',
+      payload: { notAnEnvironmentId: true },
+    })
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: { containers: [] },
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.status, 'succeeded')
+  })
+})
+
+test('processCommandEnvelope swallows managed.apply side-effect errors after success', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.apply',
+      payload: {
+        managedId,
+        environmentId: 'not-a-uuid',
+        engine: 'postgres',
+      },
+    })
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: { host: '203.0.113.10', port: 5432 },
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.status, 'succeeded')
+    const [managedRow] = await db
+      .select({ status: managed.status })
+      .from(managed)
+      .where(eq(managed.id, managedId))
+      .limit(1)
+    assertEquals(managedRow?.status, 'ready')
+  })
+})
+
+test('processCommandEnvelope leaves managed.status unchanged when managed.restore side effect fails', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    await db
+      .update(managed)
+      .set({ status: 'applying' })
+      .where(eq(managed.id, managedId))
+
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.restore',
+      payload: { managedId, engine: 'postgres' },
+    })
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: { summary: 'restored' },
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const [managedRow] = await db
+      .select({ status: managed.status })
+      .from(managed)
+      .where(eq(managed.id, managedId))
+      .limit(1)
+    assertEquals(managedRow?.status, 'applying')
   })
 })

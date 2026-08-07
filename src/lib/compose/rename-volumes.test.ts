@@ -85,6 +85,54 @@ test('renameComposeVolumes is a no-op for empty rename map', () => {
   assertEquals(renameComposeVolumes(document, new Map()), document)
 })
 
+test('renameComposeVolumes leaves tilde bind mounts unchanged', () => {
+  const document: ComposeDocument = {
+    version: 1,
+    data: {
+      services: { web: { volumes: ['~/data:/data', 'cache:/cache'] } },
+      volumes: { cache: {} },
+    },
+    presentation: { keyOrder: ['services', 'volumes'], comments: {} },
+  }
+  const renamed = '01936b3e-aaaa-bbbb-cccc-123456789abc'
+  const result = renameComposeVolumes(document, new Map([['cache', renamed]]))
+  const volumes = (result.data.services as Record<string, Record<string, unknown>>).web!
+    .volumes as string[]
+  assertEquals(volumes[0], '~/data:/data')
+  assertEquals(volumes[1], `${renamed}:/cache`)
+})
+
+test('renameComposeVolumes leaves malformed short refs unchanged', () => {
+  const document: ComposeDocument = {
+    version: 1,
+    data: {
+      services: { web: { volumes: [':/data', 'cache:/cache'] } },
+      volumes: { cache: {} },
+    },
+    presentation: { keyOrder: ['services', 'volumes'], comments: {} },
+  }
+  const renamed = '01936b3e-aaaa-bbbb-cccc-123456789abc'
+  const result = renameComposeVolumes(document, new Map([['cache', renamed]]))
+  const volumes = (result.data.services as Record<string, Record<string, unknown>>).web!
+    .volumes as string[]
+  assertEquals(volumes[0], ':/data')
+  assertEquals(volumes[1], `${renamed}:/cache`)
+})
+
+test('renameComposeVolumes passes through non-record services', () => {
+  const document: ComposeDocument = {
+    version: 1,
+    data: {
+      services: { bad: 'raw', web: { volumes: ['data:/data'] } },
+      volumes: { data: {} },
+    },
+    presentation: { keyOrder: ['services', 'volumes'], comments: {} },
+  }
+  const renamed = '01936b3e-aaaa-bbbb-cccc-123456789abc'
+  const result = renameComposeVolumes(document, new Map([['data', renamed]]))
+  assertEquals((result.data.services as Record<string, unknown>).bad, 'raw')
+})
+
 test('renameComposeVolumes leaves non-volume long mounts unchanged', () => {
   const document: ComposeDocument = {
     version: 1,

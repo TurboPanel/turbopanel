@@ -117,3 +117,25 @@ test('cachedServerDetailReadModel returns row plus presence enrichment', async (
   assertEquals(result?.presence?.connected, true)
   assertEquals(typeof result?.colocatedWithInstance, 'boolean')
 })
+
+test('cachedServerDetailReadModel returns null presence when preload is empty', async () => {
+  const row: ServerDetailRow = {
+    id: 'srv-1',
+    displayName: 'Primary',
+    organizationId: 'org-1',
+    licenseId: null,
+    options: null,
+    createdAt: '2024-01-01T00:00:00.000Z',
+  }
+  const db = createStubDb({ detailRows: [row], presenceRows: [] })
+  const cache = createPassthroughQueryCache(db)
+
+  const result = await cachedServerDetailReadModel(
+    fakeContext({ db, queryCache: cache }),
+    { organizationId: 'org-1', serverId: 'srv-1' },
+  )
+
+  assertEquals(result?.row, row)
+  assertEquals(result?.presence, null)
+  assertEquals(result?.colocatedWithInstance, false)
+})

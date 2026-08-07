@@ -25,7 +25,9 @@ import {
   clickhouseAvgExpression,
   hostEventDiscriminatorPredicates,
   MAX_STATUS_EVENTS,
+  parseAeLatestAtMs,
   parseCloudflareV4SqlResponse,
+  parseHostSummaryRow,
   parseStatusEventRows,
   queryHostSeriesViaSqlApi,
   queryHostSummaryViaSqlApi,
@@ -630,4 +632,60 @@ it("queryStatusHistoryViaSqlApi: truncation follows raw row count, not parsed le
 
   assertEquals(result.truncated, true);
   assertEquals(result.events.length, MAX_STATUS_EVENTS);
+});
+
+it("parseAeLatestAtMs accepts unix seconds, milliseconds, and space-separated UTC", () => {
+  assertEquals(parseAeLatestAtMs(null), null);
+  assertEquals(parseAeLatestAtMs(undefined), null);
+  assertEquals(parseAeLatestAtMs(""), null);
+  assertEquals(parseAeLatestAtMs(1_700_000_000), 1_700_000_000_000);
+  assertEquals(parseAeLatestAtMs(1_700_000_000_000), 1_700_000_000_000);
+  assertEquals(
+    parseAeLatestAtMs("2026-01-15 12:34:56"),
+    Date.parse("2026-01-15T12:34:56Z"),
+  );
+  assertEquals(
+    parseAeLatestAtMs("2026-01-15T12:34:56.123Z"),
+    Date.parse("2026-01-15T12:34:56.123Z"),
+  );
+});
+
+it("parseHostSummaryRow normalizes latest_at when samples exist", () => {
+  assertEquals(parseHostSummaryRow(undefined), {
+    sampleCount: 0,
+    latestAt: null,
+  });
+  assertEquals(
+    parseHostSummaryRow({
+      sample_count: 3,
+      latest_at: "2026-01-15 12:34:56",
+    }).latestAt,
+    new Date(Date.parse("2026-01-15T12:34:56Z")).toISOString(),
+  );
+  assertEquals(
+    parseHostSummaryRow({ sample_count: 0, latest_at: "2026-01-15 12:34:56" })
+      .latestAt,
+    null,
+  );
+});
+
+it("parseCloudflareV4SqlResponse surfaces AE SQL API errors", () => {
+  assertThrows(
+    () =>
+      parseCloudflareV4SqlResponse({
+        success: false,
+        errors: [{ message: "dataset missing" }],
+      }),
+    Error,
+    "AE SQL API error: dataset missing",
+  );
+  assertThrows(
+    () =>
+      parseCloudflareV4SqlResponse({
+        success: false,
+        errors: [{ code: 1003 }],
+      }),
+    Error,
+    "AE SQL API error: code=1003",
+  );
 });

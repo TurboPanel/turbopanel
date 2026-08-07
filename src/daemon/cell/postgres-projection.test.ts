@@ -11,9 +11,12 @@ import {
 } from "../authn/daemon-state.ts";
 import {
   agentChanged,
+  buildProjectionsFromDaemonRows,
   inboundHeartbeatProjectionDue,
   INBOUND_PROJECTION_COALESCE_MS,
+  identityFromSnapshot,
   listConnectedServerIdsFromProjection,
+  listEnrolledDaemonServerIds,
   listRecentlyOfflineServersForSweep,
   mergeAgentPreserving,
   projectServerDaemon,
@@ -1364,4 +1367,70 @@ test("projectServerDaemon emits status event only after a successful update", as
 
   assertEquals(threw, true);
   assertEquals(events.length, 0);
+});
+
+test("identityFromSnapshot extracts hostname machineKey and remoteAddress", () => {
+  const identity = identityFromSnapshot({
+    serverId,
+    version: 1,
+    updatedAt: "2020-01-01T00:00:00.000Z",
+    connected: true,
+    hostname: "host-1",
+    machineKey: TEST_MACHINE_KEY,
+    remoteAddress: "__direct__",
+  });
+
+  assertEquals(identity.hostname, "host-1");
+  assertEquals(identity.machineKey, TEST_MACHINE_KEY);
+  assertEquals(identity.remoteAddress, "__direct__");
+});
+
+test("buildProjectionsFromDaemonRows skips rows with no projection and offline status", () => {
+  const projections = buildProjectionsFromDaemonRows([
+    {
+      id: "srv-empty",
+      daemon: { key: baseKey },
+      connected: false,
+      statusChangedAt: null,
+    },
+  ]);
+
+  assertEquals(projections.size, 0);
+});
+
+test("buildProjectionsFromDaemonRows maps connected servers with status timestamps", () => {
+  const projections = buildProjectionsFromDaemonRows([
+    {
+      id: serverId,
+      daemon: {
+        key: baseKey,
+        projection: {
+          remoteAddress: "203.0.113.1",
+          agent: { commit: "abc", buildId: "build-1" },
+        },
+      },
+      connected: true,
+      statusChangedAt: "2020-01-01T00:00:00.000Z",
+    },
+  ]);
+
+  const read = projections.get(serverId);
+  assertEquals(read?.connected, true);
+  assertEquals(read?.connectedAt, "2020-01-01T00:00:00.000Z");
+  assertEquals(read?.remoteAddress, "203.0.113.1");
+  assertEquals(read?.agent?.commit, "abc");
+});
+
+test("listEnrolledDaemonServerIds returns only servers with daemon keys", async () => {
+  const db = {
+    select: () => ({
+      from: () => Promise.resolve([
+        { id: "srv-enrolled", daemon: { key: baseKey } },
+        { id: "srv-bare", daemon: null },
+      ]),
+    }),
+  } as unknown as Db;
+
+  const ids = await listEnrolledDaemonServerIds(db);
+  assertEquals(ids, ["srv-enrolled"]);
 });

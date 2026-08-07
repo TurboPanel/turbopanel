@@ -26,6 +26,7 @@ import {
   SERVER_CAPACITY_EXCEEDED_ERROR,
 } from '../../lib/server-capacity.ts'
 import { getOrgId } from '../shared.ts'
+import { parseLicenseCreateFields } from './routes-helpers.ts'
 
 // License create/list/revoke are owner-only. Use the exact owner-only guard so
 // an organization manager cannot mint or revoke registration keys.
@@ -34,48 +35,6 @@ async function assertBillingOrOrgMember(
   organizationId: string,
 ): Promise<Response | null> {
   return assertOrgOwnerOr403(c, 'organization', organizationId)
-}
-
-type LicenseCreateFields = {
-  displayName?: string
-  installBaseUrl?: string
-}
-
-function parseLicenseCreateFields(
-  rawBody: string,
-): LicenseCreateFields | 'invalid' {
-  if (!rawBody.trim()) {
-    return {}
-  }
-
-  let body: unknown
-  try {
-    body = JSON.parse(rawBody)
-  } catch {
-    return 'invalid'
-  }
-
-  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-    return 'invalid'
-  }
-
-  const record = body as Record<string, unknown>
-  const fields: LicenseCreateFields = {}
-
-  if (record.displayName !== undefined) {
-    if (typeof record.displayName !== 'string') {
-      return 'invalid'
-    }
-    fields.displayName = record.displayName
-  }
-  if (record.installBaseUrl !== undefined) {
-    if (typeof record.installBaseUrl !== 'string') {
-      return 'invalid'
-    }
-    fields.installBaseUrl = record.installBaseUrl
-  }
-
-  return fields
 }
 
 export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {

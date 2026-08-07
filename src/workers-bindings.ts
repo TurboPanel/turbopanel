@@ -211,6 +211,13 @@ let cachedHyperdriveWarningLogged = false
 let daemonRateLimiterWarningLogged = false
 let clientAuthRateLimiterWarningLogged = false
 
+/** @internal Reset one-shot production warning flags — tests only. */
+export function resetWorkersBindingWarningsForTests(): void {
+  cachedHyperdriveWarningLogged = false
+  daemonRateLimiterWarningLogged = false
+  clientAuthRateLimiterWarningLogged = false
+}
+
 /**
  * Warn once when production-like Workers env has primary Hyperdrive but no cached
  * binding — approved read models will fall back to the primary connection.

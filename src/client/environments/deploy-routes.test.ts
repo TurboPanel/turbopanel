@@ -31,9 +31,16 @@ import {
 import { ORG_ID_HEADER } from '../org-context.ts'
 import {
   expandHostingsForComposeInstances,
+  preferredListenPortsFromHostings,
+  readHostnames,
+  readHostingPorts,
+  readHostingProtocol,
+  readPathPrefix,
+  readTargetPort,
   registerEnvironmentDeployPreviewRoutes,
   registerEnvironmentDeployRoutes,
   registerEnvironmentLifecycleRoutes,
+  validateDeployMaterials,
 } from './deploy-routes.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 
@@ -76,6 +83,80 @@ test('expandHostingsForComposeInstances fans hostings onto clone keys', () => {
   const webClones = expanded.filter((entry) => entry.hostingId === 'h1')
   assertEquals(webClones.length, 2)
   assertEquals(webClones.every((entry) => entry.serviceId === 'svc-web'), true)
+})
+
+test('expandHostingsForComposeInstances passes through when expansion is missing', () => {
+  const hostings = [{
+    hostingId: 'h1',
+    serviceId: 'svc-api',
+    composeServiceName: 'api',
+    hostnames: ['api.example.com'],
+  }]
+  const expanded = expandHostingsForComposeInstances(hostings, {})
+  assertEquals(expanded.length, 1)
+  assertEquals(expanded[0]?.composeServiceName, 'api')
+})
+
+test('readHosting helpers parse http and tcp/udp options', () => {
+  assertEquals(readHostnames(null), [])
+  assertEquals(readHostnames({ hostnames: ['a.example.com', '', 3] }), ['a.example.com'])
+  assertEquals(readPathPrefix({ pathPrefix: '/api' }), '/api')
+  assertEquals(readPathPrefix({}), undefined)
+  assertEquals(readTargetPort({ targetPort: 8080 }), 8080)
+  assertEquals(readTargetPort({ targetPort: Number.NaN }), undefined)
+  assertEquals(readHostingProtocol({ protocol: 'tcp' }), 'tcp')
+  assertEquals(readHostingProtocol({ protocol: 'udp' }), 'udp')
+  assertEquals(readHostingProtocol({ protocol: 'http' }), 'http')
+  assertEquals(readHostingProtocol({}), 'http')
+  assertEquals(
+    readHostingPorts({
+      ports: [
+        { published: 5432, target: 5432 },
+        { published: 0, target: 5432 },
+        { published: 8443, target: '8080' },
+        null,
+      ],
+    }),
+    [{ published: 5432, target: 5432 }],
+  )
+})
+
+test('preferredListenPortsFromHostings maps targetPort by compose service name', () => {
+  const map = preferredListenPortsFromHostings([
+    {
+      hostingId: 'h1',
+      serviceId: 'svc-web',
+      composeServiceName: 'web',
+      hostnames: ['app.example.com'],
+      targetPort: 3000,
+    },
+    {
+      hostingId: 'h2',
+      serviceId: 'svc-api',
+      composeServiceName: 'api',
+      hostnames: ['api.example.com'],
+    },
+  ])
+  assertEquals(map.get('web'), 3000)
+  assertEquals(map.has('api'), false)
+})
+
+test('validateDeployMaterials rejects tcp hosting without ports', () => {
+  const res = validateDeployMaterials(
+    [{
+      hostingId: 'h1',
+      serviceId: 'svc-db',
+      composeServiceName: 'db',
+      hostnames: [],
+      protocol: 'tcp',
+      ports: [],
+    }],
+    [],
+  )
+  if (!(res instanceof Response)) {
+    throw new TypeError('expected Response')
+  }
+  assertEquals(res.status, 400)
 })
 
 function createRecordingCommandQueue(): CommandQueue & { envelopes: CommandEnvelope[] } {
@@ -444,6 +525,54 @@ test('GET /environments/:id/deploy-preview returns containers for a service', as
     // uuid naming: docker container_name is the service UUID (obfuscated)
     assertEquals(body.containers[0]!.containerName, body.containers[0]!.serviceId)
     assertEquals(body.composeYaml.includes(`container_name: ${body.containers[0]!.serviceId}`), true)
+  })
+})
+
+test('POST /environments/:id/deploy uses project defaultServerId when env pin is unset', async () => {
+  await withDeployFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    projectId,
+    environmentId,
+    serverId,
+    commandQueue,
+  }) => {
+    await db
+      .update(project)
+      .set({
+        options: {
+          compose: composeWithWebService(),
+          defaultServerId: serverId,
+        },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(project.id, projectId))
+    await db
+      .update(environment)
+      .set({
+        serverId: null,
+        options: { compose: composeWithWebService() },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(environment.id, environmentId))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/environments/${environmentId}/deploy`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    })
+
+    assertEquals(res.status, 200)
+    assertEquals(commandQueue.envelopes.length, 1)
+    assertEquals(commandQueue.envelopes[0]!.serverId, serverId)
   })
 })
 

@@ -183,11 +183,12 @@ test('getReadModel rejects unapproved read models', async () => {
 
   const cache = createRedisQueryCache({ client, db })
   await assertRejects(
-    () => cache.getReadModel({
-      readModel: 'not-allowed',
-      key: queryCacheKey('stub', 'unapproved'),
-      load: async () => ({ ok: true }),
-    } as Parameters<typeof cache.getReadModel>[0]),
+    () =>
+      cache.getReadModel({
+        readModel: 'not-allowed',
+        key: queryCacheKey('stub', 'unapproved'),
+        load: async () => ({ ok: true }),
+      } as unknown as Parameters<typeof cache.getReadModel>[0]),
     Error,
     'Unapproved read model',
   )

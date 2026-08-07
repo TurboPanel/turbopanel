@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals, assertRejects } from 'jsr:@std/assert'
 import { asc, eq, sql } from 'drizzle-orm'
 import {
   decryptSecret,
@@ -16,9 +16,11 @@ import { organization, principal, setting, tls, variable } from '../lib/db/schem
 import { SYSTEM_EMAIL_DB_KEY } from '../lib/settings/email-settings.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../test-fixtures/secrets.ts'
 import {
+  endReencryptSweep,
   reencryptAtRestSecrets,
   reencryptAtRestSecretsToCompletion,
   resetReencryptSweepLockForTests,
+  tryBeginReencryptSweep,
 } from './reencrypt-secrets.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -593,6 +595,24 @@ test('reencryptAtRestSecrets does not overwrite a concurrent secret update', asy
     assertEquals(await decryptSecret(rotated, after!.value), concurrentPlain)
     assertEquals(parseSecretEnvelope(after!.value), { keyVersion: 2 })
   })
+})
+
+test('tryBeginReencryptSweep rejects concurrent sweeps until released', () => {
+  resetReencryptSweepLockForTests()
+  assertEquals(tryBeginReencryptSweep(), true)
+  assertEquals(tryBeginReencryptSweep(), false)
+  endReencryptSweep()
+  assertEquals(tryBeginReencryptSweep(), true)
+  endReencryptSweep()
+})
+
+test('reencryptAtRestSecrets rejects non-positive limits', async () => {
+  const rotated = await createRotatedSecrets()
+  await assertRejects(
+    () => reencryptAtRestSecrets({} as Db, rotated, { limit: 0 }),
+    TypeError,
+    'reencrypt limit must be a positive integer',
+  )
 })
 
 test('reencryptAtRestSecrets resumes across bounded batches via cursor', async () => {

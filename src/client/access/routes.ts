@@ -33,24 +33,7 @@ import type { Db } from '../../db.ts'
 import { getDb } from '../../db.ts'
 import { grant, invitation, member, team, teammate } from '../../lib/db/schema.ts'
 import { getOrgId } from '../shared.ts'
-
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-function isUuid(value: string): boolean {
-  return UUID_RE.test(value)
-}
-
-function ownerRemovalConflictMessage(err: unknown): string | null {
-  if (!(err instanceof Error)) return null
-  if (err.message === 'Cannot remove the last owner of an organization') {
-    return err.message
-  }
-  if (err.message === 'Cannot remove the last owner of a team') {
-    return err.message
-  }
-  return null
-}
+import { isUuid, ownerRemovalConflictMessage } from './routes-helpers.ts'
 
 async function assertRevocableAllowGrant(
   db: Db,

@@ -7,13 +7,8 @@ import { assertCanOr403, listVisible } from "../authz/index.ts";
 import { resolveEntityOrganizationId } from "../authz/create-access-grant.ts";
 import { type Db, getDb } from "../../db.ts";
 import { datacenter, network, server } from "../../lib/db/schema.ts";
-import { buildSeededDatacenterMetadata } from "../../lib/datacenter-metadata.ts";
 import { parseDatacenterOptions } from "../../lib/datacenter-options.ts";
-import {
-  suggestDatacenterDisplayNameFromGeo,
-  suggestDatacenterNames,
-} from "../../lib/datacenter-name-suggestions.ts";
-import { parseServerGeo } from "../../lib/geo/server-geo.ts";
+import { suggestDatacenterNames } from "../../lib/datacenter-name-suggestions.ts";
 import {
   assertCanCreateOr403,
   assertCanManageOr403,
@@ -25,11 +20,21 @@ import {
   parseJsonbObject,
   parseJsonBody,
 } from "../shared.ts";
+import {
+  parseAssignServerIds,
+  resolveSeededFields,
+  type CreateDatacenterInput,
+  type SelectedServerRow,
+} from "./create-input.ts";
+
+export {
+  mergeDatacenterMetadata,
+  parseAssignServerIds,
+  resolveSeededFields,
+} from "./create-input.ts";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-const MAX_ASSIGN_SERVERS = 64;
 
 type ParseResult<T> =
   | { ok: true; value: T }
@@ -44,41 +49,6 @@ function parseOptionalUuid(value: unknown): ParseResult<string | null> {
   }
   return { ok: true, value };
 }
-
-function parseAssignServerIds(value: unknown): ParseResult<string[]> {
-  if (value === undefined || value === null) {
-    return { ok: true, value: [] };
-  }
-  if (!Array.isArray(value) || value.length > MAX_ASSIGN_SERVERS) {
-    return { ok: false };
-  }
-  const ids: string[] = [];
-  for (const entry of value) {
-    if (typeof entry !== "string" || !UUID_RE.test(entry)) {
-      return { ok: false };
-    }
-    ids.push(entry);
-  }
-  return { ok: true, value: [...new Set(ids)] };
-}
-
-function mergeDatacenterMetadata(
-  seededMetadata: Record<string, unknown> | null,
-  requestMetadata: Record<string, unknown> | null,
-): Record<string, unknown> | null {
-  if (!seededMetadata) return requestMetadata;
-  if (!requestMetadata) return seededMetadata;
-  return { ...seededMetadata, ...requestMetadata };
-}
-
-type CreateDatacenterInput = {
-  displayName: string | null;
-  description: string | null;
-  metadata: Record<string, unknown> | null;
-  options: ReturnType<typeof parseDatacenterOptions> | null;
-  sourceServerId: string | null;
-  assignServerIds: string[];
-};
 
 function parseCreateDatacenterInput(
   c: Context<AppEnv>,
@@ -113,12 +83,6 @@ function parseCreateDatacenterInput(
     assignServerIds: assignServerIds.value,
   };
 }
-
-type SelectedServerRow = {
-  id: string;
-  datacenterId: string | null;
-  metadata: unknown;
-};
 
 type AssignableServersResult =
   | { ok: true; rows: SelectedServerRow[] }
@@ -163,41 +127,6 @@ async function loadAssignableServers(
     return { ok: false, status: 409, serverId: assignedRow.id };
   }
   return { ok: true, rows };
-}
-
-function resolveSeededFields(
-  input: CreateDatacenterInput,
-  rows: SelectedServerRow[],
-): {
-  displayName: string | null;
-  metadata: Record<string, unknown> | null;
-} {
-  if (!input.sourceServerId) {
-    return { displayName: input.displayName, metadata: input.metadata };
-  }
-
-  const sourceRow = rows.find((row) => row.id === input.sourceServerId);
-  const rawMetadata = sourceRow?.metadata;
-  const geo = parseServerGeo(
-    typeof rawMetadata === "object" &&
-      rawMetadata !== null &&
-      !Array.isArray(rawMetadata)
-      ? (rawMetadata as Record<string, unknown>).geo
-      : null,
-  );
-  if (!geo) {
-    return { displayName: input.displayName, metadata: input.metadata };
-  }
-
-  const seededMetadata = buildSeededDatacenterMetadata(
-    geo,
-    input.sourceServerId,
-  );
-  return {
-    displayName: input.displayName ??
-      suggestDatacenterDisplayNameFromGeo(geo),
-    metadata: mergeDatacenterMetadata(seededMetadata, input.metadata),
-  };
 }
 
 export function registerDatacenterRoutes(

@@ -8,7 +8,15 @@ import {
 } from "../authn/daemon-state.ts";
 import type { DaemonCellRegistry, DaemonCellSnapshot } from "./contracts.ts";
 // Canonical import path: ./server-status.ts (fleet-presence.ts is a re-export shim).
-import { resolveFleetPresence } from "./server-status.ts";
+import {
+  fleetPresenceToConnection,
+  isServerConnected,
+  resolveFleetPresence,
+  resolveOnlineFleetPresence,
+} from "./server-status.ts";
+import {
+  buildProjectionsFromDaemonRows,
+} from "./postgres-projection.ts";
 
 const serverId = "srv-fleet-presence";
 
@@ -309,4 +317,109 @@ test("resolveFleetPresence keeps connected when lastSeenAt is fresh", async () =
     withSnapshots: true,
   });
   assertEquals(presence.get(serverId)?.connected, true);
+});
+
+test("resolveFleetPresence accepts preloaded rows and projections", async () => {
+  const row = buildMockRow(baseDaemon, baseConnectedStatus);
+  const projections = buildProjectionsFromDaemonRows([{
+    id: serverId,
+    daemon: baseDaemon,
+    connected: true,
+    statusChangedAt: "2020-01-01T00:00:00.000Z",
+  }]);
+  const db = {
+    select: () => {
+      throw new Error("db must not be queried when preloaded");
+    },
+  } as unknown as Db;
+  const registry = createThrowingSnapshotRegistry();
+
+  const presence = await resolveFleetPresence(db, registry, [serverId], {
+    preloaded: { rows: [row], projections },
+  });
+  assertEquals(presence.get(serverId)?.connected, true);
+  assertEquals(presence.get(serverId)?.hostname, "host-1");
+});
+
+test("resolveFleetPresence returns empty map for empty serverIds", async () => {
+  const db = createMockDb(buildMockRow(baseDaemon, baseConnectedStatus));
+  const presence = await resolveFleetPresence(db, undefined, []);
+  assertEquals(presence.size, 0);
+});
+
+test("fleetPresenceToConnection maps presence to connection shape", () => {
+  const presence = {
+    serverId,
+    connected: true,
+    hostname: "host-1",
+    machineKey: null,
+    remoteAddress: "203.0.113.1",
+    directAttach: false,
+    keyId: "key-1",
+    connectedAt: "2020-01-01T00:00:00.000Z",
+    statusChangedAt: "2020-01-01T00:00:00.000Z",
+    lastInboundAt: "2020-01-01T00:00:01.000Z",
+    keyLastUsedAt: null,
+    geo: null,
+    os: null,
+    timeSync: null,
+    addresses: null,
+  };
+
+  const connection = fleetPresenceToConnection(presence);
+  assertEquals(connection.id, serverId);
+  assertEquals(connection.serverId, serverId);
+  assertEquals(connection.hostname, "host-1");
+  assertEquals(connection.authenticated, true);
+  assertEquals(connection.connected, true);
+  assertEquals(connection.remoteAddress, "203.0.113.1");
+  assertEquals(connection.lastInboundAt, Date.parse("2020-01-01T00:00:01.000Z"));
+});
+
+test("fleetPresenceToConnection uses zero lastInboundAt when absent", () => {
+  const connection = fleetPresenceToConnection({
+    serverId,
+    connected: false,
+    hostname: null,
+    machineKey: null,
+    remoteAddress: null,
+    directAttach: false,
+    keyId: null,
+    connectedAt: null,
+    statusChangedAt: null,
+    lastInboundAt: null,
+    keyLastUsedAt: null,
+    geo: null,
+    os: null,
+    timeSync: null,
+    addresses: null,
+  });
+  assertEquals(connection.lastInboundAt, 0);
+  assertEquals(connection.connectedAt, "");
+});
+
+test("isServerConnected reads Postgres projection by default", async () => {
+  const db = createMockDb(buildMockRow(baseDaemon, baseConnectedStatus));
+  const registry = createThrowingSnapshotRegistry();
+
+  const connected = await isServerConnected(db, registry, serverId);
+  assertEquals(connected, true);
+});
+
+test("resolveOnlineFleetPresence returns presence for online server ids", async () => {
+  const db = createMockDb(buildMockRow(baseDaemon, baseConnectedStatus));
+  const registry = createThrowingSnapshotRegistry({ onlineIds: [serverId] });
+
+  const rows = await resolveOnlineFleetPresence(db, registry);
+  assertEquals(rows.length, 1);
+  assertEquals(rows[0]?.serverId, serverId);
+  assertEquals(rows[0]?.connected, true);
+});
+
+test("resolveOnlineFleetPresence returns empty when no servers are online", async () => {
+  const db = createMockDb(buildMockRow(baseDaemon, baseConnectedStatus));
+  const registry = createThrowingSnapshotRegistry({ onlineIds: [] });
+
+  const rows = await resolveOnlineFleetPresence(db, registry);
+  assertEquals(rows, []);
 });

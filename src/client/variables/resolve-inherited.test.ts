@@ -2,6 +2,7 @@ import { assertEquals } from 'jsr:@std/assert'
 import { describe, it } from '@std/testing/bdd'
 import {
   mergeHostingVariablesForService,
+  resolveInheritedVariablesForEnvironment,
   type ResolvedVariableMap,
 } from './resolve-inherited.ts'
 
@@ -12,6 +13,68 @@ type VariableRow = {
   isLiteral: boolean
   forBuild: boolean
   forRuntime: boolean
+}
+
+function thenableRows(rows: unknown[]) {
+  const promise = Promise.resolve(rows)
+  return {
+    limit: () => promise,
+    then: promise.then.bind(promise),
+    catch: promise.catch.bind(promise),
+    finally: promise.finally.bind(promise),
+  }
+}
+
+function createEnvironmentInheritanceDb(opts: {
+  chain: {
+    organizationId: string
+    workspaceId: string
+    projectId: string
+  } | null
+  variablesByScope: Partial<Record<
+    'organizationId' | 'workspaceId' | 'projectId' | 'environmentId',
+    VariableRow[]
+  >>
+  environmentId: string
+}): Parameters<typeof resolveInheritedVariablesForEnvironment>[0] {
+  let selectCalls = 0
+  const scopeOrder = [
+    'organizationId',
+    'workspaceId',
+    'projectId',
+    'environmentId',
+  ] as const
+
+  return {
+    select() {
+      selectCalls += 1
+      if (selectCalls === 1) {
+        return {
+          from: () => ({
+            innerJoin: () => ({
+              innerJoin: () => ({
+                where: () => ({
+                  limit: () => Promise.resolve(opts.chain ? [opts.chain] : []),
+                }),
+              }),
+            }),
+          }),
+        }
+      }
+
+      const scopeIndex = selectCalls - 2
+      const scope = scopeOrder[scopeIndex]
+      const rows = scope
+        ? (opts.variablesByScope[scope] ?? [])
+        : []
+
+      return {
+        from: () => ({
+          where: () => thenableRows(rows),
+        }),
+      }
+    },
+  } as unknown as Parameters<typeof resolveInheritedVariablesForEnvironment>[0]
 }
 
 /**
@@ -142,5 +205,72 @@ describe('mergeHostingVariablesForService', () => {
 
     assertEquals(target.size, 1)
     assertEquals(target.get('KEEP')?.value, 'yes')
+  })
+})
+
+describe('resolveInheritedVariablesForEnvironment', () => {
+  it('returns empty map when environment chain is missing', async () => {
+    const resolved = await resolveInheritedVariablesForEnvironment(
+      createEnvironmentInheritanceDb({
+        chain: null,
+        variablesByScope: {},
+        environmentId: 'env-missing',
+      }),
+      'env-missing',
+    )
+    assertEquals(resolved.size, 0)
+  })
+
+  it('merges org → workspace → project → environment with later scopes winning', async () => {
+    const envId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+    const resolved = await resolveInheritedVariablesForEnvironment(
+      createEnvironmentInheritanceDb({
+        chain: {
+          organizationId: 'org-1',
+          workspaceId: 'ws-1',
+          projectId: 'proj-1',
+        },
+        environmentId: envId,
+        variablesByScope: {
+          organizationId: [{
+            key: 'SHARED',
+            value: 'org',
+            isSecret: false,
+            isLiteral: false,
+            forBuild: false,
+            forRuntime: true,
+          }],
+          workspaceId: [{
+            key: 'SHARED',
+            value: 'workspace',
+            isSecret: false,
+            isLiteral: false,
+            forBuild: false,
+            forRuntime: true,
+          }],
+          projectId: [{
+            key: 'PROJECT_ONLY',
+            value: 'project',
+            isSecret: false,
+            isLiteral: false,
+            forBuild: false,
+            forRuntime: true,
+          }],
+          environmentId: [{
+            key: 'SHARED',
+            value: 'environment',
+            isSecret: false,
+            isLiteral: true,
+            forBuild: true,
+            forRuntime: true,
+          }],
+        },
+      }),
+      envId,
+    )
+
+    assertEquals(resolved.get('SHARED')?.value, 'environment')
+    assertEquals(resolved.get('SHARED')?.isLiteral, true)
+    assertEquals(resolved.get('PROJECT_ONLY')?.value, 'project')
   })
 })

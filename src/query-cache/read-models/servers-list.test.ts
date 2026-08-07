@@ -1,7 +1,9 @@
 import { assertEquals, assertRejects } from '@std/assert'
 import type { Context } from 'hono'
 import type { Db } from '../../db.ts'
+import type { RedisCellClient } from '../../daemon/cell/redis/client.ts'
 import { createPassthroughQueryCache } from '../passthrough-query-cache.ts'
+import { createRedisQueryCache } from '../redis-query-cache.ts'
 import {
   cachedServersListReadModel,
   type ServersListRow,
@@ -142,4 +144,60 @@ test('cachedServersListReadModel sorts visible ids and enriches from primary db'
     ['srv-a', 'srv-b'],
   )
   assertEquals(Array.isArray(payload.colocatedIds), true)
+})
+
+test('cachedServersListReadModel skips enrichment when cached rows are empty', async () => {
+  const db = createStubDb({ listRows: [] })
+  const cache = createPassthroughQueryCache(db)
+
+  const payload = await cachedServersListReadModel(
+    fakeContext({ db, queryCache: cache }),
+    {
+      userId: 'user-1',
+      organizationId: 'org-1',
+      visibleIds: ['srv-missing'],
+    },
+  )
+
+  assertEquals(payload, { rows: [], presence: [], colocatedIds: [] })
+})
+
+test('cachedServersListReadModel uses redis cache key with sorted visible ids', async () => {
+  const listRows: ServersListRow[] = [{
+    id: 'srv-a',
+    displayName: 'A',
+    organizationId: 'org-1',
+    licenseId: null,
+    options: null,
+    createdAt: '2024-01-01T00:00:00.000Z',
+  }]
+  const db = createStubDb({ listRows, presenceRows: [] })
+  const store = new Map<string, string>()
+  const cache = createRedisQueryCache({
+    client: {
+      get: (key: string) => Promise.resolve(store.get(key) ?? null),
+      set: (key: string, value: string) => {
+        store.set(key, value)
+        return Promise.resolve()
+      },
+    } as unknown as RedisCellClient,
+    db,
+  })
+
+  const ctx = fakeContext({ db, queryCache: cache })
+  const opts = {
+    userId: 'user-1',
+    organizationId: 'org-1',
+    visibleIds: ['srv-b', 'srv-a'],
+  }
+
+  const first = await cachedServersListReadModel(ctx, opts)
+  assertEquals(first.rows, listRows)
+  assertEquals(
+    store.has('tp:qcache:servers-list:org-1:srv-a,srv-b'),
+    true,
+  )
+
+  const second = await cachedServersListReadModel(ctx, opts)
+  assertEquals(second.rows, listRows)
 })

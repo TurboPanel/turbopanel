@@ -78,7 +78,7 @@ async function loadCachedDetailRow(
     )
     .limit(1)
 
-  return row ?? null
+  return (row as ServerDetailRow | undefined) ?? null
 }
 
 async function resolveServerDetailEnrichment(

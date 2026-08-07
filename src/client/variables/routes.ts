@@ -22,36 +22,23 @@ import {
   resolveInheritedVariablesForService,
   type ResolvedVariableMap,
 } from './resolve-inherited.ts'
-
-const VARIABLE_KEY_RE = /^[A-Za-z_]\w*$/
-
-const PARTIAL_UNIQUE_INDEX_NAMES = [
-  'uniq_var_org',
-  'uniq_var_workspace',
-  'uniq_var_project',
-  'uniq_var_environment',
-  'uniq_var_service',
-  'uniq_var_hosting',
-  'uniq_var_server',
-] as const
-
-const PARENT_BODY_FIELDS = [
-  { bodyKey: 'organizationId', column: 'organizationId', entityKind: 'organization' },
-  { bodyKey: 'workspaceId', column: 'workspaceId', entityKind: 'workspace' },
-  { bodyKey: 'projectId', column: 'projectId', entityKind: 'project' },
-  { bodyKey: 'environmentId', column: 'environmentId', entityKind: 'environment' },
-  { bodyKey: 'serviceId', column: 'serviceId', entityKind: 'service' },
-  { bodyKey: 'hostingId', column: 'hostingId', entityKind: 'hosting' },
-  { bodyKey: 'serverId', column: 'serverId', entityKind: 'server' },
-] as const
-
-type VariableParentColumn = typeof PARENT_BODY_FIELDS[number]['column']
-
-type ParsedVariableParent = {
-  column: VariableParentColumn
-  id: string
-  entityKind: string
-}
+import {
+  buildInsertValues,
+  hasImmutableParentChange,
+  isVariableKeyUniqueViolation,
+  PARENT_BODY_FIELDS,
+  parseIsSecret,
+  parseOptionalBoolean,
+  parseOptionalDescription,
+  parseOptionalStringValue,
+  parseVariableKey,
+  parseVariableParent,
+  resolvePatchIsSecret,
+  serializeResolvedVariables,
+  serializeVariable,
+  trimVariableValueOnWrite,
+  type ParsedVariableParent,
+} from './routes-helpers.ts'
 
 const VARIABLE_SELECT_FIELDS = {
   id: variable.id,
@@ -71,115 +58,6 @@ const VARIABLE_SELECT_FIELDS = {
   description: variable.description,
   createdAt: variable.createdAt,
   updatedAt: variable.updatedAt,
-}
-
-type VariableRow = {
-  id: string
-  organizationId: string | null
-  workspaceId: string | null
-  projectId: string | null
-  environmentId: string | null
-  serviceId: string | null
-  hostingId: string | null
-  serverId: string | null
-  key: string
-  value: string
-  isSecret: boolean
-  isLiteral: boolean
-  forBuild: boolean
-  forRuntime: boolean
-  description: string | null
-  createdAt: string
-  updatedAt: string
-}
-
-function isPostgresUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null &&
-    'code' in err && (err as { code: string }).code === '23505'
-}
-
-function isVariableKeyUniqueViolation(err: unknown): boolean {
-  if (!isPostgresUniqueViolation(err)) return false
-  const message = err instanceof Error ? err.message : String(err)
-  return PARTIAL_UNIQUE_INDEX_NAMES.some((name) => message.includes(name))
-}
-
-function serializeVariable(row: VariableRow) {
-  return {
-    id: row.id,
-    organizationId: row.organizationId,
-    workspaceId: row.workspaceId,
-    projectId: row.projectId,
-    environmentId: row.environmentId,
-    serviceId: row.serviceId,
-    hostingId: row.hostingId,
-    serverId: row.serverId,
-    key: row.key,
-    isSecret: row.isSecret,
-    isLiteral: row.isLiteral,
-    forBuild: row.forBuild,
-    forRuntime: row.forRuntime,
-    value: row.isSecret ? null : row.value,
-    description: row.description,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  }
-}
-
-function parseVariableKey(c: Context<AppEnv>, key: unknown): string | Response {
-  if (typeof key !== 'string' || !key || !VARIABLE_KEY_RE.test(key)) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  return key
-}
-
-function parseIsSecret(
-  c: Context<AppEnv>,
-  body: Record<string, unknown>,
-): boolean | Response {
-  if (body.isSecret === undefined || body.isSecret === null) {
-    return false
-  }
-  if (typeof body.isSecret !== 'boolean') {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  return body.isSecret
-}
-
-function parseOptionalBoolean(
-  c: Context<AppEnv>,
-  value: unknown,
-  fieldName: string,
-): boolean | Response | undefined {
-  if (value === undefined) return undefined
-  if (typeof value !== 'boolean') {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  return value
-}
-
-function trimVariableValueOnWrite(value: string): string {
-  return value.trim()
-}
-
-function serializeResolvedVariables(map: ResolvedVariableMap) {
-  const variables: Record<string, {
-    isSecret: boolean
-    isLiteral: boolean
-    forBuild: boolean
-    forRuntime: boolean
-    value: string | null
-  }> = {}
-  for (const [key, entry] of map) {
-    variables[key] = {
-      isSecret: entry.isSecret,
-      isLiteral: entry.isLiteral,
-      forBuild: entry.forBuild,
-      forRuntime: entry.forRuntime,
-      value: entry.isSecret ? null : entry.value,
-    }
-  }
-  return variables
 }
 
 type ResolvedEntityKind = 'hosting' | 'service' | 'environment'
@@ -204,65 +82,6 @@ async function respondWithResolvedVariables(
   return c.json({ variables: serializeResolvedVariables(resolved) })
 }
 
-function parseVariableParent(
-  c: Context<AppEnv>,
-  body: Record<string, unknown>,
-): ParsedVariableParent | Response {
-  const specified = PARENT_BODY_FIELDS.filter(({ bodyKey }) => {
-    const value = body[bodyKey]
-    return value !== undefined && value !== null && value !== ''
-  })
-
-  if (specified.length !== 1) {
-    return c.json({ error: 'Exactly one parent resource must be specified' }, 400)
-  }
-
-  const { bodyKey, column, entityKind } = specified[0]!
-  const id = body[bodyKey]
-  if (typeof id !== 'string' || !id) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-
-  return { column, id, entityKind }
-}
-
-function buildInsertValues(
-  parent: ParsedVariableParent,
-  fields: {
-    key: string
-    value: string
-    isSecret: boolean
-    isLiteral: boolean
-    forBuild: boolean
-    forRuntime: boolean
-    description: string | null
-  },
-) {
-  return {
-    organizationId: null,
-    workspaceId: null,
-    projectId: null,
-    environmentId: null,
-    serviceId: null,
-    hostingId: null,
-    serverId: null,
-    key: fields.key,
-    value: fields.value,
-    isSecret: fields.isSecret,
-    isLiteral: fields.isLiteral,
-    forBuild: fields.forBuild,
-    forRuntime: fields.forRuntime,
-    description: fields.description,
-    [parent.column]: parent.id,
-  }
-}
-
-const IMMUTABLE_PARENT_BODY_KEYS = PARENT_BODY_FIELDS.map(({ bodyKey }) => bodyKey)
-
-function hasImmutableParentChange(body: Record<string, unknown>): boolean {
-  return IMMUTABLE_PARENT_BODY_KEYS.some((key) => body[key] !== undefined)
-}
-
 async function sealVariableValue(
   c: Context<AppEnv>,
   value: string,
@@ -273,33 +92,6 @@ async function sealVariableValue(
   }
 
   return encryptSecret(dataEncryptionSecrets, value)
-}
-
-function parseOptionalStringValue(
-  c: Context<AppEnv>,
-  value: unknown,
-): string | null | Response | undefined {
-  if (value === undefined) return undefined
-  if (value === null) return null
-  if (typeof value !== 'string') {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  return value
-}
-
-function parseOptionalDescription(
-  c: Context<AppEnv>,
-  value: unknown,
-): string | null | Response | undefined {
-  if (value === undefined) return undefined
-  if (value === null) return null
-  if (typeof value !== 'string') {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  if (value.length > 255) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  return value
 }
 
 type ExistingVariableForPatch = {
@@ -338,21 +130,6 @@ function applyOptionalDescriptionPatch(
   const description = parseOptionalDescription(c, body.description)
   if (description instanceof Response) return description
   updateFields.description = description ?? null
-}
-
-function resolvePatchIsSecret(
-  c: Context<AppEnv>,
-  body: Record<string, unknown>,
-  existingIsSecret: boolean,
-): { nextIsSecret: boolean; toggled: boolean } | Response {
-  if (body.isSecret !== undefined && typeof body.isSecret !== 'boolean') {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  const toggled = body.isSecret !== undefined
-  return {
-    toggled,
-    nextIsSecret: toggled ? body.isSecret === true : existingIsSecret,
-  }
 }
 
 async function sealOrPlainValue(
@@ -408,7 +185,7 @@ function applyOptionalBooleanPatch(
   updateFields: VariablePatchFields,
 ): Response | undefined {
   if (body[field] === undefined) return
-  const parsed = parseOptionalBoolean(c, body[field], field)
+  const parsed = parseOptionalBoolean(c, body[field])
   if (parsed instanceof Response) return parsed
   updateFields[field] = parsed
 }
@@ -495,13 +272,13 @@ async function parseVariableCreateFields(
   const isSecret = parseIsSecret(c, body)
   if (isSecret instanceof Response) return isSecret
 
-  const isLiteral = parseOptionalBoolean(c, body.isLiteral, 'isLiteral') ?? false
+  const isLiteral = parseOptionalBoolean(c, body.isLiteral) ?? false
   if (isLiteral instanceof Response) return isLiteral
 
-  const forBuild = parseOptionalBoolean(c, body.forBuild, 'forBuild') ?? false
+  const forBuild = parseOptionalBoolean(c, body.forBuild) ?? false
   if (forBuild instanceof Response) return forBuild
 
-  const forRuntime = parseOptionalBoolean(c, body.forRuntime, 'forRuntime') ?? true
+  const forRuntime = parseOptionalBoolean(c, body.forRuntime) ?? true
   if (forRuntime instanceof Response) return forRuntime
 
   const parsedValue = parseOptionalStringValue(c, body.value)

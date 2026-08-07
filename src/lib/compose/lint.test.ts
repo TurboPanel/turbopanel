@@ -150,3 +150,51 @@ test('lintComposeYaml allows x-turbopanel extension keys on services', () => {
     false,
   )
 })
+
+test('lintComposeYaml warns when services section is missing', () => {
+  const issues = lintComposeYaml('networks:\n  default: {}\n')
+  assertEquals(
+    issues.some((issue) => issue.message.includes('no "services" section')),
+    true,
+  )
+})
+
+test('lintComposeYaml warns on unknown top-level keys without a close suggestion', () => {
+  const issues = lintComposeYaml(`totallyunknown: value
+services:
+  api:
+    image: node:22
+`)
+  const unknown = issues.find((issue) => issue.path === 'totallyunknown')
+  assertEquals(unknown?.level, 'warning')
+  assertEquals(unknown?.message.includes('did you mean'), false)
+})
+
+test('lintComposeYaml allows top-level x-* extension keys', () => {
+  const issues = lintComposeYaml(`x-custom-meta: true
+services:
+  api:
+    image: node:22
+`)
+  assertEquals(issues.some((issue) => issue.path === 'x-custom-meta'), false)
+})
+
+test('lintComposeYaml warns when services mapping is empty', () => {
+  const issues = lintComposeYaml(`services: {}
+networks:
+  default: {}
+`)
+  assertEquals(
+    issues.some((issue) => issue.message === 'No services defined'),
+    true,
+  )
+})
+
+test('lintComposeYaml skips services with non-string keys', () => {
+  const issues = lintComposeYaml(`services:
+  8080:
+    image: nginx
+  [bad]: true
+`)
+  assertEquals(issues.some((issue) => issue.path === 'services.[bad]'), false)
+})

@@ -190,6 +190,107 @@ test('registerComposeVolumes is idempotent for already-tagged rows', async () =>
   })
 })
 
+test('registerComposeVolumes returns empty when compose has no volumes', async () => {
+  await withVolumeFixtures(async ({
+    db,
+    organizationId,
+    environmentId,
+    serverId,
+  }) => {
+    const registered = await registerComposeVolumes(db, {
+      document: emptyComposeDocument(),
+      organizationId,
+      environmentId,
+      serverId,
+    })
+    assertEquals(registered, [])
+
+    const rows = await db
+      .select({ id: storage.id })
+      .from(storage)
+      .where(eq(storage.environmentId, environmentId))
+    assertEquals(rows.length, 0)
+  })
+})
+
+test('registerComposeVolumes skips external and explicit-name volumes', async () => {
+  await withVolumeFixtures(async ({
+    db,
+    organizationId,
+    environmentId,
+    serverId,
+  }) => {
+    const document: ComposeDocument = {
+      ...emptyComposeDocument(),
+      data: {
+        services: { web: { image: 'nginx' } },
+        volumes: {
+          internal: null,
+          external: { external: true },
+          named: { name: 'operator-pinned' },
+        },
+      },
+    }
+
+    const registered = await registerComposeVolumes(db, {
+      document,
+      organizationId,
+      environmentId,
+      serverId,
+    })
+
+    assertEquals(registered.length, 1)
+    assertEquals(registered[0]!.composeKey, 'internal')
+
+    const rows = await db
+      .select({ name: storage.name })
+      .from(storage)
+      .where(eq(storage.environmentId, environmentId))
+    assertEquals(rows.map((row) => row.name), ['internal'])
+  })
+})
+
+test('registerComposeVolumes reuses an existing composeVolumeKey row', async () => {
+  await withVolumeFixtures(async ({
+    db,
+    organizationId,
+    environmentId,
+    serverId,
+  }) => {
+    const [existing] = await db
+      .insert(storage)
+      .values({
+        organizationId,
+        environmentId,
+        serverId,
+        kind: 'docker_volume',
+        name: 'data',
+        metadata: {
+          composeVolumeKey: 'data',
+          dockerVolumeName: 'pinned-data-vol',
+        },
+      })
+      .returning({ id: storage.id })
+
+    const registered = await registerComposeVolumes(db, {
+      document: composeWithVolume('data'),
+      organizationId,
+      environmentId,
+      serverId,
+    })
+
+    assertEquals(registered.length, 1)
+    assertEquals(registered[0]!.storageId, existing!.id)
+    assertEquals(registered[0]!.volumeName, 'pinned-data-vol')
+
+    const rows = await db
+      .select({ id: storage.id })
+      .from(storage)
+      .where(eq(storage.environmentId, environmentId))
+    assertEquals(rows.length, 1)
+  })
+})
+
 test('registerComposeVolumes concurrent callers share one storage row', async () => {
   await withVolumeFixtures(async ({
     db,

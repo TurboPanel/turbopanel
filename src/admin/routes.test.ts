@@ -16,10 +16,10 @@ import {
   deriveSecretsConfig,
   parseSecretsEnv,
 } from '../client/authn/secrets.ts'
-import { user } from '../lib/db/schema.ts'
+import { setting, user } from '../lib/db/schema.ts'
 import { eq } from 'drizzle-orm'
 import { ADMIN_API_PREFIX } from '../surfaces.ts'
-import { resetReencryptSweepLockForTests } from './reencrypt-secrets.ts'
+import { resetReencryptSweepLockForTests, tryBeginReencryptSweep, endReencryptSweep } from './reencrypt-secrets.ts'
 import { registerAdminRoutes } from './routes.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -124,6 +124,8 @@ async function createAdminTestApp(
   options: Readonly<{
     withDataEncryption?: boolean
     withBrowserWriteProtection?: boolean
+    getEnv?: () => Record<string, string | undefined>
+    devSurface?: boolean
   }> = {},
 ) {
   const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
@@ -146,7 +148,8 @@ async function createAdminTestApp(
   registerAdminRoutes(app, {
     secrets,
     runtime: 'deno',
-    devSurface: false,
+    devSurface: options.devSurface ?? false,
+    ...(options.getEnv ? { getEnv: options.getEnv } : {}),
   })
   return { app, secrets }
 }
@@ -170,6 +173,8 @@ async function withRoleUser(
   options: Readonly<{
     withDataEncryption?: boolean
     withBrowserWriteProtection?: boolean
+    getEnv?: () => Record<string, string | undefined>
+    devSurface?: boolean
   }> = {},
 ): Promise<void> {
   if (!dbUrl) {
@@ -407,4 +412,206 @@ test('POST /api/admin/v1/secrets/reencrypt allows same-origin browser writes', a
     },
     { withBrowserWriteProtection: true },
   )
+})
+
+test('POST /api/admin/v1/secrets/reencrypt validates request bodies', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const badBody = await app.request(`${ADMIN_API_PREFIX}/secrets/reencrypt`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify([]),
+    })
+    assertEquals(badBody.status, 400)
+
+    const badLimit = await app.request(`${ADMIN_API_PREFIX}/secrets/reencrypt`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ limit: 0 }),
+    })
+    assertEquals(badLimit.status, 400)
+
+    const badCursor = await app.request(`${ADMIN_API_PREFIX}/secrets/reencrypt`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ cursor: { stage: 'not-a-stage' } }),
+    })
+    assertEquals(badCursor.status, 400)
+  })
+})
+
+test('POST /api/admin/v1/secrets/reencrypt returns 409 when a sweep is already running', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    resetReencryptSweepLockForTests()
+    assertEquals(tryBeginReencryptSweep(), true)
+    try {
+      const res = await app.request(`${ADMIN_API_PREFIX}/secrets/reencrypt`, {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({}),
+      })
+      assertEquals(res.status, 409)
+      const body = await res.json()
+      assertEquals(body.error, 'reencrypt_in_progress')
+    } finally {
+      endReencryptSweep()
+    }
+  })
+})
+
+test('GET and PUT /api/admin/v1/settings/signup round-trip panel toggle', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const db = createDenoDb()
+    const signupKey = 'IS_SIGNUP_ENABLED'
+    const previous = await db
+      .select({ value: setting.value })
+      .from(setting)
+      .where(eq(setting.key, signupKey))
+      .limit(1)
+
+    try {
+      await db.delete(setting).where(eq(setting.key, signupKey))
+
+      const initial = await app.request(`${ADMIN_API_PREFIX}/settings/signup`, {
+        headers: { Cookie: cookie },
+      })
+      assertEquals(initial.status, 200)
+      const initialBody = await initial.json()
+      assertEquals(initialBody.enabled, false)
+      assertEquals(initialBody.isEnvForced, false)
+
+      const enable = await app.request(`${ADMIN_API_PREFIX}/settings/signup`, {
+        method: 'PUT',
+        headers: {
+          Cookie: cookie,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ enabled: true }),
+      })
+      assertEquals(enable.status, 200)
+      const enabledBody = await enable.json()
+      assertEquals(enabledBody.enabled, true)
+      assertEquals(enabledBody.dbValue, '1')
+
+      const disable = await app.request(`${ADMIN_API_PREFIX}/settings/signup`, {
+        method: 'PUT',
+        headers: {
+          Cookie: cookie,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ enabled: false }),
+      })
+      assertEquals(disable.status, 200)
+      const disabledBody = await disable.json()
+      assertEquals(disabledBody.enabled, false)
+      assertEquals(disabledBody.dbValue, '0')
+    } finally {
+      await db.delete(setting).where(eq(setting.key, signupKey))
+      if (previous.length > 0) {
+        await db.insert(setting).values({
+          key: signupKey,
+          value: previous[0]!.value,
+        })
+      }
+    }
+  })
+})
+
+test('PUT /api/admin/v1/settings/signup returns 409 when env force override is set', async () => {
+  await withRoleUser(
+    'superadmin',
+    async ({ app, cookie }) => {
+      const res = await app.request(`${ADMIN_API_PREFIX}/settings/signup`, {
+        method: 'PUT',
+        headers: {
+          Cookie: cookie,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ enabled: false }),
+      })
+      assertEquals(res.status, 409)
+      const body = await res.json()
+      assertEquals(body.isEnvForced, true)
+      assertEquals(body.enabled, true)
+    },
+    {
+      getEnv: () => ({ TURBOPANEL_IS_SIGNUP_ENABLED: '1' }),
+    },
+  )
+})
+
+test('GET and PUT /api/admin/v1/instance/public-urls validate and persist origins', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const db = createDenoDb()
+    const publicUrlsKey = 'TURBOPANEL_PUBLIC_URLS'
+    const previous = await db
+      .select({ value: setting.value })
+      .from(setting)
+      .where(eq(setting.key, publicUrlsKey))
+      .limit(1)
+
+    try {
+      await db.delete(setting).where(eq(setting.key, publicUrlsKey))
+
+      const empty = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls`, {
+        headers: { Cookie: cookie },
+      })
+      assertEquals(empty.status, 200)
+      assertEquals(await empty.json(), { ok: true, urls: [] })
+
+      const invalid = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls`, {
+        method: 'PUT',
+        headers: {
+          Cookie: cookie,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ urls: ['localhost'] }),
+      })
+      assertEquals(invalid.status, 422)
+
+      const save = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls`, {
+        method: 'PUT',
+        headers: {
+          Cookie: cookie,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ urls: ['https://panel.example.com'] }),
+      })
+      assertEquals(save.status, 200)
+      const savedBody = await save.json()
+      assertEquals(savedBody, {
+        ok: true,
+        urls: ['https://panel.example.com'],
+        applied: false,
+      })
+
+      const reload = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls`, {
+        headers: { Cookie: cookie },
+      })
+      assertEquals(reload.status, 200)
+      assertEquals(await reload.json(), {
+        ok: true,
+        urls: ['https://panel.example.com'],
+      })
+    } finally {
+      await db.delete(setting).where(eq(setting.key, publicUrlsKey))
+      if (previous.length > 0) {
+        await db.insert(setting).values({
+          key: publicUrlsKey,
+          value: previous[0]!.value,
+        })
+      }
+    }
+  })
 })

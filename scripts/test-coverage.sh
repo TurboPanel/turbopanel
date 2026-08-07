@@ -66,6 +66,7 @@ from pathlib import Path
 text = Path("coverage/vitest/lcov.info").read_text()
 checks = (
     (r"SF:src/daemon/cell/do\.ts\n(?:.*\n)*?LH:(\d+)", 50, "do.ts"),
+    (r"SF:src/daemon/cell/do-registry\.ts\n(?:.*\n)*?LH:(\d+)", 80, "do-registry.ts"),
     (r"SF:src/daemon/workers-ws\.ts\n(?:.*\n)*?LH:(\d+)", 10, "workers-ws.ts"),
 )
 for pattern, minimum, label in checks:
@@ -80,76 +81,126 @@ for pattern, minimum, label in checks:
 PY
 
 echo "==> Deno coverage profile"
-# Host-free Deno suites that feed Sonar LCOV (Vitest/workerd cannot emit V8
-# coverage). Keep this list lean: pure unit suites + the existing hook set.
+# Deno V8 coverage for Sonar LCOV (Vitest/workerd covers Workers/DO-only code).
+# Two tiers:
+#   - Host-free unit suites (always run; no Postgres/Redis/ClickHouse).
+#   - Postgres integration suites (need TURBOPANEL_DATABASE_URL; skip gracefully
+#     when unset locally — CI build.yml starts Postgres and sets the URL).
+# Omit: redis-cell / ws-handlers (Redis), store.integration (ClickHouse),
+# Vitest-only Workers suites (workers-ws, durable-object, routes-core, …).
 # CI uses -A so every suite shares one profile dir (mirrors the daemon repo's
 # test:coverage grant).
 deno test -A --coverage=coverage/deno-profile \
   --no-check \
+  src/admin/public-urls.deno.test.ts \
   src/admin/reencrypt-secrets.test.ts \
   src/admin/routes.test.ts \
   src/client/authn/auth-rate-limit-http.test.ts \
   src/client/authn/auth-rate-limit.test.ts \
   src/client/authn/browser-write-protection.test.ts \
   src/client/authn/credentials-pam.test.ts \
+  src/client/authn/credentials.test.ts \
   src/client/authn/crypto.test.ts \
   src/client/authn/data-encryption.deno.test.ts \
   src/client/authn/email-otp.deno.test.ts \
+  src/client/authn/email-otp.test.ts \
+  src/client/authn/email-verification.test.ts \
+  src/client/authn/http-helpers.test.ts \
   src/client/authn/install-state.test.ts \
+  src/client/authn/install-validation.deno.test.ts \
+  src/client/authn/invitation-grants.test.ts \
   src/client/authn/license-lifecycle.test.ts \
+  src/client/authn/license.test.ts \
+  src/client/authn/middleware.test.ts \
+  src/client/authn/otp-reset-password.test.ts \
   src/client/authn/password.deno.test.ts \
   src/client/authn/secrets.deno.test.ts \
+  src/client/authn/session-store.test.ts \
   src/client/authn/signup-validation.deno.test.ts \
   src/client/authn/verification-dev-logging.deno.test.ts \
   src/client/authn/workers-onboarding.test.ts \
   src/client/authz/ \
   src/client/display-name-uniqueness.test.ts \
   src/client/environments/deploy-prepare.test.ts \
+  src/client/environments/deploy-routes.test.ts \
+  src/client/environments/register-compose-volumes.test.ts \
+  src/client/environments/reconcile-services.test.ts \
+  src/client/environments/allocate-containers.test.ts \
+  src/client/environments/routes.test.ts \
   src/client/environments/tcp-udp-ingress.test.ts \
   src/client/environments/validate-docker-external-networks.test.ts \
   src/client/hierarchy-delete.test.ts \
   src/client/managed/allocate-managed-container.test.ts \
+  src/client/managed/apply-prepare-enqueue.test.ts \
+  src/client/managed/apply-prepare-preflight.test.ts \
   src/client/managed/apply-prepare-pure.test.ts \
+  src/client/managed/apply-prepare.test.ts \
   src/client/vpns/apply-prepare-pure.test.ts \
+  src/client/vpns/apply-prepare-enqueue.test.ts \
+  src/client/vpns/apply-prepare.test.ts \
+  src/client/networks/routes-pure.test.ts \
+  src/client/ips/routes-pure.test.ts \
+  src/client/datacenters/routes-pure.test.ts \
   src/client/managed/backups.test.ts \
   src/client/managed/context.test.ts \
   src/client/managed/logs.test.ts \
   src/client/managed/options.test.ts \
+  src/client/managed/routes-helpers.test.ts \
+  src/client/managed/routes.test.ts \
   src/client/managed/serialize.test.ts \
   src/client/openapi/hostings.test.ts \
   src/client/openapi/servers.test.ts \
   src/client/openapi/system.test.ts \
   src/client/org-context-parse.test.ts \
+  src/client/org-context.test.ts \
   src/client/principals/assignments.test.ts \
+  src/client/principals/routes.test.ts \
   src/client/principals/serialize.test.ts \
+  src/client/principals/store.test.ts \
   src/client/projects/catalog/catalog.test.ts \
   src/client/projects/catalog/scaffold.test.ts \
   src/client/projects/empty-setup.test.ts \
+  src/client/projects/routes.test.ts \
+  src/client/servers/commands-routes.test.ts \
+  src/client/servers/commands-ping-latency.test.ts \
+  src/client/servers/command-dispatch.test.ts \
+  src/client/servers/colocated.test.ts \
   src/client/servers/delete-guards.test.ts \
+  src/client/servers/metrics-routes.test.ts \
+  src/client/servers/routes.test.ts \
   src/client/servers/update-status.test.ts \
   src/client/shared.test.ts \
+  src/client/shared-authz-guards.test.ts \
   src/client/storage/serialize.test.ts \
+  src/client/storage/routes-helpers.test.ts \
   src/client/system/hierarchy.test.ts \
   src/client/system/operate.test.ts \
   src/client/system/reconcile.test.ts \
+  src/client/system/routes.test.ts \
   src/client/variables/resolve-inherited.test.ts \
+  src/client/variables/routes-helpers.test.ts \
   src/cors.test.ts \
   src/daemon/authn/challenge.test.ts \
   src/daemon/authn/daemon-jwt.test.ts \
   src/daemon/authn/daemon-jwt-keyring.test.ts \
   src/daemon/authn/daemon-state.test.ts \
   src/daemon/authn/server-key.test.ts \
+  src/daemon/api-routes.test.ts \
   src/daemon/cell/contracts.test.ts \
   src/daemon/deno-ws.test.ts \
   src/daemon/cell/control-plane-monitor.test.ts \
+  src/daemon/cell/fleet-diagnostics.test.ts \
   src/daemon/cell/fleet-presence.test.ts \
   src/daemon/cell/location.test.ts \
   src/daemon/cell/offline-sweep.test.ts \
   src/daemon/cell/postgres-projection.test.ts \
   src/daemon/cell/protocol.test.ts \
+  src/daemon/cell/redis/cell.test.ts \
   src/daemon/cell/redis/keys.test.ts \
   src/daemon/cell/redis/lua.test.ts \
+  src/daemon/cell/redis/registry.test.ts \
   src/daemon/cell/socket-health.test.ts \
+  src/daemon/cell/server-diagnostics.test.ts \
   src/daemon/cell/stateless-challenge.test.ts \
   src/daemon/metrics/analytics-engine/field-map.test.ts \
   src/daemon/metrics/analytics-engine/sql-api.test.ts \
@@ -166,6 +217,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/metrics/query/series-response.test.ts \
   src/daemon/metrics/query/uptime.test.ts \
   src/daemon/metrics/store-selection.test.ts \
+  src/daemon/metrics/validation.deno.test.ts \
   src/daemon/metrics/write-path-parity.test.ts \
   src/daemon/openapi/ca.test.ts \
   src/daemon/openapi/readiness.test.ts \
@@ -188,6 +240,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/drizzle-studio-probe.test.ts \
   src/lib/amqp-default-url.test.ts \
   src/lib/commands/command-amqp-topology.test.ts \
+  src/lib/commands/consumer.test.ts \
   src/lib/commands/deno-amqp-queue.test.ts \
   src/lib/commands/deploy-validation.test.ts \
   src/lib/commands/hostname.test.ts \
@@ -203,10 +256,16 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/datacenter-name-suggestions.test.ts \
   src/lib/datacenter-options.test.ts \
   src/lib/daemon-install-command.deno.test.ts \
+  src/lib/db/command-records.test.ts \
+  src/lib/db/container-records.test.ts \
   src/lib/db/net-types.test.ts \
+  src/lib/db/project-delete.test.ts \
   src/lib/db/server-metadata.test.ts \
   src/lib/db/workspace-kind.test.ts \
   src/lib/docker-network-name.test.ts \
+  src/lib/email/mailgun/send.test.ts \
+  src/lib/email/mailgun/workers-queue.test.ts \
+  src/lib/email/mailpit/send.test.ts \
   src/lib/email/noop-queue.test.ts \
   src/lib/email/smtp/amqp-topology.test.ts \
   src/lib/email/smtp/smtp-resolve.test.ts \
@@ -215,6 +274,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/geo/server-geo.test.ts \
   src/lib/hosting-options.test.ts \
   src/lib/hosting-web-env.test.ts \
+  src/lib/install/parse-body.test.ts \
   src/lib/ip-address.test.ts \
   src/lib/machine-key.test.ts \
   src/lib/managed/ \
@@ -244,7 +304,22 @@ deno test -A --coverage=coverage/deno-profile \
   src/server-registry-metadata.test.ts \
   src/server-registry.test.ts \
   src/surfaces.test.ts \
-  src/wrangler-hyperdrive-bindings.test.ts
+  src/client/access/routes.test.ts \
+  src/client/access/routes-helpers.test.ts \
+  src/client/containers/routes.test.ts \
+  src/client/datacenters/routes.test.ts \
+  src/client/hostings/routes.test.ts \
+  src/client/ips/routes.test.ts \
+  src/client/licenses/routes.test.ts \
+  src/client/licenses/routes-helpers.test.ts \
+  src/client/networks/routes.test.ts \
+  src/client/organizations/routes.test.ts \
+  src/client/services/routes.test.ts \
+  src/client/tls/routes.test.ts \
+  src/client/tls/routes-helpers.test.ts \
+  src/client/variables/routes.test.ts \
+  src/client/vpns/routes.test.ts \
+  src/client/workspaces/routes.test.ts
 
 echo "==> Deno LCOV"
 deno coverage coverage/deno-profile --lcov --output=coverage/deno.lcov
@@ -371,11 +446,17 @@ def merge_records(all_records: list[dict[str, list[str]]]) -> dict[str, list[str
     return output
 
 
-sources = [
-    parse_records(Path("coverage/vitest/lcov.info")),
-    parse_records(Path("coverage/deno.lcov")),
-]
-merged = merge_records(sources)
+vitest_records = parse_records(Path("coverage/vitest/lcov.info"))
+deno_records = parse_records(Path("coverage/deno.lcov"))
+# Workers-pool Istanbul owns any file Vitest already measured — Deno V8
+# only imports those modules transitively (e.g. offline-sweep → do-registry)
+# and would union hundreds of zero-hit lines into the merged SF record.
+deno_records = {
+    sf: lines
+    for sf, lines in deno_records.items()
+    if sf not in vitest_records
+}
+merged = merge_records([vitest_records, deno_records])
 out_lines: list[str] = []
 for sf in sorted(merged):
     out_lines.extend(merged[sf])
@@ -386,6 +467,31 @@ if ! grep -q '^SF:src/daemon/cell/do.ts' coverage/lcov.info; then
   echo "Merged LCOV expected SF:src/daemon/cell/do.ts" >&2
   exit 1
 fi
+
+# Vitest-wins: merged LH must still clear the Workers/DO floors (guards against
+# reintroducing Deno zero-hit dilution for files Vitest already measured).
+echo "==> Assert Workers/DO coverage in merged LCOV"
+python3 - <<'PY'
+import re
+import sys
+from pathlib import Path
+
+text = Path("coverage/lcov.info").read_text()
+checks = (
+    (r"SF:src/daemon/cell/do\.ts\n(?:.*\n)*?LH:(\d+)", 50, "do.ts"),
+    (r"SF:src/daemon/cell/do-registry\.ts\n(?:.*\n)*?LH:(\d+)", 80, "do-registry.ts"),
+    (r"SF:src/daemon/workers-ws\.ts\n(?:.*\n)*?LH:(\d+)", 10, "workers-ws.ts"),
+)
+for pattern, minimum, label in checks:
+    match = re.search(pattern, text)
+    hits = int(match.group(1)) if match else 0
+    if hits < minimum:
+        print(
+            f"Merged LCOV missing expected {label} coverage (LH:{hits}, need >={minimum})",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+PY
 
 if bad="$(grep -E '^SF:(/|file:)' coverage/lcov.info || true)" && [ -n "$bad" ]; then
   echo "Merged LCOV SF paths must be repo-relative" >&2

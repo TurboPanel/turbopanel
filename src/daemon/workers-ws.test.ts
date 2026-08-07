@@ -194,6 +194,72 @@ describe("registerWorkersDaemonWebSocket forwarding", () => {
     expect(getByNameArg()).toBeUndefined();
   });
 
+  it("returns 426 when Upgrade is not websocket", async () => {
+    const secrets = await createTestSecrets();
+    const app = createWorkersWsApp(secrets);
+    const { env } = createForwardCaptureEnv();
+
+    const response = await app.fetch(
+      new Request(`https://instance.test${DAEMON_WS_PATH}`),
+      env,
+    );
+
+    expect(response.status).toBe(426);
+  });
+
+  it("returns 401 when Authorization is missing", async () => {
+    const secrets = await createTestSecrets();
+    const app = createWorkersWsApp(secrets);
+    const { env } = createForwardCaptureEnv();
+
+    const response = await app.fetch(
+      new Request(`https://instance.test${DAEMON_WS_PATH}`, {
+        headers: { Upgrade: "websocket" },
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(401);
+  });
+
+  it("returns 401 when the daemon JWT is invalid", async () => {
+    const secrets = await createTestSecrets();
+    const app = createWorkersWsApp(secrets);
+    const { env } = createForwardCaptureEnv();
+
+    const response = await app.fetch(
+      new Request(`https://instance.test${DAEMON_WS_PATH}`, {
+        headers: {
+          Upgrade: "websocket",
+          Authorization: "Bearer not-a-valid-jwt",
+        },
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(401);
+  });
+
+  it("returns 503 when the request db is unavailable", async () => {
+    const secrets = await createTestSecrets();
+    const app = new Hono<{ Variables: AppEnv["Variables"]; Bindings: CloudflareBindings }>();
+    registerWorkersDaemonWebSocket(app, { secrets });
+    const token = await issueTestToken("test-srv-ws-no-db");
+    const { env } = createForwardCaptureEnv();
+
+    const response = await app.fetch(
+      new Request(`https://instance.test${DAEMON_WS_PATH}`, {
+        headers: {
+          Upgrade: "websocket",
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(503);
+  });
+
   it("forwards to the cell when connectLimiter allows", async () => {
     const serverId = "test-srv-ws-rate-allowed";
     const secrets = await createTestSecrets();

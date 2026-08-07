@@ -3,10 +3,12 @@ import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import {
   assertManagedNotBusy,
+  assertTargetServerOnline,
   isManagedStatus,
   requireManagedCreateServerId,
   resolveManagedTargetServerId,
 } from './context.ts'
+import { createServerPresenceDb } from './server-status-test-db.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -16,8 +18,12 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
-function mockContext(): Context<AppEnv> {
+function mockContext(registry?: unknown): Context<AppEnv> {
   return {
+    get(key: string) {
+      if (key === 'daemonCellRegistry') return registry
+      return undefined
+    },
     json(body: unknown, status?: number) {
       return Response.json(body, { status })
     },
@@ -69,4 +75,30 @@ test('isManagedStatus accepts the persisted status set', () => {
   assertEquals(isManagedStatus('failed'), true)
   assertEquals(isManagedStatus(null), false)
   assertEquals(isManagedStatus('weird'), false)
+})
+
+test('assertTargetServerOnline rejects offline servers', async () => {
+  const c = mockContext()
+  const offline = await assertTargetServerOnline(
+    c,
+    createServerPresenceDb('server-1', false),
+    'server-1',
+  )
+  if (!(offline instanceof Response)) {
+    throw new TypeError('expected Response')
+  }
+  assertEquals(offline.status, 409)
+  assertEquals(await offline.json(), { error: 'server_offline' })
+})
+
+test('assertTargetServerOnline accepts online servers', async () => {
+  const c = mockContext()
+  assertEquals(
+    await assertTargetServerOnline(
+      c,
+      createServerPresenceDb('server-1', true),
+      'server-1',
+    ),
+    null,
+  )
 })

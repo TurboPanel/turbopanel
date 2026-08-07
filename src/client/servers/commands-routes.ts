@@ -12,68 +12,21 @@ import { getDb, type Db } from '../../db.ts'
 import { assertValidHostname } from '../../lib/commands/hostname.ts'
 import {
   parseNtpSetPayload,
-  parsePingResult,
   parseTimezoneSetPayload,
 } from '../../lib/commands/schemas.ts'
 import {
   getCommandRecord,
   listServerCommands,
-  type CommandRecord,
 } from '../../lib/db/command-records.ts'
 import { isAllowedTimezone } from '../../lib/timezones.ts'
 import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
 import { createAndEnqueueUserCommand } from './command-dispatch.ts'
-
-type PingLatencyBreakdown = {
-  apiToConsumerMs: number | null
-  consumerToCellMs: number | null
-  cellToDaemonMs: number | null
-  daemonProcessingMs: number | null
-  daemonToRecordedMs: number | null
-  totalRoundTripMs: number | null
-}
+import { computePingLatency } from './commands-ping-latency.ts'
 
 type ServerCommandAccess = {
   db: Db
   serverId: string
   userId: string
-}
-
-function diffMs(
-  start: string | null | undefined,
-  end: string | null | undefined,
-): number | null {
-  if (!start || !end) return null
-  return Date.parse(end) - Date.parse(start)
-}
-
-/** Clamp negative deltas (clock skew) to zero for display-safe hop timings. */
-function nonNegativeDiffMs(
-  start: string | null | undefined,
-  end: string | null | undefined,
-): number | null {
-  const ms = diffMs(start, end)
-  if (ms === null) return null
-  return Math.max(0, ms)
-}
-
-function computePingLatency(record: CommandRecord): PingLatencyBreakdown {
-  const pingResult = parsePingResult(record.result)
-  const cellDispatchedAt = pingResult.cellDispatchedAt ?? record.sentAt
-  const cellAckAt = record.ackedAt ?? record.finishedAt
-  return {
-    apiToConsumerMs: diffMs(record.queuedAt, record.dispatchStartedAt),
-    consumerToCellMs: diffMs(record.dispatchStartedAt, cellDispatchedAt),
-    cellToDaemonMs: nonNegativeDiffMs(cellDispatchedAt, cellAckAt),
-    daemonProcessingMs: nonNegativeDiffMs(
-      pingResult.daemonReceivedAt,
-      pingResult.daemonRespondedAt,
-    ),
-    daemonToRecordedMs: record.ackedAt
-      ? nonNegativeDiffMs(record.ackedAt, record.finishedAt)
-      : nonNegativeDiffMs(cellDispatchedAt, record.finishedAt),
-    totalRoundTripMs: diffMs(record.queuedAt, record.finishedAt),
-  }
 }
 
 async function resolveServerCommandAccess(

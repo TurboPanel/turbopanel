@@ -13,6 +13,9 @@ import {
 } from '../../lib/db/schema.ts'
 import {
   allocateEnvironmentContainers,
+  buildContainerServiceSpecs,
+  ensureServiceIngressContainerAllocation,
+  pruneUnexpectedPendingContainers,
   resolveAllocatedContainerName,
 } from './allocate-containers.ts'
 
@@ -293,6 +296,137 @@ test('allocateEnvironmentContainers reuses rows on concurrent/repeated calls', a
         ),
       )
     assertEquals(rows.length, 2)
+  })
+})
+
+test('buildContainerServiceSpecs skips non-container compose names and reads instances', () => {
+  const serviceId = '01936b3e-4444-5555-6666-123456789abc'
+  const specs = buildContainerServiceSpecs(
+    [{
+      id: serviceId,
+      composeServiceName: 'web',
+      options: { instances: 3, container: { name: 'explicit-web' } },
+    }, {
+      id: '01936b3e-bbbb-cccc-dddd-123456789abc',
+      composeServiceName: 'site',
+      options: {},
+    }],
+    new Set(['web']),
+  )
+  assertEquals(specs.length, 1)
+  assertEquals(specs[0]?.serviceId, serviceId)
+  assertEquals(specs[0]?.instances, 3)
+  assertEquals(specs[0]?.explicitContainerName, 'explicit-web')
+})
+
+test('allocateEnvironmentContainers skips custom naming without explicit container name', async () => {
+  await withAllocationFixtures(async ({
+    db,
+    serverId,
+    environmentId,
+    webServiceId,
+  }) => {
+    const allocations = await allocateEnvironmentContainers(db, {
+      environmentId,
+      serverId,
+      containerNaming: 'custom',
+      containerServices: [{
+        serviceId: webServiceId,
+        composeServiceName: 'web',
+        instances: 1,
+      }],
+      environmentServiceIds: [webServiceId],
+    })
+    assertEquals(allocations, [])
+
+    const rows = await db
+      .select({ id: container.id })
+      .from(container)
+      .where(eq(container.serviceId, webServiceId))
+    assertEquals(rows.length, 0)
+  })
+})
+
+test('ensureServiceIngressContainerAllocation is idempotent and re-homes server', async () => {
+  await withAllocationFixtures(async ({
+    db,
+    serverId,
+    otherServerId,
+    webServiceId,
+  }) => {
+    const first = await ensureServiceIngressContainerAllocation(db, {
+      serviceId: webServiceId,
+      serverId,
+      composeServiceName: `${webServiceId}-in`,
+    })
+    const second = await ensureServiceIngressContainerAllocation(db, {
+      serviceId: webServiceId,
+      serverId: otherServerId,
+      composeServiceName: `${webServiceId}-in`,
+    })
+
+    assertEquals(first.containerRowId, second.containerRowId)
+    assertEquals(first.containerName, `${webServiceId}-in`)
+    assertEquals(second.containerName, `${webServiceId}-in`)
+
+    const rows = await db
+      .select({
+        id: container.id,
+        serverId: container.serverId,
+        role: container.role,
+        composeServiceName: container.composeServiceName,
+      })
+      .from(container)
+      .where(eq(container.serviceId, webServiceId))
+    assertEquals(rows.length, 1)
+    assertEquals(rows[0]?.role, 'ingress')
+    assertEquals(rows[0]?.serverId, otherServerId)
+    assertEquals(rows[0]?.composeServiceName, `${webServiceId}-in`)
+  })
+})
+
+test('pruneUnexpectedPendingContainers removes stale pending rows but keeps keepIds', async () => {
+  await withAllocationFixtures(async ({
+    db,
+    serverId,
+    webServiceId,
+  }) => {
+    const [kept] = await db
+      .insert(container)
+      .values({
+        serviceId: webServiceId,
+        serverId,
+        containerId: null,
+        containerName: 'keep-me',
+        status: 'pending',
+        role: 'service',
+        composeServiceName: 'web',
+        ordinal: 1,
+      })
+      .returning({ id: container.id })
+    await db.insert(container).values({
+      serviceId: webServiceId,
+      serverId,
+      containerId: null,
+      containerName: 'stale',
+      status: 'pending',
+      role: 'service',
+      composeServiceName: 'web-stale',
+      ordinal: 2,
+    })
+
+    await pruneUnexpectedPendingContainers(db, {
+      serviceIds: [webServiceId],
+      keepIds: new Set([kept!.id]),
+    })
+
+    const rows = await db
+      .select({ id: container.id, containerName: container.containerName })
+      .from(container)
+      .where(eq(container.serviceId, webServiceId))
+    assertEquals(rows.length, 1)
+    assertEquals(rows[0]?.id, kept!.id)
+    assertEquals(rows[0]?.containerName, 'keep-me')
   })
 })
 

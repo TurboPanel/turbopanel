@@ -1651,3 +1651,280 @@ test('managed database create/delete target managed.server_id when environment p
     })
   })
 })
+
+test('GET /environments/:id/managed returns null shape before provisioning', async () => {
+  await withManagedFixtures({}, async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    environmentId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/environments/${environmentId}/managed`, {
+      headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+    })
+    assertEquals(res.status, 200)
+    const body = await res.json() as {
+      managed: unknown
+      connection: unknown
+      settings: unknown
+      server: unknown
+      rootUsername: string
+    }
+    assertEquals(body.managed, null)
+    assertEquals(body.connection, null)
+    assertEquals(body.settings, null)
+    assertEquals(body.server, null)
+    assertEquals(body.rootUsername, 'postgres')
+  })
+})
+
+test('PATCH /environments/:id/managed persists clamped settings', async () => {
+  await withManagedFixtures({}, async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    environmentId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+
+    const create = await app.request(`/environments/${environmentId}/managed`, {
+      method: 'POST',
+      headers,
+      body: '{}',
+    })
+    assertEquals(create.status, 200)
+    await db.update(managed).set({ status: 'ready' }).where(
+      eq(managed.environmentId, environmentId),
+    )
+
+    const patch = await app.request(`/environments/${environmentId}/managed`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({
+        settings: { exposure: { enabled: false, bind: 'local' } },
+      }),
+    })
+    assertEquals(patch.status, 200)
+    const patchBody = await patch.json() as {
+      ok: boolean
+      settings: { exposure: { enabled: boolean } }
+    }
+    assertEquals(patchBody.ok, true)
+    assertEquals(patchBody.settings.exposure.enabled, false)
+  })
+})
+
+test('POST lifecycle rejects invalid action', async () => {
+  await withManagedFixtures({}, async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    environmentId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+
+    const create = await app.request(`/environments/${environmentId}/managed`, {
+      method: 'POST',
+      headers,
+      body: '{}',
+    })
+    assertEquals(create.status, 200)
+    await db.update(managed).set({ status: 'ready' }).where(
+      eq(managed.environmentId, environmentId),
+    )
+
+    const bad = await app.request(
+      `/environments/${environmentId}/managed/lifecycle`,
+      { method: 'POST', headers, body: JSON.stringify({ action: 'pause' }) },
+    )
+    assertEquals(bad.status, 400)
+    assertEquals(await bad.json(), { error: 'Invalid request' })
+  })
+})
+
+test('DELETE hard-deletes stopped managed without enqueueing destroy', async () => {
+  await withManagedFixtures({}, async ({
+    db,
+    app,
+    secrets,
+    commandQueue,
+    userId,
+    organizationId,
+    environmentId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+
+    const create = await app.request(`/environments/${environmentId}/managed`, {
+      method: 'POST',
+      headers,
+      body: '{}',
+    })
+    assertEquals(create.status, 200)
+    const created = await create.json() as { managed: { id: string } }
+    await db.update(managed).set({ status: 'stopped' }).where(
+      eq(managed.id, created.managed.id),
+    )
+
+    const beforeCount = commandQueue.envelopes.length
+    const destroy = await app.request(`/environments/${environmentId}/managed`, {
+      method: 'DELETE',
+      headers,
+    })
+    assertEquals(destroy.status, 200)
+    assertEquals(await destroy.json(), { ok: true, deleted: true })
+    assertEquals(commandQueue.envelopes.length, beforeCount)
+
+    const rows = await db
+      .select({ id: managed.id })
+      .from(managed)
+      .where(eq(managed.environmentId, environmentId))
+    assertEquals(rows.length, 0)
+  })
+})
+
+test('GET /environments/:id/managed/logs returns compose logs', async () => {
+  await withManagedFixtures({}, async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    environmentId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+
+    const create = await app.request(`/environments/${environmentId}/managed`, {
+      method: 'POST',
+      headers,
+      body: '{}',
+    })
+    assertEquals(create.status, 200)
+
+    const logs = await app.request(
+      `/environments/${environmentId}/managed/logs?tail=50`,
+      { headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId } },
+    )
+    assertEquals(logs.status, 200)
+    const body = await logs.json() as { logs: string }
+    assertEquals(body.logs, 'stub-logs\n')
+  })
+})
+
+test('POST user rejects invalid username and DELETE database protects initial database', async () => {
+  await withManagedFixtures({}, async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    environmentId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+
+    const create = await app.request(`/environments/${environmentId}/managed`, {
+      method: 'POST',
+      headers,
+      body: '{}',
+    })
+    assertEquals(create.status, 200)
+    await db.update(managed).set({ status: 'ready' }).where(
+      eq(managed.environmentId, environmentId),
+    )
+
+    const badUser = await app.request(
+      `/environments/${environmentId}/managed/users`,
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ username: 'postgres', databases: ['postgres'] }),
+      },
+    )
+    assertEquals(badUser.status, 400)
+    assertEquals(await badUser.json(), { error: 'Invalid username' })
+
+    const dropInitial = await app.request(
+      `/environments/${environmentId}/managed/databases/${encodeURIComponent('postgres')}`,
+      { method: 'DELETE', headers },
+    )
+    assertEquals(dropInitial.status, 409)
+    assertEquals(await dropInitial.json(), { error: 'cannot_drop_initial_database' })
+  })
+})
+
+test('GET databases lists provisioned database names', async () => {
+  await withManagedFixtures({}, async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    environmentId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+
+    const create = await app.request(`/environments/${environmentId}/managed`, {
+      method: 'POST',
+      headers,
+      body: '{}',
+    })
+    assertEquals(create.status, 200)
+
+    const list = await app.request(
+      `/environments/${environmentId}/managed/databases`,
+      { headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId } },
+    )
+    assertEquals(list.status, 200)
+    const body = await list.json() as { databases: string[] }
+    assertEquals(body.databases.includes('postgres'), true)
+  })
+})
+
+test('registerManagedRoutes requires session secrets', () => {
+  const app = new Hono<AppEnv>()
+  let threw = false
+  try {
+    registerManagedRoutes(app, { runtime: 'deno' })
+  } catch (error) {
+    threw = true
+    assertEquals(error instanceof TypeError, true)
+    assertEquals((error as Error).message, 'session secrets are required for managed routes')
+  }
+  assertEquals(threw, true)
+})

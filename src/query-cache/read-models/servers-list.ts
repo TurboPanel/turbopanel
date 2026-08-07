@@ -66,7 +66,7 @@ async function loadCachedListRows(
     return []
   }
 
-  return readDb
+  const rows = await readDb
     .select({
       id: server.id,
       displayName: server.displayName,
@@ -79,6 +79,8 @@ async function loadCachedListRows(
     .leftJoin(license, eq(license.serverId, server.id))
     .where(inArray(server.id, visibleIds))
     .orderBy(server.createdAt)
+
+  return rows as ServersListRow[]
 }
 
 async function resolveServersListEnrichment(

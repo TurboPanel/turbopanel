@@ -17,18 +17,23 @@ import {
 } from '../../client/authn/install-state.ts'
 import { createSession, getSession } from '../../client/authn/session-store.ts'
 import { getDb } from '../../db.ts'
+import {
+  parseCompleteInstallBodyRaw,
+  parseInstallHostCredentialsBody,
+} from './parse-body.ts'
 import { INSTALL_API_PREFIX } from '../../surfaces.ts'
-
-interface CompleteInstallInput {
-  username: string
-  password: string
-  superadminEmail: string
-  superadminPassword: string
-}
 
 async function parseCompleteInstallBody(
   c: Context,
-): Promise<CompleteInstallInput | { response: Response }> {
+): Promise<
+  | {
+    username: string
+    password: string
+    superadminEmail: string
+    superadminPassword: string
+  }
+  | { response: Response }
+> {
   let body: unknown
   try {
     body = await c.req.json()
@@ -36,25 +41,12 @@ async function parseCompleteInstallBody(
     return { response: c.json({ ok: false, error: 'Invalid request' }, 400) }
   }
 
-  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-    return { response: c.json({ ok: false, error: 'Invalid request' }, 400) }
+  const parsed = parseCompleteInstallBodyRaw(body)
+  if (!parsed.ok) {
+    return { response: c.json({ ok: false, error: parsed.error }, 400) }
   }
 
-  const record = body as Record<string, unknown>
-  const { username, password, superadminEmail, superadminPassword } = record
-
-  if (
-    typeof username !== 'string' ||
-    !username.trim() ||
-    typeof password !== 'string' ||
-    !password ||
-    typeof superadminEmail !== 'string' ||
-    typeof superadminPassword !== 'string'
-  ) {
-    return { response: c.json({ ok: false, error: 'Invalid request' }, 400) }
-  }
-
-  return { username, password, superadminEmail, superadminPassword }
+  return parsed.value
 }
 
 async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
@@ -181,23 +173,11 @@ export function registerInstallRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Invalid request' }, 400)
     }
 
-    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
+    const parsed = parseInstallHostCredentialsBody(body)
+    if (!parsed.ok) {
+      return c.json({ ok: false, error: parsed.error }, 400)
     }
-
-    const { username, password } = body as {
-      username?: unknown
-      password?: unknown
-    }
-
-    if (
-      typeof username !== 'string' ||
-      !username.trim() ||
-      typeof password !== 'string' ||
-      !password
-    ) {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
+    const { username, password } = parsed.value
 
     const limited = await enforceAuthRateLimit(
       c,

@@ -154,3 +154,32 @@ test('readComposeExternalDockerNetworkName rejects invalid mapping keys', () => 
     null,
   )
 })
+
+test('readComposeExternalDockerNetworkName rejects non-mapping entries', () => {
+  assertEquals(readComposeExternalDockerNetworkName('backend', 'bad'), null)
+})
+
+test('readComposeExternalDockerNetworkName falls back to sibling name', () => {
+  assertEquals(
+    readComposeExternalDockerNetworkName('backend', {
+      external: {},
+      name: 'turbopanel-shared',
+    }),
+    'turbopanel-shared',
+  )
+})
+
+test('collectServiceComposeNetworkKeys returns empty for null networks', () => {
+  assertEquals(collectServiceComposeNetworkKeys({ networks: null }), [])
+})
+
+test('pruneUnreferencedComposeNetworks returns undefined for empty networks input', () => {
+  assertEquals(
+    pruneUnreferencedComposeNetworks({ api: { image: 'node:22' } }, undefined),
+    undefined,
+  )
+  assertEquals(
+    pruneUnreferencedComposeNetworks({ api: { image: 'node:22' } }, {}),
+    undefined,
+  )
+})

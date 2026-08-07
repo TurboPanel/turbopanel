@@ -22,6 +22,18 @@ import {
   parseJsonBody,
   parseJsonbObject,
 } from '../shared.ts'
+import {
+  assertIpScopeFkRules,
+  isIpAddressUniqueViolation,
+  parseCreateIpAddress,
+  type IpScopeFks,
+} from './ip-create-validation.ts'
+
+export {
+  assertIpScopeFkRules,
+  isIpAddressUniqueViolation,
+  parseCreateIpAddress,
+} from './ip-create-validation.ts'
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -55,13 +67,6 @@ const IP_SCOPE_FK_FIELDS = [
 
 type IpScopeFkField = (typeof IP_SCOPE_FK_FIELDS)[number][0]
 type IpScopeFkKind = (typeof IP_SCOPE_FK_FIELDS)[number][1]
-
-type IpScopeFks = {
-  datacenterId?: string | null
-  networkId?: string | null
-  serverId?: string | null
-  vpnId?: string | null
-}
 
 type CreateIpFields = {
   address: string
@@ -105,18 +110,6 @@ function serializeIpRow(row: IpRow) {
     ...row,
     version: parseIpVersion(row.address),
   }
-}
-
-function isPostgresUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null &&
-    'code' in err && (err as { code: string }).code === '23505'
-}
-
-function isIpAddressUniqueViolation(err: unknown): boolean {
-  if (!isPostgresUniqueViolation(err)) return false
-  const message = err instanceof Error ? err.message : String(err)
-  return message.includes('uniq_ip_org_address') ||
-    message.includes('uniq_ip_vpn_address')
 }
 
 async function assertSameOrgEntity(
@@ -244,55 +237,6 @@ async function buildIpListConditions(
   if (allocationDenied) return allocationDenied
 
   return conditions
-}
-
-function parseCreateIpAddress(
-  c: Context,
-  body: Record<string, unknown>,
-): { address: string } | Response {
-  const addressRaw = body.address
-  if (typeof addressRaw !== 'string' || !isValidIpAddress(addressRaw)) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  const address = addressRaw.trim()
-  if (parseIpVersion(address) === null) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-
-  // Clients must not supply version — it is derived from address on read.
-  if (body.version !== undefined) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-
-  return { address }
-}
-
-function assertIpScopeFkRules(
-  c: Context,
-  scope: string,
-  scopeFks: IpScopeFks,
-): Response | null {
-  const hasVpn = scopeFks.vpnId !== undefined && scopeFks.vpnId !== null
-  const hasServer = scopeFks.serverId !== undefined && scopeFks.serverId !== null
-  const hasNetwork = scopeFks.networkId !== undefined && scopeFks.networkId !== null
-  const hasDatacenter =
-    scopeFks.datacenterId !== undefined && scopeFks.datacenterId !== null
-
-  if (scope === 'vpn') {
-    if (!hasVpn) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-  } else if (hasVpn) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-
-  // Mirrors `ip_datacenter_free_pool_check`: datacenterId cannot coexist with
-  // networkId, serverId, or vpnId.
-  if (hasDatacenter && (hasNetwork || hasServer || hasVpn)) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-
-  return null
 }
 
 /**

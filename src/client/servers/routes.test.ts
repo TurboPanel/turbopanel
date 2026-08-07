@@ -2451,3 +2451,131 @@ test('DELETE /servers/:id succeeds after enable → disable → reconcile lifecy
     await db.delete(command).where(eq(command.serverId, serverId))
   })
 })
+
+test('registerServerRoutes requires session secrets', () => {
+  const app = new Hono<AppEnv>()
+  assertThrows(
+    () => registerServerRoutes(app, {
+      secrets: undefined as never,
+      runtime: 'deno',
+      signupEnvOverride: undefined,
+    }),
+    TypeError,
+    'session secrets are required for server routes',
+  )
+})
+
+test('PATCH /servers/:id rejects an empty patch body', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/servers/${serverId}`, {
+      method: 'PATCH',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({}),
+    })
+
+    assertEquals(res.status, 400)
+    const body = await readJson<ErrorJson>(res)
+    assertEquals(body.error, 'Invalid request')
+  })
+})
+
+test('PATCH /servers/:id updates displayName', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/servers/${serverId}`, {
+      method: 'PATCH',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ displayName: 'Renamed Host' }),
+    })
+
+    assertEquals(res.status, 200)
+    const body = await res.json() as { ok: boolean }
+    assertEquals(body.ok, true)
+
+    const [row] = await db
+      .select({ displayName: server.displayName })
+      .from(server)
+      .where(eq(server.id, serverId))
+      .limit(1)
+    assertEquals(row?.displayName, 'Renamed Host')
+  })
+})
+
+test('GET /servers/:id/update returns idle status for a disconnected server', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/servers/${serverId}/update`, {
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 200)
+    const body = await res.json() as {
+      ok: boolean
+      serverId: string
+      status: string
+      colocatedWithInstance: boolean
+    }
+    assertEquals(body.ok, true)
+    assertEquals(body.serverId, serverId)
+    assertEquals(body.colocatedWithInstance, false)
+    assertEquals(typeof body.status, 'string')
+  })
+})
+
+test('POST /servers/:id/update returns 404 when daemon is offline', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/servers/${serverId}/update`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 404)
+    const body = await readJson<{ ok: boolean; error: string }>(res)
+    assertEquals(body.ok, false)
+    assertEquals(body.error, 'Daemon not connected')
+  })
+})

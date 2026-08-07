@@ -128,4 +128,72 @@ describe('apply-variables', () => {
     doc.data.services = { api: { image: 'node:22' } }
     assertEquals(injectSecretPlaceholdersIntoComposeDocument(doc, []), doc)
   })
+
+  it('applies build-only literal variables into build args', () => {
+    const doc = emptyComposeDocument()
+    doc.data.services = { api: { image: 'node:22', environment: { KEEP: 'yes' } } }
+
+    const result = applyVariablesToComposeDocument(doc, {
+      globalEntries: [{
+        key: 'BUILD_ARG',
+        value: '$SECRET',
+        isSecret: false,
+        isLiteral: true,
+        forBuild: true,
+        forRuntime: false,
+      }],
+      perServiceEntries: new Map(),
+    })
+
+    const api = (result.document.data.services as Record<string, Record<string, unknown>>).api!
+    assertEquals(api.environment, { KEEP: 'yes' })
+    assertEquals((api.build as { args: Record<string, string> }).args.BUILD_ARG, '$$SECRET')
+  })
+
+  it('preserves existing environment when no runtime entries are provided', () => {
+    const doc = emptyComposeDocument()
+    doc.data.services = { api: { image: 'node:22', environment: { OLD: 'gone' } } }
+
+    const result = applyVariablesToComposeDocument(doc, {
+      globalEntries: [],
+      perServiceEntries: new Map(),
+    })
+
+    const api = (result.document.data.services as Record<string, Record<string, unknown>>).api!
+    assertEquals(api.environment, { OLD: 'gone' })
+  })
+
+  it('skips non-mapping service entries', () => {
+    const doc = emptyComposeDocument()
+    doc.data.services = { bad: 'not-a-map', api: { image: 'node:22' } }
+
+    const result = applyVariablesToComposeDocument(doc, {
+      globalEntries: [{
+        key: 'PORT',
+        value: '3000',
+        isSecret: false,
+        isLiteral: false,
+        forBuild: false,
+        forRuntime: true,
+      }],
+      perServiceEntries: new Map(),
+    })
+
+    const api = (result.document.data.services as Record<string, Record<string, unknown>>).api!
+    assertEquals(api.environment, { PORT: '3000' })
+  })
+
+  it('injectSecretPlaceholders skips entries without composeServiceName', () => {
+    const doc = emptyComposeDocument()
+    doc.data.services = { api: { image: 'node:22' } }
+    const unchanged = injectSecretPlaceholdersIntoComposeDocument(doc, [{
+      key: 'SECRET',
+      composeServiceName: null,
+      forBuild: true,
+      forRuntime: true,
+      isLiteral: false,
+      valueEnvelope: 'enc.1.test',
+    }])
+    assertEquals(unchanged, doc)
+  })
 })

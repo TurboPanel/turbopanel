@@ -1366,3 +1366,118 @@ describe('resolveTraditionalWebSitesForMode and toPreparedDeployResult', () => {
     assertEquals(previewDoc === doc, false)
   })
 })
+
+describe('resourceLimitPrepareError server scope', () => {
+  it('returns null when server limits are unset', () => {
+    const options = buildServiceOptionsMap([
+      { composeServiceName: 'web', options: { resources: { cpus: 0.5 } } },
+    ])
+    assertEquals(
+      resourceLimitPrepareError(options, 1, {}, {}),
+      null,
+    )
+  })
+
+  it('violates server maxCpus when usage exceeds server cap', () => {
+    const options = buildServiceOptionsMap([
+      { composeServiceName: 'web', options: { resources: { cpus: 4 } } },
+    ])
+    const err = resourceLimitPrepareError(
+      options,
+      1,
+      {},
+      { resourceLimits: { maxCpus: 2 } },
+    )
+    if (!err || err.kind !== 'resource_limit') {
+      throw new TypeError('expected resource_limit error')
+    }
+    assertEquals(
+      err.violations.some((v) => v.scope === 'server' && v.field === 'maxCpus'),
+      true,
+    )
+  })
+})
+
+describe('appendPlatformVariablesToEntries without service row', () => {
+  it('strips reserved keys and skips platform vars when clone has no service row', () => {
+    const perService = new Map([
+      ['orphan', [{
+        key: 'TURBOPANEL_ENVIRONMENT_ID',
+        value: 'stolen-env',
+        isSecret: false,
+        isLiteral: true,
+        forBuild: false,
+        forRuntime: true,
+      }, {
+        key: 'CUSTOM',
+        value: 'ok',
+        isSecret: false,
+        isLiteral: true,
+        forBuild: false,
+        forRuntime: true,
+      }]],
+    ])
+    const next = appendPlatformVariablesToEntries(perService, {
+      projectId: 'proj-1',
+      environmentId: 'env-1',
+      serviceRowByCloneName: new Map(),
+      allocationByClone: new Map(),
+    })
+    const keys = (next.get('orphan') ?? []).map((entry) => entry.key)
+    assertEquals(keys, ['CUSTOM'])
+    assertEquals(keys.includes('TURBOPANEL_ENVIRONMENT_ID'), false)
+  })
+})
+
+describe('attachPrincipalsToTraditionalWebSites edge cases', () => {
+  const site: TraditionalWebSiteSpec = {
+    composeServiceName: 'site',
+    engine: 'nginx',
+    root: 'public',
+    listenPort: 18080,
+  }
+  const serviceId = '01936b3e-4444-5555-6666-123456789abc'
+  const principalId = '01936b3e-aaaa-bbbb-cccc-123456789abc'
+
+  it('omits principal when assigned id is missing from material map', async () => {
+    const db = createSelectWhereDb([{ principalId, serviceId }])
+    const result = await attachPrincipalsToTraditionalWebSites(
+      db,
+      'env-1',
+      [{ id: serviceId, composeServiceName: 'site' }],
+      [],
+      [site],
+    )
+    if ('kind' in result) {
+      throw new TypeError('expected sites without principal pin')
+    }
+    assertEquals(result[0]?.principal, undefined)
+  })
+
+  it('handles site with no matching service row', async () => {
+    const db = createSelectWhereDb([])
+    const result = await attachPrincipalsToTraditionalWebSites(
+      db,
+      'env-1',
+      [],
+      [],
+      [site],
+    )
+    if ('kind' in result) {
+      throw new TypeError('expected sites')
+    }
+    assertEquals(result[0]?.composeServiceName, 'site')
+    assertEquals(result[0]?.principal, undefined)
+  })
+})
+
+describe('splitTraditionalWebFromDocument without networks key', () => {
+  it('keeps container yaml when traditional-web is absent', () => {
+    const doc = assertComposeDocument(WEB_API_COMPOSE)
+    const split = splitTraditionalWebFromDocument(doc)
+    assertEquals(split.sites.length, 0)
+    assertEquals(split.composeYaml.includes('nginx:latest'), true)
+    assertEquals(split.composeYaml.includes('node:22'), true)
+    assertEquals(split.composeYaml.includes('networks:'), false)
+  })
+})

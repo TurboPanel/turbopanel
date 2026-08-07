@@ -20,11 +20,18 @@ import {
   requireStringField,
 } from '../shared.ts'
 import { serializeStorage } from './serialize.ts'
-
-const STORAGE_KINDS = ['docker_volume', 'bind_mount', 'file', 'directory'] as const
-type StorageKind = typeof STORAGE_KINDS[number]
-
-const MOUNT_KINDS = new Set<StorageKind>(['bind_mount', 'file', 'directory'])
+import {
+  isStorageKind,
+  mountKindRequiresDestination,
+  optionalStringField,
+  PARENT_FIELDS,
+  parseStorageParent,
+  resolvePatchStorageRefs,
+  resolveStorageParentContext,
+  resolveStorageProjectId,
+  type StorageKind,
+  type StorageParentEntityKind,
+} from './routes-helpers.ts'
 
 const MAX_STORAGE_CONTENT_BYTES = 256 * 1024
 
@@ -56,11 +63,6 @@ function parseOptionalStorageContent(
   return value
 }
 
-function isStorageKind(value: unknown): value is StorageKind {
-  return typeof value === 'string' &&
-    (STORAGE_KINDS as readonly string[]).includes(value)
-}
-
 async function resolveSealedStorageContent(
   c: Context<AppEnv>,
   value: unknown,
@@ -70,12 +72,6 @@ async function resolveSealedStorageContent(
   if (contentResult === undefined) return undefined
   return sealStorageContent(c, contentResult)
 }
-
-const PARENT_FIELDS = [
-  { bodyKey: 'projectId', column: 'projectId' as const, entityKind: 'project' as const },
-  { bodyKey: 'environmentId', column: 'environmentId' as const, entityKind: 'environment' as const },
-  { bodyKey: 'serviceId', column: 'serviceId' as const, entityKind: 'service' as const },
-] as const
 
 const STORAGE_SELECT = {
   id: storage.id,
@@ -98,7 +94,6 @@ const STORAGE_SELECT = {
 
 type StorageRow = typeof storage.$inferSelect
 type StorageDb = NonNullable<ReturnType<typeof getDb>>
-type StorageParentEntityKind = 'project' | 'environment' | 'service'
 
 type StorageSessionContext = {
   db: StorageDb
@@ -118,21 +113,6 @@ async function resolveStorageSessionContext(
   if (orgId instanceof Response) return orgId
 
   return { db, orgId }
-}
-
-function optionalStringField(value: unknown): string | null {
-  if (typeof value === 'string') return value
-  return null
-}
-
-function resolveStorageProjectId(parent: { column: string; id: string }): string | null {
-  if (parent.column === 'projectId') return parent.id
-  return null
-}
-
-function resolvePatchKind(body: Record<string, unknown>, existing: StorageRow): StorageKind {
-  if (isStorageKind(body.kind)) return body.kind
-  return existing.kind as StorageKind
 }
 
 type CreateStorageFields = {
@@ -176,50 +156,6 @@ function parseCreateStorageFields(
     metadata,
     options,
   }
-}
-
-function resolvePatchPrincipalId(
-  body: Record<string, unknown>,
-  existing: string | null,
-): string | null {
-  if (body.principalId === null) return null
-  if (typeof body.principalId === 'string') return body.principalId
-  return existing
-}
-
-function resolvePatchStorageRefs(
-  body: Record<string, unknown>,
-  existing: StorageRow,
-): {
-  serverId: string
-  kind: StorageKind
-  destinationPath: string | null
-  principalId: string | null
-} {
-  const destinationPath = optionalStringField(body.destinationPath)
-  return {
-    serverId: optionalStringField(body.serverId) ?? existing.serverId,
-    kind: resolvePatchKind(body, existing),
-    destinationPath: destinationPath ?? existing.destinationPath,
-    principalId: resolvePatchPrincipalId(body, existing.principalId),
-  }
-}
-
-function resolveStorageParentContext(row: StorageRow | undefined): {
-  parentId: string
-  entityKind: StorageParentEntityKind
-} | null {
-  if (!row) return null
-  if (row.serviceId) {
-    return { parentId: row.serviceId, entityKind: 'service' }
-  }
-  if (row.environmentId) {
-    return { parentId: row.environmentId, entityKind: 'environment' }
-  }
-  if (row.projectId) {
-    return { parentId: row.projectId, entityKind: 'project' }
-  }
-  return null
 }
 
 function buildStorageUpdateFields(
@@ -268,22 +204,6 @@ async function authorizeStorageMutation(
   return parent
 }
 
-function parseStorageParent(c: Context<AppEnv>, body: Record<string, unknown>) {
-  const specified = PARENT_FIELDS.filter(({ bodyKey }) => {
-    const value = body[bodyKey]
-    return value !== undefined && value !== null && value !== ''
-  })
-  if (specified.length !== 1) {
-    return c.json({ error: 'Exactly one parent resource must be specified' }, 400)
-  }
-  const { bodyKey, column, entityKind } = specified[0]!
-  const id = body[bodyKey]
-  if (typeof id !== 'string' || !id) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  return { column, id, entityKind }
-}
-
 async function validateStorageReferences(
   c: Context<AppEnv>,
   db: NonNullable<ReturnType<typeof getDb>>,
@@ -301,11 +221,8 @@ async function validateStorageReferences(
     return c.json({ error: 'Not found' }, 404)
   }
 
-  if (MOUNT_KINDS.has(params.kind)) {
-    const destinationPath = params.destinationPath?.trim()
-    if (!destinationPath) {
-      return c.json({ error: 'destinationPath is required for mount kinds' }, 400)
-    }
+  if (mountKindRequiresDestination(params.kind, params.destinationPath)) {
+    return c.json({ error: 'destinationPath is required for mount kinds' }, 400)
   }
 
   if (params.principalId) {

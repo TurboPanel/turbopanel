@@ -20,6 +20,11 @@ import {
   parseJsonbObject,
 } from '../shared.ts'
 import { normalizeDockerNetworkOptions } from '../../lib/docker-network-name.ts'
+import {
+  assertNetworkKindScope,
+  buildNetworkCreateValues,
+  type NetworkCreateFields,
+} from './network-scope.ts'
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -118,6 +123,8 @@ async function resolveCreateNetworkOrganization(
   return orgIdRaw
 }
 
+export { assertNetworkKindScope, buildNetworkCreateValues } from './network-scope.ts'
+
 function parseNetworkKind(
   c: Context,
   body: Record<string, unknown>,
@@ -127,46 +134,6 @@ function parseNetworkKind(
     return c.json({ error: 'Invalid request' }, 400)
   }
   return kindRaw
-}
-
-function assertNetworkKindScope(
-  c: Context,
-  kind: string,
-  datacenterId: string | null | undefined,
-  serverId: string | null | undefined,
-): Response | null {
-  const hasDatacenter = datacenterId !== undefined && datacenterId !== null
-  const hasServer = serverId !== undefined && serverId !== null
-
-  if (hasDatacenter && hasServer) {
-    return c.json({ error: 'network_single_scope_conflict' }, 400)
-  }
-
-  if (kind === 'datacenter') {
-    if (!hasDatacenter) {
-      return c.json({ error: 'network_scope_required' }, 400)
-    }
-    if (hasServer) {
-      return c.json({ error: 'network_single_scope_conflict' }, 400)
-    }
-    return null
-  }
-
-  if (kind === 'server') {
-    if (!hasServer) {
-      return c.json({ error: 'network_scope_required' }, 400)
-    }
-    if (hasDatacenter) {
-      return c.json({ error: 'network_single_scope_conflict' }, 400)
-    }
-    return null
-  }
-
-  // docker — org-wide; neither FK allowed
-  if (hasDatacenter || hasServer) {
-    return c.json({ error: 'network_single_scope_conflict' }, 400)
-  }
-  return null
 }
 
 function parseOptionalDisplayNameField(
@@ -266,15 +233,7 @@ function parseNetworkPatchFields(
   return patchFields
 }
 
-type NetworkCreateFields = {
-  kind: string
-  datacenterId: string | null | undefined
-  serverId: string | null | undefined
-  displayName: string | null
-  cidr: string | null
-  metadata: Record<string, unknown> | null
-  options: Record<string, unknown> | null
-}
+type NetworkCreateFieldsLocal = NetworkCreateFields
 
 function parseCreateNetworkOptions(
   c: Context,
@@ -292,7 +251,7 @@ async function parseNetworkCreateFields(
   db: Db,
   organizationId: string,
   body: Record<string, unknown>,
-): Promise<NetworkCreateFields | Response> {
+): Promise<NetworkCreateFieldsLocal | Response> {
   const kind = parseNetworkKind(c, body)
   if (kind instanceof Response) return kind
 
@@ -337,21 +296,6 @@ async function parseNetworkCreateFields(
     cidr,
     metadata: metadataResult,
     options: optionsResult,
-  }
-}
-
-function buildNetworkCreateValues(input: {
-  organizationId: string
-} & NetworkCreateFields) {
-  return {
-    organizationId: input.organizationId,
-    kind: input.kind,
-    ...(input.datacenterId !== undefined ? { datacenterId: input.datacenterId } : {}),
-    ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
-    ...(input.displayName !== null ? { displayName: input.displayName } : {}),
-    ...(input.cidr !== null ? { cidr: input.cidr } : {}),
-    ...(input.metadata !== null ? { metadata: input.metadata } : {}),
-    ...(input.options !== null ? { options: input.options } : {}),
   }
 }
 

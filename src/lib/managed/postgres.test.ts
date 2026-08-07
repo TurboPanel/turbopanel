@@ -218,6 +218,21 @@ test('parseSettings rejects include directives in engineConfig', () => {
     }),
     null,
   )
+  assertEquals(
+    postgresEngineSpec.parseSettings({
+      engineConfig: "include_if_exists = 'extra.conf'\n",
+    }),
+    null,
+  )
+})
+
+test('parseSettings rejects ssl_ca_file overrides in engineConfig', () => {
+  assertEquals(
+    postgresEngineSpec.parseSettings({
+      engineConfig: "ssl_ca_file = '/tmp/evil-ca.crt'\n",
+    }),
+    null,
+  )
 })
 
 test('parseSettings rejects engineConfig overriding platform-owned port/network keys', () => {

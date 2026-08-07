@@ -9,6 +9,8 @@ import {
   buildManagedBackupCreatePayload,
   buildManagedBackupDeletePayload,
   buildManagedRestorePayload,
+  enqueueManagedBackup,
+  enqueueManagedRestore,
   isManagedBackupApiError,
   mapManagedBackupApiError,
   resolveBackupDatabase,
@@ -232,4 +234,82 @@ test('buildManagedRestorePayload omits database when the record has none', () =>
     throw new Error(`expected success, got error kind=${built.kind}`)
   }
   assertEquals('database' in built.payload, false)
+})
+
+function mockBackupContext(): Context<AppEnv> {
+  return {
+    json(body: unknown, status?: number) {
+      return Response.json(body, { status })
+    },
+  } as unknown as Context<AppEnv>
+}
+
+test('enqueueManagedBackup and enqueueManagedRestore delegate to enqueueTypedCommand', async () => {
+  const c = mockBackupContext()
+  const db = {
+    insert: () => ({
+      values: () => ({
+        returning: () =>
+          Promise.resolve([{
+            id: 'cmd-backup-1',
+            serverId: 'server-1',
+            actorType: 'user',
+            actorId: 'user-1',
+            name: 'managed.backup',
+            status: 'queued',
+            attempts: 0,
+            payload: {},
+            metadata: { queuedAt: '2024-01-01T00:00:00.000Z' },
+            result: null,
+            createdAt: '2024-01-01T00:00:00.000Z',
+            updatedAt: '2024-01-01T00:00:00.000Z',
+          }]),
+      }),
+    }),
+    update: () => ({
+      set: () => ({
+        where: () => Promise.resolve(undefined),
+        returning: () => Promise.resolve([]),
+      }),
+    }),
+  } as unknown as Db
+  const queue = {
+    enqueue: async () => {},
+  }
+
+  const backup = await enqueueManagedBackup(c, db, queue, {
+    userId: 'user-1',
+    serverId: 'server-1',
+    payload: {
+      managedId: 'managed-1',
+      engine: 'postgres',
+      action: 'create',
+      backupId: 'bk_test',
+      artifactExtension: 'dump',
+      scope: 'database',
+      database: 'app',
+    },
+  })
+  if (backup instanceof Response) {
+    throw new TypeError('expected backup enqueue response')
+  }
+  assertEquals(backup.commandId, 'cmd-backup-1')
+
+  const restore = await enqueueManagedRestore(c, db, queue, {
+    userId: 'user-1',
+    serverId: 'server-1',
+    managedId: 'managed-1',
+    payload: {
+      managedId: 'managed-1',
+      engine: 'postgres',
+      backupId: 'bk_test',
+      artifactExtension: 'dump',
+      checksum: 'a'.repeat(64),
+      sizeBytes: 100,
+    },
+  })
+  if (restore instanceof Response) {
+    throw new TypeError('expected restore enqueue response')
+  }
+  assertEquals(restore.commandId, 'cmd-backup-1')
 })

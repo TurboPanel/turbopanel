@@ -53,6 +53,10 @@ export type VpnApplyEnqueueResult = {
   error?: string
 }
 
+export function isVpnApplyPrepareError(value: unknown): value is VpnApplyPrepareError {
+  return typeof value === 'object' && value !== null && 'kind' in value
+}
+
 function prefixLengthFromCidr(cidrValue: string): number | null {
   const slash = cidrValue.lastIndexOf('/')
   if (slash <= 0) return null
@@ -61,13 +65,13 @@ function prefixLengthFromCidr(cidrValue: string): number | null {
   return Number.parseInt(prefixPart, 10)
 }
 
-function hostRouteForTunnelAddress(tunnelAddress: string): string {
+export function hostRouteForTunnelAddress(tunnelAddress: string): string {
   const version = parseIpVersion(tunnelAddress)
   if (version === 6) return `${tunnelAddress}/128`
   return `${tunnelAddress}/32`
 }
 
-function formatInterfaceAddress(tunnelAddress: string, vpnCidr: string): string {
+export function formatInterfaceAddress(tunnelAddress: string, vpnCidr: string): string {
   const prefix = prefixLengthFromCidr(vpnCidr)
   if (prefix !== null) {
     return `${tunnelAddress}/${prefix}`
@@ -77,7 +81,7 @@ function formatInterfaceAddress(tunnelAddress: string, vpnCidr: string): string 
   return `${tunnelAddress}/32`
 }
 
-function resolvePeerEndpoint(
+export function resolvePeerEndpoint(
   other: {
     endpoint: string | null
     listenPort: number | null
@@ -121,10 +125,6 @@ async function resealPeerPresharedForServer(
     sealed,
   )
   return envelope
-}
-
-function isPrepareError(value: unknown): value is VpnApplyPrepareError {
-  return typeof value === 'object' && value !== null && 'kind' in value
 }
 
 async function loadPeerRows(db: Db, vpnId: string) {
@@ -238,7 +238,7 @@ export function resolvePrimaryGatewayByDatacenter(
   return primary
 }
 
-function validateGateways(
+export function validateGateways(
   peerRows: PeerRow[],
   serversById: Map<string, ServerRow>,
   cidrsByDc: Map<string, string[]>,
@@ -292,7 +292,7 @@ function resolveTunnelAddress(
   return ipById.get(row.tunnelIpId) ?? null
 }
 
-function buildAllowedIps(params: {
+export function buildAllowedIps(params: {
   other: PeerRow
   hostRoute: string
   targetDatacenterId: string | null
@@ -384,7 +384,7 @@ async function buildPeerMaterial(
       targetServerId,
       other.presharedKey,
     )
-    if (isPrepareError(resealed)) return resealed
+    if (isVpnApplyPrepareError(resealed)) return resealed
     if (resealed) material.presharedKeyEnvelope = resealed
   }
 
@@ -429,7 +429,7 @@ async function buildTargetPayload(
       serversById: context.serversById,
     })
     if (material === 'skip') continue
-    if (isPrepareError(material)) return material
+    if (isVpnApplyPrepareError(material)) return material
     peers.push(material)
   }
 
@@ -503,7 +503,7 @@ export async function prepareVpnApplyPayloads(
       siteCidrsByDc,
       serversById,
     })
-    if (isPrepareError(payload)) return payload
+    if (isVpnApplyPrepareError(payload)) return payload
     payloads.push({ serverId: target.serverId, payload })
   }
 

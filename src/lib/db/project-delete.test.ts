@@ -235,6 +235,49 @@ test('deleteProjectCascade rejects when an ingress container is still running', 
   }
 })
 
+test('deleteProjectCascade removes project with no environments', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping project cascade tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+
+  const [org] = await db
+    .insert(organization)
+    .values({ displayName: 'Empty Project Org' })
+    .returning({ id: organization.id })
+  const organizationId = org!.id
+
+  const [ws] = await db
+    .insert(workspace)
+    .values({ displayName: 'Empty Project Workspace', organizationId })
+    .returning({ id: workspace.id })
+  const workspaceId = ws!.id
+
+  const [proj] = await db
+    .insert(project)
+    .values({ displayName: 'Empty Project', workspaceId })
+    .returning({ id: project.id })
+  const projectId = proj!.id
+
+  try {
+    const result = await deleteProjectCascade(db, projectId)
+    assertEquals(result, { ok: true })
+
+    const [goneProject] = await db
+      .select({ id: project.id })
+      .from(project)
+      .where(eq(project.id, projectId))
+      .limit(1)
+    assertEquals(goneProject, undefined)
+  } finally {
+    await db.delete(project).where(eq(project.id, projectId))
+    await db.delete(workspace).where(eq(workspace.id, workspaceId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+})
+
 test('deleteProjectCascade removes children when containers are stopped', async () => {
   if (!dbUrl) {
     console.warn('Skipping project cascade tests: TURBOPANEL_DATABASE_URL not set')
