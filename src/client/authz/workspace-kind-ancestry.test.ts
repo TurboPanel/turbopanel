@@ -244,7 +244,10 @@ test('resolveWorkspaceKindForEntity resolves service and hosting descendants', a
 
     const [systemHosting] = await db
       .insert(hosting)
-      .values({ serviceId: systemServiceId, hostnames: ['app.example.test'] })
+      .values({
+        serviceId: systemServiceId,
+        options: { hostnames: ['app.example.test'] },
+      })
       .returning({ id: hosting.id })
     const systemHostingId = systemHosting!.id
 

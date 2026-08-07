@@ -7,10 +7,7 @@ import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db.ts'
 import { hosting, ip, peer } from '../../lib/db/schema.ts'
-import {
-  isValidIpAddress,
-  parseIpVersion,
-} from '../../lib/ip-address.ts'
+import { parseIpVersion } from '../../lib/ip-address.ts'
 import { isAddressInVpnCidr } from '../../lib/net/vpn-address-allocator.ts'
 import {
   assertCanCreateOr403,

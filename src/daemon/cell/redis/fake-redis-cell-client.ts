@@ -249,19 +249,35 @@ export class FakeRedisCellClient {
     if (!state) return [];
     const groupState = state.groups.get(group);
     if (!groupState) return [];
-
-    const results: StreamEntry[] = [];
-
     if (streamId === "0") {
-      for (const [entryId, pending] of groupState.pending.entries()) {
-        if (pending.consumer !== consumer) continue;
-        const entry = state.entries.find((e) => e.id === entryId);
-        if (entry) results.push(entry);
-        if (results.length >= count) break;
-      }
-      return results;
+      return this.#readPendingForConsumer(state, groupState, consumer, count);
     }
+    return this.#claimNewStreamEntries(state, groupState, consumer, count);
+  }
 
+  #readPendingForConsumer(
+    state: StreamState,
+    groupState: StreamGroupState,
+    consumer: string,
+    count: number,
+  ): StreamEntry[] {
+    const results: StreamEntry[] = [];
+    for (const [entryId, pending] of groupState.pending.entries()) {
+      if (pending.consumer !== consumer) continue;
+      const entry = state.entries.find((e) => e.id === entryId);
+      if (entry) results.push(entry);
+      if (results.length >= count) break;
+    }
+    return results;
+  }
+
+  #claimNewStreamEntries(
+    state: StreamState,
+    groupState: StreamGroupState,
+    consumer: string,
+    count: number,
+  ): StreamEntry[] {
+    const results: StreamEntry[] = [];
     for (const entry of state.entries) {
       if (streamIdSeq(entry.id, groupState.lastDeliveredId) <= 0) continue;
       if (groupState.pending.has(entry.id)) continue;
@@ -459,30 +475,71 @@ export class FakeRedisCellClient {
       if (wasOnline === 0) return 0;
     }
 
-    const leaseHeld = await this.get(leaseKey!);
-    if (leaseHeld) {
-      let lastInbound = meta?.lastInboundAt;
-      if (!lastInbound) lastInbound = meta?.lastSeenAt;
-      if (!lastInbound) lastInbound = meta?.connectedAt;
-      if (lastInbound && lastInbound > staleBeforeIso!) return 0;
+    if (await this.#leaseStillFresh(leaseKey!, meta, staleBeforeIso!)) {
+      return 0;
     }
 
     const connectionId = meta?.connectionId ?? "";
-
-    if (connected === "1") {
-      await this.hset(metaKey!, { connected: "0" });
-      await this.srem(onlineKey!, serverId!);
-      if (connectionId !== "") {
-        const connKey = `tp:cell:${serverId}:conn:${connectionId}`;
-        await this.hset(connKey, { closedAt: closedAt!, reason: reason! });
-        await this.expire(connKey, 86_400);
-      }
-    } else if (wasOnline === 1) {
-      await this.srem(onlineKey!, serverId!);
-    }
+    await this.#markSocketOffline({
+      metaKey: metaKey!,
+      onlineKey: onlineKey!,
+      serverId: serverId!,
+      connected,
+      wasOnline,
+      connectionId,
+      closedAt: closedAt!,
+      reason: reason!,
+    });
 
     if (connectionId !== "") return [1, connectionId];
     return 1;
+  }
+
+  async #leaseStillFresh(
+    leaseKey: string,
+    meta: Record<string, string> | null,
+    staleBeforeIso: string,
+  ): Promise<boolean> {
+    const leaseHeld = await this.get(leaseKey);
+    if (!leaseHeld) return false;
+    const lastInbound = meta?.lastInboundAt ?? meta?.lastSeenAt ??
+      meta?.connectedAt;
+    return Boolean(lastInbound && lastInbound > staleBeforeIso);
+  }
+
+  async #markSocketOffline(opts: {
+    metaKey: string;
+    onlineKey: string;
+    serverId: string;
+    connected: string | undefined;
+    wasOnline: number;
+    connectionId: string;
+    closedAt: string;
+    reason: string;
+  }): Promise<void> {
+    const {
+      metaKey,
+      onlineKey,
+      serverId,
+      connected,
+      wasOnline,
+      connectionId,
+      closedAt,
+      reason,
+    } = opts;
+    if (connected === "1") {
+      await this.hset(metaKey, { connected: "0" });
+      await this.srem(onlineKey, serverId);
+      if (connectionId !== "") {
+        const connKey = `tp:cell:${serverId}:conn:${connectionId}`;
+        await this.hset(connKey, { closedAt, reason });
+        await this.expire(connKey, 86_400);
+      }
+      return;
+    }
+    if (wasOnline === 1) {
+      await this.srem(onlineKey, serverId);
+    }
   }
 
   async #rateLimitTokenBucket(key: string, argv: string[]): Promise<number> {

@@ -13,10 +13,10 @@ import {
   verification,
   workspace,
 } from '../../lib/db/schema.ts'
+import type { OtpType } from '../../lib/email/types.ts'
 import {
   deriveOtpVerifier,
   hashEmailForOtp,
-  type OtpType,
 } from './email-otp.ts'
 import type { DerivedSecretsConfig } from './secrets.ts'
 import { IS_SIGNUP_ENABLED_CONFIG_KEY } from './install-state.ts'
@@ -74,6 +74,8 @@ export type MockAuthState = {
   }>
   insertedSessions: Array<Record<string, unknown>>
 }
+
+type Row = Record<string, unknown>
 
 export function createEmptyMockAuthState(): MockAuthState {
   return {
@@ -167,11 +169,11 @@ function mapVerificationRows(
 }
 
 /** Drizzle-shaped thenable: awaitable directly and via `.limit()` / `.for().limit()`. */
-function thenableRows<T>(
-  fetchRows: () => Promise<T[]>,
-): Promise<T[]> & {
-  limit: (n: number) => Promise<T[]>
-  for: (lock: string) => { limit: (n: number) => Promise<T[]> }
+function thenableRows(
+  fetchRows: () => Promise<Row[]>,
+): Promise<Row[]> & {
+  limit: (n: number) => Promise<Row[]>
+  for: (lock: string) => { limit: (n: number) => Promise<Row[]> }
 } {
   const promise = fetchRows()
   const limited = (n: number) => promise.then((rows) => rows.slice(0, n))
@@ -181,295 +183,341 @@ function thenableRows<T>(
   })
 }
 
+function mapLicenseRows(state: MockAuthState, activeOnly: boolean) {
+  return state.licenses
+    .filter((row) => !activeOnly || row.revokedAt === null)
+    .map((row) => ({
+      id: row.id,
+      organizationId: row.organizationId,
+      displayName: row.displayName,
+      createdAt: row.createdAt,
+      token: row.token,
+      licenseId: row.id,
+      serverId: row.serverId,
+    }))
+}
+
+function fetchInnerJoinRows(state: MockAuthState, table: unknown): Promise<Row[]> {
+  if (table === session) {
+    const entries = [...state.sessions.entries()]
+    if (entries.length === 0) return Promise.resolve([])
+    const [, data] = entries[0]
+    return Promise.resolve([{
+      sessionId: data.sessionId,
+      userId: data.userId,
+      username: data.username,
+      email: data.email,
+      role: data.role,
+      isDisabled: false,
+    }])
+  }
+  if (table === license) {
+    return Promise.resolve(
+      mapLicenseRows(state, false)
+        .filter((row) => row.serverId !== null)
+        .map((row) => ({
+          licenseId: row.id,
+          id: row.serverId as string,
+          displayName: row.displayName,
+        })),
+    )
+  }
+  return Promise.resolve([])
+}
+
+function fetchWhereRows(
+  state: MockAuthState,
+  internal: MockAuthStateInternal,
+  table: unknown,
+): Promise<Row[]> {
+  if (table === user) {
+    return Promise.resolve(state.users.map((row) => ({
+      id: row.id,
+      isDisabled: row.isDisabled,
+      isEmailVerified: row.isEmailVerified,
+      email: row.email,
+      username: row.username ?? null,
+      role: row.role,
+    })))
+  }
+  if (table === organization) {
+    return Promise.resolve(
+      state.organizations
+        .filter((row) => row.displayName !== null)
+        .map((row) => ({ id: row.id })),
+    )
+  }
+  if (table === license) {
+    return Promise.resolve(
+      mapLicenseRows(state, true).map((row) => ({
+        id: row.id,
+        organizationId: row.organizationId,
+        displayName: row.displayName,
+        createdAt: row.createdAt,
+        token: row.token,
+      })),
+    )
+  }
+  if (table === setting) {
+    return Promise.resolve(
+      [...state.settings.entries()].map(([key, value]) => ({ key, value })),
+    )
+  }
+  if (table === verification) {
+    const rows = mapVerificationRows(internal, Number.MAX_SAFE_INTEGER, false)
+    return Promise.resolve(rows.map((row) => ({
+      id: row.id,
+      identifier: row.identifier,
+      value: row.value,
+      expiresAt: row.expiresAt,
+      createdAt: row.createdAt ?? row.expiresAt,
+    })))
+  }
+  return Promise.resolve([])
+}
+
+function fetchCredentialJoinRows(
+  state: MockAuthState,
+  internal: MockAuthStateInternal,
+  limit: number,
+): Promise<Row[]> {
+  const login = internal.lastLogin
+  if (!login) return Promise.resolve([])
+  const row = selectCredentialRow(state, login)
+  if (!row) return Promise.resolve([])
+  return Promise.resolve([row].slice(0, limit))
+}
+
+function fetchVerificationLimited(
+  state: MockAuthState,
+  internal: MockAuthStateInternal,
+  limit: number,
+): Promise<Row[]> {
+  const rows = mapVerificationRows(internal, limit, Boolean(internal.inTransaction))
+  return Promise.resolve(rows.map((row) => ({
+    id: row.id,
+    identifier: row.identifier,
+    value: row.value,
+    expiresAt: row.expiresAt,
+    createdAt: row.createdAt ?? row.expiresAt,
+  })))
+}
+
+function buildSelectFrom(
+  state: MockAuthState,
+  internal: MockAuthStateInternal,
+  table: unknown,
+) {
+  const chain = {
+    innerJoin: (_other: unknown, _cond: unknown) => ({
+      where: (_cond: unknown) => thenableRows(() => fetchInnerJoinRows(state, table)),
+    }),
+    where: (_cond: unknown) => thenableRows(() => fetchWhereRows(state, internal, table)),
+  }
+
+  if (table === user) {
+    return {
+      ...chain,
+      innerJoin: (_other: unknown, _cond: unknown) => ({
+        where: (_cond: unknown) => ({
+          limit: (n: number) => fetchCredentialJoinRows(state, internal, n),
+        }),
+      }),
+    }
+  }
+
+  if (table === verification) {
+    return {
+      ...chain,
+      where: (_cond: unknown) =>
+        thenableRows(() => fetchVerificationLimited(state, internal, Number.MAX_SAFE_INTEGER)),
+    }
+  }
+
+  return chain
+}
+
+function handleInsertValues(
+  state: MockAuthState,
+  table: unknown,
+  row: Record<string, unknown>,
+) {
+  if (table === session) {
+    state.insertedSessions.push(row)
+    const userId = String(row.userId)
+    const token = String(row.token)
+    const cred = [...state.credentials.values()].find((u) => u.id === userId)
+    const userRow = state.users.find((u) => u.id === userId)
+    state.sessions.set(token, {
+      sessionId: crypto.randomUUID(),
+      userId,
+      username: cred?.username ?? userRow?.username ?? null,
+      email: cred?.email ?? userRow?.email ?? 'user@example.com',
+      role: userRow?.role ?? 'user',
+    })
+    return { returning: () => Promise.resolve([{ id: crypto.randomUUID() }]) }
+  }
+  if (table === user) {
+    const id = crypto.randomUUID()
+    state.users.push({
+      id,
+      email: String(row.email),
+      username: (row.username as string | null | undefined) ?? null,
+      isDisabled: Boolean(row.isDisabled),
+      isEmailVerified: Boolean(row.isEmailVerified),
+      role: String(row.role ?? 'user'),
+      displayName: (row.displayName as string | null | undefined) ?? null,
+    })
+    return { returning: () => Promise.resolve([{ id }]) }
+  }
+  if (table === account) {
+    state.accounts.push({
+      userId: String(row.userId),
+      password: String(row.password),
+    })
+    return { returning: () => Promise.resolve([{ id: crypto.randomUUID() }]) }
+  }
+  if (table === organization) {
+    const id = crypto.randomUUID()
+    state.organizations.push({
+      id,
+      displayName: (row.displayName as string | null | undefined) ?? null,
+    })
+    return { returning: () => Promise.resolve([{ id }]) }
+  }
+  if (table === license) {
+    const id = crypto.randomUUID()
+    state.licenses.push({
+      id,
+      organizationId: String(row.organizationId),
+      displayName: (row.displayName as string | null | undefined) ?? null,
+      token: String(row.token),
+      revokedAt: null,
+      serverId: null,
+      createdAt: String(row.createdAt ?? new Date().toISOString()),
+    })
+    return { returning: () => Promise.resolve([{ id }]) }
+  }
+  if (table === verification) {
+    const id = crypto.randomUUID()
+    const stamp = String(row.createdAt ?? row.updatedAt ?? new Date().toISOString())
+    state.verificationRows.push({
+      id,
+      identifier: String(row.identifier),
+      value: String(row.value),
+      expiresAt: String(row.expiresAt),
+      createdAt: stamp,
+    })
+    return { onConflictDoUpdate: () => Promise.resolve(undefined) }
+  }
+  if (
+    table === team ||
+    table === member ||
+    table === teammate ||
+    table === grant ||
+    table === workspace ||
+    table === setting
+  ) {
+    if (table === setting) {
+      state.settings.set(String(row.key), String(row.value))
+    }
+    return {
+      returning: () => Promise.resolve([{ id: crypto.randomUUID() }]),
+      onConflictDoUpdate: () => ({
+        set: () => Promise.resolve(undefined),
+      }),
+      onConflictDoNothing: () => Promise.resolve(undefined),
+    }
+  }
+  return { returning: () => Promise.resolve([{ id: crypto.randomUUID() }]) }
+}
+
+function applyUserPatch(state: MockAuthState, patch: Record<string, unknown>): void {
+  for (const row of state.users) {
+    if (patch.isEmailVerified !== undefined) {
+      row.isEmailVerified = Boolean(patch.isEmailVerified)
+    }
+  }
+}
+
+async function returningAfterUpdate(
+  state: MockAuthState,
+  table: unknown,
+  patch: Record<string, unknown>,
+): Promise<Row[]> {
+  if (table === license) {
+    for (const row of state.licenses) {
+      if (row.revokedAt === null) {
+        row.revokedAt = String(patch.revokedAt ?? new Date().toISOString())
+        return [{ id: row.id }]
+      }
+    }
+  }
+  applyUserPatch(state, patch)
+  if (table === user) {
+    const first = state.users[0]
+    return first
+      ? [{ id: first.id, isEmailVerified: first.isEmailVerified }]
+      : []
+  }
+  if (table === account) {
+    return [{ id: crypto.randomUUID() }]
+  }
+  return []
+}
+
+function deleteVerificationRows(state: MockAuthState, internal: MockAuthStateInternal): void {
+  if (internal.inTransaction) {
+    internal.verificationDeletePhase = (internal.verificationDeletePhase ?? 0) + 1
+    if (internal.verificationDeletePhase === 1) {
+      const idx = state.verificationRows.findIndex((row) =>
+        row.identifier.startsWith('otp:') &&
+        !row.identifier.startsWith('otp-attempts:')
+      )
+      if (idx >= 0) state.verificationRows.splice(idx, 1)
+      return
+    }
+    state.verificationRows = state.verificationRows.filter((row) =>
+      !row.identifier.startsWith('otp-attempts:')
+    )
+    return
+  }
+  state.verificationRows.shift()
+}
+
+function pushOtpPair(
+  state: MockAuthState,
+  otpRow: MockAuthState['verificationRows'][number],
+  attemptsRow: MockAuthState['verificationRows'][number],
+): void {
+  state.verificationRows.push(otpRow, attemptsRow)
+}
+
 /** Minimal drizzle-shaped double for auth sign-in + session middleware paths. */
 export function createMockAuthDb(state: MockAuthState): Db {
   const internal = state as MockAuthStateInternal
 
   const db = {
     insert: (table: unknown) => ({
-      values: (row: Record<string, unknown>) => {
-        if (table === session) {
-          state.insertedSessions.push(row)
-          const userId = String(row.userId)
-          const token = String(row.token)
-          const cred = [...state.credentials.values()].find((u) => u.id === userId)
-          const userRow = state.users.find((u) => u.id === userId)
-          state.sessions.set(token, {
-            sessionId: crypto.randomUUID(),
-            userId,
-            username: cred?.username ?? userRow?.username ?? null,
-            email: cred?.email ?? userRow?.email ?? 'user@example.com',
-            role: userRow?.role ?? 'user',
-          })
-          return { returning: () => Promise.resolve([{ id: crypto.randomUUID() }]) }
-        }
-        if (table === user) {
-          const id = crypto.randomUUID()
-          state.users.push({
-            id,
-            email: String(row.email),
-            username: (row.username as string | null | undefined) ?? null,
-            isDisabled: Boolean(row.isDisabled),
-            isEmailVerified: Boolean(row.isEmailVerified),
-            role: String(row.role ?? 'user'),
-            displayName: (row.displayName as string | null | undefined) ?? null,
-          })
-          return {
-            returning: () => Promise.resolve([{ id }]),
-          }
-        }
-        if (table === account) {
-          state.accounts.push({
-            userId: String(row.userId),
-            password: String(row.password),
-          })
-          return { returning: () => Promise.resolve([{ id: crypto.randomUUID() }]) }
-        }
-        if (table === organization) {
-          const id = crypto.randomUUID()
-          state.organizations.push({
-            id,
-            displayName: (row.displayName as string | null | undefined) ?? null,
-          })
-          return { returning: () => Promise.resolve([{ id }]) }
-        }
-        if (table === license) {
-          const id = crypto.randomUUID()
-          state.licenses.push({
-            id,
-            organizationId: String(row.organizationId),
-            displayName: (row.displayName as string | null | undefined) ?? null,
-            token: String(row.token),
-            revokedAt: null,
-            serverId: null,
-            createdAt: String(row.createdAt ?? new Date().toISOString()),
-          })
-          return {
-            returning: () => Promise.resolve([{ id }]),
-          }
-        }
-        if (table === verification) {
-          const id = crypto.randomUUID()
-          const stamp = String(row.createdAt ?? row.updatedAt ?? new Date().toISOString())
-          state.verificationRows.push({
-            id,
-            identifier: String(row.identifier),
-            value: String(row.value),
-            expiresAt: String(row.expiresAt),
-            createdAt: stamp,
-          })
-          return {
-            onConflictDoUpdate: () => Promise.resolve(undefined),
-          }
-        }
-        if (
-          table === team ||
-          table === member ||
-          table === teammate ||
-          table === grant ||
-          table === workspace ||
-          table === setting
-        ) {
-          if (table === setting) {
-            state.settings.set(String(row.key), String(row.value))
-          }
-          return {
-            returning: () => Promise.resolve([{ id: crypto.randomUUID() }]),
-            onConflictDoUpdate: () => ({
-              set: () => Promise.resolve(undefined),
-            }),
-            onConflictDoNothing: () => Promise.resolve(undefined),
-          }
-        }
-        return {
-          returning: () => Promise.resolve([{ id: crypto.randomUUID() }]),
-        }
-      },
+      values: (row: Record<string, unknown>) => handleInsertValues(state, table, row),
     }),
     select: (_fields?: unknown) => ({
-      from: (table: unknown) => {
-        const licenseRows = (activeOnly: boolean) =>
-          state.licenses
-            .filter((row) => !activeOnly || row.revokedAt === null)
-            .map((row) => ({
-              id: row.id,
-              organizationId: row.organizationId,
-              displayName: row.displayName,
-              createdAt: row.createdAt,
-              token: row.token,
-              licenseId: row.id,
-              serverId: row.serverId,
-            }))
-
-        const chain = {
-          innerJoin: (_other: unknown, _cond: unknown) => ({
-            where: (_cond: unknown) => thenableRows(async () => {
-              if (table === session) {
-                const entries = [...state.sessions.entries()]
-                if (entries.length === 0) return []
-                const [, data] = entries[0]
-                return [{
-                  sessionId: data.sessionId,
-                  userId: data.userId,
-                  username: data.username,
-                  email: data.email,
-                  role: data.role,
-                  isDisabled: false,
-                }]
-              }
-              if (table === license) {
-                return licenseRows(false)
-                  .filter((row) => row.serverId !== null)
-                  .map((row) => ({
-                    licenseId: row.id,
-                    id: row.serverId as string,
-                    displayName: row.displayName,
-                  }))
-              }
-              return []
-            }),
-          }),
-          where: (_cond: unknown) => thenableRows(async () => {
-            if (table === user) {
-              return state.users.map((row) => ({
-                id: row.id,
-                isDisabled: row.isDisabled,
-                isEmailVerified: row.isEmailVerified,
-                email: row.email,
-                username: row.username ?? null,
-                role: row.role,
-              }))
-            }
-            if (table === organization) {
-              return state.organizations
-                .filter((row) => row.displayName !== null)
-                .map((row) => ({ id: row.id }))
-            }
-            if (table === license) {
-              return licenseRows(true).map((row) => ({
-                id: row.id,
-                organizationId: row.organizationId,
-                displayName: row.displayName,
-                createdAt: row.createdAt,
-                token: row.token,
-              }))
-            }
-            if (table === setting) {
-              const entries = [...state.settings.entries()]
-              return entries.map(([key, value]) => ({ key, value }))
-            }
-            if (table === verification) {
-              const rows = mapVerificationRows(internal, Number.MAX_SAFE_INTEGER, false)
-              return rows.map((row) => ({
-                id: row.id,
-                identifier: row.identifier,
-                value: row.value,
-                expiresAt: row.expiresAt,
-                createdAt: row.createdAt ?? row.expiresAt,
-              }))
-            }
-            return []
-          }),
-        }
-
-        if (table === user) {
-          return {
-            ...chain,
-            innerJoin: (_other: unknown, _cond: unknown) => ({
-              where: (_cond: unknown) => ({
-                limit: async (n: number) => {
-                  const login = internal.lastLogin
-                  if (!login) return []
-                  const row = selectCredentialRow(state, login)
-                  return row ? [row] : []
-                },
-              }),
-            }),
-          }
-        }
-
-        if (table === verification) {
-          const fetchVerification = async (n: number) => {
-            const rows = mapVerificationRows(internal, n, Boolean(internal.inTransaction))
-            return rows.map((row) => ({
-              id: row.id,
-              identifier: row.identifier,
-              value: row.value,
-              expiresAt: row.expiresAt,
-              createdAt: row.createdAt ?? row.expiresAt,
-            }))
-          }
-          return {
-            ...chain,
-            where: (_cond: unknown) => thenableRows(() => fetchVerification(Number.MAX_SAFE_INTEGER)),
-          }
-        }
-
-        return chain
-      },
+      from: (table: unknown) => buildSelectFrom(state, internal, table),
     }),
     update: (table: unknown) => ({
       set: (patch: Record<string, unknown>) => ({
         where: (_cond: unknown) => {
-          const applyUserPatch = () => {
-            if (table === user) {
-              for (const row of state.users) {
-                if (patch.isEmailVerified !== undefined) {
-                  row.isEmailVerified = Boolean(patch.isEmailVerified)
-                }
-              }
-            }
-          }
-          const promise = Promise.resolve().then(() => applyUserPatch())
+          const promise = Promise.resolve().then(() => applyUserPatch(state, patch))
           return Object.assign(promise, {
-            returning: async () => {
-              if (table === license) {
-                for (const row of state.licenses) {
-                  if (row.revokedAt === null) {
-                    row.revokedAt = String(patch.revokedAt ?? new Date().toISOString())
-                    return [{ id: row.id }]
-                  }
-                }
-              }
-              applyUserPatch()
-              if (table === user) {
-                const first = state.users[0]
-                return first
-                  ? [{ id: first.id, isEmailVerified: first.isEmailVerified }]
-                  : []
-              }
-              if (table === account) {
-                return [{ id: crypto.randomUUID() }]
-              }
-              return []
-            },
+            returning: () => returningAfterUpdate(state, table, patch),
           })
         },
       }),
     }),
     delete: (table: unknown) => ({
       where: (_cond: unknown) => {
-        if (table === session) {
-          state.sessions.clear()
-        }
-        if (table === verification) {
-          if (internal.inTransaction) {
-            internal.verificationDeletePhase = (internal.verificationDeletePhase ?? 0) + 1
-            if (internal.verificationDeletePhase === 1) {
-              const idx = state.verificationRows.findIndex((row) =>
-                row.identifier.startsWith('otp:') &&
-                !row.identifier.startsWith('otp-attempts:')
-              )
-              if (idx >= 0) state.verificationRows.splice(idx, 1)
-            } else {
-              state.verificationRows = state.verificationRows.filter((row) =>
-                !row.identifier.startsWith('otp-attempts:')
-              )
-            }
-          } else {
-            state.verificationRows.shift()
-          }
-        }
+        if (table === session) state.sessions.clear()
+        if (table === verification) deleteVerificationRows(state, internal)
         return Promise.resolve(undefined)
       },
     }),
@@ -478,7 +526,7 @@ export function createMockAuthDb(state: MockAuthState): Db {
       internal.verificationSelectPhase = 0
       internal.verificationDeletePhase = 0
       try {
-        return await fn(db as Db)
+        return await fn(db as unknown as Db)
       } finally {
         internal.inTransaction = false
         internal.verificationSelectPhase = 0
@@ -495,8 +543,7 @@ export function seedMockCredentialUser(
   cred: MockCredentialUser,
 ): void {
   state.credentials.set(cred.email, cred)
-  const existingUser = state.users.find((row) => row.id === cred.id)
-  if (!existingUser) {
+  if (!state.users.some((row) => row.id === cred.id)) {
     state.users.push({
       id: cred.id,
       email: cred.email,
@@ -566,20 +613,23 @@ export async function seedMockOtpVerification(
   const verifier = await deriveOtpVerifier(type, emailHash, otp, secrets)
   const expiresAt = new Date(Date.now() + 600_000).toISOString()
   const stamp = new Date().toISOString()
-  state.verificationRows.push({
-    id: crypto.randomUUID(),
-    identifier,
-    value: verifier,
-    expiresAt,
-    createdAt: stamp,
-  })
-  state.verificationRows.push({
-    id: crypto.randomUUID(),
-    identifier: attemptsId,
-    value: '0',
-    expiresAt,
-    createdAt: stamp,
-  })
+  pushOtpPair(
+    state,
+    {
+      id: crypto.randomUUID(),
+      identifier,
+      value: verifier,
+      expiresAt,
+      createdAt: stamp,
+    },
+    {
+      id: crypto.randomUUID(),
+      identifier: attemptsId,
+      value: '0',
+      expiresAt,
+      createdAt: stamp,
+    },
+  )
 }
 
 /** Seed an expired OTP row (and attempts companion) for negative-path tests. */
@@ -596,18 +646,21 @@ export async function seedMockExpiredOtpVerification(
   const verifier = await deriveOtpVerifier(type, emailHash, otp, secrets)
   const expiresAt = new Date(Date.now() - 60_000).toISOString()
   const stamp = new Date(Date.now() - 120_000).toISOString()
-  state.verificationRows.push({
-    id: crypto.randomUUID(),
-    identifier,
-    value: verifier,
-    expiresAt,
-    createdAt: stamp,
-  })
-  state.verificationRows.push({
-    id: crypto.randomUUID(),
-    identifier: attemptsId,
-    value: '0',
-    expiresAt,
-    createdAt: stamp,
-  })
+  pushOtpPair(
+    state,
+    {
+      id: crypto.randomUUID(),
+      identifier,
+      value: verifier,
+      expiresAt,
+      createdAt: stamp,
+    },
+    {
+      id: crypto.randomUUID(),
+      identifier: attemptsId,
+      value: '0',
+      expiresAt,
+      createdAt: stamp,
+    },
+  )
 }
