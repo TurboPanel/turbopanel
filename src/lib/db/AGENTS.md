@@ -102,6 +102,8 @@ Destructive changes (drop column/table, type narrowing) can lose dev rows. `dev/
 
 `schema.ts` mirrors the old monorepo database layout (Better Auth–compatible tables, no auth runtime yet). Grouped by concern:
 
+**Column order:** tables that carry `metadata` / `options` declare them immediately after timestamps — `id` → `created_at` → `updated_at` → `metadata` → `options` → remaining columns. If a table has one of those JSONB columns, it must have both, and both are always nullable.
+
 | Group | Tables |
 | --- | --- |
 | **Identity** | `user`, `account`, `session`, `verification`, `passkey`, `2fa` |
@@ -306,7 +308,7 @@ Each physical server node gets a row in `server` (`id` uuidv7). On daemon connec
 
 **`machine_key`** (`text`, nullable) is a deterministic HMAC-SHA256 digest of the host machine-id (`src/lib/machine-key.ts` → `deriveMachineKey`) — never the raw machine-id, and not a sealed secret (it is non-reversible and safe to index/equality-match). It is echoed into signed enroll/auth payloads and used for reconnect/reuse matching alongside `hostname`.
 
-Canonical column order: `id`, `created_at`, `updated_at`, `organization_id`, `datacenter_id`, `display_name`, `hostname`, `machine_key`, `connected`, `status_changed_at`, `daemon`, `metadata`, `options` (`daemon` before the trailing `metadata`/`options` pair). Indexes: `idx_server_organization_id`, `idx_server_datacenter_id`, `idx_server_machine_key`, `idx_server_hostname`, and partial `idx_server_connected` on `(id) WHERE connected`. There is no `daemon_status` column or CHECK constraint — liveness is a single boolean plus a transition timestamp (see "Fleet status columns" below). `organization_id` FK uses `ON DELETE RESTRICT`. `datacenter_id` FK uses `ON DELETE SET NULL` — deleting a datacenter unpins servers rather than blocking delete. `network.server_id` → `server.id` is `ON DELETE RESTRICT` — server deletion is blocked while network rows reference it (same for `ip.server_id` and `peer.server_id`). Deleting a server clears `license.server_id` via `ON DELETE SET NULL`; the app soft-revokes the bound license after delete.
+Canonical column order: `id`, `created_at`, `updated_at`, `metadata`, `options`, `organization_id`, `datacenter_id`, `display_name`, `hostname`, `machine_key`, `connected`, `status_changed_at`, `daemon` (shared `metadata`/`options` pair immediately after timestamps — remaining columns follow). Indexes: `idx_server_organization_id`, `idx_server_datacenter_id`, `idx_server_machine_key`, `idx_server_hostname`, and partial `idx_server_connected` on `(id) WHERE connected`. There is no `daemon_status` column or CHECK constraint — liveness is a single boolean plus a transition timestamp (see "Fleet status columns" below). `organization_id` FK uses `ON DELETE RESTRICT`. `datacenter_id` FK uses `ON DELETE SET NULL` — deleting a datacenter unpins servers rather than blocking delete. `network.server_id` → `server.id` is `ON DELETE RESTRICT` — server deletion is blocked while network rows reference it (same for `ip.server_id` and `peer.server_id`). Deleting a server clears `license.server_id` via `ON DELETE SET NULL`; the app soft-revokes the bound license after delete.
 
 **Cell metadata fields** (stored in `server.metadata` and/or `server.options` JSONB):
 
@@ -366,6 +368,8 @@ Canonical command/job history — source of truth for UI status and history. Do 
 | `id` | uuid (uuidv7) | Primary key |
 | `created_at` | timestamptz(3) NOT NULL `now()` | Real column; index/order source |
 | `updated_at` | timestamptz(3) NOT NULL `now()` | Bumped by `transitionCommand` |
+| `metadata` | jsonb nullable | Remaining lifecycle blob — see fields below |
+| `options` | jsonb nullable | Reserved (pair with `metadata`; unused today) |
 | `server_id` | uuid NOT NULL | FK → `server.id`, `ON DELETE CASCADE` (org derived from server) |
 | `actor_type` | text NOT NULL | Open set — e.g. `'user'`; no FK |
 | `actor_id` | uuid NOT NULL | ID of the acting entity; no FK |
@@ -374,7 +378,6 @@ Canonical command/job history — source of truth for UI status and history. Do 
 | `attempts` | integer NOT NULL `0` | Dispatch retry count |
 | `payload` | jsonb NOT NULL | Typed command input (small, bounded) |
 | `result` | jsonb nullable | Typed command output (small, bounded) |
-| `metadata` | jsonb NOT NULL | Remaining lifecycle blob — see fields below |
 
 | Metadata key | Type | Notes |
 | --- | --- | --- |

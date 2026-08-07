@@ -205,7 +205,7 @@ export async function transitionCommand(
       updatedAt: now,
       ...(patch.attempts === undefined ? {} : { attempts: patch.attempts }),
       ...(patch.result === undefined ? {} : { result: patch.result }),
-      metadata: sql`${command.metadata} || ${JSON.stringify(metadataPatch)}::jsonb`,
+      metadata: sql`coalesce(${command.metadata}, '{}'::jsonb) || ${JSON.stringify(metadataPatch)}::jsonb`,
     })
     .where(eq(command.id, commandId))
     .returning()

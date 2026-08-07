@@ -10,6 +10,11 @@ export const deploySchemas = {
         type: 'boolean',
         description: 'Acknowledge warn-policy health-check gaps before deploy',
       },
+      noCache: {
+        type: 'boolean',
+        description:
+          'Cacheless redeploy: rebuild images with `docker compose build --no-cache --pull` before `up`',
+      },
     },
   },
   DeployEnvironmentResponse: {

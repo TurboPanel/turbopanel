@@ -1,9 +1,13 @@
 /**
- * Hand-curated canonical schema. Column order (especially the trailing
- * `metadata`/`options` pair) is intentional and maintained by hand — do **not**
- * re-introspect (`dev/scripts/introspect.sh`) over this file; that reorders
- * columns and clobbers the manual layout. Generate versioned SQL via
- * `pnpm generate --name <summary>`.
+ * Hand-curated canonical schema. Column order is intentional and maintained by
+ * hand — do **not** re-introspect (`dev/scripts/introspect.sh`) over this file;
+ * that reorders columns and clobbers the manual layout. Generate versioned SQL
+ * via `pnpm generate --name <summary>`.
+ *
+ * Tables with a `metadata`/`options` pair use:
+ *   id → created_at → updated_at → metadata → options → …remaining columns
+ * If a table has one of those JSONB columns, it must have both — and both are
+ * always nullable (`jsonb()`, never `.notNull()`).
  */
 
 import { sql } from 'drizzle-orm'
@@ -81,10 +85,10 @@ export const organization = pgTable(
     updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
-    displayName: varchar('display_name', { length: 255 }),
-    slug: varchar({ length: 255 }),
     metadata: jsonb(),
     options: jsonb(),
+    displayName: varchar('display_name', { length: 255 }),
+    slug: varchar({ length: 255 }),
   },
   (table) => [
     unique('organization_slug_unique').on(table.slug),
@@ -112,6 +116,8 @@ export const tls = pgTable(
     updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
     organizationId: uuid('organization_id').notNull(),
     displayName: varchar('display_name', { length: 255 }),
     /** `upload` | `lets_encrypt` | `self_signed` */
@@ -124,8 +130,6 @@ export const tls = pgTable(
     status: text().default('ready').notNull(),
     notAfter: timestamp('not_after', { precision: 3, withTimezone: true, mode: 'string' }),
     fingerprintSha256: text('fingerprint_sha256'),
-    metadata: jsonb().notNull(),
-    options: jsonb(),
   },
   (table) => [
     index('idx_tls_organization_id').using(
@@ -242,11 +246,11 @@ export const datacenter = pgTable(
     updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
     organizationId: uuid('organization_id').notNull(),
     displayName: varchar('display_name', { length: 255 }),
     description: varchar('description', { length: 255 }),
-    metadata: jsonb(),
-    options: jsonb(),
   },
   (table) => [
     index('idx_datacenter_organization_id').using(
@@ -285,6 +289,8 @@ export const server = pgTable(
     })
       .defaultNow()
       .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
     organizationId: uuid('organization_id'),
     datacenterId: uuid('datacenter_id'),
     displayName: varchar('display_name', { length: 255 }),
@@ -312,8 +318,6 @@ export const server = pgTable(
     }),
     /** Sparse `{ key, projection? }` — status lives in dedicated columns. */
     daemon: jsonb(),
-    metadata: jsonb(),
-    options: jsonb(),
   },
   (table) => [
     index('idx_server_organization_id').using(
@@ -407,6 +411,8 @@ export const command = pgTable(
     updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
     serverId: uuid('server_id').notNull(),
     actorType: text('actor_type').notNull(),
     actorId: uuid('actor_id').notNull(),
@@ -415,7 +421,6 @@ export const command = pgTable(
     attempts: integer().default(0).notNull(),
     payload: jsonb().notNull(),
     result: jsonb(),
-    metadata: jsonb().notNull(),
   },
   (table) => [
     index('idx_command_server_id_created_at').using(
@@ -449,14 +454,14 @@ export const network = pgTable(
     updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
     organizationId: uuid('organization_id').notNull(),
     datacenterId: uuid('datacenter_id'),
     serverId: uuid('server_id'),
     kind: text().notNull(),
     cidr: cidr(),
     displayName: varchar('display_name', { length: 255 }),
-    metadata: jsonb(),
-    options: jsonb(),
   },
   (table) => [
     index('idx_network_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
@@ -515,12 +520,12 @@ export const vpn = pgTable(
     updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
     organizationId: uuid('organization_id').notNull(),
     /** Overlay tunnel subnet for this mesh. */
     cidr: cidr().notNull(),
     displayName: varchar('display_name', { length: 255 }),
-    metadata: jsonb(),
-    options: jsonb(),
   },
   (table) => [
     index('idx_vpn_organization_id').using(
@@ -562,6 +567,8 @@ export const ip = pgTable(
     updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
     organizationId: uuid('organization_id').notNull(),
     datacenterId: uuid('datacenter_id'),
     networkId: uuid('network_id'),
@@ -571,8 +578,6 @@ export const ip = pgTable(
     allocation: text().notNull(),
     scope: text().notNull(),
     displayName: varchar('display_name', { length: 255 }),
-    metadata: jsonb(),
-    options: jsonb(),
   },
   (table) => [
     index('idx_ip_organization_id').using(
@@ -654,6 +659,8 @@ export const peer = pgTable(
     updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
     vpnId: uuid('vpn_id').notNull(),
     serverId: uuid('server_id').notNull(),
     /** Public `ip` row used as the WireGuard endpoint. */
@@ -674,8 +681,6 @@ export const peer = pgTable(
     endpoint: varchar({ length: 255 }),
     /** Sealed `enc` envelope — write-only, same handling as `principal.password`. */
     presharedKey: text('preshared_key'),
-    metadata: jsonb(),
-    options: jsonb(),
   },
   (table) => [
     index('idx_peer_vpn_id').using('btree', table.vpnId.asc().nullsLast().op('uuid_ops')),
@@ -767,11 +772,11 @@ export const project = pgTable(
     updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
     workspaceId: uuid('workspace_id').notNull(),
     displayName: varchar('display_name', { length: 255 }),
     description: varchar('description', { length: 255 }),
-    metadata: jsonb(),
-    options: jsonb(),
   },
   (table) => [
     index('idx_project_workspace_id').using(
@@ -810,13 +815,13 @@ export const environment = pgTable(
     updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
     projectId: uuid('project_id').notNull(),
     /** Whole-server placement pin — single source of truth (not compose / metadata). */
     serverId: uuid('server_id'),
     displayName: varchar('display_name', { length: 255 }),
     description: varchar('description', { length: 255 }),
-    metadata: jsonb(),
-    options: jsonb(),
   },
   (table) => [
     index('idx_environment_project_id').using(
@@ -857,6 +862,9 @@ export const managed = pgTable(
     updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+  
     /** Environment-scoped managed engine service (1:1 with environment). */
     environmentId: uuid('environment_id').notNull(),
     /**
@@ -870,8 +878,6 @@ export const managed = pgTable(
     engine: text(),
     /** `provisioning` | `applying` | `ready` | `stopped` | `failed` */
     status: text(),
-    metadata: jsonb(),
-    options: jsonb(),
   },
   (table) => [
     index('idx_managed_environment_id').using(
@@ -1046,6 +1052,8 @@ export const service = pgTable(
     updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
     environmentId: uuid('environment_id').notNull(),
     displayName: varchar('display_name', { length: 255 }),
     description: varchar('description', { length: 255 }),
@@ -1058,8 +1066,6 @@ export const service = pgTable(
      * displayName itself is not unique and must not be assumed so.
      */
     composeServiceName: varchar('compose_service_name', { length: 255 }).notNull(),
-    metadata: jsonb(),
-    options: jsonb(),
   },
   (table) => [
     index('idx_service_environment_id').using(
@@ -1095,6 +1101,8 @@ export const hosting = pgTable(
     updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
     serviceId: uuid('service_id').notNull(),
     /** Optional pin into the org TLS library; null = Caddy tls internal (self-signed). */
     tlsId: uuid('tls_id'),
@@ -1102,8 +1110,6 @@ export const hosting = pgTable(
     ipId: uuid('ip_id'),
     displayName: varchar('display_name', { length: 255 }),
     description: varchar('description', { length: 255 }),
-    metadata: jsonb(),
-    options: jsonb(),
   },
   (table) => [
     index('idx_hosting_service_id').using(
@@ -1146,6 +1152,8 @@ export const container = pgTable(
     updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
     serviceId: uuid('service_id').notNull(),
     serverId: uuid('server_id').notNull(),
     /**
@@ -1171,8 +1179,6 @@ export const container = pgTable(
      * changes re-home the same allocation rather than minting a second row.
      */
     ordinal: integer('ordinal').default(1).notNull(),
-    metadata: jsonb(),
-    options: jsonb(),
   },
   (table) => [
     index('idx_container_service_id').using(
@@ -1229,6 +1235,13 @@ export const principal = pgTable(
     updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
+    /**
+     * Holds `home` (`/srv/users/<username>`) plus a mirror of an optional
+     * operator `uid`/`gid` override when set — never an instance-allocated id.
+     */
+    metadata: jsonb(),
+    options: jsonb(),
+  
     /** `system` (Linux/server host account) | `database` (engine account) */
     kind: text().notNull(),
     /** `server` | `postgres` | `mysql` | `redis` | `clickhouse` */
@@ -1250,12 +1263,6 @@ export const principal = pgTable(
     projectId: uuid('project_id'),
     /** Optional managed-engine scope (cascade-deletes with the managed row). */
     managedId: uuid('managed_id'),
-    /**
-     * Holds `home` (`/srv/users/<username>`) plus a mirror of an optional
-     * operator `uid`/`gid` override when set — never an instance-allocated id.
-     */
-    metadata: jsonb(),
-    options: jsonb(),
   },
   (table) => [
     index('idx_principal_project_id').using(
@@ -1346,6 +1353,8 @@ export const storage = pgTable(
     updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
     organizationId: uuid('organization_id').notNull(),
     projectId: uuid('project_id'),
     environmentId: uuid('environment_id'),
@@ -1358,8 +1367,6 @@ export const storage = pgTable(
     principalId: uuid('principal_id'),
     /** Sealed file content (`enc` or `denc`) for `kind=file` entries. */
     contentEnvelope: text('content_envelope'),
-    metadata: jsonb(),
-    options: jsonb(),
   },
   (table) => [
     index('idx_storage_organization_id').using(
@@ -1602,10 +1609,10 @@ export const team = pgTable(
     updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
-    organizationId: uuid('organization_id').notNull(),
-    displayName: varchar('display_name', { length: 255 }),
     metadata: jsonb(),
     options: jsonb(),
+    organizationId: uuid('organization_id').notNull(),
+    displayName: varchar('display_name', { length: 255 }),
   },
   (table) => [
     index('idx_team_organization_id').using(
@@ -1636,6 +1643,8 @@ export const user = pgTable(
     updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
       .defaultNow()
       .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
     displayName: varchar('display_name', { length: 255 }),
     username: varchar({ length: 255 }),
     displayUsername: varchar('display_username', { length: 255 }),
@@ -1644,8 +1653,6 @@ export const user = pgTable(
     is2FaEnabled: boolean('is_2fa_enabled').default(false).notNull(),
     isDisabled: boolean('is_disabled').default(false).notNull(),
     role: text().default('user').notNull(),
-    metadata: jsonb(),
-    options: jsonb(),
   },
   (table) => [
     unique('user_email_unique').on(table.email),

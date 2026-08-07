@@ -582,6 +582,7 @@ async function authorizeDeployRequest(
   userId: string
   organizationId: string
   acknowledgeHealthCheckWarnings: boolean
+  noCache: boolean
 } | Response> {
   const denied = await assertCanManageOr403(c, 'environment', environmentId)
   if (denied) return denied
@@ -607,6 +608,7 @@ async function authorizeDeployRequest(
     userId: session.userId,
     organizationId: orgResult,
     acknowledgeHealthCheckWarnings: body.acknowledgeHealthCheckWarnings === true,
+    noCache: body.noCache === true,
   }
 }
 
@@ -652,6 +654,7 @@ async function enqueueDeployCommand(
     principalMaterial: EnvironmentDeployPrincipalMaterial[]
     serviceHooks: EnvironmentDeployServiceHook[]
     dockerExternalNetworks: string[]
+    noCache: boolean
   },
 ): Promise<Response> {
   const expiresAt = new Date(Date.now() + 600_000).toISOString()
@@ -681,6 +684,7 @@ async function enqueueDeployCommand(
       ...(params.dockerExternalNetworks.length > 0
         ? { dockerExternalNetworks: params.dockerExternalNetworks }
         : {}),
+      ...(params.noCache ? { noCache: true } : {}),
     },
     expiresAt,
   })
@@ -1000,6 +1004,7 @@ export function registerEnvironmentDeployRoutes(
       principalMaterial: prepared.principalMaterial,
       serviceHooks: prepared.hooks,
       dockerExternalNetworks: prepared.dockerExternalNetworks,
+      noCache: auth.noCache,
     })
   })
 }

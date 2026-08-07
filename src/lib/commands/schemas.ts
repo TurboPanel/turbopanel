@@ -667,6 +667,11 @@ export type EnvironmentDeployCommandPayload = {
   ingressServices?: EnvironmentDeployIngressService[]
   /** External Docker networks referenced in compose — ensured on the host before compose up. */
   dockerExternalNetworks?: string[]
+  /**
+   * When true, the daemon runs `docker compose build --no-cache --pull`
+   * before `up` (cacheless redeploy).
+   */
+  noCache?: boolean
   /** Unique TLS material referenced by `hostings[].tlsId` (deduped). */
   tlsMaterial?: EnvironmentDeployTlsMaterial[]
   variableMaterial?: EnvironmentDeployVariableMaterial[]
@@ -1280,12 +1285,20 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
   const traditionalWebSites = parseDeployTraditionalWebSites(value.traditionalWebSites)
   const ingressServices = parseDeployIngressServices(value.ingressServices)
   const dockerExternalNetworks = parseDeployDockerExternalNetworks(value.dockerExternalNetworks)
+  let noCache: boolean | undefined
+  if (value.noCache !== undefined) {
+    if (typeof value.noCache !== 'boolean') {
+      throw new TypeError('Invalid environment.deploy payload')
+    }
+    noCache = value.noCache
+  }
   return {
     ...strings,
     hostings,
     ...(traditionalWebSites !== undefined ? { traditionalWebSites } : {}),
     ...(ingressServices !== undefined ? { ingressServices } : {}),
     ...(dockerExternalNetworks !== undefined ? { dockerExternalNetworks } : {}),
+    ...(noCache !== undefined ? { noCache } : {}),
     ...(tlsMaterial !== undefined ? { tlsMaterial } : {}),
     ...(variableMaterial !== undefined ? { variableMaterial } : {}),
     ...(storageMaterial !== undefined ? { storageMaterial } : {}),

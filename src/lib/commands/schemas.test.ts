@@ -1573,6 +1573,46 @@ test('parseCommandPayload accepts traditionalWebSites and dockerExternalNetworks
   )
 })
 
+test('parseCommandPayload accepts noCache on environment.deploy', () => {
+  assertEquals(
+    parseCommandPayload('environment.deploy' as CommandType, {
+      environmentId: 'env-1',
+      projectId: 'proj-1',
+      organizationId: 'org-1',
+      projectName: 'tp-demo',
+      composeYaml: 'services:\n  api:\n    image: node:22\n',
+      hostings: [],
+      noCache: true,
+    }),
+    {
+      environmentId: 'env-1',
+      projectId: 'proj-1',
+      organizationId: 'org-1',
+      projectName: 'tp-demo',
+      composeYaml: 'services:\n  api:\n    image: node:22\n',
+      hostings: [],
+      noCache: true,
+    },
+  )
+})
+
+test('parseCommandPayload rejects non-boolean noCache on environment.deploy', () => {
+  assertThrows(
+    () =>
+      parseCommandPayload('environment.deploy' as CommandType, {
+        environmentId: 'env-1',
+        projectId: 'proj-1',
+        organizationId: 'org-1',
+        projectName: 'tp-demo',
+        composeYaml: 'services: {}\n',
+        hostings: [],
+        noCache: 'yes',
+      }),
+    Error,
+    'Invalid environment.deploy payload',
+  )
+})
+
 test('parseCommandPayload accepts principalMaterial with and without uid/gid', () => {
   assertEquals(
     parseCommandPayload('environment.deploy' as CommandType, {
