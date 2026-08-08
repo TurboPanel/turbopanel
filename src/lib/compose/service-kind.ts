@@ -6,6 +6,9 @@ export type ComposeServiceKind = 'container' | 'traditional-web'
 
 export type TraditionalWebEngine = 'apache' | 'nginx' | 'openlitespeed'
 
+/** Max length for operator-facing service description metadata. */
+export const SERVICE_DESCRIPTION_MAX_LENGTH = 500
+
 export type ComposeServiceTurbopanelExtension = {
   serviceKind?: ComposeServiceKind
   engine?: TraditionalWebEngine
@@ -14,6 +17,10 @@ export type ComposeServiceTurbopanelExtension = {
    * Default `public` when omitted for traditional-web.
    */
   root?: string
+  /**
+   * Optional human description (TurboPanel-only metadata; not used by Docker).
+   */
+  description?: string
 }
 
 const SERVICE_KINDS = new Set<ComposeServiceKind>(['container', 'traditional-web'])
@@ -55,6 +62,15 @@ export function parseServiceTurbopanelExtension(
   if (typeof value.root === 'string') {
     const root = value.root.trim()
     if (root.length > 0) extension.root = root
+  }
+  if (typeof value.description === 'string') {
+    const description = value.description.trim()
+    if (
+      description.length > 0 &&
+      description.length <= SERVICE_DESCRIPTION_MAX_LENGTH
+    ) {
+      extension.description = description
+    }
   }
 
   return extension
@@ -99,6 +115,21 @@ function validateRawExtensionFieldTypes(
       path: `${basePath}.engine`,
       message: 'engine must be "apache", "nginx", or "openlitespeed"',
     })
+  }
+
+  if ('description' in rawExtension) {
+    const description = rawExtension.description
+    if (typeof description !== 'string') {
+      issues.push({
+        path: `${basePath}.description`,
+        message: 'description must be a string',
+      })
+    } else if (description.trim().length > SERVICE_DESCRIPTION_MAX_LENGTH) {
+      issues.push({
+        path: `${basePath}.description`,
+        message: `description must be at most ${SERVICE_DESCRIPTION_MAX_LENGTH} characters`,
+      })
+    }
   }
 
   return issues

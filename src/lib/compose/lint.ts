@@ -197,6 +197,14 @@ function scalarString(node: Node | null | undefined): string | null {
   return typeof value === 'string' ? value : null
 }
 
+/** True when an `image` key is present but empty/missing (not a real image ref). */
+function isEmptyImageValue(node: Node | null | undefined): boolean {
+  if (!node || typeof node !== 'object' || !('value' in node)) return false
+  const value = (node as Scalar).value
+  if (value === null || value === undefined) return true
+  return typeof value === 'string' && value.trim().length === 0
+}
+
 function serviceIsTraditionalWeb(valueNode: YAMLMap): boolean {
   for (const item of valueNode.items) {
     if (stringKey(item.key) !== TURBOPANEL_SERVICE_EXTENSION_KEY) continue
@@ -232,7 +240,9 @@ function lintService(
   for (const item of valueNode.items) {
     const key = stringKey(item.key)
     if (key === null) continue
-    if (key === 'image') hasImage = true
+    if (key === 'image' && !isEmptyImageValue(item.value as Node)) {
+      hasImage = true
+    }
     if (key === 'build') hasBuild = true
     if (!SERVICE_KEYS.has(key) && !isExtensionKey(key)) {
       issues.push({

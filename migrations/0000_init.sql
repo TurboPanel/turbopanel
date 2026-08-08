@@ -27,6 +27,8 @@ CREATE TABLE "command" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
 	"server_id" uuid NOT NULL,
 	"actor_type" text NOT NULL,
 	"actor_id" uuid NOT NULL,
@@ -34,14 +36,15 @@ CREATE TABLE "command" (
 	"status" text DEFAULT 'queued' NOT NULL,
 	"attempts" integer DEFAULT 0 NOT NULL,
 	"payload" jsonb NOT NULL,
-	"result" jsonb,
-	"metadata" jsonb NOT NULL
+	"result" jsonb
 );
 --> statement-breakpoint
 CREATE TABLE "container" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
 	"service_id" uuid NOT NULL,
 	"server_id" uuid NOT NULL,
 	"container_id" text,
@@ -50,8 +53,6 @@ CREATE TABLE "container" (
 	"role" text DEFAULT 'service' NOT NULL,
 	"compose_service_name" text NOT NULL,
 	"ordinal" integer DEFAULT 1 NOT NULL,
-	"metadata" jsonb,
-	"options" jsonb,
 	CONSTRAINT "container_ordinal_positive_check" CHECK (ordinal >= 1),
 	CONSTRAINT "container_role_check" CHECK (role IN ('service', 'ingress', 'system'))
 );
@@ -60,11 +61,11 @@ CREATE TABLE "datacenter" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
 	"organization_id" uuid NOT NULL,
 	"display_name" varchar(255),
 	"description" varchar(255),
-	"metadata" jsonb,
-	"options" jsonb,
 	CONSTRAINT "datacenter_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint
@@ -72,12 +73,12 @@ CREATE TABLE "environment" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
 	"project_id" uuid NOT NULL,
 	"server_id" uuid,
 	"display_name" varchar(255),
 	"description" varchar(255),
-	"metadata" jsonb,
-	"options" jsonb,
 	CONSTRAINT "environment_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint
@@ -97,13 +98,13 @@ CREATE TABLE "hosting" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
 	"service_id" uuid NOT NULL,
 	"tls_id" uuid,
 	"ip_id" uuid,
 	"display_name" varchar(255),
 	"description" varchar(255),
-	"metadata" jsonb,
-	"options" jsonb,
 	CONSTRAINT "hosting_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint
@@ -122,6 +123,8 @@ CREATE TABLE "ip" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
 	"organization_id" uuid NOT NULL,
 	"datacenter_id" uuid,
 	"network_id" uuid,
@@ -131,8 +134,6 @@ CREATE TABLE "ip" (
 	"allocation" text NOT NULL,
 	"scope" text NOT NULL,
 	"display_name" varchar(255),
-	"metadata" jsonb,
-	"options" jsonb,
 	CONSTRAINT "ip_allocation_check" CHECK (allocation IN ('dedicated', 'shared')),
 	CONSTRAINT "ip_scope_check" CHECK (scope IN ('public', 'datacenter', 'loopback', 'vpn')),
 	CONSTRAINT "ip_vpn_scope_check" CHECK (("ip"."scope" = 'vpn' AND "ip"."vpn_id" IS NOT NULL) OR ("ip"."scope" <> 'vpn' AND "ip"."vpn_id" IS NULL)),
@@ -155,13 +156,13 @@ CREATE TABLE "managed" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
 	"environment_id" uuid NOT NULL,
 	"server_id" uuid,
 	"display_name" varchar(255),
 	"engine" text,
 	"status" text,
-	"metadata" jsonb,
-	"options" jsonb,
 	CONSTRAINT "managed_display_name_format_check" CHECK (("managed"."display_name" IS NULL) OR (((char_length(("managed"."display_name")::text) >= 1) AND (char_length(("managed"."display_name")::text) <= 255)) AND (("managed"."display_name")::text ~ '^[A-Za-z0-9 ._-]+$'::text))),
 	CONSTRAINT "managed_status_check" CHECK (status IS NULL OR status IN ('provisioning','applying','ready','stopped','failed'))
 );
@@ -178,14 +179,14 @@ CREATE TABLE "network" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
 	"organization_id" uuid NOT NULL,
 	"datacenter_id" uuid,
 	"server_id" uuid,
 	"kind" text NOT NULL,
 	"cidr" "cidr",
 	"display_name" varchar(255),
-	"metadata" jsonb,
-	"options" jsonb,
 	CONSTRAINT "network_kind_check" CHECK (kind IN ('datacenter', 'server', 'docker')),
 	CONSTRAINT "network_single_scope_check" CHECK ((
         ("network"."kind" = 'datacenter' AND "network"."datacenter_id" IS NOT NULL AND "network"."server_id" IS NULL) OR
@@ -199,10 +200,10 @@ CREATE TABLE "organization" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
-	"display_name" varchar(255),
-	"slug" varchar(255),
 	"metadata" jsonb,
 	"options" jsonb,
+	"display_name" varchar(255),
+	"slug" varchar(255),
 	CONSTRAINT "organization_slug_unique" UNIQUE("slug"),
 	CONSTRAINT "organization_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
@@ -225,6 +226,8 @@ CREATE TABLE "peer" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
 	"vpn_id" uuid NOT NULL,
 	"server_id" uuid NOT NULL,
 	"endpoint_ip_id" uuid,
@@ -234,8 +237,6 @@ CREATE TABLE "peer" (
 	"listen_port" integer,
 	"endpoint" varchar(255),
 	"preshared_key" text,
-	"metadata" jsonb,
-	"options" jsonb,
 	CONSTRAINT "peer_vpn_server_unique" UNIQUE("vpn_id","server_id"),
 	CONSTRAINT "peer_vpn_public_key_unique" UNIQUE("vpn_id","public_key"),
 	CONSTRAINT "peer_role_check" CHECK (role IN ('gateway', 'member'))
@@ -245,14 +246,14 @@ CREATE TABLE "principal" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
 	"kind" text NOT NULL,
 	"provider" text NOT NULL,
 	"username" varchar(255) NOT NULL,
 	"password" text,
 	"project_id" uuid,
 	"managed_id" uuid,
-	"metadata" jsonb,
-	"options" jsonb,
 	CONSTRAINT "principal_kind_check" CHECK (kind IN ('system', 'database')),
 	CONSTRAINT "principal_provider_check" CHECK (provider IN ('server', 'postgres', 'mysql', 'redis', 'clickhouse')),
 	CONSTRAINT "principal_username_format_check" CHECK ((char_length((username)::text) >= 1) AND (char_length((username)::text) <= 255) AND ((username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text))
@@ -262,11 +263,11 @@ CREATE TABLE "project" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
 	"workspace_id" uuid NOT NULL,
 	"display_name" varchar(255),
 	"description" varchar(255),
-	"metadata" jsonb,
-	"options" jsonb,
 	CONSTRAINT "project_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint
@@ -274,6 +275,8 @@ CREATE TABLE "server" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
 	"organization_id" uuid,
 	"datacenter_id" uuid,
 	"display_name" varchar(255),
@@ -281,21 +284,19 @@ CREATE TABLE "server" (
 	"machine_key" text,
 	"connected" boolean DEFAULT false NOT NULL,
 	"status_changed_at" timestamp(3) with time zone,
-	"daemon" jsonb,
-	"metadata" jsonb,
-	"options" jsonb
+	"daemon" jsonb
 );
 --> statement-breakpoint
 CREATE TABLE "service" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
 	"environment_id" uuid NOT NULL,
 	"display_name" varchar(255),
 	"description" varchar(255),
 	"compose_service_name" varchar(255) NOT NULL,
-	"metadata" jsonb,
-	"options" jsonb,
 	CONSTRAINT "service_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint
@@ -324,6 +325,8 @@ CREATE TABLE "storage" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
 	"organization_id" uuid NOT NULL,
 	"project_id" uuid,
 	"environment_id" uuid,
@@ -335,8 +338,6 @@ CREATE TABLE "storage" (
 	"destination_path" text,
 	"principal_id" uuid,
 	"content_envelope" text,
-	"metadata" jsonb,
-	"options" jsonb,
 	CONSTRAINT "storage_kind_check" CHECK (kind IN ('docker_volume', 'bind_mount', 'file', 'directory')),
 	CONSTRAINT "storage_exactly_one_parent_check" CHECK (((project_id IS NOT NULL)::int +
         (environment_id IS NOT NULL)::int +
@@ -347,10 +348,10 @@ CREATE TABLE "team" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
-	"organization_id" uuid NOT NULL,
-	"display_name" varchar(255),
 	"metadata" jsonb,
 	"options" jsonb,
+	"organization_id" uuid NOT NULL,
+	"display_name" varchar(255),
 	CONSTRAINT "team_display_name_format_check" CHECK ((display_name IS NULL) OR ((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)))
 );
 --> statement-breakpoint
@@ -366,6 +367,8 @@ CREATE TABLE "tls" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
 	"organization_id" uuid NOT NULL,
 	"display_name" varchar(255),
 	"source" text NOT NULL,
@@ -374,8 +377,6 @@ CREATE TABLE "tls" (
 	"status" text DEFAULT 'ready' NOT NULL,
 	"not_after" timestamp(3) with time zone,
 	"fingerprint_sha256" text,
-	"metadata" jsonb NOT NULL,
-	"options" jsonb,
 	CONSTRAINT "tls_source_check" CHECK (source IN ('upload', 'lets_encrypt', 'self_signed')),
 	CONSTRAINT "tls_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
@@ -393,6 +394,8 @@ CREATE TABLE "user" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
 	"display_name" varchar(255),
 	"username" varchar(255),
 	"display_username" varchar(255),
@@ -401,8 +404,6 @@ CREATE TABLE "user" (
 	"is_2fa_enabled" boolean DEFAULT false NOT NULL,
 	"is_disabled" boolean DEFAULT false NOT NULL,
 	"role" text DEFAULT 'user' NOT NULL,
-	"metadata" jsonb,
-	"options" jsonb,
 	CONSTRAINT "user_email_unique" UNIQUE("email"),
 	CONSTRAINT "user_username_unique" UNIQUE("username"),
 	CONSTRAINT "user_display_name_format_check" CHECK ((display_name IS NULL) OR ((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255))),
@@ -452,11 +453,11 @@ CREATE TABLE "vpn" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
 	"organization_id" uuid NOT NULL,
 	"cidr" "cidr" NOT NULL,
 	"display_name" varchar(255),
-	"metadata" jsonb,
-	"options" jsonb,
 	CONSTRAINT "vpn_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint

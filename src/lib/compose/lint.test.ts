@@ -138,6 +138,32 @@ test('lintComposeYaml accepts build without image', () => {
   assertEquals(lintComposeYaml(source), [])
 })
 
+test('lintComposeYaml treats empty-string image as missing', () => {
+  const source = `services:
+  app:
+    image: ""
+`
+  const issues = lintComposeYaml(source)
+  const missing = issues.find(
+    (issue) => issue.level === 'error' && issue.path === 'services.app',
+  )
+  assertEquals(missing !== undefined, true)
+  assertEquals(missing?.message.includes('image'), true)
+  assertEquals(missing?.message.includes('build'), true)
+})
+
+test('lintComposeYaml accepts build when image is an empty string', () => {
+  const source = `services:
+  app:
+    image: ""
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM alpine
+`
+  assertEquals(lintComposeYaml(source), [])
+})
+
 test('lintComposeYaml allows x-turbopanel extension keys on services', () => {
   const source = `services:
   site:

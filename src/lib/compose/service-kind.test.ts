@@ -246,3 +246,50 @@ test('collectServiceTurbopanelValidationIssues skips non-mapping services', () =
     [],
   )
 })
+
+test('parseServiceTurbopanelExtension accepts description', () => {
+  assertEquals(
+    parseServiceTurbopanelExtension({
+      serviceKind: 'container',
+      description: '  API gateway  ',
+    }),
+    { serviceKind: 'container', description: 'API gateway' },
+  )
+})
+
+test('parseServiceTurbopanelExtension drops empty or overlong description', () => {
+  assertEquals(
+    parseServiceTurbopanelExtension({ description: '   ' }),
+    {},
+  )
+  assertEquals(
+    parseServiceTurbopanelExtension({ description: 'x'.repeat(501) }),
+    {},
+  )
+})
+
+test('collectServiceTurbopanelValidationIssues rejects non-string description', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    api: {
+      image: 'node:22',
+      'x-turbopanel': { description: 42 },
+    },
+  })
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.api.x-turbopanel.description'),
+    true,
+  )
+})
+
+test('collectServiceTurbopanelValidationIssues rejects overlong description', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    api: {
+      image: 'node:22',
+      'x-turbopanel': { description: 'y'.repeat(501) },
+    },
+  })
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.api.x-turbopanel.description'),
+    true,
+  )
+})
