@@ -202,26 +202,6 @@ test('verifyCredentials rejects wrong password against mock db user', async () =
   assertEquals(result.ok, false)
 })
 
-test('verifyCredentials accepts mock db users by username', async () => {
-  const state = createEmptyMockAuthState()
-  const userId = crypto.randomUUID()
-  const username = 'mockuser'
-  seedMockCredentialUser(state, {
-    id: userId,
-    email: 'username-login@example.com',
-    username,
-    password: await hashPassword('Sup3r-secret!'),
-  })
-  const db = createMockAuthDb(withMockLogin(state, username))
-
-  const result = await verifyCredentials(username, 'Sup3r-secret!', 'workers', db)
-  if (!result.ok || result.isRoot) {
-    throw new TypeError('expected username credential verification to succeed')
-  }
-  assertEquals(result.userId, userId)
-  assertEquals(result.username, username)
-})
-
 test('verifyCredentials accepts root on Deno before install in dev group-only mode', async () => {
   const saved = new Map<string, string | undefined>()
   for (const key of [

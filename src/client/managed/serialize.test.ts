@@ -44,7 +44,7 @@ test('serializeManagedRow projects residual host/port and strips them from metad
     {
       id: 'managed-1',
       environmentId: 'env-1',
-      displayName: 'Postgres',
+      name: 'Postgres',
       engine: 'postgres',
       status: 'ready',
       metadata: {
@@ -132,7 +132,7 @@ test('serializeManagedRow keeps rootPrincipalId without host when only that resi
     {
       id: 'managed-3',
       environmentId: 'env-3',
-      displayName: 'Postgres',
+      name: 'Postgres',
       engine: 'postgres',
       status: 'stopped',
       metadata: { rootPrincipalId: 'prin-only' },

@@ -78,7 +78,7 @@ test('POST /vpns stores cidr directly on the vpn row', async () => {
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: 'Mesh CIDR Org' })
+    .values({ name: 'Mesh CIDR Org' })
     .returning({ id: organization.id })
   const organizationId = orgA!.id
 
@@ -169,7 +169,7 @@ test('GET /vpns/:id/peers never returns presharedKey', async () => {
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: 'VPN Test Org' })
+    .values({ name: 'VPN Test Org' })
     .returning({ id: organization.id })
   const organizationId = orgA!.id
 
@@ -192,12 +192,12 @@ test('GET /vpns/:id/peers never returns presharedKey', async () => {
   const now = new Date().toISOString()
   const [vpnRow] = await db
     .insert(vpn)
-    .values({ organizationId, cidr: '203.0.113.0/24', displayName: 'Mesh', createdAt: now, updatedAt: now })
+    .values({ organizationId, cidr: '203.0.113.0/24', name: 'Mesh', createdAt: now, updatedAt: now })
     .returning({ id: vpn.id })
 
   const [srv] = await db
     .insert(server)
-    .values({ organizationId, displayName: 'PeerHost', createdAt: now, updatedAt: now })
+    .values({ organizationId, name: 'PeerHost', createdAt: now, updatedAt: now })
     .returning({ id: server.id })
 
   const secretMarker = `secret-marker-${crypto.randomUUID()}`
@@ -261,7 +261,7 @@ test('GET /vpns returns 403 for org member without organization:manage', async (
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: 'VPN List Org' })
+    .values({ name: 'VPN List Org' })
     .returning({ id: organization.id })
   const organizationId = orgA!.id
 
@@ -300,10 +300,10 @@ test('POST /vpns/:id/apply returns 403 for org member without organization:manag
   })
   registerVpnRoutes(app, { secrets, runtime: 'deno' })
 
-  const [orgA] = await db.insert(organization).values({ displayName: 'Apply Org' }).returning({ id: organization.id })
+  const [orgA] = await db.insert(organization).values({ name: 'Apply Org' }).returning({ id: organization.id })
   const [u] = await db.insert(user).values({ email: `vpn-apply-${crypto.randomUUID()}@example.com`, isEmailVerified: true }).returning({ id: user.id })
   await db.insert(member).values({ organizationId: orgA!.id, userId: u!.id })
-  const [vpnRow] = await db.insert(vpn).values({ organizationId: orgA!.id, cidr: '203.0.113.0/24', displayName: 'Mesh' }).returning({ id: vpn.id })
+  const [vpnRow] = await db.insert(vpn).values({ organizationId: orgA!.id, cidr: '203.0.113.0/24', name: 'Mesh' }).returning({ id: vpn.id })
 
   const cookie = await sessionCookie(db, secrets, u!.id)
   const res = await app.request(`/vpns/${vpnRow!.id}/apply`, {
@@ -330,7 +330,7 @@ test('POST /vpns/:id/peers returns 400 for invalid publicKey', async () => {
   })
   registerVpnRoutes(app, { secrets, runtime: 'deno' })
 
-  const [orgA] = await db.insert(organization).values({ displayName: 'PeerKey Org' }).returning({ id: organization.id })
+  const [orgA] = await db.insert(organization).values({ name: 'PeerKey Org' }).returning({ id: organization.id })
   const [u] = await db.insert(user).values({ email: `vpn-peer-key-${crypto.randomUUID()}@example.com`, isEmailVerified: true }).returning({ id: user.id })
   await db.insert(member).values({ organizationId: orgA!.id, userId: u!.id })
   await db.insert(grant).values({
@@ -341,8 +341,8 @@ test('POST /vpns/:id/peers returns 400 for invalid publicKey', async () => {
     permission: 'organization:manage',
     allow: true,
   })
-  const [vpnRow] = await db.insert(vpn).values({ organizationId: orgA!.id, cidr: '203.0.113.0/24', displayName: 'Mesh' }).returning({ id: vpn.id })
-  const [srv] = await db.insert(server).values({ organizationId: orgA!.id, displayName: 'Host' }).returning({ id: server.id })
+  const [vpnRow] = await db.insert(vpn).values({ organizationId: orgA!.id, cidr: '203.0.113.0/24', name: 'Mesh' }).returning({ id: vpn.id })
+  const [srv] = await db.insert(server).values({ organizationId: orgA!.id, name: 'Host' }).returning({ id: server.id })
 
   const cookie = await sessionCookie(db, secrets, u!.id)
   const res = await app.request(`/vpns/${vpnRow!.id}/peers`, {
@@ -382,7 +382,7 @@ test('POST /vpns/:id/peers accepts serverId only and defaults port + endpoint IP
 
   const [srv] = await db.insert(server).values({
     organizationId: seeded.organizationId,
-    displayName: 'AutoHost',
+    name: 'AutoHost',
   }).returning({ id: server.id })
   const [publicIp] = await db.insert(ip).values({
     organizationId: seeded.organizationId,
@@ -447,11 +447,11 @@ test('POST /vpns/:id/apply bootstraps peers that lack publicKey', async () => {
 
   const [srvA] = await db.insert(server).values({
     organizationId: seeded.organizationId,
-    displayName: 'BootA',
+    name: 'BootA',
   }).returning({ id: server.id })
   const [srvB] = await db.insert(server).values({
     organizationId: seeded.organizationId,
-    displayName: 'BootB',
+    name: 'BootB',
   }).returning({ id: server.id })
   const [tunnelA] = await db.insert(ip).values({
     organizationId: seeded.organizationId,
@@ -522,7 +522,7 @@ test('PATCH /vpns/:id/peers/:peerId returns 400 for invalid publicKey', async ()
   })
   registerVpnRoutes(app, { secrets, runtime: 'deno' })
 
-  const [orgA] = await db.insert(organization).values({ displayName: 'PeerPatchKey Org' }).returning({ id: organization.id })
+  const [orgA] = await db.insert(organization).values({ name: 'PeerPatchKey Org' }).returning({ id: organization.id })
   const [u] = await db.insert(user).values({ email: `vpn-peer-patch-${crypto.randomUUID()}@example.com`, isEmailVerified: true }).returning({ id: user.id })
   await db.insert(member).values({ organizationId: orgA!.id, userId: u!.id })
   await db.insert(grant).values({
@@ -533,8 +533,8 @@ test('PATCH /vpns/:id/peers/:peerId returns 400 for invalid publicKey', async ()
     permission: 'organization:manage',
     allow: true,
   })
-  const [vpnRow] = await db.insert(vpn).values({ organizationId: orgA!.id, cidr: '203.0.113.0/24', displayName: 'Mesh' }).returning({ id: vpn.id })
-  const [srv] = await db.insert(server).values({ organizationId: orgA!.id, displayName: 'Host' }).returning({ id: server.id })
+  const [vpnRow] = await db.insert(vpn).values({ organizationId: orgA!.id, cidr: '203.0.113.0/24', name: 'Mesh' }).returning({ id: vpn.id })
+  const [srv] = await db.insert(server).values({ organizationId: orgA!.id, name: 'Host' }).returning({ id: server.id })
   const [peerRow] = await db.insert(peer).values({
     vpnId: vpnRow!.id,
     serverId: srv!.id,
@@ -578,7 +578,7 @@ test('POST /vpns/:id/apply returns 422 when a peer lacks tunnel_address', async 
   })
   registerVpnRoutes(app, { secrets, runtime: 'deno' })
 
-  const [orgA] = await db.insert(organization).values({ displayName: 'Apply422 Org' }).returning({ id: organization.id })
+  const [orgA] = await db.insert(organization).values({ name: 'Apply422 Org' }).returning({ id: organization.id })
   const [u] = await db.insert(user).values({ email: `vpn-apply422-${crypto.randomUUID()}@example.com`, isEmailVerified: true }).returning({ id: user.id })
   await db.insert(member).values({ organizationId: orgA!.id, userId: u!.id })
   await db.insert(grant).values({
@@ -589,8 +589,8 @@ test('POST /vpns/:id/apply returns 422 when a peer lacks tunnel_address', async 
     permission: 'organization:manage',
     allow: true,
   })
-  const [vpnRow] = await db.insert(vpn).values({ organizationId: orgA!.id, cidr: '203.0.113.0/24', displayName: 'Mesh' }).returning({ id: vpn.id })
-  const [srv] = await db.insert(server).values({ organizationId: orgA!.id, displayName: 'Host' }).returning({ id: server.id })
+  const [vpnRow] = await db.insert(vpn).values({ organizationId: orgA!.id, cidr: '203.0.113.0/24', name: 'Mesh' }).returning({ id: vpn.id })
+  const [srv] = await db.insert(server).values({ organizationId: orgA!.id, name: 'Host' }).returning({ id: server.id })
   await db.insert(peer).values({
     vpnId: vpnRow!.id,
     serverId: srv!.id,
@@ -630,7 +630,7 @@ test('POST /vpns/:id/apply enqueues one command per peer without presharedKey in
   })
   registerVpnRoutes(app, { secrets, runtime: 'deno' })
 
-  const [orgA] = await db.insert(organization).values({ displayName: 'ApplyHappy Org' }).returning({ id: organization.id })
+  const [orgA] = await db.insert(organization).values({ name: 'ApplyHappy Org' }).returning({ id: organization.id })
   const [u] = await db.insert(user).values({ email: `vpn-apply-ok-${crypto.randomUUID()}@example.com`, isEmailVerified: true }).returning({ id: user.id })
   await db.insert(member).values({ organizationId: orgA!.id, userId: u!.id })
   await db.insert(grant).values({
@@ -641,9 +641,9 @@ test('POST /vpns/:id/apply enqueues one command per peer without presharedKey in
     permission: 'organization:manage',
     allow: true,
   })
-  const [vpnRow] = await db.insert(vpn).values({ organizationId: orgA!.id, cidr: '203.0.113.0/24', displayName: 'Mesh' }).returning({ id: vpn.id })
-  const [srvA] = await db.insert(server).values({ organizationId: orgA!.id, displayName: 'A' }).returning({ id: server.id })
-  const [srvB] = await db.insert(server).values({ organizationId: orgA!.id, displayName: 'B' }).returning({ id: server.id })
+  const [vpnRow] = await db.insert(vpn).values({ organizationId: orgA!.id, cidr: '203.0.113.0/24', name: 'Mesh' }).returning({ id: vpn.id })
+  const [srvA] = await db.insert(server).values({ organizationId: orgA!.id, name: 'A' }).returning({ id: server.id })
+  const [srvB] = await db.insert(server).values({ organizationId: orgA!.id, name: 'B' }).returning({ id: server.id })
   const [tunnelA] = await db.insert(ip).values({
     organizationId: orgA!.id,
     vpnId: vpnRow!.id,
@@ -711,7 +711,7 @@ async function seedVpnManageSession(
 }> {
   const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
-  const [orgA] = await db.insert(organization).values({ displayName: `${label} Org` }).returning({
+  const [orgA] = await db.insert(organization).values({ name: `${label} Org` }).returning({
     id: organization.id,
   })
   const [u] = await db.insert(user).values({
@@ -730,7 +730,7 @@ async function seedVpnManageSession(
   const [vpnRow] = await db.insert(vpn).values({
     organizationId: orgA!.id,
     cidr: '203.0.113.0/24',
-    displayName: 'Mesh',
+    name: 'Mesh',
   }).returning({ id: vpn.id })
   const cookie = await sessionCookie(db, secrets, u!.id)
   return {
@@ -755,7 +755,7 @@ test('POST /vpns/:id/peers auto-allocates tunnel IP and accepts gateway role', a
 
   const [srv] = await db.insert(server).values({
     organizationId: seeded.organizationId,
-    displayName: 'AutoHost',
+    name: 'AutoHost',
   }).returning({ id: server.id })
 
   const res = await app.request(`/vpns/${seeded.vpnId}/peers`, {
@@ -827,7 +827,7 @@ test('POST /vpns/:id/peers tunnelAddress in/out of CIDR and pool exhaustion', as
   })
   registerVpnRoutes(app, { secrets, runtime: 'deno' })
 
-  const [orgA] = await db.insert(organization).values({ displayName: 'TinyCidr Org' }).returning({
+  const [orgA] = await db.insert(organization).values({ name: 'TinyCidr Org' }).returning({
     id: organization.id,
   })
   const [u] = await db.insert(user).values({
@@ -846,11 +846,11 @@ test('POST /vpns/:id/peers tunnelAddress in/out of CIDR and pool exhaustion', as
   const [vpnRow] = await db.insert(vpn).values({
     organizationId: orgA!.id,
     cidr: '203.0.113.0/30',
-    displayName: 'Tiny',
+    name: 'Tiny',
   }).returning({ id: vpn.id })
   const [srv] = await db.insert(server).values({
     organizationId: orgA!.id,
-    displayName: 'TinyHost',
+    name: 'TinyHost',
   }).returning({ id: server.id })
   const cookie = await sessionCookie(db, secrets, u!.id)
 
@@ -886,7 +886,7 @@ test('POST /vpns/:id/peers tunnelAddress in/out of CIDR and pool exhaustion', as
 
   const [srv2] = await db.insert(server).values({
     organizationId: orgA!.id,
-    displayName: 'TinyHost2',
+    name: 'TinyHost2',
   }).returning({ id: server.id })
   const second = await app.request(`/vpns/${vpnRow!.id}/peers`, {
     method: 'POST',
@@ -904,7 +904,7 @@ test('POST /vpns/:id/peers tunnelAddress in/out of CIDR and pool exhaustion', as
 
   const [srv3] = await db.insert(server).values({
     organizationId: orgA!.id,
-    displayName: 'TinyHost3',
+    name: 'TinyHost3',
   }).returning({ id: server.id })
   const exhausted = await app.request(`/vpns/${vpnRow!.id}/peers`, {
     method: 'POST',
@@ -945,19 +945,19 @@ test('POST /vpns/:id/peers preserves peer unique conflicts for auto and explicit
 
   const [srvA] = await db.insert(server).values({
     organizationId: seeded.organizationId,
-    displayName: 'ConflictHostA',
+    name: 'ConflictHostA',
   }).returning({ id: server.id })
   const [srvB] = await db.insert(server).values({
     organizationId: seeded.organizationId,
-    displayName: 'ConflictHostB',
+    name: 'ConflictHostB',
   }).returning({ id: server.id })
   const [srvC] = await db.insert(server).values({
     organizationId: seeded.organizationId,
-    displayName: 'ConflictHostC',
+    name: 'ConflictHostC',
   }).returning({ id: server.id })
   const [srvD] = await db.insert(server).values({
     organizationId: seeded.organizationId,
-    displayName: 'ConflictHostD',
+    name: 'ConflictHostD',
   }).returning({ id: server.id })
 
   const peerHeaders = {
@@ -1068,7 +1068,7 @@ test('DELETE /vpns/:id/peers/:peerId releases overlay tunnel IP', async () => {
 
   const [srv] = await db.insert(server).values({
     organizationId: seeded.organizationId,
-    displayName: 'ReleaseHost',
+    name: 'ReleaseHost',
   }).returning({ id: server.id })
   const createRes = await app.request(`/vpns/${seeded.vpnId}/peers`, {
     method: 'POST',
@@ -1122,46 +1122,46 @@ test('POST /vpns/:id/apply emits site CIDR only for primary remote gateway', asy
 
   const [dcEast] = await db.insert(datacenter).values({
     organizationId: seeded.organizationId,
-    displayName: 'East',
+    name: 'East',
   }).returning({ id: datacenter.id })
   const [dcWest] = await db.insert(datacenter).values({
     organizationId: seeded.organizationId,
-    displayName: 'West',
+    name: 'West',
   }).returning({ id: datacenter.id })
   await db.insert(network).values({
     organizationId: seeded.organizationId,
     datacenterId: dcEast!.id,
     kind: 'datacenter',
     cidr: '10.10.0.0/16',
-    displayName: 'East LAN',
+    name: 'East LAN',
   })
   await db.insert(network).values({
     organizationId: seeded.organizationId,
     datacenterId: dcWest!.id,
     kind: 'datacenter',
     cidr: '10.20.0.0/16',
-    displayName: 'West LAN',
+    name: 'West LAN',
   })
 
   const statusChangedAt = new Date().toISOString()
   const [memberSrv] = await db.insert(server).values({
     organizationId: seeded.organizationId,
     datacenterId: dcWest!.id,
-    displayName: 'Member',
+    name: 'Member',
     connected: true,
     statusChangedAt,
   }).returning({ id: server.id })
   const [gwPrimary] = await db.insert(server).values({
     organizationId: seeded.organizationId,
     datacenterId: dcEast!.id,
-    displayName: 'GwPrimary',
+    name: 'GwPrimary',
     connected: true,
     statusChangedAt,
   }).returning({ id: server.id })
   const [gwStandby] = await db.insert(server).values({
     organizationId: seeded.organizationId,
     datacenterId: dcEast!.id,
-    displayName: 'GwStandby',
+    name: 'GwStandby',
     connected: true,
     statusChangedAt,
   }).returning({ id: server.id })
@@ -1291,7 +1291,7 @@ test('POST /vpns/:id/apply returns 422 for gateway without datacenter or CIDR', 
 
   const [srv] = await db.insert(server).values({
     organizationId: seeded.organizationId,
-    displayName: 'NoDcGw',
+    name: 'NoDcGw',
     connected: true,
     statusChangedAt: new Date().toISOString(),
   }).returning({ id: server.id })
@@ -1320,7 +1320,7 @@ test('POST /vpns/:id/apply returns 422 for gateway without datacenter or CIDR', 
 
   const [dc] = await db.insert(datacenter).values({
     organizationId: seeded.organizationId,
-    displayName: 'EmptyDc',
+    name: 'EmptyDc',
   }).returning({ id: datacenter.id })
   await db.update(server).set({ datacenterId: dc!.id }).where(eq(server.id, srv!.id))
 
@@ -1355,7 +1355,7 @@ test('POST/PATCH peers reject tunnelIpId null; PATCH replaces and releases old t
 
   const [srv] = await db.insert(server).values({
     organizationId: seeded.organizationId,
-    displayName: 'TunnelHost',
+    name: 'TunnelHost',
   }).returning({ id: server.id })
 
   const headers = {
@@ -1441,7 +1441,7 @@ test('PATCH /vpns/:id cidr widening and no-op ok; excluding tunnel addresses rej
 
   const [srv] = await db.insert(server).values({
     organizationId: seeded.organizationId,
-    displayName: 'CidrHost',
+    name: 'CidrHost',
   }).returning({ id: server.id })
 
   const headers = {

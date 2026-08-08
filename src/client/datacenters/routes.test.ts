@@ -67,7 +67,7 @@ test("GET /datacenters/name-suggestions uses unassigned server geo and ASN", asy
 
   const [org] = await db
     .insert(organization)
-    .values({ displayName: "DC Suggestions Org" })
+    .values({ name: "DC Suggestions Org" })
     .returning({ id: organization.id });
   const organizationId = org!.id;
   const [u] = await db
@@ -90,7 +90,7 @@ test("GET /datacenters/name-suggestions uses unassigned server geo and ASN", asy
   });
   const [assignedDatacenter] = await db
     .insert(datacenter)
-    .values({ organizationId, displayName: "Existing DC" })
+    .values({ organizationId, name: "Existing DC" })
     .returning({ id: datacenter.id });
   const [unassignedServer] = await db
     .insert(server)
@@ -123,7 +123,7 @@ test("GET /datacenters/name-suggestions uses unassigned server geo and ASN", asy
   assertEquals(res.status, 200);
   assertEquals(await res.json(), {
     suggestions: [{
-      displayName: "Amsterdam NL - Cloudflare AS13335",
+      name: "Amsterdam NL - Cloudflare AS13335",
       serverCount: 1,
       serverIds: [unassignedServer!.id],
       serverLabels: [unassignedServer!.id],
@@ -169,11 +169,11 @@ test("GET /datacenters/:id returns 404 for datacenter in another org", async () 
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: "DC Org A" })
+    .values({ name: "DC Org A" })
     .returning({ id: organization.id });
   const [orgB] = await db
     .insert(organization)
-    .values({ displayName: "DC Org B" })
+    .values({ name: "DC Org B" })
     .returning({ id: organization.id });
 
   const [u] = await db
@@ -200,7 +200,7 @@ test("GET /datacenters/:id returns 404 for datacenter in another org", async () 
     .insert(datacenter)
     .values({
       organizationId: orgB!.id,
-      displayName: "OtherDC",
+      name: "OtherDC",
       createdAt: now,
       updatedAt: now,
     })
@@ -248,7 +248,7 @@ test("GET /datacenters returns 403 for org member without organization:manage", 
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: "DC List Org" })
+    .values({ name: "DC List Org" })
     .returning({ id: organization.id });
   const organizationId = orgA!.id;
 
@@ -302,7 +302,7 @@ test("DELETE /datacenters/:id succeeds when no scoped networks exist", async () 
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: "DC Delete Org" })
+    .values({ name: "DC Delete Org" })
     .returning({ id: organization.id });
   const organizationId = orgA!.id;
 
@@ -330,7 +330,7 @@ test("DELETE /datacenters/:id succeeds when no scoped networks exist", async () 
     .insert(datacenter)
     .values({
       organizationId,
-      displayName: "EmptyDC",
+      name: "EmptyDC",
       createdAt: now,
       updatedAt: now,
     })
@@ -386,7 +386,7 @@ test("DELETE /datacenters/:id returns 409 when scoped networks exist", async () 
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: "DC Network Org" })
+    .values({ name: "DC Network Org" })
     .returning({ id: organization.id });
   const organizationId = orgA!.id;
 
@@ -414,7 +414,7 @@ test("DELETE /datacenters/:id returns 409 when scoped networks exist", async () 
     .insert(datacenter)
     .values({
       organizationId,
-      displayName: "NetworkedDC",
+      name: "NetworkedDC",
       createdAt: now,
       updatedAt: now,
     })
@@ -426,7 +426,7 @@ test("DELETE /datacenters/:id returns 409 when scoped networks exist", async () 
       organizationId,
       datacenterId: dc!.id,
       kind: "datacenter",
-      displayName: "DC Net",
+      name: "DC Net",
       createdAt: now,
       updatedAt: now,
     })

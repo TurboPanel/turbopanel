@@ -54,7 +54,7 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     const rows = await db
       .select({
         id: workspace.id,
-        displayName: workspace.displayName,
+        displayName: workspace.name,
         description: workspace.description,
         kind: workspace.kind,
         organizationId: workspace.organizationId,
@@ -85,7 +85,7 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     const rows = await db
       .select({
         id: workspace.id,
-        displayName: workspace.displayName,
+        displayName: workspace.name,
         description: workspace.description,
         kind: workspace.kind,
         organizationId: workspace.organizationId,
@@ -142,7 +142,7 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
         .insert(workspace)
         // Public create is always `user`. `kind='system'` is reachable only from
         // ensureSystemWorkspace in src/client/system/hierarchy.ts.
-        .values({ displayName, description, organizationId, kind: WORKSPACE_KIND_USER })
+        .values({ name: displayName, description, organizationId, kind: WORKSPACE_KIND_USER })
         .returning({ id: workspace.id })
       return inserted.id
     })
@@ -190,11 +190,11 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     }
 
     if (
-      patchFields.displayName !== undefined &&
+      patchFields.name !== undefined &&
       (await isWorkspaceDisplayNameTaken(
         db,
         organizationId,
-        patchFields.displayName,
+        patchFields.name,
         id,
       ))
     ) {

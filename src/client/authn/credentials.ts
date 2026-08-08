@@ -20,7 +20,7 @@ function bypassHyperdriveQueryCache() {
 
 export type VerifyResult =
   | { ok: true; username: string; isRoot: true }
-  | { ok: true; userId: string; username: string | null; email: string; isRoot: false }
+  | { ok: true; userId: string; email: string; isRoot: false }
   | { ok: false; reason?: 'email_not_verified' }
 
 async function verifyPamLogin(username: string, password: string): Promise<boolean> {
@@ -122,16 +122,14 @@ export async function verifyInstallHostCredentials(
 
 async function verifyDbUserCredentials(
   db: Db,
-  login: string,
+  email: string,
   password: string,
 ): Promise<VerifyResult> {
-  const trimmed = login.trim()
-  const byEmail = trimmed.includes('@')
+  const trimmed = email.trim().toLowerCase()
 
   const rows = await db
     .select({
       userId: user.id,
-      username: user.username,
       email: user.email,
       password: account.password,
       isDisabled: user.isDisabled,
@@ -144,9 +142,7 @@ async function verifyDbUserCredentials(
     )
     .where(
       and(
-        byEmail
-          ? eq(user.email, trimmed.toLowerCase())
-          : eq(user.username, trimmed),
+        eq(user.email, trimmed),
         bypassHyperdriveQueryCache(),
       ),
     )
@@ -169,19 +165,18 @@ async function verifyDbUserCredentials(
   return {
     ok: true,
     userId: row.userId,
-    username: row.username,
     email: row.email,
     isRoot: false,
   }
 }
 
 export async function verifyCredentials(
-  username: string,
+  login: string,
   password: string,
   runtime: AuthRuntime,
   db?: Db,
 ): Promise<VerifyResult> {
-  if (runtime === 'deno' && username === PAM_ROOT_USERNAME) {
+  if (runtime === 'deno' && login === PAM_ROOT_USERNAME) {
     if (db && await isInstanceInstalled(db)) {
       return { ok: false }
     }
@@ -205,5 +200,5 @@ export async function verifyCredentials(
     return { ok: false }
   }
 
-  return await verifyDbUserCredentials(db, username, password)
+  return await verifyDbUserCredentials(db, login, password)
 }

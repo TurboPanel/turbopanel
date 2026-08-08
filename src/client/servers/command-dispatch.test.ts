@@ -87,14 +87,14 @@ it('enqueueCommandOrCompensate marks the command failed when enqueue throws', as
   const db = createDenoDb()
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Command Dispatch Org' })
+    .values({ name: 'Command Dispatch Org' })
     .returning({ id: organization.id })
   const now = new Date().toISOString()
   const [insertedServer] = await db
     .insert(server)
     .values({
       organizationId: insertedOrg!.id,
-      displayName: 'Dispatch Server',
+      name: 'Dispatch Server',
       createdAt: now,
       updatedAt: now,
     })

@@ -36,7 +36,7 @@ async function withTestFixtures(
 
   const insertedOrg = await db
     .insert(organization)
-    .values({ displayName: 'Member Test Org' })
+    .values({ name: 'Member Test Org' })
     .returning({ id: organization.id })
 
   const organizationId = insertedOrg[0]!.id
@@ -52,7 +52,7 @@ async function withTestFixtures(
 
   const [insertedWorkspace] = await db
     .insert(workspace)
-    .values({ displayName: 'Test Workspace', organizationId })
+    .values({ name: 'Test Workspace', organizationId })
     .returning({ id: workspace.id })
 
   const workspaceId = insertedWorkspace!.id
@@ -213,7 +213,7 @@ test('invitation grant rejects cross-organization entity target', async () => {
   await withTestFixtures(async ({ db, userId, workspaceId }) => {
     const otherOrg = await db
       .insert(organization)
-      .values({ displayName: 'Other Org' })
+      .values({ name: 'Other Org' })
       .returning({ id: organization.id })
 
     const otherOrganizationId = otherOrg[0]!.id

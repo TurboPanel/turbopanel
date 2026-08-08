@@ -134,7 +134,7 @@ function postgresCatalogEntry(): CatalogEntry {
   return {
     code: 'postgres',
     kind: 'managed',
-    displayName: 'PostgreSQL',
+    name: 'PostgreSQL',
     description: 'Managed PostgreSQL database',
     compose: composeDocument({
       services: {
@@ -149,7 +149,7 @@ function postgresCatalogEntry(): CatalogEntry {
     },
     environments: [
       {
-        displayName: 'Production',
+        name: 'Production',
         description: 'Production environment',
         variables: [{ key: 'POSTGRES_PASSWORD', isSecret: true }],
       },
@@ -161,7 +161,7 @@ const CATALOG: CatalogEntry[] = [
   {
     code: 'wordpress-mysql',
     kind: 'template',
-    displayName: 'WordPress with MySQL',
+    name: 'WordPress with MySQL',
     description: 'WordPress site with MySQL database',
     compose: composeDocument({
       services: {
@@ -172,7 +172,7 @@ const CATALOG: CatalogEntry[] = [
     options: { stack: 'wordpress-mysql' },
     environments: [
       {
-        displayName: 'production',
+        name: 'production',
         description: 'Production environment',
         variables: [
           { key: 'MYSQL_ROOT_PASSWORD', isSecret: true },
@@ -184,7 +184,7 @@ const CATALOG: CatalogEntry[] = [
   {
     code: 'static-site',
     kind: 'template',
-    displayName: 'Static Site',
+    name: 'Static Site',
     description: 'Basic static web server template',
     compose: composeDocument({
       services: {
@@ -193,7 +193,7 @@ const CATALOG: CatalogEntry[] = [
     }),
     environments: [
       {
-        displayName: 'production',
+        name: 'production',
         description: 'Production environment',
       },
     ],
@@ -202,7 +202,7 @@ const CATALOG: CatalogEntry[] = [
   {
     code: 'mysql',
     kind: 'managed',
-    displayName: 'MySQL',
+    name: 'MySQL',
     description: 'Managed MySQL database',
     compose: composeDocument({
       services: {
@@ -217,7 +217,7 @@ const CATALOG: CatalogEntry[] = [
     },
     environments: [
       {
-        displayName: 'Production',
+        name: 'Production',
         description: 'Production environment',
         variables: [{ key: 'MYSQL_ROOT_PASSWORD', isSecret: true }],
       },
@@ -226,7 +226,7 @@ const CATALOG: CatalogEntry[] = [
   {
     code: 'mariadb',
     kind: 'managed',
-    displayName: 'MariaDB',
+    name: 'MariaDB',
     description: 'Managed MariaDB database',
     compose: composeDocument({
       services: {
@@ -241,7 +241,7 @@ const CATALOG: CatalogEntry[] = [
     },
     environments: [
       {
-        displayName: 'Production',
+        name: 'Production',
         description: 'Production environment',
         variables: [{ key: 'MYSQL_ROOT_PASSWORD', isSecret: true }],
       },
@@ -250,7 +250,7 @@ const CATALOG: CatalogEntry[] = [
   {
     code: 'redis',
     kind: 'managed',
-    displayName: 'Redis',
+    name: 'Redis',
     description: 'Managed Redis cache',
     compose: composeDocument({
       services: {
@@ -265,7 +265,7 @@ const CATALOG: CatalogEntry[] = [
     },
     environments: [
       {
-        displayName: 'Production',
+        name: 'Production',
         description: 'Production environment',
         variables: [{ key: 'REDIS_PASSWORD', isSecret: true }],
       },
@@ -274,7 +274,7 @@ const CATALOG: CatalogEntry[] = [
   {
     code: 'clickhouse',
     kind: 'managed',
-    displayName: 'ClickHouse',
+    name: 'ClickHouse',
     description: 'Managed ClickHouse analytics database',
     compose: composeDocument({
       services: {
@@ -289,7 +289,7 @@ const CATALOG: CatalogEntry[] = [
     },
     environments: [
       {
-        displayName: 'Production',
+        name: 'Production',
         description: 'Production environment',
         variables: [{ key: 'CLICKHOUSE_PASSWORD', isSecret: true }],
       },

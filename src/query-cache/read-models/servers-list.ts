@@ -47,7 +47,7 @@ export type ServersListDisplayPayload = {
  * SQL executed (read-only SELECT only; no transactions, mutations, or stable/
  * volatile PostgreSQL functions such as `now()`, `random()`, `nextval()`,
  * `clock_timestamp()`):
- *   1. `SELECT server.id, display_name, organization_id, license.id, options,
+ *   1. `SELECT server.id, name, organization_id, license.id, options,
  *      created_at FROM server LEFT JOIN license ON license.server_id = server.id
  *      WHERE server.id IN (:visibleIds) ORDER BY created_at`
  *   2. `SELECT id, daemon, metadata, hostname, machine_key, connected,
@@ -69,7 +69,7 @@ async function loadCachedListRows(
   const rows = await readDb
     .select({
       id: server.id,
-      displayName: server.displayName,
+      displayName: server.name,
       organizationId: server.organizationId,
       licenseId: license.id,
       options: server.options,

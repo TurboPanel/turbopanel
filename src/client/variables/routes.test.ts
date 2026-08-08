@@ -103,7 +103,7 @@ async function withVariableFixtures(
 
   const insertedOrg = await db
     .insert(organization)
-    .values({ displayName: 'Variable Route Test Org' })
+    .values({ name: 'Variable Route Test Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg[0]!.id
 
@@ -129,7 +129,7 @@ async function withVariableFixtures(
 
   const [insertedWorkspace] = await db
     .insert(workspace)
-    .values({ displayName: 'Variable Route Workspace', organizationId })
+    .values({ name: 'Variable Route Workspace', organizationId })
     .returning({ id: workspace.id })
   const workspaceId = insertedWorkspace!.id
 
@@ -149,7 +149,7 @@ async function withVariableFixtures(
   const [insertedProject] = await db
     .insert(project)
     .values({
-      displayName: 'Variable Route Project',
+      name: 'Variable Route Project',
       workspaceId,
       metadata: { serverId },
     })
@@ -159,7 +159,7 @@ async function withVariableFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      displayName: 'Variable Route Env',
+      name: 'Variable Route Env',
       projectId,
     })
     .returning({ id: environment.id })
@@ -168,10 +168,10 @@ async function withVariableFixtures(
   const [insertedService] = await db
     .insert(service)
     .values({
-      displayName: 'Variable Route Service',
-      environmentId,
+        environmentId,
+        name: 'variable-route-service',
       composeServiceName: 'variable-route-service',
-    })
+      })
     .returning({ id: service.id })
   const serviceId = insertedService!.id
 
@@ -516,7 +516,7 @@ test('PATCH /variables/:id rejects environmentId change', async () => {
   }) => {
     const [otherEnvironment] = await db
       .insert(environment)
-      .values({ displayName: 'Other Env', projectId })
+      .values({ name: 'Other Env', projectId })
       .returning({ id: environment.id })
 
     const [insertedVariable] = await db

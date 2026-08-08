@@ -26,7 +26,6 @@ import type { SessionData } from './session-store.ts'
 export type MockCredentialUser = {
   id: string
   email: string
-  username?: string | null
   password: string
   isDisabled?: boolean
   isEmailVerified?: boolean
@@ -35,7 +34,6 @@ export type MockCredentialUser = {
 export type MockAuthUser = {
   id: string
   email: string
-  username?: string | null
   isDisabled: boolean
   isEmailVerified: boolean
   role: string
@@ -54,7 +52,7 @@ export type MockAuthState = {
   credentials: Map<string, MockCredentialUser>
   users: MockAuthUser[]
   accounts: Array<{ userId: string; password: string }>
-  organizations: Array<{ id: string; displayName: string | null }>
+  organizations: Array<{ id: string; name: string | null }>
   settings: Map<string, string>
   licenses: Array<{
     id: string
@@ -104,17 +102,11 @@ function attemptsIdentifier(type: OtpType, emailHash: string): string {
 }
 
 function selectCredentialRow(state: MockAuthState, login: string) {
-  const trimmed = login.trim()
-  const byEmail = trimmed.includes('@')
-  const key = byEmail ? trimmed.toLowerCase() : trimmed
+  const key = login.trim().toLowerCase()
   for (const row of state.credentials.values()) {
-    const match = byEmail
-      ? row.email === key
-      : (row.username ?? '') === key
-    if (match) {
+    if (row.email === key) {
       return {
         userId: row.id,
-        username: row.username ?? null,
         email: row.email,
         password: row.password,
         isDisabled: row.isDisabled ?? false,
@@ -123,15 +115,11 @@ function selectCredentialRow(state: MockAuthState, login: string) {
     }
   }
   for (const row of state.users) {
-    const match = byEmail
-      ? row.email === key
-      : (row.username ?? '') === key
-    if (!match) continue
+    if (row.email !== key) continue
     const accountRow = state.accounts.find((a) => a.userId === row.id)
     if (!accountRow) continue
     return {
       userId: row.id,
-      username: row.username ?? null,
       email: row.email,
       password: accountRow.password,
       isDisabled: row.isDisabled,
@@ -205,7 +193,6 @@ function fetchInnerJoinRows(state: MockAuthState, table: unknown): Promise<Row[]
     return Promise.resolve([{
       sessionId: data.sessionId,
       userId: data.userId,
-      username: data.username,
       email: data.email,
       role: data.role,
       isDisabled: false,
@@ -236,14 +223,13 @@ function fetchWhereRows(
       isDisabled: row.isDisabled,
       isEmailVerified: row.isEmailVerified,
       email: row.email,
-      username: row.username ?? null,
       role: row.role,
     })))
   }
   if (table === organization) {
     return Promise.resolve(
       state.organizations
-        .filter((row) => row.displayName !== null)
+        .filter((row) => row.name !== null)
         .map((row) => ({ id: row.id })),
     )
   }
@@ -351,7 +337,6 @@ function handleInsertValues(
     state.sessions.set(token, {
       sessionId: crypto.randomUUID(),
       userId,
-      username: cred?.username ?? userRow?.username ?? null,
       email: cred?.email ?? userRow?.email ?? 'user@example.com',
       role: userRow?.role ?? 'user',
     })
@@ -362,11 +347,11 @@ function handleInsertValues(
     state.users.push({
       id,
       email: String(row.email),
-      username: (row.username as string | null | undefined) ?? null,
       isDisabled: Boolean(row.isDisabled),
       isEmailVerified: Boolean(row.isEmailVerified),
       role: String(row.role ?? 'user'),
-      displayName: (row.displayName as string | null | undefined) ?? null,
+      displayName: (row.name as string | null | undefined) ??
+        (row.displayName as string | null | undefined) ?? null,
     })
     return { returning: () => Promise.resolve([{ id }]) }
   }
@@ -381,7 +366,8 @@ function handleInsertValues(
     const id = crypto.randomUUID()
     state.organizations.push({
       id,
-      displayName: (row.displayName as string | null | undefined) ?? null,
+      name: (row.name as string | null | undefined) ??
+        (row.displayName as string | null | undefined) ?? null,
     })
     return { returning: () => Promise.resolve([{ id }]) }
   }
@@ -390,7 +376,8 @@ function handleInsertValues(
     state.licenses.push({
       id,
       organizationId: String(row.organizationId),
-      displayName: (row.displayName as string | null | undefined) ?? null,
+      displayName: (row.name as string | null | undefined) ??
+        (row.displayName as string | null | undefined) ?? null,
       token: String(row.token),
       revokedAt: null,
       serverId: null,
@@ -547,7 +534,6 @@ export function seedMockCredentialUser(
     state.users.push({
       id: cred.id,
       email: cred.email,
-      username: cred.username ?? null,
       isDisabled: cred.isDisabled ?? false,
       isEmailVerified: cred.isEmailVerified ?? true,
       role: 'user',
@@ -576,12 +562,11 @@ export function seedMockSession(
 export function seedMockInstalledInstance(state: MockAuthState): void {
   state.organizations.push({
     id: crypto.randomUUID(),
-    displayName: 'Default Organization',
+    name: 'Default Organization',
   })
   state.users.push({
     id: crypto.randomUUID(),
     email: 'root@example.com',
-    username: null,
     isDisabled: false,
     isEmailVerified: true,
     role: SUPERADMIN_ROLE,

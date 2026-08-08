@@ -55,7 +55,7 @@ export function ingressContainerNameFromService(serviceId: string): string {
 
 /**
  * Compose service key for a managed service's dedicated Traefik ingress.
- * Must satisfy `service_display_name_format_check` (`[A-Za-z0-9 ._-]+`, ≤255).
+ * Must satisfy `service_name_format_check` (`[A-Za-z0-9._-]+`, ≤255).
  */
 export function managedIngressComposeServiceName(
   engineComposeServiceName: string,
@@ -66,7 +66,7 @@ export function managedIngressComposeServiceName(
       `Invalid managed ingress compose service name length: ${name.length}`,
     )
   }
-  if (!/^[A-Za-z0-9 ._-]+$/.test(name)) {
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) {
     throw new TypeError(
       `Invalid managed ingress compose service name: ${engineComposeServiceName}`,
     )

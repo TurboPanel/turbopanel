@@ -60,13 +60,13 @@ import {
 import {
   parseServiceOptions,
   resolveServiceInstances,
-  type ServiceOptions,
 } from '../../lib/service-options.ts'
 import { validateRegisteredExternalDockerNetworks } from './validate-docker-external-networks.ts'
 import {
   allocateEnvironmentContainers,
   buildContainerServiceSpecs,
   ensureServiceIngressContainerAllocation,
+  readComposeContainerNames,
   type ContainerAllocation,
 } from './allocate-containers.ts'
 import { resolveTcpUdpIngressServices } from './tcp-udp-ingress.ts'
@@ -681,31 +681,26 @@ function listContainerComposeNames(document: ComposeDocument): Set<string> {
 function buildExpandedServiceOptionsMap(
   serviceRows: ServiceRow[],
   expansion: Map<string, string[]>,
-  allocations: readonly ContainerAllocation[],
 ): ServiceOptionsByComposeName {
   const originOptions = buildServiceOptionsMap(serviceRows)
-  const allocationByClone = new Map(
-    allocations.map((row) => [row.cloneComposeServiceName, row]),
-  )
   const map: ServiceOptionsByComposeName = new Map()
 
   for (const [originName, clones] of expansion) {
     const origin = originOptions.get(originName) ?? {}
     for (const cloneName of clones) {
-      const parsed: ServiceOptions = { ...origin }
-      // Allocation is the single source of truth for container_name — including
-      // explicit options.container.name (with per-ordinal suffixes when N > 1).
-      const allocation = allocationByClone.get(cloneName)
-      if (allocation) {
-        parsed.container = {
-          ...parsed.container,
-          name: allocation.containerName,
-        }
-      }
-      map.set(cloneName, parsed)
+      map.set(cloneName, { ...origin })
     }
   }
   return map
+}
+
+/** Build clone compose name → allocated container_name map for apply-service-options. */
+function buildContainerNameByComposeName(
+  allocations: readonly ContainerAllocation[],
+): Map<string, string> {
+  return new Map(
+    allocations.map((row) => [row.cloneComposeServiceName, row.containerName]),
+  )
 }
 
 function appendPlatformVariablesToEntries(
@@ -905,6 +900,7 @@ async function allocateExpandDeployPipeline(
   const containerServices = buildContainerServiceSpecs(
     params.serviceRows,
     containerComposeNames,
+    readComposeContainerNames(params.merged),
   )
 
   // Per-service tcp/udp Traefik rows — allocated before app prune so their
@@ -967,7 +963,6 @@ async function allocateExpandDeployPipeline(
     optionsByComposeName: buildExpandedServiceOptionsMap(
       params.serviceRows,
       expansion,
-      containers,
     ),
   }
 }
@@ -1204,6 +1199,7 @@ export async function prepareDeployCompose(
   const withServiceOptions = applyServiceOptionsToComposeDocument(
     documentForServiceOptions(mode, withVariables),
     pipeline.optionsByComposeName,
+    buildContainerNameByComposeName(pipeline.containers),
   )
 
   const storageMaterialRaw = await loadStorageMaterial(db, {

@@ -79,7 +79,7 @@ export async function scaffoldCatalogEnvironments(
       .insert(environment)
       .values({
         projectId,
-        displayName,
+        name: displayName,
         description: env.description ?? null,
         ...(serverId ? { serverId } : {}),
         options: env.compose ? { compose: env.compose } : null,
@@ -173,7 +173,7 @@ async function runCreateProjectTransaction(
   return db.transaction(async (tx) => {
     if (input.projectType === 'empty') {
       return insertEmptyProject(tx, {
-        displayName: input.displayName,
+        name: input.displayName,
         description: input.description,
         workspaceId: input.workspaceId,
         serverId: input.serverId,
@@ -183,7 +183,7 @@ async function runCreateProjectTransaction(
 
     if (input.projectType === 'docker-compose') {
       return insertDockerComposeProject(tx, {
-        displayName: input.displayName,
+        name: input.displayName,
         description: input.description,
         workspaceId: input.workspaceId,
         metadata: input.metadata,
@@ -202,7 +202,7 @@ async function runCreateProjectTransaction(
 
     return insertCatalogProject(tx, {
       projectType: input.projectType,
-      displayName: input.displayName,
+      name: input.displayName,
       description: input.description,
       workspaceId: input.workspaceId,
       metadata: input.metadata,
@@ -495,7 +495,7 @@ async function insertDockerComposeProject(
   const [inserted] = await tx
     .insert(project)
     .values({
-      displayName: fields.displayName,
+      name: fields.displayName,
       description: fields.description,
       workspaceId: fields.workspaceId,
       metadata: fields.metadata ?? { type: 'docker-compose' },
@@ -504,7 +504,7 @@ async function insertDockerComposeProject(
     .returning({ id: project.id })
   await tx.insert(environment).values({
     projectId: inserted.id,
-    displayName: fields.defaultEnvironmentName,
+    name: fields.defaultEnvironmentName,
     description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
     ...(fields.serverId ? { serverId: fields.serverId } : {}),
     options: { compose: emptyComposeDocument() },
@@ -547,7 +547,7 @@ async function insertCatalogProject(
   const [inserted] = await tx
     .insert(project)
     .values({
-      displayName: fields.displayName,
+      name: fields.displayName,
       description: fields.description,
       workspaceId: fields.workspaceId,
       metadata: fields.metadata ?? {
@@ -620,7 +620,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const rows = await db
       .select({
         id: project.id,
-        displayName: project.displayName,
+        displayName: project.name,
         description: project.description,
         workspaceId: project.workspaceId,
         metadata: project.metadata,
@@ -655,7 +655,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const rows = await db
       .select({
         id: project.id,
-        displayName: project.displayName,
+        displayName: project.name,
         description: project.description,
         workspaceId: project.workspaceId,
         metadata: project.metadata,
@@ -818,11 +818,11 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (patchFields instanceof Response) return patchFields
 
     if (
-      patchFields.displayName !== undefined &&
+      patchFields.name !== undefined &&
       (await isProjectDisplayNameTaken(
         db,
         organizationId,
-        patchFields.displayName,
+        patchFields.name,
         id,
       ))
     ) {

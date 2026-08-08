@@ -100,7 +100,7 @@ test('cachedServersListReadModel sorts visible ids and enriches from primary db'
   const listRows: ServersListRow[] = [
     {
       id: 'srv-b',
-      displayName: 'B',
+      name: 'B',
       organizationId: 'org-1',
       licenseId: null,
       options: null,
@@ -108,7 +108,7 @@ test('cachedServersListReadModel sorts visible ids and enriches from primary db'
     },
     {
       id: 'srv-a',
-      displayName: 'A',
+      name: 'A',
       organizationId: 'org-1',
       licenseId: 'lic-1',
       options: null,
@@ -165,7 +165,7 @@ test('cachedServersListReadModel skips enrichment when cached rows are empty', a
 test('cachedServersListReadModel uses redis cache key with sorted visible ids', async () => {
   const listRows: ServersListRow[] = [{
     id: 'srv-a',
-    displayName: 'A',
+    name: 'A',
     organizationId: 'org-1',
     licenseId: null,
     options: null,

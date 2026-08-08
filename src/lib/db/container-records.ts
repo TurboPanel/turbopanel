@@ -7,12 +7,11 @@ import {
 } from '../service-options.ts'
 import { container, service } from './schema.ts'
 
-/** Matches `service_display_name_format_check` in schema. */
-const SERVICE_DISPLAY_NAME_RE = /^[A-Za-z0-9 ._-]+$/
+/** Matches compose service-key charset used when minting from daemon reports. */
+const SERVICE_NAME_RE = /^[A-Za-z0-9._-]+$/
 
 type ServiceRow = {
   id: string
-  displayName: string | null
   composeServiceName: string
   options: unknown
 }
@@ -108,7 +107,7 @@ async function ensureServicesForReportedContainers(
     if (serviceIdByComposeName.has(baseComposeServiceName(reported.composeServiceName))) {
       continue
     }
-    if (!SERVICE_DISPLAY_NAME_RE.test(reported.composeServiceName)) continue
+    if (!SERVICE_NAME_RE.test(reported.composeServiceName)) continue
     if (reported.composeServiceName.length < 1 || reported.composeServiceName.length > 255) {
       continue
     }
@@ -123,13 +122,12 @@ async function ensureServicesForReportedContainers(
     .values(
       names.map((composeServiceName) => ({
         environmentId,
-        displayName: composeServiceName,
+        name: composeServiceName,
         composeServiceName,
       })),
     )
     .returning({
       id: service.id,
-      displayName: service.displayName,
       composeServiceName: service.composeServiceName,
       options: service.options,
     })
@@ -208,7 +206,6 @@ export async function reconcileEnvironmentContainers(
   let serviceRows = await db
     .select({
       id: service.id,
-      displayName: service.displayName,
       composeServiceName: service.composeServiceName,
       options: service.options,
     })

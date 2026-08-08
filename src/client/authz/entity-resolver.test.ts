@@ -31,7 +31,7 @@ test('resolveEntityById resolves network entities', async () => {
 
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Entity Resolver Org' })
+    .values({ name: 'Entity Resolver Org' })
     .returning({ id: organization.id })
 
   const organizationId = insertedOrg!.id
@@ -46,7 +46,7 @@ test('resolveEntityById resolves network entities', async () => {
 
   const [insertedServer] = await db
     .insert(server)
-    .values({ organizationId, displayName: 'Net Host' })
+    .values({ organizationId, name: 'Net Host' })
     .returning({ id: server.id })
 
   const serverId = insertedServer!.id
@@ -57,7 +57,7 @@ test('resolveEntityById resolves network entities', async () => {
       organizationId,
       serverId,
       kind: 'server',
-      displayName: 'Server net',
+      name: 'Server net',
     })
     .returning({ id: network.id })
 

@@ -27,20 +27,20 @@ describe('reconcileServicesFromCompose', () => {
 
     const db = createDenoDb()
 
-    const [orgRow] = await db.insert(organization).values({ displayName: 'Reconcile Org' }).returning({
+    const [orgRow] = await db.insert(organization).values({ name: 'Reconcile Org' }).returning({
       id: organization.id,
     })
     const [workspaceRow] = await db.insert(workspace).values({
       organizationId: orgRow.id,
-      displayName: 'Default',
+      name: 'Default',
     }).returning({ id: workspace.id })
     const [projectRow] = await db.insert(project).values({
       workspaceId: workspaceRow.id,
-      displayName: 'App',
+      name: 'App',
     }).returning({ id: project.id })
     const [envRow] = await db.insert(environment).values({
       projectId: projectRow.id,
-      displayName: 'Production',
+      name: 'Production',
     }).returning({ id: environment.id })
 
     const merged = assertComposeDocument({
@@ -87,16 +87,16 @@ describe('reconcileServicesFromCompose', () => {
 
     const db = createDenoDb()
 
-    const [orgRow] = await db.insert(organization).values({ displayName: 'Reconcile Org' }).returning({
+    const [orgRow] = await db.insert(organization).values({ name: 'Reconcile Org' }).returning({
       id: organization.id,
     })
     const [workspaceRow] = await db.insert(workspace).values({
       organizationId: orgRow.id,
-      displayName: 'Default',
+      name: 'Default',
     }).returning({ id: workspace.id })
     const [projectRow] = await db.insert(project).values({
       workspaceId: workspaceRow.id,
-      displayName: 'App',
+      name: 'App',
       options: {
         compose: {
           version: 1,
@@ -107,7 +107,7 @@ describe('reconcileServicesFromCompose', () => {
     }).returning({ id: project.id })
     const [envRow] = await db.insert(environment).values({
       projectId: projectRow.id,
-      displayName: 'Production',
+      name: 'Production',
       options: {
         compose: {
           version: 1,
@@ -142,16 +142,16 @@ describe('reconcileServicesFromCompose', () => {
 
     const db = createDenoDb()
 
-    const [orgRow] = await db.insert(organization).values({ displayName: 'Reconcile Org' }).returning({
+    const [orgRow] = await db.insert(organization).values({ name: 'Reconcile Org' }).returning({
       id: organization.id,
     })
     const [workspaceRow] = await db.insert(workspace).values({
       organizationId: orgRow.id,
-      displayName: 'Default',
+      name: 'Default',
     }).returning({ id: workspace.id })
     const [projectRow] = await db.insert(project).values({
       workspaceId: workspaceRow.id,
-      displayName: 'App',
+      name: 'App',
       options: {
         compose: {
           version: 1,
@@ -162,11 +162,11 @@ describe('reconcileServicesFromCompose', () => {
     }).returning({ id: project.id })
     const [envOne] = await db.insert(environment).values({
       projectId: projectRow.id,
-      displayName: 'Staging',
+      name: 'Staging',
     }).returning({ id: environment.id })
     const [envTwo] = await db.insert(environment).values({
       projectId: projectRow.id,
-      displayName: 'Production',
+      name: 'Production',
     }).returning({ id: environment.id })
 
     await reconcileServicesForProject(db, projectRow.id)
@@ -196,20 +196,20 @@ describe('reconcileServicesFromCompose', () => {
 
     const db = createDenoDb()
 
-    const [orgRow] = await db.insert(organization).values({ displayName: 'Reconcile Orphan Org' }).returning({
+    const [orgRow] = await db.insert(organization).values({ name: 'Reconcile Orphan Org' }).returning({
       id: organization.id,
     })
     const [workspaceRow] = await db.insert(workspace).values({
       organizationId: orgRow.id,
-      displayName: 'Default',
+      name: 'Default',
     }).returning({ id: workspace.id })
     const [projectRow] = await db.insert(project).values({
       workspaceId: workspaceRow.id,
-      displayName: 'App',
+      name: 'App',
     }).returning({ id: project.id })
     const [envRow] = await db.insert(environment).values({
       projectId: projectRow.id,
-      displayName: 'Production',
+      name: 'Production',
     }).returning({ id: environment.id })
 
     const full = assertComposeDocument({
@@ -253,21 +253,21 @@ describe('reconcileServicesFromCompose', () => {
 
     const db = createDenoDb()
 
-    const [orgRow] = await db.insert(organization).values({ displayName: 'Reconcile Invalid Org' }).returning({
+    const [orgRow] = await db.insert(organization).values({ name: 'Reconcile Invalid Org' }).returning({
       id: organization.id,
     })
     const [workspaceRow] = await db.insert(workspace).values({
       organizationId: orgRow.id,
-      displayName: 'Default',
+      name: 'Default',
     }).returning({ id: workspace.id })
     const [projectRow] = await db.insert(project).values({
       workspaceId: workspaceRow.id,
-      displayName: 'App',
+      name: 'App',
       options: { compose: 'not-a-document' },
     }).returning({ id: project.id })
     const [envRow] = await db.insert(environment).values({
       projectId: projectRow.id,
-      displayName: 'Production',
+      name: 'Production',
     }).returning({ id: environment.id })
 
     await reconcileServicesForEnvironment(db, envRow.id)

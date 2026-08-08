@@ -101,7 +101,7 @@ async function withCommandRecordFixtures(
   const db = createDenoDb()
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Command Records Test Org' })
+    .values({ name: 'Command Records Test Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -110,7 +110,7 @@ async function withCommandRecordFixtures(
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Command Records Server',
+      name: 'Command Records Server',
       createdAt: now,
       updatedAt: now,
     })

@@ -41,13 +41,13 @@ async function withReconcileFixtures(
 
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Container Reconcile Org' })
+    .values({ name: 'Container Reconcile Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
   const [insertedWorkspace] = await db
     .insert(workspace)
-    .values({ displayName: 'Container Reconcile Workspace', organizationId })
+    .values({ name: 'Container Reconcile Workspace', organizationId })
     .returning({ id: workspace.id })
   const workspaceId = insertedWorkspace!.id
 
@@ -56,7 +56,7 @@ async function withReconcileFixtures(
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Container Reconcile Server',
+      name: 'Container Reconcile Server',
       createdAt: now,
       updatedAt: now,
     })
@@ -66,7 +66,7 @@ async function withReconcileFixtures(
   const [insertedProject] = await db
     .insert(project)
     .values({
-      displayName: 'Container Reconcile Project',
+      name: 'Container Reconcile Project',
       workspaceId,
     })
     .returning({ id: project.id })
@@ -75,7 +75,7 @@ async function withReconcileFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      displayName: 'Container Reconcile Env',
+      name: 'Container Reconcile Env',
       projectId,
     })
     .returning({ id: environment.id })
@@ -84,7 +84,7 @@ async function withReconcileFixtures(
   const [webService] = await db
     .insert(service)
     .values({
-      displayName: 'web',
+      name: 'web',
       environmentId,
       composeServiceName: 'web',
     })
@@ -94,7 +94,7 @@ async function withReconcileFixtures(
   const [workerService] = await db
     .insert(service)
     .values({
-      displayName: 'worker',
+      name: 'worker',
       environmentId,
       composeServiceName: 'worker',
     })
@@ -351,13 +351,13 @@ test('reconcileEnvironmentContainers creates missing services from the report', 
 
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Container Reconcile Org' })
+    .values({ name: 'Container Reconcile Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
   const [insertedWorkspace] = await db
     .insert(workspace)
-    .values({ displayName: 'Container Reconcile Workspace', organizationId })
+    .values({ name: 'Container Reconcile Workspace', organizationId })
     .returning({ id: workspace.id })
   const workspaceId = insertedWorkspace!.id
 
@@ -366,7 +366,7 @@ test('reconcileEnvironmentContainers creates missing services from the report', 
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Container Reconcile Server',
+      name: 'Container Reconcile Server',
       createdAt: now,
       updatedAt: now,
     })
@@ -376,7 +376,7 @@ test('reconcileEnvironmentContainers creates missing services from the report', 
   const [insertedProject] = await db
     .insert(project)
     .values({
-      displayName: 'Container Reconcile Project',
+      name: 'Container Reconcile Project',
       workspaceId,
     })
     .returning({ id: project.id })
@@ -385,7 +385,7 @@ test('reconcileEnvironmentContainers creates missing services from the report', 
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      displayName: 'Container Reconcile Env',
+      name: 'Container Reconcile Env',
       projectId,
     })
     .returning({ id: environment.id })
@@ -409,7 +409,7 @@ test('reconcileEnvironmentContainers creates missing services from the report', 
     const serviceRows = await db
       .select({
         id: service.id,
-        displayName: service.displayName,
+        displayName: service.name,
         composeServiceName: service.composeServiceName,
       })
       .from(service)

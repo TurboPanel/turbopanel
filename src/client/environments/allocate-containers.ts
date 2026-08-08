@@ -6,8 +6,8 @@
  * (update `server_id`) so previewed UUID names stay stable and stale pending
  * rows on a previous server are not left behind.
  * Names come from {@link containerNameFromService} (service UUID) or an
- * explicit `service.options.container.name` — applied in every project naming
- * mode, with `-<ordinal>` suffixes when `instances > 1`.
+ * explicit compose `services.<key>.container_name` — applied in every project
+ * naming mode, with `-<ordinal>` suffixes when `instances > 1`.
  */
 
 import { and, eq, gt, inArray, isNull, ne, notInArray } from 'drizzle-orm'
@@ -18,6 +18,7 @@ import {
 } from '../../lib/naming.ts'
 import type { ContainerNamingMode } from '../../lib/project-options.ts'
 import { parseServiceOptions } from '../../lib/service-options.ts'
+import type { ComposeDocument } from '../../lib/compose/types.ts'
 import { container } from '../../lib/db/schema.ts'
 
 export type ContainerWorkloadRole = 'service' | 'system'
@@ -26,7 +27,7 @@ export type ContainerServiceSpec = {
   serviceId: string
   composeServiceName: string
   instances: number
-  /** Explicit `service.options.container.name` when set. */
+  /** Explicit compose `container_name` when set. */
   explicitContainerName?: string
   /** Workload role for allocated rows; defaults to `'service'`. */
   role?: ContainerWorkloadRole
@@ -70,10 +71,10 @@ function shouldAllocateService(
 /**
  * Resolve the compose `container_name` stored on the allocation row.
  *
- * Explicit `service.options.container.name` wins in every project naming mode.
- * Otherwise the name is derived from the **service** id (not the container
- * row). Multi-instance services append `-<ordinal>` so clones never share a
- * name.
+ * Explicit compose `services.<key>.container_name` wins in every project
+ * naming mode. Otherwise the name is derived from the **service** id (not the
+ * container row). Multi-instance services append `-<ordinal>` so clones never
+ * share a name.
  */
 export function resolveAllocatedContainerName(input: {
   explicitContainerName: string | undefined
@@ -332,7 +333,7 @@ export async function ensureServiceIngressContainerAllocation(
  * Idempotently allocate container rows for container compose services.
  *
  * Skips allocation when `containerNaming === 'custom'` and the service has no
- * explicit `options.container.name` (Compose-default names; rows come from
+ * explicit compose `container_name` (Compose-default names; rows come from
  * reconcile after the daemon report).
  */
 export async function allocateEnvironmentContainers(
@@ -386,6 +387,31 @@ export async function allocateEnvironmentContainers(
   return allocations
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Read explicit `container_name` values from a merged compose document,
+ * keyed by compose service name.
+ */
+export function readComposeContainerNames(
+  document: ComposeDocument,
+): Map<string, string> {
+  const map = new Map<string, string>()
+  const services = document.data.services
+  if (!isRecord(services)) return map
+  for (const [name, raw] of Object.entries(services)) {
+    if (!isRecord(raw)) continue
+    const containerName = raw.container_name
+    if (typeof containerName !== 'string') continue
+    const trimmed = containerName.trim()
+    if (trimmed.length === 0) continue
+    map.set(name, trimmed)
+  }
+  return map
+}
+
 /** Build {@link ContainerServiceSpec} list from service rows + compose names. */
 export function buildContainerServiceSpecs(
   serviceRows: ReadonlyArray<{
@@ -394,13 +420,18 @@ export function buildContainerServiceSpecs(
     options: unknown
   }>,
   containerComposeNames: ReadonlySet<string>,
+  /**
+   * Explicit container names keyed by compose service name (from
+   * `services.<key>.container_name` on the merged compose document).
+   */
+  explicitContainerNames?: ReadonlyMap<string, string>,
 ): ContainerServiceSpec[] {
   const specs: ContainerServiceSpec[] = []
   for (const row of serviceRows) {
     if (!containerComposeNames.has(row.composeServiceName)) continue
     const parsed = parseServiceOptions(row.options) ?? {}
     const instances = parsed.instances ?? 1
-    const explicitContainerName = parsed.container?.name
+    const explicitContainerName = explicitContainerNames?.get(row.composeServiceName)
     specs.push({
       serviceId: row.id,
       composeServiceName: row.composeServiceName,

@@ -127,13 +127,13 @@ test('resolveServerId creates row for licensed enrollment', async () => {
   await withTestDb(async (db) => {
     const [org] = await db
       .insert(organization)
-      .values({ displayName: 'Server Registry Test Org' })
+      .values({ name: 'Server Registry Test Org' })
       .returning({ id: organization.id })
 
     const organizationId = org!.id
     const { licenseId, licenseToken } = await createLicense(db, {
       organizationId,
-      displayName: 'Server Registry Test License',
+      name: 'Server Registry Test License',
     })
 
     const hostname = `licensed-${crypto.randomUUID()}`
@@ -203,7 +203,7 @@ test('getServerLicenseBinding prefers an active bound license', async () => {
     const now = new Date().toISOString()
     const [org] = await db
       .insert(organization)
-      .values({ displayName: 'Active Binding Org' })
+      .values({ name: 'Active Binding Org' })
       .returning({ id: organization.id })
     const organizationId = org!.id
 
@@ -220,7 +220,7 @@ test('getServerLicenseBinding prefers an active bound license', async () => {
 
     const { licenseId } = await createLicense(db, {
       organizationId,
-      displayName: 'Active Bound',
+      name: 'Active Bound',
     })
     await db
       .update(license)
@@ -244,7 +244,7 @@ test('getServerLicenseBinding surfaces a revoked-only latch for fail-closed chec
     const now = new Date().toISOString()
     const [org] = await db
       .insert(organization)
-      .values({ displayName: 'Revoked Binding Org' })
+      .values({ name: 'Revoked Binding Org' })
       .returning({ id: organization.id })
     const organizationId = org!.id
 
@@ -261,7 +261,7 @@ test('getServerLicenseBinding surfaces a revoked-only latch for fail-closed chec
 
     const { licenseId } = await createLicense(db, {
       organizationId,
-      displayName: 'Revoked Bound',
+      name: 'Revoked Bound',
     })
     await db
       .update(license)
@@ -285,13 +285,13 @@ test('resolveServerId rejects a second host once the license is latched', async 
   await withTestDb(async (db) => {
     const [org] = await db
       .insert(organization)
-      .values({ displayName: 'One-Shot License Org' })
+      .values({ name: 'One-Shot License Org' })
       .returning({ id: organization.id })
 
     const organizationId = org!.id
     const { licenseId, licenseToken } = await createLicense(db, {
       organizationId,
-      displayName: 'One-Shot License',
+      name: 'One-Shot License',
     })
 
     const first = await resolveServerId(db, {

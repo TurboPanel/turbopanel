@@ -18,7 +18,6 @@ export function isAdminRole(role: string | null | undefined): boolean {
 export type SessionData = {
   sessionId: string
   userId: string
-  username: string | null
   email: string
   role: string
 }
@@ -63,7 +62,6 @@ export async function getSession(
     .select({
       sessionId: session.id,
       userId: session.userId,
-      username: user.username,
       email: user.email,
       role: user.role,
       isDisabled: user.isDisabled,
@@ -91,7 +89,6 @@ export async function getSession(
   return {
     sessionId: row.sessionId,
     userId: row.userId,
-    username: row.username,
     email: row.email,
     role: row.role,
   }

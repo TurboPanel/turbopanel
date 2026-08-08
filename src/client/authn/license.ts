@@ -43,7 +43,7 @@ export async function createLicense(
     .insert(license)
     .values({
       organizationId: opts.organizationId,
-      displayName: opts.displayName ?? null,
+      name: opts.displayName ?? null,
       token: hashed,
       createdAt: now,
       updatedAt: now,
@@ -135,7 +135,7 @@ export async function listServersBoundToLicenses(
     .select({
       licenseId: license.id,
       id: server.id,
-      displayName: server.displayName,
+      displayName: server.name,
     })
     .from(license)
     .innerJoin(server, eq(server.id, license.serverId))
@@ -159,7 +159,7 @@ export async function listLicenses(
     .select({
       id: license.id,
       organizationId: license.organizationId,
-      displayName: license.displayName,
+      displayName: license.name,
       createdAt: license.createdAt,
     })
     .from(license)

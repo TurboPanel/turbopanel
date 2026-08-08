@@ -77,7 +77,7 @@ async function withPrincipalFixtures(
 
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Principal Route Test Org' })
+    .values({ name: 'Principal Route Test Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -103,14 +103,14 @@ async function withPrincipalFixtures(
 
   const [insertedWorkspace] = await db
     .insert(workspace)
-    .values({ displayName: 'Principal Route Workspace', organizationId })
+    .values({ name: 'Principal Route Workspace', organizationId })
     .returning({ id: workspace.id })
   const workspaceId = insertedWorkspace!.id
 
   const [insertedProject] = await db
     .insert(project)
     .values({
-      displayName: 'Principal Route Project',
+      name: 'Principal Route Project',
       workspaceId,
     })
     .returning({ id: project.id })

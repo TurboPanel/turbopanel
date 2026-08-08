@@ -182,7 +182,7 @@ async function withConsumerFixtures(
   const db = createDenoDb()
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Command Consumer Test Org' })
+    .values({ name: 'Command Consumer Test Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -193,7 +193,7 @@ async function withConsumerFixtures(
       createdAt: now,
       updatedAt: now,
       organizationId,
-      displayName: 'Consumer Test Server',
+      name: 'Consumer Test Server',
     })
     .returning({ id: server.id })
   const serverId = insertedServer!.id
@@ -576,7 +576,7 @@ test('processCommandEnvelope wireguard reconcile preserves tunnel_ip_id', async 
     const [vpnRow] = await db.insert(vpn).values({
       organizationId,
       cidr: '203.0.113.0/24',
-      displayName: 'Consumer Mesh',
+      name: 'Consumer Mesh',
     }).returning({ id: vpn.id })
     const [tunnel] = await db.insert(ip).values({
       organizationId,
@@ -669,13 +669,13 @@ async function withManagedDestroyFixtures(
 
     const [workspaceRow] = await db
       .insert(workspace)
-      .values({ organizationId, displayName: 'Managed Destroy Test Workspace' })
+      .values({ organizationId, name: 'Managed Destroy Test Workspace' })
       .returning({ id: workspace.id })
     const [projectRow] = await db
       .insert(project)
       .values({
         workspaceId: workspaceRow!.id,
-        displayName: 'Managed Destroy Test Project',
+        name: 'Managed Destroy Test Project',
         metadata: { type: 'managed' },
       })
       .returning({ id: project.id })
@@ -684,7 +684,7 @@ async function withManagedDestroyFixtures(
       .values({
         projectId: projectRow!.id,
         serverId,
-        displayName: 'Production',
+        name: 'Production',
       })
       .returning({ id: environment.id })
     const [managedRow] = await db
@@ -692,7 +692,7 @@ async function withManagedDestroyFixtures(
       .values({
         environmentId: environmentRow!.id,
         serverId,
-        displayName: 'Managed Destroy Test Postgres',
+        name: 'Managed Destroy Test Postgres',
         engine: 'postgres',
         status: 'ready',
         metadata: {},
@@ -870,13 +870,13 @@ test('processCommandEnvelope reconciles containers on environment.lifecycle succ
 
     const [workspaceRow] = await db
       .insert(workspace)
-      .values({ organizationId, displayName: 'Lifecycle Reconcile Workspace' })
+      .values({ organizationId, name: 'Lifecycle Reconcile Workspace' })
       .returning({ id: workspace.id })
     const [projectRow] = await db
       .insert(project)
       .values({
         workspaceId: workspaceRow!.id,
-        displayName: 'Lifecycle Reconcile Project',
+        name: 'Lifecycle Reconcile Project',
         metadata: { type: 'docker-compose' },
       })
       .returning({ id: project.id })
@@ -885,7 +885,7 @@ test('processCommandEnvelope reconciles containers on environment.lifecycle succ
       .values({
         projectId: projectRow!.id,
         serverId,
-        displayName: 'Production',
+        name: 'Production',
       })
       .returning({ id: environment.id })
     const environmentId = environmentRow!.id
@@ -893,8 +893,8 @@ test('processCommandEnvelope reconciles containers on environment.lifecycle succ
       .insert(service)
       .values({
         environmentId,
-        displayName: 'web',
-        composeServiceName: 'web',
+        name: 'web',
+      composeServiceName: 'web',
       })
       .returning({ id: service.id })
     await db.insert(container).values({
@@ -976,13 +976,13 @@ test('processCommandEnvelope skips reconcile when environment.lifecycle omits co
 
     const [workspaceRow] = await db
       .insert(workspace)
-      .values({ organizationId, displayName: 'Lifecycle Skip Workspace' })
+      .values({ organizationId, name: 'Lifecycle Skip Workspace' })
       .returning({ id: workspace.id })
     const [projectRow] = await db
       .insert(project)
       .values({
         workspaceId: workspaceRow!.id,
-        displayName: 'Lifecycle Skip Project',
+        name: 'Lifecycle Skip Project',
         metadata: { type: 'docker-compose' },
       })
       .returning({ id: project.id })
@@ -991,7 +991,7 @@ test('processCommandEnvelope skips reconcile when environment.lifecycle omits co
       .values({
         projectId: projectRow!.id,
         serverId,
-        displayName: 'Production',
+        name: 'Production',
       })
       .returning({ id: environment.id })
     const environmentId = environmentRow!.id
@@ -999,8 +999,8 @@ test('processCommandEnvelope skips reconcile when environment.lifecycle omits co
       .insert(service)
       .values({
         environmentId,
-        displayName: 'web',
-        composeServiceName: 'web',
+        name: 'web',
+      composeServiceName: 'web',
       })
       .returning({ id: service.id })
     await db.insert(container).values({
@@ -1073,13 +1073,13 @@ test('processCommandEnvelope reconciles containers on system.reconcile success',
 
     const [workspaceRow] = await db
       .insert(workspace)
-      .values({ organizationId, displayName: 'System Reconcile Workspace' })
+      .values({ organizationId, name: 'System Reconcile Workspace' })
       .returning({ id: workspace.id })
     const [projectRow] = await db
       .insert(project)
       .values({
         workspaceId: workspaceRow!.id,
-        displayName: 'System Reconcile Project',
+        name: 'System Reconcile Project',
         metadata: { type: 'docker-compose', component: 'hosting-ingress' },
       })
       .returning({ id: project.id })
@@ -1088,7 +1088,7 @@ test('processCommandEnvelope reconciles containers on system.reconcile success',
       .values({
         projectId: projectRow!.id,
         serverId,
-        displayName: 'Hosting Ingress',
+        name: 'Hosting Ingress',
         metadata: { component: 'hosting-ingress' },
       })
       .returning({ id: environment.id })
@@ -1097,8 +1097,8 @@ test('processCommandEnvelope reconciles containers on system.reconcile success',
       .insert(service)
       .values({
         environmentId,
-        displayName: 'traefik',
-        composeServiceName: 'traefik',
+        name: 'traefik',
+      composeServiceName: 'traefik',
       })
       .returning({ id: service.id })
     const serviceId = serviceRow!.id
@@ -1201,13 +1201,13 @@ test('processCommandEnvelope skips reconcile when system.reconcile omits contain
 
     const [workspaceRow] = await db
       .insert(workspace)
-      .values({ organizationId, displayName: 'System Skip Workspace' })
+      .values({ organizationId, name: 'System Skip Workspace' })
       .returning({ id: workspace.id })
     const [projectRow] = await db
       .insert(project)
       .values({
         workspaceId: workspaceRow!.id,
-        displayName: 'System Skip Project',
+        name: 'System Skip Project',
         metadata: { type: 'docker-compose', component: 'hosting-ingress' },
       })
       .returning({ id: project.id })
@@ -1216,7 +1216,7 @@ test('processCommandEnvelope skips reconcile when system.reconcile omits contain
       .values({
         projectId: projectRow!.id,
         serverId,
-        displayName: 'Hosting Ingress',
+        name: 'Hosting Ingress',
         metadata: { component: 'hosting-ingress' },
       })
       .returning({ id: environment.id })
@@ -1225,8 +1225,8 @@ test('processCommandEnvelope skips reconcile when system.reconcile omits contain
       .insert(service)
       .values({
         environmentId,
-        displayName: 'traefik',
-        composeServiceName: 'traefik',
+        name: 'traefik',
+      composeServiceName: 'traefik',
       })
       .returning({ id: service.id })
     const serviceId = serviceRow!.id
@@ -1308,13 +1308,13 @@ test('processCommandEnvelope clears pins when system.reconcile reports empty con
 
     const [workspaceRow] = await db
       .insert(workspace)
-      .values({ organizationId, displayName: 'System Empty Workspace' })
+      .values({ organizationId, name: 'System Empty Workspace' })
       .returning({ id: workspace.id })
     const [projectRow] = await db
       .insert(project)
       .values({
         workspaceId: workspaceRow!.id,
-        displayName: 'System Empty Project',
+        name: 'System Empty Project',
         metadata: { type: 'docker-compose', component: 'hosting-ingress' },
       })
       .returning({ id: project.id })
@@ -1323,7 +1323,7 @@ test('processCommandEnvelope clears pins when system.reconcile reports empty con
       .values({
         projectId: projectRow!.id,
         serverId,
-        displayName: 'Hosting Ingress',
+        name: 'Hosting Ingress',
         metadata: { component: 'hosting-ingress' },
       })
       .returning({ id: environment.id })
@@ -1332,8 +1332,8 @@ test('processCommandEnvelope clears pins when system.reconcile reports empty con
       .insert(service)
       .values({
         environmentId,
-        displayName: 'traefik',
-        composeServiceName: 'traefik',
+        name: 'traefik',
+      composeServiceName: 'traefik',
       })
       .returning({ id: service.id })
     const serviceId = serviceRow!.id
@@ -1421,13 +1421,13 @@ test('processCommandEnvelope maps a labelled self-host system.reconcile report o
 
     const [workspaceRow] = await db
       .insert(workspace)
-      .values({ organizationId, displayName: 'Self-Host Reconcile Workspace' })
+      .values({ organizationId, name: 'Self-Host Reconcile Workspace' })
       .returning({ id: workspace.id })
     const [projectRow] = await db
       .insert(project)
       .values({
         workspaceId: workspaceRow!.id,
-        displayName: 'TurboPanel',
+        name: 'TurboPanel',
         metadata: { type: 'docker-compose', component: 'turbopanel' },
       })
       .returning({ id: project.id })
@@ -1436,7 +1436,7 @@ test('processCommandEnvelope maps a labelled self-host system.reconcile report o
       .values({
         projectId: projectRow!.id,
         serverId,
-        displayName: 'Production',
+        name: 'Production',
         metadata: { component: 'turbopanel' },
       })
       .returning({ id: environment.id })
@@ -1445,8 +1445,8 @@ test('processCommandEnvelope maps a labelled self-host system.reconcile report o
       .insert(service)
       .values({
         environmentId,
-        displayName: 'database',
-        composeServiceName: 'database',
+        name: 'database',
+      composeServiceName: 'database',
       })
       .returning({ id: service.id })
     const serviceId = serviceRow!.id
@@ -1555,13 +1555,13 @@ test('processCommandEnvelope leaves a missing self-host system container exited 
 
     const [workspaceRow] = await db
       .insert(workspace)
-      .values({ organizationId, displayName: 'Self-Host Missing Workspace' })
+      .values({ organizationId, name: 'Self-Host Missing Workspace' })
       .returning({ id: workspace.id })
     const [projectRow] = await db
       .insert(project)
       .values({
         workspaceId: workspaceRow!.id,
-        displayName: 'TurboPanel',
+        name: 'TurboPanel',
         metadata: { type: 'docker-compose', component: 'turbopanel' },
       })
       .returning({ id: project.id })
@@ -1570,7 +1570,7 @@ test('processCommandEnvelope leaves a missing self-host system container exited 
       .values({
         projectId: projectRow!.id,
         serverId,
-        displayName: 'Production',
+        name: 'Production',
         metadata: { component: 'turbopanel' },
       })
       .returning({ id: environment.id })
@@ -1579,8 +1579,8 @@ test('processCommandEnvelope leaves a missing self-host system container exited 
       .insert(service)
       .values({
         environmentId,
-        displayName: 'queue',
-        composeServiceName: 'queue',
+        name: 'queue',
+      composeServiceName: 'queue',
       })
       .returning({ id: service.id })
     const serviceId = serviceRow!.id
@@ -1673,13 +1673,13 @@ test('processCommandEnvelope keeps unmatched self-host expected rows on partial 
 
     const [workspaceRow] = await db
       .insert(workspace)
-      .values({ organizationId, displayName: 'Self-Host Partial Workspace' })
+      .values({ organizationId, name: 'Self-Host Partial Workspace' })
       .returning({ id: workspace.id })
     const [projectRow] = await db
       .insert(project)
       .values({
         workspaceId: workspaceRow!.id,
-        displayName: 'TurboPanel',
+        name: 'TurboPanel',
         metadata: { type: 'docker-compose', component: 'turbopanel' },
       })
       .returning({ id: project.id })
@@ -1688,7 +1688,7 @@ test('processCommandEnvelope keeps unmatched self-host expected rows on partial 
       .values({
         projectId: projectRow!.id,
         serverId,
-        displayName: 'Production',
+        name: 'Production',
       })
       .returning({ id: environment.id })
     const environmentId = environmentRow!.id
@@ -1701,8 +1701,7 @@ test('processCommandEnvelope keeps unmatched self-host expected rows on partial 
         .insert(service)
         .values({
           environmentId,
-          displayName: composeServiceName,
-          composeServiceName,
+          name: composeServiceName,
         })
         .returning({ id: service.id })
       const serviceId = serviceRow!.id
@@ -1911,13 +1910,13 @@ async function withDeployFixtures(
   await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
     const [workspaceRow] = await db
       .insert(workspace)
-      .values({ organizationId, displayName: 'Deploy Consumer Workspace' })
+      .values({ organizationId, name: 'Deploy Consumer Workspace' })
       .returning({ id: workspace.id })
     const [projectRow] = await db
       .insert(project)
       .values({
         workspaceId: workspaceRow!.id,
-        displayName: 'Deploy Consumer Project',
+        name: 'Deploy Consumer Project',
         metadata: { type: 'docker-compose' },
       })
       .returning({ id: project.id })
@@ -1926,7 +1925,7 @@ async function withDeployFixtures(
       .values({
         projectId: projectRow!.id,
         serverId,
-        displayName: 'Production',
+        name: 'Production',
       })
       .returning({ id: environment.id })
     const environmentId = environmentRow!.id
@@ -1934,8 +1933,8 @@ async function withDeployFixtures(
       .insert(service)
       .values({
         environmentId,
-        displayName: 'web',
-        composeServiceName: 'web',
+        name: 'web',
+      composeServiceName: 'web',
       })
       .returning({ id: service.id })
 
@@ -2001,8 +2000,8 @@ async function withManagedApplyFixtures(
       .insert(service)
       .values({
         environmentId,
-        displayName: 'postgres',
-        composeServiceName: 'postgres',
+        name: 'postgres',
+      composeServiceName: 'postgres',
       })
       .returning({ id: service.id })
 

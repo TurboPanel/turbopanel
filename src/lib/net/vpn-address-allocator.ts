@@ -67,7 +67,7 @@ async function insertVpnTunnelIp(
       allocation: 'dedicated',
       scope: 'vpn',
       ...(params.displayName !== undefined
-        ? { displayName: params.displayName }
+        ? { name: params.displayName }
         : {}),
     })
     .returning({ id: ip.id, address: ip.address })
@@ -102,7 +102,7 @@ async function loadVpnAndServer(
 
   const [serverRow] = await tx
     .select({
-      displayName: server.displayName,
+      displayName: server.name,
       hostname: server.hostname,
     })
     .from(server)
@@ -144,7 +144,7 @@ export async function allocateVpnTunnelIpOnce(
     vpnId: params.vpnId,
     serverId: params.serverId,
     address: candidate,
-    displayName: params.displayName ?? context.displayName,
+    name: params.displayName ?? context.displayName,
   })
 }
 
@@ -244,7 +244,7 @@ export async function createVpnTunnelIpAtOnce(
     vpnId: params.vpnId,
     serverId: params.serverId,
     address,
-    displayName: params.displayName ?? context.displayName,
+    name: params.displayName ?? context.displayName,
   })
 }
 

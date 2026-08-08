@@ -46,14 +46,14 @@ async function withAncestryFixtures(
 
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Workspace Kind Ancestry Org' })
+    .values({ name: 'Workspace Kind Ancestry Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
   const [insertedUserWorkspace] = await db
     .insert(workspace)
     .values({
-      displayName: 'User Workspace',
+      name: 'User Workspace',
       organizationId,
       kind: WORKSPACE_KIND_USER,
     })
@@ -63,7 +63,7 @@ async function withAncestryFixtures(
   const [insertedSystemWorkspace] = await db
     .insert(workspace)
     .values({
-      displayName: 'System Workspace',
+      name: 'System Workspace',
       organizationId,
       kind: WORKSPACE_KIND_SYSTEM,
     })
@@ -82,13 +82,13 @@ test('resolveWorkspaceKindForEntity returns kind for managed-scoped principals',
   await withAncestryFixtures(async ({ db, userWorkspaceId, systemWorkspaceId }) => {
     const [userProject] = await db
       .insert(project)
-      .values({ displayName: 'User Managed Project', workspaceId: userWorkspaceId })
+      .values({ name: 'User Managed Project', workspaceId: userWorkspaceId })
       .returning({ id: project.id })
     const userProjectId = userProject!.id
 
     const [userEnv] = await db
       .insert(environment)
-      .values({ displayName: 'User Managed Env', projectId: userProjectId })
+      .values({ name: 'User Managed Env', projectId: userProjectId })
       .returning({ id: environment.id })
     const userEnvironmentId = userEnv!.id
 
@@ -111,13 +111,13 @@ test('resolveWorkspaceKindForEntity returns kind for managed-scoped principals',
 
     const [systemProject] = await db
       .insert(project)
-      .values({ displayName: 'System Managed Project', workspaceId: systemWorkspaceId })
+      .values({ name: 'System Managed Project', workspaceId: systemWorkspaceId })
       .returning({ id: project.id })
     const systemProjectId = systemProject!.id
 
     const [systemEnv] = await db
       .insert(environment)
-      .values({ displayName: 'System Managed Env', projectId: systemProjectId })
+      .values({ name: 'System Managed Env', projectId: systemProjectId })
       .returning({ id: environment.id })
     const systemEnvironmentId = systemEnv!.id
 
@@ -164,19 +164,19 @@ test('resolveWorkspaceKindForEntity walks workspace, project, and environment an
   await withAncestryFixtures(async ({ db, userWorkspaceId, systemWorkspaceId }) => {
     const [userProject] = await db
       .insert(project)
-      .values({ displayName: 'User Project', workspaceId: userWorkspaceId })
+      .values({ name: 'User Project', workspaceId: userWorkspaceId })
       .returning({ id: project.id })
     const userProjectId = userProject!.id
 
     const [userEnv] = await db
       .insert(environment)
-      .values({ displayName: 'User Env', projectId: userProjectId })
+      .values({ name: 'User Env', projectId: userProjectId })
       .returning({ id: environment.id })
     const userEnvironmentId = userEnv!.id
 
     const [systemProject] = await db
       .insert(project)
-      .values({ displayName: 'System Project', workspaceId: systemWorkspaceId })
+      .values({ name: 'System Project', workspaceId: systemWorkspaceId })
       .returning({ id: project.id })
     const systemProjectId = systemProject!.id
 
@@ -222,13 +222,13 @@ test('resolveWorkspaceKindForEntity resolves service and hosting descendants', a
   await withAncestryFixtures(async ({ db, systemWorkspaceId }) => {
     const [systemProject] = await db
       .insert(project)
-      .values({ displayName: 'System Service Project', workspaceId: systemWorkspaceId })
+      .values({ name: 'System Service Project', workspaceId: systemWorkspaceId })
       .returning({ id: project.id })
     const systemProjectId = systemProject!.id
 
     const [systemEnv] = await db
       .insert(environment)
-      .values({ displayName: 'System Service Env', projectId: systemProjectId })
+      .values({ name: 'System Service Env', projectId: systemProjectId })
       .returning({ id: environment.id })
     const systemEnvironmentId = systemEnv!.id
 
@@ -236,8 +236,8 @@ test('resolveWorkspaceKindForEntity resolves service and hosting descendants', a
       .insert(service)
       .values({
         environmentId: systemEnvironmentId,
-        displayName: 'web',
-        composeServiceName: 'web',
+        name: 'web',
+      composeServiceName: 'web',
       })
       .returning({ id: service.id })
     const systemServiceId = systemService!.id
@@ -273,13 +273,13 @@ test('resolveWorkspaceKindForEntity resolves environment-scoped variables', asyn
   await withAncestryFixtures(async ({ db, userWorkspaceId }) => {
     const [userProject] = await db
       .insert(project)
-      .values({ displayName: 'Variable Project', workspaceId: userWorkspaceId })
+      .values({ name: 'Variable Project', workspaceId: userWorkspaceId })
       .returning({ id: project.id })
     const userProjectId = userProject!.id
 
     const [userEnv] = await db
       .insert(environment)
-      .values({ displayName: 'Variable Env', projectId: userProjectId })
+      .values({ name: 'Variable Env', projectId: userProjectId })
       .returning({ id: environment.id })
     const userEnvironmentId = userEnv!.id
 

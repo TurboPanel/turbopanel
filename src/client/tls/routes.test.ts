@@ -78,7 +78,7 @@ async function withTlsFixtures(
 
   const [orgRow] = await db
     .insert(organization)
-    .values({ displayName: 'TLS Route Test Org' })
+    .values({ name: 'TLS Route Test Org' })
     .returning({ id: organization.id })
   const organizationId = orgRow!.id
 
@@ -127,7 +127,7 @@ test('POST /tls lets_encrypt pending cert appears in list and detail with empty 
       headers,
       body: JSON.stringify({
         source: 'lets_encrypt',
-        displayName: 'Pending LE',
+        name: 'Pending LE',
         hostnames: ['pending.example.com'],
         challengeType: 'http-01',
       }),
@@ -176,7 +176,7 @@ test('POST /tls returns 409 tls_fingerprint_conflict for duplicate fingerprint',
     const material = await mintSelfSignedCertificate(['dup.example.com'])
     const body = JSON.stringify({
       source: 'upload',
-      displayName: 'Dup fingerprint',
+      name: 'Dup fingerprint',
       certificatePem: material.certificatePem,
       privateKeyPem: material.privateKeyPem,
     })

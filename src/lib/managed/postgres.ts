@@ -359,7 +359,7 @@ function buildConnectionInfo(
 
 export const postgresEngineSpec: ManagedEngineSpec = {
   engine: 'postgres',
-  displayName: 'PostgreSQL',
+  name: 'PostgreSQL',
   defaultImage: DEFAULT_IMAGE,
   defaultPort: DEFAULT_PORT,
   principalProvider: 'postgres',

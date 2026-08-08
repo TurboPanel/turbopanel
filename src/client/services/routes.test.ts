@@ -76,7 +76,7 @@ async function withServiceFixtures(
 
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Service Route Test Org' })
+    .values({ name: 'Service Route Test Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -102,14 +102,14 @@ async function withServiceFixtures(
 
   const [insertedWorkspace] = await db
     .insert(workspace)
-    .values({ displayName: 'Service Route Workspace', organizationId })
+    .values({ name: 'Service Route Workspace', organizationId })
     .returning({ id: workspace.id })
   const workspaceId = insertedWorkspace!.id
 
   const [insertedProject] = await db
     .insert(project)
     .values({
-      displayName: 'Service Route Project',
+      name: 'Service Route Project',
       workspaceId,
     })
     .returning({ id: project.id })
@@ -118,7 +118,7 @@ async function withServiceFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      displayName: 'Service Route Env',
+      name: 'Service Route Env',
       projectId,
     })
     .returning({ id: environment.id })
@@ -222,7 +222,7 @@ test('PATCH /services/:id rejects a composeServiceName in the body and leaves th
       .insert(service)
       .values({
         environmentId,
-        displayName: 'web',
+        name: 'web',
         composeServiceName: 'web',
       })
       .returning({ id: service.id })
@@ -265,7 +265,7 @@ test('PATCH /services/:id still strips metadata.composeServiceName without rejec
       .insert(service)
       .values({
         environmentId,
-        displayName: 'web',
+        name: 'web',
         composeServiceName: 'web',
       })
       .returning({ id: service.id })

@@ -63,7 +63,7 @@ test(
     let loadCount = 0
     const listRows = [{
       id: 'srv-1',
-      displayName: 'Test',
+      name: 'Test',
       organizationId: 'org-1',
       licenseId: null,
       options: null,

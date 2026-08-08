@@ -64,7 +64,7 @@ test('PATCH /hostings rejects public bind with non-public ip scope', async () =>
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: 'Hosting IP Org' })
+    .values({ name: 'Hosting IP Org' })
     .returning({ id: organization.id })
   const organizationId = orgA!.id
 
@@ -87,21 +87,21 @@ test('PATCH /hostings rejects public bind with non-public ip scope', async () =>
   const now = new Date().toISOString()
   const [ws] = await db
     .insert(workspace)
-    .values({ organizationId, displayName: 'WS', createdAt: now, updatedAt: now })
+    .values({ organizationId, name: 'WS', createdAt: now, updatedAt: now })
     .returning({ id: workspace.id })
   const [proj] = await db
     .insert(project)
-    .values({ workspaceId: ws!.id, displayName: 'P', createdAt: now, updatedAt: now })
+    .values({ workspaceId: ws!.id, name: 'P', createdAt: now, updatedAt: now })
     .returning({ id: project.id })
   const [env] = await db
     .insert(environment)
-    .values({ projectId: proj!.id, displayName: 'E', createdAt: now, updatedAt: now })
+    .values({ projectId: proj!.id, name: 'E', createdAt: now, updatedAt: now })
     .returning({ id: environment.id })
   const [svc] = await db
     .insert(service)
     .values({
       environmentId: env!.id,
-      displayName: 'S',
+      name: 's',
       composeServiceName: 's',
       createdAt: now,
       updatedAt: now,
@@ -124,7 +124,7 @@ test('PATCH /hostings rejects public bind with non-public ip scope', async () =>
     .insert(hosting)
     .values({
       serviceId: svc!.id,
-      displayName: 'Site',
+      name: 'Site',
       options: { bind: 'public' },
       createdAt: now,
       updatedAt: now,
@@ -173,11 +173,11 @@ test('PATCH /hostings returns 404 when ipId belongs to another org', async () =>
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: 'Host Org A' })
+    .values({ name: 'Host Org A' })
     .returning({ id: organization.id })
   const [orgB] = await db
     .insert(organization)
-    .values({ displayName: 'Host Org B' })
+    .values({ name: 'Host Org B' })
     .returning({ id: organization.id })
 
   const [u] = await db
@@ -199,21 +199,21 @@ test('PATCH /hostings returns 404 when ipId belongs to another org', async () =>
   const now = new Date().toISOString()
   const [ws] = await db
     .insert(workspace)
-    .values({ organizationId: orgA!.id, displayName: 'WS', createdAt: now, updatedAt: now })
+    .values({ organizationId: orgA!.id, name: 'WS', createdAt: now, updatedAt: now })
     .returning({ id: workspace.id })
   const [proj] = await db
     .insert(project)
-    .values({ workspaceId: ws!.id, displayName: 'P', createdAt: now, updatedAt: now })
+    .values({ workspaceId: ws!.id, name: 'P', createdAt: now, updatedAt: now })
     .returning({ id: project.id })
   const [env] = await db
     .insert(environment)
-    .values({ projectId: proj!.id, displayName: 'E', createdAt: now, updatedAt: now })
+    .values({ projectId: proj!.id, name: 'E', createdAt: now, updatedAt: now })
     .returning({ id: environment.id })
   const [svc] = await db
     .insert(service)
     .values({
       environmentId: env!.id,
-      displayName: 'S',
+      name: 's',
       composeServiceName: 's',
       createdAt: now,
       updatedAt: now,
@@ -224,7 +224,7 @@ test('PATCH /hostings returns 404 when ipId belongs to another org', async () =>
     .insert(hosting)
     .values({
       serviceId: svc!.id,
-      displayName: 'Site',
+      name: 'Site',
       createdAt: now,
       updatedAt: now,
     })

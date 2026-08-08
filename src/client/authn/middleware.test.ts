@@ -277,7 +277,6 @@ test('resolveRootSession returns null for non-superadmin mock session', async ()
   const { db, signed } = await mockSessionApp(secrets, {
     sessionId: crypto.randomUUID(),
     userId: crypto.randomUUID(),
-    username: null,
     email: 'admin@example.com',
     role: 'admin',
   }, token)
@@ -306,7 +305,6 @@ test('createDeveloperAccessMiddleware rejects non-superadmin sessions', async ()
   const { db, signed } = await mockSessionApp(secrets, {
     sessionId: crypto.randomUUID(),
     userId: crypto.randomUUID(),
-    username: null,
     email: 'user@example.com',
     role: 'user',
   }, token)
@@ -332,7 +330,6 @@ test('createDeveloperAccessMiddleware allows superadmin mock session', async () 
   const { db, signed } = await mockSessionApp(secrets, {
     sessionId: crypto.randomUUID(),
     userId: crypto.randomUUID(),
-    username: null,
     email: 'root@example.com',
     role: 'superadmin',
   }, token)
@@ -373,7 +370,6 @@ test('createSessionMiddleware accepts mock superadmin session without postgres',
   const { db, signed } = await mockSessionApp(secrets, {
     sessionId: crypto.randomUUID(),
     userId,
-    username: null,
     email: 'root@example.com',
     role: 'superadmin',
   }, token)
@@ -403,7 +399,6 @@ test('createAdminAccessMiddleware accepts mock admin and rejects users', async (
   seedMockSession(adminState, token, {
     sessionId: crypto.randomUUID(),
     userId: crypto.randomUUID(),
-    username: null,
     email: 'admin@example.com',
     role: 'admin',
   })
@@ -429,7 +424,6 @@ test('createAdminAccessMiddleware accepts mock admin and rejects users', async (
   seedMockSession(userState, userToken, {
     sessionId: crypto.randomUUID(),
     userId: crypto.randomUUID(),
-    username: null,
     email: 'user@example.com',
     role: 'user',
   })
@@ -458,7 +452,6 @@ test('createRootOnlyMiddleware accepts mock superadmin and rejects users', async
   seedMockSession(state, token, {
     sessionId: crypto.randomUUID(),
     userId: crypto.randomUUID(),
-    username: null,
     email: 'root@example.com',
     role: 'superadmin',
   })
@@ -485,7 +478,6 @@ test('createRootOnlyMiddleware accepts mock superadmin and rejects users', async
   seedMockSession(userState, userToken, {
     sessionId: crypto.randomUUID(),
     userId: crypto.randomUUID(),
-    username: null,
     email: 'user@example.com',
     role: 'user',
   })
@@ -518,7 +510,6 @@ test('resolveSession rotates fallback-signed cookies with mock db', async () => 
   seedMockSession(state, token, {
     sessionId: crypto.randomUUID(),
     userId: crypto.randomUUID(),
-    username: null,
     email: 'user@example.com',
     role: 'user',
   })

@@ -52,13 +52,13 @@ test('deleteProjectCascade rejects when containers are still active', async () =
 
   const [org] = await db
     .insert(organization)
-    .values({ displayName: 'Project Delete Org' })
+    .values({ name: 'Project Delete Org' })
     .returning({ id: organization.id })
   const organizationId = org!.id
 
   const [ws] = await db
     .insert(workspace)
-    .values({ displayName: 'Project Delete Workspace', organizationId })
+    .values({ name: 'Project Delete Workspace', organizationId })
     .returning({ id: workspace.id })
   const workspaceId = ws!.id
 
@@ -66,7 +66,7 @@ test('deleteProjectCascade rejects when containers are still active', async () =
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Project Delete Server',
+      name: 'Project Delete Server',
       createdAt: now,
       updatedAt: now,
     })
@@ -75,19 +75,19 @@ test('deleteProjectCascade rejects when containers are still active', async () =
 
   const [proj] = await db
     .insert(project)
-    .values({ displayName: 'Running Project', workspaceId })
+    .values({ name: 'Running Project', workspaceId })
     .returning({ id: project.id })
   const projectId = proj!.id
 
   const [env] = await db
     .insert(environment)
-    .values({ displayName: 'Production', projectId })
+    .values({ name: 'Production', projectId })
     .returning({ id: environment.id })
   const environmentId = env!.id
 
   const [svc] = await db
     .insert(service)
-    .values({ displayName: 'web', environmentId, composeServiceName: 'web' })
+    .values({ name: 'web', environmentId, composeServiceName: 'web' })
     .returning({ id: service.id })
   const serviceId = svc!.id
 
@@ -135,13 +135,13 @@ test('deleteProjectCascade rejects when an ingress container is still running', 
 
   const [org] = await db
     .insert(organization)
-    .values({ displayName: 'Ingress Active Org' })
+    .values({ name: 'Ingress Active Org' })
     .returning({ id: organization.id })
   const organizationId = org!.id
 
   const [ws] = await db
     .insert(workspace)
-    .values({ displayName: 'Ingress Active Workspace', organizationId })
+    .values({ name: 'Ingress Active Workspace', organizationId })
     .returning({ id: workspace.id })
   const workspaceId = ws!.id
 
@@ -149,7 +149,7 @@ test('deleteProjectCascade rejects when an ingress container is still running', 
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Ingress Active Server',
+      name: 'Ingress Active Server',
       createdAt: now,
       updatedAt: now,
     })
@@ -158,19 +158,19 @@ test('deleteProjectCascade rejects when an ingress container is still running', 
 
   const [proj] = await db
     .insert(project)
-    .values({ displayName: 'Ingress Running Project', workspaceId })
+    .values({ name: 'Ingress Running Project', workspaceId })
     .returning({ id: project.id })
   const projectId = proj!.id
 
   const [env] = await db
     .insert(environment)
-    .values({ displayName: 'Production', projectId })
+    .values({ name: 'Production', projectId })
     .returning({ id: environment.id })
   const environmentId = env!.id
 
   const [svc] = await db
     .insert(service)
-    .values({ displayName: 'web', environmentId, composeServiceName: 'web' })
+    .values({ name: 'web', environmentId, composeServiceName: 'web' })
     .returning({ id: service.id })
   const serviceId = svc!.id
 
@@ -245,19 +245,19 @@ test('deleteProjectCascade removes project with no environments', async () => {
 
   const [org] = await db
     .insert(organization)
-    .values({ displayName: 'Empty Project Org' })
+    .values({ name: 'Empty Project Org' })
     .returning({ id: organization.id })
   const organizationId = org!.id
 
   const [ws] = await db
     .insert(workspace)
-    .values({ displayName: 'Empty Project Workspace', organizationId })
+    .values({ name: 'Empty Project Workspace', organizationId })
     .returning({ id: workspace.id })
   const workspaceId = ws!.id
 
   const [proj] = await db
     .insert(project)
-    .values({ displayName: 'Empty Project', workspaceId })
+    .values({ name: 'Empty Project', workspaceId })
     .returning({ id: project.id })
   const projectId = proj!.id
 
@@ -289,13 +289,13 @@ test('deleteProjectCascade removes children when containers are stopped', async 
 
   const [org] = await db
     .insert(organization)
-    .values({ displayName: 'Project Cascade Org' })
+    .values({ name: 'Project Cascade Org' })
     .returning({ id: organization.id })
   const organizationId = org!.id
 
   const [ws] = await db
     .insert(workspace)
-    .values({ displayName: 'Project Cascade Workspace', organizationId })
+    .values({ name: 'Project Cascade Workspace', organizationId })
     .returning({ id: workspace.id })
   const workspaceId = ws!.id
 
@@ -303,7 +303,7 @@ test('deleteProjectCascade removes children when containers are stopped', async 
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Project Cascade Server',
+      name: 'Project Cascade Server',
       createdAt: now,
       updatedAt: now,
     })
@@ -312,19 +312,19 @@ test('deleteProjectCascade removes children when containers are stopped', async 
 
   const [proj] = await db
     .insert(project)
-    .values({ displayName: 'Stopped Project', workspaceId })
+    .values({ name: 'Stopped Project', workspaceId })
     .returning({ id: project.id })
   const projectId = proj!.id
 
   const [env] = await db
     .insert(environment)
-    .values({ displayName: 'Production', projectId })
+    .values({ name: 'Production', projectId })
     .returning({ id: environment.id })
   const environmentId = env!.id
 
   const [svc] = await db
     .insert(service)
-    .values({ displayName: 'web', environmentId, composeServiceName: 'web' })
+    .values({ name: 'web', environmentId, composeServiceName: 'web' })
     .returning({ id: service.id })
   const serviceId = svc!.id
 
@@ -332,7 +332,7 @@ test('deleteProjectCascade removes children when containers are stopped', async 
     .insert(hosting)
     .values({
       serviceId,
-      displayName: 'web',
+      name: 'web',
       options: { hostnames: ['example.test'] },
     })
     .returning({ id: hosting.id })

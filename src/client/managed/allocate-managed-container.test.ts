@@ -17,8 +17,7 @@ const test = Deno.test.bind(Deno)
 type MemService = {
   id: string
   environmentId: string
-  composeServiceName: string
-  displayName: string
+  name: string
 }
 
 type MemContainer = {
@@ -78,11 +77,11 @@ function createManagedAllocationDb(opts?: {
 
   const upsertService = (values: Record<string, unknown>) => {
     const environmentId = values.environmentId as string
-    const composeServiceName = values.composeServiceName as string
+    const name = values.name as string
     const existing = services.find(
       (row) =>
         row.environmentId === environmentId &&
-        row.composeServiceName === composeServiceName,
+        row.name === name,
     )
     if (existing) {
       lastServiceId = existing.id
@@ -92,8 +91,7 @@ function createManagedAllocationDb(opts?: {
     services.push({
       id,
       environmentId,
-      composeServiceName,
-      displayName: values.displayName as string,
+      name,
     })
     lastServiceId = id
   }
@@ -343,7 +341,7 @@ test('ensureManagedContainerAllocation creates service + pending ordinal-1 conta
   })
 
   assertEquals(services.length, 1)
-  assertEquals(services[0]!.composeServiceName, 'postgres')
+  assertEquals(services[0]!.name, 'postgres')
   assertEquals(containers.length, 1)
   assertEquals(containers[0]!.role, 'service')
   assertEquals(containers[0]!.ordinal, 1)
@@ -377,8 +375,7 @@ test('ensureManagedContainerAllocation re-homes null-id row to pending on new se
     services: [{
       id: serviceId,
       environmentId: 'env-1',
-      composeServiceName: 'postgres',
-      displayName: 'postgres',
+      name: 'postgres',
     }],
     containers: [{
       id: 'ctr-old',
@@ -415,8 +412,7 @@ test('ensureManagedContainerAllocation skips update when null-id row already mat
     services: [{
       id: serviceId,
       environmentId: 'env-1',
-      composeServiceName: 'postgres',
-      displayName: 'postgres',
+      name: 'postgres',
     }],
     containers: [{
       id: 'ctr-ready',
@@ -446,8 +442,7 @@ test('ensureManagedContainerAllocation renames running row without clearing cont
     services: [{
       id: serviceId,
       environmentId: 'env-1',
-      composeServiceName: 'postgres',
-      displayName: 'postgres',
+      name: 'postgres',
     }],
     containers: [{
       id: 'ctr-live',
@@ -483,8 +478,7 @@ test('ensureManagedContainerAllocation prunes stray pending service rows', async
     services: [{
       id: serviceId,
       environmentId: 'env-1',
-      composeServiceName: 'postgres',
-      displayName: 'postgres',
+      name: 'postgres',
     }],
     containers: [
       {

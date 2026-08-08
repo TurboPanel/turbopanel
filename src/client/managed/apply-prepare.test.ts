@@ -59,13 +59,13 @@ async function withManagedAllocationFixtures(
 
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Managed Allocate Org' })
+    .values({ name: 'Managed Allocate Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
   const [insertedWorkspace] = await db
     .insert(workspace)
-    .values({ displayName: 'Managed Allocate Workspace', organizationId })
+    .values({ name: 'Managed Allocate Workspace', organizationId })
     .returning({ id: workspace.id })
   const workspaceId = insertedWorkspace!.id
 
@@ -74,7 +74,7 @@ async function withManagedAllocationFixtures(
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Managed Allocate Server',
+      name: 'Managed Allocate Server',
       createdAt: now,
       updatedAt: now,
     })
@@ -85,7 +85,7 @@ async function withManagedAllocationFixtures(
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Managed Allocate Other Server',
+      name: 'Managed Allocate Other Server',
       createdAt: now,
       updatedAt: now,
     })
@@ -95,7 +95,7 @@ async function withManagedAllocationFixtures(
   const [insertedProject] = await db
     .insert(project)
     .values({
-      displayName: 'Managed Allocate Project',
+      name: 'Managed Allocate Project',
       workspaceId,
     })
     .returning({ id: project.id })
@@ -104,7 +104,7 @@ async function withManagedAllocationFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      displayName: 'Managed Allocate Env',
+      name: 'Managed Allocate Env',
       projectId,
     })
     .returning({ id: environment.id })
@@ -148,13 +148,13 @@ async function withManagedApplyPrepareFixtures(
 
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Managed Apply Prepare Org' })
+    .values({ name: 'Managed Apply Prepare Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
   const [insertedWorkspace] = await db
     .insert(workspace)
-    .values({ displayName: 'Managed Apply Prepare Workspace', organizationId })
+    .values({ name: 'Managed Apply Prepare Workspace', organizationId })
     .returning({ id: workspace.id })
   const workspaceId = insertedWorkspace!.id
 
@@ -163,7 +163,7 @@ async function withManagedApplyPrepareFixtures(
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Managed Apply Prepare Server',
+      name: 'Managed Apply Prepare Server',
       createdAt: now,
       updatedAt: now,
       connected: true,
@@ -180,7 +180,7 @@ async function withManagedApplyPrepareFixtures(
   const [insertedProject] = await db
     .insert(project)
     .values({
-      displayName: 'Managed Apply Prepare Project',
+      name: 'Managed Apply Prepare Project',
       workspaceId,
       metadata: { type: 'managed', code: 'postgres' },
     })
@@ -190,7 +190,7 @@ async function withManagedApplyPrepareFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      displayName: 'Production',
+      name: 'Production',
       projectId,
       serverId,
     })
@@ -202,7 +202,7 @@ async function withManagedApplyPrepareFixtures(
     .values({
       environmentId,
       serverId,
-      displayName: 'Postgres',
+      name: 'Postgres',
       engine: 'postgres',
       status: 'ready',
       options: { settings: postgresEngineSpec.defaultSettings, databases: ['postgres'] },
@@ -272,7 +272,7 @@ test('ensureManagedContainerAllocation creates service + ordinal-1 container nam
       .select({
         id: service.id,
         composeServiceName: service.composeServiceName,
-        displayName: service.displayName,
+        displayName: service.name,
       })
       .from(service)
       .where(eq(service.environmentId, environmentId))

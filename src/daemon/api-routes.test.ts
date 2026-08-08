@@ -357,12 +357,12 @@ async function withEnrollFixture(
   const hostname = `host-${crypto.randomUUID()}`;
   const [orgRow] = await db
     .insert(organization)
-    .values({ displayName: "Daemon API Routes Test Org" })
+    .values({ name: "Daemon API Routes Test Org" })
     .returning({ id: organization.id });
   const organizationId = orgRow!.id;
   const { licenseId, licenseToken } = await createLicense(db, {
     organizationId,
-    displayName: "Daemon API Routes Test License",
+    name: "Daemon API Routes Test License",
   });
 
   const challengeResponse = await app.request("/api/daemon/v1/auth/challenge", {
@@ -918,7 +918,7 @@ test("POST /enroll with a fresh license creates a new server even on the same ho
     const { licenseId: freshLicenseId, licenseToken: freshLicenseToken } =
       await createLicense(db, {
         organizationId,
-        displayName: "Fresh One-Shot License",
+        name: "Fresh One-Shot License",
       });
 
     const challengeResponse = await app.request(
@@ -1326,7 +1326,7 @@ test("POST /auth/session survives colocated disk-credential recovery for enrolle
       await db
         .update(license)
         .set({
-          displayName: COLOCATED_SERVER_DISPLAY_NAME,
+          name: COLOCATED_SERVER_DISPLAY_NAME,
           updatedAt: new Date().toISOString(),
         })
         .where(eq(license.id, licenseId));

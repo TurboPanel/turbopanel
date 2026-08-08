@@ -47,7 +47,7 @@ const VPN_SELECT = {
   id: vpn.id,
   organizationId: vpn.organizationId,
   cidr: vpn.cidr,
-  displayName: vpn.displayName,
+  displayName: vpn.name,
   metadata: vpn.metadata,
   options: vpn.options,
   createdAt: vpn.createdAt,
@@ -1122,7 +1122,7 @@ export function registerVpnRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
           .values({
             organizationId,
             cidr,
-            displayName,
+            name: displayName,
             ...(metadataResult !== null ? { metadata: metadataResult } : {}),
             ...(optionsResult !== null ? { options: optionsResult } : {}),
           })

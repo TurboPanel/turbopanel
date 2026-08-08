@@ -98,7 +98,7 @@ export async function insertEmptyProject(
   const [inserted] = await tx
     .insert(project)
     .values({
-      displayName: fields.displayName,
+      name: fields.displayName,
       description: fields.description,
       workspaceId: fields.workspaceId,
       metadata: null,
@@ -108,7 +108,7 @@ export async function insertEmptyProject(
 
   await tx.insert(environment).values({
     projectId: inserted.id,
-    displayName: envName,
+    name: envName,
     description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
     ...(fields.serverId ? { serverId: fields.serverId } : {}),
     options: { compose: emptyComposeDocument() },
@@ -127,7 +127,7 @@ async function findProductionEnvironment(
   const rows = await tx
     .select({
       id: environment.id,
-      displayName: environment.displayName,
+      displayName: environment.name,
       description: environment.description,
       serverId: environment.serverId,
     })
@@ -194,7 +194,7 @@ export async function ensureProductionEnvironment(
       await tx
         .update(environment)
         .set({
-          ...(shouldNormalizeName ? { displayName: effectiveName } : {}),
+          ...(shouldNormalizeName ? { name: effectiveName } : {}),
           ...(shouldPinServer ? { serverId } : {}),
           updatedAt: new Date().toISOString(),
         })
@@ -207,7 +207,7 @@ export async function ensureProductionEnvironment(
     .insert(environment)
     .values({
       projectId,
-      displayName: effectiveName,
+      name: effectiveName,
       description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
       ...(serverId ? { serverId } : {}),
       options: { compose: emptyComposeDocument() },
@@ -350,7 +350,7 @@ async function insertExtraCatalogEnvironments(
       .where(
         and(
           eq(environment.projectId, input.projectId),
-          eq(environment.displayName, env.displayName),
+          eq(environment.name, env.displayName),
         ),
       )
       .limit(1)
@@ -359,7 +359,7 @@ async function insertExtraCatalogEnvironments(
       .insert(environment)
       .values({
         projectId: input.projectId,
-        displayName: env.displayName,
+        name: env.displayName,
         description: env.description ?? null,
         ...(input.serverId ? { serverId: input.serverId } : {}),
         options: env.compose ? { compose: env.compose } : null,

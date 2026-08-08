@@ -46,7 +46,7 @@ export async function reconcileServicesFromCompose(
     if (existingByComposeName.has(composeServiceName)) continue
 
     const [inserted] = await db.insert(service).values({
-      displayName: composeServiceName,
+      name: composeServiceName,
       environmentId,
       composeServiceName,
     }).returning({ id: service.id })

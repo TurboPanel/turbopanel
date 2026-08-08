@@ -99,7 +99,7 @@ async function findManagedForEnvironment(db: NonNullable<ReturnType<typeof getDb
     .select({
       id: managed.id,
       environmentId: managed.environmentId,
-      displayName: managed.displayName,
+      displayName: managed.name,
       engine: managed.engine,
       status: managed.status,
       metadata: managed.metadata,
@@ -185,7 +185,7 @@ async function deleteManagedCompensation(
 const MANAGED_RETURNING = {
   id: managed.id,
   environmentId: managed.environmentId,
-  displayName: managed.displayName,
+  displayName: managed.name,
   engine: managed.engine,
   status: managed.status,
   metadata: managed.metadata,
@@ -261,7 +261,7 @@ async function resolveManagedCreatePlan(
 
   const initialDatabase = readInitialDatabase(ctx.spec)
   return {
-    displayName: displayName ?? ctx.envDisplayName ?? ctx.spec.displayName,
+    name: displayName ?? ctx.envDisplayName ?? ctx.spec.displayName,
     settings,
     initialDatabase,
     rowOptions: writeManagedRowOptions({
@@ -304,7 +304,7 @@ async function insertManagedCreateTransaction(
     .values({
       environmentId,
       serverId,
-      displayName,
+      name: displayName,
       engine: ctx.spec.engine,
       status: 'provisioning',
       metadata: {},
@@ -509,7 +509,7 @@ async function createManagedAndEnqueueApply(
         environmentId,
         ctx,
         serverId: createServerId,
-        displayName: plan.displayName,
+        name: plan.displayName,
         rowOptions: plan.rowOptions,
         initialDatabase: plan.initialDatabase,
         dataEncryptionSecrets,
@@ -662,7 +662,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       ? await db
         .select({
           id: server.id,
-          displayName: server.displayName,
+          displayName: server.name,
           hostname: server.hostname,
         })
         .from(server)
@@ -737,7 +737,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .returning({
         id: managed.id,
         environmentId: managed.environmentId,
-        displayName: managed.displayName,
+        displayName: managed.name,
         engine: managed.engine,
         status: managed.status,
         metadata: managed.metadata,
@@ -1639,7 +1639,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .select({
         id: managed.id,
         environmentId: managed.environmentId,
-        displayName: managed.displayName,
+        displayName: managed.name,
         engine: managed.engine,
         status: managed.status,
         metadata: managed.metadata,
@@ -1647,12 +1647,12 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         serverId: managed.serverId,
         createdAt: managed.createdAt,
         updatedAt: managed.updatedAt,
-        environmentDisplayName: environment.displayName,
+        environmentDisplayName: environment.name,
         projectId: project.id,
-        projectDisplayName: project.displayName,
+        projectDisplayName: project.name,
         workspaceId: workspace.id,
-        workspaceDisplayName: workspace.displayName,
-        serverDisplayName: server.displayName,
+        workspaceDisplayName: workspace.name,
+        serverDisplayName: server.name,
       })
       .from(managed)
       .innerJoin(environment, eq(managed.environmentId, environment.id))

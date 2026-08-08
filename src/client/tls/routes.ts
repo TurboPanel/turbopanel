@@ -103,7 +103,7 @@ function toPublicRow(row: {
 
 const TLS_PUBLIC_SELECT = {
   id: tls.id,
-  displayName: tls.displayName,
+  displayName: tls.name,
   source: tls.source,
   organizationId: tls.organizationId,
   status: tls.status,
@@ -338,7 +338,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
           .insert(tls)
           .values({
             organizationId,
-            displayName,
+            name: displayName,
             source,
             certificatePem: material.certificatePem,
             privateKeyPem: material.privateKeyPemSealed,

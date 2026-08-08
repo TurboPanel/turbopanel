@@ -1,5 +1,5 @@
 {
-  "id": "4ea9a4b5-6ff2-44b9-824c-8694ed89166b",
+  "id": "cb1e28fc-a2ff-4869-8b05-09093f69643a",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -665,8 +665,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "display_name": {
-          "name": "display_name",
+        "name": {
+          "name": "name",
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
@@ -715,9 +715,9 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "datacenter_display_name_format_check": {
-          "name": "datacenter_display_name_format_check",
-          "value": "(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
+        "datacenter_name_format_check": {
+          "name": "datacenter_name_format_check",
+          "value": "(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
         }
       },
       "isRLSEnabled": false
@@ -771,8 +771,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "display_name": {
-          "name": "display_name",
+        "name": {
+          "name": "name",
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
@@ -850,9 +850,9 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "environment_display_name_format_check": {
-          "name": "environment_display_name_format_check",
-          "value": "(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
+        "environment_name_format_check": {
+          "name": "environment_name_format_check",
+          "value": "(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
         }
       },
       "isRLSEnabled": false
@@ -1031,8 +1031,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "display_name": {
-          "name": "display_name",
+        "name": {
+          "name": "name",
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
@@ -1139,9 +1139,9 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "hosting_display_name_format_check": {
-          "name": "hosting_display_name_format_check",
-          "value": "(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
+        "hosting_name_format_check": {
+          "name": "hosting_name_format_check",
+          "value": "(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
         }
       },
       "isRLSEnabled": false
@@ -1370,8 +1370,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "display_name": {
-          "name": "display_name",
+        "name": {
+          "name": "name",
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
@@ -1590,9 +1590,9 @@
           "name": "ip_datacenter_free_pool_check",
           "value": "(\"ip\".\"datacenter_id\" IS NULL) OR (\"ip\".\"server_id\" IS NULL AND \"ip\".\"vpn_id\" IS NULL AND \"ip\".\"network_id\" IS NULL)"
         },
-        "ip_display_name_format_check": {
-          "name": "ip_display_name_format_check",
-          "value": "(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
+        "ip_name_format_check": {
+          "name": "ip_name_format_check",
+          "value": "(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
         }
       },
       "isRLSEnabled": false
@@ -1634,8 +1634,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "display_name": {
-          "name": "display_name",
+        "name": {
+          "name": "name",
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
@@ -1770,8 +1770,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "display_name": {
-          "name": "display_name",
+        "name": {
+          "name": "name",
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
@@ -1886,9 +1886,9 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "managed_display_name_format_check": {
-          "name": "managed_display_name_format_check",
-          "value": "(\"managed\".\"display_name\" IS NULL) OR (((char_length((\"managed\".\"display_name\")::text) >= 1) AND (char_length((\"managed\".\"display_name\")::text) <= 255)) AND ((\"managed\".\"display_name\")::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
+        "managed_name_format_check": {
+          "name": "managed_name_format_check",
+          "value": "(\"managed\".\"name\" IS NULL) OR (((char_length((\"managed\".\"name\")::text) >= 1) AND (char_length((\"managed\".\"name\")::text) <= 255)) AND ((\"managed\".\"name\")::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
         },
         "managed_status_check": {
           "name": "managed_status_check",
@@ -2072,8 +2072,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "display_name": {
-          "name": "display_name",
+        "name": {
+          "name": "name",
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
@@ -2182,9 +2182,9 @@
           "name": "network_single_scope_check",
           "value": "(\n        (\"network\".\"kind\" = 'datacenter' AND \"network\".\"datacenter_id\" IS NOT NULL AND \"network\".\"server_id\" IS NULL) OR\n        (\"network\".\"kind\" = 'server' AND \"network\".\"server_id\" IS NOT NULL AND \"network\".\"datacenter_id\" IS NULL) OR\n        (\"network\".\"kind\" = 'docker' AND \"network\".\"datacenter_id\" IS NULL AND \"network\".\"server_id\" IS NULL)\n      )"
         },
-        "network_display_name_format_check": {
-          "name": "network_display_name_format_check",
-          "value": "(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
+        "network_name_format_check": {
+          "name": "network_name_format_check",
+          "value": "(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
         }
       },
       "isRLSEnabled": false
@@ -2226,8 +2226,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "display_name": {
-          "name": "display_name",
+        "name": {
+          "name": "name",
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
@@ -2253,9 +2253,9 @@
       },
       "policies": {},
       "checkConstraints": {
-        "organization_display_name_format_check": {
-          "name": "organization_display_name_format_check",
-          "value": "(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
+        "organization_name_format_check": {
+          "name": "organization_name_format_check",
+          "value": "(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
         }
       },
       "isRLSEnabled": false
@@ -2850,8 +2850,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "display_name": {
-          "name": "display_name",
+        "name": {
+          "name": "name",
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
@@ -2922,9 +2922,9 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "project_display_name_format_check": {
-          "name": "project_display_name_format_check",
-          "value": "(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
+        "project_name_format_check": {
+          "name": "project_name_format_check",
+          "value": "(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
         }
       },
       "isRLSEnabled": false
@@ -2978,8 +2978,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "display_name": {
-          "name": "display_name",
+        "name": {
+          "name": "name",
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
@@ -3175,8 +3175,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "display_name": {
-          "name": "display_name",
+        "name": {
+          "name": "name",
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
@@ -3252,9 +3252,9 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "service_display_name_format_check": {
-          "name": "service_display_name_format_check",
-          "value": "(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
+        "service_name_format_check": {
+          "name": "service_name_format_check",
+          "value": "(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
         }
       },
       "isRLSEnabled": false
@@ -3763,8 +3763,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "display_name": {
-          "name": "display_name",
+        "name": {
+          "name": "name",
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
@@ -3807,9 +3807,9 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "team_display_name_format_check": {
-          "name": "team_display_name_format_check",
-          "value": "(display_name IS NULL) OR ((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255))"
+        "team_name_format_check": {
+          "name": "team_name_format_check",
+          "value": "(name IS NULL) OR ((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255))"
         }
       },
       "isRLSEnabled": false
@@ -3965,8 +3965,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "display_name": {
-          "name": "display_name",
+        "name": {
+          "name": "name",
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
@@ -4088,9 +4088,9 @@
           "name": "tls_source_check",
           "value": "source IN ('upload', 'lets_encrypt', 'self_signed')"
         },
-        "tls_display_name_format_check": {
-          "name": "tls_display_name_format_check",
-          "value": "(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
+        "tls_name_format_check": {
+          "name": "tls_name_format_check",
+          "value": "(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
         }
       },
       "isRLSEnabled": false
@@ -4215,20 +4215,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "display_name": {
-          "name": "display_name",
-          "type": "varchar(255)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "username": {
-          "name": "username",
-          "type": "varchar(255)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "display_username": {
-          "name": "display_username",
+        "name": {
+          "name": "name",
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
@@ -4278,28 +4266,13 @@
           "columns": [
             "email"
           ]
-        },
-        "user_username_unique": {
-          "name": "user_username_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "username"
-          ]
         }
       },
       "policies": {},
       "checkConstraints": {
-        "user_display_name_format_check": {
-          "name": "user_display_name_format_check",
-          "value": "(display_name IS NULL) OR ((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255))"
-        },
-        "user_username_format_check": {
-          "name": "user_username_format_check",
-          "value": "(username IS NULL) OR ((char_length((username)::text) >= 1) AND (char_length((username)::text) <= 255))"
-        },
-        "user_display_username_format_check": {
-          "name": "user_display_username_format_check",
-          "value": "(display_username IS NULL) OR ((char_length((display_username)::text) >= 1) AND (char_length((display_username)::text) <= 255))"
+        "user_name_format_check": {
+          "name": "user_name_format_check",
+          "value": "(name IS NULL) OR ((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255))"
         }
       },
       "isRLSEnabled": false
@@ -4904,8 +4877,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "display_name": {
-          "name": "display_name",
+        "name": {
+          "name": "name",
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
@@ -4969,9 +4942,9 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "vpn_display_name_format_check": {
-          "name": "vpn_display_name_format_check",
-          "value": "(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
+        "vpn_name_format_check": {
+          "name": "vpn_name_format_check",
+          "value": "(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
         }
       },
       "isRLSEnabled": false
@@ -5007,8 +4980,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "display_name": {
-          "name": "display_name",
+        "name": {
+          "name": "name",
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
@@ -5080,9 +5053,9 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "workspace_display_name_format_check": {
-          "name": "workspace_display_name_format_check",
-          "value": "(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
+        "workspace_name_format_check": {
+          "name": "workspace_name_format_check",
+          "value": "(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
         },
         "workspace_kind_check": {
           "name": "workspace_kind_check",

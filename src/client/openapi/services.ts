@@ -20,6 +20,12 @@ export const serviceSchemas = {
         description: 'Residual service metadata (promoted fields are top-level).',
         additionalProperties: true,
       },
+      options: {
+        type: 'object',
+        nullable: true,
+        description: 'Service settings (healthCheck, resources, hooks)',
+        additionalProperties: true,
+      },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
     },

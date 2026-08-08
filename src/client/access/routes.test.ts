@@ -85,7 +85,7 @@ async function withTestFixtures(
 
   const insertedOrg = await db
     .insert(organization)
-    .values({ displayName: 'Access Route Test Org' })
+    .values({ name: 'Access Route Test Org' })
     .returning({ id: organization.id })
 
   const organizationId = insertedOrg[0]!.id
@@ -109,14 +109,14 @@ async function withTestFixtures(
 
   const [insertedWorkspace] = await db
     .insert(workspace)
-    .values({ displayName: 'Access Route Workspace', organizationId })
+    .values({ name: 'Access Route Workspace', organizationId })
     .returning({ id: workspace.id })
 
   const workspaceId = insertedWorkspace!.id
 
   const [insertedTeam] = await db
     .insert(team)
-    .values({ displayName: 'Access Route Team', organizationId })
+    .values({ name: 'Access Route Team', organizationId })
     .returning({ id: team.id })
 
   const teamId = insertedTeam!.id
@@ -549,14 +549,14 @@ test('GET /access/check returns boolean for variable and managed resource ids', 
   }) => {
     const [insertedProject] = await db
       .insert(project)
-      .values({ displayName: 'Access Route Project', workspaceId })
+      .values({ name: 'Access Route Project', workspaceId })
       .returning({ id: project.id })
 
     const projectId = insertedProject!.id
 
     const [insertedEnvironment] = await db
       .insert(environment)
-      .values({ displayName: 'Access Route Env', projectId })
+      .values({ name: 'Access Route Env', projectId })
       .returning({ id: environment.id })
 
     const environmentId = insertedEnvironment!.id

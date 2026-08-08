@@ -91,7 +91,7 @@ export async function loadManagedContext(
       id: environment.id,
       projectId: environment.projectId,
       serverId: environment.serverId,
-      displayName: environment.displayName,
+      displayName: environment.name,
     })
     .from(environment)
     .where(eq(environment.id, environmentId))

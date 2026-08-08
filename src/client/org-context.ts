@@ -105,7 +105,7 @@ export async function listAccessibleOrganizations(
     return db
       .select({
         id: organization.id,
-        displayName: organization.displayName,
+        displayName: organization.name,
         createdAt: organization.createdAt,
       })
       .from(organization)
@@ -140,7 +140,7 @@ export async function listAccessibleOrganizations(
     )
     SELECT
       o.id AS id,
-      o.display_name AS "displayName",
+      o.name AS "displayName",
       o.created_at AS "createdAt"
     FROM ${organization} o
     WHERE o.id IN (SELECT organization_id FROM accessible_org_ids)

@@ -40,7 +40,7 @@ async function withTestFixtures(
 
   const insertedOrg = await db
     .insert(organization)
-    .values({ displayName: 'Service Test Org' })
+    .values({ name: 'Service Test Org' })
     .returning({ id: organization.id })
 
   const organizationId = insertedOrg[0]!.id
@@ -56,14 +56,14 @@ async function withTestFixtures(
 
   const [insertedWorkspace] = await db
     .insert(workspace)
-    .values({ displayName: 'Test Workspace', organizationId })
+    .values({ name: 'Test Workspace', organizationId })
     .returning({ id: workspace.id })
 
   const workspaceId = insertedWorkspace!.id
 
   const [insertedTeam] = await db
     .insert(team)
-    .values({ displayName: 'Test Team', organizationId })
+    .values({ name: 'Test Team', organizationId })
     .returning({ id: team.id })
 
   const teamId = insertedTeam!.id

@@ -87,7 +87,7 @@ test('cachedServerDetailReadModel returns null when the row is missing', async (
 test('cachedServerDetailReadModel returns row plus presence enrichment', async () => {
   const row: ServerDetailRow = {
     id: 'srv-1',
-    displayName: 'Primary',
+    name: 'Primary',
     organizationId: 'org-1',
     licenseId: 'lic-1',
     options: null,
@@ -121,7 +121,7 @@ test('cachedServerDetailReadModel returns row plus presence enrichment', async (
 test('cachedServerDetailReadModel returns null presence when preload is empty', async () => {
   const row: ServerDetailRow = {
     id: 'srv-1',
-    displayName: 'Primary',
+    name: 'Primary',
     organizationId: 'org-1',
     licenseId: null,
     options: null,

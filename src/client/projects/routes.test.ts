@@ -115,7 +115,7 @@ async function withProjectFixtures(
 
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Project Route Test Org' })
+    .values({ name: 'Project Route Test Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -141,7 +141,7 @@ async function withProjectFixtures(
 
   const [insertedWorkspace] = await db
     .insert(workspace)
-    .values({ displayName: 'Project Route Workspace', organizationId })
+    .values({ name: 'Project Route Workspace', organizationId })
     .returning({ id: workspace.id })
   const workspaceId = insertedWorkspace!.id
 
@@ -150,7 +150,7 @@ async function withProjectFixtures(
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Project Route Test Server',
+      name: 'Project Route Test Server',
       createdAt: now,
       updatedAt: now,
     })
@@ -248,7 +248,7 @@ test('POST /projects managed postgres scaffolds env without managed row', async 
         type: 'managed',
         code: 'postgres',
         workspaceId,
-        displayName: 'Managed Postgres',
+        name: 'Managed Postgres',
       }),
     })
 
@@ -312,7 +312,7 @@ test('POST /projects managed rejects unknown catalog code', async () => {
         type: 'managed',
         code: 'nope',
         workspaceId,
-        displayName: 'Unknown',
+        name: 'Unknown',
       }),
     })
 
@@ -341,7 +341,7 @@ test('POST /projects empty scaffolds Production once with type empty', async () 
       body: JSON.stringify({
         type: 'empty',
         workspaceId,
-        displayName: 'Empty Project',
+        name: 'Empty Project',
       }),
     })
 
@@ -358,7 +358,7 @@ test('POST /projects empty scaffolds Production once with type empty', async () 
     assertEquals(projectRow?.options, null)
 
     const envs = await db
-      .select({ displayName: environment.displayName })
+      .select({ displayName: environment.name })
       .from(environment)
       .where(eq(environment.projectId, body.id))
     assertEquals(envs.length, 1)
@@ -385,7 +385,7 @@ test('POST /projects rejects missing type', async () => {
       },
       body: JSON.stringify({
         workspaceId,
-        displayName: 'No Type Project',
+        name: 'No Type Project',
       }),
     })
 
@@ -414,7 +414,7 @@ test('POST /projects rejects empty string type', async () => {
       body: JSON.stringify({
         type: '',
         workspaceId,
-        displayName: 'Blank Type Project',
+        name: 'Blank Type Project',
       }),
     })
 
@@ -448,7 +448,7 @@ test('POST /projects empty uses org defaultEnvironmentName when set', async () =
       body: JSON.stringify({
         type: 'empty',
         workspaceId,
-        displayName: 'Custom Env Project',
+        name: 'Custom Env Project',
       }),
     })
 
@@ -457,7 +457,7 @@ test('POST /projects empty uses org defaultEnvironmentName when set', async () =
     assertEquals(body.ok, true)
 
     const envs = await db
-      .select({ displayName: environment.displayName })
+      .select({ displayName: environment.name })
       .from(environment)
       .where(eq(environment.projectId, body.id))
     assertEquals(envs.length, 1)
@@ -490,7 +490,7 @@ test('POST /projects docker-compose uses org defaultEnvironmentName when set', a
       body: JSON.stringify({
         type: 'docker-compose',
         workspaceId,
-        displayName: 'Compose Custom Env',
+        name: 'Compose Custom Env',
       }),
     })
 
@@ -498,7 +498,7 @@ test('POST /projects docker-compose uses org defaultEnvironmentName when set', a
     const body = await res.json() as { ok: boolean; id: string }
 
     const envs = await db
-      .select({ displayName: environment.displayName })
+      .select({ displayName: environment.name })
       .from(environment)
       .where(eq(environment.projectId, body.id))
     assertEquals(envs.length, 1)
@@ -531,7 +531,7 @@ test('POST /projects/:id/configure reuses custom-named default environment', asy
       body: JSON.stringify({
         type: 'empty',
         workspaceId,
-        displayName: 'Configure Custom Env',
+        name: 'Configure Custom Env',
       }),
     })
     assertEquals(createRes.status, 200)
@@ -549,7 +549,7 @@ test('POST /projects/:id/configure reuses custom-named default environment', asy
     assertEquals(configureRes.status, 200)
 
     const envs = await db
-      .select({ displayName: environment.displayName })
+      .select({ displayName: environment.name })
       .from(environment)
       .where(eq(environment.projectId, id))
     assertEquals(envs.length, 1)
@@ -582,7 +582,7 @@ test('POST /projects/:id/configure reuses scaffolded env when org default change
       body: JSON.stringify({
         type: 'empty',
         workspaceId,
-        displayName: 'Stale Default Project',
+        name: 'Stale Default Project',
       }),
     })
     assertEquals(createRes.status, 200)
@@ -591,7 +591,7 @@ test('POST /projects/:id/configure reuses scaffolded env when org default change
     const [scaffolded] = await db
       .select({
         id: environment.id,
-        displayName: environment.displayName,
+        displayName: environment.name,
       })
       .from(environment)
       .where(eq(environment.projectId, id))
@@ -616,7 +616,7 @@ test('POST /projects/:id/configure reuses scaffolded env when org default change
     const envs = await db
       .select({
         id: environment.id,
-        displayName: environment.displayName,
+        displayName: environment.name,
       })
       .from(environment)
       .where(eq(environment.projectId, id))
@@ -659,7 +659,7 @@ test('POST /projects/:id/configure prefers literal Production over org default m
       body: JSON.stringify({
         type: 'empty',
         workspaceId,
-        displayName: 'Both Envs Project',
+        name: 'Both Envs Project',
       }),
     })
     assertEquals(createRes.status, 200)
@@ -667,7 +667,7 @@ test('POST /projects/:id/configure prefers literal Production over org default m
 
     await db.insert(environment).values({
       projectId: id,
-      displayName: 'Staging',
+      name: 'Staging',
       description: 'Custom default sibling',
     })
 
@@ -690,7 +690,7 @@ test('POST /projects/:id/configure prefers literal Production over org default m
     const envs = await db
       .select({
         id: environment.id,
-        displayName: environment.displayName,
+        displayName: environment.name,
         description: environment.description,
       })
       .from(environment)
@@ -737,7 +737,7 @@ test('POST /projects/:id/configure pins serverId on existing default environment
       body: JSON.stringify({
         type: 'empty',
         workspaceId,
-        displayName: 'Pin Server On Configure',
+        name: 'Pin Server On Configure',
       }),
     })
     assertEquals(createRes.status, 200)
@@ -755,7 +755,7 @@ test('POST /projects/:id/configure pins serverId on existing default environment
       .insert(server)
       .values({
         organizationId,
-        displayName: 'Configure Pin Server',
+        name: 'Configure Pin Server',
         createdAt: now,
         updatedAt: now,
       })
@@ -779,7 +779,7 @@ test('POST /projects/:id/configure pins serverId on existing default environment
 
       const [after] = await db
         .select({
-          displayName: environment.displayName,
+          displayName: environment.name,
           serverId: environment.serverId,
         })
         .from(environment)
@@ -817,7 +817,7 @@ test('POST /projects/:id/configure sets docker-compose idempotently', async () =
       body: JSON.stringify({
         type: 'empty',
         workspaceId,
-        displayName: 'Configure Me',
+        name: 'Configure Me',
       }),
     })
     assertEquals(createRes.status, 200)
@@ -897,7 +897,7 @@ test('POST /projects/:id/configure managed postgres reuses Production', async ()
       body: JSON.stringify({
         type: 'empty',
         workspaceId,
-        displayName: 'Managed Later',
+        name: 'Managed Later',
       }),
     })
     assertEquals(createRes.status, 200)
@@ -927,7 +927,7 @@ test('POST /projects/:id/configure managed postgres reuses Production', async ()
     assertEquals(metadata?.code, 'postgres')
 
     const envs = await db
-      .select({ id: environment.id, displayName: environment.displayName })
+      .select({ id: environment.id, displayName: environment.name })
       .from(environment)
       .where(eq(environment.projectId, id))
     assertEquals(envs.length, 1)
@@ -961,7 +961,7 @@ test('POST /projects rejects duplicate display names case-insensitively within t
       body: JSON.stringify({
         type: 'empty',
         workspaceId,
-        displayName: 'Alpha App',
+        name: 'Alpha App',
       }),
     })
     assertEquals(first.status, 200)
@@ -976,7 +976,7 @@ test('POST /projects rejects duplicate display names case-insensitively within t
       body: JSON.stringify({
         type: 'empty',
         workspaceId,
-        displayName: '  alpha app  ',
+        name: '  alpha app  ',
       }),
     })
     assertEquals(duplicate.status, 409)
@@ -1004,7 +1004,7 @@ test('PATCH /projects/:id rejects renaming onto another project name in the org'
       body: JSON.stringify({
         type: 'empty',
         workspaceId,
-        displayName: 'Project A',
+        name: 'Project A',
       }),
     })
     assertEquals(createA.status, 200)
@@ -1019,7 +1019,7 @@ test('PATCH /projects/:id rejects renaming onto another project name in the org'
       body: JSON.stringify({
         type: 'empty',
         workspaceId,
-        displayName: 'Project B',
+        name: 'Project B',
       }),
     })
     assertEquals(createB.status, 200)
@@ -1062,7 +1062,7 @@ test('system workspace project mutations return system_resource_immutable', asyn
       body: JSON.stringify({
         type: 'empty',
         workspaceId: systemWorkspaceId,
-        displayName: 'Into System',
+        name: 'Into System',
       }),
     })
     assertEquals(createIntoSystem.status, 403)
@@ -1080,7 +1080,7 @@ test('system workspace project mutations return system_resource_immutable', asyn
       body: JSON.stringify({
         type: 'empty',
         workspaceId,
-        displayName: 'User Project',
+        name: 'User Project',
       }),
     })
     assertEquals(createUser.status, 200)
@@ -1304,7 +1304,7 @@ test('TurboPanel self-host project mutations return system_resource_immutable; r
       body: JSON.stringify({
         type: 'empty',
         workspaceId,
-        displayName: 'Not Self-Host',
+        name: 'Not Self-Host',
       }),
     })
     assertEquals(createUser.status, 200)

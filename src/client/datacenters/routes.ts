@@ -172,7 +172,7 @@ export function registerDatacenterRoutes(
     const rows = await db
       .select({
         id: datacenter.id,
-        displayName: datacenter.displayName,
+        displayName: datacenter.name,
         description: datacenter.description,
         organizationId: datacenter.organizationId,
         metadata: datacenter.metadata,
@@ -229,7 +229,7 @@ export function registerDatacenterRoutes(
     const rows = await db
       .select({
         id: server.id,
-        displayName: server.displayName,
+        displayName: server.name,
         datacenterId: server.datacenterId,
         metadata: server.metadata,
       })
@@ -289,7 +289,7 @@ export function registerDatacenterRoutes(
     const [row] = await db
       .select({
         id: datacenter.id,
-        displayName: datacenter.displayName,
+        displayName: datacenter.name,
         description: datacenter.description,
         organizationId: datacenter.organizationId,
         metadata: datacenter.metadata,
@@ -360,7 +360,7 @@ export function registerDatacenterRoutes(
         .insert(datacenter)
         .values({
           organizationId,
-          displayName: seeded.displayName,
+          name: seeded.displayName,
           description: input.description,
           ...(seeded.metadata !== null ? { metadata: seeded.metadata } : {}),
           ...(input.options !== null ? { options: input.options } : {}),

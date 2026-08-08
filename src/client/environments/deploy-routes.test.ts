@@ -324,7 +324,7 @@ async function withDeployFixtures(
 
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Deploy Route Test Org' })
+    .values({ name: 'Deploy Route Test Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -350,7 +350,7 @@ async function withDeployFixtures(
 
   const [insertedWorkspace] = await db
     .insert(workspace)
-    .values({ displayName: 'Deploy Route Workspace', organizationId })
+    .values({ name: 'Deploy Route Workspace', organizationId })
     .returning({ id: workspace.id })
   const workspaceId = insertedWorkspace!.id
 
@@ -359,7 +359,7 @@ async function withDeployFixtures(
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Deploy Route Server',
+      name: 'Deploy Route Server',
       createdAt: now,
       updatedAt: now,
     })
@@ -369,7 +369,7 @@ async function withDeployFixtures(
   const [insertedProject] = await db
     .insert(project)
     .values({
-      displayName: 'Deploy Route Project',
+      name: 'Deploy Route Project',
       workspaceId,
       options: { compose: emptyComposeDocument() },
     })
@@ -379,7 +379,7 @@ async function withDeployFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      displayName: 'Deploy Route Env',
+      name: 'Deploy Route Env',
       projectId,
       options: { compose: emptyComposeDocument() },
     })
@@ -687,7 +687,7 @@ test('POST /environments/:id/deploy ignores body serverId and uses environment.s
       .insert(server)
       .values({
         organizationId,
-        displayName: 'Deploy Route Other Server',
+        name: 'Deploy Route Other Server',
         createdAt: now,
         updatedAt: now,
       })
@@ -789,14 +789,14 @@ test('POST /environments/:id/deploy stale environment pin returns 404', async ()
     const now = new Date().toISOString()
     const [foreignOrg] = await db
       .insert(organization)
-      .values({ displayName: 'Deploy Route Foreign Org' })
+      .values({ name: 'Deploy Route Foreign Org' })
       .returning({ id: organization.id })
     const foreignOrgId = foreignOrg!.id
     const [foreignServer] = await db
       .insert(server)
       .values({
         organizationId: foreignOrgId,
-        displayName: 'Foreign Server',
+        name: 'Foreign Server',
         createdAt: now,
         updatedAt: now,
       })
@@ -1102,17 +1102,17 @@ test('POST /environments/:id/lifecycle returns 404 for cross-org environment', a
   }) => {
     const [foreignOrg] = await db
       .insert(organization)
-      .values({ displayName: 'Lifecycle Foreign Org' })
+      .values({ name: 'Lifecycle Foreign Org' })
       .returning({ id: organization.id })
     const foreignOrgId = foreignOrg!.id
     const [foreignWorkspace] = await db
       .insert(workspace)
-      .values({ displayName: 'Foreign Workspace', organizationId: foreignOrgId })
+      .values({ name: 'Foreign Workspace', organizationId: foreignOrgId })
       .returning({ id: workspace.id })
     const [foreignProject] = await db
       .insert(project)
       .values({
-        displayName: 'Foreign Project',
+        name: 'Foreign Project',
         workspaceId: foreignWorkspace!.id,
         options: { compose: emptyComposeDocument() },
       })
@@ -1120,7 +1120,7 @@ test('POST /environments/:id/lifecycle returns 404 for cross-org environment', a
     const [foreignEnvironment] = await db
       .insert(environment)
       .values({
-        displayName: 'Foreign Env',
+        name: 'Foreign Env',
         projectId: foreignProject!.id,
         serverId,
         options: { compose: emptyComposeDocument() },

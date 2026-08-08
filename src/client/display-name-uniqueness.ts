@@ -26,7 +26,7 @@ export async function isProjectDisplayNameTaken(
 
   const conditions = [
     eq(workspace.organizationId, organizationId),
-    sql`lower(btrim(${project.displayName})) = ${key}`,
+    sql`lower(btrim(${project.name})) = ${key}`,
   ]
   if (excludeProjectId) {
     conditions.push(ne(project.id, excludeProjectId))
@@ -60,7 +60,7 @@ export async function isWorkspaceDisplayNameTaken(
 
   const conditions = [
     eq(workspace.organizationId, organizationId),
-    sql`lower(btrim(${workspace.displayName})) = ${key}`,
+    sql`lower(btrim(${workspace.name})) = ${key}`,
   ]
   if (excludeWorkspaceId) {
     conditions.push(ne(workspace.id, excludeWorkspaceId))

@@ -90,12 +90,12 @@ async function withTeamSubjectGrantFixtures(
 
   const [homeOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Org Context Home Org' })
+    .values({ name: 'Org Context Home Org' })
     .returning({ id: organization.id })
 
   const [targetOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Org Context Target Org' })
+    .values({ name: 'Org Context Target Org' })
     .returning({ id: organization.id })
 
   const homeOrganizationId = homeOrg!.id
@@ -115,7 +115,7 @@ async function withTeamSubjectGrantFixtures(
 
   const [insertedTeam] = await db
     .insert(team)
-    .values({ displayName: 'Org Context Team', organizationId: homeOrganizationId })
+    .values({ name: 'Org Context Team', organizationId: homeOrganizationId })
     .returning({ id: team.id })
 
   const teamId = insertedTeam!.id

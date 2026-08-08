@@ -48,7 +48,7 @@ const IP_SELECT = {
   address: ip.address,
   allocation: ip.allocation,
   scope: ip.scope,
-  displayName: ip.displayName,
+  displayName: ip.name,
   metadata: ip.metadata,
   options: ip.options,
   createdAt: ip.createdAt,
@@ -540,7 +540,7 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
             address: fields.address,
             allocation: fields.allocation,
             scope: fields.scope,
-            displayName: fields.displayName,
+            name: fields.displayName,
             ...(fields.datacenterId !== undefined
               ? { datacenterId: fields.datacenterId }
               : {}),

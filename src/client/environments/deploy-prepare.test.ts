@@ -1161,18 +1161,9 @@ describe('compose list/split/expansion helpers', () => {
     const options = buildExpandedServiceOptionsMap(
       serviceRows,
       expansion,
-      [{
-        serviceId: 'svc-web',
-        composeServiceName: 'web',
-        cloneComposeServiceName: 'web-1',
-        containerRowId: 'ctr-1',
-        containerName: 'web-container-1',
-        ordinal: 1,
-        instances: 2,
-      }],
     )
-    assertEquals(options.get('web-1')?.container?.name, 'web-container-1')
-    assertEquals(options.get('web-2')?.container?.name, undefined)
+    assertEquals(options.get('web-1'), options.get('web-2'))
+    assertEquals(options.has('web-1'), true)
 
     const instances = buildInstancesByComposeName(
       ['web', 'api', 'site'],

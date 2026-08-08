@@ -241,7 +241,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const rows = await db
       .select({
         id: hosting.id,
-        displayName: hosting.displayName,
+        displayName: hosting.name,
         description: hosting.description,
         serviceId: hosting.serviceId,
         tlsId: hosting.tlsId,
@@ -278,7 +278,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const rows = await db
       .select({
         id: hosting.id,
-        displayName: hosting.displayName,
+        displayName: hosting.name,
         description: hosting.description,
         serviceId: hosting.serviceId,
         tlsId: hosting.tlsId,
@@ -365,7 +365,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       const [inserted] = await tx
         .insert(hosting)
         .values({
-          displayName,
+          name: displayName,
           description,
           serviceId,
           ...(fks.tlsId.kind === 'value' ? { tlsId: fks.tlsId.value } : {}),

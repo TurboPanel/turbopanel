@@ -175,7 +175,7 @@ async function withSystemRouteFixtures(
   const email = `system-route-${crypto.randomUUID()}@example.com`
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'System Route Org' })
+    .values({ name: 'System Route Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -203,7 +203,7 @@ async function withSystemRouteFixtures(
     .insert(server)
     .values({
       organizationId,
-      displayName: 'System Route Server',
+      name: 'System Route Server',
       options: { hosting: { enabled: true } },
       createdAt: now,
       updatedAt: now,

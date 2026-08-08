@@ -10,7 +10,7 @@
  * - `environment.server_id` under that project — one environment per enrolled
  *   server (identity is `project_id` + `server_id`, never
  *   `environment.metadata.component`)
- * - `service.compose_service_name = 'traefik'` — ingress service under that env
+ * - `service.composeServiceName = 'traefik'` — ingress service under that env
  * - `container` via `ensureServiceIngressContainerAllocation` (`role='ingress'`)
  *
  * Self-host stack (co-located instance only):
@@ -18,7 +18,7 @@
  * - `project.metadata.component = 'turbopanel'` — shared self-host project
  * - `environment.server_id` under that project — one environment on the
  *   colocated server
- * - `service.compose_service_name` in `database` / `queue` / `analytics`
+ * - `service.composeServiceName` in `database` / `queue` / `analytics`
  * - `container` via `allocateEnvironmentContainers` (`role='system'`, uuid naming)
  *
  * The system workspace (`kind='system'`) is provisioned at self-hosted install
@@ -150,7 +150,7 @@ export async function ensureSystemWorkspace(
   // Partial unique index `uniq_workspace_organization_system` — Drizzle's
   // onConflictDoNothing cannot express `WHERE kind = 'system'`, so use raw SQL.
   const inserted = await tx.execute<{ id: string }>(sql`
-    INSERT INTO workspace (organization_id, display_name, kind)
+    INSERT INTO workspace (organization_id, name, kind)
     VALUES (
       ${organizationId}::uuid,
       ${SYSTEM_WORKSPACE_DISPLAY_NAME},
@@ -195,7 +195,7 @@ async function ensureHostingIngressProject(
   })
 
   const inserted = await tx.execute<{ id: string }>(sql`
-    INSERT INTO project (workspace_id, display_name, metadata)
+    INSERT INTO project (workspace_id, name, metadata)
     VALUES (
       ${workspaceId}::uuid,
       ${SYSTEM_PROJECT_DISPLAY_NAME},
@@ -259,7 +259,7 @@ async function ensureServerEnvironment(
     .values({
       projectId,
       serverId,
-      displayName,
+      name: displayName,
     })
     .returning({ id: environment.id })
 
@@ -275,7 +275,7 @@ async function ensureServerEnvironment(
  * Idempotent service upsert under a system environment, keyed on the existing
  * `(environment_id, compose_service_name)` unique target. Shared by the
  * hosting-ingress traefik service and the self-host database/queue/analytics
- * services — display name is the compose service name in both cases.
+ * services — display `name` defaults to the compose service name in both cases.
  */
 async function ensureComposeService(
   tx: Db,
@@ -286,7 +286,7 @@ async function ensureComposeService(
     .insert(service)
     .values({
       environmentId,
-      displayName: composeServiceName,
+      name: composeServiceName,
       composeServiceName,
     })
     .onConflictDoNothing({
@@ -331,7 +331,7 @@ async function ensureSystemHierarchyImpl(
     const workspaceId = await ensureSystemWorkspace(tx, params.organizationId)
     const projectId = await ensureHostingIngressProject(tx, workspaceId)
     const [serverRow] = await tx
-      .select({ displayName: server.displayName })
+      .select({ displayName: server.name })
       .from(server)
       .where(eq(server.id, params.serverId))
       .limit(1)
@@ -396,7 +396,7 @@ async function ensureSelfHostProject(
   })
 
   const inserted = await tx.execute<{ id: string }>(sql`
-    INSERT INTO project (workspace_id, display_name, metadata)
+    INSERT INTO project (workspace_id, name, metadata)
     VALUES (
       ${workspaceId}::uuid,
       ${SYSTEM_SELF_HOST_PROJECT_DISPLAY_NAME},

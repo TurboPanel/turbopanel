@@ -93,13 +93,13 @@ async function withAllocationFixtures(
 
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Allocate Containers Org' })
+    .values({ name: 'Allocate Containers Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
   const [insertedWorkspace] = await db
     .insert(workspace)
-    .values({ displayName: 'Allocate Containers Workspace', organizationId })
+    .values({ name: 'Allocate Containers Workspace', organizationId })
     .returning({ id: workspace.id })
   const workspaceId = insertedWorkspace!.id
 
@@ -108,7 +108,7 @@ async function withAllocationFixtures(
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Allocate Containers Server',
+      name: 'Allocate Containers Server',
       createdAt: now,
       updatedAt: now,
     })
@@ -119,7 +119,7 @@ async function withAllocationFixtures(
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Allocate Containers Server B',
+      name: 'Allocate Containers Server B',
       createdAt: now,
       updatedAt: now,
     })
@@ -129,7 +129,7 @@ async function withAllocationFixtures(
   const [insertedProject] = await db
     .insert(project)
     .values({
-      displayName: 'Allocate Containers Project',
+      name: 'Allocate Containers Project',
       workspaceId,
     })
     .returning({ id: project.id })
@@ -138,7 +138,7 @@ async function withAllocationFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      displayName: 'Allocate Containers Env',
+      name: 'Allocate Containers Env',
       projectId,
     })
     .returning({ id: environment.id })
@@ -147,10 +147,9 @@ async function withAllocationFixtures(
   const [webService] = await db
     .insert(service)
     .values({
-      displayName: 'web',
       environmentId,
+      name: 'web',
       composeServiceName: 'web',
-      options: { container: { name: 'explicit-web' } },
     })
     .returning({ id: service.id })
   const webServiceId = webService!.id
@@ -305,13 +304,14 @@ test('buildContainerServiceSpecs skips non-container compose names and reads ins
     [{
       id: serviceId,
       composeServiceName: 'web',
-      options: { instances: 3, container: { name: 'explicit-web' } },
+      options: { instances: 3 },
     }, {
       id: '01936b3e-bbbb-cccc-dddd-123456789abc',
       composeServiceName: 'site',
       options: {},
     }],
     new Set(['web']),
+    new Map([['web', 'explicit-web']]),
   )
   assertEquals(specs.length, 1)
   assertEquals(specs[0]?.serviceId, serviceId)

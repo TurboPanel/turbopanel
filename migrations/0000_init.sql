@@ -64,9 +64,9 @@ CREATE TABLE "datacenter" (
 	"metadata" jsonb,
 	"options" jsonb,
 	"organization_id" uuid NOT NULL,
-	"display_name" varchar(255),
+	"name" varchar(255),
 	"description" varchar(255),
-	CONSTRAINT "datacenter_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
+	CONSTRAINT "datacenter_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint
 CREATE TABLE "environment" (
@@ -77,9 +77,9 @@ CREATE TABLE "environment" (
 	"options" jsonb,
 	"project_id" uuid NOT NULL,
 	"server_id" uuid,
-	"display_name" varchar(255),
+	"name" varchar(255),
 	"description" varchar(255),
-	CONSTRAINT "environment_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
+	CONSTRAINT "environment_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint
 CREATE TABLE "grant" (
@@ -103,9 +103,9 @@ CREATE TABLE "hosting" (
 	"service_id" uuid NOT NULL,
 	"tls_id" uuid,
 	"ip_id" uuid,
-	"display_name" varchar(255),
+	"name" varchar(255),
 	"description" varchar(255),
-	CONSTRAINT "hosting_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
+	CONSTRAINT "hosting_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint
 CREATE TABLE "invitation" (
@@ -133,12 +133,12 @@ CREATE TABLE "ip" (
 	"address" "inet" NOT NULL,
 	"allocation" text NOT NULL,
 	"scope" text NOT NULL,
-	"display_name" varchar(255),
+	"name" varchar(255),
 	CONSTRAINT "ip_allocation_check" CHECK (allocation IN ('dedicated', 'shared')),
 	CONSTRAINT "ip_scope_check" CHECK (scope IN ('public', 'datacenter', 'loopback', 'vpn')),
 	CONSTRAINT "ip_vpn_scope_check" CHECK (("ip"."scope" = 'vpn' AND "ip"."vpn_id" IS NOT NULL) OR ("ip"."scope" <> 'vpn' AND "ip"."vpn_id" IS NULL)),
 	CONSTRAINT "ip_datacenter_free_pool_check" CHECK (("ip"."datacenter_id" IS NULL) OR ("ip"."server_id" IS NULL AND "ip"."vpn_id" IS NULL AND "ip"."network_id" IS NULL)),
-	CONSTRAINT "ip_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
+	CONSTRAINT "ip_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint
 CREATE TABLE "license" (
@@ -147,7 +147,7 @@ CREATE TABLE "license" (
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"organization_id" uuid NOT NULL,
 	"server_id" uuid,
-	"display_name" varchar(255),
+	"name" varchar(255),
 	"token" text NOT NULL,
 	"revoked_at" timestamp(3) with time zone
 );
@@ -160,10 +160,10 @@ CREATE TABLE "managed" (
 	"options" jsonb,
 	"environment_id" uuid NOT NULL,
 	"server_id" uuid,
-	"display_name" varchar(255),
+	"name" varchar(255),
 	"engine" text,
 	"status" text,
-	CONSTRAINT "managed_display_name_format_check" CHECK (("managed"."display_name" IS NULL) OR (((char_length(("managed"."display_name")::text) >= 1) AND (char_length(("managed"."display_name")::text) <= 255)) AND (("managed"."display_name")::text ~ '^[A-Za-z0-9 ._-]+$'::text))),
+	CONSTRAINT "managed_name_format_check" CHECK (("managed"."name" IS NULL) OR (((char_length(("managed"."name")::text) >= 1) AND (char_length(("managed"."name")::text) <= 255)) AND (("managed"."name")::text ~ '^[A-Za-z0-9 ._-]+$'::text))),
 	CONSTRAINT "managed_status_check" CHECK (status IS NULL OR status IN ('provisioning','applying','ready','stopped','failed'))
 );
 --> statement-breakpoint
@@ -186,14 +186,14 @@ CREATE TABLE "network" (
 	"server_id" uuid,
 	"kind" text NOT NULL,
 	"cidr" "cidr",
-	"display_name" varchar(255),
+	"name" varchar(255),
 	CONSTRAINT "network_kind_check" CHECK (kind IN ('datacenter', 'server', 'docker')),
 	CONSTRAINT "network_single_scope_check" CHECK ((
         ("network"."kind" = 'datacenter' AND "network"."datacenter_id" IS NOT NULL AND "network"."server_id" IS NULL) OR
         ("network"."kind" = 'server' AND "network"."server_id" IS NOT NULL AND "network"."datacenter_id" IS NULL) OR
         ("network"."kind" = 'docker' AND "network"."datacenter_id" IS NULL AND "network"."server_id" IS NULL)
       )),
-	CONSTRAINT "network_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
+	CONSTRAINT "network_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint
 CREATE TABLE "organization" (
@@ -202,10 +202,10 @@ CREATE TABLE "organization" (
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"metadata" jsonb,
 	"options" jsonb,
-	"display_name" varchar(255),
+	"name" varchar(255),
 	"slug" varchar(255),
 	CONSTRAINT "organization_slug_unique" UNIQUE("slug"),
-	CONSTRAINT "organization_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
+	CONSTRAINT "organization_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint
 CREATE TABLE "passkey" (
@@ -266,9 +266,9 @@ CREATE TABLE "project" (
 	"metadata" jsonb,
 	"options" jsonb,
 	"workspace_id" uuid NOT NULL,
-	"display_name" varchar(255),
+	"name" varchar(255),
 	"description" varchar(255),
-	CONSTRAINT "project_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
+	CONSTRAINT "project_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint
 CREATE TABLE "server" (
@@ -279,7 +279,7 @@ CREATE TABLE "server" (
 	"options" jsonb,
 	"organization_id" uuid,
 	"datacenter_id" uuid,
-	"display_name" varchar(255),
+	"name" varchar(255),
 	"hostname" varchar(255),
 	"machine_key" text,
 	"connected" boolean DEFAULT false NOT NULL,
@@ -294,10 +294,10 @@ CREATE TABLE "service" (
 	"metadata" jsonb,
 	"options" jsonb,
 	"environment_id" uuid NOT NULL,
-	"display_name" varchar(255),
+	"name" varchar(255),
 	"description" varchar(255),
 	"compose_service_name" varchar(255) NOT NULL,
-	CONSTRAINT "service_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
+	CONSTRAINT "service_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint
 CREATE TABLE "session" (
@@ -351,8 +351,8 @@ CREATE TABLE "team" (
 	"metadata" jsonb,
 	"options" jsonb,
 	"organization_id" uuid NOT NULL,
-	"display_name" varchar(255),
-	CONSTRAINT "team_display_name_format_check" CHECK ((display_name IS NULL) OR ((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)))
+	"name" varchar(255),
+	CONSTRAINT "team_name_format_check" CHECK ((name IS NULL) OR ((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)))
 );
 --> statement-breakpoint
 CREATE TABLE "teammate" (
@@ -370,7 +370,7 @@ CREATE TABLE "tls" (
 	"metadata" jsonb,
 	"options" jsonb,
 	"organization_id" uuid NOT NULL,
-	"display_name" varchar(255),
+	"name" varchar(255),
 	"source" text NOT NULL,
 	"certificate_pem" text,
 	"private_key_pem" text,
@@ -378,7 +378,7 @@ CREATE TABLE "tls" (
 	"not_after" timestamp(3) with time zone,
 	"fingerprint_sha256" text,
 	CONSTRAINT "tls_source_check" CHECK (source IN ('upload', 'lets_encrypt', 'self_signed')),
-	CONSTRAINT "tls_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
+	CONSTRAINT "tls_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint
 CREATE TABLE "2fa" (
@@ -396,19 +396,14 @@ CREATE TABLE "user" (
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"metadata" jsonb,
 	"options" jsonb,
-	"display_name" varchar(255),
-	"username" varchar(255),
-	"display_username" varchar(255),
+	"name" varchar(255),
 	"email" varchar(255) NOT NULL,
 	"is_email_verified" boolean DEFAULT false NOT NULL,
 	"is_2fa_enabled" boolean DEFAULT false NOT NULL,
 	"is_disabled" boolean DEFAULT false NOT NULL,
 	"role" text DEFAULT 'user' NOT NULL,
 	CONSTRAINT "user_email_unique" UNIQUE("email"),
-	CONSTRAINT "user_username_unique" UNIQUE("username"),
-	CONSTRAINT "user_display_name_format_check" CHECK ((display_name IS NULL) OR ((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255))),
-	CONSTRAINT "user_username_format_check" CHECK ((username IS NULL) OR ((char_length((username)::text) >= 1) AND (char_length((username)::text) <= 255))),
-	CONSTRAINT "user_display_username_format_check" CHECK ((display_username IS NULL) OR ((char_length((display_username)::text) >= 1) AND (char_length((display_username)::text) <= 255)))
+	CONSTRAINT "user_name_format_check" CHECK ((name IS NULL) OR ((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)))
 );
 --> statement-breakpoint
 CREATE TABLE "variable" (
@@ -457,8 +452,8 @@ CREATE TABLE "vpn" (
 	"options" jsonb,
 	"organization_id" uuid NOT NULL,
 	"cidr" "cidr" NOT NULL,
-	"display_name" varchar(255),
-	CONSTRAINT "vpn_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
+	"name" varchar(255),
+	CONSTRAINT "vpn_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint
 CREATE TABLE "workspace" (
@@ -466,10 +461,10 @@ CREATE TABLE "workspace" (
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"organization_id" uuid NOT NULL,
-	"display_name" varchar(255),
+	"name" varchar(255),
 	"description" varchar(255),
 	"kind" varchar(32) DEFAULT 'user' NOT NULL,
-	CONSTRAINT "workspace_display_name_format_check" CHECK ((display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))),
+	CONSTRAINT "workspace_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))),
 	CONSTRAINT "workspace_kind_check" CHECK (kind IN ('user', 'system'))
 );
 --> statement-breakpoint

@@ -83,7 +83,6 @@ test('createSession stores a retrievable session with metadata', async () => {
     assertEquals(data.userId, userId)
     assertEquals(data.email, email)
     assertEquals(data.role, 'user')
-    assertEquals(data.username, null)
   } finally {
     await db.delete(session).where(eq(session.userId, userId))
     await db.delete(user).where(eq(user.id, userId))

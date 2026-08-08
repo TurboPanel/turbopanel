@@ -56,14 +56,14 @@ test('stripPromotedMetadataKeys drops listed keys without mutating others', () =
 test('buildPatchUpdateFields always sets updatedAt and optional patches', () => {
   const onlyStamp = buildPatchUpdateFields({})
   assertEquals(typeof onlyStamp.updatedAt, 'string')
-  assertEquals('displayName' in onlyStamp, false)
+  assertEquals('name' in onlyStamp, false)
   assertEquals('description' in onlyStamp, false)
 
   const patched = buildPatchUpdateFields({
     displayName: '  Renamed  ',
     description: '  notes  ',
   })
-  assertEquals(patched.displayName, 'Renamed')
+  assertEquals(patched.name, 'Renamed')
   assertEquals(patched.description, 'notes')
 
   const clearedDescription = buildPatchUpdateFields({ description: '  ' })

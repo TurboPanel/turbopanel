@@ -87,14 +87,14 @@ export const organization = pgTable(
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
-    displayName: varchar('display_name', { length: 255 }),
+    name: varchar({ length: 255 }),
     slug: varchar({ length: 255 }),
   },
   (table) => [
     unique('organization_slug_unique').on(table.slug),
     check(
-      'organization_display_name_format_check',
-      sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+      'organization_name_format_check',
+      sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
     ),
   ]
 )
@@ -119,7 +119,7 @@ export const tls = pgTable(
     metadata: jsonb(),
     options: jsonb(),
     organizationId: uuid('organization_id').notNull(),
-    displayName: varchar('display_name', { length: 255 }),
+    name: varchar({ length: 255 }),
     /** `upload` | `lets_encrypt` | `self_signed` */
     source: text().notNull(),
     /** Leaf + intermediate chain PEM; null while LE `pending`. */
@@ -153,8 +153,8 @@ export const tls = pgTable(
       sql`source IN ('upload', 'lets_encrypt', 'self_signed')`
     ),
     check(
-      'tls_display_name_format_check',
-      sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+      'tls_name_format_check',
+      sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
     ),
   ]
 )
@@ -249,7 +249,7 @@ export const datacenter = pgTable(
     metadata: jsonb(),
     options: jsonb(),
     organizationId: uuid('organization_id').notNull(),
-    displayName: varchar('display_name', { length: 255 }),
+    name: varchar({ length: 255 }),
     description: varchar('description', { length: 255 }),
   },
   (table) => [
@@ -263,8 +263,8 @@ export const datacenter = pgTable(
       name: 'datacenter_organization_id_organization_id_fk',
     }).onDelete('cascade'),
     check(
-      'datacenter_display_name_format_check',
-      sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+      'datacenter_name_format_check',
+      sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
     ),
   ]
 )
@@ -293,7 +293,7 @@ export const server = pgTable(
     options: jsonb(),
     organizationId: uuid('organization_id'),
     datacenterId: uuid('datacenter_id'),
-    displayName: varchar('display_name', { length: 255 }),
+    name: varchar({ length: 255 }),
     hostname: varchar('hostname', { length: 255 }),
     /**
      * Derived HMAC of the host machine-id (not the raw value, not a sealed
@@ -371,7 +371,7 @@ export const license = pgTable(
     organizationId: uuid('organization_id').notNull(),
     /** Set on first successful enroll — one-shot seat latch. */
     serverId: uuid('server_id'),
-    displayName: varchar('display_name', { length: 255 }),
+    name: varchar({ length: 255 }),
     /** Argon2id PHC hashed token — same format as account.password */
     token: text().notNull(),
     /** Soft-delete */
@@ -461,7 +461,7 @@ export const network = pgTable(
     serverId: uuid('server_id'),
     kind: text().notNull(),
     cidr: cidr(),
-    displayName: varchar('display_name', { length: 255 }),
+    name: varchar({ length: 255 }),
   },
   (table) => [
     index('idx_network_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
@@ -501,8 +501,8 @@ export const network = pgTable(
       )`
     ),
     check(
-      'network_display_name_format_check',
-      sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+      'network_name_format_check',
+      sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
     ),
   ]
 )
@@ -525,7 +525,7 @@ export const vpn = pgTable(
     organizationId: uuid('organization_id').notNull(),
     /** Overlay tunnel subnet for this mesh. */
     cidr: cidr().notNull(),
-    displayName: varchar('display_name', { length: 255 }),
+    name: varchar({ length: 255 }),
   },
   (table) => [
     index('idx_vpn_organization_id').using(
@@ -542,8 +542,8 @@ export const vpn = pgTable(
       table.cidr
     ),
     check(
-      'vpn_display_name_format_check',
-      sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+      'vpn_name_format_check',
+      sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
     ),
   ]
 )
@@ -577,7 +577,7 @@ export const ip = pgTable(
     address: inet('address').notNull(),
     allocation: text().notNull(),
     scope: text().notNull(),
-    displayName: varchar('display_name', { length: 255 }),
+    name: varchar({ length: 255 }),
   },
   (table) => [
     index('idx_ip_organization_id').using(
@@ -633,8 +633,8 @@ export const ip = pgTable(
       .on(table.vpnId, table.address)
       .where(sql`${table.vpnId} IS NOT NULL`),
     check(
-      'ip_display_name_format_check',
-      sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+      'ip_name_format_check',
+      sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
     ),
   ]
 )
@@ -735,7 +735,7 @@ export const workspace = pgTable(
       .defaultNow()
       .notNull(),
     organizationId: uuid('organization_id').notNull(),
-    displayName: varchar('display_name', { length: 255 }),
+    name: varchar({ length: 255 }),
     description: varchar('description', { length: 255 }),
     kind: varchar({ length: 32 }).notNull().default('user'),
   },
@@ -750,8 +750,8 @@ export const workspace = pgTable(
       name: 'workspace_organization_id_organization_id_fk',
     }).onDelete('cascade'),
     check(
-      'workspace_display_name_format_check',
-      sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+      'workspace_name_format_check',
+      sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
     ),
     check('workspace_kind_check', sql`kind IN ('user', 'system')`),
     uniqueIndex('uniq_workspace_organization_system')
@@ -775,7 +775,7 @@ export const project = pgTable(
     metadata: jsonb(),
     options: jsonb(),
     workspaceId: uuid('workspace_id').notNull(),
-    displayName: varchar('display_name', { length: 255 }),
+    name: varchar({ length: 255 }),
     description: varchar('description', { length: 255 }),
   },
   (table) => [
@@ -789,8 +789,8 @@ export const project = pgTable(
       name: 'project_workspace_id_workspace_id_fk',
     }).onDelete('restrict'),
     check(
-      'project_display_name_format_check',
-      sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+      'project_name_format_check',
+      sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
     ),
     /**
      * One project per system component per workspace (system hierarchy).
@@ -820,7 +820,7 @@ export const environment = pgTable(
     projectId: uuid('project_id').notNull(),
     /** Whole-server placement pin — single source of truth (not compose / metadata). */
     serverId: uuid('server_id'),
-    displayName: varchar('display_name', { length: 255 }),
+    name: varchar({ length: 255 }),
     description: varchar('description', { length: 255 }),
   },
   (table) => [
@@ -843,8 +843,8 @@ export const environment = pgTable(
       name: 'environment_server_id_server_id_fk',
     }).onDelete('restrict'),
     check(
-      'environment_display_name_format_check',
-      sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+      'environment_name_format_check',
+      sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
     ),
   ]
 )
@@ -873,7 +873,7 @@ export const managed = pgTable(
      * independently of the environment's deploy placement later.
      */
     serverId: uuid('server_id'),
-    displayName: varchar('display_name', { length: 255 }),
+    name: varchar({ length: 255 }),
     /** Catalog engine code (e.g. `postgres`, `redis`). */
     engine: text(),
     /** `provisioning` | `applying` | `ready` | `stopped` | `failed` */
@@ -904,8 +904,8 @@ export const managed = pgTable(
     }).onDelete('restrict'),
     uniqueIndex('managed_environment_id_unique').on(table.environmentId),
     check(
-      'managed_display_name_format_check',
-      sql`(${table.displayName} IS NULL) OR (((char_length((${table.displayName})::text) >= 1) AND (char_length((${table.displayName})::text) <= 255)) AND ((${table.displayName})::text ~ '^[A-Za-z0-9 ._-]+$'::text))`,
+      'managed_name_format_check',
+      sql`(${table.name} IS NULL) OR (((char_length((${table.name})::text) >= 1) AND (char_length((${table.name})::text) <= 255)) AND ((${table.name})::text ~ '^[A-Za-z0-9 ._-]+$'::text))`,
     ),
     check(
       'managed_status_check',
@@ -1055,7 +1055,11 @@ export const service = pgTable(
     metadata: jsonb(),
     options: jsonb(),
     environmentId: uuid('environment_id').notNull(),
-    displayName: varchar('display_name', { length: 255 }),
+    /**
+     * User-facing display label (column renamed from `display_name`). Nullable
+     * and not unique. Client JSON still exposes this field as `displayName`.
+     */
+    name: varchar({ length: 255 }),
     description: varchar('description', { length: 255 }),
     /**
      * Compose service key — derived from the compose document (project base +
@@ -1063,7 +1067,7 @@ export const service = pgTable(
      * managed container allocation, and daemon-report container reconcile
      * (`ensureServicesForReportedContainers`) — never by a client request.
      * Unique per environment (`uniq_service_environment_compose_name`);
-     * displayName itself is not unique and must not be assumed so.
+     * `name` itself is not unique and must not be assumed so.
      */
     composeServiceName: varchar('compose_service_name', { length: 255 }).notNull(),
   },
@@ -1083,8 +1087,8 @@ export const service = pgTable(
       name: 'service_environment_id_environment_id_fk',
     }).onDelete('restrict'),
     check(
-      'service_display_name_format_check',
-      sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+      'service_name_format_check',
+      sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
     ),
   ]
 )
@@ -1108,7 +1112,7 @@ export const hosting = pgTable(
     tlsId: uuid('tls_id'),
     /** Optional pin to a managed `ip` row for ingress addressing. */
     ipId: uuid('ip_id'),
-    displayName: varchar('display_name', { length: 255 }),
+    name: varchar({ length: 255 }),
     description: varchar('description', { length: 255 }),
   },
   (table) => [
@@ -1134,8 +1138,8 @@ export const hosting = pgTable(
       name: 'hosting_ip_id_ip_id_fk',
     }).onDelete('set null'),
     check(
-      'hosting_display_name_format_check',
-      sql`(display_name IS NULL) OR (((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255)) AND ((display_name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+      'hosting_name_format_check',
+      sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
     ),
   ]
 )
@@ -1612,7 +1616,7 @@ export const team = pgTable(
     metadata: jsonb(),
     options: jsonb(),
     organizationId: uuid('organization_id').notNull(),
-    displayName: varchar('display_name', { length: 255 }),
+    name: varchar({ length: 255 }),
   },
   (table) => [
     index('idx_team_organization_id').using(
@@ -1625,8 +1629,8 @@ export const team = pgTable(
       name: 'team_organization_id_organization_id_fk',
     }).onDelete('cascade'),
     check(
-      'team_display_name_format_check',
-      sql`(display_name IS NULL) OR ((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255))`
+      'team_name_format_check',
+      sql`(name IS NULL) OR ((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255))`
     ),
   ]
 )
@@ -1645,9 +1649,7 @@ export const user = pgTable(
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
-    displayName: varchar('display_name', { length: 255 }),
-    username: varchar({ length: 255 }),
-    displayUsername: varchar('display_username', { length: 255 }),
+    name: varchar({ length: 255 }),
     email: varchar({ length: 255 }).notNull(),
     isEmailVerified: boolean('is_email_verified').default(false).notNull(),
     is2FaEnabled: boolean('is_2fa_enabled').default(false).notNull(),
@@ -1656,18 +1658,9 @@ export const user = pgTable(
   },
   (table) => [
     unique('user_email_unique').on(table.email),
-    unique('user_username_unique').on(table.username),
     check(
-      'user_display_name_format_check',
-      sql`(display_name IS NULL) OR ((char_length((display_name)::text) >= 1) AND (char_length((display_name)::text) <= 255))`
-    ),
-    check(
-      'user_username_format_check',
-      sql`(username IS NULL) OR ((char_length((username)::text) >= 1) AND (char_length((username)::text) <= 255))`
-    ),
-    check(
-      'user_display_username_format_check',
-      sql`(display_username IS NULL) OR ((char_length((display_username)::text) >= 1) AND (char_length((display_username)::text) <= 255))`
+      'user_name_format_check',
+      sql`(name IS NULL) OR ((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255))`
     ),
   ]
 )

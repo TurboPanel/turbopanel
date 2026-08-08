@@ -151,7 +151,7 @@ function createProjectSelectDb(
       return fn(tx ?? createTxStub({
         envRows: [{
           id: 'env-1',
-          displayName: 'Production',
+          name: 'Production',
           description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
           serverId: null,
         }],
@@ -230,7 +230,7 @@ test('ensureProductionEnvironment returns existing Production row', async () => 
   const tx = createTxStub({
     envRows: [{
       id: 'env-prod',
-      displayName: 'Production',
+      name: 'Production',
       description: 'custom',
       serverId: null,
     }],
@@ -244,13 +244,13 @@ test('ensureProductionEnvironment prefers literal Production over org default', 
     envRows: [
       {
         id: 'env-staging',
-        displayName: 'Staging',
+        name: 'Staging',
         description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
         serverId: null,
       },
       {
         id: 'env-prod',
-        displayName: 'production',
+        name: 'production',
         description: null,
         serverId: null,
       },
@@ -269,7 +269,7 @@ test('ensureProductionEnvironment matches org default name', async () => {
   const tx = createTxStub({
     envRows: [{
       id: 'env-staging',
-      displayName: 'Staging',
+      name: 'Staging',
       description: 'other',
       serverId: null,
     }],
@@ -287,7 +287,7 @@ test('ensureProductionEnvironment reuses sole scaffold row', async () => {
   const tx = createTxStub({
     envRows: [{
       id: 'env-only',
-      displayName: 'Old Default',
+      name: 'Old Default',
       description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
       serverId: null,
     }],
@@ -306,13 +306,13 @@ test('ensureProductionEnvironment matches scaffold description among many', asyn
     envRows: [
       {
         id: 'env-a',
-        displayName: 'Alpha',
+        name: 'Alpha',
         description: 'custom',
         serverId: null,
       },
       {
         id: 'env-scaffold',
-        displayName: 'Beta',
+        name: 'Beta',
         description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
         serverId: null,
       },
@@ -332,13 +332,13 @@ test('ensureProductionEnvironment inserts when nothing matches', async () => {
     envRows: [
       {
         id: 'env-a',
-        displayName: 'Alpha',
+        name: 'Alpha',
         description: 'custom',
         serverId: null,
       },
       {
         id: 'env-b',
-        displayName: 'Beta',
+        name: 'Beta',
         description: 'other',
         serverId: null,
       },
@@ -359,7 +359,7 @@ test('ensureProductionEnvironment normalizes casing and pins server', async () =
   const tx = createTxStub({
     envRows: [{
       id: 'env-prod',
-      displayName: 'production',
+      name: 'production',
       description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
       serverId: 'srv-old',
     }],
@@ -384,7 +384,7 @@ test('ensureProductionEnvironment skips update when already matching', async () 
   const tx = createTxStub({
     envRows: [{
       id: 'env-prod',
-      displayName: 'Production',
+      name: 'Production',
       description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
       serverId: 'srv-1',
     }],
@@ -405,7 +405,7 @@ test('ensureProductionEnvironment skips update when already matching', async () 
 test('insertEmptyProject inserts project and environment', async () => {
   const tx = createTxStub({ insertedProjectId: 'proj-created' })
   const id = await insertEmptyProject(tx, {
-    displayName: 'App',
+    name: 'App',
     description: 'desc',
     workspaceId: 'ws-1',
     serverId: 'srv-1',
@@ -613,7 +613,7 @@ test('configureProjectType configures managed postgres with secret vars', async 
   const tx = createTxStub({
     envRows: [{
       id: 'env-1',
-      displayName: 'Production',
+      name: 'Production',
       description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
       serverId: null,
     }],
@@ -648,7 +648,7 @@ test('configureProjectType skips existing catalog variable keys', async () => {
   const tx = createTxStub({
     envRows: [{
       id: 'env-1',
-      displayName: 'Production',
+      name: 'Production',
       description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
       serverId: null,
     }],

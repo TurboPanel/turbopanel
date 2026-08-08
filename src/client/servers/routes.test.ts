@@ -346,7 +346,7 @@ test('createListRowsOnlyReadDb rejects partial servers-list select columns', asy
   assertThrows(
     () => readDb.select({
       id: server.id,
-      displayName: server.displayName,
+      displayName: server.name,
       organizationId: server.organizationId,
       licenseId: license.id,
       options: server.options,
@@ -360,7 +360,7 @@ test('createListRowsOnlyReadDb rejects partial servers-list select columns', asy
   const allowedReadDb = createListRowsOnlyReadDb(createStubDbForCachedReadTests())
   await allowedReadDb.select({
     id: server.id,
-    displayName: server.displayName,
+    displayName: server.name,
     organizationId: server.organizationId,
     licenseId: license.id,
     options: server.options,
@@ -486,7 +486,7 @@ async function withServerDeleteFixtures(
   const email = `server-delete-test-${crypto.randomUUID()}@example.com`
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Server Delete Test Org' })
+    .values({ name: 'Server Delete Test Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -513,7 +513,7 @@ async function withServerDeleteFixtures(
       createdAt: now,
       updatedAt: now,
       organizationId,
-      displayName: 'Delete Me',
+      name: 'Delete Me',
     })
     .returning({ id: server.id })
   const serverId = insertedServer!.id
@@ -721,7 +721,7 @@ test('DELETE /servers/:id returns 403 via reserved colocated license when pin an
     // only the active reserved install license bound to this server.
     const { licenseId } = await createLicense(db, {
       organizationId,
-      displayName: COLOCATED_SERVER_DISPLAY_NAME,
+      name: COLOCATED_SERVER_DISPLAY_NAME,
     })
     await db
       .update(license)
@@ -773,7 +773,7 @@ test('DELETE /servers/:id returns 403 not 503 for self-host-pinned server withou
   const email = `server-delete-pin-no-registry-${crypto.randomUUID()}@example.com`
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Server Delete Pin No Registry Org' })
+    .values({ name: 'Server Delete Pin No Registry Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -800,7 +800,7 @@ test('DELETE /servers/:id returns 403 not 503 for self-host-pinned server withou
       createdAt: now,
       updatedAt: now,
       organizationId,
-      displayName: 'Pinned No Registry',
+      name: 'Pinned No Registry',
     })
     .returning({ id: server.id })
   const serverId = insertedServer!.id
@@ -1006,7 +1006,7 @@ test('DELETE /servers/:id invalidates the bound license on Workers runtime', asy
   const email = `server-delete-workers-${crypto.randomUUID()}@example.com`
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Server Delete Workers Org' })
+    .values({ name: 'Server Delete Workers Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -1033,7 +1033,7 @@ test('DELETE /servers/:id invalidates the bound license on Workers runtime', asy
       createdAt: now,
       updatedAt: now,
       organizationId,
-      displayName: 'Workers Delete Me',
+      name: 'Workers Delete Me',
     })
     .returning({ id: server.id })
   const serverId = insertedServer!.id
@@ -1133,7 +1133,7 @@ test('DELETE /servers/:id returns 503 when daemon cell registry is unavailable',
   const email = `server-delete-no-registry-${crypto.randomUUID()}@example.com`
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Server Delete No Registry Org' })
+    .values({ name: 'Server Delete No Registry Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -1160,7 +1160,7 @@ test('DELETE /servers/:id returns 503 when daemon cell registry is unavailable',
       createdAt: now,
       updatedAt: now,
       organizationId,
-      displayName: 'Registry Missing',
+      name: 'Registry Missing',
     })
     .returning({ id: server.id })
   const serverId = insertedServer!.id
@@ -1213,7 +1213,7 @@ test('DELETE /servers/:id returns 500 when purge fails after row delete', async 
   const email = `server-delete-purge-fail-${crypto.randomUUID()}@example.com`
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Server Delete Purge Fail Org' })
+    .values({ name: 'Server Delete Purge Fail Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -1240,7 +1240,7 @@ test('DELETE /servers/:id returns 500 when purge fails after row delete', async 
     createdAt: now,
     updatedAt: now,
     organizationId,
-    displayName: 'Purge Fail',
+    name: 'Purge Fail',
   })
   await db
     .update(license)
@@ -1312,7 +1312,7 @@ test('GET /servers/updates does not call listRequests on the cell', async () => 
   const email = `server-updates-batch-${crypto.randomUUID()}@example.com`
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Server Updates Batch Org' })
+    .values({ name: 'Server Updates Batch Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -1339,7 +1339,7 @@ test('GET /servers/updates does not call listRequests on the cell', async () => 
       createdAt: now,
       updatedAt: now,
       organizationId,
-      displayName: 'Updates Batch',
+      name: 'Updates Batch',
     })
     .returning({ id: server.id })
   const serverId = insertedServer!.id
@@ -1634,7 +1634,7 @@ test('GET /servers/:id/cell returns data for an admin user', async () => {
   const email = `server-cell-admin-${crypto.randomUUID()}@example.com`
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Server Cell Admin Org' })
+    .values({ name: 'Server Cell Admin Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -1653,7 +1653,7 @@ test('GET /servers/:id/cell returns data for an admin user', async () => {
       createdAt: now,
       updatedAt: now,
       organizationId,
-      displayName: 'Cell Admin',
+      name: 'Cell Admin',
     })
     .returning({ id: server.id })
   const serverId = insertedServer!.id
@@ -1775,7 +1775,7 @@ test('GET /servers — empty visibleIds short-circuits before cache', async () =
   const email = `server-list-no-grant-${crypto.randomUUID()}@example.com`
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'No Grant Org' })
+    .values({ name: 'No Grant Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -1794,7 +1794,7 @@ test('GET /servers — empty visibleIds short-circuits before cache', async () =
       createdAt: now,
       updatedAt: now,
       organizationId,
-      displayName: 'Hidden Server',
+      name: 'Hidden Server',
     })
     .returning({ id: server.id })
   const serverId = insertedServer!.id
@@ -1858,7 +1858,7 @@ test('GET /servers — differing visibleIds produce different cache keys', async
         createdAt: now,
         updatedAt: now,
         organizationId,
-        displayName: 'Second Server',
+        name: 'Second Server',
       })
       .returning({ id: server.id })
 
@@ -2176,11 +2176,11 @@ test('PATCH /servers/:id pins datacenterId and rejects cross-org datacenter', as
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: 'Patch Server Org A' })
+    .values({ name: 'Patch Server Org A' })
     .returning({ id: organization.id })
   const [orgB] = await db
     .insert(organization)
-    .values({ displayName: 'Patch Server Org B' })
+    .values({ name: 'Patch Server Org B' })
     .returning({ id: organization.id })
 
   const [u] = await db
@@ -2204,7 +2204,7 @@ test('PATCH /servers/:id pins datacenterId and rejects cross-org datacenter', as
     .insert(server)
     .values({
       organizationId: orgA!.id,
-      displayName: 'Host',
+      name: 'Host',
       createdAt: now,
       updatedAt: now,
     })
@@ -2214,7 +2214,7 @@ test('PATCH /servers/:id pins datacenterId and rejects cross-org datacenter', as
     .insert(datacenter)
     .values({
       organizationId: orgA!.id,
-      displayName: 'DC-A',
+      name: 'DC-A',
       createdAt: now,
       updatedAt: now,
     })
@@ -2224,7 +2224,7 @@ test('PATCH /servers/:id pins datacenterId and rejects cross-org datacenter', as
     .insert(datacenter)
     .values({
       organizationId: orgB!.id,
-      displayName: 'DC-B',
+      name: 'DC-B',
       createdAt: now,
       updatedAt: now,
     })
@@ -2516,7 +2516,7 @@ test('PATCH /servers/:id updates displayName', async () => {
     assertEquals(body.ok, true)
 
     const [row] = await db
-      .select({ displayName: server.displayName })
+      .select({ displayName: server.name })
       .from(server)
       .where(eq(server.id, serverId))
       .limit(1)

@@ -28,7 +28,7 @@ it('hasActiveColocatedLicenseBinding detects the reserved install license', asyn
   const db = createDenoDb()
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Colocated License Org' })
+    .values({ name: 'Colocated License Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -37,7 +37,7 @@ it('hasActiveColocatedLicenseBinding detects the reserved install license', asyn
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Colocated Host',
+      name: 'Colocated Host',
       createdAt: now,
       updatedAt: now,
     })
@@ -51,7 +51,7 @@ it('hasActiveColocatedLicenseBinding detects the reserved install license', asyn
 
   const { licenseId } = await createLicense(db, {
     organizationId,
-    displayName: COLOCATED_SERVER_DISPLAY_NAME,
+    name: COLOCATED_SERVER_DISPLAY_NAME,
   })
   await db
     .update(license)
@@ -84,7 +84,7 @@ it('hasActiveColocatedLicenseBinding ignores non-colocated license display names
   const db = createDenoDb()
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Regular License Org' })
+    .values({ name: 'Regular License Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -93,7 +93,7 @@ it('hasActiveColocatedLicenseBinding ignores non-colocated license display names
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Regular Host',
+      name: 'Regular Host',
       createdAt: now,
       updatedAt: now,
     })
@@ -102,7 +102,7 @@ it('hasActiveColocatedLicenseBinding ignores non-colocated license display names
 
   const { licenseId } = await createLicense(db, {
     organizationId,
-    displayName: 'Production Node',
+    name: 'Production Node',
   })
   await db
     .update(license)

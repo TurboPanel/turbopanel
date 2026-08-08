@@ -33,7 +33,7 @@ export function registerTeamRoutes(router: Hono, opts: AuthRouteOpts) {
     const rows = await db
       .select({
         id: team.id,
-        displayName: team.displayName,
+        displayName: team.name,
         organizationId: team.organizationId,
         createdAt: team.createdAt,
         updatedAt: team.updatedAt,

@@ -51,7 +51,7 @@ export async function ensureManagedContainerAllocation(
     .insert(service)
     .values({
       environmentId,
-      displayName: composeServiceName,
+      name: composeServiceName,
       composeServiceName,
     })
     .onConflictDoNothing({

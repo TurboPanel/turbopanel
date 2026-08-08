@@ -32,16 +32,19 @@ test('applyServiceOptionsToComposeDocument sets container_name and deploy limits
     api: { image: 'node:22' },
   }
 
-  const result = applyServiceOptionsToComposeDocument(doc, new Map([
-    ['api', {
-      container: { name: 'api-container' },
-      operations: { stopGracePeriodSeconds: 45, maxRestartAttempts: 3 },
-      resources: { cpus: 2, memoryBytes: 512_000_000, memoryReservationBytes: 256_000_000 },
-      preDeployCommand: 'echo before',
-      postDeployCommand: 'echo after',
-      build: { disableCache: true },
-    }],
-  ]))
+  const result = applyServiceOptionsToComposeDocument(
+    doc,
+    new Map([
+      ['api', {
+        operations: { stopGracePeriodSeconds: 45, maxRestartAttempts: 3 },
+        resources: { cpus: 2, memoryBytes: 512_000_000, memoryReservationBytes: 256_000_000 },
+        preDeployCommand: 'echo before',
+        postDeployCommand: 'echo after',
+        build: { disableCache: true },
+      }],
+    ]),
+    new Map([['api', 'api-container']]),
+  )
 
   const api = (result.document.data.services as Record<string, Record<string, unknown>>).api!
   assertServiceRecord(api, 'api')
@@ -386,23 +389,22 @@ test('serviceHasComposeHealthCheck is false for missing or non-record services',
 
 test('buildServiceOptionsMap skips invalid option rows', () => {
   const map = buildServiceOptionsMap([
-    { composeServiceName: 'api', options: { container: { name: 'api' } } },
+    { composeServiceName: 'api', options: { instances: 2 } },
     { composeServiceName: 'bad', options: { healthCheck: { policy: 'invalid' } } },
     { composeServiceName: 'empty', options: null },
     { composeServiceName: 'not-record', options: 'bad' },
   ])
   assertEquals(map.size, 2)
-  assertEquals(map.get('api')?.container?.name, 'api')
+  assertEquals(map.get('api')?.instances, 2)
   assertEquals(map.get('empty'), {})
 })
 
 test('buildServiceOptionsMap keeps last row for duplicate compose names', () => {
   const map = buildServiceOptionsMap([
-    { composeServiceName: 'web', options: { container: { name: 'first' } } },
+    { composeServiceName: 'web', options: { instances: 1 } },
     {
       composeServiceName: 'web',
       options: {
-        container: { name: 'second' },
         healthCheck: { policy: 'warn' },
         instances: 3,
       },
@@ -410,7 +412,6 @@ test('buildServiceOptionsMap keeps last row for duplicate compose names', () => 
     { composeServiceName: 'worker', options: { instances: 2 } },
   ])
   assertEquals(map.size, 2)
-  assertEquals(map.get('web')?.container?.name, 'second')
   assertEquals(map.get('web')?.healthCheck?.policy, 'warn')
   assertEquals(map.get('web')?.instances, 3)
   assertEquals(map.get('worker')?.instances, 2)

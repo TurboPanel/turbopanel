@@ -405,11 +405,11 @@ export function buildDeveloperRouter(
     const rows = await db
       .select({
         id: organization.id,
-        displayName: organization.displayName,
+        displayName: organization.name,
         slug: organization.slug,
       })
       .from(organization)
-      .orderBy(organization.displayName)
+      .orderBy(organization.name)
     return c.json({ organizations: rows })
   })
 
@@ -419,7 +419,7 @@ export function buildDeveloperRouter(
     const rows = await db
       .select({
         id: server.id,
-        displayName: server.displayName,
+        displayName: server.name,
         organizationId: server.organizationId,
         options: server.options,
         createdAt: server.createdAt,
@@ -448,7 +448,7 @@ export function buildDeveloperRouter(
     const now = nowTs()
     const inserted = await db
       .insert(server)
-      .values({ displayName, options, createdAt: now, updatedAt: now })
+      .values({ name: displayName, options, createdAt: now, updatedAt: now })
       .returning({ id: server.id })
 
     return c.json({ ok: true, id: inserted[0].id }, 201)
@@ -465,14 +465,14 @@ export function buildDeveloperRouter(
     } | null
 
     const patch: {
-      displayName?: string | null
+      name?: string | null
       organizationId?: string | null
       options?: Record<string, unknown> | null
     } = {}
     if (body && 'displayName' in body) {
       const parsed = parseDisplayNameInput(body.displayName)
       if (!parsed.ok) return c.json({ error: parsed.error }, 400)
-      patch.displayName = parsed.value
+      patch.name = parsed.value
     }
     if (body && 'options' in body) {
       patch.options = body.options ?? null

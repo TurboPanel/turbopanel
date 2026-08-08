@@ -61,7 +61,7 @@ test('POST /networks requires dockerNetworkName for kind=docker', async () => {
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: 'Docker Net Org' })
+    .values({ name: 'Docker Net Org' })
     .returning({ id: organization.id })
   const organizationId = orgA!.id
 
@@ -140,7 +140,7 @@ test('POST /networks rejects datacenterId and serverId together', async () => {
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: 'Net Test Org' })
+    .values({ name: 'Net Test Org' })
     .returning({ id: organization.id })
   const organizationId = orgA!.id
 
@@ -163,11 +163,11 @@ test('POST /networks rejects datacenterId and serverId together', async () => {
   const now = new Date().toISOString()
   const [dc] = await db
     .insert(datacenter)
-    .values({ organizationId, displayName: 'DC1', createdAt: now, updatedAt: now })
+    .values({ organizationId, name: 'DC1', createdAt: now, updatedAt: now })
     .returning({ id: datacenter.id })
   const [srv] = await db
     .insert(server)
-    .values({ organizationId, displayName: 'Host1', createdAt: now, updatedAt: now })
+    .values({ organizationId, name: 'Host1', createdAt: now, updatedAt: now })
     .returning({ id: server.id })
 
   const cookie = await sessionCookie(db, secrets, userId)
@@ -216,7 +216,7 @@ test('POST /networks rejects kind=vpn and requires per-kind scope FKs', async ()
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: 'Net Scope Org' })
+    .values({ name: 'Net Scope Org' })
     .returning({ id: organization.id })
   const organizationId = orgA!.id
 
@@ -239,11 +239,11 @@ test('POST /networks rejects kind=vpn and requires per-kind scope FKs', async ()
   const now = new Date().toISOString()
   const [dc] = await db
     .insert(datacenter)
-    .values({ organizationId, displayName: 'DC1', createdAt: now, updatedAt: now })
+    .values({ organizationId, name: 'DC1', createdAt: now, updatedAt: now })
     .returning({ id: datacenter.id })
   const [srv] = await db
     .insert(server)
-    .values({ organizationId, displayName: 'Host1', createdAt: now, updatedAt: now })
+    .values({ organizationId, name: 'Host1', createdAt: now, updatedAt: now })
     .returning({ id: server.id })
 
   const cookie = await sessionCookie(db, secrets, userId)
@@ -353,7 +353,7 @@ test('GET /networks returns 403 for org member without organization:manage', asy
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: 'Net List Org' })
+    .values({ name: 'Net List Org' })
     .returning({ id: organization.id })
   const organizationId = orgA!.id
 

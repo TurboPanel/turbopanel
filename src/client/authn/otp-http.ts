@@ -194,7 +194,7 @@ async function resolveOtpSignInUserId(
       email: trimmedEmail,
       isEmailVerified: true,
       role: 'user',
-      ...(displayName && { displayName }),
+      ...(displayName && { name: displayName }),
     })
     .returning({ id: user.id })
 

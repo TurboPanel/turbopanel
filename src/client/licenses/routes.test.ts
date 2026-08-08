@@ -104,7 +104,7 @@ async function withTestFixtures(
 
   const insertedOrg = await db
     .insert(organization)
-    .values({ displayName: 'License Route Test Org' })
+    .values({ name: 'License Route Test Org' })
     .returning({ id: organization.id })
 
   const organizationId = insertedOrg[0]!.id
@@ -161,7 +161,7 @@ async function withOwnerFixtures(
 
   const insertedOrg = await db
     .insert(organization)
-    .values({ displayName: 'License Route Owner Org' })
+    .values({ name: 'License Route Owner Org' })
     .returning({ id: organization.id })
 
   const organizationId = insertedOrg[0]!.id
@@ -269,7 +269,7 @@ test('DELETE /licenses/:id returns 403 for license bound to self-host-pinned ser
         createdAt: now,
         updatedAt: now,
         organizationId,
-        displayName: 'Self-host pinned',
+        name: 'Self-host pinned',
       })
       .returning({ id: server.id })
     const serverId = insertedServer!.id
@@ -283,7 +283,7 @@ test('DELETE /licenses/:id returns 403 for license bound to self-host-pinned ser
       .values({
         organizationId,
         serverId,
-        displayName: 'bound-to-self-host',
+        name: 'bound-to-self-host',
         token: `pin-hash-${crypto.randomUUID()}`,
       })
       .returning({ id: license.id })
@@ -352,7 +352,7 @@ test('DELETE /licenses/:id still 403 for reserved display-name when registry is 
   const now = new Date().toISOString()
   const insertedOrg = await db
     .insert(organization)
-    .values({ displayName: 'Registry and Display-Name Protect Org' })
+    .values({ name: 'Registry and Display-Name Protect Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg[0]!.id
 
@@ -362,7 +362,7 @@ test('DELETE /licenses/:id still 403 for reserved display-name when registry is 
       createdAt: now,
       updatedAt: now,
       organizationId,
-      displayName: 'Colocated via registry',
+      name: 'Colocated via registry',
       connected: true,
       statusChangedAt: now,
       daemon: {
@@ -387,7 +387,7 @@ test('DELETE /licenses/:id still 403 for reserved display-name when registry is 
     .values({
       organizationId,
       serverId,
-      displayName: 'registry-bound',
+      name: 'registry-bound',
       token: `registry-hash-${crypto.randomUUID()}`,
     })
     .returning({ id: license.id })
@@ -396,7 +396,7 @@ test('DELETE /licenses/:id still 403 for reserved display-name when registry is 
     .insert(license)
     .values({
       organizationId,
-      displayName: COLOCATED_SERVER_DISPLAY_NAME,
+      name: COLOCATED_SERVER_DISPLAY_NAME,
       token: `reserved-hash-${crypto.randomUUID()}`,
     })
     .returning({ id: license.id })
@@ -464,7 +464,7 @@ test('DELETE /licenses/:id still 403 via fallbacks when registry binding is revo
   const now = new Date().toISOString()
   const insertedOrg = await db
     .insert(organization)
-    .values({ displayName: 'Stale Registry Binding Protect Org' })
+    .values({ name: 'Stale Registry Binding Protect Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg[0]!.id
 
@@ -474,7 +474,7 @@ test('DELETE /licenses/:id still 403 via fallbacks when registry binding is revo
       createdAt: now,
       updatedAt: now,
       organizationId,
-      displayName: 'Colocated stale registry',
+      name: 'Colocated stale registry',
       connected: true,
       statusChangedAt: now,
       daemon: {
@@ -498,7 +498,7 @@ test('DELETE /licenses/:id still 403 via fallbacks when registry binding is revo
     .values({
       organizationId,
       serverId,
-      displayName: 'stale-registry-bound',
+      name: 'stale-registry-bound',
       token: `stale-registry-${crypto.randomUUID()}`,
       revokedAt: now,
     })
@@ -508,7 +508,7 @@ test('DELETE /licenses/:id still 403 via fallbacks when registry binding is revo
     .insert(license)
     .values({
       organizationId,
-      displayName: COLOCATED_SERVER_DISPLAY_NAME,
+      name: COLOCATED_SERVER_DISPLAY_NAME,
       token: `reserved-fallback-${crypto.randomUUID()}`,
     })
     .returning({ id: license.id })
@@ -575,7 +575,7 @@ test('POST /licenses rejects reserved colocated displayName', async () => {
         ...orgRequestHeaders(cookie, organizationId),
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ displayName: COLOCATED_SERVER_DISPLAY_NAME }),
+      body: JSON.stringify({ name: COLOCATED_SERVER_DISPLAY_NAME }),
     })
 
     if (res.status !== 400) {

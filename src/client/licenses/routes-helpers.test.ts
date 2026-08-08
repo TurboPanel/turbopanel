@@ -17,11 +17,11 @@ test('parseLicenseCreateFields accepts empty body', () => {
 test('parseLicenseCreateFields parses optional string fields', () => {
   assertEquals(
     parseLicenseCreateFields(JSON.stringify({
-      displayName: 'Edge node',
+      name: 'Edge node',
       installBaseUrl: 'https://panel.example.com',
     })),
     {
-      displayName: 'Edge node',
+      name: 'Edge node',
       installBaseUrl: 'https://panel.example.com',
     },
   )

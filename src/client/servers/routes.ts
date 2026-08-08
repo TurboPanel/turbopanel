@@ -296,7 +296,7 @@ async function loadDatacenterDisplayNamesMap(
   if (distinct.length === 0) return new Map()
 
   const rows = await db
-    .select({ id: datacenter.id, displayName: datacenter.displayName })
+    .select({ id: datacenter.id, displayName: datacenter.name })
     .from(datacenter)
     .where(inArray(datacenter.id, distinct))
 
@@ -375,7 +375,7 @@ async function parseServerPatchBody(
 
 function buildServerUpdateFields(patch: ServerPatchFields): Record<string, unknown> {
   const update: Record<string, unknown> = { updatedAt: patch.updatedAt }
-  if (patch.displayName !== undefined) update.displayName = patch.displayName
+  if (patch.displayName !== undefined) update.name = patch.displayName
   if (patch.datacenterId !== undefined) update.datacenterId = patch.datacenterId
   if (patch.options !== undefined) {
     update.options = sql`COALESCE(${server.options}, '{}'::jsonb) || ${

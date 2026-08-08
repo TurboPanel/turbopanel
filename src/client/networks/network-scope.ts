@@ -57,7 +57,7 @@ export function buildNetworkCreateValues(input: {
     kind: input.kind,
     ...(input.datacenterId !== undefined ? { datacenterId: input.datacenterId } : {}),
     ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
-    ...(input.displayName !== null ? { displayName: input.displayName } : {}),
+    ...(input.displayName !== null ? { name: input.displayName } : {}),
     ...(input.cidr !== null ? { cidr: input.cidr } : {}),
     ...(input.metadata !== null ? { metadata: input.metadata } : {}),
     ...(input.options !== null ? { options: input.options } : {}),

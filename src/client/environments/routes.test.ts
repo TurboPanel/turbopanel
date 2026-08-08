@@ -78,7 +78,7 @@ async function withEnvironmentFixtures(
 
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Environment Route Test Org' })
+    .values({ name: 'Environment Route Test Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -104,7 +104,7 @@ async function withEnvironmentFixtures(
 
   const [insertedWorkspace] = await db
     .insert(workspace)
-    .values({ displayName: 'Environment Route Workspace', organizationId })
+    .values({ name: 'Environment Route Workspace', organizationId })
     .returning({ id: workspace.id })
   const workspaceId = insertedWorkspace!.id
 
@@ -113,7 +113,7 @@ async function withEnvironmentFixtures(
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Environment Route Server',
+      name: 'Environment Route Server',
       createdAt: now,
       updatedAt: now,
     })
@@ -123,7 +123,7 @@ async function withEnvironmentFixtures(
   const [insertedProject] = await db
     .insert(project)
     .values({
-      displayName: 'Environment Route Project',
+      name: 'Environment Route Project',
       workspaceId,
     })
     .returning({ id: project.id })
@@ -178,7 +178,7 @@ test('POST/PATCH /environments strip metadata.serverId from stored JSONB', async
       },
       body: JSON.stringify({
         projectId,
-        displayName: 'Env Metadata Strip',
+        name: 'Env Metadata Strip',
         serverId,
         metadata: { serverId, note: 'keep-me' },
       }),
@@ -280,7 +280,7 @@ test('POST /environments reconciles service rows from the project base compose w
       },
       body: JSON.stringify({
         projectId,
-        displayName: 'Env Base Compose Reconcile',
+        name: 'Env Base Compose Reconcile',
       }),
     })
     assertEquals(createRes.status, 200)

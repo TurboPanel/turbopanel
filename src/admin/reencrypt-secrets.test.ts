@@ -77,7 +77,7 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
       id uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
       created_at timestamptz(3) DEFAULT now() NOT NULL,
       updated_at timestamptz(3) DEFAULT now() NOT NULL,
-      display_name varchar(255),
+      name varchar(255),
       slug varchar(255),
       metadata jsonb,
       options jsonb
@@ -110,7 +110,7 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
       created_at timestamptz(3) DEFAULT now() NOT NULL,
       updated_at timestamptz(3) DEFAULT now() NOT NULL,
       organization_id uuid NOT NULL,
-      display_name varchar(255),
+      name varchar(255),
       source text NOT NULL,
       certificate_pem text,
       private_key_pem text,
@@ -210,7 +210,7 @@ test('reencryptAtRestSecrets reseals plaintext/old enc, skips denc/current, fail
   await withIsolatedFixture('reencrypt_fix', async (scoped) => {
     const [org] = await scoped
       .insert(organization)
-      .values({ displayName: 'Reencrypt Sweep Org' })
+      .values({ name: 'Reencrypt Sweep Org' })
       .returning({ id: organization.id })
     const organizationId = org!.id
     const suffix = crypto.randomUUID().replaceAll('-', '')
@@ -289,7 +289,7 @@ test('reencryptAtRestSecrets reseals plaintext/old enc, skips denc/current, fail
       .insert(tls)
       .values({
         organizationId,
-        displayName: 'Reencrypt Sweep Cert',
+        name: 'Reencrypt Sweep Cert',
         source: 'upload',
         certificatePem: '-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----',
         privateKeyPem: v1TlsEnvelope,
@@ -310,7 +310,7 @@ test('reencryptAtRestSecrets reseals plaintext/old enc, skips denc/current, fail
       .insert(tls)
       .values({
         organizationId,
-        displayName: 'Reencrypt Plaintext Cert',
+        name: 'Reencrypt Plaintext Cert',
         source: 'upload',
         certificatePem: '-----BEGIN CERTIFICATE-----\nPLAIN\n-----END CERTIFICATE-----',
         privateKeyPem: plaintextTls,
@@ -558,7 +558,7 @@ test('reencryptAtRestSecrets does not overwrite a concurrent secret update', asy
   await withIsolatedFixture('reencrypt_race', async (scoped) => {
     const [org] = await scoped
       .insert(organization)
-      .values({ displayName: 'Reencrypt Race Org' })
+      .values({ name: 'Reencrypt Race Org' })
       .returning({ id: organization.id })
 
     const [v1Var] = await scoped
@@ -622,7 +622,7 @@ test('reencryptAtRestSecrets resumes across bounded batches via cursor', async (
   await withIsolatedFixture('reencrypt_batch', async (scoped) => {
     const [org] = await scoped
       .insert(organization)
-      .values({ displayName: 'Reencrypt Batch Org' })
+      .values({ name: 'Reencrypt Batch Org' })
       .returning({ id: organization.id })
 
     const plains = ['batch-a', 'batch-b', 'batch-c']

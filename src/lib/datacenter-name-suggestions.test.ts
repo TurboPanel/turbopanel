@@ -60,7 +60,7 @@ test("suggestDatacenterNames groups trusted geo and ASN metadata", () => {
 
   assertEquals(suggestions, [
     {
-      displayName: "Amsterdam NL - Cloudflare AS13335",
+      name: "Amsterdam NL - Cloudflare AS13335",
       serverCount: 2,
       serverIds: ["a", "b"],
       serverLabels: ["a", "b"],
@@ -72,7 +72,7 @@ test("suggestDatacenterNames groups trusted geo and ASN metadata", () => {
       },
     },
     {
-      displayName: "Dallas TX - AS64500",
+      name: "Dallas TX - AS64500",
       serverCount: 1,
       serverIds: ["c"],
       serverLabels: ["c"],
@@ -167,7 +167,7 @@ test("suggestDatacenterNames prefers displayName and hostname labels", () => {
   const [suggestion] = suggestDatacenterNames([
     {
       id: "srv-1",
-      displayName: " Edge-1 ",
+      name: " Edge-1 ",
       hostname: "host-a",
       datacenterId: null,
       metadata: { geo: { country: "US", city: "Chicago" } },
@@ -203,14 +203,14 @@ test("suggestDatacenterNames can require unassigned hosts only", () => {
   const suggestions = suggestDatacenterNames([
     {
       id: "free",
-      displayName: "Free",
+      name: "Free",
       hostname: null,
       datacenterId: null,
       metadata: { geo: { country: "US", city: "Chicago" } },
     },
     {
       id: "taken",
-      displayName: "Taken",
+      name: "Taken",
       hostname: null,
       datacenterId: "dc-1",
       metadata: { geo: { country: "US", city: "Chicago" } },

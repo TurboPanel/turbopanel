@@ -141,7 +141,7 @@ async function withWorkspaceFixtures(
 
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Workspace Route Test Org' })
+    .values({ name: 'Workspace Route Test Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -170,7 +170,7 @@ async function withWorkspaceFixtures(
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Workspace Route Test Server',
+      name: 'Workspace Route Test Server',
       createdAt: now,
       updatedAt: now,
     })
@@ -215,7 +215,7 @@ test('GET /workspaces returns System before Default for same-transaction install
 
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Workspace Install Order Org' })
+    .values({ name: 'Workspace Install Order Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -244,7 +244,7 @@ test('GET /workspaces returns System before Default for same-transaction install
     await ensureSystemWorkspace(tx, organizationId)
     await tx.insert(workspace).values({
       organizationId,
-      displayName: 'Default Workspace',
+      name: 'Default Workspace',
       kind: WORKSPACE_KIND_USER,
     })
   })

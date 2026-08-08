@@ -39,7 +39,7 @@ async function withTestFixtures(
 
   const insertedOrg = await db
     .insert(organization)
-    .values({ displayName: 'Evaluator Test Org' })
+    .values({ name: 'Evaluator Test Org' })
     .returning({ id: organization.id })
 
   const organizationId = insertedOrg[0]!.id
@@ -55,14 +55,14 @@ async function withTestFixtures(
 
   const [insertedWorkspace] = await db
     .insert(workspace)
-    .values({ displayName: 'Test Workspace', organizationId })
+    .values({ name: 'Test Workspace', organizationId })
     .returning({ id: workspace.id })
 
   const workspaceId = insertedWorkspace!.id
 
   const [insertedTeam] = await db
     .insert(team)
-    .values({ displayName: 'Test Team', organizationId })
+    .values({ name: 'Test Team', organizationId })
     .returning({ id: team.id })
 
   const teamId = insertedTeam!.id
@@ -342,14 +342,14 @@ test('listVisible returns variable ids for org owner', async () => {
   await withTestFixtures(async ({ db, userId, organizationId, workspaceId }) => {
     const [insertedProject] = await db
       .insert(project)
-      .values({ displayName: 'Evaluator Variables Project', workspaceId })
+      .values({ name: 'Evaluator Variables Project', workspaceId })
       .returning({ id: project.id })
 
     const projectId = insertedProject!.id
 
     const [insertedEnvironment] = await db
       .insert(environment)
-      .values({ displayName: 'Evaluator Variables Env', projectId })
+      .values({ name: 'Evaluator Variables Env', projectId })
       .returning({ id: environment.id })
 
     const environmentId = insertedEnvironment!.id
@@ -392,14 +392,14 @@ test('organization grant allows can() on managed and variable entities', async (
   await withTestFixtures(async ({ db, userId, organizationId, workspaceId }) => {
     const [insertedProject] = await db
       .insert(project)
-      .values({ displayName: 'Evaluator Test Project', workspaceId })
+      .values({ name: 'Evaluator Test Project', workspaceId })
       .returning({ id: project.id })
 
     const projectId = insertedProject!.id
 
     const [insertedEnvironment] = await db
       .insert(environment)
-      .values({ displayName: 'Evaluator Test Env', projectId })
+      .values({ name: 'Evaluator Test Env', projectId })
       .returning({ id: environment.id })
 
     const environmentId = insertedEnvironment!.id
@@ -666,7 +666,7 @@ test('listVisible returns server ids for org owner', async () => {
       .insert(server)
       .values({
         organizationId,
-        displayName: 'Evaluator Visible Server',
+        name: 'Evaluator Visible Server',
         createdAt: now,
         updatedAt: now,
       })

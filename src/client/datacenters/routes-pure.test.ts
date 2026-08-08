@@ -73,7 +73,7 @@ test('resolveSeededFields fills displayName and metadata from source server geo'
 
   const passthrough = resolveSeededFields(
     {
-      displayName: 'Custom DC',
+      name: 'Custom DC',
       description: null,
       metadata: null,
       options: null,

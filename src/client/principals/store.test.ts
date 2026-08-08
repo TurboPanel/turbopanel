@@ -57,7 +57,7 @@ async function withPrincipalFixtures(
 
   const insertedOrg = await db
     .insert(organization)
-    .values({ displayName: 'Principal Store Test Org' })
+    .values({ name: 'Principal Store Test Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg[0]!.id
 
@@ -83,14 +83,14 @@ async function withPrincipalFixtures(
 
   const [insertedWorkspace] = await db
     .insert(workspace)
-    .values({ displayName: 'Principal Store Workspace', organizationId })
+    .values({ name: 'Principal Store Workspace', organizationId })
     .returning({ id: workspace.id })
   const workspaceId = insertedWorkspace!.id
 
   const [insertedProject] = await db
     .insert(project)
     .values({
-      displayName: 'Principal Store Project',
+      name: 'Principal Store Project',
       workspaceId,
     })
     .returning({ id: project.id })
@@ -99,7 +99,7 @@ async function withPrincipalFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      displayName: 'Principal Store Env',
+      name: 'Principal Store Env',
       projectId,
     })
     .returning({ id: environment.id })
@@ -108,10 +108,10 @@ async function withPrincipalFixtures(
   const [insertedService] = await db
     .insert(service)
     .values({
-      displayName: 'Principal Store Service',
-      environmentId,
+        environmentId,
+        name: 'principal-store-service',
       composeServiceName: 'principal-store-service',
-    })
+      })
     .returning({ id: service.id })
   const serviceId = insertedService!.id
 
@@ -303,7 +303,7 @@ test('createPrincipal and replaceAssignments write expected assignment edges', a
     const [secondService] = await db
       .insert(service)
       .values({
-        displayName: 'Principal Store Service 2',
+        name: 'principal-store-service-2',
         environmentId: (
           await db
             .select({ environmentId: service.environmentId })

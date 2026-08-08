@@ -53,7 +53,6 @@ const denoSessionResponseSchema = {
   required: [
     'ok',
     'userId',
-    'username',
     'email',
     'role',
     'needsInstall',
@@ -61,7 +60,6 @@ const denoSessionResponseSchema = {
   properties: {
     ok: { type: 'boolean', const: true },
     userId: { type: ['string', 'null'] },
-    username: { type: ['string', 'null'] },
     email: { type: ['string', 'null'] },
     role: { type: ['string', 'null'] },
     needsInstall: { type: 'boolean' },
@@ -70,13 +68,12 @@ const denoSessionResponseSchema = {
 
 const workersSessionResponseSchema = {
   type: 'object',
-  required: ['ok', 'userId', 'username', 'email', 'role'],
+  required: ['ok', 'userId', 'email', 'role'],
   description:
     'Session payload on Workers. needsInstall is omitted — Workers has no install wizard.',
   properties: {
     ok: { type: 'boolean', const: true },
     userId: { type: ['string', 'null'] },
-    username: { type: ['string', 'null'] },
     email: { type: ['string', 'null'] },
     role: { type: ['string', 'null'] },
   },
@@ -110,9 +107,9 @@ export function buildAuthSchemas(runtime?: 'deno' | 'workers') {
     },
     SignInRequest: {
       type: 'object',
-      required: ['username', 'password'],
+      required: ['email', 'password'],
       properties: {
-        username: { type: 'string' },
+        email: { type: 'string', format: 'email' },
         password: { type: 'string', format: 'password' },
       },
     },

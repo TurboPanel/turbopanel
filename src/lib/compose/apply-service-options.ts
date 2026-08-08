@@ -134,9 +134,10 @@ export type ApplyServiceOptionsResult = {
 function applyParsedOptionsToService(
   service: Record<string, unknown>,
   parsed: ServiceOptions,
+  containerName: string | undefined,
 ): void {
-  if (parsed.container?.name) {
-    service.container_name = parsed.container.name
+  if (containerName !== undefined && containerName.length > 0) {
+    service.container_name = containerName
   }
 
   if (service.stop_grace_period === undefined) {
@@ -169,6 +170,12 @@ function buildServiceDeployHook(
 export function applyServiceOptionsToComposeDocument(
   document: ComposeDocument,
   optionsByComposeName: ServiceOptionsByComposeName,
+  /**
+   * Allocation is the sole writer of compose `container_name`. Keys are
+   * (possibly clone) compose service names → allocated container_name values.
+   * Overwrites any operator-typed value on the document.
+   */
+  containerNameByComposeName?: ReadonlyMap<string, string>,
 ): ApplyServiceOptionsResult {
   const data = { ...document.data }
   const services = isRecord(data.services) ? { ...data.services } : {}
@@ -180,7 +187,11 @@ export function applyServiceOptionsToComposeDocument(
 
     const service = { ...rawService }
     const parsed = parseServiceOptions(optionsByComposeName.get(composeServiceName)) ?? {}
-    applyParsedOptionsToService(service, parsed)
+    applyParsedOptionsToService(
+      service,
+      parsed,
+      containerNameByComposeName?.get(composeServiceName),
+    )
 
     const hook = buildServiceDeployHook(composeServiceName, parsed)
     if (hook) hooks.push(hook)

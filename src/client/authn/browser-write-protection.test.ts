@@ -357,7 +357,7 @@ describe('browser write protection middleware', () => {
           'content-type': 'application/json',
           'CF-Connecting-IP': '203.0.113.40',
         },
-        body: JSON.stringify({ username: 'a@example.com', password: 'x' }),
+        body: JSON.stringify({ email: 'a@example.com', password: 'x' }),
       }),
     )
     assertEquals(cross.status, 403)
@@ -371,7 +371,7 @@ describe('browser write protection middleware', () => {
           'content-type': 'application/json',
           'CF-Connecting-IP': '203.0.113.40',
         },
-        body: JSON.stringify({ username: 'a@example.com', password: 'x' }),
+        body: JSON.stringify({ email: 'a@example.com', password: 'x' }),
       }),
     )
     assertEquals(same.status === 403, false)

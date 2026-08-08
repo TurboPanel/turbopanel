@@ -171,7 +171,7 @@ export async function hasActiveColocatedLicenseBinding(
     .where(and(
       eq(license.organizationId, organizationId),
       eq(license.serverId, serverId),
-      eq(license.displayName, COLOCATED_SERVER_DISPLAY_NAME),
+      eq(license.name, COLOCATED_SERVER_DISPLAY_NAME),
       isNull(license.revokedAt),
     ))
     .limit(1)

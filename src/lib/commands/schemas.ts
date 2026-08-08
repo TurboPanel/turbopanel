@@ -1998,12 +1998,12 @@ function parseManagedApplyExposure(value: unknown): ManagedApplyExposure {
   return exposure
 }
 
-/** Matches `service_display_name_format_check` / compose-service-name charset. */
+/** Matches `service_name_format_check` / compose service-key charset. */
 function isValidComposeServiceName(value: string): boolean {
   return (
     value.length > 0 &&
     value.length <= 255 &&
-    /^[A-Za-z0-9 ._-]+$/.test(value)
+    /^[A-Za-z0-9._-]+$/.test(value)
   )
 }
 

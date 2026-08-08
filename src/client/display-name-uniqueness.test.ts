@@ -100,7 +100,7 @@ test('isWorkspaceDisplayNameTaken treats system workspace named System as taken'
   const db = createDenoDb()
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Display Name Uniqueness Org' })
+    .values({ name: 'Display Name Uniqueness Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -109,7 +109,7 @@ test('isWorkspaceDisplayNameTaken treats system workspace named System as taken'
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Display Name Uniqueness Server',
+      name: 'Display Name Uniqueness Server',
       createdAt: now,
       updatedAt: now,
     })

@@ -69,7 +69,7 @@ test('DELETE /ips returns 409 when hosting references ipId', async () => {
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: 'IP Test Org' })
+    .values({ name: 'IP Test Org' })
     .returning({ id: organization.id })
   const organizationId = orgA!.id
 
@@ -92,21 +92,21 @@ test('DELETE /ips returns 409 when hosting references ipId', async () => {
   const now = new Date().toISOString()
   const [ws] = await db
     .insert(workspace)
-    .values({ organizationId, displayName: 'WS', createdAt: now, updatedAt: now })
+    .values({ organizationId, name: 'WS', createdAt: now, updatedAt: now })
     .returning({ id: workspace.id })
   const [proj] = await db
     .insert(project)
-    .values({ workspaceId: ws!.id, displayName: 'P', createdAt: now, updatedAt: now })
+    .values({ workspaceId: ws!.id, name: 'P', createdAt: now, updatedAt: now })
     .returning({ id: project.id })
   const [env] = await db
     .insert(environment)
-    .values({ projectId: proj!.id, displayName: 'E', createdAt: now, updatedAt: now })
+    .values({ projectId: proj!.id, name: 'E', createdAt: now, updatedAt: now })
     .returning({ id: environment.id })
   const [svc] = await db
     .insert(service)
     .values({
       environmentId: env!.id,
-      displayName: 'S',
+      name: 's',
       composeServiceName: 's',
       createdAt: now,
       updatedAt: now,
@@ -130,7 +130,7 @@ test('DELETE /ips returns 409 when hosting references ipId', async () => {
     .values({
       serviceId: svc!.id,
       ipId: ipRow!.id,
-      displayName: 'H',
+      name: 'H',
       createdAt: now,
       updatedAt: now,
     })
@@ -179,7 +179,7 @@ test('GET /ips returns 403 for org member without organization:manage', async ()
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: 'IP List Org' })
+    .values({ name: 'IP List Org' })
     .returning({ id: organization.id })
   const organizationId = orgA!.id
 
@@ -224,7 +224,7 @@ test('POST /ips derives version and supports VPN-scoped addresses across meshes'
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: 'IP VPN Org' })
+    .values({ name: 'IP VPN Org' })
     .returning({ id: organization.id })
   const organizationId = orgA!.id
 
@@ -246,11 +246,11 @@ test('POST /ips derives version and supports VPN-scoped addresses across meshes'
 
   const [vpnA] = await db
     .insert(vpn)
-    .values({ organizationId, cidr: '10.0.0.0/24', displayName: 'A' })
+    .values({ organizationId, cidr: '10.0.0.0/24', name: 'A' })
     .returning({ id: vpn.id })
   const [vpnB] = await db
     .insert(vpn)
-    .values({ organizationId, cidr: '10.0.1.0/24', displayName: 'B' })
+    .values({ organizationId, cidr: '10.0.1.0/24', name: 'B' })
     .returning({ id: vpn.id })
 
   const cookie = await sessionCookie(db, secrets, userId)
@@ -373,7 +373,7 @@ test('DELETE /ips returns 409 when peer.tunnel_ip_id references the IP', async (
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: 'IP Peer Ref Org' })
+    .values({ name: 'IP Peer Ref Org' })
     .returning({ id: organization.id })
   const organizationId = orgA!.id
 
@@ -398,11 +398,11 @@ test('DELETE /ips returns 409 when peer.tunnel_ip_id references the IP', async (
 
   const [vpnRow] = await db
     .insert(vpn)
-    .values({ organizationId, cidr: '10.66.0.0/24', displayName: 'Mesh' })
+    .values({ organizationId, cidr: '10.66.0.0/24', name: 'Mesh' })
     .returning({ id: vpn.id })
   const [srv] = await db
     .insert(server)
-    .values({ organizationId, displayName: 'PeerHost' })
+    .values({ organizationId, name: 'PeerHost' })
     .returning({ id: server.id })
   const [tunnel] = await db
     .insert(ip)
@@ -465,7 +465,7 @@ test('POST /ips rejects a scope=vpn address outside the vpn cidr', async () => {
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: 'IP VPN CIDR Org' })
+    .values({ name: 'IP VPN CIDR Org' })
     .returning({ id: organization.id })
   const organizationId = orgA!.id
 
@@ -487,7 +487,7 @@ test('POST /ips rejects a scope=vpn address outside the vpn cidr', async () => {
 
   const [vpnRow] = await db
     .insert(vpn)
-    .values({ organizationId, cidr: '10.77.0.0/24', displayName: 'CidrMesh' })
+    .values({ organizationId, cidr: '10.77.0.0/24', name: 'CidrMesh' })
     .returning({ id: vpn.id })
 
   const cookie = await sessionCookie(db, secrets, userId)
@@ -551,7 +551,7 @@ test('PATCH /ips/:id rejects reassigning a scope=vpn address to a vpn whose cidr
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: 'IP VPN Patch CIDR Org' })
+    .values({ name: 'IP VPN Patch CIDR Org' })
     .returning({ id: organization.id })
   const organizationId = orgA!.id
 
@@ -573,11 +573,11 @@ test('PATCH /ips/:id rejects reassigning a scope=vpn address to a vpn whose cidr
 
   const [vpnA] = await db
     .insert(vpn)
-    .values({ organizationId, cidr: '10.88.0.0/24', displayName: 'PatchMeshA' })
+    .values({ organizationId, cidr: '10.88.0.0/24', name: 'PatchMeshA' })
     .returning({ id: vpn.id })
   const [vpnB] = await db
     .insert(vpn)
-    .values({ organizationId, cidr: '10.88.1.0/24', displayName: 'PatchMeshB' })
+    .values({ organizationId, cidr: '10.88.1.0/24', name: 'PatchMeshB' })
     .returning({ id: vpn.id })
 
   const [overlayIp] = await db
@@ -639,7 +639,7 @@ test('POST /ips rejects datacenterId together with networkId', async () => {
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: 'IP DC Network Create Org' })
+    .values({ name: 'IP DC Network Create Org' })
     .returning({ id: organization.id })
   const organizationId = orgA!.id
 
@@ -664,7 +664,7 @@ test('POST /ips rejects datacenterId together with networkId', async () => {
 
   const [dc] = await db
     .insert(datacenter)
-    .values({ organizationId, displayName: 'DC' })
+    .values({ organizationId, name: 'DC' })
     .returning({ id: datacenter.id })
   const [net] = await db
     .insert(network)
@@ -673,7 +673,7 @@ test('POST /ips rejects datacenterId together with networkId', async () => {
       datacenterId: dc!.id,
       kind: 'datacenter',
       cidr: '10.40.0.0/16',
-      displayName: 'DC LAN',
+      name: 'DC LAN',
     })
     .returning({ id: network.id })
 
@@ -721,7 +721,7 @@ test('PATCH /ips/:id rejects datacenterId when the row already has networkId', a
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: 'IP DC Network Patch Org' })
+    .values({ name: 'IP DC Network Patch Org' })
     .returning({ id: organization.id })
   const organizationId = orgA!.id
 
@@ -746,7 +746,7 @@ test('PATCH /ips/:id rejects datacenterId when the row already has networkId', a
 
   const [dc] = await db
     .insert(datacenter)
-    .values({ organizationId, displayName: 'DC' })
+    .values({ organizationId, name: 'DC' })
     .returning({ id: datacenter.id })
   const [net] = await db
     .insert(network)
@@ -755,7 +755,7 @@ test('PATCH /ips/:id rejects datacenterId when the row already has networkId', a
       datacenterId: dc!.id,
       kind: 'datacenter',
       cidr: '10.41.0.0/16',
-      displayName: 'DC LAN',
+      name: 'DC LAN',
     })
     .returning({ id: network.id })
 
@@ -817,7 +817,7 @@ test('PATCH /ips/:id rejects vpnId: null when scope is vpn', async () => {
 
   const [orgA] = await db
     .insert(organization)
-    .values({ displayName: 'IP VPN Clear Org' })
+    .values({ name: 'IP VPN Clear Org' })
     .returning({ id: organization.id })
   const organizationId = orgA!.id
 
@@ -839,7 +839,7 @@ test('PATCH /ips/:id rejects vpnId: null when scope is vpn', async () => {
 
   const [vpnRow] = await db
     .insert(vpn)
-    .values({ organizationId, cidr: '10.88.2.0/24', displayName: 'ClearMesh' })
+    .values({ organizationId, cidr: '10.88.2.0/24', name: 'ClearMesh' })
     .returning({ id: vpn.id })
 
   const [overlayIp] = await db

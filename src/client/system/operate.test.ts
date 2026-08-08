@@ -48,7 +48,7 @@ async function withOperateFixtures(
   const db = createDenoDb()
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'System Operate Org' })
+    .values({ name: 'System Operate Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -57,7 +57,7 @@ async function withOperateFixtures(
     .insert(server)
     .values({
       organizationId,
-      displayName: 'System Operate Server',
+      name: 'System Operate Server',
       connected: true,
       statusChangedAt: now,
       options: { hosting: { enabled: true } },

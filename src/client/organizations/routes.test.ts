@@ -77,7 +77,7 @@ async function withOrgFixtures(
 
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Org Route Test Org' })
+    .values({ name: 'Org Route Test Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 

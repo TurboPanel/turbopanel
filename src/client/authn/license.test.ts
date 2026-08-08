@@ -45,14 +45,14 @@ test('createLicense stores a hashed token and returns plaintext once', async () 
   const db = createDenoDb()
   const [org] = await db
     .insert(organization)
-    .values({ displayName: 'License Test Org' })
+    .values({ name: 'License Test Org' })
     .returning({ id: organization.id })
   const organizationId = org!.id
 
   try {
     const created = await createLicense(db, {
       organizationId,
-      displayName: 'Test key',
+      name: 'Test key',
     })
     assertEquals(typeof created.licenseId, 'string')
     assertEquals(created.licenseToken.length, 48)
@@ -81,7 +81,7 @@ test('revokeLicense is idempotent and invalidateLicense returns server ids', asy
   const db = createDenoDb()
   const [org] = await db
     .insert(organization)
-    .values({ displayName: 'License Revoke Org' })
+    .values({ name: 'License Revoke Org' })
     .returning({ id: organization.id })
   const organizationId = org!.id
 
@@ -135,7 +135,7 @@ test('createLicense inserts into mock store and lists active licenses', async ()
 
   const created = await createLicense(db, {
     organizationId,
-    displayName: 'Mock seat',
+    name: 'Mock seat',
   })
   assertEquals(created.licenseToken.length, 48)
   assertEquals(state.licenses.length, 1)
@@ -173,7 +173,7 @@ test('listServersBoundToLicenses maps mock license server bindings', async () =>
   state.licenses.push({
     id: licenseId,
     organizationId,
-    displayName: 'Bound seat',
+    name: 'Bound seat',
     token: 'hashed-token',
     revokedAt: null,
     serverId,

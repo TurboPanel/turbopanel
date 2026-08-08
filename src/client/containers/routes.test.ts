@@ -81,7 +81,7 @@ async function withContainerFixtures(
 
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Container Route Test Org' })
+    .values({ name: 'Container Route Test Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -107,7 +107,7 @@ async function withContainerFixtures(
 
   const [insertedWorkspace] = await db
     .insert(workspace)
-    .values({ displayName: 'Container Route Workspace', organizationId })
+    .values({ name: 'Container Route Workspace', organizationId })
     .returning({ id: workspace.id })
   const workspaceId = insertedWorkspace!.id
 
@@ -116,7 +116,7 @@ async function withContainerFixtures(
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Container Route Server',
+      name: 'Container Route Server',
       createdAt: now,
       updatedAt: now,
     })
@@ -126,7 +126,7 @@ async function withContainerFixtures(
   const [insertedProject] = await db
     .insert(project)
     .values({
-      displayName: 'Container Route Project',
+      name: 'Container Route Project',
       workspaceId,
     })
     .returning({ id: project.id })
@@ -135,7 +135,7 @@ async function withContainerFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      displayName: 'Container Route Env',
+      name: 'Container Route Env',
       projectId,
     })
     .returning({ id: environment.id })
@@ -144,10 +144,10 @@ async function withContainerFixtures(
   const [insertedService] = await db
     .insert(service)
     .values({
-      displayName: 'web',
-      environmentId,
+        environmentId,
+        name: 'web',
       composeServiceName: 'web',
-    })
+      })
     .returning({ id: service.id })
   const serviceId = insertedService!.id
 
@@ -310,7 +310,7 @@ test('GET /containers?environmentId= returns only matching environment container
     const [otherEnv] = await db
       .insert(environment)
       .values({
-        displayName: 'Other Env',
+        name: 'Other Env',
         projectId,
       })
       .returning({ id: environment.id })
@@ -319,9 +319,9 @@ test('GET /containers?environmentId= returns only matching environment container
     const [otherService] = await db
       .insert(service)
       .values({
-        displayName: 'api',
+        name: 'api',
+      composeServiceName: 'api',
         environmentId: otherEnvironmentId,
-        composeServiceName: 'api',
       })
       .returning({ id: service.id })
     const otherServiceId = otherService!.id
@@ -406,7 +406,7 @@ test('GET /containers?environmentId= ANDs with status and serverId filters', asy
       .insert(server)
       .values({
         organizationId,
-        displayName: 'Other Server',
+        name: 'Other Server',
         createdAt: now,
         updatedAt: now,
       })

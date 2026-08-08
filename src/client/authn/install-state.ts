@@ -250,7 +250,7 @@ export async function insertDefaultWorkspace(
     .insert(workspace)
     .values({
       organizationId,
-      displayName: DEFAULT_WORKSPACE_NAME,
+      name: DEFAULT_WORKSPACE_NAME,
       kind: WORKSPACE_KIND_USER,
     })
     .returning({ id: workspace.id })
@@ -317,7 +317,7 @@ export async function isInstanceInstalled(db: Db): Promise<boolean> {
   const orgRows = await db
     .select({ id: organization.id })
     .from(organization)
-    .where(isNotNull(organization.displayName))
+    .where(isNotNull(organization.name))
     .limit(1)
 
   if (orgRows.length === 0) return false
@@ -597,7 +597,7 @@ export async function findDefaultInstalledOrganizationId(
   const byName = await db
     .select({ id: organization.id })
     .from(organization)
-    .where(eq(organization.displayName, DEFAULT_ORGANIZATION_NAME))
+    .where(eq(organization.name, DEFAULT_ORGANIZATION_NAME))
     .limit(1)
   if (byName[0]?.id) return byName[0].id
 
@@ -612,7 +612,7 @@ export async function findDefaultInstalledOrganizationId(
   const rows = await db
     .select({ id: organization.id })
     .from(organization)
-    .where(isNotNull(organization.displayName))
+    .where(isNotNull(organization.name))
     .limit(1)
 
   return rows[0]?.id ?? null
@@ -776,7 +776,7 @@ async function resolveInstallDisplayNameLicenseId(
     .from(license)
     .where(and(
       eq(license.organizationId, organizationId),
-      eq(license.displayName, COLOCATED_SERVER_DISPLAY_NAME),
+      eq(license.name, COLOCATED_SERVER_DISPLAY_NAME),
       isNull(license.revokedAt),
     ))
     .limit(1)
@@ -909,7 +909,7 @@ export async function assignColocatedDaemonToOrganization(
   await db
     .update(server)
     .set({
-      displayName: sql`coalesce(${server.displayName}, ${COLOCATED_SERVER_DISPLAY_NAME})`,
+      name: sql`coalesce(${server.name}, ${COLOCATED_SERVER_DISPLAY_NAME})`,
       updatedAt: now,
     })
     .where(eq(server.id, serverId))
@@ -1068,7 +1068,7 @@ export async function rotateColocatedLicenseCredentials(
     await revokeActiveColocatedLicenses(tx, organizationId)
     const created = await createLicense(tx, {
       organizationId,
-      displayName: COLOCATED_SERVER_DISPLAY_NAME,
+      name: COLOCATED_SERVER_DISPLAY_NAME,
     })
 
     if (priorServerId) {
@@ -1098,7 +1098,7 @@ async function findActiveBoundColocatedLicense(
     .from(license)
     .where(and(
       eq(license.organizationId, organizationId),
-      eq(license.displayName, COLOCATED_SERVER_DISPLAY_NAME),
+      eq(license.name, COLOCATED_SERVER_DISPLAY_NAME),
       isNull(license.revokedAt),
       isNotNull(license.serverId),
     ))
@@ -1121,7 +1121,7 @@ async function findColocatedBoundServerId(
     .from(license)
     .where(and(
       eq(license.organizationId, organizationId),
-      eq(license.displayName, COLOCATED_SERVER_DISPLAY_NAME),
+      eq(license.name, COLOCATED_SERVER_DISPLAY_NAME),
       isNotNull(license.serverId),
     ))
     .limit(1)
@@ -1155,7 +1155,7 @@ async function revokeActiveColocatedLicenses(
     .from(license)
     .where(and(
       eq(license.organizationId, organizationId),
-      eq(license.displayName, COLOCATED_SERVER_DISPLAY_NAME),
+      eq(license.name, COLOCATED_SERVER_DISPLAY_NAME),
       isNull(license.revokedAt),
     ))
 
@@ -1175,7 +1175,7 @@ export async function createOrganizationForUser(
     const insertedOrg = await tx
       .insert(organization)
       .values({
-        displayName,
+        name: displayName,
       })
       .returning({ id: organization.id })
 
@@ -1188,7 +1188,7 @@ export async function createOrganizationForUser(
       .insert(team)
       .values({
         organizationId,
-        displayName: DEFAULT_TEAM_NAME,
+        name: DEFAULT_TEAM_NAME,
       })
       .returning({ id: team.id })
 
@@ -1295,7 +1295,7 @@ export async function completeInstanceInstall(
     const insertedOrg = await tx
       .insert(organization)
       .values({
-        displayName: trimmedOrgName,
+        name: trimmedOrgName,
       })
       .returning({ id: organization.id })
 
@@ -1312,7 +1312,7 @@ export async function completeInstanceInstall(
       .insert(team)
       .values({
         organizationId,
-        displayName: trimmedTeamName,
+        name: trimmedTeamName,
       })
       .returning({ id: team.id })
 
@@ -1378,7 +1378,7 @@ export async function completeInstanceInstall(
 
     const { licenseId, licenseToken } = await createLicense(tx, {
       organizationId,
-      displayName: COLOCATED_SERVER_DISPLAY_NAME,
+      name: COLOCATED_SERVER_DISPLAY_NAME,
     })
 
     return { organizationId, userId, licenseId, licenseToken }

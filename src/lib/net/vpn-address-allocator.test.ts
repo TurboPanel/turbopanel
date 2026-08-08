@@ -28,15 +28,15 @@ test('allocateVpnTunnelIp picks lowest free host and reuses after release', asyn
   const db = createDenoDb()
   const [org] = await db
     .insert(organization)
-    .values({ displayName: 'Alloc Org' })
+    .values({ name: 'Alloc Org' })
     .returning({ id: organization.id })
   const [vpnRow] = await db
     .insert(vpn)
-    .values({ organizationId: org!.id, cidr: '203.0.113.0/30', displayName: 'Mesh' })
+    .values({ organizationId: org!.id, cidr: '203.0.113.0/30', name: 'Mesh' })
     .returning({ id: vpn.id })
   const [srv] = await db
     .insert(server)
-    .values({ organizationId: org!.id, displayName: 'Host-A' })
+    .values({ organizationId: org!.id, name: 'Host-A' })
     .returning({ id: server.id })
 
   try {
@@ -88,15 +88,15 @@ test('allocateVpnTunnelIp treats ::/128 as pool exhausted', async () => {
   const db = createDenoDb()
   const [org] = await db
     .insert(organization)
-    .values({ displayName: 'Alloc IPv6 Unspec Org' })
+    .values({ name: 'Alloc IPv6 Unspec Org' })
     .returning({ id: organization.id })
   const [vpnRow] = await db
     .insert(vpn)
-    .values({ organizationId: org!.id, cidr: '::/128', displayName: 'Unspec' })
+    .values({ organizationId: org!.id, cidr: '::/128', name: 'Unspec' })
     .returning({ id: vpn.id })
   const [srv] = await db
     .insert(server)
-    .values({ organizationId: org!.id, displayName: 'Host-V6' })
+    .values({ organizationId: org!.id, name: 'Host-V6' })
     .returning({ id: server.id })
 
   try {
@@ -119,15 +119,15 @@ test('createVpnTunnelIpAt rejects out-of-cidr and maps unique conflicts', async 
   const db = createDenoDb()
   const [org] = await db
     .insert(organization)
-    .values({ displayName: 'Alloc Explicit Org' })
+    .values({ name: 'Alloc Explicit Org' })
     .returning({ id: organization.id })
   const [vpnRow] = await db
     .insert(vpn)
-    .values({ organizationId: org!.id, cidr: '203.0.113.0/24', displayName: 'Mesh' })
+    .values({ organizationId: org!.id, cidr: '203.0.113.0/24', name: 'Mesh' })
     .returning({ id: vpn.id })
   const [srv] = await db
     .insert(server)
-    .values({ organizationId: org!.id, displayName: 'Host-B' })
+    .values({ organizationId: org!.id, name: 'Host-B' })
     .returning({ id: server.id })
 
   try {

@@ -50,7 +50,7 @@ async function withHierarchyFixtures(
 
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'System Hierarchy Org' })
+    .values({ name: 'System Hierarchy Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -59,7 +59,7 @@ async function withHierarchyFixtures(
     .insert(server)
     .values({
       organizationId,
-      displayName: 'System Hierarchy Server',
+      name: 'System Hierarchy Server',
       createdAt: now,
       updatedAt: now,
     })
@@ -171,7 +171,7 @@ test('ensureSystemHierarchy reuses workspace/project across servers', async () =
       .insert(server)
       .values({
         organizationId,
-        displayName: 'System Hierarchy Server 2',
+        name: 'System Hierarchy Server 2',
         createdAt: now,
         updatedAt: now,
       })

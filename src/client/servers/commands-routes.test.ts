@@ -219,7 +219,7 @@ async function withCommandRouteFixtures(
   const email = `server-commands-test-${crypto.randomUUID()}@example.com`
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Server Commands Test Org' })
+    .values({ name: 'Server Commands Test Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -249,7 +249,7 @@ async function withCommandRouteFixtures(
       createdAt: now,
       updatedAt: now,
       organizationId,
-      displayName: 'Commands Test Server',
+      name: 'Commands Test Server',
     })
     .returning({ id: server.id })
   const serverId = insertedServer!.id
@@ -425,7 +425,7 @@ it('POST /servers/:id/commands/reboot returns 403 for cross-org server', async (
   }) => {
     const [otherOrg] = await db
       .insert(organization)
-      .values({ displayName: 'Other Org Reboot' })
+      .values({ name: 'Other Org Reboot' })
       .returning({ id: organization.id })
 
     const now = new Date().toISOString()
@@ -435,7 +435,7 @@ it('POST /servers/:id/commands/reboot returns 403 for cross-org server', async (
         createdAt: now,
         updatedAt: now,
         organizationId: otherOrg!.id,
-        displayName: 'Other Server Reboot',
+        name: 'Other Server Reboot',
       })
       .returning({ id: server.id })
 
@@ -612,14 +612,14 @@ it('POST /servers/:id/ntp is manage-gated and validates payload', async () => {
 
     const [otherOrg] = await db
       .insert(organization)
-      .values({ displayName: 'Other Org NTP' })
+      .values({ name: 'Other Org NTP' })
       .returning({ id: organization.id })
     const now = new Date().toISOString()
     const [otherServer] = await db
       .insert(server)
       .values({
         organizationId: otherOrg!.id,
-        displayName: 'Other',
+        name: 'Other',
         createdAt: now,
         updatedAt: now,
       })
@@ -683,7 +683,7 @@ it('POST /servers/:id/commands/ping and hostname return 403 for cross-org server
   }) => {
     const [otherOrg] = await db
       .insert(organization)
-      .values({ displayName: 'Other Org' })
+      .values({ name: 'Other Org' })
       .returning({ id: organization.id })
 
     const now = new Date().toISOString()
@@ -693,7 +693,7 @@ it('POST /servers/:id/commands/ping and hostname return 403 for cross-org server
         createdAt: now,
         updatedAt: now,
         organizationId: otherOrg!.id,
-        displayName: 'Other Server',
+        name: 'Other Server',
       })
       .returning({ id: server.id })
 
@@ -804,7 +804,7 @@ it('GET /servers/:id/commands/:commandId returns 404 for cross-org or unknown id
   }) => {
     const [otherOrg] = await db
       .insert(organization)
-      .values({ displayName: 'Other Org' })
+      .values({ name: 'Other Org' })
       .returning({ id: organization.id })
 
     const now = new Date().toISOString()
@@ -814,7 +814,7 @@ it('GET /servers/:id/commands/:commandId returns 404 for cross-org or unknown id
         createdAt: now,
         updatedAt: now,
         organizationId: otherOrg!.id,
-        displayName: 'Other Server',
+        name: 'Other Server',
       })
       .returning({ id: server.id })
 

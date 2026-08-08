@@ -140,7 +140,7 @@ async function withMetricsFixtures(
   const email = `metrics-route-test-${crypto.randomUUID()}@example.com`
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Metrics Route Test Org' })
+    .values({ name: 'Metrics Route Test Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -164,7 +164,7 @@ async function withMetricsFixtures(
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Metrics Test Server',
+      name: 'Metrics Test Server',
     })
     .returning({ id: server.id })
   const serverId = insertedServer!.id
@@ -215,7 +215,7 @@ it('GET /servers/:id/metrics/series returns 403 without read access', async () =
   const email = `metrics-deny-${crypto.randomUUID()}@example.com`
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Metrics Deny Org' })
+    .values({ name: 'Metrics Deny Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -229,7 +229,7 @@ it('GET /servers/:id/metrics/series returns 403 without read access', async () =
 
   const [insertedServer] = await db
     .insert(server)
-    .values({ organizationId, displayName: 'Denied Server' })
+    .values({ organizationId, name: 'Denied Server' })
     .returning({ id: server.id })
   const serverId = insertedServer!.id
 
@@ -434,7 +434,7 @@ it('GET /servers/:id/metrics/series maps Analytics Engine failures to 503', asyn
   const email = `metrics-ae-fail-${crypto.randomUUID()}@example.com`
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Metrics AE Fail Org' })
+    .values({ name: 'Metrics AE Fail Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -456,7 +456,7 @@ it('GET /servers/:id/metrics/series maps Analytics Engine failures to 503', asyn
 
   const [insertedServer] = await db
     .insert(server)
-    .values({ organizationId, displayName: 'AE Fail Server' })
+    .values({ organizationId, name: 'AE Fail Server' })
     .returning({ id: server.id })
   const serverId = insertedServer!.id
 
@@ -542,7 +542,7 @@ it('GET /servers/:id/metrics/summary returns 403 without read access', async () 
   const email = `metrics-summary-deny-${crypto.randomUUID()}@example.com`
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Metrics Summary Deny Org' })
+    .values({ name: 'Metrics Summary Deny Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -556,7 +556,7 @@ it('GET /servers/:id/metrics/summary returns 403 without read access', async () 
 
   const [insertedServer] = await db
     .insert(server)
-    .values({ organizationId, displayName: 'Denied Summary Server' })
+    .values({ organizationId, name: 'Denied Summary Server' })
     .returning({ id: server.id })
   const serverId = insertedServer!.id
 
@@ -598,7 +598,7 @@ it('GET /servers/:id/metrics/connection returns 403 without read access', async 
   const email = `metrics-conn-deny-${crypto.randomUUID()}@example.com`
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Metrics Connection Deny Org' })
+    .values({ name: 'Metrics Connection Deny Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -612,7 +612,7 @@ it('GET /servers/:id/metrics/connection returns 403 without read access', async 
 
   const [insertedServer] = await db
     .insert(server)
-    .values({ organizationId, displayName: 'Denied Connection Server' })
+    .values({ organizationId, name: 'Denied Connection Server' })
     .returning({ id: server.id })
   const serverId = insertedServer!.id
 

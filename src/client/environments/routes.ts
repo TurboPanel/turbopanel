@@ -75,7 +75,7 @@ function serializeEnvironment(row: EnvironmentRow) {
 
 const ENVIRONMENT_SELECT = {
   id: environment.id,
-  displayName: environment.displayName,
+  displayName: environment.name,
   description: environment.description,
   projectId: environment.projectId,
   serverId: environment.serverId,
@@ -242,7 +242,7 @@ async function parseCreateEnvironmentInput(
 
   return {
     projectId,
-    displayName: names.displayName,
+    name: names.displayName,
     description: names.description,
     ...(serverId !== undefined ? { serverId } : {}),
     metadata: jsonb.metadata,
@@ -347,7 +347,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
       const [inserted] = await tx
         .insert(environment)
         .values({
-          displayName: input.displayName,
+          name: input.displayName,
           description: input.description,
           projectId: input.projectId,
           ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),

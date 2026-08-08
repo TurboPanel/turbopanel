@@ -47,7 +47,6 @@ const test = Deno.test.bind(Deno)
 
 const sessionData = {
   userId: '00000000-0000-4000-8000-000000000099',
-  username: null,
   email: 'user@example.com',
   role: 'user',
 }
@@ -172,7 +171,7 @@ test('sign-in returns 503 when session secrets are not configured', async () => 
   const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-in`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ username: 'user@example.com', password: 'x' }),
+    body: JSON.stringify({ email: 'user@example.com', password: 'x' }),
   })
   // registerAuthRoutes always gets secrets in buildAuthApp — test without secrets:
   const bare = new Hono<AppEnv>()
@@ -185,7 +184,7 @@ test('sign-in returns 503 when session secrets are not configured', async () => 
   const unconfigured = await bare.request(`${CLIENT_API_PREFIX}/auth/sign-in`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ username: 'user@example.com', password: 'x' }),
+    body: JSON.stringify({ email: 'user@example.com', password: 'x' }),
   })
   assertEquals(unconfigured.status, 503)
   assertEquals(res.status !== 503, true)
@@ -203,7 +202,7 @@ test('sign-in rejects malformed JSON and missing fields', async () => {
   const missingPassword = await app.request(`${CLIENT_API_PREFIX}/auth/sign-in`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ username: 'user@example.com' }),
+    body: JSON.stringify({ email: 'user@example.com' }),
   })
   assertEquals(missingPassword.status, 400)
 })
@@ -220,7 +219,7 @@ test('sign-in returns 401 for invalid credentials with mock db', async () => {
       'content-type': 'application/json',
       'CF-Connecting-IP': '203.0.113.10',
     },
-    body: JSON.stringify({ username: 'missing@example.com', password: 'wrong' }),
+    body: JSON.stringify({ email: 'missing@example.com', password: 'wrong' }),
   })
   assertEquals(res.status, 401)
 })
@@ -243,7 +242,7 @@ test('sign-in returns 403 when email is not verified', async () => {
       'content-type': 'application/json',
       'CF-Connecting-IP': '203.0.113.11',
     },
-    body: JSON.stringify({ username: 'unverified@example.com', password }),
+    body: JSON.stringify({ email: 'unverified@example.com', password }),
   })
   assertEquals(res.status, 403)
 })
@@ -267,7 +266,7 @@ test('sign-in succeeds for verified mock user and sets session cookie', async ()
       'content-type': 'application/json',
       'CF-Connecting-IP': '203.0.113.13',
     },
-    body: JSON.stringify({ username: 'verified@example.com', password }),
+    body: JSON.stringify({ email: 'verified@example.com', password }),
   })
   assertEquals(res.status, 200)
   const body = await res.json()
@@ -418,7 +417,6 @@ test('verify-email consumes token and marks mock user verified', async () => {
   seedMockUser(state, {
     id: userId,
     email,
-    username: null,
     isDisabled: false,
     isEmailVerified: false,
     role: 'user',
@@ -510,7 +508,6 @@ test('registerAuthnRoutes session returns user payload for signed cookie', async
   const sessionRow: SessionData = {
     sessionId: crypto.randomUUID(),
     userId: sessionData.userId,
-    username: null,
     email: sessionData.email,
     role: 'user',
   }

@@ -38,7 +38,7 @@ const NETWORK_SELECT = {
   serverId: network.serverId,
   kind: network.kind,
   cidr: network.cidr,
-  displayName: network.displayName,
+  displayName: network.name,
   metadata: network.metadata,
   options: network.options,
   createdAt: network.createdAt,
@@ -205,7 +205,7 @@ function parseNetworkPatchFields(
 
   if (body.displayName !== undefined) {
     try {
-      patchFields.displayName = parseDisplayName(body)
+      patchFields.name = parseDisplayName(body)
     } catch {
       return c.json({ error: 'Invalid request' }, 400)
     }

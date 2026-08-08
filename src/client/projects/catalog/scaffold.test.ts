@@ -113,7 +113,7 @@ test('scaffoldCatalogEnvironments seals managed secrets as enc without placehold
 
   const [org] = await db
     .insert(organization)
-    .values({ displayName: 'Catalog Scaffold Org' })
+    .values({ name: 'Catalog Scaffold Org' })
     .returning({ id: organization.id })
   const organizationId = org!.id
 
@@ -121,7 +121,7 @@ test('scaffoldCatalogEnvironments seals managed secrets as enc without placehold
     .insert(workspace)
     .values({
       organizationId,
-      displayName: 'Catalog Scaffold Workspace',
+      name: 'Catalog Scaffold Workspace',
     })
     .returning({ id: workspace.id })
 
@@ -129,7 +129,7 @@ test('scaffoldCatalogEnvironments seals managed secrets as enc without placehold
     .insert(project)
     .values({
       workspaceId: ws!.id,
-      displayName: 'Catalog Scaffold Project',
+      name: 'Catalog Scaffold Project',
       metadata: { type: 'template' },
       options: { compose: entry.compose },
     })
@@ -205,7 +205,7 @@ test('scaffoldCatalogEnvironments reuses sharedCredentialId when sealing', async
   const sharedEntry: CatalogEntry = {
     code: 'shared-secret-fixture',
     kind: 'managed',
-    displayName: 'Shared Secret Fixture',
+    name: 'Shared Secret Fixture',
     description: 'Test-only entry for sharedCredentialId',
     compose: {
       version: 1,
@@ -214,7 +214,7 @@ test('scaffoldCatalogEnvironments reuses sharedCredentialId when sealing', async
     },
     environments: [
       {
-        displayName: 'production',
+        name: 'production',
         variables: [
           {
             key: 'DB_PASSWORD',
@@ -240,20 +240,20 @@ test('scaffoldCatalogEnvironments reuses sharedCredentialId when sealing', async
 
   const [org] = await db
     .insert(organization)
-    .values({ displayName: 'Shared Credential Org' })
+    .values({ name: 'Shared Credential Org' })
     .returning({ id: organization.id })
   const [ws] = await db
     .insert(workspace)
     .values({
       organizationId: org!.id,
-      displayName: 'Shared Credential Workspace',
+      name: 'Shared Credential Workspace',
     })
     .returning({ id: workspace.id })
   const [proj] = await db
     .insert(project)
     .values({
       workspaceId: ws!.id,
-      displayName: 'Shared Credential Project',
+      name: 'Shared Credential Project',
       metadata: { type: 'managed' },
     })
     .returning({ id: project.id })

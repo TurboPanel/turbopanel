@@ -55,13 +55,13 @@ async function withVolumeFixtures(
 
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Compose Volumes Org' })
+    .values({ name: 'Compose Volumes Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
   const [insertedWorkspace] = await db
     .insert(workspace)
-    .values({ displayName: 'Compose Volumes Workspace', organizationId })
+    .values({ name: 'Compose Volumes Workspace', organizationId })
     .returning({ id: workspace.id })
   const workspaceId = insertedWorkspace!.id
 
@@ -70,7 +70,7 @@ async function withVolumeFixtures(
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Compose Volumes Server',
+      name: 'Compose Volumes Server',
       createdAt: now,
       updatedAt: now,
     })
@@ -80,7 +80,7 @@ async function withVolumeFixtures(
   const [insertedProject] = await db
     .insert(project)
     .values({
-      displayName: 'Compose Volumes Project',
+      name: 'Compose Volumes Project',
       workspaceId,
     })
     .returning({ id: project.id })
@@ -89,7 +89,7 @@ async function withVolumeFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      displayName: 'Compose Volumes Env',
+      name: 'Compose Volumes Env',
       projectId,
     })
     .returning({ id: environment.id })

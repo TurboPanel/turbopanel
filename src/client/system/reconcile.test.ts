@@ -120,7 +120,7 @@ async function withReconcileFixtures(
   const db = createDenoDb()
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'System Reconcile Sweep Org' })
+    .values({ name: 'System Reconcile Sweep Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -131,7 +131,7 @@ async function withReconcileFixtures(
     .insert(server)
     .values({
       organizationId,
-      displayName: 'System Reconcile Sweep Server',
+      name: 'System Reconcile Sweep Server',
       connected,
       statusChangedAt: options.statusChangedAt ?? now,
       options: { hosting: { enabled: hostingEnabled } },
@@ -352,7 +352,7 @@ test('buildSystemReconcilePayload returns empty when no system hierarchy exists'
   const db = createDenoDb()
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Reconcile Empty Org' })
+    .values({ name: 'Reconcile Empty Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -361,7 +361,7 @@ test('buildSystemReconcilePayload returns empty when no system hierarchy exists'
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Reconcile Empty Server',
+      name: 'Reconcile Empty Server',
       connected: true,
       statusChangedAt: now,
       createdAt: now,
@@ -389,7 +389,7 @@ test('enqueueSystemReconcile returns not_provisioned without hierarchy', async (
   const queue = createRecordingCommandQueue()
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Reconcile Not Provisioned Org' })
+    .values({ name: 'Reconcile Not Provisioned Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -398,7 +398,7 @@ test('enqueueSystemReconcile returns not_provisioned without hierarchy', async (
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Reconcile Not Provisioned Server',
+      name: 'Reconcile Not Provisioned Server',
       connected: true,
       statusChangedAt: now,
       createdAt: now,

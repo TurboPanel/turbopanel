@@ -52,7 +52,7 @@ type SystemReconcileEnvironmentRow = {
   environment_id: string
   project_component: string | null
   service_id: string
-  compose_service_name: string
+  name: string
 }
 
 type SystemReconcileEnvironmentEntry = {
@@ -125,7 +125,7 @@ export async function buildSystemReconcilePayload(
       e.id AS environment_id,
       p.metadata->>'component' AS project_component,
       s.id AS service_id,
-      s.compose_service_name AS compose_service_name,
+      s.name AS name,
       srv.options AS server_options
     FROM environment e
     JOIN project p ON p.id = e.project_id
@@ -134,7 +134,7 @@ export async function buildSystemReconcilePayload(
     JOIN server srv ON srv.id = e.server_id
     WHERE e.server_id = ${params.serverId}::uuid
       AND w.kind = ${WORKSPACE_KIND_SYSTEM}
-    ORDER BY e.id, s.compose_service_name
+    ORDER BY e.id, s.name
   `)
 
   const byEnvironment = new Map<string, SystemReconcileEnvironmentEntry>()
@@ -151,7 +151,7 @@ export async function buildSystemReconcilePayload(
     }
     entry.services.push({
       serviceId: row.service_id,
-      composeServiceName: row.compose_service_name,
+      composeServiceName: row.name,
     })
   }
 
@@ -300,7 +300,7 @@ export async function runSystemReconcileSweep(
       AND (
         (
           p.metadata->>'component' = ${SYSTEM_HOSTING_INGRESS_COMPONENT}
-          AND s.compose_service_name = ${SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME}
+          AND s.name = ${SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME}
           AND c.role = 'ingress'
           AND srv.options->'hosting'->>'enabled' = 'true'
           AND (
@@ -311,7 +311,7 @@ export async function runSystemReconcileSweep(
         )
         OR (
           p.metadata->>'component' = ${SYSTEM_SELF_HOST_COMPONENT}
-          AND s.compose_service_name IN (${selfHostComposeServiceNameList})
+          AND s.name IN (${selfHostComposeServiceNameList})
           AND c.role = 'system'
           AND (c.status <> 'running' OR c.container_id IS NULL)
         )

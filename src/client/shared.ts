@@ -75,13 +75,15 @@ export function stripPromotedMetadataKeys(
   return next
 }
 
-/** PATCH payload: omit `displayName` when absent so partial updates do not clear it. */
+/** PATCH payload: omit `name` when absent so partial updates do not clear it.
+ * Body still uses wire field `displayName`; DB column is `name`.
+ */
 export function buildPatchUpdateFields(
   body: Record<string, unknown>,
-): { displayName?: string | null; description?: string | null; updatedAt: string } {
+): { name?: string | null; description?: string | null; updatedAt: string } {
   const updatedAt = new Date().toISOString()
   const result: {
-    displayName?: string | null
+    name?: string | null
     description?: string | null
     updatedAt: string
   } = { updatedAt }
@@ -94,7 +96,7 @@ export function buildPatchUpdateFields(
     if (name.length < 1 || name.length > 255 || !DISPLAY_NAME_RE.test(name)) {
       throw new BadRequestError('Invalid request')
     }
-    result.displayName = name
+    result.name = name
   }
 
   if (body.description !== undefined) {

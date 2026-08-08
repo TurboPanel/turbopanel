@@ -121,7 +121,7 @@ it('sign-in returns 429 with Retry-After once the limiter blocks', async () => {
         'content-type': 'application/json',
         'CF-Connecting-IP': '203.0.113.10',
       },
-      body: JSON.stringify({ username: 'someone@example.com', password: 'x' }),
+      body: JSON.stringify({ email: 'someone@example.com', password: 'x' }),
     })
 
   const first = await makeRequest()
@@ -143,7 +143,7 @@ it('spoofed X-Real-IP / X-Forwarded-For cannot bypass Workers rate limits', asyn
     app.request(`${CLIENT_API_PREFIX}/auth/sign-in`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...headers },
-      body: JSON.stringify({ username: 'someone@example.com', password: 'x' }),
+      body: JSON.stringify({ email: 'someone@example.com', password: 'x' }),
     })
 
   assertEquals(
@@ -175,7 +175,7 @@ it('Workers auth fails closed when no durable limiter is injected', async () => 
       'content-type': 'application/json',
       'CF-Connecting-IP': '203.0.113.99',
     },
-    body: JSON.stringify({ username: 'someone@example.com', password: 'x' }),
+    body: JSON.stringify({ email: 'someone@example.com', password: 'x' }),
   })
   assertEquals(res.status, 429)
   assertEquals(res.headers.get('Retry-After') !== null, true)
@@ -194,7 +194,7 @@ it('same-account attempts from different IPs cannot bypass the account cap', asy
         'content-type': 'application/json',
         'CF-Connecting-IP': ip,
       },
-      body: JSON.stringify({ username: 'someone@example.com', password: 'x' }),
+      body: JSON.stringify({ email: 'someone@example.com', password: 'x' }),
     })
 
   assertEquals((await makeRequest('203.0.113.20')).status, 401)
@@ -231,7 +231,7 @@ it('Deno createApp injects authRateLimiter before client routes (deny-all → 42
       'X-Real-IP': '203.0.113.77',
       Origin: 'http://localhost',
     },
-    body: JSON.stringify({ username: 'someone@example.com', password: 'x' }),
+    body: JSON.stringify({ email: 'someone@example.com', password: 'x' }),
   })
   assertEquals(res.status, 429)
   assertEquals(res.headers.get('Retry-After') !== null, true)
@@ -278,7 +278,7 @@ it('Deno auth stays throttled when Redis-backed limiter fails closed', async () 
       'X-Real-IP': '203.0.113.88',
       Origin: 'http://localhost',
     },
-    body: JSON.stringify({ username: 'someone@example.com', password: 'x' }),
+    body: JSON.stringify({ email: 'someone@example.com', password: 'x' }),
   })
   assertEquals(res.status, 429)
   assertEquals(res.headers.get('Retry-After') !== null, true)

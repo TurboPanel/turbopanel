@@ -66,6 +66,8 @@ sequenceDiagram
 
 ### Session model
 
+Sign-in is **email-only** (the legacy `user.username` / `displayUsername` columns were removed). The session payload does not include `username`.
+
 Sessions are **opaque DB-backed tokens** with a signed cookie:
 
 - A 32-byte random token is generated and stored in the `session` table (`token`, `userId`, `expiresAt`, `ipAddress`, `userAgent`).
@@ -164,7 +166,7 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/client/v1/auth/sign-in` | Verify DB user credentials, create session (rejects root; use install wizard) |
+| `POST` | `/api/client/v1/auth/sign-in` | Verify DB user credentials by **email** + password, create session (rejects root; use install wizard). Session payload has `userId` / `email` / `role` (no `username`) |
 | `POST` | `/api/client/v1/auth/sign-out` | Delete session, clear cookie |
 | `POST` | `/api/client/v1/auth/sign-up` | Create a regular user account when signup is enabled (`IS_SIGNUP_ENABLED` DB setting, or `TURBOPANEL_IS_SIGNUP_ENABLED` force override); no session returned — user must sign in. Generates a 24h email verification token and enqueues a `signup-verification` email job (Deno → RabbitMQ → mailer → SMTP/Mailpit; Workers → Mailgun directly). In explicit development mode only, logs a sanitized `verification email queued` event (never the token or verify URL) |
 | `GET` | `/api/client/v1/auth/verify-email?token=<token>` | Consume a 24-hour email verification token; sets `user.isEmailVerified = true` |

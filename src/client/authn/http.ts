@@ -72,7 +72,6 @@ export type AuthRouteOpts = {
 export type SessionResponse = {
   ok: true
   userId: string | null
-  username: string | null
   email: string | null
   role: string | null
   /** Deno self-hosted only — omitted on Workers (no install wizard). */
@@ -262,7 +261,6 @@ export async function buildSessionResponse(
   runtime: AuthRouteOpts['runtime'],
   sessionData: {
     userId: string
-    username: string | null
     email: string
     role: string
   },
@@ -270,7 +268,6 @@ export async function buildSessionResponse(
   const base: SessionResponse = {
     ok: true,
     userId: sessionData.userId,
-    username: sessionData.username,
     email: sessionData.email,
     role: sessionData.role,
   }
@@ -547,14 +544,14 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Invalid request' }, 400)
     }
 
-    const { username, password } = body as {
-      username?: unknown
+    const { email, password } = body as {
+      email?: unknown
       password?: unknown
     }
 
     if (
-      typeof username !== 'string' ||
-      !username ||
+      typeof email !== 'string' ||
+      !email ||
       typeof password !== 'string' ||
       !password
     ) {
@@ -564,7 +561,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
     const signInLimited = await enforceAuthRateLimit(
       c,
       'sign-in',
-      username,
+      email,
       opts.runtime,
     )
     if (signInLimited) {
@@ -573,7 +570,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
 
     if (
       opts.runtime === 'deno' &&
-      username === PAM_ROOT_USERNAME &&
+      email === PAM_ROOT_USERNAME &&
       db &&
       !(await isInstanceInstalled(db))
     ) {
@@ -586,7 +583,7 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
       )
     }
 
-    const result = await verifyCredentials(username, password, opts.runtime, db)
+    const result = await verifyCredentials(email, password, opts.runtime, db)
     if (!result.ok) {
       if (result.reason === 'email_not_verified') {
         return c.json(

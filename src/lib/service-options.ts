@@ -10,9 +10,6 @@ export type ServiceOptions = {
   build?: {
     disableCache?: boolean
   }
-  container?: {
-    name?: string
-  }
   operations?: {
     stopGracePeriodSeconds?: number
     maxRestartAttempts?: number
@@ -63,12 +60,6 @@ function parseBuild(value: Record<string, unknown>): ServiceOptions['build'] | u
   if (!isRecord(value.build)) return undefined
   if (value.build.disableCache !== true) return undefined
   return { disableCache: true }
-}
-
-function parseContainer(value: Record<string, unknown>): ServiceOptions['container'] | undefined {
-  if (!isRecord(value.container)) return undefined
-  const name = readOptionalString(value.container.name)
-  return name ? { name } : undefined
 }
 
 function parseOperations(value: Record<string, unknown>): ServiceOptions['operations'] | undefined {
@@ -128,9 +119,6 @@ export function parseServiceOptions(value: unknown): ServiceOptions | null {
 
   const build = parseBuild(value)
   if (build) options.build = build
-
-  const container = parseContainer(value)
-  if (container) options.container = container
 
   const operations = parseOperations(value)
   if (operations) options.operations = operations

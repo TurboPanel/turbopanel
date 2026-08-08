@@ -30,6 +30,7 @@ const SERVICE_PROMOTED_METADATA_KEYS = ['composeServiceName'] as const
 
 type ServiceRow = {
   id: string
+  /** DB column `name` (renamed display label) — exposed as `displayName`. */
   displayName: string | null
   description: string | null
   environmentId: string
@@ -56,7 +57,7 @@ function serializeService(row: ServiceRow) {
 
 const SERVICE_SELECT = {
   id: service.id,
-  displayName: service.displayName,
+  displayName: service.name,
   description: service.description,
   environmentId: service.environmentId,
   composeServiceName: service.composeServiceName,
@@ -106,7 +107,7 @@ function rejectComposeServiceNameInBody(
 }
 
 type ServicePatchFields = {
-  displayName?: string | null
+  name?: string | null
   description?: string | null
   metadata?: Record<string, unknown> | null
   options?: Record<string, unknown> | null
@@ -122,6 +123,7 @@ function buildServicePatchFields(
 
   let patchFields: ServicePatchFields
   try {
+    // Maps JSON `displayName` → column `name` (renamed display label).
     patchFields = buildPatchUpdateFields(body)
   } catch {
     return c.json({ error: 'Invalid request' }, 400)

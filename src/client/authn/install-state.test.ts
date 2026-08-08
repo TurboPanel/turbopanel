@@ -166,7 +166,7 @@ it('concurrent install completions create exactly one superadmin bootstrap', asy
     const orgRows = await db
       .select({ id: organization.id })
       .from(organization)
-      .where(eq(organization.displayName, DEFAULT_ORGANIZATION_NAME))
+      .where(eq(organization.name, DEFAULT_ORGANIZATION_NAME))
     if (orgRows.length !== 1) {
       throw new Error(
         `expected exactly one Default Organization, got ${orgRows.length}`,
@@ -267,7 +267,7 @@ it('install produces System workspace then Default Workspace', async () => {
     const rows = await db
       .select({
         id: workspace.id,
-        displayName: workspace.displayName,
+        displayName: workspace.name,
         kind: workspace.kind,
       })
       .from(workspace)
@@ -345,7 +345,7 @@ it('rotateColocatedLicenseCredentials revokes stale this-server licenses then mi
   const db = createDenoDb()
   const insertedOrg = await db
     .insert(organization)
-    .values({ displayName: `Colocated License Rotate ${crypto.randomUUID()}` })
+    .values({ name: `Colocated License Rotate ${crypto.randomUUID()}` })
     .returning({ id: organization.id })
   const organizationId = insertedOrg[0]!.id
 
@@ -356,7 +356,7 @@ it('rotateColocatedLicenseCredentials revokes stale this-server licenses then mi
       .insert(license)
       .values({
         organizationId,
-        displayName: COLOCATED_SERVER_DISPLAY_NAME,
+        name: COLOCATED_SERVER_DISPLAY_NAME,
         token: `stale-hash-${crypto.randomUUID()}`,
       })
       .returning({ id: license.id })
@@ -368,7 +368,7 @@ it('rotateColocatedLicenseCredentials revokes stale this-server licenses then mi
       .from(license)
       .where(and(
         eq(license.organizationId, organizationId),
-        eq(license.displayName, COLOCATED_SERVER_DISPLAY_NAME),
+        eq(license.name, COLOCATED_SERVER_DISPLAY_NAME),
         isNull(license.revokedAt),
       ))
 
@@ -414,7 +414,7 @@ it('rotateColocatedLicenseCredentials preserves an already-bound colocated seat'
   const now = new Date().toISOString()
   const insertedOrg = await db
     .insert(organization)
-    .values({ displayName: `Bound Colocated Rotate ${crypto.randomUUID()}` })
+    .values({ name: `Bound Colocated Rotate ${crypto.randomUUID()}` })
     .returning({ id: organization.id })
   const organizationId = insertedOrg[0]!.id
 
@@ -424,7 +424,7 @@ it('rotateColocatedLicenseCredentials preserves an already-bound colocated seat'
       createdAt: now,
       updatedAt: now,
       organizationId,
-      displayName: COLOCATED_SERVER_DISPLAY_NAME,
+      name: COLOCATED_SERVER_DISPLAY_NAME,
       daemon: {
         key: {
           id: crypto.randomUUID(),
@@ -444,7 +444,7 @@ it('rotateColocatedLicenseCredentials preserves an already-bound colocated seat'
     .values({
       organizationId,
       serverId,
-      displayName: COLOCATED_SERVER_DISPLAY_NAME,
+      name: COLOCATED_SERVER_DISPLAY_NAME,
       token: priorToken,
     })
     .returning({ id: license.id })
@@ -504,7 +504,7 @@ it('disk-credential recovery rewrites license files for an enrolled colocated se
 
   const insertedOrg = await db
     .insert(organization)
-    .values({ displayName: `Disk Restore Org ${crypto.randomUUID()}` })
+    .values({ name: `Disk Restore Org ${crypto.randomUUID()}` })
     .returning({ id: organization.id })
   const organizationId = insertedOrg[0]!.id
 
@@ -514,7 +514,7 @@ it('disk-credential recovery rewrites license files for an enrolled colocated se
       createdAt: now,
       updatedAt: now,
       organizationId,
-      displayName: COLOCATED_SERVER_DISPLAY_NAME,
+      name: COLOCATED_SERVER_DISPLAY_NAME,
     })
     .returning({ id: server.id })
   const serverId = insertedServer!.id
@@ -524,7 +524,7 @@ it('disk-credential recovery rewrites license files for an enrolled colocated se
     .values({
       organizationId,
       serverId,
-      displayName: COLOCATED_SERVER_DISPLAY_NAME,
+      name: COLOCATED_SERVER_DISPLAY_NAME,
       token: `enrolled-hash-${crypto.randomUUID()}`,
     })
     .returning({ id: license.id })

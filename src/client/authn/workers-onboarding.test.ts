@@ -329,7 +329,7 @@ it('Workers sign-up creates an organization for the new user', async () => {
     }
 
     const workspaceRows = await db
-      .select({ displayName: workspace.displayName })
+      .select({ displayName: workspace.name })
       .from(workspace)
       .where(eq(workspace.organizationId, organizationId))
     if (workspaceRows.length !== 1) {

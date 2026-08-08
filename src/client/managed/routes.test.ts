@@ -98,7 +98,7 @@ async function withDriftedPlacement(
     .insert(server)
     .values({
       organizationId,
-      displayName: 'Drifted Placement Server',
+      name: 'Drifted Placement Server',
       createdAt: now,
       updatedAt: now,
       connected: false,
@@ -219,7 +219,7 @@ async function withManagedFixtures(
 
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ displayName: 'Managed Route Test Org' })
+    .values({ name: 'Managed Route Test Org' })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -227,7 +227,7 @@ async function withManagedFixtures(
   if (foreignServer) {
     const [foreignOrg] = await db
       .insert(organization)
-      .values({ displayName: 'Managed Route Foreign Org' })
+      .values({ name: 'Managed Route Foreign Org' })
       .returning({ id: organization.id })
     foreignOrgId = foreignOrg!.id
   }
@@ -256,7 +256,7 @@ async function withManagedFixtures(
 
   const [insertedWorkspace] = await db
     .insert(workspace)
-    .values({ displayName: 'Managed Route Workspace', organizationId })
+    .values({ name: 'Managed Route Workspace', organizationId })
     .returning({ id: workspace.id })
   const workspaceId = insertedWorkspace!.id
 
@@ -265,7 +265,7 @@ async function withManagedFixtures(
     .insert(server)
     .values({
       organizationId: foreignServer ? foreignOrgId! : organizationId,
-      displayName: 'Managed Route Server',
+      name: 'Managed Route Server',
       createdAt: now,
       updatedAt: now,
       connected: online,
@@ -297,7 +297,7 @@ async function withManagedFixtures(
     .values(
       projectKind === 'managed-postgres'
         ? {
-          displayName: 'Managed Postgres Project',
+          name: 'Managed Postgres Project',
           workspaceId,
           metadata: { type: 'managed', code: 'postgres' },
           options: {
@@ -306,7 +306,7 @@ async function withManagedFixtures(
           },
         }
         : {
-          displayName: 'Compose Project',
+          name: 'Compose Project',
           workspaceId,
           metadata: { type: 'docker-compose' },
           options: { compose: emptyComposeDocument() },
@@ -318,7 +318,7 @@ async function withManagedFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      displayName: 'Production',
+      name: 'Production',
       projectId,
       serverId: withPlacement ? serverId : null,
       options: {
@@ -1181,7 +1181,7 @@ test('backup create/delete/restore target managed.server_id when environment pla
       .insert(server)
       .values({
         organizationId,
-        displayName: 'Drifted Placement Server',
+        name: 'Drifted Placement Server',
         createdAt: now,
         updatedAt: now,
         connected: false,

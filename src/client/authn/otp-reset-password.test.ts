@@ -385,7 +385,6 @@ test('verify-email/otp rejects email mismatch for signed session', async () => {
   seedMockSession(state, token, {
     sessionId: crypto.randomUUID(),
     userId: crypto.randomUUID(),
-    username: null,
     email: 'session@example.com',
     role: 'user',
   })
@@ -421,7 +420,6 @@ test('sign-in/otp succeeds for existing mock user with seeded OTP', async () => 
   seedMockUser(state, {
     id: userId,
     email,
-    username: null,
     isDisabled: false,
     isEmailVerified: true,
     role: 'user',
@@ -489,7 +487,6 @@ test('verify-email/otp marks mock user verified with seeded OTP', async () => {
   seedMockUser(state, {
     id: userId,
     email,
-    username: null,
     isDisabled: false,
     isEmailVerified: false,
     role: 'user',
@@ -498,7 +495,6 @@ test('verify-email/otp marks mock user verified with seeded OTP', async () => {
   seedMockSession(state, token, {
     sessionId: crypto.randomUUID(),
     userId,
-    username: null,
     email,
     role: 'user',
   })
@@ -552,7 +548,6 @@ test('sign-in/otp rejects disabled mock users', async () => {
   seedMockUser(state, {
     id: crypto.randomUUID(),
     email,
-    username: null,
     isDisabled: true,
     isEmailVerified: true,
     role: 'user',
@@ -665,7 +660,6 @@ test('send-otp email-verification succeeds for signed session', async () => {
   seedMockSession(state, token, {
     sessionId: crypto.randomUUID(),
     userId: crypto.randomUUID(),
-    username: null,
     email,
     role: 'user',
   })

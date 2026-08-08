@@ -386,7 +386,7 @@ async function insertLicensedServer(
     .insert(server)
     .values({
       organizationId,
-      displayName: defaultDisplayName(identity),
+      name: defaultDisplayName(identity),
       createdAt: now,
       updatedAt: now,
       ...(columns.hostname ? { hostname: columns.hostname } : {}),
