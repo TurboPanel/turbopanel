@@ -1,6 +1,9 @@
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { storage } from '../../lib/db/schema.ts'
+import { parseJsonbObject, requireStringField } from '../shared.ts'
+
+export const MAX_STORAGE_CONTENT_BYTES = 256 * 1024
 
 export const STORAGE_KINDS = ['docker_volume', 'bind_mount', 'file', 'directory'] as const
 export type StorageKind = typeof STORAGE_KINDS[number]
@@ -102,4 +105,91 @@ export function mountKindRequiresDestination(
 ): boolean {
   if (!MOUNT_KINDS.has(kind)) return false
   return !destinationPath?.trim()
+}
+
+export function storageContentByteLength(content: string): number {
+  return new TextEncoder().encode(content).byteLength
+}
+
+export function isStorageContentTooLarge(content: string): boolean {
+  return storageContentByteLength(content) > MAX_STORAGE_CONTENT_BYTES
+}
+
+export function parseOptionalStorageContent(
+  c: Context<AppEnv>,
+  value: unknown,
+): string | undefined | Response {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string') {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  return value
+}
+
+export type CreateStorageFields = {
+  kind: StorageKind
+  name: string
+  serverId: string
+  destinationPath: string | null
+  sourcePath: string | null
+  principalId: string | null
+  metadata: Record<string, unknown> | null
+  options: Record<string, unknown> | null
+}
+
+export function parseCreateStorageFields(
+  c: Context<AppEnv>,
+  body: Record<string, unknown>,
+): CreateStorageFields | Response {
+  const kind = body.kind
+  if (!isStorageKind(kind)) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
+  const name = requireStringField(c, body, 'name')
+  if (name instanceof Response) return name
+
+  const serverId = requireStringField(c, body, 'serverId')
+  if (serverId instanceof Response) return serverId
+
+  const metadata = parseJsonbObject(c, body, 'metadata')
+  if (metadata instanceof Response) return metadata
+  const options = parseJsonbObject(c, body, 'options')
+  if (options instanceof Response) return options
+
+  return {
+    kind,
+    name,
+    serverId,
+    destinationPath: optionalStringField(body.destinationPath),
+    sourcePath: optionalStringField(body.sourcePath),
+    principalId: optionalStringField(body.principalId),
+    metadata,
+    options,
+  }
+}
+
+export function buildStorageUpdateFields(
+  c: Context<AppEnv>,
+  body: Record<string, unknown>,
+): Record<string, unknown> | Response {
+  const updateFields: Record<string, unknown> = {
+    updatedAt: new Date().toISOString(),
+  }
+  if (typeof body.name === 'string') updateFields.name = body.name
+  if (typeof body.sourcePath === 'string') updateFields.sourcePath = body.sourcePath
+  if (typeof body.destinationPath === 'string') {
+    updateFields.destinationPath = body.destinationPath
+  }
+  if (typeof body.serverId === 'string') updateFields.serverId = body.serverId
+  if (body.principalId === null || typeof body.principalId === 'string') {
+    updateFields.principalId = body.principalId
+  }
+  const metadata = parseJsonbObject(c, body, 'metadata')
+  if (metadata instanceof Response) return metadata
+  if (metadata !== null) updateFields.metadata = metadata
+  const options = parseJsonbObject(c, body, 'options')
+  if (options instanceof Response) return options
+  if (options !== null) updateFields.options = options
+  return updateFields
 }

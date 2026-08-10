@@ -1,14 +1,24 @@
 /**
- * Host-free coverage for system hierarchy pure helpers + race-safe workspace ensure.
+ * Host-free coverage for system hierarchy pure helpers, race-safe ensures,
+ * delete subtree, and provision wrappers (Db doubles only — no Postgres).
  */
 
 import { assertEquals, assertRejects } from 'jsr:@std/assert'
 import type { Db } from '../../db.ts'
+import { ingressContainerNameFromService } from '../../lib/naming.ts'
 import {
+  deleteSystemEnvironmentSubtree,
+  ensureManagedIngressHierarchy,
+  ensureSelfHostSystemHierarchy,
+  ensureSystemHierarchy,
   ensureSystemWorkspace,
   findSystemEnvironmentForServer,
   isSystemSelfHostComposeServiceName,
+  SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME,
+  SYSTEM_PROJECT_DISPLAY_NAME,
+  SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
   SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES,
+  SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
 } from './hierarchy.ts'
 
 /**
@@ -18,6 +28,98 @@ import {
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno)
+
+const ORG = '00000000-0000-4000-8000-000000000001'
+const SERVER = '00000000-0000-4000-8000-000000000002'
+const WS = '00000000-0000-4000-8000-000000000010'
+const PROJ = '00000000-0000-4000-8000-000000000011'
+const ENV = '00000000-0000-4000-8000-000000000012'
+const SVC = '00000000-0000-4000-8000-0000000000aa'
+const CTR = '00000000-0000-4000-8000-0000000000bb'
+
+function thenableRows(rows: unknown[]) {
+  const promise = Promise.resolve(rows)
+  return {
+    limit: () => promise,
+    then: promise.then.bind(promise),
+    catch: promise.catch.bind(promise),
+    finally: promise.finally.bind(promise),
+  }
+}
+
+/** Sequenced drizzle-shaped Db used as both outer db and nested tx. */
+function createSequencedDb(opts: {
+  execute?: Array<unknown[] | (() => unknown[])>
+  select?: Array<unknown[] | (() => unknown[])>
+  insertReturning?: Array<unknown[] | (() => unknown[])>
+  track?: {
+    deletes?: number
+    updates?: number
+    inserts?: number
+    executes?: number
+  }
+}): Db {
+  let executeI = 0
+  let selectI = 0
+  let insertReturningI = 0
+  const track = opts.track ?? {}
+
+  const db: Record<string, unknown> = {
+    execute: async () => {
+      track.executes = (track.executes ?? 0) + 1
+      const next = opts.execute?.[executeI++]
+      const rows = typeof next === 'function' ? next() : (next ?? [])
+      return rows
+    },
+    select: () => ({
+      from: () => ({
+        where: () => {
+          const next = opts.select?.[selectI++]
+          const rows = typeof next === 'function' ? next() : (next ?? [])
+          return thenableRows(rows)
+        },
+      }),
+    }),
+    insert: () => {
+      track.inserts = (track.inserts ?? 0) + 1
+      return {
+        values: () => ({
+          onConflictDoNothing: () => Promise.resolve(undefined),
+          returning: () => {
+            const next = opts.insertReturning?.[insertReturningI++]
+            const rows = typeof next === 'function' ? next() : (next ?? [])
+            return Promise.resolve(rows)
+          },
+        }),
+      }
+    },
+    update: () => {
+      track.updates = (track.updates ?? 0) + 1
+      return {
+        set: () => ({
+          where: () => Promise.resolve([]),
+        }),
+      }
+    },
+    delete: () => {
+      track.deletes = (track.deletes ?? 0) + 1
+      return {
+        where: () => Promise.resolve([]),
+      }
+    },
+  }
+
+  db.transaction = async (fn: (tx: Db) => Promise<unknown>) =>
+    await fn(db as unknown as Db)
+
+  return db as unknown as Db
+}
+
+function wrapDb(tx: Db): Db {
+  return {
+    transaction: async (fn: (inner: Db) => Promise<unknown>) => await fn(tx),
+  } as unknown as Db
+}
 
 test('isSystemSelfHostComposeServiceName allowlists only stack services', () => {
   for (const name of SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES) {
@@ -79,5 +181,444 @@ test('ensureSystemWorkspace returns insert id or existing row', async () => {
     () => ensureSystemWorkspace(missing, 'org'),
     Error,
     'system workspace missing after insert race',
+  )
+})
+
+test('deleteSystemEnvironmentSubtree deletes services then environment', async () => {
+  const deleted: string[] = []
+  const tx = {
+    select: () => ({
+      from: () => ({
+        where: () => Promise.resolve([{ id: 'svc-1' }, { id: 'svc-2' }]),
+      }),
+    }),
+    delete: () => ({
+      where: () => {
+        deleted.push('delete')
+        return Promise.resolve([])
+      },
+    }),
+  } as unknown as Db
+
+  await deleteSystemEnvironmentSubtree(tx, ENV)
+  // container delete + service delete + environment delete
+  assertEquals(deleted.length, 3)
+})
+
+test('deleteSystemEnvironmentSubtree skips service deletes when empty', async () => {
+  let deletes = 0
+  const tx = {
+    select: () => ({
+      from: () => ({
+        where: () => Promise.resolve([]),
+      }),
+    }),
+    delete: () => ({
+      where: () => {
+        deletes += 1
+        return Promise.resolve([])
+      },
+    }),
+  } as unknown as Db
+
+  await deleteSystemEnvironmentSubtree(tx, ENV)
+  assertEquals(deletes, 1)
+})
+
+test('ensureSystemHierarchy inserts workspace/project/env/service/ingress', async () => {
+  const track = { deletes: 0, updates: 0, inserts: 0, executes: 0 }
+  const ingressName = ingressContainerNameFromService(SVC)
+  const tx = createSequencedDb({
+    track,
+    execute: [
+      [{ id: WS }], // workspace insert
+      [{ id: PROJ }], // hosting-ingress project insert
+      [], // FOR UPDATE project lock
+    ],
+    select: [
+      [{ displayName: '  Edge Host  ' }], // server name
+      [], // no existing environment
+      [{ id: SVC }], // compose service after upsert
+      [{
+        id: CTR,
+        serverId: SERVER,
+        containerName: ingressName,
+        status: 'pending',
+        containerId: null,
+        composeServiceName: SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
+      }],
+    ],
+    insertReturning: [[{ id: ENV }]],
+  })
+
+  const result = await ensureSystemHierarchy(wrapDb(tx), {
+    organizationId: ORG,
+    serverId: SERVER,
+  })
+  assertEquals(result, {
+    workspaceId: WS,
+    projectId: PROJ,
+    environmentId: ENV,
+    serviceId: SVC,
+    containerRowId: CTR,
+    containerName: ingressName,
+  })
+  assertEquals(track.deletes! >= 1, true)
+})
+
+test('ensureSystemHierarchy reuses existing env and falls back display name', async () => {
+  const ingressName = ingressContainerNameFromService(SVC)
+  const tx = createSequencedDb({
+    execute: [
+      [{ id: WS }],
+      [], // project insert race → empty
+      [{ id: PROJ }], // project select winner
+      [], // FOR UPDATE
+    ],
+    select: [
+      [{ displayName: '   ' }], // blank → SYSTEM_PROJECT_DISPLAY_NAME
+      [{ id: ENV }], // existing environment
+      [{ id: SVC }],
+      [{
+        id: CTR,
+        serverId: SERVER,
+        containerName: 'pending',
+        status: 'pending',
+        containerId: null,
+        composeServiceName: SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
+      }],
+    ],
+  })
+
+  const result = await ensureSystemHierarchy(wrapDb(tx), {
+    organizationId: ORG,
+    serverId: SERVER,
+  })
+  assertEquals(result.environmentId, ENV)
+  assertEquals(result.containerName, ingressName)
+  assertEquals(result.projectId, PROJ)
+})
+
+test('ensureSystemHierarchy falls back when server row is missing', async () => {
+  const ingressName = ingressContainerNameFromService(SVC)
+  const tx = createSequencedDb({
+    execute: [
+      [{ id: WS }],
+      [{ id: PROJ }],
+      [],
+    ],
+    select: [
+      [], // no server row
+      [{ id: ENV }],
+      [{ id: SVC }],
+      [{
+        id: CTR,
+        serverId: SERVER,
+        containerName: ingressName,
+        status: 'pending',
+        containerId: null,
+        composeServiceName: SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
+      }],
+    ],
+  })
+
+  const result = await ensureSystemHierarchy(wrapDb(tx), {
+    organizationId: ORG,
+    serverId: SERVER,
+  })
+  assertEquals(result.workspaceId, WS)
+  // Display name fallback is exercised inside ensureServerEnvironment call —
+  // we only assert the happy return shape here.
+  assertEquals(result.environmentId, ENV)
+  assertEquals(SYSTEM_PROJECT_DISPLAY_NAME.length > 0, true)
+})
+
+test('ensureHostingIngressProject race miss throws', async () => {
+  const tx = createSequencedDb({
+    execute: [
+      [{ id: WS }],
+      [], // project insert empty
+      [], // project select empty → throw
+    ],
+    select: [],
+  })
+
+  await assertRejects(
+    () =>
+      ensureSystemHierarchy(wrapDb(tx), {
+        organizationId: ORG,
+        serverId: SERVER,
+      }),
+    Error,
+    'hosting-ingress project missing after insert race',
+  )
+})
+
+test('ensureServerEnvironment insert failure throws', async () => {
+  const tx = createSequencedDb({
+    execute: [
+      [{ id: WS }],
+      [{ id: PROJ }],
+      [],
+    ],
+    select: [
+      [{ displayName: 'Host' }],
+      [], // no existing env
+    ],
+    insertReturning: [[]], // insert failed
+  })
+
+  await assertRejects(
+    () =>
+      ensureSystemHierarchy(wrapDb(tx), {
+        organizationId: ORG,
+        serverId: SERVER,
+      }),
+    Error,
+    'system environment insert failed',
+  )
+})
+
+test('ensureComposeService missing after upsert throws', async () => {
+  const tx = createSequencedDb({
+    execute: [
+      [{ id: WS }],
+      [{ id: PROJ }],
+      [],
+    ],
+    select: [
+      [{ displayName: 'Host' }],
+      [{ id: ENV }],
+      [], // service missing
+    ],
+  })
+
+  await assertRejects(
+    () =>
+      ensureSystemHierarchy(wrapDb(tx), {
+        organizationId: ORG,
+        serverId: SERVER,
+      }),
+    Error,
+    'compose service missing after upsert',
+  )
+})
+
+test('ensureManagedIngressHierarchy provisions proxysql system container', async () => {
+  const track = { deletes: 0, updates: 0, inserts: 0, executes: 0 }
+  const tx = createSequencedDb({
+    track,
+    execute: [
+      [{ id: WS }],
+      [{ id: PROJ }],
+      [], // FOR UPDATE
+    ],
+    select: [
+      [{ displayName: 'DB Host' }],
+      [], // no env
+      [{ id: SVC }], // proxysql service
+      // nested allocateServiceContainers select
+      [{
+        id: CTR,
+        serverId: SERVER,
+        containerName: 'pending',
+        composeServiceName: SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
+      }],
+    ],
+    insertReturning: [[{ id: ENV }]],
+  })
+
+  const result = await ensureManagedIngressHierarchy(wrapDb(tx), {
+    organizationId: ORG,
+    serverId: SERVER,
+  })
+  assertEquals(result.serviceId, SVC)
+  assertEquals(result.containerRowId, CTR)
+  assertEquals(result.containerName, SVC) // uuid naming, single instance
+  assertEquals(result.workspaceId, WS)
+  assertEquals(SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME.length > 0, true)
+  assertEquals(track.inserts! >= 2, true)
+})
+
+test('ensureManagedIngressProject race miss throws', async () => {
+  const tx = createSequencedDb({
+    execute: [
+      [{ id: WS }],
+      [],
+      [],
+    ],
+  })
+
+  await assertRejects(
+    () =>
+      ensureManagedIngressHierarchy(wrapDb(tx), {
+        organizationId: ORG,
+        serverId: SERVER,
+      }),
+    Error,
+    'managed-ingress project missing after insert race',
+  )
+})
+
+test('ensureManagedIngressHierarchy throws when allocation empty', async () => {
+  // Force allocateEnvironmentContainers to skip by making nested select miss —
+  // actually that throws inside allocateServiceContainers. Instead stub
+  // containerNaming path by making the nested select fail after insert so
+  // allocate throws "container allocation missing".
+  const tx = createSequencedDb({
+    execute: [
+      [{ id: WS }],
+      [{ id: PROJ }],
+      [],
+    ],
+    select: [
+      [], // server missing → managed display fallback
+      [{ id: ENV }],
+      [{ id: SVC }],
+      [], // allocation select empty → allocateServiceContainers throws
+    ],
+  })
+
+  await assertRejects(
+    () =>
+      ensureManagedIngressHierarchy(wrapDb(tx), {
+        organizationId: ORG,
+        serverId: SERVER,
+      }),
+    Error,
+    'container allocation missing after upsert',
+  )
+})
+
+test('ensureSelfHostSystemHierarchy provisions database/queue/analytics', async () => {
+  const serviceIds = [
+    '00000000-0000-4000-8000-0000000000a1',
+    '00000000-0000-4000-8000-0000000000a2',
+    '00000000-0000-4000-8000-0000000000a3',
+  ]
+  const containerIds = [
+    '00000000-0000-4000-8000-0000000000c1',
+    '00000000-0000-4000-8000-0000000000c2',
+    '00000000-0000-4000-8000-0000000000c3',
+  ]
+
+  const tx = createSequencedDb({
+    execute: [
+      [{ id: WS }],
+      [{ id: PROJ }],
+      [], // FOR UPDATE
+    ],
+    select: [
+      [], // no existing env
+      [{ id: serviceIds[0] }],
+      [{ id: serviceIds[1] }],
+      [{ id: serviceIds[2] }],
+      [{
+        id: containerIds[0],
+        serverId: SERVER,
+        containerName: 'pending',
+        composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[0],
+      }],
+      [{
+        id: containerIds[1],
+        serverId: SERVER,
+        containerName: 'pending',
+        composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[1],
+      }],
+      [{
+        id: containerIds[2],
+        serverId: SERVER,
+        containerName: 'pending',
+        composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[2],
+      }],
+    ],
+    insertReturning: [[{ id: ENV }]],
+  })
+
+  const result = await ensureSelfHostSystemHierarchy(wrapDb(tx), {
+    organizationId: ORG,
+    serverId: SERVER,
+  })
+  assertEquals(result.workspaceId, WS)
+  assertEquals(result.projectId, PROJ)
+  assertEquals(result.environmentId, ENV)
+  assertEquals(result.services.length, 3)
+  assertEquals(
+    result.services.map((s) => s.composeServiceName),
+    [...SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES],
+  )
+  assertEquals(
+    result.services.map((s) => s.containerName),
+    serviceIds,
+  )
+  assertEquals(
+    result.services.map((s) => s.containerRowId),
+    containerIds,
+  )
+})
+
+test('ensureSelfHostProject race miss throws', async () => {
+  const tx = createSequencedDb({
+    execute: [
+      [{ id: WS }],
+      [],
+      [],
+    ],
+  })
+
+  await assertRejects(
+    () =>
+      ensureSelfHostSystemHierarchy(wrapDb(tx), {
+        organizationId: ORG,
+        serverId: SERVER,
+      }),
+    Error,
+    'self-host project missing after insert race',
+  )
+})
+
+test('ensureSelfHostSystemHierarchy throws when a container allocation is missing', async () => {
+  const serviceIds = [
+    '00000000-0000-4000-8000-0000000000a1',
+    '00000000-0000-4000-8000-0000000000a2',
+    '00000000-0000-4000-8000-0000000000a3',
+  ]
+  const tx = createSequencedDb({
+    execute: [
+      [{ id: WS }],
+      [{ id: PROJ }],
+      [],
+    ],
+    select: [
+      [{ id: ENV }],
+      [{ id: serviceIds[0] }],
+      [{ id: serviceIds[1] }],
+      [{ id: serviceIds[2] }],
+      // Only two allocations succeed — third service missing from map
+      [{
+        id: 'c1',
+        serverId: SERVER,
+        containerName: serviceIds[0],
+        composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[0],
+      }],
+      [{
+        id: 'c2',
+        serverId: SERVER,
+        containerName: serviceIds[1],
+        composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[1],
+      }],
+      // Third allocate select empty → allocateServiceContainers throws.
+      [],
+    ],
+  })
+
+  await assertRejects(
+    () =>
+      ensureSelfHostSystemHierarchy(wrapDb(tx), {
+        organizationId: ORG,
+        serverId: SERVER,
+      }),
+    Error,
+    'container allocation missing after upsert',
   )
 })

@@ -81,6 +81,8 @@ test('isOrganizationCaUniqueViolation matches active CA index', () => {
   )
   assertEquals(isOrganizationCaUniqueViolation(match), true)
   assertEquals(isOrganizationCaUniqueViolation({ code: '23505' }), false)
+  assertEquals(isOrganizationCaUniqueViolation(new Error('other')), false)
+  assertEquals(isOrganizationCaUniqueViolation(null), false)
 })
 
 test('materialFromLetsEncrypt builds pending metadata', () => {

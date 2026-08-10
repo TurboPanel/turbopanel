@@ -147,6 +147,15 @@ change. Future agents read `AGENTS.md` first.
   transitive SF rows). Selective Workers/DO 0% with a
   healthy overall project coverage % is almost always an LCOV merge/path bug,
   not Automatic Analysis (AA being on fails the CI scanner entirely).
+- **`sonar.sources` / `sonar.tests` / `sonar.test.inclusions`** must stay set
+  in `sonar-project.properties` (and mirrored in vestigial
+  `.sonarcloud.properties`). Tests are co-located (`**/*.test.ts` under
+  `src`/`mailer`); helpers that do not match the scanner's name heuristics
+  (`src/test-fixtures/**`, `*-hostfree-doubles.ts`, `server-status-test-db.ts`,
+  `fake-redis-cell-client.ts`, `workers-vitest.ts`, `vitest-env.d.ts`) belong
+  in `test.inclusions` + `coverage.exclusions` so they are never main-code.
+  Leaving `sonar.tests` unset only yields an INFO and heuristic classification
+  that mis-labels those helpers.
 - **Automatic Analysis must stay off** for `turbopanel_turbopanel`
   (SonarCloud → project **Administration → Analysis Method**). CI and Automatic
   Analysis cannot run together — Automatic Analysis enabled makes the CI

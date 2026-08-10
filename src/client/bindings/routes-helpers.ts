@@ -1,15 +1,22 @@
 /**
- * Pure helpers for the bindings API (prefix validation, collision detection).
+ * Pure helpers for the bindings API (prefix validation, collision detection,
+ * serialization, and wire-error mapping — extracted for host-free coverage).
  */
 
 import { and, eq, inArray, isNotNull, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
-import { binding, hosting, variable } from '../../lib/db/schema.ts'
+import { binding, hosting, managed, principal, variable } from '../../lib/db/schema.ts'
+import { getManagedEngineSpec } from '../../lib/managed/index.ts'
 import {
   assertSafeBindingKeyPrefix,
   DEFAULT_BINDING_KEY_PREFIX,
 } from '../../lib/naming.ts'
+import { parseManagedRowOptions } from '../managed/options.ts'
 import { listBindingEmittedKeys } from './materialize.ts'
+import {
+  isBindingEndpointError,
+  resolveBindingEndpoint,
+} from './resolve-endpoint.ts'
 
 export {
   assertSafeBindingKeyPrefix,
@@ -20,6 +27,267 @@ export const BINDING_KEY_PREFIX_IN_USE_ERROR = 'binding_key_prefix_in_use'
 export const BINDING_ENGINE_DEFAULTS_IN_USE_ERROR = 'binding_engine_defaults_in_use'
 export const BINDING_KEY_CONFLICT_ERROR = 'binding_key_conflict'
 export const BINDING_ENDPOINT_UNAVAILABLE_ERROR = 'binding_endpoint_unavailable'
+
+export type BindingRow = {
+  id: string
+  principalId: string
+  serviceId: string
+  databaseName: string
+  keyPrefix: string
+  emitEngineDefaults: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export function isPostgresUniqueViolation(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'code' in err &&
+    (err as { code: string }).code === '23505'
+  )
+}
+
+/**
+ * Map a materialize failure onto the HTTP status + body the bindings API
+ * returns (callers wrap with `c.json`).
+ */
+export function bindingMaterializeHttpPayload(
+  materializeResult: Readonly<{ kind: string }>,
+): { status: 400 | 422; body: { error: string } } {
+  if (
+    materializeResult.kind === 'binding_endpoint_unavailable' ||
+    materializeResult.kind === 'datacenter_ip_required' ||
+    materializeResult.kind === 'private_path_unavailable' ||
+    materializeResult.kind === 'peer_tunnel_address_required'
+  ) {
+    return { status: 422, body: { error: BINDING_ENDPOINT_UNAVAILABLE_ERROR } }
+  }
+  return { status: 400, body: { error: materializeResult.kind } }
+}
+
+/**
+ * Validate engine binding support + target database name. Returns an error
+ * message string, or `null` when the target is acceptable.
+ */
+export function checkBindingDatabaseTarget(
+  managedRow: Readonly<{ engine: string | null; options: unknown }>,
+  databaseName: string,
+): string | null {
+  const spec = getManagedEngineSpec(managedRow.engine)
+  if (!spec?.binding) {
+    return 'binding_engine_unsupported'
+  }
+  const options = parseManagedRowOptions(spec, managedRow.options)
+  if (!options) return 'Invalid managed options'
+  if (!options.databases.includes(databaseName)) {
+    return 'database_not_found'
+  }
+  const { pattern, maxLength } = spec.userOperations.identifier
+  if (!pattern.test(databaseName) || databaseName.length > maxLength) {
+    return 'Invalid database name'
+  }
+  return null
+}
+
+/**
+ * Resolve PATCH field overrides for `keyPrefix` / `emitEngineDefaults`.
+ */
+export function resolvePatchBindingFields(
+  body: Readonly<Record<string, unknown>>,
+  row: Readonly<{ keyPrefix: string; emitEngineDefaults: boolean }>,
+):
+  | { ok: true; keyPrefix: string; emitEngineDefaults: boolean }
+  | { ok: false; error: string } {
+  let keyPrefix = row.keyPrefix
+  if (body.keyPrefix !== undefined) {
+    const prefixParsed = parseBindingKeyPrefix(body.keyPrefix)
+    if (!prefixParsed.ok) return { ok: false, error: prefixParsed.error }
+    keyPrefix = prefixParsed.prefix
+  }
+
+  let emitEngineDefaults = row.emitEngineDefaults
+  if (body.emitEngineDefaults !== undefined) {
+    const emitParsed = parseEmitEngineDefaults(body.emitEngineDefaults)
+    if (!emitParsed.ok) return { ok: false, error: emitParsed.error }
+    emitEngineDefaults = emitParsed.value
+  }
+
+  return { ok: true, keyPrefix, emitEngineDefaults }
+}
+
+export type BindingConflictError =
+  | { error: typeof BINDING_KEY_PREFIX_IN_USE_ERROR }
+  | { error: typeof BINDING_ENGINE_DEFAULTS_IN_USE_ERROR }
+  | { error: typeof BINDING_KEY_CONFLICT_ERROR; key: string }
+
+export async function detectBindingCreateConflicts(
+  db: Db,
+  params: Readonly<{
+    serviceId: string
+    keyPrefix: string
+    emitEngineDefaults: boolean
+    engineCode: string
+  }>,
+): Promise<BindingConflictError | null> {
+  if (await isPrefixInUse(db, params.serviceId, params.keyPrefix)) {
+    return { error: BINDING_KEY_PREFIX_IN_USE_ERROR }
+  }
+  if (
+    params.emitEngineDefaults &&
+    (await isEngineDefaultsInUse(db, params.serviceId))
+  ) {
+    return { error: BINDING_ENGINE_DEFAULTS_IN_USE_ERROR }
+  }
+  const keyCheck = await assertNoBindingKeyConflicts(db, {
+    serviceId: params.serviceId,
+    keyPrefix: params.keyPrefix,
+    emitEngineDefaults: params.emitEngineDefaults,
+    engineCode: params.engineCode,
+  })
+  if (!keyCheck.ok) {
+    return { error: BINDING_KEY_CONFLICT_ERROR, key: keyCheck.key }
+  }
+  return null
+}
+
+export async function detectBindingUpdateConflicts(
+  db: Db,
+  params: Readonly<{
+    id: string
+    serviceId: string
+    previousKeyPrefix: string
+    previousEmitEngineDefaults: boolean
+    nextKeyPrefix: string
+    nextEmitEngineDefaults: boolean
+    engineCode: string
+  }>,
+): Promise<BindingConflictError | null> {
+  if (
+    params.nextKeyPrefix !== params.previousKeyPrefix &&
+    (await isPrefixInUse(db, params.serviceId, params.nextKeyPrefix, params.id))
+  ) {
+    return { error: BINDING_KEY_PREFIX_IN_USE_ERROR }
+  }
+  if (
+    params.nextEmitEngineDefaults &&
+    !params.previousEmitEngineDefaults &&
+    (await isEngineDefaultsInUse(db, params.serviceId, params.id))
+  ) {
+    return { error: BINDING_ENGINE_DEFAULTS_IN_USE_ERROR }
+  }
+  const keyCheck = await assertNoBindingKeyConflicts(db, {
+    serviceId: params.serviceId,
+    keyPrefix: params.nextKeyPrefix,
+    emitEngineDefaults: params.nextEmitEngineDefaults,
+    engineCode: params.engineCode,
+    excludeBindingId: params.id,
+  })
+  if (!keyCheck.ok) {
+    return { error: BINDING_KEY_CONFLICT_ERROR, key: keyCheck.key }
+  }
+  return null
+}
+
+export async function resolveBindingPrincipalManagedId(
+  db: Db,
+  principalId: string,
+): Promise<string | null> {
+  const [principalRow] = await db
+    .select({ managedId: principal.managedId })
+    .from(principal)
+    .where(eq(principal.id, principalId))
+    .limit(1)
+  return principalRow?.managedId ?? null
+}
+
+/** Resolve the engine code (default `postgres`) driving a binding's key set. */
+export async function resolveBindingPrincipalEngine(
+  db: Db,
+  principalId: string,
+): Promise<{ managedId: string | null; engineCode: string }> {
+  const managedId = await resolveBindingPrincipalManagedId(db, principalId)
+  if (!managedId) return { managedId: null, engineCode: 'postgres' }
+
+  const [mrow] = await db
+    .select({ engine: managed.engine })
+    .from(managed)
+    .where(eq(managed.id, managedId))
+    .limit(1)
+  return { managedId, engineCode: mrow?.engine ?? 'postgres' }
+}
+
+export async function serializeBindingRow(db: Db, row: BindingRow) {
+  const [principalRow] = await db
+    .select({
+      managedId: principal.managedId,
+      username: principal.username,
+    })
+    .from(principal)
+    .where(eq(principal.id, row.principalId))
+    .limit(1)
+
+  let engine: string | null = null
+  let managedId: string | null = principalRow?.managedId ?? null
+  let managedEnvironmentId: string | null = null
+  let endpoint: { host: string; port: number } | null = null
+  let readSplit: boolean | null = null
+  let keys: string[] = []
+
+  if (managedId) {
+    const [mrow] = await db
+      .select({
+        id: managed.id,
+        engine: managed.engine,
+        options: managed.options,
+        environmentId: managed.environmentId,
+      })
+      .from(managed)
+      .where(eq(managed.id, managedId))
+      .limit(1)
+    if (mrow?.engine) {
+      engine = mrow.engine
+      managedEnvironmentId = mrow.environmentId
+      const spec = getManagedEngineSpec(mrow.engine)
+      keys = listBindingEmittedKeys({
+        keyPrefix: row.keyPrefix,
+        emitEngineDefaults: row.emitEngineDefaults,
+        engineCode: mrow.engine,
+      }) ?? []
+      if (spec) {
+        const options = parseManagedRowOptions(spec, mrow.options)
+        if (options) {
+          const resolved = await resolveBindingEndpoint(db, {
+            serviceId: row.serviceId,
+            managedId: mrow.id,
+            protocolPort: spec.defaultPort,
+          })
+          if (!isBindingEndpointError(resolved)) {
+            endpoint = { host: resolved.host, port: resolved.port }
+            readSplit = resolved.readSplit
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    id: row.id,
+    principalId: row.principalId,
+    serviceId: row.serviceId,
+    databaseName: row.databaseName,
+    keyPrefix: row.keyPrefix,
+    emitEngineDefaults: row.emitEngineDefaults,
+    keys,
+    endpoint,
+    engine,
+    managedId,
+    managedEnvironmentId,
+    readSplit,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  }
+}
 
 export type BindingListRow = {
   id: string

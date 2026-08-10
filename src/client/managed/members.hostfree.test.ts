@@ -1,0 +1,1184 @@
+/**
+ * Host-free coverage for managed cluster membership helpers (no Postgres).
+ */
+
+import { assertEquals, assertRejects } from 'jsr:@std/assert'
+import type { Db } from '../../db.ts'
+import {
+  countReplicas,
+  deleteManagedMember,
+  ensureManagedPrimaryMember,
+  ensureMemberPrivatePorts,
+  findManagedMember,
+  insertManagedReplicaMember,
+  isManagedPrivatePortExhaustedError,
+  listManagedMembers,
+  listManagedMembersForManagedIds,
+  listSerializedManagedMembers,
+  markMembersApplying,
+  nextReplicaOrdinal,
+  resolveMemberTransports,
+  resolvePeersForMember,
+  serializeManagedMember,
+  updateManagedMemberObservedReplication,
+  updateManagedMemberReadEligible,
+  updateMemberReplicationTransport,
+  type ManagedMemberRow,
+  MANAGED_MAX_REPLICAS,
+  MANAGED_PRIVATE_PORT_MIN,
+} from './members.ts'
+
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+function member(
+  overrides: Partial<ManagedMemberRow> & Pick<ManagedMemberRow, 'id' | 'serverId' | 'role' | 'ordinal'>,
+): ManagedMemberRow {
+  return {
+    managedId: 'managed-1',
+    readEligible: overrides.role === 'primary',
+    replicationTransport: null,
+    privatePort: null,
+    status: 'ready',
+    metadata: null,
+    options: null,
+    createdAt: '2020-01-01T00:00:00.000Z',
+    updatedAt: '2020-01-01T00:00:00.000Z',
+    ...overrides,
+  }
+}
+
+function thenableRows(rows: unknown[]) {
+  const promise = Promise.resolve(rows)
+  return {
+    orderBy: () => promise,
+    limit: () => promise,
+    then: promise.then.bind(promise),
+    catch: promise.catch.bind(promise),
+    finally: promise.finally.bind(promise),
+  }
+}
+
+function selectListDb(rows: ManagedMemberRow[]): Db {
+  return {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          orderBy: () => Promise.resolve(rows),
+        }),
+      }),
+    }),
+  } as unknown as Db
+}
+
+test('nextReplicaOrdinal assigns 2 then 3 then null when full', () => {
+  assertEquals(nextReplicaOrdinal([]), 2)
+  assertEquals(nextReplicaOrdinal([member({ id: 'p', serverId: 's', role: 'primary', ordinal: 1 })]), 2)
+  assertEquals(
+    nextReplicaOrdinal([
+      member({ id: 'p', serverId: 's', role: 'primary', ordinal: 1 }),
+      member({ id: 'r2', serverId: 's2', role: 'replica', ordinal: 2 }),
+    ]),
+    3,
+  )
+  assertEquals(
+    nextReplicaOrdinal([
+      member({ id: 'p', serverId: 's', role: 'primary', ordinal: 1 }),
+      member({ id: 'r2', serverId: 's2', role: 'replica', ordinal: 2 }),
+      member({ id: 'r3', serverId: 's3', role: 'replica', ordinal: 3 }),
+    ]),
+    null,
+  )
+  assertEquals(MANAGED_MAX_REPLICAS, 2)
+})
+
+test('countReplicas ignores primary members', () => {
+  assertEquals(countReplicas([]), 0)
+  assertEquals(
+    countReplicas([
+      member({ id: 'p', serverId: 's', role: 'primary', ordinal: 1 }),
+      member({ id: 'r', serverId: 's2', role: 'replica', ordinal: 2 }),
+    ]),
+    1,
+  )
+})
+
+test('isManagedPrivatePortExhaustedError narrows only the exhausted shape', () => {
+  assertEquals(
+    isManagedPrivatePortExhaustedError({
+      kind: 'managed_private_port_exhausted',
+      serverId: 'srv',
+    }),
+    true,
+  )
+  assertEquals(isManagedPrivatePortExhaustedError({ kind: 'other' }), false)
+  assertEquals(isManagedPrivatePortExhaustedError(null), false)
+  assertEquals(isManagedPrivatePortExhaustedError('managed_private_port_exhausted'), false)
+})
+
+test('serializeManagedMember maps role transport and replication health', () => {
+  const base = member({
+    id: 'm1',
+    serverId: 's1',
+    role: 'replica',
+    ordinal: 2,
+    readEligible: true,
+    replicationTransport: 'datacenter',
+    privatePort: 45_001,
+    status: 'ready',
+    metadata: {
+      replication: {
+        state: 'streaming',
+        observedAt: '2020-01-02T00:00:00.000Z',
+        lagBytes: 12,
+        lagSeconds: 3,
+      },
+    },
+  })
+  assertEquals(serializeManagedMember(base, 'db-1'), {
+    id: 'm1',
+    serverId: 's1',
+    serverDisplayName: 'db-1',
+    role: 'replica',
+    readEligible: true,
+    ordinal: 2,
+    status: 'ready',
+    replicationTransport: 'datacenter',
+    privatePort: 45_001,
+    replication: {
+      state: 'streaming',
+      observedAt: '2020-01-02T00:00:00.000Z',
+      lagBytes: 12,
+      lagSeconds: 3,
+    },
+  })
+
+  const primaryish = serializeManagedMember(
+    member({
+      id: 'm2',
+      serverId: 's2',
+      role: 'strange',
+      ordinal: 1,
+      replicationTransport: 'not-a-transport',
+      metadata: { replication: { state: 1 } },
+    }),
+    null,
+  )
+  assertEquals(primaryish.role, 'primary')
+  assertEquals(primaryish.replicationTransport, null)
+  assertEquals(primaryish.replication, undefined)
+
+  const transportLocal = serializeManagedMember(
+    member({
+      id: 'm3',
+      serverId: 's3',
+      role: 'primary',
+      ordinal: 1,
+      replicationTransport: 'local',
+      metadata: {
+        replication: {
+          state: 'unknown',
+          observedAt: 't',
+          lagBytes: Number.NaN,
+          lagSeconds: 'bad',
+        },
+      },
+    }),
+    'p',
+  )
+  assertEquals(transportLocal.replicationTransport, 'local')
+  assertEquals(transportLocal.replication, {
+    state: 'unknown',
+    observedAt: 't',
+  })
+
+  const transportVpn = serializeManagedMember(
+    member({
+      id: 'm4',
+      serverId: 's4',
+      role: 'replica',
+      ordinal: 2,
+      replicationTransport: 'vpn',
+      metadata: null,
+    }),
+    'v',
+  )
+  assertEquals(transportVpn.replicationTransport, 'vpn')
+})
+
+test('listManagedMembers and listManagedMembersForManagedIds wire orderBy / empty short-circuit', async () => {
+  const rows = [member({ id: 'p', serverId: 's', role: 'primary', ordinal: 1 })]
+  assertEquals(await listManagedMembers(selectListDb(rows), 'managed-1'), rows)
+  assertEquals(await listManagedMembersForManagedIds({} as Db, []), [])
+  assertEquals(await listManagedMembersForManagedIds(selectListDb(rows), ['managed-1']), rows)
+})
+
+test('listSerializedManagedMembers joins server display names', async () => {
+  const db = {
+    select: () => ({
+      from: () => ({
+        leftJoin: () => ({
+          where: () => ({
+            orderBy: () =>
+              Promise.resolve([
+                {
+                  ...member({ id: 'p', serverId: 's', role: 'primary', ordinal: 1 }),
+                  serverDisplayName: 'Primary Host',
+                },
+                {
+                  ...member({ id: 'r', serverId: 's2', role: 'replica', ordinal: 2 }),
+                  serverDisplayName: null,
+                },
+              ]),
+          }),
+        }),
+      }),
+    }),
+  } as unknown as Db
+
+  const serialized = await listSerializedManagedMembers(db, 'managed-1')
+  assertEquals(serialized.map((m) => m.serverDisplayName), ['Primary Host', null])
+  assertEquals(serialized[1]?.role, 'replica')
+})
+
+test('ensureManagedPrimaryMember returns existing primary or rehomes serverId', async () => {
+  const existing = member({
+    id: 'p1',
+    serverId: 'old',
+    role: 'primary',
+    ordinal: 1,
+  })
+  assertEquals(
+    await ensureManagedPrimaryMember(selectListDb([existing]), {
+      managedId: 'managed-1',
+      serverId: 'old',
+    }),
+    existing,
+  )
+
+  let updatedServerId: string | null = null
+  const rehomeDb = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          orderBy: () => Promise.resolve([existing]),
+        }),
+      }),
+    }),
+    update: () => ({
+      set: (patch: { serverId: string }) => {
+        updatedServerId = patch.serverId
+        return {
+          where: () => ({
+            returning: () =>
+              Promise.resolve([{ ...existing, serverId: patch.serverId }]),
+          }),
+        }
+      },
+    }),
+  } as unknown as Db
+  const rehomed = await ensureManagedPrimaryMember(rehomeDb, {
+    managedId: 'managed-1',
+    serverId: 'new',
+  })
+  assertEquals(updatedServerId, 'new')
+  assertEquals(rehomed.serverId, 'new')
+})
+
+test('ensureManagedPrimaryMember inserts primary and recovers race re-read', async () => {
+  const insertedRow = member({
+    id: 'p-new',
+    serverId: 's',
+    role: 'primary',
+    ordinal: 1,
+    status: 'provisioning',
+  })
+  let listed = 0
+  const insertDb = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          orderBy: () => {
+            listed += 1
+            return Promise.resolve([])
+          },
+        }),
+      }),
+    }),
+    insert: () => ({
+      values: () => ({
+        onConflictDoNothing: () => ({
+          returning: () => Promise.resolve([insertedRow]),
+        }),
+      }),
+    }),
+  } as unknown as Db
+  assertEquals(
+    await ensureManagedPrimaryMember(insertDb, {
+      managedId: 'managed-1',
+      serverId: 's',
+    }),
+    insertedRow,
+  )
+  assertEquals(listed, 1)
+
+  const racedPrimary = member({
+    id: 'p-race',
+    serverId: 's',
+    role: 'primary',
+    ordinal: 1,
+  })
+  let listRound = 0
+  const raceDb = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          orderBy: () => {
+            listRound += 1
+            return Promise.resolve(listRound === 1 ? [] : [racedPrimary])
+          },
+        }),
+      }),
+    }),
+    insert: () => ({
+      values: () => ({
+        onConflictDoNothing: () => ({
+          returning: () => Promise.resolve([]),
+        }),
+      }),
+    }),
+  } as unknown as Db
+  assertEquals(
+    await ensureManagedPrimaryMember(raceDb, {
+      managedId: 'managed-1',
+      serverId: 's',
+    }),
+    racedPrimary,
+  )
+
+  const missingDb = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          orderBy: () => Promise.resolve([]),
+        }),
+      }),
+    }),
+    insert: () => ({
+      values: () => ({
+        onConflictDoNothing: () => ({
+          returning: () => Promise.resolve([]),
+        }),
+      }),
+    }),
+  } as unknown as Db
+  await assertRejects(
+    () =>
+      ensureManagedPrimaryMember(missingDb, {
+        managedId: 'managed-x',
+        serverId: 's',
+      }),
+    Error,
+    'managed primary member missing after upsert',
+  )
+})
+
+/** Minimal double covering private-endpoint batch queries used by members.ts. */
+function privateEndpointDb(servers: Array<{ id: string; datacenterId: string | null }>): Db {
+  return {
+    select(fields: Record<string, unknown>) {
+      const keys = Object.keys(fields).sort((a, b) => a.localeCompare(b))
+      const keySet = new Set(keys)
+
+      if (keySet.has('id') && keySet.has('datacenterId')) {
+        return {
+          from() {
+            return {
+              where() {
+                return thenableRows(servers)
+              },
+            }
+          },
+        }
+      }
+
+      if (keySet.has('serverId') && keySet.has('address') && keySet.has('createdAt')) {
+        return {
+          from() {
+            return {
+              where() {
+                return {
+                  orderBy() {
+                    return thenableRows([])
+                  },
+                }
+              },
+            }
+          },
+        }
+      }
+
+      if (keys.length === 1 && keySet.has('vpnId')) {
+        return {
+          from() {
+            return {
+              where() {
+                return thenableRows([])
+              },
+            }
+          },
+        }
+      }
+
+      if (keySet.has('peerId') && keySet.has('vpnCreatedAt')) {
+        return {
+          from() {
+            return {
+              innerJoin() {
+                return {
+                  leftJoin() {
+                    return {
+                      where() {
+                        return {
+                          orderBy() {
+                            return thenableRows([])
+                          },
+                        }
+                      },
+                    }
+                  },
+                }
+              },
+            }
+          },
+        }
+      }
+
+      throw new TypeError(`unexpected private-endpoint select keys: ${keys.join(',')}`)
+    },
+  } as unknown as Db
+}
+
+/**
+ * Combines container-name lookup with private-endpoint fixture selects.
+ * `select` routes by projected field keys (same approach as private-endpoint pure tests).
+ */
+function peerResolutionDb(opts: {
+  containers: Array<{
+    serverId: string
+    containerName: string
+    role: string
+    ordinal: number
+  }>
+  servers: Array<{ id: string; datacenterId: string | null }>
+  addresses?: Array<{ serverId: string; address: string; createdAt: string }>
+}): Db {
+  const endpoint = privateEndpointDb(opts.servers)
+  return {
+    select(fields: Record<string, unknown>) {
+      const keys = Object.keys(fields)
+      const keySet = new Set(keys)
+      if (
+        keySet.has('containerName') &&
+        keySet.has('ordinal') &&
+        keySet.has('role') &&
+        keySet.has('serverId')
+      ) {
+        return {
+          from() {
+            return {
+              where() {
+                return thenableRows(opts.containers)
+              },
+            }
+          },
+        }
+      }
+      if (
+        keySet.has('serverId') &&
+        keySet.has('address') &&
+        keySet.has('createdAt') &&
+        opts.addresses
+      ) {
+        return {
+          from() {
+            return {
+              where() {
+                return {
+                  orderBy() {
+                    return thenableRows(opts.addresses ?? [])
+                  },
+                }
+              },
+            }
+          },
+        }
+      }
+      return endpoint.select(fields)
+    },
+  } as unknown as Db
+}
+
+test('resolveMemberTransports maps primary local and replica path results', async () => {
+  const primary = member({ id: 'p', serverId: 's1', role: 'primary', ordinal: 1 })
+  assertEquals(
+    [...(await resolveMemberTransports({} as Db, [primary])).entries()],
+    [['p', 'local']],
+  )
+  assertEquals(await resolveMemberTransports({} as Db, []), new Map())
+
+  const replicaSame = member({
+    id: 'r',
+    serverId: 's1',
+    role: 'replica',
+    ordinal: 2,
+  })
+  const transports = await resolveMemberTransports(
+    privateEndpointDb([{ id: 's1', datacenterId: null }]),
+    [primary, replicaSame],
+  )
+  if (!('size' in transports)) {
+    throw new TypeError(`expected transport map, got ${JSON.stringify(transports)}`)
+  }
+  assertEquals(transports.get('p'), 'local')
+  assertEquals(transports.get('r'), 'local')
+
+  const remote = member({
+    id: 'r2',
+    serverId: 's2',
+    role: 'replica',
+    ordinal: 2,
+  })
+  const remoteDb = {
+    select(fields: Record<string, unknown>) {
+      const keys = Object.keys(fields).sort((a, b) => a.localeCompare(b))
+      const keySet = new Set(keys)
+      if (keySet.has('id') && keySet.has('datacenterId')) {
+        return {
+          from: () => ({
+            where: () =>
+              thenableRows([
+                { id: 's1', datacenterId: 'dc-a' },
+                { id: 's2', datacenterId: 'dc-a' },
+              ]),
+          }),
+        }
+      }
+      if (keySet.has('serverId') && keySet.has('address') && keySet.has('createdAt')) {
+        return {
+          from: () => ({
+            where: () => ({
+              orderBy: () =>
+                thenableRows([
+                  {
+                    serverId: 's1',
+                    address: '10.0.0.1',
+                    createdAt: '2020-01-01T00:00:00.000Z',
+                  },
+                  {
+                    serverId: 's2',
+                    address: '10.0.0.2',
+                    createdAt: '2020-01-01T00:00:00.000Z',
+                  },
+                ]),
+            }),
+          }),
+        }
+      }
+      if (keys.length === 1 && keySet.has('vpnId')) {
+        return { from: () => ({ where: () => thenableRows([]) }) }
+      }
+      if (keySet.has('peerId')) {
+        return {
+          from: () => ({
+            innerJoin: () => ({
+              leftJoin: () => ({
+                where: () => ({
+                  orderBy: () => thenableRows([]),
+                }),
+              }),
+            }),
+          }),
+        }
+      }
+      throw new TypeError(`unexpected keys ${keys.join(',')}`)
+    },
+  } as unknown as Db
+
+  const remoteTransports = await resolveMemberTransports(remoteDb, [primary, remote])
+  if (!('size' in remoteTransports)) {
+    throw new TypeError(JSON.stringify(remoteTransports))
+  }
+  assertEquals(remoteTransports.get('r2'), 'datacenter')
+})
+
+test('ensureMemberPrivatePorts clears leftover ports on single-member clusters', async () => {
+  const sole = member({
+    id: 'p',
+    serverId: 's',
+    role: 'primary',
+    ordinal: 1,
+    privatePort: 45_010,
+  })
+  const cleared = member({ ...sole, privatePort: null })
+  let clearedId: string | null = null
+  const simpleDb = {
+    update: () => ({
+      set: () => ({
+        where: () => {
+          clearedId = 'p'
+          return Promise.resolve([])
+        },
+      }),
+    }),
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          orderBy: () => Promise.resolve([cleared]),
+        }),
+      }),
+    }),
+  } as unknown as Db
+
+  const result = await ensureMemberPrivatePorts(simpleDb, [sole])
+  assertEquals(clearedId, 'p')
+  assertEquals(result, [cleared])
+  assertEquals(await ensureMemberPrivatePorts({} as Db, []), [])
+})
+
+test('ensureMemberPrivatePorts allocates free private ports per server', async () => {
+  const primary = member({
+    id: 'p',
+    serverId: 's1',
+    role: 'primary',
+    ordinal: 1,
+    privatePort: null,
+  })
+  const replica = member({
+    id: 'r',
+    serverId: 's2',
+    role: 'replica',
+    ordinal: 2,
+    privatePort: null,
+  })
+  const assigned = [
+    { ...primary, privatePort: MANAGED_PRIVATE_PORT_MIN },
+    { ...replica, privatePort: MANAGED_PRIVATE_PORT_MIN },
+  ]
+  let selectN = 0
+  const updates: Array<{ id: unknown; port: number }> = []
+
+  const tx = {
+    select: () => ({
+      from: () => ({
+        where: () => {
+          selectN += 1
+          if (selectN === 2) {
+            // occupied private ports: foreign cluster holds min on s1
+            return Promise.resolve([
+              { serverId: 's1', privatePort: MANAGED_PRIVATE_PORT_MIN, id: 'other' },
+            ])
+          }
+          return {
+            orderBy: () =>
+              Promise.resolve(
+                selectN === 1 ? [primary, replica] : assigned,
+              ),
+          }
+        },
+      }),
+    }),
+    update: () => ({
+      set: (patch: { privatePort: number }) => ({
+        where: (cond: unknown) => {
+          updates.push({ id: cond, port: patch.privatePort })
+          return Promise.resolve([])
+        },
+      }),
+    }),
+  }
+
+  const db = {
+    transaction: async (fn: (tx: typeof tx) => Promise<unknown>) => fn(tx),
+  } as unknown as Db
+
+  const result = await ensureMemberPrivatePorts(db, [primary, replica])
+  assertEquals(Array.isArray(result), true)
+  if (Array.isArray(result)) {
+    assertEquals(result.map((m) => m.privatePort), [
+      MANAGED_PRIVATE_PORT_MIN,
+      MANAGED_PRIVATE_PORT_MIN,
+    ])
+  }
+  assertEquals(updates.length, 2)
+  // s1 skips occupied min → min+1; s2 takes min
+  assertEquals(updates.map((u) => u.port).sort((a, b) => a - b), [
+    MANAGED_PRIVATE_PORT_MIN,
+    MANAGED_PRIVATE_PORT_MIN + 1,
+  ])
+})
+
+test('ensureMemberPrivatePorts returns exhausted when the range is full', async () => {
+  const primary = member({
+    id: 'p',
+    serverId: 's1',
+    role: 'primary',
+    ordinal: 1,
+    privatePort: null,
+  })
+  const replica = member({
+    id: 'r',
+    serverId: 's1',
+    role: 'replica',
+    ordinal: 2,
+    privatePort: null,
+  })
+  const fullOccupied = Array.from({ length: 1000 }, (_, i) => ({
+    serverId: 's1',
+    privatePort: MANAGED_PRIVATE_PORT_MIN + i,
+    id: `other-${i}`,
+  }))
+  let selectN = 0
+  const tx = {
+    select: () => ({
+      from: () => ({
+        where: () => {
+          selectN += 1
+          if (selectN === 2) return Promise.resolve(fullOccupied)
+          return {
+            orderBy: () => Promise.resolve([primary, replica]),
+          }
+        },
+      }),
+    }),
+    update: () => {
+      throw new TypeError('must not update when exhausted')
+    },
+  }
+  const db = {
+    transaction: async (fn: (tx: typeof tx) => Promise<unknown>) => fn(tx),
+  } as unknown as Db
+
+  const result = await ensureMemberPrivatePorts(db, [primary, replica])
+  assertEquals(isManagedPrivatePortExhaustedError(result), true)
+  if (isManagedPrivatePortExhaustedError(result)) {
+    assertEquals(result.serverId, 's1')
+  }
+})
+
+test('resolvePeersForMember returns empty for sole members and co-resident peers', async () => {
+  const sole = member({ id: 'p', serverId: 's1', role: 'primary', ordinal: 1 })
+  assertEquals(await resolvePeersForMember({} as Db, [sole], sole, 5432), [])
+
+  const primary = member({ id: 'p', serverId: 's1', role: 'primary', ordinal: 1 })
+  const replica = member({
+    id: 'r',
+    serverId: 's1',
+    role: 'replica',
+    ordinal: 2,
+    privatePort: null,
+  })
+  const db = peerResolutionDb({
+    containers: [
+      {
+        serverId: 's1',
+        containerName: 'engine-p',
+        role: 'service',
+        ordinal: 1,
+      },
+      {
+        serverId: 's1',
+        containerName: 'engine-r',
+        role: 'service',
+        ordinal: 2,
+      },
+    ],
+    servers: [{ id: 's1', datacenterId: null }],
+  })
+
+  const peers = await resolvePeersForMember(db, [primary, replica], primary, 5432)
+  if (!Array.isArray(peers)) {
+    throw new TypeError(`expected peers array: ${JSON.stringify(peers)}`)
+  }
+  assertEquals(peers.length, 1)
+  assertEquals(peers[0], {
+    memberId: 'r',
+    role: 'replica',
+    readEligible: false,
+    address: 'engine-r',
+    transport: 'local',
+    port: 5432,
+    containerName: 'engine-r',
+  })
+})
+
+test('resolvePeersForMember remote peer uses privatePort and datacenter address', async () => {
+  const primary = member({ id: 'p', serverId: 's1', role: 'primary', ordinal: 1 })
+  const replica = member({
+    id: 'r',
+    serverId: 's2',
+    role: 'replica',
+    ordinal: 2,
+    privatePort: 45_100,
+    readEligible: true,
+  })
+  const db = peerResolutionDb({
+    containers: [],
+    servers: [
+      { id: 's1', datacenterId: 'dc-a' },
+      { id: 's2', datacenterId: 'dc-a' },
+    ],
+    addresses: [
+      {
+        serverId: 's2',
+        address: '10.0.0.22',
+        createdAt: '2020-01-01T00:00:00.000Z',
+      },
+    ],
+  })
+
+  const peers = await resolvePeersForMember(db, [primary, replica], primary, 5432)
+  if (!Array.isArray(peers)) {
+    throw new TypeError(JSON.stringify(peers))
+  }
+  assertEquals(peers[0], {
+    memberId: 'r',
+    role: 'replica',
+    readEligible: true,
+    address: '10.0.0.22',
+    transport: 'datacenter',
+    port: 45_100,
+  })
+})
+
+test('resolvePeersForMember errors when co-resident peer lacks a container name', async () => {
+  const primary = member({ id: 'p', serverId: 's1', role: 'primary', ordinal: 1 })
+  const replica = member({ id: 'r', serverId: 's1', role: 'replica', ordinal: 2 })
+  const db = peerResolutionDb({
+    containers: [],
+    servers: [{ id: 's1', datacenterId: null }],
+  })
+
+  const err = await resolvePeersForMember(db, [primary, replica], primary, 5432)
+  assertEquals(err, {
+    kind: 'private_path_unavailable',
+    fromServerId: 's1',
+    toServerId: 's1',
+  })
+})
+
+test('resolvePeersForMember errors when remote peer has no privatePort', async () => {
+  const primary = member({ id: 'p', serverId: 's1', role: 'primary', ordinal: 1 })
+  const replica = member({
+    id: 'r',
+    serverId: 's2',
+    role: 'replica',
+    ordinal: 2,
+    privatePort: null,
+  })
+  const db = peerResolutionDb({
+    containers: [],
+    servers: [
+      { id: 's1', datacenterId: 'dc-a' },
+      { id: 's2', datacenterId: 'dc-a' },
+    ],
+    addresses: [
+      {
+        serverId: 's2',
+        address: '10.0.0.22',
+        createdAt: '2020-01-01T00:00:00.000Z',
+      },
+    ],
+  })
+
+  assertEquals(await resolvePeersForMember(db, [primary, replica], primary, 5432), {
+    kind: 'private_path_unavailable',
+    fromServerId: 's1',
+    toServerId: 's2',
+  })
+})
+
+test('resolveMemberTransports returns private path error from replica', async () => {
+  const primary = member({ id: 'p', serverId: 's1', role: 'primary', ordinal: 1 })
+  const replica = member({ id: 'r', serverId: 's2', role: 'replica', ordinal: 2 })
+  const db = privateEndpointDb([
+    { id: 's1', datacenterId: 'dc-a' },
+    { id: 's2', datacenterId: 'dc-b' },
+  ])
+  const result = await resolveMemberTransports(db, [primary, replica])
+  assertEquals(result, {
+    kind: 'private_path_unavailable',
+    fromServerId: 's2',
+    toServerId: 's1',
+  })
+})
+
+test('ensureMemberPrivatePorts reuses ports already on members', async () => {
+  const primary = member({
+    id: 'p',
+    serverId: 's1',
+    role: 'primary',
+    ordinal: 1,
+    privatePort: MANAGED_PRIVATE_PORT_MIN,
+  })
+  const replica = member({
+    id: 'r',
+    serverId: 's2',
+    role: 'replica',
+    ordinal: 2,
+    privatePort: MANAGED_PRIVATE_PORT_MIN + 1,
+  })
+  let selectN = 0
+  let updates = 0
+  const tx = {
+    select: () => ({
+      from: () => ({
+        where: () => {
+          selectN += 1
+          if (selectN === 2) {
+            return Promise.resolve([
+              { serverId: 's1', privatePort: null, id: 'foreign-null' },
+              {
+                serverId: 's1',
+                privatePort: MANAGED_PRIVATE_PORT_MIN,
+                id: 'p',
+              },
+            ])
+          }
+          return {
+            orderBy: () => Promise.resolve([primary, replica]),
+          }
+        },
+      }),
+    }),
+    update: () => {
+      updates += 1
+      throw new TypeError('should not reassign ports')
+    },
+  }
+  const db = {
+    transaction: async (fn: (tx: typeof tx) => Promise<unknown>) => fn(tx),
+  } as unknown as Db
+
+  const result = await ensureMemberPrivatePorts(db, [primary, replica])
+  assertEquals(Array.isArray(result), true)
+  assertEquals(updates, 0)
+})
+
+test('resolvePeersForMember surfaces private endpoint resolution failures', async () => {
+  const primary = member({ id: 'p', serverId: 's1', role: 'primary', ordinal: 1 })
+  const replica = member({
+    id: 'r',
+    serverId: 's2',
+    role: 'replica',
+    ordinal: 2,
+    privatePort: 45_050,
+  })
+  // Different DCs, no VPN → private_path_unavailable on remote peer
+  const db = peerResolutionDb({
+    containers: [],
+    servers: [
+      { id: 's1', datacenterId: 'dc-a' },
+      { id: 's2', datacenterId: 'dc-b' },
+    ],
+  })
+  assertEquals(await resolvePeersForMember(db, [primary, replica], primary, 5432), {
+    kind: 'private_path_unavailable',
+    fromServerId: 's1',
+    toServerId: 's2',
+  })
+})
+
+test('crud helpers: insert update delete find mark and observed replication', async () => {
+  let insertValues: unknown
+  const insertDb = {
+    insert: () => ({
+      values: (values: unknown) => {
+        insertValues = values
+        return {
+          returning: () =>
+            Promise.resolve([
+              member({
+                id: 'r-new',
+                serverId: 's2',
+                role: 'replica',
+                ordinal: 2,
+                status: 'provisioning',
+              }),
+            ]),
+        }
+      },
+    }),
+  } as unknown as Db
+  const inserted = await insertManagedReplicaMember(insertDb, {
+    managedId: 'managed-1',
+    serverId: 's2',
+    ordinal: 2,
+    readEligible: true,
+    replicationTransport: 'vpn',
+  })
+  assertEquals(inserted.id, 'r-new')
+  assertEquals((insertValues as { role: string }).role, 'replica')
+
+  const emptyInsert = {
+    insert: () => ({
+      values: () => ({
+        returning: () => Promise.resolve([]),
+      }),
+    }),
+  } as unknown as Db
+  await assertRejects(
+    () =>
+      insertManagedReplicaMember(emptyInsert, {
+        managedId: 'm',
+        serverId: 's',
+        ordinal: 2,
+        readEligible: false,
+        replicationTransport: null,
+      }),
+    Error,
+    'Failed to insert managed replica member',
+  )
+
+  const updatedRow = member({
+    id: 'r1',
+    serverId: 's2',
+    role: 'replica',
+    ordinal: 2,
+    readEligible: true,
+  })
+  const updateDb = {
+    update: () => ({
+      set: () => ({
+        where: () => ({
+          returning: () => Promise.resolve([updatedRow]),
+        }),
+      }),
+    }),
+  } as unknown as Db
+  assertEquals(await updateManagedMemberReadEligible(updateDb, 'r1', true), updatedRow)
+
+  const missUpdate = {
+    update: () => ({
+      set: () => ({
+        where: () => ({
+          returning: () => Promise.resolve([]),
+        }),
+      }),
+    }),
+  } as unknown as Db
+  assertEquals(await updateManagedMemberReadEligible(missUpdate, 'missing', false), null)
+
+  let deleted = false
+  const deleteDb = {
+    delete: () => ({
+      where: () => {
+        deleted = true
+        return Promise.resolve([])
+      },
+    }),
+  } as unknown as Db
+  await deleteManagedMember(deleteDb, 'r1')
+  assertEquals(deleted, true)
+
+  const findDb = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([updatedRow]),
+        }),
+      }),
+    }),
+  } as unknown as Db
+  assertEquals(await findManagedMember(findDb, 'r1'), updatedRow)
+  const missFind = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([]),
+        }),
+      }),
+    }),
+  } as unknown as Db
+  assertEquals(await findManagedMember(missFind, 'x'), null)
+
+  let marked = false
+  const markDb = {
+    update: () => ({
+      set: () => ({
+        where: () => {
+          marked = true
+          return Promise.resolve([])
+        },
+      }),
+    }),
+  } as unknown as Db
+  await markMembersApplying(markDb, 'managed-1')
+  assertEquals(marked, true)
+
+  let transport: string | null = 'unset'
+  const transportDb = {
+    update: () => ({
+      set: (patch: { replicationTransport: string | null }) => ({
+        where: () => {
+          transport = patch.replicationTransport
+          return Promise.resolve([])
+        },
+      }),
+    }),
+  } as unknown as Db
+  await updateMemberReplicationTransport(transportDb, 'r1', 'datacenter')
+  assertEquals(transport, 'datacenter')
+
+  let observedMeta: unknown
+  let observedStatus: string | null = null
+  let metaSelect = 0
+  const observeDb = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => {
+            metaSelect += 1
+            return Promise.resolve(
+              metaSelect === 1
+                ? [{ metadata: { keep: true } }]
+                : [],
+            )
+          },
+        }),
+      }),
+    }),
+    update: () => ({
+      set: (patch: { status: string; metadata: unknown }) => ({
+        where: () => {
+          observedStatus = patch.status
+          observedMeta = patch.metadata
+          return Promise.resolve([])
+        },
+      }),
+    }),
+  } as unknown as Db
+  await updateManagedMemberObservedReplication(observeDb, 'r1', {
+    status: 'ready',
+    replication: {
+      state: 'streaming',
+      observedAt: 't',
+      lagBytes: 1,
+    },
+  })
+  assertEquals(observedStatus, 'ready')
+  assertEquals(observedMeta, {
+    keep: true,
+    replication: { state: 'streaming', observedAt: 't', lagBytes: 1 },
+  })
+
+  // Missing member is a no-op on the second select path.
+  await updateManagedMemberObservedReplication(observeDb, 'gone', {
+    status: 'failed',
+  })
+})

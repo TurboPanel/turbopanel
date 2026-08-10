@@ -23,7 +23,6 @@ import {
 } from '../../lib/db/schema.ts'
 import { isNoopCommandQueue } from '../../lib/commands/noop-command-queue.ts'
 import { getCommandQueue } from '../../lib/commands/queue.ts'
-import { getManagedEngineSpec } from '../../lib/managed/index.ts'
 import { compatLogWarn } from '../../log-compat.ts'
 import {
   assertCanManageOr403,
@@ -33,30 +32,31 @@ import {
   parseJsonBody,
   requireStringField,
 } from '../shared.ts'
-import { parseManagedRowOptions } from '../managed/options.ts'
 import { enqueueManagedIngressReconcile } from '../managed/ingress-desired.ts'
 import { isManagedRootPrincipal, isManagedReplicationPrincipal } from '../managed/routes-helpers.ts'
 import {
-  isBindingEndpointError,
   loadServicePlacementServerId,
   memberServerIdsForManaged,
-  resolveBindingEndpoint,
 } from './resolve-endpoint.ts'
 import {
-  listBindingEmittedKeys,
   materializeBinding,
   type MaterializeBindingError,
 } from './materialize.ts'
 import {
-  assertNoBindingKeyConflicts,
   BINDING_ENGINE_DEFAULTS_IN_USE_ERROR,
-  BINDING_ENDPOINT_UNAVAILABLE_ERROR,
-  BINDING_KEY_CONFLICT_ERROR,
   BINDING_KEY_PREFIX_IN_USE_ERROR,
-  isEngineDefaultsInUse,
-  isPrefixInUse,
+  bindingMaterializeHttpPayload,
+  checkBindingDatabaseTarget,
+  detectBindingCreateConflicts,
+  detectBindingUpdateConflicts,
+  isPostgresUniqueViolation,
   parseBindingKeyPrefix,
   parseEmitEngineDefaults,
+  resolveBindingPrincipalEngine,
+  resolveBindingPrincipalManagedId,
+  resolvePatchBindingFields,
+  serializeBindingRow,
+  type BindingRow,
 } from './routes-helpers.ts'
 
 const BINDING_SELECT = {
@@ -68,26 +68,6 @@ const BINDING_SELECT = {
   emitEngineDefaults: binding.emitEngineDefaults,
   createdAt: binding.createdAt,
   updatedAt: binding.updatedAt,
-}
-
-type BindingRow = {
-  id: string
-  principalId: string
-  serviceId: string
-  databaseName: string
-  keyPrefix: string
-  emitEngineDefaults: boolean
-  createdAt: string
-  updatedAt: string
-}
-
-function isPostgresUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    'code' in err &&
-    (err as { code: string }).code === '23505'
-  )
 }
 
 /**
@@ -144,78 +124,6 @@ async function enqueueIngressForBindingChange(
   }
 }
 
-async function serializeBindingRow(db: Db, row: BindingRow) {
-  const [principalRow] = await db
-    .select({
-      managedId: principal.managedId,
-      username: principal.username,
-    })
-    .from(principal)
-    .where(eq(principal.id, row.principalId))
-    .limit(1)
-
-  let engine: string | null = null
-  let managedId: string | null = principalRow?.managedId ?? null
-  let managedEnvironmentId: string | null = null
-  let endpoint: { host: string; port: number } | null = null
-  let readSplit: boolean | null = null
-  let keys: string[] = []
-
-  if (managedId) {
-    const [mrow] = await db
-      .select({
-        id: managed.id,
-        engine: managed.engine,
-        options: managed.options,
-        environmentId: managed.environmentId,
-      })
-      .from(managed)
-      .where(eq(managed.id, managedId))
-      .limit(1)
-    if (mrow?.engine) {
-      engine = mrow.engine
-      managedEnvironmentId = mrow.environmentId
-      const spec = getManagedEngineSpec(mrow.engine)
-      keys = listBindingEmittedKeys({
-        keyPrefix: row.keyPrefix,
-        emitEngineDefaults: row.emitEngineDefaults,
-        engineCode: mrow.engine,
-      }) ?? []
-      if (spec) {
-        const options = parseManagedRowOptions(spec, mrow.options)
-        if (options) {
-          const resolved = await resolveBindingEndpoint(db, {
-            serviceId: row.serviceId,
-            managedId: mrow.id,
-            protocolPort: spec.defaultPort,
-          })
-          if (!isBindingEndpointError(resolved)) {
-            endpoint = { host: resolved.host, port: resolved.port }
-            readSplit = resolved.readSplit
-          }
-        }
-      }
-    }
-  }
-
-  return {
-    id: row.id,
-    principalId: row.principalId,
-    serviceId: row.serviceId,
-    databaseName: row.databaseName,
-    keyPrefix: row.keyPrefix,
-    emitEngineDefaults: row.emitEngineDefaults,
-    keys,
-    endpoint,
-    engine,
-    managedId,
-    managedEnvironmentId,
-    readSplit,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  }
-}
-
 /** Shared 404 guard: the entity must resolve to the caller's organization. */
 async function assertEntityInOrgOr404(
   c: Context<AppEnv>,
@@ -264,43 +172,8 @@ function materializeErrorResponse(
   c: Context<AppEnv>,
   materializeResult: MaterializeBindingError,
 ): Response {
-  if (
-    materializeResult.kind === 'binding_endpoint_unavailable' ||
-    materializeResult.kind === 'datacenter_ip_required' ||
-    materializeResult.kind === 'private_path_unavailable' ||
-    materializeResult.kind === 'peer_tunnel_address_required'
-  ) {
-    return c.json({ error: BINDING_ENDPOINT_UNAVAILABLE_ERROR }, 422)
-  }
-  return c.json({ error: materializeResult.kind }, 400)
-}
-
-async function resolveBindingPrincipalManagedId(
-  db: Db,
-  principalId: string,
-): Promise<string | null> {
-  const [principalRow] = await db
-    .select({ managedId: principal.managedId })
-    .from(principal)
-    .where(eq(principal.id, principalId))
-    .limit(1)
-  return principalRow?.managedId ?? null
-}
-
-/** Resolve the engine code (default `postgres`) driving a binding's key set. */
-async function resolveBindingPrincipalEngine(
-  db: Db,
-  principalId: string,
-): Promise<{ managedId: string | null; engineCode: string }> {
-  const managedId = await resolveBindingPrincipalManagedId(db, principalId)
-  if (!managedId) return { managedId: null, engineCode: 'postgres' }
-
-  const [mrow] = await db
-    .select({ engine: managed.engine })
-    .from(managed)
-    .where(eq(managed.id, managedId))
-    .limit(1)
-  return { managedId, engineCode: mrow?.engine ?? 'postgres' }
+  const mapped = bindingMaterializeHttpPayload(materializeResult)
+  return c.json(mapped.body, mapped.status)
 }
 
 async function selectBindingsByServiceId(
@@ -476,20 +349,12 @@ function validateBindingDatabaseTarget(
   managedRow: { engine: string | null; options: unknown },
   databaseName: string,
 ): Response | null {
-  const spec = getManagedEngineSpec(managedRow.engine)
-  if (!spec?.binding) {
-    return c.json({ error: 'binding_engine_unsupported' }, 400)
+  const error = checkBindingDatabaseTarget(managedRow, databaseName)
+  if (!error) return null
+  if (error === 'database_not_found') {
+    return c.json({ error }, 404)
   }
-  const options = parseManagedRowOptions(spec, managedRow.options)
-  if (!options) return c.json({ error: 'Invalid managed options' }, 400)
-  if (!options.databases.includes(databaseName)) {
-    return c.json({ error: 'database_not_found' }, 404)
-  }
-  const { pattern, maxLength } = spec.userOperations.identifier
-  if (!pattern.test(databaseName) || databaseName.length > maxLength) {
-    return c.json({ error: 'Invalid database name' }, 400)
-  }
-  return null
+  return c.json({ error }, 400)
 }
 
 async function assertBindingCreateConflicts(
@@ -502,25 +367,12 @@ async function assertBindingCreateConflicts(
   }>,
   c: Context<AppEnv>,
 ): Promise<Response | null> {
-  if (await isPrefixInUse(db, params.serviceId, params.keyPrefix)) {
-    return c.json({ error: BINDING_KEY_PREFIX_IN_USE_ERROR }, 409)
+  const conflict = await detectBindingCreateConflicts(db, params)
+  if (!conflict) return null
+  if ('key' in conflict) {
+    return c.json(conflict, 409)
   }
-  if (
-    params.emitEngineDefaults &&
-    (await isEngineDefaultsInUse(db, params.serviceId))
-  ) {
-    return c.json({ error: BINDING_ENGINE_DEFAULTS_IN_USE_ERROR }, 409)
-  }
-  const keyCheck = await assertNoBindingKeyConflicts(db, {
-    serviceId: params.serviceId,
-    keyPrefix: params.keyPrefix,
-    emitEngineDefaults: params.emitEngineDefaults,
-    engineCode: params.engineCode,
-  })
-  if (!keyCheck.ok) {
-    return c.json({ error: BINDING_KEY_CONFLICT_ERROR, key: keyCheck.key }, 409)
-  }
-  return null
+  return c.json(conflict, 409)
 }
 
 async function insertAndMaterializeBinding(
@@ -587,21 +439,12 @@ function parsePatchBindingFields(
   body: Record<string, unknown>,
   row: Readonly<{ keyPrefix: string; emitEngineDefaults: boolean }>,
 ): { keyPrefix: string; emitEngineDefaults: boolean } | Response {
-  let keyPrefix = row.keyPrefix
-  if (body.keyPrefix !== undefined) {
-    const prefixParsed = parseBindingKeyPrefix(body.keyPrefix)
-    if (!prefixParsed.ok) return c.json({ error: prefixParsed.error }, 400)
-    keyPrefix = prefixParsed.prefix
+  const parsed = resolvePatchBindingFields(body, row)
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400)
+  return {
+    keyPrefix: parsed.keyPrefix,
+    emitEngineDefaults: parsed.emitEngineDefaults,
   }
-
-  let emitEngineDefaults = row.emitEngineDefaults
-  if (body.emitEngineDefaults !== undefined) {
-    const emitParsed = parseEmitEngineDefaults(body.emitEngineDefaults)
-    if (!emitParsed.ok) return c.json({ error: emitParsed.error }, 400)
-    emitEngineDefaults = emitParsed.value
-  }
-
-  return { keyPrefix, emitEngineDefaults }
 }
 
 async function assertBindingUpdateConflicts(
@@ -617,30 +460,9 @@ async function assertBindingUpdateConflicts(
   }>,
   c: Context<AppEnv>,
 ): Promise<Response | null> {
-  if (
-    params.nextKeyPrefix !== params.previousKeyPrefix &&
-    (await isPrefixInUse(db, params.serviceId, params.nextKeyPrefix, params.id))
-  ) {
-    return c.json({ error: BINDING_KEY_PREFIX_IN_USE_ERROR }, 409)
-  }
-  if (
-    params.nextEmitEngineDefaults &&
-    !params.previousEmitEngineDefaults &&
-    (await isEngineDefaultsInUse(db, params.serviceId, params.id))
-  ) {
-    return c.json({ error: BINDING_ENGINE_DEFAULTS_IN_USE_ERROR }, 409)
-  }
-  const keyCheck = await assertNoBindingKeyConflicts(db, {
-    serviceId: params.serviceId,
-    keyPrefix: params.nextKeyPrefix,
-    emitEngineDefaults: params.nextEmitEngineDefaults,
-    engineCode: params.engineCode,
-    excludeBindingId: params.id,
-  })
-  if (!keyCheck.ok) {
-    return c.json({ error: BINDING_KEY_CONFLICT_ERROR, key: keyCheck.key }, 409)
-  }
-  return null
+  const conflict = await detectBindingUpdateConflicts(db, params)
+  if (!conflict) return null
+  return c.json(conflict, 409)
 }
 
 async function loadBindingRowForMutation(

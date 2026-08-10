@@ -16,31 +16,27 @@ import {
   assertNotSystemOwnedOr403,
   getOrgId,
   parseJsonBody,
-  parseJsonbObject,
-  requireStringField,
 } from '../shared.ts'
 import { serializeStorage } from './serialize.ts'
 import {
-  isStorageKind,
+  buildStorageUpdateFields,
+  isStorageContentTooLarge,
   mountKindRequiresDestination,
-  optionalStringField,
   PARENT_FIELDS,
+  parseCreateStorageFields,
+  parseOptionalStorageContent,
   parseStorageParent,
   resolvePatchStorageRefs,
   resolveStorageParentContext,
   resolveStorageProjectId,
-  type StorageKind,
   type StorageParentEntityKind,
 } from './routes-helpers.ts'
-
-const MAX_STORAGE_CONTENT_BYTES = 256 * 1024
 
 async function sealStorageContent(
   c: Context<AppEnv>,
   content: string,
 ): Promise<string | Response> {
-  const byteLength = new TextEncoder().encode(content).byteLength
-  if (byteLength > MAX_STORAGE_CONTENT_BYTES) {
+  if (isStorageContentTooLarge(content)) {
     return c.json({ error: 'storage_content_too_large' }, 400)
   }
 
@@ -50,17 +46,6 @@ async function sealStorageContent(
   }
 
   return encryptSecret(dataEncryptionSecrets, content)
-}
-
-function parseOptionalStorageContent(
-  c: Context<AppEnv>,
-  value: unknown,
-): string | undefined | Response {
-  if (value === undefined) return undefined
-  if (typeof value !== 'string') {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  return value
 }
 
 async function resolveSealedStorageContent(
@@ -113,74 +98,6 @@ async function resolveStorageSessionContext(
   if (orgId instanceof Response) return orgId
 
   return { db, orgId }
-}
-
-type CreateStorageFields = {
-  kind: StorageKind
-  name: string
-  serverId: string
-  destinationPath: string | null
-  sourcePath: string | null
-  principalId: string | null
-  metadata: Record<string, unknown> | null
-  options: Record<string, unknown> | null
-}
-
-function parseCreateStorageFields(
-  c: Context<AppEnv>,
-  body: Record<string, unknown>,
-): CreateStorageFields | Response {
-  const kind = body.kind
-  if (!isStorageKind(kind)) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-
-  const name = requireStringField(c, body, 'name')
-  if (name instanceof Response) return name
-
-  const serverId = requireStringField(c, body, 'serverId')
-  if (serverId instanceof Response) return serverId
-
-  const metadata = parseJsonbObject(c, body, 'metadata')
-  if (metadata instanceof Response) return metadata
-  const options = parseJsonbObject(c, body, 'options')
-  if (options instanceof Response) return options
-
-  return {
-    kind,
-    name,
-    serverId,
-    destinationPath: optionalStringField(body.destinationPath),
-    sourcePath: optionalStringField(body.sourcePath),
-    principalId: optionalStringField(body.principalId),
-    metadata,
-    options,
-  }
-}
-
-function buildStorageUpdateFields(
-  c: Context<AppEnv>,
-  body: Record<string, unknown>,
-): Record<string, unknown> | Response {
-  const updateFields: Record<string, unknown> = {
-    updatedAt: new Date().toISOString(),
-  }
-  if (typeof body.name === 'string') updateFields.name = body.name
-  if (typeof body.sourcePath === 'string') updateFields.sourcePath = body.sourcePath
-  if (typeof body.destinationPath === 'string') {
-    updateFields.destinationPath = body.destinationPath
-  }
-  if (typeof body.serverId === 'string') updateFields.serverId = body.serverId
-  if (body.principalId === null || typeof body.principalId === 'string') {
-    updateFields.principalId = body.principalId
-  }
-  const metadata = parseJsonbObject(c, body, 'metadata')
-  if (metadata instanceof Response) return metadata
-  if (metadata !== null) updateFields.metadata = metadata
-  const options = parseJsonbObject(c, body, 'options')
-  if (options instanceof Response) return options
-  if (options !== null) updateFields.options = options
-  return updateFields
 }
 
 async function authorizeStorageMutation(

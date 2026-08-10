@@ -162,6 +162,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/managed/backups.test.ts \
   src/client/managed/context.test.ts \
   src/client/managed/logs.test.ts \
+  src/client/managed/members.hostfree.test.ts \
   src/client/managed/options.test.ts \
   src/client/managed/routes-helpers.test.ts \
   src/client/managed/routes-helpers.promote.test.ts \
@@ -194,14 +195,18 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/shared-authz-guards.test.ts \
   src/client/storage/serialize.test.ts \
   src/client/storage/routes-helpers.test.ts \
+  src/client/storage/routes.hostfree.test.ts \
   src/client/system/hierarchy.test.ts \
   src/client/system/hierarchy.hostfree.test.ts \
   src/client/system/operate.test.ts \
+  src/client/system/operate.hostfree.test.ts \
   src/client/system/reconcile.test.ts \
+  src/client/system/reconcile.hostfree.test.ts \
   src/client/system/routes.test.ts \
   src/client/variables/resolve-inherited.test.ts \
   src/client/variables/resolve-inherited.hostfree.test.ts \
   src/client/variables/routes-helpers.test.ts \
+  src/client/variables/routes-helpers.hostfree.test.ts \
   src/cors.test.ts \
   src/daemon/authn/challenge.test.ts \
   src/daemon/authn/daemon-jwt.test.ts \
@@ -330,19 +335,25 @@ deno test -A --coverage=coverage/deno-profile \
   src/runtime-paths.test.ts \
   src/scalar-html.test.ts \
   src/server-paths.deno.test.ts \
+  src/server-addresses-deno.hostfree.test.ts \
   src/server-registry-metadata.test.ts \
   src/server-registry.test.ts \
   src/surfaces.test.ts \
   src/client/access/routes.test.ts \
   src/client/access/routes-helpers.test.ts \
+  src/client/access/routes-helpers.hostfree.test.ts \
   src/client/containers/routes.test.ts \
   src/client/datacenters/routes.test.ts \
   src/client/hostings/routes.test.ts \
+  src/client/hostings/routes-helpers.hostfree.test.ts \
+  src/client/hostings/routes.hostfree.test.ts \
   src/client/ips/routes.test.ts \
   src/client/licenses/routes.test.ts \
   src/client/licenses/routes-helpers.test.ts \
+  src/client/licenses/routes-helpers.hostfree.test.ts \
   src/client/networks/routes.test.ts \
   src/client/organizations/routes.test.ts \
+  src/client/organizations/routes-helpers.hostfree.test.ts \
   src/client/services/routes.test.ts \
   src/client/tls/routes.test.ts \
   src/client/tls/routes-helpers.test.ts \

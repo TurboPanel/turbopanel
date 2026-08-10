@@ -3,13 +3,22 @@ import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { storage } from '../../lib/db/schema.ts'
 import {
+  buildStorageUpdateFields,
+  isStorageContentTooLarge,
   isStorageKind,
+  MAX_STORAGE_CONTENT_BYTES,
   mountKindRequiresDestination,
   optionalStringField,
+  parseCreateStorageFields,
+  parseOptionalStorageContent,
   parseStorageParent,
+  resolvePatchKind,
+  resolvePatchPrincipalId,
   resolvePatchStorageRefs,
   resolveStorageParentContext,
   resolveStorageProjectId,
+  STORAGE_KINDS,
+  storageContentByteLength,
 } from './routes-helpers.ts'
 
 /**
@@ -157,4 +166,134 @@ test('mountKindRequiresDestination is true when mount kind lacks path', () => {
   assertEquals(mountKindRequiresDestination('bind_mount', '  '), true)
   assertEquals(mountKindRequiresDestination('bind_mount', '/host'), false)
   assertEquals(mountKindRequiresDestination('docker_volume', null), false)
+  assertEquals(mountKindRequiresDestination('file', null), true)
+  assertEquals(mountKindRequiresDestination('directory', '/mnt/data'), false)
+})
+
+test('isStorageKind accepts all canonical kinds', () => {
+  for (const kind of STORAGE_KINDS) {
+    assertEquals(isStorageKind(kind), true)
+  }
+})
+
+test('resolvePatchKind keeps existing kind when body kind invalid', () => {
+  const existing = baseRow({ kind: 'docker_volume' })
+  assertEquals(resolvePatchKind({}, existing), 'docker_volume')
+  assertEquals(resolvePatchKind({ kind: 'bind_mount' }, existing), 'bind_mount')
+})
+
+test('resolvePatchPrincipalId honors null, string, or existing', () => {
+  assertEquals(resolvePatchPrincipalId({ principalId: null }, 'keep'), null)
+  assertEquals(
+    resolvePatchPrincipalId({ principalId: '00000000-0000-4000-8000-000000000099' }, 'keep'),
+    '00000000-0000-4000-8000-000000000099',
+  )
+  assertEquals(resolvePatchPrincipalId({}, 'keep'), 'keep')
+})
+
+test('resolvePatchStorageRefs preserves omitted fields from existing row', () => {
+  const existing = baseRow({
+    serverId: 'srv-keep',
+    kind: 'docker_volume',
+    destinationPath: '/keep',
+    principalId: '00000000-0000-4000-8000-000000000020',
+  })
+  const next = resolvePatchStorageRefs({}, existing)
+  assertEquals(next.serverId, 'srv-keep')
+  assertEquals(next.kind, 'docker_volume')
+  assertEquals(next.destinationPath, '/keep')
+  assertEquals(next.principalId, '00000000-0000-4000-8000-000000000020')
+})
+
+test('resolveStorageParentContext returns null when row has no parent ids', () => {
+  assertEquals(
+    resolveStorageParentContext(baseRow({
+      projectId: null,
+      environmentId: null,
+      serviceId: null,
+    })),
+    null,
+  )
+})
+
+test('parseStorageParent rejects invalid parent id values', async () => {
+  const c = mockContext()
+  await expectErrorResponse(
+    parseStorageParent(c, { projectId: '' }),
+    400,
+    { error: 'Exactly one parent resource must be specified' },
+  )
+  await expectErrorResponse(
+    parseStorageParent(c, { environmentId: 42 }),
+    400,
+    { error: 'Invalid request' },
+  )
+})
+
+test('parseCreateStorageFields validates required create body fields', async () => {
+  const c = mockContext()
+  await expectErrorResponse(
+    parseCreateStorageFields(c, { kind: 'volume', name: 'x', serverId: 's' }),
+    400,
+    { error: 'Invalid request' },
+  )
+  await expectErrorResponse(
+    parseCreateStorageFields(c, { kind: 'bind_mount', serverId: 's' }),
+    400,
+    { error: 'Invalid request' },
+  )
+  const ok = parseCreateStorageFields(c, {
+    kind: 'bind_mount',
+    name: 'data',
+    serverId: 'srv-1',
+    destinationPath: '/data',
+    metadata: { tier: 'fast' },
+  })
+  if (ok instanceof Response) {
+    throw new TypeError('expected parsed create fields')
+  }
+  assertEquals(ok.kind, 'bind_mount')
+  assertEquals(ok.name, 'data')
+  assertEquals(ok.serverId, 'srv-1')
+  assertEquals(ok.destinationPath, '/data')
+  assertEquals(ok.metadata, { tier: 'fast' })
+})
+
+test('buildStorageUpdateFields rejects invalid metadata and options', async () => {
+  const c = mockContext()
+  await expectErrorResponse(
+    buildStorageUpdateFields(c, { metadata: [] }),
+    400,
+    { error: 'Invalid request' },
+  )
+  const fields = buildStorageUpdateFields(c, {
+    name: 'renamed',
+    principalId: null,
+    options: { readonly: true },
+  })
+  if (fields instanceof Response) {
+    throw new TypeError('expected update fields')
+  }
+  assertEquals(fields.name, 'renamed')
+  assertEquals(fields.principalId, null)
+  assertEquals(fields.options, { readonly: true })
+  assertEquals(typeof fields.updatedAt, 'string')
+})
+
+test('parseOptionalStorageContent accepts undefined or string only', async () => {
+  const c = mockContext()
+  assertEquals(parseOptionalStorageContent(c, undefined), undefined)
+  assertEquals(parseOptionalStorageContent(c, 'payload'), 'payload')
+  await expectErrorResponse(
+    parseOptionalStorageContent(c, false),
+    400,
+    { error: 'Invalid request' },
+  )
+})
+
+test('storage content size helpers enforce the 256 KiB cap', () => {
+  const under = 'x'.repeat(MAX_STORAGE_CONTENT_BYTES)
+  assertEquals(storageContentByteLength(under), MAX_STORAGE_CONTENT_BYTES)
+  assertEquals(isStorageContentTooLarge(under), false)
+  assertEquals(isStorageContentTooLarge(`${under}x`), true)
 })

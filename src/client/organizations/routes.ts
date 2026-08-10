@@ -8,19 +8,19 @@ import { assertOrgOwnerOr403 } from '../authz/index.ts'
 import { listAccessibleOrganizations } from '../org-context.ts'
 import {
   assertCanManageOr403,
-  BadRequestError,
-  parseDisplayName,
   parseJsonBody,
 } from '../shared.ts'
 import { getDb } from '../../db.ts'
 import { organization } from '../../lib/db/schema.ts'
-import {
-  parseDefaultEnvironmentNameInput,
-  parseMaxServersInput,
-  parseOrganizationOptions,
-} from '../../lib/organization-options.ts'
+import { parseOrganizationOptions } from '../../lib/organization-options.ts'
 import { loadOrgServerCapacity } from '../../lib/server-capacity.ts'
-import { isAllowedTimezone, listTimezones } from '../../lib/timezones.ts'
+import { listTimezones } from '../../lib/timezones.ts'
+import {
+  parseDefaultEnvironmentPutBody,
+  parseDefaultTimezonePatch,
+  parseOrganizationCreateDisplayName,
+  parseServerCapacityPutBody,
+} from './routes-helpers.ts'
 
 export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   router.use('/organizations', createSessionMiddleware(opts.secrets))
@@ -50,26 +50,15 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    let displayName: string
-    try {
-      const parsed = parseDisplayName({
-        displayName:
-          typeof body.displayName === 'string'
-            ? body.displayName
-            : 'New Organization',
-      })
-      displayName = parsed ?? 'New Organization'
-    } catch (error) {
-      if (error instanceof BadRequestError) {
-        return c.json({ error: 'Invalid request' }, 400)
-      }
-      throw error
+    const parsedDisplayName = parseOrganizationCreateDisplayName(body)
+    if (!parsedDisplayName.ok) {
+      return c.json({ error: parsedDisplayName.error }, parsedDisplayName.status)
     }
 
     const { organizationId } = await createOrganizationForUser(
       db,
       session.userId,
-      displayName,
+      parsedDisplayName.displayName,
     )
 
     return c.json({ ok: true as const, id: organizationId })
@@ -108,34 +97,11 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const patch: {
-      defaultServerTimezone?: string | null
-      enforceServerTimezone?: boolean
-    } = {}
-
-    if ('defaultServerTimezone' in body) {
-      if (body.defaultServerTimezone === null) {
-        patch.defaultServerTimezone = null
-      } else if (
-        typeof body.defaultServerTimezone === 'string' &&
-        isAllowedTimezone(body.defaultServerTimezone)
-      ) {
-        patch.defaultServerTimezone = body.defaultServerTimezone
-      } else {
-        return c.json({ error: 'Invalid defaultServerTimezone' }, 400)
-      }
+    const parsedPatch = parseDefaultTimezonePatch(body)
+    if (!parsedPatch.ok) {
+      return c.json({ error: parsedPatch.error }, parsedPatch.status)
     }
-
-    if ('enforceServerTimezone' in body) {
-      if (typeof body.enforceServerTimezone !== 'boolean') {
-        return c.json({ error: 'Invalid enforceServerTimezone' }, 400)
-      }
-      patch.enforceServerTimezone = body.enforceServerTimezone
-    }
-
-    if (Object.keys(patch).length === 0) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
+    const patch = parsedPatch.patch
 
     const [orgRow] = await db
       .select({ options: organization.options })
@@ -197,19 +163,9 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    if (!('defaultEnvironmentName' in body)) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-
-    const parsed = parseDefaultEnvironmentNameInput(body.defaultEnvironmentName)
+    const parsed = parseDefaultEnvironmentPutBody(body)
     if (!parsed.ok) {
-      return c.json(
-        {
-          error:
-            'defaultEnvironmentName must be null or a non-empty name of at most 255 characters using letters, numbers, spaces, dots, underscores, or hyphens',
-        },
-        400,
-      )
+      return c.json({ error: parsed.error }, parsed.status)
     }
 
     const [orgRow] = await db
@@ -221,7 +177,7 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
 
     await db.update(organization).set({
       options: sql`COALESCE(${organization.options}, '{}'::jsonb) || ${
-        JSON.stringify({ defaultEnvironmentName: parsed.value })
+        JSON.stringify({ defaultEnvironmentName: parsed.defaultEnvironmentName })
       }::jsonb`,
       updatedAt: new Date().toISOString(),
     }).where(eq(organization.id, id))
@@ -264,16 +220,9 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    if (!('maxServers' in body)) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-
-    const parsed = parseMaxServersInput(body.maxServers)
+    const parsed = parseServerCapacityPutBody(body)
     if (!parsed.ok) {
-      return c.json(
-        { error: 'maxServers must be a non-negative integer or null' },
-        400,
-      )
+      return c.json({ error: parsed.error }, parsed.status)
     }
 
     const [orgRow] = await db
@@ -285,7 +234,7 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
 
     await db.update(organization).set({
       options: sql`COALESCE(${organization.options}, '{}'::jsonb) || ${
-        JSON.stringify({ maxServers: parsed.value })
+        JSON.stringify({ maxServers: parsed.maxServers })
       }::jsonb`,
       updatedAt: new Date().toISOString(),
     }).where(eq(organization.id, id))

@@ -145,6 +145,77 @@ async function sealIfNeeded(
   return encryptSecret(dataEncryptionSecrets, value)
 }
 
+/**
+ * Upsert binding-owned variable rows for a desired key set (insert / update /
+ * delete stale). Extracted for host-free coverage of the write path.
+ */
+export async function upsertBindingOwnedVariables(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  params: Readonly<{
+    bindingId: string
+    serviceId: string
+    desired: DesiredBindingVariable[]
+  }>,
+): Promise<void> {
+  const desiredKeys = new Set(params.desired.map((d) => d.key))
+
+  await db.transaction(async (tx) => {
+    const existing = await tx
+      .select({
+        id: variable.id,
+        key: variable.key,
+      })
+      .from(variable)
+      .where(eq(variable.bindingId, params.bindingId))
+
+    const existingByKey = new Map(existing.map((e) => [e.key, e.id]))
+
+    for (const entry of params.desired) {
+      const sealed = await sealIfNeeded(
+        dataEncryptionSecrets,
+        entry.value,
+        entry.isSecret,
+      )
+      const existingId = existingByKey.get(entry.key)
+      if (existingId) {
+        await tx
+          .update(variable)
+          .set({
+            value: sealed,
+            isSecret: entry.isSecret,
+            isLiteral: true,
+            forBuild: false,
+            forRuntime: true,
+            serviceId: params.serviceId,
+            updatedAt: new Date().toISOString(),
+          })
+          .where(eq(variable.id, existingId))
+        existingByKey.delete(entry.key)
+      } else {
+        await tx.insert(variable).values({
+          serviceId: params.serviceId,
+          bindingId: params.bindingId,
+          key: entry.key,
+          value: sealed,
+          isSecret: entry.isSecret,
+          isLiteral: true,
+          forBuild: false,
+          forRuntime: true,
+        })
+      }
+    }
+
+    // Drop binding-owned keys that are no longer emitted (prefix / flags flip).
+    const staleIds = [...existingByKey.entries()]
+      .filter(([key]) => !desiredKeys.has(key))
+      .map(([, id]) => id)
+    if (staleIds.length > 0) {
+      await tx.delete(variable).where(inArray(variable.id, staleIds))
+    }
+  })
+}
+
 export async function materializeBinding(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
@@ -246,61 +317,10 @@ export async function materializeBinding(
   })
   if ('kind' in desired) return desired
 
-  const desiredKeys = new Set(desired.map((d) => d.key))
-
-  await db.transaction(async (tx) => {
-    const existing = await tx
-      .select({
-        id: variable.id,
-        key: variable.key,
-      })
-      .from(variable)
-      .where(eq(variable.bindingId, bindingId))
-
-    const existingByKey = new Map(existing.map((e) => [e.key, e.id]))
-
-    for (const entry of desired) {
-      const sealed = await sealIfNeeded(
-        dataEncryptionSecrets,
-        entry.value,
-        entry.isSecret,
-      )
-      const existingId = existingByKey.get(entry.key)
-      if (existingId) {
-        await tx
-          .update(variable)
-          .set({
-            value: sealed,
-            isSecret: entry.isSecret,
-            isLiteral: true,
-            forBuild: false,
-            forRuntime: true,
-            serviceId: row.serviceId,
-            updatedAt: new Date().toISOString(),
-          })
-          .where(eq(variable.id, existingId))
-        existingByKey.delete(entry.key)
-      } else {
-        await tx.insert(variable).values({
-          serviceId: row.serviceId,
-          bindingId,
-          key: entry.key,
-          value: sealed,
-          isSecret: entry.isSecret,
-          isLiteral: true,
-          forBuild: false,
-          forRuntime: true,
-        })
-      }
-    }
-
-    // Drop binding-owned keys that are no longer emitted (prefix / flags flip).
-    const staleIds = [...existingByKey.entries()]
-      .filter(([key]) => !desiredKeys.has(key))
-      .map(([, id]) => id)
-    if (staleIds.length > 0) {
-      await tx.delete(variable).where(inArray(variable.id, staleIds))
-    }
+  await upsertBindingOwnedVariables(db, dataEncryptionSecrets, {
+    bindingId,
+    serviceId: row.serviceId,
+    desired,
   })
 
   return { ok: true }

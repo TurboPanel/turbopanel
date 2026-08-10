@@ -206,7 +206,53 @@ test('refreshTlsStatus flips ready certs past notAfter to expired', () => {
   assertEquals(refreshTlsStatus(pending, now).status, 'pending')
 })
 
+test('assembleTlsMetadata returns null when residual field types are wrong', () => {
+  const columns = {
+    status: 'ready' as const,
+    notAfter: fullMetadata.notAfter,
+    fingerprintSha256: fullMetadata.fingerprintSha256,
+  }
+  assertEquals(
+    assembleTlsMetadata(columns, {
+      dnsNames: fullMetadata.dnsNames,
+      hasWildcard: 'yes',
+      notBefore: fullMetadata.notBefore,
+      subject: fullMetadata.subject,
+      issuer: fullMetadata.issuer,
+    }),
+    null,
+  )
+  assertEquals(
+    assembleTlsMetadata(columns, {
+      dnsNames: fullMetadata.dnsNames,
+      hasWildcard: true,
+      notBefore: 1,
+      subject: fullMetadata.subject,
+      issuer: fullMetadata.issuer,
+    }),
+    null,
+  )
+  assertEquals(
+    assembleTlsMetadata(columns, {
+      dnsNames: fullMetadata.dnsNames,
+      hasWildcard: true,
+      notBefore: fullMetadata.notBefore,
+      subject: 1,
+      issuer: fullMetadata.issuer,
+    }),
+    null,
+  )
+})
+
 test('refreshTlsStatus leaves ready certs alone before notAfter', () => {
   const now = new Date('2026-06-01T00:00:00.000Z')
   assertEquals(refreshTlsStatus(fullMetadata, now), fullMetadata)
+})
+
+test('refreshTlsStatus ignores unparseable notAfter on ready certs', () => {
+  const broken: TlsMetadata = { ...fullMetadata, notAfter: 'not-a-date' }
+  assertEquals(
+    refreshTlsStatus(broken, new Date('2099-01-01T00:00:00.000Z')),
+    broken,
+  )
 })

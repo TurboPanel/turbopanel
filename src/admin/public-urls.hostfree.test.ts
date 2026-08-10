@@ -37,6 +37,7 @@ test('hostFromPublicUrlEntry extracts host and rejects invalids', () => {
   assertEquals(hostFromPublicUrlEntry('https://[2001:db8::1]'), '2001:db8::1')
   assertEquals(hostFromPublicUrlEntry('localhost'), null)
   assertEquals(hostFromPublicUrlEntry('not a url'), null)
+  assertEquals(hostFromPublicUrlEntry('https://null'), null)
 })
 
 test('publicUrlEntryToInstallOrigin https bare host and http allowance', () => {
@@ -60,6 +61,33 @@ test('publicUrlEntryToInstallOrigin https bare host and http allowance', () => {
     publicUrlEntryToInstallOrigin('https://[2001:db8::1]:9443'),
     'https://[2001:db8::1]:9443',
   )
+  assertEquals(
+    publicUrlEntryToInstallOrigin('ftp://panel.example.com'),
+    null,
+  )
+  assertEquals(
+    publicUrlEntryToInstallOrigin('https://localhost'),
+    null,
+  )
+  assertEquals(
+    publicUrlEntryToInstallOrigin('https://user:pass@panel.example.com'),
+    null,
+  )
+  assertEquals(
+    publicUrlEntryToInstallOrigin('https://panel.example.com/path'),
+    null,
+  )
+  assertEquals(
+    publicUrlEntryToInstallOrigin('https://panel.example.com?q=1'),
+    null,
+  )
+  assertEquals(
+    publicUrlEntryToInstallOrigin('https://panel.example.com#hash'),
+    null,
+  )
+  assertEquals(publicUrlEntryToInstallOrigin('panel.example.com/path'), null)
+  assertEquals(publicUrlEntryToInstallOrigin('panel.example.com?q=1'), null)
+  assertEquals(publicUrlEntryToInstallOrigin('host with spaces'), null)
 })
 
 test('parsePublicUrlEntries validates dedupes and reports invalids', () => {
@@ -77,8 +105,36 @@ test('parsePublicUrlEntries validates dedupes and reports invalids', () => {
     parsePublicUrlEntries(['http://dev.example.com'], { allowHttp: true }).ok,
     true,
   )
+  assertEquals(
+    parsePublicUrlEntries(['http://dev.example.com']).ok,
+    false,
+  )
+  const blanks = parsePublicUrlEntries(['', '  ', 'panel.example.com:9443'])
+  assertEquals(blanks.ok, false)
+  if (!blanks.ok) {
+    assertEquals(blanks.invalid, ['', '  '])
+  }
+  assertEquals(
+    parsePublicUrlEntries(['[2001:db8::1]:8443']),
+    { ok: true, urls: ['[2001:db8::1]:8443'] },
+  )
+  assertEquals(
+    parsePublicUrlEntries(['https://user:pass@panel.example.com']).ok,
+    false,
+  )
+  assertEquals(
+    parsePublicUrlEntries(['ftp://panel.example.com', 'panel.example.com/path']).ok,
+    false,
+  )
+  // Bare host and https origin that share an install origin dedupe.
+  assertEquals(
+    parsePublicUrlEntries([
+      'panel.example.com:8443',
+      'https://panel.example.com:8443',
+    ]),
+    { ok: true, urls: ['panel.example.com:8443'] },
+  )
 })
-
 test('getPublicUrls returns empty for null missing and blank entries', async () => {
   const empty = {
     select: () => ({

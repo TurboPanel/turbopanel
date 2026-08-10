@@ -23,17 +23,19 @@ import {
   can,
   canManageOrganization,
 } from '../authz/index.ts'
-import {
-  getPermissionCatalog,
-  isPermissionKey,
-  PERMISSIONS,
-  type PermissionKey,
-} from '../authz/catalog.ts'
+import { getPermissionCatalog } from '../authz/catalog.ts'
 import type { Db } from '../../db.ts'
 import { getDb } from '../../db.ts'
 import { grant, invitation, membership, team, teammate } from '../../lib/db/schema.ts'
 import { getOrgId } from '../shared.ts'
-import { isUuid, ownerRemovalConflictMessage } from './routes-helpers.ts'
+import {
+  ownerRemovalConflictMessage,
+  parseCreateAccessBody as parseCreateAccessBodyRecord,
+  type CreateAccessInput,
+  validateAccessCheckQuery,
+  validateAccessListQuery,
+  validateAccessResourceIdQuery,
+} from './routes-helpers.ts'
 
 async function assertRevocableAllowGrant(
   db: Db,
@@ -73,13 +75,6 @@ async function assertCanManageAccessOr403(
   return assertOrgOwnerOr403(c, entity.entityType, entity.entityId)
 }
 
-interface CreateAccessInput {
-  subjectKind: 'user' | 'team' | 'organization'
-  subjectId: string
-  resourceId: string
-  permissionKey: PermissionKey
-}
-
 async function parseCreateAccessBody(
   c: Context,
 ): Promise<CreateAccessInput | { response: Response }> {
@@ -90,40 +85,12 @@ async function parseCreateAccessBody(
     return { response: c.json({ error: 'Invalid request' }, 400) }
   }
 
-  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-    return { response: c.json({ error: 'Invalid request' }, 400) }
+  const parsed = parseCreateAccessBodyRecord(body)
+  if ('ok' in parsed && parsed.ok === false) {
+    return { response: c.json({ error: parsed.error }, parsed.status) }
   }
 
-  const record = body as Record<string, unknown>
-  const { subjectKind, subjectId, resourceId, effect, permissionKey } = record
-
-  if (
-    subjectKind !== 'user' &&
-    subjectKind !== 'team' &&
-    subjectKind !== 'organization'
-  ) {
-    return { response: c.json({ error: 'Invalid request' }, 400) }
-  }
-  if (typeof subjectId !== 'string' || typeof resourceId !== 'string') {
-    return { response: c.json({ error: 'Invalid request' }, 400) }
-  }
-  // Grants are allow-only. Reject unknown `effect` values; only `'allow'`
-  // (or omitted) is accepted for the stable client DTO.
-  if (effect !== undefined && effect !== 'allow') {
-    return { response: c.json({ error: 'Invalid request' }, 400) }
-  }
-  if (
-    typeof permissionKey !== 'string' ||
-    permissionKey.length === 0 ||
-    !isPermissionKey(permissionKey)
-  ) {
-    return { response: c.json({ error: 'permissionKey is required' }, 400) }
-  }
-  if (!isUuid(resourceId) || !isUuid(subjectId)) {
-    return { response: c.json({ error: 'Invalid request' }, 400) }
-  }
-
-  return { subjectKind, subjectId, resourceId, permissionKey }
+  return parsed
 }
 
 export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
@@ -265,25 +232,12 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const resourceId = c.req.query('resourceId')?.trim()
     const permissionKey = c.req.query('permissionKey')?.trim()
-    if (!resourceId || !permissionKey) {
-      return c.json(
-        {
-          error:
-            'resourceId and permissionKey query parameters are required',
-        },
-        400,
-      )
+    const validated = validateAccessCheckQuery(resourceId, permissionKey)
+    if (!('ok' in validated) || validated.ok === false) {
+      return c.json({ error: validated.error }, validated.status)
     }
 
-    if (!isUuid(resourceId)) {
-      return c.json({ error: 'Invalid resourceId' }, 400)
-    }
-
-    if (!PERMISSIONS.includes(permissionKey as PermissionKey)) {
-      return c.json({ error: 'Invalid permissionKey' }, 400)
-    }
-
-    const entity = await resolveEntityById(db, resourceId)
+    const entity = await resolveEntityById(db, validated.resourceId)
     if (!entity) {
       return c.json({ error: 'Not found' }, 404)
     }
@@ -291,7 +245,7 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
     const allowed = await can(
       db,
       session.userId,
-      permissionKey as PermissionKey,
+      validated.permissionKey,
       entity.entityType,
       entity.entityId,
     )
@@ -308,14 +262,12 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const kind = c.req.query('kind')?.trim()
     const itemId = c.req.query('itemId')?.trim()
-    if (!kind || !itemId) {
-      return c.json(
-        { error: 'kind and itemId query parameters are required' },
-        400,
-      )
+    const validated = validateAccessResourceIdQuery(kind, itemId)
+    if (!('ok' in validated) || validated.ok === false) {
+      return c.json({ error: validated.error }, validated.status)
     }
 
-    if (!isAccessGrantEntityType(kind)) {
+    if (!isAccessGrantEntityType(validated.kind)) {
       return c.json({ error: 'Not found' }, 404)
     }
 
@@ -323,19 +275,23 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
     if (orgResult instanceof Response) return orgResult
     const organizationId = orgResult
 
-    const entity = await resolveEntityByKindAndItemId(db, kind, itemId)
+    const entity = await resolveEntityByKindAndItemId(
+      db,
+      validated.kind,
+      validated.itemId,
+    )
     if (entity?.organizationId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    if (kind === 'organization') {
-      if (itemId !== organizationId) {
+    if (validated.kind === 'organization') {
+      if (validated.itemId !== organizationId) {
         return c.json({ error: 'Not found' }, 404)
       }
       return c.json({
         resourceId: entity.entityId,
-        kind,
-        itemId,
+        kind: validated.kind,
+        itemId: validated.itemId,
       })
     }
 
@@ -351,8 +307,8 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
 
     return c.json({
       resourceId: entity.entityId,
-      kind,
-      itemId,
+      kind: validated.kind,
+      itemId: validated.itemId,
     })
   })
 
@@ -364,15 +320,12 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
     const resourceId = c.req.query('resourceId')?.trim()
-    if (!resourceId) {
-      return c.json({ error: 'resourceId query parameter is required' }, 400)
+    const validated = validateAccessListQuery(resourceId)
+    if (!('ok' in validated) || validated.ok === false) {
+      return c.json({ error: validated.error }, validated.status)
     }
 
-    if (!isUuid(resourceId)) {
-      return c.json({ error: 'Invalid resourceId' }, 400)
-    }
-
-    const entity = await resolveEntityById(db, resourceId)
+    const entity = await resolveEntityById(db, validated.resourceId)
     if (!entity) {
       return c.json({ error: 'Not found' }, 404)
     }
@@ -381,7 +334,7 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanManageAccessOr403(c, db, resourceId)
+    const denied = await assertCanManageAccessOr403(c, db, validated.resourceId)
     if (denied) return denied
 
     const rows = await db

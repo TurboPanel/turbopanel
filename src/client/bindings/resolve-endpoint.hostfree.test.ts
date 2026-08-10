@@ -5,6 +5,7 @@
 import { assertEquals } from 'jsr:@std/assert'
 import type { Db } from '../../db.ts'
 import {
+  isBindingEndpointError,
   loadServicePlacementServerId,
   memberServerIdsForManaged,
   resolveBindingEndpoint,
@@ -117,4 +118,67 @@ test('resolveBindingEndpoint unavailable when cluster has no members', async () 
     }),
     { kind: 'binding_endpoint_unavailable' },
   )
+})
+
+test('resolveBindingEndpoint unavailable when listener server has no organization', async () => {
+  let n = 0
+  const db = {
+    select: () => {
+      n += 1
+      if (n === 1) {
+        // loadClusterMembers
+        return {
+          from: () => ({
+            where: () => ({
+              orderBy: () =>
+                Promise.resolve([
+                  {
+                    serverId: 'srv-1',
+                    role: 'primary',
+                    ordinal: 1,
+                    readEligible: false,
+                  },
+                ]),
+            }),
+          }),
+        }
+      }
+      if (n === 2) {
+        // loadServicePlacementServerId → miss (fall back to member)
+        return {
+          from: () => ({
+            innerJoin: () => ({
+              innerJoin: () => ({
+                where: () => thenableLimit([]),
+              }),
+            }),
+          }),
+        }
+      }
+      // listenerForServer: server row without organizationId
+      return {
+        from: () => ({
+          where: () => thenableLimit([{ organizationId: null }]),
+        }),
+      }
+    },
+  } as unknown as Db
+
+  assertEquals(
+    await resolveBindingEndpoint(db, {
+      serviceId: 'svc',
+      managedId: 'm1',
+      protocolPort: 5432,
+    }),
+    { kind: 'binding_endpoint_unavailable' },
+  )
+})
+
+test('isBindingEndpointError covers unavailable and non-errors', () => {
+  assertEquals(
+    isBindingEndpointError({ kind: 'binding_endpoint_unavailable' }),
+    true,
+  )
+  assertEquals(isBindingEndpointError({ host: 'x', port: 1 }), false)
+  assertEquals(isBindingEndpointError(null), false)
 })
