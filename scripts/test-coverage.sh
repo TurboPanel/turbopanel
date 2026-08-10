@@ -14,6 +14,12 @@
 # sonar-project.properties (single repo-relative report — SonarCloud was only
 # reflecting Deno hits when two comma-separated paths were used).
 #
+# Merge rule (smart): per SF, the report with more covered lines (LH) is
+# primary. Secondary may only max shared hits or add *executed* lines — never
+# zero-hit V8 transitive rows that dilute Workers/DO Istanbul. Previously a
+# hard Vitest-wins drop discarded real Deno unit hits for modules Vitest only
+# imported (false 0% on db-url, allocate-containers, …).
+#
 # Usage: sh scripts/test-coverage.sh
 # Output: coverage/lcov.info (Vitest + Deno merged for SonarCloud), plus
 # coverage/vitest/lcov.info and coverage/deno.lcov for debugging.
@@ -378,7 +384,6 @@ echo "==> Merge Vitest + Deno LCOV for SonarCloud"
 python3 - <<'PY'
 from __future__ import annotations
 
-from collections import defaultdict
 from pathlib import Path
 
 
@@ -428,58 +433,98 @@ def branch_hits(record_lines: list[str]) -> dict[str, int]:
     return hits
 
 
-def merge_records(all_records: list[dict[str, list[str]]]) -> dict[str, list[str]]:
-    merged_lines: dict[str, list[str]] = defaultdict(list)
-    for records in all_records:
-        for sf, lines in records.items():
-            merged_lines[sf].append(lines)
+def covered_line_count(record_lines: list[str]) -> int:
+    return sum(1 for count in line_hits(record_lines).values() if count > 0)
 
-    output: dict[str, list[str]] = {}
-    for sf, record_groups in merged_lines.items():
-        line_hits_merged: dict[int, int] = {}
-        branch_hits_merged: dict[str, int] = {}
-        for lines in record_groups:
-            for line_no, count in line_hits(lines).items():
-                line_hits_merged[line_no] = max(line_hits_merged.get(line_no, 0), count)
-            for key, count in branch_hits(lines).items():
-                branch_hits_merged[key] = max(branch_hits_merged.get(key, 0), count)
 
-        body: list[str] = [f"SF:{sf}"]
-        for line in record_groups[0]:
-            if line.startswith(("SF:", "DA:", "LH:", "LF:", "BRDA:", "BRF:", "BRH:", "end_of_record")):
-                continue
-            body.append(line)
+def smart_merge_hits(
+    primary: dict[int, int],
+    secondary: dict[int, int],
+) -> dict[int, int]:
+    """Primary coverable lines + max hits from secondary; add secondary-only hit lines.
 
-        for line_no in sorted(line_hits_merged):
-            body.append(f"DA:{line_no},{line_hits_merged[line_no]}")
-        body.append(f"LF:{len(line_hits_merged)}")
-        body.append(f"LH:{sum(1 for count in line_hits_merged.values() if count > 0)}")
+    Avoids Deno V8 zero-hit transitive lines diluting a healthy Vitest
+    (Istanbul) Workers/DO measurement, while still letting real Deno unit
+    coverage replace Vitest records that only imported a module (LH:0).
+    """
+    merged = dict(primary)
+    for line_no, count in secondary.items():
+        if line_no in merged:
+            merged[line_no] = max(merged[line_no], count)
+        elif count > 0:
+            merged[line_no] = count
+    return merged
 
-        if branch_hits_merged:
-            for key in sorted(branch_hits_merged):
-                body.append(f"BRDA:{key},{branch_hits_merged[key]}")
-            body.append(f"BRF:{len(branch_hits_merged)}")
-            body.append(
-                f"BRH:{sum(1 for count in branch_hits_merged.values() if count > 0)}"
-            )
 
-        body.append("end_of_record")
-        output[sf] = body
+def merge_sf_records(
+    primary_lines: list[str],
+    secondary_lines: list[str] | None = None,
+) -> list[str]:
+    primary_hits = line_hits(primary_lines)
+    primary_branches = branch_hits(primary_lines)
+    if secondary_lines is None:
+        line_hits_merged = primary_hits
+        branch_hits_merged = primary_branches
+    else:
+        secondary_hits = line_hits(secondary_lines)
+        secondary_branches = branch_hits(secondary_lines)
+        line_hits_merged = smart_merge_hits(primary_hits, secondary_hits)
+        branch_hits_merged = dict(primary_branches)
+        for key, count in secondary_branches.items():
+            if key in branch_hits_merged:
+                branch_hits_merged[key] = max(branch_hits_merged[key], count)
+            elif count > 0:
+                branch_hits_merged[key] = count
 
-    return output
+    sf_line = next(
+        (line for line in primary_lines if line.startswith("SF:")),
+        "SF:unknown",
+    )
+    body: list[str] = [sf_line]
+    for line_no in sorted(line_hits_merged):
+        body.append(f"DA:{line_no},{line_hits_merged[line_no]}")
+    body.append(f"LF:{len(line_hits_merged)}")
+    body.append(f"LH:{sum(1 for count in line_hits_merged.values() if count > 0)}")
+
+    if branch_hits_merged:
+        for key in sorted(branch_hits_merged):
+            body.append(f"BRDA:{key},{branch_hits_merged[key]}")
+        body.append(f"BRF:{len(branch_hits_merged)}")
+        body.append(
+            f"BRH:{sum(1 for count in branch_hits_merged.values() if count > 0)}"
+        )
+
+    body.append("end_of_record")
+    return body
 
 
 vitest_records = parse_records(Path("coverage/vitest/lcov.info"))
 deno_records = parse_records(Path("coverage/deno.lcov"))
-# Workers-pool Istanbul owns any file Vitest already measured — Deno V8
-# only imports those modules transitively (e.g. offline-sweep → do-registry)
-# and would union hundreds of zero-hit lines into the merged SF record.
-deno_records = {
-    sf: lines
-    for sf, lines in deno_records.items()
-    if sf not in vitest_records
-}
-merged = merge_records([vitest_records, deno_records])
+# Pair Vitest + Deno per SF:
+# - Vitest-only → Vitest (Workers/DO path).
+# - Deno-only → Deno (host-free unit suites).
+# - Both → whichever has more covered lines is primary; secondary may only
+#   raise hits or add *executed* lines (never zero-hit dilution).
+# Previously Vitest owned any overlapping SF entirely, so Deno LCOV for
+# modules Vitest only imported (db-url, allocate-containers, …) was dropped
+# and Sonar reported ~0% despite extensive Deno suite hits.
+all_sf = set(vitest_records) | set(deno_records)
+merged: dict[str, list[str]] = {}
+for sf in sorted(all_sf):
+    v = vitest_records.get(sf)
+    d = deno_records.get(sf)
+    if v is None:
+        assert d is not None
+        merged[sf] = d
+        continue
+    if d is None:
+        merged[sf] = v
+        continue
+    if covered_line_count(d) > covered_line_count(v):
+        merged[sf] = merge_sf_records(d, v)
+    else:
+        merged[sf] = merge_sf_records(v, d)
+
 out_lines: list[str] = []
 for sf in sorted(merged):
     out_lines.extend(merged[sf])
@@ -491,8 +536,8 @@ if ! grep -q '^SF:src/daemon/cell/do.ts' coverage/lcov.info; then
   exit 1
 fi
 
-# Vitest-wins: merged LH must still clear the Workers/DO floors (guards against
-# reintroducing Deno zero-hit dilution for files Vitest already measured).
+# Smart merge: Workers/DO floors must still clear after Deno hits are folded in
+# (guards against reintroducing zero-hit dilution for files Istanbul measured).
 echo "==> Assert Workers/DO coverage in merged LCOV"
 python3 - <<'PY'
 import re

@@ -4,6 +4,7 @@
 
 import { assertEquals, assertRejects } from 'jsr:@std/assert'
 import type { Db } from '../db.ts'
+import { encryptSecret } from '../client/authn/data-encryption.ts'
 import {
   deriveEncryptionSecretsConfig,
   parseSecretsEnv,
@@ -18,6 +19,10 @@ import {
   resetReencryptSweepLockForTests,
   tryBeginReencryptSweep,
 } from './reencrypt-secrets.ts'
+
+/** Non-production secondary key for rotated-envelope host-free fixtures. */
+const TEST_ONLY_TURBOPANEL_SECRET_V2 =
+  'Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2_Mm3Nn4Oo5Pp6Qq7' as const
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -93,10 +98,21 @@ test('reencryptAtRestSecrets resume from tls across empty stages', async () => {
   assertEquals(done.scanned, 0)
 })
 
-test('reencryptAtRestSecrets reseals plaintext variable blobs with secrets', async () => {
+test('reencryptAtRestSecrets reseals old-version enc and fails plaintext/malformed', async () => {
   resetReencryptSweepLockForTests()
-  const config = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
-  const dataSecrets = await deriveEncryptionSecretsConfig(config, 'data-encryption')
+  const v1Only = await deriveEncryptionSecretsConfig(
+    parseSecretsEnv(undefined, `1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno'),
+    'data-encryption',
+  )
+  const rotated = await deriveEncryptionSecretsConfig(
+    parseSecretsEnv(
+      undefined,
+      `2:${TEST_ONLY_TURBOPANEL_SECRET_V2},1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+      'deno',
+    ),
+    'data-encryption',
+  )
+  const oldEnvelope = await encryptSecret(v1Only, 'variable-v1-secret')
 
   let variablePages = 0
   let updateCalls = 0
@@ -110,9 +126,16 @@ test('reencryptAtRestSecrets reseals plaintext variable blobs with secrets', asy
               // First page of first stage only (variables).
               if (variablePages === 1) {
                 return Promise.resolve([
-                  { id: '00000000-0000-4000-8000-0000000000v1', value: 'plain-at-rest' },
+                  {
+                    id: '00000000-0000-4000-8000-0000000000v1',
+                    value: oldEnvelope,
+                  },
                   {
                     id: '00000000-0000-4000-8000-0000000000v2',
+                    value: 'plain-at-rest',
+                  },
+                  {
+                    id: '00000000-0000-4000-8000-0000000000v3',
                     value: 'enc.malformed-not-parseable',
                   },
                 ])
@@ -136,11 +159,11 @@ test('reencryptAtRestSecrets reseals plaintext variable blobs with secrets', asy
     }),
   } as unknown as Db
 
-  const batch = await reencryptAtRestSecrets(db, dataSecrets, { limit: 50 })
-  assertEquals(batch.scanned >= 2, true)
-  assertEquals(batch.reencrypted >= 1, true)
-  assertEquals(batch.failed >= 1, true)
-  assertEquals(updateCalls >= 1, true)
+  const batch = await reencryptAtRestSecrets(db, rotated, { limit: 50 })
+  assertEquals(batch.scanned >= 3, true)
+  assertEquals(batch.reencrypted, 1)
+  assertEquals(batch.failed >= 2, true)
+  assertEquals(updateCalls, 1)
   assertEquals(batch.completed, true)
 })
 

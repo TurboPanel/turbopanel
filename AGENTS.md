@@ -108,13 +108,14 @@ change. Future agents read `AGENTS.md` first.
   a single **`coverage/lcov.info`** (`sonar.javascript.lcov.reportPaths=coverage/lcov.info`
   in `sonar-project.properties` — **not** comma-separated dual paths; SonarCloud
   effectively only imported Deno hits that way, so Workers/DO files showed 0%
-  despite real Istanbul coverage). Merge takes the **max** per-line DA hit count
-  **only across files that appear in both reports**; when Vitest already has an
-  `SF:` record, that file is **dropped from the Deno LCOV before merge**
-  (Vitest-wins). Deno V8 often imports Workers modules transitively with mostly
-  zero-hit lines (e.g. offline-sweep → `do-registry.ts`); unioning those into
-  Vitest's Istanbul record dilutes coverage (Sonar showed ~5% / `LH:18` on
-  `do-registry` from Deno alone while local Vitest was ~83%). Vitest `SF:` paths
+  despite real Istanbul coverage). Merge pairs SF records **by covered-line
+  count** (higher LH is primary). Secondary may only raise shared hits or add
+  **executed** lines — never zero-hit transitive rows. When Vitest only
+  imported a Deno-tested module (`LH:0`), Deno unit hits become primary so
+  Sonar no longer reports false 0% on `db-url` / `allocate-containers` / similar.
+  Dilution of healthy Workers/DO Istanbul reports (e.g. offline-sweep →
+  `do-registry.ts`) is still avoided because Deno zero-hit extras never expand
+  LF when Vitest has more covered lines. Vitest `SF:` paths
   are normalized repo-relative like Deno. The script asserts non-zero Vitest
   hits for `src/daemon/cell/do.ts`, `do-registry.ts`, and `workers-ws.ts` before
   merge, and re-checks those LH floors on the **merged** `coverage/lcov.info`.
@@ -140,8 +141,10 @@ change. Future agents read `AGENTS.md` first.
   `test.include` — that list is an explicit file enumeration, not a glob,
   because most `*.test.ts` files use Deno-only APIs and cannot run under the
   Workers pool; a file left off `test.include` never runs at all, coverage or
-  not. (3) Vitest-wins merge must stay in place — do not re-union Deno `SF:`
-  records for files Vitest already measured. Selective Workers/DO 0% with a
+  not. (3) LCOV smart merge must stay in place — do not reintroduce
+  full-record Vitest-wins (drops Deno hits for imported-but-untested modules)
+  or naive Deno+Vitest line-union (dilutes Workers/DO with zero-hit
+  transitive SF rows). Selective Workers/DO 0% with a
   healthy overall project coverage % is almost always an LCOV merge/path bug,
   not Automatic Analysis (AA being on fails the CI scanner entirely).
 - **Automatic Analysis must stay off** for `turbopanel_turbopanel`

@@ -215,7 +215,6 @@ it('invitation grant materialization creates grant rows and enables canOwnOrgani
         entityType: 'organization',
         entityId: organizationId,
         permissionKey: 'organization:own',
-        allowed: true,
       }],
       organizationId,
     )
