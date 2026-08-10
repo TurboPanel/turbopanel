@@ -1,5 +1,5 @@
 export type LicenseCreateFields = {
-  displayName?: string
+  name?: string
   installBaseUrl?: string
 }
 
@@ -24,11 +24,11 @@ export function parseLicenseCreateFields(
   const record = body as Record<string, unknown>
   const fields: LicenseCreateFields = {}
 
-  if (record.displayName !== undefined) {
-    if (typeof record.displayName !== 'string') {
+  if (record.name !== undefined) {
+    if (typeof record.name !== 'string') {
       return 'invalid'
     }
-    fields.displayName = record.displayName
+    fields.name = record.name
   }
   if (record.installBaseUrl !== undefined) {
     if (typeof record.installBaseUrl !== 'string') {

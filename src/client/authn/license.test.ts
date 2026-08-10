@@ -188,5 +188,5 @@ test('listServersBoundToLicenses maps mock license server bindings', async () =>
     throw new TypeError('expected bound server row for mock license')
   }
   assertEquals(row.id, serverId)
-  assertEquals(row.displayName, 'Bound seat')
+  assertEquals(row.name, 'Bound seat')
 })

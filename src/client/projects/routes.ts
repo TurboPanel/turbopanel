@@ -427,7 +427,7 @@ function parseProjectPatchOptions(
 }
 
 type ProjectPatchFields = {
-  displayName?: string | null
+  name?: string | null
   description?: string | null
   options?: Record<string, unknown> | null
   workspaceId?: string
@@ -479,7 +479,7 @@ async function assertDefaultServerIdInOrg(
 async function insertDockerComposeProject(
   tx: DbTx,
   fields: {
-    displayName: string | null
+    name: string | null
     description: string | null
     workspaceId: string
     metadata: Record<string, unknown> | null
@@ -495,7 +495,7 @@ async function insertDockerComposeProject(
   const [inserted] = await tx
     .insert(project)
     .values({
-      name: fields.displayName,
+      name: fields.name,
       description: fields.description,
       workspaceId: fields.workspaceId,
       metadata: fields.metadata ?? { type: 'docker-compose' },
@@ -530,7 +530,7 @@ async function insertCatalogProject(
   tx: DbTx,
   fields: {
     projectType: 'template' | 'managed'
-    displayName: string | null
+    name: string | null
     description: string | null
     workspaceId: string
     metadata: Record<string, unknown> | null
@@ -547,7 +547,7 @@ async function insertCatalogProject(
   const [inserted] = await tx
     .insert(project)
     .values({
-      name: fields.displayName,
+      name: fields.name,
       description: fields.description,
       workspaceId: fields.workspaceId,
       metadata: fields.metadata ?? {

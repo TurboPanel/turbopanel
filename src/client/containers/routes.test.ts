@@ -428,6 +428,7 @@ test('GET /containers?environmentId= ANDs with status and serverId filters', asy
           containerName: 'web-running',
           status: 'running',
           composeServiceName: 'web',
+          ordinal: 1,
         }),
       })
       assertEquals(createRunning.status, 200)
@@ -447,6 +448,7 @@ test('GET /containers?environmentId= ANDs with status and serverId filters', asy
           containerName: 'web-exited',
           status: 'exited',
           composeServiceName: 'web',
+          ordinal: 2,
         }),
       })
       assertEquals(createExited.status, 200)
@@ -465,6 +467,7 @@ test('GET /containers?environmentId= ANDs with status and serverId filters', asy
           containerName: 'web-other-srv',
           status: 'running',
           composeServiceName: 'web',
+          ordinal: 3,
         }),
       })
       assertEquals(createOtherServer.status, 200)

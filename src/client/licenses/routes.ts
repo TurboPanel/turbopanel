@@ -73,18 +73,18 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
     )
 
     return c.json({
-      licenses: licenses.map(({ id, displayName, createdAt }) => {
+      licenses: licenses.map(({ id, name, createdAt }) => {
         const bound = boundServers.get(id)
         const status = bound ? statusByServerId.get(bound.id) : undefined
         return {
           id,
-          displayName,
+          name,
           createdAt,
           revocable: !protectedIds.has(id),
           boundServer: bound
             ? {
               id: bound.id,
-              displayName: bound.displayName,
+              name: bound.name,
               connected: status?.connected ?? false,
             }
             : null,
@@ -105,7 +105,7 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
     if (parsedFields === 'invalid') {
       return c.json({ error: 'Invalid request' }, 400)
     }
-    const { displayName, installBaseUrl } = parsedFields
+    const { name, installBaseUrl } = parsedFields
 
     const orgResult = await getOrgId(c, session.userId)
     if (orgResult instanceof Response) return orgResult
@@ -115,7 +115,7 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
     if (denied) return denied
 
     // Reserved for the co-located control-plane license (install / disk recovery).
-    if (displayName?.trim() === COLOCATED_SERVER_DISPLAY_NAME) {
+    if (name?.trim() === COLOCATED_SERVER_DISPLAY_NAME) {
       return c.json(
         {
           error:
@@ -169,7 +169,7 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
     // Caddy serves whatever is present under the daemon checkout's `dist/`.
     const { licenseId, licenseToken } = await createLicense(db, {
       organizationId,
-      displayName,
+      name,
     })
 
     const instanceUrl = parsedInstallBaseUrl ?? await resolvePublicBaseUrl(c, opts)

@@ -1,11 +1,20 @@
 import { assertEquals } from 'jsr:@std/assert'
-import { eq } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'
 import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
 import type { CommandQueue } from '../../lib/commands/queue.ts'
 import { createNoopCommandQueue } from '../../lib/commands/noop-command-queue.ts'
-import { command, organization, server } from '../../lib/db/schema.ts'
+import {
+  command,
+  container,
+  environment,
+  organization,
+  project,
+  server,
+  service,
+  workspace,
+} from '../../lib/db/schema.ts'
 import { ensureSystemHierarchy } from './hierarchy.ts'
 import { systemComponentOperations } from './operate.ts'
 
@@ -80,6 +89,39 @@ async function withOperateFixtures(
     })
   } finally {
     await db.delete(command).where(eq(command.serverId, serverId))
+    const workspaceRows = await db
+      .select({ id: workspace.id })
+      .from(workspace)
+      .where(eq(workspace.organizationId, organizationId))
+    const workspaceIds = workspaceRows.map((row) => row.id)
+    if (workspaceIds.length > 0) {
+      const projectRows = await db
+        .select({ id: project.id })
+        .from(project)
+        .where(inArray(project.workspaceId, workspaceIds))
+      const projectIds = projectRows.map((row) => row.id)
+      if (projectIds.length > 0) {
+        const environmentRows = await db
+          .select({ id: environment.id })
+          .from(environment)
+          .where(inArray(environment.projectId, projectIds))
+        const environmentIds = environmentRows.map((row) => row.id)
+        if (environmentIds.length > 0) {
+          const serviceRows = await db
+            .select({ id: service.id })
+            .from(service)
+            .where(inArray(service.environmentId, environmentIds))
+          const serviceIds = serviceRows.map((row) => row.id)
+          if (serviceIds.length > 0) {
+            await db.delete(container).where(inArray(container.serviceId, serviceIds))
+            await db.delete(service).where(inArray(service.id, serviceIds))
+          }
+          await db.delete(environment).where(inArray(environment.id, environmentIds))
+        }
+        await db.delete(project).where(inArray(project.id, projectIds))
+      }
+      await db.delete(workspace).where(inArray(workspace.id, workspaceIds))
+    }
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }

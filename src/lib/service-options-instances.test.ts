@@ -38,7 +38,7 @@ test('resolveServiceInstances defaults to 1', () => {
   assertEquals(resolveServiceInstances({ instances: 4 }), 4)
 })
 
-test('parseServiceOptions reads deploy commands, build, container, and operations', () => {
+test('parseServiceOptions reads deploy commands, build, and operations', () => {
   assertEquals(
     parseServiceOptions({
       preDeployCommand: ' npm ci ',
@@ -54,7 +54,6 @@ test('parseServiceOptions reads deploy commands, build, container, and operation
       preDeployCommand: 'npm ci',
       postDeployCommand: 'echo done',
       build: { disableCache: true },
-      container: { name: 'web' },
       operations: {
         stopGracePeriodSeconds: 45,
         maxRestartAttempts: 3,

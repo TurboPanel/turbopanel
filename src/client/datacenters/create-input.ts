@@ -39,7 +39,7 @@ export function mergeDatacenterMetadata(
 }
 
 export type CreateDatacenterInput = {
-  displayName: string | null
+  name: string | null
   description: string | null
   metadata: Record<string, unknown> | null
   options: ReturnType<typeof parseDatacenterOptions> | null
@@ -57,11 +57,11 @@ export function resolveSeededFields(
   input: CreateDatacenterInput,
   rows: SelectedServerRow[],
 ): {
-  displayName: string | null
+  name: string | null
   metadata: Record<string, unknown> | null
 } {
   if (!input.sourceServerId) {
-    return { displayName: input.displayName, metadata: input.metadata }
+    return { name: input.name, metadata: input.metadata }
   }
 
   const sourceRow = rows.find((row) => row.id === input.sourceServerId)
@@ -74,7 +74,7 @@ export function resolveSeededFields(
       : null,
   )
   if (!geo) {
-    return { displayName: input.displayName, metadata: input.metadata }
+    return { name: input.name, metadata: input.metadata }
   }
 
   const seededMetadata = buildSeededDatacenterMetadata(
@@ -82,7 +82,7 @@ export function resolveSeededFields(
     input.sourceServerId,
   )
   return {
-    displayName: input.displayName ??
+    name: input.name ??
       suggestDatacenterDisplayNameFromGeo(geo),
     metadata: mergeDatacenterMetadata(seededMetadata, input.metadata),
   }

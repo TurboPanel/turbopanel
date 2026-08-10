@@ -55,10 +55,10 @@ function parseCreateDatacenterInput(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
 ): CreateDatacenterInput | Response {
-  let displayName: string | null;
+  let name: string | null;
   let description: string | null;
   try {
-    displayName = parseDisplayName(body);
+    name = parseDisplayName(body);
     description = parseDescription(body);
   } catch {
     return c.json({ error: "Invalid request" }, 400);
@@ -76,7 +76,7 @@ function parseCreateDatacenterInput(
   if (rawOptions instanceof Response) return rawOptions;
 
   return {
-    displayName,
+    name,
     description,
     metadata,
     options: rawOptions === null ? null : parseDatacenterOptions(rawOptions),
@@ -245,7 +245,7 @@ export function registerDatacenterRoutes(
     const rows = await db
       .select({
         id: server.id,
-        displayName: server.name,
+        name: server.name,
         datacenterId: server.datacenterId,
         metadata: server.metadata,
       })
@@ -270,7 +270,7 @@ export function registerDatacenterRoutes(
             : null;
         return {
           id: row.id,
-          displayName: row.displayName,
+          name: row.name,
           hostname,
           datacenterId: row.datacenterId,
           metadata: row.metadata,
@@ -379,7 +379,7 @@ export function registerDatacenterRoutes(
         .insert(datacenter)
         .values({
           organizationId,
-          name: seeded.displayName,
+          name: seeded.name,
           description: input.description,
           ...(seeded.metadata !== null ? { metadata: seeded.metadata } : {}),
           ...(input.options !== null ? { options: input.options } : {}),
@@ -436,7 +436,7 @@ export function registerDatacenterRoutes(
     if (body instanceof Response) return body;
 
     let patchFields: {
-      displayName?: string | null;
+      name?: string | null;
       description?: string | null;
       metadata?: Record<string, unknown> | null;
       options?: ReturnType<typeof parseDatacenterOptions>;

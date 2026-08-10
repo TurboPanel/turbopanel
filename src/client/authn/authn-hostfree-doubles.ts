@@ -57,7 +57,7 @@ export type MockAuthState = {
   licenses: Array<{
     id: string
     organizationId: string
-    displayName: string | null
+    name: string | null
     token: string
     revokedAt: string | null
     serverId: string | null
@@ -177,7 +177,7 @@ function mapLicenseRows(state: MockAuthState, activeOnly: boolean) {
     .map((row) => ({
       id: row.id,
       organizationId: row.organizationId,
-      displayName: row.displayName,
+      name: row.name,
       createdAt: row.createdAt,
       token: row.token,
       licenseId: row.id,
@@ -205,7 +205,7 @@ function fetchInnerJoinRows(state: MockAuthState, table: unknown): Promise<Row[]
         .map((row) => ({
           licenseId: row.id,
           id: row.serverId as string,
-          displayName: row.displayName,
+          name: row.name,
         })),
     )
   }
@@ -238,7 +238,7 @@ function fetchWhereRows(
       mapLicenseRows(state, true).map((row) => ({
         id: row.id,
         organizationId: row.organizationId,
-        displayName: row.displayName,
+        name: row.name,
         createdAt: row.createdAt,
         token: row.token,
       })),
@@ -376,7 +376,7 @@ function handleInsertValues(
     state.licenses.push({
       id,
       organizationId: String(row.organizationId),
-      displayName: (row.name as string | null | undefined) ??
+      name: (row.name as string | null | undefined) ??
         (row.displayName as string | null | undefined) ?? null,
       token: String(row.token),
       revokedAt: null,

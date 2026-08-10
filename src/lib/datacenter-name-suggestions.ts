@@ -1,7 +1,7 @@
 import { parseServerGeo, type ServerGeo } from "./geo/server-geo.ts";
 
 export type DatacenterNameSuggestion = {
-  displayName: string;
+  name: string;
   serverCount: number;
   serverIds: string[];
   serverLabels: string[];
@@ -9,14 +9,14 @@ export type DatacenterNameSuggestion = {
 };
 
 type GeoGroup = {
-  displayName: string;
+  name: string;
   serverCount: number;
   serverIds: string[];
   serverLabels: string[];
   geo: ServerGeo;
 };
 
-function sanitizeDisplayName(value: string): string {
+function sanitizeName(value: string): string {
   return value
     .normalize("NFKD")
     .replaceAll(/[\u0300-\u036f]/g, "")
@@ -41,30 +41,30 @@ function networkLabel(geo: ServerGeo): string | null {
   return geo.asOrganization ?? asn;
 }
 
-/** Suggest one display name from a geo snapshot (same rules as fleet grouping). */
+/** Suggest one datacenter name from a geo snapshot (same rules as fleet grouping). */
 export function suggestDatacenterDisplayNameFromGeo(
   geo: ServerGeo,
 ): string | null {
   const location = locationLabel(geo);
   const network = networkLabel(geo);
-  const rawDisplayName = [location, network].filter(
+  const rawName = [location, network].filter(
     (part): part is string => part !== null,
   ).join(" - ");
-  const displayName = sanitizeDisplayName(rawDisplayName);
-  return displayName.length > 0 ? displayName : null;
+  const name = sanitizeName(rawName);
+  return name.length > 0 ? name : null;
 }
 
 export type DatacenterSuggestionServerInput = {
   id: string;
-  displayName: string | null;
+  name: string | null;
   hostname: string | null;
   datacenterId: string | null;
   metadata: unknown;
 };
 
 function serverLabel(row: DatacenterSuggestionServerInput): string {
-  const name = row.displayName?.trim();
-  if (name) return name;
+  const label = row.name?.trim();
+  if (label) return label;
   const host = row.hostname?.trim();
   if (host) return host;
   return row.id;
@@ -98,17 +98,17 @@ export function suggestDatacenterNames(
     );
     if (!geo) continue;
 
-    const displayName = suggestDatacenterDisplayNameFromGeo(geo);
-    if (!displayName) continue;
+    const name = suggestDatacenterDisplayNameFromGeo(geo);
+    if (!name) continue;
 
-    const existing = groups.get(displayName);
+    const existing = groups.get(name);
     if (existing) {
       existing.serverCount += 1;
       existing.serverIds.push(row.id);
       existing.serverLabels.push(serverLabel(row));
     } else {
-      groups.set(displayName, {
-        displayName,
+      groups.set(name, {
+        name,
         serverCount: 1,
         serverIds: [row.id],
         serverLabels: [serverLabel(row)],
@@ -123,11 +123,11 @@ export function suggestDatacenterNames(
     .sort(
       (a, b) =>
         b.serverCount - a.serverCount ||
-        a.displayName.localeCompare(b.displayName),
+        a.name.localeCompare(b.name),
     )
     .slice(0, limit)
     .map((group) => ({
-      displayName: group.displayName,
+      name: group.name,
       serverCount: group.serverCount,
       serverIds: group.serverIds,
       serverLabels: group.serverLabels,

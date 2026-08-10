@@ -1032,7 +1032,7 @@ test('PATCH /projects/:id rejects renaming onto another project name in the org'
         [ORG_ID_HEADER]: organizationId,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ displayName: 'project a' }),
+      body: JSON.stringify({ name: 'project a' }),
     })
     assertEquals(rename.status, 409)
     assertEquals(await rename.json(), { error: 'project_name_in_use' })
@@ -1477,7 +1477,7 @@ test('TurboPanel self-host descendant mutations return system_resource_immutable
       throw new TypeError('expected containers array')
     }
     assertEquals(
-      containerBody.containers.every((row) => row.role === 'service'),
+      containerBody.containers.every((row) => row.role === 'system'),
       true,
     )
     assertEquals(containerBody.containers.length > 0, true)

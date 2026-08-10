@@ -3,7 +3,7 @@ import { and, eq, inArray, isNull } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import { getDatabaseUrl } from '../../db-url.ts'
-import { createDenoDb } from '../../db.ts'
+import { createDenoDb, endDbConnection } from '../../db.ts'
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
@@ -206,14 +206,44 @@ async function withManagedFixtures(
     return
   }
 
+  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const db = createDenoDb()
+  try {
+    await withManagedFixturesBody(db, secretsConfig, options, fn)
+  } finally {
+    await endDbConnection(db)
+  }
+}
+
+async function withManagedFixturesBody(
+  db: ReturnType<typeof createDenoDb>,
+  secretsConfig: SecretsConfig,
+  options: {
+    withManageGrant?: boolean
+    withPlacement?: boolean
+    projectKind?: 'managed-postgres' | 'docker-compose'
+    foreignServer?: boolean
+    online?: boolean
+  },
+  fn: (ctx: {
+    db: ReturnType<typeof createDenoDb>
+    app: Hono<AppEnv>
+    secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>
+    commandQueue: CommandQueue & { envelopes: CommandEnvelope[] }
+    userId: string
+    organizationId: string
+    workspaceId: string
+    projectId: string
+    environmentId: string
+    serverId: string
+  }) => Promise<void>,
+): Promise<void> {
   const withManageGrant = options.withManageGrant !== false
   const withPlacement = options.withPlacement !== false
   const projectKind = options.projectKind ?? 'managed-postgres'
   const foreignServer = options.foreignServer === true
   const online = options.online !== false
 
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
-  const db = createDenoDb()
   const commandQueue = createRecordingCommandQueue()
   const { app, secrets } = await createManagedRoutesTestApp(db, secretsConfig, {
     commandQueue,

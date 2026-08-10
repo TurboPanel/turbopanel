@@ -3,6 +3,7 @@ import { Hono, type Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
+import { isAdminRole } from '../authn/session-store.ts'
 import { can, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import {
@@ -76,6 +77,7 @@ import {
 import {
   colocatedServerUpdateBlockedReason,
   isStaleProjectedUpdating,
+  loadServerStatusRecords,
   resolveServerUpdateStatus,
   type ServerUpdateCommit,
 } from './update-status.ts'
@@ -92,6 +94,36 @@ const UUID_RE =
 
 const STATUS_CACHE_CONTROL = 'private, max-age=5'
 const STATUS_CACHE_MAX_AGE_MS = 5_000
+
+type BatchStatusPayload = {
+  servers: Awaited<ReturnType<typeof loadServerStatusRecords>>
+}
+
+type BatchStatusCoalesceEntry = {
+  expiresAt: number
+  promise?: Promise<BatchStatusPayload>
+  result?: BatchStatusPayload
+}
+
+const batchStatusCoalesce = new Map<string, BatchStatusCoalesceEntry>()
+
+function buildBatchStatusCoalesceKey(
+  userId: string,
+  organizationId: string,
+  visibleIds: string[],
+): string {
+  const sortedIds = [...visibleIds].sort((a, b) => a.localeCompare(b))
+  return `${userId}:${organizationId}:${sortedIds.join(',')}`
+}
+
+function evictExpiredBatchStatusEntries(now = Date.now()): void {
+  for (const [key, entry] of batchStatusCoalesce) {
+    if (entry.promise) continue
+    if (entry.expiresAt <= now) {
+      batchStatusCoalesce.delete(key)
+    }
+  }
+}
 
 type QueuedUpdateResult = {
   ok: true
@@ -304,7 +336,7 @@ async function loadDatacenterDisplayNamesMap(
 }
 
 type ServerPatchFields = {
-  displayName?: string | null
+  name?: string | null
   datacenterId?: string | null
   options?: ServerOptions
   updatedAt: string
@@ -335,9 +367,9 @@ async function parseServerPatchBody(
 ): Promise<ServerPatchFields | Response> {
   const patch: ServerPatchFields = { updatedAt: new Date().toISOString() }
 
-  if (body.displayName !== undefined) {
+  if (body.name !== undefined) {
     try {
-      patch.displayName = parseDisplayName(body)
+      patch.name = parseDisplayName(body)
     } catch {
       return c.json({ error: 'Invalid request' }, 400)
     }
@@ -363,7 +395,7 @@ async function parseServerPatchBody(
   }
 
   if (
-    patch.displayName === undefined &&
+    patch.name === undefined &&
     patch.datacenterId === undefined &&
     patch.options === undefined
   ) {
@@ -375,7 +407,7 @@ async function parseServerPatchBody(
 
 function buildServerUpdateFields(patch: ServerPatchFields): Record<string, unknown> {
   const update: Record<string, unknown> = { updatedAt: patch.updatedAt }
-  if (patch.displayName !== undefined) update.name = patch.displayName
+  if (patch.name !== undefined) update.name = patch.name
   if (patch.datacenterId !== undefined) update.datacenterId = patch.datacenterId
   if (patch.options !== undefined) {
     update.options = sql`COALESCE(${server.options}, '{}'::jsonb) || ${
@@ -866,12 +898,103 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     })
   })
 
+  router.get('/servers/status', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
+
+    const visibleIds = await listVisible(db, {
+      kind: 'server',
+      userId: session.userId,
+      organizationId,
+    })
+
+    evictExpiredBatchStatusEntries()
+    const coalesceKey = buildBatchStatusCoalesceKey(
+      session.userId,
+      organizationId,
+      visibleIds,
+    )
+    const now = Date.now()
+
+    let entry = batchStatusCoalesce.get(coalesceKey)
+    if (entry && entry.expiresAt > now) {
+      if (entry.result) {
+        return c.json(entry.result, 200, { 'Cache-Control': STATUS_CACHE_CONTROL })
+      }
+      if (entry.promise) {
+        const result = await entry.promise
+        return c.json(result, 200, { 'Cache-Control': STATUS_CACHE_CONTROL })
+      }
+    }
+
+    if (!batchStatusCoalesce.get(coalesceKey)?.promise) {
+      const registry = getDaemonCellRegistry(c)
+      const promise = loadServerStatusRecords(db, registry, visibleIds)
+        .then((servers) => ({ servers }))
+        .then((result) => {
+          const current = batchStatusCoalesce.get(coalesceKey)
+          if (current) {
+            current.result = result
+            current.promise = undefined
+            current.expiresAt = Date.now() + STATUS_CACHE_MAX_AGE_MS
+          }
+          return result
+        })
+        .catch((err) => {
+          const current = batchStatusCoalesce.get(coalesceKey)
+          if (current?.promise === promise) {
+            batchStatusCoalesce.delete(coalesceKey)
+          }
+          throw err
+        })
+
+      batchStatusCoalesce.set(coalesceKey, {
+        expiresAt: now + STATUS_CACHE_MAX_AGE_MS,
+        promise,
+      })
+    }
+
+    entry = batchStatusCoalesce.get(coalesceKey)!
+    const result = entry.result ?? await entry.promise!
+    return c.json(result, 200, { 'Cache-Control': STATUS_CACHE_CONTROL })
+  })
+
+  router.get('/servers/:id/status', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const id = c.req.param('id')
+    const denied = await assertCanReadOr403(c, 'server', id)
+    if (denied) return denied
+
+    const registry = getDaemonCellRegistry(c)
+    const records = await loadServerStatusRecords(db, registry, [id])
+    if (records.length === 0) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
+    return c.json(records[0], 200, { 'Cache-Control': STATUS_CACHE_CONTROL })
+  })
+
   // DEBUG/DIAGNOSTIC ENDPOINT — hits the Durable Object directly via fetchDaemonServerCell.
-  // Must NOT be polled by normal UI. Only call on explicit user action (e.g. a manual Refresh button).
-  // Future: restrict to admin or add rate limiting before exposing broadly.
+  // Admin/superadmin only. Must NOT be polled by normal UI — use `/servers/status`
+  // for Postgres-backed presence instead.
   router.get('/servers/:id/cell', async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+    if (!isAdminRole(session.role)) {
+      return c.json({ error: 'Forbidden' }, 403)
+    }
 
     const id = c.req.param('id')
     const denied = await assertCanReadOr403(c, 'server', id)

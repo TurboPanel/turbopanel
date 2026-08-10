@@ -86,7 +86,7 @@ export async function loadDefaultEnvironmentName(
 export async function insertEmptyProject(
   tx: DbTx,
   fields: {
-    displayName: string | null
+    name: string | null
     description: string | null
     workspaceId: string
     serverId: string | null
@@ -98,7 +98,7 @@ export async function insertEmptyProject(
   const [inserted] = await tx
     .insert(project)
     .values({
-      name: fields.displayName,
+      name: fields.name,
       description: fields.description,
       workspaceId: fields.workspaceId,
       metadata: null,
@@ -122,12 +122,12 @@ async function findProductionEnvironment(
   projectId: string,
   defaultEnvironmentName: string,
 ): Promise<
-  { id: string; displayName: string | null; serverId: string | null } | null
+  { id: string; name: string | null; serverId: string | null } | null
 > {
   const rows = await tx
     .select({
       id: environment.id,
-      displayName: environment.name,
+      name: environment.name,
       description: environment.description,
       serverId: environment.serverId,
     })
@@ -137,13 +137,13 @@ async function findProductionEnvironment(
   // Prefer a literal Production row so catalog production config never lands
   // on a non-production environment that merely matches the org default.
   const production = rows.find((row) =>
-    isProductionEnvironmentName(row.displayName)
+    isProductionEnvironmentName(row.name)
   )
   if (production) return production
 
   const normalizedDefault = normalizeEnvName(defaultEnvironmentName)
   const exactDefault = rows.find(
-    (row) => normalizeEnvName(row.displayName) === normalizedDefault,
+    (row) => normalizeEnvName(row.name) === normalizedDefault,
   )
   if (exactDefault) return exactDefault
 
@@ -186,8 +186,8 @@ export async function ensureProductionEnvironment(
     // effective name — never clobber a custom default or a pre-existing
     // Production under a renamed org default.
     const shouldNormalizeName =
-      existing.displayName !== effectiveName &&
-      normalizeEnvName(existing.displayName) === normalizeEnvName(effectiveName)
+      existing.name !== effectiveName &&
+      normalizeEnvName(existing.name) === normalizeEnvName(effectiveName)
     const shouldPinServer =
       serverId != null && existing.serverId !== serverId
     if (shouldNormalizeName || shouldPinServer) {

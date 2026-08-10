@@ -40,10 +40,10 @@ test('parseAssignServerIds deduplicates and validates UUIDs', () => {
   })
 })
 
-test('resolveSeededFields fills displayName and metadata from source server geo', () => {
+test('resolveSeededFields fills name and metadata from source server geo', () => {
   const seeded = resolveSeededFields(
     {
-      displayName: null,
+      name: null,
       description: null,
       metadata: { operatorNote: 'edge' },
       options: null,
@@ -64,7 +64,7 @@ test('resolveSeededFields fills displayName and metadata from source server geo'
     }],
   )
 
-  assertEquals(seeded.displayName, 'Amsterdam NL - Cloudflare AS13335')
+  assertEquals(seeded.name, 'Amsterdam NL - Cloudflare AS13335')
   assertEquals(seeded.metadata?.operatorNote, 'edge')
   assertEquals(
     (seeded.metadata as Record<string, unknown>).seededFromServerId,
@@ -82,6 +82,6 @@ test('resolveSeededFields fills displayName and metadata from source server geo'
     },
     [],
   )
-  assertEquals(passthrough.displayName, 'Custom DC')
+  assertEquals(passthrough.name, 'Custom DC')
   assertEquals(passthrough.metadata, null)
 })

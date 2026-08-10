@@ -19,15 +19,15 @@ const test = Deno.test.bind(Deno)
 
 test('parseDisplayName returns null when absent and trims valid names', () => {
   assertEquals(parseDisplayName({}), null)
-  assertEquals(parseDisplayName({ displayName: '  My App  ' }), 'My App')
+  assertEquals(parseDisplayName({ name: '  My App  ' }), 'My App')
 })
 
 test('parseDisplayName rejects non-strings and invalid characters', () => {
-  assertThrows(() => parseDisplayName({ displayName: 1 }), BadRequestError)
-  assertThrows(() => parseDisplayName({ displayName: '' }), BadRequestError)
-  assertThrows(() => parseDisplayName({ displayName: 'bad@name' }), BadRequestError)
+  assertThrows(() => parseDisplayName({ name: 1 }), BadRequestError)
+  assertThrows(() => parseDisplayName({ name: '' }), BadRequestError)
+  assertThrows(() => parseDisplayName({ name: 'bad@name' }), BadRequestError)
   assertThrows(
-    () => parseDisplayName({ displayName: 'a'.repeat(256) }),
+    () => parseDisplayName({ name: 'a'.repeat(256) }),
     BadRequestError,
   )
 })
@@ -60,7 +60,7 @@ test('buildPatchUpdateFields always sets updatedAt and optional patches', () => 
   assertEquals('description' in onlyStamp, false)
 
   const patched = buildPatchUpdateFields({
-    displayName: '  Renamed  ',
+    name: '  Renamed  ',
     description: '  notes  ',
   })
   assertEquals(patched.name, 'Renamed')
@@ -70,9 +70,9 @@ test('buildPatchUpdateFields always sets updatedAt and optional patches', () => 
   assertEquals(clearedDescription.description, null)
 })
 
-test('buildPatchUpdateFields rejects invalid displayName and description', () => {
-  assertThrows(() => buildPatchUpdateFields({ displayName: 1 }), BadRequestError)
-  assertThrows(() => buildPatchUpdateFields({ displayName: '' }), BadRequestError)
+test('buildPatchUpdateFields rejects invalid name and description', () => {
+  assertThrows(() => buildPatchUpdateFields({ name: 1 }), BadRequestError)
+  assertThrows(() => buildPatchUpdateFields({ name: '' }), BadRequestError)
   assertThrows(() => buildPatchUpdateFields({ description: 1 }), BadRequestError)
   assertThrows(
     () => buildPatchUpdateFields({ description: 'a'.repeat(256) }),

@@ -310,7 +310,7 @@ it('GET /servers/:id/metrics/series issues one fan-in queryHostSeries call', asy
       'cpuUsagePercent',
       'memoryUsedBytes',
     ])
-    assertEquals(fakeStore.seriesCalls[0]!.resolutionSeconds, 300)
+    assertEquals(fakeStore.seriesCalls[0]!.resolutionSeconds, 60)
 
     const cached = await app.request(url, { headers: { Cookie: cookie } })
     assertEquals(cached.status, 200)

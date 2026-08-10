@@ -584,12 +584,6 @@ async function authorizeDeployRequest(
   acknowledgeHealthCheckWarnings: boolean
   noCache: boolean
 } | Response> {
-  const denied = await assertCanManageOr403(c, 'environment', environmentId)
-  if (denied) return denied
-
-  const immutable = await assertNotSystemOwnedOr403(c, 'environment', environmentId)
-  if (immutable) return immutable
-
   const session = c.get('session')
   if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
@@ -600,6 +594,12 @@ async function authorizeDeployRequest(
   if (!entityOrgId || entityOrgId !== orgResult) {
     return c.json({ error: 'Not found' }, 404)
   }
+
+  const denied = await assertCanManageOr403(c, 'environment', environmentId)
+  if (denied) return denied
+
+  const immutable = await assertNotSystemOwnedOr403(c, 'environment', environmentId)
+  if (immutable) return immutable
 
   const body = await parseJsonBody(c)
   if (body instanceof Response) return body
@@ -800,12 +800,6 @@ async function authorizeEnvironmentManage(
   db: Db,
   environmentId: string,
 ): Promise<{ userId: string; organizationId: string } | Response> {
-  const denied = await assertCanManageOr403(c, 'environment', environmentId)
-  if (denied) return denied
-
-  const immutable = await assertNotSystemOwnedOr403(c, 'environment', environmentId)
-  if (immutable) return immutable
-
   const session = c.get('session')
   if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
@@ -816,6 +810,12 @@ async function authorizeEnvironmentManage(
   if (!entityOrgId || entityOrgId !== orgResult) {
     return c.json({ error: 'Not found' }, 404)
   }
+
+  const denied = await assertCanManageOr403(c, 'environment', environmentId)
+  if (denied) return denied
+
+  const immutable = await assertNotSystemOwnedOr403(c, 'environment', environmentId)
+  if (immutable) return immutable
 
   return {
     userId: session.userId,

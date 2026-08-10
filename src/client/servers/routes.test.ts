@@ -1,5 +1,4 @@
 import { assertEquals, assertExists, assertThrows } from 'jsr:@std/assert'
-import { stub } from '@std/testing/mock'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -30,7 +29,6 @@ import {
 } from '../../lib/db/schema.ts'
 import * as hierarchyDelete from '../hierarchy-delete.ts'
 import * as systemHierarchy from '../system/hierarchy.ts'
-import * as colocated from './colocated.ts'
 import {
   colocatedServerDeleteBlockedReason,
   SERVER_HAS_BLOCKERS_CODE,
@@ -609,11 +607,11 @@ test('DELETE /servers/:id returns 403 for the co-located control plane server', 
     serverId,
     registry,
   }) => {
-    const colocatedStub = stub(
-      colocated,
-      'resolveColocatedServerIdSet',
-      () => Promise.resolve(new Set([serverId])),
-    )
+    // Durable self-host pin (includeSelfHostPin) marks this host as co-located.
+    await systemHierarchy.ensureSelfHostSystemHierarchy(db, {
+      organizationId,
+      serverId,
+    })
 
     try {
       const cookie = await sessionCookie(db, secrets, userId)
@@ -630,7 +628,7 @@ test('DELETE /servers/:id returns 403 for the co-located control plane server', 
       assertEquals(body.error, colocatedServerDeleteBlockedReason())
       assertEquals(registry.purgedIds.length, 0)
     } finally {
-      colocatedStub.restore()
+      await cleanupOrgSystemSubtree(db, organizationId)
     }
   })
 })
@@ -1090,11 +1088,22 @@ test('DELETE /servers/:id returns 409 when child resources block deletion', asyn
     serverId,
     registry,
   }) => {
-    const runHierarchyDeleteStub = stub(
-      hierarchyDelete,
-      'runHierarchyDelete',
-      () => Promise.resolve('has_children' as const),
-    )
+    // Active system hosting-ingress containers block delete with 409 has_children.
+    const hierarchy = await systemHierarchy.ensureSystemHierarchy(db, {
+      organizationId,
+      serverId,
+    })
+    const serviceRows = await db
+      .select({ id: service.id })
+      .from(service)
+      .where(eq(service.environmentId, hierarchy.environmentId))
+    const serviceId = serviceRows[0]?.id
+    assertExists(serviceId)
+    const now = new Date().toISOString()
+    await db
+      .update(container)
+      .set({ status: 'running', updatedAt: now })
+      .where(eq(container.serviceId, serviceId))
 
     try {
       const cookie = await sessionCookie(db, secrets, userId)
@@ -1117,7 +1126,7 @@ test('DELETE /servers/:id returns 409 when child resources block deletion', asyn
         .where(eq(server.id, serverId))
       assertEquals(remaining.length, 1)
     } finally {
-      runHierarchyDeleteStub.restore()
+      await cleanupOrgSystemSubtree(db, organizationId)
     }
   })
 })
@@ -2100,7 +2109,12 @@ test('GET /servers/:id returns statusChangedAt for offline servers', async () =>
     assertEquals(body.ok, true)
     assertEquals(body.server.connected, false)
     assertEquals(body.server.connectedAt, null)
-    assertEquals(body.server.statusChangedAt, offlineAt)
+    assertEquals(
+      body.server.statusChangedAt
+        ? new Date(body.server.statusChangedAt).toISOString()
+        : null,
+      offlineAt,
+    )
   })
 })
 
@@ -2492,7 +2506,7 @@ test('PATCH /servers/:id rejects an empty patch body', async () => {
   })
 })
 
-test('PATCH /servers/:id updates displayName', async () => {
+test('PATCH /servers/:id updates name', async () => {
   await withServerDeleteFixtures(async ({
     db,
     app,
@@ -2509,7 +2523,7 @@ test('PATCH /servers/:id updates displayName', async () => {
         [ORG_ID_HEADER]: organizationId,
         'content-type': 'application/json',
       },
-      body: JSON.stringify({ displayName: 'Renamed Host' }),
+      body: JSON.stringify({ name: 'Renamed Host' }),
     })
 
     assertEquals(res.status, 200)
@@ -2517,11 +2531,11 @@ test('PATCH /servers/:id updates displayName', async () => {
     assertEquals(body.ok, true)
 
     const [row] = await db
-      .select({ displayName: server.name })
+      .select({ name: server.name })
       .from(server)
       .where(eq(server.id, serverId))
       .limit(1)
-    assertEquals(row?.displayName, 'Renamed Host')
+    assertEquals(row?.name, 'Renamed Host')
   })
 })
 

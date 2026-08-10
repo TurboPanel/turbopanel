@@ -8,7 +8,7 @@ import { hashPassword, verifyPassword } from './password.ts'
 export type LicenseRecord = {
   id: string
   organizationId: string
-  displayName: string | null
+  name: string | null
   createdAt: string
 }
 
@@ -34,7 +34,7 @@ export async function verifyLicenseToken(
 
 export async function createLicense(
   db: Db,
-  opts: { organizationId: string; displayName?: string },
+  opts: { organizationId: string; name?: string },
 ): Promise<{ licenseId: string; licenseToken: string }> {
   const { plaintext, hashed } = await generateLicenseToken()
   const now = nowTs()
@@ -43,7 +43,7 @@ export async function createLicense(
     .insert(license)
     .values({
       organizationId: opts.organizationId,
-      name: opts.displayName ?? null,
+      name: opts.name ?? null,
       token: hashed,
       createdAt: now,
       updatedAt: now,
@@ -120,7 +120,7 @@ export async function invalidateLicense(
 
 export type LicenseBoundServer = {
   id: string
-  displayName: string | null
+  name: string | null
 }
 
 export async function listServersBoundToLicenses(
@@ -135,7 +135,7 @@ export async function listServersBoundToLicenses(
     .select({
       licenseId: license.id,
       id: server.id,
-      displayName: server.name,
+      name: server.name,
     })
     .from(license)
     .innerJoin(server, eq(server.id, license.serverId))
@@ -145,7 +145,7 @@ export async function listServersBoundToLicenses(
     ))
 
   for (const row of rows) {
-    bound.set(row.licenseId, { id: row.id, displayName: row.displayName })
+    bound.set(row.licenseId, { id: row.id, name: row.name })
   }
 
   return bound
@@ -159,7 +159,7 @@ export async function listLicenses(
     .select({
       id: license.id,
       organizationId: license.organizationId,
-      displayName: license.name,
+      name: license.name,
       createdAt: license.createdAt,
     })
     .from(license)

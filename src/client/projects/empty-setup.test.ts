@@ -59,7 +59,7 @@ async function realDataEncryptionSecrets(): Promise<DerivedSecretsConfig> {
 
 type EnvRow = {
   id: string
-  displayName: string | null
+  name: string | null
   description?: string | null
   serverId: string | null
 }
@@ -375,7 +375,7 @@ test('ensureProductionEnvironment normalizes casing and pins server', async () =
   )
   assertEquals(id, 'env-prod')
   assertEquals(patches.length, 1)
-  assertEquals(patches[0]?.displayName, 'Production')
+  assertEquals(patches[0]?.name, 'Production')
   assertEquals(patches[0]?.serverId, 'srv-new')
 })
 
@@ -416,7 +416,7 @@ test('insertEmptyProject inserts project and environment', async () => {
 test('insertEmptyProject uses custom default environment name', async () => {
   const tx = createTxStub({ insertedProjectId: 'proj-custom' })
   const id = await insertEmptyProject(tx, {
-    displayName: null,
+    name: null,
     description: null,
     workspaceId: 'ws-1',
     serverId: null,

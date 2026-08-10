@@ -32,7 +32,7 @@ test('parseLicenseCreateFields rejects invalid JSON and shapes', () => {
   assertEquals(parseLicenseCreateFields('[]'), 'invalid')
   assertEquals(parseLicenseCreateFields('null'), 'invalid')
   assertEquals(
-    parseLicenseCreateFields(JSON.stringify({ displayName: 1 })),
+    parseLicenseCreateFields(JSON.stringify({ name: 1 })),
     'invalid',
   )
   assertEquals(

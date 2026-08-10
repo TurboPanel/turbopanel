@@ -16,7 +16,7 @@ test("suggestDatacenterNames groups trusted geo and ASN metadata", () => {
   const suggestions = suggestDatacenterNames([
     {
       id: "a",
-      displayName: null,
+      name: null,
       hostname: null,
       datacenterId: null,
       metadata: {
@@ -30,7 +30,7 @@ test("suggestDatacenterNames groups trusted geo and ASN metadata", () => {
     },
     {
       id: "b",
-      displayName: null,
+      name: null,
       hostname: null,
       datacenterId: null,
       metadata: {
@@ -44,7 +44,7 @@ test("suggestDatacenterNames groups trusted geo and ASN metadata", () => {
     },
     {
       id: "c",
-      displayName: null,
+      name: null,
       hostname: null,
       datacenterId: null,
       metadata: {
@@ -89,7 +89,7 @@ test("suggestDatacenterNames groups trusted geo and ASN metadata", () => {
 test("suggestDatacenterNames emits names accepted by display-name validation", () => {
   const [suggestion] = suggestDatacenterNames([{
     id: "x",
-    displayName: null,
+    name: null,
     hostname: null,
     datacenterId: null,
     metadata: {
@@ -103,7 +103,7 @@ test("suggestDatacenterNames emits names accepted by display-name validation", (
   }]);
 
   assertEquals(
-    suggestion?.displayName,
+    suggestion?.name,
     "Montreal CA - Example S.A. Hosting AS64500",
   );
 });
@@ -112,28 +112,28 @@ test("suggestDatacenterNames ignores absent or malformed geo and caps results", 
   const suggestions = suggestDatacenterNames([
     {
       id: "1",
-      displayName: null,
+      name: null,
       hostname: null,
       datacenterId: null,
       metadata: {},
     },
     {
       id: "2",
-      displayName: null,
+      name: null,
       hostname: null,
       datacenterId: null,
       metadata: { geo: { city: "" } },
     },
     {
       id: "3",
-      displayName: null,
+      name: null,
       hostname: null,
       datacenterId: null,
       metadata: { geo: { country: "US" } },
     },
     {
       id: "4",
-      displayName: null,
+      name: null,
       hostname: null,
       datacenterId: null,
       metadata: { geo: { country: "NL" } },
@@ -141,7 +141,7 @@ test("suggestDatacenterNames ignores absent or malformed geo and caps results", 
   ], { limit: 1 });
 
   assertEquals(suggestions.length, 1);
-  assertEquals(suggestions[0]?.displayName, "NL");
+  assertEquals(suggestions[0]?.name, "NL");
   assertEquals(suggestDatacenterNames([], { limit: 0 }), []);
 });
 
@@ -163,7 +163,7 @@ test("suggestDatacenterDisplayNameFromGeo builds location and network labels", (
   assertEquals(suggestDatacenterDisplayNameFromGeo({ city: "" }), null);
 });
 
-test("suggestDatacenterNames prefers displayName and hostname labels", () => {
+test("suggestDatacenterNames prefers name and hostname labels", () => {
   const [suggestion] = suggestDatacenterNames([
     {
       id: "srv-1",
@@ -174,7 +174,7 @@ test("suggestDatacenterNames prefers displayName and hostname labels", () => {
     },
     {
       id: "srv-2",
-      displayName: null,
+      name: null,
       hostname: " host-b ",
       datacenterId: null,
       metadata: { geo: { country: "US", city: "Chicago" } },
@@ -189,7 +189,7 @@ test("suggestDatacenterNames skips non-object metadata", () => {
     suggestDatacenterNames([
       {
         id: "bad",
-        displayName: null,
+        name: null,
         hostname: null,
         datacenterId: null,
         metadata: ["not", "geo"],

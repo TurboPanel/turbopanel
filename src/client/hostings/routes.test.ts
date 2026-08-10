@@ -18,6 +18,7 @@ import {
   membership,
   organization,
   project,
+  server,
   service,
   workspace,
   user,
@@ -108,10 +109,21 @@ test('PATCH /hostings rejects public bind with non-public ip scope', async () =>
     })
     .returning({ id: service.id })
 
+  const [privateServer] = await db
+    .insert(server)
+    .values({
+      organizationId,
+      name: 'Private bind server',
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: server.id })
+
   const [privateIp] = await db
     .insert(ip)
     .values({
       organizationId,
+      serverId: privateServer!.id,
       address: '10.0.0.1',
       allocation: 'dedicated',
       scope: 'datacenter',
@@ -148,6 +160,7 @@ test('PATCH /hostings rejects public bind with non-public ip scope', async () =>
 
   await db.delete(hosting).where(eq(hosting.id, host!.id))
   await db.delete(ip).where(eq(ip.id, privateIp!.id))
+  await db.delete(server).where(eq(server.id, privateServer!.id))
   await db.delete(service).where(eq(service.id, svc!.id))
   await db.delete(environment).where(eq(environment.id, env!.id))
   await db.delete(project).where(eq(project.id, proj!.id))

@@ -10,7 +10,11 @@ import {
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
+import {
+  deriveEncryptionSecretsConfig,
+  deriveSecretsConfig,
+  parseSecretsEnv,
+} from '../authn/secrets.ts'
 import { emptyComposeDocument } from '../../lib/compose/index.ts'
 import type { ComposeDocument } from '../../lib/compose/types.ts'
 import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
@@ -275,11 +279,16 @@ async function createDeployRoutesTestApp(
 ) {
   const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+  const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
+    secretsConfig,
+    'data-encryption',
+  )
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
     c.set('daemonCellRegistry', options.registry)
     c.set('commandQueue', options.commandQueue)
+    c.set('dataEncryptionSecrets', dataEncryptionSecrets)
     return next()
   })
   registerEnvironmentDeployPreviewRoutes(app, { secrets, runtime: 'deno' })

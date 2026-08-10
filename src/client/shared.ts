@@ -16,14 +16,18 @@ export async function getOrgId(c: Context, userId: string): Promise<string | Res
   return resolveOrgId(c, userId)
 }
 
+/**
+ * Parse resource name from the wire body field `name`.
+ * (`parseDisplayName` is the historical export name — body key is `name`.)
+ */
 export function parseDisplayName(body: Record<string, unknown>): string | null {
-  if (body.displayName === undefined) {
+  if (body.name === undefined) {
     return null
   }
-  if (typeof body.displayName !== 'string') {
+  if (typeof body.name !== 'string') {
     throw new BadRequestError('Invalid request')
   }
-  const name = body.displayName.trim()
+  const name = body.name.trim()
   if (name.length < 1 || name.length > 255 || !DISPLAY_NAME_RE.test(name)) {
     throw new BadRequestError('Invalid request')
   }
@@ -75,9 +79,7 @@ export function stripPromotedMetadataKeys(
   return next
 }
 
-/** PATCH payload: omit `name` when absent so partial updates do not clear it.
- * Body still uses wire field `displayName`; DB column is `name`.
- */
+/** PATCH payload: omit `name` when absent so partial updates do not clear it. */
 export function buildPatchUpdateFields(
   body: Record<string, unknown>,
 ): { name?: string | null; description?: string | null; updatedAt: string } {
@@ -88,11 +90,11 @@ export function buildPatchUpdateFields(
     updatedAt: string
   } = { updatedAt }
 
-  if (body.displayName !== undefined) {
-    if (typeof body.displayName !== 'string') {
+  if (body.name !== undefined) {
+    if (typeof body.name !== 'string') {
       throw new BadRequestError('Invalid request')
     }
-    const name = body.displayName.trim()
+    const name = body.name.trim()
     if (name.length < 1 || name.length > 255 || !DISPLAY_NAME_RE.test(name)) {
       throw new BadRequestError('Invalid request')
     }
