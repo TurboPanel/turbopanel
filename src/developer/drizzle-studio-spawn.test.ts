@@ -129,11 +129,9 @@ test('ensureDrizzleStudioInDev does not throw when Node.js cannot be resolved', 
     PATH: Deno.env.get('PATH'),
   }
   Deno.env.set(HOST_KEY, '127.0.0.1')
-  Deno.env.set(
-    DB_URL_KEY,
-    Deno.env.get(DB_URL_KEY) ??
-      'postgres://turbopanel:turbopanel@127.0.0.1:5432/turbopanel',
-  )
+  // Presence-only placeholder: startDrizzleStudio fails on Node before drizzle
+  // kit / DB connect; avoid `user:pass@` shapes the secret scanner flags.
+  Deno.env.set(DB_URL_KEY, Deno.env.get(DB_URL_KEY) ?? 'postgres://test@127.0.0.1/test')
   Deno.env.delete(NODE_KEY)
   Deno.env.set('TURBOPANEL_RUNTIMES_DIR', missingRoot)
   Deno.env.set('TURBOPANEL_UI_MODE', 'static')
