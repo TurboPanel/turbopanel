@@ -175,7 +175,7 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `POST` | `/api/install/v1/bootstrap` | Deno: verify host PAM (root or sudo user), no cookies |
 | `POST` | `/api/install/v1/` | Deno: host PAM + superadmin setup → superadmin session only |
 | `GET` | `/api/client/v1/servers` | Session required: servers visible to the user via `listVisible`, with live `connected` / `hostname` from the daemon hub |
-| `GET` | `/api/client/v1/servers/:id/update` | Read update status (current agent commit vs trunk manifest commit); requires server read access |
+| `GET` | `/api/client/v1/servers/:id/update` | Read update status (current daemon build commit vs trunk manifest commit); requires server read access |
 | `POST` | `/api/client/v1/servers/:id/update` | Trigger a trunk update on the connected daemon; requires `organization:manage` on the server's org |
 | `POST` | `/api/client/v1/invitations/{id}/accept` | Accept a pending invitation; atomically claims the row, materializes `invitation.grants` into `grant` rows (default: `organization:manage` grant on the org), updates session `organizationId` |
 | `GET` | `/api/client/v1/permissions` | Permission catalog — four fixed keys (`organization:own`, `organization:manage`, `team:own`, `team:manage`); any authenticated user |

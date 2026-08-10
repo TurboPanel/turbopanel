@@ -76,6 +76,9 @@ jobs:
       - name: Workers bundle check
         run: pnpm run check:workers-bundle
 
+      - name: Check vocabulary (no daemon-as-agent phrasing)
+        run: pnpm run check:vocabulary
+
       - name: Test with coverage
         run: pnpm test:coverage
 

@@ -18,7 +18,8 @@
     "check:do-hibernation": "node scripts/check-durable-object-hibernation.mjs",
     "check:do-hibernation:fixtures": "node scripts/check-durable-object-hibernation.mjs --fixtures",
     "check:workers-bundle": "node scripts/check-workers-bundle.mjs",
-    "test:hook": "pnpm run check:do-hibernation && pnpm run check:workers-bundle && pnpm test:do && deno task test:authn && deno task test:permissions && deno task test:authz && deno task test:paths && deno task test:compose && deno task test:managed && deno task test:admin"
+    "check:vocabulary": "node scripts/check-vocabulary.mjs",
+    "test:hook": "pnpm run check:do-hibernation && pnpm run check:workers-bundle && pnpm run check:vocabulary && pnpm test:do && deno task test:authn && deno task test:permissions && deno task test:authz && deno task test:paths && deno task test:compose && deno task test:managed && deno task test:admin"
   },
   "dependencies": {
     "@noble/hashes": "1.8.0",

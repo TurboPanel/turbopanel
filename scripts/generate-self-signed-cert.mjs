@@ -3,7 +3,7 @@
  * Generate the TurboPanel platform TLS certificate chain (self-hosted).
  *
  * Produces:
- *   certs/ca.crt + certs/ca.key     — platform CA (distribute to agent nodes / browsers)
+ *   certs/ca.crt + certs/ca.key     — platform CA (distribute to daemon nodes / browsers)
  *   certs/self-signed.crt + .key    — server leaf cert presented by Caddy
  *
  * Regenerates the server cert when interface addresses or DNS names change.

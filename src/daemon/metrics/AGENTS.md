@@ -59,7 +59,7 @@ The **primary** write path is the authenticated `POST /api/daemon/v1/metrics` HT
 
 #### Status event stream (`blob1 = "status"`)
 
-Every genuine `connected` flip on the `server` row (never a heartbeat/identity/agent-only touch) also fires a fire-and-forget **status event** into the same AE dataset / ClickHouse table as host samples — one row per transition, discriminated from host rows by `blob1`. Source: `emitServerStatusEvent` (`src/daemon/metrics/status-events.ts`), called from `projectServerDaemon` (`src/daemon/cell/postgres-projection.ts`) on every `existingStatus.connected !== nextStatus.connected` write, and registered per-runtime (request isolate, DO isolate, cron-only offline-sweep isolate, Deno process) via `setServerStatusEventSink` / `getServerStatusEventSink` — there is no shared request context across those four runtimes.
+Every genuine `connected` flip on the `server` row (never a heartbeat/identity/daemonBuild-only touch) also fires a fire-and-forget **status event** into the same AE dataset / ClickHouse table as host samples — one row per transition, discriminated from host rows by `blob1`. Source: `emitServerStatusEvent` (`src/daemon/metrics/status-events.ts`), called from `projectServerDaemon` (`src/daemon/cell/postgres-projection.ts`) on every `existingStatus.connected !== nextStatus.connected` write, and registered per-runtime (request isolate, DO isolate, cron-only offline-sweep isolate, Deno process) via `setServerStatusEventSink` / `getServerStatusEventSink` — there is no shared request context across those four runtimes.
 
 **Slot layout for `blob1 = "status"` rows** (`field-map.ts`; the host reserved-blob count is unchanged so existing host shape tests stay green):
 
