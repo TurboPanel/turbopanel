@@ -199,7 +199,7 @@ test('applyServiceOptionsToComposeDocument handles non-record services', () => {
   const doc = emptyComposeDocument()
   doc.data.services = ['not', 'a', 'map'] as unknown as Record<string, unknown>
   const result = applyServiceOptionsToComposeDocument(doc, new Map([
-    ['api', { container: { name: 'x' } }],
+    ['api', { preDeployCommand: 'true' }],
   ]))
   assertEquals(result.document.data.services, {})
   assertEquals(result.hooks, [])
