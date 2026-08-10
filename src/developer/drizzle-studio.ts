@@ -118,9 +118,11 @@ export async function startDrizzleStudio(): Promise<
     return studioStartWhenDatabaseMissing()
   }
 
-  const nodeBin = await resolveNodePath()
-
   try {
+    // resolveNodePath throws when no Node binary is available; surface that as
+    // { ok: false } so ensureDrizzleStudioInDev never fails open-instance boot
+    // (and host-free CI coverage does not depend on a vendored node install).
+    const nodeBin = await resolveNodePath()
     await writeDrizzleKitConfig(databaseUrl, DRIZZLE_STUDIO_CONFIG)
 
     const command = new Deno.Command(nodeBin, {
