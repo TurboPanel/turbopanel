@@ -104,6 +104,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/admin/reencrypt-secrets.test.ts \
   src/admin/reencrypt-secrets.hostfree.test.ts \
   src/admin/routes-helpers.hostfree.test.ts \
+  src/admin/routes.hostfree.test.ts \
   src/admin/routes.test.ts \
   src/app.test.ts \
   src/client/authn/auth-rate-limit-http.test.ts \

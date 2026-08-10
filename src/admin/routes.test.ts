@@ -16,7 +16,7 @@ import {
   deriveSecretsConfig,
   parseSecretsEnv,
 } from '../client/authn/secrets.ts'
-import { setting, user } from '../lib/db/schema.ts'
+import { setting, user, server } from '../lib/db/schema.ts'
 import { eq } from 'drizzle-orm'
 import { ADMIN_API_PREFIX } from '../surfaces.ts'
 import { resetReencryptSweepLockForTests, tryBeginReencryptSweep, endReencryptSweep } from './reencrypt-secrets.ts'
@@ -29,6 +29,18 @@ function createMockCell(
   serverId: string,
   purgedIds: string[],
   failIds: Set<string>,
+  waitOverride?: (
+    outbound: { requestId: string; at: string; kind: string },
+  ) => Promise<{
+    serverId: string
+    requestId: string
+    requestKind: string
+    status: 'done' | 'failed' | 'expired' | 'queued'
+    createdAt: string
+    expiresAt: string
+    error?: string
+    result?: unknown
+  }>,
 ): DaemonCell {
   const noopAsync = async () => {}
   return {
@@ -68,20 +80,26 @@ function createMockCell(
     getRequest: async () => null,
     listRequests: async () => [],
     waitForRequest: async () => null,
-    createRequestAndWait: async (outbound) => ({
-      serverId,
-      requestId: outbound.requestId,
-      requestKind: outbound.kind,
-      status: 'done' as const,
-      createdAt: outbound.at,
-      expiresAt: outbound.at,
-    }),
+    createRequestAndWait: async (outbound) => {
+      if (waitOverride) return waitOverride(outbound)
+      return {
+        serverId,
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: 'done' as const,
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+        result: {
+          addresses: { public: [], private: [], loopback: [] },
+        },
+      }
+    },
     claimDeliveryLease: async () => null,
     renewDeliveryLease: async () => null,
     releaseDeliveryLease: noopAsync,
     readOutboxBatch: async () => [],
     ackOutbox: noopAsync,
-    prune: async () => false,
+    prune: async () => [],
     clearUpdateStatus: async () => ({ cleared: 0 }),
     purge: async () => {
       if (failIds.has(serverId)) {
@@ -92,7 +110,25 @@ function createMockCell(
   }
 }
 
-function createTrackingRegistry(failIds: Set<string> = new Set()): {
+function createTrackingRegistry(
+  failIds: Set<string> = new Set(),
+  opts: Readonly<{
+    onlineIds?: string[]
+    connectedSnapshots?: boolean
+    waitOverride?: (
+      outbound: { requestId: string; at: string; kind: string },
+    ) => Promise<{
+      serverId: string
+      requestId: string
+      requestKind: string
+      status: 'done' | 'failed' | 'expired' | 'queued'
+      createdAt: string
+      expiresAt: string
+      error?: string
+      result?: unknown
+    }>
+  }> = {},
+): {
   registry: DaemonCellRegistry
   purgedIds: string[]
 } {
@@ -103,14 +139,27 @@ function createTrackingRegistry(failIds: Set<string> = new Set()): {
     getCell(serverId: string): DaemonCell {
       let cell = cells.get(serverId)
       if (!cell) {
-        cell = createMockCell(serverId, purgedIds, failIds)
+        cell = createMockCell(serverId, purgedIds, failIds, opts.waitOverride)
         cells.set(serverId, cell)
       }
       return cell
     },
-    listOnlineServerIds: async () => [],
+    listOnlineServerIds: async () => opts.onlineIds ?? [],
     // Admin diagnostics (`GET /servers/:id/cell`) legitimately reads live snapshots.
-    getSnapshots: async () => new Map(),
+    getSnapshots: async (ids) => {
+      const out = new Map()
+      if (!opts.connectedSnapshots) return out
+      for (const id of ids) {
+        out.set(id, {
+          serverId: id,
+          version: 1,
+          updatedAt: new Date().toISOString(),
+          connected: true,
+          lastInboundAt: new Date().toISOString(),
+        })
+      }
+      return out
+    },
     purge: async (serverId: string) => {
       await registry.getCell(serverId).purge()
     },
@@ -126,6 +175,7 @@ async function createAdminTestApp(
     withBrowserWriteProtection?: boolean
     getEnv?: () => Record<string, string | undefined>
     devSurface?: boolean
+    runtime?: 'deno' | 'workers'
   }> = {},
 ) {
   const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
@@ -147,7 +197,7 @@ async function createAdminTestApp(
   })
   registerAdminRoutes(app, {
     secrets,
-    runtime: 'deno',
+    runtime: options.runtime ?? 'deno',
     devSurface: options.devSurface ?? false,
     ...(options.getEnv ? { getEnv: options.getEnv } : {}),
   })
@@ -614,4 +664,320 @@ test('GET and PUT /api/admin/v1/instance/public-urls validate and persist origin
       }
     }
   })
+})
+
+test('GET and PUT /api/admin/v1/settings/email round-trip non-secret settings', async () => {
+  await withRoleUser('admin', async ({ app, cookie }) => {
+    const get = await app.request(`${ADMIN_API_PREFIX}/settings/email`, {
+      headers: { Cookie: cookie },
+    })
+    assertEquals(get.status, 200)
+    const before = await get.json()
+    assertEquals(typeof before.settings, 'object')
+
+    const put = await app.request(`${ADMIN_API_PREFIX}/settings/email`, {
+      method: 'PUT',
+      headers: {
+        Cookie: cookie,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ FROM: 'coverage-admin@example.com' }),
+    })
+    assertEquals(put.status, 200)
+    const after = await put.json()
+    assertEquals(typeof after.settings, 'object')
+  })
+})
+
+test('daemon fleet diagnostics and address request success paths', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping admin route tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  resetReencryptSweepLockForTests()
+  const db = createDenoDb()
+  const email = `admin-fleet-${crypto.randomUUID()}@example.com`
+  const [insertedUser] = await db
+    .insert(user)
+    .values({ email, isEmailVerified: true, role: 'superadmin' })
+    .returning({ id: user.id })
+  const userId = insertedUser!.id
+
+  const [insertedServer] = await db
+    .insert(server)
+    .values({
+      name: `admin-fleet-${crypto.randomUUID()}`,
+      hostname: `admin-fleet-${crypto.randomUUID()}.example`,
+      connected: true,
+      statusChangedAt: new Date().toISOString(),
+      daemon: {
+        key: {
+          id: crypto.randomUUID(),
+          algorithm: 'Ed25519',
+          publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+          fingerprint: 'fp',
+          createdAt: new Date().toISOString(),
+        },
+        projection: {
+          remoteAddress: '__direct__',
+          connected: true,
+        },
+      },
+    })
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
+
+  const { registry } = createTrackingRegistry(new Set(), {
+    onlineIds: [serverId],
+    connectedSnapshots: true,
+  })
+  const { app, secrets } = await createAdminTestApp(registry)
+  const cookie = await adminSessionCookie(db, secrets, userId)
+
+  try {
+    const connections = await app.request(`${ADMIN_API_PREFIX}/daemon/connections`, {
+      headers: { Cookie: cookie },
+    })
+    assertEquals(connections.status, 200)
+    const connectionsBody = await connections.json()
+    assertEquals(Array.isArray(connectionsBody.connections), true)
+
+    const send = await app.request(`${ADMIN_API_PREFIX}/daemon/${serverId}/send`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ payload: { echo: true } }),
+    })
+    assertEquals(send.status, 200)
+    assertEquals(await send.json(), { ok: true, id: serverId })
+
+    const commands = await app.request(`${ADMIN_API_PREFIX}/daemon/commands`, {
+      headers: { Cookie: cookie },
+    })
+    assertEquals(commands.status, 200)
+
+    const fleetAddresses = await app.request(`${ADMIN_API_PREFIX}/daemon/addresses`, {
+      headers: { Cookie: cookie },
+    })
+    assertEquals(fleetAddresses.status, 200)
+    const fleetBody = await fleetAddresses.json()
+    assertEquals(Array.isArray(fleetBody.servers), true)
+    assertEquals(fleetBody.servers.length >= 1, true)
+
+    const oneAddresses = await app.request(
+      `${ADMIN_API_PREFIX}/daemon/${serverId}/addresses`,
+      { headers: { Cookie: cookie } },
+    )
+    assertEquals(oneAddresses.status, 200)
+    const oneBody = await oneAddresses.json()
+    assertEquals(oneBody.ok, true)
+    assertEquals(oneBody.daemonId, serverId)
+
+    const applyOk = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls/apply`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ urls: ['https://apply.example.com'] }),
+    })
+    assertEquals(applyOk.status, 200)
+    assertEquals(await applyOk.json(), { ok: true, applied: true })
+  } finally {
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(user).where(eq(user.id, userId))
+    resetReencryptSweepLockForTests()
+  }
+})
+
+test('daemon address request failed/expired/error branches', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping admin route tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+  const email = `admin-addr-fail-${crypto.randomUUID()}@example.com`
+  const [insertedUser] = await db
+    .insert(user)
+    .values({ email, isEmailVerified: true, role: 'admin' })
+    .returning({ id: user.id })
+  const userId = insertedUser!.id
+
+  const [insertedServer] = await db
+    .insert(server)
+    .values({
+      name: `admin-addr-${crypto.randomUUID()}`,
+      connected: true,
+      statusChangedAt: new Date().toISOString(),
+      daemon: {
+        key: {
+          id: crypto.randomUUID(),
+          algorithm: 'Ed25519',
+          publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB' },
+          fingerprint: 'fp2',
+          createdAt: new Date().toISOString(),
+        },
+        projection: { remoteAddress: '__direct__' },
+      },
+    })
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
+
+  try {
+    const failedRegistry = createTrackingRegistry(new Set(), {
+      onlineIds: [serverId],
+      waitOverride: async (outbound) => ({
+        serverId,
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: 'failed',
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+      }),
+    }).registry
+    const failedApp = await createAdminTestApp(failedRegistry)
+    const cookie = await adminSessionCookie(db, failedApp.secrets, userId)
+
+    const failedFleet = await failedApp.app.request(`${ADMIN_API_PREFIX}/daemon/addresses`, {
+      headers: { Cookie: cookie },
+    })
+    assertEquals(failedFleet.status, 200)
+    const failedFleetBody = await failedFleet.json()
+    assertEquals(failedFleetBody.servers[0]?.error, 'failed to fetch addresses')
+
+    const failedOne = await failedApp.app.request(
+      `${ADMIN_API_PREFIX}/daemon/${serverId}/addresses`,
+      { headers: { Cookie: cookie } },
+    )
+    assertEquals(failedOne.status, 500)
+
+    const expiredRegistry = createTrackingRegistry(new Set(), {
+      onlineIds: [serverId],
+      waitOverride: async (outbound) => ({
+        serverId,
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: 'expired',
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+      }),
+    }).registry
+    const expiredApp = await createAdminTestApp(expiredRegistry)
+    const expiredCookie = await adminSessionCookie(db, expiredApp.secrets, userId)
+
+    const expiredFleet = await expiredApp.app.request(`${ADMIN_API_PREFIX}/daemon/addresses`, {
+      headers: { Cookie: expiredCookie },
+    })
+    assertEquals(expiredFleet.status, 200)
+    const expiredFleetBody = await expiredFleet.json()
+    assertEquals(expiredFleetBody.servers[0]?.error, 'timeout waiting for addresses')
+
+    const expiredOne = await expiredApp.app.request(
+      `${ADMIN_API_PREFIX}/daemon/${serverId}/addresses`,
+      { headers: { Cookie: expiredCookie } },
+    )
+    assertEquals(expiredOne.status, 500)
+
+    const throwRegistry = createTrackingRegistry(new Set(), {
+      onlineIds: [serverId],
+      waitOverride: async () => {
+        throw new Error('daemon not connected')
+      },
+    }).registry
+    const throwApp = await createAdminTestApp(throwRegistry)
+    const throwCookie = await adminSessionCookie(db, throwApp.secrets, userId)
+
+    const throwFleet = await throwApp.app.request(`${ADMIN_API_PREFIX}/daemon/addresses`, {
+      headers: { Cookie: throwCookie },
+    })
+    assertEquals(throwFleet.status, 200)
+    const throwFleetBody = await throwFleet.json()
+    assertEquals(throwFleetBody.servers[0]?.error, 'daemon not connected')
+
+    const throwOne = await throwApp.app.request(
+      `${ADMIN_API_PREFIX}/daemon/${serverId}/addresses`,
+      { headers: { Cookie: throwCookie } },
+    )
+    assertEquals(throwOne.status, 404)
+
+    const throw500Registry = createTrackingRegistry(new Set(), {
+      onlineIds: [serverId],
+      waitOverride: async () => {
+        throw 'raw-fail'
+      },
+    }).registry
+    const throw500App = await createAdminTestApp(throw500Registry)
+    const throw500Cookie = await adminSessionCookie(db, throw500App.secrets, userId)
+    const throw500One = await throw500App.app.request(
+      `${ADMIN_API_PREFIX}/daemon/${serverId}/addresses`,
+      { headers: { Cookie: throw500Cookie } },
+    )
+    assertEquals(throw500One.status, 500)
+  } finally {
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(user).where(eq(user.id, userId))
+  }
+})
+
+test('POST /instance/public-urls/apply returns 503 when colocated snapshot is disconnected', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping admin route tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+  const email = `admin-apply-disc-${crypto.randomUUID()}@example.com`
+  const [insertedUser] = await db
+    .insert(user)
+    .values({ email, isEmailVerified: true, role: 'superadmin' })
+    .returning({ id: user.id })
+  const userId = insertedUser!.id
+
+  const [insertedServer] = await db
+    .insert(server)
+    .values({
+      name: `admin-apply-${crypto.randomUUID()}`,
+      connected: true,
+      statusChangedAt: new Date().toISOString(),
+      daemon: {
+        key: {
+          id: crypto.randomUUID(),
+          algorithm: 'Ed25519',
+          publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC' },
+          fingerprint: 'fp3',
+          createdAt: new Date().toISOString(),
+        },
+        projection: { remoteAddress: '__direct__' },
+      },
+    })
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
+
+  const { registry } = createTrackingRegistry(new Set(), {
+    onlineIds: [serverId],
+    connectedSnapshots: false,
+  })
+  const { app, secrets } = await createAdminTestApp(registry)
+  const cookie = await adminSessionCookie(db, secrets, userId)
+
+  try {
+    const res = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls/apply`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        'content-type': 'application/json',
+      },
+      body: '{}',
+    })
+    assertEquals(res.status, 503)
+    const body = await res.json()
+    assertEquals(body.error, 'co-located daemon disconnected')
+  } finally {
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(user).where(eq(user.id, userId))
+  }
 })
