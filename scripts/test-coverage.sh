@@ -280,7 +280,10 @@ deno test -A --coverage=coverage/deno-profile \
   src/deno-compile-permissions.test.ts \
   src/dev-mode.deno.test.ts \
   src/developer/database-routes-helpers.hostfree.test.ts \
+  src/developer/database-routes.test.ts \
   src/developer/database-routes-shared.test.ts \
+  src/developer/drizzle-studio.test.ts \
+  src/developer/drizzle-studio-spawn.test.ts \
   src/developer/dev-sync-archive.deno.test.ts \
   src/developer/drizzle-studio-bind.test.ts \
   src/developer/drizzle-studio-helpers.hostfree.test.ts \
