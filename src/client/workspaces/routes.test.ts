@@ -297,7 +297,7 @@ test('POST /workspaces rejects duplicate display names case-insensitively', asyn
         [ORG_ID_HEADER]: organizationId,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ displayName: 'Team Space' }),
+      body: JSON.stringify({ name: 'Team Space' }),
     })
     assertEquals(first.status, 200)
 
@@ -308,7 +308,7 @@ test('POST /workspaces rejects duplicate display names case-insensitively', asyn
         [ORG_ID_HEADER]: organizationId,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ displayName: '  team space  ' }),
+      body: JSON.stringify({ name: '  team space  ' }),
     })
     assertEquals(duplicate.status, 409)
     assertEquals(await duplicate.json(), { error: 'workspace_name_in_use' })
@@ -331,7 +331,7 @@ test('PATCH /workspaces/:id rejects renaming onto another workspace name', async
         [ORG_ID_HEADER]: organizationId,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ displayName: 'Workspace A' }),
+      body: JSON.stringify({ name: 'Workspace A' }),
     })
     assertEquals(createA.status, 200)
 
@@ -342,7 +342,7 @@ test('PATCH /workspaces/:id rejects renaming onto another workspace name', async
         [ORG_ID_HEADER]: organizationId,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ displayName: 'Workspace B' }),
+      body: JSON.stringify({ name: 'Workspace B' }),
     })
     assertEquals(createB.status, 200)
     const { id: workspaceBId } = await createB.json() as { id: string }
@@ -354,7 +354,7 @@ test('PATCH /workspaces/:id rejects renaming onto another workspace name', async
         [ORG_ID_HEADER]: organizationId,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ displayName: 'workspace a' }),
+      body: JSON.stringify({ name: 'workspace a' }),
     })
     assertEquals(rename.status, 409)
     assertEquals(await rename.json(), { error: 'workspace_name_in_use' })
@@ -403,7 +403,7 @@ test('workspace reads expose kind and system workspace is immutable', async () =
         [ORG_ID_HEADER]: organizationId,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ displayName: 'X', kind: 'system' }),
+      body: JSON.stringify({ name: 'X', kind: 'system' }),
     })
     assertEquals(create.status, 200)
     const { id: createdId } = await create.json() as { id: string }
@@ -421,7 +421,7 @@ test('workspace reads expose kind and system workspace is immutable', async () =
         [ORG_ID_HEADER]: organizationId,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ displayName: 'System' }),
+      body: JSON.stringify({ name: 'System' }),
     })
     assertEquals(namedSystem.status, 409)
     assertEquals(await namedSystem.json(), { error: 'workspace_name_in_use' })
@@ -433,7 +433,7 @@ test('workspace reads expose kind and system workspace is immutable', async () =
         [ORG_ID_HEADER]: organizationId,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ displayName: 'System' }),
+      body: JSON.stringify({ name: 'System' }),
     })
     assertEquals(renameOntoSystem.status, 409)
     assertEquals(await renameOntoSystem.json(), { error: 'workspace_name_in_use' })
@@ -445,7 +445,7 @@ test('workspace reads expose kind and system workspace is immutable', async () =
         [ORG_ID_HEADER]: organizationId,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ displayName: 'Renamed System' }),
+      body: JSON.stringify({ name: 'Renamed System' }),
     })
     assertEquals(patch.status, 403)
     assertEquals(await patch.json(), { error: SYSTEM_RESOURCE_IMMUTABLE_ERROR })

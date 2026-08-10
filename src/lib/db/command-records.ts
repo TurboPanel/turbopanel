@@ -191,7 +191,9 @@ export async function listServerCommands(
     .select()
     .from(command)
     .where(eq(command.serverId, params.serverId))
-    .orderBy(desc(command.createdAt))
+    // Break ties when two commands share a `created_at` instant (common in tests
+    // and burst enqueue). UUIDv7 ids are time-ordered so `id DESC` is newest-first.
+    .orderBy(desc(command.createdAt), desc(command.id))
     .limit(limit)
 
   return rows.map(serializeCommandRecord)
