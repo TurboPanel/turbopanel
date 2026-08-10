@@ -1,0 +1,222 @@
+import type { Context } from 'hono'
+import type { Db } from '../db.ts'
+import type { ServerAddresses } from '../server-addresses.ts'
+import {
+  getPublicUrls,
+  parsePublicUrlEntries,
+  setPublicUrls,
+} from './public-urls.ts'
+import {
+  REENCRYPT_BATCH_SIZE,
+  REENCRYPT_STAGES,
+  type ReencryptCursor,
+  type ReencryptStage,
+} from './reencrypt-secrets.ts'
+
+export const MAX_CELL_PURGE_BATCH_SIZE = 200
+
+export function resolvePlatformEnv(
+  c: Context,
+  opts: { getEnv?: () => Record<string, string | undefined> },
+): Record<string, string | undefined> {
+  const fromContext = c.get('platformEnv')
+  if (fromContext) return fromContext
+  if (opts.getEnv) return opts.getEnv()
+  return {}
+}
+
+export function extractAddresses(record: { status: string; result?: unknown }): ServerAddresses {
+  if (record.status !== 'done') {
+    throw new Error(record.status === 'expired'
+      ? 'timeout waiting for addresses'
+      : 'failed to fetch addresses')
+  }
+  const result = record.result as { addresses?: ServerAddresses } | undefined
+  if (!result?.addresses) throw new Error('missing addresses in daemon response')
+  return result.addresses
+}
+
+export type PublicUrlsApplyUrlsResult =
+  | { ok: true; urls: string[] }
+  | { ok: false; status: 400 | 422; body: unknown }
+
+export async function resolvePublicUrlsForApply(
+  db: Db,
+  body: unknown,
+  allowHttp: boolean,
+): Promise<PublicUrlsApplyUrlsResult> {
+  if (body && typeof body === 'object' && 'urls' in body) {
+    const urlsBody = body as { urls: unknown }
+    if (
+      !Array.isArray(urlsBody.urls) ||
+      !urlsBody.urls.every((u: unknown) => typeof u === 'string')
+    ) {
+      return {
+        ok: false,
+        status: 400,
+        body: { ok: false, error: 'expected { urls?: string[] }' },
+      }
+    }
+    const parsed = parsePublicUrlEntries(urlsBody.urls, { allowHttp })
+    if (!parsed.ok) {
+      return { ok: false, status: 422, body: parsed }
+    }
+    await setPublicUrls(db, parsed.urls)
+    return { ok: true, urls: parsed.urls }
+  }
+  return { ok: true, urls: await getPublicUrls(db) }
+}
+
+export type ReencryptRequestParse =
+  | { ok: true; cursor: ReencryptCursor | null; limit: number }
+  | { ok: false; error: string }
+
+export function isReencryptStage(value: unknown): value is ReencryptStage {
+  return typeof value === 'string' &&
+    (REENCRYPT_STAGES as readonly string[]).includes(value)
+}
+
+export function parseReencryptRequestBody(body: unknown): ReencryptRequestParse {
+  if (body === null || body === undefined) {
+    return { ok: true, cursor: null, limit: REENCRYPT_BATCH_SIZE }
+  }
+  if (typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'expected { cursor?, limit? }' }
+  }
+
+  const record = body as Record<string, unknown>
+  let limit = REENCRYPT_BATCH_SIZE
+  if (record.limit !== undefined) {
+    if (typeof record.limit !== 'number' || !Number.isInteger(record.limit) || record.limit < 1) {
+      return { ok: false, error: 'limit must be a positive integer' }
+    }
+    // Cap to the server batch size so clients cannot request unbounded work.
+    limit = Math.min(record.limit, REENCRYPT_BATCH_SIZE)
+  }
+
+  if (record.cursor === undefined || record.cursor === null) {
+    return { ok: true, cursor: null, limit }
+  }
+  if (typeof record.cursor !== 'object' || Array.isArray(record.cursor)) {
+    return { ok: false, error: 'cursor must be an object' }
+  }
+
+  const cursorObj = record.cursor as Record<string, unknown>
+  if (!isReencryptStage(cursorObj.stage)) {
+    return { ok: false, error: 'cursor.stage is required' }
+  }
+
+  const cursor: ReencryptCursor = { stage: cursorObj.stage }
+  if (cursorObj.afterId !== undefined) {
+    if (typeof cursorObj.afterId !== 'string' || cursorObj.afterId.length === 0) {
+      return { ok: false, error: 'cursor.afterId must be a non-empty string' }
+    }
+    cursor.afterId = cursorObj.afterId
+  }
+
+  return { ok: true, cursor, limit }
+}
+
+export type PayloadBodyParse =
+  | { ok: true; payload: unknown }
+  | { ok: false; error: string }
+
+export function parsePayloadBody(body: unknown): PayloadBodyParse {
+  if (!body || typeof body !== 'object' || !('payload' in body)) {
+    return { ok: false, error: 'expected { payload: unknown }' }
+  }
+  return { ok: true, payload: (body as { payload: unknown }).payload }
+}
+
+export type CellPurgeBatchParse =
+  | { ok: true; serverIds: string[] }
+  | { ok: false; error: string }
+
+export function parseCellPurgeBatchBody(body: unknown): CellPurgeBatchParse {
+  if (
+    !body ||
+    typeof body !== 'object' ||
+    !Array.isArray((body as { serverIds?: unknown }).serverIds) ||
+    (body as { serverIds: unknown[] }).serverIds.length === 0 ||
+    !(body as { serverIds: unknown[] }).serverIds.every(
+      (id: unknown) => typeof id === 'string' && id.length > 0,
+    )
+  ) {
+    return { ok: false, error: 'expected { serverIds: string[] } with at least one id' }
+  }
+  const serverIds = (body as { serverIds: string[] }).serverIds
+  if (serverIds.length > MAX_CELL_PURGE_BATCH_SIZE) {
+    return {
+      ok: false,
+      error: `serverIds exceeds maximum batch size of ${MAX_CELL_PURGE_BATCH_SIZE}`,
+    }
+  }
+  return { ok: true, serverIds }
+}
+
+export type SignupEnabledParse =
+  | { ok: true; enabled: boolean }
+  | { ok: false; error: string }
+
+export function parseSignupEnabledBody(body: unknown): SignupEnabledParse {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'expected { enabled: boolean }' }
+  }
+  const enabled = (body as { enabled?: unknown }).enabled
+  if (typeof enabled !== 'boolean') {
+    return { ok: false, error: 'expected { enabled: boolean }' }
+  }
+  return { ok: true, enabled }
+}
+
+export function parseEmailSettingsUpdates(
+  body: unknown,
+): Record<string, string | null> | null {
+  if (!body || typeof body !== 'object') {
+    return null
+  }
+  const updates: Record<string, string | null> = {}
+  for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
+    if (typeof value === 'string' || value === null) updates[key] = value
+  }
+  return updates
+}
+
+export function resolvePerServerLimit(limitRaw: string | undefined): number {
+  const limit = Number(limitRaw ?? 50)
+  return Number.isFinite(limit) ? limit : 50
+}
+
+export type PublicUrlsApplyWaitResult =
+  | { kind: 'done' }
+  | { kind: 'failed'; error: string }
+  | { kind: 'timeout' }
+  | { kind: 'error'; error: string }
+
+export type PublicUrlsApplyHttpResult =
+  | { status: 200; body: { ok: true; applied: true } }
+  | { status: 500; body: { ok: false; applied: false; error: string } }
+
+export function publicUrlsApplyWaitToResponse(
+  result: PublicUrlsApplyWaitResult,
+): PublicUrlsApplyHttpResult {
+  switch (result.kind) {
+    case 'done':
+      return { status: 200, body: { ok: true, applied: true } }
+    case 'failed':
+      return {
+        status: 500,
+        body: { ok: false, applied: false, error: result.error },
+      }
+    case 'timeout':
+      return {
+        status: 500,
+        body: { ok: false, applied: false, error: 'timeout waiting for daemon' },
+      }
+    case 'error':
+      return {
+        status: 500,
+        body: { ok: false, applied: false, error: result.error },
+      }
+  }
+}

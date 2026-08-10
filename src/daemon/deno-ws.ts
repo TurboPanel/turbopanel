@@ -45,7 +45,7 @@ import { verifyLocalConsoleAuthorization } from "../developer/local-console-auth
 const OUTBOX_PUMP_BLOCK_MS = 250;
 
 /** Decode a Hono/Deno WS frame (`string | Blob | ArrayBufferLike`) to UTF-8 text. */
-async function wsMessageDataToString(
+export async function wsMessageDataToString(
   data: string | Blob | ArrayBufferLike,
 ): Promise<string> {
   if (typeof data === "string") return data;
@@ -53,7 +53,7 @@ async function wsMessageDataToString(
   return new TextDecoder().decode(data);
 }
 
-function isClosedConnectionError(err: unknown): boolean {
+export function isClosedConnectionError(err: unknown): boolean {
   return /connection is closed/i.test(String(err));
 }
 
@@ -378,11 +378,11 @@ export function registerDaemonWebSocket(
           await cell.recordInbound({
             connectionId,
             at: message.at,
-            agent: message.agent,
+            daemonBuild: message.daemonBuild,
           });
           await onDaemonInbound(db, payload.sub, cell, {
             at: message.at,
-            agent: message.agent,
+            daemonBuild: message.daemonBuild,
           });
           return;
         }
@@ -397,11 +397,11 @@ export function registerDaemonWebSocket(
           await cell.recordInbound({
             connectionId,
             at: message.at,
-            agent: message.agent,
+            daemonBuild: message.daemonBuild,
           });
           await onDaemonInbound(db, payload.sub, cell, {
             at: message.at,
-            agent: message.agent,
+            daemonBuild: message.daemonBuild,
           });
           return;
         }

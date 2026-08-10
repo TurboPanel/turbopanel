@@ -4,7 +4,9 @@ import {
   colocatedLicenseRevokeError,
   getClientPublicStatus,
   getSignupSettingMeta,
+  isInstanceInstalled,
   normalizeSignupEnvOverride,
+  resolveEffectiveSignupEnabled,
   resolveIsSignupEnabled,
   resolveSignupEnvOverrideFromContext,
   validateOrganizationName,
@@ -124,4 +126,38 @@ it('colocatedLicenseRevokeError returns stable copy', () => {
     colocatedLicenseRevokeError(),
     'The license for the co-located control plane daemon cannot be revoked',
   )
+})
+
+it('isInstanceInstalled returns false when org exists but no superadmin', async () => {
+  let call = 0
+  const noAdminDb = {
+    select: () => ({
+      from: () => ({
+        where: () => {
+          call += 1
+          if (call === 1) {
+            return {
+              limit: () => Promise.resolve([{ id: 'org-1' }]),
+            }
+          }
+          return {
+            limit: () => Promise.resolve([]),
+          }
+        },
+      }),
+    }),
+  } as unknown as Db
+
+  assertEquals(await isInstanceInstalled(noAdminDb), false)
+})
+
+it('resolveEffectiveSignupEnabled works without a database client', async () => {
+  assertEquals(
+    await resolveEffectiveSignupEnabled(undefined, 'workers', '1'),
+    true,
+  )
+})
+
+it('getClientPublicStatus returns null for deno without db', async () => {
+  assertEquals(await getClientPublicStatus(undefined, 'deno', '0'), null)
 })

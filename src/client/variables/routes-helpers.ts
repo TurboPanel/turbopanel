@@ -248,3 +248,59 @@ export function resolvePatchIsSecret(
     nextIsSecret: toggled ? body.isSecret === true : existingIsSecret,
   }
 }
+
+export type ResolvedVariablesQuery =
+  | { kind: 'hosting'; id: string }
+  | { kind: 'service'; id: string }
+  | { kind: 'environment'; id: string }
+
+export function parseResolvedVariablesQuery(params: {
+  serviceId: string | undefined
+  environmentId: string | undefined
+  hostingId: string | undefined
+}):
+  | { ok: true; query: ResolvedVariablesQuery }
+  | { ok: false; error: string; status: 400 } {
+  const specified = [params.serviceId, params.environmentId, params.hostingId].filter(
+    (value) => value !== undefined && value !== '',
+  )
+  if (specified.length !== 1) {
+    return {
+      ok: false,
+      error: 'Exactly one of serviceId, environmentId, or hostingId must be specified',
+      status: 400,
+    }
+  }
+  if (params.hostingId) {
+    return { ok: true, query: { kind: 'hosting', id: params.hostingId } }
+  }
+  if (params.serviceId) {
+    return { ok: true, query: { kind: 'service', id: params.serviceId } }
+  }
+  return { ok: true, query: { kind: 'environment', id: params.environmentId! } }
+}
+
+export function variableKeyUniqueConflictMessage(): string {
+  return 'A variable with this key already exists in this scope'
+}
+
+export function validateVariableKeyValue(
+  key: unknown,
+): { ok: true; key: string } | { ok: false; error: string; status: 400 } {
+  if (typeof key !== 'string' || !key || !VARIABLE_KEY_RE.test(key)) {
+    return { ok: false, error: 'Invalid request', status: 400 }
+  }
+  return { ok: true, key }
+}
+
+export function patchHasOnlyUpdatedAt(updateFields: Record<string, unknown>): boolean {
+  return Object.keys(updateFields).length === 1
+}
+
+export function switchingSecretRequiresValue(
+  nextIsSecret: boolean,
+  existingIsSecret: boolean,
+  valueProvided: boolean,
+): boolean {
+  return !nextIsSecret && existingIsSecret && !valueProvided
+}

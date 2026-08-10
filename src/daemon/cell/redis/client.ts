@@ -12,7 +12,7 @@ export type StreamEntry = {
 
 const DEFAULT_SOCKET_PATH = "/run/turbopanel/redis.sock";
 
-function resolveSocketPath(opts?: RedisClientOptions): string {
+export function resolveSocketPath(opts?: RedisClientOptions): string {
   return opts?.socketPath ??
     Deno.env.get("TURBOPANEL_REDIS_SOCKET") ??
     DEFAULT_SOCKET_PATH;
@@ -24,7 +24,7 @@ function attachErrorLogging(redis: Redis, label: string): void {
   });
 }
 
-function parseStreamFields(fieldList: unknown): Record<string, string> {
+export function parseStreamFields(fieldList: unknown): Record<string, string> {
   const fields: Record<string, string> = {};
   if (!Array.isArray(fieldList)) return fields;
   for (let i = 0; i < fieldList.length; i += 2) {
@@ -33,12 +33,12 @@ function parseStreamFields(fieldList: unknown): Record<string, string> {
   return fields;
 }
 
-function parseStreamMessage(message: unknown): StreamEntry | null {
+export function parseStreamMessage(message: unknown): StreamEntry | null {
   if (!Array.isArray(message) || message.length < 2) return null;
   return { id: String(message[0]), fields: parseStreamFields(message[1]) };
 }
 
-function parseMessageList(messages: unknown): StreamEntry[] {
+export function parseMessageList(messages: unknown): StreamEntry[] {
   if (!Array.isArray(messages)) return [];
   const entries: StreamEntry[] = [];
   for (const message of messages) {
@@ -48,7 +48,7 @@ function parseMessageList(messages: unknown): StreamEntry[] {
   return entries;
 }
 
-function parseStreamEntries(raw: unknown): StreamEntry[] {
+export function parseStreamEntries(raw: unknown): StreamEntry[] {
   if (!Array.isArray(raw) || raw.length === 0) return [];
 
   const entries: StreamEntry[] = [];
@@ -59,7 +59,7 @@ function parseStreamEntries(raw: unknown): StreamEntry[] {
   return entries;
 }
 
-function parseAutoClaimEntries(raw: unknown): StreamEntry[] {
+export function parseAutoClaimEntries(raw: unknown): StreamEntry[] {
   if (!Array.isArray(raw) || raw.length < 2) return [];
   return parseMessageList(raw[1]);
 }

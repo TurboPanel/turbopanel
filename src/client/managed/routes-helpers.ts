@@ -4,7 +4,7 @@ import type { AppEnv } from '../../app.ts'
 import type { Db } from '../../db.ts'
 import type { ManagedSettings } from '../../lib/managed/settings.ts'
 import { server } from '../../lib/db/schema.ts'
-import { requireStringField } from '../shared.ts'
+import { BadRequestError, parseDisplayName, requireStringField } from '../shared.ts'
 import { USERNAME_RE } from '../principals/store.ts'
 import { resolveHostingBindAddress } from '../environments/deploy-prepare.ts'
 import type { ManagedContext } from './context.ts'
@@ -320,4 +320,375 @@ export function parseManagedUserCreateFields(
   }
 
   return { username, databases, privileges }
+}
+
+export type ManagedRouteValidationError = {
+  ok: false
+  error: string
+  status: 400 | 409 | 422
+}
+
+export type ManagedLifecycleAction = 'start' | 'stop' | 'restart'
+
+export function parseManagedLifecycleAction(
+  body: Record<string, unknown>,
+):
+  | { ok: true; action: ManagedLifecycleAction }
+  | ManagedRouteValidationError {
+  const action = body.action
+  if (action !== 'start' && action !== 'stop' && action !== 'restart') {
+    return { ok: false, error: 'Invalid request', status: 400 }
+  }
+  return { ok: true, action }
+}
+
+/**
+ * Display-name parse for managed create — mirrors {@link parseDisplayName}
+ * but returns a typed validation error instead of throwing.
+ */
+export function parseManagedCreateDisplayName(
+  body: Record<string, unknown>,
+):
+  | { ok: true; displayName: string | null }
+  | ManagedRouteValidationError {
+  try {
+    return { ok: true, displayName: parseDisplayName(body) }
+  } catch (error) {
+    if (error instanceof BadRequestError) {
+      return { ok: false, error: 'Invalid request', status: 400 }
+    }
+    throw error
+  }
+}
+
+/**
+ * Merge PATCH `settings` onto current managed settings and re-validate via
+ * the engine spec. Returns `null` when the merged shape is invalid.
+ */
+export function mergeManagedPatchSettings(
+  spec: {
+    parseSettings: (v: unknown) => ManagedSettings | null
+  },
+  currentSettings: ManagedSettings,
+  body: Record<string, unknown>,
+): ManagedSettings | null {
+  return spec.parseSettings({
+    ...currentSettings,
+    ...(isPlainObject(body.settings) ? body.settings : {}),
+  })
+}
+
+export function validateManagedDatabaseCreateName(
+  name: string,
+  databases: readonly string[],
+  identifier: { pattern: RegExp; maxLength: number },
+): ManagedRouteValidationError | null {
+  if (!identifier.pattern.test(name) || name.length > identifier.maxLength) {
+    return { ok: false, error: 'Invalid database name', status: 400 }
+  }
+  if (databases.includes(name)) {
+    return { ok: false, error: 'database_exists', status: 409 }
+  }
+  return null
+}
+
+/** Narrow the false status union — delete-not-found uses HTTP 404. */
+export type ManagedDatabaseDeleteError =
+  | { ok: false; error: 'Not found'; status: 404 }
+  | { ok: false; error: 'cannot_drop_initial_database'; status: 409 }
+
+export function evaluateManagedDatabaseDelete(
+  databaseName: string,
+  databases: readonly string[],
+  initialDatabase: string,
+): ManagedDatabaseDeleteError | null {
+  if (!databases.includes(databaseName)) {
+    return { ok: false, error: 'Not found', status: 404 }
+  }
+  if (databaseName === initialDatabase) {
+    return { ok: false, error: 'cannot_drop_initial_database', status: 409 }
+  }
+  return null
+}
+
+export function nextDatabasesAfterCreate(
+  databases: readonly string[],
+  name: string,
+): string[] {
+  return [...databases, name].sort((a, b) => a.localeCompare(b))
+}
+
+export function nextDatabasesAfterDelete(
+  databases: readonly string[],
+  databaseName: string,
+): string[] {
+  return databases.filter((entry) => entry !== databaseName)
+}
+
+export function parsePromoteForce(body: Record<string, unknown>): boolean {
+  return body.force === true
+}
+
+export function parseMemberReadEligibleCreate(
+  body: Record<string, unknown>,
+): boolean {
+  return body.readEligible === true
+}
+
+export function parseMemberReadEligiblePatch(
+  body: Record<string, unknown>,
+): { ok: true; readEligible: boolean } | ManagedRouteValidationError {
+  if (typeof body.readEligible !== 'boolean') {
+    return { ok: false, error: 'Invalid request', status: 400 }
+  }
+  return { ok: true, readEligible: body.readEligible }
+}
+
+/**
+ * Hard-delete is safe when the cluster never reached a destroyable live
+ * state (or has no placement pin).
+ */
+export function canHardDeleteManaged(
+  status: string | null | undefined,
+  serverId: string | null | undefined,
+): boolean {
+  return status === 'stopped' ||
+    status === 'failed' ||
+    status === 'provisioning' ||
+    !serverId
+}
+
+export type ReplicaPlacementPrecheckError =
+  | { ok: false; error: 'managed_member_exists'; status: 409 }
+  | { ok: false; error: 'managed_replica_limit'; status: 422 }
+
+/**
+ * Pure prechecks before datacenter / private-endpoint / online probes.
+ */
+export function evaluateReplicaPlacementPrechecks(
+  members: ReadonlyArray<{ serverId: string; role: string }>,
+  serverId: string,
+  replicaCount: number,
+  maxReplicas: number,
+): ReplicaPlacementPrecheckError | null {
+  if (members.some((m) => m.serverId === serverId)) {
+    return { ok: false, error: 'managed_member_exists', status: 409 }
+  }
+  if (replicaCount >= maxReplicas) {
+    return { ok: false, error: 'managed_replica_limit', status: 422 }
+  }
+  return null
+}
+
+export function evaluatePromoteMemberRole(
+  role: string,
+): ManagedRouteValidationError | null {
+  if (role !== 'replica') {
+    return { ok: false, error: 'Invalid request', status: 400 }
+  }
+  return null
+}
+
+export type ManagedUserRotateGuardError =
+  | { ok: false; error: 'use_root_password_route'; status: 400 }
+  | { ok: false; error: 'cannot_rotate_replication_user'; status: 400 }
+
+export function evaluateManagedUserRotateGuard(
+  metadata: unknown,
+): ManagedUserRotateGuardError | null {
+  if (isManagedRootPrincipal(metadata)) {
+    return { ok: false, error: 'use_root_password_route', status: 400 }
+  }
+  if (isManagedReplicationPrincipal(metadata)) {
+    return { ok: false, error: 'cannot_rotate_replication_user', status: 400 }
+  }
+  return null
+}
+
+export function evaluateManagedUserDropGuard(
+  metadata: unknown,
+): { ok: false; error: 'cannot_drop_root_user'; status: 400 } | null {
+  if (isManagedRootPrincipal(metadata)) {
+    return { ok: false, error: 'cannot_drop_root_user', status: 400 }
+  }
+  return null
+}
+
+/**
+ * Promote lag gate for HTTP — `force` bypasses. Returns the 409 error code
+ * when blocked, else `null`.
+ */
+export function evaluatePromoteLagHttpGate(
+  replication: unknown,
+  force: boolean,
+  nowMs?: number,
+):
+  | null
+  | 'managed_replica_not_streaming'
+  | 'managed_replica_lagging'
+  | 'managed_replica_health_stale' {
+  if (force) return null
+  return evaluateManagedPromoteLagGate(replication, nowMs)
+}
+
+export type QueuedCommandFanoutRow = {
+  commandId?: string
+  serverId?: string
+}
+
+/**
+ * Prefer the first fan-out row that already has a command id (primary), else
+ * the first row — matches every managed enqueue response.
+ */
+export function pickPrimaryCommandResult<T extends QueuedCommandFanoutRow>(
+  enqueued: readonly T[],
+): T | undefined {
+  return enqueued.find((r) => r.commandId) ?? enqueued[0]
+}
+
+export function buildQueuedFanoutResponse<T extends QueuedCommandFanoutRow>(
+  enqueued: readonly T[],
+  fallbackServerId: string,
+): {
+  ok: true
+  results: readonly T[]
+  commandId: string | undefined
+  serverId: string
+  status: 'queued'
+} {
+  const primary = pickPrimaryCommandResult(enqueued)
+  return {
+    ok: true as const,
+    results: enqueued,
+    commandId: primary?.commandId,
+    serverId: primary?.serverId ?? fallbackServerId,
+    status: 'queued' as const,
+  }
+}
+
+export function buildEmptyManagedDetailResponse(rootUsername: string) {
+  return {
+    managed: null,
+    connection: null,
+    settings: null,
+    server: null,
+    rootUsername,
+    members: [] as const,
+  }
+}
+
+export function sortManagedBackupsDesc<T extends { createdAt: string }>(
+  backups: readonly T[],
+): T[] {
+  return [...backups].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+}
+
+export function findManagedBackupById<T extends { id: string }>(
+  backups: readonly T[],
+  backupId: string,
+): T | undefined {
+  return backups.find((entry) => entry.id === backupId)
+}
+
+export function buildStatusMemberView(serialized: {
+  id: string
+  serverId: string
+  role: string
+  status: string | null
+  replicationTransport: string | null
+  privatePort: number | null
+  replication?: unknown
+}) {
+  return {
+    memberId: serialized.id,
+    serverId: serialized.serverId,
+    role: serialized.role,
+    status: serialized.status,
+    replicationTransport: serialized.replicationTransport,
+    privatePort: serialized.privatePort,
+    ...(serialized.replication !== undefined
+      ? { replication: serialized.replication }
+      : {}),
+  }
+}
+
+export function buildManagedDestroyQueuedResponse(params: {
+  commandId: string
+  serverId: string
+}) {
+  return {
+    ok: true as const,
+    destroyCommandId: params.commandId,
+    commandId: params.commandId,
+    serverId: params.serverId,
+    status: 'queued' as const,
+  }
+}
+
+export function buildManagedDeleteHardResponse() {
+  return { ok: true as const, deleted: true as const }
+}
+
+export function buildManagedDeleteQueuedResponse<T extends QueuedCommandFanoutRow>(
+  enqueued: readonly T[],
+  fallbackServerId: string,
+) {
+  const primary = pickPrimaryCommandResult(enqueued)
+  return {
+    ok: true as const,
+    deleted: false as const,
+    commandId: primary?.commandId,
+    serverId: primary?.serverId ?? fallbackServerId,
+    results: enqueued,
+  }
+}
+
+export function buildFencePromotePendingResponse(params: {
+  commandId: string
+  serverId: string
+}) {
+  return {
+    ok: true as const,
+    commandId: params.commandId,
+    serverId: params.serverId,
+    status: 'queued' as const,
+    fenceCommandId: params.commandId,
+    promotePending: true as const,
+  }
+}
+
+export function buildPromoteQueuedResponse(params: {
+  commandId: string
+  serverId: string
+}) {
+  return {
+    ok: true as const,
+    commandId: params.commandId,
+    status: 'queued' as const,
+    serverId: params.serverId,
+  }
+}
+
+export function buildOrgManagedListEntry(params: {
+  serializedRow: Record<string, unknown>
+  engineDisplayName: string | null
+  environmentDisplayName: string | null
+  projectId: string
+  projectDisplayName: string | null
+  workspaceId: string
+  workspaceDisplayName: string | null
+  serverDisplayName: string | null
+  members: unknown[]
+}) {
+  return {
+    ...params.serializedRow,
+    engineDisplayName: params.engineDisplayName,
+    environmentDisplayName: params.environmentDisplayName,
+    projectId: params.projectId,
+    projectDisplayName: params.projectDisplayName,
+    workspaceId: params.workspaceId,
+    workspaceDisplayName: params.workspaceDisplayName,
+    serverDisplayName: params.serverDisplayName,
+    members: params.members,
+  }
 }

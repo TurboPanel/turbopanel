@@ -1,5 +1,4 @@
 import { Hono } from 'hono'
-import type { Context } from 'hono'
 import { createAdminAccessMiddleware, createRootOnlyMiddleware } from '../client/authn/middleware.ts'
 import {
   getSignupSettingMeta,
@@ -25,9 +24,8 @@ import {
   type DaemonOutboundEnvelope,
 } from '../daemon/cell/protocol.ts'
 import type { DaemonCellRegistry } from '../daemon/cell/contracts.ts'
-import { getDaemonCellRegistry, getDb, type Db } from '../db.ts'
+import { getDaemonCellRegistry, getDb } from '../db.ts'
 import { cellTrace } from '../logger.ts'
-import type { ServerAddresses } from '../server-addresses.ts'
 import { emptyServerAddresses } from '../server-addresses.ts'
 import { buildAdminScalarHtml } from '../scalar-html.ts'
 import { ADMIN_API_PREFIX } from '../surfaces.ts'
@@ -45,80 +43,30 @@ import {
 } from '../lib/settings/email-settings.ts'
 import {
   endReencryptSweep,
-  REENCRYPT_BATCH_SIZE,
-  REENCRYPT_STAGES,
   reencryptAtRestSecrets,
   tryBeginReencryptSweep,
-  type ReencryptCursor,
-  type ReencryptStage,
 } from './reencrypt-secrets.ts'
+import {
+  extractAddresses,
+  parseCellPurgeBatchBody,
+  parseEmailSettingsUpdates,
+  parsePayloadBody,
+  parseReencryptRequestBody,
+  parseSignupEnabledBody,
+  publicUrlsApplyWaitToResponse,
+  resolvePerServerLimit,
+  resolvePlatformEnv,
+  resolvePublicUrlsForApply,
+  type PublicUrlsApplyWaitResult,
+} from './routes-helpers.ts'
 
 const COMMAND_TIMEOUT_MS = 30_000
 const ADDRESSES_TIMEOUT_MS = 10_000
 const PUBLIC_URLS_APPLY_TIMEOUT_MS = 60_000
-const MAX_CELL_PURGE_BATCH_SIZE = 200
 
 function nowTs(): string {
   return new Date().toISOString()
 }
-
-function resolvePlatformEnv(
-  c: Context,
-  opts: { getEnv?: () => Record<string, string | undefined> },
-): Record<string, string | undefined> {
-  const fromContext = c.get('platformEnv')
-  if (fromContext) return fromContext
-  if (opts.getEnv) return opts.getEnv()
-  return {}
-}
-
-function extractAddresses(record: { status: string; result?: unknown }): ServerAddresses {
-  if (record.status !== 'done') {
-    throw new Error(record.status === 'expired'
-      ? 'timeout waiting for addresses'
-      : 'failed to fetch addresses')
-  }
-  const result = record.result as { addresses?: ServerAddresses } | undefined
-  if (!result?.addresses) throw new Error('missing addresses in daemon response')
-  return result.addresses
-}
-
-type PublicUrlsApplyUrlsResult =
-  | { ok: true; urls: string[] }
-  | { ok: false; status: 400 | 422; body: unknown }
-
-async function resolvePublicUrlsForApply(
-  db: Db,
-  body: unknown,
-  allowHttp: boolean,
-): Promise<PublicUrlsApplyUrlsResult> {
-  if (body && typeof body === 'object' && 'urls' in body) {
-    const urlsBody = body as { urls: unknown }
-    if (
-      !Array.isArray(urlsBody.urls) ||
-      !urlsBody.urls.every((u: unknown) => typeof u === 'string')
-    ) {
-      return {
-        ok: false,
-        status: 400,
-        body: { ok: false, error: 'expected { urls?: string[] }' },
-      }
-    }
-    const parsed = parsePublicUrlEntries(urlsBody.urls, { allowHttp })
-    if (!parsed.ok) {
-      return { ok: false, status: 422, body: parsed }
-    }
-    await setPublicUrls(db, parsed.urls)
-    return { ok: true, urls: parsed.urls }
-  }
-  return { ok: true, urls: await getPublicUrls(db) }
-}
-
-type PublicUrlsApplyWaitResult =
-  | { kind: 'done' }
-  | { kind: 'failed'; error: string }
-  | { kind: 'timeout' }
-  | { kind: 'error'; error: string }
 
 async function waitForPublicUrlsApply(
   registry: DaemonCellRegistry,
@@ -194,56 +142,6 @@ async function waitForPublicUrlsApply(
   }
 }
 
-type ReencryptRequestParse =
-  | { ok: true; cursor: ReencryptCursor | null; limit: number }
-  | { ok: false; error: string }
-
-function isReencryptStage(value: unknown): value is ReencryptStage {
-  return typeof value === 'string' &&
-    (REENCRYPT_STAGES as readonly string[]).includes(value)
-}
-
-function parseReencryptRequestBody(body: unknown): ReencryptRequestParse {
-  if (body === null || body === undefined) {
-    return { ok: true, cursor: null, limit: REENCRYPT_BATCH_SIZE }
-  }
-  if (typeof body !== 'object' || Array.isArray(body)) {
-    return { ok: false, error: 'expected { cursor?, limit? }' }
-  }
-
-  const record = body as Record<string, unknown>
-  let limit = REENCRYPT_BATCH_SIZE
-  if (record.limit !== undefined) {
-    if (typeof record.limit !== 'number' || !Number.isInteger(record.limit) || record.limit < 1) {
-      return { ok: false, error: 'limit must be a positive integer' }
-    }
-    // Cap to the server batch size so clients cannot request unbounded work.
-    limit = Math.min(record.limit, REENCRYPT_BATCH_SIZE)
-  }
-
-  if (record.cursor === undefined || record.cursor === null) {
-    return { ok: true, cursor: null, limit }
-  }
-  if (typeof record.cursor !== 'object' || Array.isArray(record.cursor)) {
-    return { ok: false, error: 'cursor must be an object' }
-  }
-
-  const cursorObj = record.cursor as Record<string, unknown>
-  if (!isReencryptStage(cursorObj.stage)) {
-    return { ok: false, error: 'cursor.stage is required' }
-  }
-
-  const cursor: ReencryptCursor = { stage: cursorObj.stage }
-  if (cursorObj.afterId !== undefined) {
-    if (typeof cursorObj.afterId !== 'string' || cursorObj.afterId.length === 0) {
-      return { ok: false, error: 'cursor.afterId must be a non-empty string' }
-    }
-    cursor.afterId = cursorObj.afterId
-  }
-
-  return { ok: true, cursor, limit }
-}
-
 /**
  * Admin UI surface: fleet diagnostics, public URL management, and (dev-only) shell.
  */
@@ -273,11 +171,12 @@ export function registerAdminRoutes(app: Hono, opts: {
     const registry = getDaemonCellRegistry(c)
     if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
     const body = await c.req.json().catch(() => null)
-    if (!body || typeof body !== 'object' || !('payload' in body)) {
-      return c.json({ error: 'expected { payload: unknown }' }, 400)
+    const parsedPayload = parsePayloadBody(body)
+    if (!parsedPayload.ok) {
+      return c.json({ error: parsedPayload.error }, 400)
     }
     const ids = await registry.listOnlineServerIds()
-    const sent = await broadcastEchoToFleet(registry, ids, body.payload)
+    const sent = await broadcastEchoToFleet(registry, ids, parsedPayload.payload)
     return c.json({ ok: true, sent })
   })
 
@@ -287,13 +186,14 @@ export function registerAdminRoutes(app: Hono, opts: {
     if (!registry || !db) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
     const id = c.req.param('id')
     const body = await c.req.json().catch(() => null)
-    if (!body || typeof body !== 'object' || !('payload' in body)) {
-      return c.json({ error: 'expected { payload: unknown }' }, 400)
+    const parsedPayload = parsePayloadBody(body)
+    if (!parsedPayload.ok) {
+      return c.json({ error: parsedPayload.error }, 400)
     }
     if (!await isServerConnected(db, registry, id)) {
       return c.json({ error: 'daemon not connected' }, 404)
     }
-    await enqueueEchoToServer(registry, id, body.payload)
+    await enqueueEchoToServer(registry, id, parsedPayload.payload)
     return c.json({ ok: true, id })
   })
 
@@ -302,8 +202,7 @@ export function registerAdminRoutes(app: Hono, opts: {
     if (!registry) return c.json({ commands: [] })
     const db = getDb(c)
     if (!db) return c.json({ commands: [] })
-    const limit = Number(c.req.query('limit') ?? 50)
-    const perServerLimit = Number.isFinite(limit) ? limit : 50
+    const perServerLimit = resolvePerServerLimit(c.req.query('limit'))
     const serverIds = await listFleetServerIds(db)
     const commands = await collectFleetCommands(registry, serverIds, perServerLimit)
     return c.json({ commands })
@@ -368,13 +267,9 @@ export function registerAdminRoutes(app: Hono, opts: {
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
     const body = await c.req.json().catch(() => null)
-    if (!body || typeof body !== 'object') {
+    const updates = parseEmailSettingsUpdates(body)
+    if (!updates) {
       return c.json({ error: 'expected a JSON object of setting keys' }, 400)
-    }
-
-    const updates: Record<string, string | null> = {}
-    for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
-      if (typeof value === 'string' || value === null) updates[key] = value
     }
 
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
@@ -418,13 +313,11 @@ export function registerAdminRoutes(app: Hono, opts: {
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
     const body = await c.req.json().catch(() => null)
-    if (!body || typeof body !== 'object' || Array.isArray(body)) {
-      return c.json({ error: 'expected { enabled: boolean }' }, 400)
+    const parsedSignup = parseSignupEnabledBody(body)
+    if (!parsedSignup.ok) {
+      return c.json({ error: parsedSignup.error }, 400)
     }
-    const enabled = (body as { enabled?: unknown }).enabled
-    if (typeof enabled !== 'boolean') {
-      return c.json({ error: 'expected { enabled: boolean }' }, 400)
-    }
+    const enabled = parsedSignup.enabled
 
     const platformEnv = resolvePlatformEnv(c, opts)
     const before = await getSignupSettingMeta(
@@ -496,19 +389,8 @@ export function registerAdminRoutes(app: Hono, opts: {
     }
 
     const result = await waitForPublicUrlsApply(registry, serverId, urlsResult.urls)
-    switch (result.kind) {
-      case 'done':
-        return c.json({ ok: true, applied: true })
-      case 'failed':
-        return c.json({ ok: false, applied: false, error: result.error }, 500)
-      case 'timeout':
-        return c.json(
-          { ok: false, applied: false, error: 'timeout waiting for daemon' },
-          500,
-        )
-      case 'error':
-        return c.json({ ok: false, applied: false, error: result.error }, 500)
-    }
+    const response = publicUrlsApplyWaitToResponse(result)
+    return c.json(response.body, response.status)
   })
 
   admin.get('/daemon/addresses', async (c) => {
@@ -697,26 +579,15 @@ export function registerAdminRoutes(app: Hono, opts: {
     if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
 
     const body = await c.req.json().catch(() => null)
-    if (
-      !body ||
-      typeof body !== 'object' ||
-      !Array.isArray(body.serverIds) ||
-      body.serverIds.length === 0 ||
-      !body.serverIds.every((id: unknown) => typeof id === 'string' && id.length > 0)
-    ) {
-      return c.json({ error: 'expected { serverIds: string[] } with at least one id' }, 400)
-    }
-    if (body.serverIds.length > MAX_CELL_PURGE_BATCH_SIZE) {
-      return c.json(
-        { error: `serverIds exceeds maximum batch size of ${MAX_CELL_PURGE_BATCH_SIZE}` },
-        400,
-      )
+    const parsedBatch = parseCellPurgeBatchBody(body)
+    if (!parsedBatch.ok) {
+      return c.json({ error: parsedBatch.error }, 400)
     }
 
     const settled = await Promise.allSettled(
-      body.serverIds.map((serverId: string) => registry.purge(serverId)),
+      parsedBatch.serverIds.map((serverId: string) => registry.purge(serverId)),
     )
-    const results = body.serverIds.map((serverId: string, index: number) => {
+    const results = parsedBatch.serverIds.map((serverId: string, index: number) => {
       const outcome = settled[index]!
       if (outcome.status === 'fulfilled') {
         return { serverId, ok: true as const }

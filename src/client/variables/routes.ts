@@ -33,12 +33,16 @@ import {
   parseOptionalBoolean,
   parseOptionalDescription,
   parseOptionalStringValue,
+  parseResolvedVariablesQuery,
   parseVariableKey,
   parseVariableParent,
+  patchHasOnlyUpdatedAt,
   resolvePatchIsSecret,
   serializeResolvedVariables,
   serializeVariable,
+  switchingSecretRequiresValue,
   trimVariableValueOnWrite,
+  variableKeyUniqueConflictMessage,
   type ParsedVariableParent,
 } from './routes-helpers.ts'
 import {
@@ -157,7 +161,6 @@ async function applyValueAndSecretPatch(
 ): Promise<Response | undefined> {
   const valueProvided = body.value !== undefined
   const switchingToSecret = nextIsSecret && !existing.isSecret
-  const switchingFromSecret = !nextIsSecret && existing.isSecret
 
   if (valueProvided) {
     if (body.value !== null && typeof body.value !== 'string') {
@@ -177,7 +180,7 @@ async function applyValueAndSecretPatch(
     return
   }
 
-  if (switchingFromSecret) {
+  if (switchingSecretRequiresValue(nextIsSecret, existing.isSecret, valueProvided)) {
     return c.json(
       { error: 'value is required when converting a secret variable to non-secret' },
       400,
@@ -233,7 +236,7 @@ async function buildVariablePatchFields(
   )
   if (valueError) return valueError
 
-  if (Object.keys(updateFields).length === 1) {
+  if (patchHasOnlyUpdatedAt(updateFields)) {
     return c.json({ error: 'Invalid request' }, 400)
   }
 
@@ -338,34 +341,33 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
     const environmentId = c.req.query('environmentId')
     const hostingId = c.req.query('hostingId')
 
-    const specified = [serviceId, environmentId, hostingId].filter(
-      (value) => value !== undefined && value !== '',
-    )
-    if (specified.length !== 1) {
-      return c.json(
-        { error: 'Exactly one of serviceId, environmentId, or hostingId must be specified' },
-        400,
-      )
+    const parsed = parseResolvedVariablesQuery({
+      serviceId,
+      environmentId,
+      hostingId,
+    })
+    if (!parsed.ok) {
+      return c.json({ error: parsed.error }, parsed.status)
     }
 
-    if (hostingId) {
+    if (parsed.query.kind === 'hosting') {
       return respondWithResolvedVariables(
         c,
         db,
         organizationId,
         'hosting',
-        hostingId,
+        parsed.query.id,
         resolveInheritedVariablesForHosting,
       )
     }
 
-    if (serviceId) {
+    if (parsed.query.kind === 'service') {
       return respondWithResolvedVariables(
         c,
         db,
         organizationId,
         'service',
-        serviceId,
+        parsed.query.id,
         resolveInheritedVariablesForService,
       )
     }
@@ -375,7 +377,7 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
       db,
       organizationId,
       'environment',
-      environmentId!,
+      parsed.query.id,
       resolveInheritedVariablesForEnvironment,
     )
   })
@@ -503,7 +505,7 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
     } catch (err) {
       if (isVariableKeyUniqueViolation(err)) {
         return c.json(
-          { error: 'A variable with this key already exists in this scope' },
+          { error: variableKeyUniqueConflictMessage() },
           409,
         )
       }
@@ -577,7 +579,7 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
     } catch (err) {
       if (isVariableKeyUniqueViolation(err)) {
         return c.json(
-          { error: 'A variable with this key already exists in this scope' },
+          { error: variableKeyUniqueConflictMessage() },
           409,
         )
       }

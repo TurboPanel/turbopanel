@@ -12,183 +12,18 @@ import {
   assertCanCreateOr403,
   assertCanReadOr403,
   assertNotSystemOwnedOr403,
-  buildPatchUpdateFields,
   getOrgId,
   parseJsonBody,
-  parseJsonbObject,
-  requireStringField,
-  stripPromotedMetadataKeys,
 } from '../shared.ts'
 import {
   hierarchyDeleteHasChildrenResponse,
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
-
-/** Identity/status/compose keys live on real columns — never persist into metadata. */
-const CONTAINER_PROMOTED_METADATA_KEYS = [
-  'containerId',
-  'containerName',
-  'status',
-  'composeServiceName',
-  'ordinal',
-  'role',
-] as const
-
-type ContainerRow = {
-  id: string
-  serviceId: string
-  serverId: string
-  containerId: string | null
-  containerName: string
-  status: string
-  role: string
-  composeServiceName: string
-  ordinal: number
-  metadata: unknown
-  options: unknown
-  createdAt: string
-  updatedAt: string
-}
-
-function serializeContainer(row: ContainerRow) {
-  return {
-    id: row.id,
-    serviceId: row.serviceId,
-    serverId: row.serverId,
-    containerId: row.containerId,
-    containerName: row.containerName,
-    status: row.status,
-    role: row.role,
-    composeServiceName: row.composeServiceName,
-    ordinal: row.ordinal,
-    metadata: row.metadata,
-    options: row.options,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  }
-}
-
-function readOptionalPositiveInt(
-  body: Record<string, unknown>,
-  key: string,
-): number | undefined {
-  const value = body[key]
-  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
-  const rounded = Math.floor(value)
-  return rounded > 0 ? rounded : undefined
-}
-
-function readOptionalTopLevelString(
-  body: Record<string, unknown>,
-  key: string,
-): string | undefined {
-  const value = body[key]
-  return typeof value === 'string' && value.length > 0 ? value : undefined
-}
-
-type CreateContainerFields = {
-  serviceId: string
-  serverId: string
-  containerId: string
-  containerName: string
-  status: string
-  composeServiceName: string
-  ordinal: number
-  metadata: Record<string, unknown> | null
-  options: Record<string, unknown> | null
-}
-
-function parseCreateContainerFields(
-  c: Context<AppEnv>,
-  body: Record<string, unknown>,
-): CreateContainerFields | Response {
-  const serviceId = requireStringField(c, body, 'serviceId')
-  if (serviceId instanceof Response) return serviceId
-
-  const serverId = requireStringField(c, body, 'serverId')
-  if (serverId instanceof Response) return serverId
-
-  const containerId = requireStringField(c, body, 'containerId')
-  if (containerId instanceof Response) return containerId
-
-  const containerName = requireStringField(c, body, 'containerName')
-  if (containerName instanceof Response) return containerName
-
-  const status = requireStringField(c, body, 'status')
-  if (status instanceof Response) return status
-
-  const composeServiceName = requireStringField(c, body, 'composeServiceName')
-  if (composeServiceName instanceof Response) return composeServiceName
-
-  const ordinal = readOptionalPositiveInt(body, 'ordinal') ?? 1
-
-  const metadataResult = parseJsonbObject(c, body, 'metadata')
-  if (metadataResult instanceof Response) return metadataResult
-  const optionsResult = parseJsonbObject(c, body, 'options')
-  if (optionsResult instanceof Response) return optionsResult
-
-  const metadata = metadataResult === null
-    ? null
-    : stripPromotedMetadataKeys(metadataResult, CONTAINER_PROMOTED_METADATA_KEYS)
-
-  return {
-    serviceId,
-    serverId,
-    containerId,
-    containerName,
-    status,
-    composeServiceName,
-    ordinal,
-    metadata,
-    options: optionsResult,
-  }
-}
-
-type PatchContainerFields = {
-  metadata?: Record<string, unknown> | null
-  options?: Record<string, unknown> | null
-  containerId?: string
-  containerName?: string
-  status?: string
-  composeServiceName?: string
-  updatedAt: string
-}
-
-function parsePatchContainerFields(
-  c: Context<AppEnv>,
-  body: Record<string, unknown>,
-): PatchContainerFields | Response {
-  let patchFields: PatchContainerFields
-  try {
-    patchFields = buildPatchUpdateFields(body)
-  } catch {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-
-  const nextContainerId = readOptionalTopLevelString(body, 'containerId')
-  const nextContainerName = readOptionalTopLevelString(body, 'containerName')
-  const nextStatus = readOptionalTopLevelString(body, 'status')
-  const nextComposeServiceName = readOptionalTopLevelString(body, 'composeServiceName')
-  if (nextContainerId) patchFields.containerId = nextContainerId
-  if (nextContainerName) patchFields.containerName = nextContainerName
-  if (nextStatus) patchFields.status = nextStatus
-  if (nextComposeServiceName) patchFields.composeServiceName = nextComposeServiceName
-
-  const metadataResult = parseJsonbObject(c, body, 'metadata')
-  if (metadataResult instanceof Response) return metadataResult
-  if (metadataResult !== null) {
-    patchFields.metadata = stripPromotedMetadataKeys(
-      metadataResult,
-      CONTAINER_PROMOTED_METADATA_KEYS,
-    )
-  }
-
-  const optionsResult = parseJsonbObject(c, body, 'options')
-  if (optionsResult instanceof Response) return optionsResult
-  if (optionsResult !== null) patchFields.options = optionsResult
-
-  return patchFields
-}
+import {
+  parseCreateContainerFields,
+  parsePatchContainerFields,
+  serializeContainer,
+} from './routes-helpers.ts'
 
 const CONTAINER_SELECT = {
   id: container.id,
@@ -314,8 +149,11 @@ export function registerContainerRoutes(router: Hono, opts: AuthRouteOpts) {
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const fields = parseCreateContainerFields(c, body)
-    if (fields instanceof Response) return fields
+    const parsed = parseCreateContainerFields(body)
+    if (!parsed.ok) {
+      return c.json({ error: parsed.error }, parsed.status)
+    }
+    const fields = parsed.fields
 
     const serviceOrgId = await resolveEntityOrganizationId(db, 'service', fields.serviceId)
     if (!serviceOrgId || serviceOrgId !== organizationId) {
@@ -386,8 +224,11 @@ export function registerContainerRoutes(router: Hono, opts: AuthRouteOpts) {
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const patchFields = parsePatchContainerFields(c, body)
-    if (patchFields instanceof Response) return patchFields
+    const parsed = parsePatchContainerFields(body)
+    if (!parsed.ok) {
+      return c.json({ error: parsed.error }, parsed.status)
+    }
+    const patchFields = parsed.patch
 
     await db
       .update(container)

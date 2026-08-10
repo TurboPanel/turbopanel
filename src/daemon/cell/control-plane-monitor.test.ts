@@ -33,7 +33,7 @@ import {
   setServerStatusEventSink,
 } from "../metrics/status-events.ts";
 
-const serverId = "srv-heartbeat-agent";
+const serverId = "srv-heartbeat-daemonBuild";
 
 /** Canonical 64-char lowercase hex HMAC shape used by real daemons. */
 const TEST_MACHINE_KEY =
@@ -219,7 +219,7 @@ function createMockCell(snapshot: Record<string, unknown> = {}) {
  */
 const test = Deno.test.bind(Deno)
 
-test("onDaemonHeartbeat projects agent.commit for update status via resolveFleetPresence", async () => {
+test("onDaemonHeartbeat projects daemonBuild.commit for update status via resolveFleetPresence", async () => {
   const { db, getDaemon } = createTrackingDb(
     { key: baseKey, projection: { hostname: "host-1" } },
     {
@@ -228,7 +228,7 @@ test("onDaemonHeartbeat projects agent.commit for update status via resolveFleet
     },
   );
 
-  const agent = {
+  const daemonBuild = {
     commit: "heartbeat-commit",
     buildId: "heartbeat-build",
     channel: "trunk" as const,
@@ -237,30 +237,30 @@ test("onDaemonHeartbeat projects agent.commit for update status via resolveFleet
   await onDaemonHeartbeat(
     db,
     serverId,
-    createMockCell({ connected: true, agent }) as never,
-    agent,
+    createMockCell({ connected: true, daemonBuild }) as never,
+    daemonBuild,
   );
 
   const merged = parseServerDaemonState(getDaemon());
-  assertEquals(merged?.projection?.agent?.commit, agent.commit);
+  assertEquals(merged?.projection?.daemonBuild?.commit, daemonBuild.commit);
 
   const presence = await resolveFleetPresence(
     db,
     createEmptyRegistry(),
     [serverId],
   );
-  const liveAgent = presence.get(serverId)?.agent;
-  assertEquals(liveAgent?.commit, agent.commit);
-  assertEquals(liveAgent?.buildId, agent.buildId);
+  const liveDaemonBuild = presence.get(serverId)?.daemonBuild;
+  assertEquals(liveDaemonBuild?.commit, daemonBuild.commit);
+  assertEquals(liveDaemonBuild?.buildId, daemonBuild.buildId);
 
-  const current = liveAgent?.commit
+  const current = liveDaemonBuild?.commit
     ? {
-      commit: liveAgent.commit,
-      buildId: liveAgent.buildId ?? "",
-      builtAt: liveAgent.builtAt ?? "",
+      commit: liveDaemonBuild.commit,
+      buildId: liveDaemonBuild.buildId ?? "",
+      builtAt: liveDaemonBuild.builtAt ?? "",
     }
     : null;
-  assertEquals(current?.commit, agent.commit);
+  assertEquals(current?.commit, daemonBuild.commit);
 });
 
 test("onDaemonConnected persists optional geo into metadata (hostname/machineKey stay on columns)", async () => {
@@ -433,8 +433,8 @@ test("onDaemonConnectedFromEvidence marks online without a cell", async () => {
   assertEquals(daemon?.projection?.machineKey, TEST_MACHINE_KEY);
 });
 
-test("onDaemonHeartbeat within 60s skips DB write when agent unchanged", async () => {
-  const agent = {
+test("onDaemonHeartbeat within 60s skips DB write when daemonBuild unchanged", async () => {
+  const daemonBuild = {
     commit: "abc123",
     buildId: "build-1",
     channel: "trunk" as const,
@@ -443,7 +443,7 @@ test("onDaemonHeartbeat within 60s skips DB write when agent unchanged", async (
   const { db, updateCalls, getSelectCallCount } = createTrackingDb(
     {
       key: baseKey,
-      projection: { agent },
+      projection: { daemonBuild },
     },
     {
       connected: true,
@@ -454,8 +454,8 @@ test("onDaemonHeartbeat within 60s skips DB write when agent unchanged", async (
   await onDaemonHeartbeat(
     db,
     serverId,
-    createMockCell({ connected: true, lastSeenAt: recentAt, agent }) as never,
-    agent,
+    createMockCell({ connected: true, lastSeenAt: recentAt, daemonBuild }) as never,
+    daemonBuild,
     new Date(Date.now() + 1000).toISOString(),
   );
 
@@ -464,7 +464,7 @@ test("onDaemonHeartbeat within 60s skips DB write when agent unchanged", async (
 });
 
 test("onDaemonHeartbeat after coalesce window skips Postgres for heartbeat-only", async () => {
-  const agent = {
+  const daemonBuild = {
     commit: "abc123",
     buildId: "build-1",
     channel: "trunk" as const,
@@ -473,7 +473,7 @@ test("onDaemonHeartbeat after coalesce window skips Postgres for heartbeat-only"
   const { db, updateCalls, getSelectCallCount } = createTrackingDb(
     {
       key: baseKey,
-      projection: { agent },
+      projection: { daemonBuild },
     },
     {
       connected: true,
@@ -484,8 +484,8 @@ test("onDaemonHeartbeat after coalesce window skips Postgres for heartbeat-only"
   await onDaemonHeartbeat(
     db,
     serverId,
-    createMockCell({ connected: true, lastSeenAt: staleAt, agent }) as never,
-    agent,
+    createMockCell({ connected: true, lastSeenAt: staleAt, daemonBuild }) as never,
+    daemonBuild,
     new Date().toISOString(),
   );
 
@@ -504,8 +504,8 @@ test("onDaemonHeartbeat after coalesce window skips Postgres for heartbeat-only"
   assertEquals(getSelectCallCount(), 0);
 });
 
-test("onDaemonInbound projects new agent before steady-state skip", async () => {
-  const agent = {
+test("onDaemonInbound projects new daemonBuild before steady-state skip", async () => {
+  const daemonBuild = {
     commit: "abc123",
     buildId: "build-1",
     channel: "trunk" as const,
@@ -525,15 +525,15 @@ test("onDaemonInbound projects new agent before steady-state skip", async () => 
   await onDaemonInbound(
     db,
     serverId,
-    createMockCell({ connected: true, lastSeenAt: recentAt, agent }) as never,
-    { at: new Date(Date.now() + 1000).toISOString(), agent },
+    createMockCell({ connected: true, lastSeenAt: recentAt, daemonBuild }) as never,
+    { at: new Date(Date.now() + 1000).toISOString(), daemonBuild },
   );
 
   assertEquals(updateCalls.length, 1);
-  assertEquals(getDaemon()?.projection?.agent?.commit, "abc123");
+  assertEquals(getDaemon()?.projection?.daemonBuild?.commit, "abc123");
 });
 
-test("onDaemonInbound repairs stale updating on steady-state hello when agent matches trunk", async () => {
+test("onDaemonInbound repairs stale updating on steady-state hello when daemonBuild matches trunk", async () => {
   resetTrunkManifestCacheForTests();
   seedTrunkManifestCacheForTests({
     commit: "target-commit",
@@ -543,7 +543,7 @@ test("onDaemonInbound repairs stale updating on steady-state hello when agent ma
     manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
   });
 
-  const agent = {
+  const daemonBuild = {
     commit: "target-commit",
     buildId: "build-1",
     channel: "trunk" as const,
@@ -553,7 +553,7 @@ test("onDaemonInbound repairs stale updating on steady-state hello when agent ma
     {
       key: baseKey,
       projection: {
-        agent,
+        daemonBuild,
         update: {
           status: "updating",
           requestId: "req-1",
@@ -571,8 +571,8 @@ test("onDaemonInbound repairs stale updating on steady-state hello when agent ma
   await onDaemonInbound(
     db,
     serverId,
-    createMockCell({ connected: true, lastSeenAt: recentAt, agent }) as never,
-    { at: new Date(Date.now() + 1000).toISOString(), agent },
+    createMockCell({ connected: true, lastSeenAt: recentAt, daemonBuild }) as never,
+    { at: new Date(Date.now() + 1000).toISOString(), daemonBuild },
   );
 
   const update = parseServerDaemonState(getDaemon())?.projection?.update;
@@ -581,8 +581,8 @@ test("onDaemonInbound repairs stale updating on steady-state hello when agent ma
   assertEquals(updateCalls.length, 1);
 });
 
-test("onDaemonInbound within 60s skips heartbeat write when agent unchanged", async () => {
-  const agent = {
+test("onDaemonInbound within 60s skips heartbeat write when daemonBuild unchanged", async () => {
+  const daemonBuild = {
     commit: "abc123",
     buildId: "build-1",
     channel: "trunk" as const,
@@ -591,7 +591,7 @@ test("onDaemonInbound within 60s skips heartbeat write when agent unchanged", as
   const { db, updateCalls, getSelectCallCount } = createTrackingDb(
     {
       key: baseKey,
-      projection: { agent },
+      projection: { daemonBuild },
     },
     {
       connected: true,
@@ -602,21 +602,21 @@ test("onDaemonInbound within 60s skips heartbeat write when agent unchanged", as
   await onDaemonInbound(
     db,
     serverId,
-    createMockCell({ connected: true, lastSeenAt: recentAt, agent }) as never,
-    { at: new Date(Date.now() + 1000).toISOString(), agent },
+    createMockCell({ connected: true, lastSeenAt: recentAt, daemonBuild }) as never,
+    { at: new Date(Date.now() + 1000).toISOString(), daemonBuild },
   );
 
   assertEquals(updateCalls.length, 0);
   assertEquals(getSelectCallCount(), 2);
 });
 
-test("onDaemonHeartbeat projects agent change to daemon projection", async () => {
-  const priorAgent = {
+test("onDaemonHeartbeat projects daemonBuild change to daemon projection", async () => {
+  const priorDaemonBuild = {
     commit: "abc123",
     buildId: "build-1",
     channel: "trunk" as const,
   };
-  const nextAgent = {
+  const nextDaemonBuild = {
     commit: "def456",
     buildId: "build-2",
     channel: "trunk" as const,
@@ -624,7 +624,7 @@ test("onDaemonHeartbeat projects agent change to daemon projection", async () =>
   const { db, updateCalls, getDaemon } = createTrackingDb(
     {
       key: baseKey,
-      projection: { agent: priorAgent },
+      projection: { daemonBuild: priorDaemonBuild },
     },
     {
       connected: true,
@@ -635,18 +635,18 @@ test("onDaemonHeartbeat projects agent change to daemon projection", async () =>
   await onDaemonHeartbeat(
     db,
     serverId,
-    createMockCell({ connected: true, agent: nextAgent }) as never,
-    nextAgent,
+    createMockCell({ connected: true, daemonBuild: nextDaemonBuild }) as never,
+    nextDaemonBuild,
   );
 
   assertEquals(updateCalls.length, 1);
-  assertEquals(getDaemon()?.projection?.agent?.commit, "def456");
+  assertEquals(getDaemon()?.projection?.daemonBuild?.commit, "def456");
 
   await onDaemonHeartbeat(
     db,
     serverId,
-    createMockCell({ connected: true, agent: nextAgent }) as never,
-    nextAgent,
+    createMockCell({ connected: true, daemonBuild: nextDaemonBuild }) as never,
+    nextDaemonBuild,
   );
 
   assertEquals(updateCalls.length, 1);
@@ -658,7 +658,7 @@ test("onDaemonInbound restores online projection after stale sweep", async () =>
   const { db, updateCalls } = createTrackingDb(
     {
       key: baseKey,
-      projection: { hostname: "host-1", agent: { commit: "abc", buildId: "1" } },
+      projection: { hostname: "host-1", daemonBuild: { commit: "abc", buildId: "1" } },
     },
     {
       connected: false,
@@ -671,7 +671,7 @@ test("onDaemonInbound restores online projection after stale sweep", async () =>
     db,
     serverId,
     createMockCell({ connected: false, lastSeenAt: stale }) as never,
-    { at, agent: { commit: "recovered", buildId: "2", channel: "trunk" } },
+    { at, daemonBuild: { commit: "recovered", buildId: "2", channel: "trunk" } },
   );
 
   assertEquals(updateCalls.length, 2);
@@ -822,7 +822,7 @@ test("repairStaleProjectedUpdate marks done when daemon commit matches trunk", a
   assertEquals(update?.status, "done");
 });
 
-test("maybeRepairUpdateFromAgentHello clears updating when agent matches trunk", async () => {
+test("maybeRepairUpdateFromDaemonBuildHello clears updating when daemonBuild matches trunk", async () => {
   const { db, getDaemon } = createTrackingDb({
     key: baseKey,
     projection: {
@@ -835,8 +835,8 @@ test("maybeRepairUpdateFromAgentHello clears updating when agent matches trunk",
     },
   });
 
-  const { maybeRepairUpdateFromAgentHello } = await import("./control-plane-monitor.ts");
-  await maybeRepairUpdateFromAgentHello(
+  const { maybeRepairUpdateFromDaemonBuildHello } = await import("./control-plane-monitor.ts");
+  await maybeRepairUpdateFromDaemonBuildHello(
     db,
     serverId,
     {

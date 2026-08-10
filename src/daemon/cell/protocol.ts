@@ -4,7 +4,7 @@ import type {
   ServerTimeSync,
 } from "../../lib/db/server-metadata.ts";
 
-export type DaemonAgentInfo = {
+export type DaemonBuildInfo = {
   commit: string;
   buildId: string;
   builtAt?: string;
@@ -19,19 +19,19 @@ function isString(value: unknown): value is string {
   return typeof value === "string";
 }
 
-export function parseDaemonAgentInfo(
+export function parseDaemonBuildInfo(
   value: unknown,
-): DaemonAgentInfo | undefined {
+): DaemonBuildInfo | undefined {
   if (!isRecord(value)) return undefined;
   if (!isString(value.commit) || value.commit.length === 0) return undefined;
   if (!isString(value.buildId) || value.buildId.length === 0) return undefined;
-  const agent: DaemonAgentInfo = {
+  const daemonBuild: DaemonBuildInfo = {
     commit: value.commit,
     buildId: value.buildId,
   };
-  if (isString(value.builtAt)) agent.builtAt = value.builtAt;
-  if (isString(value.channel)) agent.channel = value.channel;
-  return agent;
+  if (isString(value.builtAt)) daemonBuild.builtAt = value.builtAt;
+  if (isString(value.channel)) daemonBuild.channel = value.channel;
+  return daemonBuild;
 }
 
 /** JSON messages exchanged between the instance and daemon over /ws. */
@@ -39,7 +39,7 @@ export type DaemonMessage =
   | {
     type: "hello";
     at: string;
-    agent: DaemonAgentInfo;
+    daemonBuild: DaemonBuildInfo;
     hostname?: string;
     machineKey?: string;
     /** Host OS from `/etc/os-release` (+ Deno build); persisted to `server.metadata.os`. */
@@ -52,7 +52,7 @@ export type DaemonMessage =
   | {
     type: "heartbeat";
     at: string;
-    agent?: DaemonAgentInfo;
+    daemonBuild?: DaemonBuildInfo;
     /** Change-detected time-sync facts; persisted to `server.metadata.timeSync`. */
     timeSync?: ServerTimeSync;
     /** Change-detected addresses; persisted to `server.metadata.addresses`. */
@@ -264,8 +264,11 @@ function validatePresenceFields(
   ) {
     return "invalid machineKey";
   }
-  if (record.agent !== undefined && !parseDaemonAgentInfo(record.agent)) {
-    return "invalid agent";
+  if (
+    record.daemonBuild !== undefined &&
+    !parseDaemonBuildInfo(record.daemonBuild)
+  ) {
+    return "invalid daemonBuild";
   }
   return null;
 }
@@ -290,7 +293,7 @@ function validateOptionalIsoTimestamp(
 }
 
 function validateHelloFields(record: Record<string, unknown>): string | null {
-  if (!parseDaemonAgentInfo(record.agent)) return "invalid agent";
+  if (!parseDaemonBuildInfo(record.daemonBuild)) return "invalid daemonBuild";
   return validatePresenceFields(record);
 }
 

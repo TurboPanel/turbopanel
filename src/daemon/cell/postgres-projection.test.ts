@@ -10,7 +10,7 @@ import {
   type ServerDaemonStatus,
 } from "../authn/daemon-state.ts";
 import {
-  agentChanged,
+  daemonBuildChanged,
   buildProjectionsFromDaemonRows,
   inboundHeartbeatProjectionDue,
   INBOUND_PROJECTION_COALESCE_MS,
@@ -18,7 +18,7 @@ import {
   listConnectedServerIdsFromProjection,
   listEnrolledDaemonServerIds,
   listRecentlyOfflineServersForSweep,
-  mergeAgentPreserving,
+  mergeDaemonBuildPreserving,
   projectServerDaemon,
   readProjectionsForServers,
   RECENT_OFFLINE_SWEEP_MS,
@@ -215,7 +215,7 @@ const baseKey = {
   createdAt: "2020-01-01T00:00:00.000Z",
 };
 
-const testAgent = {
+const testDaemonBuild = {
   commit: "abc123",
   buildId: "build-1",
   channel: "trunk",
@@ -382,7 +382,7 @@ test("projectServerDaemon identity trigger backfills metadata.geo when geo was m
         hostname: "host-1",
         machineKey: TEST_MACHINE_KEY,
         remoteAddress: "203.0.113.10",
-        agent: testAgent,
+        daemonBuild: testDaemonBuild,
       },
     },
     {},
@@ -411,7 +411,7 @@ test("projectServerDaemon identity trigger skips metadata.geo when stored geo ex
         hostname: "host-1",
         machineKey: TEST_MACHINE_KEY,
         remoteAddress: "203.0.113.10",
-        agent: testAgent,
+        daemonBuild: testDaemonBuild,
       },
     },
     {},
@@ -622,7 +622,7 @@ test("projectServerDaemon offline writes connected false and statusChangedAt", a
       key: baseKey,
       projection: {
         hostname: "host-1",
-        agent: testAgent,
+        daemonBuild: testDaemonBuild,
       },
     },
     {
@@ -671,7 +671,7 @@ test("projectServerDaemon disconnected matches offline status patch", async () =
   const { db, updateCalls, getDaemon, getStatus } = createMockDb(
     {
       key: baseKey,
-      projection: { hostname: "host-1", agent: testAgent },
+      projection: { hostname: "host-1", daemonBuild: testDaemonBuild },
     },
     {
       connected: true,
@@ -687,14 +687,14 @@ test("projectServerDaemon disconnected matches offline status patch", async () =
   assertEquals(status.daemonStatus, "offline");
   assertEquals(typeof status.statusChangedAt, "string");
   assert(updateCalls[0]?.daemon != null);
-  assertEquals(getDaemon().projection?.agent, testAgent);
+  assertEquals(getDaemon().projection?.daemonBuild, testDaemonBuild);
 });
 
-test("projectServerDaemon heartbeat with unchanged agent writes nothing", async () => {
+test("projectServerDaemon heartbeat with unchanged daemonBuild writes nothing", async () => {
   const { db, updateCalls } = createMockDb(
     {
       key: baseKey,
-      projection: { agent: testAgent },
+      projection: { daemonBuild: testDaemonBuild },
     },
     {
       connected: true,
@@ -704,18 +704,18 @@ test("projectServerDaemon heartbeat with unchanged agent writes nothing", async 
 
   const wrote = await projectServerDaemon(db, serverId, {
     kind: "heartbeat",
-    agent: testAgent,
+    daemonBuild: testDaemonBuild,
   });
 
   assertEquals(wrote, false);
   assertEquals(updateCalls.length, 0);
 });
 
-test("projectServerDaemon heartbeat with changed agent updates projection only", async () => {
+test("projectServerDaemon heartbeat with changed daemonBuild updates projection only", async () => {
   const { db, updateCalls, getStatus } = createMockDb(
     {
       key: baseKey,
-      projection: { agent: testAgent },
+      projection: { daemonBuild: testDaemonBuild },
     },
     {
       connected: true,
@@ -725,7 +725,7 @@ test("projectServerDaemon heartbeat with changed agent updates projection only",
 
   const wrote = await projectServerDaemon(db, serverId, {
     kind: "heartbeat",
-    agent: {
+    daemonBuild: {
       commit: "new-commit",
       buildId: "new-build",
     },
@@ -747,8 +747,8 @@ test("projectServerDaemon preserves server.daemon.key on write", async () => {
   });
 
   await projectServerDaemon(db, serverId, {
-    kind: "agent",
-    agent: {
+    kind: "daemon-build",
+    daemonBuild: {
       commit: "new-commit",
       buildId: "new-build",
     },
@@ -761,15 +761,15 @@ test("projectServerDaemon preserves server.daemon.key on write", async () => {
   assertEquals(merged?.key?.fingerprint, baseKey.fingerprint);
 });
 
-test("projectServerDaemon agent trigger updates jsonb only", async () => {
+test("projectServerDaemon daemonBuild trigger updates jsonb only", async () => {
   const { db, updateCalls, getStatus } = createMockDb({
     key: baseKey,
     projection: { hostname: "host-1" },
   });
 
   await projectServerDaemon(db, serverId, {
-    kind: "agent",
-    agent: {
+    kind: "daemon-build",
+    daemonBuild: {
       commit: "new-commit",
       buildId: "new-build",
     },
@@ -790,7 +790,7 @@ test("projectServerDaemon identity trigger updates jsonb only", async () => {
     key: baseKey,
     projection: {
       hostname: "old-host",
-      agent: testAgent,
+      daemonBuild: testDaemonBuild,
     },
   });
 
@@ -807,7 +807,7 @@ test("projectServerDaemon identity trigger updates jsonb only", async () => {
   assertEquals(status.statusChangedAt, null);
   const merged = parseServerDaemonState(projectionUpdate?.daemon);
   assertEquals(merged?.projection?.hostname, "new-host");
-  assertEquals(merged?.projection?.agent, testAgent);
+  assertEquals(merged?.projection?.daemonBuild, testDaemonBuild);
   assertEquals(projectionUpdate?.hostname, "new-host");
 });
 
@@ -822,7 +822,7 @@ test("projectServerDaemon identity trigger preserves projection.update", async (
     key: baseKey,
     projection: {
       hostname: "old-host",
-      agent: testAgent,
+      daemonBuild: testDaemonBuild,
       update: updatingProjection,
     },
   });
@@ -834,7 +834,7 @@ test("projectServerDaemon identity trigger preserves projection.update", async (
 
   const merged = parseServerDaemonState(getDaemon());
   assertEquals(merged?.projection?.hostname, "new-host");
-  assertEquals(merged?.projection?.agent, testAgent);
+  assertEquals(merged?.projection?.daemonBuild, testDaemonBuild);
   assertEquals(merged?.projection?.update, updatingProjection);
 });
 
@@ -869,16 +869,16 @@ test("projectServerDaemon online trigger preserves projection.update", async () 
   assertEquals(merged?.projection?.update, updatingProjection);
 });
 
-test("agentChanged detects optional field backfill for unchanged build", () => {
+test("daemonBuildChanged detects optional field backfill for unchanged build", () => {
   const current = {
-    agent: {
+    daemonBuild: {
       commit: "abc123",
       buildId: "build-1",
     },
   };
 
   assertEquals(
-    agentChanged(current, {
+    daemonBuildChanged(current, {
       commit: "abc123",
       buildId: "build-1",
       builtAt: "2020-01-02T00:00:00.000Z",
@@ -886,7 +886,7 @@ test("agentChanged detects optional field backfill for unchanged build", () => {
     true,
   );
   assertEquals(
-    agentChanged(current, {
+    daemonBuildChanged(current, {
       commit: "abc123",
       buildId: "build-1",
       channel: "trunk",
@@ -894,7 +894,7 @@ test("agentChanged detects optional field backfill for unchanged build", () => {
     true,
   );
   assertEquals(
-    agentChanged(current, {
+    daemonBuildChanged(current, {
       commit: "abc123",
       buildId: "build-1",
     }),
@@ -902,16 +902,16 @@ test("agentChanged detects optional field backfill for unchanged build", () => {
   );
 });
 
-test("mergeAgentPreserving backfills optional fields for unchanged build", () => {
+test("mergeDaemonBuildPreserving backfills optional fields for unchanged build", () => {
   const current = {
-    agent: {
+    daemonBuild: {
       commit: "abc123",
       buildId: "build-1",
     },
   };
 
   assertEquals(
-    mergeAgentPreserving(current, {
+    mergeDaemonBuildPreserving(current, {
       commit: "abc123",
       buildId: "build-1",
       builtAt: "2020-01-02T00:00:00.000Z",
@@ -957,11 +957,11 @@ test("readProjectionsForServers derives connectedAt from statusChangedAt when co
   assertEquals("hostname" in read, false);
 });
 
-test("projectServerDaemon agent trigger backfills builtAt for unchanged build", async () => {
+test("projectServerDaemon daemonBuild trigger backfills builtAt for unchanged build", async () => {
   const { db, updateCalls } = createMockDb({
     key: baseKey,
     projection: {
-      agent: {
+      daemonBuild: {
         commit: "abc123",
         buildId: "build-1",
       },
@@ -969,8 +969,8 @@ test("projectServerDaemon agent trigger backfills builtAt for unchanged build", 
   });
 
   const wrote = await projectServerDaemon(db, serverId, {
-    kind: "agent",
-    agent: {
+    kind: "daemon-build",
+    daemonBuild: {
       commit: "abc123",
       buildId: "build-1",
       builtAt: "2020-01-02T00:00:00.000Z",
@@ -981,7 +981,7 @@ test("projectServerDaemon agent trigger backfills builtAt for unchanged build", 
   assertEquals(wrote, true);
   assertEquals(updateCalls.length, 1);
   const merged = parseServerDaemonState(updateCalls[0]?.daemon);
-  assertEquals(merged?.projection?.agent, {
+  assertEquals(merged?.projection?.daemonBuild, {
     commit: "abc123",
     buildId: "build-1",
     builtAt: "2020-01-02T00:00:00.000Z",
@@ -1030,9 +1030,9 @@ test("listConnectedServerIdsFromProjection includes rows with connected column s
   assertEquals(ids, [serverId]);
 });
 
-test("inboundHeartbeatProjectionDue is false for unchanged agent within coalesce window", () => {
+test("inboundHeartbeatProjectionDue is false for unchanged daemonBuild within coalesce window", () => {
   const recentAt = new Date().toISOString();
-  const agent = {
+  const daemonBuild = {
     commit: "abc123",
     buildId: "build-1",
     channel: "trunk" as const,
@@ -1043,8 +1043,8 @@ test("inboundHeartbeatProjectionDue is false for unchanged agent within coalesce
       runtimeConnected: true,
       cellLastSeenAt: recentAt,
       inboundAt: new Date(Date.now() + 1000).toISOString(),
-      storedAgent: agent,
-      incomingAgent: agent,
+      storedDaemonBuild: daemonBuild,
+      incomingDaemonBuild: daemonBuild,
     }),
     false,
   );
@@ -1053,7 +1053,7 @@ test("inboundHeartbeatProjectionDue is false for unchanged agent within coalesce
 test("inboundHeartbeatProjectionDue is false for heartbeat-only after coalesce window", () => {
   const staleAt = new Date(Date.now() - INBOUND_PROJECTION_COALESCE_MS - 1000)
     .toISOString();
-  const agent = {
+  const daemonBuild = {
     commit: "abc123",
     buildId: "build-1",
     channel: "trunk" as const,
@@ -1064,8 +1064,8 @@ test("inboundHeartbeatProjectionDue is false for heartbeat-only after coalesce w
       runtimeConnected: true,
       cellLastSeenAt: staleAt,
       inboundAt: new Date().toISOString(),
-      storedAgent: agent,
-      incomingAgent: agent,
+      storedDaemonBuild: daemonBuild,
+      incomingDaemonBuild: daemonBuild,
     }),
     false,
   );
@@ -1080,7 +1080,7 @@ test("inboundHeartbeatProjectionDue is false for heartbeat-only after coalesce w
   );
 });
 
-test("inboundHeartbeatProjectionDue is true for agent change or offline repair", () => {
+test("inboundHeartbeatProjectionDue is true for daemonBuild change or offline repair", () => {
   const recentAt = new Date().toISOString();
   const stored = {
     commit: "abc123",
@@ -1098,8 +1098,8 @@ test("inboundHeartbeatProjectionDue is true for agent change or offline repair",
       runtimeConnected: true,
       cellLastSeenAt: recentAt,
       inboundAt: new Date(Date.now() + 1000).toISOString(),
-      storedAgent: stored,
-      incomingAgent: incoming,
+      storedDaemonBuild: stored,
+      incomingDaemonBuild: incoming,
     }),
     true,
   );
@@ -1109,8 +1109,8 @@ test("inboundHeartbeatProjectionDue is true for agent change or offline repair",
       runtimeConnected: false,
       cellLastSeenAt: recentAt,
       inboundAt: new Date().toISOString(),
-      storedAgent: stored,
-      incomingAgent: stored,
+      storedDaemonBuild: stored,
+      incomingDaemonBuild: stored,
     }),
     true,
   );
@@ -1119,7 +1119,7 @@ test("inboundHeartbeatProjectionDue is true for agent change or offline repair",
 test("steadyStateInboundSkipsDbRead skips heartbeat-only after coalesce window", () => {
   const staleAt = new Date(Date.now() - INBOUND_PROJECTION_COALESCE_MS - 1000)
     .toISOString();
-  const agent = {
+  const daemonBuild = {
     commit: "abc123",
     buildId: "build-1",
     channel: "trunk" as const,
@@ -1130,13 +1130,13 @@ test("steadyStateInboundSkipsDbRead skips heartbeat-only after coalesce window",
     updatedAt: staleAt,
     connected: true,
     lastSeenAt: staleAt,
-    agent,
+    daemonBuild,
   };
 
   assertEquals(
     steadyStateInboundSkipsDbRead(snapshot, {
       at: new Date().toISOString(),
-      agent,
+      daemonBuild,
     }),
     true,
   );
@@ -1290,13 +1290,13 @@ test("projectServerDaemon emits zero status events on repeat-offline", async () 
   assertEquals(events.length, 0);
 });
 
-test("projectServerDaemon emits zero status events on heartbeat / identity / agent / update", async () => {
+test("projectServerDaemon emits zero status events on heartbeat / identity / daemonBuild / update", async () => {
   resetServerStatusEventSinkForTests();
   const { sink, events } = createStatusEventSink();
   const { db } = createMockDb(
     {
       key: baseKey,
-      projection: { agent: testAgent, hostname: "host-1" },
+      projection: { daemonBuild: testDaemonBuild, hostname: "host-1" },
     },
     {
       connected: true,
@@ -1308,15 +1308,15 @@ test("projectServerDaemon emits zero status events on heartbeat / identity / age
 
   await projectServerDaemon(db, serverId, {
     kind: "heartbeat",
-    agent: { commit: "new", buildId: "new-build" },
+    daemonBuild: { commit: "new", buildId: "new-build" },
   }, { metrics: sink });
   await projectServerDaemon(db, serverId, {
     kind: "identity",
     identity: { hostname: "host-2" },
   }, { metrics: sink });
   await projectServerDaemon(db, serverId, {
-    kind: "agent",
-    agent: { commit: "newer", buildId: "newer-build" },
+    kind: "daemon-build",
+    daemonBuild: { commit: "newer", buildId: "newer-build" },
   }, { metrics: sink });
   await projectServerDaemon(db, serverId, {
     kind: "update-queued",
@@ -1406,7 +1406,7 @@ test("buildProjectionsFromDaemonRows maps connected servers with status timestam
         key: baseKey,
         projection: {
           remoteAddress: "203.0.113.1",
-          agent: { commit: "abc", buildId: "build-1" },
+          daemonBuild: { commit: "abc", buildId: "build-1" },
         },
       },
       connected: true,
@@ -1418,7 +1418,7 @@ test("buildProjectionsFromDaemonRows maps connected servers with status timestam
   assertEquals(read?.connected, true);
   assertEquals(read?.connectedAt, "2020-01-01T00:00:00.000Z");
   assertEquals(read?.remoteAddress, "203.0.113.1");
-  assertEquals(read?.agent?.commit, "abc");
+  assertEquals(read?.daemonBuild?.commit, "abc");
 });
 
 test("listEnrolledDaemonServerIds returns only servers with daemon keys", async () => {

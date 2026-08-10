@@ -61,8 +61,8 @@ export function buildWorkersDaemonCellForwardHeaders(
  * Verifies the daemon JWT, then forwards the upgrade request to the per-server
  * Durable Object cell. The native Workers WebSocket lifecycle runs inside the
  * Durable Object (hibernation), so the Postgres presence projection — the
- * equivalent of `onDaemonConnected()` / `onDaemonDisconnected()` and agent
- * updates — is driven from `DaemonCellObject` itself rather than here. We stamp
+ * equivalent of `onDaemonConnected()` / `onDaemonDisconnected()` and daemon
+ * build updates — is driven from `DaemonCellObject` itself rather than here. We stamp
  * the resolved server id onto the forwarded request so the cell resolves its
  * identity consistently across the WS and RPC entry paths.
  */

@@ -9,6 +9,11 @@ import {
   transitionCommand,
   type CommandRecord,
 } from '../../lib/db/command-records.ts'
+import {
+  buildUserCommandExpiresAt,
+  buildCommandEnqueueEnvelope,
+  queuedCommandResponseBody,
+} from './command-dispatch-helpers.ts'
 
 export function assertDispatchInfrastructure(c: Context): CommandQueue | Response {
   const registry = getDaemonCellRegistry(c)
@@ -58,7 +63,7 @@ export async function createAndEnqueueUserCommand(
   const commandQueue = assertDispatchInfrastructure(c)
   if (commandQueue instanceof Response) return commandQueue
 
-  const expiresAt = new Date(Date.now() + params.ttlMs).toISOString()
+  const expiresAt = buildUserCommandExpiresAt(params.ttlMs)
   const record = await createCommandRecord(db, {
     serverId: params.serverId,
     actorType: 'user',
@@ -68,13 +73,12 @@ export async function createAndEnqueueUserCommand(
     expiresAt,
   })
 
-  const envelope: CommandEnvelope = {
+  const envelope = buildCommandEnqueueEnvelope({
     commandId: record.id,
     serverId: params.serverId,
     type: params.type,
-    attempt: 1,
     queuedAt: record.queuedAt ?? record.createdAt,
-  }
+  })
   const enqueueError = await enqueueCommandOrCompensate(
     db,
     commandQueue,
@@ -84,5 +88,5 @@ export async function createAndEnqueueUserCommand(
   )
   if (enqueueError) return enqueueError
 
-  return c.json({ ok: true, commandId: record.id, status: 'queued' })
+  return c.json(queuedCommandResponseBody(record.id))
 }

@@ -1358,7 +1358,7 @@ test('GET /servers/updates does not call listRequests on the cell', async () => 
       fingerprint: 'fp-test',
     })
     daemonState.projection = {
-      agent: { commit: 'aaa', buildId: 'b1' },
+      daemonBuild: { commit: 'aaa', buildId: 'b1' },
       update: { status: 'updating', requestId: 'req-1', channel: 'trunk' },
     }
     await db.update(server).set({

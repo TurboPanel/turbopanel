@@ -146,7 +146,7 @@ test('preferredListenPortsFromHostings maps targetPort by compose service name',
 })
 
 test('validateDeployMaterials rejects tcp hosting without ports', () => {
-  const res = validateDeployMaterials(
+  const validationError = validateDeployMaterials(
     [{
       hostingId: 'h1',
       serviceId: 'svc-db',
@@ -157,10 +157,10 @@ test('validateDeployMaterials rejects tcp hosting without ports', () => {
     }],
     [],
   )
-  if (!(res instanceof Response)) {
-    throw new TypeError('expected Response')
+  if (!validationError) {
+    throw new TypeError('expected a validation error')
   }
-  assertEquals(res.status, 400)
+  assertEquals(validationError.error, 'invalid_deploy_hosting')
 })
 
 function createRecordingCommandQueue(): CommandQueue & { envelopes: CommandEnvelope[] } {

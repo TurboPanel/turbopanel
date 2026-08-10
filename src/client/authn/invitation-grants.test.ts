@@ -1,7 +1,9 @@
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
+import type { Db } from '../../db.ts'
 import {
   defaultInvitationGrants,
   InvitationGrantValidationError,
+  materializeInvitationGrants,
   parseInvitationGrants,
   resolveInvitationGrants,
 } from './invitation-grants.ts'
@@ -102,4 +104,79 @@ test('InvitationGrantValidationError carries the HTTP status', () => {
   assertEquals(err.name, 'InvitationGrantValidationError')
   assertEquals(err.status, 404)
   assertEquals(err.message, 'Entity not found')
+})
+
+test('parseInvitationGrants rejects entries with empty entityId', () => {
+  assertEquals(
+    parseInvitationGrants([
+      {
+        entityType: 'organization',
+        entityId: '',
+        permissionKey: 'organization:manage',
+      },
+    ]),
+    null,
+  )
+})
+
+function mockGrantDb(orgExists: boolean): Db {
+  return {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () =>
+            Promise.resolve(orgExists ? [{ id: 'org-row' }] : []),
+        }),
+      }),
+    }),
+    insert: () => ({
+      values: (row: unknown) => {
+        return {
+          onConflictDoNothing: () => Promise.resolve(undefined),
+          _row: row,
+        }
+      },
+    }),
+  } as unknown as Db
+}
+
+test('materializeInvitationGrants inserts validated grant rows', async () => {
+  const inserts: unknown[] = []
+  const orgId = '00000000-0000-4000-8000-000000000001'
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([{ id: orgId }]),
+        }),
+      }),
+    }),
+    insert: () => ({
+      values: (row: unknown) => {
+        inserts.push(row)
+        return {
+          onConflictDoNothing: () => Promise.resolve(undefined),
+        }
+      },
+    }),
+  } as unknown as Db
+
+  await materializeInvitationGrants(db, 'user-1', defaultInvitationGrants(orgId), orgId)
+  assertEquals(inserts.length, 1)
+  assertEquals((inserts[0] as { permission: string }).permission, 'organization:manage')
+})
+
+test('materializeInvitationGrants rejects incompatible permission keys', async () => {
+  const orgId = '00000000-0000-4000-8000-000000000001'
+  const db = mockGrantDb(true)
+  await assertRejects(
+    () =>
+      materializeInvitationGrants(
+        db,
+        'user-1',
+        [{ entityType: 'organization', entityId: orgId, permissionKey: 'team:own' }],
+        orgId,
+      ),
+    InvitationGrantValidationError,
+  )
 })

@@ -219,7 +219,7 @@ export async function syncDevToDaemon(
 }
 
 /**
- * Admin routes to push the current dev daemon build to agents. Deno-only: tar +
+ * Admin routes to push the current dev daemon build to daemons. Deno-only: tar +
  * filesystem access are not available in the Workers build.
  */
 export function registerDevSyncRoutes(

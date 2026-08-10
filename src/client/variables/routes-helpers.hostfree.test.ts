@@ -11,7 +11,12 @@ import {
   isVariableKeyUniqueViolation,
   PARENT_BODY_FIELDS,
   parseOptionalStringValue,
+  parseResolvedVariablesQuery,
   parseVariableParent,
+  patchHasOnlyUpdatedAt,
+  switchingSecretRequiresValue,
+  validateVariableKeyValue,
+  variableKeyUniqueConflictMessage,
   VARIABLE_KEY_RE,
 } from './routes-helpers.ts'
 
@@ -126,4 +131,57 @@ test('buildInsertValues pins server parent column', () => {
   assertEquals(values.serverId, 'srv-1')
   assertEquals(values.hostingId, null)
   assertEquals(values.description, 'host override')
+})
+
+test('parseResolvedVariablesQuery requires exactly one scope', () => {
+  assertEquals(
+    parseResolvedVariablesQuery({
+      serviceId: undefined,
+      environmentId: undefined,
+      hostingId: undefined,
+    }).ok,
+    false,
+  )
+  assertEquals(
+    parseResolvedVariablesQuery({
+      serviceId: 's1',
+      environmentId: 'e1',
+      hostingId: undefined,
+    }).ok,
+    false,
+  )
+  assertEquals(
+    parseResolvedVariablesQuery({
+      serviceId: undefined,
+      environmentId: undefined,
+      hostingId: 'h1',
+    }),
+    { ok: true, query: { kind: 'hosting', id: 'h1' } },
+  )
+  assertEquals(
+    parseResolvedVariablesQuery({
+      serviceId: 's1',
+      environmentId: undefined,
+      hostingId: undefined,
+    }),
+    { ok: true, query: { kind: 'service', id: 's1' } },
+  )
+  assertEquals(
+    parseResolvedVariablesQuery({
+      serviceId: undefined,
+      environmentId: 'e1',
+      hostingId: undefined,
+    }),
+    { ok: true, query: { kind: 'environment', id: 'e1' } },
+  )
+})
+
+test('validateVariableKeyValue and patch helpers', () => {
+  assertEquals(validateVariableKeyValue('APP_ENV'), { ok: true, key: 'APP_ENV' })
+  assertEquals(validateVariableKeyValue('9BAD').ok, false)
+  assertEquals(patchHasOnlyUpdatedAt({ updatedAt: 'x' }), true)
+  assertEquals(patchHasOnlyUpdatedAt({ updatedAt: 'x', key: 'A' }), false)
+  assertEquals(switchingSecretRequiresValue(false, true, false), true)
+  assertEquals(switchingSecretRequiresValue(false, true, true), false)
+  assertEquals(variableKeyUniqueConflictMessage(), 'A variable with this key already exists in this scope')
 })

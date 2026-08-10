@@ -11,31 +11,21 @@ import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db.ts'
 import { environment, project, variable, workspace } from '../../lib/db/schema.ts'
 import {
-  getCatalogEntry,
-  isCreateProjectType,
   isManagedEngineCatalogEntry,
   listCatalog,
   resolveCatalogVariablePlaintext,
   type CatalogEntry,
   type CreateProjectType,
 } from './catalog/index.ts'
-import {
-  applyValidatedComposeOption,
-  emptyComposeDocument,
-  stripProjectComposePlacementOption,
-} from '../../lib/compose/index.ts'
+import { emptyComposeDocument } from '../../lib/compose/index.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
   assertNotSystemOwnedOr403,
   buildPatchUpdateFields,
   getOrgId,
-  parseDisplayName,
-  parseDescription,
   parseJsonBody,
-  parseJsonbObject,
   requireStringField,
-  stripPromotedMetadataKeys,
 } from '../shared.ts'
 import {
   deleteProjectCascade,
@@ -44,15 +34,9 @@ import {
 import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
 import { reconcileServicesForProject } from '../environments/reconcile-after-compose-save.ts'
 import {
-  parseContainerNamingInput,
-  parseDefaultServerIdInput,
-} from '../../lib/project-options.ts'
-import { isPlacementServerId } from '../../lib/compose/placement.ts'
-import {
   configureProjectType,
   DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
   insertEmptyProject,
-  isConfiguredProjectType,
   isProductionEnvironmentName,
   loadDefaultEnvironmentName,
 } from './empty-setup.ts'
@@ -60,6 +44,20 @@ import {
   isProjectDisplayNameTaken,
   PROJECT_NAME_IN_USE_ERROR,
 } from '../display-name-uniqueness.ts'
+import {
+  assertDefaultServerIdShape,
+  catalogProjectOptions,
+  mapCreateProjectError,
+  normalizeProjectPatchOptions,
+  parseConfigureProjectBody,
+  parseCreateProjectMetadata,
+  parseCreateProjectNames,
+  parseCreateProjectOptions,
+  parseCreateProjectServerIdField,
+  parseJsonbField,
+  resolveCatalogEntryForCreate,
+  resolveCreateProjectType,
+} from './routes-helpers.ts'
 
 type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
@@ -106,54 +104,7 @@ export async function scaffoldCatalogEnvironments(
   }
 }
 
-type ResolvedCreateProjectType = CreateProjectType | 'empty'
-
-function resolveCreateProjectType(
-  body: Record<string, unknown>,
-): ResolvedCreateProjectType | 'invalid' {
-  const rawType = body.type
-  // Missing / blank type is rejected — callers must send an explicit value.
-  if (rawType === undefined || rawType === null || rawType === '') {
-    return 'invalid'
-  }
-  // Explicit empty — name + workspace only; type chosen later via configure.
-  if (rawType === 'empty') {
-    return 'empty'
-  }
-  if (typeof rawType !== 'string' || !isCreateProjectType(rawType)) {
-    return 'invalid'
-  }
-  return rawType
-}
-
-function resolveCatalogEntryForCreate(
-  projectType: ResolvedCreateProjectType,
-  body: Record<string, unknown>,
-): CatalogEntry | 'missing_code' | 'unknown_code' | undefined {
-  if (projectType !== 'template' && projectType !== 'managed') {
-    return undefined
-  }
-  const code = body.code
-  if (typeof code !== 'string' || !code) {
-    return 'missing_code'
-  }
-  const catalogEntry = getCatalogEntry(code)
-  if (catalogEntry?.kind !== projectType) {
-    return 'unknown_code'
-  }
-  return catalogEntry
-}
-
-function mapCreateProjectError(err: unknown): {
-  error: string
-  status: 503
-} | null {
-  if (!(err instanceof Error)) return null
-  if (err.message === 'encryption unavailable') {
-    return { error: 'Encryption unavailable', status: 503 }
-  }
-  return null
-}
+type ResolvedCreateProjectType = import('./routes-helpers.ts').ResolvedCreateProjectType
 
 async function runCreateProjectTransaction(
   db: Db,
@@ -273,14 +224,11 @@ function parseDisplayNameAndDescription(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
 ): { displayName: string | null; description: string | null } | Response {
-  try {
-    return {
-      displayName: parseDisplayName(body),
-      description: parseDescription(body),
-    }
-  } catch {
-    return c.json({ error: 'Invalid request' }, 400)
+  const parsed = parseCreateProjectNames(body)
+  if (!parsed.ok) {
+    return c.json({ error: parsed.error }, parsed.status)
   }
+  return parsed
 }
 
 async function resolveServerIdForCreate(
@@ -289,14 +237,16 @@ async function resolveServerIdForCreate(
   body: Record<string, unknown>,
   organizationId: string,
 ): Promise<string | null | Response> {
-  if (body.serverId === undefined || body.serverId === null) return null
-  if (typeof body.serverId !== 'string' || body.serverId.length === 0) {
-    return c.json({ error: 'Invalid request' }, 400)
+  const parsed = parseCreateProjectServerIdField(body)
+  if (!parsed.ok) {
+    return c.json({ error: parsed.error }, parsed.status)
   }
-  if (!(await verifyServerInOrg(db, body.serverId, organizationId))) {
+  if (parsed.serverId === 'omitted') return null
+  if (parsed.serverId === null) return null
+  if (!(await verifyServerInOrg(db, parsed.serverId, organizationId))) {
     return c.json({ error: 'Not found' }, 404)
   }
-  return body.serverId
+  return parsed.serverId
 }
 
 async function parseCreateProjectInput(
@@ -327,21 +277,19 @@ async function parseCreateProjectInput(
     return c.json({ error: 'Unknown catalog code' }, 400)
   }
 
-  const optionsResult = parseJsonbObject(c, body, 'options')
-  if (optionsResult instanceof Response) return optionsResult
-  const createComposeOption = applyValidatedComposeOption(optionsResult)
-  if (!createComposeOption.ok) {
-    return c.json({ error: 'compose_invalid', issues: createComposeOption.issues }, 400)
+  const optionsResult = parseCreateProjectOptions(body)
+  if (!optionsResult.ok) {
+    if (optionsResult.error === 'compose_invalid') {
+      return c.json({ error: optionsResult.error, issues: optionsResult.issues }, 400)
+    }
+    return c.json({ error: optionsResult.error }, optionsResult.status)
   }
-  stripProjectComposePlacementOption(optionsResult)
 
-  const metadataResult = parseJsonbObject(c, body, 'metadata')
-  if (metadataResult instanceof Response) return metadataResult
-  // `metadata.component` is reserved for system project identity — public
-  // create must never stamp it (system hierarchy provisions it internally).
-  const metadata = metadataResult === null
-    ? null
-    : stripPromotedMetadataKeys(metadataResult, ['component'])
+  const metadataResult = parseCreateProjectMetadata(body)
+  if (!metadataResult.ok) {
+    return c.json({ error: metadataResult.error }, metadataResult.status)
+  }
+  const { metadata } = metadataResult
 
   const serverId = await resolveServerIdForCreate(c, db, body, organizationId)
   if (serverId instanceof Response) return serverId
@@ -358,7 +306,7 @@ async function parseCreateProjectInput(
     organizationId,
     projectType,
     catalogEntry,
-    options: optionsResult,
+    options: optionsResult.options,
     metadata,
     serverId,
     defaultEnvironmentName,
@@ -393,37 +341,20 @@ function parseProjectPatchOptions(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
 ): Record<string, unknown> | null | Response {
-  const optionsResult = parseJsonbObject(c, body, 'options')
-  if (optionsResult instanceof Response) return optionsResult
+  const optionsResult = parseJsonbField(body, 'options')
+  if (optionsResult === 'invalid') {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
   if (optionsResult === null) return null
 
-  const composeOption = applyValidatedComposeOption(optionsResult)
-  if (!composeOption.ok) {
-    return c.json({ error: 'compose_invalid', issues: composeOption.issues }, 400)
-  }
-
-  if ('containerNaming' in optionsResult) {
-    const naming = parseContainerNamingInput(optionsResult.containerNaming)
-    if (!naming.ok) {
-      return c.json({ error: 'Invalid request' }, 400)
+  const normalized = normalizeProjectPatchOptions(optionsResult)
+  if (!normalized.ok) {
+    if (normalized.error === 'compose_invalid') {
+      return c.json({ error: normalized.error, issues: normalized.issues }, 400)
     }
-    optionsResult.containerNaming = naming.value
+    return c.json({ error: normalized.error }, normalized.status)
   }
-
-  if ('defaultServerId' in optionsResult) {
-    const parsed = parseDefaultServerIdInput(optionsResult.defaultServerId)
-    if (!parsed.ok) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-    if (parsed.value === null) {
-      delete optionsResult.defaultServerId
-    } else {
-      optionsResult.defaultServerId = parsed.value
-    }
-  }
-
-  stripProjectComposePlacementOption(optionsResult)
-  return optionsResult
+  return normalized.options
 }
 
 type ProjectPatchFields = {
@@ -465,12 +396,13 @@ async function assertDefaultServerIdInOrg(
   organizationId: string,
   options: Record<string, unknown> | null | undefined,
 ): Promise<Response | undefined> {
+  const shapeError = assertDefaultServerIdShape(options)
+  if (shapeError) {
+    return c.json({ error: shapeError.error }, shapeError.status)
+  }
   if (!options || !('defaultServerId' in options)) return
   const serverId = options.defaultServerId
   if (serverId === undefined || serverId === null) return
-  if (!isPlacementServerId(serverId)) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
   if (!(await verifyServerInOrg(db, serverId, organizationId))) {
     return c.json({ error: 'Not found' }, 404)
   }
@@ -745,17 +677,9 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const rawType = body.type
-    if (typeof rawType !== 'string' || !isConfiguredProjectType(rawType)) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-
-    let catalogCode: string | undefined
-    if (rawType === 'template' || rawType === 'managed') {
-      if (typeof body.code !== 'string' || !body.code) {
-        return c.json({ error: 'Invalid request' }, 400)
-      }
-      catalogCode = body.code
+    const configureBody = parseConfigureProjectBody(body)
+    if (!configureBody.ok) {
+      return c.json({ error: configureBody.error }, configureBody.status)
     }
 
     const serverId = await resolveServerIdForCreate(c, db, body, organizationId)
@@ -768,8 +692,8 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const result = await configureProjectType(db, {
       projectId: id,
-      projectType: rawType,
-      catalogCode,
+      projectType: configureBody.projectType,
+      catalogCode: configureBody.catalogCode,
       dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
       serverId,
       defaultEnvironmentName,

@@ -4,6 +4,7 @@ import type { AppEnv } from '../../app.ts'
 import type { storage } from '../../lib/db/schema.ts'
 import {
   buildStorageUpdateFields,
+  dockerVolumeMetadataWithId,
   isStorageContentTooLarge,
   isStorageKind,
   MAX_STORAGE_CONTENT_BYTES,
@@ -12,6 +13,7 @@ import {
   parseCreateStorageFields,
   parseOptionalStorageContent,
   parseStorageParent,
+  principalProjectMismatch,
   resolvePatchKind,
   resolvePatchPrincipalId,
   resolvePatchStorageRefs,
@@ -296,4 +298,22 @@ test('storage content size helpers enforce the 256 KiB cap', () => {
   assertEquals(storageContentByteLength(under), MAX_STORAGE_CONTENT_BYTES)
   assertEquals(isStorageContentTooLarge(under), false)
   assertEquals(isStorageContentTooLarge(`${under}x`), true)
+})
+
+test('dockerVolumeMetadataWithId pins the storage UUID', () => {
+  assertEquals(dockerVolumeMetadataWithId(null, 'stor-1'), {
+    dockerVolumeName: 'stor-1',
+  })
+  assertEquals(dockerVolumeMetadataWithId({ tier: 'fast' }, 'stor-2'), {
+    tier: 'fast',
+    dockerVolumeName: 'stor-2',
+  })
+})
+
+test('principalProjectMismatch only compares when a project is expected', () => {
+  assertEquals(principalProjectMismatch('p1', undefined), false)
+  assertEquals(principalProjectMismatch('p1', null), false)
+  assertEquals(principalProjectMismatch('p1', 'p1'), false)
+  assertEquals(principalProjectMismatch('p1', 'p2'), true)
+  assertEquals(principalProjectMismatch(null, 'p1'), true)
 })

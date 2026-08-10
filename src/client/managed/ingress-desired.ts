@@ -64,6 +64,20 @@ import {
   buildManagedOrgTlsMaterial,
   ensureActiveOrganizationCa,
 } from './apply-prepare.ts'
+import {
+  buildIngressUserRole,
+  buildLocalOrMissingPortBackend,
+  buildRemoteIngressBackend,
+  collectProxySqlListenerSans,
+  decideIngressBindScope,
+  hostgroupsForClusterIndex,
+  isAtRestSealedPassword,
+  mergeHierarchyContainerSan,
+  principalDefaultDatabase,
+  protocolPortForEngine,
+  shouldSkipIngressFrontendUser,
+  sortManagedIds,
+} from './ingress-desired-pure.ts'
 import { parseManagedRowOptions } from './options.ts'
 import { resolveManagedConnectionListener } from './routes-helpers.ts'
 
@@ -77,77 +91,11 @@ export type ManagedIngressReconcilePrepareError =
   | { kind: 'datacenter_ip_required'; serverId: string }
   | PrivateEndpointError
 
-const BIND_RANK: Record<HostingBindScope, number> = {
-  local: 1,
-  datacenter: 2,
-  public: 3,
-}
-
-/** Hostgroup pair for cluster index `i` (stable writer = 2i, reader = 2i+1). */
-export function hostgroupsForClusterIndex(index: number): {
-  writerHostgroup: number
-  readerHostgroup: number
-} {
-  if (!Number.isInteger(index) || index < 0) {
-    throw new TypeError(`Invalid cluster index: ${index}`)
-  }
-  return {
-    writerHostgroup: index * 2,
-    readerHostgroup: index * 2 + 1,
-  }
-}
-
-/**
- * Union of enabled exposure binds to the most permissive scope
- * (public > datacenter > local). Returns `undefined` when every cluster has
- * exposure disabled.
- */
-export function unionExposureBind(
-  binds: readonly (HostingBindScope | undefined)[],
-): HostingBindScope | undefined {
-  let best: HostingBindScope | undefined
-  let bestRank = 0
-  for (const bind of binds) {
-    if (bind === undefined) continue
-    const rank = BIND_RANK[bind] ?? 0
-    if (rank > bestRank) {
-      best = bind
-      bestRank = rank
-    }
-  }
-  return best
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function protocolPortForEngine(engine: string, defaultPort: number): 5432 | 3306 {
-  if (defaultPort === 3306) return 3306
-  if (defaultPort === 5432) return 5432
-  // Postgres-first — treat unknown defaults as the shared Postgres listener.
-  if (engine === 'mysql' || engine === 'mariadb') return 3306
-  return 5432
-}
-
-function isManagedRootPrincipal(metadata: unknown): boolean {
-  if (!isRecord(metadata)) return false
-  return metadata.managedRoot === true
-}
-
-function isManagedReplicationPrincipal(metadata: unknown): boolean {
-  if (!isRecord(metadata)) return false
-  return metadata.managedReplication === true
-}
-
-function principalDefaultDatabase(metadata: unknown): string | undefined {
-  if (!isRecord(metadata)) return undefined
-  if (!Array.isArray(metadata.databases)) return undefined
-  const first = metadata.databases.find(
-    (entry): entry is string => typeof entry === 'string' && entry.length > 0,
-  )
-  return first
-}
+export {
+  collectProxySqlListenerSans,
+  hostgroupsForClusterIndex,
+  unionExposureBind,
+} from './ingress-desired-pure.ts'
 
 type MemberClusterRow = {
   memberId: string
@@ -159,7 +107,7 @@ type MemberClusterRow = {
   privatePort: number | null
   engine: string | null
   options: unknown
-  organizationId: string
+  organizationId: string | null
   environmentId: string
   containerName: string | null
 }
@@ -330,11 +278,9 @@ async function loadClusterUsers(
 
   const users: ManagedIngressReconcileUser[] = []
   for (const row of rows) {
-    if (typeof row.username !== 'string' || row.username.length === 0) continue
-    // Replication principal is not a client login — never a ProxySQL frontend user.
-    if (isManagedReplicationPrincipal(row.metadata)) continue
+    if (shouldSkipIngressFrontendUser(row.username, row.metadata)) continue
     const sealed = row.password
-    if (typeof sealed !== 'string' || !sealed.startsWith(AT_REST_ENVELOPE_PREFIX)) {
+    if (!isAtRestSealedPassword(sealed, AT_REST_ENVELOPE_PREFIX)) {
       return { kind: 'managed_credential_not_sealed' }
     }
     const resealed = await resealSecretForDaemon(
@@ -343,10 +289,9 @@ async function loadClusterUsers(
       { serverId: params.serverId, keyId: daemonState.key.id },
       sealed,
     )
-    const role = isManagedRootPrincipal(row.metadata) ? 'root' : 'user'
     const user: ManagedIngressReconcileUser = {
       username: row.username,
-      role,
+      role: buildIngressUserRole(row.metadata),
       password: resealed,
     }
     const defaultDatabase = principalDefaultDatabase(row.metadata)
@@ -363,33 +308,17 @@ async function resolveBackendAddress(
   member: MemberClusterRow,
   enginePort: number,
 ): Promise<ManagedIngressReconcileBackend | ManagedIngressReconcilePrepareError> {
-  const role: 'primary' | 'replica' =
-    member.role === 'replica' ? 'replica' : 'primary'
-
-  if (member.serverId === fromServerId) {
-    const address = member.containerName
-    if (!address) {
-      return {
-        kind: 'private_path_unavailable',
-        fromServerId,
-        toServerId: member.serverId,
-      }
-    }
-    return {
-      memberId: member.memberId,
-      role,
-      readEligible: member.readEligible,
-      address,
-      port: enginePort,
-      transport: 'local',
-    }
-  }
-
-  if (member.privatePort === null) {
+  const localOrMissing = buildLocalOrMissingPortBackend(
+    fromServerId,
+    member,
+    enginePort,
+  )
+  if (localOrMissing.kind === 'ok') return localOrMissing.backend
+  if (localOrMissing.kind === 'private_path_unavailable') {
     return {
       kind: 'private_path_unavailable',
-      fromServerId,
-      toServerId: member.serverId,
+      fromServerId: localOrMissing.fromServerId,
+      toServerId: localOrMissing.toServerId,
     }
   }
 
@@ -399,14 +328,23 @@ async function resolveBackendAddress(
   })
   if (isPrivateEndpointError(resolved)) return resolved
 
-  return {
+  const privatePort = member.privatePort
+  if (privatePort === null) {
+    return {
+      kind: 'private_path_unavailable',
+      fromServerId,
+      toServerId: member.serverId,
+    }
+  }
+
+  return buildRemoteIngressBackend({
     memberId: member.memberId,
-    role,
+    role: localOrMissing.role,
     readEligible: member.readEligible,
     address: resolved.address,
-    port: member.privatePort,
+    privatePort,
     transport: resolved.transport,
-  }
+  })
 }
 
 async function buildOrgTlsForServer(
@@ -430,7 +368,10 @@ async function buildOrgTlsForServer(
     dataEncryptionSecrets,
     organizationId,
   )
-  if ('kind' in ca) return ca
+  if ('kind' in ca) {
+    // ensureActiveOrganizationCa prepare errors are a subset of ingress prepare errors
+    return ca as ManagedIngressReconcilePrepareError
+  }
 
   const caPrivateKeyPem = await decryptSecret(
     dataEncryptionSecrets,
@@ -445,79 +386,6 @@ async function buildOrgTlsForServer(
     listenerSans.dnsNames,
     listenerSans.ipAddresses,
   )
-}
-
-// Wildcard "any interface" bind markers — listen-address sentinels, never
-// real endpoints to advertise as a SAN.
-const WILDCARD_BIND_ADDRESSES = new Set(['0.0.0.0', '::', '::0']) // NOSONAR typescript:S1313 — wildcard bind sentinel, not a routable address
-
-function addSanValue(
-  value: string,
-  dnsNames: Set<string>,
-  ipAddresses: Set<string>,
-): void {
-  if (looksLikeIpLiteral(value)) ipAddresses.add(value)
-  else dnsNames.add(value)
-}
-
-function addBindAddressSan(
-  bindAddress: string | undefined,
-  dnsNames: Set<string>,
-  ipAddresses: Set<string>,
-): void {
-  if (!bindAddress) return
-  if (!looksLikeIpLiteral(bindAddress)) {
-    dnsNames.add(bindAddress)
-    return
-  }
-  if (WILDCARD_BIND_ADDRESSES.has(bindAddress)) return
-  ipAddresses.add(bindAddress)
-}
-
-function addBackendAddressSan(
-  address: string,
-  dnsNames: Set<string>,
-  ipAddresses: Set<string>,
-): void {
-  if (!address || address.length === 0) return
-  // Co-resident container names are not client dial targets.
-  if (!looksLikeIpLiteral(address) && !address.includes('.')) return
-  addSanValue(address, dnsNames, ipAddresses)
-}
-
-/**
- * Collect DNS + IP SANs that clients are told to dial for this server's
- * ProxySQL — hostname, bind address, and remote peer endpoints used by backends.
- * Synthetic names (leaf CN) stay additional SANs only via the builder.
- */
-export function collectProxySqlListenerSans(params: {
-  hostname: string | null | undefined
-  bindAddress: string | undefined
-  backendAddresses: readonly string[]
-}): { dnsNames: string[]; ipAddresses: string[] } {
-  const dnsNames = new Set<string>()
-  const ipAddresses = new Set<string>()
-  const hostname = params.hostname?.trim()
-  if (hostname) addSanValue(hostname, dnsNames, ipAddresses)
-  addBindAddressSan(params.bindAddress, dnsNames, ipAddresses)
-  for (const address of params.backendAddresses) {
-    addBackendAddressSan(address, dnsNames, ipAddresses)
-  }
-  return {
-    dnsNames: [...dnsNames].sort((a, b) => a.localeCompare(b)),
-    ipAddresses: [...ipAddresses].sort((a, b) => a.localeCompare(b)),
-  }
-}
-
-function looksLikeIpLiteral(value: string): boolean {
-  if (value.includes(':')) return true // IPv6 or bracketed form
-  const parts = value.split('.')
-  if (parts.length !== 4) return false
-  return parts.every((p) => {
-    if (!/^\d{1,3}$/.test(p)) return false
-    const n = Number(p)
-    return n >= 0 && n <= 255
-  })
 }
 
 async function resolveClusterBackends(
@@ -596,32 +464,21 @@ async function buildIngressCluster(
  * Explicit bind decision for the shared ProxySQL frontend — never let an
  * ambiguous `undefined` mean two different things.
  *
- * - No cluster on this server has exposure enabled → `undefined`, which the
- *   daemon (`managed-ingress-reconcile.ts`) treats as "omit `bindAddress`" →
- *   `null` → publish nothing to the host. Bound-only consumers still reach
- *   ProxySQL over {@link MANAGED_INGRESS_NETWORK} regardless of this value.
- * - `bind: 'public'` has **no IP-pin concept** for managed exposure (unlike
- *   hosting's `ipId`) — it always means "all interfaces". Resolve it to
- *   `'0.0.0.0'` directly instead of delegating to
- *   {@link resolveHostingBindAddress}: that helper's `undefined` for
- *   "public, no pin" means "Caddy already wildcards with no bind directive",
- *   which here would be misread by the daemon as "exposure disabled" and
- *   silently drop the publish the operator explicitly asked for.
- * - `local` / `datacenter` resolve through the shared hosting-bind helper,
- *   which already returns a concrete address for both.
+ * Pure scope decision lives in {@link decideIngressBindScope}; `local` /
+ * `datacenter` still resolve through the shared hosting-bind helper.
  */
 async function resolveIngressBindAddress(
   db: Db,
   serverId: string,
   enabledBinds: Array<HostingBindScope | undefined>,
 ): Promise<string | undefined | ManagedIngressReconcilePrepareError> {
-  const bindScope = unionExposureBind(enabledBinds)
-  if (bindScope === undefined) return undefined
-  if (bindScope === 'public') return '0.0.0.0' // NOSONAR typescript:S1313 — explicit all-interfaces publish, not a routable address
+  const decision = decideIngressBindScope(enabledBinds)
+  if (decision.kind === 'omit') return undefined
+  if (decision.kind === 'public_all_interfaces') return decision.address
 
   const bindResolved = await resolveHostingBindAddress(db, {
     serverId,
-    options: { bind: bindScope },
+    options: { bind: decision.bind },
     ipId: null,
   })
   if (
@@ -732,13 +589,14 @@ export async function buildManagedIngressReconcilePayload(
 
   const organizationId =
     localMembers[0]?.organizationId ?? serverRow.organizationId
+  if (!organizationId) return null
 
   const hierarchy = await ensureManagedIngressHierarchy(db, {
     organizationId,
     serverId: params.serverId,
   })
 
-  const managedIds = [...managedIdSet].sort((a, b) => a.localeCompare(b))
+  const managedIds = sortManagedIds(managedIdSet)
 
   const enabledBinds: Array<HostingBindScope | undefined> = []
   const clusters = await buildIngressClusters(
@@ -783,9 +641,10 @@ export async function buildManagedIngressReconcilePayload(
   // public `bindAddress` — the leaf cert must carry it as a SAN or
   // `sslmode=verify-full` binding connections fail hostname verification
   // even though the TCP path is reachable.
-  listenerSans.dnsNames = [
-    ...new Set([...listenerSans.dnsNames, hierarchy.containerName]),
-  ].sort((a, b) => a.localeCompare(b))
+  const listenerSansWithHierarchy = mergeHierarchyContainerSan(
+    listenerSans,
+    hierarchy.containerName,
+  )
 
   const orgTlsMaterial = await buildOrgTlsForServer(
     db,
@@ -793,7 +652,7 @@ export async function buildManagedIngressReconcilePayload(
     params.dataEncryptionSecrets,
     organizationId,
     params.serverId,
-    listenerSans,
+    listenerSansWithHierarchy,
   )
   if ('kind' in orgTlsMaterial) return orgTlsMaterial
 

@@ -29,6 +29,9 @@ import { getDb } from '../../db.ts'
 import { grant, invitation, membership, team, teammate } from '../../lib/db/schema.ts'
 import { getOrgId } from '../shared.ts'
 import {
+  invitationAcceptErrorPayload,
+  invitationEmailsMatch,
+  organizationResourceIdMismatch,
   ownerRemovalConflictMessage,
   parseCreateAccessBody as parseCreateAccessBodyRecord,
   type CreateAccessInput,
@@ -117,10 +120,7 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    if (
-      invitePreview.email.trim().toLowerCase() !==
-      session.email.trim().toLowerCase()
-    ) {
+    if (!invitationEmailsMatch(invitePreview.email, session.email)) {
       return c.json({ error: 'Forbidden' }, 403)
     }
 
@@ -200,10 +200,8 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
     })
 
     if ('error' in result) {
-      if (result.error === 'invalid_grant') {
-        return c.json({ error: 'Invalid invitation grants' }, 400)
-      }
-      return c.json({ error: 'Invitation expired or already used' }, 410)
+      const payload = invitationAcceptErrorPayload(result.error)
+      return c.json(payload.body, payload.status)
     }
 
     return c.json({ ok: true as const, organizationId: result.organizationId })
@@ -284,10 +282,10 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
       return c.json({ error: 'Not found' }, 404)
     }
 
+    if (organizationResourceIdMismatch(validated.kind, validated.itemId, organizationId)) {
+      return c.json({ error: 'Not found' }, 404)
+    }
     if (validated.kind === 'organization') {
-      if (validated.itemId !== organizationId) {
-        return c.json({ error: 'Not found' }, 404)
-      }
       return c.json({
         resourceId: entity.entityId,
         kind: validated.kind,

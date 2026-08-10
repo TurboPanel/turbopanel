@@ -16,7 +16,7 @@ import {
   MAX_DAEMON_WS_LOGS_CHARS,
   MAX_DAEMON_WS_RESULT_JSON_BYTES,
   outboundEnvelopeToWireMessage,
-  parseDaemonAgentInfo,
+  parseDaemonBuildInfo,
   parseDaemonMessage,
   validateDaemonInboundEnvelope,
   validateDaemonInboundFrame,
@@ -477,11 +477,11 @@ it("deliveryId and requestId are independent UUIDs", () => {
 });
 
 const VALID_AT = "2020-01-01T00:00:00.000Z";
-const VALID_AGENT = { commit: "abc123def456", buildId: "build-1" };
+const VALID_DAEMON_BUILD = { commit: "abc123def456", buildId: "build-1" };
 
-it("parseDaemonAgentInfo accepts optional builtAt and channel", () => {
+it("parseDaemonBuildInfo accepts optional builtAt and channel", () => {
   assertEquals(
-    parseDaemonAgentInfo({
+    parseDaemonBuildInfo({
       commit: "c1",
       buildId: "b1",
       builtAt: "2020-01-01T00:00:00.000Z",
@@ -496,11 +496,11 @@ it("parseDaemonAgentInfo accepts optional builtAt and channel", () => {
   );
 });
 
-it("parseDaemonAgentInfo rejects missing or empty commit/buildId", () => {
-  assertEquals(parseDaemonAgentInfo(null), undefined);
-  assertEquals(parseDaemonAgentInfo({ commit: "", buildId: "b" }), undefined);
-  assertEquals(parseDaemonAgentInfo({ commit: "c", buildId: "" }), undefined);
-  assertEquals(parseDaemonAgentInfo({ commit: 1, buildId: "b" }), undefined);
+it("parseDaemonBuildInfo rejects missing or empty commit/buildId", () => {
+  assertEquals(parseDaemonBuildInfo(null), undefined);
+  assertEquals(parseDaemonBuildInfo({ commit: "", buildId: "b" }), undefined);
+  assertEquals(parseDaemonBuildInfo({ commit: "c", buildId: "" }), undefined);
+  assertEquals(parseDaemonBuildInfo({ commit: 1, buildId: "b" }), undefined);
 });
 
 it("validateDaemonInboundFrame rejects invalid json and message shape", () => {
@@ -514,7 +514,7 @@ it("validateDaemonInboundFrame accepts hello with optional fields", () => {
     JSON.stringify({
       type: "hello",
       at: VALID_AT,
-      agent: VALID_AGENT,
+      daemonBuild: VALID_DAEMON_BUILD,
       hostname: "host-1",
       machineKey: "a".repeat(64),
     }),
@@ -522,10 +522,10 @@ it("validateDaemonInboundFrame accepts hello with optional fields", () => {
   assertEquals(result.ok, true);
 });
 
-it("validateDaemonInboundFrame rejects hello with invalid agent or hostname", () => {
+it("validateDaemonInboundFrame rejects hello with invalid daemonBuild or hostname", () => {
   assertEquals(
     validateDaemonInboundFrame(
-      JSON.stringify({ type: "hello", at: VALID_AT, agent: { commit: "" } }),
+      JSON.stringify({ type: "hello", at: VALID_AT, daemonBuild: { commit: "" } }),
     ).ok,
     false,
   );
@@ -534,7 +534,7 @@ it("validateDaemonInboundFrame rejects hello with invalid agent or hostname", ()
       JSON.stringify({
         type: "hello",
         at: VALID_AT,
-        agent: VALID_AGENT,
+        daemonBuild: VALID_DAEMON_BUILD,
         hostname: "x".repeat(MAX_DAEMON_WS_HOST_FIELD_CHARS + 1),
       }),
     ).ok,
@@ -542,7 +542,7 @@ it("validateDaemonInboundFrame rejects hello with invalid agent or hostname", ()
   );
 });
 
-it("validateDaemonInboundFrame rejects heartbeat with invalid timestamp or agent", () => {
+it("validateDaemonInboundFrame rejects heartbeat with invalid timestamp or daemonBuild", () => {
   assertEquals(
     validateDaemonInboundFrame(
       JSON.stringify({ type: "heartbeat", at: "not-a-timestamp" }),
@@ -554,7 +554,7 @@ it("validateDaemonInboundFrame rejects heartbeat with invalid timestamp or agent
       JSON.stringify({
         type: "heartbeat",
         at: VALID_AT,
-        agent: { buildId: "only-build" },
+        daemonBuild: { buildId: "only-build" },
       }),
     ).ok,
     false,
@@ -757,7 +757,7 @@ it("wireMessageToInboundEnvelope returns null for hello and heartbeat", () => {
     wireMessageToInboundEnvelope({
       type: "hello",
       at: VALID_AT,
-      agent: VALID_AGENT,
+      daemonBuild: VALID_DAEMON_BUILD,
     }),
     null,
   );

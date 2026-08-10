@@ -86,17 +86,23 @@ test('attachWebMetadataToTraditionalSites merges by compose service name', () =>
   assertEquals(out[1]?.php, undefined)
 })
 
-test('attachWebMetadataToTraditionalSites keeps site when merge has empty web', () => {
-  const sites = [
-    {
-      composeServiceName: 'web',
-      engine: 'nginx' as const,
-      root: 'public',
-      listenPort: 1,
-    },
-  ]
-  const out = attachWebMetadataToTraditionalSites(sites, [
-    { composeServiceName: 'web', web: { env: {} } },
-  ])
-  assertEquals(out[0], sites[0])
+test('formatHostingEnvFile sorts keys and escapes special characters', () => {
+  const file = formatHostingEnvFile({
+    ZEBRA: 'last',
+    ALPHA: 'a"b\\c\nd',
+  })
+  assertEquals(file.indexOf('ALPHA=') < file.indexOf('ZEBRA='), true)
+  assertEquals(parseHostingEnvFile(file), {
+    ALPHA: 'a"b\\c\nd',
+    ZEBRA: 'last',
+  })
+})
+
+test('parseHostingEnvFile accepts unquoted values', () => {
+  assertEquals(parseHostingEnvFile('PLAIN=hello'), { PLAIN: 'hello' })
+})
+
+test('sanitizeHostingWebEnv ignores non-string values in raw map', () => {
+  const raw = { APP_ENV: 'prod', BAD: 123 as unknown as string }
+  assertEquals(sanitizeHostingWebEnv(raw), { APP_ENV: 'prod' })
 })

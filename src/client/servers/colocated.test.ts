@@ -9,6 +9,7 @@ import { license, organization, server } from '../../lib/db/schema.ts'
 import {
   hasActiveColocatedLicenseBinding,
   isColocatedWithInstance,
+  uncolocatedCandidates,
 } from './colocated.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -17,6 +18,19 @@ it('isColocatedWithInstance returns true when the server id is in the set', () =
   const colocatedIds = new Set(['srv-a', 'srv-b'])
   assertEquals(isColocatedWithInstance('srv-a', colocatedIds), true)
   assertEquals(isColocatedWithInstance('srv-c', colocatedIds), false)
+})
+
+it('isColocatedWithInstance is false for an empty colocated set', () => {
+  assertEquals(isColocatedWithInstance('srv-a', new Set()), false)
+})
+
+it('uncolocatedCandidates filters already-marked ids', () => {
+  assertEquals(
+    uncolocatedCandidates(['a', 'b', 'c'], new Set(['b'])),
+    ['a', 'c'],
+  )
+  assertEquals(uncolocatedCandidates(['a'], new Set(['a'])), [])
+  assertEquals(uncolocatedCandidates([], new Set(['a'])), [])
 })
 
 it('hasActiveColocatedLicenseBinding detects the reserved install license', async () => {

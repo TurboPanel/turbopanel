@@ -40,9 +40,7 @@ import {
   assertDispatchInfrastructure,
 } from '../servers/command-dispatch.ts'
 import {
-  BadRequestError,
   getOrgId,
-  parseDisplayName,
   parseJsonBody,
   assertCanManageOr403,
   requireStringField,
@@ -116,18 +114,45 @@ import {
   type ManagedRowOptions,
 } from './options.ts'
 import {
+  buildEmptyManagedDetailResponse,
+  buildFencePromotePendingResponse,
+  buildManagedDeleteHardResponse,
+  buildManagedDeleteQueuedResponse,
+  buildManagedDestroyQueuedResponse,
+  buildOrgManagedListEntry,
+  buildPromoteQueuedResponse,
+  buildQueuedFanoutResponse,
+  buildStatusMemberView,
+  canHardDeleteManaged,
+  evaluateManagedDatabaseDelete,
+  evaluateManagedUserDropGuard,
+  evaluateManagedUserRotateGuard,
+  evaluatePromoteLagHttpGate,
+  evaluatePromoteMemberRole,
+  evaluateReplicaPlacementPrechecks,
+  findManagedBackupById,
   isManagedRootPrincipal,
   isManagedReplicationPrincipal,
   isPlainObject,
   managedSessionPaths,
   mergeCreateSettings,
+  mergeManagedPatchSettings,
+  nextDatabasesAfterCreate,
+  nextDatabasesAfterDelete,
+  parseManagedCreateDisplayName,
+  parseManagedLifecycleAction,
   parseManagedUserCreateFields,
+  parseMemberReadEligibleCreate,
+  parseMemberReadEligiblePatch,
+  parsePromoteForce,
+  pickPrimaryCommandResult,
   readInitialDatabase,
   resolveManagedConnectionListener,
   resolveManagedServerId,
   serializeContainerRow,
   serializeManagedUser,
-  evaluateManagedPromoteLagGate,
+  sortManagedBackupsDesc,
+  validateManagedDatabaseCreateName,
 } from './routes-helpers.ts'
 import {
   buildConnectionPayload,
@@ -206,9 +231,8 @@ function assertManagedPromoteLagAllowed(
   member: ManagedMemberRow,
   force: boolean,
 ): Response | null {
-  if (force) return null
   const serialized = serializeManagedMember(member, null)
-  const gate = evaluateManagedPromoteLagGate(serialized.replication)
+  const gate = evaluatePromoteLagHttpGate(serialized.replication, force)
   return gate !== null ? c.json({ error: gate }, 409) : null
 }
 
@@ -268,14 +292,10 @@ async function fenceOrResyncPrimaryForPromote(options: {
   })
   if (fence instanceof Response) return fence
 
-  return c.json({
-    ok: true as const,
+  return c.json(buildFencePromotePendingResponse({
     commandId: fence.commandId,
     serverId: fence.serverId,
-    status: 'queued' as const,
-    fenceCommandId: fence.commandId,
-    promotePending: true,
-  })
+  }))
 }
 
 class ManagedPrepareRollbackError extends Error {
@@ -371,15 +391,11 @@ async function resolveManagedCreatePlan(
   }
   | Response
 > {
-  let displayName: string | null
-  try {
-    displayName = parseDisplayName(body)
-  } catch (error) {
-    if (error instanceof BadRequestError) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-    throw error
+  const displayNameResult = parseManagedCreateDisplayName(body)
+  if (!displayNameResult.ok) {
+    return c.json({ error: displayNameResult.error }, displayNameResult.status)
   }
+  const displayName = displayNameResult.displayName
 
   let settings = mergeCreateSettings(ctx.spec, body)
   if (!settings) {
@@ -401,7 +417,7 @@ async function resolveManagedCreatePlan(
 
   const initialDatabase = readInitialDatabase(ctx.spec)
   return {
-    name: displayName ?? ctx.envDisplayName ?? ctx.spec.displayName,
+    displayName: displayName ?? ctx.envDisplayName ?? ctx.spec.displayName,
     settings,
     initialDatabase,
     rowOptions: writeManagedRowOptions({
@@ -633,7 +649,7 @@ async function runApplyForManaged(
   })
   if (enqueued instanceof Response) return enqueued
 
-  const primary = enqueued.find((r) => r.commandId) ?? enqueued[0]
+  const primary = pickPrimaryCommandResult(enqueued)
   return c.json({
     ok: true as const,
     results: enqueued,
@@ -699,7 +715,7 @@ async function createManagedAndEnqueueApply(
     return enqueued
   }
 
-  const primary = enqueued.find((r) => r.commandId) ?? enqueued[0]
+  const primary = pickPrimaryCommandResult(enqueued)
   const residual = parseManagedResidual(created.row.metadata)
   return c.json({
     ok: true as const,
@@ -723,11 +739,14 @@ async function resolveReplicaPlacement(
 ): Promise<
   Response | { toPrimaryTransport: PrivateEndpointTransport; ordinal: number }
 > {
-  if (params.members.some((m) => m.serverId === params.serverId)) {
-    return c.json({ error: 'managed_member_exists' }, 409)
-  }
-  if (countReplicas(params.members) >= MANAGED_MAX_REPLICAS) {
-    return c.json({ error: 'managed_replica_limit' }, 422)
+  const precheck = evaluateReplicaPlacementPrechecks(
+    params.members,
+    params.serverId,
+    countReplicas(params.members),
+    MANAGED_MAX_REPLICAS,
+  )
+  if (precheck) {
+    return c.json({ error: precheck.error }, precheck.status)
   }
 
   const dcReady = await assertServerDatacenterReady(db, params.serverId)
@@ -872,14 +891,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) {
-      return c.json({
-        managed: null,
-        connection: null,
-        settings: null,
-        server: null,
-        rootUsername: ctx.spec.rootUsername,
-        members: [],
-      })
+      return c.json(buildEmptyManagedDetailResponse(ctx.spec.rootUsername))
     }
 
     const serverId = resolveManagedServerId(row, ctx.serverId)
@@ -964,10 +976,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const mergedSettings = ctx.spec.parseSettings({
-      ...current.settings,
-      ...(isPlainObject(body.settings) ? body.settings : {}),
-    })
+    const mergedSettings = mergeManagedPatchSettings(
+      ctx.spec,
+      current.settings,
+      body,
+    )
     if (!mergedSettings) {
       return c.json({ error: 'managed_settings_invalid' }, 400)
     }
@@ -1061,10 +1074,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const action = body.action
-    if (action !== 'start' && action !== 'stop' && action !== 'restart') {
-      return c.json({ error: 'Invalid request' }, 400)
+    const actionParsed = parseManagedLifecycleAction(body)
+    if (!actionParsed.ok) {
+      return c.json({ error: actionParsed.error }, actionParsed.status)
     }
+    const { action } = actionParsed
 
     const commandQueue = assertDispatchInfrastructure(c)
     if (commandQueue instanceof Response) return commandQueue
@@ -1087,14 +1101,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       engine: ctx.spec.engine,
     })
     if (enqueued instanceof Response) return enqueued
-    const primary = enqueued.find((r) => r.commandId) ?? enqueued[0]
-    return c.json({
-      ok: true as const,
-      results: enqueued,
-      commandId: primary?.commandId,
-      serverId: primary?.serverId ?? targetServerId,
-      status: 'queued' as const,
-    })
+    return c.json(buildQueuedFanoutResponse(enqueued, targetServerId))
   })
 
   router.delete('/environments/:id/managed', async (c) => {
@@ -1114,17 +1121,14 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const busy = assertManagedNotBusy(c, row.status)
     if (busy) return busy
 
-    const canHardDelete = row.status === 'stopped' ||
-      row.status === 'failed' ||
-      row.status === 'provisioning' ||
-      !row.serverId
+    const canHardDelete = canHardDeleteManaged(row.status, row.serverId)
 
     if (canHardDelete) {
       // Clear never-applied pending container rows so deleteProjectCascade does
       // not treat them as active (`isActiveContainerStatus('pending')` is true).
       await clearPendingNullIdContainersForEnvironment(db, environmentId)
       await db.delete(managed).where(eq(managed.id, row.id))
-      return c.json({ ok: true as const, deleted: true as const })
+      return c.json(buildManagedDeleteHardResponse())
     }
 
     // `canHardDelete` already covers `!row.serverId`, so `managed.server_id`
@@ -1157,14 +1161,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     })
     if (enqueued instanceof Response) return enqueued
 
-    const primary = enqueued.find((r) => r.commandId) ?? enqueued[0]
-    return c.json({
-      ok: true as const,
-      deleted: false as const,
-      commandId: primary?.commandId,
-      serverId: primary?.serverId ?? targetServerId,
-      results: enqueued,
-    })
+    return c.json(buildManagedDeleteQueuedResponse(enqueued, targetServerId))
   })
 
   router.post('/environments/:id/managed/root-password', async (c) => {
@@ -1257,7 +1254,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return enqueued
     }
 
-    const primaryResult = enqueued.find((r) => r.commandId) ?? enqueued[0]
+    const primaryResult = pickPrimaryCommandResult(enqueued)
     const redeployRequired = await listBindingImpactForPrincipal(db, rootPrincipalId)
     return c.json({
       ok: true,
@@ -1411,7 +1408,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .where(eq(principal.id, principalId))
       .limit(1)
 
-    const primaryResult = enqueued.find((r) => r.commandId) ?? enqueued[0]
+    const primaryResult = pickPrimaryCommandResult(enqueued)
     return c.json({
       ok: true,
       user: {
@@ -1453,11 +1450,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .where(and(eq(principal.id, principalId), eq(principal.managedId, row.id)))
       .limit(1)
     if (!target) return c.json({ error: 'Not found' }, 404)
-    if (isManagedRootPrincipal(target.metadata)) {
-      return c.json({ error: 'use_root_password_route' }, 400)
-    }
-    if (isManagedReplicationPrincipal(target.metadata)) {
-      return c.json({ error: 'cannot_rotate_replication_user' }, 400)
+    const rotateGuard = evaluateManagedUserRotateGuard(target.metadata)
+    if (rotateGuard) {
+      return c.json({ error: rotateGuard.error }, rotateGuard.status)
     }
 
     const options = parseManagedRowOptions(ctx.spec, row.options)
@@ -1530,7 +1525,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return enqueued
     }
 
-    const primaryResult = enqueued.find((r) => r.commandId) ?? enqueued[0]
+    const primaryResult = pickPrimaryCommandResult(enqueued)
     const redeployRequired = await listBindingImpactForPrincipal(db, principalId)
     return c.json({
       ok: true,
@@ -1575,8 +1570,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .limit(1)
     if (!target) return c.json({ error: 'Not found' }, 404)
 
-    if (isManagedRootPrincipal(target.metadata)) {
-      return c.json({ error: 'cannot_drop_root_user' }, 400)
+    const dropGuard = evaluateManagedUserDropGuard(target.metadata)
+    if (dropGuard) {
+      return c.json({ error: dropGuard.error }, dropGuard.status)
     }
 
     if (await hasBindingsForPrincipal(db, principalId)) {
@@ -1622,7 +1618,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return enqueued
     }
 
-    const primaryFanout = enqueued.find((r) => r.commandId) ?? enqueued[0]
+    const primaryFanout = pickPrimaryCommandResult(enqueued)
     return c.json({
       ok: true,
       commandId: primaryFanout?.commandId,
@@ -1673,17 +1669,19 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     const { pattern, maxLength } = ctx.spec.userOperations.identifier
-    if (!pattern.test(name) || name.length > maxLength) {
-      return c.json({ error: 'Invalid database name' }, 400)
-    }
-    if (options.databases.includes(name)) {
-      return c.json({ error: 'database_exists' }, 409)
+    const nameError = validateManagedDatabaseCreateName(
+      name,
+      options.databases,
+      { pattern, maxLength },
+    )
+    if (nameError) {
+      return c.json({ error: nameError.error }, nameError.status)
     }
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const nextDatabases = [...options.databases, name].sort((a, b) => a.localeCompare(b))
+    const nextDatabases = nextDatabasesAfterCreate(options.databases, name)
     const nextOptions = writeManagedRowOptions({
       settings: options.settings,
       databases: nextDatabases,
@@ -1719,7 +1717,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return enqueued
     }
 
-    const primaryFanout = enqueued.find((r) => r.commandId) ?? enqueued[0]
+    const primaryFanout = pickPrimaryCommandResult(enqueued)
     return c.json({
       ok: true,
       databases: nextDatabases,
@@ -1746,13 +1744,15 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const options = parseManagedRowOptions(ctx.spec, row.options)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
-    if (!options.databases.includes(databaseName)) {
-      return c.json({ error: 'Not found' }, 404)
-    }
 
     const initialDatabase = readInitialDatabase(ctx.spec)
-    if (databaseName === initialDatabase) {
-      return c.json({ error: 'cannot_drop_initial_database' }, 409)
+    const deleteError = evaluateManagedDatabaseDelete(
+      databaseName,
+      options.databases,
+      initialDatabase,
+    )
+    if (deleteError) {
+      return c.json({ error: deleteError.error }, deleteError.status)
     }
 
     if (await hasBindingsForDatabase(db, { managedId: row.id, databaseName })) {
@@ -1769,7 +1769,10 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const nextDatabases = options.databases.filter((entry) => entry !== databaseName)
+    const nextDatabases = nextDatabasesAfterDelete(
+      options.databases,
+      databaseName,
+    )
     const nextOptions = writeManagedRowOptions({
       settings: options.settings,
       databases: nextDatabases,
@@ -1805,7 +1808,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return enqueued
     }
 
-    const primaryFanout = enqueued.find((r) => r.commandId) ?? enqueued[0]
+    const primaryFanout = pickPrimaryCommandResult(enqueued)
     return c.json({
       ok: true,
       databases: nextDatabases,
@@ -1885,7 +1888,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: USERNAME_IN_USE_ERROR }, 409)
     }
 
-    const readEligible = body.readEligible === true
+    const readEligible = parseMemberReadEligibleCreate(body)
     const member = await insertManagedReplicaMember(db, {
       managedId: row.id,
       serverId,
@@ -1920,7 +1923,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return enqueued
     }
 
-    const primary = enqueued.find((r) => r.commandId) ?? enqueued[0]
+    const primary = pickPrimaryCommandResult(enqueued)
     const [serverRow] = await db
       .select({ name: server.name })
       .from(server)
@@ -1961,14 +1964,15 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
-    if (typeof body.readEligible !== 'boolean') {
-      return c.json({ error: 'Invalid request' }, 400)
+    const readEligibleParsed = parseMemberReadEligiblePatch(body)
+    if (!readEligibleParsed.ok) {
+      return c.json({ error: readEligibleParsed.error }, readEligibleParsed.status)
     }
 
     const updated = await updateManagedMemberReadEligible(
       db,
       memberId,
-      body.readEligible,
+      readEligibleParsed.readEligible,
     )
     if (!updated) return c.json({ error: 'Not found' }, 404)
 
@@ -2079,13 +2083,10 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     })
     if (destroyOne instanceof Response) return destroyOne
 
-    return c.json({
-      ok: true as const,
-      destroyCommandId: destroyOne.commandId,
+    return c.json(buildManagedDestroyQueuedResponse({
       commandId: destroyOne.commandId,
       serverId: destroyOne.serverId,
-      status: 'queued' as const,
-    })
+    }))
   })
 
   router.post('/environments/:id/managed/members/:memberId/promote', async (c) => {
@@ -2110,13 +2111,14 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (member?.managedId !== row.id) {
       return c.json({ error: 'Not found' }, 404)
     }
-    if (member.role !== 'replica') {
-      return c.json({ error: 'Invalid request' }, 400)
+    const roleError = evaluatePromoteMemberRole(member.role)
+    if (roleError) {
+      return c.json({ error: roleError.error }, roleError.status)
     }
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
-    const force = body.force === true
+    const force = parsePromoteForce(body)
 
     const lagGate = assertManagedPromoteLagAllowed(c, member, force)
     if (lagGate) return lagGate
@@ -2159,12 +2161,10 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       setApplying: true,
     })
     if (enqueued instanceof Response) return enqueued
-    return c.json({
-      ok: true as const,
+    return c.json(buildPromoteQueuedResponse({
       commandId: enqueued.commandId,
-      status: 'queued' as const,
       serverId: enqueued.serverId,
-    })
+    }))
   })
 
 
@@ -2227,17 +2227,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       containers: rows.map(serializeContainerRow),
       members: memberRows.map((m) => {
         const serialized = serializeManagedMember(m, null)
-        return {
-          memberId: serialized.id,
-          serverId: serialized.serverId,
-          role: serialized.role,
-          status: serialized.status,
-          replicationTransport: serialized.replicationTransport,
-          privatePort: serialized.privatePort,
-          ...(serialized.replication !== undefined
-            ? { replication: serialized.replication }
-            : {}),
-        }
+        return buildStatusMemberView(serialized)
       }),
     })
   })
@@ -2283,9 +2273,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const options = parseManagedRowOptions(ctx.spec, row.options)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
-    const backups = [...options.backups].sort((a, b) =>
-      b.createdAt.localeCompare(a.createdAt),
-    )
+    const backups = sortManagedBackupsDesc(options.backups)
     return c.json({ backups })
   })
 
@@ -2364,8 +2352,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const options = parseManagedRowOptions(ctx.spec, row.options)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
-    const record: ManagedBackupRecord | undefined = options.backups.find(
-      (entry) => entry.id === backupId,
+    const record: ManagedBackupRecord | undefined = findManagedBackupById(
+      options.backups,
+      backupId,
     )
     if (!record) return c.json({ error: 'backup_not_found' }, 404)
 
@@ -2418,8 +2407,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const options = parseManagedRowOptions(ctx.spec, row.options)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
-    const record: ManagedBackupRecord | undefined = options.backups.find(
-      (entry) => entry.id === backupId,
+    const record: ManagedBackupRecord | undefined = findManagedBackupById(
+      options.backups,
+      backupId,
     )
     if (!record) return c.json({ error: 'backup_not_found' }, 404)
 
@@ -2525,8 +2515,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         const members = (membersByManaged.get(row.id) ?? []).map((m) =>
           serializeManagedMember(m, nameByServer.get(m.serverId) ?? null),
         )
-        return {
-          ...serializeManagedRow(row, row.serverId),
+        return buildOrgManagedListEntry({
+          serializedRow: serializeManagedRow(row, row.serverId) as Record<
+            string,
+            unknown
+          >,
           engineDisplayName: spec?.displayName ?? null,
           environmentDisplayName: row.environmentDisplayName,
           projectId: row.projectId,
@@ -2535,7 +2528,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
           workspaceDisplayName: row.workspaceDisplayName,
           serverDisplayName: row.serverDisplayName,
           members,
-        }
+        })
       }),
     })
   })

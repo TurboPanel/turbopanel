@@ -6,6 +6,7 @@ import { canManageOrganization } from '../authz/index.ts'
 import { getDb } from '../../db.ts'
 import { team } from '../../lib/db/schema.ts'
 import { getOrgId } from '../shared.ts'
+import { teamsListPayload } from './routes-helpers.ts'
 
 export function registerTeamRoutes(router: Hono, opts: AuthRouteOpts) {
   router.use('/teams', createSessionMiddleware(opts.secrets))
@@ -27,7 +28,7 @@ export function registerTeamRoutes(router: Hono, opts: AuthRouteOpts) {
       organizationId,
     )
     if (!canManage) {
-      return c.json({ teams: [] })
+      return c.json(teamsListPayload(false, []))
     }
 
     const rows = await db
@@ -42,6 +43,6 @@ export function registerTeamRoutes(router: Hono, opts: AuthRouteOpts) {
       .where(eq(team.organizationId, organizationId))
       .orderBy(team.createdAt)
 
-    return c.json({ teams: rows })
+    return c.json(teamsListPayload(true, rows))
   })
 }

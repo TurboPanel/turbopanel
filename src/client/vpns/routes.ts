@@ -8,11 +8,7 @@ import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db.ts'
 import { ip, peer, vpn } from '../../lib/db/schema.ts'
-import {
-  isValidWireguardPublicKey,
-  WIREGUARD_DEFAULT_LISTEN_PORT,
-} from '../../lib/commands/wireguard.ts'
-import { isValidCidr, isValidIpAddress, stripInetPrefixSuffix } from '../../lib/ip-address.ts'
+import { stripInetPrefixSuffix } from '../../lib/ip-address.ts'
 import {
   allocateVpnTunnelIpOnce,
   createVpnTunnelIpAtOnce,
@@ -37,11 +33,35 @@ import {
   parseJsonBody,
   parseJsonbObject,
 } from '../shared.ts'
-
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-const PEER_ROLES = new Set(['gateway', 'member'])
+import {
+  applyVpnJsonbPatchFields,
+  assignPatchEndpoint,
+  assignPatchJsonbField,
+  assignPatchListenPort,
+  assignPatchPublicKey,
+  assignPatchRole,
+  assertMutuallyExclusiveTunnelSelection,
+  isAutoAllocateTunnel,
+  isVpnCidrUniqueViolation,
+  mapExplicitTunnelAddressConflict,
+  parseCreateOptionalEndpoint,
+  parseCreateOptionalListenPort,
+  parseOptionalPublicKey,
+  parseOptionalScopeUuid,
+  parseOptionalTunnelAddress,
+  parseOptionalVpnCidrPatch,
+  parsePatchEndpoint,
+  parsePatchListenPort,
+  parsePeerRole,
+  parseRequiredPublicKey,
+  parseRequiredVpnCidr,
+  peerUniqueConflictError,
+  peerUniqueConflictResponse,
+  shouldReleaseTunnelOnPatch,
+  type PeerPatchFields,
+  type VpnPatchFields,
+  UUID_RE,
+} from './routes-pure.ts'
 
 const VPN_SELECT = {
   id: vpn.id,
@@ -68,62 +88,6 @@ const PEER_SELECT = {
   options: peer.options,
   createdAt: peer.createdAt,
   updatedAt: peer.updatedAt,
-}
-
-function isPostgresUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null &&
-    'code' in err && (err as { code: string }).code === '23505'
-}
-
-/** True when the unique violation is on `vpn(organization_id, cidr)`. */
-function isVpnCidrUniqueViolation(err: unknown): boolean {
-  if (!isPostgresUniqueViolation(err)) return false
-  const message = err instanceof Error ? err.message : String(err)
-  return message.includes('uniq_vpn_organization_id_cidr')
-}
-
-function isPeerUniqueViolation(
-  err: unknown,
-): 'server' | 'public_key' | 'tunnel_ip' | null {
-  if (!isPostgresUniqueViolation(err)) return null
-  const message = err instanceof Error ? err.message : String(err)
-  if (message.includes('peer_vpn_server_unique')) return 'server'
-  if (message.includes('peer_vpn_public_key_unique')) return 'public_key'
-  if (message.includes('uniq_peer_vpn_tunnel_ip')) return 'tunnel_ip'
-  return null
-}
-
-type OptionalStringOrResponse = string | undefined | Response
-type NullableStringOrResponse = string | null | Response
-type NullableNumberOrResponse = number | null | Response
-
-function parseRequiredVpnCidr(
-  c: Context,
-  body: Record<string, unknown>,
-): string | Response {
-  if (typeof body.cidr !== 'string') {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  const trimmed = body.cidr.trim()
-  if (trimmed.length === 0 || !isValidCidr(trimmed)) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  return trimmed
-}
-
-function parseOptionalVpnCidrPatch(
-  c: Context,
-  body: Record<string, unknown>,
-): OptionalStringOrResponse {
-  if (body.cidr === undefined) return undefined
-  if (typeof body.cidr !== 'string') {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  const trimmed = body.cidr.trim()
-  if (trimmed.length === 0 || !isValidCidr(trimmed)) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  return trimmed
 }
 
 async function assertVpnCidrAvailable(
@@ -176,31 +140,6 @@ async function assertVpnOverlayAddressesFitCidr(
   if (outside) {
     return c.json({ error: 'vpn_cidr_excludes_addresses' }, 409)
   }
-  return null
-}
-
-type VpnPatchFields = {
-  displayName?: string | null
-  metadata?: Record<string, unknown> | null
-  options?: Record<string, unknown> | null
-  cidr?: string
-  updatedAt: string
-}
-
-/** Parses `metadata`/`options` from a PATCH body directly onto `patchFields`. */
-function applyVpnJsonbPatchFields(
-  c: Context,
-  body: Record<string, unknown>,
-  patchFields: VpnPatchFields,
-): Response | null {
-  const metadataResult = parseJsonbObject(c, body, 'metadata')
-  if (metadataResult instanceof Response) return metadataResult
-  if (metadataResult !== null) patchFields.metadata = metadataResult
-
-  const optionsResult = parseJsonbObject(c, body, 'options')
-  if (optionsResult instanceof Response) return optionsResult
-  if (optionsResult !== null) patchFields.options = optionsResult
-
   return null
 }
 
@@ -262,11 +201,10 @@ async function applyPeerPatchReleasingTunnel(
     patch: PeerPatchFields
   },
 ): Promise<void> {
-  const nextTunnelIpId = params.patch.tunnelIpId
-  const tunnelReplaced =
-    nextTunnelIpId !== undefined &&
-    params.previousTunnelIpId !== null &&
-    params.previousTunnelIpId !== nextTunnelIpId
+  const tunnelReplaced = shouldReleaseTunnelOnPatch(
+    params.previousTunnelIpId,
+    params.patch.tunnelIpId,
+  )
 
   await db.transaction(async (tx) => {
     await tx.update(peer).set(params.patch).where(eq(peer.id, params.peerId))
@@ -285,24 +223,24 @@ async function validatePeerEndpointIpId(
   organizationId: string,
   ipIdRaw: unknown,
 ): Promise<string | null | undefined | Response> {
-  if (ipIdRaw === undefined) return undefined
-  if (ipIdRaw === null) return null
-  if (typeof ipIdRaw !== 'string' || !UUID_RE.test(ipIdRaw)) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  const entityOrgId = await resolveEntityOrganizationId(db, 'ip', ipIdRaw)
+  const parsed = parseOptionalScopeUuid(c, ipIdRaw)
+  if (parsed instanceof Response) return parsed
+  if (parsed === undefined) return undefined
+  if (parsed === null) return null
+  const ipId = parsed
+  const entityOrgId = await resolveEntityOrganizationId(db, 'ip', ipId)
   if (entityOrgId !== organizationId) {
     return c.json({ error: 'Not found' }, 404)
   }
   const [scopedIp] = await db
     .select({ scope: ip.scope })
     .from(ip)
-    .where(eq(ip.id, ipIdRaw))
+    .where(eq(ip.id, ipId))
     .limit(1)
   if (scopedIp?.scope !== 'public') {
     return c.json({ error: 'Invalid request' }, 400)
   }
-  return ipIdRaw
+  return ipId
 }
 
 async function validatePeerTunnelIpId(
@@ -312,17 +250,20 @@ async function validatePeerTunnelIpId(
   vpnId: string,
   ipIdRaw: unknown,
   expectedServerId?: string,
-): Promise<OptionalStringOrResponse> {
+): Promise<string | undefined | Response> {
   if (ipIdRaw === undefined) return undefined
   // Clearing a tunnel IP is not supported — omit for auto-allocate on create,
   // or pass a concrete overlay row id on create/patch.
   if (ipIdRaw === null) {
     return c.json({ error: 'Invalid request' }, 400)
   }
-  if (typeof ipIdRaw !== 'string' || !UUID_RE.test(ipIdRaw)) {
+  const parsed = parseOptionalScopeUuid(c, ipIdRaw)
+  if (parsed instanceof Response) return parsed
+  if (parsed === null || parsed === undefined) {
     return c.json({ error: 'Invalid request' }, 400)
   }
-  const entityOrgId = await resolveEntityOrganizationId(db, 'ip', ipIdRaw)
+  const ipId = parsed
+  const entityOrgId = await resolveEntityOrganizationId(db, 'ip', ipId)
   if (entityOrgId !== organizationId) {
     return c.json({ error: 'Not found' }, 404)
   }
@@ -334,7 +275,7 @@ async function validatePeerTunnelIpId(
       serverId: ip.serverId,
     })
     .from(ip)
-    .where(eq(ip.id, ipIdRaw))
+    .where(eq(ip.id, ipId))
     .limit(1)
   if (scopedIp?.scope !== 'vpn' || scopedIp.vpnId !== vpnId) {
     return c.json({ error: 'Invalid request' }, 400)
@@ -354,36 +295,7 @@ async function validatePeerTunnelIpId(
   if (!inCidr) {
     return c.json({ error: 'Invalid request' }, 400)
   }
-  return ipIdRaw
-}
-
-function parseOptionalTunnelAddress(
-  c: Context,
-  value: unknown,
-): OptionalStringOrResponse {
-  if (value === undefined) return undefined
-  if (typeof value !== 'string') {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  const trimmed = stripInetPrefixSuffix(value.trim())
-  if (trimmed.length === 0 || !isValidIpAddress(trimmed)) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  return trimmed
-}
-
-function parsePeerRole(
-  c: Context,
-  value: unknown,
-  required: boolean,
-): OptionalStringOrResponse {
-  if (value === undefined) {
-    return required ? c.json({ error: 'Invalid request' }, 400) : undefined
-  }
-  if (typeof value !== 'string' || !PEER_ROLES.has(value)) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  return value
+  return ipId
 }
 
 async function validateOrgServerId(
@@ -400,49 +312,6 @@ async function validateOrgServerId(
     return c.json({ error: 'Not found' }, 404)
   }
   return serverIdRaw
-}
-
-function parseOptionalPublicKey(
-  c: Context,
-  publicKeyRaw: unknown,
-): string | null | Response {
-  if (publicKeyRaw === undefined || publicKeyRaw === null) return null
-  if (typeof publicKeyRaw !== 'string' || publicKeyRaw.trim().length === 0) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  const publicKey = publicKeyRaw.trim()
-  if (!isValidWireguardPublicKey(publicKey)) {
-    return c.json({ error: 'Invalid WireGuard public key' }, 400)
-  }
-  return publicKey
-}
-
-function parseRequiredPublicKey(
-  c: Context,
-  publicKeyRaw: unknown,
-): string | Response {
-  const publicKey = parseOptionalPublicKey(c, publicKeyRaw)
-  if (publicKey instanceof Response) return publicKey
-  if (publicKey === null) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  return publicKey
-}
-
-function parseCreateOptionalListenPort(
-  c: Context,
-  value: unknown,
-): number | Response {
-  if (value === undefined || value === null) {
-    return WIREGUARD_DEFAULT_LISTEN_PORT
-  }
-  if (typeof value !== 'number' || !Number.isInteger(value)) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  if (value < 1 || value > 65_535) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  return value
 }
 
 /**
@@ -469,21 +338,10 @@ async function resolveDefaultEndpointIpId(
   return row?.id ?? null
 }
 
-function parseCreateOptionalEndpoint(
-  c: Context,
-  value: unknown,
-): NullableStringOrResponse {
-  if (value === undefined || value === null) return null
-  if (typeof value !== 'string') {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  return value.trim().length > 0 ? value.trim() : null
-}
-
 async function sealCreatePresharedKey(
   c: Context,
   value: unknown,
-): Promise<NullableStringOrResponse> {
+): Promise<string | null | Response> {
   if (value === undefined || value === null) return null
   if (typeof value !== 'string' || value.length === 0) {
     return c.json({ error: 'Invalid request' }, 400)
@@ -540,9 +398,12 @@ async function parsePeerTunnelSelection(
   )
   if (tunnelIpId instanceof Response) return tunnelIpId
 
-  if (tunnelAddress !== undefined && tunnelIpId !== undefined) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
+  const exclusiveDenied = assertMutuallyExclusiveTunnelSelection(
+    c,
+    tunnelAddress,
+    tunnelIpId,
+  )
+  if (exclusiveDenied) return exclusiveDenied
 
   if (tunnelAddress !== undefined) {
     const inCidr = await isAddressInVpnCidr(db, vpnId, tunnelAddress)
@@ -669,47 +530,10 @@ async function resolveCreateTunnelIpId(
   return { ok: true, tunnelIpId: allocated.ipId }
 }
 
-type PeerPatchFields = {
-  serverId?: string
-  endpointIpId?: string | null
-  /** Replacement overlay row; `null` is rejected (cannot clear). */
-  tunnelIpId?: string
-  role?: string
-  publicKey?: string
-  listenPort?: number | null
-  endpoint?: string | null
-  presharedKey?: string | null
-  metadata?: Record<string, unknown> | null
-  options?: Record<string, unknown> | null
-  updatedAt: string
-}
-
-function parsePatchListenPort(
-  c: Context,
-  value: unknown,
-): NullableNumberOrResponse {
-  if (value === null) return null
-  if (typeof value === 'number' && Number.isInteger(value)) {
-    return value
-  }
-  return c.json({ error: 'Invalid request' }, 400)
-}
-
-function parsePatchEndpoint(
-  c: Context,
-  value: unknown,
-): NullableStringOrResponse {
-  if (value === null) return null
-  if (typeof value === 'string') {
-    return value.trim().length > 0 ? value.trim() : null
-  }
-  return c.json({ error: 'Invalid request' }, 400)
-}
-
 async function sealPatchPresharedKey(
   c: Context,
   value: unknown,
-): Promise<NullableStringOrResponse> {
+): Promise<string | null | Response> {
   if (value === null) return null
   if (typeof value === 'string' && value.length > 0) {
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
@@ -732,18 +556,6 @@ async function assignPatchServerId(
   const serverId = await validateOrgServerId(c, db, organizationId, body.serverId)
   if (serverId instanceof Response) return serverId
   patch.serverId = serverId
-  return null
-}
-
-function assignPatchPublicKey(
-  c: Context,
-  body: Record<string, unknown>,
-  patch: PeerPatchFields,
-): Response | null {
-  if (body.publicKey === undefined) return null
-  const publicKey = parseRequiredPublicKey(c, body.publicKey)
-  if (publicKey instanceof Response) return publicKey
-  patch.publicKey = publicKey
   return null
 }
 
@@ -785,54 +597,6 @@ async function assignPatchTunnelIpId(
   )
   if (tunnelIpId instanceof Response) return tunnelIpId
   if (tunnelIpId !== undefined) patch.tunnelIpId = tunnelIpId
-  return null
-}
-
-function assignPatchRole(
-  c: Context,
-  body: Record<string, unknown>,
-  patch: PeerPatchFields,
-): Response | null {
-  if (body.role === undefined) return null
-  const role = parsePeerRole(c, body.role, true)
-  if (role instanceof Response) return role
-  if (role !== undefined) patch.role = role
-  return null
-}
-
-function assignPatchListenPort(
-  c: Context,
-  body: Record<string, unknown>,
-  patch: PeerPatchFields,
-): Response | null {
-  if (body.listenPort === undefined) return null
-  const listenPort = parsePatchListenPort(c, body.listenPort)
-  if (listenPort instanceof Response) return listenPort
-  patch.listenPort = listenPort
-  return null
-}
-
-function assignPatchEndpoint(
-  c: Context,
-  body: Record<string, unknown>,
-  patch: PeerPatchFields,
-): Response | null {
-  if (body.endpoint === undefined) return null
-  const endpoint = parsePatchEndpoint(c, body.endpoint)
-  if (endpoint instanceof Response) return endpoint
-  patch.endpoint = endpoint
-  return null
-}
-
-function assignPatchJsonbField(
-  c: Context,
-  body: Record<string, unknown>,
-  field: 'metadata' | 'options',
-  patch: PeerPatchFields,
-): Response | null {
-  const parsed = parseJsonbObject(c, body, field)
-  if (parsed instanceof Response) return parsed
-  if (parsed !== null) patch[field] = parsed
   return null
 }
 
@@ -905,20 +669,6 @@ async function parsePeerPatchFields(
   return patch
 }
 
-function peerUniqueConflictError(err: unknown): string | null {
-  const kind = isPeerUniqueViolation(err)
-  if (kind === 'server') return 'peer_server_conflict'
-  if (kind === 'public_key') return 'peer_public_key_conflict'
-  if (kind === 'tunnel_ip') return 'peer_tunnel_ip_conflict'
-  return null
-}
-
-function peerUniqueConflictResponse(c: Context, err: unknown): Response | null {
-  const error = peerUniqueConflictError(err)
-  if (!error) return null
-  return c.json({ error }, 409)
-}
-
 type PeerCreateOutcome =
   | { ok: true; id: string }
   | { ok: false; status: 400 | 409; error: string }
@@ -984,8 +734,7 @@ async function createPeer(
   vpnId: string,
   fields: PeerCreateFields,
 ): Promise<PeerCreateOutcome> {
-  const autoAllocate =
-    fields.tunnelIpId === undefined && fields.tunnelAddress === undefined
+  const autoAllocate = isAutoAllocateTunnel(fields.tunnelIpId, fields.tunnelAddress)
 
   try {
     return await insertPeerRow(db, vpnId, fields)
@@ -996,8 +745,11 @@ async function createPeer(
     if (autoAllocate) {
       return await retryPeerInsertAfterAddressRace(db, vpnId, fields)
     }
-    if (fields.tunnelAddress !== undefined) {
-      return { ok: false, status: 409, error: 'vpn_address_conflict' }
+    const explicitConflict = mapExplicitTunnelAddressConflict(
+      fields.tunnelAddress !== undefined,
+    )
+    if (explicitConflict) {
+      return { ok: false, status: explicitConflict.status, error: explicitConflict.error }
     }
     throw err
   }

@@ -3,8 +3,6 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanReadOr403 } from '../shared.ts'
 import { getServerMetricsStore } from '../../db.ts'
-import { AnalyticsEngineServerMetricsStore } from '../../daemon/metrics/analytics-engine/store.ts'
-import { ClickHouseServerMetricsStore } from '../../daemon/metrics/clickhouse/store.ts'
 import { DisabledServerMetricsStore } from '../../daemon/metrics/disabled-store.ts'
 import {
   createMetricsChartCache,
@@ -23,77 +21,18 @@ import {
   type HostSeriesChartResponse,
   type HostSummaryChartResponse,
 } from '../../daemon/metrics/query/series-response.ts'
-import type {
-  ServerMetricsStore,
-  MetricsBackendKind,
-  StatusHistoryResult,
-} from '../../daemon/metrics/types.ts'
-
-type ConnectionHistoryChartResponse = {
-  ok: true
-  serverId: string
-  from: string
-  to: string
-  backend: MetricsBackendKind
-  available: boolean
-  initialConnected: boolean | null
-  uptimeSeconds: number
-  downtimeSeconds: number
-  unknownSeconds: number
-  uptimePercent: number | null
-  truncated: boolean
-  events: StatusHistoryResult['events']
-}
-
-function resolveStoreBackendKind(
-  store: ServerMetricsStore | undefined,
-  runtime: AuthRouteOpts['runtime'],
-): MetricsBackendKind {
-  if (!store) return 'disabled'
-  if (store instanceof DisabledServerMetricsStore) return 'disabled'
-  if (store instanceof AnalyticsEngineServerMetricsStore) {
-    return 'analytics-engine'
-  }
-  if (store instanceof ClickHouseServerMetricsStore) return 'clickhouse'
-  return runtime === 'workers' ? 'analytics-engine' : 'clickhouse'
-}
-
-function parseIsoTimestampQuery(
-  raw: string | undefined,
-  field: string,
-): { ok: true; ms: number; iso: string } | { ok: false; message: string } {
-  if (!raw || raw.trim() === '') {
-    return { ok: false, message: `${field} is required` }
-  }
-  const ms = Date.parse(raw)
-  if (!Number.isFinite(ms)) {
-    return { ok: false, message: `${field} must be a valid ISO timestamp` }
-  }
-  return { ok: true, ms, iso: new Date(ms).toISOString() }
-}
-
-function parseOptionalResolution(
-  raw: string | undefined,
-): number | undefined {
-  if (raw === undefined || raw.trim() === '') return undefined
-  const parsed = Number(raw)
-  if (!Number.isFinite(parsed)) return undefined
-  return parsed
-}
-
-function metricsBackendUnavailableResponse(
-  backend: MetricsBackendKind,
-): {
-  ok: false
-  error: 'metrics_backend_unavailable'
-  backend: MetricsBackendKind
-} {
-  return {
-    ok: false,
-    error: 'metrics_backend_unavailable',
-    backend,
-  }
-}
+import type { StatusHistoryResult } from '../../daemon/metrics/types.ts'
+import {
+  resolveStoreBackendKind,
+  parseIsoTimestampQuery,
+  parseOptionalResolution,
+  metricsBackendUnavailableResponse,
+  buildConnectionHistoryPayload,
+  connectionHistoryHasCacheableData,
+  buildHostSummaryPayload,
+  metricsQueryErrorMessage,
+  type ConnectionHistoryChartResponse,
+} from './metrics-routes-helpers.ts'
 
 async function authorizeServerRead(c: Parameters<
   typeof assertCanReadOr403
@@ -185,7 +124,7 @@ export function registerServerMetricsRoutes(
         resolutionSeconds,
       })
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
+      const message = metricsQueryErrorMessage(err)
       console.error(
         `metrics queryHostSeries failed backend=${backend} serverId=${serverId}: ${message}`,
       )
@@ -267,7 +206,7 @@ export function registerServerMetricsRoutes(
         to: queryRange.toIso,
       })
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
+      const message = metricsQueryErrorMessage(err)
       console.error(
         `metrics queryHostSummary failed backend=${backend} serverId=${serverId}: ${message}`,
       )
@@ -277,16 +216,12 @@ export function registerServerMetricsRoutes(
       )
     }
 
-    const payload: HostSummaryChartResponse = {
-      ok: true,
+    const payload = buildHostSummaryPayload({
       serverId,
       from: queryRange.fromIso,
       to: queryRange.toIso,
-      backend: result.kind,
-      available: result.available,
-      sampleCount: result.sampleCount,
-      latestAt: result.latestAt,
-    }
+      result,
+    })
 
     const ttlSeconds = resolveChartCacheTtlSeconds({
       toMs: queryRange.toMs,
@@ -354,7 +289,7 @@ export function registerServerMetricsRoutes(
         to: queryRange.toIso,
       })
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
+      const message = metricsQueryErrorMessage(err)
       console.error(
         `metrics queryStatusHistory failed backend=${backend} serverId=${serverId}: ${message}`,
       )
@@ -364,28 +299,16 @@ export function registerServerMetricsRoutes(
       )
     }
 
-    const payload: ConnectionHistoryChartResponse = {
-      ok: true,
+    const payload = buildConnectionHistoryPayload({
       serverId,
       from: queryRange.fromIso,
       to: queryRange.toIso,
-      backend: result.kind,
-      available: result.available,
-      initialConnected: result.initialConnected,
-      uptimeSeconds: result.uptimeSeconds,
-      downtimeSeconds: result.downtimeSeconds,
-      unknownSeconds: result.unknownSeconds,
-      uptimePercent: result.uptimePercent,
-      truncated: result.truncated,
-      events: result.events,
-    }
+      result,
+    })
 
     // Skip caching empty live ranges — same guard as series (no sampleCount;
     // treat zero known up/down + empty events as empty).
-    const hasHistory = result.events.length > 0 ||
-      result.uptimeSeconds > 0 ||
-      result.downtimeSeconds > 0
-    if (hasHistory) {
+    if (connectionHistoryHasCacheableData(result)) {
       const ttlSeconds = resolveChartCacheTtlSeconds({
         toMs: queryRange.toMs,
         nowMs: Date.now(),

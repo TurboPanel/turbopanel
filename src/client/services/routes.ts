@@ -10,50 +10,21 @@ import {
   assertCanCreateOr403,
   assertCanReadOr403,
   assertNotSystemOwnedOr403,
-  buildPatchUpdateFields,
   getOrgId,
-  parseDisplayName,
-  parseDescription,
   parseJsonBody,
-  parseJsonbObject,
   requireStringField,
-  stripPromotedMetadataKeys,
 } from '../shared.ts'
+import { parseServiceOptions } from '../../lib/service-options.ts'
 import {
   hierarchyDeleteHasChildrenResponse,
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
-import { parseServiceOptions } from '../../lib/service-options.ts'
-
-/** Compose name lives on `service.compose_service_name` — never persist into metadata. */
-const SERVICE_PROMOTED_METADATA_KEYS = ['composeServiceName'] as const
-
-type ServiceRow = {
-  id: string
-  /** DB column `name` (renamed display label) — exposed as `displayName`. */
-  displayName: string | null
-  description: string | null
-  environmentId: string
-  composeServiceName: string
-  metadata: unknown
-  options: unknown
-  createdAt: string
-  updatedAt: string
-}
-
-function serializeService(row: ServiceRow) {
-  return {
-    id: row.id,
-    displayName: row.displayName,
-    description: row.description,
-    environmentId: row.environmentId,
-    composeServiceName: row.composeServiceName,
-    metadata: row.metadata,
-    options: row.options,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  }
-}
+import {
+  parseServiceCreateFields,
+  parseServicePatchFields,
+  serializeService,
+  SERVICE_CREATE_NOT_SUPPORTED,
+} from './routes-helpers.ts'
 
 const SERVICE_SELECT = {
   id: service.id,
@@ -67,131 +38,18 @@ const SERVICE_SELECT = {
   updatedAt: service.updatedAt,
 } as const
 
-type OptionalServiceOptionsResult =
-  | { kind: 'absent' }
-  | { kind: 'value'; value: NonNullable<ReturnType<typeof parseServiceOptions>> }
-  | { kind: 'error'; response: Response }
-
-function parseOptionalServiceOptions(
-  c: Context,
-  body: Record<string, unknown>,
-): OptionalServiceOptionsResult {
-  const optionsResult = parseJsonbObject(c, body, 'options')
-  if (optionsResult instanceof Response) return { kind: 'error', response: optionsResult }
-  if (optionsResult === null) return { kind: 'absent' }
-  const parsed = parseServiceOptions(optionsResult)
-  if (parsed === null) {
-    return { kind: 'error', response: c.json({ error: 'invalid_service_options' }, 400) }
-  }
-  return { kind: 'value', value: parsed }
-}
-
-/**
- * `composeServiceName` is derived from the compose document (reconcile /
- * managed allocation / container reconcile) — reject any client-supplied
- * value (including explicit `null`) rather than silently ignoring it.
- */
-function rejectComposeServiceNameInBody(
-  c: Context,
-  body: Record<string, unknown>,
-): Response | null {
-  if (body.composeServiceName === undefined) return null
-  return c.json(
-    {
-      error: 'compose_service_name_read_only',
-      message:
-        'compose_service_name is derived from the compose document and cannot be set directly — edit the compose document instead.',
-    },
-    400,
-  )
-}
-
-type ServicePatchFields = {
-  name?: string | null
-  description?: string | null
-  metadata?: Record<string, unknown> | null
-  options?: Record<string, unknown> | null
-  updatedAt: string
-}
-
 function buildServicePatchFields(
   c: Context,
   body: Record<string, unknown>,
-): ServicePatchFields | Response {
-  const composeNameRejected = rejectComposeServiceNameInBody(c, body)
-  if (composeNameRejected) return composeNameRejected
-
-  let patchFields: ServicePatchFields
-  try {
-    // Maps JSON `displayName` → column `name` (renamed display label).
-    patchFields = buildPatchUpdateFields(body)
-  } catch {
-    return c.json({ error: 'Invalid request' }, 400)
+) {
+  const parsed = parseServicePatchFields(body)
+  if ('ok' in parsed && parsed.ok === false && 'message' in parsed) {
+    return c.json({ error: parsed.error, message: parsed.message }, parsed.status)
   }
-
-  const metadataResult = parseJsonbObject(c, body, 'metadata')
-  if (metadataResult instanceof Response) return metadataResult
-  if (metadataResult !== null) {
-    patchFields.metadata = stripPromotedMetadataKeys(
-      metadataResult,
-      SERVICE_PROMOTED_METADATA_KEYS,
-    )
+  if (!parsed.ok) {
+    return c.json({ error: parsed.error }, parsed.status)
   }
-
-  const optionsResult = parseOptionalServiceOptions(c, body)
-  if (optionsResult.kind === 'error') return optionsResult.response
-  if (optionsResult.kind === 'value') patchFields.options = optionsResult.value
-
-  return patchFields
-}
-
-type ServiceCreateFieldsResult =
-  | {
-    kind: 'ok'
-    displayName: string | null
-    description: string | null
-    metadata: Record<string, unknown> | null
-    options: Record<string, unknown> | null
-  }
-  | { kind: 'error'; response: Response }
-
-function parseServiceCreateFields(
-  c: Context,
-  body: Record<string, unknown>,
-): ServiceCreateFieldsResult {
-  const composeNameRejected = rejectComposeServiceNameInBody(c, body)
-  if (composeNameRejected) return { kind: 'error', response: composeNameRejected }
-
-  let displayName: string | null
-  let description: string | null
-  try {
-    displayName = parseDisplayName(body)
-    description = parseDescription(body)
-  } catch {
-    return { kind: 'error', response: c.json({ error: 'Invalid request' }, 400) }
-  }
-
-  const metadataResult = parseJsonbObject(c, body, 'metadata')
-  if (metadataResult instanceof Response) {
-    return { kind: 'error', response: metadataResult }
-  }
-
-  const optionsResult = parseOptionalServiceOptions(c, body)
-  if (optionsResult.kind === 'error') {
-    return { kind: 'error', response: optionsResult.response }
-  }
-
-  const metadata = metadataResult === null
-    ? null
-    : stripPromotedMetadataKeys(metadataResult, SERVICE_PROMOTED_METADATA_KEYS)
-
-  return {
-    kind: 'ok',
-    displayName,
-    description,
-    metadata,
-    options: optionsResult.kind === 'value' ? optionsResult.value : null,
-  }
+  return parsed.patch
 }
 
 export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
@@ -298,20 +156,18 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
     const denied = await assertCanCreateOr403(c, 'environment', environmentId)
     if (denied) return denied
 
-    const fields = parseServiceCreateFields(c, body)
-    if (fields.kind === 'error') return fields.response
+    const fields = parseServiceCreateFields(body)
+    if (!fields.ok) {
+      if ('message' in fields) {
+        return c.json({ error: fields.error, message: fields.message }, fields.status)
+      }
+      return c.json({ error: fields.error }, fields.status)
+    }
 
     // `compose_service_name` is NOT NULL and derived only from the compose
     // document via reconcile — there is no client-suppliable value that can
     // satisfy it here, so this route can never create a valid row.
-    return c.json(
-      {
-        error: 'service_create_not_supported',
-        message:
-          'Services are created automatically from the compose document (save the project/environment compose, or create the environment) — POST /services is not supported.',
-      },
-      400,
-    )
+    return c.json(SERVICE_CREATE_NOT_SUPPORTED, 400)
   })
 
   router.patch('/services/:id', async (c) => {

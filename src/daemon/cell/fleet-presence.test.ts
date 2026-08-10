@@ -134,7 +134,7 @@ test("resolveFleetPresence default path is Postgres-only (never calls getSnapsho
     ...baseDaemon,
     projection: {
       ...baseDaemon.projection!,
-      agent: { commit: "proj-commit", buildId: "proj-build" },
+      daemonBuild: { commit: "proj-commit", buildId: "proj-build" },
       remoteAddress: "203.0.113.1",
     },
   };
@@ -149,7 +149,7 @@ test("resolveFleetPresence default path is Postgres-only (never calls getSnapsho
   assertEquals(presence.get(serverId)?.connected, true);
   assertEquals(presence.get(serverId)?.lastInboundAt, null);
   assertEquals(presence.get(serverId)?.connectedAt, statusChangedAt);
-  assertEquals(presence.get(serverId)?.agent?.commit, "proj-commit");
+  assertEquals(presence.get(serverId)?.daemonBuild?.commit, "proj-commit");
   assertEquals(presence.get(serverId)?.remoteAddress, "203.0.113.1");
 });
 

@@ -125,3 +125,29 @@ export function validateAccessResourceIdQuery(
   }
   return { ok: true, kind, itemId }
 }
+
+export function invitationEmailsMatch(
+  inviteEmail: string,
+  sessionEmail: string,
+): boolean {
+  return inviteEmail.trim().toLowerCase() === sessionEmail.trim().toLowerCase()
+}
+
+export type InvitationAcceptError = 'gone' | 'invalid_grant'
+
+export function invitationAcceptErrorPayload(
+  error: InvitationAcceptError,
+): { body: { error: string }; status: 400 | 410 } {
+  if (error === 'invalid_grant') {
+    return { body: { error: 'Invalid invitation grants' }, status: 400 }
+  }
+  return { body: { error: 'Invitation expired or already used' }, status: 410 }
+}
+
+export function organizationResourceIdMismatch(
+  kind: string,
+  itemId: string,
+  organizationId: string,
+): boolean {
+  return kind === 'organization' && itemId !== organizationId
+}

@@ -47,7 +47,7 @@ import type {
   PendingRequestStatus,
 } from "./contracts.ts";
 import type {
-  DaemonAgentInfo,
+  DaemonBuildInfo,
   DaemonInboundEnvelope,
   DaemonOutboundEnvelope,
   OutboxDeliveryId,
@@ -207,9 +207,9 @@ function isTerminalStatus(status: PendingRequestStatus): boolean {
   return TERMINAL_STATUSES.has(status);
 }
 
-function agentIdentityEqual(
-  a: DaemonAgentInfo | undefined,
-  b: DaemonAgentInfo | undefined,
+function daemonBuildIdentityEqual(
+  a: DaemonBuildInfo | undefined,
+  b: DaemonBuildInfo | undefined,
 ): boolean {
   if (!a && !b) return true;
   if (!a || !b) return false;
@@ -318,7 +318,7 @@ export class DaemonCellObject {
   readonly #sweptOffline = new Set<string>();
   #runtimeConnected = false;
   #lastProjectedAtMs: number | null = null;
-  #lastKnownAgent: DaemonAgentInfo | undefined;
+  #lastKnownDaemonBuild: DaemonBuildInfo | undefined;
   #lastRemoteAddress: string | undefined;
   #lastConnectedAt: string | undefined;
   #scheduledAlarmMs: number | null = null;
@@ -391,11 +391,11 @@ export class DaemonCellObject {
    * with no restored attachment) resolve the id from the request header via
    * `#resolveServerIdInMemory` (liveness) or `#resolveServerId` (snapshot/
    * alarm — SQLite fallback only when the header is absent). Trade-off: on a
-   * wake with a live socket, `#lastKnownAgent` starts `undefined`; admin
-   * `#getSnapshot` reads agent from Postgres, and `#shouldProjectInbound` will
-   * at most treat the first agent-carrying message after a wake as changed →
-   * one extra, correct projection. Rare (heartbeats are agent-gated) and never
-   * a SQLite write.
+   * wake with a live socket, `#lastKnownDaemonBuild` starts `undefined`; admin
+   * `#getSnapshot` reads the daemon build from Postgres, and
+   * `#shouldProjectInbound` will at most treat the first build-carrying
+   * message after a wake as changed → one extra, correct projection. Rare
+   * (heartbeats are build-gated) and never a SQLite write.
    */
   #initializeFromStorage(): void {
     for (const ws of this.#ctx.getWebSockets()) {
@@ -906,7 +906,7 @@ export class DaemonCellObject {
   /**
    * Build a Postgres client for the sparse presence projection. The native
    * Workers WebSocket path terminates inside the Durable Object (hibernation),
-   * so connect/disconnect/agent transitions must be projected from here rather
+   * so connect/disconnect/daemon-build transitions must be projected from here rather
    * than from the main worker. Returns `null` when no database binding is
    * configured (e.g. unit tests), making projection a no-op.
    */
@@ -987,14 +987,14 @@ export class DaemonCellObject {
       lastInboundAt: lastSeenAt,
       lastSeenAt,
       remoteAddress,
-      agent: this.#lastKnownAgent,
+      daemonBuild: this.#lastKnownDaemonBuild,
     };
   }
 
   /** Gate Postgres work using in-memory projection state before opening Hyperdrive. */
   #shouldProjectInbound(
     at: string,
-    agent?: DaemonAgentInfo,
+    daemonBuild?: DaemonBuildInfo,
   ): boolean {
     const cellLastSeenAt = this.#lastProjectedAtMs !== null
       ? new Date(this.#lastProjectedAtMs).toISOString()
@@ -1004,8 +1004,8 @@ export class DaemonCellObject {
       runtimeConnected: this.#runtimeConnected,
       cellLastSeenAt,
       inboundAt: at,
-      storedAgent: this.#lastKnownAgent,
-      incomingAgent: agent,
+      storedDaemonBuild: this.#lastKnownDaemonBuild,
+      incomingDaemonBuild: daemonBuild,
     });
   }
 
@@ -1095,7 +1095,7 @@ export class DaemonCellObject {
     });
   }
 
-  // COST RULE: #projectInbound for heartbeats runs only on agent change,
+  // COST RULE: #projectInbound for heartbeats runs only on daemon-build change,
   // timeSync/addresses presence facts, or runtime/offline repair evidence —
   // never because INBOUND_PROJECTION_COALESCE_MS elapsed alone. Hello keeps
   // identity/geo handling. Steady-state idle traffic performs no SQLite cell
@@ -1105,7 +1105,7 @@ export class DaemonCellObject {
   async #projectInbound(
     serverId: string,
     at?: string,
-    agent?: DaemonAgentInfo,
+    daemonBuild?: DaemonBuildInfo,
     hostIdentity?: {
       hostname?: string;
       machineKey?: string;
@@ -1135,13 +1135,13 @@ export class DaemonCellObject {
         db,
         serverId,
         this.#projectionCell(serverId),
-        { at, agent, geo },
+        { at, daemonBuild, geo },
       );
     });
     const atMs = at ? Date.parse(at) : Date.now();
     this.#lastProjectedAtMs = Number.isNaN(atMs) ? Date.now() : atMs;
-    if (agent) {
-      this.#lastKnownAgent = agent;
+    if (daemonBuild) {
+      this.#lastKnownDaemonBuild = daemonBuild;
     }
   }
 
@@ -1581,21 +1581,24 @@ export class DaemonCellObject {
   #recordInbound(
     serverId: string,
     at: string,
-    agent?: DaemonAgentInfo,
+    daemonBuild?: DaemonBuildInfo,
     connectionId?: string,
   ): void {
     this.#sweptOffline.delete(serverId);
     if (this.#hasLiveSocket(serverId)) {
       this.#runtimeConnected = true;
     }
-    if (agent) {
-      const agentChangedFlag = !agentIdentityEqual(agent, this.#lastKnownAgent);
-      this.#lastKnownAgent = agent;
+    if (daemonBuild) {
+      const daemonBuildChangedFlag = !daemonBuildIdentityEqual(
+        daemonBuild,
+        this.#lastKnownDaemonBuild,
+      );
+      this.#lastKnownDaemonBuild = daemonBuild;
       if (connectionId && this.#isDaemonDebug()) {
         this.#trace("record-inbound", {
           serverId,
           conn: connectionId,
-          agentChanged: agentChangedFlag,
+          daemonBuildChanged: daemonBuildChangedFlag,
         });
       }
       return;
@@ -1605,7 +1608,7 @@ export class DaemonCellObject {
       this.#trace("record-inbound", {
         serverId,
         conn: connectionId,
-        agentChanged: false,
+        daemonBuildChanged: false,
       });
     }
   }
@@ -1619,7 +1622,7 @@ export class DaemonCellObject {
     parsed: {
       type: "hello" | "heartbeat";
       at?: string;
-      agent?: DaemonAgentInfo;
+      daemonBuild?: DaemonBuildInfo;
       hostname?: string;
       machineKey?: string;
       os?: ServerOsMetadata;
@@ -1632,14 +1635,14 @@ export class DaemonCellObject {
     // Capture offline/runtime repair evidence before #recordInbound clears it.
     const needsOfflineRepair = !this.#runtimeConnected ||
       this.#sweptOffline.has(attachment.serverId);
-    const agentOrOfflineDue = this.#shouldProjectInbound(
+    const daemonBuildOrOfflineDue = this.#shouldProjectInbound(
       at,
-      parsed.agent,
+      parsed.daemonBuild,
     ) || needsOfflineRepair;
     this.#recordInbound(
       attachment.serverId,
       at,
-      parsed.agent,
+      parsed.daemonBuild,
       attachment.connectionId,
     );
     const presenceFacts = {
@@ -1678,19 +1681,20 @@ export class DaemonCellObject {
         hostIdentity?.addresses,
     );
     const attachGeo = parseServerGeo(attachment.geo) ?? undefined;
-    // Heartbeats: agent change, presence facts, or offline repair only — never
-    // elapsed coalesce time alone. Hello keeps identity/geo handling separate.
+    // Heartbeats: daemon-build change, presence facts, or offline repair only —
+    // never elapsed coalesce time alone. Hello keeps identity/geo handling
+    // separate.
     const shouldProjectInbound = parsed.type === "hello"
-      ? agentOrOfflineDue ||
-        Boolean(parsed.agent?.commit && parsed.agent?.buildId) ||
+      ? daemonBuildOrOfflineDue ||
+        Boolean(parsed.daemonBuild?.commit && parsed.daemonBuild?.buildId) ||
         hasHostIdentity ||
         Boolean(attachGeo)
-      : agentOrOfflineDue || hasPresenceFacts;
+      : daemonBuildOrOfflineDue || hasPresenceFacts;
     if (shouldProjectInbound) {
       await this.#projectInbound(
         attachment.serverId,
         at,
-        parsed.agent,
+        parsed.daemonBuild,
         hostIdentity,
         attachGeo,
       );
@@ -2152,7 +2156,7 @@ export class DaemonCellObject {
         this.#recordInbound(
           this.#requireServerId(request, body),
           String((body?.params as { at?: string })?.at ?? nowIso()),
-          (body?.params as { agent?: DaemonAgentInfo })?.agent,
+          (body?.params as { daemonBuild?: DaemonBuildInfo })?.daemonBuild,
           (body?.params as { connectionId?: string })?.connectionId,
         );
         return jsonResponse({ ok: true });
@@ -2264,17 +2268,17 @@ export class DaemonCellObject {
     );
     if (daemonState) {
       const status = daemonState.status;
-      const projectionAgent = daemonState.projection?.agent;
-      let agent = this.#lastKnownAgent;
-      if (projectionAgent?.commit && projectionAgent.buildId) {
-        agent = {
-          commit: projectionAgent.commit,
-          buildId: projectionAgent.buildId,
-          ...(projectionAgent.builtAt
-            ? { builtAt: projectionAgent.builtAt }
+      const projectionDaemonBuild = daemonState.projection?.daemonBuild;
+      let daemonBuild = this.#lastKnownDaemonBuild;
+      if (projectionDaemonBuild?.commit && projectionDaemonBuild.buildId) {
+        daemonBuild = {
+          commit: projectionDaemonBuild.commit,
+          buildId: projectionDaemonBuild.buildId,
+          ...(projectionDaemonBuild.builtAt
+            ? { builtAt: projectionDaemonBuild.builtAt }
             : {}),
-          ...(projectionAgent.channel
-            ? { channel: projectionAgent.channel }
+          ...(projectionDaemonBuild.channel
+            ? { channel: projectionDaemonBuild.channel }
             : {}),
         };
       }
@@ -2287,7 +2291,7 @@ export class DaemonCellObject {
           : undefined,
         lastInboundAt: runtime.lastInboundAt,
         lastSeenAt: runtime.lastSeenAt,
-        agent,
+        daemonBuild,
         remoteAddress: base.remoteAddress ??
           daemonState.projection?.remoteAddress,
       };
@@ -2302,7 +2306,7 @@ export class DaemonCellObject {
       connectedAt: runtime.connectedAt,
       lastInboundAt: runtime.lastInboundAt,
       lastSeenAt: runtime.lastSeenAt,
-      agent: runtime.agent,
+      daemonBuild: runtime.daemonBuild,
       remoteAddress: base.remoteAddress ?? runtime.remoteAddress,
     };
   }

@@ -11,16 +11,20 @@ import {
   BINDING_ENDPOINT_UNAVAILABLE_ERROR,
   BINDING_KEY_CONFLICT_ERROR,
   BINDING_KEY_PREFIX_IN_USE_ERROR,
+  bindingDatabaseTargetHttpStatus,
   bindingMaterializeHttpPayload,
   checkBindingDatabaseTarget,
   detectBindingCreateConflicts,
   detectBindingUpdateConflicts,
   findBindingKeyConflicts,
+  isBindableDatabasePrincipal,
   isEngineDefaultsInUse,
   isKeyOwnedByBindingOnService,
   isPostgresUniqueViolation,
   isPrefixInUse,
+  mapBindingUniqueViolation,
   parseBindingKeyPrefix,
+  parseBindingsListFilter,
   parseEmitEngineDefaults,
   resolveBindingPrincipalEngine,
   resolveBindingPrincipalManagedId,
@@ -494,4 +498,108 @@ test('serializeBindingRow fills keys without endpoint when cluster empty', async
   assertEquals(withManaged.keys.includes('DATABASE_URL'), true)
   assertEquals(withManaged.endpoint, null)
   assertEquals(withManaged.readSplit, null)
+})
+
+test('parseBindingsListFilter requires exactly one filter', () => {
+  assertEquals(
+    parseBindingsListFilter({
+      serviceId: undefined,
+      environmentId: undefined,
+      managedEnvironmentId: undefined,
+    }).ok,
+    false,
+  )
+  assertEquals(
+    parseBindingsListFilter({
+      serviceId: 's1',
+      environmentId: 'e1',
+      managedEnvironmentId: undefined,
+    }).ok,
+    false,
+  )
+  assertEquals(
+    parseBindingsListFilter({
+      serviceId: 's1',
+      environmentId: undefined,
+      managedEnvironmentId: undefined,
+    }),
+    { ok: true, filter: { kind: 'service', serviceId: 's1' } },
+  )
+  assertEquals(
+    parseBindingsListFilter({
+      serviceId: undefined,
+      environmentId: undefined,
+      managedEnvironmentId: 'me1',
+    }),
+    {
+      ok: true,
+      filter: { kind: 'managedEnvironment', managedEnvironmentId: 'me1' },
+    },
+  )
+  assertEquals(
+    parseBindingsListFilter({
+      serviceId: undefined,
+      environmentId: 'e1',
+      managedEnvironmentId: undefined,
+    }),
+    { ok: true, filter: { kind: 'environment', environmentId: 'e1' } },
+  )
+})
+
+test('bindingDatabaseTargetHttpStatus and unique-violation mapping', () => {
+  assertEquals(bindingDatabaseTargetHttpStatus('database_not_found'), 404)
+  assertEquals(bindingDatabaseTargetHttpStatus('Invalid database name'), 400)
+  assertEquals(
+    mapBindingUniqueViolation(
+      Object.assign(new Error('uniq_binding_service_engine_defaults'), {
+        code: '23505',
+      }),
+    ),
+    { error: BINDING_ENGINE_DEFAULTS_IN_USE_ERROR, status: 409 },
+  )
+  assertEquals(
+    mapBindingUniqueViolation(
+      Object.assign(new Error('uniq_binding_service_prefix'), { code: '23505' }),
+    ),
+    { error: BINDING_KEY_PREFIX_IN_USE_ERROR, status: 409 },
+  )
+  assertEquals(
+    mapBindingUniqueViolation(Object.assign(new Error('other'), { code: '23505' })),
+    null,
+  )
+})
+
+test('isBindableDatabasePrincipal rejects root and replication metadata', () => {
+  assertEquals(
+    isBindableDatabasePrincipal({
+      kind: 'database',
+      managedId: 'm1',
+      metadata: {},
+    }),
+    true,
+  )
+  assertEquals(
+    isBindableDatabasePrincipal({
+      kind: 'database',
+      managedId: 'm1',
+      metadata: { managedRoot: true },
+    }),
+    false,
+  )
+  assertEquals(
+    isBindableDatabasePrincipal({
+      kind: 'database',
+      managedId: 'm1',
+      metadata: { managedReplication: true },
+    }),
+    false,
+  )
+  assertEquals(
+    isBindableDatabasePrincipal({
+      kind: 'system',
+      managedId: 'm1',
+      metadata: {},
+    }),
+    false,
+  )
 })

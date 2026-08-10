@@ -16,6 +16,10 @@ import { parseOrganizationOptions } from '../../lib/organization-options.ts'
 import { loadOrgServerCapacity } from '../../lib/server-capacity.ts'
 import { listTimezones } from '../../lib/timezones.ts'
 import {
+  defaultEnvironmentGetResponse,
+  defaultEnvironmentPutResponse,
+  defaultTimezoneGetResponse,
+  defaultTimezonePutResponse,
   parseDefaultEnvironmentPutBody,
   parseDefaultTimezonePatch,
   parseOrganizationCreateDisplayName,
@@ -80,10 +84,7 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     if (!orgRow) return c.json({ error: 'Not found' }, 404)
 
     const options = parseOrganizationOptions(orgRow.options)
-    return c.json({
-      defaultServerTimezone: options.defaultServerTimezone ?? null,
-      enforceServerTimezone: options.enforceServerTimezone ?? false,
-    })
+    return c.json(defaultTimezoneGetResponse(options))
   })
 
   router.put('/organizations/:id/default-timezone', async (c) => {
@@ -124,11 +125,7 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
       .limit(1)
     const options = parseOrganizationOptions(updated?.options)
 
-    return c.json({
-      ok: true as const,
-      defaultServerTimezone: options.defaultServerTimezone ?? null,
-      enforceServerTimezone: options.enforceServerTimezone ?? false,
-    })
+    return c.json(defaultTimezonePutResponse(options))
   })
 
   router.get('/organizations/:id/default-environment', async (c) => {
@@ -147,9 +144,7 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     if (!orgRow) return c.json({ error: 'Not found' }, 404)
 
     const options = parseOrganizationOptions(orgRow.options)
-    return c.json({
-      defaultEnvironmentName: options.defaultEnvironmentName ?? null,
-    })
+    return c.json(defaultEnvironmentGetResponse(options))
   })
 
   router.put('/organizations/:id/default-environment', async (c) => {
@@ -189,10 +184,7 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
       .limit(1)
     const options = parseOrganizationOptions(updated?.options)
 
-    return c.json({
-      ok: true as const,
-      defaultEnvironmentName: options.defaultEnvironmentName ?? null,
-    })
+    return c.json(defaultEnvironmentPutResponse(options))
   })
 
   router.get('/organizations/:id/server-capacity', async (c) => {

@@ -20,15 +20,18 @@ import {
 import { serializeStorage } from './serialize.ts'
 import {
   buildStorageUpdateFields,
+  dockerVolumeMetadataWithId,
   isStorageContentTooLarge,
   mountKindRequiresDestination,
   PARENT_FIELDS,
   parseCreateStorageFields,
   parseOptionalStorageContent,
   parseStorageParent,
+  principalProjectMismatch,
   resolvePatchStorageRefs,
   resolveStorageParentContext,
   resolveStorageProjectId,
+  type StorageKind,
   type StorageParentEntityKind,
 } from './routes-helpers.ts'
 
@@ -151,7 +154,7 @@ async function validateStorageReferences(
     if (!principalRow?.projectId) {
       return c.json({ error: 'Not found' }, 404)
     }
-    if (params.projectId && principalRow.projectId !== params.projectId) {
+    if (params.projectId && principalProjectMismatch(principalRow.projectId, params.projectId)) {
       return c.json({ error: 'principal_project_mismatch' }, 400)
     }
   }
@@ -208,19 +211,10 @@ async function createStorageRecord(
 
   // New docker_volume rows pin their on-host name to the storage UUID.
   if (fields.kind === 'docker_volume') {
-    const existingMeta =
-      typeof fields.metadata === 'object' &&
-      fields.metadata !== null &&
-      !Array.isArray(fields.metadata)
-        ? (fields.metadata as Record<string, unknown>)
-        : {}
     await db
       .update(storage)
       .set({
-        metadata: {
-          ...existingMeta,
-          dockerVolumeName: inserted.id,
-        },
+        metadata: dockerVolumeMetadataWithId(fields.metadata, inserted.id),
       })
       .where(eq(storage.id, inserted.id))
   }

@@ -193,3 +193,27 @@ export function buildStorageUpdateFields(
   if (options !== null) updateFields.options = options
   return updateFields
 }
+
+export function dockerVolumeMetadataWithId(
+  metadata: Record<string, unknown> | null | undefined,
+  storageId: string,
+): Record<string, unknown> {
+  const existingMeta =
+    typeof metadata === 'object' &&
+    metadata !== null &&
+    !Array.isArray(metadata)
+      ? metadata
+      : {}
+  return {
+    ...existingMeta,
+    dockerVolumeName: storageId,
+  }
+}
+
+export function principalProjectMismatch(
+  principalProjectId: string | null | undefined,
+  expectedProjectId: string | null | undefined,
+): boolean {
+  if (!expectedProjectId) return false
+  return principalProjectId !== expectedProjectId
+}

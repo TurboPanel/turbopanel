@@ -1,0 +1,336 @@
+/**
+ * Host-free coverage for server route pure helpers (no Postgres).
+ */
+
+import { assertEquals } from 'jsr:@std/assert'
+import {
+  SERVER_UUID_RE,
+  STATUS_CACHE_CONTROL,
+  STATUS_CACHE_MAX_AGE_MS,
+  UPDATE_CHANNEL,
+  isServerUuid,
+  buildBatchStatusCoalesceKey,
+  expiredBatchStatusCoalesceKeys,
+  currentCommitFromDaemonBuild,
+  parsePatchDatacenterIdValue,
+  parseServerPatchCore,
+  isHostingEnableTransition,
+  isHostingDisableTransition,
+  hostingHierarchyFailedBody,
+  serverDeletedPayload,
+  queueServerUpdateHttpStatus,
+  emptyServersUpdatesPayload,
+  resolveTrunkTargetFields,
+  resolveBatchUpdateEligibility,
+  updateResetErrorStatus,
+  distinctNonEmptyIds,
+  errorMessageFromUnknown,
+  resolveServerTimezoneFields,
+  shapeServerOsFields,
+  shapeServerPresenceFields,
+  shouldSkipProjectedUpdateRepair,
+  repairedUpdateDoneProjection,
+  repairedUpdateIdleProjection,
+} from './routes-helpers.ts'
+import { colocatedServerUpdateBlockedReason } from './update-status.ts'
+
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+const UUID = '11111111-1111-4111-8111-111111111111'
+const UUID_B = '22222222-2222-4222-8222-222222222222'
+
+test('isServerUuid and SERVER_UUID_RE accept canonical UUIDs', () => {
+  assertEquals(isServerUuid(UUID), true)
+  assertEquals(isServerUuid('not-a-uuid'), false)
+  assertEquals(isServerUuid(null), false)
+  assertEquals(isServerUuid(12), false)
+  assertEquals(SERVER_UUID_RE.test(UUID.toUpperCase()), true)
+})
+
+test('buildBatchStatusCoalesceKey sorts visible ids for stable keys', () => {
+  assertEquals(
+    buildBatchStatusCoalesceKey('u1', 'o1', [UUID_B, UUID]),
+    buildBatchStatusCoalesceKey('u1', 'o1', [UUID, UUID_B]),
+  )
+  assertEquals(
+    buildBatchStatusCoalesceKey('u1', 'o1', [UUID]),
+    `u1:o1:${UUID}`,
+  )
+})
+
+test('expiredBatchStatusCoalesceKeys skips in-flight promises', () => {
+  const now = 1_000
+  const keys = expiredBatchStatusCoalesceKeys(
+    [
+      ['a', { expiresAt: 500 }],
+      ['b', { expiresAt: 500, promise: Promise.resolve() }],
+      ['c', { expiresAt: 2_000 }],
+    ],
+    now,
+  )
+  assertEquals(keys, ['a'])
+})
+
+test('currentCommitFromDaemonBuild maps daemonBuild commit fields', () => {
+  assertEquals(currentCommitFromDaemonBuild(undefined), null)
+  assertEquals(currentCommitFromDaemonBuild({}), null)
+  assertEquals(currentCommitFromDaemonBuild({ commit: 'abc' }), {
+    commit: 'abc',
+    buildId: '',
+    builtAt: '',
+  })
+  assertEquals(
+    currentCommitFromDaemonBuild({
+      commit: 'abc',
+      buildId: 'b1',
+      builtAt: '2020-01-01T00:00:00.000Z',
+    }),
+    {
+      commit: 'abc',
+      buildId: 'b1',
+      builtAt: '2020-01-01T00:00:00.000Z',
+    },
+  )
+})
+
+test('parsePatchDatacenterIdValue accepts null and UUID, rejects junk', () => {
+  assertEquals(parsePatchDatacenterIdValue(null), { ok: true, kind: 'null' })
+  assertEquals(parsePatchDatacenterIdValue(UUID), {
+    ok: true,
+    kind: 'uuid',
+    value: UUID,
+  })
+  const bad = parsePatchDatacenterIdValue('nope')
+  if (bad.ok) {
+    throw new TypeError('expected invalid datacenter id rejection')
+  }
+  assertEquals(bad.error, 'Invalid request')
+  assertEquals(bad.status, 400)
+})
+
+test('parseServerPatchCore validates name, options, and emptiness', () => {
+  const empty = parseServerPatchCore({})
+  if (empty.ok) throw new TypeError('expected empty patch rejection')
+  assertEquals(empty.error, 'Invalid request')
+
+  const badName = parseServerPatchCore({ name: '' })
+  if (badName.ok) throw new TypeError('expected empty name rejection')
+
+  const badOptions = parseServerPatchCore({ options: 'nope' })
+  if (badOptions.ok) throw new TypeError('expected bad options rejection')
+
+  const badDc = parseServerPatchCore({ datacenterId: 'bad' })
+  if (badDc.ok) throw new TypeError('expected bad datacenter rejection')
+
+  const cleared = parseServerPatchCore(
+    { datacenterId: null },
+    '2020-01-01T00:00:00.000Z',
+  )
+  if (!cleared.ok) throw new TypeError('expected null datacenter patch')
+  assertEquals(cleared.patch.datacenterId, null)
+  assertEquals(cleared.patch.updatedAt, '2020-01-01T00:00:00.000Z')
+
+  const withUuid = parseServerPatchCore({ datacenterId: UUID })
+  if (!withUuid.ok) throw new TypeError('expected uuid datacenter patch')
+  assertEquals(withUuid.patch.datacenterId, UUID)
+  assertEquals(withUuid.datacenterIdRaw, UUID)
+
+  const withHosting = parseServerPatchCore({
+    options: { hosting: { enabled: true } },
+  })
+  if (!withHosting.ok) throw new TypeError('expected hosting options patch')
+  assertEquals(withHosting.patch.options?.hosting?.enabled, true)
+})
+
+test('hosting enable/disable transitions detect edges only', () => {
+  const enablePatch = {
+    options: { hosting: { enabled: true } },
+    updatedAt: 't',
+  }
+  const disablePatch = {
+    options: { hosting: { enabled: false } },
+    updatedAt: 't',
+  }
+  assertEquals(isHostingEnableTransition(null, enablePatch), true)
+  assertEquals(
+    isHostingEnableTransition({ hosting: { enabled: true } }, enablePatch),
+    false,
+  )
+  assertEquals(
+    isHostingDisableTransition({ hosting: { enabled: true } }, disablePatch),
+    true,
+  )
+  assertEquals(isHostingDisableTransition(null, disablePatch), false)
+  assertEquals(
+    isHostingDisableTransition({ hosting: { enabled: true } }, enablePatch),
+    false,
+  )
+})
+
+test('serverDeletedPayload and hostingHierarchyFailedBody shapes', () => {
+  assertEquals(serverDeletedPayload('srv-1', null), {
+    ok: true,
+    serverId: 'srv-1',
+    status: 200,
+  })
+  assertEquals(serverDeletedPayload('srv-1', 'boom'), {
+    ok: false,
+    serverId: 'srv-1',
+    deleted: true,
+    error: 'Server deleted but daemon cell purge failed: boom',
+    status: 500,
+  })
+  assertEquals(hostingHierarchyFailedBody(), {
+    error: 'Failed to provision hosting hierarchy',
+    code: 'hosting_hierarchy_failed',
+  })
+})
+
+test('queueServerUpdateHttpStatus maps colocated vs other errors', () => {
+  assertEquals(
+    queueServerUpdateHttpStatus(colocatedServerUpdateBlockedReason()),
+    403,
+  )
+  assertEquals(queueServerUpdateHttpStatus('Daemon not connected'), 404)
+})
+
+test('emptyServersUpdatesPayload and resolveTrunkTargetFields', () => {
+  assertEquals(emptyServersUpdatesPayload().channel, UPDATE_CHANNEL)
+  assertEquals(emptyServersUpdatesPayload().targetStatus, 'unknown')
+  assertEquals(emptyServersUpdatesPayload().servers, [])
+
+  assertEquals(resolveTrunkTargetFields(null), {
+    target: null,
+    targetStatus: 'unknown',
+    targetError: 'Could not resolve trunk channel manifest',
+  })
+  const manifest = {
+    commit: 'c1',
+    buildId: 'b1',
+    builtAt: '2020-01-01T00:00:00.000Z',
+    manifestUrl: 'https://example.test/manifest',
+  }
+  assertEquals(resolveTrunkTargetFields(manifest), {
+    target: manifest,
+    targetStatus: 'ok',
+    targetError: undefined,
+  })
+})
+
+test('resolveBatchUpdateEligibility covers each rejection path', () => {
+  assertEquals(
+    resolveBatchUpdateEligibility({
+      connected: false,
+      colocated: false,
+      current: null,
+      targetCommit: 't',
+    }),
+    { ok: false, error: 'Daemon not connected' },
+  )
+  assertEquals(
+    resolveBatchUpdateEligibility({
+      connected: true,
+      colocated: true,
+      current: null,
+      targetCommit: 't',
+    }),
+    { ok: false, error: colocatedServerUpdateBlockedReason() },
+  )
+  assertEquals(
+    resolveBatchUpdateEligibility({
+      connected: true,
+      colocated: false,
+      current: { commit: 't', buildId: '' },
+      targetCommit: 't',
+    }),
+    { ok: false, error: 'Up to date' },
+  )
+  assertEquals(
+    resolveBatchUpdateEligibility({
+      connected: true,
+      colocated: false,
+      current: null,
+      targetCommit: null,
+    }),
+    { ok: false, error: 'Target unavailable' },
+  )
+  assertEquals(
+    resolveBatchUpdateEligibility({
+      connected: true,
+      colocated: false,
+      current: { commit: 'old', buildId: '' },
+      targetCommit: 'new',
+    }),
+    { ok: true, updateAvailable: true },
+  )
+})
+
+test('updateResetErrorStatus and distinctNonEmptyIds / errorMessageFromUnknown', () => {
+  assertEquals(updateResetErrorStatus('update in progress'), 409)
+  assertEquals(updateResetErrorStatus('other'), 500)
+  assertEquals(distinctNonEmptyIds([null, '', UUID, UUID, undefined]), [UUID])
+  assertEquals(errorMessageFromUnknown(new Error('x')), 'x')
+  assertEquals(errorMessageFromUnknown('y'), 'y')
+})
+
+test('timezone and presence shaping helpers', () => {
+  const tz = resolveServerTimezoneFields(
+    { timezone: 'UTC' },
+    { enforceServerTimezone: false },
+    undefined,
+    'America/Chicago',
+  )
+  assertEquals(tz.timezone, 'UTC')
+  assertEquals(tz.timezoneSource, 'server')
+
+  const os = shapeServerOsFields({ family: 'linux', id: 'debian' })
+  assertEquals(os.os?.id, 'debian')
+  assertEquals(typeof os.osDisplay, 'string')
+
+  const presence = shapeServerPresenceFields(
+    {
+      connected: true,
+      hostname: 'host',
+      os: { family: 'linux' },
+    },
+    true,
+  )
+  assertEquals(presence.connected, true)
+  assertEquals(presence.hostname, 'host')
+  assertEquals(presence.colocatedWithInstance, true)
+
+  assertEquals(shapeServerPresenceFields(undefined, false).connected, false)
+})
+
+test('projected update repair helpers', () => {
+  assertEquals(shouldSkipProjectedUpdateRepair(null), true)
+  assertEquals(shouldSkipProjectedUpdateRepair({ status: 'idle' }), true)
+  assertEquals(shouldSkipProjectedUpdateRepair({ status: 'updating' }), false)
+  assertEquals(
+    repairedUpdateDoneProjection({
+      requestId: 'r1',
+      channel: 'trunk',
+      queuedAt: 'q',
+      finishedAt: 'f',
+    }),
+    {
+      status: 'done',
+      requestId: 'r1',
+      channel: 'trunk',
+      queuedAt: 'q',
+      finishedAt: 'f',
+    },
+  )
+  assertEquals(repairedUpdateIdleProjection(), { status: 'idle' })
+})
+
+test('status cache constants stay stable for Cache-Control headers', () => {
+  assertEquals(STATUS_CACHE_CONTROL, 'private, max-age=5')
+  assertEquals(STATUS_CACHE_MAX_AGE_MS, 5_000)
+})

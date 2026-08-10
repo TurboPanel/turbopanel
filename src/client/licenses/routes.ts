@@ -26,7 +26,14 @@ import {
   SERVER_CAPACITY_EXCEEDED_ERROR,
 } from '../../lib/server-capacity.ts'
 import { getOrgId } from '../shared.ts'
-import { parseLicenseCreateFields } from './routes-helpers.ts'
+import {
+  installBaseUrlValidationError,
+  isReservedColocatedLicenseName,
+  parseLicenseCreateFields,
+  reservedColocatedLicenseNameError,
+  serializeLicenseListEntry,
+  serverCapacityExceededBody,
+} from './routes-helpers.ts'
 
 // License create/list/revoke are owner-only. Use the exact owner-only guard so
 // an organization manager cannot mint or revoke registration keys.
@@ -76,19 +83,14 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
       licenses: licenses.map(({ id, name, createdAt }) => {
         const bound = boundServers.get(id)
         const status = bound ? statusByServerId.get(bound.id) : undefined
-        return {
+        return serializeLicenseListEntry({
           id,
           name,
           createdAt,
           revocable: !protectedIds.has(id),
-          boundServer: bound
-            ? {
-              id: bound.id,
-              name: bound.name,
-              connected: status?.connected ?? false,
-            }
-            : null,
-        }
+          bound,
+          status,
+        })
       }),
     })
   })
@@ -115,11 +117,10 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
     if (denied) return denied
 
     // Reserved for the co-located control-plane license (install / disk recovery).
-    if (name?.trim() === COLOCATED_SERVER_DISPLAY_NAME) {
+    if (isReservedColocatedLicenseName(name, COLOCATED_SERVER_DISPLAY_NAME)) {
       return c.json(
         {
-          error:
-            `'${COLOCATED_SERVER_DISPLAY_NAME}' is reserved for the co-located control plane`,
+          error: reservedColocatedLicenseNameError(COLOCATED_SERVER_DISPLAY_NAME),
         },
         400,
       )
@@ -139,9 +140,7 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
     if (installBaseUrl?.trim() && !parsedInstallBaseUrl) {
       return c.json(
         {
-          error: devSurface
-            ? 'installBaseUrl must be a valid http(s) URL'
-            : 'installBaseUrl must be a valid https URL',
+          error: installBaseUrlValidationError(devSurface),
         },
         400,
       )
@@ -153,13 +152,7 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
     if (!capacity) return c.json({ error: 'Not found' }, 404)
     if (!canReserveServerSeat(capacity)) {
       return c.json(
-        {
-          error: SERVER_CAPACITY_EXCEEDED_ERROR,
-          maxServers: capacity.maxServers,
-          usedSeats: capacity.usedSeats,
-          serverCount: capacity.serverCount,
-          reservedSeatCount: capacity.reservedSeatCount,
-        },
+        serverCapacityExceededBody(capacity, SERVER_CAPACITY_EXCEEDED_ERROR),
         409,
       )
     }

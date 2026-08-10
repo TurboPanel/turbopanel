@@ -54,7 +54,7 @@ export type ProjectionIdentity = {
   addresses?: ServerAddresses;
 };
 
-export type ProjectionAgent = {
+export type ProjectionDaemonBuild = {
   commit: string;
   buildId: string;
   builtAt?: string;
@@ -70,11 +70,11 @@ export type ProjectionTrigger =
   }
   | { kind: "offline"; reason?: ServerStatusTransitionReason }
   | { kind: "disconnected"; reason?: ServerStatusTransitionReason }
-  | { kind: "heartbeat"; agent?: ProjectionAgent }
+  | { kind: "heartbeat"; daemonBuild?: ProjectionDaemonBuild }
   | { kind: "identity"; identity: ProjectionIdentity }
   | {
-    kind: "agent";
-    agent: {
+    kind: "daemon-build";
+    daemonBuild: {
       commit: string;
       buildId: string;
       builtAt?: string;
@@ -150,30 +150,37 @@ function mergeIdentity(
   };
 }
 
-export function agentChanged(
+export function daemonBuildChanged(
   current: ServerDaemonProjection | undefined,
-  agent: ProjectionAgent,
+  daemonBuild: ProjectionDaemonBuild,
 ): boolean {
-  const existing = current?.agent;
-  if (existing?.commit !== agent.commit || existing?.buildId !== agent.buildId) {
+  const existing = current?.daemonBuild;
+  if (
+    existing?.commit !== daemonBuild.commit ||
+    existing?.buildId !== daemonBuild.buildId
+  ) {
     return true;
   }
-  if (agent.builtAt !== undefined && agent.builtAt !== existing?.builtAt) {
+  if (
+    daemonBuild.builtAt !== undefined && daemonBuild.builtAt !== existing?.builtAt
+  ) {
     return true;
   }
-  if (agent.channel !== undefined && agent.channel !== existing?.channel) {
+  if (
+    daemonBuild.channel !== undefined && daemonBuild.channel !== existing?.channel
+  ) {
     return true;
   }
   return false;
 }
 
-/** Retain the persisted build identity unless an incoming agent payload replaces it. */
-export function mergeAgentPreserving(
+/** Retain the persisted build identity unless an incoming daemonBuild payload replaces it. */
+export function mergeDaemonBuildPreserving(
   current: ServerDaemonProjection | undefined,
-  incoming?: ProjectionAgent,
-): ServerDaemonProjection["agent"] | undefined {
-  if (!incoming) return current?.agent;
-  const existing = current?.agent;
+  incoming?: ProjectionDaemonBuild,
+): ServerDaemonProjection["daemonBuild"] | undefined {
+  if (!incoming) return current?.daemonBuild;
+  const existing = current?.daemonBuild;
   if (
     existing?.commit === incoming.commit &&
     existing?.buildId === incoming.buildId
@@ -284,7 +291,7 @@ function buildIdentityProjection(
     machineKey: identity.machineKey,
     remoteAddress: identity.remoteAddress,
     keyId: identity.keyId,
-    ...(current?.agent ? { agent: current.agent } : {}),
+    ...(current?.daemonBuild ? { daemonBuild: current.daemonBuild } : {}),
     ...(current?.update ? { update: current.update } : {}),
   };
 }
@@ -294,7 +301,7 @@ function buildIdentityProjection(
  *
  * Elapsed time alone never makes a heartbeat due — `last_seen_at` projection was
  * removed, so heartbeat-only traffic after {@link INBOUND_PROJECTION_COALESCE_MS}
- * must not open Hyperdrive. Due only for offline/runtime repair or agent change.
+ * must not open Hyperdrive. Due only for offline/runtime repair or daemon build change.
  * `cellLastSeenAt` / `inboundAt` remain for call-site compatibility.
  */
 export function inboundHeartbeatProjectionDue(params: {
@@ -302,19 +309,19 @@ export function inboundHeartbeatProjectionDue(params: {
   /** Cell in-memory/Redis inbound marker — not a Postgres column. */
   cellLastSeenAt?: string | null;
   inboundAt: string;
-  storedAgent?: ProjectionAgent;
-  incomingAgent?: ProjectionAgent;
+  storedDaemonBuild?: ProjectionDaemonBuild;
+  incomingDaemonBuild?: ProjectionDaemonBuild;
 }): boolean {
   if (!params.runtimeConnected) return true;
 
   if (
-    params.incomingAgent?.commit &&
-    params.incomingAgent?.buildId &&
-    agentChanged(
-      params.storedAgent
-        ? ({ agent: params.storedAgent } as ServerDaemonProjection)
+    params.incomingDaemonBuild?.commit &&
+    params.incomingDaemonBuild?.buildId &&
+    daemonBuildChanged(
+      params.storedDaemonBuild
+        ? ({ daemonBuild: params.storedDaemonBuild } as ServerDaemonProjection)
         : undefined,
-      params.incomingAgent,
+      params.incomingDaemonBuild,
     )
   ) {
     return true;
@@ -326,15 +333,15 @@ export function inboundHeartbeatProjectionDue(params: {
 /** Skip Postgres reads/writes for steady-state heartbeats (cell already coalesced). */
 export function steadyStateInboundSkipsDbRead(
   snapshot: DaemonCellSnapshot,
-  opts: { at?: string; agent?: ProjectionAgent },
+  opts: { at?: string; daemonBuild?: ProjectionDaemonBuild },
 ): boolean {
   if (!snapshot.connected || !opts.at) return false;
   return !inboundHeartbeatProjectionDue({
     runtimeConnected: true,
     cellLastSeenAt: snapshot.lastSeenAt ?? null,
     inboundAt: opts.at,
-    storedAgent: snapshot.agent,
-    incomingAgent: opts.agent,
+    storedDaemonBuild: snapshot.daemonBuild,
+    incomingDaemonBuild: opts.daemonBuild,
   });
 }
 
@@ -364,7 +371,7 @@ type ProjectionTriggerContext = {
   existingStatus: ServerDaemonStatus;
   now: string;
   nowMs: number;
-  agentHint?: ProjectionAgent;
+  daemonBuildHint?: ProjectionDaemonBuild;
 };
 
 /** Result of applying a single trigger kind; `null` means "no projection needed". */
@@ -382,7 +389,7 @@ function applyOnlineTrigger(
   trigger: Extract<ProjectionTrigger, { kind: "online" }>,
   ctx: ProjectionTriggerContext,
 ): ProjectionOutcome {
-  const { currentProjection, existingStatus, now, existing, agentHint } = ctx;
+  const { currentProjection, existingStatus, now, existing, daemonBuildHint } = ctx;
   const identity = mergeIdentity(currentProjection, trigger.identity);
   const isOfflineToOnline = !existingStatus.connected;
   const incomingGeo = trigger.identity.geo;
@@ -394,17 +401,19 @@ function applyOnlineTrigger(
   let writeProjection = false;
   if (identityDue || !currentProjection) {
     nextProjection = buildIdentityProjection(currentProjection, identity);
-    if (agentHint) {
+    if (daemonBuildHint) {
       nextProjection = {
         ...nextProjection,
-        agent: mergeAgentPreserving(currentProjection, agentHint),
+        daemonBuild: mergeDaemonBuildPreserving(currentProjection, daemonBuildHint),
       };
     }
     writeProjection = true;
-  } else if (agentHint && agentChanged(currentProjection, agentHint)) {
+  } else if (
+    daemonBuildHint && daemonBuildChanged(currentProjection, daemonBuildHint)
+  ) {
     nextProjection = {
       ...currentProjection,
-      agent: mergeAgentPreserving(currentProjection, agentHint),
+      daemonBuild: mergeDaemonBuildPreserving(currentProjection, daemonBuildHint),
     };
     writeProjection = true;
   }
@@ -448,22 +457,23 @@ function applyHeartbeatTrigger(
   trigger: Extract<ProjectionTrigger, { kind: "heartbeat" }>,
   ctx: ProjectionTriggerContext,
 ): ProjectionOutcome {
-  const { currentProjection, existingStatus, agentHint } = ctx;
-  const agent = trigger.agent ?? agentHint;
-  const agentDue = Boolean(
-    agent?.commit && agent?.buildId && agentChanged(currentProjection, agent),
+  const { currentProjection, existingStatus, daemonBuildHint } = ctx;
+  const daemonBuild = trigger.daemonBuild ?? daemonBuildHint;
+  const daemonBuildDue = Boolean(
+    daemonBuild?.commit && daemonBuild?.buildId &&
+      daemonBuildChanged(currentProjection, daemonBuild),
   );
 
-  if (!agentDue) {
+  if (!daemonBuildDue) {
     return null;
   }
 
   let nextProjection = currentProjection;
   let writeProjection = false;
-  if (agentDue && agent) {
+  if (daemonBuildDue && daemonBuild) {
     nextProjection = {
       ...currentProjection,
-      agent: mergeAgentPreserving(currentProjection, agent),
+      daemonBuild: mergeDaemonBuildPreserving(currentProjection, daemonBuild),
     };
     writeProjection = true;
   }
@@ -509,19 +519,19 @@ function applyIdentityTrigger(
   };
 }
 
-function applyAgentTrigger(
-  trigger: Extract<ProjectionTrigger, { kind: "agent" }>,
+function applyDaemonBuildTrigger(
+  trigger: Extract<ProjectionTrigger, { kind: "daemon-build" }>,
   ctx: ProjectionTriggerContext,
 ): ProjectionOutcome {
   const { currentProjection, existingStatus } = ctx;
-  if (!agentChanged(currentProjection, trigger.agent)) {
+  if (!daemonBuildChanged(currentProjection, trigger.daemonBuild)) {
     return null;
   }
   return {
     touchMetadata: false,
     nextProjection: {
       ...currentProjection,
-      agent: mergeAgentPreserving(currentProjection, trigger.agent),
+      daemonBuild: mergeDaemonBuildPreserving(currentProjection, trigger.daemonBuild),
     },
     writeProjection: true,
     nextStatus: { ...existingStatus },
@@ -643,8 +653,8 @@ function applyProjectionTrigger(
       return applyHeartbeatTrigger(trigger, ctx);
     case "identity":
       return applyIdentityTrigger(trigger, ctx);
-    case "agent":
-      return applyAgentTrigger(trigger, ctx);
+    case "daemon-build":
+      return applyDaemonBuildTrigger(trigger, ctx);
     case "update-queued":
       return applyUpdateQueuedTrigger(trigger, ctx);
     case "update-result":
@@ -667,7 +677,7 @@ function buildDaemonAndStatusColumnPatch(
   const patch: Record<string, unknown> = {};
 
   if (writeProjection || writeStatus) {
-    // Preserve key; rewrite projection when identity/agent/update changes.
+    // Preserve key; rewrite projection when identity/daemonBuild/update changes.
     // Status is never stored in jsonb — only dedicated columns.
     patch.daemon = buildMergedDaemonState(
       existing,
@@ -730,7 +740,7 @@ export async function projectServerDaemon(
   trigger: ProjectionTrigger,
   context: {
     cell?: DaemonCell;
-    agent?: ProjectionAgent;
+    daemonBuild?: ProjectionDaemonBuild;
     /** Explicit override for tests; production uses the per-runtime registry. */
     metrics?: ServerStatusEventSink;
   } = {},
@@ -746,7 +756,7 @@ export async function projectServerDaemon(
     existingStatus,
     now,
     nowMs: Date.parse(now),
-    agentHint: context.agent,
+    daemonBuildHint: context.daemonBuild,
   });
 
   if (!outcome) return false;
@@ -779,7 +789,7 @@ export async function projectServerDaemon(
 
   // Emit only on a genuine connected flip, after Postgres succeeds.
   // `applyOfflineTrigger` sets writeStatus even for already-offline rows;
-  // heartbeat / identity / agent / update triggers never flip connected.
+  // heartbeat / identity / daemonBuild / update triggers never flip connected.
   if (existingStatus.connected !== nextStatus.connected) {
     emitServerStatusEvent(
       {

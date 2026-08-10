@@ -9,19 +9,19 @@ import {
   parseJsonBody,
 } from '../shared.ts'
 import { getDb, type Db } from '../../db.ts'
-import { assertValidHostname } from '../../lib/commands/hostname.ts'
-import {
-  parseNtpSetPayload,
-  parseTimezoneSetPayload,
-} from '../../lib/commands/schemas.ts'
 import {
   getCommandRecord,
   listServerCommands,
 } from '../../lib/db/command-records.ts'
-import { isAllowedTimezone } from '../../lib/timezones.ts'
 import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
 import { createAndEnqueueUserCommand } from './command-dispatch.ts'
-import { computePingLatency } from './commands-ping-latency.ts'
+import {
+  parseHostnameCommandBody,
+  parseTimezoneCommandBody,
+  parseNtpCommandBody,
+  shapeCommandGetResponse,
+  commandNotFoundOnServer,
+} from './commands-routes-helpers.ts'
 
 type ServerCommandAccess = {
   db: Db
@@ -95,22 +95,16 @@ export function registerServerCommandRoutes(router: Hono, opts: AuthRouteOpts) {
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const hostname = body.hostname
-    if (typeof hostname !== 'string' || hostname.length === 0) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-
-    try {
-      assertValidHostname(hostname)
-    } catch {
-      return c.json({ error: 'Invalid hostname' }, 400)
+    const parsed = parseHostnameCommandBody(body)
+    if (!parsed.ok) {
+      return c.json({ error: parsed.error }, parsed.status)
     }
 
     return createAndEnqueueUserCommand(c, access.db, {
       serverId: access.serverId,
       actorId: access.userId,
       type: 'server.hostname.set',
-      payload: { hostname },
+      payload: { hostname: parsed.hostname },
       ttlMs: 300_000,
     })
   })
@@ -122,21 +116,16 @@ export function registerServerCommandRoutes(router: Hono, opts: AuthRouteOpts) {
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    let payload
-    try {
-      payload = parseTimezoneSetPayload(body)
-    } catch {
-      return c.json({ error: 'Invalid timezone' }, 400)
-    }
-    if (!isAllowedTimezone(payload.timezone)) {
-      return c.json({ error: 'Invalid timezone' }, 400)
+    const parsed = parseTimezoneCommandBody(body)
+    if (!parsed.ok) {
+      return c.json({ error: parsed.error }, parsed.status)
     }
 
     return createAndEnqueueUserCommand(c, access.db, {
       serverId: access.serverId,
       actorId: access.userId,
       type: 'server.timezone.set',
-      payload,
+      payload: parsed.payload,
       ttlMs: 300_000,
     })
   })
@@ -148,18 +137,16 @@ export function registerServerCommandRoutes(router: Hono, opts: AuthRouteOpts) {
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    let payload
-    try {
-      payload = parseNtpSetPayload(body)
-    } catch {
-      return c.json({ error: 'Invalid ntp payload' }, 400)
+    const parsed = parseNtpCommandBody(body)
+    if (!parsed.ok) {
+      return c.json({ error: parsed.error }, parsed.status)
     }
 
     return createAndEnqueueUserCommand(c, access.db, {
       serverId: access.serverId,
       actorId: access.userId,
       type: 'server.ntp.set',
-      payload,
+      payload: parsed.payload,
       ttlMs: 300_000,
     })
   })
@@ -170,15 +157,11 @@ export function registerServerCommandRoutes(router: Hono, opts: AuthRouteOpts) {
 
     const commandId = c.req.param('commandId')
     const record = await getCommandRecord(access.db, commandId)
-    if (record?.serverId !== access.serverId) {
+    if (commandNotFoundOnServer(record, access.serverId)) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    if (record.type === 'daemon.ping') {
-      return c.json({ ...record, latency: computePingLatency(record) })
-    }
-
-    return c.json(record)
+    return c.json(shapeCommandGetResponse(record!))
   })
 
   router.get('/servers/:id/commands', async (c) => {

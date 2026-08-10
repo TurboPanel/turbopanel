@@ -33,7 +33,6 @@ import {
   requireStringField,
 } from '../shared.ts'
 import { enqueueManagedIngressReconcile } from '../managed/ingress-desired.ts'
-import { isManagedRootPrincipal, isManagedReplicationPrincipal } from '../managed/routes-helpers.ts'
 import {
   loadServicePlacementServerId,
   memberServerIdsForManaged,
@@ -43,19 +42,20 @@ import {
   type MaterializeBindingError,
 } from './materialize.ts'
 import {
-  BINDING_ENGINE_DEFAULTS_IN_USE_ERROR,
-  BINDING_KEY_PREFIX_IN_USE_ERROR,
   bindingMaterializeHttpPayload,
   checkBindingDatabaseTarget,
   detectBindingCreateConflicts,
   detectBindingUpdateConflicts,
-  isPostgresUniqueViolation,
+  isBindableDatabasePrincipal,
+  mapBindingUniqueViolation,
   parseBindingKeyPrefix,
+  parseBindingsListFilter,
   parseEmitEngineDefaults,
   resolveBindingPrincipalEngine,
   resolveBindingPrincipalManagedId,
   resolvePatchBindingFields,
   serializeBindingRow,
+  bindingDatabaseTargetHttpStatus,
   type BindingRow,
 } from './routes-helpers.ts'
 
@@ -310,14 +310,15 @@ async function loadBindablePrincipal(
     .where(eq(principal.id, principalId))
     .limit(1)
   if (
-    principalRow?.kind !== 'database' ||
-    !principalRow.managedId ||
-    isManagedRootPrincipal(principalRow.metadata) ||
-    isManagedReplicationPrincipal(principalRow.metadata)
+    !isBindableDatabasePrincipal({
+      kind: principalRow?.kind,
+      managedId: principalRow?.managedId,
+      metadata: principalRow?.metadata,
+    })
   ) {
     return c.json({ error: 'Not found' }, 404)
   }
-  return { id: principalRow.id, managedId: principalRow.managedId }
+  return { id: principalRow!.id, managedId: principalRow!.managedId! }
 }
 
 /** Load the managed cluster row for a binding and confirm it belongs to the caller's org. */
@@ -351,10 +352,7 @@ function validateBindingDatabaseTarget(
 ): Response | null {
   const error = checkBindingDatabaseTarget(managedRow, databaseName)
   if (!error) return null
-  if (error === 'database_not_found') {
-    return c.json({ error }, 404)
-  }
-  return c.json({ error }, 400)
+  return c.json({ error }, bindingDatabaseTargetHttpStatus(error))
 }
 
 async function assertBindingCreateConflicts(
@@ -421,14 +419,9 @@ async function insertAndMaterializeBinding(
 
     return c.json({ ok: true as const, id })
   } catch (err) {
-    if (isPostgresUniqueViolation(err)) {
-      const message = err instanceof Error ? err.message : String(err)
-      if (message.includes('uniq_binding_service_engine_defaults')) {
-        return c.json({ error: BINDING_ENGINE_DEFAULTS_IN_USE_ERROR }, 409)
-      }
-      if (message.includes('uniq_binding_service_prefix')) {
-        return c.json({ error: BINDING_KEY_PREFIX_IN_USE_ERROR }, 409)
-      }
+    const mapped = mapBindingUniqueViolation(err)
+    if (mapped) {
+      return c.json({ error: mapped.error }, mapped.status)
     }
     throw err
   }
@@ -502,35 +495,36 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const serviceId = c.req.query('serviceId')
     const environmentId = c.req.query('environmentId')
     const managedEnvironmentId = c.req.query('managedEnvironmentId')
-    const filterCount = [serviceId, environmentId, managedEnvironmentId].filter(
-      Boolean,
-    ).length
-    if (filterCount !== 1) {
-      return c.json(
-        {
-          error:
-            'Exactly one of serviceId, environmentId, or managedEnvironmentId must be specified',
-        },
-        400,
-      )
+    const filterResult = parseBindingsListFilter({
+      serviceId,
+      environmentId,
+      managedEnvironmentId,
+    })
+    if (!filterResult.ok) {
+      return c.json({ error: filterResult.error }, filterResult.status)
     }
 
     let rowsResult: Response | BindingRow[]
-    if (serviceId) {
-      rowsResult = await selectBindingsByServiceId(c, db, organizationId, serviceId)
-    } else if (managedEnvironmentId) {
+    if (filterResult.filter.kind === 'service') {
+      rowsResult = await selectBindingsByServiceId(
+        c,
+        db,
+        organizationId,
+        filterResult.filter.serviceId,
+      )
+    } else if (filterResult.filter.kind === 'managedEnvironment') {
       rowsResult = await selectBindingsByManagedEnvironmentId(
         c,
         db,
         organizationId,
-        managedEnvironmentId,
+        filterResult.filter.managedEnvironmentId,
       )
     } else {
       rowsResult = await selectBindingsByConsumerEnvironmentId(
         c,
         db,
         organizationId,
-        environmentId!,
+        filterResult.filter.environmentId,
       )
     }
     if (rowsResult instanceof Response) return rowsResult

@@ -139,7 +139,7 @@ test("parseServerDaemonState rejects invalid shapes", () => {
   }), null);
 });
 
-test("parseServerDaemonState parses agent and update projection fields", () => {
+test("parseServerDaemonState parses daemonBuild and update projection fields", () => {
   const parsed = parseServerDaemonState({
     key: baseKey,
     projection: {
@@ -147,7 +147,7 @@ test("parseServerDaemonState parses agent and update projection fields", () => {
       machineKey: "mk-1",
       remoteAddress: "203.0.113.1",
       keyId: "key-1",
-      agent: {
+      daemonBuild: {
         commit: "abc123",
         buildId: "build-1",
         builtAt: "2020-01-01T00:00:00.000Z",
@@ -165,7 +165,7 @@ test("parseServerDaemonState parses agent and update projection fields", () => {
   });
 
   assertEquals(parsed?.projection?.hostname, "host-1");
-  assertEquals(parsed?.projection?.agent?.commit, "abc123");
+  assertEquals(parsed?.projection?.daemonBuild?.commit, "abc123");
   assertEquals(parsed?.projection?.update?.status, "updating");
   assertEquals(parsed?.projection?.update?.error, "boom");
 });
@@ -175,7 +175,7 @@ test("parseServerDaemonState drops empty projection objects", () => {
     key: baseKey,
     projection: {
       hostname: "   ",
-      agent: {},
+      daemonBuild: {},
       update: { status: "not-a-status" },
     },
   });

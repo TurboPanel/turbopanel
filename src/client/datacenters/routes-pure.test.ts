@@ -1,7 +1,11 @@
 import { assertEquals } from '@std/assert'
 import {
+  attachPrivateCidrs,
+  collectServerIdsToAssign,
   mergeDatacenterMetadata,
   parseAssignServerIds,
+  parseNameSuggestionsQuery,
+  parseOptionalUuid,
   resolveSeededFields,
 } from './create-input.ts'
 
@@ -84,4 +88,51 @@ test('resolveSeededFields fills name and metadata from source server geo', () =>
   )
   assertEquals(passthrough.name, 'Custom DC')
   assertEquals(passthrough.metadata, null)
+})
+
+test('parseOptionalUuid accepts null and valid UUIDs only', () => {
+  const valid = '550e8400-e29b-41d4-a716-446655440000'
+  assertEquals(parseOptionalUuid(undefined), { ok: true, value: null })
+  assertEquals(parseOptionalUuid(valid), { ok: true, value: valid })
+  assertEquals(parseOptionalUuid('not-a-uuid'), { ok: false })
+})
+
+test('attachPrivateCidrs joins datacenter network CIDR lists', () => {
+  const rows = [{ id: 'dc-a', displayName: 'Site A' }]
+  const cidrs = new Map([['dc-a', ['10.0.0.0/24', '10.0.1.0/24']]])
+  assertEquals(attachPrivateCidrs(rows, cidrs), [{
+    id: 'dc-a',
+    displayName: 'Site A',
+    privateCidrs: ['10.0.0.0/24', '10.0.1.0/24'],
+  }])
+  assertEquals(attachPrivateCidrs([{ id: 'dc-b' }], cidrs)[0].privateCidrs, [])
+})
+
+test('parseNameSuggestionsQuery validates limit and unassignedOnly flag', () => {
+  assertEquals(parseNameSuggestionsQuery(undefined, undefined), {
+    unassignedOnly: true,
+    limit: 8,
+  })
+  assertEquals(parseNameSuggestionsQuery('0', '16'), {
+    unassignedOnly: false,
+    limit: 16,
+  })
+  assertEquals(parseNameSuggestionsQuery(undefined, '-1'), 'invalid')
+  assertEquals(parseNameSuggestionsQuery(undefined, '33'), 'invalid')
+})
+
+test('collectServerIdsToAssign deduplicates source and assign ids', () => {
+  const source = '550e8400-e29b-41d4-a716-446655440000'
+  const other = '6ba7b810-9dad-11d1-80b4-00c04fd430c8'
+  assertEquals(
+    collectServerIdsToAssign({
+      name: null,
+      description: null,
+      metadata: null,
+      options: null,
+      sourceServerId: source,
+      assignServerIds: [source, other],
+    }).sort((a, b) => a.localeCompare(b)),
+    [source, other].sort((a, b) => a.localeCompare(b)),
+  )
 })

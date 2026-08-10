@@ -22,34 +22,25 @@ import {
   parseJsonBody,
 } from "../shared.ts";
 import {
+  attachPrivateCidrs,
+  collectServerIdsToAssign,
   parseAssignServerIds,
+  parseNameSuggestionsQuery,
+  parseOptionalUuid,
   resolveSeededFields,
   type CreateDatacenterInput,
   type SelectedServerRow,
 } from "./create-input.ts";
 
 export {
+  attachPrivateCidrs,
+  collectServerIdsToAssign,
   mergeDatacenterMetadata,
   parseAssignServerIds,
+  parseNameSuggestionsQuery,
+  parseOptionalUuid,
   resolveSeededFields,
 } from "./create-input.ts";
-
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-type ParseResult<T> =
-  | { ok: true; value: T }
-  | { ok: false };
-
-function parseOptionalUuid(value: unknown): ParseResult<string | null> {
-  if (value === undefined || value === null) {
-    return { ok: true, value: null };
-  }
-  if (typeof value !== "string" || !UUID_RE.test(value)) {
-    return { ok: false };
-  }
-  return { ok: true, value };
-}
 
 function parseCreateDatacenterInput(
   c: Context<AppEnv>,
@@ -128,16 +119,6 @@ async function loadAssignableServers(
     return { ok: false, status: 409, serverId: assignedRow.id };
   }
   return { ok: true, rows };
-}
-
-function attachPrivateCidrs<T extends { id: string }>(
-  rows: T[],
-  cidrsByDc: Map<string, string[]>,
-): Array<T & { privateCidrs: string[] }> {
-  return rows.map((row) => ({
-    ...row,
-    privateCidrs: cidrsByDc.get(row.id) ?? [],
-  }));
 }
 
 export function registerDatacenterRoutes(
@@ -226,12 +207,14 @@ export function registerDatacenterRoutes(
     );
     if (manageDenied) return manageDenied;
 
-    const unassignedOnly = c.req.query("unassignedOnly") !== "0";
-    const limitRaw = c.req.query("limit");
-    const limit = limitRaw === undefined ? 8 : Number(limitRaw);
-    if (!Number.isInteger(limit) || limit < 0 || limit > 32) {
+    const query = parseNameSuggestionsQuery(
+      c.req.query("unassignedOnly"),
+      c.req.query("limit"),
+    );
+    if (query === "invalid") {
       return c.json({ error: "Invalid request" }, 400);
     }
+    const { unassignedOnly, limit } = query;
 
     const visibleIds = await listVisible(db, {
       kind: "server",
@@ -348,12 +331,7 @@ export function registerDatacenterRoutes(
 
     const input = parseCreateDatacenterInput(c, body);
     if (input instanceof Response) return input;
-    const serverIdsToAssign = [
-      ...new Set([
-        ...input.assignServerIds,
-        ...(input.sourceServerId ? [input.sourceServerId] : []),
-      ]),
-    ];
+    const serverIdsToAssign = collectServerIdsToAssign(input);
     const assignableServers = await loadAssignableServers(
       db,
       session.userId,

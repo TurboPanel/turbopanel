@@ -12,11 +12,11 @@ import { getServerDaemonStateByServerId } from "../authn/server-identity-db.ts";
 import type { UpdateProjection } from "../authn/daemon-state.ts";
 import type { DaemonCell } from "./contracts.ts";
 import {
-  agentChanged,
+  daemonBuildChanged,
   identityFromSnapshot,
   projectServerDaemon,
   steadyStateInboundSkipsDbRead,
-  type ProjectionAgent,
+  type ProjectionDaemonBuild,
 } from "./postgres-projection.ts";
 import { resolveTrunkManifest } from "../../lib/update/manifest.ts";
 import { isStaleProjectedUpdating } from "../../client/servers/update-status.ts";
@@ -29,7 +29,7 @@ export async function onDaemonConnected(
   serverId: string,
   cell: DaemonCell,
   connectedAt?: string,
-  agent?: ProjectionAgent,
+  daemonBuild?: ProjectionDaemonBuild,
   geo?: ServerGeo,
   keyId?: string,
 ): Promise<void> {
@@ -42,7 +42,7 @@ export async function onDaemonConnected(
       ...(geo ? { geo } : {}),
     },
     connectedAt: connectedAt ?? snapshot.connectedAt,
-  }, { cell, agent });
+  }, { cell, daemonBuild });
 }
 
 /**
@@ -78,16 +78,16 @@ export async function onDaemonInbound(
   db: Db,
   serverId: string,
   cell: DaemonCell,
-  opts: { at?: string; agent?: ProjectionAgent; geo?: ServerGeo } = {},
+  opts: { at?: string; daemonBuild?: ProjectionDaemonBuild; geo?: ServerGeo } = {},
 ): Promise<void> {
-  if (opts.agent?.commit && opts.agent?.buildId) {
-    await maybeRepairUpdateFromAgentHello(db, serverId, opts.agent);
+  if (opts.daemonBuild?.commit && opts.daemonBuild?.buildId) {
+    await maybeRepairUpdateFromDaemonBuildHello(db, serverId, opts.daemonBuild);
 
-    const existingForAgent = await getServerDaemonStateByServerId(db, serverId);
-    if (agentChanged(existingForAgent?.projection, opts.agent)) {
+    const existingForDaemonBuild = await getServerDaemonStateByServerId(db, serverId);
+    if (daemonBuildChanged(existingForDaemonBuild?.projection, opts.daemonBuild)) {
       await projectServerDaemon(db, serverId, {
-        kind: "agent",
-        agent: opts.agent,
+        kind: "daemon-build",
+        daemonBuild: opts.daemonBuild,
       }, { cell });
     }
   }
@@ -122,13 +122,13 @@ export async function onDaemonInbound(
       serverId,
       cell,
       snapshot.connectedAt ?? at,
-      opts.agent,
+      opts.daemonBuild,
       opts.geo,
     );
     return;
   }
 
-  await onDaemonHeartbeat(db, serverId, cell, opts.agent, opts.at);
+  await onDaemonHeartbeat(db, serverId, cell, opts.daemonBuild, opts.at);
 }
 
 export async function onDaemonDisconnected(
@@ -247,13 +247,13 @@ export async function repairStaleProjectedUpdate(
 }
 
 /** Self-heal when a reconnecting daemon already reports the trunk target commit. */
-export async function maybeRepairUpdateFromAgentHello(
+export async function maybeRepairUpdateFromDaemonBuildHello(
   db: Db,
   serverId: string,
-  agent?: ProjectionAgent,
+  daemonBuild?: ProjectionDaemonBuild,
   targetCommit?: string,
 ): Promise<void> {
-  if (!agent?.commit || !agent?.buildId) return;
+  if (!daemonBuild?.commit || !daemonBuild?.buildId) return;
 
   const existing = await getServerDaemonStateByServerId(db, serverId);
   const update = existing?.projection?.update;
@@ -261,7 +261,7 @@ export async function maybeRepairUpdateFromAgentHello(
 
   const manifestCommit = targetCommit ??
     (await resolveTrunkManifest())?.commit;
-  if (!manifestCommit || agent.commit !== manifestCommit) return;
+  if (!manifestCommit || daemonBuild.commit !== manifestCommit) return;
 
   await projectServerDaemon(db, serverId, {
     kind: "update-result",
@@ -275,25 +275,25 @@ export async function onDaemonHeartbeat(
   db: Db,
   serverId: string,
   cell: DaemonCell,
-  agent?: ProjectionAgent,
+  daemonBuild?: ProjectionDaemonBuild,
   inboundAt?: string,
 ): Promise<void> {
-  // Heartbeat-only frames never open Postgres without an agent that may have
+  // Heartbeat-only frames never open Postgres without a daemonBuild that may have
   // changed — elapsed coalesce time alone is not a projection trigger.
-  if (!agent?.commit || !agent?.buildId) return;
+  if (!daemonBuild?.commit || !daemonBuild?.buildId) return;
 
   const snapshot = await cell.getSnapshot();
   // Skip Postgres SELECT when the cell snapshot shows steady-state heartbeats.
-  if (steadyStateInboundSkipsDbRead(snapshot, { at: inboundAt, agent })) {
+  if (steadyStateInboundSkipsDbRead(snapshot, { at: inboundAt, daemonBuild })) {
     return;
   }
 
   const existing = await getServerDaemonStateByServerId(db, serverId);
   if (!existing) return;
 
-  if (!agentChanged(existing.projection, agent)) return;
+  if (!daemonBuildChanged(existing.projection, daemonBuild)) return;
 
-  await projectServerDaemon(db, serverId, { kind: "heartbeat", agent });
+  await projectServerDaemon(db, serverId, { kind: "heartbeat", daemonBuild });
 }
 
 export async function sweepStalePresence(

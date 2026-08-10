@@ -276,18 +276,18 @@ function shouldCoalesceLastSeenAt(
   return atMs - lastSeenMs >= presenceCoalesceFloorMs();
 }
 
-function parseStoredAgent(raw: string | undefined): import("../protocol.ts").DaemonAgentInfo | undefined {
+function parseStoredDaemonBuild(raw: string | undefined): import("../protocol.ts").DaemonBuildInfo | undefined {
   if (!raw) return undefined;
   try {
-    return JSON.parse(raw) as import("../protocol.ts").DaemonAgentInfo;
+    return JSON.parse(raw) as import("../protocol.ts").DaemonBuildInfo;
   } catch {
     return undefined;
   }
 }
 
-function agentIdentityEqual(
-  a: import("../protocol.ts").DaemonAgentInfo,
-  b: import("../protocol.ts").DaemonAgentInfo | undefined,
+function daemonBuildIdentityEqual(
+  a: import("../protocol.ts").DaemonBuildInfo,
+  b: import("../protocol.ts").DaemonBuildInfo | undefined,
 ): boolean {
   if (!b) return false;
   return a.commit === b.commit &&
@@ -540,7 +540,7 @@ export class RedisDaemonCell implements DaemonCell {
     // Intentionally retain connected, connectionId, lastInboundAt, lastSeenAt,
     // connectedAt (+ keyLastUsedAt) on Redis for the Lua sweep, snapshotFromMeta,
     // and projection — even though the DO cell table dropped connected_at /
-    // last_seen_at / agent_json. Do not strip them.
+    // last_seen_at / daemon_build_json. Do not strip them.
     await redis.hset(metaKey(this.#serverId), {
       connected: "1",
       connectionId,
@@ -681,15 +681,17 @@ export class RedisDaemonCell implements DaemonCell {
     connectionId?: string;
     hostname?: string;
     at?: string;
-    agent?: import("../protocol.ts").DaemonAgentInfo;
+    daemonBuild?: import("../protocol.ts").DaemonBuildInfo;
   }): Promise<void> {
     this.#bumpMethodRoute("recordInbound");
     const at = params.at ?? nowIso();
     const atMs = Date.parse(at);
-    const hasAgent = Boolean(params.agent?.commit && params.agent?.buildId);
+    const hasDaemonBuild = Boolean(
+      params.daemonBuild?.commit && params.daemonBuild?.buildId,
+    );
 
     if (
-      !hasAgent &&
+      !hasDaemonBuild &&
       this.#connectedHint &&
       !Number.isNaN(atMs) &&
       atMs - this.#lastInboundMs < presenceCoalesceFloorMs()
@@ -715,7 +717,7 @@ export class RedisDaemonCell implements DaemonCell {
 
     const bumpInbound = shouldCoalesceLastSeenAt(meta?.lastInboundAt, atMs);
 
-    let agentChanged = false;
+    let daemonBuildChanged = false;
     const fields: Record<string, string> = {
       keyLastUsedAt: at,
     };
@@ -725,12 +727,17 @@ export class RedisDaemonCell implements DaemonCell {
       logDebug("daemon-cell", `inbound coalesce: ${this.#serverId}`);
     }
 
-    if (params.agent?.commit && params.agent?.buildId) {
-      const storedAgent = parseStoredAgent(meta?.agent);
-      agentChanged = !agentIdentityEqual(params.agent, storedAgent);
-      if (agentChanged) fields.agent = JSON.stringify(params.agent);
+    if (params.daemonBuild?.commit && params.daemonBuild?.buildId) {
+      const storedDaemonBuild = parseStoredDaemonBuild(meta?.daemonBuild);
+      daemonBuildChanged = !daemonBuildIdentityEqual(
+        params.daemonBuild,
+        storedDaemonBuild,
+      );
+      if (daemonBuildChanged) {
+        fields.daemonBuild = JSON.stringify(params.daemonBuild);
+      }
       await this.putSnapshot({
-        agent: params.agent,
+        daemonBuild: params.daemonBuild,
         ...(bumpInbound ? { lastInboundAt: at, lastSeenAt: at } : {}),
       });
     } else if (bumpInbound) {
@@ -749,7 +756,7 @@ export class RedisDaemonCell implements DaemonCell {
       serverId: this.#serverId,
       conn: connectionId,
       coalesced: bumpInbound,
-      agentChanged,
+      daemonBuildChanged,
     });
   }
 

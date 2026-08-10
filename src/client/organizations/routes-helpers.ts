@@ -111,3 +111,40 @@ export function parseOrganizationCreateDisplayName(
     throw error
   }
 }
+
+export function defaultTimezoneGetResponse(options: {
+  defaultServerTimezone?: string | null
+  enforceServerTimezone?: boolean | null
+}) {
+  return {
+    defaultServerTimezone: options.defaultServerTimezone ?? null,
+    enforceServerTimezone: options.enforceServerTimezone ?? false,
+  }
+}
+
+export function defaultEnvironmentGetResponse(options: {
+  defaultEnvironmentName?: string | null
+}) {
+  return {
+    defaultEnvironmentName: options.defaultEnvironmentName ?? null,
+  }
+}
+
+export function defaultTimezonePutResponse(options: {
+  defaultServerTimezone?: string | null
+  enforceServerTimezone?: boolean | null
+}) {
+  return {
+    ok: true as const,
+    ...defaultTimezoneGetResponse(options),
+  }
+}
+
+export function defaultEnvironmentPutResponse(options: {
+  defaultEnvironmentName?: string | null
+}) {
+  return {
+    ok: true as const,
+    ...defaultEnvironmentGetResponse(options),
+  }
+}

@@ -12,6 +12,10 @@ import {
   DEFAULT_BINDING_KEY_PREFIX,
 } from '../../lib/naming.ts'
 import { parseManagedRowOptions } from '../managed/options.ts'
+import {
+  isManagedReplicationPrincipal,
+  isManagedRootPrincipal,
+} from '../managed/routes-helpers.ts'
 import { listBindingEmittedKeys } from './materialize.ts'
 import {
   isBindingEndpointError,
@@ -502,4 +506,86 @@ export async function resolveServiceIdForHosting(
     .where(eq(hosting.id, hostingId))
     .limit(1)
   return row?.serviceId ?? null
+}
+
+export type BindingsListFilter =
+  | { kind: 'service'; serviceId: string }
+  | { kind: 'environment'; environmentId: string }
+  | { kind: 'managedEnvironment'; managedEnvironmentId: string }
+
+export type BindingsListFilterError = {
+  ok: false
+  error: string
+  status: 400
+}
+
+export function parseBindingsListFilter(params: {
+  serviceId: string | undefined
+  environmentId: string | undefined
+  managedEnvironmentId: string | undefined
+}): { ok: true; filter: BindingsListFilter } | BindingsListFilterError {
+  const filterCount = [
+    params.serviceId,
+    params.environmentId,
+    params.managedEnvironmentId,
+  ].filter(Boolean).length
+  if (filterCount !== 1) {
+    return {
+      ok: false,
+      error:
+        'Exactly one of serviceId, environmentId, or managedEnvironmentId must be specified',
+      status: 400,
+    }
+  }
+  if (params.serviceId) {
+    return { ok: true, filter: { kind: 'service', serviceId: params.serviceId } }
+  }
+  if (params.managedEnvironmentId) {
+    return {
+      ok: true,
+      filter: {
+        kind: 'managedEnvironment',
+        managedEnvironmentId: params.managedEnvironmentId,
+      },
+    }
+  }
+  return {
+    ok: true,
+    filter: { kind: 'environment', environmentId: params.environmentId! },
+  }
+}
+
+export function bindingDatabaseTargetHttpStatus(
+  error: string,
+): 400 | 404 {
+  if (error === 'database_not_found') return 404
+  return 400
+}
+
+export function mapBindingUniqueViolation(
+  err: unknown,
+):
+  | { error: typeof BINDING_ENGINE_DEFAULTS_IN_USE_ERROR; status: 409 }
+  | { error: typeof BINDING_KEY_PREFIX_IN_USE_ERROR; status: 409 }
+  | null {
+  if (!isPostgresUniqueViolation(err)) return null
+  const message = err instanceof Error ? err.message : String(err)
+  if (message.includes('uniq_binding_service_engine_defaults')) {
+    return { error: BINDING_ENGINE_DEFAULTS_IN_USE_ERROR, status: 409 }
+  }
+  if (message.includes('uniq_binding_service_prefix')) {
+    return { error: BINDING_KEY_PREFIX_IN_USE_ERROR, status: 409 }
+  }
+  return null
+}
+
+export function isBindableDatabasePrincipal(row: {
+  kind: string | null | undefined
+  managedId: string | null | undefined
+  metadata: unknown
+}): boolean {
+  if (row.kind !== 'database' || !row.managedId) return false
+  if (isManagedRootPrincipal(row.metadata)) return false
+  if (isManagedReplicationPrincipal(row.metadata)) return false
+  return true
 }

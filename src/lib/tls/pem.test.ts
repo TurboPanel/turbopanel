@@ -72,3 +72,22 @@ test('decodePrivateKeyToPkcs8 rejects unsupported PEM labels', () => {
     'unsupported private key PEM label',
   )
 })
+
+test('encodePemBlock wraps long base64 across 64-character lines', () => {
+  const der = new Uint8Array(200)
+  for (let i = 0; i < der.length; i += 1) der[i] = i
+  const pem = encodePemBlock('CERTIFICATE', der)
+  const bodyLines = pem
+    .split('\n')
+    .filter((line) => !line.startsWith('-----'))
+    .filter((line) => line.length > 0)
+  assertEquals(bodyLines.every((line) => line.length <= 64), true)
+  assertEquals(bodyLines.length > 1, true)
+})
+
+test('decodePemBlock rejects invalid base64 payload', () => {
+  assertThrows(
+    () => decodePemBlock('-----BEGIN CERTIFICATE-----\n!!!\n-----END CERTIFICATE-----', 'CERTIFICATE'),
+    Error,
+  )
+})

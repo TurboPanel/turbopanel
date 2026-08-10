@@ -870,14 +870,14 @@ describe("DaemonCellObject", () => {
     });
   }, 10_000);
 
-  it("projects agent change on heartbeat when commit changes", async () => {
-    const serverId = "test-srv-proj-heartbeat-agent";
-    const priorAgent = {
+  it("projects daemonBuild change on heartbeat when commit changes", async () => {
+    const serverId = "test-srv-proj-heartbeat-daemonBuild";
+    const priorDaemonBuild = {
       commit: "abc123",
       buildId: "build-1",
       channel: "trunk" as const,
     };
-    const nextAgent = {
+    const nextDaemonBuild = {
       commit: "def456",
       buildId: "build-2",
       channel: "trunk" as const,
@@ -900,7 +900,7 @@ describe("DaemonCellObject", () => {
     ws.send(JSON.stringify({
       type: "heartbeat",
       at: new Date().toISOString(),
-      agent: priorAgent,
+      daemonBuild: priorDaemonBuild,
     }));
 
     await waitFor(() => {
@@ -918,7 +918,7 @@ describe("DaemonCellObject", () => {
       type: "heartbeat",
       at: new Date(Date.now() + INBOUND_PROJECTION_COALESCE_MS + 1000)
         .toISOString(),
-      agent: priorAgent,
+      daemonBuild: priorDaemonBuild,
     }));
 
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -928,7 +928,7 @@ describe("DaemonCellObject", () => {
       type: "heartbeat",
       at: new Date(Date.now() + INBOUND_PROJECTION_COALESCE_MS + 2000)
         .toISOString(),
-      agent: nextAgent,
+      daemonBuild: nextDaemonBuild,
     }));
 
     await waitFor(() => {
@@ -1459,7 +1459,7 @@ describe("DaemonCellObject", () => {
     ws.send(JSON.stringify({
       type: "hello",
       at: new Date().toISOString(),
-      agent: { commit: "abc", buildId: "1" },
+      daemonBuild: { commit: "abc", buildId: "1" },
     }));
 
     await waitFor(async () => {
@@ -1469,18 +1469,18 @@ describe("DaemonCellObject", () => {
       });
       const snapshot = await snapshotResponse.json() as {
         lastSeenAt?: string;
-        agent?: { commit: string; buildId: string };
+        daemonBuild?: { commit: string; buildId: string };
       };
       expect(snapshot.lastSeenAt).toBeTruthy();
-      expect(snapshot.agent?.commit).toBe("abc");
-      expect(snapshot.agent?.buildId).toBe("1");
+      expect(snapshot.daemonBuild?.commit).toBe("abc");
+      expect(snapshot.daemonBuild?.buildId).toBe("1");
     });
 
     ws.close(1000, "test done");
   });
 
-  it("heartbeat without agent does not update Postgres status or snapshot lastSeenAt", async () => {
-    const serverId = "test-srv-heartbeat-no-agent";
+  it("heartbeat without daemonBuild does not update Postgres status or snapshot lastSeenAt", async () => {
+    const serverId = "test-srv-heartbeat-no-daemonBuild";
     const { db, updateCalls, getStatus } = createProjectionRecordingDb({
       connected: false,
     });
@@ -1927,7 +1927,7 @@ describe("DaemonCellObject", () => {
     ws.send(JSON.stringify({
       type: "hello",
       at: new Date().toISOString(),
-      agent: { commit: "recovered", buildId: "1" },
+      daemonBuild: { commit: "recovered", buildId: "1" },
     }));
 
     await waitFor(async () => {

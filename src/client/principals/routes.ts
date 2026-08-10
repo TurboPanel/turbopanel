@@ -7,16 +7,8 @@ import { assertCanOr403 } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db.ts'
 import { organization, principal, server } from '../../lib/db/schema.ts'
-import {
-  assertSafePrincipalUsername,
-  isReservedPrincipalUsername,
-  principalHomeDir,
-} from '../../lib/naming.ts'
-import {
-  parsePrincipalOptionsInput,
-  resolvePrincipalIdOverride,
-  type PrincipalOptionsPersisted,
-} from '../../lib/principal-options.ts'
+import { principalHomeDir } from '../../lib/naming.ts'
+import type { PrincipalOptionsPersisted } from '../../lib/principal-options.ts'
 import {
   assertCanManageOr403,
   assertNotSystemOwnedOr403,
@@ -37,6 +29,15 @@ import {
   USERNAME_IN_USE_ERROR,
 } from './store.ts'
 import { serializeProjectPrincipal } from './serialize.ts'
+import {
+  optionsRecordFromJsonb,
+  parseCreatePrincipalOptions,
+  parsePrincipalUsernameValue,
+  patchRequiresServiceIds,
+  projectPrincipalCreateResponse,
+  resourceLimitsFromOptions,
+  type InsertedProjectPrincipal,
+} from './routes-helpers.ts'
 
 class UsernameInUseError extends Error {
   constructor() {
@@ -52,51 +53,17 @@ type ParsedCreateProjectPrincipal = {
   serviceIds: string[]
 }
 
-type InsertedProjectPrincipal = {
-  id: string
-  uid?: number
-  gid?: number
-}
-
-/**
- * Accept top-level `uid`/`gid` as a shorthand for `options.uid`/`options.gid`.
- * Non-object `options` are left as-is so strict parse rejects them.
- */
-function mergeTopLevelPrincipalIdsIntoOptions(
-  body: Record<string, unknown>,
-): unknown {
-  if (body.uid === undefined && body.gid === undefined) {
-    return body.options
-  }
-  if (body.options === undefined || body.options === null) {
-    return { uid: body.uid, gid: body.gid }
-  }
-  if (typeof body.options === 'object' && !Array.isArray(body.options)) {
-    return {
-      ...(body.options as Record<string, unknown>),
-      ...(body.uid !== undefined ? { uid: body.uid } : {}),
-      ...(body.gid !== undefined ? { gid: body.gid } : {}),
-    }
-  }
-  return body.options
-}
-
 function parseCreatePrincipalUsername(
   c: Context,
   body: Record<string, unknown>,
 ): string | Response {
   const usernameRaw = requireStringField(c, body, 'username')
   if (usernameRaw instanceof Response) return usernameRaw
-  const username = usernameRaw.trim()
-  try {
-    assertSafePrincipalUsername(username)
-  } catch {
-    return c.json({ error: 'Invalid request' }, 400)
+  const parsed = parsePrincipalUsernameValue(usernameRaw)
+  if (!parsed.ok) {
+    return c.json({ error: parsed.error }, parsed.status)
   }
-  if (isReservedPrincipalUsername(username)) {
-    return c.json({ error: 'username_reserved' }, 400)
-  }
-  return username
+  return parsed.username
 }
 
 async function parseCreateProjectPrincipalRequest(
@@ -116,17 +83,15 @@ async function parseCreateProjectPrincipalRequest(
     return c.json({ error: 'invalid_service_ids' }, 400)
   }
 
-  const parsedOptions = parsePrincipalOptionsInput(
-    mergeTopLevelPrincipalIdsIntoOptions(body),
-  )
+  const parsedOptions = parseCreatePrincipalOptions(body)
   if (!parsedOptions.ok) {
-    return c.json({ error: 'Invalid request' }, 400)
+    return c.json({ error: parsedOptions.error }, parsedOptions.status)
   }
 
   return {
     username,
-    options: parsedOptions.value,
-    override: resolvePrincipalIdOverride(parsedOptions.value),
+    options: parsedOptions.options,
+    override: parsedOptions.override,
     serviceIds,
   }
 }
@@ -178,26 +143,6 @@ async function insertProjectPrincipal(
         : {}),
     }
   })
-}
-
-function projectPrincipalCreateResponse(
-  inserted: InsertedProjectPrincipal,
-  serviceIds: string[],
-) {
-  if (inserted.uid !== undefined && inserted.gid !== undefined) {
-    return {
-      ok: true as const,
-      id: inserted.id,
-      uid: inserted.uid,
-      gid: inserted.gid,
-      serviceIds,
-    }
-  }
-  return {
-    ok: true as const,
-    id: inserted.id,
-    serviceIds,
-  }
 }
 
 export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -321,7 +266,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    if (!('serviceIds' in body)) {
+    if (!patchRequiresServiceIds(body)) {
       return c.json({ error: 'Invalid request' }, 400)
     }
 
@@ -395,12 +340,8 @@ export function registerOrganizationLimitsRoutes(router: Hono<AppEnv>, opts: Aut
       eq(organization.id, id),
     ).limit(1)
 
-    const options = orgRow?.options && typeof orgRow.options === 'object'
-      ? orgRow.options as Record<string, unknown>
-      : {}
-
     return c.json({
-      resourceLimits: parseResourceLimits(options.resourceLimits) ?? {},
+      resourceLimits: resourceLimitsFromOptions(orgRow?.options),
     })
   })
 
@@ -430,9 +371,7 @@ export function registerOrganizationLimitsRoutes(router: Hono<AppEnv>, opts: Aut
       eq(organization.id, id),
     ).limit(1)
 
-    const prevOptions = orgRow?.options && typeof orgRow.options === 'object'
-      ? orgRow.options as Record<string, unknown>
-      : {}
+    const prevOptions = optionsRecordFromJsonb(orgRow?.options)
 
     await db.update(organization).set({
       options: { ...prevOptions, resourceLimits: limits },
@@ -469,12 +408,8 @@ export function registerServerLimitsRoutes(router: Hono<AppEnv>, opts: AuthRoute
       eq(server.id, id),
     ).limit(1)
 
-    const options = serverRow?.options && typeof serverRow.options === 'object'
-      ? serverRow.options as Record<string, unknown>
-      : {}
-
     return c.json({
-      resourceLimits: parseResourceLimits(options.resourceLimits) ?? {},
+      resourceLimits: resourceLimitsFromOptions(serverRow?.options),
     })
   })
 
@@ -507,9 +442,7 @@ export function registerServerLimitsRoutes(router: Hono<AppEnv>, opts: AuthRoute
       eq(server.id, id),
     ).limit(1)
 
-    const prevOptions = serverRow?.options && typeof serverRow.options === 'object'
-      ? serverRow.options as Record<string, unknown>
-      : {}
+    const prevOptions = optionsRecordFromJsonb(serverRow?.options)
 
     await db.update(server).set({
       options: { ...prevOptions, resourceLimits: limits },

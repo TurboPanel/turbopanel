@@ -204,7 +204,7 @@ class DurableObjectStubDaemonCell implements DaemonCell {
     connectionId?: string;
     hostname?: string;
     at?: string;
-    agent?: import("./protocol.ts").DaemonAgentInfo;
+    daemonBuild?: import("./protocol.ts").DaemonBuildInfo;
   }): Promise<void> {
     return this.#rpc("/rpc/record-inbound", {
       serverId: this.#serverId,
@@ -213,7 +213,7 @@ class DurableObjectStubDaemonCell implements DaemonCell {
       if (this.#db) {
         await onDaemonInbound(this.#db, this.#serverId, this, {
           at: params.at,
-          agent: params.agent,
+          daemonBuild: params.daemonBuild,
         });
       }
     });

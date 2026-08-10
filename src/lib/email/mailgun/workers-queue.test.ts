@@ -1,7 +1,10 @@
 import { assertEquals } from 'jsr:@std/assert'
 import { resolveEmailSettings } from '../../settings/email-settings.ts'
 import { createNoopQueue, isNoopEmailQueue } from '../noop-queue.ts'
-import { emailQueueFromResolvedSettings } from './workers-queue.ts'
+import {
+  emailQueueFromResolvedSettings,
+  resolveWorkersEmailQueue,
+} from './workers-queue.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -47,4 +50,22 @@ test('emailQueueFromResolvedSettings returns noop for smtp provider', async () =
   })
   const queue = emailQueueFromResolvedSettings(resolved, {})
   assertEquals(queue, createNoopQueue())
+})
+
+test('resolveWorkersEmailQueue mirrors emailQueueFromResolvedSettings without db', async () => {
+  const queue = await resolveWorkersEmailQueue(undefined, {
+    TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
+    MAILPIT_API_URL: 'http://127.0.0.1:8025',
+  })
+  assertEquals(queue.constructor.name, 'WorkersMailpitQueue')
+})
+
+test('emailQueueFromResolvedSettings returns noop when mailgun api key is blank', async () => {
+  const resolved = await resolveEmailSettings(undefined, {
+    TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailgun',
+    TURBOPANEL_SYSTEM_EMAIL__MAILGUN_API_KEY: '   ',
+    TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN: 'mg.example.com',
+  })
+  const queue = emailQueueFromResolvedSettings(resolved, {})
+  assertEquals(isNoopEmailQueue(queue), true)
 })

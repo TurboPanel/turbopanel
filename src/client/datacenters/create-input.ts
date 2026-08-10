@@ -12,6 +12,16 @@ export type ParseResult<T> =
   | { ok: true; value: T }
   | { ok: false }
 
+export function parseOptionalUuid(value: unknown): ParseResult<string | null> {
+  if (value === undefined || value === null) {
+    return { ok: true, value: null }
+  }
+  if (typeof value !== "string" || !UUID_RE.test(value)) {
+    return { ok: false }
+  }
+  return { ok: true, value }
+}
+
 export function parseAssignServerIds(value: unknown): ParseResult<string[]> {
   if (value === undefined || value === null) {
     return { ok: true, value: [] }
@@ -86,4 +96,40 @@ export function resolveSeededFields(
       suggestDatacenterDisplayNameFromGeo(geo),
     metadata: mergeDatacenterMetadata(seededMetadata, input.metadata),
   }
+}
+
+export function attachPrivateCidrs<T extends { id: string }>(
+  rows: T[],
+  cidrsByDc: Map<string, string[]>,
+): Array<T & { privateCidrs: string[] }> {
+  return rows.map((row) => ({
+    ...row,
+    privateCidrs: cidrsByDc.get(row.id) ?? [],
+  }))
+}
+
+export type NameSuggestionsQuery = {
+  unassignedOnly: boolean
+  limit: number
+}
+
+export function parseNameSuggestionsQuery(
+  unassignedOnlyRaw: string | undefined,
+  limitRaw: string | undefined,
+): NameSuggestionsQuery | 'invalid' {
+  const unassignedOnly = unassignedOnlyRaw !== "0"
+  const limit = limitRaw === undefined ? 8 : Number(limitRaw)
+  if (!Number.isInteger(limit) || limit < 0 || limit > 32) {
+    return 'invalid'
+  }
+  return { unassignedOnly, limit }
+}
+
+export function collectServerIdsToAssign(input: CreateDatacenterInput): string[] {
+  return [
+    ...new Set([
+      ...input.assignServerIds,
+      ...(input.sourceServerId ? [input.sourceServerId] : []),
+    ]),
+  ]
 }

@@ -29,7 +29,11 @@ import type {
 } from "./cell/protocol.ts";
 import { DAEMON_CELL_PING, DAEMON_CELL_PONG } from "./cell/protocol.ts";
 import { issueDaemonJwt } from "./authn/daemon-jwt.ts";
-import { registerDaemonWebSocket } from "./deno-ws.ts";
+import {
+  isClosedConnectionError,
+  registerDaemonWebSocket,
+  wsMessageDataToString,
+} from "./deno-ws.ts";
 import {
   CLIENT_WS_PATH,
   DAEMON_WS_PATH,
@@ -39,6 +43,14 @@ import {
   resetTrunkManifestCacheForTests,
   seedTrunkManifestCacheForTests,
 } from "../lib/update/manifest.ts";
+
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno);
 
 async function createDaemonJwtSecrets() {
   const parsed = parseSecretsEnv(generateSecret(), undefined, "deno");
@@ -638,7 +650,7 @@ it("WS lifecycle attaches, handles hello, and detaches through cell backend", as
   ws.send(JSON.stringify({
     type: "hello",
     at: new Date().toISOString(),
-    agent: { commit: "hello-commit", buildId: "hello-build" },
+    daemonBuild: { commit: "hello-commit", buildId: "hello-build" },
   }));
 
   await new Promise((resolve) => setTimeout(resolve, 50));
@@ -754,7 +766,7 @@ it("hello over WS calls cell.recordInbound", async () => {
   ws.send(JSON.stringify({
     type: "hello",
     at: new Date().toISOString(),
-    agent: { commit: "hello-commit", buildId: "hello-build" },
+    daemonBuild: { commit: "hello-commit", buildId: "hello-build" },
   }));
   await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -825,9 +837,9 @@ it("cell ping over WS sends pong, refreshes cell liveness, skips Postgres", asyn
   ws.close(1000, "done");
 });
 
-it("hello over WS with agent projects commit for update status", async () => {
+it("hello over WS with daemonBuild projects commit for update status", async () => {
   const secrets = await createDaemonJwtSecrets();
-  const serverId = "srv-heartbeat-agent-ws";
+  const serverId = "srv-heartbeat-daemonBuild-ws";
   const { db, getDaemon } = createProjectionTrackingDb(serverId, {
     key: baseDaemonKey,
     projection: { hostname: "host-1" },
@@ -855,7 +867,7 @@ it("hello over WS with agent projects commit for update status", async () => {
   });
   if (response.status !== 101 || !response.webSocket) {
     console.warn(
-      "Skipping heartbeat agent WS test: response.webSocket unavailable",
+      "Skipping heartbeat daemonBuild WS test: response.webSocket unavailable",
     );
     return;
   }
@@ -867,7 +879,7 @@ it("hello over WS with agent projects commit for update status", async () => {
   ws.send(JSON.stringify({
     type: "hello",
     at: new Date().toISOString(),
-    agent: {
+    daemonBuild: {
       commit: "ws-hello-commit",
       buildId: "ws-hello-build",
       channel: "trunk",
@@ -876,17 +888,17 @@ it("hello over WS with agent projects commit for update status", async () => {
   await new Promise((resolve) => setTimeout(resolve, 50));
 
   const merged = parseServerDaemonState(getDaemon());
-  assertEquals(merged?.projection?.agent?.commit, "ws-hello-commit");
+  assertEquals(merged?.projection?.daemonBuild?.commit, "ws-hello-commit");
   ws.close(1000, "done");
 });
 
-it("heartbeat over WS without agent does not write Postgres status", async () => {
+it("heartbeat over WS without daemonBuild does not write Postgres status", async () => {
   const secrets = await createDaemonJwtSecrets();
-  const serverId = "srv-heartbeat-no-agent-ws";
+  const serverId = "srv-heartbeat-no-daemonBuild-ws";
   const stale = new Date(Date.now() - 61_000).toISOString();
   const { db, getStatus, getUpdateCallCount } = createProjectionTrackingDb(serverId, {
     key: baseDaemonKey,
-    projection: { hostname: "host-1", agent: { commit: "abc", buildId: "1" } },
+    projection: { hostname: "host-1", daemonBuild: { commit: "abc", buildId: "1" } },
   }, {
     connected: true,
     statusChangedAt: stale,
@@ -911,7 +923,7 @@ it("heartbeat over WS without agent does not write Postgres status", async () =>
   });
   if (response.status !== 101 || !response.webSocket) {
     console.warn(
-      "Skipping heartbeat no-agent WS test: response.webSocket unavailable",
+      "Skipping heartbeat no-daemonBuild WS test: response.webSocket unavailable",
     );
     return;
   }
@@ -1111,7 +1123,7 @@ it("update-result over WS projects update summary to Postgres", async () => {
   ws.close(1000, "done");
 });
 
-it("hello over WS clears stale updating when agent matches trunk", async () => {
+it("hello over WS clears stale updating when daemonBuild matches trunk", async () => {
   resetTrunkManifestCacheForTests();
   seedTrunkManifestCacheForTests({
     commit: "target-commit",
@@ -1127,7 +1139,7 @@ it("hello over WS clears stale updating when agent matches trunk", async () => {
     key: baseDaemonKey,
     projection: {
       hostname: "host-1",
-      agent: {
+      daemonBuild: {
         commit: "target-commit",
         buildId: "b1",
         channel: "trunk",
@@ -1149,7 +1161,7 @@ it("hello over WS clears stale updating when agent matches trunk", async () => {
     version: 1,
     updatedAt: new Date().toISOString(),
     connected: true,
-    agent: {
+    daemonBuild: {
       commit: "target-commit",
       buildId: "b1",
       channel: "trunk",
@@ -1186,7 +1198,7 @@ it("hello over WS clears stale updating when agent matches trunk", async () => {
   ws.send(JSON.stringify({
     type: "hello",
     at: new Date().toISOString(),
-    agent: {
+    daemonBuild: {
       commit: "target-commit",
       buildId: "b1",
       channel: "trunk",
@@ -1198,5 +1210,226 @@ it("hello over WS clears stale updating when agent matches trunk", async () => {
   assertEquals(update?.status, "done");
   assertEquals(update?.requestId, "req-update-1");
   resetTrunkManifestCacheForTests();
+  ws.close(1000, "done");
+});
+
+test("isClosedConnectionError matches closed-socket errors", () => {
+  assertEquals(isClosedConnectionError(new Error("Connection is closed")), true);
+  assertEquals(isClosedConnectionError("connection is closed by peer"), true);
+  assertEquals(isClosedConnectionError(new Error("network timeout")), false);
+});
+
+test("wsMessageDataToString accepts string, Blob, and ArrayBuffer views", async () => {
+  assertEquals(await wsMessageDataToString("hello"), "hello");
+  assertEquals(await wsMessageDataToString(new Blob(["from-blob"])), "from-blob");
+  assertEquals(
+    await wsMessageDataToString(new TextEncoder().encode("bytes")),
+    "bytes",
+  );
+});
+
+it("WS upgrade returns 503 when database is unavailable", async () => {
+  const app = new Hono();
+  const secrets = await createDaemonJwtSecrets();
+  registerDaemonWebSocket(app, {
+    secrets,
+    daemonCellRegistry: createTrackingRegistry(
+      createTrackingDaemonCell("srv-no-db").cell,
+    ),
+  });
+  const issued = await issueDaemonJwt(
+    { sub: "srv-no-db", kid: "key-test" },
+    secrets,
+  );
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${issued.token}`,
+      ...WS_UPGRADE_HEADERS,
+    },
+  });
+  assertEquals(response.status, 503);
+  assertEquals((await response.json()).error, "Database unavailable");
+});
+
+it("WS upgrade returns 503 when daemon cell registry is unavailable", async () => {
+  const app = new Hono();
+  const secrets = await createDaemonJwtSecrets();
+  registerDaemonWebSocket(app, {
+    secrets,
+    db: createMockDb(),
+  });
+  const issued = await issueDaemonJwt(
+    { sub: "srv-no-registry", kid: "key-test" },
+    secrets,
+  );
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${issued.token}`,
+      ...WS_UPGRADE_HEADERS,
+    },
+  });
+  assertEquals(response.status, 503);
+  assertEquals(
+    (await response.json()).error,
+    "Daemon cell registry unavailable",
+  );
+});
+
+it("revoked daemon key closes the socket on the next inbound ping", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-key-revoked-ping";
+  const revokedKey = {
+    ...baseDaemonKey,
+    revokedAt: "2020-01-02T00:00:00.000Z",
+  };
+  const { db } = createProjectionTrackingDb(serverId, {
+    key: revokedKey,
+  }, {
+    connected: true,
+    statusChangedAt: "2020-01-01T00:00:00.000Z",
+  });
+  const tracking = createTrackingDaemonCell(serverId);
+  const app = new Hono();
+  registerTestDaemonWebSocket(app, secrets, {
+    db,
+    registry: createTrackingRegistry(tracking.cell),
+  });
+
+  const issued = await issueDaemonJwt(
+    { sub: serverId, kid: "key-test" },
+    secrets,
+  );
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${issued.token}`,
+      ...WS_UPGRADE_HEADERS,
+    },
+  });
+  if (response.status !== 101 || !response.webSocket) {
+    console.warn(
+      "Skipping revoked-key ping test: response.webSocket unavailable",
+    );
+    return;
+  }
+
+  const ws = response.webSocket;
+  ws.accept();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+    ws.addEventListener("close", (event) => {
+      resolve({ code: event.code, reason: event.reason });
+    });
+  });
+  ws.send(DAEMON_CELL_PING);
+  const closeEvent = await closed;
+  assertEquals(closeEvent.code, 1008);
+  assertEquals(closeEvent.reason, "key_revoked");
+});
+
+it("cell ping re-projects online when Redis snapshot is disconnected", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-ping-redis-offline";
+  const { db, getStatus } = createProjectionTrackingDb(serverId, {
+    key: baseDaemonKey,
+  }, {
+    connected: false,
+    statusChangedAt: "2020-01-01T00:00:00.000Z",
+  });
+  const tracking = createTrackingDaemonCell(serverId);
+  tracking.cell.getSnapshot = async () => ({
+    serverId,
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    connected: false,
+  });
+  const app = new Hono();
+  registerTestDaemonWebSocket(app, secrets, {
+    db,
+    registry: createTrackingRegistry(tracking.cell),
+  });
+
+  const issued = await issueDaemonJwt(
+    { sub: serverId, kid: "key-test" },
+    secrets,
+  );
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${issued.token}`,
+      ...WS_UPGRADE_HEADERS,
+    },
+  });
+  if (response.status !== 101 || !response.webSocket) {
+    console.warn(
+      "Skipping redis-offline ping repair test: response.webSocket unavailable",
+    );
+    return;
+  }
+
+  const ws = response.webSocket;
+  ws.accept();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const pongPromise = waitForWsJson(ws);
+  ws.send(DAEMON_CELL_PING);
+  assertEquals((await pongPromise).type, "pong");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assertEquals(getStatus().connected, true);
+  ws.close(1000, "done");
+});
+
+it("heartbeat with timeSync touches metadata without requiring daemonBuild", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-heartbeat-timesync";
+  const { db, getUpdateCallCount } = createProjectionTrackingDb(serverId, {
+    key: baseDaemonKey,
+  }, {
+    connected: true,
+    statusChangedAt: "2020-01-01T00:00:00.000Z",
+  });
+  const tracking = createTrackingDaemonCell(serverId);
+  const app = new Hono();
+  registerTestDaemonWebSocket(app, secrets, {
+    db,
+    registry: createTrackingRegistry(tracking.cell),
+  });
+
+  const issued = await issueDaemonJwt(
+    { sub: serverId, kid: "key-test" },
+    secrets,
+  );
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${issued.token}`,
+      ...WS_UPGRADE_HEADERS,
+    },
+  });
+  if (response.status !== 101 || !response.webSocket) {
+    console.warn(
+      "Skipping heartbeat timeSync test: response.webSocket unavailable",
+    );
+    return;
+  }
+
+  const ws = response.webSocket;
+  ws.accept();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const updatesBefore = getUpdateCallCount();
+  const inboundBefore = tracking.calls.recordInbound;
+
+  ws.send(JSON.stringify({
+    type: "heartbeat",
+    at: new Date().toISOString(),
+    timeSync: { timezone: "America/Chicago", ntpEnabled: true },
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assertEquals(tracking.calls.recordInbound, inboundBefore + 1);
+  assertEquals(getUpdateCallCount() > updatesBefore, true);
   ws.close(1000, "done");
 });

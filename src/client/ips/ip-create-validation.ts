@@ -3,12 +3,56 @@ import {
   isValidIpAddress,
   parseIpVersion,
 } from '../../lib/ip-address.ts'
+import { parseJsonbObject } from '../shared.ts'
+
+export const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+export const IP_ALLOCATIONS = new Set(['dedicated', 'shared'])
+export const IP_SCOPES = new Set(['public', 'datacenter', 'vpn'])
 
 export type IpScopeFks = {
   datacenterId?: string | null
   networkId?: string | null
   serverId?: string | null
   vpnId?: string | null
+}
+
+export type IpPatchFields = {
+  displayName?: string | null
+  metadata?: Record<string, unknown> | null
+  options?: Record<string, unknown> | null
+  datacenterId?: string | null
+  networkId?: string | null
+  serverId?: string | null
+  vpnId?: string | null
+  updatedAt: string
+}
+
+export type ExistingIpScope = {
+  scope: string
+  vpnId: string | null
+  serverId: string | null
+  datacenterId: string | null
+  networkId: string | null
+  address: string
+}
+
+export type IpRow = {
+  id: string
+  organizationId: string
+  datacenterId: string | null
+  networkId: string | null
+  serverId: string | null
+  vpnId: string | null
+  address: string
+  allocation: string
+  scope: string
+  displayName: string | null
+  metadata: unknown
+  options: unknown
+  createdAt: string
+  updatedAt: string
 }
 
 function isPostgresUniqueViolation(err: unknown): boolean {
@@ -72,3 +116,103 @@ export function assertIpScopeFkRules(
 
   return null
 }
+
+export function serializeIpRow(row: IpRow) {
+  return {
+    ...row,
+    version: parseIpVersion(row.address),
+  }
+}
+
+export function parseCreateIpEnums(
+  c: Context,
+  body: Record<string, unknown>,
+): { allocation: string; scope: string } | Response {
+  const allocation = body.allocation
+  if (typeof allocation !== 'string' || !IP_ALLOCATIONS.has(allocation)) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
+  const scope = body.scope
+  if (typeof scope !== 'string' || !IP_SCOPES.has(scope)) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
+  return { allocation, scope }
+}
+
+export function rejectImmutableIpPatchFields(
+  c: Context,
+  body: Record<string, unknown>,
+): Response | null {
+  const immutable = ['address', 'version', 'allocation', 'scope'] as const
+  if (immutable.some((key) => body[key] !== undefined)) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  return null
+}
+
+/** Final FK values = existing row plus incoming patch (undefined keeps prior). */
+export function mergeIpScopeFks(
+  existing: ExistingIpScope,
+  scopeFks: IpScopeFks,
+): IpScopeFks {
+  return {
+    vpnId: scopeFks.vpnId !== undefined ? scopeFks.vpnId : existing.vpnId,
+    serverId: scopeFks.serverId !== undefined ? scopeFks.serverId : existing.serverId,
+    datacenterId: scopeFks.datacenterId !== undefined
+      ? scopeFks.datacenterId
+      : existing.datacenterId,
+    networkId: scopeFks.networkId !== undefined
+      ? scopeFks.networkId
+      : existing.networkId,
+  }
+}
+
+export function parseEnumQueryFilter(
+  c: Context,
+  queryKey: 'scope' | 'allocation',
+  allowed: Set<string>,
+): string | undefined | Response {
+  const raw = c.req.query(queryKey)?.trim()
+  if (!raw) return undefined
+  if (!allowed.has(raw)) return c.json({ error: 'Invalid request' }, 400)
+  return raw
+}
+
+export function parseScopeFkUuid(
+  value: unknown,
+): string | null | undefined | 'invalid' {
+  if (value === undefined) return undefined
+  if (value === null) return null
+  if (typeof value !== 'string' || !UUID_RE.test(value)) {
+    return 'invalid'
+  }
+  return value
+}
+
+export function applyJsonbPatchFields(
+  c: Context,
+  body: Record<string, unknown>,
+  patchFields: IpPatchFields,
+): Response | null {
+  for (const key of ['metadata', 'options'] as const) {
+    const result = parseJsonbObject(c, body, key)
+    if (result instanceof Response) return result
+    if (result !== null) patchFields[key] = result
+  }
+  return null
+}
+
+export function assertVpnIpPatchVpnId(
+  c: Context,
+  existingScope: string,
+  finalVpnId: string | null | undefined,
+): Response | null {
+  if (existingScope !== 'vpn') return null
+  if (finalVpnId === null) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  return null
+}
+

@@ -11,10 +11,7 @@ import {
   assertCanCreateOr403,
   assertCanReadOr403,
   assertNotSystemOwnedOr403,
-  buildPatchUpdateFields,
   getOrgId,
-  parseDisplayName,
-  parseDescription,
   parseJsonBody,
 } from '../shared.ts'
 import {
@@ -25,6 +22,10 @@ import {
   isWorkspaceDisplayNameTaken,
   WORKSPACE_NAME_IN_USE_ERROR,
 } from '../display-name-uniqueness.ts'
+import {
+  parseWorkspaceCreateNames,
+  parseWorkspacePatchNames,
+} from './routes-helpers.ts'
 
 export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   router.use('/workspaces', createSessionMiddleware(opts.secrets))
@@ -121,14 +122,11 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    let displayName: string | null
-    let description: string | null
-    try {
-      displayName = parseDisplayName(body)
-      description = parseDescription(body)
-    } catch {
-      return c.json({ error: 'Invalid request' }, 400)
+    const names = parseWorkspaceCreateNames(body)
+    if (!names.ok) {
+      return c.json({ error: names.error }, names.status)
     }
+    const { displayName, description } = names
 
     const denied = await assertCanCreateOr403(c, 'organization', organizationId)
     if (denied) return denied
@@ -182,12 +180,11 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    let patchFields: { name?: string | null; description?: string | null; updatedAt: string }
-    try {
-      patchFields = buildPatchUpdateFields(body)
-    } catch {
-      return c.json({ error: 'Invalid request' }, 400)
+    const parsedPatch = parseWorkspacePatchNames(body)
+    if (!parsedPatch.ok) {
+      return c.json({ error: parsedPatch.error }, parsedPatch.status)
     }
+    const patchFields = parsedPatch.patch
 
     if (
       patchFields.name !== undefined &&

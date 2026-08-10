@@ -88,7 +88,7 @@ async function updateDaemon(
 }
 
 /**
- * Push a daemon update trigger to connected agents. Defaults to channel-based
+ * Push a daemon update trigger to connected daemons. Defaults to channel-based
  * resolution (trunk); optional updateUrl + updateSha256 for explicit-URL triggers.
  */
 export function registerUpdateRoutes(

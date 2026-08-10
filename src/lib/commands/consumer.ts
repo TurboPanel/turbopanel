@@ -109,7 +109,8 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 60_000
 
-function commandTimeoutMs(type: string): number {
+/** Per-type consumer wait budget; unknown types fall back to 60s. */
+export function commandTimeoutMs(type: string): number {
   if (
     type === 'daemon.ping' ||
     type === 'server.hostname.set' ||
@@ -172,7 +173,8 @@ export function isTransientError(err: unknown): boolean {
   )
 }
 
-function extractObservedHostname(result: unknown): string | null {
+/** Best-effort hostname from a successful `server.hostname.set` result. */
+export function extractObservedHostname(result: unknown): string | null {
   try {
     return parseHostnameSetResult(result).observedHostname
   } catch {
@@ -180,7 +182,8 @@ function extractObservedHostname(result: unknown): string | null {
   }
 }
 
-function enrichPingResult(
+/** Attach `cellDispatchedAt` for ping latency when the cell recorded `sentAt`. */
+export function enrichPingResult(
   type: string,
   result: unknown,
   pending: { sentAt?: string },
@@ -191,7 +194,7 @@ function enrichPingResult(
   return { ...parsed, cellDispatchedAt: pending.sentAt }
 }
 
-function errorMessage(err: unknown): string {
+export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
@@ -386,7 +389,7 @@ async function applyTimeSyncSideEffect(
   }
 }
 
-function isPostgresUniqueViolation(err: unknown): boolean {
+export function isPostgresUniqueViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null &&
     'code' in err && (err as { code: string }).code === '23505'
 }
@@ -832,7 +835,7 @@ async function projectManagedMemberObservedStatus(
   }
 }
 
-function isManagedObservedStatus(
+export function isManagedObservedStatus(
   value: string,
 ): value is 'ready' | 'stopped' | 'failed' {
   return MANAGED_OBSERVED_STATUSES.has(value)
@@ -1034,7 +1037,7 @@ async function applyManagedRestoreSideEffect(
  * (primary re-apply after member destroy, ProxySQL ingress reconcile) — a
  * live, non-noop queue plus the secrets needed to reseal credentials.
  */
-function hasManagedFollowUpDeps(deps: CommandConsumerDeps | undefined): deps is CommandConsumerDeps & {
+export function hasManagedFollowUpDeps(deps: CommandConsumerDeps | undefined): deps is CommandConsumerDeps & {
   commandQueue: CommandQueue
   secretsConfig: SecretsConfig
   dataEncryptionSecrets: DerivedSecretsConfig
@@ -1173,7 +1176,7 @@ async function applyManagedDestroySideEffect(
   }
 }
 
-function resolveManagedIdFromPayload(
+export function resolveManagedIdFromPayload(
   type: string,
   payload: unknown,
 ): string | null {

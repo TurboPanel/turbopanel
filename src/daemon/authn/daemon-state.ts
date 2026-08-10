@@ -24,7 +24,7 @@ export type ServerDaemonProjection = {
   machineKey?: string;
   remoteAddress?: string;
   keyId?: string;
-  agent?: {
+  daemonBuild?: {
     commit?: string;
     buildId?: string;
     builtAt?: string;
@@ -102,18 +102,18 @@ function parseUpdateProjection(raw: unknown): UpdateProjection | undefined {
   return parsed;
 }
 
-function parseProjectionAgent(
+function parseProjectionDaemonBuild(
   raw: unknown,
-): ServerDaemonProjection["agent"] | undefined {
+): ServerDaemonProjection["daemonBuild"] | undefined {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     return undefined;
   }
-  const agent = raw as Record<string, unknown>;
-  const result: NonNullable<ServerDaemonProjection["agent"]> = {};
-  if (isNonEmptyString(agent.commit)) result.commit = agent.commit;
-  if (isNonEmptyString(agent.buildId)) result.buildId = agent.buildId;
-  if (isNonEmptyString(agent.builtAt)) result.builtAt = agent.builtAt;
-  if (isNonEmptyString(agent.channel)) result.channel = agent.channel;
+  const daemonBuild = raw as Record<string, unknown>;
+  const result: NonNullable<ServerDaemonProjection["daemonBuild"]> = {};
+  if (isNonEmptyString(daemonBuild.commit)) result.commit = daemonBuild.commit;
+  if (isNonEmptyString(daemonBuild.buildId)) result.buildId = daemonBuild.buildId;
+  if (isNonEmptyString(daemonBuild.builtAt)) result.builtAt = daemonBuild.builtAt;
+  if (isNonEmptyString(daemonBuild.channel)) result.channel = daemonBuild.channel;
   if (Object.keys(result).length === 0) return undefined;
   return result;
 }
@@ -125,7 +125,7 @@ function parseServerDaemonProjection(
     return null;
   }
   const projection = raw as Record<string, unknown>;
-  const parsedAgent = parseProjectionAgent(projection.agent);
+  const parsedDaemonBuild = parseProjectionDaemonBuild(projection.daemonBuild);
   const parsedUpdate = parseUpdateProjection(projection.update);
 
   const parsed: ServerDaemonProjection = {
@@ -139,7 +139,7 @@ function parseServerDaemonProjection(
       ? projection.remoteAddress
       : undefined,
     keyId: isNonEmptyString(projection.keyId) ? projection.keyId : undefined,
-    ...(parsedAgent ? { agent: parsedAgent } : {}),
+    ...(parsedDaemonBuild ? { daemonBuild: parsedDaemonBuild } : {}),
     ...(parsedUpdate ? { update: parsedUpdate } : {}),
   };
 
@@ -148,7 +148,7 @@ function parseServerDaemonProjection(
     parsed.machineKey === undefined &&
     parsed.remoteAddress === undefined &&
     parsed.keyId === undefined &&
-    parsed.agent === undefined &&
+    parsed.daemonBuild === undefined &&
     parsed.update === undefined
   ) {
     return null;

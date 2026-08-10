@@ -7,23 +7,18 @@ import { getDb } from '../../db.ts'
 import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
 import { getOrgId } from '../shared.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
-import {
-  findSystemEnvironmentForServer,
-  SYSTEM_HOSTING_INGRESS_COMPONENT,
-  SYSTEM_MANAGED_INGRESS_COMPONENT,
-} from './hierarchy.ts'
+import { findSystemEnvironmentForServer } from './hierarchy.ts'
 import { systemComponentOperations } from './operate.ts'
+import {
+  isSystemOperateComponent,
+  mapSystemRestartFailure,
+  systemRestartQueuedResponse,
+} from './routes-helpers.ts'
 
-export const SYSTEM_OPERATE_COMPONENTS = [
-  SYSTEM_HOSTING_INGRESS_COMPONENT,
-  SYSTEM_MANAGED_INGRESS_COMPONENT,
-] as const
-
-export type SystemOperateComponent = (typeof SYSTEM_OPERATE_COMPONENTS)[number]
-
-function isSystemOperateComponent(value: string): value is SystemOperateComponent {
-  return (SYSTEM_OPERATE_COMPONENTS as readonly string[]).includes(value)
-}
+export {
+  SYSTEM_OPERATE_COMPONENTS,
+  type SystemOperateComponent,
+} from './routes-helpers.ts'
 
 export function registerSystemRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   const { secrets } = opts
@@ -76,17 +71,13 @@ export function registerSystemRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     })
 
     if (!result.ok) {
-      if (result.reason === 'not_provisioned') {
-        return c.json({ error: 'system_component_not_provisioned' }, 404)
-      }
-      return c.json({ error: 'system_reconcile_unavailable' }, 503)
+      const failure = mapSystemRestartFailure(result.reason)
+      return c.json({ error: failure.error }, failure.status)
     }
 
-    return c.json({
-      ok: true as const,
+    return c.json(systemRestartQueuedResponse({
       commandId: result.commandId,
-      status: 'queued' as const,
       serverId: result.serverId,
-    })
+    }))
   })
 }

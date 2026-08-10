@@ -52,7 +52,7 @@ export type DaemonCellSnapshot = {
   keyLastUsedAt?: string;
   addresses?: ServerAddresses;
   metadata?: ServerMetadata;
-  agent?: import("./protocol.ts").DaemonAgentInfo;
+  daemonBuild?: import("./protocol.ts").DaemonBuildInfo;
 };
 
 export type PendingRequestStatus =
@@ -171,7 +171,7 @@ export interface DaemonCell {
     connectionId?: string;
     hostname?: string;
     at?: string;
-    agent?: import("./protocol.ts").DaemonAgentInfo;
+    daemonBuild?: import("./protocol.ts").DaemonBuildInfo;
   }): Promise<void>;
 
   getSnapshot(): Promise<DaemonCellSnapshot>;

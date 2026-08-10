@@ -44,7 +44,7 @@ export type ServerFleetPresence = {
   statusChangedAt: string | null;
   lastInboundAt: string | null;
   keyLastUsedAt: string | null;
-  agent?: {
+  daemonBuild?: {
     commit?: string;
     buildId?: string;
     builtAt?: string;
@@ -90,7 +90,7 @@ export type ResolveFleetPresenceOptions = {
    * Read live Durable Object / Redis snapshots and prefer them over the sparse
    * Postgres projection. This costs one cell read per server, so it is reserved
    * for explicit diagnostics-only callers. Defaults to `false`, in which case
-   * coarse presence and agent data are served from the Postgres projection.
+   * coarse presence and daemon build data are served from the Postgres projection.
    */
   withSnapshots?: boolean;
   /** Skip redundant SELECTs when the caller already loaded rows and projections. */
@@ -100,7 +100,7 @@ export type ResolveFleetPresenceOptions = {
 /**
  * Resolve fleet presence.
  *
- * By default this path is Postgres-only: coarse presence and agent data come
+ * By default this path is Postgres-only: coarse presence and daemon build data come
  * from dedicated status columns plus sparse `server.daemon.projection`. It
  * never calls `listOnlineServerIds` or `getSnapshots`. On Workers,
  * silent-failure offline correctness is disconnect-first (`webSocketClose` /
@@ -170,7 +170,7 @@ export async function resolveFleetPresence(
       statusChangedAt: row.statusChangedAt ?? null,
       lastInboundAt,
       keyLastUsedAt: snapshot?.keyLastUsedAt ?? null,
-      agent: projection?.agent ?? snapshot?.agent ?? undefined,
+      daemonBuild: projection?.daemonBuild ?? snapshot?.daemonBuild ?? undefined,
       geo: parseServerGeo(metadata.geo),
       os: parseServerOsMetadata(metadata.os) ?? null,
       timeSync: parseServerTimeSync(metadata.timeSync) ?? null,

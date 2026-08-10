@@ -4,6 +4,10 @@
 
 import { assertEquals } from 'jsr:@std/assert'
 import {
+  defaultEnvironmentGetResponse,
+  defaultEnvironmentPutResponse,
+  defaultTimezoneGetResponse,
+  defaultTimezonePutResponse,
   parseDefaultEnvironmentPutBody,
   parseDefaultTimezonePatch,
   parseOrganizationCreateDisplayName,
@@ -97,4 +101,30 @@ test('parseOrganizationCreateDisplayName defaults when displayName is absent', (
     throw new TypeError('expected default despite invalid displayName key')
   }
   assertEquals(ignoredInvalid.displayName, 'New Organization')
+})
+
+test('default timezone and environment response shapers', () => {
+  assertEquals(defaultTimezoneGetResponse({}), {
+    defaultServerTimezone: null,
+    enforceServerTimezone: false,
+  })
+  assertEquals(
+    defaultTimezoneGetResponse({
+      defaultServerTimezone: 'UTC',
+      enforceServerTimezone: true,
+    }),
+    { defaultServerTimezone: 'UTC', enforceServerTimezone: true },
+  )
+  assertEquals(defaultTimezonePutResponse({ defaultServerTimezone: null }), {
+    ok: true,
+    defaultServerTimezone: null,
+    enforceServerTimezone: false,
+  })
+  assertEquals(defaultEnvironmentGetResponse({}), {
+    defaultEnvironmentName: null,
+  })
+  assertEquals(
+    defaultEnvironmentPutResponse({ defaultEnvironmentName: 'Staging' }),
+    { ok: true, defaultEnvironmentName: 'Staging' },
+  )
 })

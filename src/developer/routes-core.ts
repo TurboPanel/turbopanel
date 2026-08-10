@@ -27,77 +27,27 @@ import {
   generateRequestId,
   type DaemonOutboundEnvelope,
 } from '../daemon/cell/protocol.ts'
-import type { ServerAddresses } from '../server-addresses.ts'
 import { organization, server } from '../lib/db/schema.ts'
 import { collectServerAddresses } from '../server-addresses-deno.ts'
 import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
 import { registerDatabaseRoutes } from './database-routes.ts'
+import {
+  addressesFetchErrorStatus,
+  extractAddresses,
+  parseDisplayNameInput,
+  parseOrganizationIdInput,
+  parsePayloadBody,
+  resolvePerServerLimit,
+} from './routes-core-helpers.ts'
 
 /**
  * Developer console routes safe for the Workers bundle (no Deno-only imports).
  * Deno-only routes (Drizzle Studio) live in developer/routes.ts.
  */
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-const COMMAND_TIMEOUT_MS = 30_000
 const ADDRESSES_TIMEOUT_MS = 10_000
 function nowTs(): string {
   return new Date().toISOString()
-}
-
-function extractAddresses(record: { status: string; result?: unknown }): ServerAddresses {
-  if (record.status !== 'done') {
-    throw new Error(record.status === 'expired'
-      ? 'timeout waiting for addresses'
-      : 'failed to fetch addresses')
-  }
-  const result = record.result as { addresses?: ServerAddresses } | undefined
-  if (!result?.addresses) throw new Error('missing addresses in daemon response')
-  return result.addresses
-}
-
-type ParsedDisplayName =
-  | { ok: true; value: string | null }
-  | { ok: false; error: string }
-
-function parseDisplayNameInput(displayName: unknown): ParsedDisplayName {
-  if (displayName === null) return { ok: true, value: null }
-  if (typeof displayName !== 'string') {
-    return { ok: false, error: 'displayName must be a string or null' }
-  }
-  const trimmed = displayName.trim()
-  if (trimmed.length > 255) {
-    return { ok: false, error: 'displayName must be at most 255 characters' }
-  }
-  return { ok: true, value: trimmed }
-}
-
-type ParsedOrganizationId =
-  | { ok: true; value: string | null }
-  | { ok: false; error: string; status: number }
-
-async function parseOrganizationIdInput(
-  db: Db,
-  organizationId: unknown,
-): Promise<ParsedOrganizationId> {
-  if (organizationId === null) return { ok: true, value: null }
-  if (typeof organizationId === 'string') {
-    const trimmed = organizationId.trim()
-    if (!UUID_RE.test(trimmed)) {
-      return { ok: false, error: 'organizationId must be a valid UUID', status: 400 }
-    }
-    const org = await db
-      .select({ id: organization.id })
-      .from(organization)
-      .where(eq(organization.id, trimmed))
-      .limit(1)
-    if (org.length === 0) {
-      return { ok: false, error: 'Organization not found', status: 404 }
-    }
-    return { ok: true, value: trimmed }
-  }
-  return { ok: false, error: 'organizationId must be a string or null', status: 400 }
 }
 
 /** Build the developer router without mounting — extend before {@link mountDeveloperRouter}. */
@@ -126,11 +76,12 @@ export function buildDeveloperRouter(
     const registry = getDaemonCellRegistry(c)
     if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
     const body = await c.req.json().catch(() => null)
-    if (!body || typeof body !== 'object' || !('payload' in body)) {
-      return c.json({ error: 'expected { payload: unknown }' }, 400)
+    const parsedPayload = parsePayloadBody(body)
+    if (!parsedPayload.ok) {
+      return c.json({ error: parsedPayload.error }, 400)
     }
     const ids = await registry.listOnlineServerIds()
-    const sent = await broadcastEchoToFleet(registry, ids, body.payload)
+    const sent = await broadcastEchoToFleet(registry, ids, parsedPayload.payload)
     return c.json({ ok: true, sent })
   })
 
@@ -140,13 +91,14 @@ export function buildDeveloperRouter(
     if (!registry || !db) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
     const id = c.req.param('id')
     const body = await c.req.json().catch(() => null)
-    if (!body || typeof body !== 'object' || !('payload' in body)) {
-      return c.json({ error: 'expected { payload: unknown }' }, 400)
+    const parsedPayload = parsePayloadBody(body)
+    if (!parsedPayload.ok) {
+      return c.json({ error: parsedPayload.error }, 400)
     }
     if (!await isServerConnected(db, registry, id)) {
       return c.json({ error: 'daemon not connected' }, 404)
     }
-    await enqueueEchoToServer(registry, id, body.payload)
+    await enqueueEchoToServer(registry, id, parsedPayload.payload)
     return c.json({ ok: true, id })
   })
 
@@ -155,8 +107,7 @@ export function buildDeveloperRouter(
     if (!registry) return c.json({ commands: [] })
     const db = getDb(c)
     if (!db) return c.json({ commands: [] })
-    const limit = Number(c.req.query('limit') ?? 50)
-    const perServerLimit = Number.isFinite(limit) ? limit : 50
+    const perServerLimit = resolvePerServerLimit(c.req.query('limit'))
     const serverIds = await listFleetServerIds(db)
     const commands = await collectFleetCommands(registry, serverIds, perServerLimit)
     return c.json({ commands })
@@ -394,7 +345,7 @@ export function buildDeveloperRouter(
         resultStatus: 'error',
         error: message,
       })
-      const status = message === 'daemon not connected' ? 404 : 500
+      const status = addressesFetchErrorStatus(message)
       return c.json({ error: message }, status)
     }
   })

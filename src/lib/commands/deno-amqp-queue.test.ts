@@ -9,7 +9,10 @@ import {
   COMMAND_AMQP_QUEUE,
   COMMAND_AMQP_ROUTING_KEY,
 } from './command-amqp-topology.ts'
-import { createDenoAmqpCommandQueue } from './deno-amqp-queue.ts'
+import {
+  createDenoAmqpCommandQueue,
+  probeCommandAmqpBrokerReachable,
+} from './deno-amqp-queue.ts'
 import type { CommandEnvelope } from './envelope.ts'
 
 /**
@@ -122,6 +125,61 @@ test('createDenoAmqpCommandQueue publishes persistent mandatory envelopes', asyn
         Buffer.isBuffer(publishCall?.args[2]),
       true,
     )
+  } finally {
+    connectStub.restore()
+  }
+})
+
+test('createDenoAmqpCommandQueue rejects when broker connection fails', async () => {
+  const connectStub = stub(
+    amqplib,
+    'connect',
+    () => Promise.reject(new Error('ECONNREFUSED')),
+  )
+
+  const envelope: CommandEnvelope = {
+    commandId: 'cmd-3',
+    serverId: 'srv-1',
+    type: 'daemon.ping',
+    attempt: 1,
+    queuedAt: '2020-01-01T00:00:00.000Z',
+  }
+
+  try {
+    const queue = createDenoAmqpCommandQueue({ amqpUrl: 'amqp://down' })
+    await assertRejects(
+      () => queue.enqueue(envelope),
+      Error,
+      'Command queue unavailable',
+    )
+  } finally {
+    connectStub.restore()
+  }
+})
+
+test('createDenoAmqpCommandQueue close is safe when never connected', async () => {
+  const queue = createDenoAmqpCommandQueue({ amqpUrl: 'amqp://unused' })
+  await queue.close()
+})
+
+test('probeCommandAmqpBrokerReachable returns false when connect fails', async () => {
+  const connectStub = stub(
+    amqplib,
+    'connect',
+    () => Promise.reject(new Error('down')),
+  )
+  try {
+    assertEquals(await probeCommandAmqpBrokerReachable('amqp://down'), false)
+  } finally {
+    connectStub.restore()
+  }
+})
+
+test('probeCommandAmqpBrokerReachable returns true when connect succeeds', async () => {
+  const connectStub = stub(amqplib, 'connect', () =>
+    Promise.resolve({ close: async () => undefined } as never))
+  try {
+    assertEquals(await probeCommandAmqpBrokerReachable('amqp://ok'), true)
   } finally {
     connectStub.restore()
   }

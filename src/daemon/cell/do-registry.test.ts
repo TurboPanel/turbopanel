@@ -249,7 +249,7 @@ describe("createDurableObjectDaemonCellRegistry", () => {
 
     await expect(cell.recordInbound({
       at: new Date().toISOString(),
-      agent: { commit: "abc", buildId: "1", channel: "trunk" },
+      daemonBuild: { commit: "abc", buildId: "1", channel: "trunk" },
     })).resolves.toBeUndefined();
 
     const snapshot = await cell.getSnapshot();

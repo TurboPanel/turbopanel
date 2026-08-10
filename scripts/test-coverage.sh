@@ -98,11 +98,14 @@ echo "==> Deno coverage profile"
 # test:coverage grant).
 deno test -A --coverage=coverage/deno-profile \
   --no-check \
+  src/admin/openapi/index.test.ts \
   src/admin/public-urls.deno.test.ts \
   src/admin/public-urls.hostfree.test.ts \
   src/admin/reencrypt-secrets.test.ts \
   src/admin/reencrypt-secrets.hostfree.test.ts \
+  src/admin/routes-helpers.hostfree.test.ts \
   src/admin/routes.test.ts \
+  src/app.test.ts \
   src/client/authn/auth-rate-limit-http.test.ts \
   src/client/authn/auth-rate-limit.test.ts \
   src/client/authn/browser-write-protection.test.ts \
@@ -153,12 +156,12 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/managed/apply-prepare-pure.test.ts \
   src/client/managed/apply-prepare.test.ts \
   src/client/managed/ingress-desired.test.ts \
+  src/client/managed/ingress-desired-pure.hostfree.test.ts \
+  src/client/managed/routes-helpers.hostfree.test.ts \
+  src/client/managed/routes.hostfree.test.ts \
   src/client/vpns/apply-prepare-pure.test.ts \
   src/client/vpns/apply-prepare-enqueue.test.ts \
   src/client/vpns/apply-prepare.test.ts \
-  src/client/networks/routes-pure.test.ts \
-  src/client/ips/routes-pure.test.ts \
-  src/client/datacenters/routes-pure.test.ts \
   src/client/managed/backups.test.ts \
   src/client/managed/context.test.ts \
   src/client/managed/logs.test.ts \
@@ -169,6 +172,8 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/managed/routes.test.ts \
   src/client/managed/serialize.test.ts \
   src/client/openapi/hostings.test.ts \
+  src/client/openapi/index.test.ts \
+  src/client/openapi/licenses.test.ts \
   src/client/openapi/servers.test.ts \
   src/client/openapi/system.test.ts \
   src/client/org-context-parse.test.ts \
@@ -179,17 +184,22 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/principals/serialize.test.ts \
   src/client/principals/store.test.ts \
   src/client/principals/store.hostfree.test.ts \
+  src/client/principals/routes-helpers.hostfree.test.ts \
   src/client/projects/catalog/catalog.test.ts \
   src/client/projects/catalog/scaffold.test.ts \
   src/client/projects/empty-setup.test.ts \
   src/client/projects/routes.test.ts \
   src/client/servers/commands-routes.test.ts \
+  src/client/servers/commands-routes-helpers.hostfree.test.ts \
   src/client/servers/commands-ping-latency.test.ts \
   src/client/servers/command-dispatch.test.ts \
+  src/client/servers/command-dispatch-helpers.hostfree.test.ts \
   src/client/servers/colocated.test.ts \
   src/client/servers/delete-guards.test.ts \
   src/client/servers/metrics-routes.test.ts \
+  src/client/servers/metrics-routes-helpers.hostfree.test.ts \
   src/client/servers/routes.test.ts \
+  src/client/servers/routes-helpers.hostfree.test.ts \
   src/client/servers/update-status.test.ts \
   src/client/shared.test.ts \
   src/client/shared-authz-guards.test.ts \
@@ -203,6 +213,8 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/system/reconcile.test.ts \
   src/client/system/reconcile.hostfree.test.ts \
   src/client/system/routes.test.ts \
+  src/client/system/routes-helpers.hostfree.test.ts \
+  src/client/teams/routes-helpers.hostfree.test.ts \
   src/client/variables/resolve-inherited.test.ts \
   src/client/variables/resolve-inherited.hostfree.test.ts \
   src/client/variables/routes-helpers.test.ts \
@@ -212,6 +224,8 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/authn/daemon-jwt.test.ts \
   src/daemon/authn/daemon-jwt-keyring.test.ts \
   src/daemon/authn/daemon-state.test.ts \
+  src/daemon/authn/license.hostfree.test.ts \
+  src/daemon/authn/server-identity-db.hostfree.test.ts \
   src/daemon/authn/server-key.test.ts \
   src/daemon/api-routes.test.ts \
   src/daemon/cell/contracts.test.ts \
@@ -224,6 +238,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/cell/postgres-projection.test.ts \
   src/daemon/cell/protocol.test.ts \
   src/daemon/cell/redis/cell.test.ts \
+  src/daemon/cell/redis/client.hostfree.test.ts \
   src/daemon/cell/redis/keys.test.ts \
   src/daemon/cell/redis/lua.test.ts \
   src/daemon/cell/redis/registry.test.ts \
@@ -248,6 +263,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/metrics/validation.deno.test.ts \
   src/daemon/metrics/write-path-parity.test.ts \
   src/daemon/openapi/ca.test.ts \
+  src/daemon/openapi/index.test.ts \
   src/daemon/openapi/readiness.test.ts \
   src/daemon/openapi/version.test.ts \
   src/daemon/rate-limit/contracts.test.ts \
@@ -257,18 +273,23 @@ deno test -A --coverage=coverage/deno-profile \
   src/db-timeout.test.ts \
   src/db-url.test.ts \
   src/db.test.ts \
+  src/db.hostfree.test.ts \
   src/deno-compile-permissions.test.ts \
   src/dev-mode.deno.test.ts \
+  src/developer/database-routes-helpers.hostfree.test.ts \
   src/developer/database-routes-shared.test.ts \
   src/developer/dev-sync-archive.deno.test.ts \
   src/developer/drizzle-studio-bind.test.ts \
+  src/developer/drizzle-studio-helpers.hostfree.test.ts \
   src/developer/local-console-auth.test.ts \
+  src/developer/routes-core-helpers.hostfree.test.ts \
   src/developer/system-routes.test.ts \
   src/drizzle-kit-config.test.ts \
   src/drizzle-studio-probe.test.ts \
   src/lib/amqp-default-url.test.ts \
   src/lib/commands/command-amqp-topology.test.ts \
   src/lib/commands/consumer.test.ts \
+  src/lib/commands/consumer.hostfree.test.ts \
   src/lib/commands/deno-amqp-queue.test.ts \
   src/lib/commands/deploy-validation.test.ts \
   src/lib/commands/hostname.test.ts \
@@ -290,6 +311,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/db/container-records.hostfree.test.ts \
   src/lib/db/net-types.test.ts \
   src/lib/db/project-delete.test.ts \
+  src/lib/db/project-delete.hostfree.test.ts \
   src/lib/db/server-metadata.test.ts \
   src/lib/db/table-naming.test.ts \
   src/lib/db/workspace-kind.test.ts \
@@ -324,9 +346,11 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/service-options-instances.test.ts \
   src/lib/settings/email-settings.deno.test.ts \
   src/lib/settings/resolver.deno.test.ts \
+  src/lib/settings/resolver.hostfree.test.ts \
   src/lib/timezones.test.ts \
   src/lib/tls/ \
   src/lib/update/manifest.test.ts \
+  src/log-compat.test.ts \
   src/node-path.test.ts \
   src/query-cache/passthrough-query-cache.test.ts \
   src/query-cache/read-models/server-detail.test.ts \
@@ -338,28 +362,40 @@ deno test -A --coverage=coverage/deno-profile \
   src/server-addresses-deno.hostfree.test.ts \
   src/server-registry-metadata.test.ts \
   src/server-registry.test.ts \
+  src/server-registry.hostfree.test.ts \
   src/surfaces.test.ts \
   src/client/access/routes.test.ts \
   src/client/access/routes-helpers.test.ts \
   src/client/access/routes-helpers.hostfree.test.ts \
   src/client/containers/routes.test.ts \
+  src/client/containers/routes-helpers.hostfree.test.ts \
   src/client/datacenters/routes.test.ts \
+  src/client/datacenters/routes-pure.test.ts \
+  src/client/environments/routes-helpers.hostfree.test.ts \
+  src/client/environments/deploy-routes-helpers.hostfree.test.ts \
   src/client/hostings/routes.test.ts \
   src/client/hostings/routes-helpers.hostfree.test.ts \
   src/client/hostings/routes.hostfree.test.ts \
   src/client/ips/routes.test.ts \
+  src/client/ips/routes-pure.test.ts \
   src/client/licenses/routes.test.ts \
   src/client/licenses/routes-helpers.test.ts \
   src/client/licenses/routes-helpers.hostfree.test.ts \
   src/client/networks/routes.test.ts \
+  src/client/networks/routes-pure.test.ts \
   src/client/organizations/routes.test.ts \
   src/client/organizations/routes-helpers.hostfree.test.ts \
+  src/client/projects/routes-helpers.hostfree.test.ts \
   src/client/services/routes.test.ts \
+  src/client/services/routes-helpers.hostfree.test.ts \
   src/client/tls/routes.test.ts \
   src/client/tls/routes-helpers.test.ts \
+  src/client/tls/routes-helpers.hostfree.test.ts \
   src/client/variables/routes.test.ts \
   src/client/vpns/routes.test.ts \
-  src/client/workspaces/routes.test.ts
+  src/client/vpns/routes-pure.test.ts \
+  src/client/workspaces/routes.test.ts \
+  src/client/workspaces/routes-helpers.hostfree.test.ts
 
 echo "==> Deno LCOV"
 deno coverage coverage/deno-profile --lcov --output=coverage/deno.lcov

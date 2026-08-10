@@ -1,9 +1,137 @@
 import {
+  ENVELOPE_MAGIC,
+  encryptSecret,
+  isSealedEnvelope,
+} from '../authn/data-encryption.ts'
+import type { DerivedSecretsConfig } from '../authn/secrets.ts'
+import {
+  assembleTlsMetadata,
+  metadataFromParsed,
+  mintOrganizationCa,
+  mintSelfSignedCertificate,
+  parseCertificatePem,
+  parseTlsOptions,
+  privateKeyMatchesCertificate,
+  refreshTlsStatus,
+  splitCertificateChain,
   TLS_SOURCES,
   type TlsMetadata,
   type TlsOptions,
   type TlsSource,
 } from '../../lib/tls/index.ts'
+
+export const TLS_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+export function isTlsUuid(value: string): boolean {
+  return TLS_UUID_RE.test(value)
+}
+
+export type TlsPublicRow = {
+  id: string
+  displayName: string | null
+  source: string
+  organizationId: string
+  metadata: TlsMetadata
+  options: TlsOptions | null
+  certificatePem: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export type TlsRowForPublic = {
+  id: string
+  displayName: string | null
+  source: string
+  organizationId: string
+  status: string
+  notAfter: string | null
+  fingerprintSha256: string | null
+  metadata: unknown
+  options: unknown
+  certificatePem: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export function toPublicTlsRow(row: TlsRowForPublic): TlsPublicRow | null {
+  const metadata = assembleTlsMetadata(
+    {
+      status: row.status,
+      notAfter: row.notAfter,
+      fingerprintSha256: row.fingerprintSha256,
+    },
+    row.metadata,
+  )
+  if (!metadata) return null
+  return {
+    id: row.id,
+    displayName: row.displayName,
+    source: row.source,
+    organizationId: row.organizationId,
+    metadata: refreshTlsStatus(metadata),
+    options: parseTlsOptions(row.options),
+    certificatePem: row.certificatePem,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  }
+}
+
+/** Private keys at rest must be `enc` envelopes — never PEM plaintext. */
+export function assertTpSecretPrivateKey(sealed: string): void {
+  if (
+    !isSealedEnvelope(sealed) ||
+    !sealed.startsWith(`${ENVELOPE_MAGIC}.`) ||
+    sealed.includes('BEGIN')
+  ) {
+    throw new TypeError('tls private key must be an enc envelope')
+  }
+}
+
+export function tlsFailurePayload(material: CreateTlsFailure): {
+  body: { error: string; detail?: string }
+  status: 400
+} {
+  if (material.detail === undefined) {
+    return { body: { error: material.error }, status: material.status }
+  }
+  return {
+    body: { error: material.error, detail: material.detail },
+    status: material.status,
+  }
+}
+
+export function isOrganizationCaExistsCode(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'code' in err &&
+    (err as { code: string }).code === 'ORGANIZATION_CA_EXISTS'
+  )
+}
+
+export type TlsInsertConflict =
+  | { error: 'organization_ca_exists'; status: 409 }
+  | { error: 'tls_fingerprint_conflict'; status: 409 }
+
+export function classifyTlsInsertConflict(err: unknown): TlsInsertConflict | null {
+  if (isOrganizationCaExistsCode(err) || isOrganizationCaUniqueViolation(err)) {
+    return { error: 'organization_ca_exists', status: 409 }
+  }
+  if (isTlsFingerprintUniqueViolation(err)) {
+    return { error: 'tls_fingerprint_conflict', status: 409 }
+  }
+  return null
+}
+
+export const ORGANIZATION_CA_DOWNLOAD_HEADERS = {
+  'Content-Type': 'application/x-pem-file',
+  'Content-Disposition': 'attachment; filename="organization-ca.pem"',
+} as const
+
+export function shouldRevokeTlsFromBody(body: Record<string, unknown>): boolean {
+  return body.revoke === true
+}
 
 export type CreateTlsMaterial = {
   certificatePem: string | null
@@ -138,4 +266,108 @@ export function applyTlsOptionsPatch(
   }
 
   return { ok: true, options: nextOptions, changed }
+}
+
+export async function materialFromUpload(
+  body: Record<string, unknown>,
+  secrets: DerivedSecretsConfig,
+): Promise<CreateTlsResult> {
+  if (typeof body.certificatePem !== 'string' || typeof body.privateKeyPem !== 'string') {
+    return createFailure('Invalid request')
+  }
+  try {
+    // Normalize chain ordering (leaf first).
+    const certificatePem = splitCertificateChain(body.certificatePem).join('')
+    const parsed = await parseCertificatePem(certificatePem)
+    const matches = await privateKeyMatchesCertificate(body.privateKeyPem, parsed)
+    if (!matches) {
+      return createFailure('certificate_key_mismatch')
+    }
+    const privateKeyPemSealed = await encryptSecret(
+      secrets,
+      body.privateKeyPem.trim(),
+    )
+    assertTpSecretPrivateKey(privateKeyPemSealed)
+    return {
+      certificatePem,
+      privateKeyPemSealed,
+      metadata: metadataFromParsed(parsed, 'ready'),
+      options: null,
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'invalid certificate'
+    return createFailure('invalid_certificate', message)
+  }
+}
+
+export async function materialFromSelfSigned(
+  body: Record<string, unknown>,
+  secrets: DerivedSecretsConfig,
+): Promise<CreateTlsResult> {
+  const hostnames = parseHostnames(body.hostnames)
+  if (!hostnames) {
+    return createFailure('Invalid request')
+  }
+  try {
+    const material = await mintSelfSignedCertificate(hostnames)
+    const privateKeyPemSealed = await encryptSecret(
+      secrets,
+      material.privateKeyPem,
+    )
+    assertTpSecretPrivateKey(privateKeyPemSealed)
+    return {
+      certificatePem: material.certificatePem,
+      privateKeyPemSealed,
+      metadata: metadataFromParsed(material.parsed, 'ready'),
+      options: { requestedHostnames: hostnames },
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'self-signed mint failed'
+    return createFailure('invalid_certificate', message)
+  }
+}
+
+export async function materialFromOrganizationCa(
+  secrets: DerivedSecretsConfig,
+  opts?: { commonName?: string },
+): Promise<CreateTlsResult> {
+  try {
+    const material = await mintOrganizationCa(
+      opts?.commonName === undefined ? undefined : { commonName: opts.commonName },
+    )
+    const privateKeyPemSealed = await encryptSecret(
+      secrets,
+      material.privateKeyPem,
+    )
+    assertTpSecretPrivateKey(privateKeyPemSealed)
+    return {
+      certificatePem: material.certificatePem,
+      privateKeyPemSealed,
+      metadata: metadataFromParsed(material.parsed, 'ready'),
+      options: null,
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'organization CA mint failed'
+    return createFailure('invalid_certificate', message)
+  }
+}
+
+export async function buildCreateTlsMaterial(
+  source: TlsSource,
+  body: Record<string, unknown>,
+  secrets: DerivedSecretsConfig,
+): Promise<CreateTlsResult> {
+  switch (source) {
+    case 'upload':
+      return materialFromUpload(body, secrets)
+    case 'self_signed':
+      return materialFromSelfSigned(body, secrets)
+    case 'lets_encrypt':
+      return materialFromLetsEncrypt(body)
+    case 'organization_ca':
+      return materialFromOrganizationCa(
+        secrets,
+        typeof body.commonName === 'string' ? { commonName: body.commonName } : undefined,
+      )
+  }
 }

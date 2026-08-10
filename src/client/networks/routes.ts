@@ -7,29 +7,34 @@ import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db.ts'
 import { network } from '../../lib/db/schema.ts'
-import { isValidCidr } from '../../lib/ip-address.ts'
-import { canAccessOrganization, ORG_ID_HEADER } from '../org-context.ts'
+import { canAccessOrganization } from '../org-context.ts'
 import {
   assertCanCreateOr403,
   assertCanManageOr403,
   assertCanReadOr403,
-  buildPatchUpdateFields,
   getOrgId,
-  parseDisplayName,
   parseJsonBody,
   parseJsonbObject,
 } from '../shared.ts'
-import { normalizeDockerNetworkOptions } from '../../lib/docker-network-name.ts'
 import {
   assertNetworkKindScope,
   buildNetworkCreateValues,
   type NetworkCreateFields,
 } from './network-scope.ts'
+import {
+  parseCreateNetworkOptions,
+  parseCreateOrganizationId,
+  parseNetworkKind,
+  parseNetworkPatchFields,
+  parseOptionalCidrField,
+  parseOptionalDisplayNameField,
+  parseUuidQueryParam,
+  rejectImmutableNetworkScopePatch,
+  resolveKindQueryFilter,
+  UUID_RE,
+} from './routes-pure.ts'
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-const NETWORK_KINDS = new Set(['datacenter', 'docker'])
+export { assertNetworkKindScope, buildNetworkCreateValues } from './network-scope.ts'
 
 const NETWORK_SELECT = {
   id: network.id,
@@ -43,14 +48,6 @@ const NETWORK_SELECT = {
   options: network.options,
   createdAt: network.createdAt,
   updatedAt: network.updatedAt,
-}
-
-type NetworkPatchFields = {
-  displayName?: string | null
-  cidr?: string | null
-  metadata?: Record<string, unknown> | null
-  options?: Record<string, unknown> | null
-  updatedAt: string
 }
 
 async function validateOptionalScopeId(
@@ -79,23 +76,14 @@ async function resolveOrgScopedQueryFilter(
   queryKey: 'datacenterId' | 'serverId',
   kind: 'datacenter' | 'server',
 ): Promise<string | undefined | Response> {
-  const raw = c.req.query(queryKey)?.trim()
+  const raw = parseUuidQueryParam(c, c.req.query(queryKey))
+  if (raw instanceof Response) return raw
   if (!raw) return undefined
-  if (!UUID_RE.test(raw)) return c.json({ error: 'Invalid request' }, 400)
   const entityOrgId = await resolveEntityOrganizationId(db, kind, raw)
   if (entityOrgId !== organizationId) {
     return c.json({ error: 'Not found' }, 404)
   }
   return raw
-}
-
-function resolveKindQueryFilter(c: Context): string | undefined | Response {
-  const kindFilter = c.req.query('kind')?.trim()
-  if (!kindFilter) return undefined
-  if (!NETWORK_KINDS.has(kindFilter)) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  return kindFilter
 }
 
 async function resolveCreateNetworkOrganization(
@@ -104,16 +92,8 @@ async function resolveCreateNetworkOrganization(
   userId: string,
   body: Record<string, unknown>,
 ): Promise<string | Response> {
-  const orgIdRaw = body.organizationId
-  if (typeof orgIdRaw !== 'string' || !UUID_RE.test(orgIdRaw)) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-
-  const contextOrgId = c.req.header(ORG_ID_HEADER)?.trim() ||
-    c.req.query('organizationId')?.trim()
-  if (contextOrgId && contextOrgId !== orgIdRaw) {
-    return c.json({ error: 'organizationId mismatch' }, 400)
-  }
+  const orgIdRaw = parseCreateOrganizationId(c, body)
+  if (orgIdRaw instanceof Response) return orgIdRaw
 
   const orgAllowed = await canAccessOrganization(db, userId, orgIdRaw)
   if (!orgAllowed) {
@@ -123,135 +103,12 @@ async function resolveCreateNetworkOrganization(
   return orgIdRaw
 }
 
-export { assertNetworkKindScope, buildNetworkCreateValues } from './network-scope.ts'
-
-function parseNetworkKind(
-  c: Context,
-  body: Record<string, unknown>,
-): string | Response {
-  const kindRaw = body.kind
-  if (typeof kindRaw !== 'string' || !NETWORK_KINDS.has(kindRaw)) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  return kindRaw
-}
-
-function parseOptionalDisplayNameField(
-  c: Context,
-  body: Record<string, unknown>,
-): string | null | Response {
-  if (body.displayName === undefined) return null
-  try {
-    return parseDisplayName(body)
-  } catch {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-}
-
-function parseOptionalCidrField(
-  c: Context,
-  body: Record<string, unknown>,
-): string | null | Response {
-  if (body.cidr === undefined || body.cidr === null) return null
-  if (typeof body.cidr !== 'string' || !isValidCidr(body.cidr)) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  return body.cidr.trim()
-}
-
-function applyCidrPatch(
-  c: Context,
-  body: Record<string, unknown>,
-  patchFields: NetworkPatchFields,
-): Response | null {
-  if (body.cidr === undefined) return null
-  if (body.cidr === null) {
-    patchFields.cidr = null
-    return null
-  }
-  if (typeof body.cidr === 'string' && isValidCidr(body.cidr)) {
-    patchFields.cidr = body.cidr.trim()
-    return null
-  }
-  return c.json({ error: 'Invalid request' }, 400)
-}
-
-/**
- * `kind: docker` rows register long-lived host Docker networks for compose
- * `networks.*.external`. Require a valid `options.dockerNetworkName`.
- */
-function requireDockerNetworkOptions(
-  c: Context,
-  options: Record<string, unknown> | null,
-): Record<string, unknown> | Response {
-  const normalized = normalizeDockerNetworkOptions(options)
-  if (!normalized) {
-    return c.json({ error: 'docker_network_name_required' }, 400)
-  }
-  return normalized
-}
-
-function parseNetworkPatchFields(
-  c: Context,
-  body: Record<string, unknown>,
-  kind: string,
-): NetworkPatchFields | Response {
-  let patchFields: NetworkPatchFields
-  try {
-    patchFields = buildPatchUpdateFields(body)
-  } catch {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-
-  if (body.displayName !== undefined) {
-    try {
-      patchFields.name = parseDisplayName(body)
-    } catch {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-  }
-
-  const cidrDenied = applyCidrPatch(c, body, patchFields)
-  if (cidrDenied) return cidrDenied
-
-  const metadataResult = parseJsonbObject(c, body, 'metadata')
-  if (metadataResult instanceof Response) return metadataResult
-  if (metadataResult !== null) patchFields.metadata = metadataResult
-
-  const optionsResult = parseJsonbObject(c, body, 'options')
-  if (optionsResult instanceof Response) return optionsResult
-  if (optionsResult !== null) {
-    if (kind === 'docker') {
-      const dockerOptions = requireDockerNetworkOptions(c, optionsResult)
-      if (dockerOptions instanceof Response) return dockerOptions
-      patchFields.options = dockerOptions
-    } else {
-      patchFields.options = optionsResult
-    }
-  }
-
-  return patchFields
-}
-
-type NetworkCreateFieldsLocal = NetworkCreateFields
-
-function parseCreateNetworkOptions(
-  c: Context,
-  body: Record<string, unknown>,
-  kind: string,
-): Record<string, unknown> | null | Response {
-  const optionsResult = parseJsonbObject(c, body, 'options')
-  if (optionsResult instanceof Response) return optionsResult
-  if (kind !== 'docker') return optionsResult
-  return requireDockerNetworkOptions(c, optionsResult)
-}
-
 async function parseNetworkCreateFields(
   c: Context,
   db: Db,
   organizationId: string,
   body: Record<string, unknown>,
-): Promise<NetworkCreateFieldsLocal | Response> {
+): Promise<NetworkCreateFields | Response> {
   const kind = parseNetworkKind(c, body)
   if (kind instanceof Response) return kind
 
@@ -465,9 +322,8 @@ export function registerNetworkRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    if (body.datacenterId !== undefined || body.serverId !== undefined) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
+    const scopePatchDenied = rejectImmutableNetworkScopePatch(c, body)
+    if (scopePatchDenied) return scopePatchDenied
 
     const [existing] = await db
       .select({ kind: network.kind })

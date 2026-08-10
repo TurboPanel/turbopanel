@@ -10,18 +10,13 @@ import {
   assertCanManageOr403,
   assertCanReadOr403,
   getOrgId,
-  parseDisplayName,
   parseJsonBody,
 } from '../shared.ts'
 import { getDb, getDaemonCellRegistry, type Db } from '../../db.ts'
 import { parseOrganizationOptions } from '../../lib/organization-options.ts'
 import { parseDatacenterOptions } from '../../lib/datacenter-options.ts'
 import {
-  formatServerOsDisplay,
   parseServerOptions,
-  resolveEffectiveServerTimezone,
-  resolveServerResponseTimezone,
-  resolveServerOsLogoKey,
   type ServerOptions,
 } from '../../lib/db/server-metadata.ts'
 import { isActiveContainerStatus } from '../../lib/db/project-delete.ts'
@@ -85,15 +80,35 @@ import { UPDATE_REQUEST_TTL_MS } from '../../lib/update/constants.ts'
 import { registerServerCommandRoutes } from './commands-routes.ts'
 import { registerServerMetricsRoutes } from './metrics-routes.ts'
 import { cachedServersListReadModel } from '../../query-cache/read-models/servers-list.ts'
+import {
+  UPDATE_CHANNEL,
+  STATUS_CACHE_CONTROL,
+  STATUS_CACHE_MAX_AGE_MS,
+  buildBatchStatusCoalesceKey,
+  expiredBatchStatusCoalesceKeys,
+  currentCommitFromDaemonBuild,
+  parseServerPatchCore,
+  parsePatchDatacenterIdValue,
+  isHostingEnableTransition,
+  isHostingDisableTransition,
+  hostingHierarchyFailedBody,
+  serverDeletedPayload,
+  queueServerUpdateHttpStatus,
+  emptyServersUpdatesPayload,
+  resolveTrunkTargetFields,
+  resolveBatchUpdateEligibility,
+  updateResetErrorStatus,
+  distinctNonEmptyIds,
+  errorMessageFromUnknown,
+  resolveServerTimezoneFields,
+  shapeServerPresenceFields,
+  shouldSkipProjectedUpdateRepair,
+  repairedUpdateDoneProjection,
+  repairedUpdateIdleProjection,
+  type ServerPatchFields,
+} from './routes-helpers.ts'
 
-const UPDATE_CHANNEL = 'trunk'
 const UPDATE_REQUEST_TTL_SECONDS = 300
-
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-const STATUS_CACHE_CONTROL = 'private, max-age=5'
-const STATUS_CACHE_MAX_AGE_MS = 5_000
 
 type BatchStatusPayload = {
   servers: Awaited<ReturnType<typeof loadServerStatusRecords>>
@@ -107,21 +122,9 @@ type BatchStatusCoalesceEntry = {
 
 const batchStatusCoalesce = new Map<string, BatchStatusCoalesceEntry>()
 
-function buildBatchStatusCoalesceKey(
-  userId: string,
-  organizationId: string,
-  visibleIds: string[],
-): string {
-  const sortedIds = [...visibleIds].sort((a, b) => a.localeCompare(b))
-  return `${userId}:${organizationId}:${sortedIds.join(',')}`
-}
-
 function evictExpiredBatchStatusEntries(now = Date.now()): void {
-  for (const [key, entry] of batchStatusCoalesce) {
-    if (entry.promise !== undefined) continue
-    if (entry.expiresAt <= now) {
-      batchStatusCoalesce.delete(key)
-    }
+  for (const key of expiredBatchStatusCoalesceKeys(batchStatusCoalesce, now)) {
+    batchStatusCoalesce.delete(key)
   }
 }
 
@@ -179,18 +182,6 @@ async function queueServerUpdate(
   }
 }
 
-function currentCommitFromAgent(
-  agent: { commit?: string; buildId?: string; builtAt?: string } | undefined,
-): ServerUpdateCommit | null {
-  return agent?.commit
-    ? {
-      commit: agent.commit,
-      buildId: agent.buildId ?? '',
-      builtAt: agent.builtAt ?? '',
-    }
-    : null
-}
-
 async function repairProjectedUpdateIfStale(
   db: Db,
   serverId: string,
@@ -198,14 +189,14 @@ async function repairProjectedUpdateIfStale(
   current: ServerUpdateCommit | null,
   targetCommit?: string,
 ): Promise<UpdateProjection | null | undefined> {
-  if (projectedUpdate?.status !== 'updating') {
+  if (shouldSkipProjectedUpdateRepair(projectedUpdate)) {
     return projectedUpdate
   }
 
   const repaired = await repairStaleProjectedUpdate(
     db,
     serverId,
-    projectedUpdate,
+    projectedUpdate!,
     {
       currentCommit: current?.commit,
       targetCommit,
@@ -215,16 +206,15 @@ async function repairProjectedUpdateIfStale(
   if (!repaired) return projectedUpdate
 
   if (targetCommit && current?.commit === targetCommit) {
-    return {
-      status: 'done',
-      requestId: projectedUpdate.requestId,
-      channel: projectedUpdate.channel,
-      queuedAt: projectedUpdate.queuedAt,
+    return repairedUpdateDoneProjection({
+      requestId: projectedUpdate!.requestId ?? undefined,
+      channel: projectedUpdate!.channel ?? undefined,
+      queuedAt: projectedUpdate!.queuedAt ?? undefined,
       finishedAt: new Date().toISOString(),
-    }
+    })
   }
 
-  return { status: 'idle' }
+  return repairedUpdateIdleProjection()
 }
 
 async function assertServerDeletable(
@@ -265,7 +255,7 @@ async function purgeServerDaemonCell(
     await registry.getCell(serverId).purge()
     return null
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    const message = errorMessageFromUnknown(err)
     console.error(`Failed to purge daemon cell for server ${serverId}: ${message}`)
     return message
   }
@@ -297,11 +287,7 @@ async function loadDatacenterOptionsMap(
   db: Db,
   datacenterIds: Array<string | null | undefined>,
 ): Promise<Map<string, ReturnType<typeof parseDatacenterOptions>>> {
-  const distinct = [
-    ...new Set(
-      datacenterIds.filter((id): id is string => typeof id === 'string' && id.length > 0),
-    ),
-  ]
+  const distinct = distinctNonEmptyIds(datacenterIds)
   if (distinct.length === 0) return new Map()
 
   const rows = await db
@@ -320,11 +306,7 @@ async function loadDatacenterDisplayNamesMap(
   db: Db,
   datacenterIds: Array<string | null | undefined>,
 ): Promise<Map<string, string | null>> {
-  const distinct = [
-    ...new Set(
-      datacenterIds.filter((id): id is string => typeof id === 'string' && id.length > 0),
-    ),
-  ]
+  const distinct = distinctNonEmptyIds(datacenterIds)
   if (distinct.length === 0) return new Map()
 
   const rows = await db
@@ -335,28 +317,22 @@ async function loadDatacenterDisplayNamesMap(
   return new Map(rows.map((row) => [row.id, row.displayName]))
 }
 
-type ServerPatchFields = {
-  name?: string | null
-  datacenterId?: string | null
-  options?: ServerOptions
-  updatedAt: string
-}
-
 async function resolvePatchDatacenterId(
   c: Context,
   db: Db,
   organizationId: string,
   value: unknown,
 ): Promise<string | null | Response> {
-  if (value === null) return null
-  if (typeof value !== 'string' || !UUID_RE.test(value)) {
-    return c.json({ error: 'Invalid request' }, 400)
+  const parsed = parsePatchDatacenterIdValue(value)
+  if (!parsed.ok) {
+    return c.json({ error: parsed.error }, parsed.status)
   }
-  const dcOrgId = await resolveEntityOrganizationId(db, 'datacenter', value)
+  if (parsed.kind === 'null') return null
+  const dcOrgId = await resolveEntityOrganizationId(db, 'datacenter', parsed.value)
   if (dcOrgId !== organizationId) {
     return c.json({ error: 'Not found' }, 404)
   }
-  return value
+  return parsed.value
 }
 
 async function parseServerPatchBody(
@@ -365,41 +341,21 @@ async function parseServerPatchBody(
   organizationId: string,
   body: Record<string, unknown>,
 ): Promise<ServerPatchFields | Response> {
-  const patch: ServerPatchFields = { updatedAt: new Date().toISOString() }
-
-  if (body.name !== undefined) {
-    try {
-      patch.name = parseDisplayName(body)
-    } catch {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
+  const core = parseServerPatchCore(body)
+  if (!core.ok) {
+    return c.json({ error: core.error }, core.status)
   }
 
-  if (body.datacenterId !== undefined) {
+  const patch = core.patch
+  if (core.datacenterIdRaw !== undefined) {
     const datacenterId = await resolvePatchDatacenterId(
       c,
       db,
       organizationId,
-      body.datacenterId,
+      core.datacenterIdRaw,
     )
     if (datacenterId instanceof Response) return datacenterId
     patch.datacenterId = datacenterId
-  }
-
-  if (body.options !== undefined) {
-    const options = parseServerOptions(body.options)
-    if (options === null) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-    patch.options = options
-  }
-
-  if (
-    patch.name === undefined &&
-    patch.datacenterId === undefined &&
-    patch.options === undefined
-  ) {
-    return c.json({ error: 'Invalid request' }, 400)
   }
 
   return patch
@@ -415,22 +371,6 @@ function buildServerUpdateFields(patch: ServerPatchFields): Record<string, unkno
     }::jsonb`
   }
   return update
-}
-
-function isHostingEnableTransition(
-  previousOptions: ServerOptions | null,
-  patch: ServerPatchFields,
-): boolean {
-  const wasHostingEnabled = previousOptions?.hosting?.enabled === true
-  return patch.options?.hosting?.enabled === true && !wasHostingEnabled
-}
-
-function isHostingDisableTransition(
-  previousOptions: ServerOptions | null,
-  patch: ServerPatchFields,
-): boolean {
-  const wasHostingEnabled = previousOptions?.hosting?.enabled === true
-  return patch.options?.hosting?.enabled === false && wasHostingEnabled
 }
 
 /**
@@ -464,10 +404,7 @@ async function applyServerPatchWithHostingEnable(
       'servers',
       `ensureSystemHierarchy failed for server ${params.serverId}: ${message}`,
     )
-    return c.json({
-      error: 'Failed to provision hosting hierarchy',
-      code: 'hosting_hierarchy_failed',
-    }, 500)
+    return c.json(hostingHierarchyFailedBody(), 500)
   }
 }
 
@@ -537,7 +474,7 @@ async function enqueueHostingReconcileBestEffort(
       )
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    const message = errorMessageFromUnknown(err)
     compatLogWarn(
       'servers',
       `system.reconcile enqueue failed for server ${params.serverId}: ${message}`,
@@ -602,15 +539,16 @@ function serverDeletedResponse(
   serverId: string,
   purgeError: string | null,
 ): Response {
-  if (purgeError) {
-    return c.json({
-      ok: false,
-      serverId,
-      deleted: true,
-      error: `Server deleted but daemon cell purge failed: ${purgeError}`,
-    }, 500)
+  const payload = serverDeletedPayload(serverId, purgeError)
+  if (payload.ok) {
+    return c.json({ ok: true, serverId: payload.serverId })
   }
-  return c.json({ ok: true, serverId })
+  return c.json({
+    ok: false,
+    serverId: payload.serverId,
+    deleted: true,
+    error: payload.error,
+  }, payload.status)
 }
 
 export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -686,15 +624,12 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     return c.json({
       servers: display.rows.map((row) => {
         const live = presence.get(row.id)
-        const os = live?.os ?? null
         const dcId = datacenterIdByServerId.get(row.id) ?? null
         const dcOptions = dcId ? datacenterOptionsById.get(dcId) : undefined
-        const effective = resolveServerResponseTimezone(
-          resolveEffectiveServerTimezone(
-            parseServerOptions(row.options),
-            orgOptions,
-            dcOptions,
-          ),
+        const timezoneFields = resolveServerTimezoneFields(
+          row.options,
+          orgOptions,
+          dcOptions,
           live?.timeSync?.timezone,
         )
         return {
@@ -703,21 +638,8 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
           datacenterDisplayName: dcId
             ? datacenterDisplayNamesById.get(dcId) ?? null
             : null,
-          connected: live?.connected ?? false,
-          hostname: live?.hostname ?? null,
-          remoteAddress: live?.remoteAddress ?? null,
-          colocatedWithInstance: colocatedIds.has(row.id),
-          lastInboundAt: live?.lastInboundAt ?? null,
-          connectedAt: live?.connectedAt ?? null,
-          statusChangedAt: live?.statusChangedAt ?? null,
-          geo: live?.geo ?? null,
-          os,
-          osDisplay: formatServerOsDisplay(os),
-          osLogo: resolveServerOsLogoKey(os),
-          addresses: live?.addresses ?? null,
-          timeSync: live?.timeSync ?? null,
-          timezone: effective.timezone,
-          timezoneSource: effective.source,
+          ...shapeServerPresenceFields(live, colocatedIds.has(row.id)),
+          ...timezoneFields,
           licenseId: row.licenseId ?? null,
         }
       }),
@@ -742,14 +664,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     })
 
     if (visibleIds.length === 0) {
-      return c.json({
-        ok: true,
-        channel: UPDATE_CHANNEL,
-        target: null,
-        targetStatus: 'unknown' as const,
-        targetError: 'Could not resolve trunk channel manifest',
-        servers: [],
-      })
+      return c.json(emptyServersUpdatesPayload())
     }
 
     const registry = getDaemonCellRegistry(c)
@@ -757,22 +672,13 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const projections = await readProjectionsForServers(db, visibleIds)
     const colocatedIds = await resolveColocatedServerIdSet(db, registry, visibleIds)
     const targetManifest = await resolveTrunkManifest()
-    const target = targetManifest
-      ? {
-        commit: targetManifest.commit,
-        buildId: targetManifest.buildId,
-        builtAt: targetManifest.builtAt,
-        manifestUrl: targetManifest.manifestUrl,
-      }
-      : null
-    const targetStatus = target ? 'ok' as const : 'unknown' as const
-    const targetError = target
-      ? undefined
-      : 'Could not resolve trunk channel manifest'
+    const { target, targetStatus, targetError } = resolveTrunkTargetFields(
+      targetManifest,
+    )
 
     const servers = await Promise.all(
       visibleIds.map(async (serverId) => {
-        const current = currentCommitFromAgent(presence.get(serverId)?.agent)
+        const current = currentCommitFromDaemonBuild(presence.get(serverId)?.daemonBuild)
         let projection = projections.get(serverId)
         const repairedUpdate = await repairProjectedUpdateIfStale(
           db,
@@ -848,31 +754,18 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
           }
         }
 
-        if (!presence.get(serverId)?.connected) {
+        const current = currentCommitFromDaemonBuild(presence.get(serverId)?.daemonBuild)
+        const eligibility = resolveBatchUpdateEligibility({
+          connected: presence.get(serverId)?.connected ?? false,
+          colocated: colocatedIds.has(serverId),
+          current,
+          targetCommit: targetManifest?.commit ?? null,
+        })
+        if (!eligibility.ok) {
           return {
             serverId,
             ok: false,
-            error: 'Daemon not connected',
-          }
-        }
-
-        if (colocatedIds.has(serverId)) {
-          return {
-            serverId,
-            ok: false,
-            error: colocatedServerUpdateBlockedReason(),
-          }
-        }
-
-        const current = currentCommitFromAgent(presence.get(serverId)?.agent)
-        const updateAvailable = targetManifest
-          ? current?.commit !== targetManifest.commit
-          : false
-        if (!updateAvailable) {
-          return {
-            serverId,
-            ok: false,
-            error: targetManifest ? 'Up to date' : 'Target unavailable',
+            error: eligibility.error,
           }
         }
 
@@ -1023,7 +916,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       const presence = await resolveFleetPresence(db, registry, [id])
       const projections = await readProjectionsForServers(db, [id])
       const colocatedIds = await resolveColocatedServerIdSet(db, registry, [id])
-      const current = currentCommitFromAgent(presence.get(id)?.agent)
+      const current = currentCommitFromDaemonBuild(presence.get(id)?.daemonBuild)
       const targetManifest = await resolveTrunkManifest()
       const projectedUpdate = projections.get(id)?.update
       const stale = isStaleProjectedUpdating({
@@ -1074,11 +967,8 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
         ...resolved,
       })
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      if (message === 'update in progress') {
-        return c.json({ ok: false, error: message }, 409)
-      }
-      return c.json({ ok: false, error: message }, 500)
+      const message = errorMessageFromUnknown(err)
+      return c.json({ ok: false, error: message }, updateResetErrorStatus(message))
     }
   })
 
@@ -1094,7 +984,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const presence = await resolveFleetPresence(db, registry, [id])
     const projections = await readProjectionsForServers(db, [id])
     const colocatedIds = await resolveColocatedServerIdSet(db, registry, [id])
-    const current = currentCommitFromAgent(presence.get(id)?.agent)
+    const current = currentCommitFromDaemonBuild(presence.get(id)?.daemonBuild)
     const targetManifest = await resolveTrunkManifest()
     const repairedUpdate = await repairProjectedUpdateIfStale(
       db,
@@ -1135,10 +1025,10 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
 
     const queued = await queueServerUpdate(registry, db, id)
     if (!queued.ok) {
-      const status = queued.error === colocatedServerUpdateBlockedReason()
-        ? 403
-        : 404
-      return c.json({ ok: false, error: queued.error }, status)
+      return c.json(
+        { ok: false, error: queued.error },
+        queueServerUpdateHttpStatus(queued.error),
+      )
     }
 
     return c.json({ ok: true, ...queued })
@@ -1195,13 +1085,10 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       ? datacenterOptionsById.get(serverRow.datacenterId)
       : undefined
     const live = display.presence
-    const os = live?.os ?? null
-    const effective = resolveServerResponseTimezone(
-      resolveEffectiveServerTimezone(
-        parseServerOptions(display.row.options),
-        orgOptions,
-        dcOptions,
-      ),
+    const timezoneFields = resolveServerTimezoneFields(
+      display.row.options,
+      orgOptions,
+      dcOptions,
       live?.timeSync?.timezone,
     )
 
@@ -1213,23 +1100,10 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
         datacenterDisplayName: serverRow.datacenterId
           ? datacenterDisplayNamesById.get(serverRow.datacenterId) ?? null
           : null,
-        connected: live?.connected ?? false,
-        hostname: live?.hostname ?? null,
-        remoteAddress: live?.remoteAddress ?? null,
-        lastInboundAt: live?.lastInboundAt ?? null,
-        connectedAt: live?.connectedAt ?? null,
-        statusChangedAt: live?.statusChangedAt ?? null,
-        os,
-        osDisplay: formatServerOsDisplay(os),
-        osLogo: resolveServerOsLogoKey(os),
-        geo: live?.geo ?? null,
-        addresses: live?.addresses ?? null,
-        timeSync: live?.timeSync ?? null,
-        timezone: effective.timezone,
-        timezoneSource: effective.source,
+        ...shapeServerPresenceFields(live, display.colocatedWithInstance),
+        ...timezoneFields,
         orgDefaultTimezone: orgOptions.defaultServerTimezone ?? null,
         enforceServerTimezone: orgOptions.enforceServerTimezone ?? false,
-        colocatedWithInstance: display.colocatedWithInstance,
         licenseId: display.row.licenseId ?? null,
       },
     })

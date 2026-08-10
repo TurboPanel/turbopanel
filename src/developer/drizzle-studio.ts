@@ -13,6 +13,14 @@ import {
 } from '../drizzle-studio-probe.ts'
 import { resolveNodePath } from '../node-path.ts'
 import { logInfo, logWarn } from '../logger.ts'
+import {
+  childErrorDetail,
+  drizzleKitBinPath,
+  studioStartWhenDatabaseMissing,
+  studioStartWhenNotReady,
+  studioStatusWhenBindFails,
+  waitForStudioPort,
+} from './drizzle-studio-helpers.ts'
 
 const INSTANCE_REPO_ROOT = (() => {
   const here = dirname(fromFileUrl(import.meta.url))
@@ -21,10 +29,6 @@ const INSTANCE_REPO_ROOT = (() => {
 
 let studioChild: Deno.ChildProcess | null = null
 let studioRunning = false
-
-function drizzleKitPath(): string {
-  return join(INSTANCE_REPO_ROOT, 'node_modules', 'drizzle-kit', 'bin.cjs')
-}
 
 function resolveStudioBindHost():
   | { ok: true; bindHost: string; configuredHost: string }
@@ -54,12 +58,7 @@ export async function drizzleStudioStatus(): Promise<{
   const resolved = resolveStudioBindHost()
   if (!resolved.ok) {
     studioRunning = false
-    return {
-      running: false,
-      port: DRIZZLE_STUDIO_PORT,
-      browserUrl: drizzleStudioBrowserUrl(DRIZZLE_STUDIO_PORT, 'localhost'),
-      error: resolved.error,
-    }
+    return studioStatusWhenBindFails(resolved.error)
   }
 
   const portOpen = await isStudioPortListening(resolved.bindHost)
@@ -116,10 +115,7 @@ export async function startDrizzleStudio(): Promise<
 
   const databaseUrl = getDatabaseUrl()
   if (!databaseUrl) {
-    return {
-      ok: false,
-      error: 'postgres is not configured (missing TURBOPANEL_DATABASE_URL)',
-    }
+    return studioStartWhenDatabaseMissing()
   }
 
   const nodeBin = await resolveNodePath()
@@ -129,7 +125,7 @@ export async function startDrizzleStudio(): Promise<
 
     const command = new Deno.Command(nodeBin, {
       args: [
-        drizzleKitPath(),
+        drizzleKitBinPath(INSTANCE_REPO_ROOT),
         'studio',
         '--config',
         DRIZZLE_STUDIO_CONFIG,
@@ -155,16 +151,13 @@ export async function startDrizzleStudio(): Promise<
       studioChild = null
     })
 
-    const ready = await waitForStudioPort(bindHost, 30_000)
+    const ready = await waitForStudioPort(isStudioPortListening, bindHost, 30_000)
     const childAlive = await isStudioChildAlive()
 
     if (!ready || !childAlive) {
       const detail = await childErrorDetail(studioChild)
       stopDrizzleStudio()
-      return {
-        ok: false,
-        error: detail ?? 'drizzle studio did not become ready in time',
-      }
+      return studioStartWhenNotReady(detail)
     }
 
     return { ok: true, browserUrl, port: DRIZZLE_STUDIO_PORT }
@@ -188,27 +181,4 @@ export function stopDrizzleStudio(): void {
   }
   studioRunning = false
   studioChild = null
-}
-
-async function childErrorDetail(
-  child: Deno.ChildProcess | null,
-): Promise<string | undefined> {
-  if (!child) return undefined
-  const status = await Promise.race([
-    child.status,
-    new Promise<null>((resolve) => setTimeout(() => resolve(null), 500)),
-  ])
-  if (!status || status.success) return undefined
-  return `drizzle studio exited (code ${status.code})`
-}
-
-async function waitForStudioPort(host: string, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (await isStudioPortListening(host)) {
-      return true
-    }
-    await new Promise((resolve) => setTimeout(() => resolve(null), 200))
-  }
-  return false
 }

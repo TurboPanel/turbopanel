@@ -555,7 +555,7 @@ export const serverPaths: Record<string, unknown> = {
       ],
       responses: {
         '200': {
-          description: 'Current agent build vs trunk manifest target',
+          description: 'Current daemon build vs trunk manifest target',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ServerUpdateStatusResponse' },

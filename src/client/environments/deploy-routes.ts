@@ -20,9 +20,7 @@ import {
   verifyServerInOrg,
   type DeployPrepareError,
 } from './deploy-prepare.ts'
-import { assignTraditionalWebListenPorts } from '../../lib/compose/traditional-web.ts'
 import {
-  attachWebMetadataToTraditionalSites,
   resolveHostingDeployWeb,
 } from '../../lib/hosting-web-env.ts'
 import type { DerivedSecretsConfig } from '../authn/secrets.ts'
@@ -38,6 +36,23 @@ import type {
   EnvironmentDeployVariableMaterial,
   EnvironmentLifecycleAction,
 } from '../../lib/commands/schemas.ts'
+import {
+  buildDeployPreviewContainers,
+  buildTraditionalWebSitesForDeploy,
+  composeProjectName,
+  expandHostingsForComposeInstances,
+  mapPrepareErrorResponse,
+  parseDeployRequestFlags,
+  parseLifecycleAction,
+  preferredListenPortsFromHostings,
+  readHostnames,
+  readHostingPorts,
+  readHostingProtocol,
+  readPathPrefix,
+  readTargetPort,
+  tlsPinErrorCode,
+  validateDeployMaterials,
+} from './deploy-routes-helpers.ts'
 import { resolveTcpUdpIngressServices } from './tcp-udp-ingress.ts'
 import { isNoopCommandQueue } from '../../lib/commands/noop-command-queue.ts'
 import { getCommandQueue, type CommandQueue } from '../../lib/commands/queue.ts'
@@ -90,105 +105,20 @@ function responseForPrepareError(
   c: Context<AppEnv>,
   prepared: DeployPrepareError,
 ): Response {
-  if (prepared.kind === 'health_check') {
-    return c.json({
-      error: 'health_check_missing',
-      required: prepared.required,
-      services: prepared.services,
-    }, { status: 409 })
-  }
-  if (prepared.kind === 'empty_compose') {
-    return c.json({ error: 'compose_empty' }, { status: 400 })
-  }
-  if (prepared.kind === 'datacenter_ip_required') {
-    return c.json({
-      error: 'datacenter_ip_required',
-      serverId: prepared.serverId,
-    }, { status: 422 })
-  }
-  if (prepared.kind === 'docker_external_network_unregistered') {
-    return c.json({
-      error: 'docker_external_network_unregistered',
-      names: prepared.names,
-      message:
-        'Compose references external Docker network(s) that are not registered for this server. Add a Docker network under Servers → Networks with matching options.dockerNetworkName.',
-    }, { status: 422 })
-  }
-  if (prepared.kind === 'traditional_web_principal_ambiguous') {
-    return c.json({
-      error: 'traditional_web_principal_ambiguous',
-      composeServiceName: prepared.composeServiceName,
-      message:
-        `Traditional-web service "${prepared.composeServiceName}" has more than one project principal assigned. Keep a single principal for site ownership.`,
-    }, { status: 422 })
-  }
-  return c.json({
-    error: 'resource_limit_exceeded',
-    violations: prepared.violations,
-  }, { status: 409 })
+  const mapped = mapPrepareErrorResponse(prepared)
+  return c.json(mapped.body, { status: mapped.status as 400 | 409 | 422 })
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function readHostnames(options: unknown): string[] {
-  if (!isPlainObject(options)) return []
-  const hostnames = options.hostnames
-  if (!Array.isArray(hostnames)) return []
-  return hostnames.filter((h): h is string => typeof h === 'string' && h.length > 0)
-}
-
-function readPathPrefix(options: unknown): string | undefined {
-  if (!isPlainObject(options)) return undefined
-  return typeof options.pathPrefix === 'string' ? options.pathPrefix : undefined
-}
-
-function readTargetPort(options: unknown): number | undefined {
-  if (!isPlainObject(options)) return undefined
-  return typeof options.targetPort === 'number' && Number.isFinite(options.targetPort)
-    ? options.targetPort
-    : undefined
-}
-
-function readHostingProtocol(options: unknown): 'http' | 'tcp' | 'udp' {
-  if (!isPlainObject(options)) return 'http'
-  return options.protocol === 'tcp' || options.protocol === 'udp' ? options.protocol : 'http'
-}
-
-function isValidHostingPortValue(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 65535
-}
-
-function readHostingPorts(options: unknown): { published: number; target: number }[] {
-  if (!isPlainObject(options) || !Array.isArray(options.ports)) return []
-  const ports: { published: number; target: number }[] = []
-  for (const entry of options.ports) {
-    if (
-      isPlainObject(entry) &&
-      isValidHostingPortValue(entry.published) &&
-      isValidHostingPortValue(entry.target)
-    ) {
-      ports.push({ published: entry.published, target: entry.target })
-    }
-  }
-  return ports
-}
-
-import {
-  validateDeployHostings,
-  validateDeployStorageMaterialList,
-} from '../../lib/commands/deploy-validation.ts'
-
-/**
- * Docker Compose `-p` project name for an environment deploy.
- *
- * Uses the TurboPanel **project** UUID — never the operator display name.
- * Container names are separately obfuscated via service-UUID allocation
- * (`containerNaming: uuid`).
- */
-function composeProjectName(projectId: string): string {
-  return projectId
+function validateDeployMaterialsResponse(
+  hostings: DeployHostingPayload[],
+  storageMaterial: EnvironmentDeployStorageMaterial[],
+): Response | null {
+  const validationError = validateDeployMaterials(hostings, storageMaterial)
+  if (!validationError) return null
+  return Response.json(
+    { error: validationError.error, message: validationError.message },
+    { status: 400 },
+  )
 }
 
 type BuildHostingResult =
@@ -214,19 +144,6 @@ type HostingRow = {
   options: unknown
   tlsId: string | null
   ipId: string | null
-}
-
-function tlsPinErrorCode(
-  error: 'pin_not_found' | 'pin_mismatch' | 'pin_not_ready',
-): string {
-  switch (error) {
-    case 'pin_mismatch':
-      return 'tls_pin_mismatch'
-    case 'pin_not_ready':
-      return 'tls_pin_not_ready'
-    case 'pin_not_found':
-      return 'tls_pin_not_found'
-  }
 }
 
 async function resolveHttpHostingEntry(
@@ -604,11 +521,16 @@ async function authorizeDeployRequest(
   const body = await parseJsonBody(c)
   if (body instanceof Response) return body
 
+  const flags = parseDeployRequestFlags(body)
+  if (flags === 'invalid') {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
   return {
     userId: session.userId,
     organizationId: orgResult,
-    acknowledgeHealthCheckWarnings: body.acknowledgeHealthCheckWarnings === true,
-    noCache: body.noCache === true,
+    acknowledgeHealthCheckWarnings: flags.acknowledgeHealthCheckWarnings,
+    noCache: flags.noCache,
   }
 }
 
@@ -718,83 +640,18 @@ async function enqueueDeployCommand(
   })
 }
 
-/**
- * Expand each hosting onto multi-instance clone compose keys.
- * Keeps the same `hostingId` / `serviceId` so Traefik merges labels.
- */
-export function expandHostingsForComposeInstances(
-  hostings: readonly DeployHostingPayload[],
-  expansion: Readonly<Record<string, string[]>>,
-): DeployHostingPayload[] {
-  const out: DeployHostingPayload[] = []
-  for (const entry of hostings) {
-    const clones = expansion[entry.composeServiceName]
-    if (!clones || clones.length === 0) {
-      out.push(entry)
-      continue
-    }
-    for (const cloneName of clones) {
-      out.push({
-        ...entry,
-        composeServiceName: cloneName,
-      })
-    }
-  }
-  return out
-}
+export {
+  buildTraditionalWebSitesForDeploy,
+  expandHostingsForComposeInstances,
+  preferredListenPortsFromHostings,
+  readHostnames,
+  readHostingPorts,
+  readHostingProtocol,
+  readPathPrefix,
+  readTargetPort,
+  validateDeployMaterials,
+} from './deploy-routes-helpers.ts'
 
-function preferredListenPortsFromHostings(
-  hostings: readonly DeployHostingPayload[],
-): Map<string, number> {
-  const preferredListenPorts = new Map<string, number>()
-  for (const entry of hostings) {
-    if (typeof entry.targetPort === 'number') {
-      preferredListenPorts.set(entry.composeServiceName, entry.targetPort)
-    }
-  }
-  return preferredListenPorts
-}
-
-function buildTraditionalWebSitesForDeploy(
-  traditionalWebSites: EnvironmentDeployTraditionalWebSite[],
-  hostings: DeployHostingPayload[],
-): EnvironmentDeployTraditionalWebSite[] {
-  return attachWebMetadataToTraditionalSites(
-    assignTraditionalWebListenPorts(
-      traditionalWebSites,
-      preferredListenPortsFromHostings(hostings),
-    ),
-    hostings,
-  )
-}
-
-function validateDeployMaterials(
-  hostings: DeployHostingPayload[],
-  storageMaterial: EnvironmentDeployStorageMaterial[],
-): Response | null {
-  const hostingValidationError = validateDeployHostings(hostings)
-  if (hostingValidationError) {
-    return Response.json(
-      { error: 'invalid_deploy_hosting', message: hostingValidationError },
-      { status: 400 },
-    )
-  }
-
-  const storageValidationError = validateDeployStorageMaterialList(storageMaterial)
-  if (storageValidationError) {
-    return Response.json(
-      { error: 'invalid_deploy_storage', message: storageValidationError },
-      { status: 400 },
-    )
-  }
-
-  return null
-}
-
-/**
- * Register `POST /environments/:id/deploy` — single-server compose deploy.
- * Status is polled via existing `GET /servers/:serverId/commands/:commandId`.
- */
 async function authorizeEnvironmentManage(
   c: Context<AppEnv>,
   db: Db,
@@ -874,26 +731,14 @@ export function registerEnvironmentDeployPreviewRoutes(
 
     const projectName = composeProjectName(loaded.projectRow.id)
 
-    const appContainers = prepared.containers.map((row) => ({
-      serviceId: row.serviceId,
-      composeServiceName: row.cloneComposeServiceName,
-      containerName: row.containerName,
-      ordinal: row.ordinal,
-      role: 'service' as const,
-    }))
-    const ingressContainers = prepared.ingressServices.map((row) => ({
-      serviceId: row.serviceId,
-      composeServiceName: row.composeServiceName,
-      containerName: row.containerName,
-      ordinal: 1,
-      role: 'ingress' as const,
-    }))
-
     return c.json({
       ok: true as const,
       composeYaml: prepared.composeYaml,
       projectName,
-      containers: [...appContainers, ...ingressContainers],
+      containers: buildDeployPreviewContainers({
+        appContainers: prepared.containers,
+        ingressServices: prepared.ingressServices,
+      }),
       volumes: prepared.volumes.map((row) => ({
         storageId: row.storageId,
         composeKey: row.composeKey,
@@ -980,7 +825,7 @@ export function registerEnvironmentDeployRoutes(
 
     const projectName = composeProjectName(loaded.projectRow.id)
 
-    const materialsError = validateDeployMaterials(
+    const materialsError = validateDeployMaterialsResponse(
       hostings,
       prepared.storageMaterial,
     )
@@ -1235,8 +1080,8 @@ export function registerEnvironmentLifecycleRoutes(
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const action = body.action
-    if (action !== 'start' && action !== 'stop' && action !== 'restart') {
+    const action = parseLifecycleAction(body)
+    if (action === 'invalid') {
       return c.json({ error: 'Invalid request' }, 400)
     }
 
@@ -1263,16 +1108,4 @@ export function registerEnvironmentLifecycleRoutes(
       action,
     })
   })
-}
-
-/** Pure helpers exported for host-free unit coverage of hosting assembly. */
-export {
-  buildTraditionalWebSitesForDeploy,
-  preferredListenPortsFromHostings,
-  readHostnames,
-  readHostingPorts,
-  readHostingProtocol,
-  readPathPrefix,
-  readTargetPort,
-  validateDeployMaterials,
 }

@@ -3,28 +3,14 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
-import {
-  ENVELOPE_MAGIC,
-  encryptSecret,
-  isSealedEnvelope,
-} from '../authn/data-encryption.ts'
-import type { DerivedSecretsConfig } from '../authn/secrets.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db.ts'
 import {
   assembleTlsMetadata,
-  metadataFromParsed,
-  mintOrganizationCa,
-  mintSelfSignedCertificate,
-  parseCertificatePem,
   parseTlsOptions,
-  privateKeyMatchesCertificate,
-  refreshTlsStatus,
-  splitCertificateChain,
   splitTlsMetadata,
-  type TlsMetadata,
   type TlsOptions,
   type TlsSource,
 } from '../../lib/tls/index.ts'
@@ -42,69 +28,23 @@ import {
 } from '../hierarchy-delete.ts'
 import {
   applyTlsOptionsPatch,
-  createFailure,
+  buildCreateTlsMaterial,
+  classifyTlsInsertConflict,
   isCreateTlsFailure,
   isOrganizationCaUniqueViolation,
   isTlsFingerprintUniqueViolation,
-  materialFromLetsEncrypt,
-  parseHostnames,
+  isTlsUuid,
+  materialFromOrganizationCa,
+  ORGANIZATION_CA_DOWNLOAD_HEADERS,
   parseSource,
+  shouldRevokeTlsFromBody,
+  tlsFailurePayload,
+  toPublicTlsRow,
   type CreateTlsFailure,
   type CreateTlsMaterial,
-  type CreateTlsResult,
+  type TlsPublicRow,
   withPreferOption,
 } from './routes-helpers.ts'
-
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-type TlsPublicRow = {
-  id: string
-  displayName: string | null
-  source: string
-  organizationId: string
-  metadata: TlsMetadata
-  options: TlsOptions | null
-  certificatePem: string | null
-  createdAt: string
-  updatedAt: string
-}
-
-function toPublicRow(row: {
-  id: string
-  displayName: string | null
-  source: string
-  organizationId: string
-  status: string
-  notAfter: string | null
-  fingerprintSha256: string | null
-  metadata: unknown
-  options: unknown
-  certificatePem: string | null
-  createdAt: string
-  updatedAt: string
-}): TlsPublicRow | null {
-  const metadata = assembleTlsMetadata(
-    {
-      status: row.status,
-      notAfter: row.notAfter,
-      fingerprintSha256: row.fingerprintSha256,
-    },
-    row.metadata,
-  )
-  if (!metadata) return null
-  return {
-    id: row.id,
-    displayName: row.displayName,
-    source: row.source,
-    organizationId: row.organizationId,
-    metadata: refreshTlsStatus(metadata),
-    options: parseTlsOptions(row.options),
-    certificatePem: row.certificatePem,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  }
-}
 
 const TLS_PUBLIC_SELECT = {
   id: tls.id,
@@ -120,121 +60,6 @@ const TLS_PUBLIC_SELECT = {
   createdAt: tls.createdAt,
   updatedAt: tls.updatedAt,
 } as const
-
-/** Private keys at rest must be `enc` envelopes — never PEM plaintext. */
-function assertTpSecretPrivateKey(sealed: string): void {
-  if (
-    !isSealedEnvelope(sealed) ||
-    !sealed.startsWith(`${ENVELOPE_MAGIC}.`) ||
-    sealed.includes('BEGIN')
-  ) {
-    throw new TypeError('tls private key must be an enc envelope')
-  }
-}
-
-async function materialFromUpload(
-  body: Record<string, unknown>,
-  secrets: DerivedSecretsConfig,
-): Promise<CreateTlsResult> {
-  if (typeof body.certificatePem !== 'string' || typeof body.privateKeyPem !== 'string') {
-    return createFailure('Invalid request')
-  }
-  try {
-    // Normalize chain ordering (leaf first).
-    const certificatePem = splitCertificateChain(body.certificatePem).join('')
-    const parsed = await parseCertificatePem(certificatePem)
-    const matches = await privateKeyMatchesCertificate(body.privateKeyPem, parsed)
-    if (!matches) {
-      return createFailure('certificate_key_mismatch')
-    }
-    const privateKeyPemSealed = await encryptSecret(
-      secrets,
-      body.privateKeyPem.trim(),
-    )
-    assertTpSecretPrivateKey(privateKeyPemSealed)
-    return {
-      certificatePem,
-      privateKeyPemSealed,
-      metadata: metadataFromParsed(parsed, 'ready'),
-      options: null,
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'invalid certificate'
-    return createFailure('invalid_certificate', message)
-  }
-}
-
-async function materialFromSelfSigned(
-  body: Record<string, unknown>,
-  secrets: DerivedSecretsConfig,
-): Promise<CreateTlsResult> {
-  const hostnames = parseHostnames(body.hostnames)
-  if (!hostnames) {
-    return createFailure('Invalid request')
-  }
-  try {
-    const material = await mintSelfSignedCertificate(hostnames)
-    const privateKeyPemSealed = await encryptSecret(
-      secrets,
-      material.privateKeyPem,
-    )
-    assertTpSecretPrivateKey(privateKeyPemSealed)
-    return {
-      certificatePem: material.certificatePem,
-      privateKeyPemSealed,
-      metadata: metadataFromParsed(material.parsed, 'ready'),
-      options: { requestedHostnames: hostnames },
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'self-signed mint failed'
-    return createFailure('invalid_certificate', message)
-  }
-}
-
-async function materialFromOrganizationCa(
-  secrets: DerivedSecretsConfig,
-  opts?: { commonName?: string },
-): Promise<CreateTlsResult> {
-  try {
-    const material = await mintOrganizationCa(
-      opts?.commonName === undefined ? undefined : { commonName: opts.commonName },
-    )
-    const privateKeyPemSealed = await encryptSecret(
-      secrets,
-      material.privateKeyPem,
-    )
-    assertTpSecretPrivateKey(privateKeyPemSealed)
-    return {
-      certificatePem: material.certificatePem,
-      privateKeyPemSealed,
-      metadata: metadataFromParsed(material.parsed, 'ready'),
-      options: null,
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'organization CA mint failed'
-    return createFailure('invalid_certificate', message)
-  }
-}
-
-async function buildCreateTlsMaterial(
-  source: TlsSource,
-  body: Record<string, unknown>,
-  secrets: DerivedSecretsConfig,
-): Promise<CreateTlsResult> {
-  switch (source) {
-    case 'upload':
-      return materialFromUpload(body, secrets)
-    case 'self_signed':
-      return materialFromSelfSigned(body, secrets)
-    case 'lets_encrypt':
-      return materialFromLetsEncrypt(body)
-    case 'organization_ca':
-      return materialFromOrganizationCa(
-        secrets,
-        typeof body.commonName === 'string' ? { commonName: body.commonName } : undefined,
-      )
-  }
-}
 
 async function findActiveOrganizationCa(
   db: NonNullable<ReturnType<typeof getDb>>,
@@ -258,20 +83,15 @@ function createTlsFailureResponse(
   c: Context<AppEnv>,
   material: CreateTlsFailure,
 ): Response {
-  if (material.detail === undefined) {
-    return c.json({ error: material.error }, material.status)
-  }
-  return c.json(
-    { error: material.error, detail: material.detail },
-    material.status,
-  )
+  const payload = tlsFailurePayload(material)
+  return c.json(payload.body, payload.status)
 }
 
 function organizationCaRowResponse(
   c: Context<AppEnv>,
-  row: Parameters<typeof toPublicRow>[0],
+  row: Parameters<typeof toPublicTlsRow>[0],
 ): Response {
-  const publicRow = toPublicRow(row)
+  const publicRow = toPublicTlsRow(row)
   if (!publicRow) return c.json({ error: 'Invalid request' }, 500)
   return c.json({ tls: publicRow })
 }
@@ -381,17 +201,9 @@ async function insertTlsRow(
       return inserted.id
     })
   } catch (err) {
-    if (
-      (typeof err === 'object' &&
-        err !== null &&
-        'code' in err &&
-        (err as { code: string }).code === 'ORGANIZATION_CA_EXISTS') ||
-      isOrganizationCaUniqueViolation(err)
-    ) {
-      return c.json({ error: 'organization_ca_exists' }, 409)
-    }
-    if (isTlsFingerprintUniqueViolation(err)) {
-      return c.json({ error: 'tls_fingerprint_conflict' }, 409)
+    const conflict = classifyTlsInsertConflict(err)
+    if (conflict) {
+      return c.json({ error: conflict.error }, conflict.status)
     }
     throw err
   }
@@ -437,7 +249,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       .orderBy(tls.createdAt)
 
     const publicRows = rows
-      .map(toPublicRow)
+      .map(toPublicTlsRow)
       .filter((row): row is TlsPublicRow => row !== null)
 
     return c.json({ tls: publicRows })
@@ -588,10 +400,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
 
     return new Response(row.certificatePem, {
       status: 200,
-      headers: {
-        'Content-Type': 'application/x-pem-file',
-        'Content-Disposition': 'attachment; filename="organization-ca.pem"',
-      },
+      headers: { ...ORGANIZATION_CA_DOWNLOAD_HEADERS },
     })
   })
 
@@ -622,7 +431,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       .limit(1)
 
     if (!row) return c.json({ error: 'Not found' }, 404)
-    const publicRow = toPublicRow(row)
+    const publicRow = toPublicTlsRow(row)
     if (!publicRow) return c.json({ error: 'Invalid request' }, 500)
 
     return c.json({ tls: publicRow })
@@ -754,7 +563,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       patch.options = optionsPatch.options
     }
 
-    if (body.revoke === true) {
+    if (shouldRevokeTlsFromBody(body)) {
       const metadata = assembleTlsMetadata(
         {
           status: existing.status,
@@ -783,7 +592,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
     const organizationId = orgResult
 
     const id = c.req.param('id')
-    if (!UUID_RE.test(id)) {
+    if (!isTlsUuid(id)) {
       return c.json({ error: 'Not found' }, 404)
     }
 

@@ -1107,18 +1107,18 @@ test(
 );
 
 test(
-  "onDaemonHeartbeat is a no-op unless agent changed",
+  "onDaemonHeartbeat is a no-op unless daemonBuild changed",
   withRedisCell(async ({ cell, serverId }) => {
     await cell.attachDaemonSocket({
       keyId: crypto.randomUUID(),
     });
 
-    const priorAgent = {
+    const priorDaemonBuild = {
       commit: "abc123",
       buildId: "build-1",
       channel: "trunk" as const,
     };
-    const nextAgent = {
+    const nextDaemonBuild = {
       commit: "def456",
       buildId: "build-2",
       channel: "trunk" as const,
@@ -1132,7 +1132,7 @@ test(
         fingerprint: "fp-1",
         createdAt: "2020-01-01T00:00:00.000Z",
       },
-      projection: { hostname: "host-1", agent: priorAgent },
+      projection: { hostname: "host-1", daemonBuild: priorDaemonBuild },
       status: {
         ...buildDefaultDaemonStatus(),
         connected: true,
@@ -1140,10 +1140,10 @@ test(
       },
     });
 
-    await onDaemonHeartbeat(db, serverId, cell, priorAgent);
+    await onDaemonHeartbeat(db, serverId, cell, priorDaemonBuild);
     assertEquals(updateCalls.length, 0);
 
-    await onDaemonHeartbeat(db, serverId, cell, nextAgent);
+    await onDaemonHeartbeat(db, serverId, cell, nextDaemonBuild);
     assertEquals(updateCalls.length, 1);
   }),
 );
@@ -1246,15 +1246,15 @@ test(
     await cell.recordInbound({
       connectionId: attached.connectionId,
       at,
-      agent: { commit: "recovered", buildId: "1", channel: "trunk" },
+      daemonBuild: { commit: "recovered", buildId: "1", channel: "trunk" },
     });
     await onDaemonInbound(db, serverId, cell, {
       at,
-      agent: { commit: "recovered", buildId: "1", channel: "trunk" },
+      daemonBuild: { commit: "recovered", buildId: "1", channel: "trunk" },
     });
 
     const meta = await client.hgetall(metaKey(serverId));
-    // Redis keeps sweep-critical meta (connected/lastSeenAt/agent); the DO dropped those cell columns.
+    // Redis keeps sweep-critical meta (connected/lastSeenAt/daemonBuild); the DO dropped those cell columns.
     assertEquals(meta?.connected, "1");
 
     const online = await registry.listOnlineServerIds();
@@ -1482,12 +1482,12 @@ test(
 );
 
 test(
-  "coalesced heartbeat persists agent on first heartbeat after attach",
+  "coalesced heartbeat persists daemonBuild on first heartbeat after attach",
   withRedisCell(async ({ cell, client, serverId }) => {
     const attached = await cell.attachDaemonSocket({
       keyId: crypto.randomUUID(),
     });
-    const agent = {
+    const daemonBuild = {
       commit: "abc123",
       buildId: "build-1",
       builtAt: new Date().toISOString(),
@@ -1497,11 +1497,11 @@ test(
     await cell.recordInbound({
       connectionId: attached.connectionId,
       at: new Date().toISOString(),
-      agent,
+      daemonBuild,
     });
 
     const meta = await client.hgetall(metaKey(serverId));
-    assertEquals(meta?.agent, JSON.stringify(agent));
+    assertEquals(meta?.daemonBuild, JSON.stringify(daemonBuild));
   }),
 );
 

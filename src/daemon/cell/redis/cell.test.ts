@@ -126,10 +126,18 @@ test("detachDaemonSocket releases lease and clears online state", async () => {
   }
 });
 
-test("recordInbound coalesces rapid pings without agent", async () => {
+test("recordInbound coalesces rapid pings without daemonBuild", async () => {
   const { client, cell, serverId } = createTestCell();
   try {
-    const attached = await cell.attachDaemonSocket({ keyId: "key-1" });
+    // Backdate connectedAt well past the coalesce floor so the first
+    // recordInbound below is guaranteed to bump lastInboundAt to `t0`
+    // deterministically, instead of racing against attach's own `nowIso()`
+    // (which previously made this test flaky by ~1ms when both timestamps
+    // landed in the same coalesce window).
+    const attached = await cell.attachDaemonSocket({
+      keyId: "key-1",
+      connectedAt: new Date(Date.now() - 120_000).toISOString(),
+    });
     const t0 = new Date().toISOString();
     await cell.recordInbound({ connectionId: attached.connectionId, at: t0 });
     await cell.recordInbound({
@@ -144,7 +152,7 @@ test("recordInbound coalesces rapid pings without agent", async () => {
   }
 });
 
-test("recordInbound stores agent changes", async () => {
+test("recordInbound stores daemonBuild changes", async () => {
   const { client, cell, serverId } = createTestCell();
   try {
     const attached = await cell.attachDaemonSocket({ keyId: "key-1" });
@@ -152,7 +160,7 @@ test("recordInbound stores agent changes", async () => {
     await cell.recordInbound({
       connectionId: attached.connectionId,
       at,
-      agent: {
+      daemonBuild: {
         commit: "abc123",
         buildId: "build-1",
         channel: "trunk",
@@ -160,9 +168,9 @@ test("recordInbound stores agent changes", async () => {
     });
 
     const meta = await client.hgetall(metaKey(serverId));
-    assertEquals(meta?.agent?.includes("abc123"), true);
+    assertEquals(meta?.daemonBuild?.includes("abc123"), true);
     const snapshot = await cell.getSnapshot();
-    assertEquals(snapshot.agent?.commit, "abc123");
+    assertEquals(snapshot.daemonBuild?.commit, "abc123");
   } finally {
     await cleanupCell(client, serverId);
   }
@@ -447,7 +455,7 @@ test("getDiagnostics returns redis counters after attach inbound enqueue detach"
     await cell.recordInbound({
       connectionId: attached.connectionId,
       at,
-      agent: { commit: "diag", buildId: "b1" },
+      daemonBuild: { commit: "diag", buildId: "b1" },
     });
     await cell.enqueue({
       kind: "command-dispatch",

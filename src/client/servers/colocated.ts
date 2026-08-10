@@ -90,12 +90,20 @@ async function addLocalMachineKeyIds(
   }
 }
 
+/** Server ids not already marked colocated (self-host pin candidates). */
+export function uncolocatedCandidates(
+  serverIds: string[],
+  colocated: Set<string>,
+): string[] {
+  return serverIds.filter((id) => !colocated.has(id))
+}
+
 async function addSelfHostPinnedIds(
   db: Db,
   serverIds: string[],
   colocated: Set<string>,
 ): Promise<void> {
-  const candidates = serverIds.filter((id) => !colocated.has(id))
+  const candidates = uncolocatedCandidates(serverIds, colocated)
   if (candidates.length === 0) return
 
   // Same join as findSystemEnvironmentForServer(…, 'turbopanel').

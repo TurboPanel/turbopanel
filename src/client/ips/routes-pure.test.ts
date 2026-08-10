@@ -3,8 +3,16 @@ import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import {
   assertIpScopeFkRules,
+  assertVpnIpPatchVpnId,
+  applyJsonbPatchFields,
   isIpAddressUniqueViolation,
+  mergeIpScopeFks,
   parseCreateIpAddress,
+  parseCreateIpEnums,
+  parseEnumQueryFilter,
+  parseScopeFkUuid,
+  rejectImmutableIpPatchFields,
+  serializeIpRow,
 } from './ip-create-validation.ts'
 
 /**
@@ -15,8 +23,13 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
-function mockContext(): Context<AppEnv> {
+function mockContext(query: Record<string, string> = {}): Context<AppEnv> {
   return {
+    req: {
+      query(key: string) {
+        return query[key]
+      },
+    },
     json(body: unknown, status?: number) {
       return Response.json(body, { status })
     },
@@ -71,4 +84,87 @@ test('assertIpScopeFkRules enforces VPN scope, free-pool, and datacenter-anchor 
   assertEquals(assertIpScopeFkRules(c, 'vpn', { vpnId: 'vpn-1' }), null)
   assertEquals(assertIpScopeFkRules(c, 'datacenter', { datacenterId: 'dc-1' }), null)
   assertEquals(assertIpScopeFkRules(c, 'datacenter', { serverId: 'srv-1' }), null)
+})
+
+test('serializeIpRow derives version from address', () => {
+  const row = {
+    id: 'ip-1',
+    organizationId: 'org-1',
+    datacenterId: null,
+    networkId: null,
+    serverId: null,
+    vpnId: null,
+    address: '203.0.113.10',
+    allocation: 'dedicated',
+    scope: 'public',
+    displayName: null,
+    metadata: null,
+    options: null,
+    createdAt: '2020-01-01T00:00:00.000Z',
+    updatedAt: '2020-01-01T00:00:00.000Z',
+  }
+  assertEquals(serializeIpRow(row).version, 4)
+})
+
+test('parseCreateIpEnums validates allocation and scope', async () => {
+  const c = mockContext()
+  assertEquals(
+    parseCreateIpEnums(c, { allocation: 'shared', scope: 'public' }),
+    { allocation: 'shared', scope: 'public' },
+  )
+  const badAllocation = parseCreateIpEnums(c, { allocation: 'pool', scope: 'public' })
+  if (!(badAllocation instanceof Response)) throw new TypeError('expected response')
+  assertEquals(badAllocation.status, 400)
+})
+
+test('rejectImmutableIpPatchFields blocks address and scope mutations', async () => {
+  const c = mockContext()
+  assertEquals(rejectImmutableIpPatchFields(c, {}), null)
+  const denied = rejectImmutableIpPatchFields(c, { address: '203.0.113.11' })
+  if (!(denied instanceof Response)) throw new TypeError('expected response')
+  assertEquals(denied.status, 400)
+})
+
+test('mergeIpScopeFks preserves existing FKs when patch omits them', () => {
+  const existing = {
+    scope: 'vpn',
+    vpnId: 'vpn-1',
+    serverId: null,
+    datacenterId: null,
+    networkId: null,
+    address: '203.0.113.5',
+  }
+  assertEquals(
+    mergeIpScopeFks(existing, { serverId: 'srv-2' }),
+    { vpnId: 'vpn-1', serverId: 'srv-2', datacenterId: null, networkId: null },
+  )
+})
+
+test('parseEnumQueryFilter and parseScopeFkUuid validate query and body UUIDs', async () => {
+  const c = mockContext({ scope: 'public', allocation: 'dedicated' })
+  assertEquals(parseEnumQueryFilter(c, 'scope', new Set(['public', 'vpn'])), 'public')
+  const badScope = parseEnumQueryFilter(mockContext({ scope: 'loopback' }), 'scope', new Set(['public']))
+  if (!(badScope instanceof Response)) throw new TypeError('expected response')
+  assertEquals(badScope.status, 400)
+
+  const valid = '550e8400-e29b-41d4-a716-446655440000'
+  assertEquals(parseScopeFkUuid(valid), valid)
+  assertEquals(parseScopeFkUuid(undefined), undefined)
+  assertEquals(parseScopeFkUuid(null), null)
+  assertEquals(parseScopeFkUuid('bad'), 'invalid')
+})
+
+test('assertVpnIpPatchVpnId rejects clearing vpnId on vpn-scoped rows', async () => {
+  const c = mockContext()
+  assertEquals(assertVpnIpPatchVpnId(c, 'public', null), null)
+  const denied = assertVpnIpPatchVpnId(c, 'vpn', null)
+  if (!(denied instanceof Response)) throw new TypeError('expected response')
+  assertEquals(denied.status, 400)
+})
+
+test('applyJsonbPatchFields merges metadata and options on IP patch', async () => {
+  const c = mockContext()
+  const patchFields = { updatedAt: '2020-01-01T00:00:00.000Z' }
+  assertEquals(applyJsonbPatchFields(c, { metadata: { tag: 'edge' } }, patchFields), null)
+  assertEquals(patchFields.metadata, { tag: 'edge' })
 })

@@ -5,6 +5,9 @@
 import { assertEquals } from 'jsr:@std/assert'
 import {
   isUuid,
+  invitationAcceptErrorPayload,
+  invitationEmailsMatch,
+  organizationResourceIdMismatch,
   ownerRemovalConflictMessage,
   parseCreateAccessBody,
   validateAccessCheckQuery,
@@ -209,4 +212,38 @@ test('validateAccessResourceIdQuery requires kind and itemId', () => {
   }
   assertEquals(ok.kind, 'team')
   assertEquals(ok.itemId, otherUuid)
+})
+
+test('invitationEmailsMatch is case and whitespace insensitive', () => {
+  assertEquals(
+    invitationEmailsMatch('User@Example.com', ' user@example.com '),
+    true,
+  )
+  assertEquals(invitationEmailsMatch('a@b.co', 'c@d.co'), false)
+})
+
+test('invitationAcceptErrorPayload maps gone and invalid_grant', () => {
+  assertEquals(invitationAcceptErrorPayload('invalid_grant'), {
+    body: { error: 'Invalid invitation grants' },
+    status: 400,
+  })
+  assertEquals(invitationAcceptErrorPayload('gone'), {
+    body: { error: 'Invitation expired or already used' },
+    status: 410,
+  })
+})
+
+test('organizationResourceIdMismatch only flags organization kind drift', () => {
+  assertEquals(
+    organizationResourceIdMismatch('organization', validUuid, otherUuid),
+    true,
+  )
+  assertEquals(
+    organizationResourceIdMismatch('organization', validUuid, validUuid),
+    false,
+  )
+  assertEquals(
+    organizationResourceIdMismatch('team', otherUuid, validUuid),
+    false,
+  )
 })
