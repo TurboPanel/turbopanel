@@ -36,7 +36,7 @@ TurboPanel gives operators one console for multi-server fleets, application depl
 | --- | --- | --- |
 | **Who runs the control plane** | TurboPanel | You |
 | **Product experience** | Full console + API | Full console + API |
-| **Pricing** | Private early access — [request access](https://turbopanel.io/pricing) | Free, unlimited servers |
+| **Pricing** | Private alpha — [join the waitlist](https://turbopanel.io/pricing) | Private alpha — free, unlimited servers once available |
 | **Best for** | Teams that want us to operate the panel | Teams that want full operational custody |
 
 No artificial feature crippling — the split is **operational responsibility**, not capability.
@@ -61,10 +61,12 @@ Architecture detail: [turbopanel.io/docs/architecture](https://turbopanel.io/doc
 
 ## Get started
 
+Neither path is publicly available yet — both are private alpha, working toward a beta release.
+
 | Path | Link |
 | --- | --- |
-| **TurboPanel High Availability** | [Request early access](https://turbopanel.io/pricing?utm_source=github-main-readme) |
-| **Self-hosted** | [Self-hosted overview](https://turbopanel.io/docs/deployment/self-hosted?utm_source=github-main-readme) → [Control plane install](https://turbopanel.io/docs/deployment/control-plane) |
+| **TurboPanel High Availability** | [Join the waitlist](https://turbopanel.io/pricing?utm_source=github-main-readme) |
+| **Self-hosted** | [Preview self-hosted docs](https://turbopanel.io/docs/deployment/self-hosted?utm_source=github-main-readme) → [Control plane install](https://turbopanel.io/docs/deployment/control-plane) |
 
 Add managed servers with the daemon installer: [Daemon setup](https://turbopanel.io/docs/deployment/daemon-setup).
 

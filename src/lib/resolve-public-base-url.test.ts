@@ -57,3 +57,84 @@ test('resolvePublicBaseUrl reads TURBOPANEL_BASE_URL from platformEnv on Workers
   const res = await app.request('https://internal.invalid/t')
   assertEquals(await res.text(), 'https://workers.example.com')
 })
+
+test('parseInstallBaseUrl rejects blank candidates', () => {
+  assertEquals(parseInstallBaseUrl(undefined), null)
+  assertEquals(parseInstallBaseUrl('   '), null)
+})
+
+test('resolvePublicBaseUrl prefers Deno TURBOPANEL_BASE_URL over forwarded headers', async () => {
+  const previous = Deno.env.get('TURBOPANEL_BASE_URL')
+  const previousPublic = Deno.env.get('TURBOPANEL_PUBLIC_URLS')
+  Deno.env.set('TURBOPANEL_BASE_URL', 'https://env.example.com')
+  Deno.env.delete('TURBOPANEL_PUBLIC_URLS')
+  try {
+    const app = new Hono<AppEnv>()
+    app.get('/t', async (c) => {
+      c.set('platformEnv', {})
+      return c.text(await resolvePublicBaseUrl(c))
+    })
+    const res = await app.request('https://internal.invalid/t', {
+      headers: {
+        'x-forwarded-host': 'ignored.example.com',
+        'x-forwarded-proto': 'https',
+      },
+    })
+    assertEquals(await res.text(), 'https://env.example.com')
+  } finally {
+    if (previous === undefined) Deno.env.delete('TURBOPANEL_BASE_URL')
+    else Deno.env.set('TURBOPANEL_BASE_URL', previous)
+    if (previousPublic === undefined) Deno.env.delete('TURBOPANEL_PUBLIC_URLS')
+    else Deno.env.set('TURBOPANEL_PUBLIC_URLS', previousPublic)
+  }
+})
+
+test('resolvePublicBaseUrl accepts https forwarded host when env is unset', async () => {
+  const previousBase = Deno.env.get('TURBOPANEL_BASE_URL')
+  const previousPublic = Deno.env.get('TURBOPANEL_PUBLIC_URLS')
+  Deno.env.delete('TURBOPANEL_BASE_URL')
+  Deno.env.delete('TURBOPANEL_PUBLIC_URLS')
+  try {
+    const app = new Hono<AppEnv>()
+    app.get('/t', async (c) => {
+      c.set('platformEnv', {})
+      return c.text(await resolvePublicBaseUrl(c))
+    })
+    const res = await app.request('https://internal.invalid/t', {
+      headers: {
+        'x-forwarded-host': 'edge.example.com',
+        'x-forwarded-proto': 'https',
+      },
+    })
+    assertEquals(await res.text(), 'https://edge.example.com')
+  } finally {
+    if (previousBase === undefined) Deno.env.delete('TURBOPANEL_BASE_URL')
+    else Deno.env.set('TURBOPANEL_BASE_URL', previousBase)
+    if (previousPublic === undefined) Deno.env.delete('TURBOPANEL_PUBLIC_URLS')
+    else Deno.env.set('TURBOPANEL_PUBLIC_URLS', previousPublic)
+  }
+})
+
+test('resolvePublicBaseUrl uses TURBOPANEL_PUBLIC_URLS first entry when set', async () => {
+  const previousBase = Deno.env.get('TURBOPANEL_BASE_URL')
+  const previousPublic = Deno.env.get('TURBOPANEL_PUBLIC_URLS')
+  Deno.env.delete('TURBOPANEL_BASE_URL')
+  Deno.env.set(
+    'TURBOPANEL_PUBLIC_URLS',
+    'https://public.example.com,https://secondary.example.com',
+  )
+  try {
+    const app = new Hono<AppEnv>()
+    app.get('/t', async (c) => {
+      c.set('platformEnv', {})
+      return c.text(await resolvePublicBaseUrl(c))
+    })
+    const res = await app.request('https://internal.invalid/t')
+    assertEquals(await res.text(), 'https://public.example.com')
+  } finally {
+    if (previousBase === undefined) Deno.env.delete('TURBOPANEL_BASE_URL')
+    else Deno.env.set('TURBOPANEL_BASE_URL', previousBase)
+    if (previousPublic === undefined) Deno.env.delete('TURBOPANEL_PUBLIC_URLS')
+    else Deno.env.set('TURBOPANEL_PUBLIC_URLS', previousPublic)
+  }
+})

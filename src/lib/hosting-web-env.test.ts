@@ -106,3 +106,34 @@ test('sanitizeHostingWebEnv ignores non-string values in raw map', () => {
   const raw = { APP_ENV: 'prod', BAD: 123 as unknown as string }
   assertEquals(sanitizeHostingWebEnv(raw), { APP_ENV: 'prod' })
 })
+
+test('attachWebMetadataToTraditionalSites skips empty web payloads', () => {
+  const sites = [
+    {
+      composeServiceName: 'web',
+      engine: 'nginx' as const,
+      root: 'public',
+      listenPort: 18080,
+    },
+  ]
+  const out = attachWebMetadataToTraditionalSites(sites, [
+    { composeServiceName: 'web', web: { env: {}, php: {} } },
+  ])
+  assertEquals(out[0], sites[0])
+})
+
+test('attachWebMetadataToTraditionalSites attaches php-only metadata', () => {
+  const sites = [
+    {
+      composeServiceName: 'web',
+      engine: 'apache' as const,
+      root: 'public',
+      listenPort: 18080,
+    },
+  ]
+  const out = attachWebMetadataToTraditionalSites(sites, [
+    { composeServiceName: 'web', web: { php: { version: '8.3' } } },
+  ])
+  assertEquals(out[0]?.php, { version: '8.3' })
+  assertEquals(out[0]?.webEnv, undefined)
+})

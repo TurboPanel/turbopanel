@@ -7,6 +7,7 @@ import {
 } from './network-scope.ts'
 import {
   applyCidrPatch,
+  parseCreateNetworkOptions,
   parseCreateOrganizationId,
   parseNetworkKind,
   parseNetworkPatchFields,
@@ -156,6 +157,13 @@ test('parseCreateOrganizationId rejects mismatched context organizationId', asyn
   assertEquals(await mismatch.json(), { error: 'organizationId mismatch' })
 })
 
+test('parseCreateOrganizationId rejects non-UUID organizationId', async () => {
+  const bad = parseCreateOrganizationId(mockContext(), { organizationId: 'not-a-uuid' })
+  if (!(bad instanceof Response)) throw new TypeError('expected response')
+  assertEquals(bad.status, 400)
+  assertEquals(await bad.json(), { error: 'Invalid request' })
+})
+
 test('parseNetworkKind and CIDR helpers validate create/patch input', async () => {
   const c = mockContext()
   assertEquals(parseNetworkKind(c, { kind: 'docker' }), 'docker')
@@ -170,6 +178,74 @@ test('parseNetworkKind and CIDR helpers validate create/patch input', async () =
   const patchFields = { updatedAt: '2020-01-01T00:00:00.000Z' }
   assertEquals(applyCidrPatch(c, { cidr: null }, patchFields), null)
   assertEquals(patchFields.cidr, null)
+})
+
+test('parseOptionalDisplayNameField and CIDR helpers reject invalid values', async () => {
+  const c = mockContext()
+  const badName = parseOptionalDisplayNameField(c, {
+    displayName: 'set',
+    name: 'bad/name',
+  })
+  if (!(badName instanceof Response)) throw new TypeError('expected response')
+  assertEquals(badName.status, 400)
+
+  const badCidr = parseOptionalCidrField(c, { cidr: 'not-a-cidr' })
+  if (!(badCidr instanceof Response)) throw new TypeError('expected response')
+  assertEquals(badCidr.status, 400)
+
+  const patchFields = { updatedAt: '2020-01-01T00:00:00.000Z' }
+  const badPatchCidr = applyCidrPatch(c, { cidr: '999.0.0.0/99' }, patchFields)
+  if (!(badPatchCidr instanceof Response)) throw new TypeError('expected response')
+  assertEquals(badPatchCidr.status, 400)
+})
+
+test('parseNetworkPatchFields rejects invalid name metadata and options', async () => {
+  const c = mockContext()
+
+  const badName = parseNetworkPatchFields(c, { name: 12 }, 'datacenter')
+  if (!(badName instanceof Response)) throw new TypeError('expected response')
+  assertEquals(badName.status, 400)
+
+  const badDisplayName = parseNetworkPatchFields(c, {
+    displayName: 'set',
+    name: 'bad/name',
+  }, 'datacenter')
+  if (!(badDisplayName instanceof Response)) throw new TypeError('expected response')
+  assertEquals(badDisplayName.status, 400)
+
+  const badMetadata = parseNetworkPatchFields(c, { metadata: [] }, 'datacenter')
+  if (!(badMetadata instanceof Response)) throw new TypeError('expected response')
+  assertEquals(badMetadata.status, 400)
+
+  const badOptions = parseNetworkPatchFields(c, { options: 'nope' }, 'datacenter')
+  if (!(badOptions instanceof Response)) throw new TypeError('expected response')
+  assertEquals(badOptions.status, 400)
+
+  const badDockerOptions = parseNetworkPatchFields(c, { options: {} }, 'docker')
+  if (!(badDockerOptions instanceof Response)) throw new TypeError('expected response')
+  assertEquals(await badDockerOptions.json(), { error: 'docker_network_name_required' })
+})
+
+test('parseCreateNetworkOptions requires docker network name for docker kind', async () => {
+  const c = mockContext()
+  assertEquals(parseCreateNetworkOptions(c, {}, 'datacenter'), null)
+  assertEquals(
+    parseCreateNetworkOptions(c, { options: { note: 'lan' } }, 'datacenter'),
+    { note: 'lan' },
+  )
+
+  const badDocker = parseCreateNetworkOptions(c, { options: {} }, 'docker')
+  if (!(badDocker instanceof Response)) throw new TypeError('expected response')
+  assertEquals(await badDocker.json(), { error: 'docker_network_name_required' })
+
+  assertEquals(
+    parseCreateNetworkOptions(c, { options: { dockerNetworkName: 'shared' } }, 'docker'),
+    { dockerNetworkName: 'shared' },
+  )
+
+  const badJson = parseCreateNetworkOptions(c, { options: [] }, 'docker')
+  if (!(badJson instanceof Response)) throw new TypeError('expected response')
+  assertEquals(badJson.status, 400)
 })
 
 test('requireDockerNetworkOptions enforces dockerNetworkName', async () => {

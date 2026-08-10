@@ -271,6 +271,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/openapi/index.test.ts \
   src/daemon/openapi/readiness.test.ts \
   src/daemon/openapi/version.test.ts \
+  src/daemon/version.hostfree.test.ts \
   src/daemon/rate-limit/contracts.test.ts \
   src/daemon/rate-limit/inbound-window.test.ts \
   src/daemon/rate-limit/keys.test.ts \
@@ -284,6 +285,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/developer/database-routes-helpers.hostfree.test.ts \
   src/developer/database-routes.test.ts \
   src/developer/database-routes-shared.test.ts \
+  src/developer/database-studio-routes.hostfree.test.ts \
   src/developer/drizzle-studio.test.ts \
   src/developer/drizzle-studio-spawn.test.ts \
   src/developer/dev-sync-archive.deno.test.ts \

@@ -519,7 +519,7 @@ describe("developer daemon routes", () => {
     );
     expect(response.status).toBe(200);
     const body = await response.json() as { connections: Array<{ id: string }> };
-    expect(body.connections.length).toBe(1);
+    expect(body.connections).toHaveLength(1);
     expect(body.connections[0]?.id).toBe(SERVER_ID);
   });
 
@@ -664,7 +664,7 @@ describe("developer daemon routes", () => {
     const body = await response.json() as {
       commands: Array<{ command: string; status: string }>;
     };
-    expect(body.commands.length).toBe(1);
+    expect(body.commands).toHaveLength(1);
     expect(body.commands[0]?.command).toBe("daemon.ping");
     expect(body.commands[0]?.status).toBe("done");
   });

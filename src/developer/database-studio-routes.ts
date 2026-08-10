@@ -2,8 +2,14 @@ import type { Hono } from 'hono'
 import { postgresConfigFromContext } from './database-routes-shared.ts'
 import { startDrizzleStudio } from './drizzle-studio.ts'
 
+type StartDrizzleStudio = typeof startDrizzleStudio
+
 /** Deno-only: spawn drizzle-kit studio (not bundled in Workers). */
-export function registerDatabaseStudioRoutes(developer: Hono): void {
+export function registerDatabaseStudioRoutes(
+  developer: Hono,
+  opts?: { startStudio?: StartDrizzleStudio },
+): void {
+  const startStudio = opts?.startStudio ?? startDrizzleStudio
   developer.post('/database/studio', async (c) => {
     const meta = postgresConfigFromContext(c)
     if (!meta.configured) {
@@ -13,7 +19,7 @@ export function registerDatabaseStudioRoutes(developer: Hono): void {
       )
     }
 
-    const started = await startDrizzleStudio()
+    const started = await startStudio()
     if (!started.ok) {
       const status = started.error.includes('loopback') ? 400 : 500
       return c.json({ ok: false, error: started.error }, status)

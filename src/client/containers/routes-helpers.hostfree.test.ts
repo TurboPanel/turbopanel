@@ -81,3 +81,66 @@ test('parsePatchContainerFields strips promoted metadata keys', () => {
   assertEquals(parsed.patch.metadata?.containerId, undefined)
   assertEquals(parsed.patch.status, 'stopped')
 })
+
+test('parseCreateContainerFields rejects invalid jsonb and missing identity fields', () => {
+  const missingServer = parseCreateContainerFields({
+    serviceId: validUuid,
+    containerId: 'docker-id',
+    containerName: 'c1',
+    status: 'running',
+    composeServiceName: 'web',
+  })
+  assertEquals(missingServer.ok, false)
+
+  const badMetadata = parseCreateContainerFields({
+    serviceId: validUuid,
+    serverId: validUuid,
+    containerId: 'docker-id',
+    containerName: 'c1',
+    status: 'running',
+    composeServiceName: 'web',
+    metadata: [],
+  })
+  assertEquals(badMetadata.ok, false)
+  if (badMetadata.ok) throw new TypeError('expected invalid metadata')
+  assertEquals(badMetadata.field, 'metadata')
+
+  const badOptions = parseCreateContainerFields({
+    serviceId: validUuid,
+    serverId: validUuid,
+    containerId: 'docker-id',
+    containerName: 'c1',
+    status: 'running',
+    composeServiceName: 'web',
+    options: 'nope',
+  })
+  assertEquals(badOptions.ok, false)
+  if (badOptions.ok) throw new TypeError('expected invalid options')
+  assertEquals(badOptions.field, 'options')
+})
+
+test('parsePatchContainerFields rejects invalid name metadata and options', () => {
+  assertEquals(parsePatchContainerFields({ name: 12 }).ok, false)
+
+  const badMetadata = parsePatchContainerFields({ metadata: [] })
+  assertEquals(badMetadata.ok, false)
+  if (badMetadata.ok) throw new TypeError('expected invalid metadata')
+  assertEquals(badMetadata.field, 'metadata')
+
+  const badOptions = parsePatchContainerFields({ options: 'nope' })
+  assertEquals(badOptions.ok, false)
+  if (badOptions.ok) throw new TypeError('expected invalid options')
+  assertEquals(badOptions.field, 'options')
+
+  const withOptions = parsePatchContainerFields({
+    options: { note: 'keep' },
+    containerId: 'docker-id',
+    containerName: 'renamed',
+    composeServiceName: 'api',
+  })
+  if (!withOptions.ok) throw new TypeError('expected valid patch fields')
+  assertEquals(withOptions.patch.options, { note: 'keep' })
+  assertEquals(withOptions.patch.containerId, 'docker-id')
+  assertEquals(withOptions.patch.containerName, 'renamed')
+  assertEquals(withOptions.patch.composeServiceName, 'api')
+})

@@ -73,6 +73,25 @@ test('decodePrivateKeyToPkcs8 rejects unsupported PEM labels', () => {
   )
 })
 
+test('decodePrivateKeyToPkcs8 wraps PKCS#1 RSA PRIVATE KEY as PKCS#8', () => {
+  // Minimal DER payload — wrap path only needs valid PEM base64 + RSA OID in the envelope.
+  const rsaDer = new Uint8Array(200)
+  for (let i = 0; i < rsaDer.length; i += 1) rsaDer[i] = i & 0xff
+  const pem = encodePemBlock('RSA PRIVATE KEY', rsaDer)
+  const decoded = decodePrivateKeyToPkcs8(pem)
+  assertEquals(decoded.algorithm, 'rsa')
+  assertEquals(decoded.pkcs8.length > rsaDer.length, true)
+})
+
+test('decodePrivateKeyToPkcs8 rejects unrecognized PKCS#8 algorithms', () => {
+  const emptyPkcs8 = encodePemBlock('PRIVATE KEY', new Uint8Array([0x30, 0x03, 0x02, 0x01, 0x00]))
+  assertThrows(
+    () => decodePrivateKeyToPkcs8(emptyPkcs8),
+    PemError,
+    'unrecognized PKCS#8 key algorithm',
+  )
+})
+
 test('encodePemBlock wraps long base64 across 64-character lines', () => {
   const der = new Uint8Array(200)
   for (let i = 0; i < der.length; i += 1) der[i] = i

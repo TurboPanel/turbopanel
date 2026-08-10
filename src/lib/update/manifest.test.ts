@@ -211,3 +211,69 @@ test("seedTrunkManifestCacheForTests short-circuits the fetch path", async () =>
     resetTrunkManifestCacheForTests();
   }
 });
+
+test("resolveTrunkManifest returns null when trunk manifestUrl is missing", async () => {
+  resetTrunkManifestCacheForTests();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/channels.json")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ channels: { trunk: {} } }), { status: 200 }),
+      );
+    }
+    return originalFetch(input);
+  }) as typeof fetch;
+  try {
+    assertEquals(await resolveTrunkManifest(), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetTrunkManifestCacheForTests();
+  }
+});
+
+test("resolveTrunkManifest returns null when manifest fetch fails", async () => {
+  resetTrunkManifestCacheForTests();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/channels.json")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            channels: {
+              trunk: {
+                manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+              },
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+    }
+    if (url.endsWith("/channels/trunk/manifest.json")) {
+      return Promise.resolve(new Response("missing", { status: 404 }));
+    }
+    return originalFetch(input);
+  }) as typeof fetch;
+  try {
+    assertEquals(await resolveTrunkManifest(), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetTrunkManifestCacheForTests();
+  }
+});
+
+test("resolveTrunkManifest returns null when fetch throws", async () => {
+  resetTrunkManifestCacheForTests();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => {
+    throw new TypeError("network down");
+  }) as typeof fetch;
+  try {
+    assertEquals(await resolveTrunkManifest(), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetTrunkManifestCacheForTests();
+  }
+});
