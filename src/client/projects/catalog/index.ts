@@ -134,7 +134,7 @@ function postgresCatalogEntry(): CatalogEntry {
   return {
     code: 'postgres',
     kind: 'managed',
-    name: 'PostgreSQL',
+    displayName: 'PostgreSQL',
     description: 'Managed PostgreSQL database',
     compose: composeDocument({
       services: {
@@ -149,9 +149,67 @@ function postgresCatalogEntry(): CatalogEntry {
     },
     environments: [
       {
-        name: 'Production',
+        displayName: 'Production',
         description: 'Production environment',
         variables: [{ key: 'POSTGRES_PASSWORD', isSecret: true }],
+      },
+    ],
+  }
+}
+
+function mysqlCatalogEntry(): CatalogEntry {
+  const spec = getManagedEngineSpec('mysql')
+  if (!spec) throw new TypeError('mysql managed engine spec missing')
+  return {
+    code: 'mysql',
+    kind: 'managed',
+    displayName: 'MySQL',
+    description: 'Managed MySQL database',
+    compose: composeDocument({
+      services: {
+        mysql: { image: spec.defaultImage },
+      },
+    }),
+    options: {
+      engine: spec.engine,
+      rootUsername: spec.rootUsername,
+      provider: spec.principalProvider,
+      port: spec.defaultPort,
+    },
+    environments: [
+      {
+        displayName: 'Production',
+        description: 'Production environment',
+        variables: [{ key: 'MYSQL_ROOT_PASSWORD', isSecret: true }],
+      },
+    ],
+  }
+}
+
+function mariadbCatalogEntry(): CatalogEntry {
+  const spec = getManagedEngineSpec('mariadb')
+  if (!spec) throw new TypeError('mariadb managed engine spec missing')
+  return {
+    code: 'mariadb',
+    kind: 'managed',
+    displayName: 'MariaDB',
+    description: 'Managed MariaDB database',
+    compose: composeDocument({
+      services: {
+        mariadb: { image: spec.defaultImage },
+      },
+    }),
+    options: {
+      engine: spec.engine,
+      rootUsername: spec.rootUsername,
+      provider: spec.principalProvider,
+      port: spec.defaultPort,
+    },
+    environments: [
+      {
+        displayName: 'Production',
+        description: 'Production environment',
+        variables: [{ key: 'MYSQL_ROOT_PASSWORD', isSecret: true }],
       },
     ],
   }
@@ -161,7 +219,7 @@ const CATALOG: CatalogEntry[] = [
   {
     code: 'wordpress-mysql',
     kind: 'template',
-    name: 'WordPress with MySQL',
+    displayName: 'WordPress with MySQL',
     description: 'WordPress site with MySQL database',
     compose: composeDocument({
       services: {
@@ -172,7 +230,7 @@ const CATALOG: CatalogEntry[] = [
     options: { stack: 'wordpress-mysql' },
     environments: [
       {
-        name: 'production',
+        displayName: 'production',
         description: 'Production environment',
         variables: [
           { key: 'MYSQL_ROOT_PASSWORD', isSecret: true },
@@ -184,7 +242,7 @@ const CATALOG: CatalogEntry[] = [
   {
     code: 'static-site',
     kind: 'template',
-    name: 'Static Site',
+    displayName: 'Static Site',
     description: 'Basic static web server template',
     compose: composeDocument({
       services: {
@@ -193,64 +251,18 @@ const CATALOG: CatalogEntry[] = [
     }),
     environments: [
       {
-        name: 'production',
+        displayName: 'production',
         description: 'Production environment',
       },
     ],
   },
   postgresCatalogEntry(),
-  {
-    code: 'mysql',
-    kind: 'managed',
-    name: 'MySQL',
-    description: 'Managed MySQL database',
-    compose: composeDocument({
-      services: {
-        mysql: { image: 'mysql:8' },
-      },
-    }),
-    options: {
-      engine: 'mysql',
-      rootUsername: 'root',
-      provider: 'mysql',
-      port: 3306,
-    },
-    environments: [
-      {
-        name: 'Production',
-        description: 'Production environment',
-        variables: [{ key: 'MYSQL_ROOT_PASSWORD', isSecret: true }],
-      },
-    ],
-  },
-  {
-    code: 'mariadb',
-    kind: 'managed',
-    name: 'MariaDB',
-    description: 'Managed MariaDB database',
-    compose: composeDocument({
-      services: {
-        mariadb: { image: 'mariadb:11' },
-      },
-    }),
-    options: {
-      engine: 'mariadb',
-      rootUsername: 'root',
-      provider: 'mysql',
-      port: 3306,
-    },
-    environments: [
-      {
-        name: 'Production',
-        description: 'Production environment',
-        variables: [{ key: 'MYSQL_ROOT_PASSWORD', isSecret: true }],
-      },
-    ],
-  },
+  mysqlCatalogEntry(),
+  mariadbCatalogEntry(),
   {
     code: 'redis',
     kind: 'managed',
-    name: 'Redis',
+    displayName: 'Redis',
     description: 'Managed Redis cache',
     compose: composeDocument({
       services: {
@@ -265,7 +277,7 @@ const CATALOG: CatalogEntry[] = [
     },
     environments: [
       {
-        name: 'Production',
+        displayName: 'Production',
         description: 'Production environment',
         variables: [{ key: 'REDIS_PASSWORD', isSecret: true }],
       },
@@ -274,7 +286,7 @@ const CATALOG: CatalogEntry[] = [
   {
     code: 'clickhouse',
     kind: 'managed',
-    name: 'ClickHouse',
+    displayName: 'ClickHouse',
     description: 'Managed ClickHouse analytics database',
     compose: composeDocument({
       services: {
@@ -289,7 +301,7 @@ const CATALOG: CatalogEntry[] = [
     },
     environments: [
       {
-        name: 'Production',
+        displayName: 'Production',
         description: 'Production environment',
         variables: [{ key: 'CLICKHOUSE_PASSWORD', isSecret: true }],
       },

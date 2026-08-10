@@ -58,7 +58,7 @@ test('parseCreateIpAddress rejects client-supplied version and invalid addresses
   assertEquals(parsed.address, '203.0.113.10')
 })
 
-test('assertIpScopeFkRules enforces VPN scope and free-pool datacenter rules', async () => {
+test('assertIpScopeFkRules enforces VPN scope, free-pool, and datacenter-anchor rules', async () => {
   const c = mockContext()
 
   await expectInvalidRequest(assertIpScopeFkRules(c, 'vpn', {}))
@@ -67,6 +67,8 @@ test('assertIpScopeFkRules enforces VPN scope and free-pool datacenter rules', a
     datacenterId: 'dc-1',
     serverId: 'srv-1',
   }))
+  await expectInvalidRequest(assertIpScopeFkRules(c, 'datacenter', {}))
   assertEquals(assertIpScopeFkRules(c, 'vpn', { vpnId: 'vpn-1' }), null)
   assertEquals(assertIpScopeFkRules(c, 'datacenter', { datacenterId: 'dc-1' }), null)
+  assertEquals(assertIpScopeFkRules(c, 'datacenter', { serverId: 'srv-1' }), null)
 })

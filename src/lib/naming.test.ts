@@ -9,7 +9,10 @@ import {
   MAX_PRINCIPAL_USERNAME_LENGTH,
   RESERVED_DEPLOY_VARIABLE_KEYS,
   RESERVED_PRINCIPAL_USERNAMES,
+  assertSafeBindingKeyPrefix,
   assertSafePrincipalUsername,
+  bindingPrefixedKeys,
+  DEFAULT_BINDING_KEY_PREFIX,
   containerNameFromService,
   dockerVolumeNameFromStorageId,
   ingressContainerNameFromService,
@@ -17,7 +20,6 @@ import {
   isReservedPrincipalUsername,
   isValidDockerResourceName,
   managedContainerName,
-  managedIngressComposeServiceName,
   principalHomeDir,
   principalSshDir,
   principalVolumePath,
@@ -68,6 +70,14 @@ test('containerNameFromService suffixes ordinal when multi-instance', () => {
 
 test('managedContainerName always carries ordinal suffix on service id', () => {
   assertEquals(managedContainerName('sid-1'), 'sid-1-1')
+  assertEquals(managedContainerName('sid-1', 2), 'sid-1-2')
+  assertEquals(managedContainerName('sid-1', 3), 'sid-1-3')
+})
+
+test('managedContainerName rejects non-positive ordinals', () => {
+  assertThrows(() => managedContainerName('sid-1', 0), TypeError)
+  assertThrows(() => managedContainerName('sid-1', 1.5), TypeError)
+  assertThrows(() => managedContainerName('has space', 1), TypeError)
 })
 
 test('INGRESS_CONTAINER_NAME_SUFFIX is -in', () => {
@@ -90,10 +100,6 @@ test('ingressContainerNameFromService rejects invalid service ids', () => {
     TypeError,
     'Invalid ingress container name for service id',
   )
-})
-
-test('managedIngressComposeServiceName appends -ingress to the engine compose key', () => {
-  assertEquals(managedIngressComposeServiceName('postgres'), 'postgres-ingress')
 })
 
 test('dockerVolumeNameFromStorageId returns the storage UUID', () => {
@@ -199,4 +205,25 @@ test('RESERVED_DEPLOY_VARIABLE_KEYS covers tenant-deploy reserved keys', () => {
     assertEquals(isReservedDeployVariableKey(key), true)
   }
   assertEquals(isReservedDeployVariableKey('MY_APP_KEY'), false)
+})
+
+test('bindingPrefixedKeys formats prefixed binding env keys', () => {
+  assertEquals(bindingPrefixedKeys('DATABASE'), {
+    url: 'DATABASE_URL',
+    caCert: 'DATABASE_CA_CERT',
+    readSplit: 'DATABASE_READ_SPLIT',
+    host: 'DATABASE_HOST',
+    port: 'DATABASE_PORT',
+    database: 'DATABASE_NAME',
+    user: 'DATABASE_USER',
+    password: 'DATABASE_PASSWORD',
+  })
+  assertEquals(DEFAULT_BINDING_KEY_PREFIX, 'DATABASE')
+})
+
+test('assertSafeBindingKeyPrefix rejects reserved TURBOPANEL', () => {
+  assertEquals(assertSafeBindingKeyPrefix('APP'), 'APP')
+  assertThrows(() => assertSafeBindingKeyPrefix('TURBOPANEL'), TypeError)
+  assertThrows(() => assertSafeBindingKeyPrefix('TURBOPANEL_X'), TypeError)
+  assertThrows(() => assertSafeBindingKeyPrefix('9bad'), TypeError)
 })

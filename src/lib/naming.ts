@@ -31,11 +31,18 @@ export function containerNameFromService(input: {
 }
 
 /**
- * Managed engines always carry the ordinal so a future read-replica fan-out
- * is `-2`, `-3`, … with no rename of the primary.
+ * Managed engines always carry the ordinal so read-replica fan-out is
+ * `-2`, `-3`, … with no rename of the primary (`ordinal` defaults to 1).
  */
-export function managedContainerName(serviceId: string): string {
-  return `${serviceId}-1`
+export function managedContainerName(serviceId: string, ordinal = 1): string {
+  if (!Number.isInteger(ordinal) || ordinal < 1) {
+    throw new TypeError(`Invalid managed container ordinal: ${ordinal}`)
+  }
+  const name = `${serviceId}-${ordinal}`
+  if (!isValidDockerResourceName(name)) {
+    throw new TypeError(`Invalid managed container name for service id: ${serviceId}`)
+  }
+  return name
 }
 
 /** Suffix for Traefik ingress container names (`<serviceId>-in`). */
@@ -43,33 +50,13 @@ export const INGRESS_CONTAINER_NAME_SUFFIX = '-in'
 
 /**
  * Docker `container_name` for a service's dedicated Traefik ingress row
- * (`role='ingress'`, always `ordinal = 1`).
+ * (`role='ingress'`, always `ordinal = 1`). Used by tenant deploy and system
+ * reconcile — managed engines no longer allocate an ingress row.
  */
 export function ingressContainerNameFromService(serviceId: string): string {
   const name = `${serviceId}${INGRESS_CONTAINER_NAME_SUFFIX}`
   if (!isValidDockerResourceName(name)) {
     throw new TypeError(`Invalid ingress container name for service id: ${serviceId}`)
-  }
-  return name
-}
-
-/**
- * Compose service key for a managed service's dedicated Traefik ingress.
- * Must satisfy `service_name_format_check` (`[A-Za-z0-9._-]+`, ≤255).
- */
-export function managedIngressComposeServiceName(
-  engineComposeServiceName: string,
-): string {
-  const name = `${engineComposeServiceName}-ingress`
-  if (name.length === 0 || name.length > 255) {
-    throw new TypeError(
-      `Invalid managed ingress compose service name length: ${name.length}`,
-    )
-  }
-  if (!/^[A-Za-z0-9._-]+$/.test(name)) {
-    throw new TypeError(
-      `Invalid managed ingress compose service name: ${engineComposeServiceName}`,
-    )
   }
   return name
 }
@@ -234,4 +221,68 @@ export const RESERVED_DEPLOY_VARIABLE_KEYS: ReadonlySet<string> = new Set([
 
 export function isReservedDeployVariableKey(key: string): boolean {
   return RESERVED_DEPLOY_VARIABLE_KEYS.has(key)
+}
+
+/** Default `binding.key_prefix` when the operator omits one. */
+export const DEFAULT_BINDING_KEY_PREFIX = 'DATABASE'
+
+/** Binding key-prefix shape (mirrored by DB CHECK `binding_key_prefix_format_check`). */
+export const BINDING_KEY_PREFIX_RE = /^[A-Za-z_]\w*$/
+
+export const MAX_BINDING_KEY_PREFIX_LENGTH = 64
+
+export type BindingPrefixedKeys = {
+  url: string
+  caCert: string
+  readSplit: string
+  host: string
+  port: string
+  database: string
+  user: string
+  password: string
+}
+
+/**
+ * Prefixed env keys a binding materializes for a service. Per-service compute —
+ * not folded into {@link RESERVED_DEPLOY_VARIABLE_KEYS}.
+ */
+export function bindingPrefixedKeys(prefix: string): BindingPrefixedKeys {
+  return {
+    url: `${prefix}_URL`,
+    caCert: `${prefix}_CA_CERT`,
+    readSplit: `${prefix}_READ_SPLIT`,
+    host: `${prefix}_HOST`,
+    port: `${prefix}_PORT`,
+    database: `${prefix}_NAME`,
+    user: `${prefix}_USER`,
+    password: `${prefix}_PASSWORD`,
+  }
+}
+
+/**
+ * Validate a binding key prefix. Rejects malformed prefixes and any prefix
+ * whose emitted keys would land in {@link RESERVED_DEPLOY_VARIABLE_KEYS}
+ * (i.e. reject `TURBOPANEL`).
+ */
+export function assertSafeBindingKeyPrefix(prefix: string): string {
+  const trimmed = prefix.trim()
+  if (
+    trimmed.length < 1 ||
+    trimmed.length > MAX_BINDING_KEY_PREFIX_LENGTH ||
+    !BINDING_KEY_PREFIX_RE.test(trimmed)
+  ) {
+    throw new TypeError('invalid binding key prefix')
+  }
+  const keys = bindingPrefixedKeys(trimmed)
+  for (const key of Object.values(keys)) {
+    if (isReservedDeployVariableKey(key)) {
+      throw new TypeError('binding key prefix collides with reserved deploy keys')
+    }
+  }
+  // Catch the short prefix that would mint reserved keys when extended with
+  // suffixes we control (e.g. `TURBOPANEL` → `TURBOPANEL_SERVICE_ID`).
+  if (trimmed === 'TURBOPANEL' || trimmed.startsWith('TURBOPANEL_')) {
+    throw new TypeError('binding key prefix collides with reserved deploy keys')
+  }
+  return trimmed
 }

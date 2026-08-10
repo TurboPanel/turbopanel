@@ -64,6 +64,14 @@ test('resolveBackupDatabase defaults to the first configured database', () => {
   assertEquals(resolveBackupDatabase(options, undefined), 'postgres')
 })
 
+test('resolveBackupDatabase skips MySQL system schemas for the default', () => {
+  const options = buildOptions({ databases: ['mysql', 'appdb', 'sys'] })
+  assertEquals(resolveBackupDatabase(options, undefined, 'mysql'), 'appdb')
+  assertEquals(resolveBackupDatabase(options, undefined, 'mariadb'), 'appdb')
+  // Explicit request still allowed when present in the list
+  assertEquals(resolveBackupDatabase(options, 'mysql', 'mysql'), 'mysql')
+})
+
 test('resolveBackupDatabase accepts a requested database in the configured list', () => {
   const options = buildOptions()
   assertEquals(resolveBackupDatabase(options, 'app'), 'app')

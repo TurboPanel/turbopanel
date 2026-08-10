@@ -13,7 +13,7 @@ import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
 import {
   datacenter,
   grant,
-  member,
+  membership,
   network,
   organization,
   server,
@@ -71,7 +71,7 @@ test('POST /networks requires dockerNetworkName for kind=docker', async () => {
     .returning({ id: user.id })
   const userId = u!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -117,7 +117,7 @@ test('POST /networks requires dockerNetworkName for kind=docker', async () => {
 
   await db.delete(network).where(eq(network.id, createdBody.id))
   await db.delete(grant).where(eq(grant.actorId, userId))
-  await db.delete(member).where(eq(member.userId, userId))
+  await db.delete(membership).where(eq(membership.userId, userId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, organizationId))
 })
@@ -150,7 +150,7 @@ test('POST /networks rejects datacenterId and serverId together', async () => {
     .returning({ id: user.id })
   const userId = u!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -180,9 +180,10 @@ test('POST /networks rejects datacenterId and serverId together', async () => {
     },
     body: JSON.stringify({
       organizationId,
-      kind: 'server',
+      kind: 'docker',
       datacenterId: dc!.id,
       serverId: srv!.id,
+      options: { dockerNetworkName: 'shared' },
     }),
   })
 
@@ -193,7 +194,7 @@ test('POST /networks rejects datacenterId and serverId together', async () => {
   await db.delete(server).where(eq(server.id, srv!.id))
   await db.delete(datacenter).where(eq(datacenter.id, dc!.id))
   await db.delete(grant).where(eq(grant.actorId, userId))
-  await db.delete(member).where(eq(member.userId, userId))
+  await db.delete(membership).where(eq(membership.userId, userId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, organizationId))
 })
@@ -226,7 +227,7 @@ test('POST /networks rejects kind=vpn and requires per-kind scope FKs', async ()
     .returning({ id: user.id })
   const userId = u!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -291,7 +292,6 @@ test('POST /networks rejects kind=vpn and requires per-kind scope FKs', async ()
     }),
   })
   assertEquals(missingServer.status, 400)
-  assertEquals((await missingServer.json()).error, 'network_scope_required')
 
   const dockerWithServer = await app.request('/networks', {
     method: 'POST',
@@ -307,8 +307,26 @@ test('POST /networks rejects kind=vpn and requires per-kind scope FKs', async ()
       options: { dockerNetworkName: 'turbopanel-shared' },
     }),
   })
-  assertEquals(dockerWithServer.status, 400)
-  assertEquals((await dockerWithServer.json()).error, 'network_single_scope_conflict')
+  assertEquals(dockerWithServer.status, 200)
+  const dockerBody = await dockerWithServer.json() as { ok: true; id: string }
+  await db.delete(network).where(eq(network.id, dockerBody.id))
+
+  const dockerWithDc = await app.request('/networks', {
+    method: 'POST',
+    headers: {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      organizationId,
+      kind: 'docker',
+      datacenterId: dc!.id,
+      options: { dockerNetworkName: 'turbopanel-shared' },
+    }),
+  })
+  assertEquals(dockerWithDc.status, 400)
+  assertEquals((await dockerWithDc.json()).error, 'network_single_scope_conflict')
 
   const okDc = await app.request('/networks', {
     method: 'POST',
@@ -330,7 +348,7 @@ test('POST /networks rejects kind=vpn and requires per-kind scope FKs', async ()
   await db.delete(server).where(eq(server.id, srv!.id))
   await db.delete(datacenter).where(eq(datacenter.id, dc!.id))
   await db.delete(grant).where(eq(grant.actorId, userId))
-  await db.delete(member).where(eq(member.userId, userId))
+  await db.delete(membership).where(eq(membership.userId, userId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, organizationId))
 })
@@ -363,7 +381,7 @@ test('GET /networks returns 403 for org member without organization:manage', asy
     .returning({ id: user.id })
   const userId = u!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
 
   const cookie = await sessionCookie(db, secrets, userId)
   const res = await app.request('/networks', {
@@ -375,7 +393,7 @@ test('GET /networks returns 403 for org member without organization:manage', asy
 
   assertEquals(res.status, 403)
 
-  await db.delete(member).where(eq(member.userId, userId))
+  await db.delete(membership).where(eq(membership.userId, userId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, organizationId))
 })

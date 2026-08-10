@@ -242,7 +242,7 @@ test('resolvePeerEndpoint prefers explicit endpoint over derived address', () =>
   )
 })
 
-test('validateGateways requires datacenter and CIDR network for gateways', () => {
+test('validateGateways requires datacenter and CIDR network for gateways', async () => {
   const peerRows = [
     peer({
       id: 'p-gw',
@@ -257,13 +257,41 @@ test('validateGateways requires datacenter and CIDR network for gateways', () =>
       createdAt: '2020-01-01T00:00:00.000Z',
     }),
   ]
-  const serversById = servers([
-    { id: 's-gw', datacenterId: null, connected: true },
-    { id: 's-member', datacenterId: 'dc-a', connected: true },
-  ])
+
+  /** Queue of select-result rows for assertServerDatacenterReady (server then cidrs). */
+  function createQueuedDb(
+    queue: Array<Array<Record<string, unknown>>>,
+  ): Parameters<typeof validateGateways>[0] {
+    let i = 0
+    return {
+      select() {
+        const value = queue[i++] ?? []
+        const chain = {
+          async limit() {
+            return value
+          },
+          then(resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) {
+            return Promise.resolve(value).then(resolve, reject)
+          },
+        }
+        return {
+          from() {
+            return {
+              where() {
+                return chain
+              },
+            }
+          },
+        }
+      },
+    } as unknown as Parameters<typeof validateGateways>[0]
+  }
 
   assertEquals(
-    validateGateways(peerRows, serversById, new Map()),
+    await validateGateways(
+      createQueuedDb([[{ datacenterId: null }]]),
+      peerRows,
+    ),
     {
       kind: 'gateway_datacenter_required',
       peerId: 'p-gw',
@@ -271,12 +299,14 @@ test('validateGateways requires datacenter and CIDR network for gateways', () =>
     },
   )
 
-  const withDc = servers([
-    { id: 's-gw', datacenterId: 'dc-a', connected: true },
-    { id: 's-member', datacenterId: 'dc-a', connected: true },
-  ])
   assertEquals(
-    validateGateways(peerRows, withDc, new Map([['dc-a', []]])),
+    await validateGateways(
+      createQueuedDb([
+        [{ datacenterId: 'dc-a' }],
+        [],
+      ]),
+      peerRows,
+    ),
     {
       kind: 'gateway_datacenter_cidr_required',
       peerId: 'p-gw',
@@ -284,8 +314,16 @@ test('validateGateways requires datacenter and CIDR network for gateways', () =>
     },
   )
 
-  const cidrsByDc = new Map([['dc-a', ['10.0.0.0/24']]])
-  assertEquals(validateGateways(peerRows, withDc, cidrsByDc), null)
+  assertEquals(
+    await validateGateways(
+      createQueuedDb([
+        [{ datacenterId: 'dc-a' }],
+        [{ datacenterId: 'dc-a', cidr: '10.0.0.0/24' }],
+      ]),
+      peerRows,
+    ),
+    null,
+  )
 })
 
 test('buildAllowedIps advertises site CIDR only for primary remote gateway', () => {

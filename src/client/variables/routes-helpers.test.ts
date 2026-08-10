@@ -15,6 +15,8 @@ import {
   serializeResolvedVariables,
   serializeVariable,
   trimVariableValueOnWrite,
+  BINDING_OWNED_VARIABLE_ERROR,
+  BINDING_KEY_CONFLICT_ERROR,
   type VariableRow,
 } from './routes-helpers.ts'
 
@@ -62,6 +64,7 @@ function baseRow(overrides?: Partial<VariableRow>): VariableRow {
     serviceId: null,
     hostingId: null,
     serverId: null,
+    bindingId: null,
     key: 'APP_ENV',
     value: 'production',
     isSecret: false,
@@ -195,4 +198,35 @@ test('isVariableKeyUniqueViolation matches partial unique indexes', () => {
   )
   assertEquals(isVariableKeyUniqueViolation(match), true)
   assertEquals(isVariableKeyUniqueViolation({ code: '23505' }), false)
+})
+
+test('binding ownership error codes are stable', () => {
+  assertEquals(BINDING_OWNED_VARIABLE_ERROR, 'binding_owned_variable')
+  assertEquals(BINDING_KEY_CONFLICT_ERROR, 'binding_key_conflict')
+})
+
+test('serializeVariable includes bindingId and redacts secrets', () => {
+  const row: VariableRow = {
+    id: 'v1',
+    organizationId: null,
+    workspaceId: null,
+    projectId: null,
+    environmentId: null,
+    serviceId: 's1',
+    hostingId: null,
+    serverId: null,
+    bindingId: 'b1',
+    key: 'DATABASE_URL',
+    value: 'enc.1.x',
+    isSecret: true,
+    isLiteral: true,
+    forBuild: false,
+    forRuntime: true,
+    description: null,
+    createdAt: 't0',
+    updatedAt: 't1',
+  }
+  const serialized = serializeVariable(row)
+  assertEquals(serialized.bindingId, 'b1')
+  assertEquals(serialized.value, null)
 })

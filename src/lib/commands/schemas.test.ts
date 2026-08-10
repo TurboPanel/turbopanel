@@ -22,8 +22,12 @@ import {
   parseManagedBackupResult,
   parseManagedDestroyPayload,
   parseManagedDestroyResult,
+  parseManagedIngressReconcilePayload,
+  parseManagedIngressReconcileResult,
   parseManagedLifecyclePayload,
   parseManagedLifecycleResult,
+  parseManagedPromotePayload,
+  parseManagedPromoteResult,
   parseManagedRestorePayload,
   parseManagedRestoreResult,
   parseNtpSetPayload,
@@ -165,6 +169,8 @@ const DAEMON_COMMAND_TYPES = [
   'managed.destroy',
   'managed.backup',
   'managed.restore',
+  'managed.promote',
+  'managed.ingress.reconcile',
   'system.reconcile',
 ] as const
 
@@ -694,9 +700,20 @@ const VALID_MANAGED_APPLY = {
   composeYaml: 'services:\n  postgres:\n    image: postgres:18-alpine\n',
   configFiles: [
     { path: 'postgresql.conf', contents: "listen_addresses = '*'\n", mode: '0640' },
+    {
+      path: 'pg_hba.conf',
+      contents:
+        '# TurboPanel managed PostgreSQL — platform pg_hba\nlocal all all peer\n',
+      mode: '0640',
+    },
   ],
   volumes: [{ name: 'pgdata', target: '/var/lib/postgresql' }],
   exposure: { enabled: false, protocol: 'tcp' },
+  memberId: '00000000-0000-4000-8000-0000000000aa',
+  memberRole: 'primary',
+  memberOrdinal: 1,
+  readEligible: true,
+  peers: [],
   credentials: [
     {
       principalId: '00000000-0000-4000-8000-000000000003',
@@ -879,6 +896,26 @@ test('parseCommandPayload and parseCommandResult dispatch by type', () => {
     { managedId: 'm1', action: 'restart' },
   )
   assertEquals(
+    parseCommandPayload('managed.lifecycle' as CommandType, {
+      managedId: 'm1',
+      action: 'stop',
+      engine: 'mysql',
+    }),
+    { managedId: 'm1', action: 'stop', engine: 'mysql' },
+  )
+  assertEquals(
+    parseCommandPayload('managed.promote' as CommandType, {
+      managedId: '11111111-1111-1111-1111-111111111111',
+      memberId: '22222222-2222-2222-2222-222222222222',
+      engine: 'mariadb',
+    }),
+    {
+      managedId: '11111111-1111-1111-1111-111111111111',
+      memberId: '22222222-2222-2222-2222-222222222222',
+      engine: 'mariadb',
+    },
+  )
+  assertEquals(
     parseCommandPayload('managed.destroy' as CommandType, {
       managedId: 'm1',
       removeVolumes: true,
@@ -1046,6 +1083,56 @@ test('parseManagedApplyPayload rejects unsafe or incomplete input', () => {
   )
 })
 
+test('parseManagedApplyPayload enforces the engine image allowlist', () => {
+  // The fixture's approved postgres:18-alpine image is unaffected.
+  assertEquals(parseManagedApplyPayload(VALID_MANAGED_APPLY).image, VALID_MANAGED_APPLY.image)
+
+  // An old/EOL major version is syntactically a valid image ref but must still
+  // be rejected — mirrors the settings-parser allowlist in `../managed/settings.ts`
+  // so a replayed or forged command payload cannot bypass it.
+  assertThrows(
+    () =>
+      parseManagedApplyPayload({
+        ...VALID_MANAGED_APPLY,
+        image: 'docker.io/library/postgres:17',
+      }),
+    Error,
+    'Invalid managed.apply payload',
+  )
+  // Cross-engine image swap must also be rejected even though it is on the
+  // MySQL allowlist — the payload's `engine` is postgres.
+  assertThrows(
+    () =>
+      parseManagedApplyPayload({
+        ...VALID_MANAGED_APPLY,
+        image: 'docker.io/library/mysql:9.7',
+      }),
+    Error,
+    'Invalid managed.apply payload',
+  )
+  // Approved MySQL / MariaDB images are accepted for their own engine.
+  assertEquals(
+    parseManagedApplyPayload({
+      ...VALID_MANAGED_APPLY,
+      engine: 'mysql',
+      image: 'docker.io/library/mysql:9.7',
+      credentials: [{ ...VALID_MANAGED_APPLY.credentials[0], username: 'root' }],
+    }).image,
+    'docker.io/library/mysql:9.7',
+  )
+  assertThrows(
+    () =>
+      parseManagedApplyPayload({
+        ...VALID_MANAGED_APPLY,
+        engine: 'mariadb',
+        image: 'docker.io/library/mariadb:11',
+        credentials: [{ ...VALID_MANAGED_APPLY.credentials[0], username: 'root' }],
+      }),
+    Error,
+    'Invalid managed.apply payload',
+  )
+})
+
 test('parseManagedApplyPayload rejects nested dockerOptions and enabled exposure without port', () => {
   assertThrows(
     () =>
@@ -1078,71 +1165,74 @@ test('parseManagedApplyPayload rejects nested dockerOptions and enabled exposure
     Error,
     'Invalid managed.apply dockerOptions',
   )
-  assertThrows(
-    () =>
-      parseManagedApplyPayload({
-        ...VALID_MANAGED_APPLY,
-        exposure: { enabled: true, protocol: 'tcp' },
-      }),
-    Error,
-    'Invalid managed.apply exposure',
-  )
-  const VALID_INGRESS = {
-    serviceId: '00000000-0000-4000-8000-000000000099',
-    composeServiceName: 'postgres-ingress',
-    containerName: '00000000-0000-4000-8000-000000000099-in',
-  }
+  // publishedPort is ignored — ProxySQL owns protocol ports.
   assertEquals(
     parseManagedApplyPayload({
       ...VALID_MANAGED_APPLY,
       exposure: { enabled: true, protocol: 'tcp', publishedPort: 15432 },
-      ingress: VALID_INGRESS,
-    }).exposure.publishedPort,
-    15432,
+    }).exposure,
+    { enabled: true, protocol: 'tcp' },
   )
 })
 
-test('parseManagedApplyPayload requires ingress iff exposure.enabled', () => {
-  const VALID_INGRESS = {
-    serviceId: '00000000-0000-4000-8000-000000000099',
-    composeServiceName: 'postgres-ingress',
-    containerName: '00000000-0000-4000-8000-000000000099-in',
-  }
-  assertThrows(
-    () =>
-      parseManagedApplyPayload({
-        ...VALID_MANAGED_APPLY,
-        exposure: { enabled: true, protocol: 'tcp', publishedPort: 15432 },
-      }),
-    Error,
-    'Invalid managed.apply ingress',
-  )
-  assertThrows(
-    () =>
-      parseManagedApplyPayload({
-        ...VALID_MANAGED_APPLY,
-        exposure: { enabled: false, protocol: 'tcp' },
-        ingress: VALID_INGRESS,
-      }),
-    Error,
-    'Invalid managed.apply ingress',
-  )
-  assertThrows(
-    () =>
-      parseManagedApplyPayload({
-        ...VALID_MANAGED_APPLY,
-        exposure: { enabled: true, protocol: 'tcp', publishedPort: 15432 },
-        ingress: { ...VALID_INGRESS, containerName: '-bad' },
-      }),
-    Error,
-    'Invalid managed.apply ingress',
-  )
-  const accepted = parseManagedApplyPayload({
+test('parseManagedApplyPayload accepts member fields and peers', () => {
+  const payload = parseManagedApplyPayload({
     ...VALID_MANAGED_APPLY,
-    exposure: { enabled: true, protocol: 'tcp', publishedPort: 15432 },
-    ingress: VALID_INGRESS,
+    memberOrdinal: 2,
+    memberRole: 'replica',
+    containerName: '01936b3e-aaaa-bbbb-cccc-123456789abc-2',
+    peers: [
+      {
+        memberId: '00000000-0000-4000-8000-0000000000bb',
+        role: 'primary',
+        readEligible: true,
+        address: '203.0.113.10',
+        transport: 'datacenter',
+        port: 5432,
+      },
+    ],
   })
-  assertEquals(accepted.ingress, VALID_INGRESS)
+  assertEquals(payload.memberOrdinal, 2)
+  assertEquals(payload.memberRole, 'replica')
+  assertEquals(payload.peers.length, 1)
+  assertEquals(payload.peers[0]?.address, '203.0.113.10')
+})
+
+test('parseManagedPromotePayload and result accept valid shapes', () => {
+  assertEquals(
+    parseManagedPromotePayload({
+      managedId: '00000000-0000-4000-8000-000000000001',
+      memberId: '00000000-0000-4000-8000-0000000000aa',
+      demoteMemberId: '00000000-0000-4000-8000-0000000000bb',
+    }),
+    {
+      managedId: '00000000-0000-4000-8000-000000000001',
+      memberId: '00000000-0000-4000-8000-0000000000aa',
+      demoteMemberId: '00000000-0000-4000-8000-0000000000bb',
+    },
+  )
+  assertEquals(
+    parseManagedPromoteResult({
+      status: 'ready',
+      role: 'primary',
+      summary: 'ok',
+      promotedMemberId: '00000000-0000-4000-8000-0000000000aa',
+      demoted: true,
+      demotedMemberId: '00000000-0000-4000-8000-0000000000bb',
+    }),
+    {
+      status: 'ready',
+      role: 'primary',
+      summary: 'ok',
+      promotedMemberId: '00000000-0000-4000-8000-0000000000aa',
+      demoted: true,
+      demotedMemberId: '00000000-0000-4000-8000-0000000000bb',
+    },
+  )
+})
+
+test('managed.promote is in COMMAND_TYPES', () => {
+  assertEquals(COMMAND_TYPES.includes('managed.promote'), true)
 })
 
 test('parseManagedApplyPayload rejects dockerOptions.extraEnv overriding postgres-reserved env keys', () => {
@@ -1182,11 +1272,26 @@ test('parseManagedApplyPayload admits allowlisted config paths and rejects unexp
       ...VALID_MANAGED_APPLY,
       configFiles: [
         { path: 'postgresql.conf', contents: 'x\n', mode: '0640' },
+        { path: 'pg_hba.conf', contents: 'local all all peer\n', mode: '0640' },
         { path: 'tls/server.crt', contents: 'cert\n', mode: '0640' },
         { path: 'tls/server.key', contents: 'key\n', mode: '0600' },
       ],
     }).configFiles.map((file) => file.path),
-    ['postgresql.conf', 'tls/server.crt', 'tls/server.key'],
+    ['postgresql.conf', 'pg_hba.conf', 'tls/server.crt', 'tls/server.key'],
+  )
+  assertEquals(
+    parseManagedApplyPayload({
+      ...VALID_MANAGED_APPLY,
+      configFiles: [
+        { path: 'my.cnf', contents: '[mysqld]\n', mode: '0640' },
+        {
+          path: 'initdb/00-turbopanel.sql',
+          contents: 'SELECT 1;\n',
+          mode: '0640',
+        },
+      ],
+    }).configFiles.map((file) => file.path),
+    ['my.cnf', 'initdb/00-turbopanel.sql'],
   )
   assertThrows(
     () =>
@@ -1237,6 +1342,31 @@ test('parseManagedApplyPayload admits tlsMaterial and rejects hostile cert paths
       }),
     Error,
     'Invalid managed.apply tlsMaterial',
+  )
+})
+
+test('parseManagedApplyPayload admits orgTlsMaterial and rejects incomplete material', () => {
+  const payload = parseManagedApplyPayload({
+    ...VALID_MANAGED_APPLY,
+    orgTlsMaterial: {
+      certificatePem: '-----BEGIN CERTIFICATE-----\nLEAF\n-----END CERTIFICATE-----\n',
+      privateKeyEnvelope: 'denc.server.key.ciphertext',
+      caCertPem: '-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----\n',
+    },
+  })
+  assertEquals(payload.orgTlsMaterial?.caCertPem.includes('BEGIN CERTIFICATE'), true)
+  assertThrows(
+    () =>
+      parseManagedApplyPayload({
+        ...VALID_MANAGED_APPLY,
+        orgTlsMaterial: {
+          certificatePem: 'not-a-pem',
+          privateKeyEnvelope: 'denc.x',
+          caCertPem: '-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----\n',
+        },
+      }),
+    Error,
+    'Invalid managed.apply orgTlsMaterial',
   )
 })
 
@@ -1866,6 +1996,36 @@ test('parseCommandPayload rejects invalid dockerExternalNetworks names', () => {
   )
 })
 
+test('parseCommandPayload accepts and dedupes managedNetworkServices', () => {
+  const parsed = parseCommandPayload('environment.deploy' as CommandType, {
+    environmentId: 'env-1',
+    projectId: 'proj-1',
+    organizationId: 'org-1',
+    projectName: 'tp-demo',
+    composeYaml: 'services:\n  app:\n    image: node:22\n',
+    hostings: [],
+    managedNetworkServices: ['app', 'app'],
+  }) as { managedNetworkServices?: string[] }
+  assertEquals(parsed.managedNetworkServices, ['app'])
+})
+
+test('parseCommandPayload rejects invalid managedNetworkServices entries', () => {
+  assertThrows(
+    () =>
+      parseCommandPayload('environment.deploy' as CommandType, {
+        environmentId: 'env-1',
+        projectId: 'proj-1',
+        organizationId: 'org-1',
+        projectName: 'tp-demo',
+        composeYaml: 'services: {}\n',
+        hostings: [],
+        managedNetworkServices: [123],
+      }),
+    Error,
+    'Invalid managedNetworkServices entry',
+  )
+})
+
 const WG_PUBKEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
 
 test('parseWireguardApplyPayload accepts valid mesh material', () => {
@@ -1991,8 +2151,133 @@ test('isValidNtpServer accepts hostnames and literals', () => {
 
 test('isSystemComponentKey accepts only system component keys', () => {
   assertEquals(isSystemComponentKey('hosting-ingress'), true)
+  assertEquals(isSystemComponentKey('managed-ingress'), true)
   assertEquals(isSystemComponentKey('database'), true)
   assertEquals(isSystemComponentKey('not-a-component'), false)
+})
+
+const VALID_MANAGED_INGRESS_RECONCILE = {
+  serverId: '00000000-0000-4000-8000-0000000000ab',
+  bindAddress: '203.0.113.10',
+  orgTlsMaterial: {
+    certificatePem:
+      '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n',
+    privateKeyEnvelope: 'denc.server.key.1.payload',
+    caCertPem:
+      '-----BEGIN CERTIFICATE-----\nMIICaaaa\n-----END CERTIFICATE-----\n',
+  },
+  clusters: [
+    {
+      managedId: '00000000-0000-4000-8000-000000000001',
+      engine: 'postgres',
+      protocolPort: 5432,
+      writerHostgroup: 0,
+      readerHostgroup: 1,
+      backends: [
+        {
+          memberId: '00000000-0000-4000-8000-0000000000aa',
+          role: 'primary',
+          readEligible: true,
+          address: '203.0.113.20',
+          port: 5432,
+          transport: 'local',
+        },
+      ],
+      users: [
+        {
+          username: 'app',
+          role: 'user',
+          password: 'denc.server.key.1.payload',
+          defaultDatabase: 'app',
+        },
+      ],
+    },
+  ],
+} as const
+
+test('parseManagedIngressReconcilePayload accepts a valid fixture', () => {
+  const payload = parseManagedIngressReconcilePayload(
+    VALID_MANAGED_INGRESS_RECONCILE,
+  )
+  assertEquals(payload.serverId, VALID_MANAGED_INGRESS_RECONCILE.serverId)
+  assertEquals(payload.bindAddress, '203.0.113.10')
+  assertEquals(payload.clusters.length, 1)
+  assertEquals(payload.clusters[0]?.protocolPort, 5432)
+  assertEquals(
+    parseCommandPayload(
+      'managed.ingress.reconcile' as CommandType,
+      VALID_MANAGED_INGRESS_RECONCILE,
+    ),
+    payload,
+  )
+})
+
+test('parseManagedIngressReconcilePayload rejects incomplete or hostile input', () => {
+  assertThrows(
+    () =>
+      parseManagedIngressReconcilePayload({
+        ...VALID_MANAGED_INGRESS_RECONCILE,
+        serverId: 'not-a-uuid',
+      }),
+    TypeError,
+    'Invalid managed.ingress.reconcile payload',
+  )
+  assertThrows(
+    () =>
+      parseManagedIngressReconcilePayload({
+        ...VALID_MANAGED_INGRESS_RECONCILE,
+        orgTlsMaterial: {
+          certificatePem: 'x',
+          privateKeyEnvelope: 'y',
+        },
+      }),
+    Error,
+    'Invalid managed.apply orgTlsMaterial',
+  )
+  assertThrows(
+    () =>
+      parseManagedIngressReconcilePayload({
+        ...VALID_MANAGED_INGRESS_RECONCILE,
+        clusters: [
+          {
+            ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0],
+            protocolPort: 9999,
+          },
+        ],
+      }),
+    TypeError,
+  )
+})
+
+test('parseManagedIngressReconcileResult accepts applied counts and containers', () => {
+  assertEquals(
+    parseManagedIngressReconcileResult({
+      summary: 'ok',
+      appliedUsers: ['app'],
+      appliedBackends: ['00000000-0000-4000-8000-0000000000aa'],
+      restarted: false,
+    }),
+    {
+      summary: 'ok',
+      appliedUsers: ['app'],
+      appliedBackends: ['00000000-0000-4000-8000-0000000000aa'],
+      restarted: false,
+    },
+  )
+  assertEquals(
+    parseCommandResult('managed.ingress.reconcile' as CommandType, {
+      summary: 'restarted',
+      appliedUsers: [],
+      appliedBackends: [],
+      restarted: true,
+    }),
+    {
+      summary: 'restarted',
+      appliedUsers: [],
+      appliedBackends: [],
+      restarted: true,
+    },
+  )
 })
 
 test('parseManagedApplyResult projects host, port, and containers', () => {

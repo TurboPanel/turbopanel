@@ -13,8 +13,10 @@ const activeDaemon: ServerDaemonState = {
 
 function queryResult<T>(rows: T[]) {
   const promise = Promise.resolve(rows)
+  const limitable = { limit: (_n: number) => Promise.resolve(rows) }
   return Object.assign(promise, {
-    limit: (_n: number) => Promise.resolve(rows),
+    ...limitable,
+    orderBy: (..._cols: unknown[]) => Object.assign(Promise.resolve(rows), limitable),
   })
 }
 

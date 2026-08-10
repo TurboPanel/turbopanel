@@ -23,17 +23,8 @@ export function assertNetworkKindScope(
     return null
   }
 
-  if (kind === 'server') {
-    if (!hasServer) {
-      return c.json({ error: 'network_scope_required' }, 400)
-    }
-    if (hasDatacenter) {
-      return c.json({ error: 'network_single_scope_conflict' }, 400)
-    }
-    return null
-  }
-
-  if (hasDatacenter || hasServer) {
+  // docker: optional serverId (host-local external network); never datacenterId
+  if (hasDatacenter) {
     return c.json({ error: 'network_single_scope_conflict' }, 400)
   }
   return null

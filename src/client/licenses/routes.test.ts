@@ -20,7 +20,7 @@ import {
   environment,
   grant,
   license,
-  member,
+  membership,
   organization,
   project,
   server,
@@ -116,7 +116,7 @@ async function withTestFixtures(
 
   const managerId = insertedManager[0]!.id
 
-  await db.insert(member).values({ organizationId, userId: managerId })
+  await db.insert(membership).values({ organizationId, userId: managerId })
 
   // The acting user is only an organization *manager*, never an owner.
   await db.insert(grant).values({
@@ -133,7 +133,7 @@ async function withTestFixtures(
   } finally {
     await db.delete(license).where(eq(license.organizationId, organizationId))
     await db.delete(grant).where(eq(grant.entityId, organizationId))
-    await db.delete(member).where(eq(member.organizationId, organizationId))
+    await db.delete(membership).where(eq(membership.organizationId, organizationId))
     await db.delete(user).where(eq(user.id, managerId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
@@ -173,7 +173,7 @@ async function withOwnerFixtures(
 
   const ownerId = insertedOwner[0]!.id
 
-  await db.insert(member).values({ organizationId, userId: ownerId })
+  await db.insert(membership).values({ organizationId, userId: ownerId })
 
   await db.insert(grant).values({
     entityType: 'organization',
@@ -189,7 +189,7 @@ async function withOwnerFixtures(
   } finally {
     await db.delete(license).where(eq(license.organizationId, organizationId))
     await db.delete(grant).where(eq(grant.entityId, organizationId))
-    await db.delete(member).where(eq(member.organizationId, organizationId))
+    await db.delete(membership).where(eq(membership.organizationId, organizationId))
     await db.delete(user).where(eq(user.id, ownerId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
@@ -411,7 +411,7 @@ test('DELETE /licenses/:id still 403 for reserved display-name when registry is 
     })
     .returning({ id: user.id })
   const ownerId = insertedOwner[0]!.id
-  await db.insert(member).values({ organizationId, userId: ownerId })
+  await db.insert(membership).values({ organizationId, userId: ownerId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -447,7 +447,7 @@ test('DELETE /licenses/:id still 403 for reserved display-name when registry is 
     await db.delete(license).where(eq(license.id, reservedId))
     await db.delete(license).where(eq(license.id, registryBound!.id))
     await db.delete(grant).where(eq(grant.entityId, organizationId))
-    await db.delete(member).where(eq(member.organizationId, organizationId))
+    await db.delete(membership).where(eq(membership.organizationId, organizationId))
     await db.delete(user).where(eq(user.id, ownerId))
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(organization).where(eq(organization.id, organizationId))
@@ -523,7 +523,7 @@ test('DELETE /licenses/:id still 403 via fallbacks when registry binding is revo
     })
     .returning({ id: user.id })
   const ownerId = insertedOwner[0]!.id
-  await db.insert(member).values({ organizationId, userId: ownerId })
+  await db.insert(membership).values({ organizationId, userId: ownerId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -559,7 +559,7 @@ test('DELETE /licenses/:id still 403 via fallbacks when registry binding is revo
     await db.delete(license).where(eq(license.id, reservedId))
     await db.delete(license).where(eq(license.id, staleBound!.id))
     await db.delete(grant).where(eq(grant.entityId, organizationId))
-    await db.delete(member).where(eq(member.organizationId, organizationId))
+    await db.delete(membership).where(eq(membership.organizationId, organizationId))
     await db.delete(user).where(eq(user.id, ownerId))
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(organization).where(eq(organization.id, organizationId))

@@ -1,11 +1,19 @@
-import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm'
 import {
   encryptSecret,
   generateSealedSecret,
 } from '../authn/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../authn/secrets.ts'
 import type { Db } from '../../db.ts'
-import { assignment, principal, project, workspace } from '../../lib/db/schema.ts'
+import {
+  assignment,
+  node,
+  organization,
+  principal,
+  project,
+  server,
+  workspace,
+} from '../../lib/db/schema.ts'
 
 export const PRINCIPAL_KINDS = new Set(['system', 'database'])
 export const PRINCIPAL_PROVIDERS = new Set([
@@ -282,4 +290,211 @@ export async function listManagedPrincipals(
     .from(principal)
     .where(eq(principal.managedId, managedId))
     .orderBy(asc(principal.username))
+}
+
+/**
+ * Distinct non-null `server.organization_id` across the cluster's
+ * `node` servers (server owner — not the creating org, because a
+ * server may host another org's cluster via grants).
+ */
+export async function resolveManagedOwningOrganizationIds(
+  db: Db,
+  managedId: string,
+  /** Prospective member server still being added (not yet in `node`). */
+  extraServerIds: readonly string[] = [],
+): Promise<string[]> {
+  const memberOrgs = await db
+    .selectDistinct({ organizationId: server.organizationId })
+    .from(node)
+    .innerJoin(server, eq(node.serverId, server.id))
+    .where(
+      and(
+        eq(node.managedId, managedId),
+        isNotNull(server.organizationId),
+      ),
+    )
+
+  const ids = new Set<string>()
+  for (const row of memberOrgs) {
+    if (row.organizationId) ids.add(row.organizationId)
+  }
+
+  if (extraServerIds.length > 0) {
+    const extra = await db
+      .select({ organizationId: server.organizationId })
+      .from(server)
+      .where(inArray(server.id, [...extraServerIds]))
+    for (const row of extra) {
+      if (row.organizationId) ids.add(row.organizationId)
+    }
+  }
+
+  return [...ids].sort((a, b) => a.localeCompare(b))
+}
+
+/**
+ * True when a managed-engine principal (`managed_id IS NOT NULL`) already uses
+ * this username on any cluster whose member servers belong to one of the
+ * given owning-organization ids (trimmed, case-insensitive).
+ * Mirrors {@link isServerPrincipalUsernameTaken} for the managed login
+ * namespace.
+ */
+export async function isManagedUsernameTaken(
+  db: Db,
+  owningOrganizationIds: readonly string[],
+  username: string,
+  excludePrincipalId?: string,
+): Promise<boolean> {
+  const key = username.trim().toLowerCase()
+  if (!key || owningOrganizationIds.length === 0) return false
+
+  const conditions = [
+    isNotNull(principal.managedId),
+    inArray(server.organizationId, [...owningOrganizationIds]),
+    sql`lower(btrim(${principal.username})) = ${key}`,
+  ]
+  if (excludePrincipalId) {
+    conditions.push(ne(principal.id, excludePrincipalId))
+  }
+
+  const rows = await db
+    .select({ id: principal.id })
+    .from(principal)
+    .innerJoin(node, eq(principal.managedId, node.managedId))
+    .innerJoin(server, eq(node.serverId, server.id))
+    .where(and(...conditions))
+    .limit(1)
+
+  return rows.length > 0
+}
+
+/**
+ * Prefer `preferred` when free across the owning-org managed login namespace;
+ * otherwise return a deterministic short suffix from `managedId`
+ * (`preferred_<8 hex>`), validated against {@link USERNAME_RE} and the engine
+ * identifier pattern/maxLength. Cluster create must never 409 on a
+ * system-generated root name.
+ */
+export async function resolveAvailableManagedRootUsername(
+  db: Db,
+  owningOrganizationIds: readonly string[],
+  preferred: string,
+  managedId: string,
+  identifier: { pattern: RegExp; maxLength: number },
+): Promise<string> {
+  if (
+    USERNAME_RE.test(preferred) &&
+    identifier.pattern.test(preferred) &&
+    preferred.length <= identifier.maxLength &&
+    !(await isManagedUsernameTaken(db, owningOrganizationIds, preferred))
+  ) {
+    return preferred
+  }
+
+  const hex = managedId.replaceAll('-', '').slice(0, 8).toLowerCase()
+  const candidate = `${preferred}_${hex}`
+  if (
+    !USERNAME_RE.test(candidate) ||
+    !identifier.pattern.test(candidate) ||
+    candidate.length > identifier.maxLength
+  ) {
+    throw new TypeError(
+      `unable to derive available managed root username from preferred=${preferred}`,
+    )
+  }
+  if (await isManagedUsernameTaken(db, owningOrganizationIds, candidate)) {
+    // Extremely unlikely collision on uuid-derived suffix — append short tail.
+    const tail = managedId.replaceAll('-', '').slice(8, 12).toLowerCase()
+    const fallback = `${preferred}_${hex}${tail}`
+    if (
+      !USERNAME_RE.test(fallback) ||
+      !identifier.pattern.test(fallback) ||
+      fallback.length > identifier.maxLength
+    ) {
+      throw new TypeError('unable to derive unique managed root username')
+    }
+    return fallback
+  }
+  return candidate
+}
+
+/**
+ * Ensure a cluster replication principal exists (`metadata.managedReplication`).
+ * Not a client login — excluded from ProxySQL frontend users and managed-users
+ * list routes. Username resolves under the same org-wide FOR UPDATE probe as
+ * root, persisted on `managed.metadata.replicationUsername`.
+ */
+export async function ensureManagedReplicationPrincipal(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  params: {
+    managedId: string
+    preferredUsername?: string
+    provider: string
+    identifier: { pattern: RegExp; maxLength: number }
+  },
+): Promise<{ principalId: string; username: string; created: boolean }> {
+  const rows = await listManagedPrincipals(db, params.managedId)
+  for (const row of rows) {
+    if (
+      isRecord(row.metadata) &&
+      row.metadata.managedReplication === true
+    ) {
+      return {
+        principalId: row.id,
+        username: row.username,
+        created: false,
+      }
+    }
+  }
+
+  const preferred = params.preferredUsername ?? 'tp_repl'
+  const owningOrgIds = await resolveManagedOwningOrganizationIds(
+    db,
+    params.managedId,
+  )
+  await lockOrganizationsForUpdate(db, owningOrgIds)
+  const username = await resolveAvailableManagedRootUsername(
+    db,
+    owningOrgIds,
+    preferred,
+    params.managedId,
+    params.identifier,
+  )
+  const created = await createManagedPrincipal(db, dataEncryptionSecrets, {
+    managedId: params.managedId,
+    provider: params.provider,
+    username,
+    metadata: { managedReplication: true },
+  })
+  return {
+    principalId: created.principalId,
+    username,
+    created: true,
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Lock owning organization rows FOR UPDATE (ordered by id for deadlock safety)
+ * before a managed username uniqueness probe. Same pattern as
+ * `insertProjectPrincipal`.
+ */
+export async function lockOrganizationsForUpdate(
+  db: Db,
+  organizationIds: readonly string[],
+): Promise<void> {
+  if (organizationIds.length === 0) return
+  const ordered = [...organizationIds].sort((a, b) => a.localeCompare(b))
+  for (const organizationId of ordered) {
+    await db
+      .select({ id: organization.id })
+      .from(organization)
+      .where(eq(organization.id, organizationId))
+      .for('update')
+      .limit(1)
+  }
 }

@@ -1,6 +1,4 @@
 import { assertEquals } from 'jsr:@std/assert'
-import type { Context } from 'hono'
-import type { AppEnv } from '../../app.ts'
 import {
   assertNetworkKindScope,
   buildNetworkCreateValues,
@@ -14,12 +12,14 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
-function mockContext(): Context<AppEnv> {
+function mockContext(): {
+  json(body: unknown, status?: number): Response
+} {
   return {
     json(body: unknown, status?: number) {
       return Response.json(body, { status })
     },
-  } as unknown as Context<AppEnv>
+  }
 }
 
 async function expectErrorResponse(
@@ -34,8 +34,8 @@ async function expectErrorResponse(
   assertEquals(await response.json(), { error })
 }
 
-test('assertNetworkKindScope enforces datacenter and server scope rules', async () => {
-  const c = mockContext()
+test('assertNetworkKindScope enforces datacenter and docker scope rules', async () => {
+  const c = mockContext() as Parameters<typeof assertNetworkKindScope>[0]
 
   await expectErrorResponse(
     assertNetworkKindScope(c, 'datacenter', null, null),
@@ -49,13 +49,7 @@ test('assertNetworkKindScope enforces datacenter and server scope rules', async 
   )
   assertEquals(assertNetworkKindScope(c, 'datacenter', 'dc-1', null), null)
 
-  await expectErrorResponse(
-    assertNetworkKindScope(c, 'server', null, null),
-    400,
-    'network_scope_required',
-  )
-  assertEquals(assertNetworkKindScope(c, 'server', null, 'srv-1'), null)
-
+  assertEquals(assertNetworkKindScope(c, 'docker', null, 'srv-1'), null)
   await expectErrorResponse(
     assertNetworkKindScope(c, 'docker', 'dc-1', null),
     400,
@@ -89,7 +83,7 @@ test('buildNetworkCreateValues omits null optional fields', () => {
       kind: 'datacenter',
       datacenterId: 'dc-1',
       serverId: null,
-      name: 'Private LAN',
+      displayName: 'Private LAN',
       cidr: '10.0.0.0/24',
       metadata: { note: 'primary' },
       options: null,

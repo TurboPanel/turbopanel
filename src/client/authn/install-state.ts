@@ -6,7 +6,7 @@ import { resolveFleetPresence } from '../../daemon/cell/fleet-presence.ts'
 import {
   grant,
   account,
-  member,
+  membership,
   teammate,
   organization,
   license,
@@ -602,9 +602,9 @@ export async function findDefaultInstalledOrganizationId(
   if (byName[0]?.id) return byName[0].id
 
   const withSuperadmin = await db
-    .select({ organizationId: member.organizationId })
-    .from(member)
-    .innerJoin(user, eq(member.userId, user.id))
+    .select({ organizationId: membership.organizationId })
+    .from(membership)
+    .innerJoin(user, eq(membership.userId, user.id))
     .where(eq(user.role, SUPERADMIN_ROLE))
     .limit(1)
   if (withSuperadmin[0]?.organizationId) return withSuperadmin[0].organizationId
@@ -1197,7 +1197,7 @@ export async function createOrganizationForUser(
       throw new Error('Team creation failed')
     }
 
-    await tx.insert(member).values({
+    await tx.insert(membership).values({
       organizationId,
       userId,
     })
@@ -1342,7 +1342,7 @@ export async function completeInstanceInstall(
       password: hashedPassword,
     })
 
-    await tx.insert(member).values({
+    await tx.insert(membership).values({
       organizationId,
       userId,
     })

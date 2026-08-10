@@ -207,6 +207,8 @@ if (isNoopCommandQueue(commandQueue)) {
           secretsConfig,
           dataEncryptionSecrets,
         },
+        secretsConfig,
+        dataEncryptionSecrets,
       })
     } catch (err) {
       logWarn(

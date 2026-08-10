@@ -1,6 +1,6 @@
 import { eq, sql, type SQL } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
-import { grant, member, teammate } from '../../lib/db/schema.ts'
+import { grant, membership, teammate } from '../../lib/db/schema.ts'
 import { type PermissionKey, isSystemPermissionKey } from './catalog.ts'
 
 export type { PermissionKey }
@@ -26,7 +26,7 @@ export class ForbiddenError extends Error {
 export type CanOptions = {
   /**
    * Pre-fetched subject set (request-scope memoization). When omitted, the
-   * subject set is resolved inline in SQL from `member` / `teammate`.
+   * subject set is resolved inline in SQL from `membership` / `teammate`.
    */
   subjects?: Subject[]
 }
@@ -47,9 +47,9 @@ export async function getSubjects(db: Db, userId: string): Promise<Subject[]> {
   }
 
   const orgRows = await db
-    .select({ organizationId: member.organizationId })
-    .from(member)
-    .where(eq(member.userId, userId))
+    .select({ organizationId: membership.organizationId })
+    .from(membership)
+    .where(eq(membership.userId, userId))
   for (const row of orgRows) {
     subjects.push({ subjectKind: 'organization', subjectId: row.organizationId })
   }
@@ -73,7 +73,7 @@ function buildActorsetBody(userId: string, subjects?: Subject[]): SQL {
     UNION
     SELECT 'team'::text, team_id FROM teammate WHERE user_id = ${userId}::uuid
     UNION
-    SELECT 'organization'::text, organization_id FROM member WHERE user_id = ${userId}::uuid
+    SELECT 'organization'::text, organization_id FROM membership WHERE user_id = ${userId}::uuid
   `
 }
 

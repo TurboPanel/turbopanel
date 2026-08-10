@@ -3,7 +3,7 @@ import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'
 import {
   grant,
-  member,
+  membership,
   organization,
   workspace,
   user,
@@ -48,7 +48,7 @@ async function withTestFixtures(
 
   const userId = insertedUser[0]!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
 
   const [insertedWorkspace] = await db
     .insert(workspace)
@@ -66,9 +66,9 @@ async function withTestFixtures(
     })
   } finally {
     await db.delete(grant).where(eq(grant.actorId, userId))
-    await db.delete(member).where(and(
-      eq(member.userId, userId),
-      eq(member.organizationId, organizationId),
+    await db.delete(membership).where(and(
+      eq(membership.userId, userId),
+      eq(membership.organizationId, organizationId),
     ))
     await db.delete(workspace).where(eq(workspace.organizationId, organizationId))
     await db.delete(user).where(eq(user.id, userId))

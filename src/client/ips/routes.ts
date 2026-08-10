@@ -36,7 +36,7 @@ const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 const IP_ALLOCATIONS = new Set(['dedicated', 'shared'])
-const IP_SCOPES = new Set(['public', 'datacenter', 'loopback', 'vpn'])
+const IP_SCOPES = new Set(['public', 'datacenter', 'vpn'])
 
 const IP_SELECT = {
   id: ip.id,

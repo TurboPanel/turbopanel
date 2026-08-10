@@ -10,6 +10,7 @@ import {
   environment,
   ip,
   managed,
+  node,
   organization,
   peer,
   principal,
@@ -1702,6 +1703,7 @@ test('processCommandEnvelope keeps unmatched self-host expected rows on partial 
         .values({
           environmentId,
           name: composeServiceName,
+          composeServiceName,
         })
         .returning({ id: service.id })
       const serviceId = serviceRow!.id
@@ -1966,9 +1968,20 @@ const MANAGED_APPLY_PAYLOAD = {
   composeYaml: 'services:\n  postgres:\n    image: postgres:18-alpine\n',
   configFiles: [
     { path: 'postgresql.conf', contents: "listen_addresses = '*'\n", mode: '0640' },
+    {
+      path: 'pg_hba.conf',
+      contents:
+        '# TurboPanel managed PostgreSQL — platform pg_hba\nlocal all all peer\n',
+      mode: '0640',
+    },
   ],
   volumes: [{ name: 'pgdata', target: '/var/lib/postgresql' }],
   exposure: { enabled: false, protocol: 'tcp' },
+  memberId: '00000000-0000-4000-8000-0000000000aa',
+  memberRole: 'primary' as const,
+  memberOrdinal: 1,
+  readEligible: true,
+  peers: [] as const,
   credentials: [
     {
       principalId: '00000000-0000-4000-8000-000000000003',
@@ -2229,6 +2242,136 @@ test('processCommandEnvelope projects managed.apply onto managed row and reconci
       .limit(1)
     assertEquals(containerRow?.containerId, 'managed-cid')
     assertEquals(containerRow?.status, 'running')
+  })
+})
+
+test('processCommandEnvelope keeps primary pin when replica managed.apply succeeds', async () => {
+  await withManagedApplyFixtures(async ({
+    db,
+    serverId,
+    managedId,
+    environmentId,
+    serviceId,
+  }) => {
+    const primaryServerId = serverId
+    const [primaryRow] = await db
+      .select({ organizationId: server.organizationId })
+      .from(server)
+      .where(eq(server.id, primaryServerId))
+      .limit(1)
+    const now = new Date().toISOString()
+    const [replicaServer] = await db
+      .insert(server)
+      .values({
+        createdAt: now,
+        updatedAt: now,
+        organizationId: primaryRow!.organizationId!,
+        name: 'Replica Host',
+      })
+      .returning({ id: server.id })
+    const replicaServerId = replicaServer!.id
+
+    try {
+      await attachConnectedDaemonStatus(db, replicaServerId)
+
+      await db
+        .update(managed)
+        .set({
+          serverId: primaryServerId,
+          metadata: { host: '203.0.113.1', port: 5432 },
+          status: 'applying',
+        })
+        .where(eq(managed.id, managedId))
+
+      await db.insert(container).values({
+        serviceId,
+        serverId: replicaServerId,
+        containerId: null,
+        containerName: '01936b3e-aaaa-bbbb-cccc-123456789abc-2',
+        status: 'pending',
+        composeServiceName: 'postgres',
+        ordinal: 2,
+      })
+
+      const record = await createCommandRecord(db, {
+        serverId: replicaServerId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'managed.apply',
+        payload: {
+          managedId,
+          environmentId,
+          ...MANAGED_APPLY_PAYLOAD,
+          containerName: '01936b3e-aaaa-bbbb-cccc-123456789abc-2',
+          memberId: '00000000-0000-4000-8000-0000000000bb',
+          memberRole: 'replica',
+          memberOrdinal: 2,
+        },
+      })
+
+      const registry = createDispatchMockRegistry(replicaServerId, {
+        waitForRequestResult: {
+          serverId: replicaServerId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'done',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          result: {
+            host: '203.0.113.99',
+            port: 6543,
+            containers: [
+              {
+                serviceId,
+                composeServiceName: 'postgres',
+                containerId: 'replica-cid',
+                containerName: '01936b3e-aaaa-bbbb-cccc-123456789abc-2',
+                status: 'running',
+                role: 'service',
+              },
+            ],
+          },
+        },
+      })
+
+      await processCommandEnvelope(
+        db,
+        registry,
+        buildEnvelope(record, replicaServerId),
+      )
+
+      const [managedRow] = await db
+        .select({
+          status: managed.status,
+          serverId: managed.serverId,
+          metadata: managed.metadata,
+        })
+        .from(managed)
+        .where(eq(managed.id, managedId))
+        .limit(1)
+      assertEquals(managedRow?.status, 'ready')
+      assertEquals(managedRow?.serverId, primaryServerId)
+      assertEquals(
+        (managedRow?.metadata as { host?: string; port?: number }).host,
+        '203.0.113.1',
+      )
+      assertEquals(
+        (managedRow?.metadata as { host?: string; port?: number }).port,
+        5432,
+      )
+
+      const [containerRow] = await db
+        .select({ containerId: container.containerId, status: container.status })
+        .from(container)
+        .where(eq(container.ordinal, 2))
+        .limit(1)
+      assertEquals(containerRow?.containerId, 'replica-cid')
+      assertEquals(containerRow?.status, 'running')
+    } finally {
+      await db.delete(command).where(eq(command.serverId, replicaServerId))
+      await db.delete(container).where(eq(container.serverId, replicaServerId))
+      await db.delete(server).where(eq(server.id, replicaServerId))
+    }
   })
 })
 
@@ -2943,5 +3086,530 @@ test('processCommandEnvelope leaves managed.status unchanged when managed.restor
       .where(eq(managed.id, managedId))
       .limit(1)
     assertEquals(managedRow?.status, 'applying')
+  })
+})
+
+test('processCommandEnvelope demotes old primary before promote so uniq_node_primary holds', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+
+    // Second server for the standby that will be promoted.
+    const [standbyServer] = await db
+      .insert(server)
+      .values({
+        organizationId: (
+          await db
+            .select({ organizationId: server.organizationId })
+            .from(server)
+            .where(eq(server.id, serverId))
+            .limit(1)
+        )[0]!.organizationId,
+        name: 'standby-host',
+        hostname: 'standby-host',
+      })
+      .returning({ id: server.id })
+    const standbyServerId = standbyServer!.id
+    await attachConnectedDaemonStatus(db, standbyServerId)
+
+    const [primaryMember] = await db
+      .insert(node)
+      .values({
+        managedId,
+        serverId,
+        role: 'primary',
+        ordinal: 1,
+        status: 'ready',
+      })
+      .returning({ id: node.id })
+    const [replicaMember] = await db
+      .insert(node)
+      .values({
+        managedId,
+        serverId: standbyServerId,
+        role: 'replica',
+        ordinal: 2,
+        status: 'ready',
+      })
+      .returning({ id: node.id })
+
+    try {
+      const record = await createCommandRecord(db, {
+        serverId: standbyServerId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'managed.promote',
+        payload: {
+          managedId,
+          memberId: replicaMember!.id,
+          demoteMemberId: primaryMember!.id,
+        },
+      })
+
+      const registry = createDispatchMockRegistry(standbyServerId, {
+        waitForRequestResult: {
+          serverId: standbyServerId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'done',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          result: {
+            promotedMemberId: replicaMember!.id,
+            demotedMemberId: primaryMember!.id,
+            status: 'ready',
+            summary: 'promoted',
+          },
+        },
+      })
+
+      await processCommandEnvelope(
+        db,
+        registry,
+        buildEnvelope(record, standbyServerId),
+      )
+
+      const members = await db
+        .select({
+          id: node.id,
+          role: node.role,
+          status: node.status,
+        })
+        .from(node)
+        .where(eq(node.managedId, managedId))
+
+      const primary = members.find((m) => m.id === primaryMember!.id)
+      const replica = members.find((m) => m.id === replicaMember!.id)
+      assertEquals(primary?.role, 'replica')
+      assertEquals(primary?.status, 'needs_resync')
+      assertEquals(replica?.role, 'primary')
+      assertEquals(replica?.status, 'ready')
+
+      const [managedRow] = await db
+        .select({ serverId: managed.serverId, status: managed.status })
+        .from(managed)
+        .where(eq(managed.id, managedId))
+        .limit(1)
+      assertEquals(managedRow?.serverId, standbyServerId)
+      assertEquals(managedRow?.status, 'ready')
+    } finally {
+      await db.delete(node).where(eq(node.managedId, managedId))
+      // Promote may have flipped managed.serverId to the standby host; point
+      // it back at the original server before dropping the standby row so
+      // the FK doesn't block deletion.
+      await db.update(managed).set({ serverId }).where(eq(managed.id, managedId))
+      await db.delete(command).where(eq(command.serverId, standbyServerId))
+      await db.delete(server).where(eq(server.id, standbyServerId))
+    }
+  })
+})
+
+function createRecordingCommandQueue() {
+  const envelopes: CommandEnvelope[] = []
+  return {
+    envelopes,
+    enqueue: async (envelope: CommandEnvelope) => {
+      envelopes.push(envelope)
+    },
+  }
+}
+
+test('processCommandEnvelope enqueues pendingStandbyApplies only after primary succeeds', async () => {
+  await withManagedApplyFixtures(async ({
+    db,
+    serverId,
+    managedId,
+    environmentId,
+    serviceId,
+  }) => {
+    await db.insert(container).values({
+      serviceId,
+      serverId,
+      containerId: null,
+      containerName: MANAGED_APPLY_PAYLOAD.containerName,
+      status: 'pending',
+      composeServiceName: 'postgres',
+      ordinal: 1,
+    })
+
+    const [primaryServerRow] = await db
+      .select({ organizationId: server.organizationId })
+      .from(server)
+      .where(eq(server.id, serverId))
+      .limit(1)
+    const now = new Date().toISOString()
+    const [standbyServerRow] = await db
+      .insert(server)
+      .values({
+        createdAt: now,
+        updatedAt: now,
+        organizationId: primaryServerRow!.organizationId,
+        name: 'Standby Apply Test Server',
+      })
+      .returning({ id: server.id })
+    const standbyServerId = standbyServerRow!.id
+    const standbyMemberId = '00000000-0000-4000-8000-0000000000bb'
+    const standbyPayload = {
+      managedId,
+      environmentId,
+      ...MANAGED_APPLY_PAYLOAD,
+      memberId: standbyMemberId,
+      memberRole: 'replica' as const,
+      memberOrdinal: 2,
+      containerName: '01936b3e-aaaa-bbbb-cccc-123456789abc-2',
+    }
+
+    const queue = createRecordingCommandQueue()
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.apply',
+      payload: {
+        managedId,
+        environmentId,
+        ...MANAGED_APPLY_PAYLOAD,
+      },
+      metadata: {
+        pendingStandbyApplies: [
+          {
+            serverId: standbyServerId,
+            memberId: standbyMemberId,
+            payload: standbyPayload,
+          },
+        ],
+      },
+    })
+
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: {
+          host: '203.0.113.10',
+          port: 5432,
+          containers: [
+            {
+              serviceId,
+              composeServiceName: 'postgres',
+              containerId: 'managed-cid',
+              containerName: MANAGED_APPLY_PAYLOAD.containerName,
+              status: 'running',
+              role: 'service',
+            },
+          ],
+        },
+      },
+    })
+
+    await processCommandEnvelope(
+      db,
+      registry,
+      buildEnvelope(record, serverId),
+      { commandQueue: queue },
+    )
+
+    assertEquals(queue.envelopes.length, 1)
+    assertEquals(queue.envelopes[0]?.type, 'managed.apply')
+    assertEquals(queue.envelopes[0]?.serverId, standbyServerId)
+
+    await db.delete(command).where(eq(command.serverId, standbyServerId))
+    await db.delete(server).where(eq(server.id, standbyServerId))
+  })
+})
+
+test('processCommandEnvelope does not enqueue standbys when primary apply fails', async () => {
+  await withManagedApplyFixtures(async ({
+    db,
+    serverId,
+    managedId,
+    environmentId,
+  }) => {
+    const standbyServerId = crypto.randomUUID()
+    const standbyPayload = {
+      managedId,
+      environmentId,
+      ...MANAGED_APPLY_PAYLOAD,
+      memberId: '00000000-0000-4000-8000-0000000000bb',
+      memberRole: 'replica' as const,
+      memberOrdinal: 2,
+    }
+    const queue = createRecordingCommandQueue()
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.apply',
+      payload: {
+        managedId,
+        environmentId,
+        ...MANAGED_APPLY_PAYLOAD,
+      },
+      metadata: {
+        pendingStandbyApplies: [
+          {
+            serverId: standbyServerId,
+            memberId: standbyPayload.memberId,
+            payload: standbyPayload,
+          },
+        ],
+      },
+    })
+
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'failed',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        error: 'apply boom',
+      },
+    })
+
+    await processCommandEnvelope(
+      db,
+      registry,
+      buildEnvelope(record, serverId),
+      { commandQueue: queue },
+    )
+
+    assertEquals(queue.envelopes.length, 0)
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.status, 'failed')
+  })
+})
+
+test('processCommandEnvelope enqueues promote only after successful fence lifecycle', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    const [primaryServerRow] = await db
+      .select({ organizationId: server.organizationId })
+      .from(server)
+      .where(eq(server.id, serverId))
+      .limit(1)
+    const now = new Date().toISOString()
+    const [promoteServerRow] = await db
+      .insert(server)
+      .values({
+        createdAt: now,
+        updatedAt: now,
+        organizationId: primaryServerRow!.organizationId,
+        name: 'Promote Follow-up Test Server',
+      })
+      .returning({ id: server.id })
+    const promoteServerId = promoteServerRow!.id
+    const queue = createRecordingCommandQueue()
+    const promotePayload = {
+      managedId,
+      memberId: '00000000-0000-4000-8000-0000000000cc',
+      engine: 'postgres',
+      demoteMemberId: '00000000-0000-4000-8000-0000000000aa',
+    }
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.lifecycle',
+      payload: { managedId, action: 'stop', engine: 'postgres' },
+      metadata: {
+        followUpPromote: {
+          serverId: promoteServerId,
+          payload: promotePayload,
+        },
+      },
+    })
+
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: { status: 'stopped' },
+      },
+    })
+
+    await processCommandEnvelope(
+      db,
+      registry,
+      buildEnvelope(record, serverId),
+      { commandQueue: queue },
+    )
+
+    assertEquals(queue.envelopes.length, 1)
+    assertEquals(queue.envelopes[0]?.type, 'managed.promote')
+    assertEquals(queue.envelopes[0]?.serverId, promoteServerId)
+
+    await db.delete(command).where(eq(command.serverId, promoteServerId))
+    await db.delete(server).where(eq(server.id, promoteServerId))
+  })
+})
+
+test('processCommandEnvelope does not enqueue promote when fence lifecycle fails', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    const queue = createRecordingCommandQueue()
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.lifecycle',
+      payload: { managedId, action: 'stop', engine: 'postgres' },
+      metadata: {
+        followUpPromote: {
+          serverId: crypto.randomUUID(),
+          payload: {
+            managedId,
+            memberId: '00000000-0000-4000-8000-0000000000cc',
+            engine: 'postgres',
+          },
+        },
+      },
+    })
+
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'failed',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        error: 'fence failed',
+      },
+    })
+
+    await processCommandEnvelope(
+      db,
+      registry,
+      buildEnvelope(record, serverId),
+      { commandQueue: queue },
+    )
+
+    assertEquals(queue.envelopes.length, 0)
+  })
+})
+
+test('processCommandEnvelope deletes member only after destroy success with deleteMemberAfterDestroy', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    const [memberRow] = await db
+      .insert(node)
+      .values({
+        managedId,
+        serverId,
+        role: 'replica',
+        ordinal: 2,
+        status: 'applying',
+        readEligible: true,
+      })
+      .returning({ id: node.id })
+    const memberId = memberRow!.id
+
+    try {
+      const record = await createCommandRecord(db, {
+        serverId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'managed.destroy',
+        payload: {
+          managedId,
+          removeVolumes: true,
+          memberId,
+          deleteMemberAfterDestroy: true,
+        },
+      })
+
+      const registry = createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'done',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          result: { status: 'stopped', containers: [] },
+        },
+      })
+
+      await processCommandEnvelope(
+        db,
+        registry,
+        buildEnvelope(record, serverId),
+      )
+
+      const [after] = await db
+        .select({ id: node.id })
+        .from(node)
+        .where(eq(node.id, memberId))
+        .limit(1)
+      assertEquals(after, undefined)
+    } finally {
+      await db.delete(node).where(eq(node.managedId, managedId))
+    }
+  })
+})
+
+test('processCommandEnvelope keeps member row failed/retryable when destroy fails', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    const [memberRow] = await db
+      .insert(node)
+      .values({
+        managedId,
+        serverId,
+        role: 'replica',
+        ordinal: 2,
+        status: 'applying',
+        readEligible: true,
+      })
+      .returning({ id: node.id })
+    const memberId = memberRow!.id
+
+    try {
+      const record = await createCommandRecord(db, {
+        serverId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'managed.destroy',
+        payload: {
+          managedId,
+          removeVolumes: true,
+          memberId,
+          deleteMemberAfterDestroy: true,
+        },
+      })
+
+      const registry = createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'failed',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          error: 'destroy boom',
+        },
+      })
+
+      await processCommandEnvelope(
+        db,
+        registry,
+        buildEnvelope(record, serverId),
+      )
+
+      const [after] = await db
+        .select({ id: node.id, status: node.status })
+        .from(node)
+        .where(eq(node.id, memberId))
+        .limit(1)
+      assertEquals(after?.id, memberId)
+      assertEquals(after?.status, 'failed')
+    } finally {
+      await db.delete(node).where(eq(node.managedId, managedId))
+    }
   })
 })

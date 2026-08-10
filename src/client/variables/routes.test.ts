@@ -18,10 +18,12 @@ import { decryptSecret, encryptSecret } from '../authn/data-encryption.ts'
 import { buildServerDaemonState } from '../../daemon/authn/daemon-state.ts'
 import { computePublicKeyFingerprint } from '../../daemon/authn/server-key.ts'
 import {
+  binding,
   environment,
   grant,
-  member,
+  membership,
   organization,
+  principal,
   project,
   server,
   service,
@@ -117,7 +119,7 @@ async function withVariableFixtures(
     .returning({ id: user.id })
   const userId = insertedUser[0]!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -197,6 +199,11 @@ async function withVariableFixtures(
     await db.delete(variable).where(eq(variable.projectId, projectId))
     await db.delete(variable).where(eq(variable.serviceId, serviceId))
     await db.delete(variable).where(eq(variable.serverId, serverId))
+    try {
+      await db.delete(binding).where(eq(binding.serviceId, serviceId))
+    } catch {
+      // binding table lands after apply of the squashed 0000_init; ignore until applied
+    }
     await db.delete(service).where(eq(service.id, serviceId))
     await db.delete(environment).where(eq(environment.id, environmentId))
     await db.delete(project).where(eq(project.id, projectId))
@@ -205,9 +212,9 @@ async function withVariableFixtures(
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
     ))
-    await db.delete(member).where(and(
-      eq(member.userId, userId),
-      eq(member.organizationId, organizationId),
+    await db.delete(membership).where(and(
+      eq(membership.userId, userId),
+      eq(membership.organizationId, organizationId),
     ))
     await db.delete(workspace).where(eq(workspace.id, workspaceId))
     await db.delete(user).where(eq(user.id, userId))
@@ -688,6 +695,102 @@ test('PATCH /variables/:id preserves empty-string when toggling to secret', asyn
 
     const decrypted = await decryptSecret(dataEncryptionSecrets, row.value)
     assertEquals(decrypted, '')
+  })
+})
+
+test('binding-owned variables reject PATCH/DELETE and conflict on POST', async () => {
+  await withVariableFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    projectId,
+    serviceId,
+  }) => {
+    // Requires applied schema with binding + variable.binding_id.
+    try {
+      await db.select({ id: binding.id }).from(binding).limit(1)
+    } catch {
+      console.warn('Skipping binding-owned variable tests: binding table not applied')
+      return
+    }
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+
+    // Binding FKs need a principal (project-scoped host/db kind is enough for tests).
+    const [insertedPrincipal] = await db
+      .insert(principal)
+      .values({
+        projectId,
+        kind: 'database',
+        provider: 'postgres',
+        username: `bind_test_${crypto.randomUUID().slice(0, 8)}`,
+      })
+      .returning({ id: principal.id })
+    const principalId = insertedPrincipal!.id
+
+    const [insertedBinding] = await db
+      .insert(binding)
+      .values({
+        principalId,
+        serviceId,
+        databaseName: 'appdb',
+        keyPrefix: 'DATABASE',
+        emitEngineDefaults: false,
+      })
+      .returning({ id: binding.id })
+    const bindingId = insertedBinding!.id
+
+    const [owned] = await db
+      .insert(variable)
+      .values({
+        serviceId,
+        bindingId,
+        key: 'DATABASE_URL',
+        value: 'enc.fake-envelope',
+        isSecret: true,
+        isLiteral: true,
+        forRuntime: true,
+        forBuild: false,
+      })
+      .returning({ id: variable.id })
+
+    const patch = await app.request(`/variables/${owned!.id}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ description: 'nope' }),
+    })
+    assertEquals(patch.status, 403)
+    assertEquals(await patch.json(), { error: 'binding_owned_variable' })
+
+    const del = await app.request(`/variables/${owned!.id}`, {
+      method: 'DELETE',
+      headers,
+    })
+    assertEquals(del.status, 403)
+    assertEquals(await del.json(), { error: 'binding_owned_variable' })
+
+    const conflict = await app.request('/variables', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        serviceId,
+        key: 'DATABASE_URL',
+        value: 'shadow',
+      }),
+    })
+    assertEquals(conflict.status, 409)
+    assertEquals(await conflict.json(), { error: 'binding_key_conflict' })
+
+    await db.delete(variable).where(eq(variable.id, owned!.id))
+    await db.delete(binding).where(eq(binding.id, bindingId))
+    await db.delete(principal).where(eq(principal.id, principalId))
   })
 })
 

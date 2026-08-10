@@ -1,5 +1,5 @@
 /** TLS certificate source discriminator — stored in `tls.source`. */
-export type TlsSource = 'upload' | 'lets_encrypt' | 'self_signed'
+export type TlsSource = 'upload' | 'lets_encrypt' | 'self_signed' | 'organization_ca'
 
 /** Lifecycle status — dedicated `tls.status` column (also in API metadata DTO). */
 export type TlsStatus = 'ready' | 'pending' | 'expired' | 'failed' | 'revoked'
@@ -37,6 +37,8 @@ export type TlsOptions = {
 
 export type ParsedCertificate = {
   dnsNames: string[]
+  /** iPAddress SANs as dotted-quad IPv4 strings (when present). */
+  ipAddresses: string[]
   hasWildcard: boolean
   notBefore: Date
   notAfter: Date
@@ -63,4 +65,5 @@ export const TLS_SOURCES: readonly TlsSource[] = [
   'upload',
   'lets_encrypt',
   'self_signed',
+  'organization_ca',
 ] as const

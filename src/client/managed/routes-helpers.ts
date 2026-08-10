@@ -1,10 +1,57 @@
 import type { Context } from 'hono'
+import { eq } from 'drizzle-orm'
 import type { AppEnv } from '../../app.ts'
+import type { Db } from '../../db.ts'
 import type { ManagedSettings } from '../../lib/managed/settings.ts'
+import { server } from '../../lib/db/schema.ts'
 import { requireStringField } from '../shared.ts'
 import { USERNAME_RE } from '../principals/store.ts'
+import { resolveHostingBindAddress } from '../environments/deploy-prepare.ts'
 import type { ManagedContext } from './context.ts'
 import type { ManagedRowOptions } from './options.ts'
+
+/**
+ * Client connection endpoint for managed engines goes through the shared
+ * ProxySQL listener (protocol port 5432/3306), not a per-service published port.
+ */
+export async function resolveManagedConnectionListener(
+  db: Db,
+  params: Readonly<{
+    serverId: string
+    protocolPort: number
+    exposure: ManagedSettings['exposure']
+  }>,
+): Promise<{ host: string; port: number } | null> {
+  const bindScope = params.exposure.enabled
+    ? (params.exposure.bind ?? 'public')
+    : 'local'
+
+  const bindResolved = await resolveHostingBindAddress(db, {
+    serverId: params.serverId,
+    options: { bind: bindScope },
+    ipId: null,
+  })
+  if (
+    typeof bindResolved === 'object' &&
+    bindResolved?.kind === 'datacenter_ip_required'
+  ) {
+    return null
+  }
+
+  if (typeof bindResolved === 'string') {
+    return { host: bindResolved, port: params.protocolPort }
+  }
+
+  // Public bind with no pin — prefer the server hostname as a stable operator dial.
+  const [row] = await db
+    .select({ hostname: server.hostname })
+    .from(server)
+    .where(eq(server.id, params.serverId))
+    .limit(1)
+  const hostname = row?.hostname?.trim()
+  if (!hostname) return null
+  return { host: hostname, port: params.protocolPort }
+}
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -18,6 +65,7 @@ export function managedSessionPaths(): string[] {
     '/environments/:id/managed/root-password',
     '/environments/:id/managed/users',
     '/environments/:id/managed/users/:principalId',
+    '/environments/:id/managed/users/:principalId/password',
     '/environments/:id/managed/databases',
     '/environments/:id/managed/databases/:databaseName',
     '/environments/:id/managed/status',
@@ -25,6 +73,9 @@ export function managedSessionPaths(): string[] {
     '/environments/:id/managed/backups',
     '/environments/:id/managed/backups/:backupId',
     '/environments/:id/managed/backups/:backupId/restore',
+    '/environments/:id/managed/members',
+    '/environments/:id/managed/members/:memberId',
+    '/environments/:id/managed/members/:memberId/promote',
     '/organizations/:id/managed',
   ]
 }
@@ -50,9 +101,6 @@ export function mergeCreateSettings(
       ...base.exposure,
       ...(typeof exposureRaw.enabled === 'boolean'
         ? { enabled: exposureRaw.enabled }
-        : {}),
-      ...(typeof exposureRaw.publishedPort === 'number'
-        ? { publishedPort: exposureRaw.publishedPort }
         : {}),
       ...(exposureRaw.bind === 'public' ||
           exposureRaw.bind === 'datacenter' ||
@@ -98,6 +146,73 @@ export function principalMetadata(metadata: unknown): Record<string, unknown> {
 
 export function isManagedRootPrincipal(metadata: unknown): boolean {
   return principalMetadata(metadata).managedRoot === true
+}
+
+/** Replication principal is platform-managed — never listed as a client login. */
+export function isManagedReplicationPrincipal(metadata: unknown): boolean {
+  return principalMetadata(metadata).managedReplication === true
+}
+
+/**
+ * Lag gate for promote. Returns null when healthy enough to promote, or a
+ * typed 409 error code when the operator should not promote without `force`.
+ */
+export function evaluateManagedPromoteLagGate(
+  replication: unknown,
+  nowMs: number = Date.now(),
+  options?: {
+    /** Max age of the observation (default 120s). */
+    staleMs?: number
+    /** Max replay lag in bytes (default 64 MiB). */
+    maxLagBytes?: number
+    /** Max replay lag in seconds (default 30). */
+    maxLagSeconds?: number
+  },
+):
+  | null
+  | 'managed_replica_not_streaming'
+  | 'managed_replica_lagging'
+  | 'managed_replica_health_stale' {
+  const staleMs = options?.staleMs ?? 120_000
+  const maxLagBytes = options?.maxLagBytes ?? 64 * 1024 * 1024
+  const maxLagSeconds = options?.maxLagSeconds ?? 30
+
+  if (
+    typeof replication !== 'object' ||
+    replication === null ||
+    Array.isArray(replication)
+  ) {
+    return 'managed_replica_not_streaming'
+  }
+  const r = replication as Record<string, unknown>
+  if (typeof r.state !== 'string' || r.state.length === 0) {
+    return 'managed_replica_not_streaming'
+  }
+  if (r.state !== 'streaming') {
+    return 'managed_replica_not_streaming'
+  }
+  if (typeof r.observedAt !== 'string' || r.observedAt.length === 0) {
+    return 'managed_replica_health_stale'
+  }
+  const observedMs = Date.parse(r.observedAt)
+  if (!Number.isFinite(observedMs) || nowMs - observedMs > staleMs) {
+    return 'managed_replica_health_stale'
+  }
+  if (
+    typeof r.lagBytes === 'number' &&
+    Number.isFinite(r.lagBytes) &&
+    r.lagBytes > maxLagBytes
+  ) {
+    return 'managed_replica_lagging'
+  }
+  if (
+    typeof r.lagSeconds === 'number' &&
+    Number.isFinite(r.lagSeconds) &&
+    r.lagSeconds > maxLagSeconds
+  ) {
+    return 'managed_replica_lagging'
+  }
+  return null
 }
 
 export function serializeManagedUser(
@@ -159,16 +274,19 @@ export function parseManagedUserCreateFields(
   ctx: ManagedContext,
   body: Record<string, unknown>,
   options: ManagedRowOptions,
+  /** Persisted cluster root username when known; falls back to spec preference. */
+  rootUsername?: string,
 ): { username: string; databases: string[]; privileges: string[] } | Response {
   const username = requireStringField(c, body, 'username')
   if (username instanceof Response) return username
 
+  const effectiveRoot = rootUsername ?? ctx.spec.rootUsername
   const { pattern, maxLength } = ctx.spec.userOperations.identifier
   if (
     !USERNAME_RE.test(username) ||
     !pattern.test(username) ||
     username.length > maxLength ||
-    username === ctx.spec.rootUsername
+    username === effectiveRoot
   ) {
     return c.json({ error: 'Invalid username' }, 400)
   }

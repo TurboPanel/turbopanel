@@ -13,6 +13,8 @@ export const COMMAND_TYPES = [
   'managed.destroy',
   'managed.backup',
   'managed.restore',
+  'managed.promote',
+  'managed.ingress.reconcile',
   'system.reconcile',
 ] as const
 

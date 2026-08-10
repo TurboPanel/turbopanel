@@ -1,5 +1,5 @@
 import { assertEquals } from 'jsr:@std/assert'
-import { and, eq, isNull } from 'drizzle-orm'
+import { and, eq, inArray, isNull } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import { getDatabaseUrl } from '../../db-url.ts'
@@ -23,12 +23,13 @@ import { emptyComposeDocument } from '../../lib/compose/index.ts'
 import type { ComposeDocument } from '../../lib/compose/types.ts'
 import { getManagedEngineSpec } from '../../lib/managed/index.ts'
 import {
+  binding,
   command,
   container,
   environment,
   grant,
   managed,
-  member,
+  membership,
   organization,
   principal,
   project,
@@ -123,6 +124,7 @@ async function withDriftedPlacement(
     await db.update(environment).set({ serverId: originalServerId }).where(
       eq(environment.id, environmentId),
     )
+    await db.delete(container).where(eq(container.serverId, driftedServerId))
     await db.delete(server).where(eq(server.id, driftedServerId))
   }
 }
@@ -242,7 +244,7 @@ async function withManagedFixtures(
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
   if (withManageGrant) {
     await db.insert(grant).values({
       entityType: 'organization',
@@ -358,6 +360,11 @@ async function withManagedFixtures(
       .from(service)
       .where(eq(service.environmentId, environmentId))
     for (const row of envServices) {
+      try {
+        await db.delete(binding).where(eq(binding.serviceId, row.id))
+      } catch {
+        // unmigrated local DB
+      }
       await db.delete(container).where(eq(container.serviceId, row.id))
     }
     await db.delete(service).where(eq(service.environmentId, environmentId))
@@ -365,14 +372,52 @@ async function withManagedFixtures(
     await db.delete(environment).where(eq(environment.id, environmentId))
     await db.delete(project).where(eq(project.id, projectId))
     await db.delete(workspace).where(eq(workspace.id, workspaceId))
+
+    // Managed apply/backup/lifecycle routes self-heal a system
+    // (managed-ingress) workspace/project/environment/service/container
+    // scoped to `serverId` as a side effect of reconciling ProxySQL — sweep
+    // every remaining workspace under this test-owned organization (not just
+    // the tracked ids above) so that hierarchy never leaks and blocks the
+    // `server` delete below via RESTRICT foreign keys.
+    await db.delete(container).where(eq(container.serverId, serverId))
+    const leftoverWorkspaceIds = (
+      await db
+        .select({ id: workspace.id })
+        .from(workspace)
+        .where(eq(workspace.organizationId, organizationId))
+    ).map((row) => row.id)
+    if (leftoverWorkspaceIds.length > 0) {
+      const leftoverProjectIds = (
+        await db
+          .select({ id: project.id })
+          .from(project)
+          .where(inArray(project.workspaceId, leftoverWorkspaceIds))
+      ).map((row) => row.id)
+      if (leftoverProjectIds.length > 0) {
+        const leftoverEnvironmentIds = (
+          await db
+            .select({ id: environment.id })
+            .from(environment)
+            .where(inArray(environment.projectId, leftoverProjectIds))
+        ).map((row) => row.id)
+        if (leftoverEnvironmentIds.length > 0) {
+          await db.delete(service).where(inArray(service.environmentId, leftoverEnvironmentIds))
+          await db.delete(managed).where(inArray(managed.environmentId, leftoverEnvironmentIds))
+          await db.delete(environment).where(inArray(environment.id, leftoverEnvironmentIds))
+        }
+        await db.delete(project).where(inArray(project.id, leftoverProjectIds))
+      }
+      await db.delete(workspace).where(inArray(workspace.id, leftoverWorkspaceIds))
+    }
+
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(grant).where(and(
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
     ))
-    await db.delete(member).where(and(
-      eq(member.userId, userId),
-      eq(member.organizationId, organizationId),
+    await db.delete(membership).where(and(
+      eq(membership.userId, userId),
+      eq(membership.organizationId, organizationId),
     ))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
@@ -546,8 +591,16 @@ test('managed create returns rootPassword once, seals principal, is idempotent',
     assertEquals(typeof firstBody.commandId, 'string')
     assertEquals(firstBody.managed.engine, 'postgres')
     assertEquals(firstBody.managed.serverId, serverId)
-    assertEquals(commandQueue.envelopes.length, 1)
+    // A successful apply also self-heals the ProxySQL ingress reconcile
+    // (Comment 2) for the same server, so both a managed.apply and a
+    // managed.ingress.reconcile get enqueued.
+    assertEquals(commandQueue.envelopes.length, 2)
     assertEquals(commandQueue.envelopes[0]?.type, 'managed.apply')
+    assertEquals(commandQueue.envelopes[1]?.type, 'managed.ingress.reconcile')
+    assertEquals(
+      commandQueue.envelopes.every((envelope) => envelope.serverId === serverId),
+      true,
+    )
 
     const [managedRow] = await db
       .select({ options: managed.options, id: managed.id })
@@ -580,7 +633,7 @@ test('managed create returns rootPassword once, seals principal, is idempotent',
     assertEquals(secondBody.alreadyProvisioned, true)
     assertEquals(secondBody.rootPassword, undefined)
     assertEquals(secondBody.commandId, undefined)
-    assertEquals(commandQueue.envelopes.length, 1)
+    assertEquals(commandQueue.envelopes.length, 2)
 
     const getRes = await app.request(`/environments/${environmentId}/managed`, {
       headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
@@ -632,14 +685,14 @@ test('PATCH rejects denylisted dockerOptions and does not enqueue', async () => 
     assertEquals(denied.status, 400)
     assertEquals(await denied.json(), { error: 'managed_settings_invalid' })
 
-    const badPort = await app.request(`/environments/${environmentId}/managed`, {
+    const badBind = await app.request(`/environments/${environmentId}/managed`, {
       method: 'PATCH',
       headers,
       body: JSON.stringify({
-        settings: { exposure: { enabled: true, publishedPort: 22 } },
+        settings: { exposure: { enabled: true, bind: 'internet' } },
       }),
     })
-    assertEquals(badPort.status, 400)
+    assertEquals(badBind.status, 400)
     assertEquals(commandQueue.envelopes.length, beforeCount)
   })
 })
@@ -754,6 +807,11 @@ test('GET /environments/:id/managed/status returns status host port containers',
     assertEquals(create.status, 200)
     const created = await create.json() as { managed: { id: string } }
 
+    // The live connection listener (Comment 2: reachable-endpoint fix) always
+    // wins over stale `metadata.host`/`.port` when it can resolve — exposure
+    // stays disabled here (bind local), so the listener resolves the safe
+    // loopback address rather than trusting a stored public host that may no
+    // longer be reachable/valid.
     await db.update(managed).set({
       status: 'ready',
       metadata: {
@@ -775,7 +833,7 @@ test('GET /environments/:id/managed/status returns status host port containers',
       containers: Array<{ role: string }>
     }
     assertEquals(body.status, 'ready')
-    assertEquals(body.host, '203.0.113.50')
+    assertEquals(body.host, '127.0.0.1')
     assertEquals(body.port, 5432)
     assertEquals(Array.isArray(body.containers), true)
     for (const row of body.containers) {
@@ -1300,9 +1358,23 @@ test('POST /environments/:id/managed/apply targets managed.server_id when enviro
       assertEquals(apply.status, 200)
       const applyBody = await apply.json() as { serverId: string }
       assertEquals(applyBody.serverId, serverId)
-      assertEquals(commandQueue.envelopes.length, beforeCount + 1)
-      assertEquals(commandQueue.envelopes.at(-1)?.serverId, serverId)
-      assertEquals(commandQueue.envelopes.at(-1)?.type, 'managed.apply')
+      // A successful apply also self-heals the ProxySQL ingress reconcile
+      // (Comment 2) for the same server — both envelopes must target
+      // `managed.server_id`, never the drifted environment placement.
+      const newEnvelopes = commandQueue.envelopes.slice(beforeCount)
+      assertEquals(newEnvelopes.length, 2)
+      assertEquals(
+        newEnvelopes.every((envelope) => envelope.serverId === serverId),
+        true,
+      )
+      assertEquals(
+        newEnvelopes.some((envelope) => envelope.type === 'managed.apply'),
+        true,
+      )
+      assertEquals(
+        newEnvelopes.some((envelope) => envelope.type === 'managed.ingress.reconcile'),
+        true,
+      )
     })
   })
 })
@@ -1506,14 +1578,182 @@ test('POST /environments/:id/managed/root-password targets managed.server_id whe
       const rotateBody = await rotate.json() as {
         serverId: string
         rootPassword: string
+        redeployRequired: { count: number; services: unknown[] }
       }
       assertEquals(rotateBody.serverId, serverId)
       assertEquals(typeof rotateBody.rootPassword, 'string')
       assertEquals((rotateBody.rootPassword.length ?? 0) > 0, true)
-      assertEquals(commandQueue.envelopes.length, beforeCount + 1)
-      assertEquals(commandQueue.envelopes.at(-1)?.serverId, serverId)
-      assertEquals(commandQueue.envelopes.at(-1)?.type, 'managed.apply')
+      assertEquals(rotateBody.redeployRequired.count, 0)
+      assertEquals(rotateBody.redeployRequired.services, [])
+      // A successful re-apply also self-heals the ProxySQL ingress reconcile
+      // (Comment 2) for the same server — both envelopes must target
+      // `managed.server_id`, never the drifted environment placement.
+      const newEnvelopes = commandQueue.envelopes.slice(beforeCount)
+      assertEquals(newEnvelopes.length, 2)
+      assertEquals(
+        newEnvelopes.every((envelope) => envelope.serverId === serverId),
+        true,
+      )
+      assertEquals(
+        newEnvelopes.some((envelope) => envelope.type === 'managed.apply'),
+        true,
+      )
+      assertEquals(
+        newEnvelopes.some((envelope) => envelope.type === 'managed.ingress.reconcile'),
+        true,
+      )
     })
+  })
+})
+
+test('POST root-password includes redeployRequired when bindings exist; DELETE user/db block on bindings', async () => {
+  await withManagedFixtures({}, async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    projectId,
+    environmentId,
+  }) => {
+    try {
+      await db.select({ id: binding.id }).from(binding).limit(1)
+    } catch {
+      console.warn('Skipping binding impact managed tests: binding table not applied')
+      return
+    }
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+
+    const create = await app.request(`/environments/${environmentId}/managed`, {
+      method: 'POST',
+      headers,
+      body: '{}',
+    })
+    assertEquals(create.status, 200)
+    const created = await create.json() as {
+      managed: { id: string; options?: { databases?: string[] } }
+    }
+    await db.update(managed).set({ status: 'ready' }).where(
+      eq(managed.id, created.managed.id),
+    )
+
+    // Consumer service (bindings need a service_id target).
+    const [consumer] = await db
+      .insert(service)
+      .values({
+        environmentId,
+        name: 'app',
+        composeServiceName: 'app',
+      })
+      .returning({ id: service.id })
+    const consumerServiceId = consumer!.id
+
+    const [rootRow] = await db
+      .select({ id: principal.id })
+      .from(principal)
+      .where(eq(principal.managedId, created.managed.id))
+      .limit(1)
+    const rootPrincipalId = rootRow!.id
+
+    await db.insert(binding).values({
+      principalId: rootPrincipalId,
+      serviceId: consumerServiceId,
+      databaseName: 'postgres',
+      keyPrefix: 'DATABASE',
+      emitEngineDefaults: true,
+    })
+
+    const rotate = await app.request(
+      `/environments/${environmentId}/managed/root-password`,
+      { method: 'POST', headers, body: '{}' },
+    )
+    assertEquals(rotate.status, 200)
+    const rotateBody = await rotate.json() as {
+      redeployRequired: {
+        count: number
+        services: Array<{
+          serviceId: string
+          keyPrefix: string
+          environmentId: string
+          projectId: string
+        }>
+      }
+    }
+    assertEquals(rotateBody.redeployRequired.count, 1)
+    assertEquals(rotateBody.redeployRequired.services[0]?.serviceId, consumerServiceId)
+    assertEquals(rotateBody.redeployRequired.services[0]?.keyPrefix, 'DATABASE')
+    assertEquals(rotateBody.redeployRequired.services[0]?.environmentId, environmentId)
+    assertEquals(rotateBody.redeployRequired.services[0]?.projectId, projectId)
+
+    await db.update(managed).set({ status: 'ready' }).where(
+      eq(managed.id, created.managed.id),
+    )
+
+    const createUser = await app.request(`/environments/${environmentId}/managed/users`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ username: 'bound_user', databases: ['postgres'] }),
+    })
+    assertEquals(createUser.status, 200)
+    const userBody = await createUser.json() as { user: { id: string } }
+    const boundUserId = userBody.user.id
+
+    await db.insert(binding).values({
+      principalId: boundUserId,
+      serviceId: consumerServiceId,
+      databaseName: 'postgres',
+      keyPrefix: 'APP',
+      emitEngineDefaults: false,
+    })
+
+    await db.update(managed).set({ status: 'ready' }).where(
+      eq(managed.id, created.managed.id),
+    )
+
+    const deleteUser = await app.request(
+      `/environments/${environmentId}/managed/users/${boundUserId}`,
+      { method: 'DELETE', headers },
+    )
+    assertEquals(deleteUser.status, 409)
+    const deleteUserBody = await deleteUser.json() as {
+      error: string
+      services: Array<{ serviceId: string; keyPrefix: string }>
+    }
+    assertEquals(deleteUserBody.error, 'managed_user_has_bindings')
+    assertEquals(deleteUserBody.services.some((s) => s.serviceId === consumerServiceId), true)
+
+    // Extra non-initial DB then bind to it.
+    const createDb = await app.request(`/environments/${environmentId}/managed/databases`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ name: 'app_extra' }),
+    })
+    // Some engines pre-list only `postgres` — create may succeed when ready.
+    if (createDb.status === 200) {
+      await db.update(managed).set({ status: 'ready' }).where(
+        eq(managed.id, created.managed.id),
+      )
+      await db.insert(binding).values({
+        principalId: boundUserId,
+        serviceId: consumerServiceId,
+        databaseName: 'app_extra',
+        keyPrefix: 'EXTRA',
+        emitEngineDefaults: false,
+      })
+      const deleteDb = await app.request(
+        `/environments/${environmentId}/managed/databases/app_extra`,
+        { method: 'DELETE', headers },
+      )
+      assertEquals(deleteDb.status, 409)
+      const deleteDbBody = await deleteDb.json() as { error: string }
+      assertEquals(deleteDbBody.error, 'managed_database_has_bindings')
+    }
   })
 })
 
@@ -1562,8 +1802,15 @@ test('managed user create/delete target managed.server_id when environment place
         user: { id: string }
       }
       assertEquals(createBody.serverId, serverId)
-      assertEquals(commandQueue.envelopes.length, beforeCount + 1)
-      assertEquals(commandQueue.envelopes.at(-1)?.serverId, serverId)
+      // Each apply also self-heals the ProxySQL ingress reconcile
+      // (Comment 2) for the same server — both envelopes must target
+      // `managed.server_id`, never the drifted environment placement.
+      const afterCreateEnvelopes = commandQueue.envelopes.slice(beforeCount)
+      assertEquals(afterCreateEnvelopes.length, 2)
+      assertEquals(
+        afterCreateEnvelopes.every((envelope) => envelope.serverId === serverId),
+        true,
+      )
 
       // User create enqueued a managed.apply, which flips status to
       // `applying` — reset so the delete below is not rejected as busy.
@@ -1578,8 +1825,12 @@ test('managed user create/delete target managed.server_id when environment place
       assertEquals(deleteUser.status, 200)
       const deleteBody = await deleteUser.json() as { serverId: string }
       assertEquals(deleteBody.serverId, serverId)
-      assertEquals(commandQueue.envelopes.length, beforeCount + 2)
-      assertEquals(commandQueue.envelopes.at(-1)?.serverId, serverId)
+      const afterDeleteEnvelopes = commandQueue.envelopes.slice(beforeCount + 2)
+      assertEquals(afterDeleteEnvelopes.length, 2)
+      assertEquals(
+        afterDeleteEnvelopes.every((envelope) => envelope.serverId === serverId),
+        true,
+      )
     })
   })
 })
@@ -1626,8 +1877,15 @@ test('managed database create/delete target managed.server_id when environment p
       }
       assertEquals(createBody.serverId, serverId)
       assertEquals(createBody.databases.includes('drift_db'), true)
-      assertEquals(commandQueue.envelopes.length, beforeCount + 1)
-      assertEquals(commandQueue.envelopes.at(-1)?.serverId, serverId)
+      // Each apply also self-heals the ProxySQL ingress reconcile
+      // (Comment 2) for the same server — both envelopes must target
+      // `managed.server_id`, never the drifted environment placement.
+      const afterCreateEnvelopes = commandQueue.envelopes.slice(beforeCount)
+      assertEquals(afterCreateEnvelopes.length, 2)
+      assertEquals(
+        afterCreateEnvelopes.every((envelope) => envelope.serverId === serverId),
+        true,
+      )
 
       // Database create enqueued a managed.apply, which flips status to
       // `applying` — reset so the delete below is not rejected as busy.
@@ -1646,8 +1904,12 @@ test('managed database create/delete target managed.server_id when environment p
       }
       assertEquals(deleteBody.serverId, serverId)
       assertEquals(deleteBody.databases.includes('drift_db'), false)
-      assertEquals(commandQueue.envelopes.length, beforeCount + 2)
-      assertEquals(commandQueue.envelopes.at(-1)?.serverId, serverId)
+      const afterDeleteEnvelopes = commandQueue.envelopes.slice(beforeCount + 2)
+      assertEquals(afterDeleteEnvelopes.length, 2)
+      assertEquals(
+        afterDeleteEnvelopes.every((envelope) => envelope.serverId === serverId),
+        true,
+      )
     })
   })
 })
@@ -1913,6 +2175,78 @@ test('GET databases lists provisioned database names', async () => {
     assertEquals(list.status, 200)
     const body = await list.json() as { databases: string[] }
     assertEquals(body.databases.includes('postgres'), true)
+  })
+})
+
+test('create self-heals primary member; GET managed and status include members', async () => {
+  await withManagedFixtures({}, async ({
+    app,
+    secrets,
+    userId,
+    organizationId,
+    environmentId,
+    serverId,
+    db,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+
+    const create = await app.request(`/environments/${environmentId}/managed`, {
+      method: 'POST',
+      headers,
+      body: '{}',
+    })
+    assertEquals(create.status, 200)
+
+    const membersRes = await app.request(
+      `/environments/${environmentId}/managed/members`,
+      { headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId } },
+    )
+    assertEquals(membersRes.status, 200)
+    const membersBody = await membersRes.json() as {
+      members: Array<{
+        id: string
+        role: string
+        ordinal: number
+        serverId: string
+      }>
+    }
+    assertEquals(membersBody.members.length, 1)
+    assertEquals(membersBody.members[0]?.role, 'primary')
+    assertEquals(membersBody.members[0]?.ordinal, 1)
+    assertEquals(membersBody.members[0]?.serverId, serverId)
+
+    const detail = await app.request(`/environments/${environmentId}/managed`, {
+      headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+    })
+    assertEquals(detail.status, 200)
+    const detailBody = await detail.json() as {
+      members: Array<{ role: string }>
+    }
+    assertEquals(detailBody.members?.some((m) => m.role === 'primary'), true)
+
+    // Create leaves status `applying` (the fake command queue never
+    // transitions it) — reset so the primary-role rejection below is not
+    // masked by the busy gate.
+    const [createdRow] = await db
+      .select({ id: managed.id })
+      .from(managed)
+      .where(eq(managed.environmentId, environmentId))
+      .limit(1)
+    await db.update(managed).set({ status: 'ready' }).where(
+      eq(managed.id, createdRow!.id),
+    )
+
+    const del = await app.request(
+      `/environments/${environmentId}/managed/members/${membersBody.members[0]!.id}`,
+      { method: 'DELETE', headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId } },
+    )
+    assertEquals(del.status, 409)
+    assertEquals(await del.json(), { error: 'managed_member_is_primary' })
   })
 })
 

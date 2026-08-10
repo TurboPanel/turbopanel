@@ -649,7 +649,12 @@ deliberately-unversioned probe.
   `src/deno.ts`. `src/admin/routes.ts` is mounted on both Deno and Workers
   (admin/superadmin session required). Workers-safe developer REST lives in
   `src/developer/routes-core.ts` (`workers.ts`); full Deno developer surface in
-  `src/developer/routes.ts`.
+  `src/developer/routes.ts`. Client bindings (`src/client/bindings/`) expose
+  `GET|POST|PATCH|DELETE /api/client/v1/bindings` — managed DB principal → compose
+  service materialization of binding-owned `variable` rows (no new command type).
+  List filters are mutually exclusive: `serviceId`, consumer `environmentId`, or
+  managed-cluster `managedEnvironmentId`. Create returns `{ ok, id }`; patch
+  returns `{ ok }`.
 - The TurboPanel Development Environment calls developer routes via `src/instance-client.ts`
   (Unix socket + HTTPS fallback).
 - Hard cutover: daemon, UI, Caddy (`/ws/*`), and Workers routes
@@ -694,7 +699,11 @@ deliberately-unversioned probe.
   the selected `sourceServerId` / `assignServerIds`, snapshots source geo into
   datacenter metadata, and atomically assigns those currently-unassigned visible
   servers. Self-hosted installations without a geo provider may return an empty
-  list.
+  list. `src/lib/net/private-endpoint.ts` is the single resolver for
+  server-to-server private reachability (`local` → `datacenter` → `vpn`);
+  datacenter membership plus a CIDR-bearing `network(kind='datacenter')` (surfaced
+  on list/detail as `privateCidrs`) is the prerequisite that later managed-cluster
+  placement depends on (`src/lib/net/datacenter-networks.ts`).
 
 ## Subsystem docs (nested `AGENTS.md`)
 
@@ -709,7 +718,8 @@ orientation; the detail moved to:
 | **Server metrics**                | `src/daemon/metrics/AGENTS.md`                      | Host-metrics ingestion, Analytics Engine (Workers) / ClickHouse (Deno) storage, query + chart caching; also carries a history-only connection-status event stream (`blob1 = "status"`) — never authoritative for current liveness                                                       |
 | **Command Pipeline**              | `src/lib/commands/AGENTS.md`                        | Typed commands, queue transport, and correlated dev-sync / tunnel-token / public-URL-apply requests                                                                                                                                                                                     |
 | **Compose documents**             | `src/lib/compose/AGENTS.md`                         | `ComposeDocument` model, `x-turbopanel` extension, linter, overlay merge; **placement = `environment.server_id` ?? `project.options.defaultServerId`** (compose placement stripped on save)                                                                                             |
-| **Managed engines**               | `src/lib/managed/AGENTS.md` + `src/client/managed/` | Engine registry + client API (`POST …/managed`, apply/lifecycle/users/databases/status/logs, `GET /organizations/:id/managed`); all status reads are Postgres-backed; logs use cell `managed-logs-request`                                                                              |
+| **Managed engines**               | `src/lib/managed/AGENTS.md` + `src/client/managed/` | Engine registry + client API (`POST …/managed`, apply/lifecycle/users/databases/status/logs, `GET /organizations/:id/managed`); whole-server `managed.ingress.reconcile` for shared ProxySQL desired state; all status reads are Postgres-backed; logs use cell `managed-logs-request`                                                                              |
+| **Bindings**                      | `src/client/bindings/`                             | Managed DB principal → compose service materialization of service-scoped `variable` rows (`binding_id`); ride existing `environment.deploy` inject rail; no new command type                                                                                                                                                                                                  |
 | **Authentication**                | `src/client/authn/AGENTS.md`                        | Argon2id, sessions, PAM install gate, secret keyring + data encryption, daemon key JWT, auth routes                                                                                                                                                                                     |
 | **Email**                         | `src/lib/email/AGENTS.md`                           | Queue abstraction, RabbitMQ→mailer (Deno) / Mailgun (Workers), settings, OTP surface                                                                                                                                                                                                    |
 | **Database & schema**             | `src/lib/db/AGENTS.md`                              | Drizzle schema, tables, migrations; deploy-tree columns (`container_*`, `service.compose_service_name` + `service.name` display label (API `displayName`), non-partial unique per environment on compose name, `environment.server_id`)                                                                                         |
@@ -727,6 +737,7 @@ represented as `container` rows.
 | PostgreSQL                                                             | `docker run turbopanel-database`  | Compose service `database`   | service + container row |
 | RabbitMQ                                                               | `docker run turbopanel-queue`     | Compose service `queue`      | service + container row |
 | ClickHouse                                                             | `docker run turbopanel-analytics` | Compose service `analytics`  | service + container row |
+| ProxySQL (managed DB ingress)                                          | daemon compose `turbopanel-proxysql` | Compose service `proxysql` / system component `managed-ingress` | service + container row when provisioned |
 | Control plane (`turbopanel-instance.service`)                          | systemd + Deno                    | stays host-native            | none                    |
 | Control-plane Caddy                                                    | vendored binary                   | stays host-native            | none                    |
 | Hosting Caddy                                                          | vendored binary + systemd         | stays host-native            | none                    |
@@ -735,8 +746,8 @@ represented as `container` rows.
 | Mailer, dbstudio, Expo UI, website, mailpit, tabix, redis-insight      | systemd / dev-only                | excluded                     | none                    |
 
 The three databases/brokers above are provisioned into the `turbopanel-system`
-Compose project (see daemon `src/deploy/AGENTS.md` → **System services Compose
-stack**) so their container identity/status is inspectable through the same
+Compose project (see daemon `src/deploy/AGENTS.md` → **Shared HTTP ingress
+identity**) so their container identity/status is inspectable through the same
 `container` table and client `GET /api/client/v1/containers` surface as tenant
 deploys — with `role: 'system'` and `service.composeServiceName` in `database` /
 `queue` / `analytics`. They remain **inspect-only**: the daemon reports their
@@ -744,6 +755,18 @@ deploys — with `role: 'system'` and `service.composeServiceName` in `database`
 self-heals them (no restart-via-`system.reconcile` path — see
 `SYSTEM_OPERATE_COMPONENTS` in `src/client/system/routes.ts`, which only lists
 `hosting-ingress`).
+
+**ProxySQL / managed-ingress** is a separate compose project
+(`turbopanel-proxysql`) under `/etc/turbopanel/proxysql/`. Ansible role
+`proxysql` installs host prerequisites (dirs, `admin.cnf`, base static
+`proxysql.cnf` when absent, `turbopanel-proxysql-stack.service`,
+`turbopanel-managed` network). The **daemon** writes `docker-compose.yml` and
+the durable dynamic config on `managed.ingress.reconcile` and can self-heal via
+`system.reconcile` (`selfHeal: proxysql`). It is **not** part of
+`turbopanel-system` and is **not** inspect-only. Client SQL enters ProxySQL's
+published `5432`/`3306` listeners; managed engines never publish host ports.
+Tenant docker-compose raw TCP/UDP Traefik remains a separate pattern
+(`turbopanel-ingress-<serviceId>`).
 
 **Why instance/Caddy/daemon/Redis stay host-native rather than joining the
 compose stack:**

@@ -12,6 +12,11 @@ export const variableSchemas = {
       serviceId: { type: ['string', 'null'] },
       hostingId: { type: ['string', 'null'] },
       serverId: { type: ['string', 'null'] },
+      bindingId: {
+        type: ['string', 'null'],
+        description:
+          'When set, this variable is system-owned by a binding; PATCH/DELETE return 403 binding_owned_variable',
+      },
       key: { type: 'string' },
       isSecret: { type: 'boolean' },
       isLiteral: { type: 'boolean', description: 'Skip compose $ interpolation when true' },

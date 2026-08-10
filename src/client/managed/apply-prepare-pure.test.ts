@@ -1,8 +1,22 @@
 import { assertEquals } from 'jsr:@std/assert'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
+import {
+  decryptSecretForDaemon,
+  parseDaemonSecretEnvelope,
+} from '../authn/data-encryption.ts'
+import {
+  deriveEncryptionSecretsConfig,
+  parseSecretsEnv,
+} from '../authn/secrets.ts'
 import type { ManagedApplyCommandPayload } from '../../lib/commands/schemas.ts'
 import {
+  mintOrganizationCa,
+  verifyCertificateSignature,
+} from '../../lib/tls/index.ts'
+import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import {
+  buildManagedOrgTlsMaterial,
   isPrepareError,
   mapManagedApplyPrepareError,
   prepareErrorResponse,
@@ -214,4 +228,72 @@ test('prepareErrorResponse ignores serverId on wire body', async () => {
   }
   assertEquals(Object.keys(body).sort((a, b) => a.localeCompare(b)), ['error'])
   assertEquals(body, { error: 'datacenter_ip_required' })
+})
+
+test('buildManagedOrgTlsMaterial issues CA-signed leaf and reseals as denc', async () => {
+  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
+    secretsConfig,
+    'data-encryption',
+  )
+  const serverId = '11111111-1111-4111-8111-111111111111'
+  const keyId = '22222222-2222-4222-8222-222222222222'
+  const managedId = '33333333-3333-4333-8333-333333333333'
+
+  const ca = await mintOrganizationCa({ commonName: 'Org CA Test' })
+  const material = await buildManagedOrgTlsMaterial(
+    secretsConfig,
+    dataEncryptionSecrets,
+    { serverId, keyId },
+    { certificatePem: ca.certificatePem, privateKeyPem: ca.privateKeyPem },
+    managedId,
+  )
+
+  assertEquals(material.certificatePem.includes('BEGIN CERTIFICATE'), true)
+  assertEquals(material.caCertPem, ca.certificatePem)
+  assertEquals(material.privateKeyEnvelope.startsWith('denc.'), true)
+
+  const parsed = parseDaemonSecretEnvelope(material.privateKeyEnvelope)
+  assertEquals(parsed?.serverId, serverId)
+  assertEquals(parsed?.keyId, keyId)
+
+  const privateKeyPem = await decryptSecretForDaemon(
+    secretsConfig,
+    { serverId, keyId },
+    material.privateKeyEnvelope,
+  )
+  assertEquals(privateKeyPem.includes('BEGIN PRIVATE KEY'), true)
+
+  assertEquals(
+    await verifyCertificateSignature(material.certificatePem, material.caCertPem),
+    true,
+  )
+})
+
+test('buildManagedOrgTlsMaterial adds private listener IP SAN for remote replication', async () => {
+  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
+    secretsConfig,
+    'data-encryption',
+  )
+  const managedId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+  const ca = await mintOrganizationCa({ commonName: 'Org CA Remote Primary' })
+  const material = await buildManagedOrgTlsMaterial(
+    secretsConfig,
+    dataEncryptionSecrets,
+    {
+      serverId: 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff',
+      keyId: 'cccccccc-dddd-4eee-8fff-000000000000',
+    },
+    { certificatePem: ca.certificatePem, privateKeyPem: ca.privateKeyPem },
+    managedId,
+    ['svc-1'],
+    ['203.0.113.50'],
+  )
+
+  const { parseCertificatePem } = await import('../../lib/tls/parse.ts')
+  const leaf = await parseCertificatePem(material.certificatePem)
+  assertEquals(leaf.dnsNames.includes(`managed-${managedId}`), true)
+  assertEquals(leaf.dnsNames.includes('svc-1'), true)
+  assertEquals(leaf.ipAddresses.includes('203.0.113.50'), true)
 })

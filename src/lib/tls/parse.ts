@@ -81,19 +81,36 @@ function sanOctetString(extChildren: Asn1Node[]): Asn1Node {
   return valueNode
 }
 
-function dnsNamesFromGeneralNames(sanSeq: Asn1Node): string[] {
-  const names: string[] = []
+function namesFromGeneralNames(sanSeq: Asn1Node): {
+  dnsNames: string[]
+  ipAddresses: string[]
+} {
+  const dnsNames: string[] = []
+  const ipAddresses: string[] = []
   for (const general of children(sanSeq)) {
     // dNSName [2] IA5String
-    if (general.tag !== 0x82) continue
-    const dns = new TextDecoder().decode(content(general)).toLowerCase()
-    if (dns.length > 0) names.push(dns)
+    if (general.tag === 0x82) {
+      const dns = new TextDecoder().decode(content(general)).toLowerCase()
+      if (dns.length > 0) dnsNames.push(dns)
+      continue
+    }
+    // iPAddress [7] OCTET STRING (IPv4 = 4 octets)
+    if (general.tag === 0x87) {
+      const raw = content(general)
+      if (raw.length === 4) {
+        ipAddresses.push(`${raw[0]}.${raw[1]}.${raw[2]}.${raw[3]}`)
+      }
+    }
   }
-  return names
+  return { dnsNames, ipAddresses }
 }
 
-function parseSanDnsNames(extensionsNode: Asn1Node): string[] {
-  const names: string[] = []
+function parseSanNames(extensionsNode: Asn1Node): {
+  dnsNames: string[]
+  ipAddresses: string[]
+} {
+  const dnsNames: string[] = []
+  const ipAddresses: string[] = []
   for (const ext of children(extensionsNode)) {
     const extChildren = children(ext)
     if (extChildren.length < 2) continue
@@ -101,9 +118,11 @@ function parseSanDnsNames(extensionsNode: Asn1Node): string[] {
     const valueNode = sanOctetString(extChildren)
     const sanSeq = readNode(content(valueNode), 0)
     expectTag(sanSeq, 0x30, 'GeneralNames')
-    names.push(...dnsNamesFromGeneralNames(sanSeq))
+    const parsed = namesFromGeneralNames(sanSeq)
+    dnsNames.push(...parsed.dnsNames)
+    ipAddresses.push(...parsed.ipAddresses)
   }
-  return names
+  return { dnsNames, ipAddresses }
 }
 
 function decodeLeafDer(pem: string): Uint8Array {
@@ -128,14 +147,17 @@ function uniquePreservingOrder(names: string[]): string[] {
   return unique
 }
 
-function dnsNamesFromTbs(tbsChildren: Asn1Node[], fieldStart: number): string[] {
+function sanNamesFromTbs(
+  tbsChildren: Asn1Node[],
+  fieldStart: number,
+): { dnsNames: string[]; ipAddresses: string[] } {
   for (let i = fieldStart; i < tbsChildren.length; i += 1) {
     const node = tbsChildren[i]!
     if (node.tag !== 0xa3) continue
     const extSeq = children(node)[0]
-    if (extSeq) return parseSanDnsNames(extSeq)
+    if (extSeq) return parseSanNames(extSeq)
   }
-  return []
+  return { dnsNames: [], ipAddresses: [] }
 }
 
 function resolveDnsNames(sanNames: string[], cn: string | null): string[] {
@@ -195,10 +217,13 @@ async function parseLeafCertificate(leafDer: Uint8Array): Promise<ParsedCertific
   const subject = readNameString(subjectNode)
   const issuer = readNameString(issuerNode)
   const cn = extractCommonName(subjectNode)
-  const unique = resolveDnsNames(dnsNamesFromTbs(tbsChildren, idx + 6), cn)
+  const san = sanNamesFromTbs(tbsChildren, idx + 6)
+  const unique = resolveDnsNames(san.dnsNames, cn)
+  const ipAddresses = uniquePreservingOrder(san.ipAddresses)
 
   return {
     dnsNames: unique,
+    ipAddresses,
     hasWildcard: unique.some((n) => n.startsWith('*.')),
     notBefore,
     notAfter,

@@ -29,7 +29,21 @@ export {
 } from './pem.ts'
 export { CertificateParseError, parseCertificatePem } from './parse.ts'
 export { privateKeyMatchesCertificate, TlsKeyError } from './keys.ts'
-export { mintSelfSignedCertificate } from './self-signed.ts'
+export {
+  buildBasicConstraintsExtension,
+  buildKeyUsageExtension,
+  extractSubjectNameDer,
+  issueLeafCertificate,
+  KEY_USAGE_CRL_SIGN,
+  KEY_USAGE_DIGITAL_SIGNATURE,
+  KEY_USAGE_KEY_CERT_SIGN,
+  KEY_USAGE_KEY_ENCIPHERMENT,
+  mintOrganizationCa,
+  mintSelfSignedCertificate,
+  readBasicConstraintsCa,
+  readKeyUsageBits,
+  verifyCertificateSignature,
+} from './self-signed.ts'
 export type {
   ParsedCertificate,
   ResolveTlsResult,

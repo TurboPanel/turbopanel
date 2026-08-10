@@ -15,7 +15,7 @@ import {
   grant,
   hosting,
   ip,
-  member,
+  membership,
   network,
   organization,
   peer,
@@ -79,7 +79,7 @@ test('DELETE /ips returns 409 when hosting references ipId', async () => {
     .returning({ id: user.id })
   const userId = u!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -156,7 +156,7 @@ test('DELETE /ips returns 409 when hosting references ipId', async () => {
   await db.delete(project).where(eq(project.id, proj!.id))
   await db.delete(workspace).where(eq(workspace.id, ws!.id))
   await db.delete(grant).where(eq(grant.actorId, userId))
-  await db.delete(member).where(eq(member.userId, userId))
+  await db.delete(membership).where(eq(membership.userId, userId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, organizationId))
 })
@@ -189,7 +189,7 @@ test('GET /ips returns 403 for org member without organization:manage', async ()
     .returning({ id: user.id })
   const userId = u!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
 
   const cookie = await sessionCookie(db, secrets, userId)
   const res = await app.request('/ips', {
@@ -201,7 +201,7 @@ test('GET /ips returns 403 for org member without organization:manage', async ()
 
   assertEquals(res.status, 403)
 
-  await db.delete(member).where(eq(member.userId, userId))
+  await db.delete(membership).where(eq(membership.userId, userId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, organizationId))
 })
@@ -234,7 +234,7 @@ test('POST /ips derives version and supports VPN-scoped addresses across meshes'
     .returning({ id: user.id })
   const userId = u!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -350,7 +350,7 @@ test('POST /ips derives version and supports VPN-scoped addresses across meshes'
   await db.delete(vpn).where(eq(vpn.id, vpnA!.id))
   await db.delete(vpn).where(eq(vpn.id, vpnB!.id))
   await db.delete(grant).where(eq(grant.actorId, userId))
-  await db.delete(member).where(eq(member.userId, userId))
+  await db.delete(membership).where(eq(membership.userId, userId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, organizationId))
 })
@@ -386,7 +386,7 @@ test('DELETE /ips returns 409 when peer.tunnel_ip_id references the IP', async (
     .returning({ id: user.id })
   const userId = u!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -442,7 +442,7 @@ test('DELETE /ips returns 409 when peer.tunnel_ip_id references the IP', async (
   await db.delete(server).where(eq(server.id, srv!.id))
   await db.delete(vpn).where(eq(vpn.id, vpnRow!.id))
   await db.delete(grant).where(eq(grant.actorId, userId))
-  await db.delete(member).where(eq(member.userId, userId))
+  await db.delete(membership).where(eq(membership.userId, userId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, organizationId))
 })
@@ -475,7 +475,7 @@ test('POST /ips rejects a scope=vpn address outside the vpn cidr', async () => {
     .returning({ id: user.id })
   const userId = u!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -528,7 +528,7 @@ test('POST /ips rejects a scope=vpn address outside the vpn cidr', async () => {
   await db.delete(ip).where(eq(ip.id, inCidrBody.id))
   await db.delete(vpn).where(eq(vpn.id, vpnRow!.id))
   await db.delete(grant).where(eq(grant.actorId, userId))
-  await db.delete(member).where(eq(member.userId, userId))
+  await db.delete(membership).where(eq(membership.userId, userId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, organizationId))
 })
@@ -561,7 +561,7 @@ test('PATCH /ips/:id rejects reassigning a scope=vpn address to a vpn whose cidr
     .returning({ id: user.id })
   const userId = u!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -616,7 +616,7 @@ test('PATCH /ips/:id rejects reassigning a scope=vpn address to a vpn whose cidr
   await db.delete(vpn).where(eq(vpn.id, vpnA!.id))
   await db.delete(vpn).where(eq(vpn.id, vpnB!.id))
   await db.delete(grant).where(eq(grant.actorId, userId))
-  await db.delete(member).where(eq(member.userId, userId))
+  await db.delete(membership).where(eq(membership.userId, userId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, organizationId))
 })
@@ -652,7 +652,7 @@ test('POST /ips rejects datacenterId together with networkId', async () => {
     .returning({ id: user.id })
   const userId = u!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -698,7 +698,7 @@ test('POST /ips rejects datacenterId together with networkId', async () => {
   await db.delete(network).where(eq(network.id, net!.id))
   await db.delete(datacenter).where(eq(datacenter.id, dc!.id))
   await db.delete(grant).where(eq(grant.actorId, userId))
-  await db.delete(member).where(eq(member.userId, userId))
+  await db.delete(membership).where(eq(membership.userId, userId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, organizationId))
 })
@@ -734,7 +734,7 @@ test('PATCH /ips/:id rejects datacenterId when the row already has networkId', a
     .returning({ id: user.id })
   const userId = u!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -794,7 +794,7 @@ test('PATCH /ips/:id rejects datacenterId when the row already has networkId', a
   await db.delete(network).where(eq(network.id, net!.id))
   await db.delete(datacenter).where(eq(datacenter.id, dc!.id))
   await db.delete(grant).where(eq(grant.actorId, userId))
-  await db.delete(member).where(eq(member.userId, userId))
+  await db.delete(membership).where(eq(membership.userId, userId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, organizationId))
 })
@@ -827,7 +827,7 @@ test('PATCH /ips/:id rejects vpnId: null when scope is vpn', async () => {
     .returning({ id: user.id })
   const userId = u!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -876,7 +876,7 @@ test('PATCH /ips/:id rejects vpnId: null when scope is vpn', async () => {
   await db.delete(ip).where(eq(ip.id, overlayIp!.id))
   await db.delete(vpn).where(eq(vpn.id, vpnRow!.id))
   await db.delete(grant).where(eq(grant.actorId, userId))
-  await db.delete(member).where(eq(member.userId, userId))
+  await db.delete(membership).where(eq(membership.userId, userId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, organizationId))
 })

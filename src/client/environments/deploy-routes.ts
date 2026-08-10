@@ -654,6 +654,7 @@ async function enqueueDeployCommand(
     principalMaterial: EnvironmentDeployPrincipalMaterial[]
     serviceHooks: EnvironmentDeployServiceHook[]
     dockerExternalNetworks: string[]
+    managedNetworkServices: string[]
     noCache: boolean
   },
 ): Promise<Response> {
@@ -683,6 +684,9 @@ async function enqueueDeployCommand(
       ...(params.serviceHooks.length > 0 ? { serviceHooks: params.serviceHooks } : {}),
       ...(params.dockerExternalNetworks.length > 0
         ? { dockerExternalNetworks: params.dockerExternalNetworks }
+        : {}),
+      ...(params.managedNetworkServices.length > 0
+        ? { managedNetworkServices: params.managedNetworkServices }
         : {}),
       ...(params.noCache ? { noCache: true } : {}),
     },
@@ -1004,6 +1008,7 @@ export function registerEnvironmentDeployRoutes(
       principalMaterial: prepared.principalMaterial,
       serviceHooks: prepared.hooks,
       dockerExternalNetworks: prepared.dockerExternalNetworks,
+      managedNetworkServices: prepared.managedNetworkServices,
       noCache: auth.noCache,
     })
   })

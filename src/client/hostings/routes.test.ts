@@ -15,7 +15,7 @@ import {
   grant,
   hosting,
   ip,
-  member,
+  membership,
   organization,
   project,
   service,
@@ -74,7 +74,7 @@ test('PATCH /hostings rejects public bind with non-public ip scope', async () =>
     .returning({ id: user.id })
   const userId = u!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -153,7 +153,7 @@ test('PATCH /hostings rejects public bind with non-public ip scope', async () =>
   await db.delete(project).where(eq(project.id, proj!.id))
   await db.delete(workspace).where(eq(workspace.id, ws!.id))
   await db.delete(grant).where(eq(grant.actorId, userId))
-  await db.delete(member).where(eq(member.userId, userId))
+  await db.delete(membership).where(eq(membership.userId, userId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, organizationId))
 })
@@ -186,7 +186,7 @@ test('PATCH /hostings returns 404 when ipId belongs to another org', async () =>
     .returning({ id: user.id })
   const userId = u!.id
 
-  await db.insert(member).values({ organizationId: orgA!.id, userId })
+  await db.insert(membership).values({ organizationId: orgA!.id, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: orgA!.id,
@@ -262,7 +262,7 @@ test('PATCH /hostings returns 404 when ipId belongs to another org', async () =>
   await db.delete(project).where(eq(project.id, proj!.id))
   await db.delete(workspace).where(eq(workspace.id, ws!.id))
   await db.delete(grant).where(eq(grant.actorId, userId))
-  await db.delete(member).where(eq(member.userId, userId))
+  await db.delete(membership).where(eq(membership.userId, userId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, orgA!.id))
   await db.delete(organization).where(eq(organization.id, orgB!.id))

@@ -86,7 +86,6 @@ export type ManagedExposure = {
   enabled: boolean
   protocol: 'tcp' | 'udp' | 'http'
   containerPort: number
-  publishedPort?: number
   bind?: 'public' | 'datacenter' | 'local'
 }
 
@@ -145,7 +144,7 @@ export type ManagedUserOperations = {
   }
   executor: {
     kind: 'docker-exec'
-    client: 'psql'
+    client: 'psql' | 'mysql' | 'mariadb'
   }
 }
 
@@ -153,6 +152,31 @@ export type BuildRuntimeSpecInput = {
   managedId: string
   settings: ManagedSettings
   rootUsername: string
+  /**
+   * Per-member identity for multi-member clusters (private listener, role,
+   * streaming replication). Omitted for single-member / non-replicated apply.
+   */
+  member?: {
+    role: 'primary' | 'standby'
+    ordinal: number
+    replication?: {
+      username: string
+      slotName?: string
+      desiredSlots?: string[]
+      peerAddresses?: string[]
+      primary?: {
+        host: string
+        hostaddr?: string
+        port: number
+      }
+    }
+    privateListener?: {
+      address: string
+      port: number
+    }
+  }
+  /** When true, use org-CA leaf paths for engine SSL (multi-member / verify-full). */
+  useOrgTls?: boolean
 }
 
 export type BuildConnectionInfoInput = {
@@ -194,6 +218,32 @@ export type ManagedBackupDescriptor = {
   maxRetentionKeep: number
 }
 
+/**
+ * Conventional unprefixed env keys a binding may emit when
+ * `emit_engine_defaults` is true (at most one binding per service). The CA
+ * arrives as PEM text on `<PREFIX>_CA_CERT` — there is no on-disk path, so
+ * engines do not emit `PGSSLROOTCERT` / equivalent file-path keys.
+ */
+export type ManagedBindingDescriptor = {
+  /** DSN scheme segment (`postgresql`, `mysql`). */
+  scheme: string
+  /** Unprefixed keys (e.g. `PGHOST` / `MYSQL_HOST`). */
+  unprefixed: {
+    host: string
+    port: string
+    database: string
+    user: string
+    password: string
+    /** Optional SSL mode key (`PGSSLMODE`); value is forced to verify-full. */
+    sslMode?: string
+  }
+  /**
+   * Build a plaintext DSN with the real password (secrets materialization).
+   * Forces TLS verify semantics (`sslmode=verify-full` / MySQL-family equivalent).
+   */
+  buildBindingDsn(input: BuildConnectionInfoInput & { password: string }): string
+}
+
 export type ManagedEngineSpec = {
   engine: ManagedEngineCode
   displayName: string
@@ -202,7 +252,6 @@ export type ManagedEngineSpec = {
   principalProvider: string
   rootUsername: string
   exposeProtocol: 'tcp' | 'udp' | 'http'
-  supportsSni: boolean
   defaultSettings: ManagedSettings
   parseSettings(value: unknown): ManagedSettings | null
   buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec
@@ -210,4 +259,6 @@ export type ManagedEngineSpec = {
   userOperations: ManagedUserOperations
   /** Present only when the engine supports backup/restore. */
   backup?: ManagedBackupDescriptor
+  /** Present when the engine participates in service bindings. */
+  binding?: ManagedBindingDescriptor
 }

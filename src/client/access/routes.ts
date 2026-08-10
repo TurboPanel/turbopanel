@@ -31,7 +31,7 @@ import {
 } from '../authz/catalog.ts'
 import type { Db } from '../../db.ts'
 import { getDb } from '../../db.ts'
-import { grant, invitation, member, team, teammate } from '../../lib/db/schema.ts'
+import { grant, invitation, membership, team, teammate } from '../../lib/db/schema.ts'
 import { getOrgId } from '../shared.ts'
 import { isUuid, ownerRemovalConflictMessage } from './routes-helpers.ts'
 
@@ -196,13 +196,13 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
       }
 
       await tx
-        .insert(member)
+        .insert(membership)
         .values({
           organizationId,
           userId: session.userId,
         })
         .onConflictDoNothing({
-          target: [member.organizationId, member.userId],
+          target: [membership.organizationId, membership.userId],
         })
 
       await tx

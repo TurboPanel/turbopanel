@@ -26,12 +26,14 @@ import {
   type VpnApplyResealDeps,
 } from '../../client/vpns/apply-prepare.ts'
 import {
+  createCommandRecord,
+  getCommandMetadata,
   getCommandRecord,
   transitionCommand,
   type CommandRecord,
 } from '../db/command-records.ts'
 import { reconcileEnvironmentContainers } from '../db/container-records.ts'
-import { managed, peer, server } from '../db/schema.ts'
+import { managed, node, peer, server } from '../db/schema.ts'
 import { getManagedEngineSpec } from '../managed/index.ts'
 import {
   parseManagedRowOptions,
@@ -54,10 +56,13 @@ import {
   parseManagedApplyResult,
   parseManagedBackupPayload,
   parseManagedBackupResult,
+  type ManagedDestroyCommandPayload,
   parseManagedDestroyPayload,
   parseManagedDestroyResult,
   parseManagedLifecyclePayload,
   parseManagedLifecycleResult,
+  parseManagedPromotePayload,
+  parseManagedPromoteResult,
   parseManagedRestorePayload,
   parseManagedRestoreResult,
   parseNtpSetResult,
@@ -68,13 +73,18 @@ import {
   parseWireguardApplyPayload,
   parseWireguardApplyResult,
 } from './schemas.ts'
+import { updateManagedMemberObservedReplication } from '../../client/managed/members.ts'
 import { isValidWireguardPublicKey } from './wireguard.ts'
 import { TERMINAL_COMMAND_STATUSES, type CommandType } from './types.ts'
 
-/** Optional deps for follow-up WireGuard mesh-complete applies. */
+import type { SecretsConfig, DerivedSecretsConfig } from '../../client/authn/secrets.ts'
+
+/** Optional deps for follow-up WireGuard mesh-complete and managed-ingress applies. */
 export type CommandConsumerDeps = {
   commandQueue?: CommandQueue
   resealDeps?: VpnApplyResealDeps
+  secretsConfig?: SecretsConfig
+  dataEncryptionSecrets?: DerivedSecretsConfig
 }
 
 const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
@@ -92,6 +102,8 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'managed.destroy': 300_000,
   'managed.backup': 1_800_000,
   'managed.restore': 1_800_000,
+  'managed.promote': 600_000,
+  'managed.ingress.reconcile': 300_000,
   'system.reconcile': 300_000,
 }
 
@@ -113,6 +125,8 @@ function commandTimeoutMs(type: string): number {
     type === 'managed.destroy' ||
     type === 'managed.backup' ||
     type === 'managed.restore' ||
+    type === 'managed.promote' ||
+    type === 'managed.ingress.reconcile' ||
     type === 'system.reconcile'
   ) {
     return COMMAND_TIMEOUT_MS[type]
@@ -651,23 +665,37 @@ async function applyManagedApplySideEffect(
   record: CommandRecord,
   envelope: CommandEnvelope,
   result: unknown,
+  deps?: CommandConsumerDeps,
 ): Promise<void> {
   if (record.type !== 'managed.apply') return
   try {
     const payload = parseManagedApplyPayload(record.payload)
     const applyResult = parseManagedApplyResult(result)
     const updatedAt = nowIso()
-    await db
-      .update(managed)
-      .set({
-        status: 'ready',
-        serverId: envelope.serverId,
-        metadata: sql`COALESCE(${managed.metadata}, '{}'::jsonb) || ${
-          JSON.stringify({ host: applyResult.host, port: applyResult.port })
-        }::jsonb`,
-        updatedAt,
-      })
-      .where(eq(managed.id, payload.managedId))
+    // `managed.server_id` is the primary placement pin. Fan-out apply sends one
+    // command per member — only the primary member may update the pin / host /
+    // port so a late replica success cannot re-home the cluster.
+    if (payload.memberRole === 'primary') {
+      await db
+        .update(managed)
+        .set({
+          status: 'ready',
+          serverId: envelope.serverId,
+          metadata: sql`COALESCE(${managed.metadata}, '{}'::jsonb) || ${
+            JSON.stringify({ host: applyResult.host, port: applyResult.port })
+          }::jsonb`,
+          updatedAt,
+        })
+        .where(eq(managed.id, payload.managedId))
+    } else {
+      await db
+        .update(managed)
+        .set({
+          status: 'ready',
+          updatedAt,
+        })
+        .where(eq(managed.id, payload.managedId))
+    }
     if (applyResult.containers !== undefined) {
       await reconcileContainersSafely(
         db,
@@ -676,6 +704,16 @@ async function applyManagedApplySideEffect(
         payload.environmentId,
         applyResult.containers,
       )
+    }
+    await projectManagedMemberObservedStatus(db, applyResult.member, record.id, record.type)
+
+    // Primary success → enqueue deferred standby applies (if any).
+    if (
+      payload.memberRole === 'primary' &&
+      deps?.commandQueue &&
+      !isNoopCommandQueue(deps.commandQueue)
+    ) {
+      await enqueuePendingStandbyApplies(db, record, deps)
     }
   } catch (err) {
     const message = errorMessage(err)
@@ -686,8 +724,113 @@ async function applyManagedApplySideEffect(
   }
 }
 
+type PendingStandbyApply = {
+  serverId: string
+  memberId: string
+  payload: unknown
+}
+
+async function enqueuePendingStandbyApplies(
+  db: Db,
+  record: CommandRecord,
+  deps: CommandConsumerDeps,
+): Promise<void> {
+  const meta = await getCommandMetadata(db, record.id)
+  const raw = meta?.pendingStandbyApplies
+  if (!Array.isArray(raw) || raw.length === 0) return
+
+  const commandQueue = deps.commandQueue!
+  for (const entry of raw) {
+    if (
+      typeof entry !== 'object' ||
+      entry === null ||
+      typeof (entry as PendingStandbyApply).serverId !== 'string' ||
+      typeof (entry as PendingStandbyApply).memberId !== 'string'
+    ) {
+      continue
+    }
+    const standby = entry as PendingStandbyApply
+    let payload: unknown
+    try {
+      payload = parseManagedApplyPayload(standby.payload)
+    } catch {
+      continue
+    }
+    const expiresAt = new Date(Date.now() + 600_000).toISOString()
+    try {
+      const next = await createCommandRecord(db, {
+        serverId: standby.serverId,
+        actorType: record.actorEntityType,
+        actorId: record.actorEntityId,
+        type: 'managed.apply',
+        payload,
+        expiresAt,
+      })
+      const envelope: CommandEnvelope = {
+        commandId: next.id,
+        serverId: standby.serverId,
+        type: 'managed.apply',
+        attempt: 1,
+        queuedAt: next.queuedAt ?? next.createdAt,
+      }
+      try {
+        await commandQueue.enqueue(envelope)
+      } catch {
+        await transitionCommand(db, next.id, {
+          status: 'failed',
+          error: 'Command queue unavailable',
+        })
+      }
+    } catch (err) {
+      const message = errorMessage(err)
+      compatLogWarn(
+        'command-consumer',
+        `standby apply follow-up failed for command ${record.id}: ${message}`,
+      )
+    }
+  }
+}
+
 /** Observed statuses the consumer may project onto `managed.status`. */
 const MANAGED_OBSERVED_STATUSES = new Set(['ready', 'stopped', 'failed'])
+
+/**
+ * Project daemon-observed per-member status + replication health onto
+ * `node`. Only what the daemon reported — never reverse-inferred.
+ */
+async function projectManagedMemberObservedStatus(
+  db: Db,
+  member:
+    | {
+        memberId: string
+        status: string
+        replication?: {
+          state: string
+          lagBytes?: number
+          lagSeconds?: number
+          observedAt: string
+        }
+      }
+    | undefined,
+  commandId: string,
+  commandType: string,
+): Promise<void> {
+  if (member === undefined) return
+  try {
+    await updateManagedMemberObservedReplication(db, member.memberId, {
+      status: member.status,
+      ...(member.replication !== undefined
+        ? { replication: member.replication }
+        : {}),
+    })
+  } catch (err) {
+    const message = errorMessage(err)
+    compatLogWarn(
+      'command-consumer',
+      `managed member projection failed for ${commandType} command ${commandId}: ${message}`,
+    )
+  }
+}
 
 function isManagedObservedStatus(
   value: string,
@@ -723,6 +866,7 @@ async function applyManagedLifecycleSideEffect(
   record: CommandRecord,
   _envelope: CommandEnvelope,
   result: unknown,
+  deps?: CommandConsumerDeps,
 ): Promise<void> {
   if (record.type !== 'managed.lifecycle') return
   try {
@@ -735,6 +879,51 @@ async function applyManagedLifecycleSideEffect(
       record.id,
       record.type,
     )
+    await projectManagedMemberObservedStatus(
+      db,
+      lifecycleResult.member,
+      record.id,
+      record.type,
+    )
+
+    // Fence-then-promote: only enqueue promote after a successful fence stop.
+    if (
+      payload.action === 'stop' &&
+      deps?.commandQueue &&
+      !isNoopCommandQueue(deps.commandQueue)
+    ) {
+      const meta = await getCommandMetadata(db, record.id)
+      const followUp = meta?.followUpPromote as
+        | { serverId: string; payload: unknown }
+        | undefined
+      if (followUp && typeof followUp.serverId === 'string') {
+        try {
+          const promotePayload = parseManagedPromotePayload(followUp.payload)
+          const expiresAt = new Date(Date.now() + 600_000).toISOString()
+          const next = await createCommandRecord(db, {
+            serverId: followUp.serverId,
+            actorType: record.actorEntityType,
+            actorId: record.actorEntityId,
+            type: 'managed.promote',
+            payload: promotePayload,
+            expiresAt,
+          })
+          await deps.commandQueue.enqueue({
+            commandId: next.id,
+            serverId: followUp.serverId,
+            type: 'managed.promote',
+            attempt: 1,
+            queuedAt: next.queuedAt ?? next.createdAt,
+          })
+        } catch (err) {
+          const message = errorMessage(err)
+          compatLogWarn(
+            'command-consumer',
+            `promote follow-up after fence failed for ${record.id}: ${message}`,
+          )
+        }
+      }
+    }
   } catch (err) {
     const message = errorMessage(err)
     compatLogWarn(
@@ -840,11 +1029,103 @@ async function applyManagedRestoreSideEffect(
   }
 }
 
+/**
+ * Narrows `deps` to the shape required to enqueue managed follow-up commands
+ * (primary re-apply after member destroy, ProxySQL ingress reconcile) — a
+ * live, non-noop queue plus the secrets needed to reseal credentials.
+ */
+function hasManagedFollowUpDeps(deps: CommandConsumerDeps | undefined): deps is CommandConsumerDeps & {
+  commandQueue: CommandQueue
+  secretsConfig: SecretsConfig
+  dataEncryptionSecrets: DerivedSecretsConfig
+} {
+  return Boolean(
+    deps?.commandQueue &&
+      deps.secretsConfig &&
+      deps.dataEncryptionSecrets &&
+      !isNoopCommandQueue(deps.commandQueue),
+  )
+}
+
+/** Primary re-apply for slot cleanup is stamped on metadata as `pendingPrimaryReapply`. */
+async function reapplyPrimaryAfterMemberDestroy(
+  db: Db,
+  record: CommandRecord,
+  deps: CommandConsumerDeps & { commandQueue: CommandQueue },
+): Promise<void> {
+  const meta = await getCommandMetadata(db, record.id)
+  const reapply = meta?.pendingPrimaryReapply as
+    | { serverId: string; payload: unknown }
+    | undefined
+  if (!reapply || typeof reapply.serverId !== 'string') return
+  try {
+    const expiresAt = new Date(Date.now() + 600_000).toISOString()
+    const next = await createCommandRecord(db, {
+      serverId: reapply.serverId,
+      actorType: record.actorEntityType,
+      actorId: record.actorEntityId,
+      type: 'managed.apply',
+      payload: parseManagedApplyPayload(reapply.payload),
+      expiresAt,
+    })
+    await deps.commandQueue.enqueue({
+      commandId: next.id,
+      serverId: reapply.serverId,
+      type: 'managed.apply',
+      attempt: 1,
+      queuedAt: next.queuedAt ?? next.createdAt,
+    })
+  } catch (err) {
+    const message = errorMessage(err)
+    compatLogWarn(
+      'command-consumer',
+      `primary re-apply after member destroy failed for ${record.id}: ${message}`,
+    )
+  }
+}
+
+/**
+ * Member-delete path: remove the member only after destroy confirms success,
+ * then re-apply the primary so slots shrink (orphaned slot cleanup).
+ */
+async function cleanupDestroyedMember(
+  db: Db,
+  record: CommandRecord,
+  payload: ManagedDestroyCommandPayload,
+  deps: CommandConsumerDeps | undefined,
+): Promise<void> {
+  if (!payload.deleteMemberAfterDestroy || !payload.memberId) return
+  await db.delete(node).where(eq(node.id, payload.memberId))
+  if (hasManagedFollowUpDeps(deps)) {
+    await reapplyPrimaryAfterMemberDestroy(db, record, deps)
+  }
+}
+
+/** Reconcile ProxySQL so destroyed members leave the frontend backends. */
+async function reconcileManagedIngressAfterDestroy(
+  db: Db,
+  envelope: CommandEnvelope,
+  deps: CommandConsumerDeps | undefined,
+): Promise<void> {
+  if (!hasManagedFollowUpDeps(deps)) return
+  const { enqueueManagedIngressReconcile } = await import(
+    '../../client/managed/ingress-desired.ts'
+  )
+  await enqueueManagedIngressReconcile(db, deps.commandQueue, {
+    serverId: envelope.serverId,
+    actorType: 'system',
+    actorId: envelope.serverId,
+    secretsConfig: deps.secretsConfig,
+    dataEncryptionSecrets: deps.dataEncryptionSecrets,
+  })
+}
+
 async function applyManagedDestroySideEffect(
   db: Db,
   record: CommandRecord,
   envelope: CommandEnvelope,
   result: unknown,
+  deps?: CommandConsumerDeps,
 ): Promise<void> {
   if (record.type !== 'managed.destroy') return
   try {
@@ -880,6 +1161,9 @@ async function applyManagedDestroySideEffect(
     if (payload.deleteAfterDestroy) {
       await db.delete(managed).where(eq(managed.id, payload.managedId))
     }
+
+    await cleanupDestroyedMember(db, record, payload, deps)
+    await reconcileManagedIngressAfterDestroy(db, envelope, deps)
   } catch (err) {
     const message = errorMessage(err)
     compatLogWarn(
@@ -906,6 +1190,9 @@ function resolveManagedIdFromPayload(
     if (type === 'managed.restore') {
       return parseManagedRestorePayload(payload).managedId
     }
+    if (type === 'managed.promote') {
+      return parseManagedPromotePayload(payload).managedId
+    }
   } catch {
     return null
   }
@@ -913,8 +1200,8 @@ function resolveManagedIdFromPayload(
 }
 
 /**
- * Mark the managed row failed when apply/lifecycle/destroy/restore fail or
- * time out. `managed.backup` is deliberately excluded — a read-only backup
+ * Mark the managed row failed when apply/lifecycle/destroy/restore/promote fail
+ * or time out. `managed.backup` is deliberately excluded — a read-only backup
  * failure must never mark an otherwise-healthy engine `failed`. Does not
  * alter terminal command-row semantics — only `managed.status`.
  */
@@ -926,7 +1213,8 @@ async function applyManagedFailedSideEffect(
     record.type !== 'managed.apply' &&
     record.type !== 'managed.lifecycle' &&
     record.type !== 'managed.destroy' &&
-    record.type !== 'managed.restore'
+    record.type !== 'managed.restore' &&
+    record.type !== 'managed.promote'
   ) {
     return
   }
@@ -940,6 +1228,24 @@ async function applyManagedFailedSideEffect(
         updatedAt: nowIso(),
       })
       .where(eq(managed.id, managedId))
+
+    // Member-delete destroy failed: keep the row and mark it failed/retryable.
+    if (record.type === 'managed.destroy') {
+      try {
+        const payload = parseManagedDestroyPayload(record.payload)
+        if (payload.deleteMemberAfterDestroy && payload.memberId) {
+          await db
+            .update(node)
+            .set({
+              status: 'failed',
+              updatedAt: nowIso(),
+            })
+            .where(eq(node.id, payload.memberId))
+        }
+      } catch {
+        // ignore parse errors on failure path
+      }
+    }
   } catch (err) {
     const message = errorMessage(err)
     compatLogWarn(
@@ -963,11 +1269,135 @@ async function applySucceededSideEffects(
   await applyEnvironmentStopSideEffect(db, record, envelope, result)
   await applyEnvironmentLifecycleSideEffect(db, record, envelope, result)
   await applySystemReconcileSideEffect(db, record, envelope, result)
-  await applyManagedApplySideEffect(db, record, envelope, result)
-  await applyManagedLifecycleSideEffect(db, record, envelope, result)
-  await applyManagedDestroySideEffect(db, record, envelope, result)
+  await applyManagedApplySideEffect(db, record, envelope, result, deps)
+  await applyManagedLifecycleSideEffect(db, record, envelope, result, deps)
+  await applyManagedDestroySideEffect(db, record, envelope, result, deps)
+  await applyManagedPromoteSideEffect(db, record, envelope, result, deps)
   await applyManagedBackupSideEffect(db, record, envelope, result)
   await applyManagedRestoreSideEffect(db, record, envelope, result)
+}
+
+/**
+ * After a successful promote: demote the old primary **before** promoting so
+ * `uniq_node_primary` is never violated mid-flip, then re-point
+ * `managed.server_id`, project health, and re-reconcile ProxySQL.
+ */
+async function applyManagedPromoteSideEffect(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown,
+  deps?: CommandConsumerDeps,
+): Promise<void> {
+  if (record.type !== 'managed.promote') return
+  try {
+    const promoteResult = parseManagedPromoteResult(result)
+    const payload = parseManagedPromotePayload(record.payload)
+    const managedId = payload.managedId
+    const promotedMemberId = promoteResult.promotedMemberId || payload.memberId
+    const demotedMemberId =
+      promoteResult.demotedMemberId ?? payload.demoteMemberId
+    const updatedAt = nowIso()
+
+    await db.transaction(async (tx) => {
+      // Demote first so the partial unique primary index stays satisfied.
+      if (demotedMemberId) {
+        await tx
+          .update(node)
+          .set({
+            role: 'replica',
+            status: 'needs_resync',
+            updatedAt,
+          })
+          .where(
+            and(
+              eq(node.id, demotedMemberId),
+              eq(node.managedId, managedId),
+            ),
+          )
+      }
+
+      if (!promotedMemberId) return
+
+      await tx
+        .update(node)
+        .set({
+          role: 'primary',
+          status: promoteResult.status || 'ready',
+          updatedAt,
+        })
+        .where(
+          and(
+            eq(node.id, promotedMemberId),
+            eq(node.managedId, managedId),
+          ),
+        )
+
+      const [promoted] = await tx
+        .select({ serverId: node.serverId })
+        .from(node)
+        .where(eq(node.id, promotedMemberId))
+        .limit(1)
+
+      if (promoted) {
+        await tx
+          .update(managed)
+          .set({
+            status: 'ready',
+            serverId: promoted.serverId,
+            updatedAt,
+          })
+          .where(eq(managed.id, managedId))
+      } else {
+        await tx
+          .update(managed)
+          .set({ status: 'ready', updatedAt })
+          .where(eq(managed.id, managedId))
+      }
+    })
+
+    if (promotedMemberId && promoteResult.replication !== undefined) {
+      await updateManagedMemberObservedReplication(db, promotedMemberId, {
+        status: promoteResult.status || 'ready',
+        replication: promoteResult.replication,
+      })
+    }
+
+    if (
+      !deps?.commandQueue ||
+      !deps.secretsConfig ||
+      !deps.dataEncryptionSecrets ||
+      isNoopCommandQueue(deps.commandQueue)
+    ) {
+      return
+    }
+
+    const memberServers = await db
+      .select({ serverId: node.serverId })
+      .from(node)
+      .where(eq(node.managedId, managedId))
+    const serverIds = new Set(
+      memberServers.map((row) => row.serverId).concat(envelope.serverId),
+    )
+    const { enqueueManagedIngressReconcile } = await import(
+      '../../client/managed/ingress-desired.ts'
+    )
+    for (const serverId of serverIds) {
+      await enqueueManagedIngressReconcile(db, deps.commandQueue, {
+        serverId,
+        actorType: 'system',
+        actorId: envelope.serverId,
+        secretsConfig: deps.secretsConfig,
+        dataEncryptionSecrets: deps.dataEncryptionSecrets,
+      })
+    }
+  } catch (err) {
+    const message = errorMessage(err)
+    compatLogWarn(
+      'command-consumer',
+      `managed.promote side effect failed for command ${record.id}: ${message}`,
+    )
+  }
 }
 
 async function handlePendingDone(

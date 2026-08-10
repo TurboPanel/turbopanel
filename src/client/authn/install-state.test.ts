@@ -21,7 +21,7 @@ import {
   account,
   grant,
   license,
-  member,
+  membership,
   organization,
   server,
   setting,
@@ -87,7 +87,7 @@ it('unmigrated database does not report needsInstall as a normal state', async (
 async function cleanupInstall(db: Db, organizationId: string, userId: string) {
   await db.delete(grant).where(eq(grant.actorId, userId))
   await db.delete(teammate).where(eq(teammate.userId, userId))
-  await db.delete(member).where(eq(member.userId, userId))
+  await db.delete(membership).where(eq(membership.userId, userId))
   await db.delete(account).where(eq(account.userId, userId))
   await db.delete(license).where(eq(license.organizationId, organizationId))
   await db.delete(workspace).where(eq(workspace.organizationId, organizationId))

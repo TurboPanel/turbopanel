@@ -23,6 +23,8 @@ import {
   type ResolvedVariableMap,
 } from './resolve-inherited.ts'
 import {
+  BINDING_KEY_CONFLICT_ERROR,
+  BINDING_OWNED_VARIABLE_ERROR,
   buildInsertValues,
   hasImmutableParentChange,
   isVariableKeyUniqueViolation,
@@ -39,6 +41,10 @@ import {
   trimVariableValueOnWrite,
   type ParsedVariableParent,
 } from './routes-helpers.ts'
+import {
+  isKeyOwnedByBindingOnService,
+  resolveServiceIdForHosting,
+} from '../bindings/routes-helpers.ts'
 
 const VARIABLE_SELECT_FIELDS = {
   id: variable.id,
@@ -49,6 +55,7 @@ const VARIABLE_SELECT_FIELDS = {
   serviceId: variable.serviceId,
   hostingId: variable.hostingId,
   serverId: variable.serverId,
+  bindingId: variable.bindingId,
   key: variable.key,
   value: variable.value,
   isSecret: variable.isSecret,
@@ -463,6 +470,18 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
     const fields = await parseVariableCreateFields(c, body, organizationId)
     if (fields instanceof Response) return fields
 
+    // Reject user keys that a binding already emits at service / hosting scope.
+    if (fields.parent.column === 'serviceId') {
+      if (await isKeyOwnedByBindingOnService(db, fields.parent.id, fields.key)) {
+        return c.json({ error: BINDING_KEY_CONFLICT_ERROR }, 409)
+      }
+    } else if (fields.parent.column === 'hostingId') {
+      const serviceId = await resolveServiceIdForHosting(db, fields.parent.id)
+      if (serviceId && await isKeyOwnedByBindingOnService(db, serviceId, fields.key)) {
+        return c.json({ error: BINDING_KEY_CONFLICT_ERROR }, 409)
+      }
+    }
+
     try {
       const id = await db.transaction(async (tx) => {
         const [inserted] = await tx
@@ -514,6 +533,15 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
 
     const immutable = await assertNotSystemOwnedOr403(c, 'variable', id)
     if (immutable) return immutable
+
+    const [bindingOwned] = await db
+      .select({ bindingId: variable.bindingId })
+      .from(variable)
+      .where(eq(variable.id, id))
+      .limit(1)
+    if (bindingOwned?.bindingId) {
+      return c.json({ error: BINDING_OWNED_VARIABLE_ERROR }, 403)
+    }
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -579,6 +607,15 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
 
     const immutable = await assertNotSystemOwnedOr403(c, 'variable', id)
     if (immutable) return immutable
+
+    const [bindingOwned] = await db
+      .select({ bindingId: variable.bindingId })
+      .from(variable)
+      .where(eq(variable.id, id))
+      .limit(1)
+    if (bindingOwned?.bindingId) {
+      return c.json({ error: BINDING_OWNED_VARIABLE_ERROR }, 403)
+    }
 
     await db.delete(variable).where(eq(variable.id, id))
 

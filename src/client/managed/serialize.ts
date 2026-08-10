@@ -11,6 +11,7 @@ import {
 
 export type ManagedResidualMetadata = {
   rootPrincipalId?: string
+  rootUsername?: string
   host?: string
   port?: number
   error?: string
@@ -24,6 +25,9 @@ export function parseManagedResidual(value: unknown): ManagedResidualMetadata {
   return {
     ...(typeof record.rootPrincipalId === 'string'
       ? { rootPrincipalId: record.rootPrincipalId }
+      : {}),
+    ...(typeof record.rootUsername === 'string'
+      ? { rootUsername: record.rootUsername }
       : {}),
     ...(typeof record.host === 'string' ? { host: record.host } : {}),
     ...(typeof record.port === 'number' ? { port: record.port } : {}),
@@ -44,6 +48,7 @@ export function serializeManagedRow(
     updatedAt: string
   },
   serverId: string | null,
+  listener?: Readonly<{ host: string | null; port: number | null }>,
 ) {
   const residual = parseManagedResidual(row.metadata)
   const engine = row.engine && isManagedEngineCode(row.engine)
@@ -53,8 +58,12 @@ export function serializeManagedRow(
 
   const metadata: Record<string, unknown> = {
     ...(residual.rootPrincipalId ? { rootPrincipalId: residual.rootPrincipalId } : {}),
+    ...(residual.rootUsername ? { rootUsername: residual.rootUsername } : {}),
     ...(residual.error ? { error: residual.error } : {}),
   }
+
+  const host = listener ? listener.host : (residual.host ?? null)
+  const port = listener ? listener.port : (residual.port ?? null)
 
   return {
     id: row.id,
@@ -62,8 +71,8 @@ export function serializeManagedRow(
     displayName: row.displayName,
     engine,
     status,
-    host: residual.host ?? null,
-    port: residual.port ?? null,
+    host,
+    port,
     serverId,
     metadata,
     options: row.options,

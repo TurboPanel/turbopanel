@@ -8,6 +8,7 @@ import {
   command,
   container,
   environment,
+  hosting,
   organization,
   project,
   server,
@@ -22,6 +23,7 @@ import {
 import {
   buildSystemReconcilePayload,
   enqueueSystemReconcile,
+  resolveHostingIngressDesired,
   runSystemReconcileSweep,
   SYSTEM_RECONCILE_MIN_INTERVAL_MS,
 } from './reconcile.ts'
@@ -83,6 +85,7 @@ async function cleanupOrg(
         const serviceIds = serviceRows.map((row) => row.id)
         if (serviceIds.length > 0) {
           await db.delete(container).where(inArray(container.serviceId, serviceIds))
+          await db.delete(hosting).where(inArray(hosting.serviceId, serviceIds))
           await db.delete(service).where(inArray(service.id, serviceIds))
         }
         await db.delete(environment).where(inArray(environment.id, environmentIds))
@@ -104,6 +107,11 @@ async function withReconcileFixtures(
     statusChangedAt?: string
     /** Also provision the self-host (`turbopanel`) environment on this server. */
     selfHost?: boolean
+    /**
+     * Seed an HTTP hosting with hostnames on this server so shared Traefik
+     * is demand-present (otherwise pending ingress inventory must not start).
+     */
+    httpIngressDemand?: boolean
   }>,
   fn: (ctx: {
     db: ReturnType<typeof createDenoDb>
@@ -146,6 +154,41 @@ async function withReconcileFixtures(
     await ensureSelfHostSystemHierarchy(db, { organizationId, serverId })
   }
 
+  if (options.httpIngressDemand) {
+    const [ws] = await db
+      .insert(workspace)
+      .values({ organizationId, name: 'Tenant Workspace' })
+      .returning({ id: workspace.id })
+    const [proj] = await db
+      .insert(project)
+      .values({
+        workspaceId: ws!.id,
+        name: 'Tenant Project',
+        metadata: { type: 'docker-compose' },
+      })
+      .returning({ id: project.id })
+    const [env] = await db
+      .insert(environment)
+      .values({
+        projectId: proj!.id,
+        serverId,
+        name: 'Production',
+      })
+      .returning({ id: environment.id })
+    const [svc] = await db
+      .insert(service)
+      .values({
+        environmentId: env!.id,
+        name: 'web',
+        composeServiceName: 'web',
+      })
+      .returning({ id: service.id })
+    await db.insert(hosting).values({
+      serviceId: svc!.id,
+      options: { hostnames: ['app.example.test'] },
+    })
+  }
+
   const queue = createRecordingCommandQueue()
   try {
     await fn({ db, organizationId, serverId, queue })
@@ -154,8 +197,52 @@ async function withReconcileFixtures(
   }
 }
 
-test('runSystemReconcileSweep enqueues for connected hosting-enabled non-running ingress', async () => {
-  await withReconcileFixtures({}, async ({ db, serverId, queue }) => {
+test('resolveHostingIngressDesired requires demand or prior observation', () => {
+  assertEquals(
+    resolveHostingIngressDesired({
+      hostingEnabled: true,
+      hasHttpIngressDemand: false,
+      ingressObserved: false,
+    }),
+    'absent',
+  )
+  assertEquals(
+    resolveHostingIngressDesired({
+      hostingEnabled: true,
+      hasHttpIngressDemand: true,
+      ingressObserved: false,
+    }),
+    'present',
+  )
+  assertEquals(
+    resolveHostingIngressDesired({
+      hostingEnabled: true,
+      hasHttpIngressDemand: false,
+      ingressObserved: true,
+    }),
+    'present',
+  )
+  assertEquals(
+    resolveHostingIngressDesired({
+      hostingEnabled: false,
+      hasHttpIngressDemand: true,
+      ingressObserved: true,
+    }),
+    'absent',
+  )
+})
+
+test('runSystemReconcileSweep skips pending hosting-ingress without HTTP demand', async () => {
+  await withReconcileFixtures({}, async ({ db, queue }) => {
+    // Hierarchy leaves ingress pending / null container_id with no hostings.
+    const result = await runSystemReconcileSweep(db, queue)
+    assertEquals(result.enqueued, 0)
+    assertEquals(queue.envelopes.length, 0)
+  })
+})
+
+test('runSystemReconcileSweep enqueues for connected hosting-enabled non-running ingress with HTTP demand', async () => {
+  await withReconcileFixtures({ httpIngressDemand: true }, async ({ db, serverId, queue }) => {
     // Hierarchy leaves ingress pending / null container_id — eligible for sweep.
     const result = await runSystemReconcileSweep(db, queue)
     assertEquals(result.enqueued, 1)
@@ -195,7 +282,8 @@ test('runSystemReconcileSweep skips steady-state running ingress when not recent
 test('runSystemReconcileSweep enqueues for recently reconnected server with running ingress', async () => {
   await withReconcileFixtures({}, async ({ db, serverId, queue }) => {
     // status_changed_at is recent (fixture default = now); inventory still
-    // says running from before the offline window — must still reconcile.
+    // says running from before the offline window — must still reconcile
+    // because the ingress was already observed (no HTTP demand required).
     await db
       .update(container)
       .set({ status: 'running', containerId: 'stale-running-cid' })
@@ -216,7 +304,7 @@ test('runSystemReconcileSweep enqueues for recently reconnected server with runn
 })
 
 test('runSystemReconcileSweep skips when a recent system.reconcile exists', async () => {
-  await withReconcileFixtures({}, async ({ db, serverId, queue }) => {
+  await withReconcileFixtures({ httpIngressDemand: true }, async ({ db, serverId, queue }) => {
     const first = await enqueueSystemReconcile(db, queue, {
       serverId,
       actorType: 'system',
@@ -235,7 +323,7 @@ test('runSystemReconcileSweep skips when a recent system.reconcile exists', asyn
 })
 
 test('buildSystemReconcilePayload returns one payload per system environment', async () => {
-  await withReconcileFixtures({ selfHost: true }, async ({ db, serverId }) => {
+  await withReconcileFixtures({ selfHost: true, httpIngressDemand: true }, async ({ db, serverId }) => {
     const payloads = await buildSystemReconcilePayload(db, { serverId })
     assertEquals(payloads.length, 2)
 
@@ -268,6 +356,15 @@ test('buildSystemReconcilePayload returns one payload per system environment', a
       assertEquals(component.containerName, component.serviceId)
       assertEquals(component.composeServiceName, component.component)
     }
+  })
+})
+
+test('buildSystemReconcilePayload keeps hosting-ingress absent without demand even when enabled', async () => {
+  await withReconcileFixtures({}, async ({ db, serverId }) => {
+    const payloads = await buildSystemReconcilePayload(db, { serverId })
+    const hostingIngress = payloads.find((p) =>
+      p.components.some((c) => c.component === 'hosting-ingress'))
+    assertEquals(hostingIngress?.components[0]?.desired, 'absent')
   })
 })
 

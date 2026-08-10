@@ -6,12 +6,12 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import type { DerivedSecretsConfig } from '../authn/secrets.ts'
 import { getDb } from '../../db.ts'
-import type { ManagedApplyCommandPayload } from '../../lib/commands/schemas.ts'
 import type { CommandQueue } from '../../lib/commands/queue.ts'
 import {
   container,
   environment,
   managed,
+  node,
   organization,
   principal,
   project,
@@ -24,11 +24,17 @@ import {
   clampManagedResources,
   type ManagedSettings,
 } from '../../lib/managed/settings.ts'
+import { isManagedEngineCode } from '../../lib/managed/types.ts'
 import { parseResourceLimits } from '../../lib/resource-limits.ts'
 import {
   createManagedPrincipal,
+  isManagedUsernameTaken,
   listManagedPrincipals,
+  lockOrganizationsForUpdate,
+  resolveAvailableManagedRootUsername,
+  resolveManagedOwningOrganizationIds,
   rotatePrincipalPassword,
+  USERNAME_IN_USE_ERROR,
 } from '../principals/store.ts'
 import {
   assertDispatchInfrastructure,
@@ -42,6 +48,14 @@ import {
   requireStringField,
 } from '../shared.ts'
 import {
+  assertServerDatacenterReady,
+} from '../../lib/net/datacenter-networks.ts'
+import {
+  privateEndpointErrorResponse,
+  resolvePrivateEndpoint,
+  type PrivateEndpointTransport,
+} from '../../lib/net/private-endpoint.ts'
+import {
   authorizeManagedRequest,
   assertManagedNotBusy,
   assertTargetServerOnline,
@@ -51,14 +65,23 @@ import {
   type ManagedContext,
 } from './context.ts'
 import {
-  buildManagedApplyPayload,
-  enqueueManagedApply,
-  enqueueManagedDestroy,
-  enqueueManagedLifecycle,
+  hasBindingsForDatabase,
+  hasBindingsForPrincipal,
+  listBindingImpactForDatabase,
+  listBindingImpactForPrincipal,
+} from '../bindings/impact.ts'
+import { materializeBindingsForPrincipal } from '../bindings/materialize.ts'
+import {
+  enqueueManagedDestroyFanout,
+  enqueueManagedLifecycleFanout,
+  enqueuePreparedManagedApply,
+  enqueueTypedCommand,
   isPrepareError,
   mapManagedApplyPrepareError,
+  prepareManagedApplyPayloads,
   preflightManagedApplyInfrastructure,
   type ManagedApplyPrepareError,
+  type PreparedManagedMemberApply,
 } from './apply-prepare.ts'
 import {
   buildManagedBackupCreatePayload,
@@ -72,6 +95,21 @@ import {
 } from './backups.ts'
 import { fetchManagedLogs, parseLogsTailQuery } from './logs.ts'
 import {
+  countReplicas,
+  deleteManagedMember,
+  ensureManagedPrimaryMember,
+  findManagedMember,
+  insertManagedReplicaMember,
+  listManagedMembers,
+  listManagedMembersForManagedIds,
+  listSerializedManagedMembers,
+  MANAGED_MAX_REPLICAS,
+  nextReplicaOrdinal,
+  serializeManagedMember,
+  updateManagedMemberReadEligible,
+  type ManagedMemberRow,
+} from './members.ts'
+import {
   parseManagedRowOptions,
   writeManagedRowOptions,
   type ManagedBackupRecord,
@@ -79,14 +117,17 @@ import {
 } from './options.ts'
 import {
   isManagedRootPrincipal,
+  isManagedReplicationPrincipal,
   isPlainObject,
   managedSessionPaths,
   mergeCreateSettings,
   parseManagedUserCreateFields,
   readInitialDatabase,
+  resolveManagedConnectionListener,
   resolveManagedServerId,
   serializeContainerRow,
   serializeManagedUser,
+  evaluateManagedPromoteLagGate,
 } from './routes-helpers.ts'
 import {
   buildConnectionPayload,
@@ -136,6 +177,105 @@ async function loadResourceLimits(
     isPlainObject(serverRow?.options) ? serverRow.options.resourceLimits : null,
   ) ?? {}
   return { orgLimits, serverLimits }
+}
+
+/**
+ * Restore a principal's previous password hash after a failed apply so a
+ * rotate-password request that could not be enqueued/materialized does not
+ * leave the stored credential out of sync with the (unrotated) live engine.
+ */
+async function restorePreviousPrincipalPassword(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  principalId: string,
+  previousPassword: string | null | undefined,
+): Promise<void> {
+  if (typeof previousPassword !== 'string') return
+  await db
+    .update(principal)
+    .set({ password: previousPassword, updatedAt: new Date().toISOString() })
+    .where(eq(principal.id, principalId))
+}
+
+/**
+ * Gate a promote request behind replication-lag freshness unless the caller
+ * explicitly forced it. Returns a 409 response when the gate blocks, null
+ * when the promote may proceed.
+ */
+function assertManagedPromoteLagAllowed(
+  c: Context<AppEnv>,
+  member: ManagedMemberRow,
+  force: boolean,
+): Response | null {
+  if (force) return null
+  const serialized = serializeManagedMember(member, null)
+  const gate = evaluateManagedPromoteLagGate(serialized.replication)
+  return gate !== null ? c.json({ error: gate }, 409) : null
+}
+
+/**
+ * Before promoting a replica, fence an online primary (stop it and queue a
+ * follow-up promote once that fence lands) or, when the primary is already
+ * offline, mark it `needs_resync` and let the caller proceed to promote
+ * immediately. Returns a Response when the caller should return it as-is
+ * (the fence was queued), or null to continue with the promote.
+ */
+async function fenceOrResyncPrimaryForPromote(options: {
+  c: Context<AppEnv>
+  db: NonNullable<ReturnType<typeof getDb>>
+  commandQueue: CommandQueue
+  auth: { userId: string }
+  ctx: ManagedContext
+  row: { id: string }
+  member: ManagedMemberRow
+  primary: ManagedMemberRow | undefined
+}): Promise<Response | null> {
+  const { c, db, commandQueue, auth, ctx, row, member, primary } = options
+  if (!primary) return null
+
+  const primaryOnline = await assertTargetServerOnline(c, db, primary.serverId)
+  if (primaryOnline instanceof Response) {
+    await db
+      .update(node)
+      .set({ status: 'needs_resync', updatedAt: new Date().toISOString() })
+      .where(eq(node.id, primary.id))
+    return null
+  }
+
+  const fence = await enqueueTypedCommand(c, db, commandQueue, {
+    userId: auth.userId,
+    serverId: primary.serverId,
+    type: 'managed.lifecycle',
+    payload: {
+      managedId: row.id,
+      action: 'stop',
+      memberId: primary.id,
+      engine: ctx.spec.engine,
+    },
+    expiresAtMs: 600_000,
+    managedId: row.id,
+    setApplying: true,
+    metadata: {
+      followUpPromote: {
+        serverId: member.serverId,
+        payload: {
+          managedId: row.id,
+          memberId: member.id,
+          engine: ctx.spec.engine,
+          demoteMemberId: primary.id,
+        },
+      },
+    },
+  })
+  if (fence instanceof Response) return fence
+
+  return c.json({
+    ok: true as const,
+    commandId: fence.commandId,
+    serverId: fence.serverId,
+    status: 'queued' as const,
+    fenceCommandId: fence.commandId,
+    promotePending: true,
+  })
 }
 
 class ManagedPrepareRollbackError extends Error {
@@ -287,7 +427,7 @@ async function insertManagedCreateTransaction(
 ): Promise<{
   row: ManagedRow
   rootPassword: string
-  payload: ManagedApplyCommandPayload
+  prepared: PreparedManagedMemberApply[]
 }> {
   const {
     environmentId,
@@ -317,13 +457,28 @@ async function insertManagedCreateTransaction(
     throw new TypeError('Failed to create managed row')
   }
 
+  await ensureManagedPrimaryMember(tx, { managedId, serverId })
+
+  const owningOrgIds = await resolveManagedOwningOrganizationIds(tx, managedId, [
+    serverId,
+  ])
+  await lockOrganizationsForUpdate(tx, owningOrgIds)
+
+  const rootUsername = await resolveAvailableManagedRootUsername(
+    tx,
+    owningOrgIds,
+    ctx.spec.rootUsername,
+    managedId,
+    ctx.spec.userOperations.identifier,
+  )
+
   const { principalId, password } = await createManagedPrincipal(
     tx,
     dataEncryptionSecrets,
     {
       managedId,
       provider: ctx.spec.principalProvider,
-      username: ctx.spec.rootUsername,
+      username: rootUsername,
       metadata: {
         managedRoot: true,
         engine: ctx.spec.engine,
@@ -337,6 +492,7 @@ async function insertManagedCreateTransaction(
     .set({
       metadata: {
         rootPrincipalId: principalId,
+        rootUsername,
       },
       updatedAt: new Date().toISOString(),
     })
@@ -349,29 +505,30 @@ async function insertManagedCreateTransaction(
     throw new TypeError('Invalid managed options after create')
   }
 
-  const payload = await buildManagedApplyPayload(c, tx, {
+  const prepared = await prepareManagedApplyPayloads(c, tx, {
     managedRow: row,
     spec: ctx.spec,
     settings: parsedOptions.settings,
     databases: parsedOptions.databases,
     serverId,
     environmentId: ctx.environmentId,
-    rootUsername: ctx.spec.rootUsername,
+    organizationId: ctx.organizationId,
+    rootUsername,
   })
-  if (isPrepareError(payload)) {
-    throw new ManagedPrepareRollbackError(payload)
+  if (isPrepareError(prepared)) {
+    throw new ManagedPrepareRollbackError(prepared)
   }
 
   return {
     row,
     rootPassword: password,
-    payload,
+    prepared: prepared.members,
   }
 }
 
 type PreparedManagedApply = {
   commandQueue: CommandQueue
-  payload: ManagedApplyCommandPayload
+  members: PreparedManagedMemberApply[]
 }
 
 /** Busy / online / dispatch / daemon-key / bind checks — no credential payload. */
@@ -412,6 +569,7 @@ async function prepareApplyForManaged(
     dropUsers?: string[]
     dropDatabases?: string[]
     omitPrincipalIds?: string[]
+    excludeMemberIds?: string[]
   },
 ): Promise<PreparedManagedApply | Response> {
   const commandQueue = await assertManagedApplyReady(
@@ -424,23 +582,26 @@ async function prepareApplyForManaged(
   )
   if (commandQueue instanceof Response) return commandQueue
 
-  const payload = await buildManagedApplyPayload(c, db, {
+  const residual = parseManagedResidual(managedRow.metadata)
+  const prepared = await prepareManagedApplyPayloads(c, db, {
     managedRow,
     spec: ctx.spec,
     settings: options.settings,
     databases: options.databases,
     serverId: targetServerId,
     environmentId: ctx.environmentId,
-    rootUsername: ctx.spec.rootUsername,
+    organizationId: ctx.organizationId,
+    rootUsername: residual.rootUsername ?? ctx.spec.rootUsername,
     dropUsers: extra?.dropUsers,
     dropDatabases: extra?.dropDatabases,
     omitPrincipalIds: extra?.omitPrincipalIds,
+    excludeMemberIds: extra?.excludeMemberIds,
   })
-  if (isPrepareError(payload)) {
-    return mapManagedApplyPrepareError(c, payload)
+  if (isPrepareError(prepared)) {
+    return mapManagedApplyPrepareError(c, prepared)
   }
 
-  return { commandQueue, payload }
+  return { commandQueue, members: prepared.members }
 }
 
 async function runApplyForManaged(
@@ -465,14 +626,21 @@ async function runApplyForManaged(
   )
   if (prepared instanceof Response) return prepared
 
-  const enqueued = await enqueueManagedApply(c, db, prepared.commandQueue, {
-    serverId: targetServerId,
+  const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
     userId,
     managedId: managedRow.id,
-    payload: prepared.payload,
+    members: prepared.members,
   })
   if (enqueued instanceof Response) return enqueued
-  return c.json(enqueued)
+
+  const primary = enqueued.find((r) => r.commandId) ?? enqueued[0]
+  return c.json({
+    ok: true as const,
+    results: enqueued,
+    commandId: primary?.commandId,
+    serverId: primary?.serverId ?? targetServerId,
+    status: 'queued' as const,
+  })
 }
 
 async function createManagedAndEnqueueApply(
@@ -509,7 +677,7 @@ async function createManagedAndEnqueueApply(
         environmentId,
         ctx,
         serverId: createServerId,
-        name: plan.displayName,
+        displayName: plan.displayName,
         rowOptions: plan.rowOptions,
         initialDatabase: plan.initialDatabase,
         dataEncryptionSecrets,
@@ -521,23 +689,96 @@ async function createManagedAndEnqueueApply(
     throw error
   }
 
-  const enqueued = await enqueueManagedApply(c, db, commandQueue, {
-    serverId: createServerId,
+  const enqueued = await enqueuePreparedManagedApply(c, db, commandQueue, {
     userId,
     managedId: created.row.id,
-    payload: created.payload,
+    members: created.prepared,
   })
   if (enqueued instanceof Response) {
     await deleteManagedCompensation(db, created.row.id, environmentId)
     return enqueued
   }
 
+  const primary = enqueued.find((r) => r.commandId) ?? enqueued[0]
+  const residual = parseManagedResidual(created.row.metadata)
   return c.json({
     ok: true as const,
     managed: serializeManagedRow(created.row, createServerId),
-    commandId: enqueued.commandId,
-    serverId: enqueued.serverId,
+    commandId: primary?.commandId,
+    serverId: primary?.serverId ?? createServerId,
+    results: enqueued,
     rootPassword: created.rootPassword,
+    rootUsername: residual.rootUsername ?? ctx.spec.rootUsername,
+  })
+}
+
+async function resolveReplicaPlacement(
+  c: Context<AppEnv>,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  params: {
+    primaryServerId: string
+    serverId: string
+    members: readonly ManagedMemberRow[]
+  },
+): Promise<
+  Response | { toPrimaryTransport: PrivateEndpointTransport; ordinal: number }
+> {
+  if (params.members.some((m) => m.serverId === params.serverId)) {
+    return c.json({ error: 'managed_member_exists' }, 409)
+  }
+  if (countReplicas(params.members) >= MANAGED_MAX_REPLICAS) {
+    return c.json({ error: 'managed_replica_limit' }, 422)
+  }
+
+  const dcReady = await assertServerDatacenterReady(db, params.serverId)
+  if (dcReady) {
+    return c.json({ error: dcReady.kind }, 422)
+  }
+
+  const toPrimary = await resolvePrivateEndpoint(db, {
+    fromServerId: params.serverId,
+    toServerId: params.primaryServerId,
+  })
+  if ('kind' in toPrimary) return privateEndpointErrorResponse(c, toPrimary)
+  const fromPrimary = await resolvePrivateEndpoint(db, {
+    fromServerId: params.primaryServerId,
+    toServerId: params.serverId,
+  })
+  if ('kind' in fromPrimary) return privateEndpointErrorResponse(c, fromPrimary)
+
+  const offline = await assertTargetServerOnline(c, db, params.serverId)
+  if (offline) return offline
+
+  const ordinal = nextReplicaOrdinal(params.members)
+  if (ordinal === null) {
+    return c.json({ error: 'managed_replica_limit' }, 422)
+  }
+
+  return { toPrimaryTransport: toPrimary.transport, ordinal }
+}
+
+// Expanding the cluster onto a new server owner inherits that org's
+// managed-login namespace — recheck every existing principal (incl. root)
+// under a FOR UPDATE org lock before insert.
+async function hasManagedUsernameNamespaceConflict(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  managedId: string,
+  serverId: string,
+): Promise<boolean> {
+  const clusterPrincipals = await listManagedPrincipals(db, managedId)
+  return db.transaction(async (tx) => {
+    const owningOrgIds = await resolveManagedOwningOrganizationIds(tx, managedId, [
+      serverId,
+    ])
+    await lockOrganizationsForUpdate(tx, owningOrgIds)
+    for (const entry of clusterPrincipals) {
+      if (
+        await isManagedUsernameTaken(tx, owningOrgIds, entry.username, entry.id)
+      ) {
+        return true
+      }
+    }
+    return false
   })
 }
 
@@ -637,6 +878,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         settings: null,
         server: null,
         rootUsername: ctx.spec.rootUsername,
+        members: [],
       })
     }
 
@@ -647,13 +889,21 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     }
 
     const residual = parseManagedResidual(row.metadata)
+    const rootUsername = residual.rootUsername ?? ctx.spec.rootUsername
     const database = parsed.databases[0] ?? readInitialDatabase(ctx.spec)
-    const connection = residual.host !== undefined && residual.port !== undefined
+    const listener = serverId
+      ? await resolveManagedConnectionListener(db, {
+        serverId,
+        protocolPort: ctx.spec.defaultPort,
+        exposure: parsed.settings.exposure,
+      })
+      : null
+    const connection = listener
       ? buildConnectionPayload(ctx.spec, {
-        host: residual.host,
-        port: residual.port,
+        host: listener.host,
+        port: listener.port,
         database,
-        username: ctx.spec.rootUsername,
+        username: rootUsername,
         settings: parsed.settings,
       })
       : null
@@ -670,13 +920,18 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         .limit(1)
       : []
     const serverRow = serverRows[0]
+    const members = await listSerializedManagedMembers(db, row.id)
 
     return c.json({
-      managed: serializeManagedRow(row, serverId),
+      managed: serializeManagedRow(row, serverId, {
+        host: listener?.host ?? null,
+        port: listener?.port ?? null,
+      }),
       connection,
       settings: parsed.settings,
       server: serverRow ?? null,
-      rootUsername: ctx.spec.rootUsername,
+      rootUsername,
+      members,
     })
   })
 
@@ -803,9 +1058,6 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const offline = await assertTargetServerOnline(c, db, targetServerId)
-    if (offline) return offline
-
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
@@ -817,14 +1069,32 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const commandQueue = assertDispatchInfrastructure(c)
     if (commandQueue instanceof Response) return commandQueue
 
-    const enqueued = await enqueueManagedLifecycle(c, db, commandQueue, {
+    await ensureManagedPrimaryMember(db, {
+      managedId: row.id,
       serverId: targetServerId,
+    })
+    const members = await listManagedMembers(db, row.id)
+    for (const member of members) {
+      const offline = await assertTargetServerOnline(c, db, member.serverId)
+      if (offline) return offline
+    }
+
+    const enqueued = await enqueueManagedLifecycleFanout(c, db, commandQueue, {
       userId: auth.userId,
       managedId: row.id,
       action,
+      members,
+      engine: ctx.spec.engine,
     })
     if (enqueued instanceof Response) return enqueued
-    return c.json(enqueued)
+    const primary = enqueued.find((r) => r.commandId) ?? enqueued[0]
+    return c.json({
+      ok: true as const,
+      results: enqueued,
+      commandId: primary?.commandId,
+      serverId: primary?.serverId ?? targetServerId,
+      status: 'queued' as const,
+    })
   })
 
   router.delete('/environments/:id/managed', async (c) => {
@@ -863,32 +1133,37 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const offline = await assertTargetServerOnline(c, db, targetServerId)
-    if (offline) return offline
-
     const commandQueue = assertDispatchInfrastructure(c)
     if (commandQueue instanceof Response) return commandQueue
 
-    // Single-click delete: this is the API delete route, not a future
-    // "destroy runtime only" action, so mark the payload for the consumer's
-    // row-cleanup side effect — deleting the `managed` row after a
-    // successful destroy cascades to `principal.managed_id`. The API stays
-    // the source of truth for when that cleanup happens (only after the
-    // daemon reports success), not the UI.
-    const enqueued = await enqueueManagedDestroy(c, db, commandQueue, {
+    await ensureManagedPrimaryMember(db, {
+      managedId: row.id,
       serverId: targetServerId,
+    })
+    const members = await listManagedMembers(db, row.id)
+    for (const member of members) {
+      const offline = await assertTargetServerOnline(c, db, member.serverId)
+      if (offline) return offline
+    }
+
+    // Single-click delete: stamp deleteAfterDestroy on primary only so the
+    // managed row is deleted exactly once after the last host teardown.
+    const enqueued = await enqueueManagedDestroyFanout(c, db, commandQueue, {
       userId: auth.userId,
       managedId: row.id,
       removeVolumes: true,
+      members,
       deleteAfterDestroy: true,
     })
     if (enqueued instanceof Response) return enqueued
 
+    const primary = enqueued.find((r) => r.commandId) ?? enqueued[0]
     return c.json({
       ok: true as const,
       deleted: false as const,
-      commandId: enqueued.commandId,
-      serverId: enqueued.serverId,
+      commandId: primary?.commandId,
+      serverId: primary?.serverId ?? targetServerId,
+      results: enqueued,
     })
   })
 
@@ -946,30 +1221,31 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       rootPrincipalId,
     )
 
-    const payload = await buildManagedApplyPayload(c, db, {
+    const residualForApply = parseManagedResidual(row.metadata)
+    const preparedApply = await prepareManagedApplyPayloads(c, db, {
       managedRow: row,
       spec: ctx.spec,
       settings: options.settings,
       databases: options.databases,
       serverId: targetServerId,
       environmentId: ctx.environmentId,
-      rootUsername: ctx.spec.rootUsername,
+      organizationId: ctx.organizationId,
+      rootUsername: residualForApply.rootUsername ?? ctx.spec.rootUsername,
     })
-    if (isPrepareError(payload)) {
+    if (isPrepareError(preparedApply)) {
       if (typeof previousPassword === 'string') {
         await db
           .update(principal)
           .set({ password: previousPassword, updatedAt: new Date().toISOString() })
           .where(eq(principal.id, rootPrincipalId))
       }
-      return mapManagedApplyPrepareError(c, payload)
+      return mapManagedApplyPrepareError(c, preparedApply)
     }
 
-    const enqueued = await enqueueManagedApply(c, db, commandQueue, {
-      serverId: targetServerId,
+    const enqueued = await enqueuePreparedManagedApply(c, db, commandQueue, {
       userId: auth.userId,
       managedId: row.id,
-      payload,
+      members: preparedApply.members,
     })
     if (enqueued instanceof Response) {
       if (typeof previousPassword === 'string') {
@@ -981,11 +1257,15 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return enqueued
     }
 
+    const primaryResult = enqueued.find((r) => r.commandId) ?? enqueued[0]
+    const redeployRequired = await listBindingImpactForPrincipal(db, rootPrincipalId)
     return c.json({
       ok: true,
       rootPassword: plaintext,
-      commandId: enqueued.commandId,
-      serverId: enqueued.serverId,
+      commandId: primaryResult?.commandId,
+      serverId: primaryResult?.serverId ?? targetServerId,
+      results: enqueued,
+      redeployRequired,
     })
   })
 
@@ -1003,7 +1283,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const users = await listManagedPrincipals(db, row.id)
     return c.json({
       users: users
-        .filter((entry) => !isManagedRootPrincipal(entry.metadata))
+        .filter(
+          (entry) =>
+            !isManagedRootPrincipal(entry.metadata) &&
+            !isManagedReplicationPrincipal(entry.metadata),
+        )
         .map((entry) => serializeManagedUser(entry)),
     })
   })
@@ -1028,14 +1312,16 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const options = parseManagedRowOptions(ctx.spec, row.options)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
-    const fields = parseManagedUserCreateFields(c, ctx, body, options)
+    const residual = parseManagedResidual(row.metadata)
+    const fields = parseManagedUserCreateFields(
+      c,
+      ctx,
+      body,
+      options,
+      residual.rootUsername,
+    )
     if (fields instanceof Response) return fields
     const { username, databases, privileges } = fields
-
-    const existingUsers = await listManagedPrincipals(db, row.id)
-    if (existingUsers.some((entry) => entry.username === username)) {
-      return c.json({ error: 'managed_user_exists' }, 409)
-    }
 
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     if (!dataEncryptionSecrets) {
@@ -1055,10 +1341,29 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     )
     if (commandQueue instanceof Response) return commandQueue
 
-    const { principalId, password } = await createManagedPrincipal(
-      db,
-      dataEncryptionSecrets,
-      {
+    // Same-cluster collision, owning-org namespace probe, and principal insert
+    // share one txn so the organization FOR UPDATE lock covers the insert —
+    // otherwise concurrent creates can pass the check before either inserts.
+    // include targetServerId so legacy rows self-heal a primary member first.
+    const userCreate = await db.transaction(async (tx) => {
+      const existingUsers = await listManagedPrincipals(tx, row.id)
+      if (existingUsers.some((entry) => entry.username === username)) {
+        return { ok: false as const, error: 'managed_user_exists' as const }
+      }
+
+      await ensureManagedPrimaryMember(tx, {
+        managedId: row.id,
+        serverId: targetServerId,
+      })
+      const owningOrgIds = await resolveManagedOwningOrganizationIds(tx, row.id, [
+        targetServerId,
+      ])
+      await lockOrganizationsForUpdate(tx, owningOrgIds)
+      if (await isManagedUsernameTaken(tx, owningOrgIds, username)) {
+        return { ok: false as const, error: USERNAME_IN_USE_ERROR }
+      }
+
+      const created = await createManagedPrincipal(tx, dataEncryptionSecrets, {
         managedId: row.id,
         provider: ctx.spec.principalProvider,
         username,
@@ -1067,28 +1372,33 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
           databases,
           privileges,
         },
-      },
-    )
+      })
+      return { ok: true as const, ...created }
+    })
+    if (!userCreate.ok) {
+      return c.json({ error: userCreate.error }, 409)
+    }
+    const { principalId, password } = userCreate
 
-    const payload = await buildManagedApplyPayload(c, db, {
+    const preparedApply = await prepareManagedApplyPayloads(c, db, {
       managedRow: row,
       spec: ctx.spec,
       settings: options.settings,
       databases: options.databases,
       serverId: targetServerId,
       environmentId: ctx.environmentId,
-      rootUsername: ctx.spec.rootUsername,
+      organizationId: ctx.organizationId,
+      rootUsername: residual.rootUsername ?? ctx.spec.rootUsername,
     })
-    if (isPrepareError(payload)) {
+    if (isPrepareError(preparedApply)) {
       await db.delete(principal).where(eq(principal.id, principalId))
-      return mapManagedApplyPrepareError(c, payload)
+      return mapManagedApplyPrepareError(c, preparedApply)
     }
 
-    const enqueued = await enqueueManagedApply(c, db, commandQueue, {
-      serverId: targetServerId,
+    const enqueued = await enqueuePreparedManagedApply(c, db, commandQueue, {
       userId: auth.userId,
       managedId: row.id,
-      payload,
+      members: preparedApply.members,
     })
     if (enqueued instanceof Response) {
       await db.delete(principal).where(eq(principal.id, principalId))
@@ -1101,6 +1411,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .where(eq(principal.id, principalId))
       .limit(1)
 
+    const primaryResult = enqueued.find((r) => r.commandId) ?? enqueued[0]
     return c.json({
       ok: true,
       user: {
@@ -1111,8 +1422,123 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         createdAt: createdUser?.createdAt ?? new Date().toISOString(),
       },
       password,
-      commandId: enqueued.commandId,
-      serverId: enqueued.serverId,
+      commandId: primaryResult?.commandId,
+      serverId: primaryResult?.serverId ?? targetServerId,
+      results: enqueued,
+    })
+  })
+
+  router.post('/environments/:id/managed/users/:principalId/password', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const environmentId = c.req.param('id')
+    const principalId = c.req.param('principalId')
+    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
+    if (auth instanceof Response) return auth
+
+    const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
+    if (ctx instanceof Response) return ctx
+
+    const row = await findManagedForEnvironment(db, environmentId)
+    if (!row) return c.json({ error: 'Not found' }, 404)
+
+    const [target] = await db
+      .select({
+        id: principal.id,
+        metadata: principal.metadata,
+        managedId: principal.managedId,
+      })
+      .from(principal)
+      .where(and(eq(principal.id, principalId), eq(principal.managedId, row.id)))
+      .limit(1)
+    if (!target) return c.json({ error: 'Not found' }, 404)
+    if (isManagedRootPrincipal(target.metadata)) {
+      return c.json({ error: 'use_root_password_route' }, 400)
+    }
+    if (isManagedReplicationPrincipal(target.metadata)) {
+      return c.json({ error: 'cannot_rotate_replication_user' }, 400)
+    }
+
+    const options = parseManagedRowOptions(ctx.spec, row.options)
+    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+
+    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+    if (!dataEncryptionSecrets) {
+      return c.json({ error: 'Encryption unavailable' }, 503)
+    }
+
+    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
+    if (targetServerId instanceof Response) return targetServerId
+
+    const commandQueue = await assertManagedApplyReady(
+      c,
+      db,
+      ctx,
+      row,
+      options,
+      targetServerId,
+    )
+    if (commandQueue instanceof Response) return commandQueue
+
+    const [previous] = await db
+      .select({ password: principal.password })
+      .from(principal)
+      .where(eq(principal.id, principalId))
+      .limit(1)
+    const previousPassword = previous?.password
+
+    const { plaintext } = await rotatePrincipalPassword(
+      db,
+      dataEncryptionSecrets,
+      principalId,
+    )
+
+    const materializeResult = await materializeBindingsForPrincipal(
+      db,
+      dataEncryptionSecrets,
+      principalId,
+    )
+    if (!('ok' in materializeResult)) {
+      await restorePreviousPrincipalPassword(db, principalId, previousPassword)
+      return c.json({ error: materializeResult.kind }, 422)
+    }
+
+    const residual = parseManagedResidual(row.metadata)
+    const preparedApply = await prepareManagedApplyPayloads(c, db, {
+      managedRow: row,
+      spec: ctx.spec,
+      settings: options.settings,
+      databases: options.databases,
+      serverId: targetServerId,
+      environmentId: ctx.environmentId,
+      organizationId: ctx.organizationId,
+      rootUsername: residual.rootUsername ?? ctx.spec.rootUsername,
+    })
+    if (isPrepareError(preparedApply)) {
+      await restorePreviousPrincipalPassword(db, principalId, previousPassword)
+      return mapManagedApplyPrepareError(c, preparedApply)
+    }
+
+    const enqueued = await enqueuePreparedManagedApply(c, db, commandQueue, {
+      userId: auth.userId,
+      managedId: row.id,
+      members: preparedApply.members,
+    })
+    if (enqueued instanceof Response) {
+      await restorePreviousPrincipalPassword(db, principalId, previousPassword)
+      return enqueued
+    }
+
+    const primaryResult = enqueued.find((r) => r.commandId) ?? enqueued[0]
+    const redeployRequired = await listBindingImpactForPrincipal(db, principalId)
+    return c.json({
+      ok: true,
+      password: plaintext,
+      commandId: primaryResult?.commandId,
+      serverId: primaryResult?.serverId ?? targetServerId,
+      results: enqueued,
+      redeployRequired,
     })
   })
 
@@ -1153,6 +1579,14 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: 'cannot_drop_root_user' }, 400)
     }
 
+    if (await hasBindingsForPrincipal(db, principalId)) {
+      const redeployRequired = await listBindingImpactForPrincipal(db, principalId)
+      return c.json({
+        error: 'managed_user_has_bindings',
+        services: redeployRequired.services,
+      }, 409)
+    }
+
     const options = parseManagedRowOptions(ctx.spec, row.options)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
@@ -1167,11 +1601,10 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     await db.delete(principal).where(eq(principal.id, principalId))
 
-    const enqueued = await enqueueManagedApply(c, db, prepared.commandQueue, {
-      serverId: targetServerId,
+    const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
       userId: auth.userId,
       managedId: row.id,
-      payload: prepared.payload,
+      members: prepared.members,
     })
     if (enqueued instanceof Response) {
       await db.insert(principal).values({
@@ -1189,10 +1622,12 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return enqueued
     }
 
+    const primaryFanout = enqueued.find((r) => r.commandId) ?? enqueued[0]
     return c.json({
       ok: true,
-      commandId: enqueued.commandId,
-      serverId: enqueued.serverId,
+      commandId: primaryFanout?.commandId,
+      serverId: primaryFanout?.serverId ?? targetServerId,
+      results: enqueued,
     })
   })
 
@@ -1268,11 +1703,10 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .set({ options: nextOptions, updatedAt: new Date().toISOString() })
       .where(eq(managed.id, row.id))
 
-    const enqueued = await enqueueManagedApply(c, db, prepared.commandQueue, {
-      serverId: targetServerId,
+    const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
       userId: auth.userId,
       managedId: row.id,
-      payload: prepared.payload,
+      members: prepared.members,
     })
     if (enqueued instanceof Response) {
       await db
@@ -1285,11 +1719,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return enqueued
     }
 
+    const primaryFanout = enqueued.find((r) => r.commandId) ?? enqueued[0]
     return c.json({
       ok: true,
       databases: nextDatabases,
-      commandId: enqueued.commandId,
-      serverId: enqueued.serverId,
+      commandId: primaryFanout?.commandId,
+      serverId: primaryFanout?.serverId ?? targetServerId,
+      results: enqueued,
     })
   })
 
@@ -1319,6 +1755,17 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: 'cannot_drop_initial_database' }, 409)
     }
 
+    if (await hasBindingsForDatabase(db, { managedId: row.id, databaseName })) {
+      const redeployRequired = await listBindingImpactForDatabase(db, {
+        managedId: row.id,
+        databaseName,
+      })
+      return c.json({
+        error: 'managed_database_has_bindings',
+        services: redeployRequired.services,
+      }, 409)
+    }
+
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
@@ -1342,11 +1789,10 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .set({ options: nextOptions, updatedAt: new Date().toISOString() })
       .where(eq(managed.id, row.id))
 
-    const enqueued = await enqueueManagedApply(c, db, prepared.commandQueue, {
-      serverId: targetServerId,
+    const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
       userId: auth.userId,
       managedId: row.id,
-      payload: prepared.payload,
+      members: prepared.members,
     })
     if (enqueued instanceof Response) {
       await db
@@ -1359,13 +1805,368 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return enqueued
     }
 
+    const primaryFanout = enqueued.find((r) => r.commandId) ?? enqueued[0]
     return c.json({
       ok: true,
       databases: nextDatabases,
+      commandId: primaryFanout?.commandId,
+      serverId: primaryFanout?.serverId ?? targetServerId,
+      results: enqueued,
+    })
+  })
+
+
+  router.get('/environments/:id/managed/members', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const environmentId = c.req.param('id')
+    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
+    if (auth instanceof Response) return auth
+
+    const row = await findManagedForEnvironment(db, environmentId)
+    if (!row) return c.json({ members: [] })
+
+    const members = await listSerializedManagedMembers(db, row.id)
+    return c.json({ members })
+  })
+
+  router.post('/environments/:id/managed/members', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const environmentId = c.req.param('id')
+    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
+    if (auth instanceof Response) return auth
+
+    const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
+    if (ctx instanceof Response) return ctx
+
+    const row = await findManagedForEnvironment(db, environmentId)
+    if (!row) return c.json({ error: 'Not found' }, 404)
+
+    const busy = assertManagedNotBusy(c, row.status)
+    if (busy) return busy
+
+    const primaryServerId = resolveManagedTargetServerId(c, row.serverId)
+    if (primaryServerId instanceof Response) return primaryServerId
+
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+
+    const serverId = requireStringField(c, body, 'serverId')
+    if (serverId instanceof Response) return serverId
+
+    // Placement may land on a grant-visible server owned by another org —
+    // authority is can(organization:manage on server), not server.organizationId
+    // equality with the environment's org.
+    const serverDenied = await assertCanManageOr403(c, 'server', serverId)
+    if (serverDenied) return serverDenied
+
+    await ensureManagedPrimaryMember(db, {
+      managedId: row.id,
+      serverId: primaryServerId,
+    })
+    const members = await listManagedMembers(db, row.id)
+
+    const placement = await resolveReplicaPlacement(c, db, {
+      primaryServerId,
+      serverId,
+      members,
+    })
+    if (placement instanceof Response) return placement
+
+    const namespaceConflict = await hasManagedUsernameNamespaceConflict(
+      db,
+      row.id,
+      serverId,
+    )
+    if (namespaceConflict) {
+      return c.json({ error: USERNAME_IN_USE_ERROR }, 409)
+    }
+
+    const readEligible = body.readEligible === true
+    const member = await insertManagedReplicaMember(db, {
+      managedId: row.id,
+      serverId,
+      ordinal: placement.ordinal,
+      readEligible,
+      replicationTransport: placement.toPrimaryTransport,
+    })
+
+    const options = parseManagedRowOptions(ctx.spec, row.options)
+    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+
+    const prepared = await prepareApplyForManaged(
+      c,
+      db,
+      ctx,
+      row,
+      options,
+      primaryServerId,
+    )
+    if (prepared instanceof Response) {
+      await deleteManagedMember(db, member.id)
+      return prepared
+    }
+
+    const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
+      userId: auth.userId,
+      managedId: row.id,
+      members: prepared.members,
+    })
+    if (enqueued instanceof Response) {
+      await deleteManagedMember(db, member.id)
+      return enqueued
+    }
+
+    const primary = enqueued.find((r) => r.commandId) ?? enqueued[0]
+    const [serverRow] = await db
+      .select({ name: server.name })
+      .from(server)
+      .where(eq(server.id, serverId))
+      .limit(1)
+    return c.json({
+      ok: true as const,
+      member: serializeManagedMember(member, serverRow?.name ?? null),
+      results: enqueued,
+      commandId: primary?.commandId,
+      serverId: primary?.serverId,
+      status: 'queued' as const,
+    })
+  })
+
+  router.patch('/environments/:id/managed/members/:memberId', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const environmentId = c.req.param('id')
+    const memberId = c.req.param('memberId')
+    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
+    if (auth instanceof Response) return auth
+
+    const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
+    if (ctx instanceof Response) return ctx
+
+    const row = await findManagedForEnvironment(db, environmentId)
+    if (!row) return c.json({ error: 'Not found' }, 404)
+
+    const busy = assertManagedNotBusy(c, row.status)
+    if (busy) return busy
+
+    const member = await findManagedMember(db, memberId)
+    if (member?.managedId !== row.id) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    if (typeof body.readEligible !== 'boolean') {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+
+    const updated = await updateManagedMemberReadEligible(
+      db,
+      memberId,
+      body.readEligible,
+    )
+    if (!updated) return c.json({ error: 'Not found' }, 404)
+
+    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
+    if (targetServerId instanceof Response) return targetServerId
+
+    const options = parseManagedRowOptions(ctx.spec, row.options)
+    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+
+    const applyResp = await runApplyForManaged(c, db, {
+      userId: auth.userId,
+      ctx,
+      managedRow: row,
+      options,
+      targetServerId,
+    })
+    return applyResp
+  })
+
+  router.delete('/environments/:id/managed/members/:memberId', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const environmentId = c.req.param('id')
+    const memberId = c.req.param('memberId')
+    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
+    if (auth instanceof Response) return auth
+
+    const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
+    if (ctx instanceof Response) return ctx
+
+    const row = await findManagedForEnvironment(db, environmentId)
+    if (!row) return c.json({ error: 'Not found' }, 404)
+
+    const busy = assertManagedNotBusy(c, row.status)
+    if (busy) return busy
+
+    const member = await findManagedMember(db, memberId)
+    if (member?.managedId !== row.id) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+    if (member.role === 'primary') {
+      return c.json({ error: 'managed_member_is_primary' }, 409)
+    }
+
+    const commandQueue = assertDispatchInfrastructure(c)
+    if (commandQueue instanceof Response) return commandQueue
+
+    const offline = await assertTargetServerOnline(c, db, member.serverId)
+    if (offline) return offline
+
+    // Keep the member visible until destroy succeeds (consumer deletes the row).
+    await db
+      .update(node)
+      .set({
+        status: 'applying',
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(node.id, member.id))
+
+    await db
+      .update(managed)
+      .set({ status: 'applying', updatedAt: new Date().toISOString() })
+      .where(eq(managed.id, row.id))
+
+    const primaryServerId = resolveManagedTargetServerId(c, row.serverId)
+    if (primaryServerId instanceof Response) return primaryServerId
+
+    const options = parseManagedRowOptions(ctx.spec, row.options)
+    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+
+    // Prepare primary re-apply payload for post-destroy slot cleanup (consumer).
+    // Exclude the removing member so desiredSlots/peers shrink.
+    const prepared = await prepareApplyForManaged(
+      c,
+      db,
+      ctx,
+      row,
+      options,
+      primaryServerId,
+      { excludeMemberIds: [member.id] },
+    )
+    if (prepared instanceof Response) return prepared
+
+    const primaryPrepared = prepared.members.find(
+      (m) => m.payload.memberRole === 'primary',
+    )
+
+    const destroyOne = await enqueueTypedCommand(c, db, commandQueue, {
+      userId: auth.userId,
+      serverId: member.serverId,
+      type: 'managed.destroy',
+      payload: {
+        managedId: row.id,
+        removeVolumes: true,
+        memberId: member.id,
+        deleteMemberAfterDestroy: true,
+      },
+      expiresAtMs: 600_000,
+      metadata: primaryPrepared
+        ? {
+            pendingPrimaryReapply: {
+              serverId: primaryPrepared.serverId,
+              payload: primaryPrepared.payload,
+            },
+          }
+        : undefined,
+    })
+    if (destroyOne instanceof Response) return destroyOne
+
+    return c.json({
+      ok: true as const,
+      destroyCommandId: destroyOne.commandId,
+      commandId: destroyOne.commandId,
+      serverId: destroyOne.serverId,
+      status: 'queued' as const,
+    })
+  })
+
+  router.post('/environments/:id/managed/members/:memberId/promote', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const environmentId = c.req.param('id')
+    const memberId = c.req.param('memberId')
+    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
+    if (auth instanceof Response) return auth
+
+    const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
+    if (ctx instanceof Response) return ctx
+
+    const row = await findManagedForEnvironment(db, environmentId)
+    if (!row) return c.json({ error: 'Not found' }, 404)
+
+    const busy = assertManagedNotBusy(c, row.status)
+    if (busy) return busy
+
+    const member = await findManagedMember(db, memberId)
+    if (member?.managedId !== row.id) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+    if (member.role !== 'replica') {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    const force = body.force === true
+
+    const lagGate = assertManagedPromoteLagAllowed(c, member, force)
+    if (lagGate) return lagGate
+
+    const offline = await assertTargetServerOnline(c, db, member.serverId)
+    if (offline) return offline
+
+    const commandQueue = assertDispatchInfrastructure(c)
+    if (commandQueue instanceof Response) return commandQueue
+
+    const members = await listManagedMembers(db, row.id)
+    const primary = members.find((m) => m.role === 'primary')
+
+    // Fence online primary then enqueue promote from the command consumer.
+    // HTTP returns immediately with the fence (or promote) command id.
+    const fenceResult = await fenceOrResyncPrimaryForPromote({
+      c,
+      db,
+      commandQueue,
+      auth,
+      ctx,
+      row,
+      member,
+      primary,
+    })
+    if (fenceResult) return fenceResult
+
+    const enqueued = await enqueueTypedCommand(c, db, commandQueue, {
+      userId: auth.userId,
+      serverId: member.serverId,
+      type: 'managed.promote',
+      payload: {
+        managedId: row.id,
+        memberId: member.id,
+        engine: ctx.spec.engine,
+        ...(primary ? { demoteMemberId: primary.id } : {}),
+      },
+      expiresAtMs: 600_000,
+      managedId: row.id,
+      setApplying: true,
+    })
+    if (enqueued instanceof Response) return enqueued
+    return c.json({
+      ok: true as const,
       commandId: enqueued.commandId,
+      status: 'queued' as const,
       serverId: enqueued.serverId,
     })
   })
+
 
   router.get('/environments/:id/managed/status', async (c) => {
     const db = getDb(c)
@@ -1397,11 +2198,47 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .innerJoin(service, eq(container.serviceId, service.id))
       .where(eq(service.environmentId, environmentId))
 
+    const memberRows = row
+      ? await listManagedMembers(db, row.id)
+      : []
+
+    let listener: { host: string; port: number } | null = null
+    if (row?.serverId) {
+      const engineCode = row.engine && isManagedEngineCode(row.engine)
+        ? row.engine
+        : null
+      const spec = engineCode ? getManagedEngineSpec(engineCode) : null
+      if (spec) {
+        const parsed = parseManagedRowOptions(spec, row.options)
+        if (parsed) {
+          listener = await resolveManagedConnectionListener(db, {
+            serverId: row.serverId,
+            protocolPort: spec.defaultPort,
+            exposure: parsed.settings.exposure,
+          })
+        }
+      }
+    }
+
     return c.json({
       status: row?.status ?? null,
-      host: residual.host ?? null,
-      port: residual.port ?? null,
+      host: listener?.host ?? residual.host ?? null,
+      port: listener?.port ?? residual.port ?? null,
       containers: rows.map(serializeContainerRow),
+      members: memberRows.map((m) => {
+        const serialized = serializeManagedMember(m, null)
+        return {
+          memberId: serialized.id,
+          serverId: serialized.serverId,
+          role: serialized.role,
+          status: serialized.status,
+          replicationTransport: serialized.replicationTransport,
+          privatePort: serialized.privatePort,
+          ...(serialized.replication !== undefined
+            ? { replication: serialized.replication }
+            : {}),
+        }
+      }),
     })
   })
 
@@ -1486,7 +2323,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const database = resolveBackupDatabase(options, body.database)
+    const database = resolveBackupDatabase(options, body.database, ctx.spec.engine)
     if (database === null) {
       return c.json({ error: 'Invalid database' }, 400)
     }
@@ -1662,9 +2499,32 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .where(eq(workspace.organizationId, organizationId))
       .orderBy(desc(managed.createdAt))
 
+    const memberRows = await listManagedMembersForManagedIds(
+      db,
+      rows.map((r) => r.id),
+    )
+    const membersByManaged = new Map<string, typeof memberRows>()
+    for (const member of memberRows) {
+      const list = membersByManaged.get(member.managedId) ?? []
+      list.push(member)
+      membersByManaged.set(member.managedId, list)
+    }
+
+    const serverIds = [...new Set(memberRows.map((m) => m.serverId))]
+    const serverNames = serverIds.length === 0
+      ? []
+      : await db
+        .select({ id: server.id, name: server.name })
+        .from(server)
+        .where(inArray(server.id, serverIds))
+    const nameByServer = new Map(serverNames.map((s) => [s.id, s.name]))
+
     return c.json({
       managed: rows.map((row) => {
         const spec = row.engine ? getManagedEngineSpec(row.engine) : null
+        const members = (membersByManaged.get(row.id) ?? []).map((m) =>
+          serializeManagedMember(m, nameByServer.get(m.serverId) ?? null),
+        )
         return {
           ...serializeManagedRow(row, row.serverId),
           engineDisplayName: spec?.displayName ?? null,
@@ -1674,6 +2534,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
           workspaceId: row.workspaceId,
           workspaceDisplayName: row.workspaceDisplayName,
           serverDisplayName: row.serverDisplayName,
+          members,
         }
       }),
     })

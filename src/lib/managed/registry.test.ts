@@ -35,32 +35,34 @@ test('MANAGED_ENGINE_STATUS covers every engine code', () => {
   ].sort((a, b) => a.localeCompare(b)))
 })
 
-test('postgres is available; other codes are coming-soon', () => {
-  assertEquals(MANAGED_ENGINE_STATUS.postgres, 'available')
-  assertEquals(isManagedEngineAvailable('postgres'), true)
+test('MANAGED_ENGINE_STATUS drives availability and specs', () => {
   for (const code of MANAGED_ENGINE_CODES) {
-    if (code === 'postgres') continue
-    assertEquals(MANAGED_ENGINE_STATUS[code], 'coming-soon')
-    assertEquals(isManagedEngineAvailable(code), false)
-  }
-})
-
-test('getManagedEngineSpec returns null for coming-soon codes', () => {
-  for (const code of MANAGED_ENGINE_CODES) {
-    if (MANAGED_ENGINE_STATUS[code] === 'coming-soon') {
+    const status = MANAGED_ENGINE_STATUS[code]
+    const available = status === 'available'
+    assertEquals(isManagedEngineAvailable(code), available)
+    if (available) {
+      assertEquals(getManagedEngineSpec(code)?.engine, code)
+    } else {
       assertEquals(getManagedEngineSpec(code), null, code)
     }
   }
-  assertEquals(getManagedEngineSpec('postgres')?.engine, 'postgres')
   assertEquals(getManagedEngineSpec('not-an-engine'), null)
-  assertEquals(listManagedEngineSpecs().map((s) => s.engine), ['postgres'])
+  const listed = listManagedEngineSpecs().map((s) => s.engine).sort((a, b) =>
+    a.localeCompare(b)
+  )
+  const expected = MANAGED_ENGINE_CODES.filter(
+    (code) => MANAGED_ENGINE_STATUS[code] === 'available',
+  ).sort((a, b) => a.localeCompare(b))
+  assertEquals(listed, expected)
 })
 
-test('getManagedBackupDescriptor returns postgres dump descriptor or null', () => {
+test('getManagedBackupDescriptor returns dump/sql for available engines or null', () => {
   const backup = getManagedBackupDescriptor('postgres')
   if (!backup) throw new TypeError('expected postgres backup descriptor')
   assertEquals(backup.artifactExtension, 'dump')
-  assertEquals(getManagedBackupDescriptor('mysql'), null)
+  assertEquals(getManagedBackupDescriptor('mysql')?.artifactExtension, 'sql')
+  assertEquals(getManagedBackupDescriptor('mariadb')?.artifactExtension, 'sql')
+  assertEquals(getManagedBackupDescriptor('redis'), null)
   assertEquals(getManagedBackupDescriptor('nope'), null)
 })
 

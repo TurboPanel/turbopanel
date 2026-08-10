@@ -41,6 +41,7 @@ export type VariableRow = {
   serviceId: string | null
   hostingId: string | null
   serverId: string | null
+  bindingId: string | null
   key: string
   value: string
   isSecret: boolean
@@ -63,6 +64,12 @@ export function isVariableKeyUniqueViolation(err: unknown): boolean {
   return PARTIAL_UNIQUE_INDEX_NAMES.some((name) => message.includes(name))
 }
 
+/** Client PATCH/DELETE of a binding-owned variable. */
+export const BINDING_OWNED_VARIABLE_ERROR = 'binding_owned_variable'
+
+/** Client create that collides with a binding-emitted key. */
+export const BINDING_KEY_CONFLICT_ERROR = 'binding_key_conflict'
+
 export function serializeVariable(row: VariableRow) {
   return {
     id: row.id,
@@ -73,6 +80,7 @@ export function serializeVariable(row: VariableRow) {
     serviceId: row.serviceId,
     hostingId: row.hostingId,
     serverId: row.serverId,
+    bindingId: row.bindingId,
     key: row.key,
     isSecret: row.isSecret,
     isLiteral: row.isLiteral,

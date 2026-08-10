@@ -3,7 +3,8 @@ import type { Db } from '../../db.ts'
 import { managedContainerName } from '../../lib/naming.ts'
 import {
   ensureManagedContainerAllocation,
-  ensureManagedIngressContainerAllocation,
+  pruneLegacyManagedIngressContainers,
+  pruneManagedContainersOutsideMemberSet,
 } from './allocate-managed-container.ts'
 
 /**
@@ -18,6 +19,7 @@ type MemService = {
   id: string
   environmentId: string
   name: string
+  options: Record<string, unknown> | null
 }
 
 type MemContainer = {
@@ -58,6 +60,7 @@ type AllocationDbHandle = {
   containers: MemContainer[]
   updates: Array<{ id: string; patch: Record<string, unknown> }>
   deletedContainerIds: string[]
+  setMemberOrdinalsHint: (ordinals: number[] | null) => void
 }
 
 function createManagedAllocationDb(opts?: {
@@ -66,12 +69,17 @@ function createManagedAllocationDb(opts?: {
   omitServiceAfterInsert?: boolean
   omitContainerAfterInsert?: boolean
 }): AllocationDbHandle {
-  const services = [...(opts?.services ?? [])]
+  const services: MemService[] = (opts?.services ?? []).map((s) => ({
+    ...s,
+    options: s.options ?? null,
+  }))
   const containers = [...(opts?.containers ?? [])]
   let nextServiceNum = services.length + 1
   let nextContainerNum = containers.length + 1
   let selectCalls = 0
   let lastServiceId: string | null = null
+  let lastOrdinal = 1
+  let lastMemberOrdinals: number[] | null = null
   const updates: Array<{ id: string; patch: Record<string, unknown> }> = []
   const deletedContainerIds: string[] = []
 
@@ -92,6 +100,7 @@ function createManagedAllocationDb(opts?: {
       id,
       environmentId,
       name,
+      options: null,
     })
     lastServiceId = id
   }
@@ -100,6 +109,7 @@ function createManagedAllocationDb(opts?: {
     const serviceId = values.serviceId as string
     const role = values.role as string
     const ordinal = values.ordinal as number
+    lastOrdinal = ordinal
     const existing = containers.find(
       (row) =>
         row.serviceId === serviceId &&
@@ -124,7 +134,7 @@ function createManagedAllocationDb(opts?: {
     if (opts?.omitServiceAfterInsert) return []
     if (!lastServiceId) return []
     const row = services.find((entry) => entry.id === lastServiceId)
-    return row ? [{ id: row.id }] : []
+    return row ? [{ id: row.id, options: row.options }] : []
   }
 
   const selectContainer = () => {
@@ -134,7 +144,7 @@ function createManagedAllocationDb(opts?: {
       (entry) =>
         entry.serviceId === lastServiceId &&
         entry.role === 'service' &&
-        entry.ordinal === 1,
+        entry.ordinal === lastOrdinal,
     )
     if (!row) return []
     return [{
@@ -172,15 +182,24 @@ function createManagedAllocationDb(opts?: {
     update: () => ({
       set: (patch: Record<string, unknown>) => ({
         where: () => {
-          const row = containers.find(
+          // Container rename/re-home
+          const containerRow = containers.find(
             (entry) =>
               entry.serviceId === lastServiceId &&
               entry.role === 'service' &&
-              entry.ordinal === 1,
+              entry.ordinal === lastOrdinal,
           )
-          if (row) {
-            updates.push({ id: row.id, patch })
-            Object.assign(row, patch)
+          if (containerRow && !('instances' in patch) && !('options' in patch)) {
+            updates.push({ id: containerRow.id, patch })
+            Object.assign(containerRow, patch)
+          }
+          // service.options.instances
+          if ('options' in patch && lastServiceId) {
+            const svc = services.find((s) => s.id === lastServiceId)
+            if (svc) {
+              svc.options = patch.options as Record<string, unknown>
+              updates.push({ id: lastServiceId, patch })
+            }
           }
           return thenableVoid()
         },
@@ -188,20 +207,20 @@ function createManagedAllocationDb(opts?: {
     }),
     delete: () => ({
       where: () => {
-        const keepId = containers.find(
-          (entry) =>
-            entry.serviceId === lastServiceId &&
-            entry.role === 'service' &&
-            entry.ordinal === 1,
-        )?.id
+        // Approximate member-set prune / ingress cleanup when ordinals known
         for (const row of [...containers]) {
+          if (row.serviceId !== lastServiceId) continue
           if (
-            row.serviceId === lastServiceId &&
             row.role === 'service' &&
             row.containerId === null &&
             row.status === 'pending' &&
-            row.id !== keepId
+            lastMemberOrdinals &&
+            !lastMemberOrdinals.includes(row.ordinal)
           ) {
+            deletedContainerIds.push(row.id)
+            containers.splice(containers.indexOf(row), 1)
+          }
+          if (row.role === 'ingress' && row.containerId === null) {
             deletedContainerIds.push(row.id)
             containers.splice(containers.indexOf(row), 1)
           }
@@ -211,125 +230,16 @@ function createManagedAllocationDb(opts?: {
     }),
   } as unknown as Db
 
-  return { db, services, containers, updates, deletedContainerIds }
-}
-
-type IngressDbHandle = {
-  db: Db
-  containers: MemContainer[]
-  updates: Array<{ id: string; patch: Record<string, unknown> }>
-  deletedContainerIds: string[]
-}
-
-function createIngressAllocationDb(opts?: {
-  containers?: MemContainer[]
-  omitContainerAfterInsert?: boolean
-}): IngressDbHandle {
-  const containers = [...(opts?.containers ?? [])]
-  let nextContainerNum = containers.length + 1
-  let activeServiceId: string | null = null
-  const updates: Array<{ id: string; patch: Record<string, unknown> }> = []
-  const deletedContainerIds: string[] = []
-
-  const upsertContainer = (values: Record<string, unknown>) => {
-    activeServiceId = values.serviceId as string
-    const serviceId = values.serviceId as string
-    const role = values.role as string
-    const ordinal = values.ordinal as number
-    const existing = containers.find(
-      (row) =>
-        row.serviceId === serviceId &&
-        row.role === role &&
-        row.ordinal === ordinal,
-    )
-    if (existing) return
-    containers.push({
-      id: `ing-${nextContainerNum++}`,
-      serviceId,
-      serverId: values.serverId as string,
-      containerId: (values.containerId as null) ?? null,
-      containerName: values.containerName as string,
-      status: values.status as string,
-      role,
-      composeServiceName: values.composeServiceName as string,
-      ordinal,
-    })
+  return {
+    db,
+    services,
+    containers,
+    updates,
+    deletedContainerIds,
+    setMemberOrdinalsHint(ordinals: number[] | null) {
+      lastMemberOrdinals = ordinals
+    },
   }
-
-  const selectContainer = () => {
-    if (opts?.omitContainerAfterInsert || !activeServiceId) return []
-    const row = containers.find(
-      (entry) =>
-        entry.serviceId === activeServiceId &&
-        entry.role === 'ingress' &&
-        entry.ordinal === 1,
-    )
-    if (!row) return []
-    return [{
-      id: row.id,
-      serverId: row.serverId,
-      containerName: row.containerName,
-      status: row.status,
-      containerId: row.containerId,
-      composeServiceName: row.composeServiceName,
-    }]
-  }
-
-  const db = {
-    insert: () => ({
-      values: (values: Record<string, unknown>) => {
-        upsertContainer(values)
-        return thenableVoid()
-      },
-    }),
-    select: () => ({
-      from: () => ({
-        where: () => thenableRows(selectContainer()),
-      }),
-    }),
-    update: () => ({
-      set: (patch: Record<string, unknown>) => ({
-        where: () => {
-          const row = containers.find(
-            (entry) =>
-              entry.serviceId === activeServiceId &&
-              entry.role === 'ingress' &&
-              entry.ordinal === 1,
-          )
-          if (row) {
-            updates.push({ id: row.id, patch })
-            Object.assign(row, patch)
-          }
-          return thenableVoid()
-        },
-      }),
-    }),
-    delete: () => ({
-      where: () => {
-        const keepId = containers.find(
-          (entry) =>
-            entry.serviceId === activeServiceId &&
-            entry.role === 'ingress' &&
-            entry.ordinal === 1,
-        )?.id
-        for (const row of [...containers]) {
-          if (
-            row.serviceId === activeServiceId &&
-            row.role === 'ingress' &&
-            row.containerId === null &&
-            row.status === 'pending' &&
-            row.id !== keepId
-          ) {
-            deletedContainerIds.push(row.id)
-            containers.splice(containers.indexOf(row), 1)
-          }
-        }
-        return thenableVoid()
-      },
-    }),
-  } as unknown as Db
-
-  return { db, containers, updates, deletedContainerIds }
 }
 
 test('ensureManagedContainerAllocation creates service + pending ordinal-1 container', async () => {
@@ -338,6 +248,7 @@ test('ensureManagedContainerAllocation creates service + pending ordinal-1 conta
     environmentId: 'env-1',
     serverId: 'srv-1',
     composeServiceName: 'postgres',
+    ordinal: 1,
   })
 
   assertEquals(services.length, 1)
@@ -347,7 +258,45 @@ test('ensureManagedContainerAllocation creates service + pending ordinal-1 conta
   assertEquals(containers[0]!.ordinal, 1)
   assertEquals(allocation.serviceId, services[0]!.id)
   assertEquals(allocation.containerRowId, containers[0]!.id)
-  assertEquals(allocation.containerName, managedContainerName(services[0]!.id))
+  assertEquals(allocation.containerName, managedContainerName(services[0]!.id, 1))
+})
+
+test('ensureManagedContainerAllocation supports ordinals 2 and 3', async () => {
+  const handle = createManagedAllocationDb()
+  const { db, containers } = handle
+
+  await ensureManagedContainerAllocation(db, {
+    environmentId: 'env-1',
+    serverId: 'srv-1',
+    composeServiceName: 'postgres',
+    ordinal: 1,
+  })
+  await ensureManagedContainerAllocation(db, {
+    environmentId: 'env-1',
+    serverId: 'srv-2',
+    composeServiceName: 'postgres',
+    ordinal: 2,
+  })
+  await ensureManagedContainerAllocation(db, {
+    environmentId: 'env-1',
+    serverId: 'srv-3',
+    composeServiceName: 'postgres',
+    ordinal: 3,
+  })
+
+  assertEquals(containers.length, 3)
+  assertEquals(
+    containers.map((r) => r.ordinal).sort((a, b) => a - b),
+    [1, 2, 3],
+  )
+  assertEquals(
+    containers.find((r) => r.ordinal === 2)?.containerName,
+    managedContainerName(handle.services[0]!.id, 2),
+  )
+  assertEquals(
+    containers.find((r) => r.ordinal === 3)?.containerName,
+    managedContainerName(handle.services[0]!.id, 3),
+  )
 })
 
 test('ensureManagedContainerAllocation is idempotent on stub db', async () => {
@@ -356,11 +305,13 @@ test('ensureManagedContainerAllocation is idempotent on stub db', async () => {
     environmentId: 'env-1',
     serverId: 'srv-1',
     composeServiceName: 'postgres',
+    ordinal: 1,
   })
   const second = await ensureManagedContainerAllocation(db, {
     environmentId: 'env-1',
     serverId: 'srv-1',
     composeServiceName: 'postgres',
+    ordinal: 1,
   })
 
   assertEquals(second.serviceId, first.serviceId)
@@ -376,6 +327,7 @@ test('ensureManagedContainerAllocation re-homes null-id row to pending on new se
       id: serviceId,
       environmentId: 'env-1',
       name: 'postgres',
+      options: null,
     }],
     containers: [{
       id: 'ctr-old',
@@ -394,25 +346,26 @@ test('ensureManagedContainerAllocation re-homes null-id row to pending on new se
     environmentId: 'env-1',
     serverId: 'srv-new',
     composeServiceName: 'postgres',
+    ordinal: 1,
   })
 
   assertEquals(allocation.containerRowId, 'ctr-old')
-  assertEquals(allocation.containerName, managedContainerName(serviceId))
+  assertEquals(allocation.containerName, managedContainerName(serviceId, 1))
   assertEquals(containers[0]!.serverId, 'srv-new')
   assertEquals(containers[0]!.status, 'pending')
-  assertEquals(containers[0]!.containerName, managedContainerName(serviceId))
-  assertEquals(updates.length, 1)
-  assertEquals(updates[0]!.patch.status, 'pending')
+  assertEquals(containers[0]!.containerName, managedContainerName(serviceId, 1))
+  assertEquals(updates.some((u) => u.patch.status === 'pending'), true)
 })
 
 test('ensureManagedContainerAllocation skips update when null-id row already matches', async () => {
   const serviceId = 'svc-ready'
-  const nextName = managedContainerName(serviceId)
+  const nextName = managedContainerName(serviceId, 1)
   const { db, updates } = createManagedAllocationDb({
     services: [{
       id: serviceId,
       environmentId: 'env-1',
       name: 'postgres',
+      options: null,
     }],
     containers: [{
       id: 'ctr-ready',
@@ -431,6 +384,7 @@ test('ensureManagedContainerAllocation skips update when null-id row already mat
     environmentId: 'env-1',
     serverId: 'srv-1',
     composeServiceName: 'postgres',
+    ordinal: 1,
   })
 
   assertEquals(updates.length, 0)
@@ -443,6 +397,7 @@ test('ensureManagedContainerAllocation renames running row without clearing cont
       id: serviceId,
       environmentId: 'env-1',
       name: 'postgres',
+      options: null,
     }],
     containers: [{
       id: 'ctr-live',
@@ -461,59 +416,148 @@ test('ensureManagedContainerAllocation renames running row without clearing cont
     environmentId: 'env-1',
     serverId: 'srv-1',
     composeServiceName: 'postgres',
+    ordinal: 1,
   })
 
-  assertEquals(allocation.containerName, managedContainerName(serviceId))
+  assertEquals(allocation.containerName, managedContainerName(serviceId, 1))
   assertEquals(containers[0]!.containerId, 'docker-abc')
   assertEquals(containers[0]!.status, 'running')
   assertEquals(updates.length, 1)
-  assertEquals(updates[0]!.patch.containerName, managedContainerName(serviceId))
+  assertEquals(updates[0]!.patch.containerName, managedContainerName(serviceId, 1))
   assertEquals(updates[0]!.patch.role, 'service')
   assertEquals('status' in updates[0]!.patch, false)
 })
 
-test('ensureManagedContainerAllocation prunes stray pending service rows', async () => {
-  const serviceId = 'svc-prune'
-  const { db, containers, deletedContainerIds } = createManagedAllocationDb({
+test('ensureManagedContainerAllocation syncs options.instances from memberOrdinals', async () => {
+  const serviceId = 'svc-inst'
+  const handle = createManagedAllocationDb({
     services: [{
       id: serviceId,
       environmentId: 'env-1',
       name: 'postgres',
+      options: null,
     }],
-    containers: [
-      {
-        id: 'ctr-keep',
-        serviceId,
-        serverId: 'srv-1',
-        containerId: null,
-        containerName: managedContainerName(serviceId),
-        status: 'pending',
-        role: 'service',
-        composeServiceName: 'postgres',
-        ordinal: 1,
-      },
-      {
-        id: 'ctr-stray',
-        serviceId,
-        serverId: 'srv-old',
-        containerId: null,
-        containerName: 'pending',
-        status: 'pending',
-        role: 'service',
-        composeServiceName: 'postgres',
-        ordinal: 1,
-      },
-    ],
+    containers: [{
+      id: 'ctr-1',
+      serviceId,
+      serverId: 'srv-1',
+      containerId: null,
+      containerName: managedContainerName(serviceId, 1),
+      status: 'pending',
+      role: 'service',
+      composeServiceName: 'postgres',
+      ordinal: 1,
+    }],
   })
+  handle.setMemberOrdinalsHint([1, 2])
 
-  await ensureManagedContainerAllocation(db, {
+  await ensureManagedContainerAllocation(handle.db, {
     environmentId: 'env-1',
     serverId: 'srv-1',
     composeServiceName: 'postgres',
+    ordinal: 1,
+    memberOrdinals: [1, 2],
   })
 
-  assertEquals(deletedContainerIds, ['ctr-stray'])
-  assertEquals(containers.map((row) => row.id), ['ctr-keep'])
+  assertEquals(handle.services[0]!.options?.instances, 2)
+})
+
+test('pruneManagedContainersOutsideMemberSet removes out-of-set pending ordinals', async () => {
+  const serviceId = 'svc-prune'
+  const containers: MemContainer[] = [
+    {
+      id: 'ctr-1',
+      serviceId,
+      serverId: 'srv-1',
+      containerId: null,
+      containerName: managedContainerName(serviceId, 1),
+      status: 'pending',
+      role: 'service',
+      composeServiceName: 'postgres',
+      ordinal: 1,
+    },
+    {
+      id: 'ctr-2',
+      serviceId,
+      serverId: 'srv-2',
+      containerId: null,
+      containerName: managedContainerName(serviceId, 2),
+      status: 'pending',
+      role: 'service',
+      composeServiceName: 'postgres',
+      ordinal: 2,
+    },
+  ]
+  const deleted: string[] = []
+  const db = {
+    delete: () => ({
+      where: () => {
+        for (const row of [...containers]) {
+          if (
+            row.serviceId === serviceId &&
+            row.role === 'service' &&
+            row.containerId === null &&
+            row.status === 'pending' &&
+            row.ordinal === 2
+          ) {
+            deleted.push(row.id)
+            containers.splice(containers.indexOf(row), 1)
+          }
+        }
+        return Promise.resolve(undefined)
+      },
+    }),
+  } as unknown as Db
+
+  await pruneManagedContainersOutsideMemberSet(db, serviceId, [1])
+  assertEquals(deleted, ['ctr-2'])
+  assertEquals(containers.map((r) => r.id), ['ctr-1'])
+})
+
+test('pruneLegacyManagedIngressContainers deletes null-id ingress rows', async () => {
+  const serviceId = 'svc-legacy'
+  const containers: MemContainer[] = [
+    {
+      id: 'ing-1',
+      serviceId,
+      serverId: 'srv-1',
+      containerId: null,
+      containerName: `${serviceId}-in`,
+      status: 'pending',
+      role: 'ingress',
+      composeServiceName: 'postgres-ingress',
+      ordinal: 1,
+    },
+    {
+      id: 'svc-1',
+      serviceId,
+      serverId: 'srv-1',
+      containerId: null,
+      containerName: managedContainerName(serviceId, 1),
+      status: 'pending',
+      role: 'service',
+      composeServiceName: 'postgres',
+      ordinal: 1,
+    },
+  ]
+  const deleted: string[] = []
+  const db = {
+    delete: () => ({
+      where: () => {
+        for (const row of [...containers]) {
+          if (row.serviceId === serviceId && row.role === 'ingress' && row.containerId === null) {
+            deleted.push(row.id)
+            containers.splice(containers.indexOf(row), 1)
+          }
+        }
+        return Promise.resolve(undefined)
+      },
+    }),
+  } as unknown as Db
+
+  await pruneLegacyManagedIngressContainers(db, serviceId)
+  assertEquals(deleted, ['ing-1'])
+  assertEquals(containers.map((r) => r.id), ['svc-1'])
 })
 
 test('ensureManagedContainerAllocation throws when service row missing after upsert', async () => {
@@ -524,6 +568,7 @@ test('ensureManagedContainerAllocation throws when service row missing after ups
         environmentId: 'env-1',
         serverId: 'srv-1',
         composeServiceName: 'postgres',
+        ordinal: 1,
       }),
     Error,
     'managed service allocation missing after upsert',
@@ -538,106 +583,24 @@ test('ensureManagedContainerAllocation throws when container row missing after u
         environmentId: 'env-1',
         serverId: 'srv-1',
         composeServiceName: 'postgres',
+        ordinal: 1,
       }),
     Error,
     'managed container allocation missing after upsert',
   )
 })
 
-test('ensureManagedIngressContainerAllocation maps ingress allocation shape', async () => {
-  const serviceId = 'svc-ing'
-  const { db } = createIngressAllocationDb()
-  const allocation = await ensureManagedIngressContainerAllocation(db, {
-    serviceId,
-    serverId: 'srv-1',
-    composeServiceName: 'postgres-ingress',
-  })
-
-  assertEquals(allocation.serviceId, serviceId)
-  assertEquals(allocation.containerName, `${serviceId}-in`)
-  if (!allocation.containerRowId.startsWith('ing-')) {
-    throw new TypeError('expected ingress container row id')
-  }
-})
-
-test('ensureManagedIngressContainerAllocation restores exited ingress row to pending', async () => {
-  const serviceId = 'svc-ing-restore'
-  const { db, containers, updates } = createIngressAllocationDb({
-    containers: [{
-      id: 'ing-old',
-      serviceId,
-      serverId: 'srv-old',
-      containerId: null,
-      containerName: 'pending',
-      status: 'exited',
-      role: 'ingress',
-      composeServiceName: 'postgres-ingress',
-      ordinal: 1,
-    }],
-  })
-
-  const allocation = await ensureManagedIngressContainerAllocation(db, {
-    serviceId,
-    serverId: 'srv-new',
-    composeServiceName: 'postgres-ingress',
-  })
-
-  assertEquals(allocation.containerRowId, 'ing-old')
-  assertEquals(containers[0]!.status, 'pending')
-  assertEquals(containers[0]!.serverId, 'srv-new')
-  assertEquals(containers[0]!.containerName, `${serviceId}-in`)
-  assertEquals(updates.length, 1)
-})
-
-test('ensureManagedIngressContainerAllocation prunes stray pending ingress rows', async () => {
-  const serviceId = 'svc-ing-prune'
-  const { db, containers, deletedContainerIds } = createIngressAllocationDb({
-    containers: [
-      {
-        id: 'ing-keep',
-        serviceId,
-        serverId: 'srv-1',
-        containerId: null,
-        containerName: `${serviceId}-in`,
-        status: 'pending',
-        role: 'ingress',
-        composeServiceName: 'postgres-ingress',
-        ordinal: 1,
-      },
-      {
-        id: 'ing-stray',
-        serviceId,
-        serverId: 'srv-old',
-        containerId: null,
-        containerName: 'pending',
-        status: 'pending',
-        role: 'ingress',
-        composeServiceName: 'postgres-ingress',
-        ordinal: 1,
-      },
-    ],
-  })
-
-  await ensureManagedIngressContainerAllocation(db, {
-    serviceId,
-    serverId: 'srv-1',
-    composeServiceName: 'postgres-ingress',
-  })
-
-  assertEquals(deletedContainerIds, ['ing-stray'])
-  assertEquals(containers.map((row) => row.id), ['ing-keep'])
-})
-
-test('ensureManagedIngressContainerAllocation throws when ingress row missing after upsert', async () => {
-  const { db } = createIngressAllocationDb({ omitContainerAfterInsert: true })
+test('ensureManagedContainerAllocation rejects non-positive ordinal', async () => {
+  const { db } = createManagedAllocationDb()
   await assertRejects(
     () =>
-      ensureManagedIngressContainerAllocation(db, {
-        serviceId: 'svc-missing',
+      ensureManagedContainerAllocation(db, {
+        environmentId: 'env-1',
         serverId: 'srv-1',
-        composeServiceName: 'postgres-ingress',
+        composeServiceName: 'postgres',
+        ordinal: 0,
       }),
-    Error,
-    'service ingress container allocation missing after upsert',
+    TypeError,
+    'Invalid managed container ordinal',
   )
 })

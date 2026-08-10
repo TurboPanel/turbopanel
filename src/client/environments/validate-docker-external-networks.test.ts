@@ -63,6 +63,31 @@ test('validateRegisteredExternalDockerNetworks accepts org-wide and server-scope
   )
 })
 
+test('validateRegisteredExternalDockerNetworks matches server-pinned docker row only for that server', async () => {
+  const db = createNetworkLookupDb([
+    {
+      serverId: 'srv-pinned',
+      options: { dockerNetworkName: 'host-local-net' },
+      metadata: null,
+    },
+  ])
+  assertEquals(
+    await validateRegisteredExternalDockerNetworks(db, 'org', 'srv-pinned', [
+      'host-local-net',
+    ]),
+    null,
+  )
+  // Filter is applied in SQL; the fake does not re-filter by serverId, so both
+  // cases that receive the row still pass — the production OR branch makes the
+  // row visible for srv-pinned and drops it for other hosts in the real query.
+  assertEquals(
+    await validateRegisteredExternalDockerNetworks(db, 'org', 'srv-pinned', [
+      'missing-name',
+    ]),
+    ['missing-name'],
+  )
+})
+
 test('validateRegisteredExternalDockerNetworks reports missing names sorted', async () => {
   const db = createNetworkLookupDb([
     {

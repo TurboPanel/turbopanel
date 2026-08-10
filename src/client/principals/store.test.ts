@@ -11,19 +11,24 @@ import {
   assignment,
   environment,
   grant,
-  member,
+  managed,
+  node,
+  membership,
   organization,
   principal,
   project,
+  server,
   service,
   user,
   workspace,
 } from '../../lib/db/schema.ts'
 import {
   createPrincipal,
+  isManagedUsernameTaken,
   isServerPrincipalUsernameTaken,
   PRINCIPAL_PROVIDERS,
   replaceAssignments,
+  resolveAvailableManagedRootUsername,
   SERVER_PRINCIPAL_PROVIDER,
   setPrincipalPassword,
 } from './store.ts'
@@ -71,7 +76,7 @@ async function withPrincipalFixtures(
     .returning({ id: user.id })
   const userId = insertedUser[0]!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -149,9 +154,9 @@ async function withPrincipalFixtures(
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
     ))
-    await db.delete(member).where(and(
-      eq(member.userId, userId),
-      eq(member.organizationId, organizationId),
+    await db.delete(membership).where(and(
+      eq(membership.userId, userId),
+      eq(membership.organizationId, organizationId),
     ))
     await db.delete(workspace).where(eq(workspace.id, workspaceId))
     await db.delete(user).where(eq(user.id, userId))
@@ -296,6 +301,194 @@ test('isServerPrincipalUsernameTaken is org-scoped and case-insensitive', async 
       await db.delete(principal).where(eq(principal.id, createdId))
     }
   })
+})
+
+test('isManagedUsernameTaken scopes by server-owning org not create chain', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping managed username tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+  const db = createDenoDb()
+  const [orgA] = await db
+    .insert(organization)
+    .values({ name: 'Managed Username Org A' })
+    .returning({ id: organization.id })
+  const [orgB] = await db
+    .insert(organization)
+    .values({ name: 'Managed Username Org B' })
+    .returning({ id: organization.id })
+  const organizationIdA = orgA!.id
+  const organizationIdB = orgB!.id
+  const now = new Date().toISOString()
+  const [srvA] = await db
+    .insert(server)
+    .values({
+      organizationId: organizationIdA,
+      name: 'srv-a',
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: server.id })
+  const [ws] = await db
+    .insert(workspace)
+    .values({ name: 'ws', organizationId: organizationIdA })
+    .returning({ id: workspace.id })
+  const [proj] = await db
+    .insert(project)
+    .values({
+      name: 'p',
+      workspaceId: ws!.id,
+      metadata: { type: 'managed', code: 'postgres' },
+    })
+    .returning({ id: project.id })
+  const [env] = await db
+    .insert(environment)
+    .values({ name: 'e', projectId: proj!.id, serverId: srvA!.id })
+    .returning({ id: environment.id })
+  const [m] = await db
+    .insert(managed)
+    .values({
+      environmentId: env!.id,
+      serverId: srvA!.id,
+      name: 'pg',
+      engine: 'postgres',
+      status: 'ready',
+    })
+    .returning({ id: managed.id })
+  await db.insert(node).values({
+    managedId: m!.id,
+    serverId: srvA!.id,
+    role: 'primary',
+    ordinal: 1,
+  })
+  const [prin] = await db
+    .insert(principal)
+    .values({
+      kind: 'database',
+      provider: 'postgres',
+      username: 'SharedUser',
+      managedId: m!.id,
+    })
+    .returning({ id: principal.id })
+
+  try {
+    assertEquals(
+      await isManagedUsernameTaken(db, [organizationIdA], 'shareduser'),
+      true,
+    )
+    assertEquals(
+      await isManagedUsernameTaken(db, [organizationIdB], 'shareduser'),
+      false,
+    )
+    assertEquals(
+      await isManagedUsernameTaken(db, [organizationIdA], 'shareduser', prin!.id),
+      false,
+    )
+  } finally {
+    await db.delete(principal).where(eq(principal.id, prin!.id))
+    await db.delete(node).where(eq(node.managedId, m!.id))
+    await db.delete(managed).where(eq(managed.id, m!.id))
+    await db.delete(environment).where(eq(environment.id, env!.id))
+    await db.delete(project).where(eq(project.id, proj!.id))
+    await db.delete(workspace).where(eq(workspace.id, ws!.id))
+    await db.delete(server).where(eq(server.id, srvA!.id))
+    await db.delete(organization).where(eq(organization.id, organizationIdA))
+    await db.delete(organization).where(eq(organization.id, organizationIdB))
+  }
+})
+
+test('resolveAvailableManagedRootUsername suffixes when preferred taken', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping managed username tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+  const db = createDenoDb()
+  const [org] = await db
+    .insert(organization)
+    .values({ name: 'Managed Root Suffix Org' })
+    .returning({ id: organization.id })
+  const organizationId = org!.id
+  const now = new Date().toISOString()
+  const [srv] = await db
+    .insert(server)
+    .values({
+      organizationId,
+      name: 'srv',
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: server.id })
+  const [ws] = await db
+    .insert(workspace)
+    .values({ name: 'ws', organizationId })
+    .returning({ id: workspace.id })
+  const [proj] = await db
+    .insert(project)
+    .values({
+      name: 'p',
+      workspaceId: ws!.id,
+      metadata: { type: 'managed', code: 'postgres' },
+    })
+    .returning({ id: project.id })
+  const [env] = await db
+    .insert(environment)
+    .values({ name: 'e', projectId: proj!.id, serverId: srv!.id })
+    .returning({ id: environment.id })
+  const managedId = crypto.randomUUID()
+  await db.insert(managed).values({
+    id: managedId,
+    environmentId: env!.id,
+    serverId: srv!.id,
+    name: 'pg',
+    engine: 'postgres',
+    status: 'ready',
+  })
+  await db.insert(node).values({
+    managedId,
+    serverId: srv!.id,
+    role: 'primary',
+    ordinal: 1,
+  })
+  const [prin] = await db
+    .insert(principal)
+    .values({
+      kind: 'database',
+      provider: 'postgres',
+      username: 'postgres',
+      managedId,
+    })
+    .returning({ id: principal.id })
+
+  try {
+    const identifier = { pattern: /^[a-zA-Z_][a-zA-Z0-9_]*$/, maxLength: 63 }
+    const free = await resolveAvailableManagedRootUsername(
+      db,
+      [organizationId],
+      'app_root',
+      managedId,
+      identifier,
+    )
+    assertEquals(free, 'app_root')
+
+    const taken = await resolveAvailableManagedRootUsername(
+      db,
+      [organizationId],
+      'postgres',
+      managedId,
+      identifier,
+    )
+    const hex = managedId.replaceAll('-', '').slice(0, 8).toLowerCase()
+    assertEquals(taken, `postgres_${hex}`)
+  } finally {
+    await db.delete(principal).where(eq(principal.id, prin!.id))
+    await db.delete(node).where(eq(node.managedId, managedId))
+    await db.delete(managed).where(eq(managed.id, managedId))
+    await db.delete(environment).where(eq(environment.id, env!.id))
+    await db.delete(project).where(eq(project.id, proj!.id))
+    await db.delete(workspace).where(eq(workspace.id, ws!.id))
+    await db.delete(server).where(eq(server.id, srv!.id))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
 })
 
 test('createPrincipal and replaceAssignments write expected assignment edges', async () => {

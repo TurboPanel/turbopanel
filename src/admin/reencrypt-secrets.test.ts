@@ -101,7 +101,8 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
       is_literal boolean DEFAULT false NOT NULL,
       for_build boolean DEFAULT false NOT NULL,
       for_runtime boolean DEFAULT true NOT NULL,
-      description varchar(255)
+      description varchar(255),
+      binding_id uuid
     )
   `))
   await tx.execute(sql.raw(`

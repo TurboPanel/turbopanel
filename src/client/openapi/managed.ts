@@ -33,6 +33,13 @@ const BACKUP_ID_PARAM = {
   schema: { type: 'string' },
 } as const
 
+const MEMBER_ID_PARAM = {
+  name: 'memberId',
+  in: 'path',
+  required: true,
+  schema: { type: 'string' },
+} as const
+
 function errorSchema(constError: string) {
   return {
     type: 'object',
@@ -54,6 +61,37 @@ function jsonSchema(ref: string) {
 }
 
 export const managedSchemas = {
+  ManagedMember: {
+    type: 'object',
+    required: [
+      'id',
+      'serverId',
+      'serverDisplayName',
+      'role',
+      'readEligible',
+      'ordinal',
+      'status',
+      'replicationTransport',
+    ],
+    properties: {
+      id: { type: 'string' },
+      serverId: { type: 'string' },
+      serverDisplayName: { type: 'string', nullable: true },
+      role: { type: 'string', enum: ['primary', 'replica'] },
+      readEligible: { type: 'boolean' },
+      ordinal: { type: 'integer', minimum: 1 },
+      status: {
+        type: 'string',
+        nullable: true,
+        enum: ['provisioning', 'applying', 'ready', 'stopped', 'failed'],
+      },
+      replicationTransport: {
+        type: 'string',
+        nullable: true,
+        enum: ['local', 'datacenter', 'vpn'],
+      },
+    },
+  },
   ManagedEnvironmentRow: {
     type: 'object',
     required: [
@@ -97,6 +135,11 @@ export const managedSchemas = {
           'Residual metadata only (`rootPrincipalId`, `error`). Engine/status/host/port are top-level.',
       },
       options: { type: 'object', additionalProperties: true, nullable: true },
+      members: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/ManagedMember' },
+        description: 'Cluster members (primary + replicas)',
+      },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
     },
@@ -123,7 +166,7 @@ export const managedSchemas = {
   },
   ManagedDetailResponse: {
     type: 'object',
-    required: ['managed', 'connection', 'settings', 'server', 'rootUsername'],
+    required: ['managed', 'connection', 'settings', 'server', 'rootUsername', 'members'],
     properties: {
       managed: {
         oneOf: [
@@ -152,6 +195,10 @@ export const managedSchemas = {
         },
       },
       rootUsername: { type: 'string', nullable: true },
+      members: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/ManagedMember' },
+      },
     },
   },
   CreateManagedRequest: {
@@ -165,7 +212,6 @@ export const managedSchemas = {
         type: 'object',
         properties: {
           enabled: { type: 'boolean' },
-          publishedPort: { type: 'integer', minimum: 1, maximum: 65535 },
           bind: { type: 'string', enum: ['public', 'datacenter', 'local'] },
         },
       },
@@ -225,15 +271,64 @@ export const managedSchemas = {
   },
   ManagedRootPasswordResponse: {
     type: 'object',
-    required: ['ok', 'password', 'commandId', 'serverId'],
+    required: ['ok', 'rootPassword'],
     properties: {
       ok: { type: 'boolean', const: true },
-      password: {
+      rootPassword: {
         type: 'string',
         description: 'Show-once plaintext root password',
       },
       commandId: { type: 'string' },
       serverId: { type: 'string' },
+      results: { type: 'array', items: { type: 'object' } },
+      redeployRequired: {
+        $ref: '#/components/schemas/ManagedRedeployRequired',
+        description:
+          'Services whose binding-materialized variables still carry the old password; API never redeploys',
+      },
+    },
+  },
+  ManagedRedeployRequired: {
+    type: 'object',
+    required: ['count', 'services'],
+    properties: {
+      count: { type: 'integer' },
+      services: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: [
+            'serviceId',
+            'environmentId',
+            'projectId',
+            'keyPrefix',
+          ],
+          properties: {
+            serviceId: { type: 'string' },
+            displayName: { type: ['string', 'null'] },
+            environmentId: { type: 'string' },
+            projectId: { type: 'string' },
+            keyPrefix: { type: 'string' },
+          },
+        },
+      },
+    },
+  },
+  ManagedUserPasswordResponse: {
+    type: 'object',
+    required: ['ok', 'password'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      password: {
+        type: 'string',
+        description: 'Show-once plaintext user password',
+      },
+      commandId: { type: 'string' },
+      serverId: { type: 'string' },
+      results: { type: 'array', items: { type: 'object' } },
+      redeployRequired: {
+        $ref: '#/components/schemas/ManagedRedeployRequired',
+      },
     },
   },
   ManagedUserRecord: {
@@ -306,7 +401,7 @@ export const managedSchemas = {
   },
   ManagedStatusResponse: {
     type: 'object',
-    required: ['status', 'host', 'port', 'containers'],
+    required: ['status', 'host', 'port', 'containers', 'members'],
     properties: {
       status: { type: 'string', nullable: true },
       host: { type: 'string', nullable: true },
@@ -314,6 +409,24 @@ export const managedSchemas = {
       containers: {
         type: 'array',
         items: { $ref: '#/components/schemas/ContainerRow' },
+      },
+      members: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['memberId', 'serverId', 'role'],
+          properties: {
+            memberId: { type: 'string' },
+            serverId: { type: 'string' },
+            role: { type: 'string', enum: ['primary', 'replica'] },
+            status: { type: 'string', nullable: true },
+            replicationTransport: {
+              type: 'string',
+              nullable: true,
+              enum: ['local', 'datacenter', 'vpn'],
+            },
+          },
+        },
       },
     },
   },
@@ -357,6 +470,10 @@ export const managedSchemas = {
       host: { type: 'string', nullable: true },
       port: { type: 'number', nullable: true },
       createdAt: { type: 'string', format: 'date-time' },
+      members: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/ManagedMember' },
+      },
     },
   },
   OrganizationManagedListResponse: {
@@ -434,8 +551,18 @@ export const managedSchemas = {
   NotManagedEnvironmentError: errorSchema('not_managed_environment'),
   ManagedEngineUnavailableError: errorSchema('managed_engine_unavailable'),
   ManagedUserExistsError: errorSchema('managed_user_exists'),
+  UsernameInUseError: errorSchema('username_in_use'),
+  ManagedMemberExistsError: errorSchema('managed_member_exists'),
+  ManagedMemberIsPrimaryError: errorSchema('managed_member_is_primary'),
+  ManagedReplicaLimitError: errorSchema('managed_replica_limit'),
+  DatacenterRequiredError: errorSchema('datacenter_required'),
+  DatacenterCidrRequiredError: errorSchema('datacenter_cidr_required'),
+  PrivatePathUnavailableError: errorSchema('private_path_unavailable'),
   ManagedBackupUnsupportedError: errorSchema('managed_backup_unsupported'),
   BackupNotFoundError: errorSchema('backup_not_found'),
+  ManagedReplicaNotStreamingError: errorSchema('managed_replica_not_streaming'),
+  ManagedReplicaLaggingError: errorSchema('managed_replica_lagging'),
+  ManagedReplicaHealthStaleError: errorSchema('managed_replica_health_stale'),
 }
 
 export const managedPaths = {
@@ -669,6 +796,37 @@ export const managedPaths = {
           description: 'User deleted; apply enqueued',
           ...jsonSchema('ManagedApplyResponse'),
         },
+        409: {
+          description: 'managed_user_has_bindings',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  error: { type: 'string', const: 'managed_user_has_bindings' },
+                  services: {
+                    type: 'array',
+                    items: { type: 'object' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/users/{principalId}/password': {
+    post: {
+      tags: ['Managed services'],
+      summary:
+        'Rotate a managed user password (show-once), re-materialize bindings, enqueue apply',
+      parameters: [ENV_ID_PARAM, PRINCIPAL_ID_PARAM],
+      responses: {
+        200: {
+          description: 'Rotated',
+          ...jsonSchema('ManagedUserPasswordResponse'),
+        },
       },
     },
   },
@@ -858,6 +1016,205 @@ export const managedPaths = {
             'application/json': {
               schema: {
                 oneOf: [
+                  { $ref: '#/components/schemas/ManagedBusyError' },
+                  { $ref: '#/components/schemas/ServerOfflineError' },
+                ],
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/members': {
+    get: {
+      tags: ['Managed services'],
+      summary: 'List managed cluster members',
+      parameters: [ENV_ID_PARAM],
+      responses: {
+        200: {
+          description: 'Member list with server display names',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['members'],
+                properties: {
+                  members: {
+                    type: 'array',
+                    items: { $ref: '#/components/schemas/ManagedMember' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    post: {
+      tags: ['Managed services'],
+      summary: 'Add a managed replica member',
+      description:
+        'Body `{ serverId, readEligible? }`. Caps at 2 replicas. Requires private reachability to primary and a ready datacenter CIDR for non-local paths.',
+      parameters: [ENV_ID_PARAM],
+      requestBody: {
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['serverId'],
+              properties: {
+                serverId: { type: 'string' },
+                readEligible: { type: 'boolean' },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Member added; cluster apply fan-out enqueued',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                additionalProperties: true,
+              },
+            },
+          },
+        },
+        409: {
+          description: 'managed_member_exists / managed_busy',
+          content: {
+            'application/json': {
+              schema: {
+                oneOf: [
+                  { $ref: '#/components/schemas/ManagedMemberExistsError' },
+                  { $ref: '#/components/schemas/ManagedBusyError' },
+                ],
+              },
+            },
+          },
+        },
+        422: {
+          description:
+            'managed_replica_limit / datacenter_required / datacenter_cidr_required / private_path_unavailable',
+          content: {
+            'application/json': {
+              schema: {
+                oneOf: [
+                  { $ref: '#/components/schemas/ManagedReplicaLimitError' },
+                  { $ref: '#/components/schemas/DatacenterRequiredError' },
+                  { $ref: '#/components/schemas/DatacenterCidrRequiredError' },
+                  { $ref: '#/components/schemas/PrivatePathUnavailableError' },
+                ],
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/members/{memberId}': {
+    patch: {
+      tags: ['Managed services'],
+      summary: 'Update managed member (readEligible only)',
+      parameters: [ENV_ID_PARAM, MEMBER_ID_PARAM],
+      requestBody: {
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                readEligible: { type: 'boolean' },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Member updated; apply re-emitted',
+          content: {
+            'application/json': {
+              schema: { type: 'object', additionalProperties: true },
+            },
+          },
+        },
+      },
+    },
+    delete: {
+      tags: ['Managed services'],
+      summary: 'Remove a managed replica member',
+      parameters: [ENV_ID_PARAM, MEMBER_ID_PARAM],
+      responses: {
+        200: {
+          description: 'Replica removed; destroy + re-apply enqueued',
+          content: {
+            'application/json': {
+              schema: { type: 'object', additionalProperties: true },
+            },
+          },
+        },
+        409: {
+          description: 'managed_member_is_primary — cannot delete the primary',
+          ...jsonSchema('ManagedMemberIsPrimaryError'),
+        },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/members/{memberId}/promote': {
+    post: {
+      tags: ['Managed services'],
+      summary: 'Enqueue managed.promote for a replica member',
+      description:
+        'Promotes a streaming replica to primary. Body may include `{ force: true }` to bypass the lag health gate for dead-primary failover (accepts possible data loss). Best-effort fences the old primary with managed.lifecycle stop when online (payload carries the managed engine code so the daemon resolves the correct runtime). On success the consumer flips roles and re-reconciles ProxySQL. The enqueued managed.promote payload includes optional `engine` (postgres|mysql|mariadb) for multi-engine promote; older commands without `engine` default to postgres on the daemon.',
+      parameters: [ENV_ID_PARAM, MEMBER_ID_PARAM],
+      requestBody: {
+        required: false,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                force: {
+                  type: 'boolean',
+                  description:
+                    'Bypass lag gate for failover when the primary is dead. Risk: unreplicated commits on the old primary may be lost.',
+                },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Promote command queued (managed.status → applying)',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'commandId', 'status', 'serverId'],
+                properties: {
+                  ok: { type: 'boolean', const: true },
+                  commandId: { type: 'string' },
+                  status: { type: 'string', const: 'queued' },
+                  serverId: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+        409: {
+          description:
+            'managed_replica_not_streaming / managed_replica_lagging / managed_replica_health_stale / managed_busy / server_offline',
+          content: {
+            'application/json': {
+              schema: {
+                oneOf: [
+                  { $ref: '#/components/schemas/ManagedReplicaNotStreamingError' },
+                  { $ref: '#/components/schemas/ManagedReplicaLaggingError' },
+                  { $ref: '#/components/schemas/ManagedReplicaHealthStaleError' },
                   { $ref: '#/components/schemas/ManagedBusyError' },
                   { $ref: '#/components/schemas/ServerOfflineError' },
                 ],

@@ -120,6 +120,9 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/authn/verification-dev-logging.deno.test.ts \
   src/client/authn/workers-onboarding.test.ts \
   src/client/authz/ \
+  src/client/bindings/materialize.test.ts \
+  src/client/bindings/resolve-endpoint.test.ts \
+  src/client/bindings/routes-helpers.test.ts \
   src/client/display-name-uniqueness.test.ts \
   src/client/environments/deploy-prepare.test.ts \
   src/client/environments/deploy-routes.test.ts \
@@ -135,6 +138,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/managed/apply-prepare-preflight.test.ts \
   src/client/managed/apply-prepare-pure.test.ts \
   src/client/managed/apply-prepare.test.ts \
+  src/client/managed/ingress-desired.test.ts \
   src/client/vpns/apply-prepare-pure.test.ts \
   src/client/vpns/apply-prepare-enqueue.test.ts \
   src/client/vpns/apply-prepare.test.ts \
@@ -146,6 +150,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/managed/logs.test.ts \
   src/client/managed/options.test.ts \
   src/client/managed/routes-helpers.test.ts \
+  src/client/managed/routes-helpers.promote.test.ts \
   src/client/managed/routes.test.ts \
   src/client/managed/serialize.test.ts \
   src/client/openapi/hostings.test.ts \
@@ -261,6 +266,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/db/net-types.test.ts \
   src/lib/db/project-delete.test.ts \
   src/lib/db/server-metadata.test.ts \
+  src/lib/db/table-naming.test.ts \
   src/lib/db/workspace-kind.test.ts \
   src/lib/docker-network-name.test.ts \
   src/lib/email/mailgun/send.test.ts \
@@ -280,6 +286,8 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/managed/ \
   src/lib/net/vpn-address-allocator.pure.test.ts \
   src/lib/net/vpn-address-allocator.test.ts \
+  src/lib/net/datacenter-networks.pure.test.ts \
+  src/lib/net/private-endpoint.pure.test.ts \
   src/lib/naming.test.ts \
   src/lib/organization-options.test.ts \
   src/lib/principal-options.test.ts \

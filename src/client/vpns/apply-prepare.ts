@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { resealSecretForDaemon } from '../authn/data-encryption.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../authn/secrets.ts'
 import {
@@ -17,8 +17,12 @@ import {
   isValidWireguardPublicKey,
   WIREGUARD_PERSISTENT_KEEPALIVE,
 } from '../../lib/commands/wireguard.ts'
-import { ip, network, peer, server, vpn } from '../../lib/db/schema.ts'
+import { ip, peer, server, vpn } from '../../lib/db/schema.ts'
 import { parseIpVersion, stripInetPrefixSuffix } from '../../lib/ip-address.ts'
+import {
+  assertServerDatacenterReady,
+  loadDatacenterCidrs,
+} from '../../lib/net/datacenter-networks.ts'
 import type { Db } from '../../db.ts'
 
 export type VpnApplyPrepareError =
@@ -175,36 +179,6 @@ async function loadPeerServers(
   return byId
 }
 
-async function loadDatacenterCidrs(
-  db: Db,
-  datacenterIds: string[],
-): Promise<Map<string, string[]>> {
-  const byDc = new Map<string, string[]>()
-  if (datacenterIds.length === 0) return byDc
-
-  const rows = await db
-    .select({
-      datacenterId: network.datacenterId,
-      cidr: network.cidr,
-    })
-    .from(network)
-    .where(
-      and(
-        eq(network.kind, 'datacenter'),
-        isNotNull(network.cidr),
-        inArray(network.datacenterId, datacenterIds),
-      ),
-    )
-
-  for (const row of rows) {
-    if (!row.datacenterId || !row.cidr) continue
-    const list = byDc.get(row.datacenterId) ?? []
-    list.push(row.cidr)
-    byDc.set(row.datacenterId, list)
-  }
-  return byDc
-}
-
 /**
  * One deterministic primary gateway per datacenter: lowest `createdAt` among
  * online gateways, else lowest `createdAt` overall.
@@ -238,28 +212,30 @@ export function resolvePrimaryGatewayByDatacenter(
   return primary
 }
 
-export function validateGateways(
+/**
+ * Gateways must be pinned to a datacenter that has at least one CIDR-bearing
+ * site network. Delegates to {@link assertServerDatacenterReady} and maps the
+ * placement errors onto VPN apply wire codes.
+ */
+export async function validateGateways(
+  db: Db,
   peerRows: PeerRow[],
-  serversById: Map<string, ServerRow>,
-  cidrsByDc: Map<string, string[]>,
-): VpnApplyPrepareError | null {
+): Promise<VpnApplyPrepareError | null> {
   for (const row of peerRows) {
     if (row.role !== 'gateway') continue
-    const srv = serversById.get(row.serverId)
-    if (!srv?.datacenterId) {
+    const ready = await assertServerDatacenterReady(db, row.serverId)
+    if (!ready) continue
+    if (ready.kind === 'datacenter_required') {
       return {
         kind: 'gateway_datacenter_required',
         peerId: row.id,
         serverId: row.serverId,
       }
     }
-    const cidrs = cidrsByDc.get(srv.datacenterId) ?? []
-    if (cidrs.length === 0) {
-      return {
-        kind: 'gateway_datacenter_cidr_required',
-        peerId: row.id,
-        datacenterId: srv.datacenterId,
-      }
+    return {
+      kind: 'gateway_datacenter_cidr_required',
+      peerId: row.id,
+      datacenterId: ready.datacenterId,
     }
   }
   return null
@@ -485,7 +461,7 @@ export async function prepareVpnApplyPayloads(
     ),
   ]
   const siteCidrsByDc = await loadDatacenterCidrs(db, datacenterIds)
-  const gatewayError = validateGateways(peerRows, serversById, siteCidrsByDc)
+  const gatewayError = await validateGateways(db, peerRows)
   if (gatewayError) return gatewayError
 
   const primaryGatewayByDc = resolvePrimaryGatewayByDatacenter(peerRows, serversById)

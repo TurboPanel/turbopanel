@@ -55,8 +55,8 @@ const ALLOWED_DOCKER_KEYS = new Set([
   'extraEnv',
 ])
 
-/** Host ports reserved for platform / OS services — never publish managed engines here. */
-export const RESERVED_PUBLISHED_PORTS = new Set([22, 80, 443, 8443, 8880])
+/** Hosting bind scopes — published ports are shared ProxySQL listeners (5432/3306). */
+// (former RESERVED_PUBLISHED_PORTS removed — managed no longer publishes unique ports)
 
 const MAX_IMAGE_REF_LENGTH = 256
 /**
@@ -93,26 +93,108 @@ export const POSTGRES_RESERVED_ENV_KEYS = new Set([
   'PGDATA',
 ])
 
+/** Engine-reserved MySQL image env keys that `extraEnv` must not override. */
+export const MYSQL_RESERVED_ENV_KEYS = new Set([
+  'MYSQL_ROOT_PASSWORD',
+  'MYSQL_ROOT_HOST',
+  'MYSQL_DATABASE',
+  'MYSQL_USER',
+  'MYSQL_PASSWORD',
+  'MYSQL_ALLOW_EMPTY_PASSWORD',
+  'MYSQL_RANDOM_ROOT_PASSWORD',
+  'MYSQL_INITDB_SKIP_TZINFO',
+])
+
+/**
+ * Engine-reserved MariaDB image env keys. The official image still honours
+ * legacy `MYSQL_*` names, so both the `MARIADB_*` and `MYSQL_*` sets are
+ * blocked.
+ */
+export const MARIADB_RESERVED_ENV_KEYS = new Set([
+  'MARIADB_ROOT_PASSWORD',
+  'MARIADB_ROOT_HOST',
+  'MARIADB_DATABASE',
+  'MARIADB_USER',
+  'MARIADB_PASSWORD',
+  'MARIADB_ALLOW_EMPTY_PASSWORD',
+  'MARIADB_RANDOM_ROOT_PASSWORD',
+  'MARIADB_INITDB_SKIP_TZINFO',
+  ...MYSQL_RESERVED_ENV_KEYS,
+])
+
 /**
  * Engine-reserved env keys keyed by managed engine code. Shared by two
  * validation boundaries: client settings save (`parseManagedSettingsBase` via
  * each engine spec's `parseSettings`) and the `managed.apply` command payload
  * parser (`parseManagedApplyPayload` in `../commands/schemas.ts`). Both must
  * reject a hostile `dockerOptions.extraEnv` override of engine-owned vars
- * (credentials, `PGDATA`, …) — a payload that bypassed the settings save path
- * (e.g. a stale/replayed command, or a future direct-apply caller) must not
- * be able to smuggle one past the daemon just because it skipped
- * `parsePostgresSettings`. Engines without a concrete spec yet
- * (mysql/mariadb/redis/clickhouse) have no entry — `dockerOptions` for those
- * is unreachable until they ship a spec.
+ * (credentials, data-dir roots, …) — a payload that bypassed the settings
+ * save path (e.g. a stale/replayed command, or a future direct-apply caller)
+ * must not be able to smuggle one past the daemon just because it skipped
+ * the engine `parseSettings`. Engines without a concrete spec yet
+ * (redis/clickhouse) have no entry — `dockerOptions` for those is
+ * unreachable until they ship a spec.
  */
 const MANAGED_RESERVED_ENV_KEYS_BY_ENGINE: Record<string, ReadonlySet<string>> = {
   postgres: POSTGRES_RESERVED_ENV_KEYS,
+  mysql: MYSQL_RESERVED_ENV_KEYS,
+  mariadb: MARIADB_RESERVED_ENV_KEYS,
 }
 
 /** Reserved env keys for `engine`, or an empty set when the engine has none declared. */
 export function getManagedReservedEnvKeys(engine: string): ReadonlySet<string> {
   return MANAGED_RESERVED_ENV_KEYS_BY_ENGINE[engine] ?? new Set()
+}
+
+/**
+ * Approved managed-engine image references. Every surface that can
+ * ultimately produce a `settings.image` value — this settings parser, the
+ * `managed.apply` command payload parser (`parseManagedApplyPayload` in
+ * `../commands/schemas.ts`), the daemon mirror
+ * (`daemon/src/instance/commands/contracts.ts`), and the UI image picker
+ * (`ui/src/lib/managed-services.ts`) — must reject anything outside this
+ * list. An operator (or a replayed/forged command payload that skipped the
+ * settings save path) must never be able to run an unsupported or EOL major
+ * version.
+ *
+ * Neither MySQL nor MariaDB publish an official Alpine-based image (MySQL
+ * dropped its Alpine variant after 8.0; MariaDB has never shipped one), so
+ * both allowlists use the Docker Official Image's default Debian-based tag,
+ * with the vendor-published Oracle Linux (MySQL) / UBI (MariaDB) variant
+ * listed as the documented alternative. PostgreSQL does publish an official
+ * Alpine variant, which stays the default for its smaller footprint.
+ */
+export const POSTGRES_ALLOWED_IMAGES: readonly string[] = [
+  'docker.io/library/postgres:18-alpine',
+  'docker.io/library/postgres:18',
+]
+
+export const MYSQL_ALLOWED_IMAGES: readonly string[] = [
+  'docker.io/library/mysql:9.7',
+  'docker.io/library/mysql:9.7-oraclelinux9',
+]
+
+export const MARIADB_ALLOWED_IMAGES: readonly string[] = [
+  'docker.io/library/mariadb:12.3',
+  'docker.io/library/mariadb:12.3-ubi',
+]
+
+const MANAGED_ALLOWED_IMAGES_BY_ENGINE: Record<string, readonly string[]> = {
+  postgres: POSTGRES_ALLOWED_IMAGES,
+  mysql: MYSQL_ALLOWED_IMAGES,
+  mariadb: MARIADB_ALLOWED_IMAGES,
+}
+
+/** Approved image references for `engine`, or `undefined` when the engine has no curated allowlist yet. */
+export function getManagedAllowedImages(engine: string): readonly string[] | undefined {
+  return MANAGED_ALLOWED_IMAGES_BY_ENGINE[engine]
+}
+
+/** `true` when `engine` has no curated allowlist (unrestricted) or `image` is a member of it. */
+export function isManagedImageAllowed(engine: string, image: string): boolean {
+  const allowed = MANAGED_ALLOWED_IMAGES_BY_ENGINE[engine]
+  if (allowed === undefined) return true
+  return allowed.includes(image)
 }
 
 export type ManagedDockerOptions = {
@@ -139,7 +221,6 @@ export type ManagedSettings = {
   engineConfig?: string
   exposure: {
     enabled: boolean
-    publishedPort?: number
     bind?: HostingBindScope
   }
   /** Only meaningful for engines with a `backup` descriptor. */
@@ -147,7 +228,8 @@ export type ManagedSettings = {
 }
 
 export const DEFAULT_MANAGED_SETTINGS: ManagedSettings = {
-  ssl: { enabled: false },
+  /** Default on for new/undefined settings; ProxySQL listener enforcement is a later phase. */
+  ssl: { enabled: true },
   exposure: { enabled: false },
 }
 
@@ -376,16 +458,6 @@ function parseEngineConfig(value: unknown): string | null | undefined {
   return normalizeEngineConfig(value)
 }
 
-function isValidPublishedPort(value: unknown): value is number {
-  return (
-    typeof value === 'number' &&
-    Number.isInteger(value) &&
-    value >= 1 &&
-    value <= 65535 &&
-    !RESERVED_PUBLISHED_PORTS.has(value)
-  )
-}
-
 function parseExposure(value: unknown): ManagedSettings['exposure'] | null {
   if (value === undefined) return { ...DEFAULT_MANAGED_SETTINGS.exposure }
   if (!isRecord(value)) return null
@@ -393,19 +465,12 @@ function parseExposure(value: unknown): ManagedSettings['exposure'] | null {
 
   const exposure: ManagedSettings['exposure'] = { enabled: value.enabled }
 
-  if (value.publishedPort !== undefined) {
-    if (!isValidPublishedPort(value.publishedPort)) return null
-    exposure.publishedPort = value.publishedPort
-  }
-
   if (value.bind !== undefined) {
     if (typeof value.bind !== 'string' || !BIND_SCOPES.has(value.bind as HostingBindScope)) {
       return null
     }
     exposure.bind = value.bind as HostingBindScope
   }
-
-  if (exposure.enabled && exposure.publishedPort === undefined) return null
 
   return exposure
 }
@@ -436,10 +501,17 @@ export function parseBackupSettings(
 /**
  * Shared base settings every engine reuses. Engine specs compose this with
  * their own extras (e.g. Postgres `initialDatabase`).
+ *
+ * `engine` (when passed) narrows `image` against
+ * {@link MANAGED_ALLOWED_IMAGES_BY_ENGINE} via {@link isManagedImageAllowed} —
+ * engines without a curated allowlist are unrestricted. Callers that already
+ * enforce the allowlist themselves (or intentionally validate a
+ * pre-allowlisted default) may omit `engine`.
  */
 export function parseManagedSettingsBase(
   value: unknown,
   reservedEnvKeys: ReadonlySet<string> = new Set(),
+  engine?: string,
 ): ManagedSettings | null {
   if (value === null || value === undefined) {
     return {
@@ -448,9 +520,24 @@ export function parseManagedSettingsBase(
     }
   }
   if (!isRecord(value)) return null
+  return parseManagedSettingsRecord(value, reservedEnvKeys, engine)
+}
 
+/** Parse a non-null object body into shared managed settings fields. */
+function parseManagedSettingsRecord(
+  value: Record<string, unknown>,
+  reservedEnvKeys: ReadonlySet<string>,
+  engine?: string,
+): ManagedSettings | null {
   const image = parseImage(value.image)
   if (image === null) return null
+  if (
+    image !== undefined &&
+    engine !== undefined &&
+    !isManagedImageAllowed(engine, image)
+  ) {
+    return null
+  }
 
   const ssl = parseSsl(value.ssl)
   if (ssl === null) return null
@@ -473,12 +560,37 @@ export function parseManagedSettingsBase(
   const backups = parseBackupSettings(value.backups)
   if (backups === null) return null
 
-  const settings: ManagedSettings = { ssl, exposure }
-  if (image !== undefined) settings.image = image
-  if (resources !== undefined) settings.resources = resources
-  if (dockerOptions !== undefined) settings.dockerOptions = dockerOptions
-  if (engineConfig !== undefined) settings.engineConfig = engineConfig
-  if (backups !== undefined) settings.backups = backups
+  return assembleManagedSettings({
+    ssl,
+    exposure,
+    image,
+    resources,
+    dockerOptions,
+    engineConfig,
+    backups,
+  })
+}
+
+function assembleManagedSettings(parts: {
+  ssl: ManagedSettings['ssl']
+  exposure: ManagedSettings['exposure']
+  image: string | undefined
+  resources: ManagedSettings['resources'] | undefined
+  dockerOptions: ManagedSettings['dockerOptions'] | undefined
+  engineConfig: string | undefined
+  backups: ManagedBackupSettings | undefined
+}): ManagedSettings {
+  const settings: ManagedSettings = {
+    ssl: parts.ssl,
+    exposure: parts.exposure,
+  }
+  if (parts.image !== undefined) settings.image = parts.image
+  if (parts.resources !== undefined) settings.resources = parts.resources
+  if (parts.dockerOptions !== undefined) {
+    settings.dockerOptions = parts.dockerOptions
+  }
+  if (parts.engineConfig !== undefined) settings.engineConfig = parts.engineConfig
+  if (parts.backups !== undefined) settings.backups = parts.backups
   return settings
 }
 

@@ -10,11 +10,13 @@ import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
 import {
   findSystemEnvironmentForServer,
   SYSTEM_HOSTING_INGRESS_COMPONENT,
+  SYSTEM_MANAGED_INGRESS_COMPONENT,
 } from './hierarchy.ts'
 import { systemComponentOperations } from './operate.ts'
 
 export const SYSTEM_OPERATE_COMPONENTS = [
   SYSTEM_HOSTING_INGRESS_COMPONENT,
+  SYSTEM_MANAGED_INGRESS_COMPONENT,
 ] as const
 
 export type SystemOperateComponent = (typeof SYSTEM_OPERATE_COMPONENTS)[number]
@@ -55,7 +57,7 @@ export function registerSystemRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const environmentId = await findSystemEnvironmentForServer(
       db,
       serverId,
-      SYSTEM_HOSTING_INGRESS_COMPONENT,
+      component,
     )
     if (!environmentId) {
       return c.json({ error: 'system_component_not_provisioned' }, 404)

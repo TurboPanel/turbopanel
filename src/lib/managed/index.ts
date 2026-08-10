@@ -6,6 +6,8 @@
  * status entry, nothing else.
  */
 
+import { mariadbEngineSpec } from './mariadb.ts'
+import { mysqlEngineSpec } from './mysql.ts'
 import { postgresEngineSpec } from './postgres.ts'
 import {
   isManagedEngineCode,
@@ -44,10 +46,16 @@ export {
 
 export {
   DEFAULT_MANAGED_SETTINGS,
+  getManagedAllowedImages,
+  isManagedImageAllowed,
   MANAGED_DOCKER_OPTION_DENYLIST,
   MANAGED_EXTRA_ENV_KEY_RE,
+  MARIADB_ALLOWED_IMAGES,
+  MARIADB_RESERVED_ENV_KEYS,
+  MYSQL_ALLOWED_IMAGES,
+  MYSQL_RESERVED_ENV_KEYS,
+  POSTGRES_ALLOWED_IMAGES,
   POSTGRES_RESERVED_ENV_KEYS,
-  RESERVED_PUBLISHED_PORTS,
   clampManagedResources,
   parseBackupSettings,
   parseManagedDockerOptions,
@@ -59,12 +67,18 @@ export {
 
 export { postgresEngineSpec } from './postgres.ts'
 export type { PostgresManagedSettings } from './postgres.ts'
+export { mysqlEngineSpec } from './mysql.ts'
+export type { MysqlManagedSettings } from './mysql.ts'
+export { mariadbEngineSpec } from './mariadb.ts'
+export type { MariadbManagedSettings } from './mariadb.ts'
 
 /** Registry keyed by engine code. Only engines with a shipped spec appear here. */
 export const MANAGED_ENGINE_SPECS: Partial<
   Record<ManagedEngineCode, ManagedEngineSpec>
 > = {
   postgres: postgresEngineSpec,
+  mysql: mysqlEngineSpec,
+  mariadb: mariadbEngineSpec,
 }
 
 /** Availability for every managed engine code (UI / API source of truth). */
@@ -73,8 +87,8 @@ export const MANAGED_ENGINE_STATUS: Record<
   ManagedEngineStatus
 > = {
   postgres: 'available',
-  mysql: 'coming-soon',
-  mariadb: 'coming-soon',
+  mysql: 'available',
+  mariadb: 'available',
   redis: 'coming-soon',
   clickhouse: 'coming-soon',
 }
@@ -89,6 +103,11 @@ export function getManagedBackupDescriptor(
   code: string,
 ): ManagedEngineSpec['backup'] | null {
   return getManagedEngineSpec(code)?.backup ?? null
+}
+
+/** `true` when `code` names an available engine whose spec declares a `backup` descriptor. */
+export function isManagedBackupSupported(code: string): boolean {
+  return getManagedBackupDescriptor(code) !== null
 }
 
 export function listManagedEngineSpecs(): ManagedEngineSpec[] {

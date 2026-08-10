@@ -29,7 +29,7 @@ import {
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-const NETWORK_KINDS = new Set(['datacenter', 'server', 'docker'])
+const NETWORK_KINDS = new Set(['datacenter', 'docker'])
 
 const NETWORK_SELECT = {
   id: network.id,

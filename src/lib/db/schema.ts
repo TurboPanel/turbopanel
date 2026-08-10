@@ -120,7 +120,7 @@ export const tls = pgTable(
     options: jsonb(),
     organizationId: uuid('organization_id').notNull(),
     name: varchar({ length: 255 }),
-    /** `upload` | `lets_encrypt` | `self_signed` */
+    /** `upload` | `lets_encrypt` | `self_signed` | `organization_ca` */
     source: text().notNull(),
     /** Leaf + intermediate chain PEM; null while LE `pending`. */
     certificatePem: text('certificate_pem'),
@@ -143,6 +143,9 @@ export const tls = pgTable(
     uniqueIndex('uniq_tls_organization_fingerprint_sha256')
       .on(table.organizationId, table.fingerprintSha256)
       .where(sql`${table.fingerprintSha256} IS NOT NULL`),
+    uniqueIndex('uniq_tls_organization_active_ca')
+      .on(table.organizationId)
+      .where(sql`${table.source} = 'organization_ca' AND ${table.status} != 'revoked'`),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -150,7 +153,7 @@ export const tls = pgTable(
     }).onDelete('cascade'),
     check(
       'tls_source_check',
-      sql`source IN ('upload', 'lets_encrypt', 'self_signed')`
+      sql`source IN ('upload', 'lets_encrypt', 'self_signed', 'organization_ca')`
     ),
     check(
       'tls_name_format_check',
@@ -195,8 +198,13 @@ export const passkey = pgTable(
     }).onDelete('cascade'),
   ]
 )
-export const member = pgTable(
-  'member',
+/**
+ * Organization membership (user ↔ organization). Physical table is
+ * `membership` (not Better Auth’s default `member`) — map the auth org model
+ * onto this table when wiring Better Auth.
+ */
+export const membership = pgTable(
+  'membership',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -209,22 +217,22 @@ export const member = pgTable(
     userId: uuid('user_id').notNull(),
   },
   (table) => [
-    index('idx_member_organization_id').using(
+    index('idx_membership_organization_id').using(
       'btree',
       table.organizationId.asc().nullsLast().op('uuid_ops')
     ),
-    index('idx_member_user_id').using('btree', table.userId.asc().nullsLast().op('uuid_ops')),
+    index('idx_membership_user_id').using('btree', table.userId.asc().nullsLast().op('uuid_ops')),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
-      name: 'member_organization_id_organization_id_fk',
+      name: 'membership_organization_id_organization_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.userId],
       foreignColumns: [user.id],
-      name: 'member_user_id_user_id_fk',
+      name: 'membership_user_id_user_id_fk',
     }).onDelete('cascade'),
-    unique('member_org_user_unique').on(table.organizationId, table.userId),
+    unique('membership_org_user_unique').on(table.organizationId, table.userId),
   ]
 )
 /**
@@ -437,9 +445,9 @@ export const command = pgTable(
   ]
 )
 /**
- * Org-owned network registry. Today holds datacenter and server networks;
- * `kind = 'docker'` is the seam for per-compose Docker networks — hence nullable
- * `cidr` and org ownership rather than server ownership.
+ * Org-owned network registry — two facts only: datacenter site CIDRs
+ * (`kind = 'datacenter'`) and external Docker network registrations
+ * (`kind = 'docker'`, optional `server_id` pin for host-local networks).
  */
 export const network = pgTable(
   'network',
@@ -490,14 +498,13 @@ export const network = pgTable(
     }).onDelete('restrict'),
     check(
       'network_kind_check',
-      sql`kind IN ('datacenter', 'server', 'docker')`
+      sql`kind IN ('datacenter', 'docker')`
     ),
     check(
       'network_single_scope_check',
       sql`(
         (${table.kind} = 'datacenter' AND ${table.datacenterId} IS NOT NULL AND ${table.serverId} IS NULL) OR
-        (${table.kind} = 'server' AND ${table.serverId} IS NOT NULL AND ${table.datacenterId} IS NULL) OR
-        (${table.kind} = 'docker' AND ${table.datacenterId} IS NULL AND ${table.serverId} IS NULL)
+        (${table.kind} = 'docker' AND ${table.datacenterId} IS NULL)
       )`
     ),
     check(
@@ -548,11 +555,12 @@ export const vpn = pgTable(
   ]
 )
 /**
- * Single source of truth for every managed address. There is deliberately **no**
- * `server.datacenter_private_ip` column — a server's private address is
- * `ip WHERE server_id = … AND scope = 'datacenter'`. Public VPS addresses carry
- * no `network_id`. Overlay tunnel addresses are `scope = 'vpn'` with `vpn_id`.
- * Address family (`version`) is derived from `address` in the API — not stored.
+ * Single source of truth for every managed address. Two non-overlapping private
+ * facts: **site CIDR** lives on `network(kind='datacenter', datacenter_id=…)`;
+ * **a server's private address** is `ip WHERE server_id = … AND scope = 'datacenter'`.
+ * Public VPS addresses carry no `network_id`. Overlay tunnel addresses are
+ * `scope = 'vpn'` with `vpn_id`. Address family (`version`) is derived from
+ * `address` in the API — not stored.
  */
 export const ip = pgTable(
   'ip',
@@ -617,10 +625,14 @@ export const ip = pgTable(
       name: 'ip_vpn_id_vpn_id_fk',
     }).onDelete('cascade'),
     check('ip_allocation_check', sql`allocation IN ('dedicated', 'shared')`),
-    check('ip_scope_check', sql`scope IN ('public', 'datacenter', 'loopback', 'vpn')`),
+    check('ip_scope_check', sql`scope IN ('public', 'datacenter', 'vpn')`),
     check(
       'ip_vpn_scope_check',
       sql`(${table.scope} = 'vpn' AND ${table.vpnId} IS NOT NULL) OR (${table.scope} <> 'vpn' AND ${table.vpnId} IS NULL)`
+    ),
+    check(
+      'ip_datacenter_scope_check',
+      sql`(${table.scope} <> 'datacenter') OR (${table.serverId} IS NOT NULL OR ${table.datacenterId} IS NOT NULL)`
     ),
     check(
       'ip_datacenter_free_pool_check',
@@ -913,6 +925,92 @@ export const managed = pgTable(
     ),
   ]
 )
+/**
+ * One server participation (node) in a managed cluster (`managed`). Exactly
+ * one `primary` per `managed_id` (partial unique); replicas use ordinals 2+.
+ * Container fan-out uses `ordinal` on `(service_id, role='service', ordinal)`.
+ */
+export const node = pgTable(
+  'node',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+    managedId: uuid('managed_id').notNull(),
+    serverId: uuid('server_id').notNull(),
+    /** `primary` | `replica` */
+    role: text().default('primary').notNull(),
+    readEligible: boolean('read_eligible').default(false).notNull(),
+    /** 1-based member ordinal — mirrors the service-role container ordinal. */
+    ordinal: integer().default(1).notNull(),
+    /**
+     * Resolved private path to the primary (`local` | `datacenter` | `vpn`).
+     * Null when not yet resolved (or primary self).
+     */
+    replicationTransport: text('replication_transport'),
+    /**
+     * Host port published only on the member's private address for remote
+     * replication + ProxySQL backend reachability. Null for single-member
+     * clusters.
+     */
+    privatePort: integer('private_port'),
+    /** Per-member observed status; same vocabulary as `managed.status` plus `needs_resync`. */
+    status: text(),
+  },
+  (table) => [
+    index('idx_node_managed_id').using(
+      'btree',
+      table.managedId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_node_server_id').using(
+      'btree',
+      table.serverId.asc().nullsLast().op('uuid_ops'),
+    ),
+    foreignKey({
+      columns: [table.managedId],
+      foreignColumns: [managed.id],
+      name: 'node_managed_id_managed_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'node_server_id_server_id_fk',
+    }).onDelete('restrict'),
+    uniqueIndex('uniq_node_primary')
+      .on(table.managedId)
+      .where(sql`${table.role} = 'primary'`),
+    uniqueIndex('uniq_node_server_private_port')
+      .on(table.serverId, table.privatePort)
+      .where(sql`${table.privatePort} IS NOT NULL`),
+    unique('uniq_node_managed_ordinal').on(table.managedId, table.ordinal),
+    unique('uniq_node_managed_server').on(table.managedId, table.serverId),
+    check(
+      'node_role_check',
+      sql`${table.role} IN ('primary','replica')`,
+    ),
+    check(
+      'node_ordinal_positive_check',
+      sql`${table.ordinal} >= 1`,
+    ),
+    check(
+      'node_transport_check',
+      sql`${table.replicationTransport} IS NULL OR ${table.replicationTransport} IN ('local','datacenter','vpn')`,
+    ),
+    check(
+      'node_status_check',
+      sql`status IS NULL OR status IN ('provisioning','applying','ready','stopped','failed','needs_resync')`,
+    ),
+  ],
+)
 export const variable = pgTable(
   'variable',
   {
@@ -933,6 +1031,11 @@ export const variable = pgTable(
     serviceId: uuid('service_id'),
     hostingId: uuid('hosting_id'),
     serverId: uuid('server_id'),
+    /**
+     * When set, this row is system-owned by a binding (materialized credentials).
+     * Client PATCH/DELETE is refused; variable rows cascade when the binding is deleted.
+     */
+    bindingId: uuid('binding_id'),
     key: varchar({ length: 255 }).notNull(),
     value: text().default('').notNull(),
     isSecret: boolean('is_secret').default(false).notNull(),
@@ -967,6 +1070,10 @@ export const variable = pgTable(
       table.hostingId.asc().nullsLast().op('uuid_ops')
     ),
     index('idx_variable_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
+    index('idx_variable_binding_id').using(
+      'btree',
+      table.bindingId.asc().nullsLast().op('uuid_ops'),
+    ),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -1001,6 +1108,11 @@ export const variable = pgTable(
       columns: [table.serverId],
       foreignColumns: [server.id],
       name: 'variable_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.bindingId],
+      foreignColumns: [binding.id],
+      name: 'variable_binding_id_binding_id_fk',
     }).onDelete('cascade'),
     uniqueIndex('uniq_var_org')
       .on(table.key, table.organizationId)
@@ -1343,6 +1455,69 @@ export const assignment = pgTable(
     }).onDelete('restrict'),
     unique('assignment_principal_service_unique').on(table.principalId, table.serviceId),
   ]
+)
+/**
+ * Join edge: managed-database principal ↔ consuming compose service.
+ * Materializes system-owned `variable` rows (marked via `variable.binding_id`)
+ * so DB credentials ride the existing deploy injection rail.
+ *
+ * FK direction: principal CASCADE (user/db gone → drop bindings); service
+ * RESTRICT (a service still referenced by bindings cannot be deleted).
+ */
+export const binding = pgTable(
+  'binding',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+    principalId: uuid('principal_id').notNull(),
+    serviceId: uuid('service_id').notNull(),
+    databaseName: varchar('database_name', { length: 255 }).notNull(),
+    keyPrefix: varchar('key_prefix', { length: 64 }).default('DATABASE').notNull(),
+    /** When true, also emit the unprefixed conventional engine keys (PG* / MYSQL_*). */
+    emitEngineDefaults: boolean('emit_engine_defaults').default(true).notNull(),
+  },
+  (table) => [
+    index('idx_binding_principal_id').using(
+      'btree',
+      table.principalId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_binding_service_id').using(
+      'btree',
+      table.serviceId.asc().nullsLast().op('uuid_ops'),
+    ),
+    foreignKey({
+      columns: [table.principalId],
+      foreignColumns: [principal.id],
+      name: 'binding_principal_id_principal_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serviceId],
+      foreignColumns: [service.id],
+      name: 'binding_service_id_service_id_fk',
+    }).onDelete('restrict'),
+    unique('uniq_binding_service_prefix').on(table.serviceId, table.keyPrefix),
+    uniqueIndex('uniq_binding_service_engine_defaults')
+      .on(table.serviceId)
+      .where(sql`${table.emitEngineDefaults}`),
+    check(
+      'binding_key_prefix_format_check',
+      sql`(char_length((key_prefix)::text) >= 1) AND (char_length((key_prefix)::text) <= 64) AND ((key_prefix)::text ~ '^[A-Za-z_][A-Za-z0-9_]*$'::text)`,
+    ),
+    check(
+      'binding_database_name_format_check',
+      sql`(char_length((database_name)::text) >= 1) AND (char_length((database_name)::text) <= 63) AND ((database_name)::text ~ '^[A-Za-z_][A-Za-z0-9_]*$'::text)`,
+    ),
+  ],
 )
 export const storage = pgTable(
   'storage',

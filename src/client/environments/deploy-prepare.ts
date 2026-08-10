@@ -84,6 +84,7 @@ import type {
   EnvironmentDeployVariableMaterial,
 } from '../../lib/commands/schemas.ts'
 import {
+  binding,
   environment,
   ip,
   organization,
@@ -99,7 +100,8 @@ import {
   resolveHostingBind,
   resolveHostingProxy,
 } from '../../lib/hosting-options.ts'
-import { isValidIpAddress } from '../../lib/ip-address.ts'
+import { inetAddressToString } from '../../lib/ip-address.ts'
+import { loadServerDatacenterAddress } from '../../lib/net/private-endpoint.ts'
 import { reconcileServicesFromCompose } from './reconcile-services.ts'
 import type { Db } from '../../db.ts'
 import {
@@ -114,6 +116,10 @@ import {
   loadPrincipalIdsByServiceIdForEnvironment,
   pickSolePrincipalId,
 } from '../principals/assignments.ts'
+import {
+  materializeBindingsForServices,
+  reapplyBindingOwnedVariables,
+} from '../bindings/materialize.ts'
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -144,6 +150,7 @@ export type DeployPrepareWarningCode =
   | 'health_check_missing'
   | 'docker_external_network_unregistered'
   | 'traditional_web_principal_ambiguous'
+  | 'binding_endpoint_unavailable'
 
 export type DeployPrepareWarning = {
   code: DeployPrepareWarningCode
@@ -160,6 +167,13 @@ export type PreparedDeployCompose = {
   traditionalWebSites: EnvironmentDeployTraditionalWebSite[]
   /** External Docker network names declared in compose — must be registered on the server. */
   dockerExternalNetworks: string[]
+  /**
+   * Compose service names that must join the daemon's shared managed-ingress
+   * network so their managed-database binding endpoint (a ProxySQL container
+   * name) resolves. Disjoint from `dockerExternalNetworks` — this is a
+   * platform network, never operator-registered.
+   */
+  managedNetworkServices: string[]
   /** Pre-allocated container rows for this deploy (uuid / explicit-name paths). */
   containers: ContainerAllocation[]
   /**
@@ -182,6 +196,7 @@ export type DeployPrepareError =
   | { kind: 'datacenter_ip_required'; serverId: string }
   | { kind: 'docker_external_network_unregistered'; names: string[] }
   | { kind: 'traditional_web_principal_ambiguous'; composeServiceName: string }
+  | { kind: 'binding_endpoint_unavailable' }
 
 export type DeployPrepareMode = 'deploy' | 'preview'
 
@@ -196,6 +211,7 @@ function emptyPreparedCompose(
     principalMaterial: [],
     traditionalWebSites: [],
     dockerExternalNetworks: [],
+    managedNetworkServices: [],
     containers: [],
     ingressServices: [],
     composeServiceExpansion: {},
@@ -243,6 +259,12 @@ function warningFromPrepareError(
         message:
           `Traditional-web service "${error.composeServiceName}" has more than one project principal assigned.`,
         details: { composeServiceName: error.composeServiceName },
+      }
+    case 'binding_endpoint_unavailable':
+      return {
+        code: 'binding_endpoint_unavailable',
+        message:
+          'A service binding could not resolve a ProxySQL listener for its managed cluster.',
       }
   }
 }
@@ -650,6 +672,8 @@ async function resolveDeployVariableBuckets(
       if (!cached) {
         const varMap = await resolveInheritedVariablesForService(db, row.id)
         await mergeHostingVariablesForService(db, row.id, varMap)
+        // Re-assert binding-owned keys last — hosting scope must never shadow them.
+        await reapplyBindingOwnedVariables(db, row.id, varMap)
         const mergedServer = new Map([...varMap, ...serverVars])
         cached = await mapResolvedVariablesToDeployEntries(
           mergedServer,
@@ -819,6 +843,47 @@ function buildServiceRowByCloneName(
     }
   }
   return serviceRowByCloneName
+}
+
+/** Service ids (within this environment) that own at least one active binding. */
+async function loadServiceIdsWithBindings(
+  db: Db,
+  serviceIds: readonly string[],
+): Promise<Set<string>> {
+  if (serviceIds.length === 0) return new Set()
+  const rows = await db
+    .select({ serviceId: binding.serviceId })
+    .from(binding)
+    .where(inArray(binding.serviceId, [...serviceIds]))
+  return new Set(rows.map((row) => row.serviceId))
+}
+
+/**
+ * Compose service names (post multi-instance expansion) that consume a
+ * managed-database binding and therefore must join the daemon's shared
+ * managed-ingress Docker network (`turbopanel-managed`) so their resolved
+ * binding endpoint (a ProxySQL container name) is dial-able — see
+ * `resolveBindingEndpoint` in `../bindings/resolve-endpoint.ts`.
+ */
+async function resolveManagedNetworkComposeServiceNames(
+  db: Db,
+  serviceRows: ServiceRow[],
+  expansion: Map<string, string[]>,
+): Promise<string[]> {
+  const boundServiceIds = await loadServiceIdsWithBindings(
+    db,
+    serviceRows.map((row) => row.id),
+  )
+  if (boundServiceIds.size === 0) return []
+
+  const names = new Set<string>()
+  for (const row of serviceRows) {
+    if (!boundServiceIds.has(row.id)) continue
+    for (const cloneName of expansion.get(row.composeServiceName) ?? [row.composeServiceName]) {
+      names.add(cloneName)
+    }
+  }
+  return [...names].sort((a, b) => a.localeCompare(b))
 }
 
 function resourceLimitPrepareError(
@@ -1015,6 +1080,50 @@ async function maybeSealDeployMaterials(
   return { variableMaterial, storageMaterial }
 }
 
+type BindingMaterializationOutcome =
+  | { kind: 'ok' }
+  | { kind: 'warn'; warning: DeployPrepareWarning }
+  | { kind: 'error'; error: DeployPrepareError }
+
+/**
+ * Re-materialize service bindings and classify the outcome so the caller
+ * stays a flat sequence of early returns / warning pushes.
+ */
+async function resolveBindingMaterializationOutcome(
+  db: Db,
+  dataEncryptionSecrets: Parameters<typeof decryptSecret>[0] | undefined,
+  serviceIds: string[],
+  mode: DeployPrepareMode,
+): Promise<BindingMaterializationOutcome> {
+  if (!dataEncryptionSecrets) return { kind: 'ok' }
+
+  const bindResult = await materializeBindingsForServices(db, dataEncryptionSecrets, serviceIds)
+  if ('ok' in bindResult) return { kind: 'ok' }
+
+  const isSoftBindingError =
+    bindResult.kind === 'binding_endpoint_unavailable' ||
+    bindResult.kind === 'datacenter_ip_required' ||
+    bindResult.kind === 'private_path_unavailable' ||
+    bindResult.kind === 'peer_tunnel_address_required'
+
+  const error: DeployPrepareError = { kind: 'binding_endpoint_unavailable' }
+  if (isSoftBindingError) {
+    return mode === 'preview'
+      ? { kind: 'warn', warning: warningFromPrepareError(error) }
+      : { kind: 'error', error }
+  }
+
+  if (mode !== 'preview') return { kind: 'error', error }
+
+  return {
+    kind: 'warn',
+    warning: {
+      code: 'binding_endpoint_unavailable',
+      message: `Binding materialization failed: ${bindResult.kind}`,
+    },
+  }
+}
+
 function resolveTraditionalWebSitesForMode(
   mode: DeployPrepareMode,
   warnings: DeployPrepareWarning[],
@@ -1060,6 +1169,7 @@ function toPreparedDeployResult(
     principalMaterial: EnvironmentDeployPrincipalMaterial[]
     traditionalWebSites: EnvironmentDeployTraditionalWebSite[]
     dockerExternalNetworks: string[]
+    managedNetworkServices: string[]
     containers: ContainerAllocation[]
     ingressServices: EnvironmentDeployIngressService[]
     expansion: Map<string, string[]>
@@ -1076,6 +1186,7 @@ function toPreparedDeployResult(
     principalMaterial: parts.principalMaterial,
     traditionalWebSites: parts.traditionalWebSites,
     dockerExternalNetworks: parts.dockerExternalNetworks,
+    managedNetworkServices: parts.managedNetworkServices,
     containers: parts.containers,
     ingressServices: parts.ingressServices,
     composeServiceExpansion: expansionToRecord(parts.expansion),
@@ -1135,6 +1246,17 @@ export async function prepareDeployCompose(
     })
     .from(service)
     .where(eq(service.environmentId, params.environmentId))
+
+  // Re-materialize bindings so endpoint / CA / topology drift is picked up.
+  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  const bindingOutcome = await resolveBindingMaterializationOutcome(
+    db,
+    dataEncryptionSecrets,
+    serviceRows.map((r) => r.id),
+    mode,
+  )
+  if (bindingOutcome.kind === 'error') return bindingOutcome.error
+  if (bindingOutcome.kind === 'warn') warnings.push(bindingOutcome.warning)
 
   const pipeline = await allocateExpandDeployPipeline(db, {
     environmentId: params.environmentId,
@@ -1272,6 +1394,13 @@ export async function prepareDeployCompose(
   )
   if (networkErr) return networkErr
 
+  // Traditional-web sites are host-native (stripped from `composeYaml` above)
+  // and never join a Docker network — exclude them even if a binding was
+  // somehow attached to one.
+  const managedNetworkServices = (
+    await resolveManagedNetworkComposeServiceNames(db, serviceRows, pipeline.expansion)
+  ).filter((name) => !traditionalNames.has(name))
+
   return toPreparedDeployResult(mode, {
     composeYaml: split.composeYaml,
     hooks,
@@ -1280,6 +1409,7 @@ export async function prepareDeployCompose(
     principalMaterial,
     traditionalWebSites: traditionalResolved,
     dockerExternalNetworks,
+    managedNetworkServices,
     containers: pipeline.containers,
     ingressServices: pipeline.ingressServices,
     expansion: pipeline.expansion,
@@ -1409,13 +1539,6 @@ export function readHostingProxyFromOptions(options: unknown): EnvironmentDeploy
   }
 }
 
-function inetAddressToString(address: unknown): string | undefined {
-  if (typeof address !== 'string') return undefined
-  const trimmed = address.trim()
-  if (!isValidIpAddress(trimmed)) return undefined
-  return trimmed
-}
-
 /**
  * Resolve the Caddy `bind` address for one hosting entry at deploy-prepare time
  * so the daemon stays DB-free. Returns `undefined` when no bind directive should
@@ -1434,12 +1557,7 @@ export async function resolveHostingBindAddress(
   if (bind === 'local') return '127.0.0.1'
 
   if (bind === 'datacenter') {
-    const [row] = await db
-      .select({ address: ip.address })
-      .from(ip)
-      .where(and(eq(ip.serverId, params.serverId), eq(ip.scope, 'datacenter')))
-      .limit(1)
-    const address = inetAddressToString(row?.address)
+    const address = await loadServerDatacenterAddress(db, params.serverId)
     if (!address) {
       return { kind: 'datacenter_ip_required', serverId: params.serverId }
     }

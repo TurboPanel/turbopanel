@@ -3,6 +3,7 @@ import {
   applyTlsOptionsPatch,
   createFailure,
   isCreateTlsFailure,
+  isOrganizationCaUniqueViolation,
   isTlsFingerprintUniqueViolation,
   materialFromLetsEncrypt,
   parseHostnames,
@@ -22,6 +23,7 @@ test('parseSource accepts tls source tokens', () => {
   assertEquals(parseSource('upload'), 'upload')
   assertEquals(parseSource('self_signed'), 'self_signed')
   assertEquals(parseSource('lets_encrypt'), 'lets_encrypt')
+  assertEquals(parseSource('organization_ca'), 'organization_ca')
   assertEquals(parseSource('acme'), null)
   assertEquals(parseSource(1), null)
 })
@@ -56,6 +58,15 @@ test('isTlsFingerprintUniqueViolation matches org fingerprint index', () => {
   assertEquals(isTlsFingerprintUniqueViolation(match), true)
   assertEquals(isTlsFingerprintUniqueViolation({ code: '23505' }), false)
   assertEquals(isTlsFingerprintUniqueViolation(new Error('other')), false)
+})
+
+test('isOrganizationCaUniqueViolation matches active CA index', () => {
+  const match = Object.assign(
+    new Error('duplicate key value violates unique constraint "uniq_tls_organization_active_ca"'),
+    { code: '23505' },
+  )
+  assertEquals(isOrganizationCaUniqueViolation(match), true)
+  assertEquals(isOrganizationCaUniqueViolation({ code: '23505' }), false)
 })
 
 test('materialFromLetsEncrypt builds pending metadata', () => {

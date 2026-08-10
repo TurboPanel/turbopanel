@@ -29,7 +29,7 @@ export const systemPaths = {
           name: 'component',
           in: 'path',
           required: true,
-          schema: { type: 'string', enum: ['hosting-ingress'] },
+          schema: { type: 'string', enum: ['hosting-ingress', 'managed-ingress'] },
           description: 'System component allowlist key',
         },
       ],

@@ -46,6 +46,8 @@ type CreateCommandRecordParams = {
   type: string
   payload: unknown
   expiresAt?: string
+  /** Additional metadata keys merged into the command row (follow-up chains). */
+  metadata?: Record<string, unknown>
 }
 
 type ListServerCommandsParams = {
@@ -119,9 +121,10 @@ export async function createCommandRecord(
   params: CreateCommandRecordParams,
 ): Promise<CommandRecord> {
   const now = nowIso()
-  const metadata: CommandMetadata = {
+  const metadata: CommandMetadata & Record<string, unknown> = {
     queuedAt: now,
     ...(params.expiresAt !== undefined ? { expiresAt: params.expiresAt } : {}),
+    ...(params.metadata ?? {}),
   }
 
   const rows = await db
@@ -143,6 +146,26 @@ export async function createCommandRecord(
     throw new Error('Failed to create command record')
   }
   return serializeCommandRecord(row)
+}
+
+/**
+ * Read raw command.metadata jsonb (for follow-up chains). Not flattened into
+ * {@link CommandRecord}.
+ */
+export async function getCommandMetadata(
+  db: Db,
+  commandId: string,
+): Promise<Record<string, unknown> | null> {
+  const rows = await db
+    .select({ metadata: command.metadata })
+    .from(command)
+    .where(eq(command.id, commandId))
+    .limit(1)
+  const meta = rows[0]?.metadata
+  if (typeof meta !== 'object' || meta === null || Array.isArray(meta)) {
+    return null
+  }
+  return meta as Record<string, unknown>
 }
 
 export async function getCommandRecord(

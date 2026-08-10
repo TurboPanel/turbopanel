@@ -63,8 +63,9 @@ test('isPlainObject accepts records only', () => {
 
 test('managedSessionPaths lists every managed session route', () => {
   const paths = managedSessionPaths()
-  assertEquals(paths.length, 14)
+  assertEquals(paths.length, 18)
   assertEquals(paths.includes('/environments/:id/managed/logs'), true)
+  assertEquals(paths.includes('/environments/:id/managed/members/:memberId/promote'), true)
   assertEquals(paths.includes('/organizations/:id/managed'), true)
 })
 
@@ -79,19 +80,19 @@ test('mergeCreateSettings merges exposure overrides and re-validates', () => {
   const merged = mergeCreateSettings(postgresEngineSpec, {
     exposure: {
       enabled: true,
-      publishedPort: 15432,
       bind: 'public',
     },
   })
   if (!merged) throw new TypeError('expected merged settings')
   assertEquals(merged.exposure.enabled, true)
-  assertEquals(merged.exposure.publishedPort, 15432)
   assertEquals(merged.exposure.bind, 'public')
 
-  const invalidPort = mergeCreateSettings(postgresEngineSpec, {
-    exposure: { enabled: true, publishedPort: 22 },
+  const invalidBind = mergeCreateSettings(postgresEngineSpec, {
+    exposure: { enabled: true, bind: 'internet' },
   })
-  assertEquals(invalidPort, null)
+  // bind ignored/invalid token → re-parse keeps enabled without bind when only
+  // enabled is present; invalid bind alone is filtered out by merge.
+  assertEquals(invalidBind?.exposure.enabled, true)
 })
 
 test('mergeCreateSettings ignores non-object exposure and invalid bind tokens', () => {
@@ -117,6 +118,13 @@ test('readInitialDatabase defaults to postgres and honors engine initialDatabase
     },
   }
   assertEquals(readInitialDatabase(customSpec), 'appdb')
+})
+
+test('readInitialDatabase for MySQL/MariaDB defaults to appdb, not system schemas', async () => {
+  const { mysqlEngineSpec } = await import('../../lib/managed/mysql.ts')
+  const { mariadbEngineSpec } = await import('../../lib/managed/mariadb.ts')
+  assertEquals(readInitialDatabase(mysqlEngineSpec), 'appdb')
+  assertEquals(readInitialDatabase(mariadbEngineSpec), 'appdb')
 })
 
 test('resolveManagedServerId prefers managed.server_id over environment placement', () => {

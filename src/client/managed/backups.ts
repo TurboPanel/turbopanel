@@ -40,13 +40,23 @@ function generateBackupId(): string {
   return `bk_${crypto.randomUUID().replaceAll('-', '')}`
 }
 
+/** Engine system schemas that must never be chosen for a default backup. */
+const MYSQL_FAMILY_SYSTEM_SCHEMAS = new Set([
+  'mysql',
+  'information_schema',
+  'performance_schema',
+  'sys',
+])
+
 /**
  * Body `database` must already be a database configured on this managed
- * instance; when omitted, default to the first configured (initial) database.
+ * instance; when omitted, default to the first configured (initial) database
+ * that is not a MySQL-family system schema.
  */
 export function resolveBackupDatabase(
   options: ManagedRowOptions,
   requested: unknown,
+  engine?: string,
 ): string | null {
   if (requested !== undefined) {
     if (typeof requested !== 'string' || !options.databases.includes(requested)) {
@@ -54,7 +64,15 @@ export function resolveBackupDatabase(
     }
     return requested
   }
-  return options.databases[0] ?? null
+  const skipSystem =
+    engine === 'mysql' || engine === 'mariadb'
+  for (const name of options.databases) {
+    if (skipSystem && MYSQL_FAMILY_SYSTEM_SCHEMAS.has(name.toLowerCase())) {
+      continue
+    }
+    return name
+  }
+  return null
 }
 
 /** Clamp `settings.backups.retentionKeep` (or the engine default) to the engine's `maxRetentionKeep`. */

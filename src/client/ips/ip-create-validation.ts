@@ -62,6 +62,10 @@ export function assertIpScopeFkRules(
     return c.json({ error: 'Invalid request' }, 400)
   }
 
+  if (scope === 'datacenter' && !hasServer && !hasDatacenter) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
   if (hasDatacenter && (hasNetwork || hasServer || hasVpn)) {
     return c.json({ error: 'Invalid request' }, 400)
   }

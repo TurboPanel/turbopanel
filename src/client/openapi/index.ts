@@ -17,6 +17,7 @@ import { projectPaths, projectSchemas } from './projects.ts'
 import { serverPaths, serverSchemas } from './servers.ts'
 import { servicePaths, serviceSchemas } from './services.ts'
 import { variablePaths, variableSchemas } from './variables.ts'
+import { bindingPaths, bindingSchemas } from './bindings.ts'
 import { workspacePaths, workspaceSchemas } from './workspaces.ts'
 import { storagePaths, storageSchemas } from './storage.ts'
 import { principalPaths, principalSchemas } from './principals.ts'
@@ -60,6 +61,11 @@ export function getClientOpenApiSpec(
       { name: 'Projects', description: 'Project CRUD' },
       { name: 'Environments', description: 'Environment CRUD' },
       { name: 'Variables', description: 'Environment variable and secret management' },
+      {
+        name: 'Bindings',
+        description:
+          'Managed-database principal → compose-service credential bindings (materialized variables)',
+      },
       { name: 'Storage', description: 'Volumes, bind mounts, and file storage' },
       { name: 'Principals', description: 'Project runtime principals' },
       { name: 'Resource limits', description: 'Organization and server deploy quotas' },
@@ -80,7 +86,7 @@ export function getClientOpenApiSpec(
     ],
     'x-tagGroups': [
       { name: 'Authentication & Authorization', tags: ['Authentication', 'Authorization'] },
-      { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Managed services', 'Variables', 'Storage', 'Principals', 'Resource limits', 'Services', 'Hostings', 'Containers', 'TLS'] },
+      { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Managed services', 'Variables', 'Bindings', 'Storage', 'Principals', 'Resource limits', 'Services', 'Hostings', 'Containers', 'TLS'] },
       { name: 'Infrastructure', tags: ['Servers', 'Networks', 'Datacenters', 'IPs', 'VPNs', 'Licenses'] },
       { name: 'Platform', tags: ['Health', 'System', ...(includeInstall ? ['Install'] : [])] },
     ],
@@ -107,6 +113,7 @@ export function getClientOpenApiSpec(
         ...environmentSchemas,
         ...projectSchemas,
         ...variableSchemas,
+        ...bindingSchemas,
         ...storageSchemas,
         ...principalSchemas,
         ...deploySchemas,
@@ -133,6 +140,7 @@ export function getClientOpenApiSpec(
       ...environmentPaths,
       ...projectPaths,
       ...variablePaths,
+      ...bindingPaths,
       ...storagePaths,
       ...principalPaths,
       ...deployPaths,

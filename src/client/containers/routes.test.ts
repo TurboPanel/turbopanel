@@ -14,7 +14,7 @@ import {
   container,
   environment,
   grant,
-  member,
+  membership,
   organization,
   project,
   server,
@@ -95,7 +95,7 @@ async function withContainerFixtures(
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -173,9 +173,9 @@ async function withContainerFixtures(
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
     ))
-    await db.delete(member).where(and(
-      eq(member.userId, userId),
-      eq(member.organizationId, organizationId),
+    await db.delete(membership).where(and(
+      eq(membership.userId, userId),
+      eq(membership.organizationId, organizationId),
     ))
     await db.delete(workspace).where(eq(workspace.id, workspaceId))
     await db.delete(user).where(eq(user.id, userId))
@@ -534,7 +534,7 @@ test('GET /containers?environmentId= does not leak containers the caller cannot 
       .returning({ id: user.id })
     const limitedUserId = limitedUser!.id
 
-    await db.insert(member).values({ organizationId, userId: limitedUserId })
+    await db.insert(membership).values({ organizationId, userId: limitedUserId })
 
     try {
       const limitedCookie = await sessionCookie(db, secrets, limitedUserId)
@@ -553,9 +553,9 @@ test('GET /containers?environmentId= does not leak containers the caller cannot 
       }
       assertEquals(listBody.containers.length, 0)
     } finally {
-      await db.delete(member).where(and(
-        eq(member.userId, limitedUserId),
-        eq(member.organizationId, organizationId),
+      await db.delete(membership).where(and(
+        eq(membership.userId, limitedUserId),
+        eq(membership.organizationId, organizationId),
       ))
       await db.delete(user).where(eq(user.id, limitedUserId))
     }

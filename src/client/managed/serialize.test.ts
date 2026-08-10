@@ -112,7 +112,9 @@ test('buildConnectionPayload delegates to the engine spec', () => {
   assertEquals(info.database, 'app')
   assertEquals(info.username, 'app_user')
   assertEquals(info.dsn.includes('***'), true)
-  assertEquals(info.dsn.includes('sslmode=prefer'), true)
+  // Default settings enable TLS, and verify-full matches the SANs issued for
+  // the ProxySQL listener certificate (container name + any exposed address).
+  assertEquals(info.dsn.includes('sslmode=verify-full'), true)
 })
 
 test('parseManagedResidual ignores wrong-typed residual fields', () => {

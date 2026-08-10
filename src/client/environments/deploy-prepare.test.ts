@@ -138,9 +138,16 @@ function createIpLookupDb(rows: IpRow[]): Parameters<typeof resolveHostingBindAd
           return {
             where() {
               return {
+                orderBy() {
+                  return {
+                    async limit() {
+                      return rows.slice(0, 1)
+                    },
+                  }
+                },
                 async limit() {
                   // Caller chains `.where(...).limit(1)`; return first matching
-                  // row. Public-by-id and datacenter-by-server queries both end here.
+                  // row. Public-by-id and datacenter-by-server (via orderBy) end here.
                   return rows.slice(0, 1)
                 },
               }
@@ -814,8 +821,12 @@ describe('resolveHostingBindAddress edge cases', () => {
             return {
               where() {
                 return {
-                  async limit() {
-                    return [{ address: 10 }]
+                  orderBy() {
+                    return {
+                      async limit() {
+                        return [{ address: 10 }]
+                      },
+                    }
                   },
                 }
               },
@@ -969,6 +980,14 @@ describe('warningFromPrepareError and soft-error absorb', () => {
         composeServiceName: 'site',
       }).code,
       'traditional_web_principal_ambiguous',
+    )
+    assertEquals(
+      warningFromPrepareError({ kind: 'binding_endpoint_unavailable' }),
+      {
+        code: 'binding_endpoint_unavailable',
+        message:
+          'A service binding could not resolve a ProxySQL listener for its managed cluster.',
+      },
     )
   })
 
@@ -1355,6 +1374,45 @@ describe('resolveTraditionalWebSitesForMode and toPreparedDeployResult', () => {
     const deployDoc = documentForServiceOptions('deploy', withVariables)
     assertEquals(deployDoc, doc)
     assertEquals(previewDoc === doc, false)
+  })
+
+  it('redacts binding secrets in preview the same as ordinary secret variables', () => {
+    // Binding materialization seals secrets as enc. and parks them on
+    // secretMaterial alongside user variables; preview must drop
+    // variableMaterial and never leave envelopes in the YAML path.
+    const prepared = toPreparedDeployResult('preview', {
+      composeYaml: 'services:\n  web:\n    environment:\n      DATABASE_URL: sealed\n',
+      hooks: [],
+      variableMaterial: [
+        {
+          key: 'DATABASE_URL',
+          composeServiceName: 'web',
+          forBuild: false,
+          forRuntime: true,
+          isLiteral: true,
+          valueEnvelope: 'enc.binding-url',
+        },
+        {
+          key: 'DATABASE_PASSWORD',
+          composeServiceName: 'web',
+          forBuild: false,
+          forRuntime: true,
+          isLiteral: true,
+          valueEnvelope: 'enc.binding-password',
+        },
+      ],
+      storageMaterial: [],
+      principalMaterial: [],
+      traditionalWebSites: [],
+      dockerExternalNetworks: [],
+      containers: [],
+      ingressServices: [],
+      expansion: new Map([['web', ['web']]]),
+      registeredVolumes: [],
+      warnings: [],
+    })
+    assertEquals(prepared.variableMaterial, [])
+    assertEquals(prepared.composeYaml.includes('enc.binding'), false)
   })
 })
 

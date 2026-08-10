@@ -68,6 +68,17 @@ export function isValidIpAddress(address: string): boolean {
   return parseIpVersion(address) !== null
 }
 
+/**
+ * Coerce a Postgres `inet` driver value (possibly with a `/prefix` suffix) into
+ * a plain address string, or `undefined` when the value is not a valid IP.
+ */
+export function inetAddressToString(address: unknown): string | undefined {
+  if (typeof address !== 'string') return undefined
+  const stripped = stripInetPrefixSuffix(address)
+  if (!isValidIpAddress(stripped)) return undefined
+  return stripped
+}
+
 function parsePrefix(value: string, version: 4 | 6): number | null {
   if (!/^\d+$/.test(value)) return null
   const prefix = Number.parseInt(value, 10)

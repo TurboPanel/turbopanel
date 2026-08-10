@@ -1,5 +1,5 @@
 import { assertEquals } from 'jsr:@std/assert'
-import { and, eq, isNull } from 'drizzle-orm'
+import { and, eq, inArray, ne } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -19,17 +19,17 @@ import {
   project,
   server,
   service,
+  tls,
   workspace,
 } from '../../lib/db/schema.ts'
 import { postgresEngineSpec } from '../../lib/managed/postgres.ts'
 import type { ManagedSettings } from '../../lib/managed/settings.ts'
-import { managedIngressComposeServiceName } from '../../lib/naming.ts'
 import { createManagedPrincipal } from '../principals/store.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import { ensureManagedContainerAllocation } from './allocate-managed-container.ts'
 import {
-  buildManagedApplyPayload,
   isPrepareError,
+  prepareManagedApplyPayloads,
 } from './apply-prepare.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -132,6 +132,7 @@ async function withManagedApplyPrepareFixtures(
     serverId: string
     environmentId: string
     managedId: string
+    organizationId: string
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
@@ -234,16 +235,57 @@ async function withManagedApplyPrepareFixtures(
   if (!captured) throw new TypeError('failed to capture Hono context')
 
   try {
-    await fn({ db, c: captured, serverId, environmentId, managedId })
+    await fn({
+      db,
+      c: captured,
+      serverId,
+      environmentId,
+      managedId,
+      organizationId,
+    })
   } finally {
+    // `attachManagedOrgTlsMaterial` self-heals a system (managed-ingress)
+    // workspace/project/environment/service scoped to `serverId` as a side
+    // effect of preparing the apply payload — sweep every workspace under
+    // this test-owned organization (not just the tracked consumer ids) so
+    // that hierarchy never leaks and blocks the `server` delete below via
+    // the `environment.server_id` RESTRICT foreign key.
     await db.delete(principal).where(eq(principal.managedId, managedId))
     await db.delete(container).where(eq(container.serverId, serverId))
-    await db.delete(service).where(eq(service.environmentId, environmentId))
-    await db.delete(managed).where(eq(managed.id, managedId))
-    await db.delete(environment).where(eq(environment.id, environmentId))
-    await db.delete(project).where(eq(project.id, projectId))
+
+    const workspaceIds = (
+      await db
+        .select({ id: workspace.id })
+        .from(workspace)
+        .where(eq(workspace.organizationId, organizationId))
+    ).map((row) => row.id)
+    if (workspaceIds.length > 0) {
+      const projectIds = (
+        await db
+          .select({ id: project.id })
+          .from(project)
+          .where(inArray(project.workspaceId, workspaceIds))
+      ).map((row) => row.id)
+      if (projectIds.length > 0) {
+        const environmentIds = (
+          await db
+            .select({ id: environment.id })
+            .from(environment)
+            .where(inArray(environment.projectId, projectIds))
+        ).map((row) => row.id)
+        if (environmentIds.length > 0) {
+          await db.delete(service).where(inArray(service.environmentId, environmentIds))
+          await db.delete(managed).where(inArray(managed.environmentId, environmentIds))
+          await db.delete(environment).where(inArray(environment.id, environmentIds))
+        }
+        await db.delete(project).where(inArray(project.id, projectIds))
+      }
+    }
     await db.delete(server).where(eq(server.id, serverId))
-    await db.delete(workspace).where(eq(workspace.id, workspaceId))
+    if (workspaceIds.length > 0) {
+      await db.delete(workspace).where(inArray(workspace.id, workspaceIds))
+    }
+    await db.delete(tls).where(eq(tls.organizationId, organizationId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
 }
@@ -251,7 +293,7 @@ async function withManagedApplyPrepareFixtures(
 function settingsWithExposure(enabled: boolean): ManagedSettings {
   const parsed = postgresEngineSpec.parseSettings({
     ...(enabled
-      ? { exposure: { enabled: true, publishedPort: 15432, bind: 'local' } }
+      ? { exposure: { enabled: true, bind: 'local' } }
       : { exposure: { enabled: false } }),
   })
   if (!parsed) throw new TypeError('expected valid managed settings')
@@ -264,6 +306,7 @@ test('ensureManagedContainerAllocation creates service + ordinal-1 container nam
       environmentId,
       serverId,
       composeServiceName: 'postgres',
+      ordinal: 1,
     })
 
     assertEquals(allocation.containerName, `${allocation.serviceId}-1`)
@@ -311,11 +354,13 @@ test('ensureManagedContainerAllocation is idempotent on re-apply', async () => {
       environmentId,
       serverId,
       composeServiceName: 'postgres',
+      ordinal: 1,
     })
     const second = await ensureManagedContainerAllocation(db, {
       environmentId,
       serverId,
       composeServiceName: 'postgres',
+      ordinal: 1,
     })
 
     assertEquals(second.serviceId, first.serviceId)
@@ -341,12 +386,14 @@ test('ensureManagedContainerAllocation prunes stray pending rows on another serv
       environmentId,
       serverId: otherServerId,
       composeServiceName: 'postgres',
+      ordinal: 1,
     })
 
     const rePin = await ensureManagedContainerAllocation(db, {
       environmentId,
       serverId,
       composeServiceName: 'postgres',
+      ordinal: 1,
     })
 
     assertEquals(rePin.serviceId, first.serviceId)
@@ -376,6 +423,7 @@ test('ensureManagedContainerAllocation restores exited null-id ordinal-1 row to 
       environmentId,
       serverId,
       composeServiceName: 'postgres',
+      ordinal: 1,
     })
 
     await db
@@ -387,6 +435,7 @@ test('ensureManagedContainerAllocation restores exited null-id ordinal-1 row to 
       environmentId,
       serverId,
       composeServiceName: 'postgres',
+      ordinal: 1,
     })
 
     assertEquals(second.containerRowId, first.containerRowId)
@@ -413,51 +462,53 @@ test('ensureManagedContainerAllocation restores exited null-id ordinal-1 row to 
   })
 })
 
-test('buildManagedApplyPayload with exposure enabled allocates ingress on the engine service', async () => {
+test('prepareManagedApplyPayloads self-heals primary member and omits ingress', async () => {
   await withManagedApplyPrepareFixtures(async ({
     db,
     c,
     serverId,
     environmentId,
     managedId,
+    organizationId,
   }) => {
-    const payload = await buildManagedApplyPayload(c, db, {
+    const prepared = await prepareManagedApplyPayloads(c, db, {
       managedRow: { id: managedId, engine: 'postgres' },
       spec: postgresEngineSpec,
       settings: settingsWithExposure(true),
       databases: ['postgres'],
       serverId,
       environmentId,
+      organizationId,
     })
-    if (isPrepareError(payload)) {
-      throw new TypeError(`unexpected prepare error: ${payload.kind}`)
+    if (isPrepareError(prepared)) {
+      throw new TypeError(`unexpected prepare error: ${prepared.kind}`)
     }
 
+    assertEquals(prepared.members.length, 1)
+    assertEquals(prepared.members[0]!.serverId, serverId)
+    const payload = prepared.members[0]!.payload
+    assertEquals(payload.memberRole, 'primary')
+    assertEquals(payload.memberOrdinal, 1)
     assertEquals(payload.exposure.enabled, true)
-    assertEquals(payload.ingress !== undefined, true)
-    assertEquals(
-      payload.ingress?.composeServiceName,
-      managedIngressComposeServiceName('postgres'),
-    )
-    assertEquals(
-      payload.ingress?.containerName,
-      `${payload.ingress!.serviceId}-in`,
-    )
+    assertEquals('ingress' in payload, false)
+    assertEquals(payload.peers, [])
 
     const services = await db
       .select({
         id: service.id,
         composeServiceName: service.composeServiceName,
+        options: service.options,
       })
       .from(service)
       .where(eq(service.environmentId, environmentId))
     assertEquals(services.length, 1)
     assertEquals(services[0]?.composeServiceName, 'postgres')
-
     const serviceId = services[0]!.id
-    assertEquals(payload.ingress?.serviceId, serviceId)
     assertEquals(payload.containerName, `${serviceId}-1`)
-    assertEquals(payload.ingress?.containerName, `${serviceId}-in`)
+    assertEquals(
+      (services[0]!.options as { instances?: number } | null)?.instances,
+      1,
+    )
 
     const containers = await db
       .select({
@@ -467,113 +518,90 @@ test('buildManagedApplyPayload with exposure enabled allocates ingress on the en
       })
       .from(container)
       .where(eq(container.serviceId, serviceId))
-    const byRole = Object.fromEntries(
-      containers.map((row) => [row.role, row]),
-    )
-    assertEquals(containers.length, 2)
-    assertEquals(byRole.service?.ordinal, 1)
-    assertEquals(byRole.service?.containerName, `${serviceId}-1`)
-    assertEquals(byRole.ingress?.ordinal, 1)
-    assertEquals(byRole.ingress?.containerName, `${serviceId}-in`)
+    assertEquals(containers.length, 1)
+    assertEquals(containers[0]!.role, 'service')
+    assertEquals(containers[0]!.ordinal, 1)
+    assertEquals(containers[0]!.containerName, `${serviceId}-1`)
   })
 })
 
-test('buildManagedApplyPayload with exposure disabled prunes pending ingress containers', async () => {
+test('prepareManagedApplyPayloads ensures org CA and sets orgTlsMaterial with denc leaf key', async () => {
   await withManagedApplyPrepareFixtures(async ({
     db,
     c,
     serverId,
     environmentId,
     managedId,
+    organizationId,
   }) => {
-    const enabled = await buildManagedApplyPayload(c, db, {
-      managedRow: { id: managedId, engine: 'postgres' },
-      spec: postgresEngineSpec,
-      settings: settingsWithExposure(true),
-      databases: ['postgres'],
-      serverId,
-      environmentId,
-    })
-    if (isPrepareError(enabled)) {
-      throw new TypeError(`unexpected prepare error: ${enabled.kind}`)
-    }
-    const engineServiceId = enabled.ingress!.serviceId
-
-    const ingressPendingBefore = await db
-      .select({ id: container.id })
-      .from(container)
-      .where(
-        and(
-          eq(container.serviceId, engineServiceId),
-          eq(container.role, 'ingress'),
-          isNull(container.containerId),
-          eq(container.status, 'pending'),
-        ),
-      )
-    assertEquals(ingressPendingBefore.length, 1)
-
-    const [appBefore] = await db
-      .select({
-        id: container.id,
-        status: container.status,
-        containerName: container.containerName,
-      })
-      .from(container)
-      .where(
-        and(
-          eq(container.serviceId, engineServiceId),
-          eq(container.role, 'service'),
-        ),
-      )
-      .limit(1)
-    if (!appBefore) {
-      throw new TypeError('expected role=service container on engine service')
-    }
-
-    const disabled = await buildManagedApplyPayload(c, db, {
+    const prepared = await prepareManagedApplyPayloads(c, db, {
       managedRow: { id: managedId, engine: 'postgres' },
       spec: postgresEngineSpec,
       settings: settingsWithExposure(false),
       databases: ['postgres'],
       serverId,
       environmentId,
+      organizationId,
     })
-    if (isPrepareError(disabled)) {
-      throw new TypeError(`unexpected prepare error: ${disabled.kind}`)
+    if (isPrepareError(prepared)) {
+      throw new TypeError(`unexpected prepare error: ${prepared.kind}`)
     }
 
-    assertEquals(disabled.exposure.enabled, false)
-    assertEquals(disabled.ingress, undefined)
+    const payload = prepared.members[0]!.payload
+    assertEquals(payload.orgTlsMaterial !== undefined, true)
+    assertEquals(
+      payload.orgTlsMaterial!.certificatePem.includes('BEGIN CERTIFICATE'),
+      true,
+    )
+    assertEquals(
+      payload.orgTlsMaterial!.caCertPem.includes('BEGIN CERTIFICATE'),
+      true,
+    )
+    assertEquals(
+      payload.orgTlsMaterial!.privateKeyEnvelope.startsWith('denc.'),
+      true,
+    )
 
-    const ingressPendingAfter = await db
-      .select({ id: container.id })
-      .from(container)
+    const cas = await db
+      .select({ id: tls.id, source: tls.source, status: tls.status })
+      .from(tls)
       .where(
         and(
-          eq(container.serviceId, engineServiceId),
-          eq(container.role, 'ingress'),
-          isNull(container.containerId),
-          eq(container.status, 'pending'),
+          eq(tls.organizationId, organizationId),
+          eq(tls.source, 'organization_ca'),
+          ne(tls.status, 'revoked'),
         ),
       )
-    assertEquals(ingressPendingAfter.length, 0)
+    assertEquals(cas.length, 1)
 
-    const [appAfter] = await db
-      .select({
-        id: container.id,
-        status: container.status,
-        containerName: container.containerName,
-      })
-      .from(container)
+    // Re-apply reuses the same active CA (no second row).
+    const again = await prepareManagedApplyPayloads(c, db, {
+      managedRow: { id: managedId, engine: 'postgres' },
+      spec: postgresEngineSpec,
+      settings: settingsWithExposure(false),
+      databases: ['postgres'],
+      serverId,
+      environmentId,
+      organizationId,
+    })
+    if (isPrepareError(again)) {
+      throw new TypeError(`unexpected prepare error: ${again.kind}`)
+    }
+    assertEquals(
+      again.members[0]!.payload.orgTlsMaterial?.caCertPem,
+      payload.orgTlsMaterial?.caCertPem,
+    )
+
+    const casAfter = await db
+      .select({ id: tls.id })
+      .from(tls)
       .where(
         and(
-          eq(container.serviceId, engineServiceId),
-          eq(container.role, 'service'),
+          eq(tls.organizationId, organizationId),
+          eq(tls.source, 'organization_ca'),
+          ne(tls.status, 'revoked'),
         ),
       )
-      .limit(1)
-    assertEquals(appAfter?.id, appBefore.id)
-    assertEquals(appAfter?.status, appBefore.status)
-    assertEquals(appAfter?.containerName, appBefore.containerName)
+    assertEquals(casAfter.length, 1)
   })
 })

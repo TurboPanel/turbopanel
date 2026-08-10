@@ -51,6 +51,12 @@ export function isTlsFingerprintUniqueViolation(err: unknown): boolean {
   return message.includes('uniq_tls_organization_fingerprint_sha256')
 }
 
+export function isOrganizationCaUniqueViolation(err: unknown): boolean {
+  if (!isPostgresUniqueViolation(err)) return false
+  const message = err instanceof Error ? err.message : String(err)
+  return message.includes('uniq_tls_organization_active_ca')
+}
+
 export function createFailure(error: string, detail?: string): CreateTlsFailure {
   if (detail === undefined) {
     return { error, status: 400 }

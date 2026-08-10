@@ -47,6 +47,8 @@ export async function startCommandConsumer(opts: {
   amqpUrl: string
   commandQueue?: CommandQueue
   resealDeps?: VpnApplyResealDeps
+  secretsConfig?: import('../../client/authn/secrets.ts').SecretsConfig
+  dataEncryptionSecrets?: import('../../client/authn/secrets.ts').DerivedSecretsConfig
 }): Promise<{ close(): Promise<void> }> {
   const connection = await connectAmqp(opts.amqpUrl)
   const channel = await connection.createConfirmChannel()
@@ -54,8 +56,13 @@ export async function startCommandConsumer(opts: {
   await channel.prefetch(1)
 
   const consumerDeps: CommandConsumerDeps | undefined =
-    opts.commandQueue || opts.resealDeps
-      ? { commandQueue: opts.commandQueue, resealDeps: opts.resealDeps }
+    opts.commandQueue || opts.resealDeps || opts.secretsConfig
+      ? {
+        commandQueue: opts.commandQueue,
+        resealDeps: opts.resealDeps,
+        secretsConfig: opts.secretsConfig,
+        dataEncryptionSecrets: opts.dataEncryptionSecrets,
+      }
       : undefined
 
   const { consumerTag } = await channel.consume(

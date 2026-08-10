@@ -9,6 +9,7 @@ import { type Db, getDb } from "../../db.ts";
 import { datacenter, network, server } from "../../lib/db/schema.ts";
 import { parseDatacenterOptions } from "../../lib/datacenter-options.ts";
 import { suggestDatacenterNames } from "../../lib/datacenter-name-suggestions.ts";
+import { loadDatacenterCidrs } from "../../lib/net/datacenter-networks.ts";
 import {
   assertCanCreateOr403,
   assertCanManageOr403,
@@ -129,6 +130,16 @@ async function loadAssignableServers(
   return { ok: true, rows };
 }
 
+function attachPrivateCidrs<T extends { id: string }>(
+  rows: T[],
+  cidrsByDc: Map<string, string[]>,
+): Array<T & { privateCidrs: string[] }> {
+  return rows.map((row) => ({
+    ...row,
+    privateCidrs: cidrsByDc.get(row.id) ?? [],
+  }));
+}
+
 export function registerDatacenterRoutes(
   router: Hono<AppEnv>,
   opts: AuthRouteOpts,
@@ -189,7 +200,12 @@ export function registerDatacenterRoutes(
       )
       .orderBy(datacenter.createdAt);
 
-    return c.json({ datacenters: rows });
+    const cidrsByDc = await loadDatacenterCidrs(
+      db,
+      rows.map((row) => row.id),
+    );
+
+    return c.json({ datacenters: attachPrivateCidrs(rows, cidrsByDc) });
   });
 
   router.get("/datacenters/name-suggestions", async (c) => {
@@ -303,7 +319,10 @@ export function registerDatacenterRoutes(
 
     if (!row) return c.json({ error: "Not found" }, 404);
 
-    return c.json({ datacenter: row });
+    const cidrsByDc = await loadDatacenterCidrs(db, [row.id]);
+    const [withCidrs] = attachPrivateCidrs([row], cidrsByDc);
+
+    return c.json({ datacenter: withCidrs });
   });
 
   router.post("/datacenters", async (c) => {

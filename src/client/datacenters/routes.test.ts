@@ -13,7 +13,7 @@ import { deriveSecretsConfig, parseSecretsEnv } from "../authn/secrets.ts";
 import {
   datacenter,
   grant,
-  member,
+  membership,
   network,
   organization,
   server,
@@ -79,7 +79,7 @@ test("GET /datacenters/name-suggestions uses unassigned server geo and ASN", asy
     .returning({ id: user.id });
   const userId = u!.id;
 
-  await db.insert(member).values({ organizationId, userId });
+  await db.insert(membership).values({ organizationId, userId });
   await db.insert(grant).values({
     entityType: "organization",
     entityId: organizationId,
@@ -140,7 +140,7 @@ test("GET /datacenters/name-suggestions uses unassigned server geo and ASN", asy
   await db.delete(server).where(eq(server.id, assignedServer!.id));
   await db.delete(datacenter).where(eq(datacenter.id, assignedDatacenter!.id));
   await db.delete(grant).where(eq(grant.actorId, userId));
-  await db.delete(member).where(eq(member.userId, userId));
+  await db.delete(membership).where(eq(membership.userId, userId));
   await db.delete(user).where(eq(user.id, userId));
   await db.delete(organization).where(eq(organization.id, organizationId));
 });
@@ -185,7 +185,7 @@ test("GET /datacenters/:id returns 404 for datacenter in another org", async () 
     .returning({ id: user.id });
   const userId = u!.id;
 
-  await db.insert(member).values({ organizationId: orgA!.id, userId });
+  await db.insert(membership).values({ organizationId: orgA!.id, userId });
   await db.insert(grant).values({
     entityType: "organization",
     entityId: orgA!.id,
@@ -218,7 +218,7 @@ test("GET /datacenters/:id returns 404 for datacenter in another org", async () 
 
   await db.delete(datacenter).where(eq(datacenter.id, dcB!.id));
   await db.delete(grant).where(eq(grant.actorId, userId));
-  await db.delete(member).where(eq(member.userId, userId));
+  await db.delete(membership).where(eq(membership.userId, userId));
   await db.delete(user).where(eq(user.id, userId));
   await db.delete(organization).where(eq(organization.id, orgA!.id));
   await db.delete(organization).where(eq(organization.id, orgB!.id));
@@ -261,7 +261,7 @@ test("GET /datacenters returns 403 for org member without organization:manage", 
     .returning({ id: user.id });
   const userId = u!.id;
 
-  await db.insert(member).values({ organizationId, userId });
+  await db.insert(membership).values({ organizationId, userId });
 
   const cookie = await sessionCookie(db, secrets, userId);
   const res = await app.request("/datacenters", {
@@ -273,7 +273,7 @@ test("GET /datacenters returns 403 for org member without organization:manage", 
 
   assertEquals(res.status, 403);
 
-  await db.delete(member).where(eq(member.userId, userId));
+  await db.delete(membership).where(eq(membership.userId, userId));
   await db.delete(user).where(eq(user.id, userId));
   await db.delete(organization).where(eq(organization.id, organizationId));
 });
@@ -315,7 +315,7 @@ test("DELETE /datacenters/:id succeeds when no scoped networks exist", async () 
     .returning({ id: user.id });
   const userId = u!.id;
 
-  await db.insert(member).values({ organizationId, userId });
+  await db.insert(membership).values({ organizationId, userId });
   await db.insert(grant).values({
     entityType: "organization",
     entityId: organizationId,
@@ -357,7 +357,7 @@ test("DELETE /datacenters/:id succeeds when no scoped networks exist", async () 
   assertEquals(remaining, undefined);
 
   await db.delete(grant).where(eq(grant.actorId, userId));
-  await db.delete(member).where(eq(member.userId, userId));
+  await db.delete(membership).where(eq(membership.userId, userId));
   await db.delete(user).where(eq(user.id, userId));
   await db.delete(organization).where(eq(organization.id, organizationId));
 });
@@ -399,7 +399,7 @@ test("DELETE /datacenters/:id returns 409 when scoped networks exist", async () 
     .returning({ id: user.id });
   const userId = u!.id;
 
-  await db.insert(member).values({ organizationId, userId });
+  await db.insert(membership).values({ organizationId, userId });
   await db.insert(grant).values({
     entityType: "organization",
     entityId: organizationId,
@@ -455,7 +455,7 @@ test("DELETE /datacenters/:id returns 409 when scoped networks exist", async () 
   await db.delete(network).where(eq(network.id, net!.id));
   await db.delete(datacenter).where(eq(datacenter.id, dc!.id));
   await db.delete(grant).where(eq(grant.actorId, userId));
-  await db.delete(member).where(eq(member.userId, userId));
+  await db.delete(membership).where(eq(membership.userId, userId));
   await db.delete(user).where(eq(user.id, userId));
   await db.delete(organization).where(eq(organization.id, organizationId));
 });

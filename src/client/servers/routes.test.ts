@@ -19,7 +19,7 @@ import {
   environment,
   grant,
   license,
-  member,
+  membership,
   network,
   organization,
   project,
@@ -496,7 +496,7 @@ async function withServerDeleteFixtures(
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -534,9 +534,9 @@ async function withServerDeleteFixtures(
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
     ))
-    await db.delete(member).where(and(
-      eq(member.userId, userId),
-      eq(member.organizationId, organizationId),
+    await db.delete(membership).where(and(
+      eq(membership.userId, userId),
+      eq(membership.organizationId, organizationId),
     ))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
@@ -783,7 +783,7 @@ test('DELETE /servers/:id returns 403 not 503 for self-host-pinned server withou
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -830,9 +830,9 @@ test('DELETE /servers/:id returns 403 not 503 for self-host-pinned server withou
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
     ))
-    await db.delete(member).where(and(
-      eq(member.userId, userId),
-      eq(member.organizationId, organizationId),
+    await db.delete(membership).where(and(
+      eq(membership.userId, userId),
+      eq(membership.organizationId, organizationId),
     ))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
@@ -857,7 +857,8 @@ test('DELETE /servers/:id returns 409 when networks block deletion', async () =>
         updatedAt: now,
         organizationId,
         serverId,
-        kind: 'server',
+        kind: 'docker',
+        options: { dockerNetworkName: 'tp-restrict-net' },
       })
       .returning({ id: network.id })
 
@@ -1016,7 +1017,7 @@ test('DELETE /servers/:id invalidates the bound license on Workers runtime', asy
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -1070,9 +1071,9 @@ test('DELETE /servers/:id invalidates the bound license on Workers runtime', asy
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
     ))
-    await db.delete(member).where(and(
-      eq(member.userId, userId),
-      eq(member.organizationId, organizationId),
+    await db.delete(membership).where(and(
+      eq(membership.userId, userId),
+      eq(membership.organizationId, organizationId),
     ))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
@@ -1143,7 +1144,7 @@ test('DELETE /servers/:id returns 503 when daemon cell registry is unavailable',
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -1190,9 +1191,9 @@ test('DELETE /servers/:id returns 503 when daemon cell registry is unavailable',
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
     ))
-    await db.delete(member).where(and(
-      eq(member.userId, userId),
-      eq(member.organizationId, organizationId),
+    await db.delete(membership).where(and(
+      eq(membership.userId, userId),
+      eq(membership.organizationId, organizationId),
     ))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
@@ -1223,7 +1224,7 @@ test('DELETE /servers/:id returns 500 when purge fails after row delete', async 
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -1290,9 +1291,9 @@ test('DELETE /servers/:id returns 500 when purge fails after row delete', async 
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
     ))
-    await db.delete(member).where(and(
-      eq(member.userId, userId),
-      eq(member.organizationId, organizationId),
+    await db.delete(membership).where(and(
+      eq(membership.userId, userId),
+      eq(membership.organizationId, organizationId),
     ))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
@@ -1322,7 +1323,7 @@ test('GET /servers/updates does not call listRequests on the cell', async () => 
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -1385,9 +1386,9 @@ test('GET /servers/updates does not call listRequests on the cell', async () => 
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
     ))
-    await db.delete(member).where(and(
-      eq(member.userId, userId),
-      eq(member.organizationId, organizationId),
+    await db.delete(membership).where(and(
+      eq(membership.userId, userId),
+      eq(membership.organizationId, organizationId),
     ))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
@@ -1644,7 +1645,7 @@ test('GET /servers/:id/cell returns data for an admin user', async () => {
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
 
   const now = new Date().toISOString()
   const [insertedServer] = await db
@@ -1676,9 +1677,9 @@ test('GET /servers/:id/cell returns data for an admin user', async () => {
     assertEquals(body.snapshot.serverId, serverId)
   } finally {
     await db.delete(server).where(eq(server.id, serverId))
-    await db.delete(member).where(and(
-      eq(member.userId, userId),
-      eq(member.organizationId, organizationId),
+    await db.delete(membership).where(and(
+      eq(membership.userId, userId),
+      eq(membership.organizationId, organizationId),
     ))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
@@ -1785,7 +1786,7 @@ test('GET /servers — empty visibleIds short-circuits before cache', async () =
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(member).values({ organizationId, userId })
+  await db.insert(membership).values({ organizationId, userId })
 
   const now = new Date().toISOString()
   const [insertedServer] = await db
@@ -1814,9 +1815,9 @@ test('GET /servers — empty visibleIds short-circuits before cache', async () =
     assertEquals(recordingCache.readModels.length, 0)
   } finally {
     await db.delete(server).where(eq(server.id, serverId))
-    await db.delete(member).where(and(
-      eq(member.userId, userId),
-      eq(member.organizationId, organizationId),
+    await db.delete(membership).where(and(
+      eq(membership.userId, userId),
+      eq(membership.organizationId, organizationId),
     ))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
@@ -2189,7 +2190,7 @@ test('PATCH /servers/:id pins datacenterId and rejects cross-org datacenter', as
     .returning({ id: user.id })
   const userId = u!.id
 
-  await db.insert(member).values({ organizationId: orgA!.id, userId })
+  await db.insert(membership).values({ organizationId: orgA!.id, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: orgA!.id,
@@ -2265,7 +2266,7 @@ test('PATCH /servers/:id pins datacenterId and rejects cross-org datacenter', as
   await db.delete(datacenter).where(eq(datacenter.id, dcA!.id))
   await db.delete(datacenter).where(eq(datacenter.id, dcB!.id))
   await db.delete(grant).where(eq(grant.actorId, userId))
-  await db.delete(member).where(eq(member.userId, userId))
+  await db.delete(membership).where(eq(membership.userId, userId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, orgA!.id))
   await db.delete(organization).where(eq(organization.id, orgB!.id))

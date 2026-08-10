@@ -11,6 +11,12 @@ export const datacenterSchemas = {
       description: { type: ["string", "null"] },
       metadata: { type: ["object", "null"] },
       options: { type: ["object", "null"] },
+      privateCidrs: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "CIDRs from `network(kind='datacenter')` rows for this site. Prerequisite for private/replica placement (server-to-server datacenter transport).",
+      },
       createdAt: { type: "string", format: "date-time" },
       updatedAt: { type: "string", format: "date-time" },
     },

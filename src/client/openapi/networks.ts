@@ -8,7 +8,7 @@ export const networkSchemas = {
       organizationId: { type: 'string', format: 'uuid' },
       datacenterId: { type: ['string', 'null'], format: 'uuid' },
       serverId: { type: ['string', 'null'], format: 'uuid' },
-      kind: { type: 'string', enum: ['datacenter', 'server', 'docker'] },
+      kind: { type: 'string', enum: ['datacenter', 'docker'] },
       cidr: { type: ['string', 'null'] },
       displayName: { type: ['string', 'null'] },
       metadata: { type: ['object', 'null'] },
@@ -54,9 +54,9 @@ export const networkSchemas = {
       organizationId: { type: 'string', format: 'uuid' },
       kind: {
         type: 'string',
-        enum: ['datacenter', 'server', 'docker'],
+        enum: ['datacenter', 'docker'],
         description:
-          'Scope pairing: datacenter requires datacenterId; server requires serverId; docker requires neither (network_scope_required / network_single_scope_conflict on 400).',
+          'Scope pairing: datacenter requires datacenterId (no serverId); docker may optionally pin serverId for a host-local external network and must not set datacenterId (network_scope_required / network_single_scope_conflict on 400).',
       },
       datacenterId: { type: ['string', 'null'], format: 'uuid' },
       serverId: { type: ['string', 'null'], format: 'uuid' },
@@ -128,7 +128,7 @@ export const networkPaths: Record<string, unknown> = {
           in: 'query',
           schema: {
             type: 'string',
-            enum: ['datacenter', 'server', 'docker'],
+            enum: ['datacenter', 'docker'],
           },
         },
       ],
@@ -182,7 +182,7 @@ export const networkPaths: Record<string, unknown> = {
         },
         '400': {
           description:
-            'Invalid request — `docker_network_name_required` when kind=docker; `network_scope_required` when datacenter lacks datacenterId or server lacks serverId; `network_single_scope_conflict` when docker includes a scope id or a kind carries the wrong scope pair.',
+            'Invalid request — `docker_network_name_required` when kind=docker; `network_scope_required` when datacenter lacks datacenterId; `network_single_scope_conflict` when both scope ids are set, datacenter carries serverId, or docker carries datacenterId.',
           content: { 'application/json': { schema: clientErrorJson } },
         },
         '401': {

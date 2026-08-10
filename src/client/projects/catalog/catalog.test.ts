@@ -93,11 +93,13 @@ test('PRINCIPAL_PROVIDERS includes clickhouse and ClickHouse catalog uses it', (
   assertEquals(options.provider, 'clickhouse')
 })
 
-test('postgres catalog image equals managed engine spec default', () => {
-  const spec = getManagedEngineSpec('postgres')
-  if (!spec) throw new TypeError('postgres spec missing')
-  const entry = getCatalogEntry('postgres')
-  if (!entry) throw new TypeError('missing postgres')
-  const services = entry.compose.data.services as Record<string, { image?: string }>
-  assertEquals(services.postgres?.image, spec.defaultImage)
+test('available catalog engines match managed engine spec defaults', () => {
+  for (const code of ['postgres', 'mysql', 'mariadb'] as const) {
+    const spec = getManagedEngineSpec(code)
+    if (!spec) throw new TypeError(`${code} spec missing`)
+    const entry = getCatalogEntry(code)
+    if (!entry) throw new TypeError(`missing ${code}`)
+    const services = entry.compose.data.services as Record<string, { image?: string }>
+    assertEquals(services[code]?.image, spec.defaultImage)
+  }
 })

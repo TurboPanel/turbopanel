@@ -52,7 +52,7 @@ export const tlsSchemas = {
       displayName: { type: ['string', 'null'] },
       source: {
         type: 'string',
-        enum: ['upload', 'lets_encrypt', 'self_signed'],
+        enum: ['upload', 'lets_encrypt', 'self_signed', 'organization_ca'],
       },
       metadata: { $ref: '#/components/schemas/TlsMetadata' },
       options: { type: ['object', 'null'] },
@@ -80,7 +80,7 @@ export const tlsSchemas = {
     properties: {
       source: {
         type: 'string',
-        enum: ['upload', 'lets_encrypt', 'self_signed'],
+        enum: ['upload', 'lets_encrypt', 'self_signed', 'organization_ca'],
       },
       displayName: { type: 'string' },
       certificatePem: {
@@ -95,6 +95,10 @@ export const tlsSchemas = {
         type: 'array',
         items: { type: 'string' },
         description: 'Required for lets_encrypt and self_signed',
+      },
+      commonName: {
+        type: 'string',
+        description: 'Optional CN for source=organization_ca',
       },
       prefer: { type: 'number' },
       autoRenew: { type: 'boolean' },
@@ -131,7 +135,8 @@ export const tlsPaths = {
     },
     post: {
       tags: ['TLS'],
-      summary: 'Create a TLS certificate (upload, self-signed, or LE pending)',
+      summary:
+        'Create a TLS certificate (upload, self-signed, organization CA, or LE pending)',
       security: [{ cookieAuth: [] }],
       requestBody: {
         required: true,
@@ -149,6 +154,72 @@ export const tlsPaths = {
               schema: { $ref: '#/components/schemas/EntityOkResponse' },
             },
           },
+        },
+        409: {
+          description:
+            'tls_fingerprint_conflict or organization_ca_exists (active CA already present)',
+        },
+      },
+    },
+  },
+  '/api/client/v1/tls/ca': {
+    get: {
+      tags: ['TLS'],
+      summary: 'Ensure or return the organization CA certificate (create if missing)',
+      security: [{ cookieAuth: [] }],
+      responses: {
+        200: {
+          description: 'Active organization CA (public fields only)',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['tls'],
+                properties: {
+                  tls: { $ref: '#/components/schemas/TlsRow' },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/tls/ca/rotate': {
+    post: {
+      tags: ['TLS'],
+      summary: 'Rotate the organization CA (revokes prior active CA, mints a new one)',
+      security: [{ cookieAuth: [] }],
+      responses: {
+        200: {
+          description: 'Rotated',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/EntityOkResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/tls/ca/download': {
+    get: {
+      tags: ['TLS'],
+      summary: 'Download the organization CA certificate PEM only',
+      description:
+        'Returns the active organization CA `certificatePem` as `application/x-pem-file`. Private key is never included.',
+      security: [{ cookieAuth: [] }],
+      responses: {
+        200: {
+          description: 'CA certificate PEM',
+          content: {
+            'application/x-pem-file': {
+              schema: { type: 'string' },
+            },
+          },
+        },
+        404: {
+          description: 'No active organization CA',
         },
       },
     },

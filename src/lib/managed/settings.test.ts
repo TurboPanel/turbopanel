@@ -2,13 +2,19 @@ import { assertEquals } from 'jsr:@std/assert'
 import {
   clampManagedResources,
   DEFAULT_MANAGED_SETTINGS,
+  getManagedAllowedImages,
   getManagedReservedEnvKeys,
+  isManagedImageAllowed,
   MANAGED_DOCKER_OPTION_DENYLIST,
+  MARIADB_ALLOWED_IMAGES,
+  MARIADB_RESERVED_ENV_KEYS,
+  MYSQL_ALLOWED_IMAGES,
+  MYSQL_RESERVED_ENV_KEYS,
   parseBackupSettings,
   parseManagedDockerOptions,
   parseManagedSettingsBase,
+  POSTGRES_ALLOWED_IMAGES,
   POSTGRES_RESERVED_ENV_KEYS,
-  RESERVED_PUBLISHED_PORTS,
 } from './settings.ts'
 
 /**
@@ -21,11 +27,11 @@ const test = Deno.test.bind(Deno)
 
 test('parseManagedSettingsBase returns defaults for undefined/null', () => {
   assertEquals(parseManagedSettingsBase(undefined), {
-    ssl: { enabled: false },
+    ssl: { enabled: true },
     exposure: { enabled: false },
   })
   assertEquals(parseManagedSettingsBase(null), {
-    ssl: { enabled: false },
+    ssl: { enabled: true },
     exposure: { enabled: false },
   })
   assertEquals(
@@ -45,6 +51,71 @@ test('image ref accept/reject', () => {
   assertEquals(parseManagedSettingsBase({ image: 'postgres;rm' }), null)
   assertEquals(parseManagedSettingsBase({ image: '' }), null)
   assertEquals(parseManagedSettingsBase({ image: 12 }), null)
+})
+
+test('getManagedAllowedImages / isManagedImageAllowed expose the curated allowlists', () => {
+  assertEquals(getManagedAllowedImages('postgres'), POSTGRES_ALLOWED_IMAGES)
+  assertEquals(getManagedAllowedImages('mysql'), MYSQL_ALLOWED_IMAGES)
+  assertEquals(getManagedAllowedImages('mariadb'), MARIADB_ALLOWED_IMAGES)
+  // Engines without a curated allowlist yet (redis/clickhouse/unknown) are unrestricted.
+  assertEquals(getManagedAllowedImages('redis'), undefined)
+  assertEquals(getManagedAllowedImages('unknown'), undefined)
+
+  assertEquals(
+    isManagedImageAllowed('postgres', 'docker.io/library/postgres:18-alpine'),
+    true,
+  )
+  assertEquals(isManagedImageAllowed('postgres', 'docker.io/library/postgres:17'), false)
+  assertEquals(isManagedImageAllowed('mysql', 'docker.io/library/mysql:9.7'), true)
+  assertEquals(isManagedImageAllowed('mysql', 'docker.io/library/mysql:8'), false)
+  assertEquals(isManagedImageAllowed('mariadb', 'docker.io/library/mariadb:12.3'), true)
+  assertEquals(isManagedImageAllowed('mariadb', 'docker.io/library/mariadb:11'), false)
+  // Unrestricted engines accept anything syntactically valid.
+  assertEquals(isManagedImageAllowed('redis', 'docker.io/library/redis:7'), true)
+})
+
+test('parseManagedSettingsBase enforces the engine allowlist when engine is passed', () => {
+  assertEquals(
+    parseManagedSettingsBase(
+      { image: 'docker.io/library/mysql:9.7' },
+      undefined,
+      'mysql',
+    )?.image,
+    'docker.io/library/mysql:9.7',
+  )
+  // Outside the allowlist -> rejected, even though the OCI syntax is valid.
+  assertEquals(
+    parseManagedSettingsBase(
+      { image: 'docker.io/library/mysql:8' },
+      undefined,
+      'mysql',
+    ),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase(
+      { image: 'docker.io/library/mariadb:11' },
+      undefined,
+      'mariadb',
+    ),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase(
+      { image: 'docker.io/library/postgres:17' },
+      undefined,
+      'postgres',
+    ),
+    null,
+  )
+  // Without an engine argument, the base parser stays syntax-only (callers that
+  // already enforce the allowlist, e.g. via the command-payload check, may omit it).
+  assertEquals(
+    parseManagedSettingsBase({ image: 'docker.io/library/mysql:8' })?.image,
+    'docker.io/library/mysql:8',
+  )
+  // No image at all is always fine (engine default applies later).
+  assertEquals(parseManagedSettingsBase({}, undefined, 'mysql')?.image, undefined)
 })
 
 test('engineConfig size cap and control-char reject', () => {
@@ -128,38 +199,32 @@ test('dockerOptions returns null on each denied key', () => {
   )
 })
 
-test('exposure port range, reserved ports, enabled requires port', () => {
+test('exposure accept/reject bind; publishedPort ignored', () => {
   assertEquals(
     parseManagedSettingsBase({
-      exposure: { enabled: true, publishedPort: 15432 },
+      exposure: { enabled: true, bind: 'public' },
     })?.exposure,
-    { enabled: true, publishedPort: 15432 },
-  )
-  assertEquals(
-    parseManagedSettingsBase({ exposure: { enabled: true } }),
-    null,
+    { enabled: true, bind: 'public' },
   )
   assertEquals(
     parseManagedSettingsBase({
-      exposure: { enabled: true, publishedPort: 0 },
-    }),
-    null,
+      exposure: { enabled: true },
+    })?.exposure,
+    { enabled: true },
   )
   assertEquals(
     parseManagedSettingsBase({
-      exposure: { enabled: true, publishedPort: 70000 },
+      exposure: { enabled: true, bind: 'internet' },
     }),
     null,
   )
-  for (const port of RESERVED_PUBLISHED_PORTS) {
-    assertEquals(
-      parseManagedSettingsBase({
-        exposure: { enabled: true, publishedPort: port },
-      }),
-      null,
-      `reserved port ${port} must be rejected`,
-    )
-  }
+  // publishedPort is ignored — shared ProxySQL listeners use protocol ports.
+  assertEquals(
+    parseManagedSettingsBase({
+      exposure: { enabled: true, publishedPort: 22, bind: 'local' },
+    })?.exposure,
+    { enabled: true, bind: 'local' },
+  )
   assertEquals(
     parseManagedSettingsBase({
       exposure: { enabled: false, bind: 'local' },
@@ -208,9 +273,10 @@ test('parseManagedSettingsBase wires backups through', () => {
   assertEquals(parseManagedSettingsBase(undefined)?.backups, undefined)
 })
 
-test('getManagedReservedEnvKeys returns postgres set or empty', () => {
+test('getManagedReservedEnvKeys returns the engine set or empty for unknown engines', () => {
   assertEquals(getManagedReservedEnvKeys('postgres'), POSTGRES_RESERVED_ENV_KEYS)
-  assertEquals(getManagedReservedEnvKeys('mysql').size, 0)
+  assertEquals(getManagedReservedEnvKeys('mysql'), MYSQL_RESERVED_ENV_KEYS)
+  assertEquals(getManagedReservedEnvKeys('mariadb'), MARIADB_RESERVED_ENV_KEYS)
   assertEquals(getManagedReservedEnvKeys('unknown').size, 0)
 })
 

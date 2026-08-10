@@ -31,7 +31,7 @@ export const ipSchemas = {
         description: 'Derived from `address`, read-only. Do not send on create.',
       },
       allocation: { type: 'string', enum: ['dedicated', 'shared'] },
-      scope: { type: 'string', enum: ['public', 'datacenter', 'loopback', 'vpn'] },
+      scope: { type: 'string', enum: ['public', 'datacenter', 'vpn'] },
       displayName: { type: ['string', 'null'] },
       metadata: { type: ['object', 'null'] },
       options: { type: ['object', 'null'] },
@@ -57,11 +57,11 @@ export const ipSchemas = {
     type: 'object',
     required: ['address', 'allocation', 'scope'],
     description:
-      'Do not send `version` (server returns 400 when present). `scope=vpn` requires `vpnId`; other scopes forbid it. `serverId` and `datacenterId` are mutually exclusive.',
+      'Do not send `version` (server returns 400 when present). `scope=vpn` requires `vpnId`; other scopes forbid it. `scope=datacenter` requires `serverId` or `datacenterId`. `serverId` and `datacenterId` are mutually exclusive.',
     properties: {
       address: { type: 'string' },
       allocation: { type: 'string', enum: ['dedicated', 'shared'] },
-      scope: { type: 'string', enum: ['public', 'datacenter', 'loopback', 'vpn'] },
+      scope: { type: 'string', enum: ['public', 'datacenter', 'vpn'] },
       displayName: { type: 'string' },
       datacenterId: { type: ['string', 'null'], format: 'uuid' },
       networkId: { type: ['string', 'null'], format: 'uuid' },
@@ -99,7 +99,7 @@ export const ipPaths: Record<string, unknown> = {
         {
           name: 'scope',
           in: 'query',
-          schema: { type: 'string', enum: ['public', 'datacenter', 'loopback', 'vpn'] },
+          schema: { type: 'string', enum: ['public', 'datacenter', 'vpn'] },
         },
         { name: 'allocation', in: 'query', schema: { type: 'string', enum: ['dedicated', 'shared'] } },
       ],
@@ -140,7 +140,11 @@ export const ipPaths: Record<string, unknown> = {
             },
           },
         },
-        '400': { description: 'Invalid request', content: { 'application/json': { schema: clientErrorJson } } },
+        '400': {
+          description:
+            'Invalid request — includes client-supplied `version`, invalid address/scope FKs, missing VPN/`scope=vpn` pairing, missing `serverId`/`datacenterId` when `scope=datacenter`, or free-pool datacenter mutual exclusion.',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
         '401': { description: 'Unauthorized', content: { 'application/json': { schema: clientErrorJson } } },
         '403': { description: 'Forbidden', content: { 'application/json': { schema: clientErrorJson } } },
         '409': {

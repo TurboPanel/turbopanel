@@ -1,17 +1,21 @@
 /**
- * System hierarchy provisioning for per-server hosting ingress and the
- * co-located self-host stack (`turbopanel` component: database/queue/analytics).
+ * System hierarchy provisioning for per-server hosting ingress, managed
+ * (ProxySQL) ingress, and the co-located self-host stack (`turbopanel`
+ * component: database/queue/analytics).
  *
  * Identity contract (do not store org/server ids in project/service/container
  * metadata — these keys are the source of truth):
  *
  * - `workspace.kind = 'system'` — one machine workspace per organization
- * - `project.metadata.component = 'hosting-ingress'` — shared ingress project
+ * - `project.metadata.component = 'hosting-ingress'` — shared Traefik project
+ * - `project.metadata.component = 'managed-ingress'` — shared ProxySQL project
  * - `environment.server_id` under that project — one environment per enrolled
  *   server (identity is `project_id` + `server_id`, never
  *   `environment.metadata.component`)
- * - `service.composeServiceName = 'traefik'` — ingress service under that env
- * - `container` via `ensureServiceIngressContainerAllocation` (`role='ingress'`)
+ * - `service.composeServiceName = 'traefik'` — hosting ingress service
+ * - `service.composeServiceName = 'proxysql'` — managed ingress service
+ * - hosting container via `ensureServiceIngressContainerAllocation` (`role='ingress'`)
+ * - managed-ingress container via `allocateEnvironmentContainers` (`role='system'`)
  *
  * Self-host stack (co-located instance only):
  *
@@ -50,6 +54,11 @@ export const SYSTEM_HOSTING_INGRESS_COMPONENT = 'hosting-ingress'
 export const SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME = 'traefik'
 export const SYSTEM_WORKSPACE_DISPLAY_NAME = 'System'
 export const SYSTEM_PROJECT_DISPLAY_NAME = 'Server Ingress'
+
+/** Per-server ProxySQL shared frontend (managed engine ingress). */
+export const SYSTEM_MANAGED_INGRESS_COMPONENT = 'managed-ingress'
+export const SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME = 'proxysql'
+export const SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME = 'Database Ingress'
 
 /** Self-host project/environment identity key — not a wire `SystemComponentKey`. */
 export const SYSTEM_SELF_HOST_COMPONENT = 'turbopanel'
@@ -105,8 +114,9 @@ export type SelfHostSystemHierarchyIds = {
  * Component identity comes from `project.metadata.component` — never from
  * `environment.metadata.component`.
  *
- * A server can now carry up to two system environments — hosting-ingress
- * (any enrolled server) and self-host `turbopanel` (colocated server only).
+ * A server can now carry up to three system environments — hosting-ingress
+ * (any enrolled server), managed-ingress / ProxySQL (when managed members
+ * exist), and self-host `turbopanel` (colocated server only).
  * Pass `component` to disambiguate; omitting it returns the first match and
  * should only be used where at most one system environment can exist for the
  * server in question (e.g. non-colocated hosting-ingress delete-blocking).
@@ -378,6 +388,130 @@ export async function ensureSystemHierarchy(
   params: { organizationId: string; serverId: string },
 ): Promise<SystemHierarchyIds> {
   return await systemHierarchyProvision.ensure(db, params)
+}
+
+/**
+ * Shared managed-ingress (ProxySQL) project under the system workspace.
+ *
+ * Race-safe via partial unique `uniq_project_workspace_system_component`.
+ */
+async function ensureManagedIngressProject(
+  tx: Db,
+  workspaceId: string,
+): Promise<string> {
+  const metadataJson = JSON.stringify({
+    type: 'docker-compose',
+    component: SYSTEM_MANAGED_INGRESS_COMPONENT,
+  })
+
+  const inserted = await tx.execute<{ id: string }>(sql`
+    INSERT INTO project (workspace_id, name, metadata)
+    VALUES (
+      ${workspaceId}::uuid,
+      ${SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME},
+      ${metadataJson}::jsonb
+    )
+    ON CONFLICT (workspace_id, (metadata->>'component'))
+      WHERE (metadata->>'component') IS NOT NULL
+    DO NOTHING
+    RETURNING id
+  `)
+  if (inserted[0]?.id) return inserted[0].id
+
+  const rows = await tx.execute<{ id: string }>(sql`
+    SELECT id
+    FROM project
+    WHERE workspace_id = ${workspaceId}::uuid
+      AND metadata->>'component' = ${SYSTEM_MANAGED_INGRESS_COMPONENT}
+    LIMIT 1
+  `)
+  const existing = rows[0]?.id
+  if (!existing) {
+    throw new Error(
+      `managed-ingress project missing after insert race (workspace=${workspaceId})`,
+    )
+  }
+  return existing
+}
+
+/**
+ * Idempotently ensure workspace(kind=system) → project(managed-ingress) →
+ * environment(server) → service(proxysql) → container(role=system, uuid naming).
+ *
+ * Does **not** allocate an ingress-role Traefik row — ProxySQL is the
+ * protocol frontend and uses uuid naming like self-host stack services.
+ */
+async function ensureManagedIngressHierarchyImpl(
+  db: Db,
+  params: { organizationId: string; serverId: string },
+): Promise<SystemHierarchyIds> {
+  return await db.transaction(async (tx) => {
+    const workspaceId = await ensureSystemWorkspace(tx, params.organizationId)
+    const projectId = await ensureManagedIngressProject(tx, workspaceId)
+    const [serverRow] = await tx
+      .select({ displayName: server.name })
+      .from(server)
+      .where(eq(server.id, params.serverId))
+      .limit(1)
+    const environmentDisplayName =
+      serverRow?.displayName?.trim() || SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME
+    const environmentId = await ensureServerEnvironment(
+      tx,
+      projectId,
+      params.serverId,
+      environmentDisplayName,
+    )
+    const serviceId = await ensureComposeService(
+      tx,
+      environmentId,
+      SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
+    )
+
+    const allocations = await allocateEnvironmentContainers(tx, {
+      environmentId,
+      serverId: params.serverId,
+      containerServices: [
+        {
+          serviceId,
+          composeServiceName: SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
+          instances: 1,
+          role: 'system',
+        },
+      ],
+      containerNaming: 'uuid',
+      environmentServiceIds: [serviceId],
+    })
+    const allocation = allocations[0]
+    if (!allocation) {
+      throw new Error(
+        `managed-ingress container allocation missing (service=${serviceId})`,
+      )
+    }
+
+    return {
+      workspaceId,
+      projectId,
+      environmentId,
+      serviceId,
+      containerRowId: allocation.containerRowId,
+      containerName: allocation.containerName,
+    }
+  })
+}
+
+/**
+ * Mutable provision hook — tests may replace `ensure` to force failures.
+ * Production callers use {@link ensureManagedIngressHierarchy}.
+ */
+export const managedIngressHierarchyProvision = {
+  ensure: ensureManagedIngressHierarchyImpl,
+}
+
+export async function ensureManagedIngressHierarchy(
+  db: Db,
+  params: { organizationId: string; serverId: string },
+): Promise<SystemHierarchyIds> {
+  return await managedIngressHierarchyProvision.ensure(db, params)
 }
 
 /**

@@ -247,6 +247,8 @@ export default {
                     dataEncryptionSecrets: cachedDataEncryptionSecrets,
                   }
                   : undefined,
+              secretsConfig: cachedSecretsConfig ?? undefined,
+              dataEncryptionSecrets: cachedDataEncryptionSecrets ?? undefined,
             })
             msg.ack()
           } catch (error) {

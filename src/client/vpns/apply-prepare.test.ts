@@ -1,6 +1,7 @@
 import { assertEquals } from 'jsr:@std/assert'
 import type { Db } from '../../db.ts'
 import { deriveWireguardInterfaceName } from '../../lib/commands/wireguard.ts'
+import { ip, network, peer, server, vpn } from '../../lib/db/schema.ts'
 import { prepareVpnApplyPayloads } from './apply-prepare.ts'
 
 /**
@@ -30,6 +31,33 @@ function createSequentialSelectDb(...resultSets: unknown[][]): Db {
           return {
             where() {
               return whereResult(resultSets[index++] ?? [])
+            },
+          }
+        },
+      }
+    },
+  } as unknown as Db
+}
+
+/**
+ * Table-routed mock: each table gets its own queue of canned result sets,
+ * consumed in call order for that table. Needed because `validateGateways`
+ * now issues a variable number of extra `server` / `network` selects per
+ * gateway peer (via {@link assertServerDatacenterReady}) — a purely
+ * sequential mock desyncs as soon as any gateway is present.
+ */
+function createTableRoutedDb(queues: Map<unknown, unknown[][]>): Db {
+  const cursors = new Map<unknown, number>()
+  return {
+    select() {
+      return {
+        from(table: unknown) {
+          return {
+            where() {
+              const queue = queues.get(table) ?? []
+              const idx = cursors.get(table) ?? 0
+              cursors.set(table, idx + 1)
+              return whereResult(queue[idx] ?? [])
             },
           }
         },
@@ -90,12 +118,18 @@ test('prepareVpnApplyPayloads builds mesh payloads with forwarding on primary ga
     { id: 'ip-member', address: '203.0.113.2' },
   ]
 
-  const db = createSequentialSelectDb(
-    [{ id: VPN_ID, cidr: '203.0.113.0/24' }],
-    peerRows,
-    serverRows,
-    networkRows,
-    ipRows,
+  const db = createTableRoutedDb(
+    new Map<unknown, unknown[][]>([
+      [vpn, [[{ id: VPN_ID, cidr: '203.0.113.0/24' }]]],
+      [peer, [peerRows]],
+      // 1st call: loadPeerServers (all servers). 2nd call:
+      // assertServerDatacenterReady for the single gateway peer.
+      [server, [serverRows, [{ id: 'server-gw', datacenterId: 'dc-a', connected: true }]]],
+      // 1st call: siteCidrsByDc preload. 2nd call: assertDatacenterHasCidr
+      // inside validateGateways for the same gateway's datacenter.
+      [network, [networkRows, networkRows]],
+      [ip, [ipRows]],
+    ]),
   )
 
   const result = await prepareVpnApplyPayloads(db, VPN_ID)
