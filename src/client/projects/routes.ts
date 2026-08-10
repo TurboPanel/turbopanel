@@ -15,7 +15,6 @@ import {
   listCatalog,
   resolveCatalogVariablePlaintext,
   type CatalogEntry,
-  type CreateProjectType,
 } from './catalog/index.ts'
 import { emptyComposeDocument } from '../../lib/compose/index.ts'
 import {
