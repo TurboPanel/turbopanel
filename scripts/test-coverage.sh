@@ -137,6 +137,8 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/bindings/resolve-endpoint.hostfree.test.ts \
   src/client/bindings/routes-helpers.test.ts \
   src/client/bindings/routes-helpers.hostfree.test.ts \
+  src/client/bindings/routes.test.ts \
+  src/client/bindings/routes.hostfree.test.ts \
   src/client/bindings/impact.test.ts \
   src/client/display-name-uniqueness.test.ts \
   src/client/environments/deploy-prepare.test.ts \
