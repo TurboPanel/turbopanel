@@ -238,7 +238,6 @@ async function withCommandRouteFixtures(
       actorType: 'user',
       actorId: userId,
       permission: 'organization:manage',
-      allow: true,
     })
   }
 

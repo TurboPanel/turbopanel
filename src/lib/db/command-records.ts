@@ -124,7 +124,7 @@ export async function createCommandRecord(
   const metadata: CommandMetadata & Record<string, unknown> = {
     queuedAt: now,
     ...(params.expiresAt !== undefined ? { expiresAt: params.expiresAt } : {}),
-    ...(params.metadata ?? {}),
+    ...params.metadata,
   }
 
   const rows = await db

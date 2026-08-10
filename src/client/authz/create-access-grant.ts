@@ -38,7 +38,6 @@ export type CreateAccessGrantInput = {
   actorId: string
   entityType: string
   entityId: string
-  allow?: boolean
   permissionKey: string
 }
 
@@ -642,8 +641,6 @@ export async function createAccessGrant(
     return actorResult
   }
 
-  const allow = input.allow ?? true
-
   const inserted = await db
     .insert(grant)
     .values({
@@ -652,7 +649,6 @@ export async function createAccessGrant(
       actorType: input.actorType,
       actorId: input.actorId,
       permission,
-      allow,
     })
     .onConflictDoNothing({
       target: [

@@ -1640,7 +1640,6 @@ export const grant = pgTable(
     entityType: text('entity_type').notNull(),
     entityId: uuid('entity_id').notNull(),
     permission: text().notNull(),
-    allow: boolean().notNull().default(true),
   },
   (table) => [
     unique('grant_unique').on(

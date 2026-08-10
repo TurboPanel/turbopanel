@@ -118,7 +118,7 @@ function buildBatchStatusCoalesceKey(
 
 function evictExpiredBatchStatusEntries(now = Date.now()): void {
   for (const [key, entry] of batchStatusCoalesce) {
-    if (entry.promise) continue
+    if (entry.promise !== undefined) continue
     if (entry.expiresAt <= now) {
       batchStatusCoalesce.delete(key)
     }
@@ -928,13 +928,13 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       if (entry.result) {
         return c.json(entry.result, 200, { 'Cache-Control': STATUS_CACHE_CONTROL })
       }
-      if (entry.promise) {
+      if (entry.promise !== undefined) {
         const result = await entry.promise
         return c.json(result, 200, { 'Cache-Control': STATUS_CACHE_CONTROL })
       }
     }
 
-    if (!batchStatusCoalesce.get(coalesceKey)?.promise) {
+    if (batchStatusCoalesce.get(coalesceKey)?.promise === undefined) {
       const registry = getDaemonCellRegistry(c)
       const promise = loadServerStatusRecords(db, registry, visibleIds)
         .then((servers) => ({ servers }))
@@ -1044,7 +1044,10 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       if (stale && projectedUpdate?.status === 'updating') {
         const finishedAt = new Date().toISOString()
         const requestId = projectedUpdate.requestId ?? ''
-        if (targetManifest && current?.commit === targetManifest.commit) {
+        if (
+          current?.commit === targetManifest?.commit &&
+          targetManifest != null
+        ) {
           await onDaemonUpdateResult(db, id, requestId, true, finishedAt)
         } else {
           await onDaemonUpdateExpired(db, id, requestId, finishedAt)

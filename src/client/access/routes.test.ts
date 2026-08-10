@@ -161,7 +161,6 @@ test('GET /access is forbidden for an organization manager', async () => {
       actorType: 'user',
       actorId: actorId,
       permission: 'organization:manage',
-      allow: true,
     })
 
     const cookie = await sessionCookie(db, secrets, actorId)
@@ -184,7 +183,6 @@ test('POST /access is forbidden for an organization manager', async () => {
       actorType: 'user',
       actorId: actorId,
       permission: 'organization:manage',
-      allow: true,
     })
 
     const cookie = await sessionCookie(db, secrets, actorId)
@@ -229,7 +227,6 @@ test('DELETE /access/:id is forbidden for an organization manager', async () => 
       actorType: 'user',
       actorId: actorId,
       permission: 'organization:manage',
-      allow: true,
     })
 
     // An existing grant the manager should not be able to revoke.
@@ -241,7 +238,6 @@ test('DELETE /access/:id is forbidden for an organization manager', async () => 
         actorType: 'user',
         actorId: targetId,
         permission: 'organization:manage',
-        allow: true,
       })
       .returning({ id: grant.id })
 
@@ -275,7 +271,6 @@ test('DELETE /access/:id rejects revoking the sole organization owner', async ()
         actorType: 'user',
         actorId: actorId,
         permission: 'organization:own',
-        allow: true,
       })
       .returning({ id: grant.id })
 
@@ -299,7 +294,6 @@ test('DELETE /access/:id allows revoking a non-final organization owner', async 
       actorType: 'user',
       actorId: actorId,
       permission: 'organization:own',
-      allow: true,
     })
 
     const [targetGrant] = await db
@@ -310,7 +304,6 @@ test('DELETE /access/:id allows revoking a non-final organization owner', async 
         actorType: 'user',
         actorId: targetId,
         permission: 'organization:own',
-        allow: true,
       })
       .returning({ id: grant.id })
 
@@ -334,7 +327,6 @@ test('DELETE /access/:id rejects revoking the sole team owner', async () => {
       actorType: 'user',
       actorId: actorId,
       permission: 'organization:own',
-      allow: true,
     })
 
     const [teamOwnerGrant] = await db
@@ -345,7 +337,6 @@ test('DELETE /access/:id rejects revoking the sole team owner', async () => {
         actorType: 'user',
         actorId: targetId,
         permission: 'team:own',
-        allow: true,
       })
       .returning({ id: grant.id })
 
@@ -369,7 +360,6 @@ test('GET /access/check honors team-scoped grants without org grants', async () 
       actorType: 'user',
       actorId: targetId,
       permission: 'team:manage',
-      allow: true,
     })
 
     const cookie = await sessionCookie(db, secrets, targetId)
@@ -405,7 +395,6 @@ test('POST /access rejects organization permission on workspace entity', async (
       actorType: 'user',
       actorId: actorId,
       permission: 'organization:own',
-      allow: true,
     })
 
     const cookie = await sessionCookie(db, secrets, actorId)
@@ -445,7 +434,6 @@ test('POST /access rejects deny grants with 400', async () => {
       actorType: 'user',
       actorId: actorId,
       permission: 'organization:own',
-      allow: true,
     })
 
     const cookie = await sessionCookie(db, secrets, actorId)
@@ -465,7 +453,7 @@ test('POST /access rejects deny grants with 400', async () => {
     })
 
     if (res.status !== 400) {
-      throw new Error(`expected 400 for deny grant, got ${res.status}`)
+      throw new Error(`expected 400 for deny effect, got ${res.status}`)
     }
 
     // The deny grant must not have been persisted.
@@ -478,7 +466,7 @@ test('POST /access rejects deny grants with 400', async () => {
       ))
 
     if (denyRows.length !== 0) {
-      throw new Error('deny grant should not be persisted')
+      throw new Error('grant with non-allow effect should not be persisted')
     }
   })
 })
@@ -498,7 +486,6 @@ test('POST /access creates an allow grant with the validated subject id', async 
       actorType: 'user',
       actorId: actorId,
       permission: 'organization:own',
-      allow: true,
     })
 
     const cookie = await sessionCookie(db, secrets, actorId)
@@ -522,7 +509,7 @@ test('POST /access creates an allow grant with the validated subject id', async 
     }
 
     const rows = await db
-      .select({ id: grant.id, actorId: grant.actorId, allow: grant.allow })
+      .select({ id: grant.id, actorId: grant.actorId })
       .from(grant)
       .where(and(
         eq(grant.entityId, organizationId),
@@ -532,7 +519,7 @@ test('POST /access creates an allow grant with the validated subject id', async 
       .limit(1)
 
     const created = rows[0]
-    if (!created || created.actorId !== targetId || created.allow !== true) {
+    if (!created || created.actorId !== targetId) {
       throw new Error('allow grant was not persisted for the validated subject id')
     }
   })
@@ -581,7 +568,6 @@ test('GET /access/check returns boolean for variable and managed resource ids', 
       actorType: 'user',
       actorId: actorId,
       permission: 'organization:manage',
-      allow: true,
     })
 
     const cookie = await sessionCookie(db, secrets, actorId)

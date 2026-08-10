@@ -175,7 +175,7 @@ async function withIsolatedFixture(
   }
 }
 
-test('reencryptAtRestSecrets reseals plaintext/old enc, skips denc/current, fails malformed', async () => {
+test('reencryptAtRestSecrets reseals old enc, skips denc/current, fails plaintext/malformed', async () => {
   const v1Only = await createV1OnlySecrets()
   const rotated = await createRotatedSecrets()
   const secretsConfig = parseSecretsEnv(undefined, `1:${V1_SECRET}`, 'deno')
@@ -362,14 +362,15 @@ test('reencryptAtRestSecrets reseals plaintext/old enc, skips denc/current, fail
     const summary = await reencryptAtRestSecretsToCompletion(scoped, rotated)
 
     // 7 variables + 2 tls + 2 principals + 2 email secrets.
-    // Resealed: v1 var/tls/principal, plaintext var/tls/principal, smtp pass = 7
+    // Resealed: v1 var/tls/principal, smtp pass = 4
     // Skipped: current v2 var, valid denc = 2
-    // Failed: unknown-version, malformed enc, malformed denc, plaintext mailgun = 4
+    // Failed: unknown-version, malformed enc, malformed denc,
+    //         plaintext var/tls/principal/mailgun = 7
     assertEquals(summary, {
       scanned: 13,
-      reencrypted: 7,
+      reencrypted: 4,
       skipped: 2,
-      failed: 4,
+      failed: 7,
     })
 
     const [updatedV1Var] = await scoped
@@ -383,8 +384,8 @@ test('reencryptAtRestSecrets reseals plaintext/old enc, skips denc/current, fail
       .select({ value: variable.value })
       .from(variable)
       .where(eq(variable.id, plainVar!.id))
-    assertEquals(parseSecretEnvelope(updatedPlainVar!.value), { keyVersion: 2 })
-    assertEquals(await decryptSecret(rotated, updatedPlainVar!.value), plaintextVariable)
+    assertEquals(updatedPlainVar!.value, plaintextVariable)
+    assertEquals(parseSecretEnvelope(updatedPlainVar!.value), null)
 
     const [updatedTls] = await scoped
       .select({ privateKeyPem: tls.privateKeyPem })
@@ -400,11 +401,8 @@ test('reencryptAtRestSecrets reseals plaintext/old enc, skips denc/current, fail
       .select({ privateKeyPem: tls.privateKeyPem })
       .from(tls)
       .where(eq(tls.id, plainTlsRow!.id))
-    assertEquals(parseSecretEnvelope(updatedPlainTls!.privateKeyPem!), { keyVersion: 2 })
-    assertEquals(
-      await decryptSecret(rotated, updatedPlainTls!.privateKeyPem!),
-      plaintextTls,
-    )
+    assertEquals(updatedPlainTls!.privateKeyPem, plaintextTls)
+    assertEquals(parseSecretEnvelope(updatedPlainTls!.privateKeyPem!), null)
 
     const [updatedPrincipal] = await scoped
       .select({ password: principal.password })
@@ -420,11 +418,8 @@ test('reencryptAtRestSecrets reseals plaintext/old enc, skips denc/current, fail
       .select({ password: principal.password })
       .from(principal)
       .where(eq(principal.id, plainPrincipalRow!.id))
-    assertEquals(parseSecretEnvelope(updatedPlainPrincipal!.password!), { keyVersion: 2 })
-    assertEquals(
-      await decryptSecret(rotated, updatedPlainPrincipal!.password!),
-      plaintextPrincipal,
-    )
+    assertEquals(updatedPlainPrincipal!.password, plaintextPrincipal)
+    assertEquals(parseSecretEnvelope(updatedPlainPrincipal!.password!), null)
 
     const [updatedEmail] = await scoped
       .select({ value: setting.value })

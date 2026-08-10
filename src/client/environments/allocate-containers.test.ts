@@ -319,6 +319,246 @@ test('buildContainerServiceSpecs skips non-container compose names and reads ins
   assertEquals(specs[0]?.explicitContainerName, 'explicit-web')
 })
 
+test('pruneUnexpectedPendingContainers is a no-op for empty service id list', async () => {
+  let deleted = false
+  const db = {
+    delete: () => {
+      deleted = true
+      return { where: () => Promise.resolve() }
+    },
+  } as unknown as import('../../db.ts').Db
+  await pruneUnexpectedPendingContainers(db, {
+    serviceIds: [],
+    keepIds: new Set(),
+  })
+  assertEquals(deleted, false)
+})
+
+test('pruneUnexpectedPendingContainers deletes pending outside keep set', async () => {
+  let sawDelete = false
+  const db = {
+    delete: () => ({
+      where: () => {
+        sawDelete = true
+        return Promise.resolve()
+      },
+    }),
+  } as unknown as import('../../db.ts').Db
+  await pruneUnexpectedPendingContainers(db, {
+    serviceIds: ['svc-a'],
+    keepIds: new Set(['keep-1']),
+  })
+  assertEquals(sawDelete, true)
+})
+
+test('ensureServiceIngressContainerAllocation upserts renames and prunes strays', async () => {
+  let insertCalled = false
+  let updates = 0
+  let deletes = 0
+  const serviceId = '01936b3e-aaaa-bbbb-cccc-123456789abc'
+  const db = {
+    insert: () => ({
+      values: () => {
+        insertCalled = true
+        return {
+          onConflictDoNothing: () => Promise.resolve(),
+        }
+      },
+    }),
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () =>
+            Promise.resolve([
+              {
+                id: 'row-1',
+                serverId: 'old-server',
+                containerName: 'pending',
+                status: 'pending',
+                containerId: null,
+                composeServiceName: 'stale',
+              },
+            ]),
+        }),
+      }),
+    }),
+    update: () => ({
+      set: () => ({
+        where: () => {
+          updates += 1
+          return Promise.resolve()
+        },
+      }),
+    }),
+    delete: () => ({
+      where: () => {
+        deletes += 1
+        return Promise.resolve()
+      },
+    }),
+  } as unknown as import('../../db.ts').Db
+
+  const result = await ensureServiceIngressContainerAllocation(db, {
+    serviceId,
+    serverId: 'new-server',
+    composeServiceName: 'web',
+  })
+  assertEquals(insertCalled, true)
+  assertEquals(updates, 1)
+  assertEquals(deletes, 1)
+  assertEquals(result.containerRowId, 'row-1')
+  assertEquals(result.containerName, `${serviceId}-in`)
+  assertEquals(result.composeServiceName, 'web')
+})
+
+test('ensureServiceIngressContainerAllocation renames live docker-backed rows', async () => {
+  let updates = 0
+  const serviceId = '01936b3e-aaaa-bbbb-cccc-123456789abc'
+  const db = {
+    insert: () => ({
+      values: () => ({
+        onConflictDoNothing: () => Promise.resolve(),
+      }),
+    }),
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () =>
+            Promise.resolve([
+              {
+                id: 'row-live',
+                serverId: 'srv',
+                containerName: 'wrong-name',
+                status: 'running',
+                containerId: 'docker-x',
+                composeServiceName: 'web',
+              },
+            ]),
+        }),
+      }),
+    }),
+    update: () => ({
+      set: () => ({
+        where: () => {
+          updates += 1
+          return Promise.resolve()
+        },
+      }),
+    }),
+    delete: () => ({
+      where: () => Promise.resolve(),
+    }),
+  } as unknown as import('../../db.ts').Db
+
+  const result = await ensureServiceIngressContainerAllocation(db, {
+    serviceId,
+    serverId: 'srv',
+    composeServiceName: 'web',
+  })
+  assertEquals(updates, 1)
+  assertEquals(result.containerName, `${serviceId}-in`)
+})
+
+test('allocateEnvironmentContainers host-free custom naming skips allocation and still prunes', async () => {
+  let pruned = false
+  const db = {
+    transaction: async () => {
+      throw new TypeError('allocate should not open a transaction for skipped services')
+    },
+    delete: () => ({
+      where: () => {
+        pruned = true
+        return Promise.resolve()
+      },
+    }),
+  } as unknown as import('../../db.ts').Db
+
+  const out = await allocateEnvironmentContainers(db, {
+    environmentId: 'env',
+    serverId: 'srv',
+    containerNaming: 'custom',
+    containerServices: [{
+      serviceId: 'svc',
+      composeServiceName: 'web',
+      instances: 1,
+    }],
+    environmentServiceIds: ['svc'],
+  })
+  assertEquals(out, [])
+  assertEquals(pruned, true)
+})
+
+test('allocateEnvironmentContainers allocates multi-instance uuid services via transaction', async () => {
+  const serviceId = '01936b3e-aaaa-bbbb-cccc-123456789abc'
+  let insertCalls = 0
+  let deleteCalls = 0
+  let updateCalls = 0
+  const db = {
+    transaction: async (fn: (tx: typeof db) => Promise<void>) => {
+      await fn(db)
+    },
+    insert: () => ({
+      values: () => {
+        insertCalls += 1
+        return {
+          onConflictDoNothing: () => Promise.resolve(),
+        }
+      },
+    }),
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () =>
+            Promise.resolve([
+              {
+                id: `row-${insertCalls}`,
+                serverId: 'old',
+                containerName: 'pending',
+                composeServiceName: 'stale',
+              },
+            ]),
+        }),
+      }),
+    }),
+    update: () => ({
+      set: () => ({
+        where: () => {
+          updateCalls += 1
+          return Promise.resolve()
+        },
+      }),
+    }),
+    delete: () => ({
+      where: () => {
+        deleteCalls += 1
+        return Promise.resolve()
+      },
+    }),
+  } as unknown as import('../../db.ts').Db
+
+  const out = await allocateEnvironmentContainers(db, {
+    environmentId: 'env',
+    serverId: 'srv',
+    containerNaming: 'uuid',
+    containerServices: [{
+      serviceId,
+      composeServiceName: 'web',
+      instances: 2,
+    }],
+    environmentServiceIds: [serviceId],
+    extraKeepIds: new Set(['extra-keep']),
+  })
+  assertEquals(out.length, 2)
+  assertEquals(out[0]?.ordinal, 1)
+  assertEquals(out[1]?.ordinal, 2)
+  assertEquals(out[0]?.composeServiceName, 'web')
+  assertEquals(out[1]?.cloneComposeServiceName, 'web-2')
+  assertEquals(insertCalls, 2)
+  assertEquals(updateCalls, 2)
+  // 1× post-ordinal prune inside allocateServiceContainers + 1× pruneUnexpectedPending
+  assertEquals(deleteCalls >= 2, true)
+})
+
 test('allocateEnvironmentContainers skips custom naming without explicit container name', async () => {
   await withAllocationFixtures(async ({
     db,

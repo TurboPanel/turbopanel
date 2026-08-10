@@ -106,7 +106,6 @@ CREATE TABLE "grant" (
 	"entity_type" text NOT NULL,
 	"entity_id" uuid NOT NULL,
 	"permission" text NOT NULL,
-	"allow" boolean DEFAULT true NOT NULL,
 	CONSTRAINT "grant_unique" UNIQUE("entity_type","entity_id","actor_type","actor_id","permission")
 );
 --> statement-breakpoint

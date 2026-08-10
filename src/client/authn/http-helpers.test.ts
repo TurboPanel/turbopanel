@@ -23,7 +23,6 @@ import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
   HTTPS_SESSION_COOKIE_NAME,
-  LEGACY_HTTPS_SESSION_COOKIE_NAME,
 } from './crypto.ts'
 import {
   buildSessionResponse,
@@ -315,7 +314,8 @@ test('sign-out clears HTTP and HTTPS session cookies', async () => {
   assertEquals(httpsRes2.status, 200)
   const cookies = httpsRes2.headers.getSetCookie?.() ?? []
   const joined = cookies.join(';')
-  assertEquals(joined.includes(LEGACY_HTTPS_SESSION_COOKIE_NAME), true)
+  assertEquals(joined.includes(HTTPS_SESSION_COOKIE_NAME), true)
+  assertEquals(joined.includes('__Secure-'), false)
   assertEquals(httpsRes.status, httpsRes2.status)
 })
 

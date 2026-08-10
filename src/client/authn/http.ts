@@ -3,7 +3,6 @@ import { getCookie } from 'hono/cookie'
 import { Hono, type Context } from 'hono'
 import {
   buildSignedCookie,
-  LEGACY_HTTPS_SESSION_COOKIE_NAME,
   resolveRequestTls,
   resolveSessionCookieName,
   SESSION_EXPIRES_IN_MS,
@@ -648,18 +647,6 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
     const clearAttrs = 'HttpOnly; SameSite=Lax; Path=/; Max-Age=0'
     const clearPrimary =
       `${tls.cookieName}=; ${clearAttrs}${tls.isHttps ? '; Secure' : ''}`
-
-    // Pre-MVP: also expire the retired __Secure- name so it cannot shadow
-    // __Host- on HTTPS after cutover.
-    if (tls.isHttps) {
-      c.header('Set-Cookie', clearPrimary)
-      c.header(
-        'Set-Cookie',
-        `${LEGACY_HTTPS_SESSION_COOKIE_NAME}=; ${clearAttrs}; Secure`,
-        { append: true },
-      )
-      return c.json({ ok: true }, 200)
-    }
 
     return c.json(
       { ok: true },

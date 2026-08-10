@@ -157,7 +157,6 @@ async function withMetricsFixtures(
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const [insertedServer] = await db
@@ -451,7 +450,6 @@ it('GET /servers/:id/metrics/series maps Analytics Engine failures to 503', asyn
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const [insertedServer] = await db

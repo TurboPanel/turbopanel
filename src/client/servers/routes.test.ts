@@ -501,7 +501,6 @@ async function withServerDeleteFixtures(
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const now = new Date().toISOString()
@@ -788,7 +787,6 @@ test('DELETE /servers/:id returns 403 not 503 for self-host-pinned server withou
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const now = new Date().toISOString()
@@ -1022,7 +1020,6 @@ test('DELETE /servers/:id invalidates the bound license on Workers runtime', asy
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const now = new Date().toISOString()
@@ -1160,7 +1157,6 @@ test('DELETE /servers/:id returns 503 when daemon cell registry is unavailable',
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const now = new Date().toISOString()
@@ -1240,7 +1236,6 @@ test('DELETE /servers/:id returns 500 when purge fails after row delete', async 
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const now = new Date().toISOString()
@@ -1339,7 +1334,6 @@ test('GET /servers/updates does not call listRequests on the cell', async () => 
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const now = new Date().toISOString()
@@ -2211,7 +2205,6 @@ test('PATCH /servers/:id pins datacenterId and rejects cross-org datacenter', as
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const now = new Date().toISOString()

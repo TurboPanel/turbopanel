@@ -162,7 +162,6 @@ async function withWorkspaceFixtures(
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const now = new Date().toISOString()
@@ -236,7 +235,6 @@ test('GET /workspaces returns System before Default for same-transaction install
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   // Mirror install transaction insert order: System then Default Workspace.

@@ -5,7 +5,6 @@ import {
   generateSessionToken,
   HTTP_SESSION_COOKIE_NAME,
   HTTPS_SESSION_COOKIE_NAME,
-  LEGACY_HTTPS_SESSION_COOKIE_NAME,
   resolveRequestTls,
   resolveRequestTlsFromUrl,
   resolveSessionCookieName,
@@ -28,12 +27,8 @@ async function sessionSigningSecrets() {
 }
 
 describe('HTTPS session cookie name', () => {
-  it('uses the __Host- prefix (not the retired __Secure- name)', () => {
+  it('uses the __Host- prefix', () => {
     assertEquals(HTTPS_SESSION_COOKIE_NAME, '__Host-turbopanel.session_token')
-    assertEquals(
-      LEGACY_HTTPS_SESSION_COOKIE_NAME,
-      '__Secure-turbopanel.session_token',
-    )
   })
 })
 

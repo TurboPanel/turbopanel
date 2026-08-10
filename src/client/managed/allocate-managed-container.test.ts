@@ -3,7 +3,6 @@ import type { Db } from '../../db.ts'
 import { managedContainerName } from '../../lib/naming.ts'
 import {
   ensureManagedContainerAllocation,
-  pruneLegacyManagedIngressContainers,
   pruneManagedContainersOutsideMemberSet,
 } from './allocate-managed-container.ts'
 
@@ -512,52 +511,6 @@ test('pruneManagedContainersOutsideMemberSet removes out-of-set pending ordinals
   await pruneManagedContainersOutsideMemberSet(db, serviceId, [1])
   assertEquals(deleted, ['ctr-2'])
   assertEquals(containers.map((r) => r.id), ['ctr-1'])
-})
-
-test('pruneLegacyManagedIngressContainers deletes null-id ingress rows', async () => {
-  const serviceId = 'svc-legacy'
-  const containers: MemContainer[] = [
-    {
-      id: 'ing-1',
-      serviceId,
-      serverId: 'srv-1',
-      containerId: null,
-      containerName: `${serviceId}-in`,
-      status: 'pending',
-      role: 'ingress',
-      composeServiceName: 'postgres-ingress',
-      ordinal: 1,
-    },
-    {
-      id: 'svc-1',
-      serviceId,
-      serverId: 'srv-1',
-      containerId: null,
-      containerName: managedContainerName(serviceId, 1),
-      status: 'pending',
-      role: 'service',
-      composeServiceName: 'postgres',
-      ordinal: 1,
-    },
-  ]
-  const deleted: string[] = []
-  const db = {
-    delete: () => ({
-      where: () => {
-        for (const row of [...containers]) {
-          if (row.serviceId === serviceId && row.role === 'ingress' && row.containerId === null) {
-            deleted.push(row.id)
-            containers.splice(containers.indexOf(row), 1)
-          }
-        }
-        return Promise.resolve(undefined)
-      },
-    }),
-  } as unknown as Db
-
-  await pruneLegacyManagedIngressContainers(db, serviceId)
-  assertEquals(deleted, ['ing-1'])
-  assertEquals(containers.map((r) => r.id), ['svc-1'])
 })
 
 test('ensureManagedContainerAllocation throws when service row missing after upsert', async () => {

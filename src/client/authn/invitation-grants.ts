@@ -21,7 +21,6 @@ export class InvitationGrantValidationError extends Error {
 export type InvitationGrantSpec = {
   entityType: string
   entityId: string
-  allowed?: boolean
   permissionKey: string
 }
 
@@ -33,7 +32,6 @@ export function defaultInvitationGrants(
       entityType: 'organization',
       entityId: organizationId,
       permissionKey: 'organization:manage',
-      allowed: true,
     },
   ]
 }
@@ -66,23 +64,20 @@ function parseInvitationGrantEntry(
     return 'invalid'
   }
 
-  const target = parseGrantTarget(record)
-  if (!target) return 'invalid'
-
-  let allowed: boolean | undefined
-  if (typeof record.allowed === 'boolean') {
-    allowed = record.allowed
-  } else if (typeof record.allow === 'boolean') {
-    allowed = record.allow
-  } else if (record.allowed !== undefined || record.allow !== undefined) {
+  // Allow/deny branches are not supported — every persisted grant is allow-only.
+  // Reject legacy `allowed` / `allow` fields so invitation JSON cannot stash
+  // invisible deny semantics.
+  if (record.allowed !== undefined || record.allow !== undefined) {
     return 'invalid'
   }
+
+  const target = parseGrantTarget(record)
+  if (!target) return 'invalid'
 
   return {
     entityType,
     entityId,
     permissionKey: target.permissionKey,
-    ...(allowed !== undefined ? { allowed } : {}),
   }
 }
 
@@ -135,8 +130,6 @@ export async function materializeInvitationGrants(
       throw new InvitationGrantValidationError(permissionCompat.error, 400)
     }
 
-    const allow = grantSpec.allowed ?? true
-
     await db
       .insert(grant)
       .values({
@@ -145,7 +138,6 @@ export async function materializeInvitationGrants(
         actorType: 'user',
         actorId: userId,
         permission: grantSpec.permissionKey,
-        allow,
       })
       .onConflictDoNothing({
         target: [

@@ -22,20 +22,43 @@ test('defaultInvitationGrants grants organization:manage on the org', () => {
   assertEquals(grants[0]?.entityType, 'organization')
   assertEquals(grants[0]?.entityId, organizationId)
   assertEquals(grants[0]?.permissionKey, 'organization:manage')
-  assertEquals(grants[0]?.allowed, true)
 })
 
-test('parseInvitationGrants accepts valid entries with allow alias', () => {
+test('parseInvitationGrants accepts valid entries without allow fields', () => {
   const parsed = parseInvitationGrants([
     {
       entityType: 'organization',
       entityId: organizationId,
       permissionKey: 'organization:manage',
-      allow: false,
     },
   ])
   assertEquals(parsed?.length, 1)
-  assertEquals(parsed?.[0]?.allowed, false)
+  assertEquals(parsed?.[0]?.permissionKey, 'organization:manage')
+})
+
+test('parseInvitationGrants rejects allowed and allow fields', () => {
+  assertEquals(
+    parseInvitationGrants([
+      {
+        entityType: 'organization',
+        entityId: organizationId,
+        permissionKey: 'organization:manage',
+        allow: true,
+      },
+    ]),
+    null,
+  )
+  assertEquals(
+    parseInvitationGrants([
+      {
+        entityType: 'organization',
+        entityId: organizationId,
+        permissionKey: 'organization:manage',
+        allowed: false,
+      },
+    ]),
+    null,
+  )
 })
 
 test('parseInvitationGrants rejects invalid shapes', () => {

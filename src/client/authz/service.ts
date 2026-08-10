@@ -46,7 +46,6 @@ async function hasOrganizationGrant(
         eq(grant.entityType, 'organization'),
         eq(grant.entityId, organizationId),
         eq(grant.permission, permission),
-        eq(grant.allow, true),
       ),
     )
     .limit(1)
@@ -69,7 +68,6 @@ async function hasTeamGrant(
         eq(grant.entityType, 'team'),
         eq(grant.entityId, teamId),
         eq(grant.permission, permission),
-        eq(grant.allow, true),
       ),
     )
     .limit(1)
@@ -163,7 +161,6 @@ export async function assertNotLastOrgOwner(
         eq(grant.entityType, 'organization'),
         eq(grant.entityId, organizationId),
         eq(grant.permission, 'organization:own'),
-        eq(grant.allow, true),
       ),
     )
 
@@ -185,7 +182,6 @@ export async function assertNotLastTeamOwner(
         eq(grant.entityType, 'team'),
         eq(grant.entityId, teamId),
         eq(grant.permission, 'team:own'),
-        eq(grant.allow, true),
       ),
     )
 

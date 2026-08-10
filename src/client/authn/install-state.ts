@@ -228,7 +228,6 @@ export async function insertOwnerGrants(
       actorType: 'user',
       actorId: userId,
       permission: 'organization:own',
-      allow: true,
     })
     .onConflictDoNothing({
       target: [
@@ -939,39 +938,6 @@ export async function assignColocatedDaemonToOrganization(
   return assignedOrgId != null ? serverId : null
 }
 
-/**
- * Best-effort System workspace + self-host hierarchy bootstrap. Resolves the
- * default installed organization first and ensures the System workspace
- * (backfill for pre-existing installs — no daemon required), then when a
- * colocated server is resolvable provisions the full `turbopanel`
- * project/environment/services tree (see `system/hierarchy.ts`). Callers
- * re-run this on a maintenance timer so a host whose daemon enrolls after
- * install still converges. Logs and swallows failures so it can never block
- * install completion or the boot path that calls it.
- */
-export async function ensureSelfHostSystemHierarchyBestEffort(
-  db: Db,
-  registry?: DaemonCellRegistry,
-): Promise<void> {
-  try {
-    const organizationId = await findDefaultInstalledOrganizationId(db)
-    if (!organizationId) return
-
-    // Backfill System workspace for installs that predate install-time
-    // provisioning — does not require a colocated server.
-    await ensureSystemWorkspace(db, organizationId)
-
-    const serverId = await resolveColocatedServerId(db, registry)
-    if (!serverId) return
-
-    await ensureSelfHostSystemHierarchy(db, { organizationId, serverId })
-  } catch (err) {
-    compatLogWarn(
-      'install',
-      `failed to ensure self-host system hierarchy: ${err}`,
-    )
-  }
-}
 
 export type CompleteInstallInput = {
   superadminEmail: string
@@ -1004,48 +970,6 @@ export async function persistColocatedLicenseCredentials(
   }
 }
 
-/**
- * After a partial install (DB configured but license files missing), rotate the
- * colocated license and persist credentials so the daemon can enroll.
- *
- * The plaintext token is unrecoverable once disk files are gone (DB stores only
- * an Argon2id hash). When a co-located server is already enrolled (active bound
- * license), recovery **updates that row's token in place** so the `server_id`
- * latch and daemon identity stay intact. Otherwise it revokes active unbound
- * colocated licenses, mints one fresh seat, and — when a prior binding still
- * holds `server_id` — rebinds the new credential and clears daemon state in the
- * same transaction so re-enroll targets the same server.
- */
-export async function ensureColocatedLicenseCredentialsOnDisk(
-  db: Db,
-): Promise<void> {
-  if (typeof Deno === 'undefined') return
-
-  const stateDir = resolveColocatedLicenseCredentialsDir()
-  try {
-    const licenseId = (await Deno.readTextFile(`${stateDir}/license.id`)).trim()
-    const licenseToken = (await Deno.readTextFile(`${stateDir}/license.token`))
-      .trim()
-    if (licenseId.length > 0 && licenseToken.length > 0) return
-  } catch {
-    // Missing or unreadable — recover below when installed.
-  }
-
-  if (!(await isInstanceInstalled(db))) return
-
-  const organizationId = await findDefaultInstalledOrganizationId(db)
-  if (!organizationId) return
-
-  const { licenseId, licenseToken } = await rotateColocatedLicenseCredentials(
-    db,
-    organizationId,
-  )
-  await persistColocatedLicenseCredentials(licenseId, licenseToken)
-  compatLogInfo(
-    'install',
-    'restored colocated license credentials on disk after partial install',
-  )
-}
 
 /**
  * Restore colocated disk credentials for an org.
@@ -1217,7 +1141,6 @@ export async function createOrganizationForUser(
         actorType: 'user',
         actorId: userId,
         permission: 'team:own',
-        allow: true,
       })
       .onConflictDoNothing({
         target: [
@@ -1362,7 +1285,6 @@ export async function completeInstanceInstall(
         actorType: 'user',
         actorId: userId,
         permission: 'team:own',
-        allow: true,
       })
       .onConflictDoNothing({
         target: [

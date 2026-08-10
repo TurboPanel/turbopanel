@@ -97,7 +97,6 @@ async function withServiceFixtures(
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const [insertedWorkspace] = await db

@@ -93,7 +93,9 @@ echo "==> Deno coverage profile"
 deno test -A --coverage=coverage/deno-profile \
   --no-check \
   src/admin/public-urls.deno.test.ts \
+  src/admin/public-urls.hostfree.test.ts \
   src/admin/reencrypt-secrets.test.ts \
+  src/admin/reencrypt-secrets.hostfree.test.ts \
   src/admin/routes.test.ts \
   src/client/authn/auth-rate-limit-http.test.ts \
   src/client/authn/auth-rate-limit.test.ts \
@@ -121,13 +123,17 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/authn/workers-onboarding.test.ts \
   src/client/authz/ \
   src/client/bindings/materialize.test.ts \
+  src/client/bindings/materialize.hostfree.test.ts \
   src/client/bindings/resolve-endpoint.test.ts \
+  src/client/bindings/resolve-endpoint.hostfree.test.ts \
   src/client/bindings/routes-helpers.test.ts \
+  src/client/bindings/routes-helpers.hostfree.test.ts \
   src/client/bindings/impact.test.ts \
   src/client/display-name-uniqueness.test.ts \
   src/client/environments/deploy-prepare.test.ts \
   src/client/environments/deploy-routes.test.ts \
   src/client/environments/register-compose-volumes.test.ts \
+  src/client/environments/register-compose-volumes.hostfree.test.ts \
   src/client/environments/reconcile-services.test.ts \
   src/client/environments/reconcile-services.hostfree.test.ts \
   src/client/environments/allocate-containers.test.ts \
@@ -160,10 +166,12 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/openapi/system.test.ts \
   src/client/org-context-parse.test.ts \
   src/client/org-context.test.ts \
+  src/client/org-context.hostfree.test.ts \
   src/client/principals/assignments.test.ts \
   src/client/principals/routes.test.ts \
   src/client/principals/serialize.test.ts \
   src/client/principals/store.test.ts \
+  src/client/principals/store.hostfree.test.ts \
   src/client/projects/catalog/catalog.test.ts \
   src/client/projects/catalog/scaffold.test.ts \
   src/client/projects/empty-setup.test.ts \
@@ -181,10 +189,12 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/storage/serialize.test.ts \
   src/client/storage/routes-helpers.test.ts \
   src/client/system/hierarchy.test.ts \
+  src/client/system/hierarchy.hostfree.test.ts \
   src/client/system/operate.test.ts \
   src/client/system/reconcile.test.ts \
   src/client/system/routes.test.ts \
   src/client/variables/resolve-inherited.test.ts \
+  src/client/variables/resolve-inherited.hostfree.test.ts \
   src/client/variables/routes-helpers.test.ts \
   src/cors.test.ts \
   src/daemon/authn/challenge.test.ts \
@@ -264,7 +274,9 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/datacenter-options.test.ts \
   src/lib/daemon-install-command.deno.test.ts \
   src/lib/db/command-records.test.ts \
+  src/lib/db/command-records.hostfree.test.ts \
   src/lib/db/container-records.test.ts \
+  src/lib/db/container-records.hostfree.test.ts \
   src/lib/db/net-types.test.ts \
   src/lib/db/project-delete.test.ts \
   src/lib/db/server-metadata.test.ts \
@@ -287,6 +299,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/machine-key.test.ts \
   src/lib/managed/ \
   src/lib/net/vpn-address-allocator.pure.test.ts \
+  src/lib/net/vpn-address-allocator.hostfree.test.ts \
   src/lib/net/vpn-address-allocator.test.ts \
   src/lib/net/datacenter-networks.pure.test.ts \
   src/lib/net/private-endpoint.pure.test.ts \

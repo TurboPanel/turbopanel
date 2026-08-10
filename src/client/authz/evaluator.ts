@@ -749,25 +749,23 @@ export async function can(
       SELECT entity_id FROM ancestry WHERE entity_type = 'organization' LIMIT 1
     ),
     org_hits AS (
-      SELECT ag.allow
+      SELECT 1
       FROM ${grant} ag
       JOIN actorset ss
         ON ss.actor_type = ag.actor_type AND ss.actor_id = ag.actor_id
       WHERE ag.entity_type = 'organization'
         AND ag.entity_id = (SELECT entity_id FROM org_id)
         AND ${orgPermissionFilter}
-        AND ag.allow = true
       LIMIT 1
     ),
     team_hits AS (
-      SELECT ag.allow
+      SELECT 1
       FROM ${grant} ag
       JOIN actorset ss
         ON ss.actor_type = ag.actor_type AND ss.actor_id = ag.actor_id
       WHERE ${isTeamScopedCheck ? sql`ag.entity_type = 'team'` : sql`false`}
         AND ${isTeamScopedCheck ? sql`ag.entity_id = ${entityId}::uuid` : sql`false`}
         AND ${teamPermissionFilter}
-        AND ag.allow = true
       LIMIT 1
     )
     SELECT (
@@ -831,7 +829,6 @@ export async function listVisible(
         WHERE ag.entity_type = 'organization'
           AND ag.entity_id = ${organizationId}::uuid
           AND ag.permission IN ('organization:own', 'organization:manage')
-          AND ag.allow = true
       ) AS val
     ),
     leaves AS (

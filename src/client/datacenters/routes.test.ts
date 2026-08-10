@@ -86,7 +86,6 @@ test("GET /datacenters/name-suggestions uses unassigned server geo and ASN", asy
     actorType: "user",
     actorId: userId,
     permission: "organization:manage",
-    allow: true,
   });
   const [assignedDatacenter] = await db
     .insert(datacenter)
@@ -192,7 +191,6 @@ test("GET /datacenters/:id returns 404 for datacenter in another org", async () 
     actorType: "user",
     actorId: userId,
     permission: "organization:manage",
-    allow: true,
   });
 
   const now = new Date().toISOString();
@@ -322,7 +320,6 @@ test("DELETE /datacenters/:id succeeds when no scoped networks exist", async () 
     actorType: "user",
     actorId: userId,
     permission: "organization:manage",
-    allow: true,
   });
 
   const now = new Date().toISOString();
@@ -406,7 +403,6 @@ test("DELETE /datacenters/:id returns 409 when scoped networks exist", async () 
     actorType: "user",
     actorId: userId,
     permission: "organization:manage",
-    allow: true,
   });
 
   const now = new Date().toISOString();

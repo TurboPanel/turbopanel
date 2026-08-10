@@ -1076,13 +1076,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
-        },
-        "allow": {
-          "name": "allow",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
         }
       },
       "indexes": {

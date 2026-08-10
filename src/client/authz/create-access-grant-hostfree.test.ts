@@ -291,8 +291,8 @@ test('createAccessGrant rejects empty permission keys before database access', a
   assertEquals(result.error, 'Invalid permission key')
 })
 
-test('createAccessGrant persists allow=false when explicitly requested', async () => {
-  let capturedAllow: boolean | undefined
+test('createAccessGrant inserts without allow column', async () => {
+  const capturedKeys: string[] = []
   const db = {
     select: () => ({
       from: () => ({
@@ -302,11 +302,11 @@ test('createAccessGrant persists allow=false when explicitly requested', async (
       }),
     }),
     insert: () => ({
-      values: (row: { allow: boolean }) => {
-        capturedAllow = row.allow
+      values: (row: Record<string, unknown>) => {
+        capturedKeys.push(...Object.keys(row))
         return {
           onConflictDoNothing: () => ({
-            returning: () => Promise.resolve([{ id: 'grant-deny' }]),
+            returning: () => Promise.resolve([{ id: 'grant-1' }]),
           }),
         }
       },
@@ -319,13 +319,13 @@ test('createAccessGrant persists allow=false when explicitly requested', async (
     actorType: 'user',
     actorId: otherUuid,
     permissionKey: 'organization:manage',
-    allow: false,
   })
 
   if (!result.ok) {
-    throw new TypeError('explicit deny grant should succeed')
+    throw new TypeError('grant create should succeed')
   }
-  assertEquals(capturedAllow, false)
+  assertEquals(capturedKeys.includes('allow'), false)
+  assertEquals(capturedKeys.includes('permission'), true)
 })
 
 test('validatePermissionEntityCompatibility rejects org permissions on team entities', () => {

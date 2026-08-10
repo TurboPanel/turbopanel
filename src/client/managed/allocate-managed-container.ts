@@ -186,23 +186,6 @@ export async function pruneManagedContainersOutsideMemberSet(
     )
 }
 
-/**
- * One-time cleanup of leftover `role='ingress'` rows on a managed engine
- * service (pre-cluster allocation). Pending null-id rows are hard-deleted;
- * rows with a Docker id are left for stop/destroy reconcile.
- */
-export async function pruneLegacyManagedIngressContainers(
-  db: Db,
-  serviceId: string,
-): Promise<void> {
-  await db.delete(container).where(
-    and(
-      eq(container.serviceId, serviceId),
-      eq(container.role, 'ingress'),
-      isNull(container.containerId),
-    ),
-  )
-}
 
 async function syncServiceInstances(
   db: Db,

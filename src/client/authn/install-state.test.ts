@@ -531,9 +531,8 @@ it('disk-credential recovery rewrites license files for an enrolled colocated se
   const boundId = bound!.id
 
   try {
-    // Same recovery steps as ensureColocatedLicenseCredentialsOnDisk after the
-    // org is resolved — isolate the org so we do not touch a live Default
-    // Organization seat on an installed host.
+    // Same steps as operator recovery: rotate colocated credentials and
+    // write license.id + license.token under TURBOPANEL_DAEMON_STATE_DIR.
     const rotated = await rotateColocatedLicenseCredentials(db, organizationId)
     const wrote = await persistColocatedLicenseCredentials(
       rotated.licenseId,

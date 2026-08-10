@@ -78,7 +78,6 @@ test('POST /networks requires dockerNetworkName for kind=docker', async () => {
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const cookie = await sessionCookie(db, secrets, userId)
@@ -157,7 +156,6 @@ test('POST /networks rejects datacenterId and serverId together', async () => {
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const now = new Date().toISOString()
@@ -234,7 +232,6 @@ test('POST /networks rejects kind=vpn and requires per-kind scope FKs', async ()
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const now = new Date().toISOString()

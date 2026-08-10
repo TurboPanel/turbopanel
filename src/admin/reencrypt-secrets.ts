@@ -5,18 +5,16 @@
  * `principal.password`, and email secret keys in the `SYSTEM_EMAIL` setting
  * row onto the current data-encryption key version.
  *
- * Per-blob rules (variable / TLS / principal):
+ * Per-blob rules (variable / TLS / principal / email secrets):
  * - Valid daemon-bound `denc` → skipped (delivery envelopes are not at-rest
- *   material for this sweep).
+ *   material for this sweep; variables/TLS/principals only).
  * - Malformed `denc` or malformed `enc` → failed.
- * - Plaintext → re-sealed under the current `enc` key (column semantics mark
- *   the value as a secret).
+ * - Non-envelope plaintext → failed (never auto-migrated).
  * - Current-version `enc` → skipped.
  * - Older-version `enc` → decrypt + re-seal; decrypt failures → failed.
  *
- * Email secret keys (`MAILGUN_API_KEY` / `SMTP_PASS`) that are not valid `enc`
- * envelopes are counted as `failed` (invalid/unsupported) — they are not
- * auto-migrated from plaintext.
+ * Email secret keys (`MAILGUN_API_KEY` / `SMTP_PASS`) follow the same
+ * plaintext-is-failed rule as variables/TLS/principals.
  *
  * Sweeps are **bounded**: each call processes at most `limit` blobs (default
  * {@link REENCRYPT_BATCH_SIZE}) and returns a resume cursor until
@@ -133,8 +131,6 @@ export function resetReencryptSweepLockForTests(): void {
 type ProcessBlobOptions = Readonly<{
   /** Skip valid daemon-bound `denc` envelopes (variable/TLS/principal paths). */
   allowDaemonBound: boolean
-  /** Re-seal non-envelope plaintext under the current `enc` key. */
-  resealPlaintext: boolean
 }>
 
 async function applyResealedBlob(
@@ -160,7 +156,7 @@ function classifyBlobForSweep(
   blob: string,
   currentKeyVersion: number,
   options: ProcessBlobOptions,
-): 'skip' | 'fail' | 'reseal-plaintext' | null {
+): 'skip' | 'fail' | null {
   const daemonParsed = parseDaemonSecretEnvelope(blob)
   if (daemonParsed !== null) {
     return options.allowDaemonBound ? 'skip' : 'fail'
@@ -180,7 +176,8 @@ function classifyBlobForSweep(
     return 'fail'
   }
 
-  return options.resealPlaintext ? 'reseal-plaintext' : 'fail'
+  // Non-envelope plaintext is invalid — never auto-migrated.
+  return 'fail'
 }
 
 /**
@@ -211,9 +208,7 @@ async function processBlob(
   }
 
   try {
-    const plaintext = classification === 'reseal-plaintext'
-      ? blob
-      : await decryptSecret(secrets, blob)
+    const plaintext = await decryptSecret(secrets, blob)
     const resealed = await encryptSecret(secrets, plaintext)
     await applyResealedBlob(summary, update, resealed)
   } catch {
@@ -259,7 +254,7 @@ async function sweepSecretVariablesBatch(
           .returning({ id: variable.id })
         return updated.length > 0
       },
-      { allowDaemonBound: true, resealPlaintext: true },
+      { allowDaemonBound: true },
     )
   }
 
@@ -304,7 +299,7 @@ async function sweepTlsPrivateKeysBatch(
           .returning({ id: tls.id })
         return updated.length > 0
       },
-      { allowDaemonBound: true, resealPlaintext: true },
+      { allowDaemonBound: true },
     )
   }
 
@@ -351,7 +346,7 @@ async function sweepPrincipalPasswordsBatch(
           .returning({ id: principal.id })
         return updated.length > 0
       },
-      { allowDaemonBound: true, resealPlaintext: true },
+      { allowDaemonBound: true },
     )
   }
 

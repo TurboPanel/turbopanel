@@ -93,6 +93,14 @@ function isExpired(iso: string): boolean {
   return iso <= new Date().toISOString()
 }
 
+/**
+ * Coerce an unknown value to string without Object's default
+ * `[object Object]` stringification (`typescript:S6551`).
+ */
+function asString(value: unknown, fallback: string): string {
+  return typeof value === 'string' ? value : fallback
+}
+
 function otpIdentifier(type: OtpType, emailHash: string): string {
   return `otp:${type}:${emailHash}`
 }
@@ -349,7 +357,7 @@ function handleInsertValues(
       email: String(row.email),
       isDisabled: Boolean(row.isDisabled),
       isEmailVerified: Boolean(row.isEmailVerified),
-      role: String(row.role ?? 'user'),
+      role: asString(row.role, 'user'),
       displayName: (row.name as string | null | undefined) ??
         (row.displayName as string | null | undefined) ?? null,
     })
@@ -381,13 +389,16 @@ function handleInsertValues(
       token: String(row.token),
       revokedAt: null,
       serverId: null,
-      createdAt: String(row.createdAt ?? new Date().toISOString()),
+      createdAt: asString(row.createdAt, new Date().toISOString()),
     })
     return { returning: () => Promise.resolve([{ id }]) }
   }
   if (table === verification) {
     const id = crypto.randomUUID()
-    const stamp = String(row.createdAt ?? row.updatedAt ?? new Date().toISOString())
+    const stamp = asString(
+      row.createdAt,
+      asString(row.updatedAt, new Date().toISOString()),
+    )
     state.verificationRows.push({
       id,
       identifier: String(row.identifier),
@@ -435,7 +446,7 @@ async function returningAfterUpdate(
   if (table === license) {
     for (const row of state.licenses) {
       if (row.revokedAt === null) {
-        row.revokedAt = String(patch.revokedAt ?? new Date().toISOString())
+        row.revokedAt = asString(patch.revokedAt, new Date().toISOString())
         return [{ id: row.id }]
       }
     }

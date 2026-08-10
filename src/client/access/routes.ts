@@ -42,10 +42,8 @@ async function assertRevocableAllowGrant(
     entityId: string
     permission: string
     actorId: string
-    allow: boolean
   },
 ): Promise<void> {
-  if (!accessRow.allow) return
   if (
     accessRow.entityType === 'organization' &&
     accessRow.permission === 'organization:own'
@@ -109,11 +107,8 @@ async function parseCreateAccessBody(
   if (typeof subjectId !== 'string' || typeof resourceId !== 'string') {
     return { response: c.json({ error: 'Invalid request' }, 400) }
   }
-  // Deny grants are not supported — authorization only evaluates allow grants,
-  // so a deny would be silently ineffective. Reject it explicitly.
-  if (effect === 'deny') {
-    return { response: c.json({ error: 'Deny grants are not supported' }, 400) }
-  }
+  // Grants are allow-only. Reject unknown `effect` values; only `'allow'`
+  // (or omitted) is accepted for the stable client DTO.
   if (effect !== undefined && effect !== 'allow') {
     return { response: c.json({ error: 'Invalid request' }, 400) }
   }
@@ -397,7 +392,6 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
         actorType: grant.actorType,
         actorId: grant.actorId,
         permission: grant.permission,
-        allow: grant.allow,
       })
       .from(grant)
       .where(
@@ -441,7 +435,6 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
       entityId: entity.entityId,
       actorType: subjectKind,
       actorId: subjectId,
-      allow: true,
       permissionKey,
     })
 
@@ -470,7 +463,6 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
         entityId: grant.entityId,
         permission: grant.permission,
         actorId: grant.actorId,
-        allow: grant.allow,
       })
       .from(grant)
       .where(eq(grant.id, accessId))
@@ -484,16 +476,14 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
     const denied = await assertCanManageAccessOr403(c, db, accessRow.entityId)
     if (denied) return denied
 
-    if (accessRow.allow) {
-      try {
-        await assertRevocableAllowGrant(db, accessRow)
-      } catch (err) {
-        const conflict = ownerRemovalConflictMessage(err)
-        if (conflict) {
-          return c.json({ error: conflict }, 409)
-        }
-        throw err
+    try {
+      await assertRevocableAllowGrant(db, accessRow)
+    } catch (err) {
+      const conflict = ownerRemovalConflictMessage(err)
+      if (conflict) {
+        return c.json({ error: conflict }, 409)
       }
+      throw err
     }
 
     const revoked = await revokeAccessGrant(db, accessId)

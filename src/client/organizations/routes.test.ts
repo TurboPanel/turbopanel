@@ -99,7 +99,6 @@ async function withOrgFixtures(
       actorType: 'user',
       actorId: userId,
       permission: 'organization:manage',
-      allow: true,
     })
   }
 
@@ -341,7 +340,6 @@ test('POST /organizations creates an org owned by the signed-in user', async () 
           eq(grant.actorType, 'user'),
           eq(grant.actorId, userId),
           eq(grant.permission, 'organization:own'),
-          eq(grant.allow, true),
         ),
       )
       .limit(1)

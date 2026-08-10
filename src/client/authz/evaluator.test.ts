@@ -118,7 +118,6 @@ test('organization:own grant allows full org access', async () => {
       actorType: 'user',
       actorId: userId,
       permission: 'organization:own',
-      allow: true,
     })
 
     const canWorkspace = await can(db, userId, 'organization:own', 'workspace', workspaceId)
@@ -137,7 +136,6 @@ test('organization:manage grant allows full org access', async () => {
       actorType: 'user',
       actorId: userId,
       permission: 'organization:manage',
-      allow: true,
     })
 
     const canWorkspace = await can(db, userId, 'organization:manage', 'workspace', workspaceId)
@@ -156,7 +154,6 @@ test('organization:manage grant does not satisfy an organization:own check', asy
       actorType: 'user',
       actorId: userId,
       permission: 'organization:manage',
-      allow: true,
     })
 
     const ownsOrg = await can(db, userId, 'organization:own', 'organization', organizationId)
@@ -253,7 +250,6 @@ test('listVisible returns all leaves for org owner', async () => {
       actorType: 'user',
       actorId: userId,
       permission: 'organization:own',
-      allow: true,
     })
 
     const visible = await listVisible(db, {
@@ -276,7 +272,6 @@ test('team:own grant allows team ownership check via can()', async () => {
       actorType: 'user',
       actorId: userId,
       permission: 'team:own',
-      allow: true,
     })
 
     const canOwn = await can(db, userId, 'team:own', 'team', teamId)
@@ -295,7 +290,6 @@ test('team:manage grant allows team management but not ownership via can()', asy
       actorType: 'user',
       actorId: userId,
       permission: 'team:manage',
-      allow: true,
     })
 
     const canOwn = await can(db, userId, 'team:own', 'team', teamId)
@@ -314,7 +308,6 @@ test('team grant without org grant is denied for org-scoped workspace check', as
       actorType: 'user',
       actorId: userId,
       permission: 'team:manage',
-      allow: true,
     })
 
     const canWorkspace = await can(db, userId, 'organization:own', 'workspace', workspaceId)
@@ -368,7 +361,6 @@ test('listVisible returns variable ids for org owner', async () => {
         actorType: 'user',
         actorId: userId,
         permission: 'organization:own',
-        allow: true,
       })
 
       const visible = await listVisible(db, {
@@ -425,7 +417,6 @@ test('organization grant allows can() on managed and variable entities', async (
         actorType: 'user',
         actorId: userId,
         permission: 'organization:manage',
-        allow: true,
       })
 
       const canManaged = await can(
@@ -466,7 +457,6 @@ test('organization:manage grant does not satisfy system permissions; explicit an
       actorType: 'user',
       actorId: userId,
       permission: 'organization:manage',
-      allow: true,
     })
 
     const manageOperate = await can(
@@ -496,7 +486,6 @@ test('organization:manage grant does not satisfy system permissions; explicit an
       actorType: 'user',
       actorId: userId,
       permission: 'system:operate',
-      allow: true,
     })
 
     const explicitOperate = await can(
@@ -640,7 +629,6 @@ test('can honors pre-fetched subjects without re-querying membership', async () 
       actorType: 'user',
       actorId: userId,
       permission: 'organization:manage',
-      allow: true,
     })
 
     const allowed = await can(
@@ -680,7 +668,6 @@ test('listVisible returns server ids for org owner', async () => {
         actorType: 'user',
         actorId: userId,
         permission: 'organization:own',
-        allow: true,
       })
 
       const visible = await listVisible(db, {

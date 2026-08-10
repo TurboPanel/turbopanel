@@ -199,7 +199,6 @@ async function withSystemRouteFixtures(
       actorType: 'user',
       actorId: userId,
       permission: 'system:operate',
-      allow: true,
     })
   }
 

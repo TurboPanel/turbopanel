@@ -102,7 +102,6 @@ async function withContainerFixtures(
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const [insertedWorkspace] = await db

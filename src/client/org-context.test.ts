@@ -128,7 +128,6 @@ async function withTeamSubjectGrantFixtures(
     actorType: 'team',
     actorId: teamId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   try {

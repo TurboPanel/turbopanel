@@ -86,7 +86,6 @@ test('DELETE /ips returns 409 when hosting references ipId', async () => {
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const now = new Date().toISOString()
@@ -241,7 +240,6 @@ test('POST /ips derives version and supports VPN-scoped addresses across meshes'
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const [vpnA] = await db
@@ -393,7 +391,6 @@ test('DELETE /ips returns 409 when peer.tunnel_ip_id references the IP', async (
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const [vpnRow] = await db
@@ -482,7 +479,6 @@ test('POST /ips rejects a scope=vpn address outside the vpn cidr', async () => {
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const [vpnRow] = await db
@@ -568,7 +564,6 @@ test('PATCH /ips/:id rejects reassigning a scope=vpn address to a vpn whose cidr
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const [vpnA] = await db
@@ -659,7 +654,6 @@ test('POST /ips rejects datacenterId together with networkId', async () => {
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const [dc] = await db
@@ -741,7 +735,6 @@ test('PATCH /ips/:id rejects datacenterId when the row already has networkId', a
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const [dc] = await db
@@ -834,7 +827,6 @@ test('PATCH /ips/:id rejects vpnId: null when scope is vpn', async () => {
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const [vpnRow] = await db

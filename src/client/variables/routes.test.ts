@@ -126,7 +126,6 @@ async function withVariableFixtures(
     actorType: 'user',
     actorId: userId,
     permission: 'organization:own',
-    allow: true,
   })
 
   const [insertedWorkspace] = await db

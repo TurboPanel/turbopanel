@@ -43,12 +43,23 @@ test('isTransientError classifies retryable infrastructure failures', () => {
   assertEquals(isTransientError(new Error('ECONNREFUSED to postgres')), true)
   assertEquals(isTransientError(new Error('cell unavailable')), true)
   assertEquals(isTransientError('redis connection reset'), true)
+  assertEquals(isTransientError(new Error('ECONNRESET from peer')), true)
+  assertEquals(isTransientError(new Error('request timed out waiting')), true)
+  assertEquals(isTransientError(new Error('failed to fetch command status')), true)
+  assertEquals(isTransientError(new Error('database is temporarily unreachable')), true)
+  const named = new Error('upstream died')
+  named.name = 'TimeoutError'
+  assertEquals(isTransientError(named), true)
+  const networkNamed = new Error('boom')
+  networkNamed.name = 'NetworkError'
+  assertEquals(isTransientError(networkNamed), true)
 })
 
 test('isTransientError rejects permanent validation failures', () => {
   assertEquals(isTransientError(new Error('invalid command envelope')), false)
   assertEquals(isTransientError(new Error('data integrity violation')), false)
   assertEquals(isTransientError(new Error('overloaded queue')), false)
+  assertEquals(isTransientError(new Error('permission denied for table')), false)
 })
 
 const TEST_COMMAND_ACTOR = {

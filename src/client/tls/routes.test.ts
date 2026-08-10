@@ -99,7 +99,6 @@ async function withTlsFixtures(
     actorType: 'user',
     actorId: userId,
     permission: 'organization:own',
-    allow: true,
   })
 
   try {

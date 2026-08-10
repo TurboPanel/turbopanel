@@ -116,7 +116,6 @@ it('org owner can manage org', async () => {
       actorType: 'user',
       actorId: userId,
       permission: 'organization:own',
-      allow: true,
     })
 
     const ownsOrg = await canOwnOrganization(db, userId, organizationId)
@@ -135,7 +134,6 @@ it('org manager can invite and manage org members', async () => {
       actorType: 'user',
       actorId: userId,
       permission: 'organization:manage',
-      allow: true,
     })
 
     const managesOrg = await canManageOrganization(db, userId, organizationId)
@@ -156,7 +154,6 @@ it('team owner can manage team', async () => {
       actorType: 'user',
       actorId: userId,
       permission: 'team:own',
-      allow: true,
     })
 
     const ownsTeam = await canOwnTeam(db, userId, teamId)
@@ -175,7 +172,6 @@ it('team manager can invite and manage team members', async () => {
       actorType: 'user',
       actorId: userId,
       permission: 'team:manage',
-      allow: true,
     })
 
     const managesTeam = await canManageTeam(db, userId, teamId)
@@ -196,7 +192,6 @@ it('org manager can manage any team in their org', async () => {
       actorType: 'user',
       actorId: userId,
       permission: 'organization:manage',
-      allow: true,
     })
 
     const managesTeam = await canManageTeam(db, userId, teamId)
@@ -255,7 +250,6 @@ it('assertNotLastOrgOwner throws when removing the sole owner', async () => {
       actorType: 'user',
       actorId: userId,
       permission: 'organization:own',
-      allow: true,
     })
 
     let threw = false
@@ -284,7 +278,6 @@ it('assertNotLastOrgOwner throws when removing the sole owner', async () => {
         actorType: 'user',
         actorId: secondUserId,
         permission: 'organization:own',
-        allow: true,
       })
 
       await assertNotLastOrgOwner(db, organizationId, userId)
@@ -303,7 +296,6 @@ it('assertNotLastTeamOwner throws when removing the sole owner', async () => {
       actorType: 'user',
       actorId: userId,
       permission: 'team:own',
-      allow: true,
     })
 
     let threw = false
@@ -332,7 +324,6 @@ it('assertNotLastTeamOwner throws when removing the sole owner', async () => {
         actorType: 'user',
         actorId: secondUserId,
         permission: 'team:own',
-        allow: true,
       })
 
       await assertNotLastTeamOwner(db, teamId, userId)
@@ -401,7 +392,6 @@ it('org manager is not treated as team owner without direct team:own grant', asy
       actorType: 'user',
       actorId: userId,
       permission: 'organization:manage',
-      allow: true,
     })
 
     const ownsTeam = await canOwnTeam(db, userId, teamId)

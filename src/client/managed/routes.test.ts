@@ -282,7 +282,6 @@ async function withManagedFixturesBody(
       actorType: 'user',
       actorId: userId,
       permission: 'organization:manage',
-      allow: true,
     })
   }
 

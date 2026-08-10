@@ -10,7 +10,7 @@ import { mapGrantRows, revokeAccessGrant } from './access-grants.ts'
  */
 const test = Deno.test.bind(Deno)
 
-test('mapGrantRows maps allow rows onto AccessRecord shape', () => {
+test('mapGrantRows maps rows onto AccessRecord shape', () => {
   const mapped = mapGrantRows([
     {
       id: 'g1',
@@ -19,7 +19,6 @@ test('mapGrantRows maps allow rows onto AccessRecord shape', () => {
       actorType: 'user',
       actorId: 'user-1',
       permission: 'organization:manage',
-      allow: true,
     },
   ])
 
@@ -35,31 +34,29 @@ test('mapGrantRows maps allow rows onto AccessRecord shape', () => {
   ])
 })
 
-test('mapGrantRows excludes deny / non-allow rows', () => {
+test('mapGrantRows maps every row as allow effect', () => {
   const mapped = mapGrantRows([
     {
-      id: 'allow-1',
+      id: 'g-1',
       entityType: 'organization',
       entityId: 'org-1',
       actorType: 'team',
       actorId: 'team-1',
       permission: 'team:manage',
-      allow: true,
     },
     {
-      id: 'deny-1',
+      id: 'g-2',
       entityType: 'organization',
       entityId: 'org-1',
       actorType: 'user',
       actorId: 'user-2',
       permission: 'organization:own',
-      allow: false,
     },
   ])
 
-  assertEquals(mapped.length, 1)
-  assertEquals(mapped[0]?.id, 'allow-1')
+  assertEquals(mapped.length, 2)
   assertEquals(mapped[0]?.effect, 'allow')
+  assertEquals(mapped[1]?.effect, 'allow')
 })
 
 test('mapGrantRows returns an empty list for empty input', () => {
@@ -75,7 +72,6 @@ test('mapGrantRows preserves subject kinds used by the access API', () => {
       actorType: 'organization',
       actorId: 'org-1',
       permission: 'organization:own',
-      allow: true,
     },
   ])
 

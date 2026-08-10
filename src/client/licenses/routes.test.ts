@@ -125,7 +125,6 @@ async function withTestFixtures(
     actorType: 'user',
     actorId: managerId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   try {
@@ -181,7 +180,6 @@ async function withOwnerFixtures(
     actorType: 'user',
     actorId: ownerId,
     permission: 'organization:own',
-    allow: true,
   })
 
   try {
@@ -418,7 +416,6 @@ test('DELETE /licenses/:id still 403 for reserved display-name when registry is 
     actorType: 'user',
     actorId: ownerId,
     permission: 'organization:own',
-    allow: true,
   })
 
   const { app, secrets } = await createLicenseTestApp(
@@ -530,7 +527,6 @@ test('DELETE /licenses/:id still 403 via fallbacks when registry binding is revo
     actorType: 'user',
     actorId: ownerId,
     permission: 'organization:own',
-    allow: true,
   })
 
   const { app, secrets } = await createLicenseTestApp(

@@ -49,7 +49,6 @@ import { isOrganizationCaUniqueViolation } from '../tls/routes-helpers.ts'
 import { ensureManagedIngressHierarchy } from '../system/hierarchy.ts'
 import {
   ensureManagedContainerAllocation,
-  pruneLegacyManagedIngressContainers,
 } from './allocate-managed-container.ts'
 import {
   enqueueManagedIngressReconcile,
@@ -922,8 +921,6 @@ async function buildPayloadForMember(
     ordinal: member.ordinal,
     memberOrdinals,
   })
-
-  await pruneLegacyManagedIngressContainers(db, allocation.serviceId)
 
   const bindResolved = await resolveHostingBindAddress(db, {
     serverId: member.serverId,

@@ -82,7 +82,6 @@ test('PATCH /hostings rejects public bind with non-public ip scope', async () =>
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const now = new Date().toISOString()
@@ -206,7 +205,6 @@ test('PATCH /hostings returns 404 when ipId belongs to another org', async () =>
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const now = new Date().toISOString()

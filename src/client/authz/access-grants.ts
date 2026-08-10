@@ -3,10 +3,10 @@ import type { Db } from '../../db.ts'
 import { grant } from '../../lib/db/schema.ts'
 
 /**
- * Deny grants are not supported: authorization evaluation only considers
- * `allow = true` rows (see `evaluator.ts`), so `effect` is always `'allow'`.
- * A `deny` value would be silently ignored by the checks, so it is rejected at
- * the API boundary rather than accepted and displayed.
+ * Every persisted grant is allow-only. Authorization evaluation treats each
+ * row as a positive capability grant (see `evaluator.ts`); deny semantics are
+ * not part of the model. The API still exposes `effect: 'allow'` for the
+ * stable client DTO shape.
  */
 export type AccessRecord = {
   id: string
@@ -24,25 +24,18 @@ type AtomicGrantRow = {
   actorType: string
   actorId: string
   permission: string
-  allow: boolean
 }
 
-/**
- * Map atomic `grant` rows to access API records. Only `allow` rows are
- * surfaced — deny grants are unsupported and never authoritative, so any
- * legacy non-allow row is excluded rather than misrepresented.
- */
+/** Map atomic `grant` rows to access API records (all grants are allow). */
 export function mapGrantRows(rows: AtomicGrantRow[]): AccessRecord[] {
-  return rows
-    .filter((row) => row.allow)
-    .map((row) => ({
-      id: row.id,
-      subjectKind: row.actorType as AccessRecord['subjectKind'],
-      subjectId: row.actorId,
-      resourceId: row.entityId,
-      effect: 'allow' as const,
-      permissionKey: row.permission,
-    }))
+  return rows.map((row) => ({
+    id: row.id,
+    subjectKind: row.actorType as AccessRecord['subjectKind'],
+    subjectId: row.actorId,
+    resourceId: row.entityId,
+    effect: 'allow' as const,
+    permissionKey: row.permission,
+  }))
 }
 
 /** Delete a single access grant row by id. */

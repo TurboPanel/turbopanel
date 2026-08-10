@@ -95,7 +95,6 @@ test('POST /vpns stores cidr directly on the vpn row', async () => {
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const cookie = await sessionCookie(db, secrets, userId)
@@ -186,7 +185,6 @@ test('GET /vpns/:id/peers never returns presharedKey', async () => {
     actorType: 'user',
     actorId: userId,
     permission: 'organization:manage',
-    allow: true,
   })
 
   const now = new Date().toISOString()
@@ -339,7 +337,6 @@ test('POST /vpns/:id/peers returns 400 for invalid publicKey', async () => {
     actorType: 'user',
     actorId: u!.id,
     permission: 'organization:manage',
-    allow: true,
   })
   const [vpnRow] = await db.insert(vpn).values({ organizationId: orgA!.id, cidr: '203.0.113.0/24', name: 'Mesh' }).returning({ id: vpn.id })
   const [srv] = await db.insert(server).values({ organizationId: orgA!.id, name: 'Host' }).returning({ id: server.id })
@@ -531,7 +528,6 @@ test('PATCH /vpns/:id/peers/:peerId returns 400 for invalid publicKey', async ()
     actorType: 'user',
     actorId: u!.id,
     permission: 'organization:manage',
-    allow: true,
   })
   const [vpnRow] = await db.insert(vpn).values({ organizationId: orgA!.id, cidr: '203.0.113.0/24', name: 'Mesh' }).returning({ id: vpn.id })
   const [srv] = await db.insert(server).values({ organizationId: orgA!.id, name: 'Host' }).returning({ id: server.id })
@@ -587,7 +583,6 @@ test('POST /vpns/:id/apply returns 422 when a peer lacks tunnel_address', async 
     actorType: 'user',
     actorId: u!.id,
     permission: 'organization:manage',
-    allow: true,
   })
   const [vpnRow] = await db.insert(vpn).values({ organizationId: orgA!.id, cidr: '203.0.113.0/24', name: 'Mesh' }).returning({ id: vpn.id })
   const [srv] = await db.insert(server).values({ organizationId: orgA!.id, name: 'Host' }).returning({ id: server.id })
@@ -639,7 +634,6 @@ test('POST /vpns/:id/apply enqueues one command per peer without presharedKey in
     actorType: 'user',
     actorId: u!.id,
     permission: 'organization:manage',
-    allow: true,
   })
   const [vpnRow] = await db.insert(vpn).values({ organizationId: orgA!.id, cidr: '203.0.113.0/24', name: 'Mesh' }).returning({ id: vpn.id })
   const [srvA] = await db.insert(server).values({ organizationId: orgA!.id, name: 'A' }).returning({ id: server.id })
@@ -725,7 +719,6 @@ async function seedVpnManageSession(
     actorType: 'user',
     actorId: u!.id,
     permission: 'organization:manage',
-    allow: true,
   })
   const [vpnRow] = await db.insert(vpn).values({
     organizationId: orgA!.id,
@@ -841,7 +834,6 @@ test('POST /vpns/:id/peers tunnelAddress in/out of CIDR and pool exhaustion', as
     actorType: 'user',
     actorId: u!.id,
     permission: 'organization:manage',
-    allow: true,
   })
   const [vpnRow] = await db.insert(vpn).values({
     organizationId: orgA!.id,

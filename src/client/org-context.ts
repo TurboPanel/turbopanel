@@ -128,7 +128,6 @@ export async function listAccessibleOrganizations(
         ON ss.actor_type = ag.actor_type AND ss.actor_id = ag.actor_id
       WHERE ag.entity_type = 'organization'
         AND ag.permission IN ('organization:own', 'organization:manage')
-        AND ag.allow = true
     ),
     member_orgs AS (
       SELECT organization_id FROM membership WHERE user_id = ${userId}::uuid
