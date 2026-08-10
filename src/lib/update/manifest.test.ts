@@ -2,6 +2,7 @@ import { assertEquals } from "jsr:@std/assert";
 import {
   resetTrunkManifestCacheForTests,
   resolveTrunkManifest,
+  seedTrunkManifestCacheForTests,
 } from "./manifest.ts";
 
 /**
@@ -106,6 +107,105 @@ test("resolveTrunkManifest reuses cached manifest within TTL", async () => {
     assertEquals(first?.commit, "cached-commit");
     assertEquals(second?.commit, "cached-commit");
     assertEquals(fetchCount, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetTrunkManifestCacheForTests();
+  }
+});
+
+test("resolveTrunkManifest returns null when channels.json is unavailable", async () => {
+  resetTrunkManifestCacheForTests();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() =>
+    Promise.resolve(new Response("nope", { status: 500 }))) as typeof fetch;
+  try {
+    assertEquals(await resolveTrunkManifest(), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetTrunkManifestCacheForTests();
+  }
+});
+
+test("resolveTrunkManifest rejects http or missing trunk manifestUrl", async () => {
+  resetTrunkManifestCacheForTests();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/channels.json")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            channels: {
+              trunk: { manifestUrl: "http://insecure.example/manifest.json" },
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+    }
+    return originalFetch(input);
+  }) as typeof fetch;
+  try {
+    assertEquals(await resolveTrunkManifest(), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetTrunkManifestCacheForTests();
+  }
+});
+
+test("resolveTrunkManifest returns null for incomplete manifest fields", async () => {
+  resetTrunkManifestCacheForTests();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/channels.json")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            channels: {
+              trunk: {
+                manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+              },
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+    }
+    if (url.endsWith("/channels/trunk/manifest.json")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ commit: "only" }), { status: 200 }),
+      );
+    }
+    return originalFetch(input);
+  }) as typeof fetch;
+  try {
+    assertEquals(await resolveTrunkManifest(), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetTrunkManifestCacheForTests();
+  }
+});
+
+test("seedTrunkManifestCacheForTests short-circuits the fetch path", async () => {
+  resetTrunkManifestCacheForTests();
+  seedTrunkManifestCacheForTests({
+    commit: "seeded",
+    buildId: "b",
+    builtAt: "2020-01-01T00:00:00.000Z",
+    channel: "trunk",
+    manifestUrl: "https://dl.trbp.nl/m.json",
+  });
+  let fetchCount = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => {
+    fetchCount += 1;
+    return Promise.reject(new Error("should not fetch"));
+  }) as typeof fetch;
+  try {
+    const manifest = await resolveTrunkManifest();
+    assertEquals(manifest?.commit, "seeded");
+    assertEquals(fetchCount, 0);
   } finally {
     globalThis.fetch = originalFetch;
     resetTrunkManifestCacheForTests();

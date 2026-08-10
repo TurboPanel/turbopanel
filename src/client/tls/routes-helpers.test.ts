@@ -38,6 +38,11 @@ test('parseHostnames normalizes and rejects empty lists', () => {
 test('createFailure and isCreateTlsFailure discriminate results', () => {
   const failure = createFailure('Invalid request')
   assertEquals(failure, { error: 'Invalid request', status: 400 })
+  assertEquals(createFailure('Invalid request', 'more'), {
+    error: 'Invalid request',
+    detail: 'more',
+    status: 400,
+  })
   assertEquals(isCreateTlsFailure(failure), true)
   assertEquals(
     isCreateTlsFailure({
@@ -56,8 +61,17 @@ test('isTlsFingerprintUniqueViolation matches org fingerprint index', () => {
     { code: '23505' },
   )
   assertEquals(isTlsFingerprintUniqueViolation(match), true)
+  assertEquals(
+    isTlsFingerprintUniqueViolation(
+      Object.assign(new Error('uniq_tls_organization_fingerprint_sha256'), {
+        code: '23505',
+      }),
+    ),
+    true,
+  )
   assertEquals(isTlsFingerprintUniqueViolation({ code: '23505' }), false)
   assertEquals(isTlsFingerprintUniqueViolation(new Error('other')), false)
+  assertEquals(isTlsFingerprintUniqueViolation(null), false)
 })
 
 test('isOrganizationCaUniqueViolation matches active CA index', () => {
@@ -71,7 +85,7 @@ test('isOrganizationCaUniqueViolation matches active CA index', () => {
 
 test('materialFromLetsEncrypt builds pending metadata', () => {
   const material = materialFromLetsEncrypt({
-    hostnames: ['LE.example.com'],
+    hostnames: ['LE.example.com', '*.Example.com'],
     challengeType: 'dns-01',
     autoRenew: false,
   })
@@ -80,9 +94,21 @@ test('materialFromLetsEncrypt builds pending metadata', () => {
   }
   assertEquals(material.certificatePem, null)
   assertEquals(material.metadata.status, 'pending')
-  assertEquals(material.metadata.dnsNames, ['le.example.com'])
+  assertEquals(material.metadata.dnsNames, ['le.example.com', '*.example.com'])
+  assertEquals(material.metadata.hasWildcard, true)
   assertEquals(material.metadata.acme?.challengeType, 'dns-01')
   assertEquals(material.options?.autoRenew, false)
+})
+
+test('materialFromLetsEncrypt defaults challengeType and autoRenew', () => {
+  const material = materialFromLetsEncrypt({
+    hostnames: ['app.example.com'],
+  })
+  if (isCreateTlsFailure(material)) {
+    throw new TypeError('expected success material')
+  }
+  assertEquals(material.metadata.acme?.challengeType, 'http-01')
+  assertEquals(material.options?.autoRenew, true)
 })
 
 test('materialFromLetsEncrypt rejects missing hostnames', () => {
@@ -111,6 +137,18 @@ test('applyTlsOptionsPatch updates prefer and autoRenew', () => {
 
   const invalidPrefer = applyTlsOptionsPatch({}, { prefer: 'x' })
   assertEquals(invalidPrefer.ok, false)
+
+  const invalidAutoRenew = applyTlsOptionsPatch({}, { autoRenew: 'yes' })
+  assertEquals(invalidAutoRenew.ok, false)
+
+  const setPrefer = applyTlsOptionsPatch({}, { prefer: 5 })
+  if (!setPrefer.ok) throw new TypeError('expected ok patch')
+  assertEquals(setPrefer.options.prefer, 5)
+  assertEquals(setPrefer.changed, true)
+
+  const unchanged = applyTlsOptionsPatch({ prefer: 1 }, {})
+  if (!unchanged.ok) throw new TypeError('expected ok patch')
+  assertEquals(unchanged.changed, false)
 
   const toggled = applyTlsOptionsPatch({}, { autoRenew: false })
   if (!toggled.ok) throw new TypeError('expected ok patch')

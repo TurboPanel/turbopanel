@@ -78,6 +78,42 @@ it('assertDispatchInfrastructure returns the queue when dispatch infra is presen
   assertEquals(result, queue)
 })
 
+it('assertDispatchInfrastructure returns 503 when command queue binding is missing', async () => {
+  const response = assertDispatchInfrastructure(mockContext({
+    daemonCellRegistry: {},
+  }))
+  assertEquals(response instanceof Response, true)
+  if (response instanceof Response) {
+    assertEquals(response.status, 503)
+    assertEquals(await response.json(), { error: 'Command queue unavailable' })
+  }
+})
+
+it('enqueueCommandOrCompensate returns null when enqueue succeeds', async () => {
+  const queue = createRecordingQueue()
+  const record = {
+    id: 'cmd-1',
+    queuedAt: '2020-01-01T00:00:00.000Z',
+    createdAt: '2020-01-01T00:00:00.000Z',
+  } as Awaited<ReturnType<typeof createCommandRecord>>
+  const response = await enqueueCommandOrCompensate(
+    {} as never,
+    queue,
+    record,
+    {
+      commandId: record.id,
+      serverId: 'server-1',
+      type: 'daemon.ping',
+      attempt: 1,
+      queuedAt: record.queuedAt ?? record.createdAt,
+    },
+    mockContext(),
+  )
+  assertEquals(response, null)
+  assertEquals(queue.envelopes.length, 1)
+  assertEquals(queue.envelopes[0]?.commandId, 'cmd-1')
+})
+
 it('enqueueCommandOrCompensate marks the command failed when enqueue throws', async () => {
   if (!dbUrl) {
     console.warn('Skipping enqueueCommandOrCompensate test: TURBOPANEL_DATABASE_URL not set')

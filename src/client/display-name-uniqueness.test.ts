@@ -12,7 +12,9 @@ import {
   workspace,
 } from '../lib/db/schema.ts'
 import { ensureSystemHierarchy } from './system/hierarchy.ts'
+import type { Db } from '../db.ts'
 import {
+  isProjectDisplayNameTaken,
   isWorkspaceDisplayNameTaken,
   normalizeDisplayNameKey,
   PROJECT_NAME_IN_USE_ERROR,
@@ -37,6 +39,77 @@ test('normalizeDisplayNameKey trims and lowercases', () => {
 test('name-in-use error codes stay stable for API clients', () => {
   assertEquals(PROJECT_NAME_IN_USE_ERROR, 'project_name_in_use')
   assertEquals(WORKSPACE_NAME_IN_USE_ERROR, 'workspace_name_in_use')
+})
+
+function nameLookupDb(rows: Array<{ id: string }>): Db {
+  return {
+    select: () => ({
+      from: () => ({
+        innerJoin: () => ({
+          where: () => ({
+            limit: () => Promise.resolve(rows),
+          }),
+        }),
+        where: () => ({
+          limit: () => Promise.resolve(rows),
+        }),
+      }),
+    }),
+  } as unknown as Db
+}
+
+test('isProjectDisplayNameTaken rejects null blank and whitespace-only names without querying', async () => {
+  let queried = false
+  const db = {
+    select: () => {
+      queried = true
+      throw new TypeError('should not query for blank names')
+    },
+  } as unknown as Db
+  assertEquals(await isProjectDisplayNameTaken(db, 'org', null), false)
+  assertEquals(await isProjectDisplayNameTaken(db, 'org', undefined), false)
+  assertEquals(await isProjectDisplayNameTaken(db, 'org', '   '), false)
+  assertEquals(queried, false)
+})
+
+test('isWorkspaceDisplayNameTaken rejects null blank and whitespace-only names without querying', async () => {
+  let queried = false
+  const db = {
+    select: () => {
+      queried = true
+      throw new TypeError('should not query for blank names')
+    },
+  } as unknown as Db
+  assertEquals(await isWorkspaceDisplayNameTaken(db, 'org', null), false)
+  assertEquals(await isWorkspaceDisplayNameTaken(db, 'org', ''), false)
+  assertEquals(await isWorkspaceDisplayNameTaken(db, 'org', ' \t '), false)
+  assertEquals(queried, false)
+})
+
+test('isProjectDisplayNameTaken reports taken vs free via host-free stub', async () => {
+  assertEquals(
+    await isProjectDisplayNameTaken(nameLookupDb([{ id: 'p1' }]), 'org', 'App'),
+    true,
+  )
+  assertEquals(
+    await isProjectDisplayNameTaken(nameLookupDb([]), 'org', 'App', 'exclude'),
+    false,
+  )
+})
+
+test('isWorkspaceDisplayNameTaken reports taken vs free via host-free stub', async () => {
+  assertEquals(
+    await isWorkspaceDisplayNameTaken(
+      nameLookupDb([{ id: 'w1' }]),
+      'org',
+      'Default',
+    ),
+    true,
+  )
+  assertEquals(
+    await isWorkspaceDisplayNameTaken(nameLookupDb([]), 'org', 'Default', 'ex'),
+    false,
+  )
 })
 
 async function cleanupOrgHierarchy(

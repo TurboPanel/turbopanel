@@ -123,11 +123,13 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/bindings/materialize.test.ts \
   src/client/bindings/resolve-endpoint.test.ts \
   src/client/bindings/routes-helpers.test.ts \
+  src/client/bindings/impact.test.ts \
   src/client/display-name-uniqueness.test.ts \
   src/client/environments/deploy-prepare.test.ts \
   src/client/environments/deploy-routes.test.ts \
   src/client/environments/register-compose-volumes.test.ts \
   src/client/environments/reconcile-services.test.ts \
+  src/client/environments/reconcile-services.hostfree.test.ts \
   src/client/environments/allocate-containers.test.ts \
   src/client/environments/routes.test.ts \
   src/client/environments/tcp-udp-ingress.test.ts \
