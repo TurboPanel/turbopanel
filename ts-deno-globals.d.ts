@@ -10,9 +10,11 @@ declare const process: {
 }
 
 declare namespace Deno {
-  namespace env {
-    function get(key: string): string | undefined
-    function toObject(): Record<string, string>
+  const env: {
+    get(key: string): string | undefined
+    set(key: string, value: string): void
+    delete(key: string): void
+    toObject(): Record<string, string>
   }
 
   namespace errors {
@@ -23,11 +25,19 @@ declare namespace Deno {
   function serve(
     options: {
       path?: string
+      hostname?: string
+      port?: number
       signal?: AbortSignal
-      onListen?: (info: { path: string }) => void | Promise<void>
+      onListen?: (
+        info: { path: string } | { hostname: string; port: number },
+      ) => void | Promise<void>
     },
     handler: (request: Request) => Response | Promise<Response>,
-  ): { shutdown: () => Promise<void> }
+  ): {
+    addr: { transport: 'tcp'; hostname: string; port: number } | { transport: 'unix'; path: string }
+    finished: Promise<void>
+    shutdown: () => Promise<void>
+  }
   function connect(
     options: { transport: 'unix'; path: string } | { hostname: string; port: number },
   ): Promise<Conn>
@@ -96,6 +106,22 @@ declare namespace Deno {
   interface Conn {
     close(): void
   }
+}
+
+/** Deno's WebSocket constructor accepts a headers init (not in DOM lib). */
+interface WebSocket {
+  // keep ambient DOM WebSocket; constructor overload added below
+}
+declare var WebSocket: {
+  prototype: WebSocket
+  new (
+    url: string | URL,
+    protocols?: string | string[] | { headers?: Record<string, string> },
+  ): WebSocket
+  readonly CONNECTING: 0
+  readonly OPEN: 1
+  readonly CLOSING: 2
+  readonly CLOSED: 3
 }
 
 declare module '@std/path' {

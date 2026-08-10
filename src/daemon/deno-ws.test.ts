@@ -7,6 +7,7 @@ import {
 import {
   deriveSecretsConfig,
   parseSecretsEnv,
+  type DerivedSecretsConfig,
 } from "../client/authn/secrets.ts";
 import type { Db } from "../db.ts";
 import { generateSecret } from "../generate-secret.ts";
@@ -43,6 +44,22 @@ import {
   resetTrunkManifestCacheForTests,
   seedTrunkManifestCacheForTests,
 } from "../lib/update/manifest.ts";
+import {
+  buildSignedCookie,
+  HTTP_SESSION_COOKIE_NAME,
+} from "../client/authn/crypto.ts";
+import {
+  createEmptyMockAuthState,
+  createMockAuthDb,
+  seedMockSession,
+} from "../client/authn/authn-hostfree-doubles.ts";
+import {
+  buildLocalConsoleAuthorization,
+  hashLocalConsoleContent,
+  LOCAL_CONSOLE_CONTENT_SHA256_HEADER,
+} from "../developer/local-console-auth.ts";
+import type { RateLimiter } from "./rate-limit/contracts.ts";
+import { TEST_ONLY_TURBOPANEL_SECRET } from "../test-fixtures/secrets.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -239,12 +256,19 @@ function createTrackingDaemonCell(serverId: string) {
     claimDeliveryLease: async () => null,
     renewDeliveryLease: async () => null,
     releaseDeliveryLease: async () => {},
-    readOutboxBatch: async () => {
+    readOutboxBatch: async (args?: { blockMs?: number }) => {
       calls.readOutboxBatch += 1;
+      // Honour blockMs so the outbox pump cannot busy-loop under Deno.serve.
+      const blockMs = args?.blockMs;
+      if (blockMs != null && blockMs > 0) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.min(blockMs, 15))
+        );
+      }
       return [];
     },
     ackOutbox: async () => {},
-    prune: async () => false,
+    prune: async () => [],
     clearUpdateStatus: async () => ({ cleared: 0 }),
     purge: async () => {},
   };
@@ -1222,8 +1246,9 @@ test("isClosedConnectionError matches closed-socket errors", () => {
 test("wsMessageDataToString accepts string, Blob, and ArrayBuffer views", async () => {
   assertEquals(await wsMessageDataToString("hello"), "hello");
   assertEquals(await wsMessageDataToString(new Blob(["from-blob"])), "from-blob");
+  const bytes = new TextEncoder().encode("bytes");
   assertEquals(
-    await wsMessageDataToString(new TextEncoder().encode("bytes")),
+    await wsMessageDataToString(bytes.buffer as ArrayBufferLike),
     "bytes",
   );
 });
@@ -1249,7 +1274,7 @@ it("WS upgrade returns 503 when database is unavailable", async () => {
     },
   });
   assertEquals(response.status, 503);
-  assertEquals((await response.json()).error, "Database unavailable");
+  assertEquals((await response.json() as { error: string }).error, "Database unavailable");
 });
 
 it("WS upgrade returns 503 when daemon cell registry is unavailable", async () => {
@@ -1272,7 +1297,7 @@ it("WS upgrade returns 503 when daemon cell registry is unavailable", async () =
   });
   assertEquals(response.status, 503);
   assertEquals(
-    (await response.json()).error,
+    (await response.json() as { error: string }).error,
     "Daemon cell registry unavailable",
   );
 });
@@ -1432,4 +1457,979 @@ it("heartbeat with timeSync touches metadata without requiring daemonBuild", asy
   assertEquals(tracking.calls.recordInbound, inboundBefore + 1);
   assertEquals(getUpdateCallCount() > updatesBefore, true);
   ws.close(1000, "done");
+});
+
+// ---------------------------------------------------------------------------
+// Live Deno.serve WebSocket coverage
+//
+// `app.request()` returns HTTP 101 without a usable `response.webSocket` under
+// Deno, so the suites above silently skip most handler paths. These tests drive
+// a real upgrade via Deno.serve + WebSocket client.
+// ---------------------------------------------------------------------------
+
+const LIVE_REMOTE_IP = "203.0.113.50";
+
+/**
+ * Deno's WebSocket constructor accepts `{ headers }` (not in the DOM lib).
+ * Wrap construction so `tsc` via tsconfig stays quiet.
+ */
+function createDenoWebSocket(
+  url: string,
+  init?: { headers?: Record<string, string> },
+): WebSocket {
+  const WebSocketCtor = WebSocket as unknown as {
+    new (
+      url: string,
+      protocolsOrInit?: string | string[] | { headers?: Record<string, string> },
+    ): WebSocket;
+  };
+  return init ? new WebSocketCtor(url, init) : new WebSocketCtor(url);
+}
+
+async function waitForWsOpen(ws: WebSocket): Promise<void> {
+  if (ws.readyState === WebSocket.OPEN) return;
+  await new Promise<void>((resolve, reject) => {
+    const onOpen = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = () => {
+      cleanup();
+      reject(new TypeError("WebSocket failed to open"));
+    };
+    const cleanup = () => {
+      ws.removeEventListener("open", onOpen);
+      ws.removeEventListener("error", onError);
+    };
+    ws.addEventListener("open", onOpen);
+    ws.addEventListener("error", onError);
+  });
+}
+
+function waitForWsClose(
+  ws: WebSocket,
+  timeoutMs = 3000,
+): Promise<{ code: number; reason: string }> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new TypeError("timed out waiting for ws close")),
+      timeoutMs,
+    );
+    ws.addEventListener("close", (event) => {
+      clearTimeout(timer);
+      resolve({ code: event.code, reason: event.reason });
+    }, { once: true });
+  });
+}
+
+function waitForWsMessage(
+  ws: WebSocket,
+  timeoutMs = 3000,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new TypeError("timed out waiting for ws message")),
+      timeoutMs,
+    );
+    ws.addEventListener("message", (event) => {
+      clearTimeout(timer);
+      resolve(String(event.data));
+    }, { once: true });
+  });
+}
+
+async function withLiveDaemonServer(
+  options: {
+    secrets: Awaited<ReturnType<typeof createDaemonJwtSecrets>>;
+    db?: Db;
+    registry?: DaemonCellRegistry;
+    inboundMessageLimit?: number;
+    inboundMessageWindowMs?: number;
+    connectLimiter?: RateLimiter;
+    developerSurface?: boolean;
+    sessionSecrets?: DerivedSecretsConfig;
+    setDbOnContext?: Db;
+  },
+  fn: (ctx: { port: number; origin: string }) => Promise<void>,
+): Promise<void> {
+  const app = new Hono();
+  if (options.setDbOnContext) {
+    const db = options.setDbOnContext;
+    app.use("*", async (c, next) => {
+      (c as { set: (key: "db", value: Db) => void }).set("db", db);
+      await next();
+    });
+  }
+  registerDaemonWebSocket(app, {
+    secrets: options.secrets,
+    db: options.db,
+    daemonCellRegistry: options.registry ?? createTrackingRegistry(
+      createTrackingDaemonCell("srv-live").cell,
+    ),
+    inboundMessageLimit: options.inboundMessageLimit,
+    inboundMessageWindowMs: options.inboundMessageWindowMs,
+    connectLimiter: options.connectLimiter,
+    developerSurface: options.developerSurface,
+    sessionSecrets: options.sessionSecrets,
+  });
+
+  const ac = new AbortController();
+  const server = Deno.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    signal: ac.signal,
+    onListen() {},
+  }, app.fetch);
+  const addr = server.addr;
+  if (!("port" in addr)) {
+    throw new TypeError("expected TCP listen address");
+  }
+  const port = addr.port;
+  try {
+    await fn({ port, origin: `http://127.0.0.1:${port}` });
+  } finally {
+    ac.abort();
+    await server.finished.catch(() => {});
+  }
+}
+
+async function openLiveDaemonWs(params: {
+  port: number;
+  token: string;
+  remoteIp?: string;
+}): Promise<WebSocket> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${params.token}`,
+  };
+  if (params.remoteIp !== undefined) {
+    headers["X-Real-IP"] = params.remoteIp;
+  }
+  const ws = createDenoWebSocket(
+    `ws://127.0.0.1:${params.port}${DAEMON_WS_PATH}`,
+    { headers },
+  );
+  await waitForWsOpen(ws);
+  // Allow async onOpen (attach + outbox pump start) to settle.
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  return ws;
+}
+
+/** Open a live WS while buffering the first inbound server message. */
+async function openLiveDaemonWsWithFirstMessage(params: {
+  port: number;
+  token: string;
+  remoteIp?: string;
+}): Promise<{ ws: WebSocket; firstMessage: Promise<string> }> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${params.token}`,
+  };
+  if (params.remoteIp !== undefined) {
+    headers["X-Real-IP"] = params.remoteIp;
+  }
+  const ws = createDenoWebSocket(
+    `ws://127.0.0.1:${params.port}${DAEMON_WS_PATH}`,
+    { headers },
+  );
+  const firstMessage = waitForWsMessage(ws);
+  await waitForWsOpen(ws);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  return { ws, firstMessage };
+}
+
+test("live WS attaches, pumps outbox, handles hello/ping, and detaches", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-live-lifecycle";
+  const tracking = createTrackingDaemonCell(serverId);
+  let outboxDelivered = false;
+  const outbound: DaemonOutboundEnvelope = {
+    kind: "echo",
+    requestId: "req-echo-1",
+    at: "2020-01-01T00:00:00.000Z",
+    payload: { ping: true },
+    deliveryId: "del-1",
+  };
+  tracking.cell.readOutboxBatch = async (args?: { blockMs?: number }) => {
+    tracking.calls.readOutboxBatch += 1;
+    if (!outboxDelivered) {
+      outboxDelivered = true;
+      return [outbound];
+    }
+    const blockMs = args?.blockMs;
+    if (blockMs != null && blockMs > 0) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(blockMs, 15))
+      );
+    }
+    return [];
+  };
+  let markSent = 0;
+  let ackOutbox = 0;
+  tracking.cell.markSent = async () => {
+    markSent += 1;
+  };
+  tracking.cell.ackOutbox = async () => {
+    ackOutbox += 1;
+  };
+
+  await withLiveDaemonServer({
+    secrets,
+    db: createMockDb(),
+    registry: createTrackingRegistry(tracking.cell),
+  }, async ({ port }) => {
+    const issued = await issueDaemonJwt(
+      { sub: serverId, kid: "key-test" },
+      secrets,
+    );
+    const { ws, firstMessage } = await openLiveDaemonWsWithFirstMessage({
+      port,
+      token: issued.token,
+      remoteIp: LIVE_REMOTE_IP,
+    });
+
+    assertEquals(tracking.calls.attach, 1);
+    assertEquals(tracking.getSnapshot().connected, true);
+
+    const outboxMsg = await firstMessage;
+    const parsed = JSON.parse(outboxMsg) as Record<string, unknown>;
+    assertEquals(parsed.type, "echo");
+    assertEquals(markSent >= 1, true);
+    assertEquals(ackOutbox >= 1, true);
+    assertEquals(tracking.calls.putSnapshot >= 1, true);
+
+    ws.send(JSON.stringify({
+      type: "hello",
+      at: new Date().toISOString(),
+      hostname: "live-host",
+      daemonBuild: { commit: "c1", buildId: "b1" },
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assertEquals(tracking.calls.recordInbound >= 1, true);
+
+    const pongPromise = waitForWsMessage(ws);
+    ws.send(DAEMON_CELL_PING);
+    assertEquals(await pongPromise, DAEMON_CELL_PONG);
+
+    const closed = waitForWsClose(ws);
+    ws.close(1000, "done");
+    await closed;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assertEquals(tracking.calls.detach, 1);
+  });
+});
+
+test("live WS queues messages until attach completes then drains them", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-live-pending";
+  const tracking = createTrackingDaemonCell(serverId);
+  let releaseAttach: (() => void) | undefined;
+  const attachGate = new Promise<void>((resolve) => {
+    releaseAttach = resolve;
+  });
+  const originalAttach = tracking.cell.attachDaemonSocket.bind(tracking.cell);
+  tracking.cell.attachDaemonSocket = async (meta) => {
+    await attachGate;
+    return await originalAttach(meta);
+  };
+
+  await withLiveDaemonServer({
+    secrets,
+    db: createMockDb(),
+    registry: createTrackingRegistry(tracking.cell),
+    inboundMessageLimit: 10,
+  }, async ({ port }) => {
+    const issued = await issueDaemonJwt(
+      { sub: serverId, kid: "key-test" },
+      secrets,
+    );
+    const ws = createDenoWebSocket(
+      `ws://127.0.0.1:${port}${DAEMON_WS_PATH}`,
+      {
+        headers: {
+          Authorization: `Bearer ${issued.token}`,
+          "X-Real-IP": LIVE_REMOTE_IP,
+        },
+      },
+    );
+    await waitForWsOpen(ws);
+    // Send before attach finishes — should queue.
+    ws.send(JSON.stringify({
+      type: "heartbeat",
+      at: new Date().toISOString(),
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assertEquals(tracking.calls.attach, 0);
+    assertEquals(tracking.calls.recordInbound, 0);
+
+    releaseAttach?.();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assertEquals(tracking.calls.attach, 1);
+    assertEquals(tracking.calls.recordInbound >= 1, true);
+    ws.close(1000, "done");
+    await waitForWsClose(ws);
+  });
+});
+
+test("live WS closes when pending queue exceeds inboundMessageLimit before attach", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-live-pending-flood";
+  const tracking = createTrackingDaemonCell(serverId);
+  let releaseAttach: (() => void) | undefined;
+  const attachGate = new Promise<void>((resolve) => {
+    releaseAttach = resolve;
+  });
+  const originalAttach = tracking.cell.attachDaemonSocket.bind(tracking.cell);
+  tracking.cell.attachDaemonSocket = async (meta) => {
+    await attachGate;
+    return await originalAttach(meta);
+  };
+
+  await withLiveDaemonServer({
+    secrets,
+    db: createMockDb(),
+    registry: createTrackingRegistry(tracking.cell),
+    inboundMessageLimit: 2,
+  }, async ({ port }) => {
+    const issued = await issueDaemonJwt(
+      { sub: serverId, kid: "key-test" },
+      secrets,
+    );
+    const ws = createDenoWebSocket(
+      `ws://127.0.0.1:${port}${DAEMON_WS_PATH}`,
+      {
+        headers: {
+          Authorization: `Bearer ${issued.token}`,
+          "X-Real-IP": LIVE_REMOTE_IP,
+        },
+      },
+    );
+    await waitForWsOpen(ws);
+    const closed = waitForWsClose(ws);
+    for (let i = 0; i < 3; i++) {
+      ws.send(JSON.stringify({
+        type: "heartbeat",
+        at: new Date().toISOString(),
+      }));
+    }
+    const closeEvent = await closed;
+    assertEquals(closeEvent.code, 1008);
+    assertEquals(closeEvent.reason, "rate_limited");
+    releaseAttach?.();
+  });
+});
+
+test("live WS rate-limits after attach and closes with 1008", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-live-rate";
+  const tracking = createTrackingDaemonCell(serverId);
+
+  await withLiveDaemonServer({
+    secrets,
+    db: createMockDb(),
+    registry: createTrackingRegistry(tracking.cell),
+    inboundMessageLimit: 3,
+    inboundMessageWindowMs: 60_000,
+  }, async ({ port }) => {
+    const issued = await issueDaemonJwt(
+      { sub: serverId, kid: "key-test" },
+      secrets,
+    );
+    const ws = await openLiveDaemonWs({
+      port,
+      token: issued.token,
+      remoteIp: LIVE_REMOTE_IP,
+    });
+    const closed = waitForWsClose(ws);
+    for (let i = 0; i < 4; i++) {
+      ws.send(JSON.stringify({
+        type: "heartbeat",
+        at: new Date().toISOString(),
+      }));
+    }
+    const closeEvent = await closed;
+    assertEquals(closeEvent.code, 1008);
+    assertEquals(closeEvent.reason, "rate_limited");
+  });
+});
+
+test("live WS rejects oversized frames and revoked keys", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-live-policy";
+  const tracking = createTrackingDaemonCell(serverId);
+
+  await withLiveDaemonServer({
+    secrets,
+    db: createMockDb(),
+    registry: createTrackingRegistry(tracking.cell),
+  }, async ({ port }) => {
+    const issued = await issueDaemonJwt(
+      { sub: serverId, kid: "key-test" },
+      secrets,
+    );
+    const ws = await openLiveDaemonWs({
+      port,
+      token: issued.token,
+      remoteIp: LIVE_REMOTE_IP,
+    });
+    const closed = waitForWsClose(ws);
+    ws.send(JSON.stringify({
+      type: "heartbeat",
+      at: new Date().toISOString(),
+      pad: "x".repeat(260 * 1024),
+    }));
+    const closeEvent = await closed;
+    assertEquals(closeEvent.code, 1008);
+    assertEquals(closeEvent.reason, "policy_violation");
+  });
+
+  const revoked = {
+    ...baseDaemonKey,
+    revokedAt: "2020-01-02T00:00:00.000Z",
+  };
+  const { db } = createProjectionTrackingDb(serverId + "-rev", {
+    key: revoked,
+  }, {
+    connected: true,
+    statusChangedAt: "2020-01-01T00:00:00.000Z",
+  });
+  const tracking2 = createTrackingDaemonCell(serverId + "-rev");
+  await withLiveDaemonServer({
+    secrets,
+    db,
+    registry: createTrackingRegistry(tracking2.cell),
+  }, async ({ port }) => {
+    const issued = await issueDaemonJwt(
+      { sub: serverId + "-rev", kid: "key-test" },
+      secrets,
+    );
+    const ws = await openLiveDaemonWs({
+      port,
+      token: issued.token,
+      remoteIp: LIVE_REMOTE_IP,
+    });
+    const closed = waitForWsClose(ws);
+    ws.send(DAEMON_CELL_PING);
+    const closeEvent = await closed;
+    assertEquals(closeEvent.code, 1008);
+    assertEquals(closeEvent.reason, "key_revoked");
+  });
+});
+
+test("live WS attach failure closes with 1013", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-live-attach-fail";
+  const tracking = createTrackingDaemonCell(serverId);
+  tracking.cell.attachDaemonSocket = async () => {
+    throw new Error("attach boom");
+  };
+
+  await withLiveDaemonServer({
+    secrets,
+    db: createMockDb(),
+    registry: createTrackingRegistry(tracking.cell),
+  }, async ({ port }) => {
+    const issued = await issueDaemonJwt(
+      { sub: serverId, kid: "key-test" },
+      secrets,
+    );
+    const ws = createDenoWebSocket(
+      `ws://127.0.0.1:${port}${DAEMON_WS_PATH}`,
+      {
+        headers: {
+          Authorization: `Bearer ${issued.token}`,
+          "X-Real-IP": LIVE_REMOTE_IP,
+        },
+      },
+    );
+    const closed = waitForWsClose(ws);
+    await waitForWsOpen(ws).catch(() => {});
+    const closeEvent = await closed;
+    assertEquals(closeEvent.code, 1013);
+  });
+});
+
+test("live WS colocated path closes when postgres row is missing", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-live-colocated-missing";
+  const tracking = createTrackingDaemonCell(serverId);
+  const emptyDb = {
+    select: () => createSelectChain(() => []),
+    update: () => ({
+      set: () => ({
+        where: () => Promise.resolve(undefined),
+      }),
+    }),
+  } as unknown as Db;
+
+  await withLiveDaemonServer({
+    secrets,
+    db: emptyDb,
+    registry: createTrackingRegistry(tracking.cell),
+  }, async ({ port }) => {
+    const issued = await issueDaemonJwt(
+      { sub: serverId, kid: "key-test" },
+      secrets,
+    );
+    // No X-Real-IP → identityAddress === "__direct__"
+    const ws = createDenoWebSocket(
+      `ws://127.0.0.1:${port}${DAEMON_WS_PATH}`,
+      { headers: { Authorization: `Bearer ${issued.token}` } },
+    );
+    const closed = waitForWsClose(ws);
+    await waitForWsOpen(ws).catch(() => {});
+    const closeEvent = await closed;
+    assertEquals(closeEvent.code, 4401);
+    assertEquals(closeEvent.reason, "server row missing");
+  });
+});
+
+test("live WS ping repairs Postgres-only false offline", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-live-pg-offline";
+  const { db, getStatus } = createProjectionTrackingDb(serverId, {
+    key: baseDaemonKey,
+  }, {
+    connected: false,
+    statusChangedAt: "2020-01-01T00:00:00.000Z",
+  });
+  const tracking = createTrackingDaemonCell(serverId);
+  // Redis already connected — exercise the Postgres-only repair branch.
+  tracking.cell.getSnapshot = async () => ({
+    serverId,
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    connected: true,
+    connectedAt: "2020-01-01T00:00:00.000Z",
+  });
+
+  await withLiveDaemonServer({
+    secrets,
+    db,
+    registry: createTrackingRegistry(tracking.cell),
+  }, async ({ port }) => {
+    const issued = await issueDaemonJwt(
+      { sub: serverId, kid: "key-test" },
+      secrets,
+    );
+    const ws = await openLiveDaemonWs({
+      port,
+      token: issued.token,
+      remoteIp: LIVE_REMOTE_IP,
+    });
+    const pongPromise = waitForWsMessage(ws);
+    ws.send(DAEMON_CELL_PING);
+    assertEquals(await pongPromise, DAEMON_CELL_PONG);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assertEquals(getStatus().connected, true);
+    ws.close(1000, "done");
+    await waitForWsClose(ws);
+  });
+});
+
+test("live WS update-result and heartbeat with addresses cover inbound dispatch", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-live-inbound";
+  const { db, getDaemon } = createProjectionTrackingDb(serverId, {
+    key: baseDaemonKey,
+    projection: {
+      update: {
+        status: "updating",
+        requestId: "req-u1",
+        channel: "trunk",
+        queuedAt: "2020-01-01T00:00:00.000Z",
+      },
+    },
+  }, {
+    connected: true,
+    statusChangedAt: "2020-01-01T00:00:00.000Z",
+  });
+  const tracking = createTrackingDaemonCell(serverId);
+  tracking.cell.handleInbound = async () => {
+    tracking.calls.handleInbound += 1;
+    return {
+      serverId,
+      requestId: "req-u1",
+      requestKind: "update",
+      status: "done" as const,
+      createdAt: "2020-01-01T00:00:00.000Z",
+      expiresAt: "2020-01-01T00:05:00.000Z",
+      finishedAt: "2020-01-01T00:01:00.000Z",
+    };
+  };
+  await withLiveDaemonServer({
+    secrets,
+    db,
+    registry: createTrackingRegistry(tracking.cell),
+  }, async ({ port }) => {
+    const issued = await issueDaemonJwt(
+      { sub: serverId, kid: "key-test" },
+      secrets,
+    );
+    const ws = await openLiveDaemonWs({
+      port,
+      token: issued.token,
+      remoteIp: LIVE_REMOTE_IP,
+    });
+
+    ws.send(JSON.stringify({
+      type: "heartbeat",
+      at: new Date().toISOString(),
+      addresses: {
+        ipv4: ["203.0.113.10"],
+        ipv6: [],
+      },
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    ws.send(JSON.stringify({
+      type: "update-result",
+      id: "req-u1",
+      at: "2020-01-01T00:01:00.000Z",
+      ok: true,
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    assertEquals(tracking.calls.handleInbound >= 1, true);
+    const update = parseServerDaemonState(getDaemon())?.projection?.update;
+    assertEquals(update?.status, "done");
+    ws.close(1000, "done");
+    await waitForWsClose(ws);
+  });
+});
+
+test("live WS swallows inbound handler errors without tearing down the socket", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-live-inbound-err";
+  const tracking = createTrackingDaemonCell(serverId);
+  tracking.cell.recordInbound = async () => {
+    tracking.calls.recordInbound += 1;
+    throw new Error("recordInbound boom");
+  };
+
+  await withLiveDaemonServer({
+    secrets,
+    db: createMockDb(),
+    registry: createTrackingRegistry(tracking.cell),
+  }, async ({ port }) => {
+    const issued = await issueDaemonJwt(
+      { sub: serverId, kid: "key-test" },
+      secrets,
+    );
+    const ws = await openLiveDaemonWs({
+      port,
+      token: issued.token,
+      remoteIp: LIVE_REMOTE_IP,
+    });
+    ws.send(JSON.stringify({
+      type: "heartbeat",
+      at: new Date().toISOString(),
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assertEquals(ws.readyState, WebSocket.OPEN);
+    assertEquals(tracking.calls.recordInbound >= 1, true);
+    ws.close(1000, "done");
+    await waitForWsClose(ws);
+  });
+});
+
+test("live WS outbox pump aborts on closed-connection errors", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-live-outbox-closed";
+  const tracking = createTrackingDaemonCell(serverId);
+  let reads = 0;
+  tracking.cell.readOutboxBatch = async () => {
+    reads += 1;
+    tracking.calls.readOutboxBatch += 1;
+    if (reads === 1) {
+      throw new Error("Connection is closed");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    return [];
+  };
+
+  await withLiveDaemonServer({
+    secrets,
+    db: createMockDb(),
+    registry: createTrackingRegistry(tracking.cell),
+  }, async ({ port }) => {
+    const issued = await issueDaemonJwt(
+      { sub: serverId, kid: "key-test" },
+      secrets,
+    );
+    const ws = await openLiveDaemonWs({
+      port,
+      token: issued.token,
+      remoteIp: LIVE_REMOTE_IP,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    // Pump should have aborted after the closed-connection error — reads stay low.
+    const readsAfter = tracking.calls.readOutboxBatch;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assertEquals(tracking.calls.readOutboxBatch, readsAfter);
+    ws.close(1000, "done");
+    await waitForWsClose(ws);
+  });
+});
+
+test("live WS outbox pump logs non-closed errors and continues", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-live-outbox-warn";
+  const tracking = createTrackingDaemonCell(serverId);
+  let reads = 0;
+  tracking.cell.readOutboxBatch = async (args?: { blockMs?: number }) => {
+    reads += 1;
+    tracking.calls.readOutboxBatch += 1;
+    if (reads === 1) {
+      throw new Error("transient outbox failure");
+    }
+    const blockMs = args?.blockMs;
+    if (blockMs != null && blockMs > 0) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(blockMs, 15))
+      );
+    }
+    return [];
+  };
+
+  await withLiveDaemonServer({
+    secrets,
+    db: createMockDb(),
+    registry: createTrackingRegistry(tracking.cell),
+  }, async ({ port }) => {
+    const issued = await issueDaemonJwt(
+      { sub: serverId, kid: "key-test" },
+      secrets,
+    );
+    const ws = await openLiveDaemonWs({
+      port,
+      token: issued.token,
+      remoteIp: LIVE_REMOTE_IP,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assertEquals(tracking.calls.readOutboxBatch >= 2, true);
+    ws.close(1000, "done");
+    await waitForWsClose(ws);
+  });
+});
+
+test("live WS detach ignores closed-connection errors from detachDaemonSocket", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-live-detach-closed";
+  const tracking = createTrackingDaemonCell(serverId);
+  tracking.cell.detachDaemonSocket = async () => {
+    tracking.calls.detach += 1;
+    throw new Error("Connection is closed");
+  };
+
+  await withLiveDaemonServer({
+    secrets,
+    db: createMockDb(),
+    registry: createTrackingRegistry(tracking.cell),
+  }, async ({ port }) => {
+    const issued = await issueDaemonJwt(
+      { sub: serverId, kid: "key-test" },
+      secrets,
+    );
+    const ws = await openLiveDaemonWs({
+      port,
+      token: issued.token,
+      remoteIp: LIVE_REMOTE_IP,
+    });
+    ws.close(1000, "done");
+    await waitForWsClose(ws);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assertEquals(tracking.calls.detach, 1);
+  });
+});
+
+test("client stub WS greets then closes for a valid session cookie", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const sessionSecrets = await createSessionSecrets();
+  const token = crypto.randomUUID();
+  const state = createEmptyMockAuthState();
+  seedMockSession(state, token, {
+    sessionId: crypto.randomUUID(),
+    userId: crypto.randomUUID(),
+    email: "user@example.com",
+    role: "user",
+  });
+  const db = createMockAuthDb(state);
+  const signed = await buildSignedCookie(token, sessionSecrets);
+
+  await withLiveDaemonServer({
+    secrets,
+    db: createMockDb(),
+    sessionSecrets,
+    setDbOnContext: db as unknown as Db,
+  }, async ({ port }) => {
+    const ws = createDenoWebSocket(
+      `ws://127.0.0.1:${port}${CLIENT_WS_PATH}`,
+      { headers: { Cookie: `${HTTP_SESSION_COOKIE_NAME}=${signed}` } },
+    );
+    const helloPromise = waitForWsMessage(ws);
+    const closedPromise = waitForWsClose(ws);
+    await waitForWsOpen(ws);
+    const hello = JSON.parse(await helloPromise) as {
+      type: string;
+      surface: string;
+    };
+    assertEquals(hello.type, "hello");
+    assertEquals(hello.surface, "client");
+    const closed = await closedPromise;
+    assertEquals(closed.code, 1000);
+    assertEquals(closed.reason, "not_implemented");
+  });
+});
+
+test("developer stub WS accepts superadmin session and local-console auth", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const sessionSecrets = await createSessionSecrets();
+  const token = crypto.randomUUID();
+  const state = createEmptyMockAuthState();
+  seedMockSession(state, token, {
+    sessionId: crypto.randomUUID(),
+    userId: crypto.randomUUID(),
+    email: "root@example.com",
+    role: "superadmin",
+  });
+  const db = createMockAuthDb(state);
+  const signed = await buildSignedCookie(token, sessionSecrets);
+
+  await withLiveDaemonServer({
+    secrets,
+    db: createMockDb(),
+    developerSurface: true,
+    sessionSecrets,
+    setDbOnContext: db as unknown as Db,
+  }, async ({ port }) => {
+    const ws = createDenoWebSocket(
+      `ws://127.0.0.1:${port}${DEVELOPER_WS_PATH}`,
+      { headers: { Cookie: `${HTTP_SESSION_COOKIE_NAME}=${signed}` } },
+    );
+    const helloPromise = waitForWsMessage(ws);
+    const closedPromise = waitForWsClose(ws);
+    await waitForWsOpen(ws);
+    const hello = JSON.parse(await helloPromise) as {
+      type: string;
+      surface: string;
+    };
+    assertEquals(hello.type, "hello");
+    assertEquals(hello.surface, "developer");
+    const closed = await closedPromise;
+    assertEquals(closed.code, 1000);
+  });
+
+  // Non-superadmin session → 403 when local-console auth is unavailable.
+  const userToken = crypto.randomUUID();
+  const userState = createEmptyMockAuthState();
+  seedMockSession(userState, userToken, {
+    sessionId: crypto.randomUUID(),
+    userId: crypto.randomUUID(),
+    email: "user@example.com",
+    role: "user",
+  });
+  const userDb = createMockAuthDb(userState);
+  const userSigned = await buildSignedCookie(userToken, sessionSecrets);
+  const app = new Hono();
+  app.use("*", async (c, next) => {
+    (c as { set: (key: "db", value: Db) => void }).set(
+      "db",
+      userDb as unknown as Db,
+    );
+    await next();
+  });
+  registerDaemonWebSocket(app, {
+    developerSurface: true,
+    secrets,
+    sessionSecrets,
+    db: createMockDb(),
+    daemonCellRegistry: createTrackingRegistry(
+      createTrackingDaemonCell("srv-stub").cell,
+    ),
+  });
+  const forbidden = await app.request(DEVELOPER_WS_PATH, {
+    method: "GET",
+    headers: {
+      ...WS_UPGRADE_HEADERS,
+      Cookie: `${HTTP_SESSION_COOKIE_NAME}=${userSigned}`,
+    },
+  });
+  assertEquals(forbidden.status, 403);
+
+  // Local-console auth without sessionSecrets.
+  const prevSecret = Deno.env.get("TURBOPANEL_SECRET");
+  const prevDevSurface = Deno.env.get("TURBOPANEL_DEV_SURFACE");
+  Deno.env.set("TURBOPANEL_SECRET", TEST_ONLY_TURBOPANEL_SECRET);
+  Deno.env.set("TURBOPANEL_DEV_SURFACE", "1");
+  try {
+    const consoleApp = new Hono();
+    registerDaemonWebSocket(consoleApp, {
+      developerSurface: true,
+      secrets,
+      db: createMockDb(),
+      daemonCellRegistry: createTrackingRegistry(
+        createTrackingDaemonCell("srv-stub").cell,
+      ),
+    });
+    const contentSha256 = await hashLocalConsoleContent(new Uint8Array());
+    const authorization = await buildLocalConsoleAuthorization(
+      "GET",
+      DEVELOPER_WS_PATH,
+      TEST_ONLY_TURBOPANEL_SECRET,
+      contentSha256,
+    );
+    const ac = new AbortController();
+    const server = Deno.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      signal: ac.signal,
+      onListen() {},
+    }, consoleApp.fetch);
+    const addr = server.addr;
+    if (!("port" in addr)) throw new TypeError("expected TCP listen address");
+    try {
+      const ws = createDenoWebSocket(
+        `ws://127.0.0.1:${addr.port}${DEVELOPER_WS_PATH}`,
+        {
+          headers: {
+            Authorization: authorization,
+            [LOCAL_CONSOLE_CONTENT_SHA256_HEADER]: contentSha256,
+          },
+        },
+      );
+      const helloPromise = waitForWsMessage(ws);
+      await waitForWsOpen(ws);
+      const hello = JSON.parse(await helloPromise) as {
+        surface: string;
+      };
+      assertEquals(hello.surface, "developer");
+      ws.close();
+      await waitForWsClose(ws);
+    } finally {
+      ac.abort();
+      await server.finished.catch(() => {});
+    }
+  } finally {
+    if (prevSecret === undefined) Deno.env.delete("TURBOPANEL_SECRET");
+    else Deno.env.set("TURBOPANEL_SECRET", prevSecret);
+    if (prevDevSurface === undefined) Deno.env.delete("TURBOPANEL_DEV_SURFACE");
+    else Deno.env.set("TURBOPANEL_DEV_SURFACE", prevDevSurface);
+  }
+});
+
+test("WS upgrade rejects when secrets keyring is missing", async () => {
+  const app = new Hono();
+  registerDaemonWebSocket(app, {
+    db: createMockDb(),
+    daemonCellRegistry: createTrackingRegistry(
+      createTrackingDaemonCell("srv-no-secrets").cell,
+    ),
+  });
+  const response = await app.request(DAEMON_WS_PATH, {
+    method: "GET",
+    headers: {
+      Authorization: "Bearer anything",
+      ...WS_UPGRADE_HEADERS,
+    },
+  });
+  assertEquals(response.status, 401);
 });

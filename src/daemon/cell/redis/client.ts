@@ -1,8 +1,18 @@
 /** Deno-only — uses ioredis and Deno.env; not imported by the Workers bundle. */
 import { Redis } from "ioredis";
 
+export type RedisConnectionOptions = {
+  path: string;
+  maxRetriesPerRequest: number | null;
+};
+
 export type RedisClientOptions = {
   socketPath?: string;
+  /**
+   * Optional Redis constructor override for host-free unit tests. Production
+   * callers omit this and get `new Redis(options)`.
+   */
+  redisFactory?: (options: RedisConnectionOptions) => Redis;
 };
 
 export type StreamEntry = {
@@ -71,11 +81,16 @@ export class RedisCellClient {
 
   constructor(opts?: RedisClientOptions) {
     const path = resolveSocketPath(opts);
-    const options = { path, maxRetriesPerRequest: null as number | null };
+    const options: RedisConnectionOptions = {
+      path,
+      maxRetriesPerRequest: null,
+    };
+    const create = opts?.redisFactory ??
+      ((connectionOptions) => new Redis(connectionOptions));
 
-    this.#cmd = new Redis(options);
-    this.#block = new Redis(options);
-    this.#maint = new Redis(options);
+    this.#cmd = create(options);
+    this.#block = create(options);
+    this.#maint = create(options);
 
     attachErrorLogging(this.#cmd, "cmd");
     attachErrorLogging(this.#block, "block");
