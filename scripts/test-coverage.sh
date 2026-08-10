@@ -205,6 +205,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/shared-authz-guards.test.ts \
   src/client/storage/serialize.test.ts \
   src/client/storage/routes-helpers.test.ts \
+  src/client/storage/routes.test.ts \
   src/client/storage/routes.hostfree.test.ts \
   src/client/system/hierarchy.test.ts \
   src/client/system/hierarchy.hostfree.test.ts \
@@ -215,6 +216,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/system/routes.test.ts \
   src/client/system/routes-helpers.hostfree.test.ts \
   src/client/teams/routes-helpers.hostfree.test.ts \
+  src/client/teams/routes.test.ts \
   src/client/variables/resolve-inherited.test.ts \
   src/client/variables/resolve-inherited.hostfree.test.ts \
   src/client/variables/routes-helpers.test.ts \
