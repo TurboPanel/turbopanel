@@ -5,18 +5,18 @@
 [![Release](https://img.shields.io/github/v/release/turbopanel/turbopanel?label=release)](https://github.com/turbopanel/turbopanel/releases)
 [![License: AGPL-3.0-only](https://img.shields.io/badge/License-AGPL--3.0--only-blue.svg)](./LICENSE)
 [![Docs](https://img.shields.io/badge/docs-turbopanel.io-3366cc)](https://turbopanel.io/docs)
-[![Discussions](https://img.shields.io/github/discussions/turbopanel/turbopanel)](https://github.com/turbopanel/turbopanel/discussions)
+[![Discord](https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white)](https://turbopanel.io/discord)
 [![Status: Private alpha](https://img.shields.io/badge/status-private%20alpha-3dd68c)](https://turbopanel.io/roadmap)
 
 [![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=turbopanel_turbopanel&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=turbopanel_turbopanel)
 [![Coverage](https://sonarcloud.io/api/project_badges/measure?project=turbopanel_turbopanel&metric=coverage)](https://sonarcloud.io/component_measures?id=turbopanel_turbopanel&metric=coverage)
 [![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=turbopanel_turbopanel&metric=code_smells)](https://sonarcloud.io/project/issues?id=turbopanel_turbopanel&resolved=false&types=CODE_SMELL)
 
-**[Use TurboPanel Managed](https://turbopanel.io/pricing?utm_source=github-main-readme)** · **[Self-host TurboPanel](https://turbopanel.io/docs/deployment/self-hosted?utm_source=github-main-readme)** · **[Documentation](https://turbopanel.io/docs?utm_source=github-main-readme)**
+**[Join the waitlist](https://turbopanel.io/pricing?utm_source=github-main-readme)** · **[Preview self-hosted docs](https://turbopanel.io/docs/deployment/self-hosted?utm_source=github-main-readme)** · **[Documentation](https://turbopanel.io/docs?utm_source=github-main-readme)**
 
 ![TurboPanel servers overview](https://turbopanel.io/screenshots/servers-overview.png)
 
-> **Private alpha** — Foundation and fleet operations are shipped; apps and deploy are actively improving. See the [roadmap](https://turbopanel.io/roadmap) and [releases](https://github.com/turbopanel/turbopanel/releases). Check the [compatibility matrix](https://turbopanel.io/docs/deployment/compatibility) before upgrading.
+> **Private alpha** — Neither TurboPanel High Availability nor self-hosted is publicly available yet. Foundation and fleet operations are furthest along; apps and deploy are actively improving. We're working toward a beta release — see the [roadmap](https://turbopanel.io/roadmap) and [releases](https://github.com/turbopanel/turbopanel/releases). Check the [compatibility matrix](https://turbopanel.io/docs/deployment/compatibility) before upgrading.
 
 ## What TurboPanel does
 
@@ -76,10 +76,8 @@ Canonical docs live at **[turbopanel.io/docs](https://turbopanel.io/docs)** — 
 
 | Need | Where |
 | --- | --- |
-| Usage questions | [Discussions → Help & Q&A](https://github.com/turbopanel/turbopanel/discussions/categories/help-q-a) |
-| Ideas | [Discussions → Ideas](https://github.com/turbopanel/turbopanel/discussions/categories/ideas) |
+| Questions, ideas, chat | [Discord](https://turbopanel.io/discord) |
 | Bugs | Issue on the owning repo |
-| Chat | [Discord](https://turbopanel.io/discord) (cross-post durable answers to Discussions) |
 
 Full routing table: [SUPPORT.md](https://github.com/turbopanel/.github/blob/trunk/SUPPORT.md)
 
