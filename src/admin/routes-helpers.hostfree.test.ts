@@ -1,5 +1,6 @@
 import { assertEquals, assertExists } from 'jsr:@std/assert'
 import type { Db } from '../db.ts'
+import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../daemon/cell/contracts.ts'
 import { REENCRYPT_BATCH_SIZE } from './reencrypt-secrets.ts'
 import {
   extractAddresses,
@@ -14,6 +15,7 @@ import {
   resolvePerServerLimit,
   resolvePlatformEnv,
   resolvePublicUrlsForApply,
+  waitForPublicUrlsApply,
 } from './routes-helpers.ts'
 
 /**
@@ -197,4 +199,110 @@ test('resolvePublicUrlsForApply validates, persists, or loads stored urls', asyn
   assertEquals(loaded.ok, true)
   if (!loaded.ok) throw new TypeError('expected ok')
   assertExists(loaded.urls)
+})
+
+function registryWithWait(
+  wait: (outbound: { requestId: string; at: string; kind: string }) => Promise<PendingRequestRecord>,
+): DaemonCellRegistry {
+  const cell = {
+    createRequestAndWait: wait,
+  } as unknown as DaemonCell
+  return {
+    getCell: () => cell,
+    listOnlineServerIds: async () => [],
+    getSnapshots: async () => new Map(),
+    purge: async () => {},
+  }
+}
+
+test('waitForPublicUrlsApply maps done, failed, timeout, and thrown errors', async () => {
+  const serverId = crypto.randomUUID()
+  const urls = ['https://panel.example.com']
+
+  assertEquals(
+    await waitForPublicUrlsApply(
+      registryWithWait(async (outbound) => ({
+        serverId,
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: 'done',
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+      })),
+      serverId,
+      urls,
+    ),
+    { kind: 'done' },
+  )
+
+  assertEquals(
+    await waitForPublicUrlsApply(
+      registryWithWait(async (outbound) => ({
+        serverId,
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: 'failed',
+        error: 'apply blew up',
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+      })),
+      serverId,
+      urls,
+    ),
+    { kind: 'failed', error: 'apply blew up' },
+  )
+
+  assertEquals(
+    await waitForPublicUrlsApply(
+      registryWithWait(async (outbound) => ({
+        serverId,
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: 'failed',
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+      })),
+      serverId,
+      urls,
+    ),
+    { kind: 'failed', error: 'daemon reported failure' },
+  )
+
+  assertEquals(
+    await waitForPublicUrlsApply(
+      registryWithWait(async (outbound) => ({
+        serverId,
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: 'expired',
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+      })),
+      serverId,
+      urls,
+    ),
+    { kind: 'timeout' },
+  )
+
+  assertEquals(
+    await waitForPublicUrlsApply(
+      registryWithWait(async () => {
+        throw new Error('cell offline')
+      }),
+      serverId,
+      urls,
+    ),
+    { kind: 'error', error: 'cell offline' },
+  )
+
+  assertEquals(
+    await waitForPublicUrlsApply(
+      registryWithWait(async () => {
+        throw 'string-fail'
+      }),
+      serverId,
+      urls,
+    ),
+    { kind: 'error', error: 'string-fail' },
+  )
 })

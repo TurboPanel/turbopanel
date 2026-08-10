@@ -18,12 +18,11 @@ import {
   resolveFleetPresence,
   resolveOnlineFleetPresence,
 } from '../daemon/cell/fleet-presence.ts'
+import type { DaemonOutboundEnvelope } from '../daemon/cell/protocol.ts'
 import {
   generateDeliveryId,
   generateRequestId,
-  type DaemonOutboundEnvelope,
 } from '../daemon/cell/protocol.ts'
-import type { DaemonCellRegistry } from '../daemon/cell/contracts.ts'
 import { getDaemonCellRegistry, getDb } from '../db.ts'
 import { cellTrace } from '../logger.ts'
 import { emptyServerAddresses } from '../server-addresses.ts'
@@ -57,89 +56,13 @@ import {
   resolvePerServerLimit,
   resolvePlatformEnv,
   resolvePublicUrlsForApply,
-  type PublicUrlsApplyWaitResult,
+  waitForPublicUrlsApply,
 } from './routes-helpers.ts'
 
-const COMMAND_TIMEOUT_MS = 30_000
 const ADDRESSES_TIMEOUT_MS = 10_000
-const PUBLIC_URLS_APPLY_TIMEOUT_MS = 60_000
 
 function nowTs(): string {
   return new Date().toISOString()
-}
-
-async function waitForPublicUrlsApply(
-  registry: DaemonCellRegistry,
-  serverId: string,
-  urls: string[],
-): Promise<PublicUrlsApplyWaitResult> {
-  const requestId = generateRequestId()
-  cellTrace('request-start', {
-    requestId,
-    serverId,
-    kind: 'public-urls-update',
-  })
-  const envelope: DaemonOutboundEnvelope = {
-    kind: 'public-urls-update',
-    deliveryId: generateDeliveryId(),
-    requestId,
-    at: nowTs(),
-    urls,
-  }
-  cellTrace('request-enqueued', {
-    requestId,
-    serverId,
-    kind: 'public-urls-update',
-    deliveryId: envelope.deliveryId,
-  })
-
-  try {
-    const record = await registry.getCell(serverId).createRequestAndWait(
-      envelope,
-      PUBLIC_URLS_APPLY_TIMEOUT_MS,
-    )
-    if (record.status === 'done') {
-      cellTrace('request-result', {
-        requestId,
-        serverId,
-        kind: 'public-urls-update',
-        pendingStatus: record.status,
-        resultStatus: 'done',
-      })
-      return { kind: 'done' }
-    }
-    if (record.status === 'failed') {
-      const error = record.error ?? 'daemon reported failure'
-      cellTrace('request-result', {
-        requestId,
-        serverId,
-        kind: 'public-urls-update',
-        pendingStatus: record.status,
-        resultStatus: 'failed',
-        error,
-      })
-      return { kind: 'failed', error }
-    }
-    cellTrace('request-result', {
-      requestId,
-      serverId,
-      kind: 'public-urls-update',
-      pendingStatus: record.status,
-      resultStatus: 'timeout',
-      error: 'timeout waiting for daemon',
-    })
-    return { kind: 'timeout' }
-  } catch (err) {
-    const errMessage = err instanceof Error ? err.message : String(err)
-    cellTrace('request-result', {
-      requestId,
-      serverId,
-      kind: 'public-urls-update',
-      resultStatus: 'error',
-      error: errMessage,
-    })
-    return { kind: 'error', error: errMessage }
-  }
 }
 
 /**
