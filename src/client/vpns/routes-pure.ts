@@ -11,6 +11,16 @@ export const UUID_RE =
 
 export const PEER_ROLES = new Set(['gateway', 'member'])
 
+/** Optional string field: value present, omitted (`undefined`), or HTTP error response. */
+export type OptionalStringResult = string | undefined | Response
+
+/** Nullable string field: value, explicit null, or HTTP error response. */
+export type NullableStringResult = string | null | Response
+
+export type OptionalUuidParse =
+  | { ok: true; value: string | null | undefined }
+  | { ok: false }
+
 export function isPostgresUniqueViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null &&
     'code' in err && (err as { code: string }).code === '23505'
@@ -65,7 +75,7 @@ export function parseRequiredVpnCidr(
 export function parseOptionalVpnCidrPatch(
   c: Context,
   body: Record<string, unknown>,
-): string | undefined | Response {
+): OptionalStringResult {
   if (body.cidr === undefined) return undefined
   if (typeof body.cidr !== 'string') {
     return c.json({ error: 'Invalid request' }, 400)
@@ -105,7 +115,7 @@ export function applyVpnJsonbPatchFields(
 export function parseOptionalTunnelAddress(
   c: Context,
   value: unknown,
-): string | undefined | Response {
+): OptionalStringResult {
   if (value === undefined) return undefined
   if (typeof value !== 'string') {
     return c.json({ error: 'Invalid request' }, 400)
@@ -121,7 +131,7 @@ export function parsePeerRole(
   c: Context,
   value: unknown,
   required: boolean,
-): string | undefined | Response {
+): OptionalStringResult {
   if (value === undefined) {
     return required ? c.json({ error: 'Invalid request' }, 400) : undefined
   }
@@ -134,7 +144,7 @@ export function parsePeerRole(
 export function parseOptionalPublicKey(
   c: Context,
   publicKeyRaw: unknown,
-): string | null | Response {
+): NullableStringResult {
   if (publicKeyRaw === undefined || publicKeyRaw === null) return null
   if (typeof publicKeyRaw !== 'string' || publicKeyRaw.trim().length === 0) {
     return c.json({ error: 'Invalid request' }, 400)
@@ -177,7 +187,7 @@ export function parseCreateOptionalListenPort(
 export function parseCreateOptionalEndpoint(
   c: Context,
   value: unknown,
-): string | null | Response {
+): NullableStringResult {
   if (value === undefined || value === null) return null
   if (typeof value !== 'string') {
     return c.json({ error: 'Invalid request' }, 400)
@@ -199,7 +209,7 @@ export function parsePatchListenPort(
 export function parsePatchEndpoint(
   c: Context,
   value: unknown,
-): string | null | Response {
+): NullableStringResult {
   if (value === null) return null
   if (typeof value === 'string') {
     return value.trim().length > 0 ? value.trim() : null
@@ -310,26 +320,24 @@ export function assignPatchJsonbField(
   return null
 }
 
-export function parseOptionalUuid(
-  value: unknown,
-): string | null | undefined | 'invalid' {
-  if (value === undefined) return undefined
-  if (value === null) return null
+export function parseOptionalUuid(value: unknown): OptionalUuidParse {
+  if (value === undefined) return { ok: true, value: undefined }
+  if (value === null) return { ok: true, value: null }
   if (typeof value !== 'string' || !UUID_RE.test(value)) {
-    return 'invalid'
+    return { ok: false }
   }
-  return value
+  return { ok: true, value }
 }
 
 export function parseOptionalScopeUuid(
   c: Context,
   value: unknown,
-): string | null | undefined | Response {
+): NullableStringResult | undefined {
   const parsed = parseOptionalUuid(value)
-  if (parsed === 'invalid') {
+  if (!parsed.ok) {
     return c.json({ error: 'Invalid request' }, 400)
   }
-  return parsed
+  return parsed.value
 }
 
 export type CreatePeerAddressErrorOutcome =

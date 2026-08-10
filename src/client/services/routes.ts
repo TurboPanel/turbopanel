@@ -14,7 +14,6 @@ import {
   parseJsonBody,
   requireStringField,
 } from '../shared.ts'
-import { parseServiceOptions } from '../../lib/service-options.ts'
 import {
   hierarchyDeleteHasChildrenResponse,
   runHierarchyDelete,

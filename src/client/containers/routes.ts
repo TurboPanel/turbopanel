@@ -1,7 +1,5 @@
 import { and, eq, inArray } from 'drizzle-orm'
-import type { Context } from 'hono'
 import { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'

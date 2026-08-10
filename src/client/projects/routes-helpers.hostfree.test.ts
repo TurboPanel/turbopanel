@@ -115,7 +115,7 @@ test('parseCreateProjectMetadata strips reserved component key', () => {
 test('parseCreateProjectServerIdField accepts omitted, null, and uuid', () => {
   assertEquals(parseCreateProjectServerIdField({}).ok, true)
   if (!parseCreateProjectServerIdField({}).ok) throw new TypeError()
-  assertEquals(parseCreateProjectServerIdField({}).serverId, 'omitted')
+  assertEquals(parseCreateProjectServerIdField({}).serverId, undefined)
 
   const cleared = parseCreateProjectServerIdField({ serverId: null })
   if (!cleared.ok) throw new TypeError('expected null serverId')

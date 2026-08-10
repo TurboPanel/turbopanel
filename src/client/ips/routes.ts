@@ -23,7 +23,6 @@ import {
   serializeIpRow,
   type ExistingIpScope,
   type IpPatchFields,
-  type IpRow,
   type IpScopeFks,
   UUID_RE,
 } from './ip-create-validation.ts'
@@ -106,12 +105,12 @@ async function validateOptionalScopeFk(
 ): Promise<string | null | undefined | Response> {
   if (body[field] === undefined) return undefined
   const parsed = parseScopeFkUuid(body[field])
-  if (parsed === 'invalid') {
+  if (!parsed.ok) {
     return c.json({ error: 'Invalid request' }, 400)
   }
-  if (parsed === null) return null
-  if (parsed === undefined) return undefined
-  const id = parsed
+  if (parsed.value === null) return null
+  if (parsed.value === undefined) return undefined
+  const id = parsed.value
   const denied = await assertSameOrgEntity(c, db, kind, id, organizationId)
   if (denied) return denied
   return id

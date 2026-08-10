@@ -1,9 +1,11 @@
 import { attachWebMetadataToTraditionalSites } from '../../lib/hosting-web-env.ts'
 import { assignTraditionalWebListenPorts } from '../../lib/compose/traditional-web.ts'
-import type { EnvironmentDeployHosting } from '../../lib/commands/schemas.ts'
-import type { EnvironmentDeployStorageMaterial } from '../../lib/commands/schemas.ts'
-import type { EnvironmentDeployTraditionalWebSite } from '../../lib/commands/schemas.ts'
-import type { EnvironmentLifecycleAction } from '../../lib/commands/schemas.ts'
+import type {
+  EnvironmentDeployHosting,
+  EnvironmentDeployStorageMaterial,
+  EnvironmentDeployTraditionalWebSite,
+  EnvironmentLifecycleAction,
+} from '../../lib/commands/schemas.ts'
 import {
   validateDeployHostings,
   validateDeployStorageMaterialList,

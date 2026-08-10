@@ -180,15 +180,17 @@ export function parseEnumQueryFilter(
   return raw
 }
 
-export function parseScopeFkUuid(
-  value: unknown,
-): string | null | undefined | 'invalid' {
-  if (value === undefined) return undefined
-  if (value === null) return null
+export type ScopeFkUuidParse =
+  | { ok: true; value: string | null | undefined }
+  | { ok: false }
+
+export function parseScopeFkUuid(value: unknown): ScopeFkUuidParse {
+  if (value === undefined) return { ok: true, value: undefined }
+  if (value === null) return { ok: true, value: null }
   if (typeof value !== 'string' || !UUID_RE.test(value)) {
-    return 'invalid'
+    return { ok: false }
   }
-  return value
+  return { ok: true, value }
 }
 
 export function applyJsonbPatchFields(

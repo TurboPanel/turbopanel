@@ -203,16 +203,12 @@ export function publicUrlsApplyWaitToResponse(
   switch (result.kind) {
     case 'done':
       return { status: 200, body: { ok: true, applied: true } }
-    case 'failed':
-      return {
-        status: 500,
-        body: { ok: false, applied: false, error: result.error },
-      }
     case 'timeout':
       return {
         status: 500,
         body: { ok: false, applied: false, error: 'timeout waiting for daemon' },
       }
+    case 'failed':
     case 'error':
       return {
         status: 500,

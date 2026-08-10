@@ -131,10 +131,10 @@ export function parseCreateEnvironmentJsonb(
 export function parseOptionalServerIdShape(
   body: Record<string, unknown>,
 ):
-  | { ok: true; serverId: string | null | 'omitted' }
+  | { ok: true; serverId: string | null | undefined }
   | EnvironmentRouteValidationError {
   if (!('serverId' in body)) {
-    return { ok: true, serverId: 'omitted' }
+    return { ok: true, serverId: undefined }
   }
   const value = body.serverId
   if (value === null) {

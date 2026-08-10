@@ -240,7 +240,7 @@ async function resolveServerIdForCreate(
   if (!parsed.ok) {
     return c.json({ error: parsed.error }, parsed.status)
   }
-  if (parsed.serverId === 'omitted') return null
+  if (parsed.serverId === undefined) return null
   if (parsed.serverId === null) return null
   if (!(await verifyServerInOrg(db, parsed.serverId, organizationId))) {
     return c.json({ error: 'Not found' }, 404)

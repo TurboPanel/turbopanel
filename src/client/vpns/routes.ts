@@ -50,14 +50,12 @@ import {
   parseOptionalScopeUuid,
   parseOptionalTunnelAddress,
   parseOptionalVpnCidrPatch,
-  parsePatchEndpoint,
-  parsePatchListenPort,
   parsePeerRole,
-  parseRequiredPublicKey,
   parseRequiredVpnCidr,
   peerUniqueConflictError,
   peerUniqueConflictResponse,
   shouldReleaseTunnelOnPatch,
+  type OptionalStringResult,
   type PeerPatchFields,
   type VpnPatchFields,
   UUID_RE,
@@ -149,7 +147,7 @@ async function resolveVpnCidrPatch(
   organizationId: string,
   vpnId: string,
   body: Record<string, unknown>,
-): Promise<OptionalStringOrResponse> {
+): Promise<OptionalStringResult> {
   const cidr = parseOptionalVpnCidrPatch(c, body)
   if (cidr instanceof Response) return cidr
   if (cidr === undefined) return undefined

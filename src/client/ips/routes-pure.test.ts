@@ -148,10 +148,10 @@ test('parseEnumQueryFilter and parseScopeFkUuid validate query and body UUIDs', 
   assertEquals(badScope.status, 400)
 
   const valid = '550e8400-e29b-41d4-a716-446655440000'
-  assertEquals(parseScopeFkUuid(valid), valid)
-  assertEquals(parseScopeFkUuid(undefined), undefined)
-  assertEquals(parseScopeFkUuid(null), null)
-  assertEquals(parseScopeFkUuid('bad'), 'invalid')
+  assertEquals(parseScopeFkUuid(valid), { ok: true, value: valid })
+  assertEquals(parseScopeFkUuid(undefined), { ok: true, value: undefined })
+  assertEquals(parseScopeFkUuid(null), { ok: true, value: null })
+  assertEquals(parseScopeFkUuid('bad'), { ok: false })
 })
 
 test('assertVpnIpPatchVpnId rejects clearing vpnId on vpn-scoped rows', async () => {

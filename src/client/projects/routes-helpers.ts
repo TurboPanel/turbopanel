@@ -170,10 +170,10 @@ export function parseCreateProjectMetadata(
 export function parseCreateProjectServerIdField(
   body: Record<string, unknown>,
 ):
-  | { ok: true; serverId: string | null | 'omitted' }
+  | { ok: true; serverId: string | null | undefined }
   | ProjectRouteValidationError {
   if (body.serverId === undefined) {
-    return { ok: true, serverId: 'omitted' }
+    return { ok: true, serverId: undefined }
   }
   if (body.serverId === null) {
     return { ok: true, serverId: null }

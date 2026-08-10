@@ -110,7 +110,7 @@ export function parseServerPatchCore(
   | {
     ok: true
     patch: ServerPatchFields
-    datacenterIdRaw: unknown | undefined
+    datacenterIdRaw: unknown
   }
   | ServerRouteValidationError {
   const patch: ServerPatchFields = { updatedAt }
@@ -123,7 +123,7 @@ export function parseServerPatchCore(
     }
   }
 
-  let datacenterIdRaw: unknown | undefined
+  let datacenterIdRaw: unknown = undefined
   if (body.datacenterId !== undefined) {
     datacenterIdRaw = body.datacenterId
     const parsed = parsePatchDatacenterIdValue(body.datacenterId)
@@ -383,9 +383,9 @@ export function shouldSkipProjectedUpdateRepair(
 }
 
 export function repairedUpdateDoneProjection(params: Readonly<{
-  requestId?: string | undefined
-  channel?: string | undefined
-  queuedAt?: string | undefined
+  requestId?: string
+  channel?: string
+  queuedAt?: string
   finishedAt: string
 }>) {
   return {

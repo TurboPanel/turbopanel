@@ -44,7 +44,6 @@ import {
   mapPrepareErrorResponse,
   parseDeployRequestFlags,
   parseLifecycleAction,
-  preferredListenPortsFromHostings,
   readHostnames,
   readHostingPorts,
   readHostingProtocol,

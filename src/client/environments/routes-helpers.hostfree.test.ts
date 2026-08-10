@@ -73,7 +73,7 @@ test('parseCreateEnvironmentJsonb lints compose and strips promoted metadata', (
 })
 
 test('parseOptionalServerIdShape accepts omitted, null, and uuid', () => {
-  assertEquals(parseOptionalServerIdShape({}).serverId, 'omitted')
+  assertEquals(parseOptionalServerIdShape({}).serverId, undefined)
   assertEquals(parseOptionalServerIdShape({ serverId: null }).serverId, null)
   assertEquals(parseOptionalServerIdShape({ serverId: 'bad' }).ok, false)
   assertEquals(parseOptionalServerIdShape({ serverId: validUuid }).serverId, validUuid)
