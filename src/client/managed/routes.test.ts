@@ -868,7 +868,7 @@ test('GET /environments/:id/managed/status returns status host port containers',
     for (const row of body.containers) {
       assertEquals(typeof row.role, 'string')
       assertEquals(
-        row.role === 'service' || row.role === 'ingress' || row.role === 'system',
+        row.role === 'service' || row.role === 'ingress' || row.role === 'turbopanel',
         true,
       )
     }

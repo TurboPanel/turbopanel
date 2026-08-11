@@ -21,7 +21,7 @@ import { parseServiceOptions } from '../../lib/service-options.ts'
 import type { ComposeDocument } from '../../lib/compose/types.ts'
 import { container } from '../../lib/db/schema.ts'
 
-export type ContainerWorkloadRole = 'service' | 'system'
+export type ContainerWorkloadRole = 'service' | 'turbopanel'
 
 export type ContainerServiceSpec = {
   serviceId: string

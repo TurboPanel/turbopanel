@@ -789,7 +789,7 @@
         },
         "container_role_check": {
           "name": "container_role_check",
-          "value": "role IN ('service', 'ingress', 'system')"
+          "value": "role IN ('service', 'ingress', 'turbopanel')"
         }
       },
       "isRLSEnabled": false
@@ -5466,8 +5466,8 @@
           "method": "btree",
           "with": {}
         },
-        "uniq_workspace_organization_system": {
-          "name": "uniq_workspace_organization_system",
+        "uniq_workspace_organization_turbopanel": {
+          "name": "uniq_workspace_organization_turbopanel",
           "columns": [
             {
               "expression": "organization_id",
@@ -5477,7 +5477,7 @@
             }
           ],
           "isUnique": true,
-          "where": "kind = 'system'",
+          "where": "kind = 'turbopanel'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -5508,7 +5508,7 @@
         },
         "workspace_kind_check": {
           "name": "workspace_kind_check",
-          "value": "kind IN ('user', 'system')"
+          "value": "kind IN ('user', 'turbopanel')"
         }
       },
       "isRLSEnabled": false

@@ -284,7 +284,7 @@ test('parseEnvironmentDeployResult rejects omitted or invalid container roles', 
     [],
   )
   // Allowlisted roles round-trip.
-  for (const role of ['service', 'ingress', 'system'] as const) {
+  for (const role of ['service', 'ingress', 'turbopanel'] as const) {
     assertEquals(
       parseEnvironmentDeployResult({
         projectName: 'tp-demo',
@@ -476,7 +476,7 @@ test('parseSystemReconcilePayload accepts the widened database/queue/analytics c
             serviceId,
             composeServiceName: component,
             containerName: serviceId,
-            role: 'system',
+            role: 'turbopanel',
             desired: 'present',
           },
         ],
@@ -486,7 +486,7 @@ test('parseSystemReconcilePayload accepts the widened database/queue/analytics c
         serviceId,
         composeServiceName: component,
         containerName: serviceId,
-        role: 'system',
+        role: 'turbopanel',
         desired: 'present',
       },
     )
@@ -505,7 +505,7 @@ test('parseSystemReconcilePayload accepts managed-ingress with system role and -
           serviceId,
           composeServiceName: 'proxysql',
           containerName: `${serviceId}-sql`,
-          role: 'system',
+          role: 'turbopanel',
           desired: 'present',
         },
       ],
@@ -515,7 +515,7 @@ test('parseSystemReconcilePayload accepts managed-ingress with system role and -
       serviceId,
       composeServiceName: 'proxysql',
       containerName: `${serviceId}-sql`,
-      role: 'system',
+      role: 'turbopanel',
       desired: 'present',
     },
   )
@@ -543,7 +543,7 @@ test('parseSystemReconcilePayload rejects role/containerName mismatches across t
     Error,
     'Invalid system.reconcile payload',
   )
-  // database must be role: 'system' — declaring 'ingress' is rejected.
+  // database must be role: 'turbopanel' — declaring 'ingress' is rejected.
   assertThrows(
     () =>
       parseSystemReconcilePayload({
@@ -562,7 +562,7 @@ test('parseSystemReconcilePayload rejects role/containerName mismatches across t
     Error,
     'Invalid system.reconcile payload',
   )
-  // database with role: 'system' but an ingress-shaped containerName is rejected.
+  // database with role: 'turbopanel' but an ingress-shaped containerName is rejected.
   assertThrows(
     () =>
       parseSystemReconcilePayload({
@@ -573,7 +573,7 @@ test('parseSystemReconcilePayload rejects role/containerName mismatches across t
             serviceId,
             composeServiceName: 'database',
             containerName: `${serviceId}-in`,
-            role: 'system',
+            role: 'turbopanel',
             desired: 'present',
           },
         ],
@@ -592,7 +592,7 @@ test('parseSystemReconcilePayload rejects role/containerName mismatches across t
             serviceId,
             composeServiceName: 'proxysql',
             containerName: serviceId,
-            role: 'system',
+            role: 'turbopanel',
             desired: 'present',
           },
         ],
@@ -611,7 +611,7 @@ test('parseSystemReconcilePayload rejects role/containerName mismatches across t
             serviceId,
             composeServiceName: 'proxysql',
             containerName: `${serviceId}-in`,
-            role: 'system',
+            role: 'turbopanel',
             desired: 'present',
           },
         ],

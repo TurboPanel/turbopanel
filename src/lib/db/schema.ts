@@ -765,10 +765,10 @@ export const workspace = pgTable(
       'workspace_name_format_check',
       sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
     ),
-    check('workspace_kind_check', sql`kind IN ('user', 'system')`),
-    uniqueIndex('uniq_workspace_organization_system')
+    check('workspace_kind_check', sql`kind IN ('user', 'turbopanel')`),
+    uniqueIndex('uniq_workspace_organization_turbopanel')
       .on(table.organizationId)
-      .where(sql`kind = 'system'`),
+      .where(sql`kind = 'turbopanel'`),
   ]
 )
 export const project = pgTable(
@@ -1282,7 +1282,7 @@ export const container = pgTable(
     /**
      * `role='ingress'` rows always use `ordinal = 1` and are named
      * `<service.id>-in` via `ingressContainerNameFromService`.
-     * `role='system'` is the platform `turbopanel-system` compose stack
+     * `role='turbopanel'` is the platform `turbopanel-system` compose stack
      * (`database` / `queue` / `analytics`). `role='service'` is the ordinary
      * workload/engine replica. A service may hold N service replicas plus
      * exactly one ingress row.
@@ -1318,7 +1318,7 @@ export const container = pgTable(
       table.ordinal,
     ),
     check('container_ordinal_positive_check', sql`ordinal >= 1`),
-    check('container_role_check', sql`role IN ('service', 'ingress', 'system')`),
+    check('container_role_check', sql`role IN ('service', 'ingress', 'turbopanel')`),
     foreignKey({
       columns: [table.serviceId],
       foreignColumns: [service.id],

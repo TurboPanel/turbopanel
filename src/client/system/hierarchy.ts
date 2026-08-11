@@ -6,7 +6,7 @@
  * Identity contract (do not store org/server ids in project/service/container
  * metadata — these keys are the source of truth):
  *
- * - `workspace.kind = 'system'` — one machine workspace per organization
+ * - `workspace.kind = 'turbopanel'` — one machine workspace per organization
  * - `project.metadata.component = 'hosting-ingress'` — shared Traefik project
  * - `project.metadata.component = 'managed-ingress'` — shared ProxySQL project
  * - `environment.server_id` under that project — one environment per enrolled
@@ -16,7 +16,7 @@
  * - `service.composeServiceName = 'proxysql'` — managed ingress service
  * - hosting container via `ensureServiceIngressContainerAllocation` (`role='ingress'`,
  *   name `<serviceId>-in`)
- * - managed-ingress container via `allocateEnvironmentContainers` (`role='system'`,
+ * - managed-ingress container via `allocateEnvironmentContainers` (`role='turbopanel'`,
  *   name `<serviceId>-sql`)
  *
  * Self-host stack (co-located instance only):
@@ -25,15 +25,16 @@
  * - `environment.server_id` under that project — one environment on the
  *   colocated server
  * - `service.composeServiceName` in `database` / `queue` / `analytics`
- * - `container` via `allocateEnvironmentContainers` (`role='system'`, uuid naming)
+ * - `container` via `allocateEnvironmentContainers` (`role='turbopanel'`, uuid naming)
  *
- * The system workspace (`kind='system'`) is provisioned at self-hosted install
- * time (`completeInstanceInstall`), before any server enrolls. Hierarchy
- * functions below only *ensure* it (race-safe upsert) for Workers/HA orgs and
- * pre-existing installs. Full project/environment/service rows still wait on
- * server enrollment / enable-hosting (`server-registry`, `PATCH /servers/:id`)
- * and self-host bootstrap (`authn/install-state.ts`, Deno maintenance timer).
- * Must never be reached from public workspace/project routes.
+ * The TurboPanel Platform workspace (`kind='turbopanel'`) is provisioned at
+ * self-hosted install time (`completeInstanceInstall`), before any server
+ * enrolls. Hierarchy functions below only *ensure* it (race-safe upsert) for
+ * Workers/HA orgs and pre-existing installs. Full project/environment/service
+ * rows still wait on server enrollment / enable-hosting (`server-registry`,
+ * `PATCH /servers/:id`) and self-host bootstrap (`authn/install-state.ts`,
+ * including daemon-connect assign). Must never be reached from public
+ * workspace/project routes.
  */
 
 import { and, eq, inArray, sql } from 'drizzle-orm'
@@ -55,7 +56,7 @@ import { managedIngressContainerNameFromService } from '../../lib/naming.ts'
 
 export const SYSTEM_HOSTING_INGRESS_COMPONENT = 'hosting-ingress'
 export const SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME = 'traefik'
-export const SYSTEM_WORKSPACE_DISPLAY_NAME = 'System'
+export const SYSTEM_WORKSPACE_DISPLAY_NAME = 'TurboPanel Platform'
 export const SYSTEM_PROJECT_DISPLAY_NAME = 'Server Ingress'
 
 /** Per-server ProxySQL shared frontend (managed engine ingress). */
@@ -160,8 +161,8 @@ export async function ensureSystemWorkspace(
   tx: Db,
   organizationId: string,
 ): Promise<string> {
-  // Partial unique index `uniq_workspace_organization_system` — Drizzle's
-  // onConflictDoNothing cannot express `WHERE kind = 'system'`, so use raw SQL.
+  // Partial unique index `uniq_workspace_organization_turbopanel` — Drizzle's
+  // onConflictDoNothing cannot express `WHERE kind = 'turbopanel'`, so use raw SQL.
   const inserted = await tx.execute<{ id: string }>(sql`
     INSERT INTO workspace (organization_id, name, kind)
     VALUES (
@@ -169,7 +170,7 @@ export async function ensureSystemWorkspace(
       ${SYSTEM_WORKSPACE_DISPLAY_NAME},
       ${WORKSPACE_KIND_SYSTEM}
     )
-    ON CONFLICT (organization_id) WHERE kind = 'system' DO NOTHING
+    ON CONFLICT (organization_id) WHERE kind = 'turbopanel' DO NOTHING
     RETURNING id
   `)
   if (inserted[0]?.id) return inserted[0].id
@@ -480,7 +481,7 @@ async function ensureManagedIngressHierarchyImpl(
           serviceId,
           composeServiceName: SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
           instances: 1,
-          role: 'system',
+          role: 'turbopanel',
           explicitContainerName: managedIngressContainerNameFromService(serviceId),
         },
       ],
@@ -602,7 +603,7 @@ async function ensureSelfHostSystemHierarchyImpl(
         serviceId: composeServiceIds.get(composeServiceName)!,
         composeServiceName,
         instances: 1,
-        role: 'system' as const,
+        role: 'turbopanel' as const,
       }))
 
     const allocations = await allocateEnvironmentContainers(tx, {

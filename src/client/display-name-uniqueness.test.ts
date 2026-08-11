@@ -193,7 +193,7 @@ test('isWorkspaceDisplayNameTaken treats system workspace named System as taken'
     await ensureSystemHierarchy(db, { organizationId, serverId })
 
     assertEquals(
-      await isWorkspaceDisplayNameTaken(db, organizationId, 'System'),
+      await isWorkspaceDisplayNameTaken(db, organizationId, 'TurboPanel Platform'),
       true,
     )
     assertEquals(

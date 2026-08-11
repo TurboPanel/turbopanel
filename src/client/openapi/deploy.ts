@@ -77,9 +77,9 @@ export const deploySchemas = {
             ordinal: { type: 'integer', minimum: 1 },
             role: {
               type: 'string',
-              enum: ['service', 'ingress', 'system'],
+              enum: ['service', 'ingress', 'turbopanel'],
               description:
-                "Workload replica (`service`), per-service Traefik container (`ingress`, named `<serviceId>-in` at ordinal 1), or platform `turbopanel-system` stack container (`system`).",
+                "Workload replica (`service`), per-service Traefik container (`ingress`, named `<serviceId>-in` at ordinal 1), or platform `turbopanel-system` stack container (`turbopanel`).",
             },
           },
         },

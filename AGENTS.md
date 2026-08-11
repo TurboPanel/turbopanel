@@ -767,7 +767,7 @@ The three databases/brokers above are provisioned into the `turbopanel-system`
 Compose project (see daemon `src/deploy/AGENTS.md` → **Shared HTTP ingress
 identity**) so their container identity/status is inspectable through the same
 `container` table and client `GET /api/client/v1/containers` surface as tenant
-deploys — with `role: 'system'` and `service.composeServiceName` in `database` /
+deploys — with `role: 'turbopanel'` and `service.composeServiceName` in `database` /
 `queue` / `analytics`. They remain **inspect-only**: the daemon reports their
 `docker compose ps` identity for inventory but never starts, stops, or
 self-heals them (no restart-via-`system.reconcile` path — see
@@ -804,8 +804,8 @@ compose stack:**
   to the dev user / `tpcache` group — a socket-permission model that is
   simpler to keep host-native than to thread through a container network.
 
-**Bootstrap ordering:** Self-hosted install creates the **System** workspace
-(`kind='system'`) inside the install transaction — before any daemon enrolls.
+**Bootstrap ordering:** Self-hosted install creates the **TurboPanel Platform** workspace
+(`kind='turbopanel'`) inside the install transaction — before any daemon enrolls.
 Self-host project/environment/services still wait on the colocated server
 (`ensureSelfHostSystemHierarchy`). Then `docker compose up` (with the labels
 below) runs via the `system-compose` Ansible role → the hierarchy allocates

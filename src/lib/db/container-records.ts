@@ -65,11 +65,11 @@ function parseCloneOrdinal(composeServiceName: string): number | null {
  */
 function resolveReportedRole(
   reported: EnvironmentDeployContainer,
-): 'service' | 'ingress' | 'system' {
+): 'service' | 'ingress' | 'turbopanel' {
   if (
     reported.role === 'service' ||
     reported.role === 'ingress' ||
-    reported.role === 'system'
+    reported.role === 'turbopanel'
   ) {
     return reported.role
   }
@@ -167,7 +167,7 @@ function isExpectedPendingAllocation(
 
 export type ExpectedContainerAllocation = {
   serviceId: string
-  role: 'service' | 'ingress' | 'system'
+  role: 'service' | 'ingress' | 'turbopanel'
   ordinal: number
 }
 
@@ -295,7 +295,7 @@ async function resetContainersOnEmptyReport(
 function matchUnmatchedExistingContainer(params: {
   reported: EnvironmentDeployContainer
   serviceId: string
-  role: 'service' | 'ingress' | 'system'
+  role: 'service' | 'ingress' | 'turbopanel'
   byName: Map<string, ExistingContainerRow>
   byServiceOrdinal: Map<string, ExistingContainerRow>
   matchedIds: Set<string>

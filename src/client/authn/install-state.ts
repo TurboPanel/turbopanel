@@ -876,7 +876,24 @@ export async function tryAssignColocatedDaemonToInstalledOrganization(
   const organizationId = await findDefaultInstalledOrganizationId(db)
   if (!organizationId) return
 
-  await assignColocatedDaemonToOrganization(db, organizationId, registry)
+  const serverId = await assignColocatedDaemonToOrganization(
+    db,
+    organizationId,
+    registry,
+  )
+  if (!serverId) return
+
+  try {
+    await ensureSelfHostSystemHierarchy(db, {
+      organizationId,
+      serverId,
+    })
+  } catch (err) {
+    compatLogWarn(
+      'install',
+      `failed to ensure self-host system hierarchy on daemon assign: ${err}`,
+    )
+  }
 }
 
 /**

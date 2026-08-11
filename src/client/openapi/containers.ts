@@ -29,10 +29,10 @@ export const containerSchemas = {
       status: { type: 'string' },
       role: {
         type: 'string',
-        enum: ['service', 'ingress', 'system'],
+        enum: ['service', 'ingress', 'turbopanel'],
         default: 'service',
         description:
-          "Allocator-owned; `'service'` is the ordinary workload/engine replica, `'ingress'` is the per-service Traefik container named `<service.id>-in` at ordinal 1, and `'system'` is the platform `turbopanel-system` stack (`database` / `queue` / `analytics`).",
+          "Allocator-owned; `'service'` is the ordinary workload/engine replica, `'ingress'` is the per-service Traefik container named `<service.id>-in` at ordinal 1, and `'turbopanel'` is the platform `turbopanel-system` stack (`database` / `queue` / `analytics`).",
       },
       composeServiceName: { type: 'string' },
       ordinal: {

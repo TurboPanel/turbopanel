@@ -144,7 +144,7 @@ function buildSystemReconcileComponents(
         serviceId: proxysql.serviceId,
         composeServiceName: SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
         containerName: managedIngressContainerNameFromService(proxysql.serviceId),
-        role: 'system',
+        role: 'turbopanel',
         desired: resolveManagedIngressDesired({
           hasManagedMembers: entry.hasManagedMembers,
         }),
@@ -163,7 +163,7 @@ function buildSystemReconcileComponents(
         serviceId: svc.serviceId,
         composeServiceName: svc.composeServiceName,
         containerName: svc.serviceId,
-        role: 'system',
+        role: 'turbopanel',
         desired: 'present',
       })
     }
@@ -175,7 +175,7 @@ function buildSystemReconcileComponents(
 
 /**
  * Resolve every system-workspace environment pinned to this server (join
- * `project.metadata->>'component'` under a `workspace.kind='system'`
+ * `project.metadata->>'component'` under a `workspace.kind='turbopanel'`
  * ancestor) and return one payload per environment. Desired state is
  * derived per environment:
  * - hosting-ingress: present only when hosting is enabled **and** some HTTP
@@ -232,8 +232,8 @@ export async function buildSystemReconcilePayload(
       AND c.ordinal = 1
       AND (
         (p.metadata->>'component' = ${SYSTEM_HOSTING_INGRESS_COMPONENT} AND c.role = 'ingress')
-        OR (p.metadata->>'component' = ${SYSTEM_MANAGED_INGRESS_COMPONENT} AND c.role = 'system')
-        OR (p.metadata->>'component' = ${SYSTEM_SELF_HOST_COMPONENT} AND c.role = 'system')
+        OR (p.metadata->>'component' = ${SYSTEM_MANAGED_INGRESS_COMPONENT} AND c.role = 'turbopanel')
+        OR (p.metadata->>'component' = ${SYSTEM_SELF_HOST_COMPONENT} AND c.role = 'turbopanel')
       )
     WHERE e.server_id = ${params.serverId}::uuid
       AND w.kind = ${WORKSPACE_KIND_SYSTEM}
@@ -448,13 +448,13 @@ export async function runSystemReconcileSweep(
         OR (
           p.metadata->>'component' = ${SYSTEM_SELF_HOST_COMPONENT}
           AND s.name IN (${selfHostComposeServiceNameList})
-          AND c.role = 'system'
+          AND c.role = 'turbopanel'
           AND (c.status <> 'running' OR c.container_id IS NULL)
         )
         OR (
           p.metadata->>'component' = ${SYSTEM_MANAGED_INGRESS_COMPONENT}
           AND s.name = ${SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME}
-          AND c.role = 'system'
+          AND c.role = 'turbopanel'
           AND EXISTS (
             SELECT 1
             FROM node mm

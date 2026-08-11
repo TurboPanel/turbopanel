@@ -72,7 +72,7 @@ export async function assertOrgOwnerOr403(
  * variables — intentionally need no guard; do not "fix" that omission by
  * inventing joins.
  *
- * When `kind === 'system'`, returns `403` with
+ * When `kind === 'turbopanel'`, returns `403` with
  * `{ error: 'system_resource_immutable' }`.
  */
 export async function assertNotSystemOwnedOr403(

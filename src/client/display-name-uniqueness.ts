@@ -45,7 +45,7 @@ export async function isProjectDisplayNameTaken(
 /**
  * True when another workspace in the organization already uses this display name
  * (trimmed, case-insensitive), across all workspace kinds — including the
- * reserved system workspace named `System`. Null/blank names are never
+ * reserved TurboPanel platform workspace named `TurboPanel Platform`. Null/blank names are never
  * considered taken.
  */
 export async function isWorkspaceDisplayNameTaken(

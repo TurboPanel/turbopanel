@@ -9,9 +9,9 @@ export const workspaceSchemas = {
       description: { type: ['string', 'null'] },
       kind: {
         type: 'string',
-        enum: ['user', 'system'],
+        enum: ['user', 'turbopanel'],
         description:
-          'Authorization-sensitive discriminator. System workspaces are platform-managed and immutable through the public API.',
+          'Authorization-sensitive discriminator. TurboPanel Platform workspaces (`turbopanel`) are platform-managed and immutable through the public API.',
       },
       organizationId: { type: 'string' },
       createdAt: { type: 'string', format: 'date-time' },

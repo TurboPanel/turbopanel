@@ -66,7 +66,7 @@ export const MANAGED_INGRESS_CONTAINER_NAME_SUFFIX = '-sql'
 
 /**
  * Docker `container_name` for the shared per-server ProxySQL managed-ingress
- * row (`role='system'`, always ordinal 1). Distinct from the bare-uuid
+ * row (`role='turbopanel'`, always ordinal 1). Distinct from the bare-uuid
  * self-host `database`/`queue`/`analytics` system rows.
  */
 export function managedIngressContainerNameFromService(serviceId: string): string {

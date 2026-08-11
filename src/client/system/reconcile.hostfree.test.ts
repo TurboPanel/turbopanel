@@ -210,7 +210,7 @@ test('buildSystemReconcilePayload builds hosting/managed/self-host components', 
   const selfHost = payloads.find((p) => p.environmentId === ENV_SELF)!
   assertEquals(selfHost.components.length, 2)
   assertEquals(
-    selfHost.components.every((c) => c.desired === 'present' && c.role === 'system'),
+    selfHost.components.every((c) => c.desired === 'present' && c.role === 'turbopanel'),
     true,
   )
 })

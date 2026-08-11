@@ -738,9 +738,9 @@ export type EnvironmentDeployContainer = {
   status: string
   /**
    * Workload / ingress / platform role — required on the wire.
-   * Must be `'service'`, `'ingress'`, or `'system'`.
+   * Must be `'service'`, `'ingress'`, or `'turbopanel'`.
    */
-  role: 'service' | 'ingress' | 'system'
+  role: 'service' | 'ingress' | 'turbopanel'
 }
 
 export type EnvironmentDeployCommandResult = {
@@ -1228,11 +1228,11 @@ function parseDeployContainerEntry(entry: unknown): EnvironmentDeployContainer |
     return undefined
   }
   // Role is required — omit or misspell drops the entry rather than defaulting
-  // to 'service' (which would silently mis-classify ingress/system rows).
+  // to 'service' (which would silently mis-classify ingress/turbopanel rows).
   if (
     entry.role !== 'service' &&
     entry.role !== 'ingress' &&
-    entry.role !== 'system'
+    entry.role !== 'turbopanel'
   ) {
     return undefined
   }
@@ -1509,13 +1509,13 @@ export type SystemReconcileAction = 'reconcile' | 'restart' | 'stop'
  */
 export const SYSTEM_COMPONENT_ROLES: Record<
   SystemComponentKey,
-  'service' | 'ingress' | 'system'
+  'service' | 'ingress' | 'turbopanel'
 > = {
   'hosting-ingress': 'ingress',
-  'managed-ingress': 'system',
-  database: 'system',
-  queue: 'system',
-  analytics: 'system',
+  'managed-ingress': 'turbopanel',
+  database: 'turbopanel',
+  queue: 'turbopanel',
+  analytics: 'turbopanel',
 }
 
 /** Per-component Docker `container_name` for a system.reconcile entry. */
@@ -1540,7 +1540,7 @@ export type SystemReconcileComponent = {
   serviceId: string
   composeServiceName: string
   containerName: string
-  role: 'service' | 'ingress' | 'system'
+  role: 'service' | 'ingress' | 'turbopanel'
   desired: 'present' | 'absent'
 }
 
@@ -1625,7 +1625,7 @@ function parseSystemReconcileComponent(
     serviceId,
     composeServiceName,
     containerName,
-    role: role as 'service' | 'ingress' | 'system',
+    role: role as 'service' | 'ingress' | 'turbopanel',
     desired: desired as 'present' | 'absent',
   }
 }

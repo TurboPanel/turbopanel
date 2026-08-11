@@ -351,7 +351,7 @@ test('buildSystemReconcilePayload returns one payload per system environment', a
       [...SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES].sort(),
     )
     for (const component of selfHost?.components ?? []) {
-      assertEquals(component.role, 'system')
+      assertEquals(component.role, 'turbopanel')
       assertEquals(component.desired, 'present')
       assertEquals(component.containerName, component.serviceId)
       assertEquals(component.composeServiceName, component.component)

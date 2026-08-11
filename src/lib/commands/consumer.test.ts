@@ -1473,7 +1473,7 @@ test('processCommandEnvelope maps a labelled self-host system.reconcile report o
         containerId: null,
         containerName,
         status: 'pending',
-        role: 'system',
+        role: 'turbopanel',
         composeServiceName: 'database',
         ordinal: 1,
       })
@@ -1494,7 +1494,7 @@ test('processCommandEnvelope maps a labelled self-host system.reconcile report o
               serviceId,
               composeServiceName: 'database',
               containerName,
-              role: 'system',
+              role: 'turbopanel',
               desired: 'present',
             },
           ],
@@ -1519,7 +1519,7 @@ test('processCommandEnvelope maps a labelled self-host system.reconcile report o
                 containerId: 'db-cid-1',
                 containerName,
                 status: 'running',
-                role: 'system',
+                role: 'turbopanel',
               },
             ],
           },
@@ -1550,7 +1550,7 @@ test('processCommandEnvelope maps a labelled self-host system.reconcile report o
       assertEquals(row?.containerId, 'db-cid-1')
       assertEquals(row?.containerName, serviceId)
       assertEquals(row?.status, 'running')
-      assertEquals(row?.role, 'system')
+      assertEquals(row?.role, 'turbopanel')
     } finally {
       await db.delete(container).where(eq(container.serverId, serverId))
       await db.delete(service).where(eq(service.environmentId, environmentId))
@@ -1605,7 +1605,7 @@ test('processCommandEnvelope leaves a missing self-host system container exited 
         containerId: 'stale-queue-cid',
         containerName,
         status: 'running',
-        role: 'system',
+        role: 'turbopanel',
         composeServiceName: 'queue',
         ordinal: 1,
       })
@@ -1626,7 +1626,7 @@ test('processCommandEnvelope leaves a missing self-host system container exited 
               serviceId,
               composeServiceName: 'queue',
               containerName,
-              role: 'system',
+              role: 'turbopanel',
               desired: 'present',
             },
           ],
@@ -1727,7 +1727,7 @@ test('processCommandEnvelope keeps unmatched self-host expected rows on partial 
           containerId: `stale-${composeServiceName}`,
           containerName: serviceId,
           status: 'running',
-          role: 'system',
+          role: 'turbopanel',
           composeServiceName,
           ordinal: 1,
         })
@@ -1748,7 +1748,7 @@ test('processCommandEnvelope keeps unmatched self-host expected rows on partial 
             serviceId: serviceIds[index]!,
             composeServiceName,
             containerName: serviceIds[index]!,
-            role: 'system' as const,
+            role: 'turbopanel' as const,
             desired: 'present' as const,
           })),
         },
@@ -1774,7 +1774,7 @@ test('processCommandEnvelope keeps unmatched self-host expected rows on partial 
                 containerId: 'db-only-cid',
                 containerName: serviceIds[0]!,
                 status: 'running',
-                role: 'system',
+                role: 'turbopanel',
               },
             ],
           },

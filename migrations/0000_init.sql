@@ -70,7 +70,7 @@ CREATE TABLE "container" (
 	"compose_service_name" text NOT NULL,
 	"ordinal" integer DEFAULT 1 NOT NULL,
 	CONSTRAINT "container_ordinal_positive_check" CHECK (ordinal >= 1),
-	CONSTRAINT "container_role_check" CHECK (role IN ('service', 'ingress', 'system'))
+	CONSTRAINT "container_role_check" CHECK (role IN ('service', 'ingress', 'turbopanel'))
 );
 --> statement-breakpoint
 CREATE TABLE "datacenter" (
@@ -503,7 +503,7 @@ CREATE TABLE "workspace" (
 	"description" varchar(255),
 	"kind" varchar(32) DEFAULT 'user' NOT NULL,
 	CONSTRAINT "workspace_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))),
-	CONSTRAINT "workspace_kind_check" CHECK (kind IN ('user', 'system'))
+	CONSTRAINT "workspace_kind_check" CHECK (kind IN ('user', 'turbopanel'))
 );
 --> statement-breakpoint
 ALTER TABLE "account" ADD CONSTRAINT "account_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -670,4 +670,4 @@ CREATE UNIQUE INDEX "uniq_var_server" ON "variable" USING btree ("key","server_i
 CREATE INDEX "idx_vpn_organization_id" ON "vpn" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_vpn_organization_id_cidr" ON "vpn" USING btree ("organization_id","cidr");--> statement-breakpoint
 CREATE INDEX "idx_workspace_organization_id" ON "workspace" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
-CREATE UNIQUE INDEX "uniq_workspace_organization_system" ON "workspace" USING btree ("organization_id") WHERE kind = 'system';
+CREATE UNIQUE INDEX "uniq_workspace_organization_turbopanel" ON "workspace" USING btree ("organization_id") WHERE kind = 'turbopanel';
