@@ -590,6 +590,11 @@ export function findManagedBackupById<T extends { id: string }>(
   return backups.find((entry) => entry.id === backupId)
 }
 
+/**
+ * Status endpoint member row — same identity field as detail (`id`), not
+ * `memberId`. The UI merges status onto detail by id; a different key
+ * produced a ghost second "primary" with no React key.
+ */
 export function buildStatusMemberView(serialized: {
   id: string
   serverId: string
@@ -600,7 +605,7 @@ export function buildStatusMemberView(serialized: {
   replication?: unknown
 }) {
   return {
-    memberId: serialized.id,
+    id: serialized.id,
     serverId: serialized.serverId,
     role: serialized.role,
     status: serialized.status,

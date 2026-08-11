@@ -391,7 +391,7 @@ test('buildStatusMemberView and org list entry', () => {
       replication: { state: 'streaming' },
     }),
     {
-      memberId: 'm1',
+      id: 'm1',
       serverId: 's1',
       role: 'replica',
       status: 'ready',

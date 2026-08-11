@@ -37,7 +37,6 @@ const MAX_IDENTIFIER_LENGTH = 63
 const TLS_CERT_PATH = '/etc/postgresql/tls/server.crt'
 const TLS_KEY_PATH = '/etc/postgresql/tls/server.key'
 const CONFIG_CONTAINER_PATH = '/etc/postgresql/postgresql.conf'
-const CONFIG_DIR_CONTAINER = '/etc/postgresql'
 const TLS_DIR_CONTAINER = '/etc/postgresql/tls'
 const DATA_VOLUME_TARGET = '/var/lib/postgresql'
 
@@ -411,9 +410,15 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
     command: ['postgres', '-c', `config_file=${CONFIG_CONTAINER_PATH}`],
     // Named volume at the parent path — PG18 stores data under $PGDATA
     // (mirrors daemon/orchestration/roles/postgres volume convention).
+    //
+    // Mount config as individual files — never bind the whole `./config` tree
+    // over `/etc/postgresql` then nest `./tls` under `/etc/postgresql/tls`.
+    // Docker cannot create that nested mountpoint under a read-only parent
+    // (`read-only file system` / OCI mkdirat fail).
     volumes: [
       `${volumeName}:${DATA_VOLUME_TARGET}`,
-      `./config:${CONFIG_DIR_CONTAINER}:ro`,
+      `./config/postgresql.conf:${CONFIG_CONTAINER_PATH}:ro`,
+      `./config/pg_hba.conf:${HBA_FILE_PATH}:ro`,
     ],
     healthcheck: {
       test: healthcheck.test,

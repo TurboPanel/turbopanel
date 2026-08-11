@@ -2533,6 +2533,17 @@ test('processCommandEnvelope marks managed failed when managed.apply times out',
       .where(eq(managed.id, managedId))
       .limit(1)
 
+    const memberId = MANAGED_APPLY_PAYLOAD.memberId
+    await db.insert(node).values({
+      id: memberId,
+      managedId,
+      serverId,
+      role: 'primary',
+      readEligible: true,
+      ordinal: 1,
+      status: 'provisioning',
+    })
+
     const record = await createCommandRecord(db, {
       serverId,
       ...TEST_COMMAND_ACTOR,
@@ -2559,6 +2570,14 @@ test('processCommandEnvelope marks managed failed when managed.apply times out',
       .where(eq(managed.id, managedId))
       .limit(1)
     assertEquals(afterManaged?.status, 'failed')
+
+    // Member must not stay stuck on provisioning after the apply command fails.
+    const [afterMember] = await db
+      .select({ status: node.status })
+      .from(node)
+      .where(eq(node.id, memberId))
+      .limit(1)
+    assertEquals(afterMember?.status, 'failed')
   })
 })
 

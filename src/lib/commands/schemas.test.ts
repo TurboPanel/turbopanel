@@ -493,6 +493,34 @@ test('parseSystemReconcilePayload accepts the widened database/queue/analytics c
   }
 })
 
+test('parseSystemReconcilePayload accepts managed-ingress with system role and -sql containerName', () => {
+  const serviceId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+  const environmentId = '11111111-2222-3333-4444-555555555555'
+  assertEquals(
+    parseSystemReconcilePayload({
+      environmentId,
+      components: [
+        {
+          component: 'managed-ingress',
+          serviceId,
+          composeServiceName: 'proxysql',
+          containerName: `${serviceId}-sql`,
+          role: 'system',
+          desired: 'present',
+        },
+      ],
+    }).components[0],
+    {
+      component: 'managed-ingress',
+      serviceId,
+      composeServiceName: 'proxysql',
+      containerName: `${serviceId}-sql`,
+      role: 'system',
+      desired: 'present',
+    },
+  )
+})
+
 test('parseSystemReconcilePayload rejects role/containerName mismatches across the system/ingress split', () => {
   const serviceId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
   const environmentId = '11111111-2222-3333-4444-555555555555'
@@ -544,6 +572,44 @@ test('parseSystemReconcilePayload rejects role/containerName mismatches across t
             component: 'database',
             serviceId,
             composeServiceName: 'database',
+            containerName: `${serviceId}-in`,
+            role: 'system',
+            desired: 'present',
+          },
+        ],
+      }),
+    Error,
+    'Invalid system.reconcile payload',
+  )
+  // managed-ingress requires the -sql suffix — bare serviceId is rejected.
+  assertThrows(
+    () =>
+      parseSystemReconcilePayload({
+        environmentId,
+        components: [
+          {
+            component: 'managed-ingress',
+            serviceId,
+            composeServiceName: 'proxysql',
+            containerName: serviceId,
+            role: 'system',
+            desired: 'present',
+          },
+        ],
+      }),
+    Error,
+    'Invalid system.reconcile payload',
+  )
+  // managed-ingress must not use the hosting-ingress -in suffix.
+  assertThrows(
+    () =>
+      parseSystemReconcilePayload({
+        environmentId,
+        components: [
+          {
+            component: 'managed-ingress',
+            serviceId,
+            composeServiceName: 'proxysql',
             containerName: `${serviceId}-in`,
             role: 'system',
             desired: 'present',

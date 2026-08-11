@@ -61,6 +61,24 @@ export function ingressContainerNameFromService(serviceId: string): string {
   return name
 }
 
+/** Suffix for managed-ingress (ProxySQL) container names (`<serviceId>-sql`). */
+export const MANAGED_INGRESS_CONTAINER_NAME_SUFFIX = '-sql'
+
+/**
+ * Docker `container_name` for the shared per-server ProxySQL managed-ingress
+ * row (`role='system'`, always ordinal 1). Distinct from the bare-uuid
+ * self-host `database`/`queue`/`analytics` system rows.
+ */
+export function managedIngressContainerNameFromService(serviceId: string): string {
+  const name = `${serviceId}${MANAGED_INGRESS_CONTAINER_NAME_SUFFIX}`
+  if (!isValidDockerResourceName(name)) {
+    throw new TypeError(
+      `Invalid managed ingress container name for service id: ${serviceId}`,
+    )
+  }
+  return name
+}
+
 /** Docker volume name for a `docker_volume` storage row is the row UUID. */
 export function dockerVolumeNameFromStorageId(storageId: string): string {
   if (!isValidDockerResourceName(storageId)) {

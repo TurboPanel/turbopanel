@@ -30,7 +30,10 @@ import {
   transitionCommand,
 } from '../../lib/db/command-records.ts'
 import { parseServerOptions } from '../../lib/db/server-metadata.ts'
-import { ingressContainerNameFromService } from '../../lib/naming.ts'
+import {
+  ingressContainerNameFromService,
+  managedIngressContainerNameFromService,
+} from '../../lib/naming.ts'
 import { WORKSPACE_KIND_SYSTEM } from '../../lib/db/workspace-kind.ts'
 import {
   isSystemSelfHostComposeServiceName,
@@ -140,7 +143,7 @@ function buildSystemReconcileComponents(
         component: SYSTEM_MANAGED_INGRESS_COMPONENT,
         serviceId: proxysql.serviceId,
         composeServiceName: SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
-        containerName: proxysql.serviceId,
+        containerName: managedIngressContainerNameFromService(proxysql.serviceId),
         role: 'system',
         desired: resolveManagedIngressDesired({
           hasManagedMembers: entry.hasManagedMembers,

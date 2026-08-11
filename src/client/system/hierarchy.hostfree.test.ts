@@ -5,7 +5,10 @@
 
 import { assertEquals, assertRejects } from 'jsr:@std/assert'
 import type { Db } from '../../db.ts'
-import { ingressContainerNameFromService } from '../../lib/naming.ts'
+import {
+  ingressContainerNameFromService,
+  managedIngressContainerNameFromService,
+} from '../../lib/naming.ts'
 import {
   deleteSystemEnvironmentSubtree,
   ensureManagedIngressHierarchy,
@@ -434,7 +437,7 @@ test('ensureManagedIngressHierarchy provisions proxysql system container', async
   })
   assertEquals(result.serviceId, SVC)
   assertEquals(result.containerRowId, CTR)
-  assertEquals(result.containerName, SVC) // uuid naming, single instance
+  assertEquals(result.containerName, managedIngressContainerNameFromService(SVC))
   assertEquals(result.workspaceId, WS)
   assertEquals(SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME.length > 0, true)
   assertEquals(track.inserts! >= 2, true)

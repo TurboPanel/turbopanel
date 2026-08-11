@@ -1203,10 +1203,43 @@ export function resolveManagedIdFromPayload(
 }
 
 /**
+ * Member id on a failed managed command payload (apply always has one;
+ * lifecycle/destroy/promote when fan-out targets a single node).
+ * Does not invent ids — only what the typed payload already carried.
+ */
+export function resolveManagedMemberIdFromFailedPayload(
+  type: string,
+  payload: unknown,
+): string | null {
+  try {
+    if (type === 'managed.apply') {
+      return parseManagedApplyPayload(payload).memberId
+    }
+    if (type === 'managed.lifecycle') {
+      return parseManagedLifecyclePayload(payload).memberId ?? null
+    }
+    if (type === 'managed.destroy') {
+      return parseManagedDestroyPayload(payload).memberId ?? null
+    }
+    if (type === 'managed.promote') {
+      return parseManagedPromotePayload(payload).memberId
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+/**
  * Mark the managed row failed when apply/lifecycle/destroy/restore/promote fail
  * or time out. `managed.backup` is deliberately excluded — a read-only backup
- * failure must never mark an otherwise-healthy engine `failed`. Does not
- * alter terminal command-row semantics — only `managed.status`.
+ * failure must never mark an otherwise-healthy engine `failed`.
+ *
+ * Also marks the targeted `node` failed when the payload names a member —
+ * otherwise UI cluster rows stay stuck on `provisioning` after a failed apply
+ * while only `managed.status` flipped to `failed`.
+ *
+ * Does not alter terminal command-row semantics.
  */
 async function applyManagedFailedSideEffect(
   db: Db,
@@ -1224,30 +1257,27 @@ async function applyManagedFailedSideEffect(
   try {
     const managedId = resolveManagedIdFromPayload(record.type, record.payload)
     if (!managedId) return
+    const updatedAt = nowIso()
     await db
       .update(managed)
       .set({
         status: 'failed',
-        updatedAt: nowIso(),
+        updatedAt,
       })
       .where(eq(managed.id, managedId))
 
-    // Member-delete destroy failed: keep the row and mark it failed/retryable.
-    if (record.type === 'managed.destroy') {
-      try {
-        const payload = parseManagedDestroyPayload(record.payload)
-        if (payload.deleteMemberAfterDestroy && payload.memberId) {
-          await db
-            .update(node)
-            .set({
-              status: 'failed',
-              updatedAt: nowIso(),
-            })
-            .where(eq(node.id, payload.memberId))
-        }
-      } catch {
-        // ignore parse errors on failure path
-      }
+    const memberId = resolveManagedMemberIdFromFailedPayload(
+      record.type,
+      record.payload,
+    )
+    if (memberId) {
+      await db
+        .update(node)
+        .set({
+          status: 'failed',
+          updatedAt,
+        })
+        .where(eq(node.id, memberId))
     }
   } catch (err) {
     const message = errorMessage(err)

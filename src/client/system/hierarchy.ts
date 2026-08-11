@@ -14,8 +14,10 @@
  *   `environment.metadata.component`)
  * - `service.composeServiceName = 'traefik'` — hosting ingress service
  * - `service.composeServiceName = 'proxysql'` — managed ingress service
- * - hosting container via `ensureServiceIngressContainerAllocation` (`role='ingress'`)
- * - managed-ingress container via `allocateEnvironmentContainers` (`role='system'`)
+ * - hosting container via `ensureServiceIngressContainerAllocation` (`role='ingress'`,
+ *   name `<serviceId>-in`)
+ * - managed-ingress container via `allocateEnvironmentContainers` (`role='system'`,
+ *   name `<serviceId>-sql`)
  *
  * Self-host stack (co-located instance only):
  *
@@ -49,6 +51,7 @@ import {
   type ContainerServiceSpec,
   ensureServiceIngressContainerAllocation,
 } from '../environments/allocate-containers.ts'
+import { managedIngressContainerNameFromService } from '../../lib/naming.ts'
 
 export const SYSTEM_HOSTING_INGRESS_COMPONENT = 'hosting-ingress'
 export const SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME = 'traefik'
@@ -436,10 +439,12 @@ async function ensureManagedIngressProject(
 
 /**
  * Idempotently ensure workspace(kind=system) → project(managed-ingress) →
- * environment(server) → service(proxysql) → container(role=system, uuid naming).
+ * environment(server) → service(proxysql) → container(role=system, `-sql` suffix).
  *
  * Does **not** allocate an ingress-role Traefik row — ProxySQL is the
- * protocol frontend and uses uuid naming like self-host stack services.
+ * protocol frontend and uses the `-sql` suffix via
+ * {@link managedIngressContainerNameFromService} (distinct from bare-uuid
+ * self-host stack services).
  */
 async function ensureManagedIngressHierarchyImpl(
   db: Db,
@@ -476,6 +481,7 @@ async function ensureManagedIngressHierarchyImpl(
           composeServiceName: SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
           instances: 1,
           role: 'system',
+          explicitContainerName: managedIngressContainerNameFromService(serviceId),
         },
       ],
       containerNaming: 'uuid',

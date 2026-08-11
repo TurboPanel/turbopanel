@@ -16,6 +16,7 @@ import {
   ingressContainerNameFromService,
   isValidDockerResourceName,
   managedContainerName,
+  managedIngressContainerNameFromService,
 } from '../naming.ts'
 import type { ServiceOptions } from '../service-options.ts'
 import { isValidTimezone } from '../timezones.ts'
@@ -1499,7 +1500,13 @@ export type SystemComponentKey =
 
 export type SystemReconcileAction = 'reconcile' | 'restart' | 'stop'
 
-/** Container-name rule / role per system component — never a free-form wire value. */
+/**
+ * Role per system component — never a free-form wire value.
+ * Container naming is resolved separately via
+ * {@link expectedSystemComponentContainerName} (`hosting-ingress` → `-in`,
+ * `managed-ingress` → `-sql`, self-host stack → bare serviceId).
+ * Keep in parity with daemon `contracts.ts` system-reconcile component roles.
+ */
 export const SYSTEM_COMPONENT_ROLES: Record<
   SystemComponentKey,
   'service' | 'ingress' | 'system'
@@ -1509,6 +1516,23 @@ export const SYSTEM_COMPONENT_ROLES: Record<
   database: 'system',
   queue: 'system',
   analytics: 'system',
+}
+
+/** Per-component Docker `container_name` for a system.reconcile entry. */
+function expectedSystemComponentContainerName(
+  component: SystemComponentKey,
+  serviceId: string,
+): string {
+  switch (component) {
+    case 'hosting-ingress':
+      return ingressContainerNameFromService(serviceId)
+    case 'managed-ingress':
+      return managedIngressContainerNameFromService(serviceId)
+    case 'database':
+    case 'queue':
+    case 'analytics':
+      return serviceId
+  }
 }
 
 export type SystemReconcileComponent = {
@@ -1585,9 +1609,10 @@ function parseSystemReconcileComponent(
     throw new Error('Invalid system.reconcile payload')
   }
   const containerName = value.containerName
-  const expectedContainerName = role === 'ingress'
-    ? ingressContainerNameFromService(serviceId)
-    : serviceId
+  const expectedContainerName = expectedSystemComponentContainerName(
+    component,
+    serviceId,
+  )
   if (!isString(containerName) || containerName !== expectedContainerName) {
     throw new Error('Invalid system.reconcile payload')
   }

@@ -7,7 +7,10 @@ import { assertEquals } from 'jsr:@std/assert'
 import type { Db } from '../../db.ts'
 import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
 import type { CommandQueue } from '../../lib/commands/queue.ts'
-import { ingressContainerNameFromService } from '../../lib/naming.ts'
+import {
+  ingressContainerNameFromService,
+  managedIngressContainerNameFromService,
+} from '../../lib/naming.ts'
 import {
   SYSTEM_HOSTING_INGRESS_COMPONENT,
   SYSTEM_MANAGED_INGRESS_COMPONENT,
@@ -199,7 +202,10 @@ test('buildSystemReconcilePayload builds hosting/managed/self-host components', 
   const managed = payloads.find((p) => p.environmentId === ENV_MANAGED)!
   assertEquals(managed.components[0]?.desired, 'present')
   assertEquals(managed.components[0]?.composeServiceName, SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME)
-  assertEquals(managed.components[0]?.containerName, SVC_PROXY)
+  assertEquals(
+    managed.components[0]?.containerName,
+    managedIngressContainerNameFromService(SVC_PROXY),
+  )
 
   const selfHost = payloads.find((p) => p.environmentId === ENV_SELF)!
   assertEquals(selfHost.components.length, 2)
