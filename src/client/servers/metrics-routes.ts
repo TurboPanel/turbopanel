@@ -1,8 +1,9 @@
 import { Hono } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { assertCanReadOr403 } from '../shared.ts'
-import { getServerMetricsStore } from '../../db.ts'
+import { listVisible } from '../authz/index.ts'
+import { assertCanReadOr403, getOrgId } from '../shared.ts'
+import { getDb, getServerMetricsStore } from '../../db.ts'
 import { DisabledServerMetricsStore } from '../../daemon/metrics/disabled-store.ts'
 import {
   createMetricsChartCache,
@@ -21,7 +22,11 @@ import {
   type HostSeriesChartResponse,
   type HostSummaryChartResponse,
 } from '../../daemon/metrics/query/series-response.ts'
-import type { StatusHistoryResult } from '../../daemon/metrics/types.ts'
+import type {
+  FleetHostSnapshotResult,
+  HostMetricKey,
+  StatusHistoryResult,
+} from '../../daemon/metrics/types.ts'
 import {
   resolveStoreBackendKind,
   parseIsoTimestampQuery,
@@ -33,6 +38,16 @@ import {
   metricsQueryErrorMessage,
   type ConnectionHistoryChartResponse,
 } from './metrics-routes-helpers.ts'
+
+/** Fixed lookback for the org servers overview usage strip/bars (~1 sample/min). */
+export const FLEET_USAGE_LOOKBACK_MS = 10 * 60_000
+
+/** Metrics shown on the org servers overview (CPU / memory / swap %). */
+export const FLEET_USAGE_METRICS = [
+  'cpuUsagePercent',
+  'memoryUsedPercent',
+  'swapUsedPercent',
+] as const satisfies readonly HostMetricKey[]
 
 async function authorizeServerRead(c: Parameters<
   typeof assertCanReadOr403
@@ -51,7 +66,101 @@ export function registerServerMetricsRoutes(
 ) {
   const cache = createMetricsChartCache(opts.runtime)
 
+  router.use('/servers/metrics/*', createSessionMiddleware(opts.secrets))
   router.use('/servers/:id/metrics/*', createSessionMiddleware(opts.secrets))
+
+  /**
+   * One fleet usage snapshot for the org servers overview.
+   * Authz via listVisible — never accept client-supplied serverIds.
+   */
+  router.get('/servers/metrics/latest', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
+
+    const visibleIds = await listVisible(db, {
+      kind: 'server',
+      userId: session.userId,
+      organizationId,
+    })
+
+    const store = getServerMetricsStore(c) ??
+      new DisabledServerMetricsStore()
+    const backend = resolveStoreBackendKind(store, opts.runtime)
+    const toMs = Date.now()
+    const fromMs = toMs - FLEET_USAGE_LOOKBACK_MS
+    const fromIso = new Date(fromMs).toISOString()
+    const toIso = new Date(toMs).toISOString()
+    const metrics = [...FLEET_USAGE_METRICS]
+
+    if (visibleIds.length === 0) {
+      return c.json({
+        ok: true,
+        from: fromIso,
+        to: toIso,
+        backend,
+        available: true,
+        metrics,
+        servers: [],
+      })
+    }
+
+    const cacheKey = metricsChartCacheKey({
+      serverId: `fleet:${organizationId}`,
+      fromBucketMs: Math.floor(fromMs / 60_000) * 60_000,
+      toBucketMs: Math.floor(toMs / 60_000) * 60_000,
+      metrics,
+      resolutionSeconds: 60,
+      backend,
+      kind: 'fleet-latest',
+    })
+    const cached = await cache.get<{
+      ok: true
+      from: string
+      to: string
+      backend: typeof backend
+      available: boolean
+      metrics: HostMetricKey[]
+      servers: FleetHostSnapshotResult['servers']
+    }>(cacheKey)
+    if (cached) return c.json(cached)
+
+    let result: FleetHostSnapshotResult
+    try {
+      result = await store.queryFleetHostSnapshot({
+        serverIds: visibleIds,
+        metrics,
+        from: fromIso,
+        to: toIso,
+      })
+    } catch (err) {
+      const message = metricsQueryErrorMessage(err)
+      console.error(
+        `metrics queryFleetHostSnapshot failed backend=${backend}: ${message}`,
+      )
+      return c.json(metricsBackendUnavailableResponse(backend), 503)
+    }
+
+    const payload = {
+      ok: true as const,
+      from: fromIso,
+      to: toIso,
+      backend: result.kind,
+      available: result.available,
+      metrics: [...result.metrics],
+      servers: result.servers,
+    }
+    if (result.available && result.servers.some((row) => row.sampleCount > 0)) {
+      await cache.set(cacheKey, payload, 45)
+    }
+    return c.json(payload)
+  })
 
   router.get('/servers/:id/metrics/series', async (c) => {
     const serverId = c.req.param('id')

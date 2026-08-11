@@ -573,7 +573,7 @@ export function seedMockSession(
 export function seedMockInstalledInstance(state: MockAuthState): void {
   state.organizations.push({
     id: crypto.randomUUID(),
-    name: 'Default Organization',
+    name: 'Root Organization',
   })
   state.users.push({
     id: crypto.randomUUID(),

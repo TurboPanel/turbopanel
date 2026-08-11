@@ -1,5 +1,5 @@
 import { assertEquals } from 'jsr:@std/assert@1'
-import { asc, and, eq, isNull } from 'drizzle-orm'
+import { asc, and, eq, inArray, isNull } from 'drizzle-orm'
 import { it } from '@std/testing/bdd'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb, type Db } from '../../db.ts'
@@ -19,11 +19,15 @@ import {
 import { SUPERADMIN_ROLE } from './session-store.ts'
 import {
   account,
+  container,
+  environment,
   grant,
   license,
   membership,
   organization,
+  project,
   server,
+  service,
   setting,
   team,
   teammate,
@@ -90,7 +94,46 @@ async function cleanupInstall(db: Db, organizationId: string, userId: string) {
   await db.delete(membership).where(eq(membership.userId, userId))
   await db.delete(account).where(eq(account.userId, userId))
   await db.delete(license).where(eq(license.organizationId, organizationId))
-  await db.delete(workspace).where(eq(workspace.organizationId, organizationId))
+
+  const workspaceRows = await db
+    .select({ id: workspace.id })
+    .from(workspace)
+    .where(eq(workspace.organizationId, organizationId))
+  const workspaceIds = workspaceRows.map((row) => row.id)
+  if (workspaceIds.length > 0) {
+    const projectRows = await db
+      .select({ id: project.id })
+      .from(project)
+      .where(inArray(project.workspaceId, workspaceIds))
+    const projectIds = projectRows.map((row) => row.id)
+    if (projectIds.length > 0) {
+      const envRows = await db
+        .select({ id: environment.id })
+        .from(environment)
+        .where(inArray(environment.projectId, projectIds))
+      const environmentIds = envRows.map((row) => row.id)
+      if (environmentIds.length > 0) {
+        const serviceRows = await db
+          .select({ id: service.id })
+          .from(service)
+          .where(inArray(service.environmentId, environmentIds))
+        const serviceIds = serviceRows.map((row) => row.id)
+        if (serviceIds.length > 0) {
+          await db
+            .delete(container)
+            .where(inArray(container.serviceId, serviceIds))
+          await db.delete(service).where(inArray(service.id, serviceIds))
+        }
+        await db
+          .delete(environment)
+          .where(inArray(environment.id, environmentIds))
+      }
+      await db.delete(project).where(inArray(project.id, projectIds))
+    }
+    await db.delete(workspace).where(inArray(workspace.id, workspaceIds))
+  }
+
+  await db.delete(server).where(eq(server.organizationId, organizationId))
   await db.delete(team).where(eq(team.organizationId, organizationId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, organizationId))
@@ -162,14 +205,14 @@ it('concurrent install completions create exactly one superadmin bootstrap', asy
     winnerOrgId = fulfilled[0].value.organizationId
     winnerUserId = fulfilled[0].value.userId
 
-    // Exactly one Default Organization bootstrap.
+    // Exactly one Root Organization bootstrap.
     const orgRows = await db
       .select({ id: organization.id })
       .from(organization)
       .where(eq(organization.name, DEFAULT_ORGANIZATION_NAME))
     if (orgRows.length !== 1) {
       throw new Error(
-        `expected exactly one Default Organization, got ${orgRows.length}`,
+        `expected exactly one Root Organization, got ${orgRows.length}`,
       )
     }
 
@@ -263,6 +306,31 @@ it('install produces System workspace then Default Workspace', async () => {
     })
     organizationId = result.organizationId
     userId = result.userId
+
+    const [orgRow] = await db
+      .select({ name: organization.name })
+      .from(organization)
+      .where(eq(organization.id, organizationId))
+      .limit(1)
+    assertEquals(orgRow?.name, DEFAULT_ORGANIZATION_NAME)
+
+    const serverRows = await db
+      .select({
+        id: server.id,
+        name: server.name,
+        organizationId: server.organizationId,
+      })
+      .from(server)
+      .where(eq(server.organizationId, organizationId))
+    assertEquals(serverRows.length, 1)
+    assertEquals(serverRows[0]?.name, COLOCATED_SERVER_DISPLAY_NAME)
+
+    const [licenseRow] = await db
+      .select({ serverId: license.serverId })
+      .from(license)
+      .where(eq(license.id, result.licenseId))
+      .limit(1)
+    assertEquals(licenseRow?.serverId, serverRows[0]?.id)
 
     const rows = await db
       .select({

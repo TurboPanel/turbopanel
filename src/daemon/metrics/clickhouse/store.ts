@@ -16,10 +16,12 @@
 import { HOST_METRIC_KEYS } from "../contract.ts";
 import {
   AE_DEFAULT_MAX_RANGE_SECONDS,
+  buildFleetHostSnapshotClickHouseSql,
   buildHostSeriesClickHouseSql,
   buildHostSummaryClickHouseSql,
   buildStatusEventsClickHouseSql,
   buildStatusPriorStateClickHouseSql,
+  parseFleetHostSnapshotRows,
   parseHostSummaryRow,
   parseSeriesRows,
   resolveTruncatedStatusEvents,
@@ -42,6 +44,8 @@ import {
 } from "../analytics-engine/field-map.ts";
 import type {
   AuthenticatedHostMetricsSample,
+  FleetHostSnapshotQuery,
+  FleetHostSnapshotResult,
   HostSeriesQuery,
   HostSeriesResult,
   HostSummaryQuery,
@@ -238,6 +242,40 @@ export class ClickHouseServerMetricsStore implements ServerMetricsStore {
       serverId: input.serverId,
       sampleCount,
       latestAt,
+    };
+  }
+
+  async queryFleetHostSnapshot(
+    input: FleetHostSnapshotQuery,
+  ): Promise<FleetHostSnapshotResult> {
+    if (input.serverIds.length === 0) {
+      return {
+        kind: "clickhouse",
+        available: true,
+        metrics: [...input.metrics],
+        servers: [],
+      };
+    }
+    await this.ensureSchema();
+    await this.flushWrites();
+    const from = assertIsoTimestamp("from", input.from);
+    const to = assertIsoTimestamp("to", input.to);
+    assertRange(from, to);
+
+    const { sql, metrics } = buildFleetHostSnapshotClickHouseSql(input, {
+      table: HOST_METRICS_TABLE,
+      maxRangeSeconds: AE_DEFAULT_MAX_RANGE_SECONDS,
+    });
+    const rows = await this.#client.query<Record<string, unknown>>(sql, {
+      from: toClickHouseDateTime64(from),
+      to: toClickHouseDateTime64(to),
+    });
+
+    return {
+      kind: "clickhouse",
+      available: true,
+      metrics,
+      servers: parseFleetHostSnapshotRows(metrics, rows),
     };
   }
 

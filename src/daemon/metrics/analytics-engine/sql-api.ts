@@ -21,6 +21,9 @@ import {
   METRICS_SCHEMA_VERSION,
 } from "../contract.ts";
 import type {
+  FleetHostSnapshotQuery,
+  FleetHostSnapshotResult,
+  FleetHostSnapshotServer,
   HostSeriesPoint,
   HostSeriesQuery,
   HostSeriesResult,
@@ -433,6 +436,183 @@ export function buildHostSummarySql(
     `  AND ${AE_TIMESTAMP_COLUMN} >= toDateTime(${fromUnix})`,
     `  AND ${AE_TIMESTAMP_COLUMN} <= toDateTime(${toUnix})`,
   ].join("\n");
+}
+
+/** Cap on serverIds accepted into a fleet snapshot IN-list. */
+export const MAX_FLEET_SNAPSHOT_SERVERS = 500;
+
+/**
+ * Quote + validate a non-empty list of server UUIDs for an SQL `IN (...)`.
+ * @param asClickHouseUuid wrap each literal with `toUUID(...)` for UUID columns.
+ */
+export function quoteServerIdInList(
+  serverIds: readonly string[],
+  options?: { asClickHouseUuid?: boolean },
+): string {
+  if (serverIds.length === 0) {
+    throw new TypeError("serverIds must be non-empty for fleet snapshot SQL");
+  }
+  if (serverIds.length > MAX_FLEET_SNAPSHOT_SERVERS) {
+    throw new TypeError(
+      `serverIds length ${serverIds.length} exceeds max ${MAX_FLEET_SNAPSHOT_SERVERS}`,
+    );
+  }
+  const seen = new Set<string>();
+  const quoted: string[] = [];
+  for (const raw of serverIds) {
+    const id = assertSafeServerId(raw);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const literal = quoteSqlString(id);
+    quoted.push(
+      options?.asClickHouseUuid ? `toUUID(${literal})` : literal,
+    );
+  }
+  if (quoted.length === 0) {
+    throw new TypeError("serverIds must be non-empty for fleet snapshot SQL");
+  }
+  return quoted.join(", ");
+}
+
+/**
+ * Fleet snapshot AE SQL: weighted averages + latest_at per serverId over a
+ * short lookback. One query covers the whole authorized fleet — never N
+ * per-server chart reads from the org servers overview.
+ */
+export function buildFleetHostSnapshotSql(
+  input: FleetHostSnapshotQuery,
+  opts: {
+    dataset: string;
+    maxRangeSeconds: number;
+  },
+): { sql: string; metrics: HostMetricKey[] } {
+  const metrics = assertAllowedMetrics(input.metrics);
+  const from = assertIsoTimestamp("from", input.from);
+  const to = assertIsoTimestamp("to", input.to);
+  assertRange(from, to, opts.maxRangeSeconds);
+  assertSafeDatasetName(opts.dataset);
+  const inList = quoteServerIdInList(input.serverIds);
+
+  const fromUnix = Math.floor(from.getTime() / 1000);
+  const toUnix = Math.floor(to.getTime() / 1000);
+  const discriminators = hostEventDiscriminatorPredicates();
+
+  const metricSelects = metrics.map((key) => {
+    const col = doubleColumnForMetric(key);
+    return `${weightedAvgExpression(col)} AS ${key}`;
+  });
+
+  const sql = [
+    "SELECT",
+    `  ${AE_INDEX_SERVER_ID_COLUMN} AS server_id,`,
+    `  SUM(_sample_interval) AS sample_count,`,
+    `  max(${AE_TIMESTAMP_COLUMN}) AS latest_at,`,
+    `  ${metricSelects.join(",\n  ")}`,
+    `FROM ${opts.dataset}`,
+    `WHERE ${AE_INDEX_SERVER_ID_COLUMN} IN (${inList})`,
+    `  AND ${discriminators[0]}`,
+    `  AND ${discriminators[1]}`,
+    `  AND ${AE_TIMESTAMP_COLUMN} >= toDateTime(${fromUnix})`,
+    `  AND ${AE_TIMESTAMP_COLUMN} <= toDateTime(${toUnix})`,
+    `GROUP BY server_id`,
+  ].join("\n");
+
+  return { sql, metrics };
+}
+
+/**
+ * ClickHouse fleet snapshot — unit-weight averages, same shape as AE.
+ * Server ids are embedded as validated UUID string literals (no array bind);
+ * from/to use the same DateTime64 query params as other ClickHouse reads.
+ */
+export function buildFleetHostSnapshotClickHouseSql(
+  input: FleetHostSnapshotQuery,
+  opts: {
+    table: string;
+    maxRangeSeconds: number;
+  },
+): { sql: string; metrics: HostMetricKey[] } {
+  const metrics = assertAllowedMetrics(input.metrics);
+  const from = assertIsoTimestamp("from", input.from);
+  const to = assertIsoTimestamp("to", input.to);
+  assertRange(from, to, opts.maxRangeSeconds);
+  assertSafeDatasetName(opts.table);
+  const inList = quoteServerIdInList(input.serverIds, { asClickHouseUuid: true });
+
+  const discriminators = hostEventDiscriminatorPredicates();
+  const metricSelects = metrics.map((key) => {
+    const col = doubleColumnForMetric(key);
+    return `${clickhouseAvgExpression(col)} AS ${key}`;
+  });
+
+  const sql = [
+    "SELECT",
+    `  ${AE_INDEX_SERVER_ID_COLUMN} AS server_id,`,
+    `  count() AS sample_count,`,
+    `  max(${AE_TIMESTAMP_COLUMN}) AS latest_at,`,
+    `  ${metricSelects.join(",\n  ")}`,
+    `FROM ${opts.table}`,
+    `WHERE ${AE_INDEX_SERVER_ID_COLUMN} IN (${inList})`,
+    `  AND ${discriminators[0]}`,
+    `  AND ${discriminators[1]}`,
+    `  AND ${AE_TIMESTAMP_COLUMN} >= {from:DateTime64(3, 'UTC')}`,
+    `  AND ${AE_TIMESTAMP_COLUMN} <= {to:DateTime64(3, 'UTC')}`,
+    `GROUP BY server_id`,
+  ].join("\n");
+
+  return { sql, metrics };
+}
+
+export function parseFleetHostSnapshotRows(
+  metrics: readonly HostMetricKey[],
+  data: Array<Record<string, unknown>>,
+): FleetHostSnapshotServer[] {
+  const servers: FleetHostSnapshotServer[] = [];
+  for (const row of data) {
+    const serverId = parseAeServerId(row.server_id);
+    if (serverId === null) continue;
+    const sampleCountRaw = Number(row.sample_count ?? 0);
+    const sampleCount = Number.isFinite(sampleCountRaw) ? sampleCountRaw : 0;
+    const latestAtMs = parseAeLatestAtMs(row.latest_at);
+    servers.push({
+      serverId,
+      sampleCount,
+      latestAt: latestAtMs === null || sampleCount <= 0
+        ? null
+        : new Date(latestAtMs).toISOString(),
+      values: parseMetricValues(metrics, row),
+    });
+  }
+  servers.sort((a, b) => a.serverId.localeCompare(b.serverId));
+  return servers;
+}
+
+export async function queryFleetHostSnapshotViaSqlApi(
+  config: AnalyticsEngineSqlConfig,
+  input: FleetHostSnapshotQuery,
+): Promise<FleetHostSnapshotResult> {
+  if (input.serverIds.length === 0) {
+    return {
+      kind: "analytics-engine",
+      available: true,
+      metrics: [...input.metrics],
+      servers: [],
+    };
+  }
+  const dataset = config.dataset ?? AE_DATASET_NAME;
+  const maxRangeSeconds = config.maxRangeSeconds ??
+    AE_DEFAULT_MAX_RANGE_SECONDS;
+  const { sql, metrics } = buildFleetHostSnapshotSql(input, {
+    dataset,
+    maxRangeSeconds,
+  });
+  const result = await executeSql(config, sql);
+  return {
+    kind: "analytics-engine",
+    available: true,
+    metrics,
+    servers: parseFleetHostSnapshotRows(metrics, result.data),
+  };
 }
 
 /**

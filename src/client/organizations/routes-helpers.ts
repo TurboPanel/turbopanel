@@ -5,6 +5,9 @@ import {
 import { isAllowedTimezone } from '../../lib/timezones.ts'
 import { BadRequestError, parseDisplayName } from '../shared.ts'
 
+/** Matches {@link NEW_ORGANIZATION_NAME} in authn/install-state.ts. */
+const NEW_ORGANIZATION_DISPLAY_NAME = 'New Organization'
+
 export type OrganizationRouteValidationError = {
   ok: false
   error: string
@@ -101,9 +104,9 @@ export function parseOrganizationCreateDisplayName(
       displayName:
         typeof body.displayName === 'string'
           ? body.displayName
-          : 'New Organization',
+          : NEW_ORGANIZATION_DISPLAY_NAME,
     })
-    return { ok: true, displayName: parsed ?? 'New Organization' }
+    return { ok: true, displayName: parsed ?? NEW_ORGANIZATION_DISPLAY_NAME }
   } catch (error) {
     if (error instanceof BadRequestError) {
       return { ok: false, error: 'Invalid request', status: 400 }

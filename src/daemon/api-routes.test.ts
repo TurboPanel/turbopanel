@@ -1973,6 +1973,14 @@ async function createMetricsTestApp(options: {
         truncated: false,
       });
     },
+    queryFleetHostSnapshot(input) {
+      return Promise.resolve({
+        kind: "disabled",
+        available: false,
+        metrics: [...input.metrics],
+        servers: [],
+      });
+    },
   };
 
   const app = new Hono<AppEnv>();

@@ -1,5 +1,7 @@
 import type {
   AuthenticatedHostMetricsSample,
+  FleetHostSnapshotQuery,
+  FleetHostSnapshotResult,
   HostSeriesQuery,
   HostSeriesResult,
   HostSummaryQuery,
@@ -15,6 +17,7 @@ import {
   type AnalyticsEngineDataPointLike,
 } from "./field-map.ts";
 import {
+  queryFleetHostSnapshotViaSqlApi,
   queryHostSeriesViaSqlApi,
   queryHostSummaryViaSqlApi,
   queryStatusHistoryViaSqlApi,
@@ -126,5 +129,19 @@ export class AnalyticsEngineServerMetricsStore
       });
     }
     return queryStatusHistoryViaSqlApi(this.#sql, input);
+  }
+
+  queryFleetHostSnapshot(
+    input: FleetHostSnapshotQuery,
+  ): Promise<FleetHostSnapshotResult> {
+    if (!this.#sql) {
+      return Promise.resolve({
+        kind: "analytics-engine",
+        available: false,
+        metrics: [...input.metrics],
+        servers: [],
+      });
+    }
+    return queryFleetHostSnapshotViaSqlApi(this.#sql, input);
   }
 }

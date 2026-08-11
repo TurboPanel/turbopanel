@@ -19,6 +19,7 @@ import {
   aeMissingMetricSentinelSql,
   buildHostSeriesSql,
   buildHostSummarySql,
+  buildFleetHostSnapshotSql,
   buildRecentlyActiveServerIdsSql,
   buildStatusEventsSql,
   buildStatusPriorStateSql,
@@ -27,6 +28,7 @@ import {
   MAX_STATUS_EVENTS,
   parseAeLatestAtMs,
   parseCloudflareV4SqlResponse,
+  parseFleetHostSnapshotRows,
   parseHostSummaryRow,
   parseStatusEventRows,
   queryHostSeriesViaSqlApi,
@@ -248,6 +250,56 @@ it("buildHostSummarySql: quoted serverId + sample_count/latest_at", () => {
   for (const predicate of hostEventDiscriminatorPredicates()) {
     assertEquals(sql.includes(`AND ${predicate}`), true);
   }
+});
+
+it("buildFleetHostSnapshotSql: IN-list + GROUP BY server + weighted metrics", () => {
+  const idB = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const { sql, metrics } = buildFleetHostSnapshotSql(
+    {
+      serverIds: [SERVER_ID, idB],
+      metrics: ["cpuUsagePercent", "memoryUsedPercent", "swapUsedPercent"],
+      from: "2026-01-01T00:50:00.000Z",
+      to: "2026-01-01T01:00:00.000Z",
+    },
+    { dataset: AE_DATASET_NAME, maxRangeSeconds: AE_DEFAULT_MAX_RANGE_SECONDS },
+  );
+  assertEquals(metrics, [
+    "cpuUsagePercent",
+    "memoryUsedPercent",
+    "swapUsedPercent",
+  ]);
+  assertEquals(sql.includes(`IN (${quoteSqlString(SERVER_ID)}, ${quoteSqlString(idB)})`), true);
+  assertEquals(sql.includes("GROUP BY server_id"), true);
+  assertEquals(sql.includes("AS cpuUsagePercent"), true);
+  assertEquals(sql.includes("AS memoryUsedPercent"), true);
+  assertEquals(sql.includes("AS swapUsedPercent"), true);
+  assertEquals(sql.includes(weightedAvgExpression(doubleColumnForMetric("cpuUsagePercent"))), true);
+});
+
+it("parseFleetHostSnapshotRows skips bad ids and sorts", () => {
+  const idB = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const rows = parseFleetHostSnapshotRows(
+    ["cpuUsagePercent"],
+    [
+      {
+        server_id: idB,
+        sample_count: 2,
+        latest_at: "2026-01-01T00:59:00Z",
+        cpuUsagePercent: 10,
+      },
+      {
+        server_id: SERVER_ID,
+        sample_count: 3,
+        latest_at: "2026-01-01T00:58:00Z",
+        cpuUsagePercent: 42.5,
+      },
+      { server_id: 12, sample_count: 1, cpuUsagePercent: 1 },
+    ],
+  );
+  assertEquals(rows.length, 2);
+  assertEquals(rows[0]!.serverId, SERVER_ID);
+  assertEquals(rows[0]!.values.cpuUsagePercent, 42.5);
+  assertEquals(rows[1]!.serverId, idB);
 });
 
 it("AE_LIVENESS_WINDOW_SECONDS is three missed 60s samples", () => {

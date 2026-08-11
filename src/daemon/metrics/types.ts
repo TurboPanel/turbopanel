@@ -77,6 +77,31 @@ export type HostSummaryResult = {
   latestAt: string | null;
 };
 
+/**
+ * One AE/ClickHouse query for recent host usage across many servers.
+ * Used by the org servers overview — never N per-server chart calls.
+ */
+export type FleetHostSnapshotQuery = {
+  serverIds: readonly string[];
+  metrics: readonly HostMetricKey[];
+  from: string;
+  to: string;
+};
+
+export type FleetHostSnapshotServer = {
+  serverId: string;
+  latestAt: string | null;
+  values: Partial<Record<HostMetricKey, number | null>>;
+  sampleCount: number;
+};
+
+export type FleetHostSnapshotResult = {
+  kind: MetricsBackendKind;
+  available: boolean;
+  metrics: readonly HostMetricKey[];
+  servers: FleetHostSnapshotServer[];
+};
+
 /** Why a `connected` boolean flipped — closed enum for status-stream rows. */
 export type ServerStatusTransitionReason =
   | "connect"
@@ -137,4 +162,7 @@ export interface ServerMetricsStore {
   queryHostSeries(input: HostSeriesQuery): Promise<HostSeriesResult>;
   queryHostSummary(input: HostSummaryQuery): Promise<HostSummaryResult>;
   queryStatusHistory(input: StatusHistoryQuery): Promise<StatusHistoryResult>;
+  queryFleetHostSnapshot(
+    input: FleetHostSnapshotQuery,
+  ): Promise<FleetHostSnapshotResult>;
 }

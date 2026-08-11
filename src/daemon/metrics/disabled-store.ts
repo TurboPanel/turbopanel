@@ -1,5 +1,7 @@
 import type {
   AuthenticatedHostMetricsSample,
+  FleetHostSnapshotQuery,
+  FleetHostSnapshotResult,
   HostSeriesQuery,
   HostSeriesResult,
   HostSummaryQuery,
@@ -55,6 +57,17 @@ export class DisabledServerMetricsStore implements ServerMetricsStore {
       unknownSeconds: 0,
       uptimePercent: null,
       truncated: false,
+    });
+  }
+
+  queryFleetHostSnapshot(
+    input: FleetHostSnapshotQuery,
+  ): Promise<FleetHostSnapshotResult> {
+    return Promise.resolve({
+      kind: "disabled",
+      available: false,
+      metrics: [...input.metrics],
+      servers: [],
     });
   }
 }

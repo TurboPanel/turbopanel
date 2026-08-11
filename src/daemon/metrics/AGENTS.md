@@ -110,10 +110,13 @@ Endpoints (`src/client/servers/metrics-routes.ts`):
 | `GET` | `/api/client/v1/servers/:id/metrics/series` | session + `assertCanReadOr403('server', id)` |
 | `GET` | `/api/client/v1/servers/:id/metrics/summary` | session + `assertCanReadOr403('server', id)` |
 | `GET` | `/api/client/v1/servers/:id/metrics/connection` | session + `assertCanReadOr403('server', id)`; status-event history (uptime/downtime) — see "Status event stream" above |
+| `GET` | `/api/client/v1/servers/metrics/latest` | session + `listVisible('server')`; one fleet snapshot (CPU / memory / swap % over a fixed ~10 min lookback) for the org servers overview — **never** N per-server chart calls |
 
-Never authorize by bare UUID possession — session middleware + resource read grant required.
+Never authorize by bare UUID possession — session middleware + resource read grant required. Fleet latest never accepts client-supplied serverIds (always filters to `listVisible`).
 
 **Resolution ladder** (`src/daemon/metrics/query/resolution.ts`): range ≤6 h → 60 s; ≤24 h → 300 s; ≤30 d → 3600 s; else 86400 s (ClickHouse maps 60 → 300). **`MAX_METRICS_POINTS` = 1500**; range ≤**90 days**. One combined backend query per `(server, range)` — no per-metric or per-chart queries. Backend-neutral payload includes `gapCount`, `sampleCount`, and `expectedSampleCount` so the UI distinguishes zero values from missing samples. **Coverage grid is half-open `[from, to)` on bucket starts** (`computeSeriesGapCount` / UI `normalizeMetricsGrid`) — inclusive end would always expect the in-progress `to` bucket on live charts (e.g. 1 h @ 60 s → 61 slots) so coverage could almost never hit 100%.
+
+**Fleet latest snapshot** (`queryFleetHostSnapshot` / `GET …/servers/metrics/latest`): one AE/ClickHouse `GROUP BY server_id` over authorized ids with weighted (AE) / unit-weight (ClickHouse) averages for `cpuUsagePercent`, `memoryUsedPercent`, `swapUsedPercent`. Used by the UI servers overview totals + usage bars. Cap `MAX_FLEET_SNAPSHOT_SERVERS` = 500.
 
 **Chart cache** (`src/daemon/metrics/query/cache.ts`): key = `tp:metrics:chart:` + kind + authorized `serverId` + bucket-rounded range + sorted metrics + resolution + backend + `v{schemaVersion}`. TTL: **live 45 s** / **historical 300 s**. Workers: Cloudflare Cache API; Deno: bounded in-process `Map` (256 entries). Authorization is never globally cached — cache keys always include the authorized server id. Separate from the approved-read-models query cache — see `src/query-cache/AGENTS.md`.
 

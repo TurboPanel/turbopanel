@@ -84,6 +84,7 @@ function createFakeMetricsStore(
       }
       return disabled.queryStatusHistory(input)
     },
+    queryFleetHostSnapshot: (input) => disabled.queryFleetHostSnapshot(input),
   }
 }
 

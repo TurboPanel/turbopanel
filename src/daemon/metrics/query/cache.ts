@@ -21,7 +21,7 @@ export function metricsChartCacheKey(input: {
   resolutionSeconds: number;
   backend: MetricsBackendKind;
   schemaVersion?: number;
-  kind?: "series" | "summary" | "connection";
+  kind?: "series" | "summary" | "connection" | "fleet-latest";
 }): string {
   const sortedMetrics = [...input.metrics]
     .sort((a, b) => a.localeCompare(b))

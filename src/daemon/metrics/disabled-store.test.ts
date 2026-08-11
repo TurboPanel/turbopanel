@@ -95,4 +95,15 @@ it("DisabledServerMetricsStore queries return available:false", async () => {
   assertEquals(history.unknownSeconds, 0);
   assertEquals(history.uptimePercent, null);
   assertEquals(history.truncated, false);
+
+  const fleet = await store.queryFleetHostSnapshot({
+    serverIds: ["srv-1"],
+    metrics: ["cpuUsagePercent"],
+    from: "2026-01-01T00:00:00.000Z",
+    to: "2026-01-01T01:00:00.000Z",
+  });
+  assertEquals(fleet.kind, "disabled");
+  assertEquals(fleet.available, false);
+  assertEquals(fleet.servers, []);
+  assertEquals(fleet.metrics, ["cpuUsagePercent"]);
 });

@@ -55,7 +55,21 @@ function isSimpleEmailShape(email: string): boolean {
   return true
 }
 
-export const DEFAULT_ORGANIZATION_NAME = 'Default Organization'
+/**
+ * Self-hosted install creates exactly one org that owns the colocated control
+ * plane server and TurboPanel Platform hierarchy.
+ */
+export const ROOT_ORGANIZATION_NAME = 'Root Organization'
+/** @deprecated Prefer {@link ROOT_ORGANIZATION_NAME} — kept as the install alias. */
+export const DEFAULT_ORGANIZATION_NAME = ROOT_ORGANIZATION_NAME
+/**
+ * Default display name for the first org provisioned for a signed-up user
+ * (Workers onboarding / `createOrganizationForUser` without an explicit name).
+ * Explicit create (`POST /organizations`) defaults to {@link NEW_ORGANIZATION_NAME}.
+ */
+export const MY_ORGANIZATION_NAME = 'My Organization'
+/** Default display name when creating an additional organization via the API. */
+export const NEW_ORGANIZATION_NAME = 'New Organization'
 export const DEFAULT_TEAM_NAME = 'Default Team'
 export const DEFAULT_WORKSPACE_NAME = 'Default Workspace'
 export const COLOCATED_SERVER_DISPLAY_NAME = 'this server'
@@ -596,9 +610,17 @@ export async function findDefaultInstalledOrganizationId(
   const byName = await db
     .select({ id: organization.id })
     .from(organization)
-    .where(eq(organization.name, DEFAULT_ORGANIZATION_NAME))
+    .where(eq(organization.name, ROOT_ORGANIZATION_NAME))
     .limit(1)
   if (byName[0]?.id) return byName[0].id
+
+  // Legacy installs named the root org "Default Organization".
+  const byLegacyName = await db
+    .select({ id: organization.id })
+    .from(organization)
+    .where(eq(organization.name, 'Default Organization'))
+    .limit(1)
+  if (byLegacyName[0]?.id) return byLegacyName[0].id
 
   const withSuperadmin = await db
     .select({ organizationId: membership.organizationId })
@@ -961,16 +983,32 @@ export type CompleteInstallInput = {
   superadminPassword: string
 }
 
-/** Write colocated daemon license files for enrollment (self-hosted Deno only). */
+/**
+ * Write colocated daemon license (+ optional pre-provisioned `server.id`) for
+ * enrollment (self-hosted Deno only).
+ *
+ * When `serverId` is set, the daemon can re-enroll an already-latched seat
+ * without creating a second server row — required so the root org always has a
+ * visible server immediately after install.
+ */
 export async function persistColocatedLicenseCredentials(
   licenseId: string,
   licenseToken: string,
+  serverId?: string,
 ): Promise<boolean> {
   if (typeof Deno === 'undefined') return false
 
   try {
     const stateDir = resolveColocatedLicenseCredentialsDir()
     await Deno.mkdir(stateDir, { recursive: true })
+    // Write server.id before license credentials so a racing enroll always sees
+    // the pre-provisioned seat (fresh license + missing serverId would be
+    // rejected as already consumed).
+    if (serverId) {
+      await Deno.writeTextFile(`${stateDir}/server.id`, `${serverId}\n`, {
+        create: true,
+      })
+    }
     await Deno.writeTextFile(`${stateDir}/license.id`, licenseId, {
       create: true,
     })
@@ -985,6 +1023,103 @@ export async function persistColocatedLicenseCredentials(
     )
     return false
   }
+}
+
+/**
+ * Ensure the root org has a colocated server seat latched to `licenseId`.
+ *
+ * Prefers an already-enrolled colocated daemon row when present; otherwise
+ * inserts a pending `this server` row so the servers list is never empty after
+ * self-hosted install (daemon enroll reuses the latched seat via `server.id`).
+ */
+export async function ensureColocatedServerSeat(
+  db: Db,
+  opts: {
+    organizationId: string
+    licenseId: string
+    registry?: DaemonCellRegistry
+  },
+): Promise<string> {
+  const { organizationId, licenseId, registry } = opts
+  const now = nowTs()
+
+  const bound = await db
+    .select({ serverId: license.serverId })
+    .from(license)
+    .where(and(
+      eq(license.id, licenseId),
+      isNull(license.revokedAt),
+      isNotNull(license.serverId),
+    ))
+    .limit(1)
+  if (bound[0]?.serverId) {
+    await assignColocatedDaemonToOrganization(db, organizationId, registry)
+    return bound[0].serverId
+  }
+
+  const existingServerId = await assignColocatedDaemonToOrganization(
+    db,
+    organizationId,
+    registry,
+  )
+  if (existingServerId) {
+    await db
+      .update(license)
+      .set({ serverId: existingServerId, updatedAt: now })
+      .where(and(
+        eq(license.id, licenseId),
+        isNull(license.serverId),
+        isNull(license.revokedAt),
+      ))
+    return existingServerId
+  }
+
+  const inserted = await db
+    .insert(server)
+    .values({
+      organizationId,
+      name: COLOCATED_SERVER_DISPLAY_NAME,
+      connected: false,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: server.id })
+
+  const serverId = inserted[0]?.id
+  if (!serverId) {
+    throw new Error('Colocated server seat creation failed')
+  }
+
+  const latched = await db
+    .update(license)
+    .set({ serverId, updatedAt: now })
+    .where(and(
+      eq(license.id, licenseId),
+      isNull(license.serverId),
+      isNull(license.revokedAt),
+    ))
+    .returning({ id: license.id })
+
+  if (latched.length === 0) {
+    // Concurrent latch won — prefer the winner's server and drop the orphan.
+    await db.delete(server).where(eq(server.id, serverId))
+    const raced = await db
+      .select({ serverId: license.serverId })
+      .from(license)
+      .where(eq(license.id, licenseId))
+      .limit(1)
+    const racedServerId = raced[0]?.serverId
+    if (!racedServerId) {
+      throw new Error('Colocated license latch race left no server')
+    }
+    return racedServerId
+  }
+
+  compatLogInfo(
+    'install',
+    `provisioned colocated server seat ${serverId} for organization ${organizationId}`,
+  )
+  return serverId
 }
 
 
@@ -1110,7 +1245,7 @@ export async function createOrganizationForUser(
   userId: string,
   orgName?: string,
 ): Promise<{ organizationId: string; teamId: string }> {
-  const displayName = orgName?.trim() || DEFAULT_ORGANIZATION_NAME
+  const displayName = orgName?.trim() || MY_ORGANIZATION_NAME
 
   return await db.transaction(async (tx) => {
     const insertedOrg = await tx
@@ -1191,7 +1326,7 @@ export async function completeInstanceInstall(
   const passwordError = validateSuperadminPassword(input.superadminPassword)
   if (passwordError) throw new Error(passwordError)
 
-  const trimmedOrgName = DEFAULT_ORGANIZATION_NAME
+  const trimmedOrgName = ROOT_ORGANIZATION_NAME
   const trimmedTeamName = DEFAULT_TEAM_NAME
   const trimmedEmail = input.superadminEmail.trim().toLowerCase()
   const hashedPassword = await hashPassword(input.superadminPassword)
@@ -1325,31 +1460,31 @@ export async function completeInstanceInstall(
 
   await clearColocatedDaemonIdentityFiles()
 
+  // Always leave the root org with a latched colocated server seat so the
+  // servers list is never empty after install. Prefer an already-enrolled
+  // daemon row when present; otherwise insert a pending `this server` seat and
+  // write `server.id` next to the license credentials for re-enroll.
+  const colocatedServerId = await ensureColocatedServerSeat(db, {
+    organizationId: result.organizationId,
+    licenseId: result.licenseId,
+  })
+
   await persistColocatedLicenseCredentials(
     result.licenseId,
     result.licenseToken,
+    colocatedServerId,
   )
 
-  // Resolve + assign before hierarchy provision. After assignment,
-  // resolveColocatedServerId filters on organization_id IS NULL and cannot
-  // re-find this server — pass the returned id directly.
-  const colocatedServerId = await assignColocatedDaemonToOrganization(
-    db,
-    result.organizationId,
-  )
-
-  if (colocatedServerId) {
-    try {
-      await ensureSelfHostSystemHierarchy(db, {
-        organizationId: result.organizationId,
-        serverId: colocatedServerId,
-      })
-    } catch (err) {
-      compatLogWarn(
-        'install',
-        `failed to ensure self-host system hierarchy: ${err}`,
-      )
-    }
+  try {
+    await ensureSelfHostSystemHierarchy(db, {
+      organizationId: result.organizationId,
+      serverId: colocatedServerId,
+    })
+  } catch (err) {
+    compatLogWarn(
+      'install',
+      `failed to ensure self-host system hierarchy: ${err}`,
+    )
   }
 
   return {
