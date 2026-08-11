@@ -123,6 +123,37 @@ describe('apply-variables', () => {
     assertEquals(worker.environment, { GLOBAL: 'all' })
   })
 
+  it('normalizes list-form environment when injecting runtime variables', () => {
+    const doc = emptyComposeDocument()
+    doc.data.services = {
+      web: {
+        image: 'nginx',
+        environment: ['FOO=1', 'BAR:two', 'BAZ', 'KEEP=yes'],
+      },
+    }
+
+    const result = applyVariablesToComposeDocument(doc, {
+      globalEntries: [{
+        key: 'TURBOPANEL_ENV',
+        value: 'x',
+        isSecret: false,
+        isLiteral: false,
+        forBuild: false,
+        forRuntime: true,
+      }],
+      perServiceEntries: new Map(),
+    })
+
+    const web = (result.document.data.services as Record<string, Record<string, unknown>>).web!
+    assertEquals(web.environment, {
+      FOO: '1',
+      BAR: 'two',
+      BAZ: '',
+      KEEP: 'yes',
+      TURBOPANEL_ENV: 'x',
+    })
+  })
+
   it('injectSecretPlaceholdersIntoComposeDocument is a no-op without secrets', () => {
     const doc = emptyComposeDocument()
     doc.data.services = { api: { image: 'node:22' } }

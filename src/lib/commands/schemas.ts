@@ -646,13 +646,61 @@ export type EnvironmentDeployIngressService = {
   containerName: string
 }
 
+/** Role of one file in the deploy-time `docker compose -f` chain. */
+export type EnvironmentDeployComposeFileRole = 'project' | 'environment' | 'platform'
+
+/** Where the file content was produced; only `inline` is emitted today. */
+export type EnvironmentDeployComposeFileSource = 'inline' | 'repository'
+
+/**
+ * One file in the ordered compose file chain the daemon should run with
+ * `docker compose -f …`. Array order is exactly the `-f` order — never sort.
+ */
+export type EnvironmentDeployComposeFile = {
+  filename: string
+  role: EnvironmentDeployComposeFileRole
+  source?: EnvironmentDeployComposeFileSource
+  /**
+   * Repo-relative original location of this file when `source: 'repository'`.
+   * Populated once repository-pinned compose files are supported; unused
+   * today.
+   */
+  path?: string
+  content: string
+}
+
+/** Basename-only compose filenames safe for host paths (no directories). */
+export const COMPOSE_FILE_NAME_RE = /^[A-Za-z0-9._-]+\.ya?ml$/
+
+const DEPLOY_COMPOSE_FILE_ROLES = new Set<EnvironmentDeployComposeFileRole>([
+  'project',
+  'environment',
+  'platform',
+])
+
+const DEPLOY_COMPOSE_FILE_SOURCES = new Set<EnvironmentDeployComposeFileSource>([
+  'inline',
+  'repository',
+])
+
 export type EnvironmentDeployCommandPayload = {
   environmentId: string
   projectId: string
   organizationId: string
   projectName: string
-  /** Runtime docker-compose YAML (presentation stripped). May be `services: {}` when all sites are traditional-web. */
+  /**
+   * @deprecated Pre-merged runtime docker-compose YAML kept for one release so
+   * daemons that predate `composeFiles` still work. Prefer the ordered
+   * `composeFiles` chain; this remains the merged effective view for display.
+   * May be `services: {}` when all sites are traditional-web.
+   */
   composeYaml: string
+  /**
+   * Ordered compose file chain for `docker compose -f` (project → environment
+   * → optional platform last). When present, takes precedence over
+   * `composeYaml` on daemons that understand multi-file deploys.
+   */
+  composeFiles?: EnvironmentDeployComposeFile[]
   /** Public hosting routes to wire through Traefik + hosting Caddy. */
   hostings: EnvironmentDeployHosting[]
   /**
@@ -1217,6 +1265,80 @@ function parseDeployManagedNetworkServices(value: unknown): string[] | undefined
   return [...new Set(names)].sort((a, b) => a.localeCompare(b))
 }
 
+function parseDeployComposeFileEntry(entry: unknown): EnvironmentDeployComposeFile {
+  if (!isRecord(entry)) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  const { filename, role, content, source, path } = entry
+  if (
+    !isString(filename) ||
+    !COMPOSE_FILE_NAME_RE.test(filename) ||
+    filename.includes('..')
+  ) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  if (!isString(role) || !DEPLOY_COMPOSE_FILE_ROLES.has(role as EnvironmentDeployComposeFileRole)) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  if (!isString(content) || content.length === 0) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  const file: EnvironmentDeployComposeFile = {
+    filename,
+    role: role as EnvironmentDeployComposeFileRole,
+    content,
+  }
+  if (source !== undefined) {
+    if (
+      !isString(source) ||
+      !DEPLOY_COMPOSE_FILE_SOURCES.has(source as EnvironmentDeployComposeFileSource)
+    ) {
+      throw new Error('Invalid environment.deploy payload')
+    }
+    file.source = source as EnvironmentDeployComposeFileSource
+  }
+  if (path !== undefined) {
+    if (!isString(path) || path.length === 0 || path.includes('..') || path.startsWith('/')) {
+      throw new Error('Invalid environment.deploy payload')
+    }
+    file.path = path
+  }
+  return file
+}
+
+/**
+ * Parse the ordered `composeFiles` array on `environment.deploy`.
+ * Never sorts — order is the daemon `-f` order.
+ */
+export function parseDeployComposeFiles(
+  value: unknown,
+): EnvironmentDeployComposeFile[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  const files = value.map(parseDeployComposeFileEntry)
+  const seen = new Set<string>()
+  let platformCount = 0
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i]!
+    if (seen.has(file.filename)) {
+      throw new Error('Invalid environment.deploy payload')
+    }
+    seen.add(file.filename)
+    if (file.role === 'platform') {
+      platformCount += 1
+      if (i !== files.length - 1) {
+        throw new Error('Invalid environment.deploy payload')
+      }
+    }
+  }
+  if (platformCount > 1) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  return files
+}
+
 function parseDeployContainerEntry(entry: unknown): EnvironmentDeployContainer | undefined {
   if (!isRecord(entry)) return undefined
   if (
@@ -1310,6 +1432,7 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
   const ingressServices = parseDeployIngressServices(value.ingressServices)
   const dockerExternalNetworks = parseDeployDockerExternalNetworks(value.dockerExternalNetworks)
   const managedNetworkServices = parseDeployManagedNetworkServices(value.managedNetworkServices)
+  const composeFiles = parseDeployComposeFiles(value.composeFiles)
   let noCache: boolean | undefined
   if (value.noCache !== undefined) {
     if (typeof value.noCache !== 'boolean') {
@@ -1320,6 +1443,7 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
   return {
     ...strings,
     hostings,
+    ...(composeFiles !== undefined ? { composeFiles } : {}),
     ...(traditionalWebSites !== undefined ? { traditionalWebSites } : {}),
     ...(ingressServices !== undefined ? { ingressServices } : {}),
     ...(dockerExternalNetworks !== undefined ? { dockerExternalNetworks } : {}),

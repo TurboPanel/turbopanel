@@ -12,6 +12,7 @@ import {
   type ServerOptions,
   type ServerOsMetadata,
   type ServerTimeSync,
+  type ServerHostInventory,
 } from '../../lib/db/server-metadata.ts'
 import type { OrganizationOptions } from '../../lib/organization-options.ts'
 import type { DatacenterOptions } from '../../lib/datacenter-options.ts'
@@ -115,7 +116,7 @@ export function parseServerPatchCore(
   | ServerRouteValidationError {
   const patch: ServerPatchFields = { updatedAt }
 
-  if (body.name !== undefined) {
+  if (body.displayName !== undefined || body.name !== undefined) {
     try {
       patch.name = parseDisplayName(body)
     } catch {
@@ -319,6 +320,7 @@ export type PresenceLike = {
   statusChangedAt?: string | null
   geo?: unknown
   os?: ServerOsMetadata | null
+  inventory?: ServerHostInventory | null
   addresses?: unknown
   timeSync?: ServerTimeSync | null
 }
@@ -371,6 +373,7 @@ export function shapeServerPresenceFields(
     statusChangedAt: live?.statusChangedAt ?? null,
     geo: live?.geo ?? null,
     ...shapeServerOsFields(os),
+    inventory: live?.inventory ?? null,
     addresses: live?.addresses ?? null,
     timeSync: live?.timeSync ?? null,
   }

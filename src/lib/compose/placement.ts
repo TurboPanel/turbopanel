@@ -1,4 +1,9 @@
 import {
+  composeTagOf,
+  isComposeTaggedValue,
+  makeComposeTag,
+} from './tags.ts'
+import {
   normalizeCompose,
   type ComposeDocument,
   type ComposePresentation,
@@ -65,19 +70,46 @@ function clonePresentation(
  * This is an input-sanitization path only: it strips any placement a client
  * might still submit embedded in compose, on save and again defensively
  * before merging project + environment compose for deploy.
+ *
+ * Strip placement from a (possibly tagged) top-level extension value.
+ * `remove: true` means the key should be deleted entirely.
  */
+type StripPlacementResult =
+  | { changed: false }
+  | { changed: true; remove: true }
+  | { changed: true; remove: false; next: unknown }
+
+function stripPlacementFromExtension(extension: unknown): StripPlacementResult {
+  if (isComposeTaggedValue(extension)) {
+    const tag = composeTagOf(extension)
+    if (tag === null) return { changed: false }
+    const inner = stripPlacementFromExtension(extension.value)
+    if (!inner.changed) return { changed: false }
+    if (inner.remove) return { changed: true, remove: true }
+    return { changed: true, remove: false, next: makeComposeTag(tag, inner.next) }
+  }
+  if (!isPlainObject(extension) || !('placement' in extension)) {
+    return { changed: false }
+  }
+  const { placement: _removed, ...rest } = extension
+  if (Object.keys(rest).length === 0) {
+    return { changed: true, remove: true }
+  }
+  return { changed: true, remove: false, next: rest }
+}
+
 export function stripComposePlacement(document: ComposeDocument): ComposeDocument {
   const normalized = normalizeCompose(document)
   const extension = normalized.data[TURBOPANEL_EXTENSION_KEY]
-  if (!isPlainObject(extension) || !('placement' in extension)) {
-    return normalized
-  }
+  if (extension === undefined) return normalized
 
-  const { placement: _removed, ...rest } = extension
+  const stripped = stripPlacementFromExtension(extension)
+  if (!stripped.changed) return normalized
+
   const data = { ...normalized.data }
   const keyOrder = [...normalized.presentation.keyOrder]
 
-  if (Object.keys(rest).length === 0) {
+  if (stripped.remove) {
     delete data[TURBOPANEL_EXTENSION_KEY]
     return {
       version: 1,
@@ -89,7 +121,7 @@ export function stripComposePlacement(document: ComposeDocument): ComposeDocumen
     }
   }
 
-  data[TURBOPANEL_EXTENSION_KEY] = rest
+  data[TURBOPANEL_EXTENSION_KEY] = stripped.next
   return {
     version: 1,
     data,

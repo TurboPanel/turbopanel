@@ -19,15 +19,24 @@ const test = Deno.test.bind(Deno)
 
 test('parseDisplayName returns null when absent and trims valid names', () => {
   assertEquals(parseDisplayName({}), null)
-  assertEquals(parseDisplayName({ name: '  My App  ' }), 'My App')
+  assertEquals(parseDisplayName({ displayName: '  My App  ' }), 'My App')
+  assertEquals(parseDisplayName({ name: '  Legacy Name  ' }), 'Legacy Name')
+})
+
+test('parseDisplayName prefers displayName over legacy name', () => {
+  assertEquals(
+    parseDisplayName({ displayName: 'Preferred', name: 'Legacy' }),
+    'Preferred',
+  )
 })
 
 test('parseDisplayName rejects non-strings and invalid characters', () => {
+  assertThrows(() => parseDisplayName({ displayName: 1 }), BadRequestError)
   assertThrows(() => parseDisplayName({ name: 1 }), BadRequestError)
-  assertThrows(() => parseDisplayName({ name: '' }), BadRequestError)
-  assertThrows(() => parseDisplayName({ name: 'bad@name' }), BadRequestError)
+  assertThrows(() => parseDisplayName({ displayName: '' }), BadRequestError)
+  assertThrows(() => parseDisplayName({ displayName: 'bad@name' }), BadRequestError)
   assertThrows(
-    () => parseDisplayName({ name: 'a'.repeat(256) }),
+    () => parseDisplayName({ displayName: 'a'.repeat(256) }),
     BadRequestError,
   )
 })
@@ -65,6 +74,11 @@ test('buildPatchUpdateFields always sets updatedAt and optional patches', () => 
   })
   assertEquals(patched.name, 'Renamed')
   assertEquals(patched.description, 'notes')
+
+  const fromDisplayName = buildPatchUpdateFields({
+    displayName: '  From UI  ',
+  })
+  assertEquals(fromDisplayName.name, 'From UI')
 
   const clearedDescription = buildPatchUpdateFields({ description: '  ' })
   assertEquals(clearedDescription.description, null)

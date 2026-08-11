@@ -42,10 +42,18 @@ import {
 /** Fixed lookback for the org servers overview usage strip/bars (~1 sample/min). */
 export const FLEET_USAGE_LOOKBACK_MS = 10 * 60_000
 
-/** Metrics shown on the org servers overview (CPU / memory / swap %). */
+/** Metrics shown on the org servers overview (CPU stack + load + memory/swap). */
 export const FLEET_USAGE_METRICS = [
   'cpuUsagePercent',
+  'cpuUserPercent',
+  'cpuSystemPercent',
+  'cpuIowaitPercent',
+  'load1',
+  'load5',
+  'load15',
   'memoryUsedPercent',
+  'memoryUsedBytes',
+  'memoryAvailableBytes',
   'swapUsedPercent',
 ] as const satisfies readonly HostMetricKey[]
 

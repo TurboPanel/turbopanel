@@ -1,13 +1,20 @@
 import {
   Document,
   isMap,
+  isScalar,
   isSeq,
   parseDocument,
+  visit,
   type Node,
   type Pair,
   type YAMLMap,
   type YAMLSeq,
 } from 'yaml'
+import {
+  COMPOSE_TAG_KEY,
+  COMPOSE_YAML_OPTIONS,
+  type ComposeTagName,
+} from './tags.ts'
 import {
   emptyComposeDocument,
   isBlankComposeData,
@@ -305,7 +312,11 @@ export function yamlToComposeDocument(source: string): ComposeDocument {
   const trimmed = source.trim()
   if (!trimmed) return emptyComposeDocument()
 
-  const doc = parseDocument(source, { prettyErrors: true, keepSourceTokens: true })
+  const doc = parseDocument(source, {
+    prettyErrors: true,
+    keepSourceTokens: true,
+    ...COMPOSE_YAML_OPTIONS,
+  })
   if (doc.errors.length > 0) {
     throw new ComposeParseError(doc.errors.map((e) => e.message).join('; '))
   }
@@ -316,6 +327,9 @@ export function yamlToComposeDocument(source: string): ComposeDocument {
     throw new ComposeParseError('Compose file root must be a mapping')
   }
 
+  // A top-level `!reset` / `!override` sentinel is a non-empty mapping
+  // (`__turbopanelComposeTag` + `value`), so pruneBlankComposeData never drops
+  // it as "blank" — deliberate: tagged keys must round-trip for overlay merge.
   const data = pruneBlankComposeData(json as Record<string, unknown>)
   if (isBlankComposeData(data)) {
     return emptyComposeDocument()
@@ -342,6 +356,50 @@ export function yamlToComposeDocument(source: string): ComposeDocument {
   }
 }
 
+/**
+ * Detect a JSON-sentinel map (`__turbopanelComposeTag` + `value`) on a YAMLMap
+ * built from payload JS, extract tag name + unwrapped value.
+ */
+function readSentinelFromMap(
+  map: YAMLMap,
+): { tag: ComposeTagName; value: unknown } | null {
+  if (map.items.length !== 2) return null
+  let tag: ComposeTagName | null = null
+  let value: unknown = undefined
+  let sawValue = false
+  for (const item of map.items) {
+    const key = stringKey(item.key)
+    if (key === COMPOSE_TAG_KEY && isScalar(item.value)) {
+      const raw = item.value.value
+      if (raw === 'reset' || raw === 'override') tag = raw
+    } else if (key === 'value') {
+      sawValue = true
+      value = isMap(item.value) || isSeq(item.value) || isScalar(item.value)
+        ? (item.value as Node).toJSON()
+        : item.value
+    }
+  }
+  if (!tag || !sawValue) return null
+  return { tag, value }
+}
+
+/**
+ * Replace sentinel-shaped maps with tagged nodes before presentation so
+ * comment paths (`services.web.ports`) point at the real value node.
+ */
+function retagComposeSentinels(doc: Document): void {
+  visit(doc, {
+    Map(_key, node) {
+      const sentinel = readSentinelFromMap(node)
+      if (!sentinel) return undefined
+      const replacement = doc.createNode(sentinel.value)
+      replacement.tag = `!${sentinel.tag}`
+      // Visit the replacement so nested sentinels retag as well.
+      return replacement
+    },
+  })
+}
+
 function composeDataToYaml(
   data: Record<string, unknown>,
   presentation?: ComposePresentation,
@@ -353,7 +411,8 @@ function composeDataToYaml(
     return ''
   }
 
-  const yamlDoc = new Document(payload)
+  const yamlDoc = new Document(payload, COMPOSE_YAML_OPTIONS)
+  retagComposeSentinels(yamlDoc)
   if (presentation) {
     applyPresentation(yamlDoc, presentation)
   }

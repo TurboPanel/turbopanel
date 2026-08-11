@@ -10,6 +10,7 @@
 
 import { parse } from 'yaml'
 import { isValidDockerNetworkName } from '../docker-network-name.ts'
+import { COMPOSE_YAML_OPTIONS } from './tags.ts'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -53,7 +54,7 @@ export function readComposeExternalDockerNetworkName(
 export function collectComposeExternalDockerNetworkNames(composeYaml: string): string[] {
   if (composeYaml.trim().length === 0) return []
 
-  const parsed: unknown = parse(composeYaml)
+  const parsed: unknown = parse(composeYaml, COMPOSE_YAML_OPTIONS)
   if (!isRecord(parsed) || !isRecord(parsed.networks)) return []
 
   const names = new Set<string>()

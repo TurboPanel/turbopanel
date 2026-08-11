@@ -17,17 +17,33 @@ export async function getOrgId(c: Context, userId: string): Promise<string | Res
 }
 
 /**
- * Parse resource name from the wire body field `name`.
- * (`parseDisplayName` is the historical export name — body key is `name`.)
+ * Prefer `displayName` (OpenAPI / client UI); fall back to legacy `name`.
+ */
+function pickDisplayNameRaw(body: Record<string, unknown>): unknown {
+  if (body.displayName !== undefined) {
+    return body.displayName
+  }
+  if (body.name !== undefined) {
+    return body.name
+  }
+  return undefined
+}
+
+/**
+ * Parse resource name from the wire body.
+ *
+ * Prefer `displayName` (OpenAPI / client UI). Accept legacy `name` for older
+ * callers and tests. (`parseDisplayName` is the historical export name.)
  */
 export function parseDisplayName(body: Record<string, unknown>): string | null {
-  if (body.name === undefined) {
+  const raw = pickDisplayNameRaw(body)
+  if (raw === undefined) {
     return null
   }
-  if (typeof body.name !== 'string') {
+  if (typeof raw !== 'string') {
     throw new BadRequestError('Invalid request')
   }
-  const name = body.name.trim()
+  const name = raw.trim()
   if (name.length < 1 || name.length > 255 || !DISPLAY_NAME_RE.test(name)) {
     throw new BadRequestError('Invalid request')
   }
@@ -90,11 +106,12 @@ export function buildPatchUpdateFields(
     updatedAt: string
   } = { updatedAt }
 
-  if (body.name !== undefined) {
-    if (typeof body.name !== 'string') {
+  const rawName = pickDisplayNameRaw(body)
+  if (rawName !== undefined) {
+    if (typeof rawName !== 'string') {
       throw new BadRequestError('Invalid request')
     }
-    const name = body.name.trim()
+    const name = rawName.trim()
     if (name.length < 1 || name.length > 255 || !DISPLAY_NAME_RE.test(name)) {
       throw new BadRequestError('Invalid request')
     }

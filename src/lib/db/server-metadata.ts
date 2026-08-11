@@ -47,6 +47,19 @@ export type ServerCpuMetadata = {
 }
 
 /**
+ * Static host capacity from daemon hello (`/proc/stat` + `/proc/meminfo`).
+ * Used for fleet inventory totals and load-average normalization — not live
+ * usage (that lives in the metrics backend).
+ */
+export type ServerHostInventory = {
+  /** Logical CPU count (online `cpuN` cores/threads). */
+  cpuCores?: number
+  memoryTotalBytes?: number
+  /** 0 means swap is configured as empty / disabled. */
+  swapTotalBytes?: number
+}
+
+/**
  * Host time-sync facts mirrored from the daemon `HostTimeSync` shape, plus an
  * optional `capturedAt` stamp when persisted on `server.metadata`.
  */
@@ -66,6 +79,11 @@ export type ServerTimeSync = {
 export type ServerMetadata = {
   os?: ServerOsMetadata
   cpu?: ServerCpuMetadata
+  /**
+   * Host capacity (cpu cores / RAM / swap totals) from daemon hello.
+   * Rarely changes; process-cached on the daemon and projected once per connect.
+   */
+  inventory?: ServerHostInventory
   /**
    * Cloudflare `locationHint` chosen at enrollment time (e.g. `"wnam"`, `"eeur"`).
    * Enrollment-time decision; region moves require a new generation.
@@ -168,6 +186,44 @@ export function parseServerOsMetadata(
   if (arch) os.arch = arch
 
   return Object.keys(os).length > 0 ? os : undefined
+}
+
+function optionalNonNegativeInt(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
+  if (!Number.isInteger(value) || value < 0) return undefined
+  return value
+}
+
+/** Parse host capacity block from daemon hello / stored metadata. */
+export function parseServerHostInventory(
+  value: unknown,
+): ServerHostInventory | undefined {
+  if (!isRecord(value)) return undefined
+  const inventory: ServerHostInventory = {}
+  const cpuCores = optionalNonNegativeInt(value.cpuCores)
+  // Reject zero cores — that is never a real online CPU count.
+  if (cpuCores !== undefined && cpuCores > 0) inventory.cpuCores = cpuCores
+  const memoryTotalBytes = optionalNonNegativeInt(value.memoryTotalBytes)
+  if (memoryTotalBytes !== undefined && memoryTotalBytes > 0) {
+    inventory.memoryTotalBytes = memoryTotalBytes
+  }
+  const swapTotalBytes = optionalNonNegativeInt(value.swapTotalBytes)
+  // 0 is a valid SwapTotal (no swap).
+  if (swapTotalBytes !== undefined) inventory.swapTotalBytes = swapTotalBytes
+  return Object.keys(inventory).length > 0 ? inventory : undefined
+}
+
+export function serverHostInventoryEquals(
+  a: ServerHostInventory | null | undefined,
+  b: ServerHostInventory | null | undefined,
+): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+  return (
+    a.cpuCores === b.cpuCores &&
+    a.memoryTotalBytes === b.memoryTotalBytes &&
+    a.swapTotalBytes === b.swapTotalBytes
+  )
 }
 
 function titleCaseWord(word: string): string {

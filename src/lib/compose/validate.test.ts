@@ -3,8 +3,11 @@ import {
   applyValidatedComposeOption,
   assertComposeDocument,
   stripComposePlacementOption,
+  validateComposeDocument,
 } from './validate.ts'
+import { makeComposeTag } from './tags.ts'
 import { emptyComposeDocument } from './types.ts'
+import { yamlToComposeDocument } from './convert.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -48,4 +51,71 @@ test('stripComposePlacementOption ignores non-ComposeDocument compose values', (
 
 test('assertComposeDocument accepts validated empty draft', () => {
   assertEquals(assertComposeDocument(emptyComposeDocument()).data, {})
+})
+
+test('validateComposeDocument accepts tagged services nodes', () => {
+  const document = yamlToComposeDocument(`
+services:
+  web:
+    image: nginx
+    ports: !override
+      - "9000:80"
+  gone: !reset null
+`)
+  const result = validateComposeDocument(document)
+  assertEquals(result.ok, true)
+})
+
+test('validateComposeDocument rejects malformed tag name', () => {
+  const result = validateComposeDocument({
+    version: 1,
+    data: {
+      services: {
+        web: {
+          image: 'nginx',
+          ports: { __turbopanelComposeTag: 'nope', value: [] },
+        },
+      },
+    },
+    presentation: { keyOrder: ['services'], comments: {} },
+  })
+  assertEquals(result.ok, false)
+  if (!result.ok) {
+    assertEquals(
+      result.issues.some((issue) => issue.message.includes('unknown compose tag')),
+      true,
+    )
+  }
+})
+
+test('validateComposeDocument still rejects placement after unwrapping tags', () => {
+  const result = validateComposeDocument({
+    version: 1,
+    data: {
+      'x-turbopanel': makeComposeTag('override', {
+        placement: { server_id: '01989d42-9adb-7e65-bc2e-f38792c53691' },
+      }),
+      services: { web: { image: 'nginx' } },
+    },
+    presentation: { keyOrder: ['x-turbopanel', 'services'], comments: {} },
+  })
+  assertEquals(result.ok, false)
+  if (!result.ok) {
+    assertEquals(
+      result.issues.some((issue) => issue.path === 'x-turbopanel.placement'),
+      true,
+    )
+  }
+})
+
+test('validateComposeDocument layer overlay suppresses base tag advisory on lint', () => {
+  const document = yamlToComposeDocument(`
+services:
+  web:
+    image: nginx
+    ports: !override
+      - "9000:80"
+`)
+  assertEquals(validateComposeDocument(document, { layer: 'overlay' }).ok, true)
+  assertEquals(validateComposeDocument(document, { layer: 'base' }).ok, true)
 })

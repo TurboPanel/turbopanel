@@ -6,6 +6,7 @@ import {
   type Scalar,
   type YAMLMap,
 } from 'yaml'
+import { COMPOSE_YAML_OPTIONS } from './tags.ts'
 import { TURBOPANEL_SERVICE_EXTENSION_KEY } from './service-kind.ts'
 
 export type ComposeLintLevel = 'error' | 'warning'
@@ -17,6 +18,20 @@ export type ComposeLintIssue = {
   path: string
   /** 1-based source line, when it can be resolved from the YAML. */
   line?: number
+  /**
+   * When false, never blocks save even if the level is `warning`/`error`.
+   * Used for advisory-only tags in the base layer.
+   */
+  blocking?: false
+}
+
+export type ComposeLintOptions = {
+  /**
+   * Layer role for tag semantics. Defaults to `base` (existing zero-arg calls
+   * unchanged). Tags only take effect in an overlay; on base they emit a
+   * non-blocking advisory warning.
+   */
+  layer?: 'base' | 'overlay'
 }
 
 /** Top-level Compose Specification keys. `x-*` extensions are always allowed. */
@@ -127,6 +142,9 @@ const DRAFT_ALLOWED_LINT_MESSAGES = new Set([
   'No services defined',
 ])
 
+const BASE_LAYER_TAG_ADVISORY =
+  '!reset / !override only take effect in an overlay compose file'
+
 function isExtensionKey(key: string): boolean {
   return key.startsWith('x-')
 }
@@ -197,6 +215,13 @@ function scalarString(node: Node | null | undefined): string | null {
   return typeof value === 'string' ? value : null
 }
 
+/** True when the YAML node carries Compose Spec `!reset` / `!override`. */
+function isTaggedNode(node: Node | null | undefined): boolean {
+  if (!node || typeof node !== 'object') return false
+  const tag = (node as { tag?: string }).tag
+  return tag === '!reset' || tag === '!override'
+}
+
 /** True when an `image` key is present but empty/missing (not a real image ref). */
 function isEmptyImageValue(node: Node | null | undefined): boolean {
   if (!node || typeof node !== 'object' || !('value' in node)) return false
@@ -217,14 +242,114 @@ function serviceIsTraditionalWeb(valueNode: YAMLMap): boolean {
   return false
 }
 
+function pushBaseTagAdvisory(
+  node: Node | null | undefined,
+  path: string,
+  layer: 'base' | 'overlay',
+  lineCounter: LineCounter,
+  issues: ComposeLintIssue[],
+): void {
+  if (layer !== 'base' || !isTaggedNode(node)) return
+  issues.push({
+    level: 'warning',
+    message: BASE_LAYER_TAG_ADVISORY,
+    path,
+    line: nodeLine(node, lineCounter),
+    blocking: false,
+  })
+}
+
+/**
+ * Walk a value tree and emit base-layer tag advisories; skip unknown-key walks
+ * inside tagged sub-trees (a tagged node is intentional, not a typo).
+ */
+function walkTaggedAdvisories(
+  node: Node | null | undefined,
+  path: string,
+  layer: 'base' | 'overlay',
+  lineCounter: LineCounter,
+  issues: ComposeLintIssue[],
+): void {
+  if (!node || typeof node !== 'object') return
+  if (isTaggedNode(node)) {
+    pushBaseTagAdvisory(node, path, layer, lineCounter, issues)
+    return
+  }
+  if (!isMap(node)) return
+  for (const item of node.items) {
+    const key = stringKey(item.key)
+    if (key === null) continue
+    const childPath = path ? `${path}.${key}` : key
+    walkTaggedAdvisories(
+      item.value as Node | null | undefined,
+      childPath,
+      layer,
+      lineCounter,
+      issues,
+    )
+  }
+}
+
+/** Whether a service field lint pass found an `image` / `build` key. */
+type ServiceFieldPresence = { hasImage: boolean; hasBuild: boolean }
+
+/**
+ * Lint a single service field (unknown-key check + nested tag advisories) and
+ * report whether it counts toward the service's `image`/`build` requirement.
+ */
+function lintServiceField(
+  servicePath: string,
+  key: string,
+  keyNode: Node | null | undefined,
+  valueNode: Node | null | undefined,
+  layer: 'base' | 'overlay',
+  lineCounter: LineCounter,
+  issues: ComposeLintIssue[],
+): ServiceFieldPresence {
+  const fieldPath = `${servicePath}.${key}`
+
+  // Tagged subtree is intentional — skip unknown-key checks inside it. Tagged
+  // image/build fields still count as present for the structural requirement
+  // (an override still supplies a value; a reset is an explicit author choice).
+  if (isTaggedNode(valueNode)) {
+    pushBaseTagAdvisory(valueNode, fieldPath, layer, lineCounter, issues)
+    return { hasImage: key === 'image', hasBuild: key === 'build' }
+  }
+
+  const hasImage = key === 'image' && !isEmptyImageValue(valueNode)
+  const hasBuild = key === 'build'
+
+  if (!SERVICE_KEYS.has(key) && !isExtensionKey(key)) {
+    issues.push({
+      level: 'warning',
+      message: unknownKeyMessage(key, 'service', SERVICE_KEYS),
+      path: fieldPath,
+      line: nodeLine(keyNode, lineCounter),
+    })
+  } else {
+    // Nested advisories (e.g. healthcheck.test tagged).
+    walkTaggedAdvisories(valueNode, fieldPath, layer, lineCounter, issues)
+  }
+
+  return { hasImage, hasBuild }
+}
+
 function lintService(
   name: string,
   valueNode: Node | null | undefined,
   keyLine: number | undefined,
   lineCounter: LineCounter,
+  layer: 'base' | 'overlay',
   issues: ComposeLintIssue[],
 ): void {
   const path = `services.${name}`
+
+  // Whole service body tagged — skip structural checks; still advisory on base.
+  if (isTaggedNode(valueNode)) {
+    pushBaseTagAdvisory(valueNode, path, layer, lineCounter, issues)
+    return
+  }
+
   if (!isMap(valueNode)) {
     issues.push({
       level: 'error',
@@ -240,18 +365,17 @@ function lintService(
   for (const item of valueNode.items) {
     const key = stringKey(item.key)
     if (key === null) continue
-    if (key === 'image' && !isEmptyImageValue(item.value as Node)) {
-      hasImage = true
-    }
-    if (key === 'build') hasBuild = true
-    if (!SERVICE_KEYS.has(key) && !isExtensionKey(key)) {
-      issues.push({
-        level: 'warning',
-        message: unknownKeyMessage(key, 'service', SERVICE_KEYS),
-        path: `${path}.${key}`,
-        line: nodeLine(item.key as Node, lineCounter),
-      })
-    }
+    const presence = lintServiceField(
+      path,
+      key,
+      item.key as Node,
+      item.value as Node | null | undefined,
+      layer,
+      lineCounter,
+      issues,
+    )
+    hasImage = hasImage || presence.hasImage
+    hasBuild = hasBuild || presence.hasBuild
   }
 
   const traditionalWeb = serviceIsTraditionalWeb(valueNode)
@@ -269,8 +393,14 @@ function lintServices(
   servicesNode: Node | null | undefined,
   servicesKeyLine: number | undefined,
   lineCounter: LineCounter,
+  layer: 'base' | 'overlay',
   issues: ComposeLintIssue[],
 ): void {
+  if (isTaggedNode(servicesNode)) {
+    pushBaseTagAdvisory(servicesNode, 'services', layer, lineCounter, issues)
+    return
+  }
+
   if (!isMap(servicesNode)) {
     issues.push({
       level: 'error',
@@ -299,6 +429,7 @@ function lintServices(
       item.value as Node | null | undefined,
       nodeLine(item.key as Node, lineCounter),
       lineCounter,
+      layer,
       issues,
     )
   }
@@ -307,12 +438,19 @@ function lintServices(
 function lintTopLevel(
   root: YAMLMap,
   lineCounter: LineCounter,
+  layer: 'base' | 'overlay',
   issues: ComposeLintIssue[],
 ): void {
   let servicesItem: (typeof root.items)[number] | null = null
   for (const item of root.items) {
     const key = stringKey(item.key)
     if (key === null) continue
+    const valueNode = item.value as Node | null | undefined
+    if (isTaggedNode(valueNode)) {
+      pushBaseTagAdvisory(valueNode, key, layer, lineCounter, issues)
+      if (key === 'services') servicesItem = item
+      continue
+    }
     if (key === 'services') {
       servicesItem = item
       continue
@@ -324,6 +462,8 @@ function lintTopLevel(
         path: key,
         line: nodeLine(item.key as Node, lineCounter),
       })
+    } else {
+      walkTaggedAdvisories(valueNode, key, layer, lineCounter, issues)
     }
   }
 
@@ -340,6 +480,7 @@ function lintTopLevel(
     servicesItem.value as Node | null | undefined,
     nodeLine(servicesItem.key as Node, lineCounter),
     lineCounter,
+    layer,
     issues,
   )
 }
@@ -362,12 +503,20 @@ function compareLintIssues(a: ComposeLintIssue, b: ComposeLintIssue): number {
  * services missing image/build). Returns an empty list for empty input. Issues
  * are ordered by line number.
  */
-export function lintComposeYaml(source: string): ComposeLintIssue[] {
+export function lintComposeYaml(
+  source: string,
+  options?: ComposeLintOptions,
+): ComposeLintIssue[] {
+  const layer = options?.layer ?? 'base'
   const trimmed = source.trim()
   if (!trimmed) return []
 
   const lineCounter = new LineCounter()
-  const doc = parseDocument(source, { prettyErrors: true, lineCounter })
+  const doc = parseDocument(source, {
+    prettyErrors: true,
+    lineCounter,
+    ...COMPOSE_YAML_OPTIONS,
+  })
 
   if (doc.errors.length > 0) {
     return doc.errors
@@ -393,15 +542,20 @@ export function lintComposeYaml(source: string): ComposeLintIssue[] {
   }
 
   const issues: ComposeLintIssue[] = []
-  lintTopLevel(root, lineCounter, issues)
+  lintTopLevel(root, lineCounter, layer, issues)
   return issues.sort(compareLintIssues)
 }
 
 /**
- * Issues that must fail a save (everything except empty-draft warnings).
+ * Issues that must fail a save (everything except empty-draft warnings and
+ * explicitly non-blocking advisories).
  */
 export function blockingComposeLintIssues(
   issues: readonly ComposeLintIssue[],
 ): ComposeLintIssue[] {
-  return issues.filter((issue) => !DRAFT_ALLOWED_LINT_MESSAGES.has(issue.message))
+  return issues.filter(
+    (issue) =>
+      issue.blocking !== false &&
+      !DRAFT_ALLOWED_LINT_MESSAGES.has(issue.message),
+  )
 }

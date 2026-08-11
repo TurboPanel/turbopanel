@@ -26,6 +26,7 @@ import {
 import type { DerivedSecretsConfig } from '../authn/secrets.ts'
 import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
 import type {
+  EnvironmentDeployComposeFile,
   EnvironmentDeployHosting,
   EnvironmentDeployIngressService,
   EnvironmentDeployPrincipalMaterial,
@@ -566,6 +567,7 @@ async function enqueueDeployCommand(
     organizationId: string
     projectName: string
     composeYaml: string
+    composeFiles: EnvironmentDeployComposeFile[]
     hostings: DeployHostingPayload[]
     traditionalWebSites: EnvironmentDeployTraditionalWebSite[]
     ingressServices: EnvironmentDeployIngressService[]
@@ -591,6 +593,7 @@ async function enqueueDeployCommand(
       organizationId: params.organizationId,
       projectName: params.projectName,
       composeYaml: params.composeYaml,
+      composeFiles: params.composeFiles,
       hostings: params.hostings,
       ...(params.traditionalWebSites.length > 0
         ? { traditionalWebSites: params.traditionalWebSites }
@@ -733,6 +736,7 @@ export function registerEnvironmentDeployPreviewRoutes(
     return c.json({
       ok: true as const,
       composeYaml: prepared.composeYaml,
+      composeFiles: prepared.composeFiles,
       projectName,
       containers: buildDeployPreviewContainers({
         appContainers: prepared.containers,
@@ -843,6 +847,7 @@ export function registerEnvironmentDeployRoutes(
       organizationId: auth.organizationId,
       projectName,
       composeYaml: prepared.composeYaml,
+      composeFiles: prepared.composeFiles,
       hostings,
       traditionalWebSites,
       ingressServices: prepared.ingressServices,

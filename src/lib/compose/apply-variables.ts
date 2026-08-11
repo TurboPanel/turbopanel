@@ -43,7 +43,38 @@ function formatEnvValue(entry: DeployVariableEntry): string {
   return entry.isLiteral ? escapeLiteralComposeValue(trimmed) : trimmed
 }
 
+/**
+ * Parse one Compose list-form environment entry (`KEY=value`, `KEY:value`, or
+ * bare `KEY`). Separator is the first `=` or `:` (Compose Spec duality).
+ * Bare keys map to `''` so they remain in the string map used for injection.
+ */
+function parseListEnvEntry(item: string): { key: string; value: string } {
+  const eq = item.indexOf('=')
+  const colon = item.indexOf(':')
+  let sep = -1
+  if (eq >= 0 && colon >= 0) sep = Math.min(eq, colon)
+  else if (eq >= 0) sep = eq
+  else if (colon >= 0) sep = colon
+  if (sep < 0) return { key: item, value: '' }
+  return { key: item.slice(0, sep), value: item.slice(sep + 1) }
+}
+
+/**
+ * Read mapping-form or list-form Compose `environment` / `build.args` into a
+ * string map. List form (`KEY=value` / `KEY:value` / bare `KEY`) is normalized
+ * so platform injection preserves user entries instead of dropping them.
+ * Mapping form is unchanged (string values only).
+ */
 function readStringEnvMap(value: unknown): Record<string, string> {
+  if (Array.isArray(value)) {
+    const out: Record<string, string> = {}
+    for (const item of value) {
+      if (typeof item !== 'string') continue
+      const { key, value: envValue } = parseListEnvEntry(item)
+      out[key] = envValue
+    }
+    return out
+  }
   if (!isRecord(value)) return {}
   const out: Record<string, string> = {}
   for (const [key, envValue] of Object.entries(value)) {

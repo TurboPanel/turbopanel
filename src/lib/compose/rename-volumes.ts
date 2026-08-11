@@ -4,10 +4,32 @@
  * Pure — leaves bind sources, anonymous mounts, and unlisted keys alone.
  */
 
+import {
+  composeTagOf,
+  isComposeTaggedValue,
+  makeComposeTag,
+} from './tags.ts'
 import type { ComposeDocument } from './types.ts'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Apply `map` to a plain value, or to the payload of a `!reset` / `!override`
+ * sentinel and rewrap with the same tag (per-layer transforms must preserve
+ * tags for later overlay emission).
+ */
+function mapThroughTag(
+  value: unknown,
+  map: (inner: unknown) => unknown,
+): unknown {
+  if (isComposeTaggedValue(value)) {
+    const tag = composeTagOf(value)
+    if (tag === null) return value
+    return makeComposeTag(tag, map(value.value))
+  }
+  return map(value)
 }
 
 /** True for bind-style short sources that must not be renamed as named volumes. */
@@ -45,22 +67,74 @@ function renameLongVolumeRef(
   return { ...mount, source: next }
 }
 
-function renameServiceVolumes(
-  service: Record<string, unknown>,
+function renameVolumeEntries(
+  volumes: unknown,
   renames: ReadonlyMap<string, string>,
-): Record<string, unknown> {
-  if (!Array.isArray(service.volumes)) return service
-  const volumes = service.volumes.map((entry) => {
+): unknown {
+  if (!Array.isArray(volumes)) return volumes
+  return volumes.map((entry) => {
     if (typeof entry === 'string') return renameShortVolumeRef(entry, renames)
     if (isRecord(entry)) return renameLongVolumeRef(entry, renames)
     return entry
   })
-  return { ...service, volumes }
+}
+
+function renameServiceVolumes(
+  service: Record<string, unknown>,
+  renames: ReadonlyMap<string, string>,
+): Record<string, unknown> {
+  if (!('volumes' in service)) return service
+  return {
+    ...service,
+    volumes: mapThroughTag(service.volumes, (inner) =>
+      renameVolumeEntries(inner, renames),
+    ),
+  }
+}
+
+function renameServiceValue(
+  raw: unknown,
+  renames: ReadonlyMap<string, string>,
+): unknown {
+  return mapThroughTag(raw, (inner) => {
+    if (!isRecord(inner)) return inner
+    return renameServiceVolumes(inner, renames)
+  })
+}
+
+function renameTopLevelVolumes(
+  volumes: unknown,
+  renames: ReadonlyMap<string, string>,
+): unknown {
+  return mapThroughTag(volumes, (inner) => {
+    if (!isRecord(inner)) return inner
+    const nextVolumes: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(inner)) {
+      const nextKey = renames.get(key) ?? key
+      nextVolumes[nextKey] = value
+    }
+    return nextVolumes
+  })
+}
+
+function renameServicesMapping(
+  services: unknown,
+  renames: ReadonlyMap<string, string>,
+): unknown {
+  return mapThroughTag(services, (inner) => {
+    if (!isRecord(inner)) return inner
+    const nextServices: Record<string, unknown> = {}
+    for (const [name, raw] of Object.entries(inner)) {
+      nextServices[name] = renameServiceValue(raw, renames)
+    }
+    return nextServices
+  })
 }
 
 /**
  * Rewrite top-level `volumes:` keys and every service `volumes:` reference
  * (short `src:dst[:opts]` and long `{ type: volume, source }` syntax).
+ * Looks through `!override` / `!reset` sentinels and rewraps them.
  */
 export function renameComposeVolumes(
   document: ComposeDocument,
@@ -70,23 +144,12 @@ export function renameComposeVolumes(
 
   const data = { ...document.data }
 
-  if (isRecord(data.volumes)) {
-    const nextVolumes: Record<string, unknown> = {}
-    for (const [key, value] of Object.entries(data.volumes)) {
-      const nextKey = renames.get(key) ?? key
-      nextVolumes[nextKey] = value
-    }
-    data.volumes = nextVolumes
+  if (data.volumes !== undefined) {
+    data.volumes = renameTopLevelVolumes(data.volumes, renames)
   }
 
-  if (isRecord(data.services)) {
-    const nextServices: Record<string, unknown> = {}
-    for (const [name, raw] of Object.entries(data.services)) {
-      nextServices[name] = isRecord(raw)
-        ? renameServiceVolumes(raw, renames)
-        : raw
-    }
-    data.services = nextServices
+  if (data.services !== undefined) {
+    data.services = renameServicesMapping(data.services, renames)
   }
 
   return {

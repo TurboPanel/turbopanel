@@ -8,6 +8,7 @@ import {
   isValidNtpServer,
   parseCommandPayload,
   parseCommandResult,
+  parseDeployComposeFiles,
   parseEnvironmentDeployPayload,
   parseEnvironmentDeployResult,
   parseEnvironmentLifecyclePayload,
@@ -2655,6 +2656,211 @@ test('parseEnvironmentDeployPayload parses rich hostings and optional material',
   assertEquals(result.storageMaterial?.[0]?.volumeName, '01936b3e-8c7a-7b2d-a1f0-123456789abc')
   assertEquals(result.serviceHooks?.[0]?.preDeployCommand, '/bin/true')
   assertEquals(result.ingressServices?.[0]?.containerName, `${INGRESS_SERVICE_ID}-in`)
+})
+
+test('parseEnvironmentDeployPayload round-trips composeFiles in caller order', () => {
+  const composeFiles = [
+    {
+      filename: 'docker-compose.yml',
+      role: 'project' as const,
+      content: 'services:\n  web:\n    image: nginx\n',
+    },
+    {
+      filename: 'docker-compose.prod.yml',
+      role: 'environment' as const,
+      source: 'inline' as const,
+      content: 'services:\n  web:\n    restart: always\n',
+    },
+    {
+      filename: 'docker-compose.turbopanel.yml',
+      role: 'platform' as const,
+      content: 'services:\n  web:\n    container_name: abc\n',
+    },
+  ]
+  const result = parseEnvironmentDeployPayload({
+    ...BASE_ENVIRONMENT_DEPLOY,
+    composeFiles,
+  })
+  assertEquals(result.composeFiles, composeFiles)
+  // Optional source omitted stays omitted
+  assertEquals(result.composeFiles?.[0]?.source, undefined)
+  // Order preserved (must not sort by filename)
+  assertEquals(
+    result.composeFiles?.map((f) => f.filename),
+    [
+      'docker-compose.yml',
+      'docker-compose.prod.yml',
+      'docker-compose.turbopanel.yml',
+    ],
+  )
+})
+
+test('parseEnvironmentDeployPayload accepts legacy payloads without composeFiles', () => {
+  const result = parseEnvironmentDeployPayload(BASE_ENVIRONMENT_DEPLOY)
+  assertEquals(result.composeFiles, undefined)
+})
+
+test('parseEnvironmentDeployPayload parses repository source with valid path', () => {
+  const result = parseEnvironmentDeployPayload({
+    ...BASE_ENVIRONMENT_DEPLOY,
+    composeFiles: [
+      {
+        filename: 'docker-compose.yml',
+        role: 'project' as const,
+        source: 'repository' as const,
+        path: 'deploy/docker-compose.yml',
+        content: 'services:\n  web:\n    image: nginx\n',
+      },
+    ],
+  })
+  assertEquals(result.composeFiles?.[0]?.source, 'repository')
+  assertEquals(result.composeFiles?.[0]?.path, 'deploy/docker-compose.yml')
+})
+
+test('parseDeployComposeFiles rejects a path with traversal or a leading slash', () => {
+  assertThrows(
+    () =>
+      parseDeployComposeFiles([
+        {
+          filename: 'docker-compose.yml',
+          role: 'project',
+          source: 'repository',
+          path: '../evil/docker-compose.yml',
+          content: 'a',
+        },
+      ]),
+    Error,
+    'Invalid environment.deploy payload',
+  )
+  assertThrows(
+    () =>
+      parseDeployComposeFiles([
+        {
+          filename: 'docker-compose.yml',
+          role: 'project',
+          source: 'repository',
+          path: '/etc/docker-compose.yml',
+          content: 'a',
+        },
+      ]),
+    Error,
+    'Invalid environment.deploy payload',
+  )
+  assertThrows(
+    () =>
+      parseDeployComposeFiles([
+        {
+          filename: 'docker-compose.yml',
+          role: 'project',
+          source: 'repository',
+          path: '',
+          content: 'a',
+        },
+      ]),
+    Error,
+    'Invalid environment.deploy payload',
+  )
+})
+
+test('parseDeployComposeFiles rejects invalid entries', () => {
+  assertThrows(
+    () => parseDeployComposeFiles([]),
+    Error,
+    'Invalid environment.deploy payload',
+  )
+  assertThrows(
+    () =>
+      parseDeployComposeFiles([
+        { filename: '../evil.yml', role: 'project', content: 'x' },
+      ]),
+    Error,
+    'Invalid environment.deploy payload',
+  )
+  assertThrows(
+    () =>
+      parseDeployComposeFiles([
+        { filename: 'nested/file.yml', role: 'project', content: 'x' },
+      ]),
+    Error,
+    'Invalid environment.deploy payload',
+  )
+  assertThrows(
+    () =>
+      parseDeployComposeFiles([
+        { filename: 'compose.txt', role: 'project', content: 'x' },
+      ]),
+    Error,
+    'Invalid environment.deploy payload',
+  )
+  assertThrows(
+    () =>
+      parseDeployComposeFiles([
+        { filename: 'docker-compose.yml', role: 'project', content: 'a' },
+        { filename: 'docker-compose.yml', role: 'environment', content: 'b' },
+      ]),
+    Error,
+    'Invalid environment.deploy payload',
+  )
+  assertThrows(
+    () =>
+      parseDeployComposeFiles([
+        { filename: 'docker-compose.yml', role: 'unknown', content: 'a' },
+      ]),
+    Error,
+    'Invalid environment.deploy payload',
+  )
+  assertThrows(
+    () =>
+      parseDeployComposeFiles([
+        {
+          filename: 'docker-compose.yml',
+          role: 'project',
+          source: 'git',
+          content: 'a',
+        },
+      ]),
+    Error,
+    'Invalid environment.deploy payload',
+  )
+  assertThrows(
+    () =>
+      parseDeployComposeFiles([
+        { filename: 'docker-compose.yml', role: 'project', content: '' },
+      ]),
+    Error,
+    'Invalid environment.deploy payload',
+  )
+  assertThrows(
+    () =>
+      parseDeployComposeFiles([
+        {
+          filename: 'docker-compose.turbopanel.yml',
+          role: 'platform',
+          content: 'p',
+        },
+        { filename: 'docker-compose.yml', role: 'project', content: 'a' },
+      ]),
+    Error,
+    'Invalid environment.deploy payload',
+  )
+  assertThrows(
+    () =>
+      parseDeployComposeFiles([
+        { filename: 'docker-compose.yml', role: 'project', content: 'a' },
+        {
+          filename: 'docker-compose.platform.yml',
+          role: 'platform',
+          content: 'p1',
+        },
+        {
+          filename: 'docker-compose.turbopanel.yml',
+          role: 'platform',
+          content: 'p2',
+        },
+      ]),
+    Error,
+    'Invalid environment.deploy payload',
+  )
 })
 
 test('parseEnvironmentDeployPayload rejects invalid hosting protocol and bindAddress', () => {

@@ -7,11 +7,13 @@ import {
   formatServerOsDisplay,
   parseServerOptions,
   parseServerOsMetadata,
+  parseServerHostInventory,
   parseServerTimeSync,
   resolveEffectiveServerTimezone,
   resolveServerResponseTimezone,
   resolveServerOsLogoKey,
   serverOsMetadataEquals,
+  serverHostInventoryEquals,
   serverTimeSyncEquals,
 } from './server-metadata.ts'
 
@@ -123,6 +125,31 @@ test('parseServerOsMetadata accepts daemon hello os blocks', () => {
   )
   assertEquals(parseServerOsMetadata({ family: 'solaris' }), undefined)
   assertEquals(parseServerOsMetadata('nope'), undefined)
+})
+
+test('parseServerHostInventory accepts capacity totals', () => {
+  assertEquals(
+    parseServerHostInventory({
+      cpuCores: 8,
+      memoryTotalBytes: 16_384_000_000,
+      swapTotalBytes: 0,
+    }),
+    {
+      cpuCores: 8,
+      memoryTotalBytes: 16_384_000_000,
+      swapTotalBytes: 0,
+    },
+  )
+  assertEquals(parseServerHostInventory({ cpuCores: 0 }), undefined)
+  assertEquals(parseServerHostInventory({ memoryTotalBytes: -1 }), undefined)
+  assertEquals(parseServerHostInventory(null), undefined)
+})
+
+test('serverHostInventoryEquals compares field-wise', () => {
+  const a = { cpuCores: 4, memoryTotalBytes: 100, swapTotalBytes: 0 }
+  assertEquals(serverHostInventoryEquals(a, { ...a }), true)
+  assertEquals(serverHostInventoryEquals(a, { ...a, cpuCores: 8 }), false)
+  assertEquals(serverHostInventoryEquals(a, null), false)
 })
 
 test('serverOsMetadataEquals compares field-wise including variant', () => {

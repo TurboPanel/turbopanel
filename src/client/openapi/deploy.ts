@@ -44,15 +44,58 @@ export const deploySchemas = {
       details: { type: 'object', additionalProperties: true },
     },
   },
+  DeployPreviewComposeFile: {
+    type: 'object',
+    required: ['filename', 'role', 'content'],
+    properties: {
+      filename: {
+        type: 'string',
+        description: 'Basename only (`docker-compose.yml`, …) — safe for host paths',
+      },
+      role: {
+        type: 'string',
+        enum: ['project', 'environment', 'platform'],
+      },
+      source: {
+        type: 'string',
+        enum: ['inline', 'repository'],
+        description:
+          'Provenance of this layer (`EnvironmentDeployComposeFile.source`); only `inline` is emitted today. `repository` is reserved for repository-backed layers.',
+      },
+      path: {
+        type: 'string',
+        description:
+          'Repo-relative original location when `source` is `repository` (`EnvironmentDeployComposeFile.path`). Unused until repository-pinned compose files are supported; optional so preview matches the deploy wire shape without another contract widen.',
+      },
+      content: {
+        type: 'string',
+        description: 'Runtime compose YAML body for this layer',
+      },
+    },
+  },
   DeployPreviewResponse: {
     type: 'object',
-    required: ['ok', 'composeYaml', 'projectName', 'containers', 'volumes', 'warnings'],
+    required: [
+      'ok',
+      'composeYaml',
+      'composeFiles',
+      'projectName',
+      'containers',
+      'volumes',
+      'warnings',
+    ],
     properties: {
       ok: { type: 'boolean', const: true },
       composeYaml: {
         type: 'string',
         description:
-          'Exact runtime compose YAML prepare would send the daemon; secret values redacted',
+          'Merged effective runtime compose for display/preview (and legacy single-file fallback). Secret values redacted. The ordered `-f` chain the daemon runs is `composeFiles`.',
+      },
+      composeFiles: {
+        type: 'array',
+        description:
+          'Ordered `docker compose -f` chain (project → environment → platform last). This is what deploy enqueues for multi-file-aware daemons.',
+        items: { $ref: '#/components/schemas/DeployPreviewComposeFile' },
       },
       projectName: {
         type: 'string',
@@ -185,7 +228,7 @@ export const deployPaths = {
       tags: ['Environments'],
       summary: 'Preview the exact compose document that deploy would send',
       description:
-        'Runs the same prepareDeployCompose path as deploy (including idempotent container allocation and volume registration) but skips daemon sealing. Secret-backed variable values are redacted. Prepare gates surface as warnings so the preview always renders.',
+        'Runs the same prepareDeployCompose path as deploy (including idempotent container allocation and volume registration) but skips daemon sealing. Secret-backed variable values are redacted. `composeYaml` is the merged effective view for display; `composeFiles` is the ordered `-f` chain the daemon runs. Prepare gates surface as warnings so the preview always renders.',
       parameters: [
         {
           name: 'id',

@@ -1,5 +1,6 @@
 import type { ServerAddresses } from "../../server-addresses.ts";
 import type {
+  ServerHostInventory,
   ServerOsMetadata,
   ServerTimeSync,
 } from "../../lib/db/server-metadata.ts";
@@ -44,6 +45,11 @@ export type DaemonMessage =
     machineKey?: string;
     /** Host OS from `/etc/os-release` (+ Deno build); persisted to `server.metadata.os`. */
     os?: ServerOsMetadata;
+    /**
+     * Host capacity (cpu cores / RAM / swap totals) from `/proc`;
+     * persisted to `server.metadata.inventory`.
+     */
+    inventory?: ServerHostInventory;
     /** Host timezone + NTP state; persisted to `server.metadata.timeSync`. */
     timeSync?: ServerTimeSync;
     /** Host interface addresses; persisted to `server.metadata.addresses`. */

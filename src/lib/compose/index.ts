@@ -16,7 +16,36 @@ export {
   composeDocumentToYaml,
   yamlToComposeDocument,
 } from './convert.ts'
-export { mergeComposeOverlay } from './merge.ts'
+export { mergeComposeDocuments, mergeComposeOverlay } from './merge.ts'
+export {
+  COMPOSE_CUSTOM_TAGS,
+  COMPOSE_TAG_KEY,
+  composeTagOf,
+  isComposeTaggedValue,
+  makeComposeTag,
+  resolveComposeTags,
+  unwrapComposeTag,
+  type ComposeTagName,
+  type ComposeTaggedValue,
+} from './tags.ts'
+export {
+  collectTraditionalWebServiceNames,
+  mergeComposeLayers,
+  renameComposeVolumesInLayer,
+  stripComposePlacementFromLayer,
+  stripTraditionalWebServicesFromLayer,
+  type ComposeLayer,
+  type ComposeLayerRole,
+} from './layers.ts'
+export { stripComposeTurbopanelExtensions } from './extensions.ts'
+export { renameComposeVolumes } from './rename-volumes.ts'
+export { expandComposeServiceInstances } from './expand-instances.ts'
+export {
+  collectComposeExternalDockerNetworkNames,
+  collectServiceComposeNetworkKeys,
+  pruneUnreferencedComposeNetworks,
+  readComposeExternalDockerNetworkName,
+} from './docker-external-networks.ts'
 export {
   applyValidatedComposeOption,
   assertComposeDocument,

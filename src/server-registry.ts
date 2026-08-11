@@ -9,11 +9,14 @@ import {
 import {
   parseServerOsMetadata,
   parseServerTimeSync,
+  parseServerHostInventory,
   serverOsMetadataEquals,
   serverTimeSyncEquals,
+  serverHostInventoryEquals,
   type ServerMetadata,
   type ServerOsMetadata,
   type ServerTimeSync,
+  type ServerHostInventory,
 } from './lib/db/server-metadata.ts'
 import { license, server } from './lib/db/schema.ts'
 import { normalizeMachineKey } from './lib/machine-key.ts'
@@ -30,6 +33,7 @@ export type ServerHelloIdentity = {
   licenseId?: string
   licenseToken?: string
   os?: ServerOsMetadata
+  inventory?: ServerHostInventory
   timeSync?: ServerTimeSync
   addresses?: ServerAddresses
 }
@@ -38,6 +42,8 @@ function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
   const patch: Partial<ServerMetadata> = {}
   const os = parseServerOsMetadata(identity.os)
   if (os) patch.os = os
+  const inventory = parseServerHostInventory(identity.inventory)
+  if (inventory) patch.inventory = inventory
   const timeSync = parseServerTimeSync(identity.timeSync)
   if (timeSync) {
     patch.timeSync = {
@@ -66,7 +72,7 @@ function identityColumnPatch(identity: ServerHelloIdentity): {
 }
 
 /**
- * Pure merge of os/timeSync/addresses into `server.metadata` — no DB I/O.
+ * Pure merge of os/inventory/timeSync/addresses into `server.metadata` — no DB I/O.
  * Hostname / machineKey are dedicated columns (see {@link touchServerMetadata}).
  * Returns null when nothing would change (idempotent skip).
  */
@@ -74,7 +80,7 @@ export function mergeServerMetadataIdentity(
   current: ServerMetadata | null | undefined,
   identity: Pick<
     ServerHelloIdentity,
-    'hostname' | 'machineKey' | 'os' | 'timeSync' | 'addresses'
+    'hostname' | 'machineKey' | 'os' | 'inventory' | 'timeSync' | 'addresses'
   >,
 ): ServerMetadata | null {
   const patch = metadataPatch(identity)
@@ -86,6 +92,13 @@ export function mergeServerMetadataIdentity(
   let changed = false
   if (patch.os !== undefined && !serverOsMetadataEquals(patch.os, base.os)) {
     next.os = patch.os
+    changed = true
+  }
+  if (
+    patch.inventory !== undefined &&
+    !serverHostInventoryEquals(patch.inventory, base.inventory)
+  ) {
+    next.inventory = patch.inventory
     changed = true
   }
   if (patch.timeSync !== undefined) {
@@ -119,6 +132,46 @@ function nowTs(): string {
   return new Date().toISOString()
 }
 
+/**
+ * Diff identity patch against current metadata for a jsonb || merge.
+ * Only keys that actually change are included so concurrent writers (e.g. geo)
+ * are not wiped.
+ */
+function buildMetadataDelta(
+  base: ServerMetadata | null | undefined,
+  identity: ServerHelloIdentity,
+): Partial<ServerMetadata> {
+  const patch = metadataPatch(identity)
+  const delta: Partial<ServerMetadata> = {}
+  if (
+    patch.os !== undefined &&
+    !serverOsMetadataEquals(patch.os, base?.os)
+  ) {
+    delta.os = patch.os
+  }
+  if (
+    patch.inventory !== undefined &&
+    !serverHostInventoryEquals(patch.inventory, base?.inventory)
+  ) {
+    delta.inventory = patch.inventory
+  }
+  if (patch.timeSync !== undefined) {
+    const mergedTimeSync = { ...base?.timeSync, ...patch.timeSync }
+    if (!serverTimeSyncEquals(mergedTimeSync, base?.timeSync)) {
+      // Persist the deep-merged object so jsonb || replaces the key with the
+      // full fact set (partial command outcomes must not clobber NTP fields).
+      delta.timeSync = mergedTimeSync
+    }
+  }
+  if (
+    patch.addresses !== undefined &&
+    !serverAddressesEquals(patch.addresses, base?.addresses)
+  ) {
+    delta.addresses = patch.addresses
+  }
+  return delta
+}
+
 export async function touchServerMetadata(
   db: Db,
   serverId: string,
@@ -147,31 +200,7 @@ export async function touchServerMetadata(
   )
   if (!metadataChanged && !hostnameChanged && !machineKeyChanged) return
 
-  // Patch only changed metadata keys via jsonb || so a concurrent connect
-  // projection that wrote metadata.geo cannot be wiped by this hello update.
-  const patch = metadataPatch(identity)
-  const delta: Partial<ServerMetadata> = {}
-  if (
-    patch.os !== undefined &&
-    !serverOsMetadataEquals(patch.os, base?.os)
-  ) {
-    delta.os = patch.os
-  }
-  if (patch.timeSync !== undefined) {
-    const mergedTimeSync = { ...base?.timeSync, ...patch.timeSync }
-    if (!serverTimeSyncEquals(mergedTimeSync, base?.timeSync)) {
-      // Persist the deep-merged object so jsonb || replaces the key with the
-      // full fact set (partial command outcomes must not clobber NTP fields).
-      delta.timeSync = mergedTimeSync
-    }
-  }
-  if (
-    patch.addresses !== undefined &&
-    !serverAddressesEquals(patch.addresses, base?.addresses)
-  ) {
-    delta.addresses = patch.addresses
-  }
-
+  const delta = buildMetadataDelta(base, identity)
   const update: Record<string, unknown> = { updatedAt: nowTs() }
   if (hostnameChanged) update.hostname = columns.hostname
   if (machineKeyChanged) update.machineKey = columns.machineKey

@@ -468,6 +468,7 @@ test('GET /environments/:id/deploy-preview returns prepared yaml with warnings f
     const body = await res.json() as {
       ok: boolean
       composeYaml: string
+      composeFiles?: Array<{ filename: string; role: string; content: string }>
       projectName: string
       containers: unknown[]
       volumes: unknown[]
@@ -478,6 +479,8 @@ test('GET /environments/:id/deploy-preview returns prepared yaml with warnings f
     assertEquals(body.containers, [])
     assertEquals(body.volumes, [])
     assertEquals(body.warnings.some((w) => w.code === 'empty_compose'), true)
+    assertEquals(body.composeFiles?.[0]?.role, 'project')
+    assertEquals(body.composeFiles?.[0]?.filename, 'docker-compose.yml')
   })
 })
 
@@ -514,6 +517,12 @@ test('GET /environments/:id/deploy-preview returns containers for a service', as
     const body = await res.json() as {
       ok: boolean
       composeYaml: string
+      composeFiles: Array<{
+        filename: string
+        role: string
+        source?: string
+        content: string
+      }>
       projectName: string
       containers: Array<{
         serviceId: string
@@ -533,6 +542,76 @@ test('GET /environments/:id/deploy-preview returns containers for a service', as
     // uuid naming: docker container_name is the service UUID (obfuscated)
     assertEquals(body.containers[0]!.containerName, body.containers[0]!.serviceId)
     assertEquals(body.composeYaml.includes(`container_name: ${body.containers[0]!.serviceId}`), true)
+
+    // Project file first; blank env overlay omitted; platform last (if injected).
+    assertEquals(body.composeFiles.length >= 1, true)
+    assertEquals(body.composeFiles[0]!.role, 'project')
+    assertEquals(body.composeFiles[0]!.filename, 'docker-compose.yml')
+    assertEquals(
+      body.composeFiles.some((f) => f.role === 'environment'),
+      false,
+    )
+    const last = body.composeFiles[body.composeFiles.length - 1]!
+    if (body.composeFiles.length > 1) {
+      assertEquals(last.role, 'platform')
+      assertEquals(last.filename, 'docker-compose.turbopanel.yml')
+    }
+  })
+})
+
+test('POST /environments/:id/deploy payload carries composeYaml and ordered composeFiles', async () => {
+  await withDeployFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    environmentId,
+    serverId,
+    commandQueue,
+  }) => {
+    await db
+      .update(environment)
+      .set({
+        serverId,
+        name: 'Production',
+        options: { compose: composeWithWebService() },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(environment.id, environmentId))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/environments/${environmentId}/deploy`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    })
+
+    assertEquals(res.status, 200)
+    const body = await res.json() as { ok: boolean; commandId: string }
+    assertEquals(body.ok, true)
+    assertEquals(commandQueue.envelopes.length, 1)
+
+    const [row] = await db
+      .select({ payload: command.payload })
+      .from(command)
+      .where(eq(command.id, body.commandId))
+      .limit(1)
+    const payload = row?.payload as {
+      composeYaml?: string
+      composeFiles?: Array<{ filename: string; role: string; content: string }>
+    }
+    assertEquals(typeof payload.composeYaml, 'string')
+    assertEquals(Array.isArray(payload.composeFiles), true)
+    assertEquals(payload.composeFiles!.length >= 1, true)
+    assertEquals(payload.composeFiles![0]!.role, 'project')
+    const last = payload.composeFiles![payload.composeFiles!.length - 1]!
+    assertEquals(last.role, 'platform')
+    assertEquals(last.filename, 'docker-compose.turbopanel.yml')
   })
 })
 

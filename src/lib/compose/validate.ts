@@ -10,6 +10,11 @@ import {
 } from './placement.ts'
 import { collectServiceTurbopanelValidationIssues } from './service-kind.ts'
 import {
+  COMPOSE_TAG_KEY,
+  isComposeTaggedValue,
+  resolveComposeTags,
+} from './tags.ts'
+import {
   emptyComposeDocument,
   isComposeDocument,
   normalizeCompose,
@@ -27,6 +32,14 @@ export type ComposeValidationResult =
   | { ok: true; document: ComposeDocument }
   | { ok: false; issues: ComposeValidationIssue[] }
 
+export type ComposeValidateOptions = {
+  /**
+   * Layer role for lint tag semantics. Defaults to `base` (existing call sites
+   * unchanged). Overlay prepares later phases can pass `layer: 'overlay'`.
+   */
+  layer?: 'base' | 'overlay'
+}
+
 /**
  * Structural validation for stored / editor compose documents.
  * Validates shape before normalization can hide invalid input.
@@ -36,8 +49,17 @@ export type ComposeValidationResult =
  * After shape checks, runs the same compose linter as the UI editor and rejects
  * blocking issues (unknown keys, services missing image/build, invalid YAML).
  * Intentionally empty values (`null` / `undefined`) become emptyComposeDocument().
+ *
+ * Tagged `services` / `services.<name>` nodes (`!reset` / `!override`) are
+ * structurally valid; placement and service-extension checks run on the
+ * unwrapped view via {@link resolveComposeTags}.
  */
-export function validateComposeDocument(value: unknown): ComposeValidationResult {
+export function validateComposeDocument(
+  value: unknown,
+  options?: ComposeValidateOptions,
+): ComposeValidationResult {
+  const layer = options?.layer ?? 'base'
+
   if (value == null) {
     return { ok: true, document: emptyComposeDocument() }
   }
@@ -55,18 +77,27 @@ export function validateComposeDocument(value: unknown): ComposeValidationResult
   const document = normalizeCompose(value)
   const issues: ComposeValidationIssue[] = []
 
-  if (
-    'services' in document.data &&
-    (typeof document.data.services !== 'object' ||
-      document.data.services === null ||
-      Array.isArray(document.data.services))
-  ) {
-    issues.push({ path: 'services', message: 'services must be a mapping' })
+  collectMalformedTagIssues(document.data, '', issues)
+
+  if ('services' in document.data) {
+    const services = document.data.services
+    if (isComposeTaggedValue(services)) {
+      // Tagged services mapping is intentional; do not require plain mapping.
+    } else if (
+      typeof services !== 'object' ||
+      services === null ||
+      Array.isArray(services)
+    ) {
+      issues.push({ path: 'services', message: 'services must be a mapping' })
+    }
   }
 
-  validateTurbopanelExtension(document.data, issues)
+  // Placement + extension checks on the unwrapped tree so a tagged extension
+  // is still validated once tags are resolved.
+  const unwrappedData = resolveComposeTags(document.data) as Record<string, unknown>
+  validateTurbopanelExtension(unwrappedData, issues)
 
-  const services = document.data.services
+  const services = unwrappedData.services
   if (isPlainMapping(services)) {
     for (const issue of collectServiceTurbopanelValidationIssues(services)) {
       issues.push(issue)
@@ -78,7 +109,7 @@ export function validateComposeDocument(value: unknown): ComposeValidationResult
   }
 
   const lintIssues = blockingComposeLintIssues(
-    lintComposeYaml(composeDocumentToYaml(document)),
+    lintComposeYaml(composeDocumentToYaml(document), { layer }),
   )
   if (lintIssues.length > 0) {
     return {
@@ -97,6 +128,54 @@ export function validateComposeDocument(value: unknown): ComposeValidationResult
 
 function isPlainMapping(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Reject objects that look like tag sentinels but carry an unknown tag name
+ * (guards against hand-crafted JSON / jsonb typos).
+ */
+function collectMalformedTagIssues(
+  value: unknown,
+  path: string,
+  issues: ComposeValidationIssue[],
+): void {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      collectMalformedTagIssues(
+        item,
+        path ? `${path}[${index}]` : `[${index}]`,
+        issues,
+      )
+    })
+    return
+  }
+  if (!isPlainMapping(value)) return
+
+  if (COMPOSE_TAG_KEY in value) {
+    const tagName = value[COMPOSE_TAG_KEY]
+    if (tagName !== 'reset' && tagName !== 'override') {
+      issues.push({
+        path: path || '$',
+        message: `unknown compose tag "${String(tagName)}" (expected reset or override)`,
+      })
+      return
+    }
+    // Well-formed sentinel: walk the inner value only.
+    collectMalformedTagIssues(
+      value.value,
+      path,
+      issues,
+    )
+    return
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    collectMalformedTagIssues(
+      child,
+      path ? `${path}.${key}` : key,
+      issues,
+    )
+  }
 }
 
 function validateTurbopanelExtension(
@@ -134,14 +213,18 @@ export function assertComposeDocument(value: unknown): ComposeDocument {
 /**
  * When `options` includes `compose`, validate and rewrite it in place as a
  * normalized ComposeDocument. Returns false when validation fails.
+ *
+ * Optional `validateOptions.layer` is a seam for later overlay-aware callers;
+ * existing routes in projects/environments routes-helpers stay on the default.
  */
 export function applyValidatedComposeOption(
   options: Record<string, unknown> | null,
+  validateOptions?: ComposeValidateOptions,
 ): { ok: true } | { ok: false; issues: ComposeValidationIssue[] } {
   if (options === null || !('compose' in options)) {
     return { ok: true }
   }
-  const result = validateComposeDocument(options.compose)
+  const result = validateComposeDocument(options.compose, validateOptions)
   if (!result.ok) return result
   options.compose = result.document
   return { ok: true }

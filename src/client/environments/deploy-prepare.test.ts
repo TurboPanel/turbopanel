@@ -24,6 +24,7 @@ import {
   buildServiceRowByCloneName,
   documentForServiceOptions,
   emptyComposePrepareResult,
+  emptyPreparedCompose,
   evaluateHealthCheckGates,
   expansionToRecord,
   extractComposeFromOptions,
@@ -34,6 +35,7 @@ import {
   mergeProjectEnvironmentCompose,
   readHostingProxyFromOptions,
   resolveHostingBindAddress,
+  resolveProjectEnvironmentComposeLayers,
   resolveTraditionalWebSitesForMode,
   resourceLimitPrepareError,
   splitTraditionalWebFromDocument,
@@ -498,6 +500,50 @@ describe('mergeProjectEnvironmentCompose', () => {
     }
     assertEquals(res.status, 400)
     assertEquals(await res.json(), { error: 'Invalid compose document' })
+  })
+})
+
+describe('resolveProjectEnvironmentComposeLayers', () => {
+  it('returns project and environment layers with the given filename', () => {
+    const layers = resolveProjectEnvironmentComposeLayers(
+      { compose: WEB_COMPOSE },
+      { compose: EMPTY_COMPOSE },
+      'docker-compose.staging.yml',
+    )
+    if (layers instanceof Response) {
+      throw new TypeError('expected layers')
+    }
+    assertEquals(layers.map((l) => l.role), ['project', 'environment'])
+    assertEquals(layers[0]!.filename, 'docker-compose.yml')
+    assertEquals(layers[1]!.filename, 'docker-compose.staging.yml')
+  })
+
+  it('returns 400 on invalid documents', async () => {
+    const res = resolveProjectEnvironmentComposeLayers(
+      { compose: 'bad' },
+      { compose: EMPTY_COMPOSE },
+      'docker-compose.env.yml',
+    )
+    if (!(res instanceof Response)) {
+      throw new TypeError('expected Response')
+    }
+    assertEquals(res.status, 400)
+    assertEquals(await res.json(), { error: 'Invalid compose document' })
+  })
+})
+
+describe('emptyPreparedCompose', () => {
+  it('includes a single empty project-role compose file', () => {
+    const prepared = emptyPreparedCompose([])
+    assertEquals(prepared.composeYaml, 'services: {}\n')
+    assertEquals(prepared.composeFiles, [
+      {
+        filename: 'docker-compose.yml',
+        role: 'project',
+        source: 'inline',
+        content: 'services: {}\n',
+      },
+    ])
   })
 })
 
@@ -1015,6 +1061,8 @@ describe('warningFromPrepareError and soft-error absorb', () => {
     }
     assertEquals(preview.warnings[0]?.code, 'empty_compose')
     assertEquals(preview.composeYaml, 'services: {}\n')
+    assertEquals(preview.composeFiles[0]?.role, 'project')
+    assertEquals(preview.composeFiles[0]?.content, 'services: {}\n')
   })
 })
 
@@ -1294,6 +1342,12 @@ describe('resolveTraditionalWebSitesForMode and toPreparedDeployResult', () => {
     const expansion = new Map([['web', ['web']]])
     const prepared = toPreparedDeployResult('preview', {
       composeYaml: 'services: {}\n',
+      composeFiles: [{
+        filename: 'docker-compose.yml',
+        role: 'project',
+        source: 'inline',
+        content: 'services: {}\n',
+      }],
       hooks: [],
       variableMaterial: [{
         key: 'SECRET',
@@ -1313,6 +1367,7 @@ describe('resolveTraditionalWebSitesForMode and toPreparedDeployResult', () => {
       principalMaterial: [],
       traditionalWebSites: [],
       dockerExternalNetworks: [],
+      managedNetworkServices: [],
       containers: [],
       ingressServices: [],
       expansion,
@@ -1322,11 +1377,17 @@ describe('resolveTraditionalWebSitesForMode and toPreparedDeployResult', () => {
     assertEquals(prepared.variableMaterial, [])
     assertEquals(prepared.storageMaterial, [])
     assertEquals(prepared.composeServiceExpansion, { web: ['web'] })
+    assertEquals(prepared.composeFiles.length, 1)
   })
 
   it('keeps materials for deploy mode', () => {
     const prepared = toPreparedDeployResult('deploy', {
       composeYaml: 'services: {}\n',
+      composeFiles: [{
+        filename: 'docker-compose.yml',
+        role: 'project',
+        content: 'services: {}\n',
+      }],
       hooks: [],
       variableMaterial: [{
         key: 'SECRET',
@@ -1346,6 +1407,7 @@ describe('resolveTraditionalWebSitesForMode and toPreparedDeployResult', () => {
       principalMaterial: [],
       traditionalWebSites: [],
       dockerExternalNetworks: ['edge'],
+      managedNetworkServices: [],
       containers: [],
       ingressServices: [],
       expansion: new Map(),
@@ -1382,6 +1444,11 @@ describe('resolveTraditionalWebSitesForMode and toPreparedDeployResult', () => {
     // variableMaterial and never leave envelopes in the YAML path.
     const prepared = toPreparedDeployResult('preview', {
       composeYaml: 'services:\n  web:\n    environment:\n      DATABASE_URL: sealed\n',
+      composeFiles: [{
+        filename: 'docker-compose.yml',
+        role: 'project',
+        content: 'services:\n  web:\n    environment:\n      DATABASE_URL: sealed\n',
+      }],
       hooks: [],
       variableMaterial: [
         {
@@ -1405,6 +1472,7 @@ describe('resolveTraditionalWebSitesForMode and toPreparedDeployResult', () => {
       principalMaterial: [],
       traditionalWebSites: [],
       dockerExternalNetworks: [],
+      managedNetworkServices: [],
       containers: [],
       ingressServices: [],
       expansion: new Map([['web', ['web']]]),

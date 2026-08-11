@@ -224,3 +224,47 @@ test('lintComposeYaml skips services with non-string keys', () => {
 `)
   assertEquals(issues.some((issue) => issue.path === 'services.[bad]'), false)
 })
+
+test('lintComposeYaml does not report tagged nodes as unknown keys or invalid services', () => {
+  const source = `services:
+  web:
+    image: nginx
+    ports: !override
+      - "9000:80"
+    environment: !reset null
+  gone: !reset null
+`
+  const issues = lintComposeYaml(source)
+  assertEquals(
+    issues.some((issue) => issue.message.includes('Unknown')),
+    false,
+  )
+  assertEquals(
+    issues.some((issue) => issue.message.includes('must be a mapping')),
+    false,
+  )
+})
+
+test('base-layer tag advisory is non-blocking; overlay suppresses it', () => {
+  const source = `services:
+  web:
+    image: nginx
+    ports: !override
+      - "9000:80"
+`
+  const baseIssues = lintComposeYaml(source)
+  const advisory = baseIssues.find((issue) =>
+    issue.message.includes('only take effect in an overlay')
+  )
+  assertEquals(advisory?.level, 'warning')
+  assertEquals(advisory?.blocking, false)
+  assertEquals(blockingComposeLintIssues(baseIssues), [])
+
+  const overlayIssues = lintComposeYaml(source, { layer: 'overlay' })
+  assertEquals(
+    overlayIssues.some((issue) =>
+      issue.message.includes('only take effect in an overlay')
+    ),
+    false,
+  )
+})

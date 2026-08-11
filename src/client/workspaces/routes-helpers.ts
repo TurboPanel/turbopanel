@@ -38,12 +38,18 @@ export function parseWorkspacePatchNames(
     updatedAt,
   }
 
-  if (body.name !== undefined) {
-    if (typeof body.name !== 'string') {
+  if (body.displayName !== undefined || body.name !== undefined) {
+    if (
+      body.displayName !== undefined &&
+      typeof body.displayName !== 'string'
+    ) {
+      return { ok: false, error: 'Invalid request', status: 400 }
+    }
+    if (body.name !== undefined && typeof body.name !== 'string') {
       return { ok: false, error: 'Invalid request', status: 400 }
     }
     try {
-      patch.name = parseDisplayName({ name: body.name })
+      patch.name = parseDisplayName(body)
     } catch {
       return { ok: false, error: 'Invalid request', status: 400 }
     }

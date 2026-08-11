@@ -13,10 +13,12 @@ import type {
   ServerMetadata,
   ServerOsMetadata,
   ServerTimeSync,
+  ServerHostInventory,
 } from "../../lib/db/server-metadata.ts";
 import {
   parseServerOsMetadata,
   parseServerTimeSync,
+  parseServerHostInventory,
 } from "../../lib/db/server-metadata.ts";
 import type { ServerAddresses } from "../../server-addresses.ts";
 import { parseServerAddresses } from "../../server-addresses.ts";
@@ -53,6 +55,8 @@ export type ServerFleetPresence = {
   geo: ServerGeo | null;
   /** From `server.metadata.os` (daemon hello); null until reported. */
   os: ServerOsMetadata | null;
+  /** From `server.metadata.inventory` (daemon hello capacity totals). */
+  inventory: ServerHostInventory | null;
   /** From `server.metadata.timeSync` (hello / change-detected heartbeat). */
   timeSync: ServerTimeSync | null;
   /** From `server.metadata.addresses` (hello / change-detected heartbeat). */
@@ -173,6 +177,7 @@ export async function resolveFleetPresence(
       daemonBuild: projection?.daemonBuild ?? snapshot?.daemonBuild ?? undefined,
       geo: parseServerGeo(metadata.geo),
       os: parseServerOsMetadata(metadata.os) ?? null,
+      inventory: parseServerHostInventory(metadata.inventory) ?? null,
       timeSync: parseServerTimeSync(metadata.timeSync) ?? null,
       addresses: parseServerAddresses(metadata.addresses) ?? null,
     });

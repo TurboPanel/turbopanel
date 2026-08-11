@@ -1,5 +1,11 @@
 import { assertEquals } from 'jsr:@std/assert'
 import { renameComposeVolumes } from './rename-volumes.ts'
+import {
+  composeTagOf,
+  isComposeTaggedValue,
+  makeComposeTag,
+  unwrapComposeTag,
+} from './tags.ts'
 import type { ComposeDocument } from './types.ts'
 
 /**
@@ -155,4 +161,71 @@ test('renameComposeVolumes leaves non-volume long mounts unchanged', () => {
     .volumes as Array<Record<string, unknown> | string>
   assertEquals(volumes[0], { type: 'bind', source: '/host', target: '/data' })
   assertEquals(volumes[1], { type: 'volume', source: renamed, target: '/data' })
+})
+
+test('renameComposeVolumes rewrites inside !override service volumes and preserves tag', () => {
+  const document: ComposeDocument = {
+    version: 1,
+    data: {
+      volumes: { data: {} },
+      services: {
+        web: {
+          image: 'nginx',
+          volumes: makeComposeTag('override', ['data:/data']),
+        },
+      },
+    },
+    presentation: { keyOrder: ['volumes', 'services'], comments: {} },
+  }
+  const renamed = '01936b3e-aaaa-bbbb-cccc-123456789abc'
+  const result = renameComposeVolumes(document, new Map([['data', renamed]]))
+  const web = (result.data.services as Record<string, Record<string, unknown>>).web!
+  assertEquals(isComposeTaggedValue(web.volumes), true)
+  assertEquals(composeTagOf(web.volumes), 'override')
+  assertEquals(unwrapComposeTag(web.volumes), [`${renamed}:/data`])
+})
+
+test('renameComposeVolumes looks through tagged services mapping', () => {
+  const document: ComposeDocument = {
+    version: 1,
+    data: {
+      volumes: { data: {} },
+      services: makeComposeTag('override', {
+        web: { volumes: ['data:/data'] },
+      }),
+    },
+    presentation: { keyOrder: ['volumes', 'services'], comments: {} },
+  }
+  const renamed = 'vol-uuid'
+  const result = renameComposeVolumes(document, new Map([['data', renamed]]))
+  assertEquals(composeTagOf(result.data.services), 'override')
+  const services = unwrapComposeTag(result.data.services) as Record<
+    string,
+    Record<string, unknown>
+  >
+  assertEquals(services.web.volumes, [`${renamed}:/data`])
+})
+
+test('renameComposeVolumes looks through tagged service body', () => {
+  const document: ComposeDocument = {
+    version: 1,
+    data: {
+      volumes: { data: {} },
+      services: {
+        web: makeComposeTag('override', {
+          image: 'nginx',
+          volumes: ['data:/data'],
+        }),
+      },
+    },
+    presentation: { keyOrder: ['volumes', 'services'], comments: {} },
+  }
+  const renamed = 'vol-uuid'
+  const result = renameComposeVolumes(document, new Map([['data', renamed]]))
+  const web = (result.data.services as Record<string, unknown>).web
+  assertEquals(composeTagOf(web), 'override')
+  assertEquals(
+    (unwrapComposeTag(web) as Record<string, unknown>).volumes,
+    [`${renamed}:/data`],
+  )
 })

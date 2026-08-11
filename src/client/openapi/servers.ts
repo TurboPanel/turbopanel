@@ -34,6 +34,29 @@ export const serverSchemas = {
       arch: { type: 'string', description: 'CPU arch (e.g. aarch64, x86_64).' },
     },
   },
+  ServerHostInventory: {
+    type: 'object',
+    description:
+      'Static host capacity from daemon hello (/proc/stat cores + /proc/meminfo totals).',
+    properties: {
+      cpuCores: {
+        type: 'integer',
+        minimum: 1,
+        description: 'Online logical CPU count (cpuN lines in /proc/stat).',
+      },
+      memoryTotalBytes: {
+        type: 'integer',
+        minimum: 1,
+        description: 'MemTotal from /proc/meminfo in bytes.',
+      },
+      swapTotalBytes: {
+        type: 'integer',
+        minimum: 0,
+        description:
+          'SwapTotal from /proc/meminfo in bytes (0 when swap is disabled).',
+      },
+    },
+  },
   ServerTimeSync: {
     type: 'object',
     description:
@@ -122,6 +145,14 @@ export const serverSchemas = {
         type: ['string', 'null'],
         enum: ['debian', 'raspberry-pi-os', null],
         description: 'Logo key for the UI OS column.',
+      },
+      inventory: {
+        oneOf: [
+          { $ref: '#/components/schemas/ServerHostInventory' },
+          { type: 'null' },
+        ],
+        description:
+          'Host capacity (cpu cores / RAM / swap totals) from server.metadata.inventory. Null until the daemon hello reports it.',
       },
       addresses: {
         oneOf: [

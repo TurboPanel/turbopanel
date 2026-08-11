@@ -26,14 +26,25 @@ import {
 import { expandComposeServiceInstances } from '../../lib/compose/expand-instances.ts'
 import {
   assertComposeDocument,
+  collectTraditionalWebServiceNames,
   composeDocumentToRuntimeYaml,
   emptyContainerComposeYaml,
   isTraditionalWebComposeService,
-  mergeComposeOverlay,
+  mergeComposeLayers,
   splitTraditionalWebServices,
   type ComposeDocument,
+  type ComposeLayer,
   type TraditionalWebSiteSpec,
 } from '../../lib/compose/index.ts'
+import {
+  buildPlatformComposeLayer,
+  buildUserComposeLayers,
+  environmentComposeFilename,
+  expandedOriginServiceNames,
+  PLATFORM_COMPOSE_FILENAME,
+  PROJECT_COMPOSE_FILENAME,
+  renderComposeFiles,
+} from './deploy-layers.ts'
 import {
   buildPlatformDeployVariables,
   stripReservedDeployVariableKeys,
@@ -75,6 +86,7 @@ import {
   type RegisteredComposeVolume,
 } from './register-compose-volumes.ts'
 import type {
+  EnvironmentDeployComposeFile,
   EnvironmentDeployHosting,
   EnvironmentDeployIngressService,
   EnvironmentDeployPrincipalMaterial,
@@ -159,7 +171,16 @@ export type DeployPrepareWarning = {
 }
 
 export type PreparedDeployCompose = {
+  /**
+   * Merged effective runtime compose (display / preview / legacy single-file
+   * fallback for daemons that predate `composeFiles`).
+   */
   composeYaml: string
+  /**
+   * Ordered `docker compose -f` chain (project → environment → platform).
+   * The daemon should prefer this over `composeYaml` when present.
+   */
+  composeFiles: EnvironmentDeployComposeFile[]
   hooks: ServiceDeployHook[]
   variableMaterial: EnvironmentDeployVariableMaterial[]
   storageMaterial: EnvironmentDeployStorageMaterial[]
@@ -203,8 +224,17 @@ export type DeployPrepareMode = 'deploy' | 'preview'
 function emptyPreparedCompose(
   warnings: DeployPrepareWarning[],
 ): PreparedDeployCompose {
+  const emptyYaml = emptyContainerComposeYaml()
   return {
-    composeYaml: emptyContainerComposeYaml(),
+    composeYaml: emptyYaml,
+    composeFiles: [
+      {
+        filename: PROJECT_COMPOSE_FILENAME,
+        role: 'project',
+        source: 'inline',
+        content: emptyYaml,
+      },
+    ],
     hooks: [],
     variableMaterial: [],
     storageMaterial: [],
@@ -559,17 +589,48 @@ export async function loadPrincipalMaterial(
   return material
 }
 
+/**
+ * Resolve the two raw project/environment compose layers (no prepare
+ * transforms). `environmentFilename` is the overlay's wire basename.
+ */
+export function resolveProjectEnvironmentComposeLayers(
+  projectOptions: unknown,
+  environmentOptions: unknown,
+  environmentFilename: string,
+): ComposeLayer[] | Response {
+  try {
+    const baseCompose = assertComposeDocument(extractComposeFromOptions(projectOptions))
+    const overlayCompose = assertComposeDocument(extractComposeFromOptions(environmentOptions))
+    return [
+      {
+        role: 'project',
+        filename: PROJECT_COMPOSE_FILENAME,
+        document: baseCompose,
+      },
+      {
+        role: 'environment',
+        filename: environmentFilename,
+        document: overlayCompose,
+      },
+    ]
+  } catch {
+    return Response.json({ error: 'Invalid compose document' }, { status: 400 })
+  }
+}
+
 export function mergeProjectEnvironmentCompose(
   projectOptions: unknown,
   environmentOptions: unknown,
 ): ComposeDocument | Response {
-  try {
-    const baseCompose = assertComposeDocument(extractComposeFromOptions(projectOptions))
-    const overlayCompose = assertComposeDocument(extractComposeFromOptions(environmentOptions))
-    return mergeComposeOverlay(baseCompose, overlayCompose)
-  } catch {
-    return Response.json({ error: 'Invalid compose document' }, { status: 400 })
-  }
+  // Filename is unused by mergeComposeLayers (document fold only); use a
+  // placeholder that cannot collide with the project basename.
+  const layers = resolveProjectEnvironmentComposeLayers(
+    projectOptions,
+    environmentOptions,
+    'docker-compose.environment.yml',
+  )
+  if (layers instanceof Response) return layers
+  return mergeComposeLayers(layers)
 }
 
 function evaluateHealthCheckGates(
@@ -909,7 +970,12 @@ async function loadDeployEnvAndProject(
   environmentId: string,
 ): Promise<
   | {
-    envRow: { id: string; projectId: string; options: unknown }
+    envRow: {
+      id: string
+      projectId: string
+      options: unknown
+      name: string | null
+    }
     projectRow: { id: string; options: unknown }
   }
   | Response
@@ -919,6 +985,7 @@ async function loadDeployEnvAndProject(
       id: environment.id,
       projectId: environment.projectId,
       options: environment.options,
+      name: environment.name,
     })
     .from(environment)
     .where(eq(environment.id, environmentId))
@@ -942,6 +1009,8 @@ type DeployExpandPipeline = {
   containers: ContainerAllocation[]
   ingressServices: EnvironmentDeployIngressService[]
   registeredVolumes: RegisteredComposeVolume[]
+  /** composeKey → Docker volume name applied by the merged pipeline. */
+  volumeRenames: Map<string, string>
   expandedDocument: ComposeDocument
   expansion: Map<string, string[]>
   expandedServiceNames: string[]
@@ -1022,6 +1091,7 @@ async function allocateExpandDeployPipeline(
     containers,
     ingressServices,
     registeredVolumes,
+    volumeRenames,
     expandedDocument,
     expansion,
     expandedServiceNames: listComposeServiceKeys(expandedDocument),
@@ -1163,6 +1233,7 @@ function toPreparedDeployResult(
   mode: DeployPrepareMode,
   parts: {
     composeYaml: string
+    composeFiles: EnvironmentDeployComposeFile[]
     hooks: ServiceDeployHook[]
     variableMaterial: EnvironmentDeployVariableMaterial[]
     storageMaterial: EnvironmentDeployStorageMaterial[]
@@ -1180,6 +1251,7 @@ function toPreparedDeployResult(
   const omitSecrets = mode === 'preview'
   return {
     composeYaml: parts.composeYaml,
+    composeFiles: parts.composeFiles,
     hooks: parts.hooks,
     variableMaterial: omitSecrets ? [] : parts.variableMaterial,
     storageMaterial: omitSecrets ? [] : parts.storageMaterial,
@@ -1230,8 +1302,17 @@ export async function prepareDeployCompose(
     .where(eq(server.id, params.serverId))
     .limit(1)
 
-  const merged = mergeProjectEnvironmentCompose(projectRow.options, envRow.options)
-  if (merged instanceof Response) return merged
+  const environmentFilename = environmentComposeFilename({
+    id: envRow.id,
+    name: envRow.name,
+  })
+  const rawComposeLayers = resolveProjectEnvironmentComposeLayers(
+    projectRow.options,
+    envRow.options,
+    environmentFilename,
+  )
+  if (rawComposeLayers instanceof Response) return rawComposeLayers
+  const merged = mergeComposeLayers(rawComposeLayers)
 
   const composeServiceNames = listComposeServiceKeys(merged)
   if (composeServiceNames.length === 0) return emptyComposePrepareResult(mode)
@@ -1401,8 +1482,54 @@ export async function prepareDeployCompose(
     await resolveManagedNetworkComposeServiceNames(db, serviceRows, pipeline.expansion)
   ).filter((name) => !traditionalNames.has(name))
 
+  // Effective document = the same post-split container document serialized as
+  // composeYaml today. Network keys surviving prune drive per-layer keep sets.
+  const effective = split.containerDocument
+  const keepNetworkKeys = new Set(
+    isPlainObject(effective.data.networks)
+      ? Object.keys(effective.data.networks as Record<string, unknown>)
+      : [],
+  )
+  const removeServiceNames = new Set([
+    ...collectTraditionalWebServiceNames(withServiceOptions.document),
+    ...expandedOriginServiceNames(pipeline.expansion),
+  ])
+  const projectLayerDoc = rawComposeLayers[0]!.document
+  const environmentLayerDoc = rawComposeLayers[1]!.document
+  const userLayers = buildUserComposeLayers({
+    projectDocument: projectLayerDoc,
+    environmentDocument: environmentLayerDoc,
+    environmentFilename,
+    removeServiceNames,
+    volumeRenames: pipeline.volumeRenames,
+    keepNetworkKeys,
+  })
+  // Future: a not-yet-implemented `resolveRepositoryComposeLayer(project.options.repository, environment)`
+  // seam would resolve a repository-pinned compose file and return an
+  // `EnvironmentDeployComposeFile` with `source: 'repository'` and `path` set
+  // to its repo-relative location. That layer would be spliced into
+  // `userLayers` here — after the environment layer, before this call to
+  // `mergeComposeLayers`/`buildPlatformComposeLayer` — so it merges ahead of
+  // the platform layer, which must always stay last. This phase adds no such
+  // resolver; it is contract-only (see `EnvironmentDeployComposeFile.path` in
+  // `src/lib/commands/schemas.ts`).
+  const userMerged = mergeComposeLayers(userLayers)
+  const platformDocument = buildPlatformComposeLayer({
+    effective,
+    userMerged,
+  })
+  const composeFiles = renderComposeFiles([
+    ...userLayers,
+    {
+      role: 'platform',
+      filename: PLATFORM_COMPOSE_FILENAME,
+      document: platformDocument,
+    },
+  ])
+
   return toPreparedDeployResult(mode, {
     composeYaml: split.composeYaml,
+    composeFiles,
     hooks,
     variableMaterial,
     storageMaterial,
@@ -1486,6 +1613,8 @@ function toTraditionalWebPrincipal(
 
 function splitTraditionalWebFromDocument(document: ComposeDocument): {
   composeYaml: string
+  /** Post-split / pruned container document (same body as `composeYaml`). */
+  containerDocument: ComposeDocument
   sites: TraditionalWebSiteSpec[]
 } {
   const services = isPlainObject(document.data.services)
@@ -1494,8 +1623,14 @@ function splitTraditionalWebFromDocument(document: ComposeDocument): {
   const { containerServices, sites } = splitTraditionalWebServices(services)
 
   if (Object.keys(containerServices).length === 0) {
+    const emptyDocument: ComposeDocument = {
+      version: 1,
+      data: { services: {} },
+      presentation: { keyOrder: ['services'], comments: {} },
+    }
     return {
       composeYaml: emptyContainerComposeYaml(),
+      containerDocument: emptyDocument,
       sites,
     }
   }
@@ -1524,6 +1659,7 @@ function splitTraditionalWebFromDocument(document: ComposeDocument): {
   }
   return {
     composeYaml: composeDocumentToRuntimeYaml(containerDocument),
+    containerDocument,
     sites,
   }
 }
@@ -1597,6 +1733,7 @@ export {
   buildServiceRowByCloneName,
   documentForServiceOptions,
   emptyComposePrepareResult,
+  emptyPreparedCompose,
   evaluateHealthCheckGates,
   expansionToRecord,
   listComposeServiceKeys,
@@ -1607,3 +1744,14 @@ export {
   toPreparedDeployResult,
   warningFromPrepareError,
 }
+
+// Re-export layer builders used by prepare for host-free coverage imports.
+export {
+  buildPlatformComposeLayer,
+  buildUserComposeLayers,
+  environmentComposeFilename,
+  expandedOriginServiceNames,
+  PLATFORM_COMPOSE_FILENAME,
+  PROJECT_COMPOSE_FILENAME,
+  renderComposeFiles,
+} from './deploy-layers.ts'

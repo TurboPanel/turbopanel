@@ -372,6 +372,7 @@ export function registerDaemonWebSocket(
             hostname: message.hostname,
             machineKey: message.machineKey,
             os: message.os,
+            inventory: message.inventory,
             timeSync: message.timeSync,
             addresses: message.addresses,
           });

@@ -14,6 +14,7 @@ import { evaluateSocketHealth } from "./socket-health.ts";
 import type { ServerGeo } from "../../lib/geo/server-geo.ts";
 import { parseServerGeo } from "../../lib/geo/server-geo.ts";
 import type {
+  ServerHostInventory,
   ServerOsMetadata,
   ServerTimeSync,
 } from "../../lib/db/server-metadata.ts";
@@ -1110,6 +1111,7 @@ export class DaemonCellObject {
       hostname?: string;
       machineKey?: string;
       os?: ServerOsMetadata;
+      inventory?: ServerHostInventory;
       timeSync?: ServerTimeSync;
       addresses?: ServerAddresses;
     },
@@ -1120,6 +1122,7 @@ export class DaemonCellObject {
         hostIdentity?.hostname ||
         hostIdentity?.machineKey ||
         hostIdentity?.os ||
+        hostIdentity?.inventory ||
         hostIdentity?.timeSync ||
         hostIdentity?.addresses
       ) {
@@ -1127,6 +1130,7 @@ export class DaemonCellObject {
           hostname: hostIdentity.hostname,
           machineKey: hostIdentity.machineKey,
           os: hostIdentity.os,
+          inventory: hostIdentity.inventory,
           timeSync: hostIdentity.timeSync,
           addresses: hostIdentity.addresses,
         });
@@ -1626,6 +1630,7 @@ export class DaemonCellObject {
       hostname?: string;
       machineKey?: string;
       os?: ServerOsMetadata;
+      inventory?: ServerHostInventory;
       timeSync?: ServerTimeSync;
       addresses?: ServerAddresses;
     },
@@ -1652,13 +1657,14 @@ export class DaemonCellObject {
     const hasPresenceFacts = Boolean(
       presenceFacts.timeSync || presenceFacts.addresses,
     );
-    // hostname/os stay hello-only; timeSync/addresses project on both hello and
-    // change-detected heartbeats.
+    // hostname/os/inventory stay hello-only; timeSync/addresses project on both
+    // hello and change-detected heartbeats.
     let hostIdentity:
       | {
         hostname?: string;
         machineKey?: string;
         os?: ServerOsMetadata;
+        inventory?: ServerHostInventory;
         timeSync?: ServerTimeSync;
         addresses?: ServerAddresses;
       }
@@ -1668,6 +1674,7 @@ export class DaemonCellObject {
         hostname: parsed.hostname,
         machineKey: parsed.machineKey,
         os: parsed.os,
+        inventory: parsed.inventory,
         ...presenceFacts,
       };
     } else if (hasPresenceFacts) {
@@ -1677,6 +1684,7 @@ export class DaemonCellObject {
       hostIdentity?.hostname ||
         hostIdentity?.machineKey ||
         hostIdentity?.os ||
+        hostIdentity?.inventory ||
         hostIdentity?.timeSync ||
         hostIdentity?.addresses,
     );

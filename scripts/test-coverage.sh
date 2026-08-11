@@ -143,6 +143,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/bindings/impact.test.ts \
   src/client/display-name-uniqueness.test.ts \
   src/client/environments/deploy-prepare.test.ts \
+  src/client/environments/deploy-layers.test.ts \
   src/client/environments/deploy-routes.test.ts \
   src/client/environments/register-compose-volumes.test.ts \
   src/client/environments/register-compose-volumes.hostfree.test.ts \
