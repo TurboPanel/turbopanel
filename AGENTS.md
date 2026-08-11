@@ -267,9 +267,15 @@ fixture lines in `.secretscan-allowlist` — do not add broad exclusions.
   `orchestration/runtime/venv`).
 - Managed/co-located installs: secret-bearing runtime env lives in the instance
   config dir (`runtime.env`, `runtime.dev-vars`) — **never** in the git checkout
-  root. Standalone scripts (`scripts/generate-self-signed-cert.mjs`,
-  `scripts/workers-serve.sh`, `scripts/drizzle-studio-serve.sh`) default to the
-  FHS location **`/etc/turbopanel/instance/runtime.env`** when
+  root. Beside those env files, Ansible holds
+  `.instance_secret` (legacy singular) and `.instance_secrets` (versioned
+  keyring, `root:<turbopanel_group>` `0640`, ordered `<version>:<value>`, first
+  entry current); both are injected into `runtime.dev-vars`, and rotation is
+  gated by the `turbopanel_instance_secret_rotate` extra-var. Semantics:
+  `src/client/authn/AGENTS.md`. Standalone scripts
+  (`scripts/generate-self-signed-cert.mjs`, `scripts/workers-serve.sh`,
+  `scripts/drizzle-studio-serve.sh`) default to the FHS location
+  **`/etc/turbopanel/instance/runtime.env`** when
   `TURBOPANEL_INSTANCE_RUNTIME_ENV` is unset. Both managed and co-located dev
   use **`/etc/turbopanel/instance/`** (dev-user-owned in development). The unit
   injects `TURBOPANEL_INSTANCE_RUNTIME_ENV` accordingly.

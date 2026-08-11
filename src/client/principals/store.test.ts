@@ -193,7 +193,7 @@ test('setPrincipalPassword with password seals as enc and never stores plaintext
       .limit(1)
     const stored = rows[0]!.password
     assertEquals(typeof stored, 'string')
-    assertEquals(stored!.startsWith('enc.'), true)
+    assertEquals(stored!.startsWith('tpsecret.'), true)
     assertEquals(stored!.includes(plaintext), false)
     assertEquals(await decryptSecret(dataEncryptionSecrets, stored!), plaintext)
   })
@@ -221,7 +221,7 @@ test('setPrincipalPassword generate:true returns plaintext once and stores enc',
       .limit(1)
     const stored = rows[0]!.password
     assertEquals(typeof stored, 'string')
-    assertEquals(stored!.startsWith('enc.'), true)
+    assertEquals(stored!.startsWith('tpsecret.'), true)
     assertEquals(stored!.includes(result.plaintext!), false)
     assertEquals(
       await decryptSecret(dataEncryptionSecrets, stored!),

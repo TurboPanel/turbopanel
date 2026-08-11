@@ -645,7 +645,7 @@ test('managed create returns rootPassword once, seals principal, is idempotent',
       .from(principal)
       .where(eq(principal.managedId, managedRow!.id))
     assertEquals(principals.length, 1)
-    assertEquals(principals[0]!.password?.startsWith('enc.'), true)
+    assertEquals(principals[0]!.password?.startsWith('tpsecret.'), true)
 
     const second = await app.request(`/environments/${environmentId}/managed`, {
       method: 'POST',
@@ -670,7 +670,7 @@ test('managed create returns rootPassword once, seals principal, is idempotent',
     assertEquals(getRes.status, 200)
     const getBody = await getRes.json() as Record<string, unknown>
     assertEquals(JSON.stringify(getBody).includes('password'), false)
-    assertEquals(JSON.stringify(getBody).includes('enc.'), false)
+    assertEquals(JSON.stringify(getBody).includes('tpsecret.'), false)
   })
 })
 

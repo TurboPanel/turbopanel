@@ -77,14 +77,14 @@ export function toPublicTlsRow(row: TlsRowForPublic): TlsPublicRow | null {
   }
 }
 
-/** Private keys at rest must be `enc` envelopes — never PEM plaintext. */
+/** Private keys at rest must be `tpsecret` envelopes — never PEM plaintext. */
 export function assertTpSecretPrivateKey(sealed: string): void {
   if (
     !isSealedEnvelope(sealed) ||
     !sealed.startsWith(`${ENVELOPE_MAGIC}.`) ||
     sealed.includes('BEGIN')
   ) {
-    throw new TypeError('tls private key must be an enc envelope')
+    throw new TypeError('tls private key must be a tpsecret envelope')
   }
 }
 

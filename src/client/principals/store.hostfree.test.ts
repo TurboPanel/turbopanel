@@ -516,7 +516,7 @@ test('setPrincipalPassword seals explicit password and generate mode', async () 
   )
   assertEquals(stored.plaintext, undefined)
   assertEquals(typeof sealed, 'string')
-  assertEquals(sealed?.startsWith('enc.'), true)
+  assertEquals(sealed?.startsWith('tpsecret.'), true)
 
   const generated = await setPrincipalPassword(
     db,
@@ -602,7 +602,7 @@ test('createManagedPrincipal inserts sealed password and validates inputs', asyn
   assertEquals(typeof created.password, 'string')
   assertEquals(insertValues?.managedId, 'm1')
   assertEquals(typeof insertValues?.password, 'string')
-  assertEquals((insertValues?.password as string).startsWith('enc.'), true)
+  assertEquals((insertValues?.password as string).startsWith('tpsecret.'), true)
 
   await assertRejects(
     () =>

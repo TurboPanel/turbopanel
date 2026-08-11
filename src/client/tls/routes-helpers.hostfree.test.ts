@@ -58,7 +58,7 @@ test('assertTpSecretPrivateKey accepts enc envelopes and rejects PEM plaintext',
   )
   assertThrows(() => assertTpSecretPrivateKey('not-an-envelope'), TypeError)
   assertThrows(
-    () => assertTpSecretPrivateKey(`${ENVELOPE_MAGIC}.1.BEGIN`),
+    () => assertTpSecretPrivateKey(`${ENVELOPE_MAGIC}.v1.BEGIN`),
     TypeError,
   )
 })

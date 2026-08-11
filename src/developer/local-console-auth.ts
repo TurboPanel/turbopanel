@@ -18,9 +18,10 @@ function resolveLocalConsoleRootSecret(): string | undefined {
   if (typeof Deno === 'undefined') return undefined
   try {
     // Share the same validated parse/selection as the rest of the process.
-    // `parseSecretsEnv` sorts versioned secrets descending, so entry [0] is the
-    // current signing secret. Invalid/weak configurations throw and disable
-    // local-console auth rather than falling back to a loose parse.
+    // Order-as-written is authoritative: `parseSecretsEnv` keeps versioned
+    // entries in list order, so entry [0] is the current signing secret.
+    // Invalid/weak configurations throw and disable local-console auth rather
+    // than falling back to a loose parse.
     const config = parseSecretsEnv(
       Deno.env.get('TURBOPANEL_SECRET'),
       Deno.env.get('TURBOPANEL_SECRETS'),

@@ -100,7 +100,7 @@ export const organization = pgTable(
 )
 /**
  * Organization TLS certificate library (upload / Let's Encrypt / self-signed).
- * Private keys are sealed `enc` envelopes — never returned on client GET.
+ * Private keys are sealed `tpsecret` envelopes — never returned on client GET.
  * Hosting pins via `hosting.tls_id`; unset uses Caddy `tls internal` (self-signed).
  */
 export const tls = pgTable(
@@ -124,7 +124,7 @@ export const tls = pgTable(
     source: text().notNull(),
     /** Leaf + intermediate chain PEM; null while LE `pending`. */
     certificatePem: text('certificate_pem'),
-    /** Sealed `enc` private key PEM; null while LE `pending` before keygen. */
+    /** Sealed `tpsecret` private key PEM; null while LE `pending` before keygen. */
     privateKeyPem: text('private_key_pem'),
     /** `ready` | `pending` | `expired` | `failed` | `revoked` */
     status: text().default('ready').notNull(),
@@ -691,7 +691,7 @@ export const peer = pgTable(
     publicKey: text('public_key'),
     listenPort: integer('listen_port'),
     endpoint: varchar({ length: 255 }),
-    /** Sealed `enc` envelope — write-only, same handling as `principal.password`. */
+    /** Sealed `tpsecret` envelope — write-only, same handling as `principal.password`. */
     presharedKey: text('preshared_key'),
   },
   (table) => [
@@ -1370,8 +1370,8 @@ export const principal = pgTable(
      */
     username: varchar({ length: 255 }).notNull(),
     /**
-     * Write-only credential. Stored as an `enc.<keyVersion>.…` envelope (instance
-     * at-rest seal). Never returned on GET; delivery re-seals to `denc`
+     * Write-only credential. Stored as a `tpsecret.v<version>.…` envelope (instance
+     * at-rest seal). Never returned on GET; delivery re-seals to `tpdaemon`
      * for the target daemon.
      */
     password: text(),
@@ -1544,7 +1544,7 @@ export const storage = pgTable(
     sourcePath: text('source_path'),
     destinationPath: text('destination_path'),
     principalId: uuid('principal_id'),
-    /** Sealed file content (`enc` or `denc`) for `kind=file` entries. */
+    /** Sealed file content (`tpsecret` or `tpdaemon`) for `kind=file` entries. */
     contentEnvelope: text('content_envelope'),
   },
   (table) => [

@@ -203,10 +203,10 @@ test('reencryptAtRestSecrets reseals old enc, skips denc/current, fails plaintex
     },
     daemonPlain,
   )
-  const unknownVersionEnvelope = v1VariableEnvelope.replaceAll('.1.', '.99.')
-  // Structural malform: `enc.` magic but invalid key version / shape.
-  const malformedEnc = 'enc.not-a-version.abcde'
-  const malformedDenc = 'denc.not-a-valid-daemon-envelope'
+  const unknownVersionEnvelope = v1VariableEnvelope.replaceAll('.v1.', '.v99.')
+  // Structural malform: `tpsecret.` magic but invalid key version / shape.
+  const malformedEnc = 'tpsecret.not-a-version.abcde'
+  const malformedDenc = 'tpdaemon.not-a-valid-daemon-envelope'
 
   await withIsolatedFixture('reencrypt_fix', async (scoped) => {
     const [org] = await scoped

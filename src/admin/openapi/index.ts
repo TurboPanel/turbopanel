@@ -548,10 +548,10 @@ export function getAdminOpenApiSpec(
           summary: 'Re-encrypt at-rest secrets to the current key version',
           description:
             'Bounded sweep over secret variables, TLS private keys, principal passwords, ' +
-            'and SYSTEM_EMAIL secret keys. Re-seals older `enc` and plaintext secret columns; ' +
-            'skips valid `denc` and current-version `enc`; fails malformed envelopes. ' +
-            'Pass the previous `cursor` to resume until `completed` is true. Concurrent ' +
-            'sweeps return 409 `reencrypt_in_progress`.',
+            'and SYSTEM_EMAIL secret keys. Re-seals older-version `tpsecret` blobs; skips ' +
+            'current-version `tpsecret` and valid `tpdaemon` delivery envelopes; fails ' +
+            'plaintext or malformed material. Pass the previous `cursor` to resume until ' +
+            '`completed` is true. Concurrent sweeps return 409 `reencrypt_in_progress`.',
           security: [...cookieSecurity],
           requestBody: {
             required: false,

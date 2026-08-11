@@ -110,20 +110,27 @@ test('stateless challenge rejects mismatch, expiry, and tampering', async () => 
   assertEquals(
     await consumeChallenge(
       secrets,
-      { challengeId: 'not.a.valid.token', serverId: 'srv-1', keyId: 'key-1' },
+      { challengeId: 'tpsession.v1.not.a.challenge', serverId: 'srv-1', keyId: 'key-1' },
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
       now,
     ),
     null,
   )
 
-  const [payload, sig] = issued.id.split('.')
+  // tpchallenge.vN.<payload>.<sig> — indices [2]=payload, [3]=sig
+  const parts = issued.id.split('.')
+  const payload = parts[2]!
+  const sig = parts[3]!
   // Last base64url char can be padding-equivalent; truncate the signature instead.
   const tamperedSig = sig.slice(0, Math.max(1, sig.length - 8))
   assertEquals(
     await consumeChallenge(
       secrets,
-      { challengeId: `${payload}.${tamperedSig}`, serverId: 'srv-1', keyId: 'key-1' },
+      {
+        challengeId: `tpchallenge.v${secrets.current.version}.${payload}.${tamperedSig}`,
+        serverId: 'srv-1',
+        keyId: 'key-1',
+      },
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
       now,
     ),
@@ -134,7 +141,11 @@ test('stateless challenge rejects mismatch, expiry, and tampering', async () => 
   assertEquals(
     await consumeChallenge(
       secrets,
-      { challengeId: `${tamperedPayload}.${sig}`, serverId: 'srv-1', keyId: 'key-1' },
+      {
+        challengeId: `tpchallenge.v${secrets.current.version}.${tamperedPayload}.${sig}`,
+        serverId: 'srv-1',
+        keyId: 'key-1',
+      },
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
       now,
     ),
@@ -191,19 +202,58 @@ test('stateless challenge rejects malformed ids and empty binding fields', async
   const now = Date.parse('2026-08-05T12:00:00.000Z')
   const issued = await issueChallenge(secrets, {}, DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS, now)
 
+  // Wrong scheme
   assertEquals(
     await consumeChallenge(
       secrets,
-      { challengeId: 'only-one-part', serverId: '', keyId: '' },
+      { challengeId: 'tpsession.v1.payload.sig', serverId: '', keyId: '' },
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
       now,
     ),
     null,
   )
+  // Missing version token
   assertEquals(
     await consumeChallenge(
       secrets,
-      { challengeId: '.missing-payload', serverId: '', keyId: '' },
+      { challengeId: 'tpchallenge.payload.sig', serverId: '', keyId: '' },
+      DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+      now,
+    ),
+    null,
+  )
+  // Empty field
+  assertEquals(
+    await consumeChallenge(
+      secrets,
+      { challengeId: 'tpchallenge.v1..sig', serverId: '', keyId: '' },
+      DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+      now,
+    ),
+    null,
+  )
+  // Wrong field count
+  assertEquals(
+    await consumeChallenge(
+      secrets,
+      { challengeId: 'tpchallenge.v1.only-one', serverId: '', keyId: '' },
+      DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+      now,
+    ),
+    null,
+  )
+  // Version absent from the keyring
+  const issuedParts = issued.id.split('.')
+  const payload = issuedParts[2]!
+  const sig = issuedParts[3]!
+  assertEquals(
+    await consumeChallenge(
+      secrets,
+      {
+        challengeId: `tpchallenge.v9.${payload}.${sig}`,
+        serverId: '',
+        keyId: '',
+      },
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
       now,
     ),
@@ -213,6 +263,57 @@ test('stateless challenge rejects malformed ids and empty binding fields', async
     await consumeChallenge(
       secrets,
       { challengeId: issued.id, serverId: 'unexpected', keyId: '' },
+      DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+      now,
+    ),
+    null,
+  )
+})
+
+test('stateless challenge returns null for invalid base64url payload/signature segments', async () => {
+  const secrets = await challengeSecrets()
+  const now = Date.parse('2026-08-05T12:00:00.000Z')
+  const version = secrets.current.version
+  const encoder = new TextEncoder()
+
+  // Invalid signature segment — parseEnvelope accepts it, base64urlDecode/atob would throw
+  assertEquals(
+    await consumeChallenge(
+      secrets,
+      {
+        challengeId: `tpchallenge.v${version}.cGF5bG9hZA.%%%`,
+        serverId: '',
+        keyId: '',
+      },
+      DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
+      now,
+    ),
+    null,
+  )
+
+  // Valid HMAC over an invalid base64url payload segment — verify passes, parsePayload fails
+  const badPayload = '%%%'
+  const sigBytes = await crypto.subtle.sign(
+    'HMAC',
+    secrets.current.key,
+    encoder.encode(badPayload),
+  )
+  let binary = ''
+  for (const byte of new Uint8Array(sigBytes)) {
+    binary += String.fromCodePoint(byte)
+  }
+  const encodedSig = btoa(binary)
+    .replaceAll('+', '-')
+    .replaceAll('/', '_')
+    .replaceAll('=', '')
+  assertEquals(
+    await consumeChallenge(
+      secrets,
+      {
+        challengeId: `tpchallenge.v${version}.${badPayload}.${encodedSig}`,
+        serverId: '',
+        keyId: '',
+      },
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
       now,
     ),

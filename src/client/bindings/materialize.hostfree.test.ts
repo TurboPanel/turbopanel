@@ -121,7 +121,7 @@ function baseBindingRow(overrides: Record<string, unknown> = {}) {
     emitEngineDefaults: false,
     principalKind: 'database',
     principalUsername: 'u',
-    principalPassword: 'enc.placeholder',
+    principalPassword: 'tpsecret.placeholder',
     principalManagedId: 'm1',
     managedId: 'm1',
     managedEngine: 'postgres',
@@ -369,7 +369,7 @@ test('upsertBindingOwnedVariables inserts updates and deletes stale keys', async
   assertEquals(updates.length, 1)
   assertEquals(typeof updates[0]?.value, 'string')
   assertEquals(
-    String(updates[0]?.value).startsWith('enc.'),
+    String(updates[0]?.value).startsWith('tpsecret.'),
     true,
   )
   assertEquals(inserts.length, 1)

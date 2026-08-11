@@ -34,6 +34,19 @@ export type DerivedSecretsConfig = {
   fallbacks: Array<{ version: number; key: CryptoKey }>;
 };
 
+/**
+ * Direct version→key lookup against a derived keyring. Returns the matching
+ * current or fallback key, or `null` when the version is absent.
+ */
+export function findKeyForVersion(
+  secrets: DerivedSecretsConfig,
+  version: number,
+): CryptoKey | null {
+  if (secrets.current.version === version) return secrets.current.key;
+  const fallback = secrets.fallbacks.find((f) => f.version === version);
+  return fallback?.key ?? null;
+}
+
 function normalizeEnvValue(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   const trimmed = value.trim();
@@ -87,7 +100,25 @@ function parseVersionedSecrets(secretsEnv: string): VersionedSecret[] {
     seen.add(entry.version);
   }
 
-  versioned.sort((a, b) => b.version - a.version);
+  // Order-as-written is authoritative: versioned[0] is current/signing.
+  // Warn (do not reorder) when operators listed keys off descending-version order.
+  if (versioned.length > 1) {
+    let descending = true;
+    for (let i = 1; i < versioned.length; i++) {
+      if (versioned[i].version >= versioned[i - 1].version) {
+        descending = false;
+        break;
+      }
+    }
+    if (!descending) {
+      compatLogWarn(
+        "auth",
+        "TURBOPANEL_SECRETS entries are not listed in descending version order; " +
+          "the first entry is treated as current — list highest version first",
+      );
+    }
+  }
+
   return versioned;
 }
 
@@ -102,10 +133,27 @@ export function parseSecretsEnv(
   let versioned: VersionedSecret[] = [];
 
   if (secretsEnv !== undefined) {
+    // Non-descending warning runs here on the operator's keyring alone —
+    // before folding in TURBOPANEL_SECRET as a decrypt-only tail entry.
     versioned = parseVersionedSecrets(secretsEnv);
-  } else if (secretEnv !== undefined) {
+  }
+
+  if (secretEnv !== undefined) {
     assertValidSecretValue(secretEnv, "TURBOPANEL_SECRET");
-    versioned = [{ version: 1, value: secretEnv }];
+    const existingV1 = versioned.find((entry) => entry.version === 1);
+    if (existingV1 !== undefined) {
+      if (existingV1.value !== secretEnv) {
+        throw new Error(
+          "TURBOPANEL_SECRET and TURBOPANEL_SECRETS both define version 1 with different values; " +
+            "remove one or make them identical",
+        );
+      }
+      // Identical v1 already present — idempotent fold, no change.
+    } else {
+      // Decrypt-only fallback (or sole entry when TURBOPANEL_SECRETS is unset).
+      // Never unshift — must not become current when a keyring already exists.
+      versioned.push({ version: 1, value: secretEnv });
+    }
   }
 
   if (secretEnv === undefined && secretsEnv === undefined) {

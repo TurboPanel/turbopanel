@@ -166,7 +166,7 @@ test('scaffoldCatalogEnvironments seals managed secrets as enc without placehold
     const plaintexts: string[] = []
     for (const row of secretRows) {
       assertEquals(parseSecretEnvelope(row.value)?.keyVersion !== undefined, true)
-      assertEquals(row.value.startsWith('enc.'), true)
+      assertEquals(row.value.startsWith('tpsecret.'), true)
 
       const plaintext = await decryptSecret(dataEncryptionSecrets, row.value)
       plaintexts.push(plaintext)
@@ -285,8 +285,8 @@ test('scaffoldCatalogEnvironments reuses sharedCredentialId when sealing', async
       throw new TypeError('expected shared secret variable rows')
     }
 
-    assertEquals(dbPassword.startsWith('enc.'), true)
-    assertEquals(appPassword.startsWith('enc.'), true)
+    assertEquals(dbPassword.startsWith('tpsecret.'), true)
+    assertEquals(appPassword.startsWith('tpsecret.'), true)
     assertEquals(
       await decryptSecret(dataEncryptionSecrets, dbPassword),
       await decryptSecret(dataEncryptionSecrets, appPassword),

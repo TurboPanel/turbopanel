@@ -217,7 +217,7 @@ test('serializeVariable includes bindingId and redacts secrets', () => {
     serverId: null,
     bindingId: 'b1',
     key: 'DATABASE_URL',
-    value: 'enc.1.x',
+    value: 'tpsecret.v1.x',
     isSecret: true,
     isLiteral: true,
     forBuild: false,

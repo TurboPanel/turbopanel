@@ -419,7 +419,7 @@ async function sealTlsMaterialForDaemon(
     if (!row?.certificatePem || !row.privateKeyPem) {
       return c.json({ error: 'tls_material_missing', tlsId }, 400)
     }
-    // Refuse plaintext / non-enc rows — keys must be sealed at rest.
+    // Refuse plaintext / non-tpsecret rows — keys must be sealed at rest.
     if (
       !row.privateKeyPem.startsWith(`${ENVELOPE_MAGIC}.`) ||
       row.privateKeyPem.includes('BEGIN')

@@ -586,6 +586,6 @@ test('POST /storage seals file content when encryption is configured', async () 
     if (typeof row?.contentEnvelope !== 'string' || row.contentEnvelope.length === 0) {
       throw new TypeError('expected sealed content envelope')
     }
-    assertEquals(row.contentEnvelope.startsWith('enc.'), true)
+    assertEquals(row.contentEnvelope.startsWith('tpsecret.'), true)
   })
 })

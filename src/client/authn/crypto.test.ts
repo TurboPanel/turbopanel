@@ -192,23 +192,43 @@ describe('session cookie signing', () => {
     assertEquals(await verifySignedCookie('', secrets), null)
     assertEquals(await verifySignedCookie('only-two.parts', secrets), null)
     assertEquals(
-      await verifySignedCookie('token.vabc.sig', secrets),
+      await verifySignedCookie('tpsession.vabc.token.sig', secrets),
       null,
     )
     assertEquals(
-      await verifySignedCookie('token.v99.nope', secrets),
+      await verifySignedCookie('tpsession.v99.token.nope', secrets),
+      null,
+    )
+    assertEquals(
+      await verifySignedCookie('tpsecret.v1.token.sig', secrets),
+      null,
+    )
+    assertEquals(
+      await verifySignedCookie('tpsession.v1.only-one-field', secrets),
       null,
     )
 
     const token = generateSessionToken()
     const cookie = await buildSignedCookie(token, secrets)
-    const [, version, sig] = cookie.split('.')
+    // tpsession.vN.<token>.<sig> — indices [2]=token, [3]=sig
+    const parts = cookie.split('.')
+    const cookieToken = parts[2]!
+    const versionToken = parts[1]!
+    const sig = parts[3]!
     assertEquals(
-      await verifySignedCookie(`${token}.${version}.tampered`, secrets),
+      await verifySignedCookie(
+        `tpsession.${versionToken}.${cookieToken}.tampered`,
+        secrets,
+      ),
       null,
     )
     assertEquals(
-      await verifySignedCookie(`${token}.v0.${sig}`, secrets),
+      await verifySignedCookie(`tpsession.v0.${cookieToken}.${sig}`, secrets),
+      null,
+    )
+    // Old <token>.v1.<sig> shape must be rejected (no back-compat).
+    assertEquals(
+      await verifySignedCookie(`${cookieToken}.${versionToken}.${sig}`, secrets),
       null,
     )
   })
@@ -226,9 +246,14 @@ describe('session cookie signing', () => {
       subtle.timingSafeEqual = undefined
       const verified = await verifySignedCookie(cookie, secrets)
       assertEquals(verified, { token, rotated: false })
-      const [, version, sig] = cookie.split('.')
+      const parts = cookie.split('.')
+      const cookieToken = parts[2]!
+      const versionToken = parts[1]!
       assertEquals(
-        await verifySignedCookie(`${token}.${version}.bad-signature-value`, secrets),
+        await verifySignedCookie(
+          `tpsession.${versionToken}.${cookieToken}.bad-signature-value`,
+          secrets,
+        ),
         null,
       )
     } finally {

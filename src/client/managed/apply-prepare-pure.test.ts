@@ -251,7 +251,7 @@ test('buildManagedOrgTlsMaterial issues CA-signed leaf and reseals as denc', asy
 
   assertEquals(material.certificatePem.includes('BEGIN CERTIFICATE'), true)
   assertEquals(material.caCertPem, ca.certificatePem)
-  assertEquals(material.privateKeyEnvelope.startsWith('denc.'), true)
+  assertEquals(material.privateKeyEnvelope.startsWith('tpdaemon.'), true)
 
   const parsed = parseDaemonSecretEnvelope(material.privateKeyEnvelope)
   assertEquals(parsed?.serverId, serverId)

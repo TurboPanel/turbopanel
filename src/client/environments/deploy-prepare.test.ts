@@ -1377,7 +1377,7 @@ describe('resolveTraditionalWebSitesForMode and toPreparedDeployResult', () => {
   })
 
   it('redacts binding secrets in preview the same as ordinary secret variables', () => {
-    // Binding materialization seals secrets as enc. and parks them on
+    // Binding materialization seals secrets as tpsecret. and parks them on
     // secretMaterial alongside user variables; preview must drop
     // variableMaterial and never leave envelopes in the YAML path.
     const prepared = toPreparedDeployResult('preview', {
@@ -1390,7 +1390,7 @@ describe('resolveTraditionalWebSitesForMode and toPreparedDeployResult', () => {
           forBuild: false,
           forRuntime: true,
           isLiteral: true,
-          valueEnvelope: 'enc.binding-url',
+          valueEnvelope: 'tpsecret.binding-url',
         },
         {
           key: 'DATABASE_PASSWORD',
@@ -1398,7 +1398,7 @@ describe('resolveTraditionalWebSitesForMode and toPreparedDeployResult', () => {
           forBuild: false,
           forRuntime: true,
           isLiteral: true,
-          valueEnvelope: 'enc.binding-password',
+          valueEnvelope: 'tpsecret.binding-password',
         },
       ],
       storageMaterial: [],
@@ -1412,7 +1412,7 @@ describe('resolveTraditionalWebSitesForMode and toPreparedDeployResult', () => {
       warnings: [],
     })
     assertEquals(prepared.variableMaterial, [])
-    assertEquals(prepared.composeYaml.includes('enc.binding'), false)
+    assertEquals(prepared.composeYaml.includes('tpsecret.binding'), false)
   })
 })
 

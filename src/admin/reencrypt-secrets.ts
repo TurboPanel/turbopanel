@@ -6,12 +6,12 @@
  * row onto the current data-encryption key version.
  *
  * Per-blob rules (variable / TLS / principal / email secrets):
- * - Valid daemon-bound `denc` → skipped (delivery envelopes are not at-rest
+ * - Valid daemon-bound `tpdaemon` → skipped (delivery envelopes are not at-rest
  *   material for this sweep; variables/TLS/principals only).
- * - Malformed `denc` or malformed `enc` → failed.
+ * - Malformed `tpdaemon` or malformed `tpsecret` → failed.
  * - Non-envelope plaintext → failed (never auto-migrated).
- * - Current-version `enc` → skipped.
- * - Older-version `enc` → decrypt + re-seal; decrypt failures → failed.
+ * - Current-version `tpsecret` → skipped.
+ * - Older-version `tpsecret` → decrypt + re-seal; decrypt failures → failed.
  *
  * Email secret keys (`MAILGUN_API_KEY` / `SMTP_PASS`) follow the same
  * plaintext-is-failed rule as variables/TLS/principals.
@@ -28,7 +28,7 @@
 
 import { and, asc, eq, gt, isNotNull } from 'drizzle-orm'
 import {
-  ENVELOPE_MAGIC,
+  ENVELOPE_PREFIX_SECRET,
   encryptSecret,
   decryptSecret,
   isDaemonSealedEnvelope,
@@ -129,7 +129,7 @@ export function resetReencryptSweepLockForTests(): void {
 }
 
 type ProcessBlobOptions = Readonly<{
-  /** Skip valid daemon-bound `denc` envelopes (variable/TLS/principal paths). */
+  /** Skip valid daemon-bound `tpdaemon` envelopes (variable/TLS/principal paths). */
   allowDaemonBound: boolean
 }>
 
@@ -148,9 +148,9 @@ async function applyResealedBlob(
 }
 
 /**
- * Classify non-`enc` material before any decrypt/reseal work.
+ * Classify non-`tpsecret` material before any decrypt/reseal work.
  * Returns a terminal outcome, or `null` when the caller should treat `blob` as
- * an older-version `enc` envelope to decrypt.
+ * an older-version `tpsecret` envelope to decrypt.
  */
 function classifyBlobForSweep(
   blob: string,
@@ -162,7 +162,7 @@ function classifyBlobForSweep(
     return options.allowDaemonBound ? 'skip' : 'fail'
   }
   if (isDaemonSealedEnvelope(blob)) {
-    // Malformed daemon envelope — not intentional `denc` material.
+    // Malformed daemon envelope — not intentional `tpdaemon` material.
     return 'fail'
   }
 
@@ -171,8 +171,8 @@ function classifyBlobForSweep(
     return parsed.keyVersion === currentKeyVersion ? 'skip' : null
   }
 
-  if (blob.startsWith(`${ENVELOPE_MAGIC}.`)) {
-    // Looks like `enc` but failed structural parse → malformed at-rest material.
+  if (blob.startsWith(ENVELOPE_PREFIX_SECRET)) {
+    // Looks like `tpsecret` but failed structural parse → malformed at-rest material.
     return 'fail'
   }
 
@@ -394,7 +394,7 @@ async function sweepEmailSettingSecrets(
     summary.scanned += 1
     const parsed = parseSecretEnvelope(raw)
     if (parsed === null) {
-      // Plaintext, denc, or malformed — invalid/unsupported for email at rest.
+      // Plaintext, tpdaemon, or malformed — invalid/unsupported for email at rest.
       summary.failed += 1
       continue
     }

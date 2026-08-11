@@ -237,7 +237,7 @@ function collectEmailSettingMutations(
 }
 
 /**
- * Seal secret-key mutations as `enc` envelopes before they are written.
+ * Seal secret-key mutations as `tpsecret` envelopes before they are written.
  * Non-secret keys and deletions pass through untouched. Requires
  * data-encryption secrets whenever a secret value is being stored.
  */
@@ -308,7 +308,7 @@ async function applyEmailSettingMutations(
 /**
  * Decrypt a DB-stored email secret value for runtime use.
  *
- * DB values for `MAILGUN_API_KEY` / `SMTP_PASS` must be `enc` envelopes.
+ * DB values for `MAILGUN_API_KEY` / `SMTP_PASS` must be `tpsecret` envelopes.
  * Plaintext or other non-envelope material fails closed (`undefined`) so the
  * setting resolves as unset rather than activating an unsealed secret. When a
  * value is a sealed envelope but no data-encryption secrets are available (or

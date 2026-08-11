@@ -13,7 +13,7 @@ import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import {
   decryptSecret,
-  ENVELOPE_MAGIC,
+  ENVELOPE_PREFIX_SECRET,
   resealSecretForDaemon,
 } from '../authn/data-encryption.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../authn/secrets.ts'
@@ -81,7 +81,6 @@ import {
 import { parseManagedRowOptions } from './options.ts'
 import { resolveManagedConnectionListener } from './routes-helpers.ts'
 
-const AT_REST_ENVELOPE_PREFIX = `${ENVELOPE_MAGIC}.`
 
 export const MANAGED_INGRESS_RECONCILE_TTL_MS = 300_000
 
@@ -280,7 +279,7 @@ async function loadClusterUsers(
   for (const row of rows) {
     if (shouldSkipIngressFrontendUser(row.username, row.metadata)) continue
     const sealed = row.password
-    if (!isAtRestSealedPassword(sealed, AT_REST_ENVELOPE_PREFIX)) {
+    if (!isAtRestSealedPassword(sealed, ENVELOPE_PREFIX_SECRET)) {
       return { kind: 'managed_credential_not_sealed' }
     }
     const resealed = await resealSecretForDaemon(

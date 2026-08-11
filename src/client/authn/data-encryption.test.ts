@@ -55,6 +55,12 @@ describe('encryptSecretForDaemon / decryptSecretForDaemon', () => {
     const secretsConfig = await createSecretsConfig()
     const envelope = await encryptSecretForDaemon(secretsConfig, recipient, 'daemon-bound')
     expect(isDaemonSealedEnvelope(envelope)).toBe(true)
+    const tokens = envelope.split('.')
+    expect(tokens[0]).toBe('tpdaemon')
+    expect(tokens[1]).toBe('v1')
+    expect(tokens[2]).toBe(recipient.serverId)
+    expect(tokens[3]).toBe(recipient.keyId)
+    expect(tokens).toHaveLength(5)
     expect(parseDaemonSecretEnvelope(envelope)).toEqual({
       ...recipient,
       keyVersion: 1,
@@ -80,7 +86,7 @@ describe('encryptSecret / decryptSecret', () => {
     const secrets = await createCurrentSecrets()
     const envelope = await encryptSecret(secrets, 'hello-secret')
     expect(isSealedEnvelope(envelope)).toBe(true)
-    expect(envelope.startsWith(`${ENVELOPE_MAGIC}.1.`)).toBe(true)
+    expect(envelope.startsWith(`${ENVELOPE_MAGIC}.v1.`)).toBe(true)
     expect(envelope.split('.')).toHaveLength(3)
     expect(await decryptSecret(secrets, envelope)).toBe('hello-secret')
   })
@@ -114,7 +120,7 @@ describe('encryptSecret / decryptSecret', () => {
   it('rejects unknown key version without trial decryption', async () => {
     const secrets = await createCurrentSecrets()
     const envelope = await encryptSecret(secrets, 'x')
-    const tamperedVersion = envelope.replace(/\.1\./, '.99.')
+    const tamperedVersion = envelope.replace(/\.v1\./, '.v99.')
     await expect(decryptSecret(secrets, tamperedVersion)).rejects.toThrow(
       DataEncryptionError,
     )
@@ -122,10 +128,13 @@ describe('encryptSecret / decryptSecret', () => {
 
   it('rejects malformed envelopes', async () => {
     const secrets = await createCurrentSecrets()
-    await expect(decryptSecret(secrets, 'enc.1')).rejects.toThrow(
+    await expect(decryptSecret(secrets, 'tpsecret.v1')).rejects.toThrow(
       DataEncryptionError,
     )
     await expect(decryptSecret(secrets, 'not-sealed')).rejects.toThrow(
+      DataEncryptionError,
+    )
+    await expect(decryptSecret(secrets, 'tpsecretvalue')).rejects.toThrow(
       DataEncryptionError,
     )
   })
@@ -147,7 +156,7 @@ describe('resealSecretForDaemon', () => {
     keyId: '22222222-2222-4222-8222-222222222222',
   }
 
-  it('reseals enc → denc for the bound recipient', async () => {
+  it('reseals tpsecret → tpdaemon for the bound recipient', async () => {
     const secretsConfig = await createSecretsConfig()
     const dataEncryptionSecrets = await createCurrentSecrets()
     const sealed = await encryptSecret(dataEncryptionSecrets, 'delivery-secret')
@@ -165,7 +174,7 @@ describe('resealSecretForDaemon', () => {
 })
 
 describe('generateSealedSecret', () => {
-  it('returns plaintext and an enc envelope that decrypts to it', async () => {
+  it('returns plaintext and a tpsecret envelope that decrypts to it', async () => {
     const dataEncryptionSecrets = await createCurrentSecrets()
     const { plaintext, sealed } = await generateSealedSecret(dataEncryptionSecrets)
     expect(plaintext.length).toBeGreaterThan(0)
@@ -173,7 +182,7 @@ describe('generateSealedSecret', () => {
     expect(await decryptSecret(dataEncryptionSecrets, sealed)).toBe(plaintext)
   })
 
-  it('principal-password sealing stores enc never plaintext', async () => {
+  it('principal-password sealing stores tpsecret never plaintext', async () => {
     // Mirrors POST /principals/:id/password { generate: true } persist path.
     const dataEncryptionSecrets = await createCurrentSecrets()
     const { plaintext, sealed } = await generateSealedSecret(dataEncryptionSecrets)
@@ -184,7 +193,7 @@ describe('generateSealedSecret', () => {
 })
 
 describe('isSealedEnvelope', () => {
-  it('returns true for enc envelopes', async () => {
+  it('returns true for tpsecret envelopes', async () => {
     const secrets = await createCurrentSecrets()
     const envelope = await encryptSecret(secrets, 'x')
     expect(isSealedEnvelope(envelope)).toBe(true)
@@ -193,6 +202,7 @@ describe('isSealedEnvelope', () => {
   it('returns false for plaintext and unrelated strings', () => {
     expect(isSealedEnvelope('plain-password')).toBe(false)
     expect(isSealedEnvelope('')).toBe(false)
-    expect(isSealedEnvelope('enc')).toBe(false)
+    expect(isSealedEnvelope('tpsecret')).toBe(false)
+    expect(isSealedEnvelope('tpsecretvalue')).toBe(false)
   })
 })

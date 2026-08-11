@@ -182,7 +182,7 @@ The DO caches `#serverId` (and live-socket presence) once in the constructor via
 
 **Co-located daemon** (`__direct__`): stored in the `cell` table (`remote_address = '__direct__'`) so `tryAssignColocatedDaemonToInstalledOrganization` and tunnel routing still work. Co-located detection reads the Postgres projection (`src/client/servers/colocated.ts`); the projection's `remoteAddress`/`__direct__` marker now flows from **attach meta** (`#applyDaemonSocketAttach` → runtime snapshot) into Postgres rather than from the cell-row snapshot.
 
-**Challenge stores:** enrollment and auth challenges are **stateless HMAC-signed tokens** (`src/daemon/cell/stateless-challenge.ts`). `issue()` returns a self-contained `challengeId = base64url(payload).base64url(HMAC)` signed with the `daemon-challenge-signing` derived key. `consume()` re-derives and verifies — no storage, no DO, no Redis key. Replay protection relies on the short TTL (60s) and the daemon's Ed25519 private key requirement.
+**Challenge stores:** enrollment and auth challenges are **stateless HMAC-signed tokens** (`src/daemon/cell/stateless-challenge.ts`). `issue()` returns a self-contained `challengeId` in envelope form `tpchallenge.v<version>.<payloadB64u>.<sigB64u>` signed with the `daemon-challenge-signing` derived key. `consume()` verifies with a **direct key lookup by embedded version** (`findKeyForVersion`) — no loop over every keyring key, no storage, no DO, no Redis key. A challenge whose version has been retired simply fails and the daemon re-requests within the 60 s TTL. Challenges are not single-use; replay is bounded by the short TTL and the daemon's Ed25519 private key requirement.
 
 **`DAEMON_INBOUND_ALLOWED`** is defined in `src/daemon/cell/protocol.ts` (not `hub.ts`).
 
@@ -204,7 +204,7 @@ The DO caches `#serverId` (and live-socket presence) once in the constructor via
 | --- | --- | --- |
 | `GET /api/daemon/v1/jwks.json` | public | Ed25519 public JWKS for daemon JWT verification (`Cache-Control: public, max-age=300`) |
 | `POST /api/daemon/v1/commands/lease` | daemon JWT | Poll for pending commands (stub — returns `{ commands: [] }`) |
-| `POST /api/daemon/v1/secrets/decrypt` | daemon JWT | Batch-decrypt recipient-scoped `denc` envelopes (`{ ciphertexts }` → `{ plaintexts }`; null per failed entry); rejects global `enc` blobs |
+| `POST /api/daemon/v1/secrets/decrypt` | daemon JWT | Batch-decrypt recipient-scoped **`tpdaemon`** envelopes (`{ ciphertexts }` → `{ plaintexts }`; null per failed entry); rejects at-rest **`tpsecret`** blobs |
 | `POST /api/daemon/v1/metrics` | daemon JWT | Ingest a v1 host-metrics frame; serverId from JWT `sub`; fire-and-forget to AE/ClickHouse; never wakes the DO; returns `202` |
 
 - No `version` push / auto-update: the daemon never self-updates.

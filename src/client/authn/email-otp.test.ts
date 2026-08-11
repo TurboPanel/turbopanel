@@ -166,7 +166,10 @@ it('createEmailOtp stores a keyed HMAC verifier, never the raw OTP', async () =>
     assertEquals(rows.length, 1)
     // The at-rest value must never be the plaintext OTP.
     assertEquals(rows[0].value === otp, false)
-    assertEquals(rows[0].value.startsWith(`v${secrets.current.version}.`), true)
+    assertEquals(
+      rows[0].value.startsWith(`tpotp.v${secrets.current.version}.`),
+      true,
+    )
 
     // The correct OTP still verifies against the stored HMAC.
     const ok = await verifyEmailOtp(db, email, 'sign-in', otp, secrets)
@@ -193,6 +196,8 @@ it('stored OTP verifier cannot be validated with only the database value', async
   const otp = '123456'
   const stored = await deriveOtpVerifier('sign-in', emailHash, otp, secrets)
 
+  assertEquals(stored.startsWith('tpotp.'), true)
+
   // Correct secret verifies.
   assertEquals(
     await verifyOtpVerifier('sign-in', emailHash, otp, stored, secrets),
@@ -206,6 +211,18 @@ it('stored OTP verifier cannot be validated with only the database value', async
   // Brute-forcing the six-digit space against a wrong key also fails.
   assertEquals(
     await verifyOtpVerifier('sign-in', emailHash, '000000', stored, wrongSecrets),
+    false,
+  )
+  // Version absent from the keyring cannot be verified by rotation sweep alone
+  // when the embedded hex is garbage under that missing version prefix.
+  assertEquals(
+    await verifyOtpVerifier(
+      'sign-in',
+      emailHash,
+      otp,
+      'tpotp.v99.deadbeefcafebabe',
+      secrets,
+    ),
     false,
   )
 })
@@ -229,7 +246,7 @@ it('rotated fallback OTP keys still verify existing verifiers', async () => {
     otp,
     oldSecrets,
   )
-  assertEquals(storedUnderV1.startsWith('v1.'), true)
+  assertEquals(storedUnderV1.startsWith('tpotp.v1.'), true)
 
   // Rotate: new current key (v2) with v1 as fallback.
   const rotatedConfig = parseSecretsEnv(

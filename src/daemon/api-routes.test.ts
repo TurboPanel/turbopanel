@@ -581,6 +581,55 @@ test("POST /enroll rejects a raw machine-id shaped machineKey", async () => {
   assertEquals(body.error, "Invalid machineKey");
 });
 
+test("POST /enroll returns 400 for malformed tpchallenge id", async () => {
+  if (!dbUrl) {
+    console.warn(
+      "Skipping daemon API route tests: TURBOPANEL_DATABASE_URL not set",
+    );
+    return;
+  }
+  const db = createDenoDb();
+  const app = await createTestApp(db);
+  const key = await generateKeyMaterial();
+  // Invalid base64url signature segment must not 500 — same invalid-challenge contract.
+  const response = await app.request("/api/daemon/v1/enroll", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      licenseId: crypto.randomUUID(),
+      licenseToken: "dummy-token",
+      machineKey: randomMachineKey(),
+      hostname: "host-test",
+      publicJwk: key.publicJwk,
+      challengeId: "tpchallenge.v1.cGF5bG9hZA.%%%",
+      signature: "aa",
+    }),
+  });
+  assertEquals(response.status, 400);
+  const body = await response.json() as { error?: string };
+  assertEquals(body.error, "Invalid or expired challenge");
+});
+
+test("POST /auth/session returns 400 for malformed tpchallenge id", async () => {
+  await withEnrollFixture(async ({ app, serverId, keyId, hostname, machineKey }) => {
+    const response = await app.request("/api/daemon/v1/auth/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        serverId,
+        keyId,
+        challengeId: "tpchallenge.v1.cGF5bG9hZA.%%%",
+        signature: "aa",
+        hostname,
+        machineKey,
+      }),
+    });
+    assertEquals(response.status, 400);
+    const body = await response.json() as { error?: string };
+    assertEquals(body.error, "Invalid or expired challenge");
+  });
+});
+
 test("POST /auth/session rejects a raw machine-id shaped machineKey", async () => {
   await withEnrollFixture(async ({ app, serverId, keyId, hostname }) => {
     const response = await app.request("/api/daemon/v1/auth/session", {
@@ -1583,7 +1632,7 @@ test("POST /secrets/decrypt returns 401 without JWT", async () => {
     const response = await app.request("/api/daemon/v1/secrets/decrypt", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ciphertexts: ["enc.1.x"] }),
+      body: JSON.stringify({ ciphertexts: ["tpsecret.v1.x"] }),
     });
     assertEquals(response.status, 401);
   });
@@ -1668,7 +1717,7 @@ test("POST /secrets/decrypt rejects envelopes sealed for another daemon", async 
   });
 });
 
-test("POST /secrets/decrypt rejects global enc envelopes (daemon-scoped only)", async () => {
+test("POST /secrets/decrypt rejects global tpsecret envelopes (daemon-scoped only)", async () => {
   await withEnrollFixture(async ({ app, serverId, keyId }) => {
     const daemonToken = await issueDaemonToken(serverId, keyId);
     const response = await app.request("/api/daemon/v1/secrets/decrypt", {
@@ -1677,7 +1726,7 @@ test("POST /secrets/decrypt rejects global enc envelopes (daemon-scoped only)", 
         Authorization: `Bearer ${daemonToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ ciphertexts: ["enc.1.x"] }),
+      body: JSON.stringify({ ciphertexts: ["tpsecret.v1.x"] }),
     });
     assertEquals(response.status, 200);
     const body = await response.json() as { plaintexts: (string | null)[] };
@@ -1738,7 +1787,7 @@ test("POST /secrets/decrypt rejects a batch larger than the limit", async () => 
   const app = await createDecryptTestApp();
   const daemonToken = await issueDaemonToken("srv-decrypt-batch", "key-batch");
   const ciphertexts = new Array(MAX_SECRETS_DECRYPT_BATCH + 1).fill(
-    "enc.1.x",
+    "tpsecret.v1.x",
   );
   const response = await app.request("/api/daemon/v1/secrets/decrypt", {
     method: "POST",

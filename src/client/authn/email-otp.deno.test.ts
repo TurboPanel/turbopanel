@@ -42,7 +42,7 @@ test("deriveOtpVerifier and verifyOtpVerifier round-trip with rotation fallbacks
   const emailHash = await hashEmailForOtp("otp@example.com");
   const otp = "123456";
   const stored = await deriveOtpVerifier("sign-in", emailHash, otp, secrets);
-  assertEquals(stored.startsWith(`v${secrets.current.version}.`), true);
+  assertEquals(stored.startsWith(`tpotp.v${secrets.current.version}.`), true);
   assertEquals(
     await verifyOtpVerifier("sign-in", emailHash, otp, stored, secrets),
     true,
@@ -56,7 +56,22 @@ test("deriveOtpVerifier and verifyOtpVerifier round-trip with rotation fallbacks
     false,
   );
   assertEquals(
-    await verifyOtpVerifier("sign-in", emailHash, otp, "v0.deadbeef", secrets),
+    await verifyOtpVerifier("sign-in", emailHash, otp, "tpotp.v0.deadbeef", secrets),
+    false,
+  );
+  // Old v1.<hex> shape must be rejected (no back-compat).
+  assertEquals(
+    await verifyOtpVerifier("sign-in", emailHash, otp, "v1.deadbeef", secrets),
+    false,
+  );
+  assertEquals(
+    await verifyOtpVerifier(
+      "sign-in",
+      emailHash,
+      otp,
+      "tpotp.v1.not-hex-!!!!",
+      secrets,
+    ),
     false,
   );
 });

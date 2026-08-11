@@ -48,7 +48,7 @@ describe('apply-variables', () => {
     const result = applyVariablesToComposeDocument(doc, {
       globalEntries: [{
         key: 'SECRET',
-        value: 'enc.1.test',
+        value: 'tpsecret.v1.test',
         isSecret: true,
         isLiteral: false,
         forBuild: false,
@@ -69,7 +69,7 @@ describe('apply-variables', () => {
     const applied = applyVariablesToComposeDocument(doc, {
       globalEntries: [{
         key: 'SECRET',
-        value: 'enc.1.test',
+        value: 'tpsecret.v1.test',
         isSecret: true,
         isLiteral: false,
         forBuild: true,
@@ -192,7 +192,7 @@ describe('apply-variables', () => {
       forBuild: true,
       forRuntime: true,
       isLiteral: false,
-      valueEnvelope: 'enc.1.test',
+      valueEnvelope: 'tpsecret.v1.test',
     }])
     assertEquals(unchanged, doc)
   })

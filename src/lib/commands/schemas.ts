@@ -27,7 +27,7 @@ import {
   isValidWireguardListenPort,
   isValidWireguardPublicKey,
 } from './wireguard.ts'
-import { DAEMON_ENVELOPE_MAGIC } from '../../client/authn/data-encryption.ts'
+import { ENVELOPE_PREFIX_DAEMON } from '../../client/authn/data-encryption.ts'
 import type { CommandType } from './types.ts'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -535,7 +535,7 @@ export type EnvironmentDeployTlsMaterial = {
   tlsId: string
   /** Public leaf + intermediate chain PEM. */
   certificatePem: string
-  /** Daemon-recipient sealed private key (`denc.…`). */
+  /** Daemon-recipient sealed private key (`tpdaemon.…`). */
   privateKeyEnvelope: string
 }
 
@@ -1712,7 +1712,7 @@ const MAX_MANAGED_PEER_ADDRESSES = 16
 const MANAGED_DATABASE_ACTIONS = new Set(['create', 'drop'])
 const MANAGED_LIFECYCLE_ACTIONS = new Set(['start', 'stop', 'restart'])
 const MANAGED_CONFIG_MODES = new Set(['0640', '0600'])
-const DAEMON_ENVELOPE_PREFIX = `${DAEMON_ENVELOPE_MAGIC}.`
+const DAEMON_ENVELOPE_PREFIX = ENVELOPE_PREFIX_DAEMON
 
 function isSafeIdentifier(value: string): boolean {
   return (
@@ -1827,7 +1827,7 @@ export type ManagedApplyCredential = {
   role: 'root' | 'user' | 'replication'
   databases: string[]
   privileges?: string[]
-  /** Daemon-recipient sealed password (`denc.…`). */
+  /** Daemon-recipient sealed password (`tpdaemon.…`). */
   password: string
 }
 
@@ -1846,7 +1846,7 @@ export type ManagedApplyTlsMaterial = {
 
 /**
  * Org-CA-signed leaf for managed frontend (ProxySQL) TLS.
- * Private key is daemon-recipient sealed (`denc.…`); cert + CA are plain PEM.
+ * Private key is daemon-recipient sealed (`tpdaemon.…`); cert + CA are plain PEM.
  */
 export type ManagedApplyOrgTlsMaterial = {
   certificatePem: string
@@ -2048,7 +2048,7 @@ export type ManagedIngressReconcileBackend = {
 export type ManagedIngressReconcileUser = {
   username: string
   role: 'root' | 'user'
-  /** Daemon-recipient sealed password (`denc.…`) for ProxySQL frontend auth. */
+  /** Daemon-recipient sealed password (`tpdaemon.…`) for ProxySQL frontend auth. */
   password: string
   defaultDatabase?: string
 }

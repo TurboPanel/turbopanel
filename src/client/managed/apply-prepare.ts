@@ -4,7 +4,7 @@ import type { AppEnv } from '../../app.ts'
 import {
   decryptSecret,
   encryptSecret,
-  ENVELOPE_MAGIC,
+  ENVELOPE_PREFIX_SECRET,
   resealSecretForDaemon,
 } from '../authn/data-encryption.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../authn/secrets.ts'
@@ -65,7 +65,6 @@ import {
 } from './members.ts'
 import { parseManagedResidual } from './serialize.ts'
 
-const AT_REST_ENVELOPE_PREFIX = `${ENVELOPE_MAGIC}.`
 const APPLY_EXPIRES_MS = 600_000
 /** Polling cadence while awaiting primary apply before standby enqueue. */
 const COMMAND_AWAIT_POLL_MS = 1_000
@@ -386,7 +385,7 @@ async function buildCredentials(
       .where(eq(principal.id, row.id))
       .limit(1)
     const sealed = passwordRow?.password
-    if (typeof sealed !== 'string' || !sealed.startsWith(AT_REST_ENVELOPE_PREFIX)) {
+    if (typeof sealed !== 'string' || !sealed.startsWith(ENVELOPE_PREFIX_SECRET)) {
       return { kind: 'managed_credential_not_sealed' }
     }
 
@@ -447,7 +446,7 @@ export async function ensureActiveOrganizationCa(
       typeof existing.certificatePem !== 'string' ||
       existing.certificatePem.length === 0 ||
       typeof existing.privateKeyPem !== 'string' ||
-      !existing.privateKeyPem.startsWith(AT_REST_ENVELOPE_PREFIX)
+      !existing.privateKeyPem.startsWith(ENVELOPE_PREFIX_SECRET)
     ) {
       return { kind: 'managed_credential_not_sealed' }
     }
@@ -462,7 +461,7 @@ export async function ensureActiveOrganizationCa(
     dataEncryptionSecrets,
     material.privateKeyPem,
   )
-  if (!privateKeyPemSealed.startsWith(AT_REST_ENVELOPE_PREFIX)) {
+  if (!privateKeyPemSealed.startsWith(ENVELOPE_PREFIX_SECRET)) {
     return { kind: 'managed_credential_not_sealed' }
   }
   const { columns, residual } = splitTlsMetadata(
@@ -521,7 +520,7 @@ export async function ensureActiveOrganizationCa(
     typeof row.certificatePem !== 'string' ||
     row.certificatePem.length === 0 ||
     typeof row.privateKeyPem !== 'string' ||
-    !row.privateKeyPem.startsWith(AT_REST_ENVELOPE_PREFIX)
+    !row.privateKeyPem.startsWith(ENVELOPE_PREFIX_SECRET)
   ) {
     return { kind: 'managed_credential_not_sealed' }
   }
@@ -533,7 +532,7 @@ export async function ensureActiveOrganizationCa(
 
 /**
  * Issue a managed leaf from an org CA and reseal the leaf private key as a
- * daemon-bound `denc` envelope for `payload.orgTlsMaterial`.
+ * daemon-bound `tpdaemon` envelope for `payload.orgTlsMaterial`.
  *
  * Exported for host-free unit tests (no DB).
  *
@@ -740,7 +739,7 @@ async function attachReplicationCredential(
     .where(eq(principal.id, repl.id))
     .limit(1)
   const sealed = passwordRow?.password
-  if (typeof sealed !== 'string' || !sealed.startsWith(AT_REST_ENVELOPE_PREFIX)) {
+  if (typeof sealed !== 'string' || !sealed.startsWith(ENVELOPE_PREFIX_SECRET)) {
     return { kind: 'managed_credential_not_sealed' }
   }
   const resealed = await resealSecretForDaemon(

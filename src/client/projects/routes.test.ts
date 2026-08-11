@@ -286,7 +286,7 @@ test('POST /projects managed postgres scaffolds env without managed row', async 
       .where(eq(variable.environmentId, envs[0]!.id))
     assertEquals(vars.length, 1)
     assertEquals(vars[0]!.isSecret, true)
-    assertEquals(vars[0]!.value?.startsWith('enc.'), true)
+    assertEquals(vars[0]!.value?.startsWith('tpsecret.'), true)
   })
 })
 

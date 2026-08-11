@@ -298,7 +298,7 @@ test('PATCH /variables/:id seals plaintext when isSecret toggles true without va
 
     const row = rows[0]!
     assertEquals(row.isSecret, true)
-    assertEquals(row.value?.startsWith('enc.'), true)
+    assertEquals(row.value?.startsWith('tpsecret.'), true)
 
     const decrypted = await decryptSecret(dataEncryptionSecrets, row.value!)
     assertEquals(decrypted, 'plain-secret')
@@ -690,7 +690,7 @@ test('PATCH /variables/:id preserves empty-string when toggling to secret', asyn
 
     const row = rows[0]!
     assertEquals(row.isSecret, true)
-    assertEquals(row.value.startsWith('enc.'), true)
+    assertEquals(row.value.startsWith('tpsecret.'), true)
 
     const decrypted = await decryptSecret(dataEncryptionSecrets, row.value)
     assertEquals(decrypted, '')
@@ -752,7 +752,7 @@ test('binding-owned variables reject PATCH/DELETE and conflict on POST', async (
         serviceId,
         bindingId,
         key: 'DATABASE_URL',
-        value: 'enc.fake-envelope',
+        value: 'tpsecret.fake-envelope',
         isSecret: true,
         isLiteral: true,
         forRuntime: true,

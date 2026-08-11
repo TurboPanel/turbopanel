@@ -215,7 +215,7 @@ test('reencryptAtRestSecrets reseals old-version enc and fails plaintext/malform
         },
         {
           id: '00000000-0000-4000-8000-0000000000v3',
-          value: 'enc.malformed-not-parseable',
+          value: 'tpsecret.malformed-not-parseable',
         },
       ]],
     },
@@ -247,7 +247,7 @@ test('reencryptAtRestSecrets skips current enc and valid denc; fails malformed d
         { id: '00000000-0000-4000-8000-0000000000d1', value: denc },
         {
           id: '00000000-0000-4000-8000-0000000000d2',
-          value: 'denc.not-a-valid-daemon-envelope',
+          value: 'tpdaemon.not-a-valid-daemon-envelope',
         },
       ]],
     },

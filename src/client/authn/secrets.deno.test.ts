@@ -1,4 +1,5 @@
 import { assertEquals, assertRejects, assertThrows } from "jsr:@std/assert";
+import { stub } from "@std/testing/mock";
 import {
   deriveEncryptionSecretsConfig,
   deriveKey,
@@ -10,6 +11,7 @@ import { TEST_ONLY_TURBOPANEL_SECRET } from "../../test-fixtures/secrets.ts";
 
 const STRONG_A = TEST_ONLY_TURBOPANEL_SECRET;
 const STRONG_B = "Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2_Mm3Nn4Oo5Pp6Qq7";
+const STRONG_C = "Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2Mm3Nn4_Oo5Pp6Qq7Rr8";
 const TOO_SHORT = "abc123_short";
 
 /**
@@ -61,14 +63,106 @@ test("parses a valid single secret at version 1", () => {
   assertEquals(config.versioned[0], { version: 1, value: STRONG_A });
 });
 
-test("parses a valid plural keyring sorted descending by version", () => {
+test("parses a valid plural keyring keeping written order (descending)", () => {
   const config = parseSecretsEnv(
     undefined,
-    `1:${STRONG_A},2:${STRONG_B}`,
+    `2:${STRONG_B},1:${STRONG_A}`,
     "deno",
   );
   assertEquals(config.versioned.map((v) => v.version), [2, 1]);
   assertEquals(config.versioned[0].value, STRONG_B);
+});
+
+test("folds TURBOPANEL_SECRET as decrypt-only v1 when TURBOPANEL_SECRETS has no v1", () => {
+  const config = parseSecretsEnv(
+    STRONG_A,
+    `3:${STRONG_C},2:${STRONG_B}`,
+    "deno",
+  );
+  assertEquals(config.versioned.length, 3);
+  assertEquals(config.versioned[0], { version: 3, value: STRONG_C });
+  assertEquals(config.versioned[1], { version: 2, value: STRONG_B });
+  assertEquals(config.versioned[2], { version: 1, value: STRONG_A });
+});
+
+test("does not duplicate v1 when TURBOPANEL_SECRET matches keyring entry", () => {
+  const config = parseSecretsEnv(
+    STRONG_A,
+    `2:${STRONG_B},1:${STRONG_A}`,
+    "deno",
+  );
+  assertEquals(config.versioned.length, 2);
+  assertEquals(config.versioned.map((v) => v.version), [2, 1]);
+  assertEquals(config.versioned[1], { version: 1, value: STRONG_A });
+});
+
+test("rejects conflicting v1 between TURBOPANEL_SECRET and TURBOPANEL_SECRETS", () => {
+  assertThrows(
+    () =>
+      parseSecretsEnv(
+        STRONG_B,
+        `2:${STRONG_C},1:${STRONG_A}`,
+        "deno",
+      ),
+    Error,
+    "TURBOPANEL_SECRET and TURBOPANEL_SECRETS",
+  );
+});
+
+test("keeps non-descending keyring order without throwing and warns (first entry is current)", () => {
+  const writes: string[] = [];
+  const writeStub = stub(Deno.stderr, "writeSync", (data) => {
+    writes.push(new TextDecoder().decode(data));
+    return data.byteLength;
+  });
+  try {
+    const config = parseSecretsEnv(
+      undefined,
+      `1:${STRONG_A},2:${STRONG_B}`,
+      "deno",
+    );
+    assertEquals(config.versioned.length, 2);
+    assertEquals(config.versioned[0], { version: 1, value: STRONG_A });
+    assertEquals(config.versioned[1], { version: 2, value: STRONG_B });
+    const authWarns = writes.filter((line) => line.includes(" WARN auth"));
+    assertEquals(authWarns.length, 1);
+    assertEquals(
+      authWarns[0]?.includes(
+        "TURBOPANEL_SECRETS entries are not listed in descending version order",
+      ),
+      true,
+    );
+    assertEquals(
+      authWarns[0]?.includes(
+        "the first entry is treated as current — list highest version first",
+      ),
+      true,
+    );
+  } finally {
+    writeStub.restore();
+  }
+});
+
+test("accepts gapped descending versions without warning", () => {
+  const writes: string[] = [];
+  const writeStub = stub(Deno.stderr, "writeSync", (data) => {
+    writes.push(new TextDecoder().decode(data));
+    return data.byteLength;
+  });
+  try {
+    const config = parseSecretsEnv(
+      undefined,
+      `3:${STRONG_A},1:${STRONG_B}`,
+      "deno",
+    );
+    assertEquals(config.versioned.map((v) => v.version), [3, 1]);
+    assertEquals(config.versioned[0].version, 3);
+    assertEquals(config.versioned[0].value, STRONG_A);
+    const authWarns = writes.filter((line) => line.includes(" WARN auth"));
+    assertEquals(authWarns.length, 0);
+  } finally {
+    writeStub.restore();
+  }
 });
 
 test("rejects an empty plural entry value", () => {

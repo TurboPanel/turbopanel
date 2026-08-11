@@ -1,6 +1,6 @@
 # Authentication — AGENTS.md
 
-Custom PAM-style auth on the Web Crypto API (runs on both Deno and Workers): Argon2id password hashing, opaque DB-backed sessions with signed cookies, the host PAM install gate, the session-secret keyring + `enc`/`denc` data encryption, daemon key authentication (Ed25519 JWT), and all client/install auth routes.
+Custom PAM-style auth on the Web Crypto API (runs on both Deno and Workers): Argon2id password hashing, opaque DB-backed sessions with signed cookies, the host PAM install gate, the session-secret keyring + `tpsecret`/`tpdaemon` data encryption, daemon key authentication (Ed25519 JWT), and all client/install auth routes.
 
 Root context: `../../../AGENTS.md`. Daemon-side key verification files live under `../../daemon/authn/`; daemon cell + license lifecycle: `../../daemon/cell/AGENTS.md`.
 
@@ -71,8 +71,8 @@ Sign-in is **email-only** (the legacy `user.username` / `displayUsername` column
 Sessions are **opaque DB-backed tokens** with a signed cookie:
 
 - A 32-byte random token is generated and stored in the `session` table (`token`, `userId`, `expiresAt`, `ipAddress`, `userAgent`).
-- The cookie value sent to the browser is `<token>.v<version>.<HMAC-SHA256-signature>`, where the signature is computed over the raw token using the session secret for that version.
-- On every request the signature is verified first (constant-time); only then is the DB queried for the session row.
+- The cookie value sent to the browser is `tpsession.v<version>.<token>.<sig>`, where the signature is computed over the raw token using the session secret for that version.
+- On every request the signature is verified first (constant-time); only then is the DB queried for the session row. A cookie value that does not parse as this envelope is rejected outright (no fallback formats).
 - Cookie name: `turbopanel.session_token` on HTTP, `__Host-turbopanel.session_token` on HTTPS (resolved from the request URL in `src/client/authn/crypto.ts`). `__Host-` requires `Secure`, `Path=/`, and no `Domain` (stronger against subdomain cookie shadowing).
 - Cookie attributes: `HttpOnly; SameSite=Lax; Path=/; Max-Age=604800` (7 days). `Secure` is added automatically when the request URL is HTTPS.
 
@@ -88,7 +88,12 @@ Superadmin-only routes (`createRootOnlyMiddleware`, `resolveRootSession`) author
 
 ### Session secret configuration
 
-Both runtimes read the same root secret env vars. **`TURBOPANEL_SECRET`** = single-key mode (normalized to `v1` when `TURBOPANEL_SECRETS` is unset). **`TURBOPANEL_SECRETS`** = plural keyring (`2:secret,1:secret`; highest version is current signing key). **First key signs / all keys verify.** Every key yields a stable `kid`; JWT headers include the active `kid`.
+Both runtimes read the same root secret env vars (Better Auth-style keyring semantics):
+
+- **`TURBOPANEL_SECRETS`** — versioned list in the **exact order given**. The **first entry is current/signing**; the rest are decrypt/verify-only fallbacks. Versions are labels for envelopes (`tpsecret.v<n>…`); **entry order** decides current vs fallback — not “highest version wins.” Operators should list highest version first (e.g. `2:secret,1:secret`); if entries are not already in descending-version order, boot logs a **warning only** and still treats the written first entry as current.
+- **`TURBOPANEL_SECRET`** — single root secret. Alone, it becomes the sole keyring entry (`v1`, current). When set **alongside** `TURBOPANEL_SECRETS`, it is folded in as an additional **decrypt-only** fallback (`version: 1`, always appended last — never current). If the keyring already has `1:` with the **same** value, the fold is a no-op; if `1:` exists with a **different** value, boot fails (ambiguity — both env names are named in the error).
+
+**First entry signs / all keys verify.** Every key yields a stable `kid`; JWT headers include the active `kid`.
 
 `deriveSecretsConfig()` HKDF-derives HMAC keys for `session-signing` and `daemon-challenge-signing`. `deriveEncryptionSecretsConfig()` derives AES-256-GCM keys for `data-encryption`. The **daemon-facing JWT** uses `deriveDaemonJwtKeyring()` (`src/daemon/authn/daemon-jwt-keyring.ts`: Ed25519, HKDF salt `turbopanel`, info `daemon-jwt-eddsa`) — the legacy HMAC `daemon-jwt-signing` purpose is no longer used for daemon JWTs.
 
@@ -96,10 +101,10 @@ Both runtimes read the same root secret env vars. **`TURBOPANEL_SECRET`** = sing
 
 **Rotation:** add a new active key at the highest version, deploy, old tokens verify during their ≤15-min window, then drop the old key from the keyring/JWKS.
 
-| Variable | Behaviour when missing |
+| Variable | Behaviour |
 | --- | --- |
-| `TURBOPANEL_SECRET` | Single 48-char root key (`src/generate-secret.ts`); normalized to `v1` when `TURBOPANEL_SECRETS` is unset |
-| `TURBOPANEL_SECRETS` | Versioned list `2:secret,1:secret`; highest version is current signing key |
+| `TURBOPANEL_SECRET` | Single 48-char root key (`src/generate-secret.ts`); alone → `v1` current; with `TURBOPANEL_SECRETS` → decrypt-only `v1` fallback (noop if identical; boot error if conflicting) |
+| `TURBOPANEL_SECRETS` | Versioned list `2:secret,1:secret` — order as written; first entry is current/signing |
 
 | Runtime | Source |
 | --- | --- |
@@ -108,7 +113,7 @@ Both runtimes read the same root secret env vars. **`TURBOPANEL_SECRET`** = sing
 
 **Root secret format:** 48 characters from `[A-Za-z0-9_]`, always at least one `_` between positions 2–47 (never in position 1 or 48). Implementation: `scripts/generate-secret.mjs` (re-exported from `src/generate-secret.ts`). Generate with `pnpm generate:secret` in `instance/`. HKDF uses the UTF-8 bytes of the string as key material (`deriveKey` in `src/client/authn/secrets.ts`). Same helper (`generatePassword`) is the canonical generator for random passwords.
 
-At least one of `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` must be set in production. Workers always fail fast when both are missing. Co-located dev Ansible (`instance-launch`) persists a single signing secret at `/etc/turbopanel/instance/.instance_secret` (`root:<turbopanel_group>` mode `0640` so the dev console can HMAC Local-Console developer API calls) and injects it into `runtime.dev-vars` for **both** Deno and Workers runtimes so session cookies and daemon JWTs survive runtime toggles; the Deno unit also loads `runtime.dev-vars` via `EnvironmentFile`. Without that file, Deno co-located dev (`TURBOPANEL_UI_MODE` ≠ `static`) falls back to an ephemeral random key (sessions do not survive restarts or switches).
+At least one of `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` must be set in production. Workers always fail fast when both are missing. Co-located dev Ansible (`instance-launch`) persists `/etc/turbopanel/instance/.instance_secret` (legacy singular, generate-once) and `/etc/turbopanel/instance/.instance_secrets` (versioned keyring, `<version>:<value>` comma-separated, highest first) — both `root:<turbopanel_group>` mode `0640` so the dev console can HMAC Local-Console developer API calls — and emits both into `runtime.dev-vars` for **both** Deno and Workers runtimes so session cookies and daemon JWTs survive runtime toggles; the Deno unit also loads `runtime.dev-vars` via `EnvironmentFile`. Rotation is the opt-in extra-var `turbopanel_instance_secret_rotate` (ordinary converges never rotate). Without those files, Deno co-located dev (`TURBOPANEL_UI_MODE` ≠ `static`) falls back to an ephemeral random key (sessions do not survive restarts or switches).
 
 Add a `TURBOPANEL_SECRET` to `dev/.env` before running `pnpm dev` (Tilt syncs it to `instance/.dev.vars` — see `dev/.env.example`).
 
@@ -139,9 +144,11 @@ Local-Console auth is Deno + developer-surface only; it never applies on Workers
 
 ### Data encryption
 
-`enc` is the **universal at-rest format** for all persisted secrets (secret variables, TLS private keys, principal passwords). Shared symmetric encryption is keyed off the same root secret via HKDF (`info: "data-encryption"` → AES-256-GCM). Envelope format: `enc.<keyVersion>.<payloadB64u>` where `payload` = IV (12 bytes) ‖ ciphertext+tag. The embedded `keyVersion` enables direct lookup against `DerivedSecretsConfig.current` / `.fallbacks` during rotation — no trial decryption. Format version is implied by the magic (`enc` / `denc`); bump the magic if the layout changes. There are **no per-server at-rest keys**: a single `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` root of trust yields a rollable data-encryption keyring. A credential sealed as `enc` is server-agnostic at rest and can be delivered to any authorized daemon.
+`tpsecret` is the **universal at-rest format** for all persisted secrets (secret variables, TLS private keys, principal passwords, email secrets). Shared symmetric encryption is keyed off the same root secret via HKDF (`info: "data-encryption"` → AES-256-GCM). Envelope format: `tpsecret.v<version>.<payloadB64u>` where `payload` = IV (12 bytes) ‖ ciphertext+tag. The embedded version enables direct lookup against `DerivedSecretsConfig.current` / `.fallbacks` during rotation — no trial decryption. Every TurboPanel-authored serialized secret shares grammar `<scheme>.v<version>.<fields…>`; `src/client/authn/envelope.ts` is the single owner of format/parse (`formatEnvelope` / `parseEnvelope` / `hasEnvelopeScheme`) — no module hand-rolls `split(".")`. Bump the version token when the payload layout changes; the scheme identifies the purpose. There are **no per-server at-rest keys**: a single `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` root of trust yields a rollable data-encryption keyring. A credential sealed as `tpsecret` is server-agnostic at rest and can be delivered to any authorized daemon.
 
-**Delivery:** at deploy/delivery time the instance decrypts the at-rest `enc` envelope and re-seals it as a recipient-bound `denc.<serverId>.<keyId>.<keyVersion>.<payloadB64u>` envelope via the shared `resealSecretForDaemon` helper (`src/client/authn/data-encryption.ts`). Daemons decrypt only those recipient-scoped envelopes through `POST /api/daemon/v1/secrets/decrypt` (daemon JWT). Global `enc` blobs are never handed to daemons.
+**OTP verifiers** use `tpotp.v<n>.<hmacHex>` (HMAC material unchanged): direct-version lookup plus a rotation-safety sweep across remaining keyring entries.
+
+**Delivery:** at deploy/delivery time the instance decrypts the at-rest `tpsecret` envelope and re-seals it as a recipient-bound `tpdaemon.v<version>.<serverId>.<keyId>.<payloadB64u>` envelope via the shared `resealSecretForDaemon` helper (`src/client/authn/data-encryption.ts`). Daemons decrypt only those recipient-scoped envelopes through `POST /api/daemon/v1/secrets/decrypt` (daemon JWT). Global `tpsecret` blobs are never handed to daemons.
 
 **Boundary:** client/UI code imports only `encryptSecret` / `generateSealedSecret` for at-rest sealing (can generate a secret and show plaintext once); decryption is not exposed on the client surface. The symmetric key never leaves the instance.
 
@@ -150,8 +157,8 @@ Local-Console auth is Deno + developer-surface only; it never applies on Workers
 **Superadmin re-encrypt sweep** (`POST /api/admin/v1/secrets/reencrypt`, `src/admin/reencrypt-secrets.ts`):
 
 - **Bounded batches:** each request scans at most `limit` blobs (default/cap 200) across stages `variables` → `tls` → `principals` → `email`. Response includes per-batch `{ scanned, reencrypted, skipped, failed, completed, cursor }`. When `completed` is false, resume with the returned `cursor` until `completed` is true. A process-local in-progress guard returns **409** `reencrypt_in_progress` if a second sweep overlaps.
-- **`variable.value` / `tls.privateKeyPem` / `principal.password`:** re-seal older-version `enc` under the current key; **skip** already-current `enc` and **valid** daemon-bound `denc`; **fail** plaintext, malformed `enc`/`denc`, and decrypt errors. Valid `denc` is left untouched on purpose (delivery envelopes, not at-rest rotation targets).
-- **`SYSTEM_EMAIL` secret keys** (`MAILGUN_API_KEY` / `SMTP_PASS`): re-seal older-version `enc` only; plaintext / non-`enc` material is **failed** (not auto-migrated).
+- **`variable.value` / `tls.privateKeyPem` / `principal.password`:** re-seal older-version `tpsecret` under the current key; **skip** already-current `tpsecret` and **valid** daemon-bound `tpdaemon`; **fail** plaintext, malformed `tpsecret`/`tpdaemon`, and decrypt errors. Valid `tpdaemon` is left untouched on purpose (delivery envelopes, not at-rest rotation targets).
+- **`SYSTEM_EMAIL` secret keys** (`MAILGUN_API_KEY` / `SMTP_PASS`): re-seal older-version `tpsecret` only; plaintext / non-`tpsecret` material is **failed** (not auto-migrated).
 - Each write is conditional on the original value still being present (id + secret-column compare-and-swap) so a concurrent update during rotation is left untouched and counted as `skipped`.
 
 **CORS (Scalar / docs site):** when `TURBOPANEL_UI_CORS_ORIGINS` is set (comma-separated browser origins), `src/cors.ts` reflects matching `Origin` headers on API responses and always emits `Vary: Origin` when an `Origin` is present (credentials / allow-origin still restricted to the allowlist). Allowed CORS methods are **read-oriented** (`GET`, `HEAD`, `OPTIONS`) — credentialed cross-origin writes from the docs site are not permitted; cookie-authenticated mutations must be same-origin (console UI) and are additionally gated by `createBrowserWriteProtectionMiddleware` in `src/app.ts` (same-origin `Origin`/`Referer` check on `POST`/`PUT`/`PATCH`/`DELETE` under client/admin/install/**developer** prefixes; daemon JWT routes excluded). On Deno the expected origin is reconstructed from trusted Caddy `X-Forwarded-Proto` + `Host` (Unix-socket URL is not compared); Workers uses the URL-derived origin only. Co-located dev (`turbopanel_dev_user` set) injects `http://localhost:{WEBSITE_PORT}` and `http://127.0.0.1:{WEBSITE_PORT}` via `instance-launch` on the Deno instance unit (and Workers `.dev.vars` when `turbopanel_instance_runtime=workers`) so the docs site can fetch OpenAPI through Caddy cross-origin — never emitted on managed/production hosts. Cloudflare Workers production/testing set matching website origins in `wrangler.jsonc` (`live`: `https://turbopanel.io`; `testing`: `https://testing.turbopanel.io`).
@@ -194,18 +201,18 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `PATCH` | `/api/client/v1/environments/:id` | Optional `options` patch |
 | `GET` | `/api/client/v1/variables` | List variables (optional `?environmentId=`); org owner/manager |
 | `GET` | `/api/client/v1/variables/:id` | Get variable; sealed secret values are never returned (`value: null` when `isSecret`) |
-| `POST` | `/api/client/v1/variables` | Create variable under an environment; `isSecret=true` seals via `encryptSecret` (client surface encrypts only — delivery re-seals to `denc` via `resealSecretForDaemon`; daemon decrypts via `POST /api/daemon/v1/secrets/decrypt`) |
+| `POST` | `/api/client/v1/variables` | Create variable under an environment; `isSecret=true` seals via `encryptSecret` (client surface encrypts only — delivery re-seals to `tpdaemon` via `resealSecretForDaemon`; daemon decrypts via `POST /api/daemon/v1/secrets/decrypt`) |
 | `PATCH` | `/api/client/v1/variables/:id` | Update variable; re-seals on secret value update (lazy re-seal-on-write under the current key version) |
 | `DELETE` | `/api/client/v1/variables/:id` | Delete variable |
 | `GET` | `/api/client/v1/licenses` | List licenses (`organization:own`) — API only; not shown in the end-user UI |
 | `POST` | `/api/client/v1/licenses` | Create a one-shot registration key (`organization:own`; used by Add Server); rejects reserved display name `'this server'`; **409** `server_capacity_exceeded` when `organization.options.maxServers` is exhausted (enrolled servers + unconsumed keys). Response includes `installCommand` from `buildLicenseInstallCommand` — production shape is `curl -fsSL turbopanel.sh \| TURBOPANEL_LICENSE=… sh` (optional `TURBOPANEL_HOST` / `TURBOPANEL_INSECURE_TLS=1`); see `src/lib/daemon-install-command.ts`. |
 | `DELETE` | `/api/client/v1/licenses/{id}` | Invalidate a license (`organization:own`; soft `revoked_at`, disconnects bound servers) |
 | `GET` | `/api/client/v1/tls` | List org TLS certs (metadata + public PEM; private key never returned) |
-| `POST` | `/api/client/v1/tls` | Create cert (`upload` / `self_signed` / `lets_encrypt`); seals private key with `encryptSecret` (`enc`) |
+| `POST` | `/api/client/v1/tls` | Create cert (`upload` / `self_signed` / `lets_encrypt`); seals private key with `encryptSecret` (`tpsecret`) |
 | `PATCH` | `/api/client/v1/tls/:id` | Update display name / prefer / autoRenew |
 | `DELETE` | `/api/client/v1/tls/:id` | Delete cert; clears hosting pins (`ON DELETE SET NULL`) |
 
-**Principals** are Linux (server) host accounts and managed-engine users — not a public client CRUD surface beyond project principal routes. There is no `pam` provider (`provider='server'` for host accounts). Hosting/database-user flows and `POST /projects/:projectId/principals` create `principal` / `assignment` rows via `src/client/principals/store.ts`; passwords are sealed as `enc` at rest, never returned on read, and re-sealed to `denc` only at delivery.
+**Principals** are Linux (server) host accounts and managed-engine users — not a public client CRUD surface beyond project principal routes. There is no `pam` provider (`provider='server'` for host accounts). Hosting/database-user flows and `POST /projects/:projectId/principals` create `principal` / `assignment` rows via `src/client/principals/store.ts`; passwords are sealed as `tpsecret` at rest, never returned on read, and re-sealed to `tpdaemon` only at delivery.
 
 **Install mode (Deno self-hosted):** `isInstanceInstalled()` is false on a fresh DB. The UI `/install` page first verifies host PAM (`POST /api/install/v1/bootstrap`, client-side gate only), then collects superadmin email/password. Org/team/workspace names are fixed defaults (**Default Organization**, **Default Team**, **Default Workspace**). `completeInstanceInstall` inserts exactly one `organization:own` grant on the org and one `team:own` grant on the default team for the superadmin user. After install, sign-in uses superadmin email/password only. The co-located daemon's `server.organization_id` is assigned to **Default Organization** on install (`assignColocatedDaemonToOrganization` in `install-state.ts`, resolving the server row from the live hub or by `metadata.machineId` / hostname) and again when the Unix-socket daemon sends `hello` if still unassigned. When assignment returns a `serverId`, install completion calls `ensureSelfHostSystemHierarchy(db, { organizationId, serverId })` with that id directly — post-assignment `resolveColocatedServerId` filters on `organization_id IS NULL` and cannot re-find the row. Missing System hierarchy or colocated license files after install is fail-fast: there is no silent boot-time backfill; repair only via explicit install/enroll operators.
 
@@ -213,6 +220,7 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 
 | File | Purpose |
 | --- | --- |
+| `src/client/authn/envelope.ts` | Shared envelope grammar (`formatEnvelope` / `parseEnvelope` / `hasEnvelopeScheme`); Workers-bundle-safe |
 | `src/client/authn/crypto.ts` | Web Crypto primitives: session cookie signing |
 | `src/client/authn/session-store.ts` | `createSession`, `getSession`, `deleteSession`; `SessionData` type (`role` included) |
 | `src/client/authn/credentials.ts` | `verifyCredentials`, `verifyInstallHostCredentials`; PAM host install gate + DB credential users |

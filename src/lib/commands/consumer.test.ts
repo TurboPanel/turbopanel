@@ -1999,7 +1999,7 @@ const MANAGED_APPLY_PAYLOAD = {
       username: 'postgres',
       role: 'root',
       databases: ['postgres'],
-      password: 'denc.server.key.1.payload',
+      password: 'tpdaemon.v1.server.key.payload',
     },
   ],
 } as const

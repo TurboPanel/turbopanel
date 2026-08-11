@@ -558,7 +558,7 @@ test('prepareManagedApplyPayloads ensures org CA and sets orgTlsMaterial with de
       true,
     )
     assertEquals(
-      payload.orgTlsMaterial!.privateKeyEnvelope.startsWith('denc.'),
+      payload.orgTlsMaterial!.privateKeyEnvelope.startsWith('tpdaemon.'),
       true,
     )
 

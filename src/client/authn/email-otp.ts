@@ -3,7 +3,12 @@ import type { Db } from '../../db.ts'
 import { isExplicitDevelopmentMode } from '../../dev-mode.ts'
 import { verification } from '../../lib/db/schema.ts'
 import type { OtpType } from '../../lib/email/types.ts'
-import type { DerivedSecretsConfig } from './secrets.ts'
+import {
+  ENVELOPE_SCHEME_OTP,
+  formatEnvelope,
+  parseEnvelope,
+} from './envelope.ts'
+import { findKeyForVersion, type DerivedSecretsConfig } from './secrets.ts'
 
 export const OTP_IDENTIFIER_PREFIX = 'otp'
 export const OTP_ATTEMPTS_IDENTIFIER_PREFIX = 'otp-attempts'
@@ -85,15 +90,6 @@ export function requireOtpVerifierSecrets(
   )
 }
 
-function findKeyForVersion(
-  secrets: DerivedSecretsConfig,
-  version: number,
-): CryptoKey | null {
-  if (secrets.current.version === version) return secrets.current.key
-  const fallback = secrets.fallbacks.find((f) => f.version === version)
-  return fallback?.key ?? null
-}
-
 function constantTimeEqual(a: string, b: string): boolean {
   const enc = new TextEncoder()
   const aBytes = enc.encode(a)
@@ -101,7 +97,7 @@ function constantTimeEqual(a: string, b: string): boolean {
   if (aBytes.length !== bBytes.length) return false
   let diff = 0
   for (let i = 0; i < aBytes.length; i++) {
-    diff |= aBytes[i] ^ bBytes[i]
+    diff |= aBytes[i]! ^ bBytes[i]!
   }
   return diff === 0
 }
@@ -114,9 +110,9 @@ function constantTimeEqual(a: string, b: string): boolean {
  * of the OTP purpose ({@link OTP_VERIFIER_CONTEXT}), the flow `type`, and the
  * email context (`emailHash`), keyed by a server-held secret derived from
  * `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS`. Format:
- * `v{keyVersion}.{hmacHex}` — the embedded version selects current or fallback
- * keys during rotation. The {@link MAX_OTP_ATTEMPTS} attempt cap remains the
- * online brute-force defense; the HMAC secret blocks offline attacks on a
+ * `tpotp.v{keyVersion}.{hmacHex}` — the embedded version selects current or
+ * fallback keys during rotation. The {@link MAX_OTP_ATTEMPTS} attempt cap remains
+ * the online brute-force defense; the HMAC secret blocks offline attacks on a
  * leaked DB dump.
  *
  * Rollout: any pre-existing plaintext or public-digest row fails HMAC verify
@@ -135,7 +131,11 @@ export async function deriveOtpVerifier(
     keyring.current.key,
     new TextEncoder().encode(material),
   )
-  return `v${keyring.current.version}.${bytesToHex(new Uint8Array(mac))}`
+  return formatEnvelope(
+    ENVELOPE_SCHEME_OTP,
+    keyring.current.version,
+    bytesToHex(new Uint8Array(mac)),
+  )
 }
 
 /**
@@ -150,16 +150,16 @@ export async function verifyOtpVerifier(
   secrets: DerivedSecretsConfig,
 ): Promise<boolean> {
   const keyring = requireOtpVerifierSecrets(secrets)
-  const match = /^v(\d+)\.([0-9a-f]+)$/i.exec(storedVerifier)
-  if (!match) return false
-  const version = Number.parseInt(match[1], 10)
-  const providedMac = match[2].toLowerCase()
-  if (!Number.isInteger(version) || version < 1) return false
+  const parsed = parseEnvelope(ENVELOPE_SCHEME_OTP, storedVerifier, 1)
+  if (parsed === null) return false
+  const hmacHex = parsed.fields[0]!
+  if (!/^[0-9a-f]+$/i.test(hmacHex)) return false
+  const providedMac = hmacHex.toLowerCase()
 
   const material = `${OTP_VERIFIER_CONTEXT}:${type}:${emailHash}:${otp}`
   const materialBytes = new TextEncoder().encode(material)
 
-  const versionedKey = findKeyForVersion(keyring, version)
+  const versionedKey = findKeyForVersion(keyring, parsed.version)
   if (versionedKey) {
     const mac = await crypto.subtle.sign('HMAC', versionedKey, materialBytes)
     if (constantTimeEqual(providedMac, bytesToHex(new Uint8Array(mac)))) {

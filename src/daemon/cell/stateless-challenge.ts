@@ -1,4 +1,12 @@
-import type { DerivedSecretsConfig } from "../../client/authn/secrets.ts";
+import {
+  ENVELOPE_SCHEME_CHALLENGE,
+  formatEnvelope,
+  parseEnvelope,
+} from "../../client/authn/envelope.ts";
+import {
+  findKeyForVersion,
+  type DerivedSecretsConfig,
+} from "../../client/authn/secrets.ts";
 import type { DaemonChallenge } from "../authn/challenge.ts";
 
 export {
@@ -66,30 +74,6 @@ function parsePayload(encoded: string): ChallengePayload | null {
   }
 }
 
-async function verifySignature(
-  secrets: DerivedSecretsConfig,
-  encodedPayload: string,
-  encodedSig: string,
-): Promise<boolean> {
-  const signatureBytes = base64urlDecode(encodedSig);
-  const data = textEncoder.encode(encodedPayload);
-
-  const keys = [
-    secrets.current.key,
-    ...secrets.fallbacks.map((entry) => entry.key),
-  ];
-  for (const key of keys) {
-    const verified = await crypto.subtle.verify(
-      "HMAC",
-      key,
-      signatureBytes,
-      data,
-    );
-    if (verified) return true;
-  }
-  return false;
-}
-
 export async function issueChallenge(
   secrets: DerivedSecretsConfig,
   params: { serverId?: string; keyId?: string },
@@ -113,7 +97,12 @@ export async function issueChallenge(
     textEncoder.encode(encodedPayload),
   );
   const encodedSig = base64urlEncode(new Uint8Array(signature));
-  const challengeId = `${encodedPayload}.${encodedSig}`;
+  const challengeId = formatEnvelope(
+    ENVELOPE_SCHEME_CHALLENGE,
+    secrets.current.version,
+    encodedPayload,
+    encodedSig,
+  );
 
   return {
     id: challengeId,
@@ -132,13 +121,35 @@ export async function consumeChallenge(
   ttlMs: number,
   nowMs = Date.now(),
 ): Promise<DaemonChallenge | null> {
-  const parts = params.challengeId.split(".");
-  if (parts.length !== 2) return null;
+  const parsed = parseEnvelope(
+    ENVELOPE_SCHEME_CHALLENGE,
+    params.challengeId,
+    2,
+  );
+  if (parsed === null) return null;
 
-  const [encodedPayload, encodedSig] = parts;
-  if (!encodedPayload || !encodedSig) return null;
+  const [encodedPayload, encodedSig] = parsed.fields;
 
-  const verified = await verifySignature(secrets, encodedPayload, encodedSig);
+  // Challenges signed under a retired key version (absent from the keyring)
+  // simply fail — the daemon re-requests within the 60 s TTL window.
+  const key = findKeyForVersion(secrets, parsed.version);
+  if (key === null) return null;
+
+  // Malformed base64url segments throw from atob()/verify — treat as invalid,
+  // never surface as 500 from enroll/auth callers.
+  let verified: boolean;
+  try {
+    const signatureBytes = new Uint8Array(base64urlDecode(encodedSig));
+    const data = textEncoder.encode(encodedPayload);
+    verified = await crypto.subtle.verify(
+      "HMAC",
+      key,
+      signatureBytes,
+      data,
+    );
+  } catch {
+    return null;
+  }
   if (!verified) return null;
 
   const payload = parsePayload(encodedPayload);

@@ -1,4 +1,9 @@
-import type { DerivedSecretsConfig } from "./secrets.ts";
+import {
+  ENVELOPE_SCHEME_SESSION,
+  formatEnvelope,
+  parseEnvelope,
+} from "./envelope.ts";
+import { findKeyForVersion, type DerivedSecretsConfig } from "./secrets.ts";
 
 export type VerifyResult = {
   token: string;
@@ -140,7 +145,12 @@ export async function buildSignedCookie(
   secrets: DerivedSecretsConfig,
 ): Promise<string> {
   const sig = await signToken(token, secrets.current.key);
-  return `${token}.v${secrets.current.version}.${sig}`;
+  return formatEnvelope(
+    ENVELOPE_SCHEME_SESSION,
+    secrets.current.version,
+    token,
+    sig,
+  );
 }
 
 function signaturesEqual(providedSig: string, expectedSig: string): boolean {
@@ -173,54 +183,18 @@ async function signatureMatches(
   return signaturesEqual(providedSig, expectedSig);
 }
 
-function parseCookieVersion(versionSegment: string): number | null {
-  if (!versionSegment.startsWith("v")) return null;
-
-  const versionDigits = versionSegment.slice(1);
-  if (versionDigits.length === 0 || !/^\d+$/.test(versionDigits)) return null;
-
-  const version = Number.parseInt(versionDigits, 10);
-  return Number.isInteger(version) ? version : null;
-}
-
-function findKeyForVersion(
-  secrets: DerivedSecretsConfig,
-  version: number,
-): CryptoKey | null {
-  if (secrets.current.version === version) return secrets.current.key;
-
-  const fallback = secrets.fallbacks.find((f) => f.version === version);
-  return fallback?.key ?? null;
-}
-
-async function verifyVersionedCookie(
-  token: string,
-  versionSegment: string,
-  providedSig: string,
+export async function verifySignedCookie(
+  cookieValue: string,
   secrets: DerivedSecretsConfig,
 ): Promise<VerifyResult | null> {
-  const version = parseCookieVersion(versionSegment);
-  if (version === null) return null;
+  const parsed = parseEnvelope(ENVELOPE_SCHEME_SESSION, cookieValue, 2);
+  if (parsed === null) return null;
 
-  const matchedKey = findKeyForVersion(secrets, version);
+  const [token, providedSig] = parsed.fields;
+  const matchedKey = findKeyForVersion(secrets, parsed.version);
   if (matchedKey === null) return null;
 
   if (!await signatureMatches(token, providedSig, matchedKey)) return null;
 
   return { token, rotated: matchedKey !== secrets.current.key };
-}
-
-export async function verifySignedCookie(
-  cookieValue: string,
-  secrets: DerivedSecretsConfig,
-): Promise<VerifyResult | null> {
-  const segments = cookieValue.split(".");
-
-  if (segments.length === 3) {
-    const [token, versionSegment, providedSig] = segments;
-    if (!token || !versionSegment || !providedSig) return null;
-    return verifyVersionedCookie(token, versionSegment, providedSig, secrets);
-  }
-
-  return null;
 }

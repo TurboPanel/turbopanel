@@ -786,7 +786,7 @@ const VALID_MANAGED_APPLY = {
       username: 'postgres',
       role: 'root',
       databases: ['postgres'],
-      password: 'denc.server.key.1.payload',
+      password: 'tpdaemon.v1.server.key.payload',
     },
   ],
 } as const
@@ -1416,7 +1416,7 @@ test('parseManagedApplyPayload admits orgTlsMaterial and rejects incomplete mate
     ...VALID_MANAGED_APPLY,
     orgTlsMaterial: {
       certificatePem: '-----BEGIN CERTIFICATE-----\nLEAF\n-----END CERTIFICATE-----\n',
-      privateKeyEnvelope: 'denc.server.key.ciphertext',
+      privateKeyEnvelope: 'tpdaemon.v1.server.key.ciphertext',
       caCertPem: '-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----\n',
     },
   })
@@ -1427,7 +1427,7 @@ test('parseManagedApplyPayload admits orgTlsMaterial and rejects incomplete mate
         ...VALID_MANAGED_APPLY,
         orgTlsMaterial: {
           certificatePem: 'not-a-pem',
-          privateKeyEnvelope: 'denc.x',
+          privateKeyEnvelope: 'tpdaemon.v1.x',
           caCertPem: '-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----\n',
         },
       }),
@@ -2228,7 +2228,7 @@ const VALID_MANAGED_INGRESS_RECONCILE = {
   orgTlsMaterial: {
     certificatePem:
       '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n',
-    privateKeyEnvelope: 'denc.server.key.1.payload',
+    privateKeyEnvelope: 'tpdaemon.v1.server.key.payload',
     caCertPem:
       '-----BEGIN CERTIFICATE-----\nMIICaaaa\n-----END CERTIFICATE-----\n',
   },
@@ -2253,7 +2253,7 @@ const VALID_MANAGED_INGRESS_RECONCILE = {
         {
           username: 'app',
           role: 'user',
-          password: 'denc.server.key.1.payload',
+          password: 'tpdaemon.v1.server.key.payload',
           defaultDatabase: 'app',
         },
       ],

@@ -12,7 +12,7 @@ describe('serializeProjectPrincipal', () => {
       kind: 'system',
       provider: 'server',
       username: 'app',
-      password: 'enc.1.must-not-leak',
+      password: 'tpsecret.v1.must-not-leak',
       projectId: '00000000-0000-4000-8000-000000000002',
       managedId: null,
       metadata: { home: '/srv/users/app' },

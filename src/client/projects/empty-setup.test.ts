@@ -639,7 +639,7 @@ test('configureProjectType configures managed postgres with secret vars', async 
   if (typeof insertedVars[0]?.value !== 'string') {
     throw new TypeError('expected sealed secret string')
   }
-  assertEquals(insertedVars[0].value.startsWith('enc.'), true)
+  assertEquals(insertedVars[0].value.startsWith('tpsecret.'), true)
 })
 
 test('configureProjectType skips existing catalog variable keys', async () => {
