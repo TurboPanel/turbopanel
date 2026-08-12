@@ -7,3 +7,7 @@
 	directory = /home/tp/daemon
 	directory = /home/tp/ui
 	directory = /home/tp/website
+	directory = /home/vagrant/instance
+	directory = /home/vagrant/daemon
+	directory = /home/vagrant/ui
+	directory = /home/vagrant/website
