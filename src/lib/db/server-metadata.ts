@@ -52,8 +52,13 @@ export type ServerCpuMetadata = {
  * usage (that lives in the metrics backend).
  */
 export type ServerHostInventory = {
-  /** Logical CPU count (online `cpuN` cores/threads). */
+  /** Physical core count (`/proc/cpuinfo` topology). */
   cpuCores?: number
+  /**
+   * Logical CPU / thread count (`/proc/stat` `cpuN` lines). Distinct from
+   * {@link cpuCores} when SMT/HT is enabled. Used for load-average bars.
+   */
+  cpuThreads?: number
   memoryTotalBytes?: number
   /** 0 means swap is configured as empty / disabled. */
   swapTotalBytes?: number
@@ -201,8 +206,12 @@ export function parseServerHostInventory(
   if (!isRecord(value)) return undefined
   const inventory: ServerHostInventory = {}
   const cpuCores = optionalNonNegativeInt(value.cpuCores)
-  // Reject zero cores — that is never a real online CPU count.
+  // Reject zero — that is never a real online CPU count.
   if (cpuCores !== undefined && cpuCores > 0) inventory.cpuCores = cpuCores
+  const cpuThreads = optionalNonNegativeInt(value.cpuThreads)
+  if (cpuThreads !== undefined && cpuThreads > 0) {
+    inventory.cpuThreads = cpuThreads
+  }
   const memoryTotalBytes = optionalNonNegativeInt(value.memoryTotalBytes)
   if (memoryTotalBytes !== undefined && memoryTotalBytes > 0) {
     inventory.memoryTotalBytes = memoryTotalBytes
@@ -221,6 +230,7 @@ export function serverHostInventoryEquals(
   if (!a || !b) return false
   return (
     a.cpuCores === b.cpuCores &&
+    a.cpuThreads === b.cpuThreads &&
     a.memoryTotalBytes === b.memoryTotalBytes &&
     a.swapTotalBytes === b.swapTotalBytes
   )

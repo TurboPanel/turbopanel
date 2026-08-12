@@ -37,12 +37,19 @@ export const serverSchemas = {
   ServerHostInventory: {
     type: 'object',
     description:
-      'Static host capacity from daemon hello (/proc/stat cores + /proc/meminfo totals).',
+      'Static host capacity from daemon hello (/proc/cpuinfo physical cores, /proc/stat logical threads, /proc/meminfo totals).',
     properties: {
       cpuCores: {
         type: 'integer',
         minimum: 1,
-        description: 'Online logical CPU count (cpuN lines in /proc/stat).',
+        description:
+          'Physical core count from /proc/cpuinfo topology (equals cpuThreads when topology is unknown).',
+      },
+      cpuThreads: {
+        type: 'integer',
+        minimum: 1,
+        description:
+          'Online logical CPU / thread count (cpuN lines in /proc/stat). Used for load bars.',
       },
       memoryTotalBytes: {
         type: 'integer',

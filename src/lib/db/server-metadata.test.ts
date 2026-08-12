@@ -130,25 +130,34 @@ test('parseServerOsMetadata accepts daemon hello os blocks', () => {
 test('parseServerHostInventory accepts capacity totals', () => {
   assertEquals(
     parseServerHostInventory({
-      cpuCores: 8,
+      cpuCores: 4,
+      cpuThreads: 8,
       memoryTotalBytes: 16_384_000_000,
       swapTotalBytes: 0,
     }),
     {
-      cpuCores: 8,
+      cpuCores: 4,
+      cpuThreads: 8,
       memoryTotalBytes: 16_384_000_000,
       swapTotalBytes: 0,
     },
   )
   assertEquals(parseServerHostInventory({ cpuCores: 0 }), undefined)
+  assertEquals(parseServerHostInventory({ cpuThreads: 0 }), undefined)
   assertEquals(parseServerHostInventory({ memoryTotalBytes: -1 }), undefined)
   assertEquals(parseServerHostInventory(null), undefined)
 })
 
 test('serverHostInventoryEquals compares field-wise', () => {
-  const a = { cpuCores: 4, memoryTotalBytes: 100, swapTotalBytes: 0 }
+  const a = {
+    cpuCores: 4,
+    cpuThreads: 8,
+    memoryTotalBytes: 100,
+    swapTotalBytes: 0,
+  }
   assertEquals(serverHostInventoryEquals(a, { ...a }), true)
   assertEquals(serverHostInventoryEquals(a, { ...a, cpuCores: 8 }), false)
+  assertEquals(serverHostInventoryEquals(a, { ...a, cpuThreads: 4 }), false)
   assertEquals(serverHostInventoryEquals(a, null), false)
 })
 
