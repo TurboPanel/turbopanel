@@ -1,5 +1,6 @@
 import {
   isMap,
+  isSeq,
   LineCounter,
   parseDocument,
   type Node,
@@ -8,6 +9,7 @@ import {
 } from 'yaml'
 import { COMPOSE_YAML_OPTIONS } from './tags.ts'
 import { TURBOPANEL_SERVICE_EXTENSION_KEY } from './service-kind.ts'
+import { parseExactVariableRef } from './variable-refs.ts'
 
 export type ComposeLintLevel = 'error' | 'warning'
 
@@ -331,7 +333,91 @@ function lintServiceField(
     walkTaggedAdvisories(valueNode, fieldPath, layer, lineCounter, issues)
   }
 
+  if (key === 'environment') {
+    lintEnvOrArgsCollection(fieldPath, valueNode, lineCounter, issues)
+  } else if (key === 'build') {
+    lintBuildArgs(fieldPath, valueNode, lineCounter, issues)
+  }
+
   return { hasImage, hasBuild }
+}
+
+function lintVariableRefScalar(
+  raw: string,
+  path: string,
+  node: Node | null | undefined,
+  lineCounter: LineCounter,
+  issues: ComposeLintIssue[],
+): void {
+  const parsed = parseExactVariableRef(raw)
+  if (parsed.ok || parsed.error === 'not_a_ref') return
+  issues.push({
+    level: 'error',
+    message: parsed.message,
+    path,
+    line: nodeLine(node, lineCounter),
+  })
+}
+
+function lintEnvOrArgsCollection(
+  fieldPath: string,
+  valueNode: Node | null | undefined,
+  lineCounter: LineCounter,
+  issues: ComposeLintIssue[],
+): void {
+  if (!valueNode || typeof valueNode !== 'object') return
+  if (isMap(valueNode)) {
+    for (const item of valueNode.items) {
+      const key = stringKey(item.key)
+      const raw = scalarString(item.value as Node)
+      if (key === null || raw === null) continue
+      lintVariableRefScalar(
+        raw,
+        `${fieldPath}.${key}`,
+        item.value as Node,
+        lineCounter,
+        issues,
+      )
+    }
+    return
+  }
+  if (!isSeq(valueNode)) return
+  for (const [index, item] of valueNode.items.entries()) {
+    const raw = scalarString(item as Node)
+    if (raw === null) continue
+    const eq = raw.indexOf('=')
+    const colon = raw.indexOf(':')
+    let sep = -1
+    if (eq >= 0 && colon >= 0) sep = Math.min(eq, colon)
+    else if (eq >= 0) sep = eq
+    else if (colon >= 0) sep = colon
+    const value = sep < 0 ? '' : raw.slice(sep + 1)
+    lintVariableRefScalar(
+      value,
+      `${fieldPath}[${index}]`,
+      item as Node,
+      lineCounter,
+      issues,
+    )
+  }
+}
+
+function lintBuildArgs(
+  fieldPath: string,
+  valueNode: Node | null | undefined,
+  lineCounter: LineCounter,
+  issues: ComposeLintIssue[],
+): void {
+  if (!isMap(valueNode)) return
+  for (const item of valueNode.items) {
+    if (stringKey(item.key) !== 'args') continue
+    lintEnvOrArgsCollection(
+      `${fieldPath}.args`,
+      item.value as Node | null | undefined,
+      lineCounter,
+      issues,
+    )
+  }
 }
 
 function lintService(

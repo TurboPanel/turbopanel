@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import type { Context } from 'hono'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -17,8 +17,9 @@ import {
   prepareDeployCompose,
   readHostingProxyFromOptions,
   resolveHostingBindAddress,
-  verifyServerInOrg,
   type DeployPrepareError,
+  type DeployScheduleSlice,
+  type PreparedDeployCompose,
 } from './deploy-prepare.ts'
 import {
   resolveHostingDeployWeb,
@@ -60,10 +61,29 @@ import {
   createCommandRecord,
   transitionCommand,
 } from '../../lib/db/command-records.ts'
+import { bumpEnvironmentGeneration } from '../../lib/db/environment-generation.ts'
+import {
+  listEnvironmentDeploymentTargets,
+  markDeploymentFailed,
+  pruneDrainedDeployments,
+  upsertDeploymentTargets,
+} from '../../lib/db/deployment-records.ts'
+import { replaceEnvironmentTasks } from '../../lib/db/task-records.ts'
+import {
+  getOrganizationFabric,
+  materializeSpanningNetworks,
+} from '../../lib/db/fabric-records.ts'
+import { enqueueFabricReconcileForServers } from '../../lib/fabric/enqueue.ts'
+import {
+  planEnvironmentDeploy,
+  type PlannedDeploy,
+  type ScheduleErrorCode,
+} from '../../lib/schedule/index.ts'
 import {
   environment,
   hosting,
   project,
+  server,
   service,
   tls,
 } from '../../lib/db/schema.ts'
@@ -86,6 +106,79 @@ import {
 } from '../../lib/project-options.ts'
 
 type DeployHostingPayload = EnvironmentDeployHosting
+
+type QueuedCommandRef = {
+  commandId: string
+  serverId: string
+  status: 'queued'
+}
+
+function responseForScheduleError(
+  c: Context<AppEnv>,
+  error: ScheduleErrorCode,
+  message: string,
+): Response {
+  if (error === 'no_eligible_server') {
+    return c.json({ error: 'server_placement_required' }, 409)
+  }
+  return c.json({ error, message }, 422)
+}
+
+function serviceIdToNameMap(
+  rows: ReadonlyArray<{ id: string; composeServiceName: string }>,
+): Map<string, string> {
+  return new Map(rows.map((row) => [row.id, row.composeServiceName]))
+}
+
+function scheduleSliceForServer(
+  planned: PlannedDeploy,
+  serverId: string,
+  spanning: ReadonlyMap<string, string> | undefined,
+): DeployScheduleSlice {
+  const tasks = planned.plan.ok ? planned.plan.tasks : []
+  return {
+    serverId,
+    tasks,
+    serviceIdToName: serviceIdToNameMap(planned.serviceRows),
+    ...(spanning && spanning.size > 0 ? { spanningNetworks: spanning } : {}),
+  }
+}
+
+function queuedCommandsJson(commands: readonly QueuedCommandRef[]): Record<string, unknown> {
+  const first = commands[0]
+  return {
+    ok: true as const,
+    commandId: first?.commandId ?? '',
+    status: 'queued' as const,
+    ...(first ? { serverId: first.serverId } : {}),
+    commands: commands.map((row) => ({
+      commandId: row.commandId,
+      serverId: row.serverId,
+      status: row.status,
+    })),
+  }
+}
+
+async function loadSpanningNetworks(
+  db: Db,
+  planned: PlannedDeploy,
+  organizationId: string,
+  environmentId: string,
+): Promise<Map<string, string>> {
+  if (!planned.plan.ok || planned.plan.serverIds.length <= 1 || !planned.fabricEnabled) {
+    return new Map()
+  }
+  const fabricRow = await getOrganizationFabric(db, organizationId)
+  if (!fabricRow) return new Map()
+  return await materializeSpanningNetworks(db, {
+    organizationId,
+    environmentId,
+    fabric: fabricRow,
+    document: planned.merged,
+    tasks: planned.plan.tasks,
+    serviceRows: planned.serviceRows,
+  })
+}
 
 function assertDispatchInfrastructure(c: Context<AppEnv>): CommandQueue | Response {
   const registry = getDaemonCellRegistry(c)
@@ -448,49 +541,6 @@ async function sealTlsMaterialForDaemon(
   return material
 }
 
-type LoadedDeployCompose = {
-  envRow: { id: string; projectId: string; options: unknown; metadata: unknown }
-  projectRow: { id: string; options: unknown }
-  placementServerId: string | null
-}
-
-async function loadDeployContext(
-  db: Db,
-  environmentId: string,
-): Promise<LoadedDeployCompose | Response> {
-  const [envRow] = await db
-    .select({
-      id: environment.id,
-      projectId: environment.projectId,
-      serverId: environment.serverId,
-      options: environment.options,
-      metadata: environment.metadata,
-    })
-    .from(environment)
-    .where(eq(environment.id, environmentId))
-    .limit(1)
-  if (!envRow) return Response.json({ error: 'Not found' }, { status: 404 })
-
-  const [projectRow] = await db
-    .select({
-      id: project.id,
-      options: project.options,
-    })
-    .from(project)
-    .where(eq(project.id, envRow.projectId))
-    .limit(1)
-  if (!projectRow) return Response.json({ error: 'Not found' }, { status: 404 })
-
-  return {
-    envRow,
-    projectRow,
-    placementServerId: resolveEffectivePlacementServerId(
-      envRow.serverId,
-      parseProjectOptions(projectRow.options),
-    ),
-  }
-}
-
 async function authorizeDeployRequest(
   c: Context<AppEnv>,
   db: Db,
@@ -534,28 +584,6 @@ async function authorizeDeployRequest(
   }
 }
 
-/**
- * Resolve deploy/stop target from `environment.server_id`, falling back to
- * `project.options.defaultServerId`. Body/compose placement is never a
- * fallback.
- */
-async function resolveDeployTargetServer(
-  c: Context<AppEnv>,
-  db: Db,
-  organizationId: string,
-  placementServerId: string | null,
-): Promise<{ serverId: string } | Response> {
-  if (!placementServerId) {
-    return c.json({ error: 'server_placement_required' }, 409)
-  }
-
-  if (!(await verifyServerInOrg(db, placementServerId, organizationId))) {
-    return c.json({ error: 'Not found' }, 404)
-  }
-
-  return { serverId: placementServerId }
-}
-
 async function enqueueDeployCommand(
   db: Db,
   commandQueue: CommandQueue,
@@ -579,8 +607,11 @@ async function enqueueDeployCommand(
     dockerExternalNetworks: string[]
     managedNetworkServices: string[]
     noCache: boolean
+    generation: number
+    desiredHash: string
+    replicaCounts: Record<string, number>
   },
-): Promise<Response> {
+): Promise<QueuedCommandRef | Response> {
   const expiresAt = new Date(Date.now() + 600_000).toISOString()
   const record = await createCommandRecord(db, {
     serverId: params.serverId,
@@ -594,6 +625,10 @@ async function enqueueDeployCommand(
       projectName: params.projectName,
       composeYaml: params.composeYaml,
       composeFiles: params.composeFiles,
+      generation: params.generation,
+      desiredHash: params.desiredHash,
+      serverId: params.serverId,
+      replicaCounts: params.replicaCounts,
       hostings: params.hostings,
       ...(params.traditionalWebSites.length > 0
         ? { traditionalWebSites: params.traditionalWebSites }
@@ -632,14 +667,20 @@ async function enqueueDeployCommand(
       status: 'failed',
       error: 'Command queue unavailable',
     })
+    await markDeploymentFailed(db, {
+      environmentId: params.environmentId,
+      serverId: params.serverId,
+      error: 'Command queue unavailable',
+      commandId: record.id,
+    })
     return Response.json({ error: 'Command queue unavailable' }, { status: 503 })
   }
 
-  return Response.json({
-    ok: true as const,
+  return {
     commandId: record.id,
-    status: 'queued' as const,
-  })
+    serverId: params.serverId,
+    status: 'queued',
+  }
 }
 
 export {
@@ -708,46 +749,80 @@ export function registerEnvironmentDeployPreviewRoutes(
     const auth = await authorizeEnvironmentManage(c, db, environmentId)
     if (auth instanceof Response) return auth
 
-    const loaded = await loadDeployContext(db, environmentId)
-    if (loaded instanceof Response) return loaded
-
-    const target = await resolveDeployTargetServer(
-      c,
-      db,
-      auth.organizationId,
-      loaded.placementServerId,
-    )
-    if (target instanceof Response) return target
-
-    const prepared = await prepareDeployCompose(c, db, {
+    const planned = await planEnvironmentDeploy(db, {
       environmentId,
-      serverId: target.serverId,
       organizationId: auth.organizationId,
-      mode: 'preview',
     })
-    if (prepared instanceof Response) return prepared
-    // Preview mode softens prepare gates into warnings; hard errors are Responses.
-    if ('kind' in prepared) {
-      return c.json({ error: 'Unexpected prepare error' }, 500)
+    if ('kind' in planned) {
+      if (planned.kind === 'not_found') return c.json({ error: 'Not found' }, 404)
+      return c.json({ error: 'Invalid compose document' }, 400)
+    }
+    if (!planned.plan.ok) {
+      return responseForScheduleError(c, planned.plan.error, planned.plan.message)
     }
 
-    const projectName = composeProjectName(loaded.projectRow.id)
+    const spanning = await loadSpanningNetworks(
+      db,
+      planned,
+      auth.organizationId,
+      environmentId,
+    )
+    const preparedByServer: Array<{
+      serverId: string
+      prepared: PreparedDeployCompose
+    }> = []
+    for (const serverId of planned.plan.serverIds) {
+      const prepared = await prepareDeployCompose(c, db, {
+        environmentId,
+        serverId,
+        organizationId: auth.organizationId,
+        mode: 'preview',
+        schedule: scheduleSliceForServer(planned, serverId, spanning),
+      })
+      if (prepared instanceof Response) return prepared
+      if ('kind' in prepared) {
+        return responseForPrepareError(c, prepared)
+      }
+      preparedByServer.push({ serverId, prepared })
+    }
+
+    const first = preparedByServer[0]
+    const serverRows = planned.plan.serverIds.length === 0
+      ? []
+      : await db
+        .select({ id: server.id, name: server.name })
+        .from(server)
+        .where(inArray(server.id, planned.plan.serverIds))
+    const nameById = new Map(serverRows.map((row) => [row.id, row.name]))
+    const projectName = composeProjectName(planned.projectId)
+    const ingress = preparedByServer.flatMap((row) => row.prepared.ingressServices)
+    const appContainers = first?.prepared.containers ?? []
 
     return c.json({
       ok: true as const,
-      composeYaml: prepared.composeYaml,
-      composeFiles: prepared.composeFiles,
+      composeYaml: first?.prepared.composeYaml ?? '',
+      composeFiles: first?.prepared.composeFiles ?? [],
       projectName,
+      servers: preparedByServer.map((row) => ({
+        serverId: row.serverId,
+        displayName: nameById.get(row.serverId) ?? row.serverId,
+        composeYaml: row.prepared.composeYaml,
+        services: Object.keys(row.prepared.replicaCounts).sort((a, b) =>
+          a.localeCompare(b),
+        ),
+      })),
       containers: buildDeployPreviewContainers({
-        appContainers: prepared.containers,
-        ingressServices: prepared.ingressServices,
+        appContainers,
+        ingressServices: ingress,
       }),
-      volumes: prepared.volumes.map((row) => ({
+      volumes: (first?.prepared.volumes ?? []).map((row) => ({
         storageId: row.storageId,
         composeKey: row.composeKey,
         volumeName: row.volumeName,
       })),
-      warnings: prepared.warnings,
+      warnings: preparedByServer.flatMap((row) => row.prepared.warnings),
+      envFile: first?.prepared.envFile ?? '',
+      secretPlan: first?.prepared.secretPlan ?? [],
     })
   })
 }
@@ -772,105 +847,198 @@ export function registerEnvironmentDeployRoutes(
     const commandQueue = assertDispatchInfrastructure(c)
     if (commandQueue instanceof Response) return commandQueue
 
-    const loaded = await loadDeployContext(db, environmentId)
-    if (loaded instanceof Response) return loaded
-
-    const target = await resolveDeployTargetServer(
-      c,
-      db,
-      auth.organizationId,
-      loaded.placementServerId,
-    )
-    if (target instanceof Response) return target
-
-    const prepared = await prepareDeployCompose(c, db, {
+    const planned = await planEnvironmentDeploy(db, {
       environmentId,
-      serverId: target.serverId,
       organizationId: auth.organizationId,
-      acknowledgeHealthCheckWarnings: auth.acknowledgeHealthCheckWarnings,
     })
-    if (prepared instanceof Response) return prepared
-    if ('kind' in prepared) return responseForPrepareError(c, prepared)
+    if ('kind' in planned) {
+      if (planned.kind === 'not_found') return c.json({ error: 'Not found' }, 404)
+      return c.json({ error: 'Invalid compose document' }, 400)
+    }
+    if (!planned.plan.ok) {
+      return responseForScheduleError(c, planned.plan.error, planned.plan.message)
+    }
 
+    const spanning = await loadSpanningNetworks(
+      db,
+      planned,
+      auth.organizationId,
+      environmentId,
+    )
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     if (!dataEncryptionSecrets) {
       return c.json({ error: 'Encryption unavailable' }, 503)
     }
 
-    const hostingBuilt = await buildHostingPayload(
-      db,
-      environmentId,
-      auth.organizationId,
-      target.serverId,
-      dataEncryptionSecrets,
-    )
-    if ('prepareError' in hostingBuilt) {
-      return responseForPrepareError(c, hostingBuilt.prepareError)
+    const preparedByServer: Array<{
+      serverId: string
+      prepared: PreparedDeployCompose
+      hostings: DeployHostingPayload[]
+      tlsMaterial: EnvironmentDeployTlsMaterial[]
+    }> = []
+    for (const serverId of planned.plan.serverIds) {
+      const prepared = await prepareDeployCompose(c, db, {
+        environmentId,
+        serverId,
+        organizationId: auth.organizationId,
+        acknowledgeHealthCheckWarnings: auth.acknowledgeHealthCheckWarnings,
+        schedule: scheduleSliceForServer(planned, serverId, spanning),
+      })
+      if (prepared instanceof Response) return prepared
+      if ('kind' in prepared) return responseForPrepareError(c, prepared)
+
+      const hostingBuilt = await buildHostingPayload(
+        db,
+        environmentId,
+        auth.organizationId,
+        serverId,
+        dataEncryptionSecrets,
+      )
+      if ('prepareError' in hostingBuilt) {
+        return responseForPrepareError(c, hostingBuilt.prepareError)
+      }
+      if ('error' in hostingBuilt) return hostingBuilt.error
+
+      const hostings = expandHostingsForComposeInstances(
+        hostingBuilt.hostings,
+        prepared.composeServiceExpansion,
+      )
+      const tlsMaterial = await sealTlsMaterialForDaemon(
+        c,
+        db,
+        serverId,
+        auth.organizationId,
+        hostingBuilt.resolvedTlsIds,
+      )
+      if (tlsMaterial instanceof Response) return tlsMaterial
+
+      const materialsError = validateDeployMaterialsResponse(
+        hostings,
+        prepared.storageMaterial,
+      )
+      if (materialsError) return materialsError
+
+      preparedByServer.push({ serverId, prepared, hostings, tlsMaterial })
     }
-    if ('error' in hostingBuilt) return hostingBuilt.error
 
-    // Fan hostings out to multi-instance clone keys so injectHostingLabels
-    // finds every compose service. Same hostingId/serviceId → Traefik merges
-    // identical router/service labels into one load balancer.
-    const hostings = expandHostingsForComposeInstances(
-      hostingBuilt.hostings,
-      prepared.composeServiceExpansion,
-    )
+    const previous = await listEnvironmentDeploymentTargets(db, environmentId)
+    const activeIds = new Set(planned.plan.serverIds)
+    const drainedIds = previous
+      .map((row) => row.serverId)
+      .filter((serverId) => !activeIds.has(serverId))
 
-    const tlsMaterial = await sealTlsMaterialForDaemon(
-      c,
-      db,
-      target.serverId,
-      auth.organizationId,
-      hostingBuilt.resolvedTlsIds,
-    )
-    if (tlsMaterial instanceof Response) return tlsMaterial
-
-    const projectName = composeProjectName(loaded.projectRow.id)
-
-    const materialsError = validateDeployMaterialsResponse(
-      hostings,
-      prepared.storageMaterial,
-    )
-    if (materialsError) return materialsError
-
-    const traditionalWebSites = buildTraditionalWebSitesForDeploy(
-      prepared.traditionalWebSites,
-      hostings,
-    )
-
-    return enqueueDeployCommand(db, commandQueue, {
-      serverId: target.serverId,
-      userId: auth.userId,
+    const generation = await bumpEnvironmentGeneration(db, environmentId)
+    await replaceEnvironmentTasks(db, {
       environmentId,
-      projectId: loaded.projectRow.id,
-      organizationId: auth.organizationId,
-      projectName,
-      composeYaml: prepared.composeYaml,
-      composeFiles: prepared.composeFiles,
-      hostings,
-      traditionalWebSites,
-      ingressServices: prepared.ingressServices,
-      tlsMaterial,
-      variableMaterial: prepared.variableMaterial,
-      storageMaterial: prepared.storageMaterial,
-      principalMaterial: prepared.principalMaterial,
-      serviceHooks: prepared.hooks,
-      dockerExternalNetworks: prepared.dockerExternalNetworks,
-      managedNetworkServices: prepared.managedNetworkServices,
-      noCache: auth.noCache,
+      generation,
+      tasks: planned.plan.tasks,
     })
+
+    if (planned.fabricEnabled && planned.plan.serverIds.length > 1) {
+      const fabricRow = await getOrganizationFabric(db, auth.organizationId)
+      if (fabricRow) {
+        await enqueueFabricReconcileForServers({
+          db,
+          commandQueue,
+          actorType: 'user',
+          actorId: auth.userId,
+          fabric: fabricRow,
+          serverIds: planned.plan.serverIds,
+          enabled: true,
+        })
+      }
+    }
+
+    const projectName = composeProjectName(planned.projectId)
+    const queued: QueuedCommandRef[] = []
+    for (const row of preparedByServer) {
+      const enqueued = await enqueueDeployCommand(db, commandQueue, {
+        serverId: row.serverId,
+        userId: auth.userId,
+        environmentId,
+        projectId: planned.projectId,
+        organizationId: auth.organizationId,
+        projectName,
+        composeYaml: row.prepared.composeYaml,
+        composeFiles: row.prepared.composeFiles,
+        hostings: row.hostings,
+        traditionalWebSites: buildTraditionalWebSitesForDeploy(
+          row.prepared.traditionalWebSites,
+          row.hostings,
+        ),
+        ingressServices: row.prepared.ingressServices,
+        tlsMaterial: row.tlsMaterial,
+        variableMaterial: row.prepared.variableMaterial,
+        envFile: row.prepared.envFile,
+        secretPlan: row.prepared.secretPlan,
+        storageMaterial: row.prepared.storageMaterial,
+        principalMaterial: row.prepared.principalMaterial,
+        serviceHooks: row.prepared.hooks,
+        dockerExternalNetworks: row.prepared.dockerExternalNetworks,
+        managedNetworkServices: row.prepared.managedNetworkServices,
+        noCache: auth.noCache,
+        generation,
+        desiredHash: row.prepared.desiredHash,
+        replicaCounts: row.prepared.replicaCounts,
+      })
+      if (enqueued instanceof Response) return enqueued
+      queued.push(enqueued)
+    }
+
+    const hashByServer = new Map(
+      preparedByServer.map((row) => [row.serverId, row.prepared.desiredHash]),
+    )
+    const commandByServer = new Map(queued.map((row) => [row.serverId, row.commandId]))
+    await upsertDeploymentTargets(db, {
+      environmentId,
+      targets: [
+        ...planned.plan.serverIds.map((serverId) => ({
+          serverId,
+          desiredGeneration: generation,
+          desiredHash: hashByServer.get(serverId) ?? null,
+          status: 'applying' as const,
+          lastCommandId: commandByServer.get(serverId) ?? null,
+          options: {
+            secretPlan: preparedByServer.find((row) => row.serverId === serverId)
+              ?.prepared.secretPlan ?? [],
+          },
+        })),
+        ...drainedIds.map((serverId) => ({
+          serverId,
+          desiredGeneration: generation,
+          status: 'draining' as const,
+        })),
+      ],
+    })
+
+    if (drainedIds.length > 0) {
+      const tcpUdpServices = await resolveTcpUdpIngressServices(db, environmentId)
+      for (const serverId of drainedIds) {
+        const stopped = await enqueueStopCommand(db, commandQueue, {
+          serverId,
+          userId: auth.userId,
+          environmentId,
+          projectId: planned.projectId,
+          projectName,
+          ingressServices: tcpUdpServices.map((svc) => ({ serviceId: svc.serviceId })),
+        })
+        if (stopped instanceof Response) return stopped
+      }
+      await pruneDrainedDeployments(db, { environmentId, serverIds: drainedIds })
+    }
+
+    return Response.json(queuedCommandsJson(queued))
   })
 }
 
-async function loadStopTarget(
+async function loadLifecycleTargets(
   db: Db,
   environmentId: string,
 ): Promise<
   | {
     projectId: string
     projectName: string
-    placementServerId: string | null
+    serverIds: string[]
   }
   | Response
 > {
@@ -895,13 +1063,31 @@ async function loadStopTarget(
     .limit(1)
   if (!projectRow) return Response.json({ error: 'Not found' }, { status: 404 })
 
+  const deployments = await listEnvironmentDeploymentTargets(db, environmentId)
+  const fromDeployments = [...new Set(
+    deployments
+      .filter((row) => row.status !== 'draining')
+      .map((row) => row.serverId),
+  )].sort((a, b) => a.localeCompare(b))
+  if (fromDeployments.length > 0) {
+    return {
+      projectId: projectRow.id,
+      projectName: composeProjectName(projectRow.id),
+      serverIds: fromDeployments,
+    }
+  }
+
+  const pin = resolveEffectivePlacementServerId(
+    envRow.serverId,
+    parseProjectOptions(projectRow.options),
+  )
+  if (!pin) {
+    return Response.json({ error: 'server_placement_required' }, { status: 409 })
+  }
   return {
     projectId: projectRow.id,
     projectName: composeProjectName(projectRow.id),
-    placementServerId: resolveEffectivePlacementServerId(
-      envRow.serverId,
-      parseProjectOptions(projectRow.options),
-    ),
+    serverIds: [pin],
   }
 }
 
@@ -916,7 +1102,7 @@ async function enqueueStopCommand(
     projectName: string
     ingressServices: Array<{ serviceId: string }>
   },
-): Promise<Response> {
+): Promise<QueuedCommandRef | Response> {
   const expiresAt = new Date(Date.now() + 120_000).toISOString()
   const record = await createCommandRecord(db, {
     serverId: params.serverId,
@@ -952,12 +1138,11 @@ async function enqueueStopCommand(
     return Response.json({ error: 'Command queue unavailable' }, { status: 503 })
   }
 
-  return Response.json({
-    ok: true as const,
+  return {
     commandId: record.id,
-    status: 'queued' as const,
     serverId: params.serverId,
-  })
+    status: 'queued',
+  }
 }
 
 /**
@@ -984,26 +1169,24 @@ export function registerEnvironmentStopRoutes(
     const commandQueue = assertDispatchInfrastructure(c)
     if (commandQueue instanceof Response) return commandQueue
 
-    const loaded = await loadStopTarget(db, environmentId)
+    const loaded = await loadLifecycleTargets(db, environmentId)
     if (loaded instanceof Response) return loaded
 
-    const target = await resolveDeployTargetServer(
-      c,
-      db,
-      auth.organizationId,
-      loaded.placementServerId,
-    )
-    if (target instanceof Response) return target
-
     const tcpUdpServices = await resolveTcpUdpIngressServices(db, environmentId)
-    return enqueueStopCommand(db, commandQueue, {
-      serverId: target.serverId,
-      userId: auth.userId,
-      environmentId,
-      projectId: loaded.projectId,
-      projectName: loaded.projectName,
-      ingressServices: tcpUdpServices.map((svc) => ({ serviceId: svc.serviceId })),
-    })
+    const queued: QueuedCommandRef[] = []
+    for (const serverId of loaded.serverIds) {
+      const enqueued = await enqueueStopCommand(db, commandQueue, {
+        serverId,
+        userId: auth.userId,
+        environmentId,
+        projectId: loaded.projectId,
+        projectName: loaded.projectName,
+        ingressServices: tcpUdpServices.map((svc) => ({ serviceId: svc.serviceId })),
+      })
+      if (enqueued instanceof Response) return enqueued
+      queued.push(enqueued)
+    }
+    return Response.json(queuedCommandsJson(queued))
   })
 }
 
@@ -1018,7 +1201,7 @@ async function enqueueLifecycleCommand(
     projectName: string
     action: EnvironmentLifecycleAction
   },
-): Promise<Response> {
+): Promise<QueuedCommandRef | Response> {
   const expiresAt = new Date(Date.now() + 120_000).toISOString()
   const record = await createCommandRecord(db, {
     serverId: params.serverId,
@@ -1052,12 +1235,11 @@ async function enqueueLifecycleCommand(
     return Response.json({ error: 'Command queue unavailable' }, { status: 503 })
   }
 
-  return Response.json({
-    ok: true as const,
+  return {
     commandId: record.id,
-    status: 'queued' as const,
     serverId: params.serverId,
-  })
+    status: 'queued',
+  }
 }
 
 /**
@@ -1092,24 +1274,22 @@ export function registerEnvironmentLifecycleRoutes(
     const commandQueue = assertDispatchInfrastructure(c)
     if (commandQueue instanceof Response) return commandQueue
 
-    const loaded = await loadStopTarget(db, environmentId)
+    const loaded = await loadLifecycleTargets(db, environmentId)
     if (loaded instanceof Response) return loaded
 
-    const target = await resolveDeployTargetServer(
-      c,
-      db,
-      auth.organizationId,
-      loaded.placementServerId,
-    )
-    if (target instanceof Response) return target
-
-    return enqueueLifecycleCommand(db, commandQueue, {
-      serverId: target.serverId,
-      userId: auth.userId,
-      environmentId,
-      projectId: loaded.projectId,
-      projectName: loaded.projectName,
-      action,
-    })
+    const queued: QueuedCommandRef[] = []
+    for (const serverId of loaded.serverIds) {
+      const enqueued = await enqueueLifecycleCommand(db, commandQueue, {
+        serverId,
+        userId: auth.userId,
+        environmentId,
+        projectId: loaded.projectId,
+        projectName: loaded.projectName,
+        action,
+      })
+      if (enqueued instanceof Response) return enqueued
+      queued.push(enqueued)
+    }
+    return Response.json(queuedCommandsJson(queued))
   })
 }

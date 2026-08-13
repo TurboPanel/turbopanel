@@ -5,6 +5,7 @@ export const COMMAND_TYPES = [
   'server.reboot',
   'server.timezone.set',
   'server.wireguard.apply',
+  'server.fabric.reconcile',
   'environment.deploy',
   'environment.lifecycle',
   'environment.stop',

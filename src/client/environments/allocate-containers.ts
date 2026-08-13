@@ -31,6 +31,11 @@ export type ContainerServiceSpec = {
   explicitContainerName?: string
   /** Workload role for allocated rows; defaults to `'service'`. */
   role?: ContainerWorkloadRole
+  /**
+   * 1-based ordinal → placement server. When omitted, every replica uses the
+   * allocate call's `serverId`.
+   */
+  serverIdByOrdinal?: ReadonlyMap<number, string>
 }
 
 export type ContainerAllocation = {
@@ -41,6 +46,7 @@ export type ContainerAllocation = {
   containerName: string
   ordinal: number
   instances: number
+  serverId: string
 }
 
 export type ServiceIngressAllocation = {
@@ -48,15 +54,6 @@ export type ServiceIngressAllocation = {
   containerRowId: string
   containerName: string
   composeServiceName: string
-}
-
-function cloneComposeServiceName(
-  originalName: string,
-  ordinal: number,
-  instances: number,
-): string {
-  if (instances === 1) return originalName
-  return `${originalName}-${ordinal}`
 }
 
 function shouldAllocateService(
@@ -136,13 +133,14 @@ async function allocateServiceContainers(
 
   await db.transaction(async (tx) => {
     for (let ordinal = 1; ordinal <= instances; ordinal += 1) {
-      const cloneName = cloneComposeServiceName(svc.composeServiceName, ordinal, instances)
+      const cloneName = svc.composeServiceName
+      const placementServerId = svc.serverIdByOrdinal?.get(ordinal) ?? serverId
 
       await tx
         .insert(container)
         .values({
           serviceId: svc.serviceId,
-          serverId,
+          serverId: placementServerId,
           containerId: null,
           containerName: 'pending',
           status: 'pending',
@@ -184,14 +182,14 @@ async function allocateServiceContainers(
         instances,
       })
       if (
-        row.serverId !== serverId ||
+        row.serverId !== placementServerId ||
         row.containerName !== nextName ||
         row.composeServiceName !== cloneName
       ) {
         await tx
           .update(container)
           .set({
-            serverId,
+            serverId: placementServerId,
             containerName: nextName,
             composeServiceName: cloneName,
             role,
@@ -207,6 +205,7 @@ async function allocateServiceContainers(
         containerName: nextName,
         ordinal,
         instances,
+        serverId: placementServerId,
       })
     }
 

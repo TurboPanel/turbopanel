@@ -197,6 +197,44 @@ export const serverSchemas = {
       datacenterDisplayName: { type: ['string', 'null'] },
     },
   },
+  ServerLabel: {
+    type: 'object',
+    required: ['key', 'value'],
+    properties: {
+      key: {
+        type: 'string',
+        description:
+          'Docker engine-label charset: starts with alphanumeric, then alphanumerics / `.` / `_` / `-`, 1–255 chars.',
+      },
+      value: {
+        type: 'string',
+        description: 'Label value, at most 255 characters (empty string allowed).',
+      },
+    },
+  },
+  ServerLabelsResponse: {
+    type: 'object',
+    required: ['ok', 'labels'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      labels: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerLabel' },
+      },
+    },
+  },
+  ServerLabelsPutRequest: {
+    type: 'object',
+    required: ['labels'],
+    properties: {
+      labels: {
+        type: 'object',
+        additionalProperties: { type: 'string' },
+        description:
+          'Replace-all map of label key to value (max 64 entries). Empty object clears all labels.',
+      },
+    },
+  },
   PatchServerRequest: {
     type: 'object',
     properties: {
@@ -217,6 +255,12 @@ export const serverSchemas = {
             properties: {
               orgDefaultTimezone: { type: ['string', 'null'] },
               enforceServerTimezone: { type: 'boolean' },
+              labels: {
+                type: 'array',
+                items: { $ref: '#/components/schemas/ServerLabel' },
+                description:
+                  'Server labels from the primary connection (not the cached detail row). Source for placement.constraints node.labels.*.',
+              },
             },
           },
         ],
@@ -1157,6 +1201,126 @@ export const serverPaths: Record<string, unknown> = {
         },
         '400': {
           description: 'Invalid NTP payload',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '404': {
+          description: 'Server not found',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/servers/{id}/labels': {
+    get: {
+      tags: ['Servers'],
+      summary: 'List server labels',
+      description:
+        'Returns the replace-all label set for placement.constraints (`node.labels.*`). Read-gated so the same viewers who can see the server detail projection can read its labels.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Label list',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ServerLabelsResponse' },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '404': {
+          description: 'Server not found',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    },
+    put: {
+      tags: ['Servers'],
+      summary: 'Replace server labels',
+      description:
+        'Replace-all write of the server label set (no per-key DELETE). Manage-gated. Body is `{ labels: { key: value } }`; empty object clears all labels.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/ServerLabelsPutRequest' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Updated label list',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ServerLabelsResponse' },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid label payload',
           content: {
             'application/json': {
               schema: {

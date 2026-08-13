@@ -303,6 +303,9 @@ test(
       }],
       perServiceEntries: new Map(),
     })
+    if ('kind' in applied) {
+      throw new TypeError(applied.message)
+    }
     // Effective document after service-options would also set container_name;
     // include it so the platform layer has a scalar injection like real prepare.
     const effective: ComposeDocument = {

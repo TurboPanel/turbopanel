@@ -25,6 +25,7 @@ import {
   parseOrganizationCreateDisplayName,
   parseServerCapacityPutBody,
 } from './routes-helpers.ts'
+import { registerOrganizationFabricRoutes } from './fabric-routes.ts'
 
 export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   router.use('/organizations', createSessionMiddleware(opts.secrets))
@@ -32,6 +33,7 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
   router.use('/organizations/:id/default-environment', createSessionMiddleware(opts.secrets))
   router.use('/organizations/:id/server-capacity', createSessionMiddleware(opts.secrets))
   router.use('/timezones', createSessionMiddleware(opts.secrets))
+  registerOrganizationFabricRoutes(router, opts)
 
   router.get('/organizations', async (c) => {
     const db = getDb(c)

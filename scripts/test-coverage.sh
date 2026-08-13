@@ -234,6 +234,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/authn/server-identity-db.hostfree.test.ts \
   src/daemon/authn/server-key.test.ts \
   src/daemon/api-routes.test.ts \
+  src/daemon/rehydrate-secrets.hostfree.test.ts \
   src/daemon/cell/contracts.test.ts \
   src/daemon/deno-ws.test.ts \
   src/daemon/cell/control-plane-monitor.test.ts \
@@ -312,6 +313,8 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/commands/wireguard.test.ts \
   src/lib/commands/workers-queue.test.ts \
   src/lib/compose/ \
+  src/lib/schedule/ \
+  src/lib/fabric/ \
   src/lib/datacenter-metadata.test.ts \
   src/lib/datacenter-name-suggestions.test.ts \
   src/lib/datacenter-options.test.ts \
@@ -320,11 +323,14 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/db/command-records.hostfree.test.ts \
   src/lib/db/container-records.test.ts \
   src/lib/db/container-records.hostfree.test.ts \
+  src/lib/db/deployment-records.hostfree.test.ts \
+  src/lib/db/label-records.hostfree.test.ts \
   src/lib/db/net-types.test.ts \
   src/lib/db/project-delete.test.ts \
   src/lib/db/project-delete.hostfree.test.ts \
   src/lib/db/server-metadata.test.ts \
   src/lib/db/table-naming.test.ts \
+  src/lib/db/task-records.hostfree.test.ts \
   src/lib/db/workspace-kind.test.ts \
   src/lib/docker-network-name.test.ts \
   src/lib/email/mailgun/send.test.ts \
@@ -396,6 +402,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/networks/routes-pure.test.ts \
   src/client/organizations/routes.test.ts \
   src/client/organizations/routes-helpers.hostfree.test.ts \
+  src/client/organizations/fabric-routes.hostfree.test.ts \
   src/client/projects/routes-helpers.hostfree.test.ts \
   src/client/services/routes.test.ts \
   src/client/services/routes-helpers.hostfree.test.ts \

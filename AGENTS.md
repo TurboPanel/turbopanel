@@ -654,7 +654,7 @@ deliberately-unversioned probe.
 
 | Surface                      | REST                  | WS                        | Notes                                                                                                                                                             |
 | ---------------------------- | --------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Client (end-user UI)         | `/api/client/v1/*`    | `/ws/client/v1`           | servers list/detail (+ addresses/timeSync/effective timezone), timezone/NTP commands, org default-timezone + default-environment + server-capacity + `/timezones` |
+| Client (end-user UI)         | `/api/client/v1/*`    | `/ws/client/v1`           | servers list/detail (+ addresses/timeSync/effective timezone, labels), timezone/NTP commands, server labels (`GET`/`PUT /servers/:id/labels`), org default-timezone + default-environment + server-capacity + TurboFabric (`GET`/`PUT /organizations/:id/fabric`) + `/timezones` |
 | Install (self-hosted wizard) | `/api/install/v1/*`   | —                         | Deno only for POST endpoints; PAM-gated; no session/cookie on bootstrap                                                                                           |
 | Developer (dev console)      | `/api/developer/v1/*` | `/ws/developer/v1` (stub) | fleet, diagnostics, shell, addresses, `system/upgrade`, `instance/tunnel-token`, `daemon/(:id/)sync-dev`                                                          |
 | Admin                        | `/api/admin/v1/*`     | —                         | Mounted on both Deno and Workers; `superadmin` or `admin` role required; OpenAPI/Scalar at `/api/admin/v1/openapi.json` + `/reference` in development only        |
@@ -689,6 +689,32 @@ deliberately-unversioned probe.
   Org defaults: `GET`/`PUT /organizations/:id/default-timezone`. Picker source:
   `GET /timezones` (`listTimezones()` / `isAllowedTimezone()`). Detail rows use
   the `server-detail` cached read model (mirrors `servers-list`).
+- **Server labels (client surface):** `GET`/`PUT /servers/:id/labels` — read-gated
+  GET and manage-gated PUT; PUT is replace-all (`{ labels: { key: value } }`, no
+  per-key DELETE). `GET /servers/:id` includes `labels` from a primary-connection
+  read (not the cached `server-detail` row). Keys use the Docker engine-label
+  charset so `placement.constraints` `node.labels.*` parses cleanly.
+- **TurboFabric (client surface):** `GET`/`PUT /organizations/:id/fabric` —
+  manage-gated opt-in. Default off (capable single-engine Docker standalone; no
+  `tp0`). Enabling creates the org `fabric` row plus per-server `relay` rows
+  (`tp0` identity + container prefix) and reconciles host interface `tp0` on
+  enrolled servers. Spanning compose networks persist per-host `span` rows
+  (local bridge subnet). A deploy plan that would use two or more servers
+  without TurboFabric returns **422** `turbofabric_required`. Whole-environment
+  `environment.server_id` pins never require it. User-facing copy is
+  **TurboFabric**; backend identifiers stay `fabric` / `tp0` / `relay` / `span`.
+  Additive to org site-to-site VPN (`server.wireguard.apply`) — never ask which
+  WireGuard network a container should join.
+- **Compiled runtime compose:** users author project + optional environment
+  ComposeDocuments. Deploy compiles **one** `compose.yaml` (`role: 'runtime'`)
+  per participating server plus a project `.env` for non-secrets. Secret
+  `{$KEY}` / `{$scope.KEY}` refs compile to Compose standalone `secrets:` files
+  under `/run/turbopanel/deployments/<projectId>/<environmentId>/secrets/`
+  (YAML holds paths only). Preview **Prepared** shows that snapshot (plus
+  `servers[]` when scheduled across hosts), redacted `.env`, and `secretPlan[]`.
+  Preview **Merged** stays the user-authored merge (including `{$…}`).
+  `POST /api/daemon/v1/deployments/secrets/rehydrate` reseals current registry
+  values after daemon boot because `/run` is tmpfs.
 - **Org server seat capacity:** `organization.options.maxServers`
   (`null`/omitted = unlimited). `GET`/`PUT /organizations/:id/server-capacity`;
   `POST /licenses` returns **409** `server_capacity_exceeded` when enrolled
@@ -735,12 +761,12 @@ orientation; the detail moved to:
 | **Daemon Cell** (`/ws/daemon/v1`) | `src/daemon/cell/AGENTS.md`                         | Presence, outbox + request correlation, Redis vs Durable Object backends, the **canonical Durable Object cost / hibernation / billing rules**, and the Postgres liveness read model (`server.connected` + `server.status_changed_at` only — no stored tri-state `daemon_status` column) |
 | **Server metrics**                | `src/daemon/metrics/AGENTS.md`                      | Host-metrics ingestion, Analytics Engine (Workers) / ClickHouse (Deno) storage, query + chart caching; also carries a history-only connection-status event stream (`blob1 = "status"`) — never authoritative for current liveness                                                       |
 | **Command Pipeline**              | `src/lib/commands/AGENTS.md`                        | Typed commands, queue transport, and correlated dev-sync / tunnel-token / public-URL-apply requests                                                                                                                                                                                     |
-| **Compose documents**             | `src/lib/compose/AGENTS.md`                         | `ComposeDocument` model, `x-turbopanel` extension, linter, overlay merge; **placement = `environment.server_id` ?? `project.options.defaultServerId`** (compose placement stripped on save)                                                                                             |
+| **Compose documents**             | `src/lib/compose/AGENTS.md`                         | `ComposeDocument` model, `x-turbopanel` extension, linter, overlay merge; compile-runtime (`compose.yaml` per participating server); schedule in `src/lib/schedule/`; **placement = `environment.server_id` ?? `project.options.defaultServerId`** (compose placement stripped on save)                                                                                             |
 | **Managed engines**               | `src/lib/managed/AGENTS.md` + `src/client/managed/` | Engine registry + client API (`POST …/managed`, apply/lifecycle/users/databases/status/logs, `GET /organizations/:id/managed`); whole-server `managed.ingress.reconcile` for shared ProxySQL desired state; all status reads are Postgres-backed; logs use cell `managed-logs-request`                                                                              |
 | **Bindings**                      | `src/client/bindings/`                             | Managed DB principal → compose service materialization of service-scoped `variable` rows (`binding_id`); ride existing `environment.deploy` inject rail; no new command type                                                                                                                                                                                                  |
 | **Authentication**                | `src/client/authn/AGENTS.md`                        | Argon2id, sessions, PAM install gate, secret keyring + data encryption, daemon key JWT, auth routes                                                                                                                                                                                     |
 | **Email**                         | `src/lib/email/AGENTS.md`                           | Queue abstraction, RabbitMQ→mailer (Deno) / Mailgun (Workers), settings, OTP surface                                                                                                                                                                                                    |
-| **Database & schema**             | `src/lib/db/AGENTS.md`                              | Drizzle schema, tables, migrations; deploy-tree columns (`container_*`, `service.compose_service_name` + `service.name` display label (API `displayName`), non-partial unique per environment on compose name, `environment.server_id`)                                                                                         |
+| **Database & schema**             | `src/lib/db/AGENTS.md`                              | Drizzle schema, tables, migrations; deploy-tree columns (`container_*`, `service.compose_service_name` + `service.name` display label (API `displayName`), non-partial unique per environment on compose name, `environment.server_id`, `environment.generation`); runtime `deployment` / `task` / `label`; TurboFabric `fabric` / `relay` / `span` |
 | **Query cache**                   | `src/query-cache/AGENTS.md`                         | Approved read-only cached `SELECT` models (Hyperdrive cached / Redis read-through)                                                                                                                                                                                                      |
 
 ## Self-host system inventory

@@ -25,6 +25,7 @@ import {
 
 export const PROJECT_COMPOSE_FILENAME = 'docker-compose.yml'
 export const PLATFORM_COMPOSE_FILENAME = 'docker-compose.turbopanel.yml'
+export const RUNTIME_COMPOSE_FILENAME = 'compose.yaml'
 
 /** Platform-injected service keys (scalar or mapping — never sequences). */
 const PLATFORM_SERVICE_SCALAR_KEYS = new Set([
@@ -311,12 +312,22 @@ export function buildPlatformComposeLayer(params: Readonly<{
 }
 
 function fallbackEmptyComposeFiles(): EnvironmentDeployComposeFile[] {
+  return renderRuntimeComposeFiles(emptyContainerComposeYaml())
+}
+
+/**
+ * Single compiled runtime file the daemon writes as `compose.yaml`.
+ */
+export function renderRuntimeComposeFiles(
+  content: string,
+): EnvironmentDeployComposeFile[] {
+  const body = content.trim() === '' ? emptyContainerComposeYaml() : content
   return [
     {
-      filename: PROJECT_COMPOSE_FILENAME,
-      role: 'project',
+      filename: RUNTIME_COMPOSE_FILENAME,
+      role: 'runtime',
       source: 'inline',
-      content: emptyContainerComposeYaml(),
+      content: body.endsWith('\n') ? body : `${body}\n`,
     },
   ]
 }

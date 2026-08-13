@@ -479,8 +479,8 @@ test('GET /environments/:id/deploy-preview returns prepared yaml with warnings f
     assertEquals(body.containers, [])
     assertEquals(body.volumes, [])
     assertEquals(body.warnings.some((w) => w.code === 'empty_compose'), true)
-    assertEquals(body.composeFiles?.[0]?.role, 'project')
-    assertEquals(body.composeFiles?.[0]?.filename, 'docker-compose.yml')
+    assertEquals(body.composeFiles?.[0]?.role, 'runtime')
+    assertEquals(body.composeFiles?.[0]?.filename, 'compose.yaml')
   })
 })
 
@@ -550,19 +550,10 @@ test('GET /environments/:id/deploy-preview returns containers for a service', as
     assertEquals(body.containers[0]!.containerName, body.containers[0]!.serviceId)
     assertEquals(body.composeYaml.includes(`container_name: ${body.containers[0]!.serviceId}`), true)
 
-    // Project file first; blank env overlay omitted; platform last (if injected).
     assertEquals(body.composeFiles.length >= 1, true)
-    assertEquals(body.composeFiles[0]!.role, 'project')
-    assertEquals(body.composeFiles[0]!.filename, 'docker-compose.yml')
-    assertEquals(
-      body.composeFiles.some((f) => f.role === 'environment'),
-      false,
-    )
-    const last = body.composeFiles[body.composeFiles.length - 1]!
-    if (body.composeFiles.length > 1) {
-      assertEquals(last.role, 'platform')
-      assertEquals(last.filename, 'docker-compose.turbopanel.yml')
-    }
+    assertEquals(body.composeFiles[0]!.role, 'runtime')
+    assertEquals(body.composeFiles[0]!.filename, 'compose.yaml')
+    assertEquals(body.composeFiles.length, 1)
   })
 })
 

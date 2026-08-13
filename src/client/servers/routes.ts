@@ -21,6 +21,7 @@ import {
 } from '../../lib/db/server-metadata.ts'
 import { isActiveContainerStatus } from '../../lib/db/project-delete.ts'
 import { cachedServerDetailReadModel } from '../../query-cache/read-models/server-detail.ts'
+import { listServerLabels } from '../../lib/db/label-records.ts'
 import {
   fetchDaemonServerCell,
 } from '../../daemon/cell/server-diagnostics.ts'
@@ -79,6 +80,7 @@ import {
 import { UPDATE_REQUEST_TTL_MS } from '../../lib/update/constants.ts'
 import { registerServerCommandRoutes } from './commands-routes.ts'
 import { registerServerMetricsRoutes } from './metrics-routes.ts'
+import { registerServerLabelRoutes } from './labels-routes.ts'
 import { cachedServersListReadModel } from '../../query-cache/read-models/servers-list.ts'
 import {
   UPDATE_CHANNEL,
@@ -1084,6 +1086,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const dcOptions = serverRow.datacenterId
       ? datacenterOptionsById.get(serverRow.datacenterId)
       : undefined
+    const labelRows = await listServerLabels(db, id)
     const live = display.presence
     const timezoneFields = resolveServerTimezoneFields(
       display.row.options,
@@ -1105,6 +1108,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
         orgDefaultTimezone: orgOptions.defaultServerTimezone ?? null,
         enforceServerTimezone: orgOptions.enforceServerTimezone ?? false,
         licenseId: display.row.licenseId ?? null,
+        labels: labelRows.map((row) => ({ key: row.key, value: row.value })),
       },
     })
   })
@@ -1242,4 +1246,5 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
 
   registerServerCommandRoutes(router, opts)
   registerServerMetricsRoutes(router, opts)
+  registerServerLabelRoutes(router, opts)
 }

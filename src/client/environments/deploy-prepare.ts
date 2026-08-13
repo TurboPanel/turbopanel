@@ -3,7 +3,10 @@ import { and, eq, inArray, or } from 'drizzle-orm'
 import type { AppEnv } from '../../app.ts'
 import {
   decryptSecret,
+  encryptSecretForDaemon,
   ENVELOPE_MAGIC,
+  isDaemonSealedEnvelope,
+  isSealedEnvelope,
   resealSecretForDaemon,
 } from '../authn/data-encryption.ts'
 import {
@@ -17,16 +20,18 @@ import {
   type ServiceDeployHook,
   type ServiceOptionsByComposeName,
 } from '../../lib/compose/apply-service-options.ts'
+import { compileRuntimeComposeDocument } from '../../lib/compose/compile-runtime.ts'
+import { sha256HexUtf8 } from '../../lib/compose/desired-hash.ts'
 import {
   applyVariablesToComposeDocument,
-  injectSecretPlaceholdersIntoComposeDocument,
+  isApplyVariablesError,
   type DeployVariableEntry,
   type DeployVariableMaterial,
+  type VariableScopeEntryMap,
 } from '../../lib/compose/apply-variables.ts'
-import { expandComposeServiceInstances } from '../../lib/compose/expand-instances.ts'
+import type { DeploySecretPlanEntry } from '../../lib/compose/secret-files.ts'
 import {
   assertComposeDocument,
-  collectTraditionalWebServiceNames,
   composeDocumentToRuntimeYaml,
   emptyContainerComposeYaml,
   isTraditionalWebComposeService,
@@ -37,13 +42,9 @@ import {
   type TraditionalWebSiteSpec,
 } from '../../lib/compose/index.ts'
 import {
-  buildPlatformComposeLayer,
-  buildUserComposeLayers,
   environmentComposeFilename,
-  expandedOriginServiceNames,
-  PLATFORM_COMPOSE_FILENAME,
   PROJECT_COMPOSE_FILENAME,
-  renderComposeFiles,
+  renderRuntimeComposeFiles,
 } from './deploy-layers.ts'
 import {
   buildPlatformDeployVariables,
@@ -73,12 +74,18 @@ import {
   resolveServiceInstances,
 } from '../../lib/service-options.ts'
 import { validateRegisteredExternalDockerNetworks } from './validate-docker-external-networks.ts'
+import type { DesiredTaskInput } from '../../lib/db/task-records.ts'
+import {
+  localReplicaCounts,
+  localServiceNames,
+} from '../../lib/schedule/planner.ts'
 import {
   allocateEnvironmentContainers,
   buildContainerServiceSpecs,
   ensureServiceIngressContainerAllocation,
   readComposeContainerNames,
   type ContainerAllocation,
+  type ContainerServiceSpec,
 } from './allocate-containers.ts'
 import { resolveTcpUdpIngressServices } from './tcp-udp-ingress.ts'
 import {
@@ -118,10 +125,11 @@ import { reconcileServicesFromCompose } from './reconcile-services.ts'
 import type { Db } from '../../db.ts'
 import {
   mergeHostingVariablesForService,
+  resolveInheritedVariableBundleForService,
   resolveInheritedVariablesForEnvironment,
-  resolveInheritedVariablesForService,
   resolveServerScopedVariables,
   type ResolvedVariableMap,
+  type ResolvedVariableScopes,
 } from '../variables/resolve-inherited.ts'
 import {
   loadPrincipalIdsAssignedToEnvironment,
@@ -177,10 +185,14 @@ export type PreparedDeployCompose = {
    */
   composeYaml: string
   /**
-   * Ordered `docker compose -f` chain (project → environment → platform).
-   * The daemon should prefer this over `composeYaml` when present.
+   * Compiled runtime files. New deploys send a single `role: 'runtime'`
+   * `compose.yaml` entry.
    */
   composeFiles: EnvironmentDeployComposeFile[]
+  /** SHA-256 hex of `composeYaml` (compiled runtime, before daemon overlay). */
+  desiredHash: string
+  /** Local replica counts keyed by logical compose service name. */
+  replicaCounts: Record<string, number>
   hooks: ServiceDeployHook[]
   variableMaterial: EnvironmentDeployVariableMaterial[]
   storageMaterial: EnvironmentDeployStorageMaterial[]
@@ -208,6 +220,10 @@ export type PreparedDeployCompose = {
   volumes: RegisteredComposeVolume[]
   /** Soft prepare issues (preview mode); empty for deploy. */
   warnings: DeployPrepareWarning[]
+  /** Non-secret Compose project `.env` next to compose.yaml. */
+  envFile?: string
+  /** File-only secret mounts (no plaintext). */
+  secretPlan?: DeploySecretPlanEntry[]
 }
 
 export type DeployPrepareError =
@@ -218,23 +234,45 @@ export type DeployPrepareError =
   | { kind: 'docker_external_network_unregistered'; names: string[] }
   | { kind: 'traditional_web_principal_ambiguous'; composeServiceName: string }
   | { kind: 'binding_endpoint_unavailable' }
+  | {
+    kind: 'variable_unresolved'
+    message: string
+    ref?: string
+    composeServiceName?: string
+    envKey?: string
+  }
+  | {
+    kind: 'variable_ref_invalid'
+    message: string
+    composeServiceName?: string
+    envKey?: string
+  }
+  | {
+    kind: 'variable_secret_interpolation'
+    message: string
+    composeServiceName?: string
+    envKey?: string
+  }
 
 export type DeployPrepareMode = 'deploy' | 'preview'
 
-function emptyPreparedCompose(
+/** Per-server slice of a scheduled environment deploy. */
+export type DeployScheduleSlice = {
+  serverId: string
+  tasks: readonly DesiredTaskInput[]
+  serviceIdToName: ReadonlyMap<string, string>
+  spanningNetworks?: ReadonlyMap<string, string>
+}
+
+async function emptyPreparedCompose(
   warnings: DeployPrepareWarning[],
-): PreparedDeployCompose {
+): Promise<PreparedDeployCompose> {
   const emptyYaml = emptyContainerComposeYaml()
   return {
     composeYaml: emptyYaml,
-    composeFiles: [
-      {
-        filename: PROJECT_COMPOSE_FILENAME,
-        role: 'project',
-        source: 'inline',
-        content: emptyYaml,
-      },
-    ],
+    composeFiles: renderRuntimeComposeFiles(emptyYaml),
+    desiredHash: await sha256HexUtf8(emptyYaml),
+    replicaCounts: {},
     hooks: [],
     variableMaterial: [],
     storageMaterial: [],
@@ -250,8 +288,30 @@ function emptyPreparedCompose(
   }
 }
 
+type HardDeployPrepareError =
+  | { kind: 'datacenter_ip_required'; serverId: string }
+  | {
+    kind: 'variable_unresolved'
+    message: string
+    ref?: string
+    composeServiceName?: string
+    envKey?: string
+  }
+  | {
+    kind: 'variable_ref_invalid'
+    message: string
+    composeServiceName?: string
+    envKey?: string
+  }
+  | {
+    kind: 'variable_secret_interpolation'
+    message: string
+    composeServiceName?: string
+    envKey?: string
+  }
+
 function warningFromPrepareError(
-  error: Exclude<DeployPrepareError, { kind: 'datacenter_ip_required' }>,
+  error: Exclude<DeployPrepareError, HardDeployPrepareError>,
 ): DeployPrepareWarning {
   switch (error.kind) {
     case 'empty_compose':
@@ -322,10 +382,18 @@ async function sealVariableMaterialForDaemon(
   const sealed: EnvironmentDeployVariableMaterial[] = []
   for (const entry of material) {
     let envelope = entry.valueEnvelope
-    if (entry.valueEnvelope.startsWith(`${ENVELOPE_MAGIC}.`)) {
+    if (isDaemonSealedEnvelope(entry.valueEnvelope)) {
+      envelope = entry.valueEnvelope
+    } else if (isSealedEnvelope(entry.valueEnvelope)) {
       envelope = await resealSecretForDaemon(
         secretsConfig,
         dataEncryptionSecrets,
+        { serverId, keyId },
+        entry.valueEnvelope,
+      )
+    } else {
+      envelope = await encryptSecretForDaemon(
+        secretsConfig,
         { serverId, keyId },
         entry.valueEnvelope,
       )
@@ -675,6 +743,7 @@ async function mapResolvedVariablesToDeployEntries(
       isLiteral: entry.isLiteral,
       forBuild: entry.forBuild,
       forRuntime: entry.forRuntime,
+      ...(entry.bindingId ? { bindingId: entry.bindingId } : {}),
     })
   }
   return entries
@@ -699,6 +768,7 @@ async function resolveDeployVariableBuckets(
 ): Promise<{
   globalEntries: DeployVariableEntry[]
   perServiceEntries: Map<string, DeployVariableEntry[]>
+  perServiceScopes: Map<string, VariableScopeEntryMap>
 }> {
   const envVars = await resolveInheritedVariablesForEnvironment(db, params.environmentId)
   const serverVars = await resolveServerScopedVariables(db, params.serverId)
@@ -707,48 +777,84 @@ async function resolveDeployVariableBuckets(
     fallbackGlobal,
     params.dataEncryptionSecrets,
   )
+  const serverScopeEntries = await mapResolvedVariablesToDeployEntries(
+    serverVars,
+    params.dataEncryptionSecrets,
+  )
+  const serverScopeMap = new Map(serverScopeEntries.map((entry) => [entry.key, entry]))
 
   const composeServices = params.composeServiceNames
   const globalEntries: DeployVariableEntry[] = composeServices.length === 0
     ? fallbackEntries
     : []
   const perServiceEntries = new Map<string, DeployVariableEntry[]>()
+  const perServiceScopes = new Map<string, VariableScopeEntryMap>()
 
   if (composeServices.length === 0) {
-    return { globalEntries, perServiceEntries }
+    return { globalEntries, perServiceEntries, perServiceScopes }
   }
   if (params.serviceRowByComposeName.size === 0) {
     globalEntries.push(...fallbackEntries)
-    return { globalEntries, perServiceEntries }
+    return { globalEntries, perServiceEntries, perServiceScopes }
   }
 
-  // Cache user vars per origin service id so clones share one resolve.
   const userEntriesByServiceId = new Map<string, DeployVariableEntry[]>()
+  const scopesByServiceId = new Map<string, VariableScopeEntryMap>()
 
   for (const composeServiceName of composeServices) {
     const row = params.serviceRowByComposeName.get(composeServiceName)
     let userEntries: DeployVariableEntry[]
+    let scopes: VariableScopeEntryMap
     if (row) {
       let cached = userEntriesByServiceId.get(row.id)
-      if (!cached) {
-        const varMap = await resolveInheritedVariablesForService(db, row.id)
-        await mergeHostingVariablesForService(db, row.id, varMap)
-        // Re-assert binding-owned keys last — hosting scope must never shadow them.
-        await reapplyBindingOwnedVariables(db, row.id, varMap)
-        const mergedServer = new Map([...varMap, ...serverVars])
+      let cachedScopes = scopesByServiceId.get(row.id)
+      if (!cached || !cachedScopes) {
+        const bundle = await resolveInheritedVariableBundleForService(db, row.id)
+        const hostingMap = await mergeHostingVariablesForService(db, row.id, bundle.inherited)
+        await reapplyBindingOwnedVariables(db, row.id, bundle.inherited)
+        const mergedServer = new Map([...bundle.inherited, ...serverVars])
         cached = await mapResolvedVariablesToDeployEntries(
           mergedServer,
           params.dataEncryptionSecrets,
         )
+        const scopeMaps: ResolvedVariableScopes = {
+          ...bundle.scopes,
+          hosting: hostingMap,
+          server: serverVars,
+        }
+        cachedScopes = await mapResolvedScopesToDeployEntries(
+          scopeMaps,
+          params.dataEncryptionSecrets,
+        )
+        cachedScopes.server = serverScopeMap
         userEntriesByServiceId.set(row.id, cached)
+        scopesByServiceId.set(row.id, cachedScopes)
       }
       userEntries = cached
+      scopes = cachedScopes
     } else {
       userEntries = fallbackEntries
+      scopes = { server: serverScopeMap }
     }
     perServiceEntries.set(composeServiceName, userEntries)
+    perServiceScopes.set(composeServiceName, scopes)
   }
-  return { globalEntries, perServiceEntries }
+  return { globalEntries, perServiceEntries, perServiceScopes }
+}
+
+async function mapResolvedScopesToDeployEntries(
+  scopes: ResolvedVariableScopes,
+  dataEncryptionSecrets: Parameters<typeof mapResolvedVariablesToDeployEntries>[1],
+): Promise<VariableScopeEntryMap> {
+  const out: VariableScopeEntryMap = {}
+  for (const [scope, map] of Object.entries(scopes)) {
+    if (!map) continue
+    const entries = await mapResolvedVariablesToDeployEntries(map, dataEncryptionSecrets)
+    out[scope as keyof VariableScopeEntryMap] = new Map(
+      entries.map((entry) => [entry.key, entry]),
+    )
+  }
+  return out
 }
 
 function listContainerComposeNames(document: ComposeDocument): Set<string> {
@@ -782,10 +888,17 @@ function buildExpandedServiceOptionsMap(
 /** Build clone compose name → allocated container_name map for apply-service-options. */
 function buildContainerNameByComposeName(
   allocations: readonly ContainerAllocation[],
+  localCounts: ReadonlyMap<string, number> | undefined,
+  localServerId: string | undefined,
 ): Map<string, string> {
-  return new Map(
-    allocations.map((row) => [row.cloneComposeServiceName, row.containerName]),
-  )
+  const map = new Map<string, string>()
+  for (const row of allocations) {
+    const count = localCounts?.get(row.composeServiceName) ?? row.instances
+    if (count > 1) continue
+    if (localServerId && row.serverId !== localServerId) continue
+    map.set(row.cloneComposeServiceName, row.containerName)
+  }
+  return map
 }
 
 function appendPlatformVariablesToEntries(
@@ -840,10 +953,7 @@ function buildCloneNamesByServiceId(
 }
 
 /** Soft prepare errors that preview can absorb into `warnings`. */
-type SoftDeployPrepareError = Exclude<
-  DeployPrepareError,
-  { kind: 'datacenter_ip_required' }
->
+type SoftDeployPrepareError = Exclude<DeployPrepareError, HardDeployPrepareError>
 
 function absorbSoftPrepareError(
   mode: DeployPrepareMode,
@@ -863,11 +973,11 @@ function listComposeServiceKeys(document: ComposeDocument): string[] {
   return Object.keys(document.data.services as Record<string, unknown>)
 }
 
-function emptyComposePrepareResult(
+async function emptyComposePrepareResult(
   mode: DeployPrepareMode,
-): PreparedDeployCompose | DeployPrepareError {
+): Promise<PreparedDeployCompose | DeployPrepareError> {
   if (mode === 'preview') {
-    return emptyPreparedCompose([warningFromPrepareError({ kind: 'empty_compose' })])
+    return await emptyPreparedCompose([warningFromPrepareError({ kind: 'empty_compose' })])
   }
   return { kind: 'empty_compose' }
 }
@@ -1015,6 +1125,8 @@ type DeployExpandPipeline = {
   expansion: Map<string, string[]>
   expandedServiceNames: string[]
   optionsByComposeName: ServiceOptionsByComposeName
+  localReplicaCounts: Map<string, number>
+  localServiceNames?: Set<string>
 }
 
 async function allocateExpandDeployPipeline(
@@ -1027,23 +1139,27 @@ async function allocateExpandDeployPipeline(
     merged: ComposeDocument
     composeServiceNames: readonly string[]
     serviceRows: ServiceRow[]
+    schedule?: DeployScheduleSlice
   },
 ): Promise<DeployExpandPipeline> {
   const containerNaming = resolveContainerNaming(parseProjectOptions(params.projectOptions))
   const containerComposeNames = listContainerComposeNames(params.merged)
-  const containerServices = buildContainerServiceSpecs(
-    params.serviceRows,
-    containerComposeNames,
-    readComposeContainerNames(params.merged),
+  const containerServices = applyScheduleToContainerSpecs(
+    buildContainerServiceSpecs(
+      params.serviceRows,
+      containerComposeNames,
+      readComposeContainerNames(params.merged),
+    ),
+    params.schedule,
   )
 
-  // Per-service tcp/udp Traefik rows — allocated before app prune so their
-  // containerRowIds stay in keepIds; HTTP-only services drop out of resolve
-  // and their stale pending ingress rows are swept.
   const tcpUdpServices = await resolveTcpUdpIngressServices(db, params.environmentId)
   const ingressServices: EnvironmentDeployIngressService[] = []
   const ingressKeepIds = new Set<string>()
   for (const svc of tcpUdpServices) {
+    if (!ownsIngressForService(params.schedule, svc.serviceId, params.serverId)) {
+      continue
+    }
     const alloc = await ensureServiceIngressContainerAllocation(db, {
       serviceId: svc.serviceId,
       serverId: params.serverId,
@@ -1057,7 +1173,6 @@ async function allocateExpandDeployPipeline(
     })
   }
 
-  // Idempotent by (service, ordinal) — preview may allocate; deploy reuses rows.
   const containers = await allocateEnvironmentContainers(db, {
     environmentId: params.environmentId,
     serverId: params.serverId,
@@ -1067,7 +1182,6 @@ async function allocateExpandDeployPipeline(
     extraKeepIds: ingressKeepIds,
   })
 
-  // Idempotent by (environment, composeVolumeKey) — preview may register; deploy reuses.
   const registeredVolumes = await registerComposeVolumes(db, {
     document: params.merged,
     organizationId: params.organizationId,
@@ -1078,40 +1192,45 @@ async function allocateExpandDeployPipeline(
     registeredVolumes.map((row) => [row.composeKey, row.volumeName]),
   )
   const withRenamedVolumes = renameComposeVolumes(params.merged, volumeRenames)
-  const instancesByComposeName = buildInstancesByComposeName(
-    params.composeServiceNames,
-    containerServices,
-    params.serviceRows,
-  )
-  const { document: expandedDocument, expansion } = expandComposeServiceInstances(
-    withRenamedVolumes,
-    instancesByComposeName,
-  )
+  const expansion = identityComposeExpansion(params.composeServiceNames)
+  const localCounts = params.schedule
+    ? localReplicaCounts(
+      params.schedule.tasks,
+      params.schedule.serviceIdToName,
+      params.serverId,
+    )
+    : new Map(
+      containerServices.map((spec) => [spec.composeServiceName, spec.instances]),
+    )
+  const localNames = params.schedule
+    ? localServiceNames(
+      params.schedule.tasks,
+      params.schedule.serviceIdToName,
+      params.serverId,
+    )
+    : undefined
+
   return {
     containers,
     ingressServices,
     registeredVolumes,
     volumeRenames,
-    expandedDocument,
+    expandedDocument: withRenamedVolumes,
     expansion,
-    expandedServiceNames: listComposeServiceKeys(expandedDocument),
+    expandedServiceNames: listComposeServiceKeys(withRenamedVolumes),
     optionsByComposeName: buildExpandedServiceOptionsMap(
       params.serviceRows,
       expansion,
     ),
+    localReplicaCounts: localCounts,
+    ...(localNames ? { localServiceNames: localNames } : {}),
   }
 }
 
 function documentForServiceOptions(
-  mode: DeployPrepareMode,
-  withVariables: ReturnType<typeof applyVariablesToComposeDocument>,
+  _mode: DeployPrepareMode,
+  withVariables: { document: ComposeDocument },
 ): ComposeDocument {
-  if (mode === 'preview') {
-    return injectSecretPlaceholdersIntoComposeDocument(
-      withVariables.document,
-      withVariables.secretMaterial,
-    )
-  }
   return withVariables.document
 }
 
@@ -1229,7 +1348,64 @@ async function externalNetworkPrepareError(
   }
 }
 
-function toPreparedDeployResult(
+function replicaCountsFromMap(
+  counts: ReadonlyMap<string, number>,
+): Record<string, number> {
+  return Object.fromEntries(
+    [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0])),
+  )
+}
+
+function identityComposeExpansion(names: readonly string[]): Map<string, string[]> {
+  const map = new Map<string, string[]>()
+  for (const name of names) map.set(name, [name])
+  return map
+}
+
+function applyScheduleToContainerSpecs(
+  specs: ContainerServiceSpec[],
+  schedule: DeployScheduleSlice | undefined,
+): ContainerServiceSpec[] {
+  if (!schedule) return specs
+  const tasksByService = new Map<string, DesiredTaskInput[]>()
+  for (const task of schedule.tasks) {
+    const list = tasksByService.get(task.serviceId) ?? []
+    list.push(task)
+    tasksByService.set(task.serviceId, list)
+  }
+  const next: ContainerServiceSpec[] = []
+  for (const spec of specs) {
+    const tasks = tasksByService.get(spec.serviceId)
+    if (!tasks || tasks.length === 0) continue
+    const serverIdByOrdinal = new Map<number, string>()
+    for (const task of tasks) {
+      serverIdByOrdinal.set(task.slot + 1, task.serverId)
+    }
+    next.push({
+      ...spec,
+      instances: tasks.length,
+      serverIdByOrdinal,
+    })
+  }
+  return next
+}
+
+function ownsIngressForService(
+  schedule: DeployScheduleSlice | undefined,
+  serviceId: string,
+  serverId: string,
+): boolean {
+  if (!schedule) return true
+  const slots = schedule.tasks.filter((task) => task.serviceId === serviceId)
+  if (slots.length === 0) return false
+  let minSlot = slots[0]!.slot
+  for (const task of slots) {
+    if (task.slot < minSlot) minSlot = task.slot
+  }
+  return slots.some((task) => task.slot === minSlot && task.serverId === serverId)
+}
+
+async function toPreparedDeployResult(
   mode: DeployPrepareMode,
   parts: {
     composeYaml: string
@@ -1246,12 +1422,17 @@ function toPreparedDeployResult(
     expansion: Map<string, string[]>
     registeredVolumes: RegisteredComposeVolume[]
     warnings: DeployPrepareWarning[]
+    replicaCounts: Record<string, number>
+    envFile?: string
+    secretPlan?: DeploySecretPlanEntry[]
   },
-): PreparedDeployCompose {
+): Promise<PreparedDeployCompose> {
   const omitSecrets = mode === 'preview'
   return {
     composeYaml: parts.composeYaml,
     composeFiles: parts.composeFiles,
+    desiredHash: await sha256HexUtf8(parts.composeYaml),
+    replicaCounts: parts.replicaCounts,
     hooks: parts.hooks,
     variableMaterial: omitSecrets ? [] : parts.variableMaterial,
     storageMaterial: omitSecrets ? [] : parts.storageMaterial,
@@ -1264,6 +1445,8 @@ function toPreparedDeployResult(
     composeServiceExpansion: expansionToRecord(parts.expansion),
     volumes: parts.registeredVolumes,
     warnings: parts.warnings,
+    ...(parts.envFile !== undefined ? { envFile: parts.envFile } : {}),
+    ...(parts.secretPlan !== undefined ? { secretPlan: parts.secretPlan } : {}),
   }
 }
 
@@ -1281,6 +1464,8 @@ export async function prepareDeployCompose(
      * registration still run (idempotent) so previewed UUIDs match deploy.
      */
     mode?: DeployPrepareMode
+    /** When set, compile and allocate from the scheduler plan instead of YAML expansion. */
+    schedule?: DeployScheduleSlice
   },
 ): Promise<PreparedDeployCompose | DeployPrepareError | Response> {
   const mode = params.mode ?? 'deploy'
@@ -1315,7 +1500,7 @@ export async function prepareDeployCompose(
   const merged = mergeComposeLayers(rawComposeLayers)
 
   const composeServiceNames = listComposeServiceKeys(merged)
-  if (composeServiceNames.length === 0) return emptyComposePrepareResult(mode)
+  if (composeServiceNames.length === 0) return await emptyComposePrepareResult(mode)
 
   await reconcileServicesFromCompose(db, params.environmentId, merged)
 
@@ -1347,6 +1532,7 @@ export async function prepareDeployCompose(
     merged,
     composeServiceNames,
     serviceRows,
+    schedule: params.schedule,
   })
 
   const limitErr = absorbSoftPrepareError(
@@ -1376,7 +1562,7 @@ export async function prepareDeployCompose(
     serviceRows,
     pipeline.expansion,
   )
-  const { globalEntries, perServiceEntries: userPerService } =
+  const { globalEntries, perServiceEntries: userPerService, perServiceScopes } =
     await resolveDeployVariableBuckets(db, {
       environmentId: params.environmentId,
       serverId: params.serverId,
@@ -1398,11 +1584,29 @@ export async function prepareDeployCompose(
   const withVariables = applyVariablesToComposeDocument(pipeline.expandedDocument, {
     globalEntries,
     perServiceEntries,
+    perServiceScopes,
+    projectId: envRow.projectId,
+    environmentId: params.environmentId,
   })
+  if (isApplyVariablesError(withVariables)) {
+    return {
+      kind: withVariables.kind,
+      message: withVariables.message,
+      ...(withVariables.ref ? { ref: withVariables.ref } : {}),
+      ...(withVariables.composeServiceName
+        ? { composeServiceName: withVariables.composeServiceName }
+        : {}),
+      ...(withVariables.envKey ? { envKey: withVariables.envKey } : {}),
+    }
+  }
   const withServiceOptions = applyServiceOptionsToComposeDocument(
     documentForServiceOptions(mode, withVariables),
     pipeline.optionsByComposeName,
-    buildContainerNameByComposeName(pipeline.containers),
+    buildContainerNameByComposeName(
+      pipeline.containers,
+      pipeline.localReplicaCounts,
+      params.serverId,
+    ),
   )
 
   const storageMaterialRaw = await loadStorageMaterial(db, {
@@ -1459,6 +1663,10 @@ export async function prepareDeployCompose(
     split.sites,
   )
   if ('kind' in traditionalResolved) return traditionalResolved
+  const localNames = pipeline.localServiceNames
+  const localTraditional = localNames
+    ? traditionalResolved.filter((site) => localNames.has(site.composeServiceName))
+    : traditionalResolved
 
   const dockerExternalNetworks = collectComposeExternalDockerNetworkNames(
     split.composeYaml,
@@ -1483,58 +1691,31 @@ export async function prepareDeployCompose(
   ).filter((name) => !traditionalNames.has(name))
 
   // Effective document = the same post-split container document serialized as
-  // composeYaml today. Network keys surviving prune drive per-layer keep sets.
+  // composeYaml today. Compile one runtime snapshot; daemons never see
+  // project/environment/platform layers.
   const effective = split.containerDocument
-  const keepNetworkKeys = new Set(
-    isPlainObject(effective.data.networks)
-      ? Object.keys(effective.data.networks as Record<string, unknown>)
-      : [],
-  )
-  const removeServiceNames = new Set([
-    ...collectTraditionalWebServiceNames(withServiceOptions.document),
-    ...expandedOriginServiceNames(pipeline.expansion),
-  ])
-  const projectLayerDoc = rawComposeLayers[0]!.document
-  const environmentLayerDoc = rawComposeLayers[1]!.document
-  const userLayers = buildUserComposeLayers({
-    projectDocument: projectLayerDoc,
-    environmentDocument: environmentLayerDoc,
-    environmentFilename,
-    removeServiceNames,
-    volumeRenames: pipeline.volumeRenames,
-    keepNetworkKeys,
+  const runtimeDocument = compileRuntimeComposeDocument(effective, {
+    environmentId: params.environmentId,
+    localReplicaCounts: pipeline.localReplicaCounts,
+    ...(pipeline.localServiceNames
+      ? { localServiceNames: pipeline.localServiceNames }
+      : {}),
+    ...(params.schedule?.spanningNetworks
+      ? { spanningNetworks: params.schedule.spanningNetworks }
+      : {}),
   })
-  // Future: a not-yet-implemented `resolveRepositoryComposeLayer(project.options.repository, environment)`
-  // seam would resolve a repository-pinned compose file and return an
-  // `EnvironmentDeployComposeFile` with `source: 'repository'` and `path` set
-  // to its repo-relative location. That layer would be spliced into
-  // `userLayers` here — after the environment layer, before this call to
-  // `mergeComposeLayers`/`buildPlatformComposeLayer` — so it merges ahead of
-  // the platform layer, which must always stay last. This phase adds no such
-  // resolver; it is contract-only (see `EnvironmentDeployComposeFile.path` in
-  // `src/lib/commands/schemas.ts`).
-  const userMerged = mergeComposeLayers(userLayers)
-  const platformDocument = buildPlatformComposeLayer({
-    effective,
-    userMerged,
-  })
-  const composeFiles = renderComposeFiles([
-    ...userLayers,
-    {
-      role: 'platform',
-      filename: PLATFORM_COMPOSE_FILENAME,
-      document: platformDocument,
-    },
-  ])
+  const composeYaml =
+    composeDocumentToRuntimeYaml(runtimeDocument) || emptyContainerComposeYaml()
+  const composeFiles = renderRuntimeComposeFiles(composeYaml)
 
-  return toPreparedDeployResult(mode, {
-    composeYaml: split.composeYaml,
+  return await toPreparedDeployResult(mode, {
+    composeYaml,
     composeFiles,
     hooks,
     variableMaterial,
     storageMaterial,
     principalMaterial,
-    traditionalWebSites: traditionalResolved,
+    traditionalWebSites: localTraditional,
     dockerExternalNetworks,
     managedNetworkServices,
     containers: pipeline.containers,
@@ -1542,6 +1723,9 @@ export async function prepareDeployCompose(
     expansion: pipeline.expansion,
     registeredVolumes: pipeline.registeredVolumes,
     warnings,
+    replicaCounts: replicaCountsFromMap(pipeline.localReplicaCounts),
+    envFile: withVariables.envFileContent,
+    secretPlan: withVariables.secretPlan,
   })
 }
 
@@ -1747,11 +1931,8 @@ export {
 
 // Re-export layer builders used by prepare for host-free coverage imports.
 export {
-  buildPlatformComposeLayer,
-  buildUserComposeLayers,
   environmentComposeFilename,
-  expandedOriginServiceNames,
-  PLATFORM_COMPOSE_FILENAME,
   PROJECT_COMPOSE_FILENAME,
-  renderComposeFiles,
+  renderRuntimeComposeFiles,
+  RUNTIME_COMPOSE_FILENAME,
 } from './deploy-layers.ts'

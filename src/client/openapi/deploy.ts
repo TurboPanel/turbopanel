@@ -22,8 +22,25 @@ export const deploySchemas = {
     required: ['ok', 'commandId', 'status'],
     properties: {
       ok: { type: 'boolean', const: true },
-      commandId: { type: 'string' },
+      commandId: {
+        type: 'string',
+        description: 'First queued command id (fan-out may enqueue more).',
+      },
       status: { type: 'string', const: 'queued' },
+      serverId: { type: 'string' },
+      commands: {
+        type: 'array',
+        description: 'Every queued `environment.deploy` (and drained-server stop) command.',
+        items: {
+          type: 'object',
+          required: ['commandId', 'serverId', 'status'],
+          properties: {
+            commandId: { type: 'string' },
+            serverId: { type: 'string' },
+            status: { type: 'string', const: 'queued' },
+          },
+        },
+      },
     },
   },
   DeployPreviewWarning: {
@@ -50,26 +67,28 @@ export const deploySchemas = {
     properties: {
       filename: {
         type: 'string',
-        description: 'Basename only (`docker-compose.yml`, …) — safe for host paths',
+        description: 'Basename only (`compose.yaml`) — safe for host paths',
       },
       role: {
         type: 'string',
-        enum: ['project', 'environment', 'platform'],
+        enum: ['runtime', 'project', 'environment', 'platform'],
+        description:
+          'New deploys emit a single `runtime` file. Older queued commands may still carry a project → environment → platform chain.',
       },
       source: {
         type: 'string',
         enum: ['inline', 'repository'],
         description:
-          'Provenance of this layer (`EnvironmentDeployComposeFile.source`); only `inline` is emitted today. `repository` is reserved for repository-backed layers.',
+          'Provenance of this file (`EnvironmentDeployComposeFile.source`); only `inline` is emitted today.',
       },
       path: {
         type: 'string',
         description:
-          'Repo-relative original location when `source` is `repository` (`EnvironmentDeployComposeFile.path`). Unused until repository-pinned compose files are supported; optional so preview matches the deploy wire shape without another contract widen.',
+          'Repo-relative original location when `source` is `repository`. Unused until repository-pinned compose files are supported.',
       },
       content: {
         type: 'string',
-        description: 'Runtime compose YAML body for this layer',
+        description: 'Compiled runtime compose YAML for this server',
       },
     },
   },
@@ -89,13 +108,31 @@ export const deploySchemas = {
       composeYaml: {
         type: 'string',
         description:
-          'Merged effective runtime compose for display/preview (and legacy single-file fallback). Secret values redacted. The ordered `-f` chain the daemon runs is `composeFiles`.',
+          'Compiled runtime compose for the first participating server (legacy single-file fallback). Secret values redacted. Same body as `composeFiles[0]` when that file is `role: runtime`.',
       },
       composeFiles: {
         type: 'array',
         description:
-          'Ordered `docker compose -f` chain (project → environment → platform last). This is what deploy enqueues for multi-file-aware daemons.',
+          'Compiled runtime files the daemon writes. New deploys send a single `{ filename: compose.yaml, role: runtime }` entry. Users never see project/environment/platform layers.',
         items: { $ref: '#/components/schemas/DeployPreviewComposeFile' },
+      },
+      servers: {
+        type: 'array',
+        description:
+          'Per-server compiled snapshots when the scheduler places tasks on more than one host. Omitted or empty for a whole-environment pin / single-server plan.',
+        items: {
+          type: 'object',
+          required: ['serverId', 'displayName', 'composeYaml', 'services'],
+          properties: {
+            serverId: { type: 'string' },
+            displayName: { type: 'string' },
+            composeYaml: { type: 'string' },
+            services: {
+              type: 'array',
+              items: { type: 'string' },
+            },
+          },
+        },
       },
       projectName: {
         type: 'string',
@@ -142,6 +179,37 @@ export const deploySchemas = {
       warnings: {
         type: 'array',
         items: { $ref: '#/components/schemas/DeployPreviewWarning' },
+      },
+      envFile: {
+        type: 'string',
+        description:
+          'Generated Compose project .env for non-secret interpolation. Secret values are omitted.',
+      },
+      secretPlan: {
+        type: 'array',
+        description:
+          'Compose standalone secret file plan (paths and names only — never plaintext).',
+        items: {
+          type: 'object',
+          required: [
+            'key',
+            'composeServiceName',
+            'source',
+            'target',
+            'relativePath',
+            'forBuild',
+            'forRuntime',
+          ],
+          properties: {
+            key: { type: 'string' },
+            composeServiceName: { type: 'string' },
+            source: { type: 'string' },
+            target: { type: 'string' },
+            relativePath: { type: 'string' },
+            forBuild: { type: 'boolean' },
+            forRuntime: { type: 'boolean' },
+          },
+        },
       },
     },
   },
@@ -208,15 +276,26 @@ export const deployPaths = {
           },
         },
         409: {
-          description: 'Health-check or resource-limit conflict',
+          description:
+            'Health-check, resource-limit, or no eligible server (`server_placement_required`)',
           content: {
             'application/json': {
               schema: {
                 oneOf: [
                   { $ref: '#/components/schemas/HealthCheckMissingError' },
                   { $ref: '#/components/schemas/ResourceLimitExceededError' },
+                  { $ref: '#/components/schemas/ErrorResponse' },
                 ],
               },
+            },
+          },
+        },
+        422: {
+          description:
+            'Scheduler rejected the plan (`turbofabric_required`, `host_port_conflict`, `constraint_unsatisfiable`, `colocation_conflict`)',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
             },
           },
         },
@@ -228,7 +307,7 @@ export const deployPaths = {
       tags: ['Environments'],
       summary: 'Preview the exact compose document that deploy would send',
       description:
-        'Runs the same prepareDeployCompose path as deploy (including idempotent container allocation and volume registration) but skips daemon sealing. Secret-backed variable values are redacted. `composeYaml` is the merged effective view for display; `composeFiles` is the ordered `-f` chain the daemon runs. Prepare gates surface as warnings so the preview always renders.',
+        'Runs the same prepareDeployCompose path as deploy (including idempotent container allocation and volume registration) but skips daemon sealing. Secret-backed variable values are redacted. `composeYaml` / `composeFiles` are the compiled runtime snapshot for the first participating server; `servers[]` lists every host. Prepare gates surface as warnings so the preview always renders.',
       parameters: [
         {
           name: 'id',
@@ -247,7 +326,11 @@ export const deployPaths = {
           },
         },
         409: {
-          description: 'Environment has no pinned server',
+          description: 'No eligible server (`server_placement_required`)',
+        },
+        422: {
+          description:
+            'Scheduler rejected the plan (`turbofabric_required`, `host_port_conflict`, `constraint_unsatisfiable`, `colocation_conflict`)',
         },
       },
     },

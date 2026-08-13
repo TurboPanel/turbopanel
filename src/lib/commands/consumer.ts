@@ -9,16 +9,10 @@
  */
 import { and, eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
-import type {
-  DaemonCellRegistry,
-  PendingRequestRecord,
-} from '../../daemon/cell/contracts.ts'
+import type { DaemonCellRegistry, PendingRequestRecord } from '../../daemon/cell/contracts.ts'
 import { generateDeliveryId } from '../../daemon/cell/protocol.ts'
 import { resolveFleetPresence } from '../../daemon/cell/server-status.ts'
-import {
-  getServerLicenseBinding,
-  touchServerMetadata,
-} from '../../server-registry.ts'
+import { getServerLicenseBinding, touchServerMetadata } from '../../server-registry.ts'
 import { commandConsumerTrace } from '../../logger.ts'
 import { compatLogWarn } from '../../log-compat.ts'
 import {
@@ -26,37 +20,42 @@ import {
   type VpnApplyResealDeps,
 } from '../../client/vpns/apply-prepare.ts'
 import {
+  type CommandRecord,
   createCommandRecord,
   getCommandMetadata,
   getCommandRecord,
   transitionCommand,
-  type CommandRecord,
 } from '../db/command-records.ts'
 import { reconcileEnvironmentContainers } from '../db/container-records.ts'
+import { markDeploymentApplied, markDeploymentFailed } from '../db/deployment-records.ts'
+import { stampRelayPublicKey } from '../db/fabric-records.ts'
+import { maybeEnqueueFabricMeshComplete } from '../fabric/enqueue.ts'
 import { managed, node, peer, server } from '../db/schema.ts'
 import { getManagedEngineSpec } from '../managed/index.ts'
 import {
+  type ManagedBackupRecord,
   parseManagedRowOptions,
   writeManagedRowOptions,
-  type ManagedBackupRecord,
 } from '../../client/managed/options.ts'
 import type { CommandEnvelope } from './envelope.ts'
 import { nowIso } from './ids.ts'
 import { isNoopCommandQueue } from './noop-command-queue.ts'
 import type { CommandQueue } from './queue.ts'
 import {
+  type ManagedDestroyCommandPayload,
   parseEnvironmentDeployPayload,
   parseEnvironmentDeployResult,
   parseEnvironmentLifecyclePayload,
   parseEnvironmentLifecycleResult,
   parseEnvironmentStopPayload,
   parseEnvironmentStopResult,
+  parseFabricReconcilePayload,
+  parseFabricReconcileResult,
   parseHostnameSetResult,
   parseManagedApplyPayload,
   parseManagedApplyResult,
   parseManagedBackupPayload,
   parseManagedBackupResult,
-  type ManagedDestroyCommandPayload,
   parseManagedDestroyPayload,
   parseManagedDestroyResult,
   parseManagedLifecyclePayload,
@@ -75,9 +74,9 @@ import {
 } from './schemas.ts'
 import { updateManagedMemberObservedReplication } from '../../client/managed/members.ts'
 import { isValidWireguardPublicKey } from './wireguard.ts'
-import { TERMINAL_COMMAND_STATUSES, type CommandType } from './types.ts'
+import { type CommandType, TERMINAL_COMMAND_STATUSES } from './types.ts'
 
-import type { SecretsConfig, DerivedSecretsConfig } from '../../client/authn/secrets.ts'
+import type { DerivedSecretsConfig, SecretsConfig } from '../../client/authn/secrets.ts'
 
 /** Optional deps for follow-up WireGuard mesh-complete and managed-ingress applies. */
 export type CommandConsumerDeps = {
@@ -94,6 +93,7 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'server.reboot': 120_000,
   'server.timezone.set': 300_000,
   'server.wireguard.apply': 300_000,
+  'server.fabric.reconcile': 300_000,
   'environment.deploy': 600_000,
   'environment.lifecycle': 120_000,
   'environment.stop': 120_000,
@@ -118,6 +118,7 @@ export function commandTimeoutMs(type: string): number {
     type === 'server.reboot' ||
     type === 'server.timezone.set' ||
     type === 'server.wireguard.apply' ||
+    type === 'server.fabric.reconcile' ||
     type === 'environment.deploy' ||
     type === 'environment.lifecycle' ||
     type === 'environment.stop' ||
@@ -138,11 +139,7 @@ export function commandTimeoutMs(type: string): number {
 export function isTransientError(err: unknown): boolean {
   if (err instanceof Error) {
     const name = err.name.toLowerCase()
-    if (
-      name.includes('timeout') ||
-      name.includes('network') ||
-      name.includes('connection')
-    ) {
+    if (name.includes('timeout') || name.includes('network') || name.includes('connection')) {
       return true
     }
   }
@@ -186,7 +183,7 @@ export function extractObservedHostname(result: unknown): string | null {
 export function enrichPingResult(
   type: string,
   result: unknown,
-  pending: { sentAt?: string },
+  pending: { sentAt?: string }
 ): unknown {
   if (type !== 'daemon.ping') return result
   const parsed = parsePingResult(result)
@@ -200,7 +197,7 @@ export function errorMessage(err: unknown): string {
 
 async function loadDispatchableRecord(
   db: Db,
-  envelope: CommandEnvelope,
+  envelope: CommandEnvelope
 ): Promise<CommandRecord | null> {
   const record = await getCommandRecord(db, envelope.commandId)
   if (!record) {
@@ -219,7 +216,7 @@ async function loadDispatchableRecord(
   if (record.serverId !== envelope.serverId) {
     compatLogWarn(
       'command-consumer',
-      `envelope mismatch for command ${envelope.commandId}: record server=${record.serverId}, envelope server=${envelope.serverId}`,
+      `envelope mismatch for command ${envelope.commandId}: record server=${record.serverId}, envelope server=${envelope.serverId}`
     )
     return null
   }
@@ -230,7 +227,7 @@ async function loadDispatchableRecord(
 async function markDispatching(
   db: Db,
   record: CommandRecord,
-  envelope: CommandEnvelope,
+  envelope: CommandEnvelope
 ): Promise<void> {
   commandConsumerTrace('dispatch-start', {
     commandId: record.id,
@@ -249,13 +246,13 @@ async function ensureServerAndDaemonOnline(
   db: Db,
   registry: DaemonCellRegistry,
   record: CommandRecord,
-  envelope: CommandEnvelope,
+  envelope: CommandEnvelope
 ): Promise<boolean> {
   const serverBinding = await getServerLicenseBinding(db, envelope.serverId)
   if (!serverBinding) {
     compatLogWarn(
       'command-consumer',
-      `server ${envelope.serverId} not found for command ${envelope.commandId}`,
+      `server ${envelope.serverId} not found for command ${envelope.commandId}`
     )
     await transitionCommand(db, record.id, {
       status: 'failed',
@@ -287,7 +284,7 @@ async function enqueueAndAwaitOutcome(
   db: Db,
   registry: DaemonCellRegistry,
   record: CommandRecord,
-  envelope: CommandEnvelope,
+  envelope: CommandEnvelope
 ): Promise<PendingRequestRecord | null> {
   const outbound = {
     kind: 'command-dispatch' as const,
@@ -326,15 +323,40 @@ async function enqueueAndAwaitOutcome(
       resultStatus: 'timed_out',
     })
     await applyManagedFailedSideEffect(db, record)
+    await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out')
   }
   return pending
+}
+
+async function applyEnvironmentDeployFailedSideEffect(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+  error: string
+): Promise<void> {
+  if (record.type !== 'environment.deploy') return
+  try {
+    const payload = parseEnvironmentDeployPayload(record.payload)
+    await markDeploymentFailed(db, {
+      environmentId: payload.environmentId,
+      serverId: envelope.serverId,
+      error,
+      commandId: record.id,
+    })
+  } catch (err) {
+    const message = errorMessage(err)
+    compatLogWarn(
+      'command-consumer',
+      `deployment failure side effect failed for command ${record.id}: ${message}`
+    )
+  }
 }
 
 async function applyHostnameSideEffect(
   db: Db,
   record: CommandRecord,
   envelope: CommandEnvelope,
-  result: unknown,
+  result: unknown
 ): Promise<void> {
   if (record.type !== 'server.hostname.set') return
   const observedHostname = extractObservedHostname(result)
@@ -348,17 +370,20 @@ async function applyTimeSyncSideEffect(
   db: Db,
   record: CommandRecord,
   envelope: CommandEnvelope,
-  result: unknown,
+  result: unknown
 ): Promise<void> {
   if (record.type === 'server.timezone.set') {
     try {
       const timezoneResult = parseTimezoneSetResult(result)
-      await db.update(server).set({
-        options: sql`COALESCE(${server.options}, '{}'::jsonb) || ${
-          JSON.stringify({ timezone: timezoneResult.timezone })
-        }::jsonb`,
-        updatedAt: new Date().toISOString(),
-      }).where(eq(server.id, envelope.serverId))
+      await db
+        .update(server)
+        .set({
+          options: sql`COALESCE(${server.options}, '{}'::jsonb) || ${JSON.stringify({
+            timezone: timezoneResult.timezone,
+          })}::jsonb`,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(server.id, envelope.serverId))
       await touchServerMetadata(db, envelope.serverId, {
         timeSync: { timezone: timezoneResult.timezone },
       })
@@ -372,12 +397,8 @@ async function applyTimeSyncSideEffect(
     const ntpResult = parseNtpSetResult(result)
     await touchServerMetadata(db, envelope.serverId, {
       timeSync: {
-        ...(ntpResult.ntpEnabled === undefined
-          ? {}
-          : { ntpEnabled: ntpResult.ntpEnabled }),
-        ...(ntpResult.ntpSynced === undefined
-          ? {}
-          : { ntpSynced: ntpResult.ntpSynced }),
+        ...(ntpResult.ntpEnabled === undefined ? {} : { ntpEnabled: ntpResult.ntpEnabled }),
+        ...(ntpResult.ntpSynced === undefined ? {} : { ntpSynced: ntpResult.ntpSynced }),
         ntpServers: ntpResult.ntpServers,
         ...(ntpResult.fallbackNtpServers === undefined
           ? {}
@@ -390,8 +411,54 @@ async function applyTimeSyncSideEffect(
 }
 
 export function isPostgresUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null &&
-    'code' in err && (err as { code: string }).code === '23505'
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'code' in err &&
+    (err as { code: string }).code === '23505'
+  )
+}
+
+async function applyFabricSideEffect(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown,
+  deps?: CommandConsumerDeps,
+): Promise<void> {
+  if (record.type !== 'server.fabric.reconcile') return
+  try {
+    const payload = parseFabricReconcilePayload(record.payload)
+    if (!payload.enabled) return
+    const fabricResult = parseFabricReconcileResult(result)
+    if (fabricResult.skipped || !fabricResult.publicKey) return
+    if (!isValidWireguardPublicKey(fabricResult.publicKey)) return
+    const fabricId = payload.fabricId
+    if (!fabricId) return
+
+    const filledNullKey = await stampRelayPublicKey(db, {
+      fabricId,
+      serverId: envelope.serverId,
+      publicKey: fabricResult.publicKey,
+    })
+    const commandQueue = deps?.commandQueue
+    if (filledNullKey && commandQueue && !isNoopCommandQueue(commandQueue)) {
+      await maybeEnqueueFabricMeshComplete({
+        db,
+        commandQueue,
+        actorType: record.actorEntityType,
+        actorId: record.actorEntityId,
+        fabricId,
+        filledNullKey: true,
+      })
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    compatLogWarn(
+      'command-consumer',
+      `fabric reconcile side effect failed for command ${record.id}: ${message}`,
+    )
+  }
 }
 
 async function applyWireguardSideEffect(
@@ -399,7 +466,7 @@ async function applyWireguardSideEffect(
   record: CommandRecord,
   envelope: CommandEnvelope,
   result: unknown,
-  deps?: CommandConsumerDeps,
+  deps?: CommandConsumerDeps
 ): Promise<void> {
   if (record.type !== 'server.wireguard.apply') return
   try {
@@ -415,8 +482,7 @@ async function applyWireguardSideEffect(
       .where(and(eq(peer.id, payload.peerId), eq(peer.vpnId, payload.vpnId)))
       .limit(1)
 
-    const filledNullKey = !existing?.publicKey ||
-      !isValidWireguardPublicKey(existing.publicKey)
+    const filledNullKey = !existing?.publicKey || !isValidWireguardPublicKey(existing.publicKey)
 
     const updatedAt = nowIso()
     const patch: {
@@ -427,10 +493,7 @@ async function applyWireguardSideEffect(
       publicKey: wireguardResult.publicKey,
       updatedAt,
     }
-    if (
-      wireguardResult.listenPort !== undefined &&
-      existing?.listenPort === null
-    ) {
+    if (wireguardResult.listenPort !== undefined && existing?.listenPort === null) {
       patch.listenPort = wireguardResult.listenPort
     }
 
@@ -440,11 +503,7 @@ async function applyWireguardSideEffect(
       .where(and(eq(peer.id, payload.peerId), eq(peer.vpnId, payload.vpnId)))
 
     const commandQueue = deps?.commandQueue
-    if (
-      filledNullKey &&
-      commandQueue &&
-      !isNoopCommandQueue(commandQueue)
-    ) {
+    if (filledNullKey && commandQueue && !isNoopCommandQueue(commandQueue)) {
       try {
         await maybeEnqueueVpnMeshComplete({
           db,
@@ -456,12 +515,10 @@ async function applyWireguardSideEffect(
           filledNullKey: true,
         })
       } catch (followUpErr) {
-        const message = followUpErr instanceof Error
-          ? followUpErr.message
-          : String(followUpErr)
+        const message = followUpErr instanceof Error ? followUpErr.message : String(followUpErr)
         compatLogWarn(
           'command-consumer',
-          `wireguard mesh-complete follow-up failed for command ${record.id}: ${message}`,
+          `wireguard mesh-complete follow-up failed for command ${record.id}: ${message}`
         )
       }
     }
@@ -469,14 +526,14 @@ async function applyWireguardSideEffect(
     if (isPostgresUniqueViolation(err)) {
       compatLogWarn(
         'command-consumer',
-        `wireguard public key reconcile conflict for command ${record.id}`,
+        `wireguard public key reconcile conflict for command ${record.id}`
       )
       return
     }
     const message = err instanceof Error ? err.message : String(err)
     compatLogWarn(
       'command-consumer',
-      `wireguard side effect failed for command ${record.id}: ${message}`,
+      `wireguard side effect failed for command ${record.id}: ${message}`
     )
   }
 }
@@ -487,9 +544,7 @@ async function reconcileContainersSafely(
   envelope: CommandEnvelope,
   environmentId: string,
   containers: Parameters<typeof reconcileEnvironmentContainers>[1]['containers'],
-  expectedAllocations?: Parameters<
-    typeof reconcileEnvironmentContainers
-  >[1]['expectedAllocations'],
+  expectedAllocations?: Parameters<typeof reconcileEnvironmentContainers>[1]['expectedAllocations']
 ): Promise<void> {
   try {
     await reconcileEnvironmentContainers(db, {
@@ -509,7 +564,7 @@ async function reconcileContainersSafely(
     })
     compatLogWarn(
       'command-consumer',
-      `container reconcile failed for command ${record.id}: ${message}`,
+      `container reconcile failed for command ${record.id}: ${message}`
     )
   }
 }
@@ -518,11 +573,19 @@ async function applyEnvironmentDeploySideEffect(
   db: Db,
   record: CommandRecord,
   envelope: CommandEnvelope,
-  result: unknown,
+  result: unknown
 ): Promise<void> {
   if (record.type !== 'environment.deploy') return
   try {
-    const { environmentId } = parseEnvironmentDeployPayload(record.payload)
+    const payload = parseEnvironmentDeployPayload(record.payload)
+    if (payload.generation !== undefined) {
+      await markDeploymentApplied(db, {
+        environmentId: payload.environmentId,
+        serverId: envelope.serverId,
+        generation: payload.generation,
+        commandId: record.id,
+      })
+    }
     const deployResult = parseEnvironmentDeployResult(result)
     // Only reconcile when the daemon included an authoritative containers
     // report (including `[]`). Omitting the field means collection failed.
@@ -531,8 +594,8 @@ async function applyEnvironmentDeploySideEffect(
       db,
       record,
       envelope,
-      environmentId,
-      deployResult.containers,
+      payload.environmentId,
+      deployResult.containers
     )
   } catch (err) {
     const message = errorMessage(err)
@@ -545,7 +608,7 @@ async function applyEnvironmentDeploySideEffect(
     })
     compatLogWarn(
       'command-consumer',
-      `container reconcile failed for command ${record.id}: ${message}`,
+      `container reconcile failed for command ${record.id}: ${message}`
     )
   }
 }
@@ -554,20 +617,14 @@ async function applyEnvironmentStopSideEffect(
   db: Db,
   record: CommandRecord,
   envelope: CommandEnvelope,
-  result: unknown,
+  result: unknown
 ): Promise<void> {
   if (record.type !== 'environment.stop') return
   try {
     const { environmentId } = parseEnvironmentStopPayload(record.payload)
     const stopResult = parseEnvironmentStopResult(result)
     if (stopResult.containers === undefined) return
-    await reconcileContainersSafely(
-      db,
-      record,
-      envelope,
-      environmentId,
-      stopResult.containers,
-    )
+    await reconcileContainersSafely(db, record, envelope, environmentId, stopResult.containers)
   } catch (err) {
     const message = errorMessage(err)
     commandConsumerTrace('dispatch-result', {
@@ -579,7 +636,7 @@ async function applyEnvironmentStopSideEffect(
     })
     compatLogWarn(
       'command-consumer',
-      `container reconcile failed for command ${record.id}: ${message}`,
+      `container reconcile failed for command ${record.id}: ${message}`
     )
   }
 }
@@ -588,7 +645,7 @@ async function applyEnvironmentLifecycleSideEffect(
   db: Db,
   record: CommandRecord,
   envelope: CommandEnvelope,
-  result: unknown,
+  result: unknown
 ): Promise<void> {
   if (record.type !== 'environment.lifecycle') return
   try {
@@ -596,13 +653,7 @@ async function applyEnvironmentLifecycleSideEffect(
     const lifecycleResult = parseEnvironmentLifecycleResult(result)
     // Live `compose ps` rows update pins; omitted field means collection failed.
     if (lifecycleResult.containers === undefined) return
-    await reconcileContainersSafely(
-      db,
-      record,
-      envelope,
-      environmentId,
-      lifecycleResult.containers,
-    )
+    await reconcileContainersSafely(db, record, envelope, environmentId, lifecycleResult.containers)
   } catch (err) {
     const message = errorMessage(err)
     commandConsumerTrace('dispatch-result', {
@@ -614,7 +665,7 @@ async function applyEnvironmentLifecycleSideEffect(
     })
     compatLogWarn(
       'command-consumer',
-      `container reconcile failed for command ${record.id}: ${message}`,
+      `container reconcile failed for command ${record.id}: ${message}`
     )
   }
 }
@@ -623,7 +674,7 @@ async function applySystemReconcileSideEffect(
   db: Db,
   record: CommandRecord,
   envelope: CommandEnvelope,
-  result: unknown,
+  result: unknown
 ): Promise<void> {
   if (record.type !== 'system.reconcile') return
   try {
@@ -645,7 +696,7 @@ async function applySystemReconcileSideEffect(
       envelope,
       payload.environmentId,
       reconcileResult.containers,
-      expectedAllocations,
+      expectedAllocations
     )
   } catch (err) {
     const message = errorMessage(err)
@@ -658,7 +709,7 @@ async function applySystemReconcileSideEffect(
     })
     compatLogWarn(
       'command-consumer',
-      `container reconcile failed for command ${record.id}: ${message}`,
+      `container reconcile failed for command ${record.id}: ${message}`
     )
   }
 }
@@ -668,7 +719,7 @@ async function applyManagedApplySideEffect(
   record: CommandRecord,
   envelope: CommandEnvelope,
   result: unknown,
-  deps?: CommandConsumerDeps,
+  deps?: CommandConsumerDeps
 ): Promise<void> {
   if (record.type !== 'managed.apply') return
   try {
@@ -684,9 +735,10 @@ async function applyManagedApplySideEffect(
         .set({
           status: 'ready',
           serverId: envelope.serverId,
-          metadata: sql`COALESCE(${managed.metadata}, '{}'::jsonb) || ${
-            JSON.stringify({ host: applyResult.host, port: applyResult.port })
-          }::jsonb`,
+          metadata: sql`COALESCE(${managed.metadata}, '{}'::jsonb) || ${JSON.stringify({
+            host: applyResult.host,
+            port: applyResult.port,
+          })}::jsonb`,
           updatedAt,
         })
         .where(eq(managed.id, payload.managedId))
@@ -705,7 +757,7 @@ async function applyManagedApplySideEffect(
         record,
         envelope,
         payload.environmentId,
-        applyResult.containers,
+        applyResult.containers
       )
     }
     await projectManagedMemberObservedStatus(db, applyResult.member, record.id, record.type)
@@ -722,7 +774,7 @@ async function applyManagedApplySideEffect(
     const message = errorMessage(err)
     compatLogWarn(
       'command-consumer',
-      `managed.apply side effect failed for command ${record.id}: ${message}`,
+      `managed.apply side effect failed for command ${record.id}: ${message}`
     )
   }
 }
@@ -736,7 +788,7 @@ type PendingStandbyApply = {
 async function enqueuePendingStandbyApplies(
   db: Db,
   record: CommandRecord,
-  deps: CommandConsumerDeps,
+  deps: CommandConsumerDeps
 ): Promise<void> {
   const meta = await getCommandMetadata(db, record.id)
   const raw = meta?.pendingStandbyApplies
@@ -788,7 +840,7 @@ async function enqueuePendingStandbyApplies(
       const message = errorMessage(err)
       compatLogWarn(
         'command-consumer',
-        `standby apply follow-up failed for command ${record.id}: ${message}`,
+        `standby apply follow-up failed for command ${record.id}: ${message}`
       )
     }
   }
@@ -816,28 +868,24 @@ async function projectManagedMemberObservedStatus(
       }
     | undefined,
   commandId: string,
-  commandType: string,
+  commandType: string
 ): Promise<void> {
   if (member === undefined) return
   try {
     await updateManagedMemberObservedReplication(db, member.memberId, {
       status: member.status,
-      ...(member.replication !== undefined
-        ? { replication: member.replication }
-        : {}),
+      ...(member.replication !== undefined ? { replication: member.replication } : {}),
     })
   } catch (err) {
     const message = errorMessage(err)
     compatLogWarn(
       'command-consumer',
-      `managed member projection failed for ${commandType} command ${commandId}: ${message}`,
+      `managed member projection failed for ${commandType} command ${commandId}: ${message}`
     )
   }
 }
 
-export function isManagedObservedStatus(
-  value: string,
-): value is 'ready' | 'stopped' | 'failed' {
+export function isManagedObservedStatus(value: string): value is 'ready' | 'stopped' | 'failed' {
   return MANAGED_OBSERVED_STATUSES.has(value)
 }
 
@@ -846,12 +894,14 @@ async function projectManagedObservedStatus(
   managedId: string,
   status: string,
   commandId: string,
-  commandType: string,
+  commandType: string
 ): Promise<void> {
   if (!isManagedObservedStatus(status)) {
     compatLogWarn(
       'command-consumer',
-      `ignored non-projectable managed status ${JSON.stringify(status)} for ${commandType} command ${commandId}`,
+      `ignored non-projectable managed status ${JSON.stringify(
+        status
+      )} for ${commandType} command ${commandId}`
     )
     return
   }
@@ -869,7 +919,7 @@ async function applyManagedLifecycleSideEffect(
   record: CommandRecord,
   _envelope: CommandEnvelope,
   result: unknown,
-  deps?: CommandConsumerDeps,
+  deps?: CommandConsumerDeps
 ): Promise<void> {
   if (record.type !== 'managed.lifecycle') return
   try {
@@ -880,25 +930,14 @@ async function applyManagedLifecycleSideEffect(
       payload.managedId,
       lifecycleResult.status,
       record.id,
-      record.type,
+      record.type
     )
-    await projectManagedMemberObservedStatus(
-      db,
-      lifecycleResult.member,
-      record.id,
-      record.type,
-    )
+    await projectManagedMemberObservedStatus(db, lifecycleResult.member, record.id, record.type)
 
     // Fence-then-promote: only enqueue promote after a successful fence stop.
-    if (
-      payload.action === 'stop' &&
-      deps?.commandQueue &&
-      !isNoopCommandQueue(deps.commandQueue)
-    ) {
+    if (payload.action === 'stop' && deps?.commandQueue && !isNoopCommandQueue(deps.commandQueue)) {
       const meta = await getCommandMetadata(db, record.id)
-      const followUp = meta?.followUpPromote as
-        | { serverId: string; payload: unknown }
-        | undefined
+      const followUp = meta?.followUpPromote as { serverId: string; payload: unknown } | undefined
       if (followUp && typeof followUp.serverId === 'string') {
         try {
           const promotePayload = parseManagedPromotePayload(followUp.payload)
@@ -922,7 +961,7 @@ async function applyManagedLifecycleSideEffect(
           const message = errorMessage(err)
           compatLogWarn(
             'command-consumer',
-            `promote follow-up after fence failed for ${record.id}: ${message}`,
+            `promote follow-up after fence failed for ${record.id}: ${message}`
           )
         }
       }
@@ -931,7 +970,7 @@ async function applyManagedLifecycleSideEffect(
     const message = errorMessage(err)
     compatLogWarn(
       'command-consumer',
-      `managed.lifecycle side effect failed for command ${record.id}: ${message}`,
+      `managed.lifecycle side effect failed for command ${record.id}: ${message}`
     )
   }
 }
@@ -943,7 +982,7 @@ async function applyManagedBackupSideEffect(
   db: Db,
   record: CommandRecord,
   _envelope: CommandEnvelope,
-  result: unknown,
+  result: unknown
 ): Promise<void> {
   if (record.type !== 'managed.backup') return
   try {
@@ -979,11 +1018,13 @@ async function applyManagedBackupSideEffect(
         checksum: backupResult.checksum,
         path: backupResult.path,
       }
-      if (backupResult.database !== undefined) created.database = backupResult.database
-      backups = [
-        created,
-        ...backups.filter((entry) => entry.id !== created.id),
-      ].slice(0, MAX_BACKUP_RECORDS)
+      if (backupResult.database !== undefined) {
+        created.database = backupResult.database
+      }
+      backups = [created, ...backups.filter((entry) => entry.id !== created.id)].slice(
+        0,
+        MAX_BACKUP_RECORDS
+      )
     }
 
     const nextOptions = writeManagedRowOptions({
@@ -999,7 +1040,7 @@ async function applyManagedBackupSideEffect(
     const message = errorMessage(err)
     compatLogWarn(
       'command-consumer',
-      `managed.backup side effect failed for command ${record.id}: ${message}`,
+      `managed.backup side effect failed for command ${record.id}: ${message}`
     )
   }
 }
@@ -1008,7 +1049,7 @@ async function applyManagedRestoreSideEffect(
   db: Db,
   record: CommandRecord,
   _envelope: CommandEnvelope,
-  result: unknown,
+  result: unknown
 ): Promise<void> {
   if (record.type !== 'managed.restore') return
   try {
@@ -1016,18 +1057,12 @@ async function applyManagedRestoreSideEffect(
     // Result parser is lenient; a successful restore always projects `ready`
     // regardless of whether the daemon included an optional `status` field.
     parseManagedRestoreResult(result)
-    await projectManagedObservedStatus(
-      db,
-      payload.managedId,
-      'ready',
-      record.id,
-      record.type,
-    )
+    await projectManagedObservedStatus(db, payload.managedId, 'ready', record.id, record.type)
   } catch (err) {
     const message = errorMessage(err)
     compatLogWarn(
       'command-consumer',
-      `managed.restore side effect failed for command ${record.id}: ${message}`,
+      `managed.restore side effect failed for command ${record.id}: ${message}`
     )
   }
 }
@@ -1037,16 +1072,18 @@ async function applyManagedRestoreSideEffect(
  * (primary re-apply after member destroy, ProxySQL ingress reconcile) — a
  * live, non-noop queue plus the secrets needed to reseal credentials.
  */
-export function hasManagedFollowUpDeps(deps: CommandConsumerDeps | undefined): deps is CommandConsumerDeps & {
+export function hasManagedFollowUpDeps(
+  deps: CommandConsumerDeps | undefined
+): deps is CommandConsumerDeps & {
   commandQueue: CommandQueue
   secretsConfig: SecretsConfig
   dataEncryptionSecrets: DerivedSecretsConfig
 } {
   return Boolean(
     deps?.commandQueue &&
-      deps.secretsConfig &&
-      deps.dataEncryptionSecrets &&
-      !isNoopCommandQueue(deps.commandQueue),
+    deps.secretsConfig &&
+    deps.dataEncryptionSecrets &&
+    !isNoopCommandQueue(deps.commandQueue)
   )
 }
 
@@ -1054,12 +1091,10 @@ export function hasManagedFollowUpDeps(deps: CommandConsumerDeps | undefined): d
 async function reapplyPrimaryAfterMemberDestroy(
   db: Db,
   record: CommandRecord,
-  deps: CommandConsumerDeps & { commandQueue: CommandQueue },
+  deps: CommandConsumerDeps & { commandQueue: CommandQueue }
 ): Promise<void> {
   const meta = await getCommandMetadata(db, record.id)
-  const reapply = meta?.pendingPrimaryReapply as
-    | { serverId: string; payload: unknown }
-    | undefined
+  const reapply = meta?.pendingPrimaryReapply as { serverId: string; payload: unknown } | undefined
   if (!reapply || typeof reapply.serverId !== 'string') return
   try {
     const expiresAt = new Date(Date.now() + 600_000).toISOString()
@@ -1082,7 +1117,7 @@ async function reapplyPrimaryAfterMemberDestroy(
     const message = errorMessage(err)
     compatLogWarn(
       'command-consumer',
-      `primary re-apply after member destroy failed for ${record.id}: ${message}`,
+      `primary re-apply after member destroy failed for ${record.id}: ${message}`
     )
   }
 }
@@ -1095,7 +1130,7 @@ async function cleanupDestroyedMember(
   db: Db,
   record: CommandRecord,
   payload: ManagedDestroyCommandPayload,
-  deps: CommandConsumerDeps | undefined,
+  deps: CommandConsumerDeps | undefined
 ): Promise<void> {
   if (!payload.deleteMemberAfterDestroy || !payload.memberId) return
   await db.delete(node).where(eq(node.id, payload.memberId))
@@ -1108,12 +1143,10 @@ async function cleanupDestroyedMember(
 async function reconcileManagedIngressAfterDestroy(
   db: Db,
   envelope: CommandEnvelope,
-  deps: CommandConsumerDeps | undefined,
+  deps: CommandConsumerDeps | undefined
 ): Promise<void> {
   if (!hasManagedFollowUpDeps(deps)) return
-  const { enqueueManagedIngressReconcile } = await import(
-    '../../client/managed/ingress-desired.ts'
-  )
+  const { enqueueManagedIngressReconcile } = await import('../../client/managed/ingress-desired.ts')
   await enqueueManagedIngressReconcile(db, deps.commandQueue, {
     serverId: envelope.serverId,
     actorType: 'system',
@@ -1128,7 +1161,7 @@ async function applyManagedDestroySideEffect(
   record: CommandRecord,
   envelope: CommandEnvelope,
   result: unknown,
-  deps?: CommandConsumerDeps,
+  deps?: CommandConsumerDeps
 ): Promise<void> {
   if (record.type !== 'managed.destroy') return
   try {
@@ -1139,7 +1172,7 @@ async function applyManagedDestroySideEffect(
       payload.managedId,
       destroyResult.status,
       record.id,
-      record.type,
+      record.type
     )
     const [row] = await db
       .select({ environmentId: managed.environmentId })
@@ -1152,7 +1185,7 @@ async function applyManagedDestroySideEffect(
       record,
       envelope,
       row.environmentId,
-      destroyResult.containers,
+      destroyResult.containers
     )
 
     // `applyManagedDestroySideEffect` only runs from `applySucceededSideEffects`
@@ -1171,15 +1204,12 @@ async function applyManagedDestroySideEffect(
     const message = errorMessage(err)
     compatLogWarn(
       'command-consumer',
-      `managed.destroy side effect failed for command ${record.id}: ${message}`,
+      `managed.destroy side effect failed for command ${record.id}: ${message}`
     )
   }
 }
 
-export function resolveManagedIdFromPayload(
-  type: string,
-  payload: unknown,
-): string | null {
+export function resolveManagedIdFromPayload(type: string, payload: unknown): string | null {
   try {
     if (type === 'managed.apply') {
       return parseManagedApplyPayload(payload).managedId
@@ -1209,7 +1239,7 @@ export function resolveManagedIdFromPayload(
  */
 export function resolveManagedMemberIdFromFailedPayload(
   type: string,
-  payload: unknown,
+  payload: unknown
 ): string | null {
   try {
     if (type === 'managed.apply') {
@@ -1241,10 +1271,7 @@ export function resolveManagedMemberIdFromFailedPayload(
  *
  * Does not alter terminal command-row semantics.
  */
-async function applyManagedFailedSideEffect(
-  db: Db,
-  record: CommandRecord,
-): Promise<void> {
+async function applyManagedFailedSideEffect(db: Db, record: CommandRecord): Promise<void> {
   if (
     record.type !== 'managed.apply' &&
     record.type !== 'managed.lifecycle' &&
@@ -1266,10 +1293,7 @@ async function applyManagedFailedSideEffect(
       })
       .where(eq(managed.id, managedId))
 
-    const memberId = resolveManagedMemberIdFromFailedPayload(
-      record.type,
-      record.payload,
-    )
+    const memberId = resolveManagedMemberIdFromFailedPayload(record.type, record.payload)
     if (memberId) {
       await db
         .update(node)
@@ -1283,7 +1307,7 @@ async function applyManagedFailedSideEffect(
     const message = errorMessage(err)
     compatLogWarn(
       'command-consumer',
-      `managed failure side effect failed for command ${record.id}: ${message}`,
+      `managed failure side effect failed for command ${record.id}: ${message}`
     )
   }
 }
@@ -1293,11 +1317,12 @@ async function applySucceededSideEffects(
   record: CommandRecord,
   envelope: CommandEnvelope,
   result: unknown,
-  deps?: CommandConsumerDeps,
+  deps?: CommandConsumerDeps
 ): Promise<void> {
   await applyHostnameSideEffect(db, record, envelope, result)
   await applyTimeSyncSideEffect(db, record, envelope, result)
   await applyWireguardSideEffect(db, record, envelope, result, deps)
+  await applyFabricSideEffect(db, record, envelope, result, deps)
   await applyEnvironmentDeploySideEffect(db, record, envelope, result)
   await applyEnvironmentStopSideEffect(db, record, envelope, result)
   await applyEnvironmentLifecycleSideEffect(db, record, envelope, result)
@@ -1320,7 +1345,7 @@ async function applyManagedPromoteSideEffect(
   record: CommandRecord,
   envelope: CommandEnvelope,
   result: unknown,
-  deps?: CommandConsumerDeps,
+  deps?: CommandConsumerDeps
 ): Promise<void> {
   if (record.type !== 'managed.promote') return
   try {
@@ -1328,8 +1353,7 @@ async function applyManagedPromoteSideEffect(
     const payload = parseManagedPromotePayload(record.payload)
     const managedId = payload.managedId
     const promotedMemberId = promoteResult.promotedMemberId || payload.memberId
-    const demotedMemberId =
-      promoteResult.demotedMemberId ?? payload.demoteMemberId
+    const demotedMemberId = promoteResult.demotedMemberId ?? payload.demoteMemberId
     const updatedAt = nowIso()
 
     await db.transaction(async (tx) => {
@@ -1342,12 +1366,7 @@ async function applyManagedPromoteSideEffect(
             status: 'needs_resync',
             updatedAt,
           })
-          .where(
-            and(
-              eq(node.id, demotedMemberId),
-              eq(node.managedId, managedId),
-            ),
-          )
+          .where(and(eq(node.id, demotedMemberId), eq(node.managedId, managedId)))
       }
 
       if (!promotedMemberId) return
@@ -1359,12 +1378,7 @@ async function applyManagedPromoteSideEffect(
           status: promoteResult.status || 'ready',
           updatedAt,
         })
-        .where(
-          and(
-            eq(node.id, promotedMemberId),
-            eq(node.managedId, managedId),
-          ),
-        )
+        .where(and(eq(node.id, promotedMemberId), eq(node.managedId, managedId)))
 
       const [promoted] = await tx
         .select({ serverId: node.serverId })
@@ -1409,12 +1423,9 @@ async function applyManagedPromoteSideEffect(
       .select({ serverId: node.serverId })
       .from(node)
       .where(eq(node.managedId, managedId))
-    const serverIds = new Set(
-      memberServers.map((row) => row.serverId).concat(envelope.serverId),
-    )
-    const { enqueueManagedIngressReconcile } = await import(
-      '../../client/managed/ingress-desired.ts'
-    )
+    const serverIds = new Set(memberServers.map((row) => row.serverId).concat(envelope.serverId))
+    const { enqueueManagedIngressReconcile } =
+      await import('../../client/managed/ingress-desired.ts')
     for (const serverId of serverIds) {
       await enqueueManagedIngressReconcile(db, deps.commandQueue, {
         serverId,
@@ -1428,7 +1439,7 @@ async function applyManagedPromoteSideEffect(
     const message = errorMessage(err)
     compatLogWarn(
       'command-consumer',
-      `managed.promote side effect failed for command ${record.id}: ${message}`,
+      `managed.promote side effect failed for command ${record.id}: ${message}`
     )
   }
 }
@@ -1438,7 +1449,7 @@ async function handlePendingDone(
   record: CommandRecord,
   envelope: CommandEnvelope,
   pending: PendingRequestRecord,
-  deps?: CommandConsumerDeps,
+  deps?: CommandConsumerDeps
 ): Promise<void> {
   await transitionCommand(db, record.id, {
     status: 'succeeded',
@@ -1461,7 +1472,7 @@ async function handlePendingFailed(
   db: Db,
   record: CommandRecord,
   envelope: CommandEnvelope,
-  pending: PendingRequestRecord,
+  pending: PendingRequestRecord
 ): Promise<void> {
   const error = pending.error ?? 'Command failed'
   await transitionCommand(db, record.id, {
@@ -1477,13 +1488,14 @@ async function handlePendingFailed(
     error,
   })
   await applyManagedFailedSideEffect(db, record)
+  await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error)
 }
 
 async function handlePendingExpired(
   db: Db,
   record: CommandRecord,
   envelope: CommandEnvelope,
-  pending: PendingRequestRecord,
+  pending: PendingRequestRecord
 ): Promise<void> {
   await transitionCommand(db, record.id, { status: 'timed_out' })
   commandConsumerTrace('dispatch-result', {
@@ -1494,13 +1506,14 @@ async function handlePendingExpired(
     resultStatus: 'timed_out',
   })
   await applyManagedFailedSideEffect(db, record)
+  await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out')
 }
 
 async function handlePendingUnexpected(
   db: Db,
   record: CommandRecord,
   envelope: CommandEnvelope,
-  pending: PendingRequestRecord,
+  pending: PendingRequestRecord
 ): Promise<void> {
   const error = `Unexpected pending request status: ${pending.status}`
   await transitionCommand(db, record.id, {
@@ -1515,6 +1528,7 @@ async function handlePendingUnexpected(
     resultStatus: 'failed',
     error,
   })
+  await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error)
 }
 
 async function applyPendingOutcome(
@@ -1522,7 +1536,7 @@ async function applyPendingOutcome(
   record: CommandRecord,
   envelope: CommandEnvelope,
   pending: PendingRequestRecord,
-  deps?: CommandConsumerDeps,
+  deps?: CommandConsumerDeps
 ): Promise<void> {
   switch (pending.status) {
     case 'done':
@@ -1543,7 +1557,7 @@ export async function processCommandEnvelope(
   db: Db,
   registry: DaemonCellRegistry,
   envelope: CommandEnvelope,
-  deps?: CommandConsumerDeps,
+  deps?: CommandConsumerDeps
 ): Promise<void> {
   const record = await loadDispatchableRecord(db, envelope)
   if (!record) return

@@ -445,9 +445,9 @@ export const command = pgTable(
   ]
 )
 /**
- * Org-owned network registry — two facts only: datacenter site CIDRs
- * (`kind = 'datacenter'`) and external Docker network registrations
- * (`kind = 'docker'`, optional `server_id` pin for host-local networks).
+ * Org-owned network registry: datacenter site CIDRs (`kind = 'datacenter'`),
+ * external Docker registrations (`kind = 'docker'`, optional `server_id`),
+ * and TurboFabric logical spanning networks (`kind = 'compose'`).
  */
 export const network = pgTable(
   'network',
@@ -467,6 +467,12 @@ export const network = pgTable(
     organizationId: uuid('organization_id').notNull(),
     datacenterId: uuid('datacenter_id'),
     serverId: uuid('server_id'),
+    /**
+     * Optional pin for `kind = 'compose'` logical spanning networks
+     * (null = org-shared). No FK here — `environment` is declared later;
+     * compiler writes this id from a live environment row.
+     */
+    environmentId: uuid('environment_id'),
     kind: text().notNull(),
     cidr: cidr(),
     name: varchar({ length: 255 }),
@@ -480,6 +486,10 @@ export const network = pgTable(
     index('idx_network_datacenter_id').using(
       'btree',
       table.datacenterId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_network_environment_id').using(
+      'btree',
+      table.environmentId.asc().nullsLast().op('uuid_ops'),
     ),
     foreignKey({
       columns: [table.organizationId],
@@ -498,13 +508,14 @@ export const network = pgTable(
     }).onDelete('restrict'),
     check(
       'network_kind_check',
-      sql`kind IN ('datacenter', 'docker')`
+      sql`kind IN ('datacenter', 'docker', 'compose')`
     ),
     check(
       'network_single_scope_check',
       sql`(
-        (${table.kind} = 'datacenter' AND ${table.datacenterId} IS NOT NULL AND ${table.serverId} IS NULL) OR
-        (${table.kind} = 'docker' AND ${table.datacenterId} IS NULL)
+        (${table.kind} = 'datacenter' AND ${table.datacenterId} IS NOT NULL AND ${table.serverId} IS NULL AND ${table.environmentId} IS NULL) OR
+        (${table.kind} = 'docker' AND ${table.datacenterId} IS NULL AND ${table.environmentId} IS NULL) OR
+        (${table.kind} = 'compose' AND ${table.datacenterId} IS NULL AND ${table.serverId} IS NULL)
       )`
     ),
     check(
@@ -555,11 +566,54 @@ export const vpn = pgTable(
   ]
 )
 /**
+ * Org TurboFabric mesh (host interface `tp0`). At most one row per
+ * organization; **absence means TurboFabric is off**. Container-pool CIDR and
+ * listen port live in `options`. Private keys never stored.
+ */
+export const fabric = pgTable(
+  'fabric',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+    organizationId: uuid('organization_id').notNull(),
+    /** Host fabric subnet for `tp0` addresses (e.g. `10.250.0.0/16`). */
+    cidr: cidr().notNull(),
+    name: varchar({ length: 255 }),
+  },
+  (table) => [
+    uniqueIndex('uniq_fabric_organization_id').on(table.organizationId),
+    index('idx_fabric_organization_id').using(
+      'btree',
+      table.organizationId.asc().nullsLast().op('uuid_ops'),
+    ),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'fabric_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    check(
+      'fabric_name_format_check',
+      sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+    ),
+  ],
+)
+/**
  * Single source of truth for every managed address. Two non-overlapping private
  * facts: **site CIDR** lives on `network(kind='datacenter', datacenter_id=…)`;
  * **a server's private address** is `ip WHERE server_id = … AND scope = 'datacenter'`.
  * Public VPS addresses carry no `network_id`. Overlay tunnel addresses are
- * `scope = 'vpn'` with `vpn_id`. Address family (`version`) is derived from
+ * `scope = 'vpn'` with `vpn_id`. TurboFabric `tp0` addresses are
+ * `scope = 'fabric'` with `fabric_id`. Address family (`version`) is derived from
  * `address` in the API — not stored.
  */
 export const ip = pgTable(
@@ -582,6 +636,7 @@ export const ip = pgTable(
     networkId: uuid('network_id'),
     serverId: uuid('server_id'),
     vpnId: uuid('vpn_id'),
+    fabricId: uuid('fabric_id'),
     address: inet('address').notNull(),
     allocation: text().notNull(),
     scope: text().notNull(),
@@ -599,6 +654,7 @@ export const ip = pgTable(
     index('idx_ip_network_id').using('btree', table.networkId.asc().nullsLast().op('uuid_ops')),
     index('idx_ip_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
     index('idx_ip_vpn_id').using('btree', table.vpnId.asc().nullsLast().op('uuid_ops')),
+    index('idx_ip_fabric_id').using('btree', table.fabricId.asc().nullsLast().op('uuid_ops')),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -624,11 +680,20 @@ export const ip = pgTable(
       foreignColumns: [vpn.id],
       name: 'ip_vpn_id_vpn_id_fk',
     }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.fabricId],
+      foreignColumns: [fabric.id],
+      name: 'ip_fabric_id_fabric_id_fk',
+    }).onDelete('cascade'),
     check('ip_allocation_check', sql`allocation IN ('dedicated', 'shared')`),
-    check('ip_scope_check', sql`scope IN ('public', 'datacenter', 'vpn')`),
+    check('ip_scope_check', sql`scope IN ('public', 'datacenter', 'vpn', 'fabric')`),
     check(
       'ip_vpn_scope_check',
       sql`(${table.scope} = 'vpn' AND ${table.vpnId} IS NOT NULL) OR (${table.scope} <> 'vpn' AND ${table.vpnId} IS NULL)`
+    ),
+    check(
+      'ip_fabric_scope_check',
+      sql`(${table.scope} = 'fabric' AND ${table.fabricId} IS NOT NULL) OR (${table.scope} <> 'fabric' AND ${table.fabricId} IS NULL)`
     ),
     check(
       'ip_datacenter_scope_check',
@@ -636,14 +701,17 @@ export const ip = pgTable(
     ),
     check(
       'ip_datacenter_free_pool_check',
-      sql`(${table.datacenterId} IS NULL) OR (${table.serverId} IS NULL AND ${table.vpnId} IS NULL AND ${table.networkId} IS NULL)`
+      sql`(${table.datacenterId} IS NULL) OR (${table.serverId} IS NULL AND ${table.vpnId} IS NULL AND ${table.networkId} IS NULL AND ${table.fabricId} IS NULL)`
     ),
     uniqueIndex('uniq_ip_org_address')
       .on(table.organizationId, table.address)
-      .where(sql`${table.vpnId} IS NULL`),
+      .where(sql`${table.vpnId} IS NULL AND ${table.fabricId} IS NULL`),
     uniqueIndex('uniq_ip_vpn_address')
       .on(table.vpnId, table.address)
       .where(sql`${table.vpnId} IS NOT NULL`),
+    uniqueIndex('uniq_ip_fabric_address')
+      .on(table.fabricId, table.address)
+      .where(sql`${table.fabricId} IS NOT NULL`),
     check(
       'ip_name_format_check',
       sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
@@ -732,6 +800,112 @@ export const peer = pgTable(
       .where(sql`${table.tunnelIpId} IS NOT NULL`),
     check('peer_role_check', sql`role IN ('gateway', 'member')`),
   ]
+)
+/**
+ * One server in an org TurboFabric mesh (parallel to VPN `peer` / managed
+ * `node`). Private key never stored; `public_key` stays null until the first
+ * successful `server.fabric.reconcile`. `prefix` is that server's container
+ * aggregate, forwarded over `tp0`.
+ */
+export const relay = pgTable(
+  'relay',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+    fabricId: uuid('fabric_id').notNull(),
+    serverId: uuid('server_id').notNull(),
+    /** `ip(scope='fabric')` row for this server's `tp0` /32. */
+    fabricIpId: uuid('fabric_ip_id'),
+    publicKey: text('public_key'),
+    /** Container aggregate CIDR forwarded via this relay (e.g. `10.192.0.0/16`). */
+    prefix: cidr().notNull(),
+  },
+  (table) => [
+    index('idx_relay_fabric_id').using(
+      'btree',
+      table.fabricId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_relay_server_id').using(
+      'btree',
+      table.serverId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_relay_fabric_ip_id').using(
+      'btree',
+      table.fabricIpId.asc().nullsLast().op('uuid_ops'),
+    ),
+    foreignKey({
+      columns: [table.fabricId],
+      foreignColumns: [fabric.id],
+      name: 'relay_fabric_id_fabric_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'relay_server_id_server_id_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.fabricIpId],
+      foreignColumns: [ip.id],
+      name: 'relay_fabric_ip_id_ip_id_fk',
+    }).onDelete('restrict'),
+    unique('relay_fabric_server_unique').on(table.fabricId, table.serverId),
+  ],
+)
+/**
+ * A logical `kind='compose'` network present on this server, with a local
+ * bridge subnet carved from that relay's prefix.
+ */
+export const span = pgTable(
+  'span',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+    networkId: uuid('network_id').notNull(),
+    serverId: uuid('server_id').notNull(),
+    /** Server-local bridge subnet. */
+    cidr: cidr().notNull(),
+  },
+  (table) => [
+    index('idx_span_network_id').using(
+      'btree',
+      table.networkId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_span_server_id').using(
+      'btree',
+      table.serverId.asc().nullsLast().op('uuid_ops'),
+    ),
+    foreignKey({
+      columns: [table.networkId],
+      foreignColumns: [network.id],
+      name: 'span_network_id_network_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'span_server_id_server_id_fk',
+    }).onDelete('restrict'),
+    unique('span_network_server_unique').on(table.networkId, table.serverId),
+  ],
 )
 export const workspace = pgTable(
   'workspace',
@@ -832,6 +1006,11 @@ export const environment = pgTable(
     projectId: uuid('project_id').notNull(),
     /** Whole-server placement pin — single source of truth (not compose / metadata). */
     serverId: uuid('server_id'),
+    /**
+     * Monotonic desired generation, bumped once per deploy and fanned into
+     * `deployment.desired_generation`.
+     */
+    generation: integer().default(0).notNull(),
     name: varchar({ length: 255 }),
     description: varchar('description', { length: 255 }),
   },
@@ -1203,6 +1382,166 @@ export const service = pgTable(
       sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
     ),
   ]
+)
+/**
+ * One row per participating `(environment, server)` in a deploy. Unique on
+ * that pair; `server_id` RESTRICT mirrors `container.server_id`.
+ */
+export const deployment = pgTable(
+  'deployment',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    /** Last failure message / planner warnings. */
+    metadata: jsonb(),
+    options: jsonb(),
+    environmentId: uuid('environment_id').notNull(),
+    serverId: uuid('server_id').notNull(),
+    desiredGeneration: integer('desired_generation').default(0).notNull(),
+    appliedGeneration: integer('applied_generation'),
+    /** sha256 of that server's compiled runtime `compose.yaml`. */
+    desiredHash: text('desired_hash'),
+    status: text().default('pending').notNull(),
+    /** No FK — mirrors `command.actor_id`. */
+    lastCommandId: uuid('last_command_id'),
+  },
+  (table) => [
+    unique('uniq_deployment_environment_server').on(table.environmentId, table.serverId),
+    index('idx_deployment_environment_id').using(
+      'btree',
+      table.environmentId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_deployment_server_id').using(
+      'btree',
+      table.serverId.asc().nullsLast().op('uuid_ops'),
+    ),
+    foreignKey({
+      columns: [table.environmentId],
+      foreignColumns: [environment.id],
+      name: 'deployment_environment_id_environment_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'deployment_server_id_server_id_fk',
+    }).onDelete('restrict'),
+    check(
+      'deployment_status_check',
+      sql`${table.status} IN ('pending','applying','applied','failed','draining')`,
+    ),
+    check(
+      'deployment_generation_check',
+      sql`${table.desiredGeneration} >= 0 AND (${table.appliedGeneration} IS NULL OR ${table.appliedGeneration} >= 0)`,
+    ),
+  ],
+)
+/**
+ * One scheduled instance of a logical service. Never mint a `service` row per
+ * replica — `slot` is 0-based (unlike `container.ordinal` / `node.ordinal`,
+ * which are 1-based). A task is derived scheduling state: `service_id`
+ * CASCADE so deleting a service drops its tasks rather than blocking.
+ */
+export const task = pgTable(
+  'task',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+    environmentId: uuid('environment_id').notNull(),
+    serviceId: uuid('service_id').notNull(),
+    serverId: uuid('server_id').notNull(),
+    /** 0-based replica slot (not 1-based like `container.ordinal`). */
+    slot: integer().notNull(),
+    generation: integer().default(0).notNull(),
+    desiredState: text('desired_state').default('running').notNull(),
+  },
+  (table) => [
+    unique('uniq_task_service_slot').on(table.serviceId, table.slot),
+    index('idx_task_environment_generation').using(
+      'btree',
+      table.environmentId.asc(),
+      table.generation.asc(),
+    ),
+    index('idx_task_server_id').using(
+      'btree',
+      table.serverId.asc().nullsLast().op('uuid_ops'),
+    ),
+    foreignKey({
+      columns: [table.environmentId],
+      foreignColumns: [environment.id],
+      name: 'task_environment_id_environment_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serviceId],
+      foreignColumns: [service.id],
+      name: 'task_service_id_service_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'task_server_id_server_id_fk',
+    }).onDelete('restrict'),
+    check('task_slot_nonnegative_check', sql`${table.slot} >= 0`),
+    check(
+      'task_desired_state_check',
+      sql`${table.desiredState} IN ('running','stopped','removed')`,
+    ),
+  ],
+)
+/**
+ * Server label source for `placement.constraints` (`node.labels.*`). Org is
+ * derived through `server` — no `organization_id`, matching `container`.
+ */
+export const label = pgTable(
+  'label',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    serverId: uuid('server_id').notNull(),
+    key: varchar({ length: 255 }).notNull(),
+    value: varchar({ length: 255 }).default('').notNull(),
+  },
+  (table) => [
+    unique('uniq_label_server_key').on(table.serverId, table.key),
+    index('idx_label_server_id').using(
+      'btree',
+      table.serverId.asc().nullsLast().op('uuid_ops'),
+    ),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'label_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    check(
+      'label_key_format_check',
+      sql`(char_length((${table.key})::text) >= 1) AND (char_length((${table.key})::text) <= 255) AND ((${table.key})::text ~ '^[A-Za-z0-9][A-Za-z0-9._-]*$'::text)`,
+    ),
+  ],
 )
 export const hosting = pgTable(
   'hosting',

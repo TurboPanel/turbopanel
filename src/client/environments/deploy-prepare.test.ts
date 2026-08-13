@@ -533,13 +533,13 @@ describe('resolveProjectEnvironmentComposeLayers', () => {
 })
 
 describe('emptyPreparedCompose', () => {
-  it('includes a single empty project-role compose file', () => {
-    const prepared = emptyPreparedCompose([])
+  it('includes a single empty runtime compose file', async () => {
+    const prepared = await emptyPreparedCompose([])
     assertEquals(prepared.composeYaml, 'services: {}\n')
     assertEquals(prepared.composeFiles, [
       {
-        filename: 'docker-compose.yml',
-        role: 'project',
+        filename: 'compose.yaml',
+        role: 'runtime',
         source: 'inline',
         content: 'services: {}\n',
       },
@@ -1053,15 +1053,15 @@ describe('warningFromPrepareError and soft-error absorb', () => {
     assertEquals(absorbSoftPrepareError('deploy', warnings), null)
   })
 
-  it('emptyComposePrepareResult differs by mode', () => {
-    assertEquals(emptyComposePrepareResult('deploy'), { kind: 'empty_compose' })
-    const preview = emptyComposePrepareResult('preview')
+  it('emptyComposePrepareResult differs by mode', async () => {
+    assertEquals(await emptyComposePrepareResult('deploy'), { kind: 'empty_compose' })
+    const preview = await emptyComposePrepareResult('preview')
     if (!preview || typeof preview !== 'object' || !('warnings' in preview)) {
       throw new TypeError('expected prepared compose')
     }
     assertEquals(preview.warnings[0]?.code, 'empty_compose')
     assertEquals(preview.composeYaml, 'services: {}\n')
-    assertEquals(preview.composeFiles[0]?.role, 'project')
+    assertEquals(preview.composeFiles[0]?.role, 'runtime')
     assertEquals(preview.composeFiles[0]?.content, 'services: {}\n')
   })
 })
@@ -1338,13 +1338,13 @@ describe('resolveTraditionalWebSitesForMode and toPreparedDeployResult', () => {
     assertEquals(warnings[0]?.code, 'traditional_web_principal_ambiguous')
   })
 
-  it('redacts secret materials in preview prepared results', () => {
+  it('redacts secret materials in preview prepared results', async () => {
     const expansion = new Map([['web', ['web']]])
-    const prepared = toPreparedDeployResult('preview', {
+    const prepared = await toPreparedDeployResult('preview', {
       composeYaml: 'services: {}\n',
       composeFiles: [{
-        filename: 'docker-compose.yml',
-        role: 'project',
+        filename: 'compose.yaml',
+        role: 'runtime',
         source: 'inline',
         content: 'services: {}\n',
       }],
@@ -1373,6 +1373,7 @@ describe('resolveTraditionalWebSitesForMode and toPreparedDeployResult', () => {
       expansion,
       registeredVolumes: [],
       warnings: [],
+      replicaCounts: {},
     })
     assertEquals(prepared.variableMaterial, [])
     assertEquals(prepared.storageMaterial, [])
@@ -1380,12 +1381,12 @@ describe('resolveTraditionalWebSitesForMode and toPreparedDeployResult', () => {
     assertEquals(prepared.composeFiles.length, 1)
   })
 
-  it('keeps materials for deploy mode', () => {
-    const prepared = toPreparedDeployResult('deploy', {
+  it('keeps materials for deploy mode', async () => {
+    const prepared = await toPreparedDeployResult('deploy', {
       composeYaml: 'services: {}\n',
       composeFiles: [{
-        filename: 'docker-compose.yml',
-        role: 'project',
+        filename: 'compose.yaml',
+        role: 'runtime',
         content: 'services: {}\n',
       }],
       hooks: [],
@@ -1413,6 +1414,7 @@ describe('resolveTraditionalWebSitesForMode and toPreparedDeployResult', () => {
       expansion: new Map(),
       registeredVolumes: [],
       warnings: [],
+      replicaCounts: {},
     })
     assertEquals(prepared.variableMaterial.length, 1)
     assertEquals(prepared.storageMaterial.length, 1)
@@ -1435,18 +1437,18 @@ describe('resolveTraditionalWebSitesForMode and toPreparedDeployResult', () => {
     const previewDoc = documentForServiceOptions('preview', withVariables)
     const deployDoc = documentForServiceOptions('deploy', withVariables)
     assertEquals(deployDoc, doc)
-    assertEquals(previewDoc === doc, false)
+    assertEquals(previewDoc, doc)
   })
 
-  it('redacts binding secrets in preview the same as ordinary secret variables', () => {
+  it('redacts binding secrets in preview the same as ordinary secret variables', async () => {
     // Binding materialization seals secrets as tpsecret. and parks them on
     // secretMaterial alongside user variables; preview must drop
     // variableMaterial and never leave envelopes in the YAML path.
-    const prepared = toPreparedDeployResult('preview', {
+    const prepared = await toPreparedDeployResult('preview', {
       composeYaml: 'services:\n  web:\n    environment:\n      DATABASE_URL: sealed\n',
       composeFiles: [{
-        filename: 'docker-compose.yml',
-        role: 'project',
+        filename: 'compose.yaml',
+        role: 'runtime',
         content: 'services:\n  web:\n    environment:\n      DATABASE_URL: sealed\n',
       }],
       hooks: [],
@@ -1478,6 +1480,7 @@ describe('resolveTraditionalWebSitesForMode and toPreparedDeployResult', () => {
       expansion: new Map([['web', ['web']]]),
       registeredVolumes: [],
       warnings: [],
+      replicaCounts: {},
     })
     assertEquals(prepared.variableMaterial, [])
     assertEquals(prepared.composeYaml.includes('tpsecret.binding'), false)

@@ -222,4 +222,18 @@ export const authPaths: Record<string, unknown> = {
       },
     },
   },
+  "/api/daemon/v1/deployments/secrets/rehydrate": {
+    post: {
+      tags: ["Daemon"],
+      summary: "Rehydrate deployment secret plan and envelopes",
+      description:
+        "Returns the last-applied secret plan plus tpdaemon envelopes for deployments on this server. Plaintext never leaves the instance; the daemon decrypts via /secrets/decrypt.",
+      security: [{ bearerAuth: [] }],
+      responses: {
+        "200": {
+          description: "Plans and envelopes",
+        },
+      },
+    },
+  },
 };

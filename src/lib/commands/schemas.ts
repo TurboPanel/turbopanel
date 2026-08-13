@@ -1,4 +1,4 @@
-import { isValidHostname, HOSTNAME_MAX_LENGTH } from './hostname.ts'
+import { HOSTNAME_MAX_LENGTH, isValidHostname } from './hostname.ts'
 import { isValidIpAddress } from '../ip-address.ts'
 import {
   isManagedBackupArtifactExtension,
@@ -9,8 +9,8 @@ import {
 import {
   getManagedReservedEnvKeys,
   isManagedImageAllowed,
-  parseManagedDockerOptions,
   type ManagedDockerOptions,
+  parseManagedDockerOptions,
 } from '../managed/settings.ts'
 import {
   ingressContainerNameFromService,
@@ -224,10 +224,7 @@ export function parseTimezoneSetResult(value: unknown): TimezoneSetCommandResult
   return result
 }
 
-function parseOptionalNtpServerList(
-  value: unknown,
-  field: string,
-): string[] | undefined {
+function parseOptionalNtpServerList(value: unknown, field: string): string[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) {
     throw new TypeError(`${field} must be an array of server hostnames or IPs`)
@@ -261,10 +258,7 @@ export function parseNtpSetPayload(value: unknown): NtpSetCommandPayload {
   const servers = parseOptionalNtpServerList(value.servers, 'servers')
   if (servers !== undefined) payload.servers = servers
 
-  const fallbackServers = parseOptionalNtpServerList(
-    value.fallbackServers,
-    'fallbackServers',
-  )
+  const fallbackServers = parseOptionalNtpServerList(value.fallbackServers, 'fallbackServers')
   if (fallbackServers !== undefined) payload.fallbackServers = fallbackServers
 
   if (
@@ -272,9 +266,7 @@ export function parseNtpSetPayload(value: unknown): NtpSetCommandPayload {
     payload.servers === undefined &&
     payload.fallbackServers === undefined
   ) {
-    throw new Error(
-      'ntp payload must include enabled, servers, and/or fallbackServers',
-    )
+    throw new Error('ntp payload must include enabled, servers, and/or fallbackServers')
   }
 
   return payload
@@ -301,12 +293,11 @@ export function parseNtpSetResult(value: unknown): NtpSetCommandResult {
   const result: NtpSetCommandResult = {
     ntpServers: parseRequiredNtpServerList(value.ntpServers, 'ntpServers'),
   }
-  if (typeof value.ntpEnabled === 'boolean') result.ntpEnabled = value.ntpEnabled
+  if (typeof value.ntpEnabled === 'boolean') {
+    result.ntpEnabled = value.ntpEnabled
+  }
   if (typeof value.ntpSynced === 'boolean') result.ntpSynced = value.ntpSynced
-  const fallback = parseOptionalNtpServerList(
-    value.fallbackNtpServers,
-    'fallbackNtpServers',
-  )
+  const fallback = parseOptionalNtpServerList(value.fallbackNtpServers, 'fallbackNtpServers')
   if (fallback !== undefined) result.fallbackNtpServers = fallback
   if (isString(value.summary)) result.summary = value.summary
   return result
@@ -331,15 +322,27 @@ export function parsePingResult(value: unknown): PingCommandResult {
   const result: PingCommandResult = {}
   if (isString(value.apiAcceptedAt)) result.apiAcceptedAt = value.apiAcceptedAt
   if (isString(value.queuedAt)) result.queuedAt = value.queuedAt
-  if (isString(value.consumerReceivedAt)) result.consumerReceivedAt = value.consumerReceivedAt
-  if (isString(value.cellEnqueuedAt)) result.cellEnqueuedAt = value.cellEnqueuedAt
+  if (isString(value.consumerReceivedAt)) {
+    result.consumerReceivedAt = value.consumerReceivedAt
+  }
+  if (isString(value.cellEnqueuedAt)) {
+    result.cellEnqueuedAt = value.cellEnqueuedAt
+  }
   if (isString(value.cellDispatchedAt)) {
     result.cellDispatchedAt = value.cellDispatchedAt
   }
-  if (isString(value.daemonReceivedAt)) result.daemonReceivedAt = value.daemonReceivedAt
-  if (isString(value.daemonRespondedAt)) result.daemonRespondedAt = value.daemonRespondedAt
-  if (isString(value.resultRecordedAt)) result.resultRecordedAt = value.resultRecordedAt
-  if (isString(value.daemonHostname)) result.daemonHostname = value.daemonHostname
+  if (isString(value.daemonReceivedAt)) {
+    result.daemonReceivedAt = value.daemonReceivedAt
+  }
+  if (isString(value.daemonRespondedAt)) {
+    result.daemonRespondedAt = value.daemonRespondedAt
+  }
+  if (isString(value.resultRecordedAt)) {
+    result.resultRecordedAt = value.resultRecordedAt
+  }
+  if (isString(value.daemonHostname)) {
+    result.daemonHostname = value.daemonHostname
+  }
   const daemonBuild = parseDaemonBuild(value.daemonBuild)
   if (daemonBuild) result.daemonBuild = daemonBuild
   return result
@@ -404,8 +407,7 @@ export type WireguardApplyCommandResult = {
   summary?: string
 }
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function parseWireguardUuid(value: unknown, field: string): string {
   if (typeof value !== 'string' || !UUID_RE.test(value)) {
@@ -433,7 +435,11 @@ function parseWireguardPeerEntry(value: unknown): WireguardApplyPeerMaterial {
     }
     allowedIps.push((entry as string).trim())
   }
-  const material: WireguardApplyPeerMaterial = { peerId, publicKey, allowedIps }
+  const material: WireguardApplyPeerMaterial = {
+    peerId,
+    publicKey,
+    allowedIps,
+  }
   if (value.endpoint !== undefined) {
     if (!isString(value.endpoint) || !isValidWireguardEndpoint(value.endpoint)) {
       throw new Error('Invalid wireguard peer endpoint')
@@ -452,10 +458,7 @@ function parseWireguardPeerEntry(value: unknown): WireguardApplyPeerMaterial {
     material.persistentKeepalive = value.persistentKeepalive
   }
   if (value.presharedKeyEnvelope !== undefined) {
-    if (
-      !isString(value.presharedKeyEnvelope) ||
-      value.presharedKeyEnvelope.length === 0
-    ) {
+    if (!isString(value.presharedKeyEnvelope) || value.presharedKeyEnvelope.length === 0) {
       throw new Error('Invalid wireguard peer presharedKeyEnvelope')
     }
     material.presharedKeyEnvelope = value.presharedKeyEnvelope
@@ -527,6 +530,169 @@ export function parseWireguardApplyResult(value: unknown): WireguardApplyCommand
   }
   if (isString(value.summary)) {
     result.summary = value.summary
+  }
+  return result
+}
+
+/** Must stay in sync with the daemon `server.fabric.reconcile` shape. */
+export type FabricReconcilePeerMaterial = {
+  publicKey: string
+  endpoint?: string
+  allowedIPs: string[]
+}
+
+/** Must stay in sync with the daemon `server.fabric.reconcile` shape. */
+export type FabricReconcileNetworkMaterial = {
+  name: string
+  subnet: string
+}
+
+/** Must stay in sync with the daemon `server.fabric.reconcile` shape. */
+export type FabricReconcileCommandPayload =
+  | { enabled: false }
+  | {
+      enabled: true
+      fabricId?: string
+      listenPort?: number
+      address: string
+      prefix: string
+      peers: FabricReconcilePeerMaterial[]
+      networks?: FabricReconcileNetworkMaterial[]
+    }
+
+/** Must stay in sync with the daemon `server.fabric.reconcile` shape. */
+export type FabricReconcileCommandResult = {
+  summary: string
+  publicKey?: string
+  skipped?: boolean
+}
+
+const FABRIC_DOCKER_NETWORK_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/
+
+function parseFabricUuid(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !UUID_RE.test(value)) {
+    throw new TypeError(`Invalid fabric ${field}`)
+  }
+  return value
+}
+
+function parseFabricPeerEntry(value: unknown): FabricReconcilePeerMaterial {
+  if (!isRecord(value)) {
+    throw new TypeError('Invalid fabric peer entry')
+  }
+  const publicKey = value.publicKey
+  if (!isString(publicKey) || !isValidWireguardPublicKey(publicKey)) {
+    throw new TypeError('Invalid fabric peer publicKey')
+  }
+  if (!Array.isArray(value.allowedIPs) || value.allowedIPs.length === 0) {
+    throw new TypeError('Invalid fabric peer allowedIPs')
+  }
+  const allowedIPs: string[] = []
+  for (const entry of value.allowedIPs) {
+    if (!isValidWireguardAllowedIp(entry)) {
+      throw new TypeError('Invalid fabric peer allowedIPs')
+    }
+    allowedIPs.push((entry as string).trim())
+  }
+  const peer: FabricReconcilePeerMaterial = { publicKey, allowedIPs }
+  if (value.endpoint !== undefined) {
+    if (!isString(value.endpoint) || !isValidWireguardEndpoint(value.endpoint)) {
+      throw new TypeError('Invalid fabric peer endpoint')
+    }
+    peer.endpoint = value.endpoint
+  }
+  return peer
+}
+
+function parseFabricNetworkEntry(value: unknown): FabricReconcileNetworkMaterial {
+  if (!isRecord(value)) {
+    throw new TypeError('Invalid fabric network entry')
+  }
+  const name = value.name
+  if (!isString(name) || !FABRIC_DOCKER_NETWORK_NAME_RE.test(name)) {
+    throw new TypeError('Invalid fabric network name')
+  }
+  const subnet = value.subnet
+  if (!isString(subnet) || !isValidWireguardAllowedIp(subnet)) {
+    throw new TypeError('Invalid fabric network subnet')
+  }
+  return { name, subnet: subnet.trim() }
+}
+
+function parseEnabledFabricPayload(
+  value: Record<string, unknown>
+): Extract<FabricReconcileCommandPayload, { enabled: true }> {
+  const address = value.address
+  if (!isString(address) || !isValidWireguardAllowedIp(address)) {
+    throw new TypeError('Invalid fabric address')
+  }
+  const prefix = value.prefix
+  if (!isString(prefix) || !isValidWireguardAllowedIp(prefix)) {
+    throw new TypeError('Invalid fabric prefix')
+  }
+  if (!Array.isArray(value.peers)) {
+    throw new TypeError('Invalid fabric peers')
+  }
+  const payload: Extract<FabricReconcileCommandPayload, { enabled: true }> = {
+    enabled: true,
+    address: address.trim(),
+    prefix: prefix.trim(),
+    peers: value.peers.map(parseFabricPeerEntry),
+  }
+  if (value.fabricId !== undefined) {
+    payload.fabricId = parseFabricUuid(value.fabricId, 'fabricId')
+  }
+  if (value.listenPort !== undefined) {
+    if (!isValidWireguardListenPort(value.listenPort)) {
+      throw new TypeError('Invalid fabric listenPort')
+    }
+    payload.listenPort = value.listenPort
+  }
+  if (value.networks !== undefined) {
+    if (!Array.isArray(value.networks)) {
+      throw new TypeError('Invalid fabric networks')
+    }
+    payload.networks = value.networks.map(parseFabricNetworkEntry)
+  }
+  return payload
+}
+
+export function parseFabricReconcilePayload(value: unknown): FabricReconcileCommandPayload {
+  if (!isRecord(value)) {
+    throw new TypeError('Invalid fabric reconcile payload')
+  }
+  if (typeof value.enabled !== 'boolean') {
+    throw new TypeError('Invalid fabric enabled')
+  }
+  if (!value.enabled) {
+    return { enabled: false }
+  }
+  return parseEnabledFabricPayload(value)
+}
+
+export function parseFabricReconcileResult(value: unknown): FabricReconcileCommandResult {
+  if (!isRecord(value)) {
+    throw new TypeError('Invalid fabric reconcile result')
+  }
+  const summary = value.summary
+  if (!isString(summary) || summary.length === 0) {
+    throw new TypeError('Invalid fabric reconcile result summary')
+  }
+  const result: FabricReconcileCommandResult = { summary }
+  if (value.skipped !== undefined) {
+    if (typeof value.skipped !== 'boolean') {
+      throw new TypeError('Invalid fabric reconcile result skipped')
+    }
+    result.skipped = value.skipped
+  }
+  if (value.publicKey !== undefined) {
+    if (!isString(value.publicKey) || !isValidWireguardPublicKey(value.publicKey)) {
+      throw new TypeError('Invalid fabric reconcile result publicKey')
+    }
+    result.publicKey = value.publicKey
+  }
+  if (result.skipped !== true && result.publicKey === undefined) {
+    throw new TypeError('Invalid fabric reconcile result publicKey')
   }
   return result
 }
@@ -647,7 +813,7 @@ export type EnvironmentDeployIngressService = {
 }
 
 /** Role of one file in the deploy-time `docker compose -f` chain. */
-export type EnvironmentDeployComposeFileRole = 'project' | 'environment' | 'platform'
+export type EnvironmentDeployComposeFileRole = 'project' | 'environment' | 'platform' | 'runtime'
 
 /** Where the file content was produced; only `inline` is emitted today. */
 export type EnvironmentDeployComposeFileSource = 'inline' | 'repository'
@@ -672,10 +838,21 @@ export type EnvironmentDeployComposeFile = {
 /** Basename-only compose filenames safe for host paths (no directories). */
 export const COMPOSE_FILE_NAME_RE = /^[A-Za-z0-9._-]+\.ya?ml$/
 
+export type EnvironmentDeploySecretPlanEntry = {
+  key: string
+  composeServiceName: string
+  source: string
+  target: string
+  relativePath: string
+  forBuild: boolean
+  forRuntime: boolean
+}
+
 const DEPLOY_COMPOSE_FILE_ROLES = new Set<EnvironmentDeployComposeFileRole>([
   'project',
   'environment',
   'platform',
+  'runtime',
 ])
 
 const DEPLOY_COMPOSE_FILE_SOURCES = new Set<EnvironmentDeployComposeFileSource>([
@@ -689,18 +866,26 @@ export type EnvironmentDeployCommandPayload = {
   organizationId: string
   projectName: string
   /**
-   * @deprecated Pre-merged runtime docker-compose YAML kept for one release so
-   * daemons that predate `composeFiles` still work. Prefer the ordered
-   * `composeFiles` chain; this remains the merged effective view for display.
+   * Compiled runtime docker-compose YAML for this server (same body as the
+   * single `composeFiles` `role: 'runtime'` entry). Kept so older daemons
+   * that ignore `composeFiles` still have a single-file body.
    * May be `services: {}` when all sites are traditional-web.
    */
   composeYaml: string
   /**
-   * Ordered compose file chain for `docker compose -f` (project → environment
-   * → optional platform last). When present, takes precedence over
-   * `composeYaml` on daemons that understand multi-file deploys.
+   * Compose files the daemon writes. New deploys send a single
+   * `{ filename: 'compose.yaml', role: 'runtime' }` entry. Older queued
+   * commands may still carry a project → environment → platform chain.
    */
   composeFiles?: EnvironmentDeployComposeFile[]
+  /** Environment desired generation this command is applying. */
+  generation?: number
+  /** SHA-256 hex of the compiled runtime YAML (before daemon overlay). */
+  desiredHash?: string
+  /** Target server (command `serverId` is authoritative; echoed for `deployment.json`). */
+  serverId?: string
+  /** Local replica counts keyed by logical compose service name. */
+  replicaCounts?: Record<string, number>
   /** Public hosting routes to wire through Traefik + hosting Caddy. */
   hostings: EnvironmentDeployHosting[]
   /**
@@ -732,6 +917,10 @@ export type EnvironmentDeployCommandPayload = {
   /** Unique TLS material referenced by `hostings[].tlsId` (deduped). */
   tlsMaterial?: EnvironmentDeployTlsMaterial[]
   variableMaterial?: EnvironmentDeployVariableMaterial[]
+  /** Non-secret Compose project `.env` written next to compose.yaml. */
+  envFile?: string
+  /** File-only secret mounts (paths/names, no plaintext). */
+  secretPlan?: EnvironmentDeploySecretPlanEntry[]
   storageMaterial?: EnvironmentDeployStorageMaterial[]
   principalMaterial?: EnvironmentDeployPrincipalMaterial[]
   serviceHooks?: EnvironmentDeployServiceHook[]
@@ -801,7 +990,7 @@ export type EnvironmentDeployCommandResult = {
 const MAX_ENVIRONMENT_DEPLOY_CONTAINERS = 100
 
 function requireDeployPayloadStrings(
-  value: Record<string, unknown>,
+  value: Record<string, unknown>
 ): Pick<
   EnvironmentDeployCommandPayload,
   'environmentId' | 'projectId' | 'organizationId' | 'projectName' | 'composeYaml'
@@ -820,12 +1009,12 @@ function requireDeployPayloadStrings(
   return { environmentId, projectId, organizationId, projectName, composeYaml }
 }
 
-function parseDeployHostingProxy(
-  value: unknown,
-): EnvironmentDeployHostingProxy | undefined {
+function parseDeployHostingProxy(value: unknown): EnvironmentDeployHostingProxy | undefined {
   if (!isRecord(value)) return undefined
   const proxy: EnvironmentDeployHostingProxy = {}
-  if (typeof value.forceHttps === 'boolean') proxy.forceHttps = value.forceHttps
+  if (typeof value.forceHttps === 'boolean') {
+    proxy.forceHttps = value.forceHttps
+  }
   if (typeof value.gzip === 'boolean') proxy.gzip = value.gzip
   if (typeof value.brotli === 'boolean') proxy.brotli = value.brotli
   if (isString(value.stripPrefix)) proxy.stripPrefix = value.stripPrefix
@@ -835,7 +1024,7 @@ function parseDeployHostingProxy(
 const DEPLOY_HOSTING_PROTOCOLS = new Set(['http', 'tcp', 'udp'])
 
 function parseDeployHostingProtocol(
-  value: unknown,
+  value: unknown
 ): EnvironmentDeployHosting['protocol'] | undefined {
   if (value === undefined) return undefined
   if (!isString(value) || !DEPLOY_HOSTING_PROTOCOLS.has(value)) {
@@ -855,9 +1044,7 @@ function parseDeployHostingPortEntry(entry: unknown): EnvironmentDeployHostingPo
   return { published: entry.published, target: entry.target }
 }
 
-function parseDeployHostingPorts(
-  value: unknown,
-): EnvironmentDeployHostingPort[] | undefined {
+function parseDeployHostingPorts(value: unknown): EnvironmentDeployHostingPort[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value) || value.length === 0) {
     throw new Error('Invalid environment.deploy payload')
@@ -898,7 +1085,7 @@ function parseDeployHostingWeb(value: unknown): EnvironmentDeployHostingWeb | un
 
 function applyOptionalDeployHostingFields(
   hosting: EnvironmentDeployHosting,
-  entry: Record<string, unknown>,
+  entry: Record<string, unknown>
 ): void {
   if (isString(entry.pathPrefix)) hosting.pathPrefix = entry.pathPrefix
   if (typeof entry.targetPort === 'number' && Number.isFinite(entry.targetPort)) {
@@ -973,9 +1160,7 @@ function parseDeployTlsMaterialEntry(entry: unknown): EnvironmentDeployTlsMateri
   }
 }
 
-function parseDeployTlsMaterial(
-  value: unknown,
-): EnvironmentDeployTlsMaterial[] | undefined {
+function parseDeployTlsMaterial(value: unknown): EnvironmentDeployTlsMaterial[] | undefined {
   if (!Array.isArray(value)) return undefined
   return value.map(parseDeployTlsMaterialEntry)
 }
@@ -996,10 +1181,67 @@ function parseDeployVariableMaterialEntry(entry: unknown): EnvironmentDeployVari
 }
 
 function parseDeployVariableMaterial(
-  value: unknown,
+  value: unknown
 ): EnvironmentDeployVariableMaterial[] | undefined {
   if (!Array.isArray(value)) return undefined
   return value.map(parseDeployVariableMaterialEntry)
+}
+
+const SECRET_PLAN_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+const MAX_DEPLOY_ENV_FILE_CHARS = 1_048_576
+
+function parseDeploySecretPlanEntry(entry: unknown): EnvironmentDeploySecretPlanEntry {
+  if (!isRecord(entry)) throw new TypeError('Invalid environment.deploy secretPlan entry')
+  if (
+    !isString(entry.key) ||
+    !isString(entry.composeServiceName) ||
+    !isString(entry.source) ||
+    !isString(entry.target) ||
+    !isString(entry.relativePath)
+  ) {
+    throw new TypeError('Invalid environment.deploy secretPlan entry')
+  }
+  if (
+    entry.relativePath.includes('/') ||
+    entry.relativePath.includes('\\') ||
+    entry.relativePath.includes('..') ||
+    !SECRET_PLAN_NAME_RE.test(entry.relativePath)
+  ) {
+    throw new TypeError('Invalid environment.deploy secretPlan relativePath')
+  }
+  if (!SECRET_PLAN_NAME_RE.test(entry.source) || !SECRET_PLAN_NAME_RE.test(entry.target)) {
+    throw new TypeError('Invalid environment.deploy secretPlan source/target')
+  }
+  return {
+    key: entry.key,
+    composeServiceName: entry.composeServiceName,
+    source: entry.source,
+    target: entry.target,
+    relativePath: entry.relativePath,
+    forBuild: entry.forBuild === true,
+    forRuntime: entry.forRuntime !== false,
+  }
+}
+
+export function parseDeploySecretPlan(
+  value: unknown,
+): EnvironmentDeploySecretPlanEntry[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) {
+    throw new TypeError('secretPlan must be an array')
+  }
+  return value.map(parseDeploySecretPlanEntry)
+}
+
+function parseDeployEnvFile(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string') {
+    throw new TypeError('envFile must be a string')
+  }
+  if (value.length > MAX_DEPLOY_ENV_FILE_CHARS) {
+    throw new TypeError('envFile exceeds maximum length')
+  }
+  return value
 }
 
 function parseDeployStorageMaterialEntry(entry: unknown): EnvironmentDeployStorageMaterial {
@@ -1028,12 +1270,18 @@ function parseDeployStorageMaterialEntry(entry: unknown): EnvironmentDeployStora
     }
     material.volumeName = entry.volumeName
   }
-  if (isString(entry.destinationPath)) material.destinationPath = entry.destinationPath
+  if (isString(entry.destinationPath)) {
+    material.destinationPath = entry.destinationPath
+  }
   if (isString(entry.sourcePath)) material.sourcePath = entry.sourcePath
   if (isString(entry.principalId)) material.principalId = entry.principalId
   if (isString(entry.serviceId)) material.serviceId = entry.serviceId
-  if (isString(entry.composeServiceName)) material.composeServiceName = entry.composeServiceName
-  if (isString(entry.contentEnvelope)) material.contentEnvelope = entry.contentEnvelope
+  if (isString(entry.composeServiceName)) {
+    material.composeServiceName = entry.composeServiceName
+  }
+  if (isString(entry.contentEnvelope)) {
+    material.contentEnvelope = entry.contentEnvelope
+  }
   return material
 }
 
@@ -1120,14 +1368,14 @@ function parseDeployPrincipalMaterialEntry(entry: unknown): EnvironmentDeployPri
 }
 
 function parseDeployPrincipalMaterial(
-  value: unknown,
+  value: unknown
 ): EnvironmentDeployPrincipalMaterial[] | undefined {
   if (!Array.isArray(value)) return undefined
   return value.map(parseDeployPrincipalMaterialEntry)
 }
 
 function parseDeployStorageMaterial(
-  value: unknown,
+  value: unknown
 ): EnvironmentDeployStorageMaterial[] | undefined {
   if (!Array.isArray(value)) return undefined
   return value.map(parseDeployStorageMaterialEntry)
@@ -1141,8 +1389,12 @@ function parseDeployServiceHookEntry(entry: unknown): EnvironmentDeployServiceHo
   const hook: EnvironmentDeployServiceHook = {
     composeServiceName: entry.composeServiceName,
   }
-  if (isString(entry.preDeployCommand)) hook.preDeployCommand = entry.preDeployCommand
-  if (isString(entry.postDeployCommand)) hook.postDeployCommand = entry.postDeployCommand
+  if (isString(entry.preDeployCommand)) {
+    hook.preDeployCommand = entry.preDeployCommand
+  }
+  if (isString(entry.postDeployCommand)) {
+    hook.postDeployCommand = entry.postDeployCommand
+  }
   if (entry.buildDisableCache === true) hook.buildDisableCache = true
   return hook
 }
@@ -1154,9 +1406,7 @@ function parseDeployServiceHooks(value: unknown): EnvironmentDeployServiceHook[]
 
 const TRADITIONAL_WEB_ENGINES = new Set(['apache', 'nginx', 'openlitespeed'])
 
-function parseDeployTraditionalWebSiteEntry(
-  entry: unknown,
-): EnvironmentDeployTraditionalWebSite {
+function parseDeployTraditionalWebSiteEntry(entry: unknown): EnvironmentDeployTraditionalWebSite {
   if (!isRecord(entry)) {
     throw new Error('Invalid traditionalWebSites entry')
   }
@@ -1190,7 +1440,7 @@ function parseDeployTraditionalWebSiteEntry(
 }
 
 function parseDeployTraditionalWebPrincipal(
-  value: unknown,
+  value: unknown
 ): EnvironmentDeployTraditionalWebPrincipal | undefined {
   if (value === undefined) return undefined
   if (!isRecord(value)) {
@@ -1220,7 +1470,7 @@ function parseDeployTraditionalWebPrincipal(
 }
 
 function parseDeployTraditionalWebSites(
-  value: unknown,
+  value: unknown
 ): EnvironmentDeployTraditionalWebSite[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) {
@@ -1270,11 +1520,7 @@ function parseDeployComposeFileEntry(entry: unknown): EnvironmentDeployComposeFi
     throw new Error('Invalid environment.deploy payload')
   }
   const { filename, role, content, source, path } = entry
-  if (
-    !isString(filename) ||
-    !COMPOSE_FILE_NAME_RE.test(filename) ||
-    filename.includes('..')
-  ) {
+  if (!isString(filename) || !COMPOSE_FILE_NAME_RE.test(filename) || filename.includes('..')) {
     throw new Error('Invalid environment.deploy payload')
   }
   if (!isString(role) || !DEPLOY_COMPOSE_FILE_ROLES.has(role as EnvironmentDeployComposeFileRole)) {
@@ -1311,7 +1557,7 @@ function parseDeployComposeFileEntry(entry: unknown): EnvironmentDeployComposeFi
  * Never sorts — order is the daemon `-f` order.
  */
 export function parseDeployComposeFiles(
-  value: unknown,
+  value: unknown
 ): EnvironmentDeployComposeFile[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value) || value.length === 0) {
@@ -1339,6 +1585,47 @@ export function parseDeployComposeFiles(
   return files
 }
 
+const DESIRED_HASH_RE = /^[0-9a-f]{64}$/
+
+function parseOptionalGeneration(value: unknown): number | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  return value
+}
+
+function parseOptionalDesiredHash(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (!isString(value) || !DESIRED_HASH_RE.test(value)) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  return value
+}
+
+function parseOptionalDeployServerId(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (!isString(value) || !UUID_RE.test(value)) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  return value
+}
+
+function parseReplicaCounts(value: unknown): Record<string, number> | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  const out: Record<string, number> = {}
+  for (const [name, count] of Object.entries(value)) {
+    if (name.length === 0 || typeof count !== 'number' || !Number.isInteger(count) || count < 1) {
+      throw new Error('Invalid environment.deploy payload')
+    }
+    out[name] = count
+  }
+  return out
+}
+
 function parseDeployContainerEntry(entry: unknown): EnvironmentDeployContainer | undefined {
   if (!isRecord(entry)) return undefined
   if (
@@ -1351,11 +1638,7 @@ function parseDeployContainerEntry(entry: unknown): EnvironmentDeployContainer |
   }
   // Role is required — omit or misspell drops the entry rather than defaulting
   // to 'service' (which would silently mis-classify ingress/turbopanel rows).
-  if (
-    entry.role !== 'service' &&
-    entry.role !== 'ingress' &&
-    entry.role !== 'turbopanel'
-  ) {
+  if (entry.role !== 'service' && entry.role !== 'ingress' && entry.role !== 'turbopanel') {
     return undefined
   }
   const container: EnvironmentDeployContainer = {
@@ -1407,9 +1690,7 @@ function parseDeployIngressServiceEntry(entry: unknown): EnvironmentDeployIngres
   }
 }
 
-function parseDeployIngressServices(
-  value: unknown,
-): EnvironmentDeployIngressService[] | undefined {
+function parseDeployIngressServices(value: unknown): EnvironmentDeployIngressService[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) {
     throw new TypeError('ingressServices must be an array')
@@ -1425,6 +1706,8 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
   const hostings = parseDeployHostings(value.hostings)
   const tlsMaterial = parseDeployTlsMaterial(value.tlsMaterial)
   const variableMaterial = parseDeployVariableMaterial(value.variableMaterial)
+  const envFile = parseDeployEnvFile(value.envFile)
+  const secretPlan = parseDeploySecretPlan(value.secretPlan)
   const storageMaterial = parseDeployStorageMaterial(value.storageMaterial)
   const principalMaterial = parseDeployPrincipalMaterial(value.principalMaterial)
   const serviceHooks = parseDeployServiceHooks(value.serviceHooks)
@@ -1440,6 +1723,10 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
     }
     noCache = value.noCache
   }
+  const generation = parseOptionalGeneration(value.generation)
+  const desiredHash = parseOptionalDesiredHash(value.desiredHash)
+  const serverId = parseOptionalDeployServerId(value.serverId)
+  const replicaCounts = parseReplicaCounts(value.replicaCounts)
   return {
     ...strings,
     hostings,
@@ -1451,9 +1738,15 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
     ...(noCache !== undefined ? { noCache } : {}),
     ...(tlsMaterial !== undefined ? { tlsMaterial } : {}),
     ...(variableMaterial !== undefined ? { variableMaterial } : {}),
+    ...(envFile !== undefined ? { envFile } : {}),
+    ...(secretPlan !== undefined ? { secretPlan } : {}),
     ...(storageMaterial !== undefined ? { storageMaterial } : {}),
     ...(principalMaterial !== undefined ? { principalMaterial } : {}),
     ...(serviceHooks !== undefined ? { serviceHooks } : {}),
+    ...(generation !== undefined ? { generation } : {}),
+    ...(desiredHash !== undefined ? { desiredHash } : {}),
+    ...(serverId !== undefined ? { serverId } : {}),
+    ...(replicaCounts !== undefined ? { replicaCounts } : {}),
   }
 }
 
@@ -1491,9 +1784,7 @@ export type EnvironmentStopCommandResult = {
   containers?: EnvironmentDeployContainer[]
 }
 
-function parseStopIngressServices(
-  value: unknown,
-): Array<{ serviceId: string }> | undefined {
+function parseStopIngressServices(value: unknown): Array<{ serviceId: string }> | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) {
     throw new TypeError('ingressServices must be an array')
@@ -1570,7 +1861,7 @@ export type EnvironmentLifecycleCommandResult = {
 }
 
 export function parseEnvironmentLifecyclePayload(
-  value: unknown,
+  value: unknown
 ): EnvironmentLifecycleCommandPayload {
   if (!isRecord(value)) {
     throw new Error('Invalid environment.lifecycle payload')
@@ -1599,9 +1890,7 @@ export function parseEnvironmentLifecyclePayload(
   }
 }
 
-export function parseEnvironmentLifecycleResult(
-  value: unknown,
-): EnvironmentLifecycleCommandResult {
+export function parseEnvironmentLifecycleResult(value: unknown): EnvironmentLifecycleCommandResult {
   if (!isRecord(value)) {
     return { projectName: '' }
   }
@@ -1616,11 +1905,7 @@ export function parseEnvironmentLifecycleResult(
 
 /** Allowlisted system component keys — never a free-form wire string. */
 export type SystemComponentKey =
-  | 'hosting-ingress'
-  | 'managed-ingress'
-  | 'database'
-  | 'queue'
-  | 'analytics'
+  'hosting-ingress' | 'managed-ingress' | 'database' | 'queue' | 'analytics'
 
 export type SystemReconcileAction = 'reconcile' | 'restart' | 'stop'
 
@@ -1645,7 +1930,7 @@ export const SYSTEM_COMPONENT_ROLES: Record<
 /** Per-component Docker `container_name` for a system.reconcile entry. */
 function expectedSystemComponentContainerName(
   component: SystemComponentKey,
-  serviceId: string,
+  serviceId: string
 ): string {
   switch (component) {
     case 'hosting-ingress':
@@ -1705,7 +1990,7 @@ export function isSystemComponentKey(value: unknown): value is SystemComponentKe
 
 function parseSystemReconcileComponent(
   value: unknown,
-  seen: Set<string>,
+  seen: Set<string>
 ): SystemReconcileComponent {
   if (!isRecord(value)) {
     throw new Error('Invalid system.reconcile payload')
@@ -1733,10 +2018,7 @@ function parseSystemReconcileComponent(
     throw new Error('Invalid system.reconcile payload')
   }
   const containerName = value.containerName
-  const expectedContainerName = expectedSystemComponentContainerName(
-    component,
-    serviceId,
-  )
+  const expectedContainerName = expectedSystemComponentContainerName(component, serviceId)
   if (!isString(containerName) || containerName !== expectedContainerName) {
     throw new Error('Invalid system.reconcile payload')
   }
@@ -1754,18 +2036,12 @@ function parseSystemReconcileComponent(
   }
 }
 
-export function parseSystemReconcilePayload(
-  value: unknown,
-): SystemReconcileCommandPayload {
+export function parseSystemReconcilePayload(value: unknown): SystemReconcileCommandPayload {
   if (!isRecord(value)) {
     throw new Error('Invalid system.reconcile payload')
   }
   const environmentId = value.environmentId
-  if (
-    !isString(environmentId) ||
-    environmentId.length === 0 ||
-    !UUID_RE.test(environmentId)
-  ) {
+  if (!isString(environmentId) || environmentId.length === 0 || !UUID_RE.test(environmentId)) {
     throw new Error('Invalid system.reconcile payload')
   }
 
@@ -1793,9 +2069,7 @@ export function parseSystemReconcilePayload(
   return { environmentId, action, components }
 }
 
-export function parseSystemReconcileResult(
-  value: unknown,
-): SystemReconcileCommandResult {
+export function parseSystemReconcileResult(value: unknown): SystemReconcileCommandResult {
   if (!isRecord(value)) {
     return {}
   }
@@ -1867,19 +2141,16 @@ function isComposeProjectName(value: string): boolean {
 
 /** Light OCI-ref charset check (mirrors managed/settings.ts syntax rules). */
 function isValidManagedImageRef(value: string): boolean {
-  if (value.length === 0 || value.length > MAX_MANAGED_IMAGE_LENGTH) return false
+  if (value.length === 0 || value.length > MAX_MANAGED_IMAGE_LENGTH) {
+    return false
+  }
   if (/\s/.test(value)) return false
   if (SHELL_METACHAR_RE.test(value)) return false
   return true
 }
 
 function isValidPortNumber(value: unknown): value is number {
-  return (
-    typeof value === 'number' &&
-    Number.isInteger(value) &&
-    value >= 1 &&
-    value <= 65_535
-  )
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 65_535
 }
 
 function isLoopbackIpLiteral(value: string): boolean {
@@ -2262,7 +2533,7 @@ function parseManagedApplyVolumes(value: unknown): ManagedApplyVolume[] {
 }
 
 function parseManagedApplyResources(
-  value: unknown,
+  value: unknown
 ): NonNullable<ServiceOptions['resources']> | undefined {
   if (value === undefined) return undefined
   if (!isRecord(value)) {
@@ -2313,10 +2584,7 @@ function parseManagedApplyExposure(value: unknown): ManagedApplyExposure {
   if (!isRecord(value) || typeof value.enabled !== 'boolean') {
     throw new Error('Invalid managed.apply exposure')
   }
-  if (
-    !isString(value.protocol) ||
-    !MANAGED_EXPOSURE_PROTOCOLS.has(value.protocol)
-  ) {
+  if (!isString(value.protocol) || !MANAGED_EXPOSURE_PROTOCOLS.has(value.protocol)) {
     throw new Error('Invalid managed.apply exposure.protocol')
   }
   const exposure: ManagedApplyExposure = {
@@ -2331,11 +2599,7 @@ function parseManagedApplyExposure(value: unknown): ManagedApplyExposure {
 
 /** Matches `service_name_format_check` / compose service-key charset. */
 function isValidComposeServiceName(value: string): boolean {
-  return (
-    value.length > 0 &&
-    value.length <= 255 &&
-    /^[A-Za-z0-9._-]+$/.test(value)
-  )
+  return value.length > 0 && value.length <= 255 && /^[A-Za-z0-9._-]+$/.test(value)
 }
 
 function parseManagedApplyPeers(value: unknown): ManagedApplyPeer[] {
@@ -2375,10 +2639,7 @@ function parseManagedApplyPeers(value: unknown): ManagedApplyPeer[] {
       port: entry.port,
     }
     if (entry.containerName !== undefined) {
-      if (
-        !isString(entry.containerName) ||
-        !isValidDockerResourceName(entry.containerName)
-      ) {
+      if (!isString(entry.containerName) || !isValidDockerResourceName(entry.containerName)) {
         throw new Error('Invalid managed.apply peers entry')
       }
       peer.containerName = entry.containerName
@@ -2388,9 +2649,7 @@ function parseManagedApplyPeers(value: unknown): ManagedApplyPeer[] {
   return peers
 }
 
-function parseManagedApplyPrivateListener(
-  value: unknown,
-): ManagedApplyPrivateListener | undefined {
+function parseManagedApplyPrivateListener(value: unknown): ManagedApplyPrivateListener | undefined {
   if (value === undefined) return undefined
   if (!isRecord(value)) {
     throw new Error('Invalid managed.apply privateListener')
@@ -2461,17 +2720,14 @@ function parseManagedApplyReplicationPeerAddresses(value: unknown): string[] | u
 
 function parseManagedApplyReplicationPrimaryHostaddr(value: unknown): string | undefined {
   if (value === undefined) return undefined
-  if (
-    !isString(value) ||
-    (!isValidIpv4Literal(value) && !isValidIpv6Literal(value))
-  ) {
+  if (!isString(value) || (!isValidIpv4Literal(value) && !isValidIpv6Literal(value))) {
     throw new Error('Invalid managed.apply replication.primary.hostaddr')
   }
   return value
 }
 
 function parseManagedApplyReplicationPrimary(
-  value: unknown,
+  value: unknown
 ): ManagedApplyReplicationPrimary | undefined {
   if (value === undefined) return undefined
   if (!isRecord(value)) {
@@ -2494,9 +2750,7 @@ function parseManagedApplyReplicationPrimary(
   return primary
 }
 
-function assertManagedApplyReplicationRoleRequirements(
-  replication: ManagedApplyReplication,
-): void {
+function assertManagedApplyReplicationRoleRequirements(replication: ManagedApplyReplication): void {
   if (
     replication.role === 'standby' &&
     (replication.slotName === undefined || replication.primary === undefined)
@@ -2508,9 +2762,7 @@ function assertManagedApplyReplicationRoleRequirements(
   }
 }
 
-function parseManagedApplyReplication(
-  value: unknown,
-): ManagedApplyReplication | undefined {
+function parseManagedApplyReplication(value: unknown): ManagedApplyReplication | undefined {
   if (value === undefined) return undefined
   if (!isRecord(value)) {
     throw new Error('Invalid managed.apply replication')
@@ -2547,7 +2799,7 @@ function parseManagedApplyReplication(
 }
 
 export function parseManagedReplicationHealth(
-  value: unknown,
+  value: unknown
 ): ManagedReplicationHealth | undefined {
   if (value === undefined) return undefined
   if (!isRecord(value)) return undefined
@@ -2580,9 +2832,7 @@ export function parseManagedReplicationHealth(
   return health
 }
 
-function parseManagedMemberObservedResult(
-  value: unknown,
-): ManagedMemberObservedResult | undefined {
+function parseManagedMemberObservedResult(value: unknown): ManagedMemberObservedResult | undefined {
   if (value === undefined) return undefined
   if (!isRecord(value)) return undefined
   if (
@@ -2619,9 +2869,7 @@ function parseManagedApplyCredentialDatabases(value: unknown): string[] {
   return databases
 }
 
-function parseManagedApplyCredentialPrivileges(
-  value: unknown,
-): string[] | undefined {
+function parseManagedApplyCredentialPrivileges(value: unknown): string[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) {
     throw new TypeError('Invalid managed.apply credentials.privileges')
@@ -2673,9 +2921,7 @@ function parseManagedApplyCredentials(value: unknown): ManagedApplyCredential[] 
   return value.map(parseManagedApplyCredentialEntry)
 }
 
-function parseManagedApplyDatabases(
-  value: unknown,
-): ManagedApplyDatabaseOp[] | undefined {
+function parseManagedApplyDatabases(value: unknown): ManagedApplyDatabaseOp[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) {
     throw new TypeError('Invalid managed.apply databases')
@@ -2720,9 +2966,7 @@ function parseManagedApplyDropUsers(value: unknown): string[] | undefined {
   return dropUsers
 }
 
-function parseManagedApplyTlsMaterial(
-  value: unknown,
-): ManagedApplyTlsMaterial | undefined {
+function parseManagedApplyTlsMaterial(value: unknown): ManagedApplyTlsMaterial | undefined {
   if (value === undefined) return undefined
   if (!isRecord(value)) {
     throw new Error('Invalid managed.apply tlsMaterial')
@@ -2746,9 +2990,7 @@ function parseManagedApplyTlsMaterial(
   }
 }
 
-function parseManagedApplyOrgTlsMaterial(
-  value: unknown,
-): ManagedApplyOrgTlsMaterial | undefined {
+function parseManagedApplyOrgTlsMaterial(value: unknown): ManagedApplyOrgTlsMaterial | undefined {
   if (value === undefined) return undefined
   if (!isRecord(value)) {
     throw new Error('Invalid managed.apply orgTlsMaterial')
@@ -2828,7 +3070,7 @@ export function parseManagedApplyPayload(value: unknown): ManagedApplyCommandPay
 
   const dockerOptions = parseManagedDockerOptions(
     value.dockerOptions,
-    getManagedReservedEnvKeys(value.engine),
+    getManagedReservedEnvKeys(value.engine)
   )
   if (dockerOptions === null) {
     throw new Error('Invalid managed.apply dockerOptions')
@@ -2886,10 +3128,7 @@ export function parseManagedApplyResult(value: unknown): ManagedApplyCommandResu
   if (Array.isArray(value.appliedUsers) && value.appliedUsers.every(isString)) {
     result.appliedUsers = value.appliedUsers as string[]
   }
-  if (
-    Array.isArray(value.appliedDatabases) &&
-    value.appliedDatabases.every(isString)
-  ) {
+  if (Array.isArray(value.appliedDatabases) && value.appliedDatabases.every(isString)) {
     result.appliedDatabases = value.appliedDatabases as string[]
   }
   if (isString(value.engineVersion)) result.engineVersion = value.engineVersion
@@ -2903,9 +3142,7 @@ export function parseManagedApplyResult(value: unknown): ManagedApplyCommandResu
   return result
 }
 
-export function parseManagedLifecyclePayload(
-  value: unknown,
-): ManagedLifecycleCommandPayload {
+export function parseManagedLifecyclePayload(value: unknown): ManagedLifecycleCommandPayload {
   if (!isRecord(value)) {
     throw new Error('Invalid managed.lifecycle payload')
   }
@@ -2936,9 +3173,7 @@ export function parseManagedLifecyclePayload(
   return payload
 }
 
-export function parseManagedLifecycleResult(
-  value: unknown,
-): ManagedLifecycleCommandResult {
+export function parseManagedLifecycleResult(value: unknown): ManagedLifecycleCommandResult {
   if (!isRecord(value)) {
     return { status: '' }
   }
@@ -2951,9 +3186,7 @@ export function parseManagedLifecycleResult(
   return result
 }
 
-export function parseManagedDestroyPayload(
-  value: unknown,
-): ManagedDestroyCommandPayload {
+export function parseManagedDestroyPayload(value: unknown): ManagedDestroyCommandPayload {
   if (!isRecord(value)) {
     throw new Error('Invalid managed.destroy payload')
   }
@@ -2964,10 +3197,7 @@ export function parseManagedDestroyPayload(
   ) {
     throw new Error('Invalid managed.destroy payload')
   }
-  if (
-    value.deleteAfterDestroy !== undefined &&
-    typeof value.deleteAfterDestroy !== 'boolean'
-  ) {
+  if (value.deleteAfterDestroy !== undefined && typeof value.deleteAfterDestroy !== 'boolean') {
     throw new Error('Invalid managed.destroy payload')
   }
   if (
@@ -2995,9 +3225,7 @@ export function parseManagedDestroyPayload(
   return payload
 }
 
-export function parseManagedDestroyResult(
-  value: unknown,
-): ManagedDestroyCommandResult {
+export function parseManagedDestroyResult(value: unknown): ManagedDestroyCommandResult {
   if (!isRecord(value)) {
     return { status: '', containers: [] }
   }
@@ -3010,9 +3238,7 @@ export function parseManagedDestroyResult(
   return result
 }
 
-export function parseManagedPromotePayload(
-  value: unknown,
-): ManagedPromoteCommandPayload {
+export function parseManagedPromotePayload(value: unknown): ManagedPromoteCommandPayload {
   if (!isRecord(value)) {
     throw new Error('Invalid managed.promote payload')
   }
@@ -3043,9 +3269,7 @@ export function parseManagedPromotePayload(
   return payload
 }
 
-export function parseManagedPromoteResult(
-  value: unknown,
-): ManagedPromoteCommandResult {
+export function parseManagedPromoteResult(value: unknown): ManagedPromoteCommandResult {
   if (!isRecord(value)) {
     return { status: '', role: '', promotedMemberId: '', demoted: false }
   }
@@ -3058,10 +3282,7 @@ export function parseManagedPromoteResult(
         : '',
     demoted: value.demoted === true,
   }
-  if (
-    isString(value.demotedMemberId) &&
-    UUID_RE.test(value.demotedMemberId)
-  ) {
+  if (isString(value.demotedMemberId) && UUID_RE.test(value.demotedMemberId)) {
     result.demotedMemberId = value.demotedMemberId
   }
   if (isString(value.summary)) result.summary = value.summary
@@ -3130,9 +3351,7 @@ export type ManagedRestoreCommandResult = {
   summary?: string
 }
 
-export function parseManagedBackupPayload(
-  value: unknown,
-): ManagedBackupCommandPayload {
+export function parseManagedBackupPayload(value: unknown): ManagedBackupCommandPayload {
   if (!isRecord(value)) {
     throw new Error('Invalid managed.backup payload')
   }
@@ -3184,9 +3403,7 @@ export function parseManagedBackupPayload(
 }
 
 /** Lenient result parser (like other managed results): missing → omitted. Never carries dump contents. */
-export function parseManagedBackupResult(
-  value: unknown,
-): ManagedBackupCommandResult {
+export function parseManagedBackupResult(value: unknown): ManagedBackupCommandResult {
   if (!isRecord(value) || !isString(value.backupId) || value.backupId.length === 0) {
     return { backupId: '' }
   }
@@ -3212,9 +3429,7 @@ export function parseManagedBackupResult(
   return result
 }
 
-export function parseManagedRestorePayload(
-  value: unknown,
-): ManagedRestoreCommandPayload {
+export function parseManagedRestorePayload(value: unknown): ManagedRestoreCommandPayload {
   if (!isRecord(value)) {
     throw new Error('Invalid managed.restore payload')
   }
@@ -3259,9 +3474,7 @@ export function parseManagedRestorePayload(
 }
 
 /** Lenient result parser. Never carries dump contents. */
-export function parseManagedRestoreResult(
-  value: unknown,
-): ManagedRestoreCommandResult {
+export function parseManagedRestoreResult(value: unknown): ManagedRestoreCommandResult {
   if (!isRecord(value) || !isString(value.backupId) || value.backupId.length === 0) {
     return { backupId: '' }
   }
@@ -3274,17 +3487,10 @@ export function parseManagedRestoreResult(
 }
 
 function isValidHostgroupId(value: unknown): value is number {
-  return (
-    typeof value === 'number' &&
-    Number.isInteger(value) &&
-    value >= 0 &&
-    value <= 65_535
-  )
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 65_535
 }
 
-function parseManagedIngressReconcileBackend(
-  value: unknown,
-): ManagedIngressReconcileBackend {
+function parseManagedIngressReconcileBackend(value: unknown): ManagedIngressReconcileBackend {
   if (!isRecord(value)) {
     throw new TypeError('Invalid managed.ingress.reconcile backend')
   }
@@ -3310,9 +3516,7 @@ function parseManagedIngressReconcileBackend(
   }
 }
 
-function parseManagedIngressReconcileUser(
-  value: unknown,
-): ManagedIngressReconcileUser {
+function parseManagedIngressReconcileUser(value: unknown): ManagedIngressReconcileUser {
   if (!isRecord(value)) {
     throw new TypeError('Invalid managed.ingress.reconcile user')
   }
@@ -3331,10 +3535,7 @@ function parseManagedIngressReconcileUser(
     password: value.password,
   }
   if (value.defaultDatabase !== undefined) {
-    if (
-      !isString(value.defaultDatabase) ||
-      !isSafeIdentifier(value.defaultDatabase)
-    ) {
+    if (!isString(value.defaultDatabase) || !isSafeIdentifier(value.defaultDatabase)) {
       throw new TypeError('Invalid managed.ingress.reconcile user defaultDatabase')
     }
     user.defaultDatabase = value.defaultDatabase
@@ -3342,9 +3543,7 @@ function parseManagedIngressReconcileUser(
   return user
 }
 
-function parseManagedIngressReconcileCluster(
-  value: unknown,
-): ManagedIngressReconcileCluster {
+function parseManagedIngressReconcileCluster(value: unknown): ManagedIngressReconcileCluster {
   if (!isRecord(value)) {
     throw new TypeError('Invalid managed.ingress.reconcile cluster')
   }
@@ -3376,13 +3575,11 @@ function parseManagedIngressBindAddress(value: unknown): string {
   if (
     !isString(value) ||
     value.length === 0 ||
-    (
-      !isValidIpv4Literal(value) &&
+    (!isValidIpv4Literal(value) &&
       !isValidIpv6Literal(value) &&
       value !== '0.0.0.0' &&
       value !== '::' &&
-      value !== '::0' // NOSONAR typescript:S1313 — IPv6 all-interfaces bind synonym (::0 == ::), not a reachable host
-    )
+      value !== '::0') // NOSONAR typescript:S1313 — IPv6 all-interfaces bind synonym (::0 == ::), not a reachable host
   ) {
     throw new TypeError('Invalid managed.ingress.reconcile bindAddress')
   }
@@ -3391,7 +3588,7 @@ function parseManagedIngressBindAddress(value: unknown): string {
 
 /** Must stay in sync with the daemon `managed.ingress.reconcile` validator. */
 export function parseManagedIngressReconcilePayload(
-  value: unknown,
+  value: unknown
 ): ManagedIngressReconcileCommandPayload {
   if (!isRecord(value)) {
     throw new TypeError('Invalid managed.ingress.reconcile payload')
@@ -3420,7 +3617,7 @@ export function parseManagedIngressReconcilePayload(
 
 /** Must stay in sync with the daemon `managed.ingress.reconcile` result parser. */
 export function parseManagedIngressReconcileResult(
-  value: unknown,
+  value: unknown
 ): ManagedIngressReconcileCommandResult {
   if (!isRecord(value)) {
     throw new TypeError('Invalid managed.ingress.reconcile result')
@@ -3428,13 +3625,9 @@ export function parseManagedIngressReconcileResult(
   if (
     !isString(value.summary) ||
     !Array.isArray(value.appliedUsers) ||
-    !value.appliedUsers.every(
-      (entry) => isString(entry) && isSafeUsername(entry),
-    ) ||
+    !value.appliedUsers.every((entry) => isString(entry) && isSafeUsername(entry)) ||
     !Array.isArray(value.appliedBackends) ||
-    !value.appliedBackends.every(
-      (entry) => isString(entry) && UUID_RE.test(entry),
-    ) ||
+    !value.appliedBackends.every((entry) => isString(entry) && UUID_RE.test(entry)) ||
     typeof value.restarted !== 'boolean'
   ) {
     throw new TypeError('Invalid managed.ingress.reconcile result')
@@ -3460,7 +3653,7 @@ export function parseManagedIngressReconcileResult(
 
 export function parseCommandPayload(
   type: CommandType,
-  value: unknown,
+  value: unknown
 ):
   | PingCommandPayload
   | HostnameSetCommandPayload
@@ -3468,6 +3661,7 @@ export function parseCommandPayload(
   | NtpSetCommandPayload
   | RebootCommandPayload
   | WireguardApplyCommandPayload
+  | FabricReconcileCommandPayload
   | EnvironmentDeployCommandPayload
   | EnvironmentLifecycleCommandPayload
   | EnvironmentStopCommandPayload
@@ -3492,6 +3686,8 @@ export function parseCommandPayload(
       return parseRebootPayload(value)
     case 'server.wireguard.apply':
       return parseWireguardApplyPayload(value)
+    case 'server.fabric.reconcile':
+      return parseFabricReconcilePayload(value)
     case 'environment.deploy':
       return parseEnvironmentDeployPayload(value)
     case 'environment.lifecycle':
@@ -3519,7 +3715,7 @@ export function parseCommandPayload(
 
 export function parseCommandResult(
   type: CommandType,
-  value: unknown,
+  value: unknown
 ):
   | PingCommandResult
   | HostnameSetCommandResult
@@ -3527,6 +3723,7 @@ export function parseCommandResult(
   | NtpSetCommandResult
   | RebootCommandResult
   | WireguardApplyCommandResult
+  | FabricReconcileCommandResult
   | EnvironmentDeployCommandResult
   | EnvironmentLifecycleCommandResult
   | EnvironmentStopCommandResult
@@ -3551,6 +3748,8 @@ export function parseCommandResult(
       return parseRebootResult(value)
     case 'server.wireguard.apply':
       return parseWireguardApplyResult(value)
+    case 'server.fabric.reconcile':
+      return parseFabricReconcileResult(value)
     case 'environment.deploy':
       return parseEnvironmentDeployResult(value)
     case 'environment.lifecycle':

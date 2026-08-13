@@ -8,6 +8,7 @@ import {
   variable,
   workspace,
 } from '../../lib/db/schema.ts'
+import type { VariableRefScope } from '../../lib/compose/variable-refs.ts'
 
 export type ResolvedVariableEntry = {
   value: string
@@ -15,9 +16,13 @@ export type ResolvedVariableEntry = {
   isLiteral: boolean
   forBuild: boolean
   forRuntime: boolean
+  bindingId?: string | null
 }
 
 export type ResolvedVariableMap = Map<string, ResolvedVariableEntry>
+export type ResolvedVariableScopes = Partial<
+  Record<VariableRefScope, ResolvedVariableMap>
+>
 
 type VariableRow = {
   key: string
@@ -26,6 +31,7 @@ type VariableRow = {
   isLiteral: boolean
   forBuild: boolean
   forRuntime: boolean
+  bindingId: string | null
 }
 
 type VariableParentColumn =
@@ -47,8 +53,24 @@ function mergeVariables(
       isLiteral: row.isLiteral,
       forBuild: row.forBuild,
       forRuntime: row.forRuntime,
+      bindingId: row.bindingId ?? null,
     })
   }
+}
+
+function overlayMap(
+  target: ResolvedVariableMap,
+  source: ResolvedVariableMap,
+): void {
+  for (const [key, entry] of source) {
+    target.set(key, entry)
+  }
+}
+
+function mapFromRows(rows: VariableRow[]): ResolvedVariableMap {
+  const map: ResolvedVariableMap = new Map()
+  mergeVariables(map, rows)
+  return map
 }
 
 async function loadVariablesForParent(
@@ -65,6 +87,7 @@ async function loadVariablesForParent(
       isLiteral: variable.isLiteral,
       forBuild: variable.forBuild,
       forRuntime: variable.forRuntime,
+      bindingId: variable.bindingId,
     })
     .from(variable)
     .where(and(eq(columnRef, id), isNotNull(columnRef)))
@@ -79,11 +102,29 @@ async function mergeOrganizationChain(
     environmentId: string
   },
   merged: ResolvedVariableMap,
-): Promise<void> {
-  mergeVariables(merged, await loadVariablesForParent(db, 'organizationId', chain.organizationId))
-  mergeVariables(merged, await loadVariablesForParent(db, 'workspaceId', chain.workspaceId))
-  mergeVariables(merged, await loadVariablesForParent(db, 'projectId', chain.projectId))
-  mergeVariables(merged, await loadVariablesForParent(db, 'environmentId', chain.environmentId))
+): Promise<ResolvedVariableScopes> {
+  const organization = mapFromRows(
+    await loadVariablesForParent(db, 'organizationId', chain.organizationId),
+  )
+  const workspaceScope = mapFromRows(
+    await loadVariablesForParent(db, 'workspaceId', chain.workspaceId),
+  )
+  const projectScope = mapFromRows(
+    await loadVariablesForParent(db, 'projectId', chain.projectId),
+  )
+  const environmentScope = mapFromRows(
+    await loadVariablesForParent(db, 'environmentId', chain.environmentId),
+  )
+  overlayMap(merged, organization)
+  overlayMap(merged, workspaceScope)
+  overlayMap(merged, projectScope)
+  overlayMap(merged, environmentScope)
+  return {
+    organization,
+    workspace: workspaceScope,
+    project: projectScope,
+    environment: environmentScope,
+  }
 }
 
 /**
@@ -98,7 +139,7 @@ export async function mergeHostingVariablesForService(
   db: Db,
   serviceId: string,
   target: ResolvedVariableMap,
-): Promise<void> {
+): Promise<ResolvedVariableMap> {
   const hostingRows = await db
     .select({ id: hosting.id })
     .from(hosting)
@@ -108,9 +149,18 @@ export async function mergeHostingVariablesForService(
     .map((row) => row.id)
     .sort((a, b) => a.localeCompare(b))
 
+  const hostingMerged: ResolvedVariableMap = new Map()
   for (const hostingId of hostingIds) {
-    mergeVariables(target, await loadVariablesForParent(db, 'hostingId', hostingId))
+    const rows = await loadVariablesForParent(db, 'hostingId', hostingId)
+    mergeVariables(hostingMerged, rows)
+    mergeVariables(target, rows)
   }
+  return hostingMerged
+}
+
+export type InheritedVariableBundle = {
+  inherited: ResolvedVariableMap
+  scopes: ResolvedVariableScopes
 }
 
 /**
@@ -123,6 +173,14 @@ export async function resolveInheritedVariablesForService(
   db: Db,
   serviceId: string,
 ): Promise<ResolvedVariableMap> {
+  const bundle = await resolveInheritedVariableBundleForService(db, serviceId)
+  return bundle.inherited
+}
+
+export async function resolveInheritedVariableBundleForService(
+  db: Db,
+  serviceId: string,
+): Promise<InheritedVariableBundle> {
   const chainRows = await db
     .select({
       organizationId: workspace.organizationId,
@@ -139,13 +197,19 @@ export async function resolveInheritedVariablesForService(
 
   const chain = chainRows[0]
   if (!chain) {
-    return new Map()
+    return { inherited: new Map(), scopes: {} }
   }
 
-  const merged: ResolvedVariableMap = new Map()
-  await mergeOrganizationChain(db, chain, merged)
-  mergeVariables(merged, await loadVariablesForParent(db, 'serviceId', serviceId))
-  return merged
+  const inherited: ResolvedVariableMap = new Map()
+  const scopes = await mergeOrganizationChain(db, chain, inherited)
+  const serviceScope = mapFromRows(
+    await loadVariablesForParent(db, 'serviceId', serviceId),
+  )
+  overlayMap(inherited, serviceScope)
+  return {
+    inherited,
+    scopes: { ...scopes, service: serviceScope },
+  }
 }
 
 /**
@@ -233,6 +297,7 @@ export async function resolveServerScopedVariables(
       isLiteral: variable.isLiteral,
       forBuild: variable.forBuild,
       forRuntime: variable.forRuntime,
+      bindingId: variable.bindingId,
     })
     .from(variable)
     .where(and(eq(variable.serverId, serverId), isNotNull(variable.serverId)))

@@ -41,6 +41,11 @@ export { stripComposeTurbopanelExtensions } from './extensions.ts'
 export { renameComposeVolumes } from './rename-volumes.ts'
 export { expandComposeServiceInstances } from './expand-instances.ts'
 export {
+  compileRuntimeComposeDocument,
+  type CompileRuntimeOptions,
+} from './compile-runtime.ts'
+export { sha256HexUtf8, SHA256_HEX_RE } from './desired-hash.ts'
+export {
   collectComposeExternalDockerNetworkNames,
   collectServiceComposeNetworkKeys,
   pruneUnreferencedComposeNetworks,
@@ -90,10 +95,20 @@ export {
   applyVariablesToComposeDocument,
   escapeLiteralComposeValue,
   trimVariableValue,
+  isApplyVariablesError,
+  type ApplyVariablesError,
   type ApplyVariablesResult,
   type DeployVariableEntry,
   type DeployVariableMaterial,
 } from './apply-variables.ts'
+export {
+  type DeploySecretPlanEntry,
+} from './secret-files.ts'
+export {
+  parseExactVariableRef,
+  type ParsedVariableRef,
+  type VariableRefScope,
+} from './variable-refs.ts'
 export {
   applyResourcesToComposeService,
   applyServiceOptionsToComposeDocument,

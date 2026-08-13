@@ -43,6 +43,8 @@ import {
   parseTimezoneSetResult,
   parseWireguardApplyPayload,
   parseWireguardApplyResult,
+  parseFabricReconcilePayload,
+  parseFabricReconcileResult,
 } from './schemas.ts'
 import { COMMAND_TYPES, type CommandType } from './types.ts'
 
@@ -162,6 +164,7 @@ const DAEMON_COMMAND_TYPES = [
   'server.reboot',
   'server.timezone.set',
   'server.wireguard.apply',
+  'server.fabric.reconcile',
   'environment.deploy',
   'environment.lifecycle',
   'environment.stop',
@@ -2159,6 +2162,66 @@ test('parseWireguardApplyResult round-trips applied flag', () => {
   )
 })
 
+test('parseFabricReconcilePayload skips extra fields when disabled', () => {
+  assertEquals(
+    parseFabricReconcilePayload({ enabled: false, address: 'not-a-cidr' }),
+    { enabled: false },
+  )
+})
+
+test('parseFabricReconcilePayload accepts enabled mesh material', () => {
+  const payload = parseFabricReconcilePayload({
+    enabled: true,
+    fabricId: '550e8400-e29b-41d4-a716-446655440000',
+    address: '10.250.0.11/32',
+    prefix: '10.192.0.0/16',
+    peers: [
+      {
+        publicKey: WG_PUBKEY,
+        allowedIPs: ['10.250.0.12/32', '10.193.0.0/16'],
+        endpoint: '203.0.113.1:51820',
+      },
+    ],
+    networks: [
+      {
+        name: 'tpn_550e8400-e29b-41d4-a716-446655440000',
+        subnet: '10.192.11.0/24',
+      },
+    ],
+  })
+  assertEquals(payload.enabled, true)
+  if (!payload.enabled) {
+    throw new TypeError('expected enabled fabric payload')
+  }
+  assertEquals(payload.address, '10.250.0.11/32')
+  assertEquals(
+    parseCommandPayload('server.fabric.reconcile', { enabled: false }),
+    { enabled: false },
+  )
+  assertEquals(
+    parseCommandResult('server.fabric.reconcile', {
+      summary: 'TurboFabric disabled',
+      skipped: true,
+    }),
+    { summary: 'TurboFabric disabled', skipped: true },
+  )
+})
+
+test('parseFabricReconcileResult requires publicKey unless skipped', () => {
+  assertEquals(
+    parseFabricReconcileResult({
+      summary: 'TurboFabric reconciled',
+      publicKey: WG_PUBKEY,
+    }).publicKey,
+    WG_PUBKEY,
+  )
+  assertThrows(
+    () => parseFabricReconcileResult({ summary: 'ok' }),
+    TypeError,
+    'Invalid fabric reconcile result publicKey',
+  )
+})
+
 test('encodeCommandEnvelope round-trips through parseCommandEnvelope', () => {
   const envelope = {
     commandId: 'cmd-1',
@@ -2622,6 +2685,16 @@ test('parseEnvironmentDeployPayload parses rich hostings and optional material',
       forBuild: true,
       isLiteral: true,
     }],
+    envFile: 'web__PORT=3000\n',
+    secretPlan: [{
+      key: 'TOKEN',
+      composeServiceName: 'web',
+      source: 'web_token',
+      target: 'TOKEN',
+      relativePath: 'web--TOKEN',
+      forBuild: false,
+      forRuntime: true,
+    }],
     storageMaterial: [{
       storageId: 'st1',
       kind: 'docker_volume',
@@ -2653,6 +2726,8 @@ test('parseEnvironmentDeployPayload parses rich hostings and optional material',
   assertEquals(result.hostings[1]?.ports, [{ published: 5432, target: 5432 }])
   assertEquals(result.tlsMaterial?.length, 1)
   assertEquals(result.variableMaterial?.[0]?.forBuild, true)
+  assertEquals(result.envFile, 'web__PORT=3000\n')
+  assertEquals(result.secretPlan?.[0]?.relativePath, 'web--TOKEN')
   assertEquals(result.storageMaterial?.[0]?.volumeName, '01936b3e-8c7a-7b2d-a1f0-123456789abc')
   assertEquals(result.serviceHooks?.[0]?.preDeployCommand, '/bin/true')
   assertEquals(result.ingressServices?.[0]?.containerName, `${INGRESS_SERVICE_ID}-in`)

@@ -268,3 +268,21 @@ test('base-layer tag advisory is non-blocking; overlay suppresses it', () => {
     false,
   )
 })
+
+test('lintComposeYaml errors on invalid TurboPanel variable refs', () => {
+  const issues = lintComposeYaml(`services:
+  web:
+    image: nginx
+    environment:
+      BAD: prefix-{$PORT}
+      SCOPE: "{$galaxy.KEY}"
+`)
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.web.environment.BAD'),
+    true,
+  )
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.web.environment.SCOPE'),
+    true,
+  )
+})

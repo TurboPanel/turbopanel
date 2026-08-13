@@ -26,6 +26,7 @@ import {
   DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
 } from "./cell/stateless-challenge.ts";
 import { getDaemonOpenApiSpec } from "./openapi/index.ts";
+import { buildDeploymentSecretsRehydrate } from "./rehydrate-secrets.ts";
 import { buildDaemonScalarHtml } from "../scalar-html.ts";
 import { resolveInstanceTlsCaPath } from "../server-paths.ts";
 import { DAEMON_API_PREFIX } from "../surfaces.ts";
@@ -1039,6 +1040,33 @@ export function registerDaemonApiRoutes(
       }
 
       return c.json({ plaintexts }, 200);
+    },
+  );
+
+  daemon.post(
+    "/deployments/secrets/rehydrate",
+    requireDaemonJwt,
+    enforceJwtRestLimit("secrets-rehydrate"),
+    requireActiveDaemonKey,
+    async (c) => {
+      const db = getDb(c);
+      if (!db) {
+        return c.json({ ok: false, error: "database unavailable" }, 503);
+      }
+      const bodyRead = await readBoundedJsonBody(
+        c,
+        MAX_SECRETS_DECRYPT_BODY_BYTES,
+      );
+      if (!bodyRead.ok) return bodyRead.response;
+      let body: unknown;
+      try {
+        body = JSON.parse(bodyRead.text) as unknown;
+      } catch {
+        return c.json({ ok: false, error: "invalid json" }, 400);
+      }
+      const result = await buildDeploymentSecretsRehydrate(c, db, body);
+      if (result instanceof Response) return result;
+      return c.json({ ok: true, ...result }, 200);
     },
   );
 

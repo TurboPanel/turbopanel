@@ -50,6 +50,10 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
     { kind: 'docker_external_network_unregistered', names: ['external-net'] },
     { kind: 'traditional_web_principal_ambiguous', composeServiceName: 'php' },
     { kind: 'resource_limit', violations: [{ resource: 'cpu', limit: 1, requested: 2 }] },
+    { kind: 'binding_endpoint_unavailable' },
+    { kind: 'variable_unresolved', message: 'missing {$project.x}', ref: '{$project.x}' },
+    { kind: 'variable_ref_invalid', message: 'bad ref' },
+    { kind: 'variable_secret_interpolation', message: 'use {$SECRET}' },
   ]
 
   assertEquals(mapPrepareErrorResponse(cases[0]).status, 409)
@@ -58,6 +62,11 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
   assertEquals(mapPrepareErrorResponse(cases[3]).body.error, 'docker_external_network_unregistered')
   assertEquals(mapPrepareErrorResponse(cases[4]).body.error, 'traditional_web_principal_ambiguous')
   assertEquals(mapPrepareErrorResponse(cases[5]).body.error, 'resource_limit_exceeded')
+  assertEquals(mapPrepareErrorResponse(cases[6]).body.error, 'binding_endpoint_unavailable')
+  assertEquals(mapPrepareErrorResponse(cases[7]).status, 422)
+  assertEquals(mapPrepareErrorResponse(cases[7]).body.error, 'variable_unresolved')
+  assertEquals(mapPrepareErrorResponse(cases[8]).body.error, 'variable_ref_invalid')
+  assertEquals(mapPrepareErrorResponse(cases[9]).body.error, 'variable_secret_interpolation')
 })
 
 test('parseDeployRequestFlags defaults flags to false', () => {

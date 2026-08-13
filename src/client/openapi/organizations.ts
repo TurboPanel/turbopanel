@@ -125,6 +125,36 @@ export const organizationSchemas = {
       },
     },
   },
+  OrganizationFabric: {
+    type: 'object',
+    required: ['enabled'],
+    properties: {
+      enabled: {
+        type: 'boolean',
+        description:
+          'Whether TurboFabric is on for this organization. Absence of a fabric row is off. Not required for single-engine Docker standalone.',
+      },
+      fabric: {
+        type: 'object',
+        required: ['id', 'cidr'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          cidr: { type: 'string' },
+          status: { type: 'string' },
+        },
+      },
+    },
+  },
+  OrganizationFabricUpdate: {
+    type: 'object',
+    required: ['enabled'],
+    properties: {
+      enabled: {
+        type: 'boolean',
+        description: 'Enable or disable TurboFabric for the organization.',
+      },
+    },
+  },
 }
 
 export const organizationPaths: Record<string, unknown> = {
@@ -494,6 +524,106 @@ export const organizationPaths: Record<string, unknown> = {
         },
         '401': {
           description: 'Unauthorized',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/fabric': {
+    get: {
+      tags: ['Organizations'],
+      summary: 'Get TurboFabric opt-in status',
+      description:
+        'Manage-gated. Returns whether TurboFabric is enabled for the organization. Default is off: capable single-engine Docker standalone, no `tp0`. Enabling creates the org `fabric` row and reconciles host interface `tp0` on enrolled servers. User-facing copy is TurboFabric; backend identifiers stay `fabric` / `tp0`.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'TurboFabric status',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/OrganizationFabric' },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'Organization not found',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+    put: {
+      tags: ['Organizations'],
+      summary: 'Enable or disable TurboFabric',
+      description:
+        'Manage-gated. `{ enabled: true }` creates the org fabric (if missing) and enqueues `server.fabric.reconcile` on enrolled servers. `{ enabled: false }` enqueues disable then deletes the fabric row (CASCADE relays/spans). Does not auto-enable on install, enroll, or first deploy. Returns 409 `fabric_cidr_unavailable` / `fabric_address_pool_exhausted` when the default host CIDR cannot be allocated.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/OrganizationFabricUpdate' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Updated TurboFabric status',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/OrganizationFabric' },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid request',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '409': {
+          description: 'CIDR or address pool unavailable',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },

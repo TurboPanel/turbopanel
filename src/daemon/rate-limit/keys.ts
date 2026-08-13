@@ -12,7 +12,8 @@ export type DaemonRestRateLimitRoute =
   | "enroll"
   | "auth-session"
   | "commands-lease"
-  | "secrets-decrypt";
+  | "secrets-decrypt"
+  | "secrets-rehydrate";
 
 /** Sentinel id for anonymous enrollment-challenge REST limiting (no serverId). */
 export const DAEMON_ENROLL_CHALLENGE_RATE_LIMIT_ID = "enroll-challenge";

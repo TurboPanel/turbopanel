@@ -2587,3 +2587,172 @@ test('POST /servers/:id/update returns 404 when daemon is offline', async () => 
     assertEquals(body.error, 'Daemon not connected')
   })
 })
+
+test('GET /servers/:id/labels returns an empty list then PUT replace-all', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const emptyRes = await app.request(`/servers/${serverId}/labels`, {
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+    assertEquals(emptyRes.status, 200)
+    const emptyBody = await readJson<{ ok: boolean; labels: Array<{ key: string; value: string }> }>(
+      emptyRes,
+    )
+    assertEquals(emptyBody.ok, true)
+    assertEquals(emptyBody.labels, [])
+
+    const putRes = await app.request(`/servers/${serverId}/labels`, {
+      method: 'PUT',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ labels: { region: 'us-east', env: 'prod' } }),
+    })
+    assertEquals(putRes.status, 200)
+    const putBody = await readJson<{ ok: boolean; labels: Array<{ key: string; value: string }> }>(
+      putRes,
+    )
+    assertEquals(putBody.ok, true)
+    assertEquals(putBody.labels, [
+      { key: 'env', value: 'prod' },
+      { key: 'region', value: 'us-east' },
+    ])
+
+    const getRes = await app.request(`/servers/${serverId}/labels`, {
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+    assertEquals(getRes.status, 200)
+    const getBody = await readJson<{ ok: boolean; labels: Array<{ key: string; value: string }> }>(
+      getRes,
+    )
+    assertEquals(getBody.labels, putBody.labels)
+  })
+})
+
+test('PUT /servers/:id/labels returns 400 for invalid keys', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/servers/${serverId}/labels`, {
+      method: 'PUT',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ labels: { '-nope': 'x' } }),
+    })
+    assertEquals(res.status, 400)
+    const body = await readJson<{ error: string }>(res)
+    assertEquals(body.error.includes('invalid'), true)
+  })
+})
+
+test('PUT /servers/:id/labels returns 403 for a non-manager', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    organizationId,
+    serverId,
+  }) => {
+    const email = `server-labels-reader-${crypto.randomUUID()}@example.com`
+    const [insertedUser] = await db
+      .insert(user)
+      .values({ email, isEmailVerified: true, role: 'user' })
+      .returning({ id: user.id })
+    const readerId = insertedUser!.id
+    await db.insert(membership).values({ organizationId, userId: readerId })
+
+    try {
+      const cookie = await sessionCookie(db, secrets, readerId)
+      const res = await app.request(`/servers/${serverId}/labels`, {
+        method: 'PUT',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ labels: { env: 'prod' } }),
+      })
+      assertEquals(res.status, 403)
+    } finally {
+      await db.delete(membership).where(and(
+        eq(membership.userId, readerId),
+        eq(membership.organizationId, organizationId),
+      ))
+      await db.delete(user).where(eq(user.id, readerId))
+    }
+  })
+})
+
+test('GET /servers/:id still issues exactly one cached select after labels are added', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const putRes = await app.request(`/servers/${serverId}/labels`, {
+      method: 'PUT',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ labels: { env: 'prod' } }),
+    })
+    assertEquals(putRes.status, 200)
+
+    const registry = createTrackingRegistry({
+      getCellThrows: true,
+      getSnapshotsThrows: true,
+      listOnlineServerIdsThrows: true,
+    })
+    const readDb = createDetailRowsOnlyReadDb(db)
+    const recordingCache = createRecordingQueryCache(readDb)
+    const { app: detailApp } = await createServerRoutesTestApp(db, registry, recordingCache)
+
+    const res = await detailApp.request(`/servers/${serverId}`, {
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 200)
+    const body = await readJson<{
+      ok: boolean
+      server: { id: string; labels: Array<{ key: string; value: string }> }
+    }>(res)
+    assertEquals(body.ok, true)
+    assertEquals(body.server.id, serverId)
+    assertEquals(body.server.labels, [{ key: 'env', value: 'prod' }])
+    assertEquals(recordingCache.readModels, ['server-detail'])
+    assertEquals(readDb.selectCallCount, 1)
+  })
+})

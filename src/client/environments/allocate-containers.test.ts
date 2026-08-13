@@ -240,7 +240,7 @@ test('allocateEnvironmentContainers suffixes explicit names for multi-instance',
     assertEquals(names, ['explicit-web-1', 'explicit-web-2'])
     assertEquals(
       allocations.map((row) => row.cloneComposeServiceName).sort((a, b) => a.localeCompare(b)),
-      ['web-1', 'web-2'],
+      ['web', 'web'],
     )
   })
 })
@@ -552,7 +552,7 @@ test('allocateEnvironmentContainers allocates multi-instance uuid services via t
   assertEquals(out[0]?.ordinal, 1)
   assertEquals(out[1]?.ordinal, 2)
   assertEquals(out[0]?.composeServiceName, 'web')
-  assertEquals(out[1]?.cloneComposeServiceName, 'web-2')
+  assertEquals(out[1]?.cloneComposeServiceName, 'web')
   assertEquals(insertCalls, 2)
   assertEquals(updateCalls, 2)
   // 1× post-ordinal prune inside allocateServiceContainers + 1× pruneUnexpectedPending

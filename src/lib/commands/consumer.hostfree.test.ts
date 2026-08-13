@@ -44,6 +44,7 @@ test('commandTimeoutMs returns per-type budgets and the default', () => {
   assertEquals(commandTimeoutMs('server.timezone.set'), 300_000)
   assertEquals(commandTimeoutMs('server.reboot'), 120_000)
   assertEquals(commandTimeoutMs('server.wireguard.apply'), 300_000)
+  assertEquals(commandTimeoutMs('server.fabric.reconcile'), 300_000)
   assertEquals(commandTimeoutMs('environment.deploy'), 600_000)
   assertEquals(commandTimeoutMs('environment.lifecycle'), 120_000)
   assertEquals(commandTimeoutMs('environment.stop'), 120_000)
@@ -59,10 +60,7 @@ test('commandTimeoutMs returns per-type budgets and the default', () => {
 })
 
 test('extractObservedHostname parses valid results and swallows invalid', () => {
-  assertEquals(
-    extractObservedHostname({ observedHostname: 'web-01' }),
-    'web-01',
-  )
+  assertEquals(extractObservedHostname({ observedHostname: 'web-01' }), 'web-01')
   assertEquals(extractObservedHostname(null), null)
   assertEquals(extractObservedHostname({}), null)
   assertEquals(extractObservedHostname({ observedHostname: '' }), null)
@@ -70,25 +68,28 @@ test('extractObservedHostname parses valid results and swallows invalid', () => 
 
 test('enrichPingResult only attaches cellDispatchedAt for daemon.ping', () => {
   assertEquals(
-    enrichPingResult('server.reboot', { scheduled: true }, {
-      sentAt: '2020-01-01T00:00:00.000Z',
-    }),
-    { scheduled: true },
+    enrichPingResult(
+      'server.reboot',
+      { scheduled: true },
+      {
+        sentAt: '2020-01-01T00:00:00.000Z',
+      }
+    ),
+    { scheduled: true }
   )
-  assertEquals(
-    enrichPingResult('daemon.ping', { daemonHostname: 'h' }, {}),
-    { daemonHostname: 'h' },
-  )
+  assertEquals(enrichPingResult('daemon.ping', { daemonHostname: 'h' }, {}), {
+    daemonHostname: 'h',
+  })
   assertEquals(
     enrichPingResult(
       'daemon.ping',
       { daemonHostname: 'h' },
-      { sentAt: '2020-01-01T00:00:05.000Z' },
+      { sentAt: '2020-01-01T00:00:05.000Z' }
     ),
     {
       daemonHostname: 'h',
       cellDispatchedAt: '2020-01-01T00:00:05.000Z',
-    },
+    }
   )
 })
 
@@ -116,10 +117,7 @@ test('isManagedObservedStatus accepts projectable statuses only', () => {
 test('hasManagedFollowUpDeps requires live queue plus both secret configs', () => {
   assertEquals(hasManagedFollowUpDeps(undefined), false)
   assertEquals(hasManagedFollowUpDeps({}), false)
-  assertEquals(
-    hasManagedFollowUpDeps({ commandQueue: createNoopCommandQueue() }),
-    false,
-  )
+  assertEquals(hasManagedFollowUpDeps({ commandQueue: createNoopCommandQueue() }), false)
   const liveQueue = {
     enqueue: async () => {},
   }
@@ -132,7 +130,7 @@ test('hasManagedFollowUpDeps requires live queue plus both secret configs', () =
         fallbacks: [],
       },
     }),
-    true,
+    true
   )
 })
 
@@ -142,14 +140,14 @@ test('resolveManagedIdFromPayload extracts ids and returns null on miss', () => 
       managedId: MANAGED_ID,
       action: 'start',
     }),
-    MANAGED_ID,
+    MANAGED_ID
   )
   assertEquals(
     resolveManagedIdFromPayload('managed.destroy', {
       managedId: MANAGED_ID,
       removeVolumes: true,
     }),
-    MANAGED_ID,
+    MANAGED_ID
   )
   assertEquals(resolveManagedIdFromPayload('managed.lifecycle', {}), null)
   assertEquals(resolveManagedIdFromPayload('managed.apply', { managedId: 'x' }), null)
@@ -216,9 +214,7 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
   transitions: Array<{ status: string; error?: string }>
 } {
   const transitions: Array<{ status: string; error?: string }> = []
-  const commandRow = options.commandRow === undefined
-    ? baseCommandRow()
-    : options.commandRow
+  const commandRow = options.commandRow === undefined ? baseCommandRow() : options.commandRow
   const serverExists = options.serverExists ?? true
   const serverConnected = options.serverConnected ?? false
 
@@ -233,9 +229,7 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
           // getServerLicenseBinding first hop
           if ('organizationId' in fields && !('id' in fields)) {
             return queryResult(
-              serverExists
-                ? [{ organizationId: '00000000-0000-4000-8000-000000000099' }]
-                : [],
+              serverExists ? [{ organizationId: '00000000-0000-4000-8000-000000000099' }] : []
             )
           }
           // getServerLicenseBinding license hops
@@ -246,24 +240,26 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
           if ('daemon' in fields || 'connected' in fields) {
             return queryResult(
               serverExists
-                ? [{
-                  id: SERVER_ID,
-                  daemon: {
-                    key: {
-                      id: 'key-1',
-                      algorithm: 'Ed25519',
-                      publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
-                      fingerprint: 'fp',
-                      createdAt: '2020-01-01T00:00:00.000Z',
+                ? [
+                    {
+                      id: SERVER_ID,
+                      daemon: {
+                        key: {
+                          id: 'key-1',
+                          algorithm: 'Ed25519',
+                          publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
+                          fingerprint: 'fp',
+                          createdAt: '2020-01-01T00:00:00.000Z',
+                        },
+                      },
+                      metadata: null,
+                      hostname: 'host-1',
+                      machineKey: null,
+                      connected: serverConnected,
+                      statusChangedAt: '2020-01-01T00:00:00.000Z',
                     },
-                  },
-                  metadata: null,
-                  hostname: 'host-1',
-                  machineKey: null,
-                  connected: serverConnected,
-                  statusChangedAt: '2020-01-01T00:00:00.000Z',
-                }]
-                : [],
+                  ]
+                : []
             )
           }
           return queryResult([])
@@ -292,27 +288,23 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
         return {
           where: () => ({
             returning: () =>
-              Promise.resolve([
-                commandRow
-                  ? {
-                    ...commandRow,
-                    status: (patch.status as string) ?? commandRow.status,
-                    updatedAt: new Date().toISOString(),
-                    metadata: {
-                      ...(commandRow.metadata ?? {}),
-                      ...(typeof patch.error === 'string'
-                        ? { error: patch.error }
-                        : {}),
-                    },
-                    ...(patch.result !== undefined
-                      ? { result: patch.result }
-                      : {}),
-                    ...(typeof patch.attempts === 'number'
-                      ? { attempts: patch.attempts }
-                      : {}),
-                  }
-                  : undefined,
-              ].filter(Boolean)),
+              Promise.resolve(
+                [
+                  commandRow
+                    ? {
+                        ...commandRow,
+                        status: (patch.status as string) ?? commandRow.status,
+                        updatedAt: new Date().toISOString(),
+                        metadata: {
+                          ...(commandRow.metadata ?? {}),
+                          ...(typeof patch.error === 'string' ? { error: patch.error } : {}),
+                        },
+                        ...(patch.result !== undefined ? { result: patch.result } : {}),
+                        ...(typeof patch.attempts === 'number' ? { attempts: patch.attempts } : {}),
+                      }
+                    : undefined,
+                ].filter(Boolean)
+              ),
           }),
         }
       },
@@ -376,7 +368,10 @@ test('processCommandEnvelope marks expired commands timed_out', async () => {
     attempt: 1,
     queuedAt: '2020-01-01T00:00:00.000Z',
   })
-  assertEquals(transitions.some((t) => t.status === 'timed_out'), true)
+  assertEquals(
+    transitions.some((t) => t.status === 'timed_out'),
+    true
+  )
 })
 
 test('processCommandEnvelope no-ops on serverId envelope mismatch', async () => {
@@ -404,8 +399,14 @@ test('processCommandEnvelope fails when the server row is missing', async () => 
     attempt: 1,
     queuedAt: '2020-01-01T00:00:00.000Z',
   })
-  assertEquals(transitions.some((t) => t.status === 'dispatching'), true)
-  assertEquals(transitions.some((t) => t.status === 'failed'), true)
+  assertEquals(
+    transitions.some((t) => t.status === 'dispatching'),
+    true
+  )
+  assertEquals(
+    transitions.some((t) => t.status === 'failed'),
+    true
+  )
 })
 
 test('processCommandEnvelope fails fast when the daemon is offline', async () => {
@@ -420,8 +421,14 @@ test('processCommandEnvelope fails fast when the daemon is offline', async () =>
     attempt: 1,
     queuedAt: '2020-01-01T00:00:00.000Z',
   })
-  assertEquals(transitions.some((t) => t.status === 'dispatching'), true)
-  assertEquals(transitions.some((t) => t.status === 'failed'), true)
+  assertEquals(
+    transitions.some((t) => t.status === 'dispatching'),
+    true
+  )
+  assertEquals(
+    transitions.some((t) => t.status === 'failed'),
+    true
+  )
 })
 
 test('processCommandEnvelope dispatches when online and maps a done outcome', async () => {
@@ -510,7 +517,16 @@ test('processCommandEnvelope dispatches when online and maps a done outcome', as
     queuedAt: '2020-01-01T00:00:00.000Z',
   })
 
-  assertEquals(transitions.some((t) => t.status === 'dispatching'), true)
-  assertEquals(transitions.some((t) => t.status === 'sent'), true)
-  assertEquals(transitions.some((t) => t.status === 'succeeded'), true)
+  assertEquals(
+    transitions.some((t) => t.status === 'dispatching'),
+    true
+  )
+  assertEquals(
+    transitions.some((t) => t.status === 'sent'),
+    true
+  )
+  assertEquals(
+    transitions.some((t) => t.status === 'succeeded'),
+    true
+  )
 })

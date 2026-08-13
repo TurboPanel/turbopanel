@@ -72,8 +72,18 @@ test('migrations/0000_init.sql CREATE TABLE names are single lower-case words', 
   if (!unique.includes('node')) {
     throw new TypeError('expected managed-cluster participation table "node"')
   }
-  if (unique.includes('member') || unique.includes('managed_member')) {
-    throw new TypeError('retired table names member / managed_member must not reappear')
+  if (!unique.includes('fabric') || !unique.includes('relay') || !unique.includes('span')) {
+    throw new TypeError('expected TurboFabric tables fabric / relay / span')
+  }
+  if (
+    unique.includes('member') ||
+    unique.includes('managed_member') ||
+    unique.includes('router') ||
+    unique.includes('attachment')
+  ) {
+    throw new TypeError(
+      'retired table names member / managed_member / router / attachment must not reappear',
+    )
   }
 
   // Every listed exception must still exist in the migration (no stale exceptions)

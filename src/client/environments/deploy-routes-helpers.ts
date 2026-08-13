@@ -133,6 +133,34 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
       },
     }
   }
+  if (prepared.kind === 'binding_endpoint_unavailable') {
+    return {
+      status: 422,
+      body: {
+        error: 'binding_endpoint_unavailable',
+        message:
+          'A service binding could not resolve a ProxySQL listener for its managed cluster.',
+      },
+    }
+  }
+  if (
+    prepared.kind === 'variable_unresolved' ||
+    prepared.kind === 'variable_ref_invalid' ||
+    prepared.kind === 'variable_secret_interpolation'
+  ) {
+    return {
+      status: 422,
+      body: {
+        error: prepared.kind,
+        message: prepared.message,
+        ...(prepared.composeServiceName
+          ? { composeServiceName: prepared.composeServiceName }
+          : {}),
+        ...('ref' in prepared && prepared.ref ? { ref: prepared.ref } : {}),
+        ...(prepared.envKey ? { envKey: prepared.envKey } : {}),
+      },
+    }
+  }
   return {
     status: 409,
     body: {

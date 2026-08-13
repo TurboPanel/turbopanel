@@ -376,6 +376,7 @@ export async function reapplyBindingOwnedVariables(
       isLiteral: variable.isLiteral,
       forBuild: variable.forBuild,
       forRuntime: variable.forRuntime,
+      bindingId: variable.bindingId,
     })
     .from(variable)
     .where(
@@ -392,6 +393,7 @@ export async function reapplyBindingOwnedVariables(
       isLiteral: row.isLiteral,
       forBuild: row.forBuild,
       forRuntime: row.forRuntime,
+      bindingId: row.bindingId ?? null,
     }
     map.set(row.key, entry)
   }
