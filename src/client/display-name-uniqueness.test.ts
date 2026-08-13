@@ -162,7 +162,7 @@ async function cleanupOrgHierarchy(
   await db.delete(organization).where(eq(organization.id, organizationId))
 }
 
-test('isWorkspaceDisplayNameTaken treats system workspace named System as taken', async () => {
+test('isWorkspaceDisplayNameTaken treats TurboPanel Platform workspace as taken', async () => {
   if (!dbUrl) {
     console.warn(
       'Skipping workspace display-name uniqueness DB test: TURBOPANEL_DATABASE_URL not set',
@@ -197,7 +197,7 @@ test('isWorkspaceDisplayNameTaken treats system workspace named System as taken'
       true,
     )
     assertEquals(
-      await isWorkspaceDisplayNameTaken(db, organizationId, '  system  '),
+      await isWorkspaceDisplayNameTaken(db, organizationId, '  TurboPanel Platform  '),
       true,
     )
   } finally {

@@ -401,7 +401,7 @@ test('workspace reads expose kind and system workspace is immutable', async () =
         [ORG_ID_HEADER]: organizationId,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ name: 'X', kind: 'system' }),
+      body: JSON.stringify({ name: 'X', kind: 'turbopanel' }),
     })
     assertEquals(create.status, 200)
     const { id: createdId } = await create.json() as { id: string }

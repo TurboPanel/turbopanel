@@ -499,10 +499,17 @@ test('GET /environments/:id/deploy-preview returns containers for a service', as
       .update(environment)
       .set({
         serverId,
-        options: { compose: composeWithWebService() },
+        options: { compose: emptyComposeDocument() },
         updatedAt: new Date().toISOString(),
       })
       .where(eq(environment.id, environmentId))
+    await db
+      .update(project)
+      .set({
+        options: { compose: composeWithWebService() },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(project.id, projectId))
 
     const cookie = await sessionCookie(db, secrets, userId)
     const res = await app.request(`/environments/${environmentId}/deploy-preview`, {
@@ -566,6 +573,7 @@ test('POST /environments/:id/deploy payload carries composeYaml and ordered comp
     secrets,
     userId,
     organizationId,
+    projectId,
     environmentId,
     serverId,
     commandQueue,
@@ -575,10 +583,17 @@ test('POST /environments/:id/deploy payload carries composeYaml and ordered comp
       .set({
         serverId,
         name: 'Production',
-        options: { compose: composeWithWebService() },
+        options: { compose: emptyComposeDocument() },
         updatedAt: new Date().toISOString(),
       })
       .where(eq(environment.id, environmentId))
+    await db
+      .update(project)
+      .set({
+        options: { compose: composeWithWebService() },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(project.id, projectId))
 
     const cookie = await sessionCookie(db, secrets, userId)
     const res = await app.request(`/environments/${environmentId}/deploy`, {

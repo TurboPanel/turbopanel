@@ -138,7 +138,7 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     const id = await db.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(workspace)
-        // Public create is always `user`. `kind='system'` is reachable only from
+        // Public create is always `user`. `kind='turbopanel'` is reachable only from
         // ensureSystemWorkspace in src/client/system/hierarchy.ts.
         .values({ name: displayName, description, organizationId, kind: WORKSPACE_KIND_USER })
         .returning({ id: workspace.id })

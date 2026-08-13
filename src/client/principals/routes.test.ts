@@ -23,6 +23,7 @@ import {
   user,
   workspace,
 } from '../../lib/db/schema.ts'
+import { WORKSPACE_KIND_TURBOPANEL } from '../../lib/db/workspace-kind.ts'
 import { principalHomeDir } from '../../lib/naming.ts'
 import { DEFAULT_PRINCIPAL_SHELL } from '../../lib/principal-options.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
@@ -735,7 +736,7 @@ test('POST /projects/:projectId/principals returns 404 for project in another or
   })
 })
 
-test('POST /projects/:projectId/principals rejects mutations on system workspace projects', async () => {
+test('POST /projects/:projectId/principals rejects mutations on turbopanel workspace projects', async () => {
   await withPrincipalFixtures(async ({
     db,
     app,
@@ -743,17 +744,21 @@ test('POST /projects/:projectId/principals rejects mutations on system workspace
     userId,
     organizationId,
   }) => {
-    const [systemWorkspace] = await db
+    const [platformWorkspace] = await db
       .insert(workspace)
-      .values({ name: 'System WS', organizationId, kind: 'system' })
+      .values({
+        name: 'Platform WS',
+        organizationId,
+        kind: WORKSPACE_KIND_TURBOPANEL,
+      })
       .returning({ id: workspace.id })
-    const [systemProject] = await db
+    const [platformProject] = await db
       .insert(project)
-      .values({ name: 'System Project', workspaceId: systemWorkspace!.id })
+      .values({ name: 'Platform Project', workspaceId: platformWorkspace!.id })
       .returning({ id: project.id })
 
     const cookie = await sessionCookie(db, secrets, userId)
-    const res = await app.request(`/projects/${systemProject!.id}/principals`, {
+    const res = await app.request(`/projects/${platformProject!.id}/principals`, {
       method: 'POST',
       headers: {
         Cookie: cookie,
@@ -766,8 +771,8 @@ test('POST /projects/:projectId/principals rejects mutations on system workspace
     const body = await res.json() as { error: string }
     assertEquals(body.error, 'system_resource_immutable')
 
-    await db.delete(project).where(eq(project.id, systemProject!.id))
-    await db.delete(workspace).where(eq(workspace.id, systemWorkspace!.id))
+    await db.delete(project).where(eq(project.id, platformProject!.id))
+    await db.delete(workspace).where(eq(workspace.id, platformWorkspace!.id))
   })
 })
 
